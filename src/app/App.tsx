@@ -58,7 +58,6 @@ export function App() {
   const modal = useNewChat(s => s.open);
   const layout = usePanes(s => s.layout);
   const setLayout = usePanes(s => s.setLayout);
-  const refreshAccounts = useAccounts(s => s.refresh);
   const loginFor = useAccounts(s => s.loginFor);
   const sidebarRef = useRef(sidebar);
   sidebarRef.current = sidebar;
@@ -71,11 +70,12 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    void refreshAccounts();
+    // The store owns the cadence: a fixed interval here would keep hitting a
+    // rate-limited endpoint straight through the backoff it just scheduled.
+    useAccounts.getState().startPolling();
     void checkForUpdates();
-    const t = setInterval(() => void refreshAccounts(), 60_000);
-    return () => clearInterval(t);
-  }, [refreshAccounts]);
+    return () => useAccounts.getState().stopPolling();
+  }, []);
 
   useEffect(() => {
     localStorage.setItem('llm-desktop.theme', pref);

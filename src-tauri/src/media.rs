@@ -62,6 +62,45 @@ pub fn save_media(chat_id: String, name: String, data: String) -> Result<String,
     Ok(path.to_string_lossy().into_owned())
 }
 
+/// Attachments are only cleared when their chat is deleted, so a long-lived
+/// chat would hoard every screenshot ever pasted into it. Drop anything the CLI
+/// can no longer plausibly be asked about.
+const KEEP_DAYS: u64 = 14;
+
+#[tauri::command]
+pub fn prune_media() -> Result<usize, String> {
+    let base = dirs::data_local_dir()
+        .or_else(dirs::cache_dir)
+        .ok_or("No local data directory")?
+        .join("llm-desktop")
+        .join("media");
+    if !base.exists() {
+        return Ok(0);
+    }
+    let max_age = std::time::Duration::from_secs(KEEP_DAYS * 24 * 3600);
+    let mut removed = 0;
+
+    for chat_dir in fs::read_dir(&base).map_err(|e| e.to_string())?.flatten() {
+        let Ok(entries) = fs::read_dir(chat_dir.path()) else { continue };
+        for f in entries.flatten() {
+            let old = f
+                .metadata()
+                .and_then(|m| m.modified())
+                .map(|t| t.elapsed().map(|age| age > max_age).unwrap_or(false))
+                .unwrap_or(false);
+            if old && fs::remove_file(f.path()).is_ok() {
+                removed += 1;
+            }
+        }
+        // Tidy up the chat folder once nothing is left in it.
+        let _ = fs::remove_dir(chat_dir.path());
+    }
+    if removed > 0 {
+        crate::log::info("media", &format!("pruned {removed} attachment(s) older than {KEEP_DAYS}d"));
+    }
+    Ok(removed)
+}
+
 /// Drops everything a chat accumulated; called when the chat is deleted.
 #[tauri::command]
 pub fn clear_media(chat_id: String) -> Result<(), String> {

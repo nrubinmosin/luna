@@ -118,6 +118,7 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
     }
 
     let disposed = false;
+    let repaintTimer: ReturnType<typeof setTimeout> | undefined;
     const unlisteners: Array<() => void> = [];
     // Fitting a detached or zero-sized host throws; that happens on every
     // pane close and used to take the whole window down with it.
@@ -169,8 +170,26 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
         resume: chat.sessionId ?? null
       });
       if (disposed) return;
-      if (backlog) term.write(backlog);
-      void resizeSession(chat.id, term.cols, term.rows);
+
+      if (!backlog) {
+        // Fresh session: the pty starts at a placeholder size, so this is also
+        // the first real SIGWINCH and the CLI paints itself.
+        void resizeSession(chat.id, term.cols, term.rows);
+        return;
+      }
+
+      // Reattaching to a live session. The CLI runs in fullscreen mode, i.e. on
+      // the alternate screen, and only repaints on input or on SIGWINCH.
+      // Replaying its scrollback into a fresh xterm therefore leaves whatever
+      // the buffer happened to end on — often just the prompt box, with the
+      // conversation above it missing until you type. Resizing to a different
+      // size and straight back forces a full repaint.
+      term.write(backlog);
+      const { cols, rows } = term;
+      void resizeSession(chat.id, cols, Math.max(1, rows - 1));
+      repaintTimer = setTimeout(() => {
+        if (!disposed) void resizeSession(chat.id, cols, rows);
+      }, 60);
     })();
 
     // Pick up the CLI's own session registry: AI-derived name + real status.
@@ -226,6 +245,7 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
     return () => {
       disposed = true;
       clearInterval(metaTimer);
+      clearTimeout(repaintTimer);
       safely(() => ro.disconnect());
       safely(() => mo.disconnect());
       safely(() => dataSub.dispose());

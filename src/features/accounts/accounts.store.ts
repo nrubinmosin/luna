@@ -18,6 +18,9 @@ interface AccountsState {
   error: string | null;
   loginFor: Account | null;
   refresh: () => Promise<void>;
+  /** Refreshes now and keeps refreshing, honouring the backoff between rounds. */
+  startPolling: () => void;
+  stopPolling: () => void;
   add: (name: string) => Promise<void>;
   remove: (name: string) => Promise<void>;
   setAdding: (v: boolean) => void;
@@ -39,6 +42,9 @@ let retryTimer: ReturnType<typeof setTimeout> | undefined;
 // into a loop that kept the usage endpoint throttled indefinitely.
 let backoffStep = 0;
 const BACKOFF_S = [30, 60, 120, 300, 600, 900];
+
+const HEALTHY_S = 60;
+let polling = false;
 
 const scheduleRetry = (afterS: number, run: () => void) => {
   clearTimeout(retryTimer);
@@ -100,14 +106,28 @@ export const useAccounts = create<AccountsState>()((set, get) => ({
     );
 
     const unhappy = get().accounts.filter(a => a.sync !== 'ready');
-    if (unhappy.length === 0) {
-      backoffStep = 0;
-      return;
-    }
-    // Back off on every unhappy round, and never sooner than the server asked.
-    const step = BACKOFF_S[Math.min(backoffStep, BACKOFF_S.length - 1)];
-    backoffStep += 1;
-    scheduleRetry(Math.max(step, serverWait), () => void get().refresh());
+    if (unhappy.length === 0) backoffStep = 0;
+
+    if (!polling) return;
+    // One scheduler for both cases. A separate fixed-interval poll alongside
+    // this would defeat the backoff entirely — which is exactly what a 60s
+    // interval in the app shell used to do to a rate-limited endpoint.
+    const wait =
+      unhappy.length === 0
+        ? HEALTHY_S
+        : Math.max(BACKOFF_S[Math.min(backoffStep++, BACKOFF_S.length - 1)], serverWait);
+    scheduleRetry(wait, () => void get().refresh());
+  },
+
+  startPolling: () => {
+    if (polling) return;
+    polling = true;
+    void get().refresh();
+  },
+
+  stopPolling: () => {
+    polling = false;
+    clearTimeout(retryTimer);
   },
 
   add: async name => {

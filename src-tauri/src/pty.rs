@@ -381,6 +381,29 @@ fn content_text(content: &serde_json::Value) -> Option<String> {
     None
 }
 
+/// The opening prompt of a session never changes, but session_meta asks for it
+/// every few seconds per pane — so read the file once and remember the answer.
+fn cached_first_prompt(account_path: &str, cwd: &str, session_id: &str) -> Option<String> {
+    static CACHE: std::sync::OnceLock<Mutex<HashMap<String, Option<String>>>> =
+        std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(Default::default);
+
+    if let Ok(map) = cache.lock() {
+        if let Some(hit) = map.get(session_id) {
+            return hit.clone();
+        }
+    }
+    let found = read_first_prompt(account_path, cwd, session_id);
+    // A miss is worth caching too, but only once the transcript exists: before
+    // the first turn there is genuinely nothing to read yet.
+    if found.is_some() {
+        if let Ok(mut map) = cache.lock() {
+            map.insert(session_id.to_string(), found.clone());
+        }
+    }
+    found
+}
+
 /// The session's opening prompt, trimmed to a title. Sessions are always named
 /// `derived` in the registry — i.e. after the cwd, which for a worktree run is
 /// a random codename — so the first thing the user actually said is a far
@@ -421,8 +444,16 @@ fn parse_session_file(path: &std::path::Path) -> Option<serde_json::Value> {
 
 // Claude Code maintains a live registry at <config>/sessions/<pid>.json with
 // the AI-derived session name and current status — free to read, no tokens.
+//
+// Async on purpose: this runs every few seconds for every open pane and reads
+// the tail of a transcript that grows into the megabytes. As a sync command it
+// would do that on the main thread, i.e. with the window frozen.
 #[tauri::command]
-pub fn session_meta(state: PtyState, id: String, account_path: String) -> Result<SessionMeta, String> {
+pub async fn session_meta(
+    state: PtyState<'_>,
+    id: String,
+    account_path: String,
+) -> Result<SessionMeta, String> {
     let (pid, cwd, spawned_at_ms) = {
         let sessions = state.sessions.lock().unwrap();
         let s = sessions.get(&id).ok_or("no such session")?;
@@ -432,6 +463,17 @@ pub fn session_meta(state: PtyState, id: String, account_path: String) -> Result
         (s.pid, s.cwd.clone(), s.spawned_at_ms)
     };
 
+    tauri::async_runtime::spawn_blocking(move || meta_from_disk(pid, cwd, spawned_at_ms, account_path))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn meta_from_disk(
+    pid: Option<u32>,
+    cwd: String,
+    spawned_at_ms: u128,
+    account_path: String,
+) -> Result<SessionMeta, String> {
     let dir = std::path::Path::new(&account_path).join("sessions");
     let extract = |v: &serde_json::Value| {
         let mut m = SessionMeta {
@@ -451,7 +493,7 @@ pub fn session_meta(state: PtyState, id: String, account_path: String) -> Result
                 m.context_window = Some(c.window);
                 m.context = Some((c.tokens / c.window).min(1.0));
             }
-            m.first_prompt = read_first_prompt(&account_path, scwd, sid);
+            m.first_prompt = cached_first_prompt(&account_path, scwd, sid);
         }
         m
     };

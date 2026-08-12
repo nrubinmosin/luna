@@ -1,4 +1,4 @@
-import { useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import type { CSSProperties } from 'react';
 import { ACCENT } from '../../shared/lib/format';
 import { currentSplits, usePanes, type SplitKey } from './panes.store';
@@ -14,6 +14,10 @@ const GAP = 8;
 function Splitter({ axis, split }: { axis: 'x' | 'y'; split: SplitKey }) {
   const ref = useRef<HTMLDivElement>(null);
   const dragging = useRef(false);
+  // Unmounting mid-drag (switching layout with the mouse down) would otherwise
+  // leave the move/up handlers bound to window forever.
+  const release = useRef<() => void>(() => {});
+  useEffect(() => () => release.current(), []);
 
   const start = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -30,6 +34,7 @@ function Splitter({ axis, split }: { axis: 'x' | 'y'; split: SplitKey }) {
       setSplit(split, pos / span);
     };
     const up = () => {
+      release.current = () => {};
       dragging.current = false;
       window.removeEventListener('mousemove', move);
       window.removeEventListener('mouseup', up);
@@ -37,6 +42,7 @@ function Splitter({ axis, split }: { axis: 'x' | 'y'; split: SplitKey }) {
       document.body.style.userSelect = '';
       ref.current?.style.setProperty('background', 'transparent');
     };
+    release.current = up;
     window.addEventListener('mousemove', move);
     window.addEventListener('mouseup', up);
     document.body.style.cursor = axis === 'x' ? 'col-resize' : 'row-resize';

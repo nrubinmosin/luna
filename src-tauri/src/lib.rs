@@ -38,6 +38,11 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .manage(pty::PtyManager::default())
         .setup(|app| {
+            // Housekeeping off the startup path.
+            std::thread::spawn(|| {
+                let _ = media::prune_media();
+            });
+
             let open = MenuItem::with_id(app, "open", "Open", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&open, &quit])?;
@@ -81,6 +86,7 @@ pub fn run() {
             log::reveal_log,
             media::save_media,
             media::clear_media,
+            media::prune_media,
             pty::ensure_session,
             pty::write_session,
             pty::resize_session,
