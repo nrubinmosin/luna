@@ -66,6 +66,12 @@ const hasFiles = (dt: DataTransfer | null) => !!dt && Array.from(dt.types).inclu
 export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const setStatus = useChats(s => s.setStatus);
+  // Resolved from the store rather than read once at mount: on a cold start the
+  // account list arrives after the panes do, and spawning with an empty path
+  // drops CLAUDE_CONFIG_DIR — the CLI then boots on the default config and
+  // greets every pane with first-run onboarding.
+  const accountsLoaded = useAccounts(s => s.loaded);
+  const accountPath = useAccounts(s => s.accounts.find(a => a.name === chat.account)?.path ?? null);
   const [dropping, setDropping] = useState(false);
   const [attaching, setAttaching] = useState(0);
 
@@ -80,7 +86,7 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
 
   useEffect(() => {
     const host = hostRef.current;
-    if (!host) return;
+    if (!host || !accountsLoaded) return;
 
     const term = new XTerm({
       fontFamily: TERM_FONT_FAMILY,
@@ -114,8 +120,16 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
     };
     refit();
 
-    const accountPath =
-      useAccounts.getState().accounts.find(a => a.name === chat.account)?.path ?? '';
+    if (!accountPath) {
+      term.write(
+        `\r\n\x1b[33mAccount "${chat.account}" is not on disk.\x1b[0m\r\n` +
+          'Add it in the accounts panel, or delete this chat.\r\n'
+      );
+      return () => {
+        safely(() => webgl?.dispose());
+        safely(() => term.dispose());
+      };
+    }
 
     void (async () => {
       const un1 = await onPtyOutput(p => {
@@ -214,7 +228,7 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
     };
     // Session identity is the chat id; the rest is captured at spawn time.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chat.id]);
+  }, [chat.id, accountsLoaded, accountPath]);
 
   return (
     <div

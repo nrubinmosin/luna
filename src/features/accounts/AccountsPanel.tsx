@@ -73,7 +73,19 @@ export function AccountsPanel() {
       )}
 
       {accounts.map(acc => {
-        const dot = Math.max(acc.limits.h5, acc.limits.week) >= 0.85 ? 'oklch(.63 .19 25)' : 'oklch(.64 .18 145)';
+        const dot =
+          acc.sync === 'error'
+            ? 'oklch(.63 .19 25)'
+            : acc.sync !== 'ready'
+              ? 'var(--faint)'
+              : Math.max(acc.limits.h5, acc.limits.week) >= 0.85
+                ? 'oklch(.63 .19 25)'
+                : 'oklch(.64 .18 145)';
+        const note =
+          acc.sync === 'loading' ? 'loading…'
+          : acc.sync === 'stale' ? 'refreshing token…'
+          : acc.sync === 'error' ? 'unreachable'
+          : null;
         return (
           <div key={acc.name} style={{ padding: '9px 0', borderTop: '1px solid var(--line)' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
@@ -82,7 +94,9 @@ export function AccountsPanel() {
                 {acc.name}
               </span>
               <span style={{ flex: 1 }} />
-              <span style={{ fontSize: 11.5, color: 'var(--faint)', whiteSpace: 'nowrap' }}>{acc.plan}</span>
+              <span style={{ fontSize: 11.5, color: 'var(--faint)', whiteSpace: 'nowrap' }}>
+                {note ?? acc.plan}
+              </span>
               <span
                 onClick={() => setLoginFor(acc)}
                 title="Sign in / re-login this account"

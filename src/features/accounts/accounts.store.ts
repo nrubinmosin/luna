@@ -11,6 +11,9 @@ const emptyResets = { h5: '—', week: '—', fable: '—' };
 
 interface AccountsState {
   accounts: Account[];
+  /** False until list_accounts has answered once. Sessions must not spawn
+   *  before that: an unresolved account path means no CLAUDE_CONFIG_DIR. */
+  loaded: boolean;
   open: boolean;
   adding: boolean;
   error: string | null;
@@ -29,11 +32,15 @@ const toAccount = (a: ipc.AccountInfo): Account => ({
   path: a.path,
   plan: '—',
   limits: emptyLimits,
-  resets: emptyResets
+  resets: emptyResets,
+  sync: 'loading'
 });
+
+let retryTimer: ReturnType<typeof setTimeout> | undefined;
 
 export const useAccounts = create<AccountsState>()((set, get) => ({
   accounts: [],
+  loaded: false,
   open: false,
   adding: false,
   error: null,
@@ -43,30 +50,44 @@ export const useAccounts = create<AccountsState>()((set, get) => ({
     const list = await ipc.listAccounts();
     // Show the accounts immediately, then fill limits in as they arrive.
     set(s => ({
-      accounts: list.map(a => s.accounts.find(x => x.path === a.path) ?? toAccount(a))
+      accounts: list.map(a => s.accounts.find(x => x.path === a.path) ?? toAccount(a)),
+      loaded: true
     }));
+
+    const patch = (path: string, next: Partial<Account>) =>
+      set(s => ({ accounts: s.accounts.map(x => (x.path === path ? { ...x, ...next } : x)) }));
+
     await Promise.allSettled(
       list.map(async a => {
         const lim = await ipc.accountLimits(a.path).catch(() => null);
-        if (!lim) return;
-        set(s => ({
-          accounts: s.accounts.map(x =>
-            x.path === a.path
-              ? {
-                  ...x,
-                  plan: lim.plan ?? x.plan,
-                  limits: { h5: lim.h5, week: lim.week, fable: lim.model },
-                  resets: {
-                    h5: fmtReset(lim.resetH5),
-                    week: fmtReset(lim.resetWeek),
-                    fable: fmtReset(lim.resetModel)
-                  }
-                }
-              : x
-          )
-        }));
+        if (!lim) {
+          patch(a.path, { sync: 'error' });
+          return;
+        }
+        // Expired token: the CLI renews it as soon as a session runs, so keep
+        // the last known numbers on screen instead of flashing zeros.
+        if (lim.stale) {
+          patch(a.path, { sync: 'stale' });
+          return;
+        }
+        patch(a.path, {
+          sync: 'ready',
+          plan: lim.plan ?? '—',
+          limits: { h5: lim.h5, week: lim.week, fable: lim.model },
+          resets: {
+            h5: fmtReset(lim.resetH5),
+            week: fmtReset(lim.resetWeek),
+            fable: fmtReset(lim.resetModel)
+          }
+        });
       })
     );
+
+    // While any account is mid-refresh, come back sooner than the usual minute.
+    if (get().accounts.some(a => a.sync === 'stale' || a.sync === 'error')) {
+      clearTimeout(retryTimer);
+      retryTimer = setTimeout(() => void get().refresh(), 8000);
+    }
   },
 
   add: async name => {

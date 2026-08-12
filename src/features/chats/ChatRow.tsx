@@ -6,6 +6,7 @@ import { useChats } from './chats.store';
 import { usePanes } from '../panes/panes.store';
 import { useAccounts } from '../accounts/accounts.store';
 import { deleteSession } from '../../ipc/commands';
+import { ConfirmDialog } from '../../shared/ui/ConfirmDialog';
 
 export function ChatRow({ chat }: { chat: Chat }) {
   const active = useChats(s => s.active === chat.id);
@@ -15,7 +16,25 @@ export function ChatRow({ chat }: { chat: Chat }) {
   const { setDrag, setOver, evictChat, setSpot } = usePanes.getState();
   const st = STATUS[chat.status];
   const [editing, setEditing] = useState(false);
+  const [confirming, setConfirming] = useState(false);
   const [draft, setDraft] = useState('');
+
+  const doDelete = () => {
+    setConfirming(false);
+    const folder = useChats.getState().folderOf(chat.id);
+    const accountPath =
+      useAccounts.getState().accounts.find(a => a.name === chat.account)?.path ?? '';
+    if (folder) {
+      // One command kills the process tree and clears worktree, branch and
+      // attachments — it resolves the worktree itself, so deleting a chat
+      // seconds after creating it no longer orphans one.
+      void deleteSession(chat.id, folder.path, accountPath, chat.worktreePath ?? null).catch(err =>
+        console.warn('[llm-desktop] delete failed', err)
+      );
+    }
+    evictChat(chat.id);
+    deleteChat(chat.id);
+  };
 
   const commitRename = () => {
     setEditing(false);
@@ -84,19 +103,7 @@ export function ChatRow({ chat }: { chat: Chat }) {
       <span
         onClick={e => {
           e.stopPropagation();
-          const folder = useChats.getState().folderOf(chat.id);
-          const accountPath =
-            useAccounts.getState().accounts.find(a => a.name === chat.account)?.path ?? '';
-          if (folder) {
-            // One command kills the process tree and clears worktree, branch
-            // and attachments — it resolves the worktree itself, so deleting a
-            // chat seconds after creating it no longer orphans one.
-            void deleteSession(chat.id, folder.path, accountPath, chat.worktreePath ?? null).catch(
-              e => console.warn('[llm-desktop] delete failed', e)
-            );
-          }
-          evictChat(chat.id);
-          deleteChat(chat.id);
+          setConfirming(true);
         }}
         title={
           chat.worktree
@@ -111,6 +118,27 @@ export function ChatRow({ chat }: { chat: Chat }) {
       >
         ✕
       </span>
+
+      {confirming && (
+        <ConfirmDialog
+          title={`Delete "${chat.name}"?`}
+          body={
+            <>
+              The session is stopped and its scrollback is lost.
+              {chat.worktree && (
+                <>
+                  {' '}Its git worktree{chat.worktreePath ? ` (${chat.worktreePath})` : ''} and the
+                  throwaway <code>worktree-…</code> branch go with it, including any uncommitted work.
+                </>
+              )}{' '}
+              Pasted attachments are removed. The transcript is kept, so the session can still be
+              resumed from the CLI.
+            </>
+          }
+          onConfirm={doDelete}
+          onCancel={() => setConfirming(false)}
+        />
+      )}
     </div>
   );
 }

@@ -35,12 +35,16 @@ export interface LimitSet {
   fable: number;
 }
 
+/** 'idle' before the first fetch, 'stale' while the CLI refreshes the token. */
+export type AccountSync = 'loading' | 'ready' | 'stale' | 'error';
+
 export interface Account {
   name: string;
   path: string;
   plan: string;
   limits: LimitSet;
   resets: { h5: string; week: string; fable: string };
+  sync: AccountSync;
 }
 
 export type PaneIndex = 0 | 1 | 2 | 3;

@@ -1,10 +1,18 @@
 import { useEffect, useRef, useState } from 'react';
 import { clockDate, clockTime, clockWeekday, limitColor } from '../../shared/lib/format';
+import type { Account } from '../../shared/types';
 import { useAccounts } from '../accounts/accounts.store';
 import { useChats } from '../chats/chats.store';
 import { AccountsPanel } from '../accounts/AccountsPanel';
 
 const LK: Array<['h5' | 'week' | 'fable', string]> = [['h5', '5 hours'], ['week', 'week'], ['fable', 'fable']];
+
+const SYNC_HINT: Record<Account['sync'], string> = {
+  loading: 'Loading usage…',
+  ready: '',
+  stale: 'Access token expired — the CLI renews it once a session runs',
+  error: 'Could not reach the usage endpoint — retrying'
+};
 
 export function StatusBar() {
   const [now, setNow] = useState(() => new Date());
@@ -71,9 +79,18 @@ export function StatusBar() {
         {barAccounts.map(acc => (
           <div key={acc.name} style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, overflow: 'hidden' }}>
             <span
+              title={SYNC_HINT[acc.sync]}
               style={{
                 width: 6, height: 6, borderRadius: '50%', flex: 'none',
-                background: Math.max(acc.limits.h5, acc.limits.week) >= 0.85 ? 'oklch(.63 .19 25)' : 'oklch(.64 .18 145)'
+                animation: acc.sync === 'loading' || acc.sync === 'stale' ? 'pulse 1.4s infinite' : undefined,
+                background:
+                  acc.sync === 'error'
+                    ? 'oklch(.63 .19 25)'
+                    : acc.sync !== 'ready'
+                      ? 'var(--faint)'
+                      : Math.max(acc.limits.h5, acc.limits.week) >= 0.85
+                        ? 'oklch(.63 .19 25)'
+                        : 'oklch(.64 .18 145)'
               }}
             />
             <span style={{ fontSize: 12.5, color: 'var(--fg)', fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', flex: '0 1 auto', minWidth: 48 }}>
@@ -82,8 +99,16 @@ export function StatusBar() {
             {LK.map(([k, full]) => (
               <div
                 key={k}
-                title={`${full}: ${Math.round(acc.limits[k] * 100)}% · resets in ${acc.resets[k]}`}
-                style={{ width: 40, height: 6, borderRadius: 3, background: 'var(--track)', border: '1px solid var(--line)', overflow: 'hidden', flex: 'none' }}
+                title={
+                  acc.sync === 'ready'
+                    ? `${full}: ${Math.round(acc.limits[k] * 100)}% · resets in ${acc.resets[k]}`
+                    : SYNC_HINT[acc.sync]
+                }
+                style={{
+                  width: 40, height: 6, borderRadius: 3, background: 'var(--track)',
+                  border: '1px solid var(--line)', overflow: 'hidden', flex: 'none',
+                  opacity: acc.sync === 'ready' ? 1 : 0.45
+                }}
               >
                 <div style={{ height: '100%', borderRadius: 3, width: `${Math.round(acc.limits[k] * 100)}%`, background: limitColor(acc.limits[k]) }} />
               </div>

@@ -63,6 +63,12 @@ pub fn ensure_session(
         sessions.remove(&id);
     }
 
+    // Spawning without one would silently fall back to the default ~/.claude
+    // config: wrong account, and first-run onboarding in every pane.
+    if account_path.is_empty() {
+        return Err("no account config dir for this chat".into());
+    }
+
     let pty_system = native_pty_system();
     let pair = pty_system
         .openpty(PtySize {

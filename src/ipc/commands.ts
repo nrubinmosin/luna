@@ -17,6 +17,8 @@ export interface AccountInfo {
 }
 
 export interface AccountLimitsDto {
+  /** Token expired; the CLI refreshes it once a session runs. Not a logout. */
+  stale: boolean;
   h5: number;
   week: number;
   model: number;
