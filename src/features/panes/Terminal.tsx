@@ -52,6 +52,25 @@ export const themeFor = (isDark: boolean) =>
       };
 
 
+// How long the CLI's output has to stay silent before its input box is assumed
+// drawn and ready, and how long to keep waiting for that silence before sending
+// anyway. The CLI can spend seconds on its welcome screen and update check.
+const PROMPT_QUIET_MS = 700;
+const PROMPT_WAIT_MS = 30_000;
+
+/**
+ * Reads the chat's queued first message and clears it in the same tick, so two
+ * panes racing on the same chat cannot both send it.
+ */
+const takePendingPrompt = (chatId: string): string | null => {
+  const state = useChats.getState();
+  const chat = state.folders.flatMap(f => f.chats).find(c => c.id === chatId);
+  const prompt = chat?.pendingPrompt?.trim();
+  if (!prompt) return null;
+  state.clearPendingPrompt(chatId);
+  return prompt;
+};
+
 /** A drag carrying real files, as opposed to a chat row being dropped into a pane. */
 const hasFiles = (dt: DataTransfer | null) => !!dt && Array.from(dt.types).includes('Files');
 
@@ -104,9 +123,18 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
     term.loadAddon(fit);
     term.open(host);
     let webgl: WebglAddon | null = null;
+    // Disposing the addon twice reaches into renderer state it has already
+    // freed and throws, which is what filled the log with teardown warnings on
+    // every pane close: a context loss disposes it, and so does the cleanup.
+    // Dropping the reference makes the second call a no-op.
+    const disposeWebgl = () => {
+      const addon = webgl;
+      webgl = null;
+      if (addon) safely(() => addon.dispose());
+    };
     try {
       webgl = new WebglAddon();
-      webgl.onContextLoss(() => safely(() => webgl?.dispose()));
+      webgl.onContextLoss(disposeWebgl);
       term.loadAddon(webgl);
     } catch {
       webgl = null; // canvas/DOM renderer fallback
@@ -115,6 +143,7 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
     let disposed = false;
     let repaintTimer: ReturnType<typeof setTimeout> | undefined;
     let promptTimer: ReturnType<typeof setTimeout> | undefined;
+    let lastOutputAt = 0;
     const unlisteners: Array<() => void> = [];
     // Fitting a detached or zero-sized host throws; that happens on every
     // pane close and used to take the whole window down with it.
@@ -135,14 +164,16 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
           'Add it in the accounts panel, or delete this chat.\r\n'
       );
       return () => {
-        safely(() => webgl?.dispose());
+        disposeWebgl();
         safely(() => term.dispose());
       };
     }
 
     void (async () => {
       const un1 = await onPtyOutput(p => {
-        if (p.id === chat.id) term.write(p.data);
+        if (p.id !== chat.id) return;
+        lastOutputAt = Date.now();
+        term.write(p.data);
       });
       const un2 = await onPtyExit(p => {
         if (p.id === chat.id) {
@@ -172,21 +203,37 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
       });
       if (disposed) return;
 
+      // A chat opened from the command line with --prompt carries its first
+      // message. The CLI throws away anything written before it has entered raw
+      // mode and drawn its input box, and how long that takes varies with the
+      // machine and with what the CLI does on startup, so wait for its output to
+      // go quiet rather than guessing a delay. The prompt is taken from the
+      // store at the moment it is sent, not before: a pane that is torn down
+      // while still waiting — which happens routinely — must leave the message
+      // behind for the next mount instead of consuming it and dropping it.
+      if (chat.pendingPrompt?.trim()) {
+        // A session that was already running is past its startup: the replayed
+        // backlog does not arrive as pty output, so count it as the last thing
+        // heard rather than waiting out the ceiling in silence.
+        if (backlog) lastOutputAt = Date.now();
+        const deadline = Date.now() + PROMPT_WAIT_MS;
+        const poll = () => {
+          if (disposed) return;
+          const quiet = lastOutputAt > 0 && Date.now() - lastOutputAt >= PROMPT_QUIET_MS;
+          if (!quiet && Date.now() < deadline) {
+            promptTimer = setTimeout(poll, 150);
+            return;
+          }
+          const first = takePendingPrompt(chat.id);
+          if (first) void writeSession(chat.id, first + '\r');
+        };
+        promptTimer = setTimeout(poll, 150);
+      }
+
       if (!backlog) {
         // Fresh session: the pty starts at a placeholder size, so this is also
         // the first real SIGWINCH and the CLI paints itself.
         void resizeSession(chat.id, term.cols, term.rows);
-
-        // A chat opened from the command line with --prompt carries its first
-        // message. Send it once, after the CLI has had a moment to draw its
-        // input, and clear it so a remount cannot send it twice.
-        const first = chat.pendingPrompt?.trim();
-        if (first) {
-          useChats.getState().clearPendingPrompt(chat.id);
-          promptTimer = setTimeout(() => {
-            if (!disposed) void writeSession(chat.id, first + '\r');
-          }, 1200);
-        }
         return;
       }
 
@@ -245,7 +292,7 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
       unlisteners.forEach(u => safely(u));
       // Drop the webgl context before the terminal: disposing it afterwards
       // hits already-freed renderer state and throws.
-      safely(() => webgl?.dispose());
+      disposeWebgl();
       safely(() => term.dispose());
     };
     // Session identity is the chat id; the rest is captured at spawn time.
