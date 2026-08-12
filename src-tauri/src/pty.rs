@@ -297,20 +297,6 @@ fn encode_project_dir(p: &str) -> String {
         .collect()
 }
 
-const DEFAULT_CONTEXT_WINDOW: f64 = 200_000.0;
-
-/// Context window per model, keyed off the id the transcript records. Sonnet
-/// and Haiku ship 200k; Opus is a megatoken; the `[1m]` suffix marks the
-/// long-context variants explicitly.
-fn window_for_model(model: &str) -> f64 {
-    let m = model.to_ascii_lowercase();
-    if m.contains("[1m]") || m.contains("opus") {
-        1_000_000.0
-    } else {
-        DEFAULT_CONTEXT_WINDOW
-    }
-}
-
 struct ContextRead {
     tokens: f64,
     window: f64,
@@ -357,7 +343,10 @@ fn read_context(account_path: &str, cwd: &str, session_id: &str) -> Option<Conte
                 + u["cache_creation_input_tokens"].as_f64().unwrap_or(0.0);
             if total > 0.0 {
                 let model = v["message"]["model"].as_str().unwrap_or("");
-                return Some(ContextRead { tokens: total, window: window_for_model(model) });
+                return Some(ContextRead {
+                    tokens: total,
+                    window: crate::models::context_window(model),
+                });
             }
         }
     }

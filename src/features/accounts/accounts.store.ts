@@ -76,15 +76,25 @@ export const useAccounts = create<AccountsState>()((set, get) => ({
 
   refresh: async () => {
     const list = await ipc.listAccounts();
-    // Show the accounts immediately, then fill limits in as they arrive.
-    set(s => ({
-      accounts: list.map(a => s.accounts.find(x => x.path === a.path) ?? toAccount(a)),
-      loaded: true
-    }));
+    // Rebuilding the array every poll gave it a new identity and re-rendered
+    // the whole footer on a timer, which is what the flicker was.
+    const cur = get();
+    const same =
+      cur.loaded &&
+      cur.accounts.length === list.length &&
+      list.every((a, i) => cur.accounts[i]?.path === a.path);
+    if (!same) {
+      set(s => ({
+        accounts: list.map(a => s.accounts.find(x => x.path === a.path) ?? toAccount(a)),
+        loaded: true
+      }));
+    }
 
     let serverWait = 0;
-    const patch = (path: string, next: Partial<Account>) =>
-      set(s => ({ accounts: s.accounts.map(x => (x.path === path ? { ...x, ...next } : x)) }));
+    // Collected and applied in one write at the end: one store update per
+    // round instead of one per account.
+    const patches = new Map<string, Partial<Account>>();
+    const patch = (path: string, next: Partial<Account>) => patches.set(path, next);
 
     await Promise.allSettled(
       list.map(async a => {
@@ -126,6 +136,26 @@ export const useAccounts = create<AccountsState>()((set, get) => ({
         });
       })
     );
+
+    // Apply everything at once, and skip the write entirely when nothing moved
+    // — an idle poll of unchanged accounts should cost no render at all.
+    const changed = (a: Account, p: Partial<Account>) =>
+      (Object.keys(p) as (keyof Account)[]).some(k => {
+        const before = a[k];
+        const after = p[k];
+        return typeof before === 'object' && before !== null
+          ? JSON.stringify(before) !== JSON.stringify(after)
+          : before !== after;
+      });
+
+    if (get().accounts.some(a => { const p = patches.get(a.path); return p && changed(a, p); })) {
+      set(s => ({
+        accounts: s.accounts.map(a => {
+          const p = patches.get(a.path);
+          return p && changed(a, p) ? { ...a, ...p } : a;
+        })
+      }));
+    }
 
     // "Unhappy" means we have nothing to show — an account on cached numbers is
     // perfectly serviceable and should not drive the retry cadence.

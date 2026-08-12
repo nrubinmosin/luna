@@ -3,12 +3,11 @@ import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
-import { notifyWaiting } from '../../shared/lib/notify';
 import { logWarn } from '../../shared/lib/log';
 import { attachClipboardImage, attachFiles, filesFrom } from '../../shared/lib/attach';
 import { ACCENT, tint } from '../../shared/lib/format';
 import type { Chat } from '../../shared/types';
-import { ensureSession, resizeSession, sessionMeta, writeSession } from '../../ipc/commands';
+import { ensureSession, resizeSession, writeSession } from '../../ipc/commands';
 import { onPtyExit, onPtyOutput } from '../../ipc/events';
 import { useChats } from '../chats/chats.store';
 import { useAccounts } from '../accounts/accounts.store';
@@ -52,14 +51,6 @@ export const themeFor = (isDark: boolean) =>
         brightBlue: '#2a7fd4', brightMagenta: '#9b52d1', brightCyan: '#12968f', brightWhite: '#0d1512'
       };
 
-// The CLI registry reports its own status vocabulary; fold it into the
-// three-state design palette.
-const mapStatus = (s: string | null): Chat['status'] => {
-  if (!s) return 'resting';
-  if (s === 'busy' || s === 'working') return 'working';
-  if (/wait|input|block|attention|permission/.test(s)) return 'waiting';
-  return 'resting';
-};
 
 /** A drag carrying real files, as opposed to a chat row being dropped into a pane. */
 const hasFiles = (dt: DataTransfer | null) => !!dt && Array.from(dt.types).includes('Files');
@@ -225,38 +216,6 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
       }, 60);
     })();
 
-    // Pick up the CLI's own session registry: AI-derived name + real status.
-    const metaTimer = setInterval(() => {
-      void sessionMeta(chat.id, accountPath)
-        .then(meta => {
-          if (!meta) return;
-          const { setName, setStatus: setSt, setWorktreePath, setSessionId, setContext, findChat } =
-            useChats.getState();
-          const fresh = findChat(chat.id);
-          if (!fresh) return;
-          // The registry name is `derived` in practice — the cwd folder, which
-          // for a worktree run is a random codename. Prefer the CLI's own title
-          // when it ever produces one, else the session's opening prompt.
-          const titled = meta.nameSource === 'auto' || meta.nameSource === 'user';
-          const title = (titled && meta.name) || meta.firstPrompt;
-          if (title && !fresh.nameCustom) setName(chat.id, title);
-          const next = mapStatus(meta.status);
-          if (next === 'waiting' && fresh.status !== 'waiting') {
-            void notifyWaiting(fresh.name);
-          }
-          setSt(chat.id, next);
-          if (meta.context != null) {
-            setContext(chat.id, meta.context, meta.contextTokens ?? null, meta.contextWindow ?? null);
-          }
-          // Remember where --worktree actually put the session, for cleanup on delete.
-          if (meta.cwd && /[\\/]\.claude[\\/]worktrees[\\/]/i.test(meta.cwd)) {
-            setWorktreePath(chat.id, meta.cwd);
-          }
-          // Remember the CLI session id so an app restart can --resume it.
-          if (meta.sessionId) setSessionId(chat.id, meta.sessionId);
-        })
-        .catch(() => {});
-    }, 4000);
 
     const dataSub = term.onData(d => void writeSession(chat.id, d));
     const resizeSub = term.onResize(({ cols, rows }) => {
@@ -277,7 +236,6 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
 
     return () => {
       disposed = true;
-      clearInterval(metaTimer);
       clearTimeout(repaintTimer);
       clearTimeout(promptTimer);
       safely(() => ro.disconnect());

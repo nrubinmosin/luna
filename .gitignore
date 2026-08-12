@@ -6,3 +6,4 @@ multi-chat/
 *.local
 .DS_Store
 .claude/worktrees/
+cli/target/

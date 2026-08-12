@@ -1,13 +1,13 @@
 //! Console companion for the GUI app.
 //!
-//! The app itself is a `windows_subsystem = "windows"` binary: it has no
-//! console, and a shell does not wait for it — so it can never report whether
-//! anything worked. This binary is an ordinary console program, so it blocks
-//! until the app answers and exits with a meaningful code.
+//! The app is a `windows_subsystem = "windows"` binary: it has no console, and
+//! a shell does not wait for it — so it can never report whether anything
+//! worked. This is an ordinary console program, so it blocks until the app
+//! answers and exits with a meaningful code.
 //!
 //! Shares the request format with the app by compiling the same module.
 
-#[path = "../cli.rs"]
+#[path = "../../src-tauri/src/cli.rs"]
 mod cli;
 
 const USAGE: &str = "\
@@ -15,7 +15,7 @@ llm-desktop-cli --new-chat --folder <path> [options]
 
   --folder <path>     Project directory for the session (required)
   --prompt <text>     First message to send once the session is up
-  --model <name>      Opus | Fable | Haiku | Sonnet      (default: Sonnet)
+  --model <name>      Opus | Fable | Haiku | Sonnet      (default: Opus)
   --effort <level>    low | medium | high | xhigh | max  (default: medium)
   --account <name>    Claude account to run on           (default: the first)
   --worktree          Run in an isolated git worktree    (default)

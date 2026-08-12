@@ -3,6 +3,7 @@ pub mod cli;
 mod limits;
 mod log;
 mod media;
+mod models;
 mod pty;
 mod trust;
 mod worktree;
@@ -84,6 +85,7 @@ pub fn run() {
         .manage(pty::PtyManager::default())
         .setup(|app| {
             watch_requests(app.handle().clone());
+            models::refresh_soon();
 
             // Housekeeping off the startup path.
             std::thread::spawn(|| {

@@ -80,7 +80,7 @@ export function useCliChats() {
         id,
         name: `chat ${n}`,
         status: 'resting',
-        model: pick<ModelLabel>(MODELS, req.model) ?? 'Sonnet',
+        model: pick<ModelLabel>(MODELS, req.model) ?? 'Opus',
         effort: pick<Effort>(EFFORTS, req.effort) ?? 'medium',
         // Not settable from the command line: whatever can run the command
         // would otherwise be choosing this session's permissions.

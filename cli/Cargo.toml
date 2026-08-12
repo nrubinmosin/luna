@@ -1,0 +1,20 @@
+[package]
+name = "llm-desktop-cli"
+version = "0.1.0"
+edition = "2021"
+description = "Console companion for llm-desktop"
+
+# Deliberately a separate crate rather than a second [[bin]] in src-tauri:
+# tauri-cli picks the app binary from the crate's bin targets, and with two of
+# them it chose this one and renamed it over the real app.
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dirs = "6"
+
+[profile.release]
+strip = true
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"

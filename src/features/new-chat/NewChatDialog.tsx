@@ -51,7 +51,7 @@ export function NewChatDialog() {
 
   const [folder, setFolder] = useState(initialFolder ?? folders[0]?.path ?? '');
   const [pickedFolder, setPickedFolder] = useState<string | null>(null);
-  const [model, setModel] = useState<ModelLabel>('Sonnet');
+  const [model, setModel] = useState<ModelLabel>('Opus');
   const [effort, setEffort] = useState<Effort>('medium');
   const [perm, setPerm] = useState<PermMode>('Bypass');
   const [account, setAccount] = useState(accounts[0]?.name ?? '');

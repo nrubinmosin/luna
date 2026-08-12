@@ -7,7 +7,9 @@ const LK: Array<['h5' | 'week' | 'fable', string]> = [['h5', '5 hours'], ['week'
 
 /** Renders inline as the sidebar's account list — no longer a floating popover. */
 export function AccountsPanel() {
-  const { accounts, adding, error } = useAccounts();
+  const accounts = useAccounts(s => s.accounts);
+  const adding = useAccounts(s => s.adding);
+  const error = useAccounts(s => s.error);
   const { add, remove, setAdding, setLoginFor } = useAccounts.getState();
   const [name, setName] = useState('');
   const folders = useChats(s => s.folders);

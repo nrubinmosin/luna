@@ -33,7 +33,7 @@ llm-desktop-cli --new-chat --folder "E:\Projects\Personal\app" --prompt "поч�
 |---|---|
 | `--folder <путь>` | папка проекта, обязателен |
 | `--prompt <текст>` | первое сообщение, отправляется после старта сессии |
-| `--model <имя>` | `Opus` \| `Fable` \| `Haiku` \| `Sonnet` (по умолчанию `Sonnet`) |
+| `--model <имя>` | `Opus` \| `Fable` \| `Haiku` \| `Sonnet` (по умолчанию `Opus`) |
 | `--effort <уровень>` | `low` \| `medium` \| `high` \| `xhigh` \| `max` (по умолчанию `medium`) |
 | `--account <имя>` | аккаунт Claude (по умолчанию первый в списке) |
 | `--worktree` / `--no-worktree` | изолированный git-worktree (по умолчанию включён) |
