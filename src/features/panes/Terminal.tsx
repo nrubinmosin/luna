@@ -123,6 +123,7 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
 
     let disposed = false;
     let repaintTimer: ReturnType<typeof setTimeout> | undefined;
+    let promptTimer: ReturnType<typeof setTimeout> | undefined;
     const unlisteners: Array<() => void> = [];
     // Fitting a detached or zero-sized host throws; that happens on every
     // pane close and used to take the whole window down with it.
@@ -184,6 +185,17 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
         // Fresh session: the pty starts at a placeholder size, so this is also
         // the first real SIGWINCH and the CLI paints itself.
         void resizeSession(chat.id, term.cols, term.rows);
+
+        // A chat opened from the command line with --prompt carries its first
+        // message. Send it once, after the CLI has had a moment to draw its
+        // input, and clear it so a remount cannot send it twice.
+        const first = chat.pendingPrompt?.trim();
+        if (first) {
+          useChats.getState().clearPendingPrompt(chat.id);
+          promptTimer = setTimeout(() => {
+            if (!disposed) void writeSession(chat.id, first + '\r');
+          }, 1200);
+        }
         return;
       }
 
@@ -267,6 +279,7 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
       disposed = true;
       clearInterval(metaTimer);
       clearTimeout(repaintTimer);
+      clearTimeout(promptTimer);
       safely(() => ro.disconnect());
       safely(() => mo.disconnect());
       safely(() => dataSub.dispose());

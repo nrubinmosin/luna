@@ -1,4 +1,5 @@
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import type { NewChatRequest } from './commands';
 
 const tauriAvailable = '__TAURI_INTERNALS__' in window;
 
@@ -17,3 +18,6 @@ export const onPtyOutput = (cb: (p: PtyOutput) => void): Promise<UnlistenFn> =>
 
 export const onPtyExit = (cb: (p: PtyExit) => void): Promise<UnlistenFn> =>
   tauriAvailable ? listen<PtyExit>('pty://exit', e => cb(e.payload)) : Promise.resolve(() => {});
+
+export const onNewChatRequest = (cb: (r: NewChatRequest) => void): Promise<UnlistenFn> =>
+  tauriAvailable ? listen<NewChatRequest>('app://new-chat', e => cb(e.payload)) : Promise.resolve(() => {});

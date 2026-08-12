@@ -21,6 +21,9 @@ export interface Chat {
   worktreePath?: string | null;
   sessionId?: string | null;
   nameCustom?: boolean;
+  /** Typed into the session once it starts; cleared afterwards. Set by the
+   *  --prompt flag when a chat is opened from the command line. */
+  pendingPrompt?: string | null;
 }
 
 export interface Folder {

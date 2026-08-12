@@ -14,6 +14,7 @@ interface ChatsState {
   setWorktreePath: (chatId: string, path: string) => void;
   setSessionId: (chatId: string, sessionId: string) => void;
   setContext: (chatId: string, context: number, tokens: number | null, window: number | null) => void;
+  clearPendingPrompt: (chatId: string) => void;
   renameChat: (chatId: string, name: string) => void;
   findChat: (chatId: string | null) => Chat | null;
   folderOf: (chatId: string) => Folder | null;
@@ -87,6 +88,14 @@ export const useChats = create<ChatsState>()(
             chats: f.chats.map(c =>
               c.id === chatId && c.sessionId !== sessionId ? { ...c, sessionId } : c
             )
+          }))
+        })),
+
+      clearPendingPrompt: chatId =>
+        set(s => ({
+          folders: s.folders.map(f => ({
+            ...f,
+            chats: f.chats.map(c => (c.id === chatId ? { ...c, pendingPrompt: null } : c))
           }))
         })),
 
