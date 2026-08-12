@@ -75,30 +75,50 @@ export function AccountsPanel() {
       )}
 
       {accounts.map(acc => {
-        const dot =
-          acc.sync === 'error'
-            ? 'oklch(.63 .19 25)'
-            : acc.sync !== 'ready'
-              ? 'var(--faint)'
-              : Math.max(acc.limits.h5, acc.limits.week) >= 0.85
-                ? 'oklch(.63 .19 25)'
-                : 'oklch(.64 .18 145)';
-        const note =
-          acc.sync === 'loading' ? 'loading…'
-          : acc.sync === 'stale' ? 'refreshing token…'
-          : acc.sync === 'throttled' ? 'rate-limited'
-          : acc.sync === 'error' ? 'unreachable'
-          : null;
+        // The dot answers "can this account be used", which is the sign-in
+        // state — not whether the usage endpoint happened to answer.
+        const dot = !acc.signedIn
+          ? 'oklch(.63 .19 25)'
+          : acc.sync === 'loading'
+            ? 'var(--faint)'
+            : Math.max(acc.limits.h5, acc.limits.week) >= 0.85
+              ? 'oklch(.63 .19 25)'
+              : 'oklch(.64 .18 145)';
+        const note = !acc.signedIn
+          ? 'signed out'
+          : acc.sync === 'loading' && !acc.haveUsage
+            ? 'loading…'
+            : acc.plan;
+        // Usage can lag behind sign-in; say so beside the bars, not instead of
+        // the plan, so a throttled endpoint never reads as a broken account.
+        const usageNote = !acc.haveUsage
+          ? acc.sync === 'stale'
+            ? 'waiting for token refresh'
+            : acc.sync === 'throttled'
+              ? 'usage rate-limited'
+              : acc.sync === 'error'
+                ? 'usage unavailable'
+                : 'no usage data yet'
+          : acc.usageAge;
         return (
           <div key={acc.name} style={{ padding: '6px 0', borderTop: '1px solid var(--line)' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 5 }}>
               <span style={{ width: 6, height: 6, borderRadius: '50%', flex: 'none', background: dot }} />
-              <span style={{ fontSize: 11.5, fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={acc.path}>
+              <span
+                style={{ fontSize: 11.5, fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+                title={[acc.email, acc.path].filter(Boolean).join('\n')}
+              >
                 {acc.name}
               </span>
               <span style={{ flex: 1 }} />
-              <span style={{ fontSize: 10, color: 'var(--faint)', whiteSpace: 'nowrap' }}>
-                {note ?? acc.plan}
+              <span
+                title={acc.signedIn ? 'Signed in' : 'No usable credentials — click login'}
+                style={{
+                  fontSize: 10, whiteSpace: 'nowrap',
+                  color: acc.signedIn ? 'var(--faint)' : 'oklch(.58 .2 25)'
+                }}
+              >
+                {note}
               </span>
               <span
                 onClick={() => setLoginFor(acc)}
@@ -121,16 +141,31 @@ export function AccountsPanel() {
               </span>
             </div>
             {LK.map(([k, full]) => (
-              <div key={k} title={`${full}: ${Math.round(acc.limits[k] * 100)}% · resets in ${acc.resets[k]}`} style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 3 }}>
+              <div
+                key={k}
+                title={
+                  acc.haveUsage
+                    ? `${full}: ${Math.round(acc.limits[k] * 100)}% · resets in ${acc.resets[k]}`
+                    : usageNote ?? ''
+                }
+                style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 3 }}
+              >
                 <span style={{ fontSize: 10, color: 'var(--dim)', width: 30, flex: 'none', whiteSpace: 'nowrap', overflow: 'hidden' }}>{full}</span>
                 <div className="xp-sunken" style={{ flex: 1, height: 6, background: 'var(--track)', overflow: 'hidden' }}>
-                  <div style={{ height: '100%', width: `${Math.round(acc.limits[k] * 100)}%`, background: limitColor(acc.limits[k]) }} />
+                  {acc.haveUsage && (
+                    <div style={{ height: '100%', width: `${Math.round(acc.limits[k] * 100)}%`, background: limitColor(acc.limits[k]) }} />
+                  )}
                 </div>
                 <span style={{ fontSize: 10, color: 'var(--dim)', width: 26, flex: 'none', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
-                  {Math.round(acc.limits[k] * 100)}%
+                  {acc.haveUsage ? `${Math.round(acc.limits[k] * 100)}%` : '—'}
                 </span>
               </div>
             ))}
+            {usageNote && (
+              <div style={{ fontSize: 9.5, color: 'var(--faint)', textAlign: 'right', marginTop: 1 }}>
+                {usageNote}
+              </div>
+            )}
           </div>
         );
       })}

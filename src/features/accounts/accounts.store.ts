@@ -32,10 +32,24 @@ const toAccount = (a: ipc.AccountInfo): Account => ({
   name: a.name,
   path: a.path,
   plan: '—',
+  email: null,
+  signedIn: false,
+  haveUsage: false,
   limits: emptyLimits,
   resets: emptyResets,
+  usageAge: null,
   sync: 'loading'
 });
+
+/** "just now" / "6m ago" / "2h ago" — how old the usage numbers are. */
+const ageLabel = (fetchedAtMs: number | null): string | null => {
+  if (!fetchedAtMs) return null;
+  const m = Math.round((Date.now() - fetchedAtMs) / 60000);
+  if (m < 1) return 'just now';
+  if (m < 60) return `${m}m ago`;
+  const h = Math.round(m / 60);
+  return h < 48 ? `${h}h ago` : `${Math.round(h / 24)}d ago`;
+};
 
 let retryTimer: ReturnType<typeof setTimeout> | undefined;
 // Consecutive unhappy rounds. The previous fixed 8s retry turned a single 429
@@ -79,33 +93,43 @@ export const useAccounts = create<AccountsState>()((set, get) => ({
           patch(a.path, { sync: 'error' });
           return;
         }
-        // Expired token: the CLI renews it as soon as a session runs, so keep
-        // the last known numbers on screen instead of flashing zeros.
-        if (lim.stale) {
-          patch(a.path, { sync: 'stale' });
-          return;
-        }
-        // Throttled: the numbers in this response are empty, not zero. Hold on
-        // to whatever we last knew and wait as long as the server asked.
-        if (lim.rateLimited != null) {
-          patch(a.path, { sync: 'throttled' });
-          serverWait = Math.max(serverWait, lim.rateLimited);
+        if (lim.rateLimited != null) serverWait = Math.max(serverWait, lim.rateLimited);
+
+        // Identity always applies: it comes off disk and is right even when the
+        // usage endpoint is unreachable.
+        const base = {
+          plan: lim.plan ?? '—',
+          email: lim.email,
+          signedIn: lim.signedIn,
+          haveUsage: lim.haveUsage,
+          usageAge: ageLabel(lim.fetchedAtMs)
+        };
+
+        // Numbers may be from the CLI's own cache; keep them even when this
+        // round was throttled, and never overwrite real figures with zeros.
+        if (lim.haveUsage) {
+          patch(a.path, {
+            ...base,
+            limits: { h5: lim.h5, week: lim.week, fable: lim.model },
+            resets: {
+              h5: fmtReset(lim.resetH5),
+              week: fmtReset(lim.resetWeek),
+              fable: fmtReset(lim.resetModel)
+            },
+            sync: lim.rateLimited != null ? 'throttled' : lim.stale ? 'stale' : 'ready'
+          });
           return;
         }
         patch(a.path, {
-          sync: 'ready',
-          plan: lim.plan ?? '—',
-          limits: { h5: lim.h5, week: lim.week, fable: lim.model },
-          resets: {
-            h5: fmtReset(lim.resetH5),
-            week: fmtReset(lim.resetWeek),
-            fable: fmtReset(lim.resetModel)
-          }
+          ...base,
+          sync: lim.rateLimited != null ? 'throttled' : lim.stale ? 'stale' : 'error'
         });
       })
     );
 
-    const unhappy = get().accounts.filter(a => a.sync !== 'ready');
+    // "Unhappy" means we have nothing to show — an account on cached numbers is
+    // perfectly serviceable and should not drive the retry cadence.
+    const unhappy = get().accounts.filter(a => a.sync !== 'ready' && !a.haveUsage);
     if (unhappy.length === 0) backoffStep = 0;
 
     if (!polling) return;

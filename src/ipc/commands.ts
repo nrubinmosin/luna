@@ -29,18 +29,23 @@ export interface AccountInfo {
 }
 
 export interface AccountLimitsDto {
-  /** Token expired; the CLI refreshes it once a session runs. Not a logout. */
-  stale: boolean;
-  /** Usage endpoint throttled us; seconds it asked for, 0 if it gave no hint. */
-  rateLimited: number | null;
+  /** Refresh token present and unexpired — the real "is this account usable". */
+  signedIn: boolean;
+  email: string | null;
+  plan: string | null;
+  /** False when no usage numbers are known; show "—", not 0%. */
+  haveUsage: boolean;
   h5: number;
   week: number;
   model: number;
   resetH5: string | null;
   resetWeek: string | null;
   resetModel: string | null;
-  plan: string | null;
-  email: string | null;
+  /** 'cache' (the CLI's own, free) or 'network'. */
+  source: string | null;
+  fetchedAtMs: number | null;
+  stale: boolean;
+  rateLimited: number | null;
 }
 
 export const listAccounts = () => call<AccountInfo[]>('list_accounts', {}, []);

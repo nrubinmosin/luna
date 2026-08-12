@@ -6,23 +6,48 @@ const BETA_HEADER: &str = "oauth-2025-04-20";
 const RATE_401: &str = "token expired — run a session to refresh";
 pub const RATE_429: &str = "rate-limited";
 
+/// How old the CLI's own cached usage may be before we bother the network.
+const CACHE_FRESH_MS: u64 = 5 * 60 * 1000;
+
 #[derive(Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountLimits {
-    /// The stored access token has expired. The CLI refreshes it the moment a
-    /// session runs, so this is a "wait a few seconds", not a "logged out".
-    pub stale: bool,
-    /// The usage endpoint throttled us. Seconds it asked us to wait, 0 if it
-    /// gave no hint. The numbers below are then meaningless — keep the old ones.
-    pub rate_limited: Option<u64>,
+    /// Credentials are present and the refresh token has not expired. The
+    /// access token expiring is routine — the CLI renews it — so it is not a
+    /// sign-out and must not be reported as one.
+    pub signed_in: bool,
+    pub email: Option<String>,
+    pub plan: Option<String>,
+
+    /// False when no usage numbers are known at all, so the UI can show "—"
+    /// rather than a row of confident-looking zeroes.
+    pub have_usage: bool,
     pub h5: f64,
     pub week: f64,
     pub model: f64,
     pub reset_h5: Option<String>,
     pub reset_week: Option<String>,
     pub reset_model: Option<String>,
-    pub plan: Option<String>,
-    pub email: Option<String>,
+
+    /// Where the numbers came from, and when they were taken.
+    pub source: Option<String>,
+    pub fetched_at_ms: Option<f64>,
+
+    /// The stored access token has expired; the CLI refreshes it on next use.
+    pub stale: bool,
+    /// The usage endpoint throttled us. Any numbers above came from the cache.
+    pub rate_limited: Option<u64>,
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn read_json(path: &Path) -> Option<Value> {
+    serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
 }
 
 struct Token {
@@ -31,35 +56,64 @@ struct Token {
 }
 
 fn read_token(account_path: &str) -> Result<Token, String> {
-    let creds_path = Path::new(account_path).join(".credentials.json");
-    let raw = std::fs::read_to_string(&creds_path)
-        .map_err(|_| "not logged in (no .credentials.json)".to_string())?;
-    let v: Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+    let v = read_json(&Path::new(account_path).join(".credentials.json"))
+        .ok_or_else(|| "not logged in (no .credentials.json)".to_string())?;
     let oauth = &v["claudeAiOauth"];
     let access = oauth["accessToken"]
         .as_str()
         .map(str::to_owned)
         .ok_or_else(|| "no access token in credentials".to_string())?;
-
-    // Spending two doomed HTTP round-trips on a token we can see is expired is
-    // what made a restart look like a logout.
-    let expired = oauth["expiresAt"]
-        .as_u64()
-        .map(|ms| {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as u64)
-                .unwrap_or(0);
-            now >= ms
-        })
-        .unwrap_or(false);
-
+    let expired = oauth["expiresAt"].as_u64().map(|ms| now_ms() >= ms).unwrap_or(false);
     Ok(Token { access, expired })
 }
 
-/// Seconds the server asked us to wait, if it did.
-fn retry_after(resp: &ureq::Response) -> Option<u64> {
-    resp.header("retry-after")?.trim().parse().ok()
+/// Being signed in is about the *refresh* token: while it lives, the CLI can
+/// mint a new access token without the user doing anything.
+fn signed_in(account_path: &str) -> bool {
+    read_json(&Path::new(account_path).join(".credentials.json"))
+        .map(|v| {
+            let o = &v["claudeAiOauth"];
+            o["refreshToken"].is_string()
+                && o["refreshTokenExpiresAt"].as_u64().map(|ms| now_ms() < ms).unwrap_or(true)
+        })
+        .unwrap_or(false)
+}
+
+fn plan_from_tier(tier: &str) -> Option<String> {
+    if let Some(mult) = tier.strip_prefix("default_claude_max_") {
+        return Some(format!("Max {}", mult.replace('x', "×")));
+    }
+    match tier {
+        "" => None,
+        "default_claude_pro" => Some("Pro".into()),
+        other => Some(other.to_string()),
+    }
+}
+
+/// Copies a `limits` array — the shape is identical in the API response and in
+/// the CLI's on-disk cache — into the DTO.
+fn apply_limits(out: &mut AccountLimits, limits: &Value) {
+    let Some(arr) = limits.as_array() else { return };
+    for lim in arr {
+        let pct = lim["percent"].as_f64().unwrap_or(0.0) / 100.0;
+        let reset = lim["resets_at"].as_str().map(str::to_owned);
+        match lim["kind"].as_str().unwrap_or("") {
+            "session" => {
+                out.h5 = pct;
+                out.reset_h5 = reset;
+            }
+            "weekly_all" => {
+                out.week = pct;
+                out.reset_week = reset;
+            }
+            "weekly_scoped" => {
+                out.model = pct;
+                out.reset_model = reset;
+            }
+            _ => {}
+        }
+    }
+    out.have_usage = true;
 }
 
 fn get_json(url: &str, token: &str) -> Result<Value, String> {
@@ -76,31 +130,16 @@ fn get_json(url: &str, token: &str) -> Result<Value, String> {
             ureq::Error::Status(401, _) => RATE_401.to_string(),
             // Polling usage too eagerly gets the endpoint throttled; the caller
             // turns this into a backoff rather than another immediate retry.
-            ureq::Error::Status(429, r) => {
-                format!("{RATE_429}:{}", retry_after(&r).unwrap_or(0))
-            }
+            ureq::Error::Status(429, r) => format!(
+                "{RATE_429}:{}",
+                r.header("retry-after").and_then(|h| h.trim().parse::<u64>().ok()).unwrap_or(0)
+            ),
             other => other.to_string(),
         })?;
     resp.into_json().map_err(|e| e.to_string())
 }
 
-fn plan_label(profile: &Value) -> Option<String> {
-    let tier = profile["organization"]["rate_limit_tier"].as_str().unwrap_or("");
-    if let Some(mult) = tier.strip_prefix("default_claude_max_") {
-        return Some(format!("Max {}", mult.replace('x', "×")));
-    }
-    if profile["account"]["has_claude_max"].as_bool() == Some(true) {
-        return Some("Max".into());
-    }
-    if profile["account"]["has_claude_pro"].as_bool() == Some(true) {
-        return Some("Pro".into());
-    }
-    profile["organization"]["organization_type"].as_str().map(str::to_owned)
-}
-
-/// Async so the blocking HTTP work leaves the main thread free: these calls
-/// used to run inline with `ensure_session`, so restoring several sessions at
-/// startup waited on every account's usage request first.
+/// Async so the blocking HTTP work leaves the main thread free.
 #[tauri::command]
 pub async fn account_limits(account_path: String) -> Result<AccountLimits, String> {
     tauri::async_runtime::spawn_blocking(move || fetch_limits(&account_path))
@@ -109,72 +148,70 @@ pub async fn account_limits(account_path: String) -> Result<AccountLimits, Strin
 }
 
 fn fetch_limits(account_path: &str) -> Result<AccountLimits, String> {
-    let token = read_token(account_path)?;
-    if token.expired {
-        return Ok(AccountLimits { stale: true, ..Default::default() });
-    }
-    let token = token.access;
-    let usage = match get_json("https://api.anthropic.com/api/oauth/usage", &token) {
-        Ok(v) => v,
-        Err(e) if e.starts_with(RATE_429) => {
-            let secs = e.rsplit(':').next().and_then(|s| s.parse().ok()).unwrap_or(0);
-            crate::log::warn("limits", &format!("429 for {account_path}, retry-after {secs}s"));
-            return Ok(AccountLimits { rate_limited: Some(secs), ..Default::default() });
-        }
-        Err(e) => {
-            crate::log::warn("limits", &format!("usage failed for {account_path}: {e}"));
-            return Err(e);
-        }
+    let mut out = AccountLimits {
+        signed_in: signed_in(account_path),
+        ..Default::default()
     };
 
-    let mut out = AccountLimits::default();
+    // Identity and plan come from the config the CLI wrote at login: no
+    // request, and still correct when the network is unavailable.
+    if let Some(cfg) = read_json(&Path::new(account_path).join(".claude.json")) {
+        let acc = &cfg["oauthAccount"];
+        out.email = acc["emailAddress"].as_str().map(str::to_owned);
+        out.plan = plan_from_tier(acc["organizationRateLimitTier"].as_str().unwrap_or(""));
 
-    if let Some(limits) = usage["limits"].as_array() {
-        for lim in limits {
-            let pct = lim["percent"].as_f64().unwrap_or(0.0) / 100.0;
-            let reset = lim["resets_at"].as_str().map(str::to_owned);
-            match lim["kind"].as_str().unwrap_or("") {
-                "session" => {
-                    out.h5 = pct;
-                    out.reset_h5 = reset;
+        // The CLI refreshes this cache whenever a session runs — which is
+        // exactly when the numbers change. Reading it costs no request, so it
+        // cannot be throttled, and it survives the usage endpoint being down.
+        let cached = &cfg["cachedUsageUtilization"];
+        if let Some(fetched) = cached["fetchedAtMs"].as_u64() {
+            apply_limits(&mut out, &cached["utilization"]["limits"]);
+            if out.have_usage {
+                out.source = Some("cache".into());
+                out.fetched_at_ms = Some(fetched as f64);
+                if now_ms().saturating_sub(fetched) < CACHE_FRESH_MS {
+                    return Ok(out);
                 }
-                "weekly_all" => {
-                    out.week = pct;
-                    out.reset_week = reset;
-                }
-                "weekly_scoped" => {
-                    out.model = pct;
-                    out.reset_model = reset;
-                }
-                _ => {}
             }
         }
     }
 
-    // Plan/email are cosmetic and effectively static — cache them so a usage
-    // poll costs one request rather than two.
-    if let Some((plan, email)) = cached_profile(account_path, &token) {
-        out.plan = plan;
-        out.email = email;
+    if !out.signed_in {
+        return Ok(out);
+    }
+
+    let token = match read_token(account_path) {
+        Ok(t) => t,
+        // Cached numbers beat failing the whole read over a credentials hiccup.
+        Err(e) if out.have_usage => {
+            crate::log::warn("limits", &format!("{account_path}: {e}"));
+            return Ok(out);
+        }
+        Err(e) => return Err(e),
+    };
+    if token.expired {
+        out.stale = true;
+        return Ok(out);
+    }
+
+    match get_json("https://api.anthropic.com/api/oauth/usage", &token.access) {
+        Ok(usage) => {
+            apply_limits(&mut out, &usage["limits"]);
+            out.source = Some("network".into());
+            out.fetched_at_ms = Some(now_ms() as f64);
+        }
+        Err(e) if e.starts_with(RATE_429) => {
+            let secs = e.rsplit(':').next().and_then(|s| s.parse().ok()).unwrap_or(0);
+            crate::log::warn("limits", &format!("429 for {account_path}, retry-after {secs}s"));
+            out.rate_limited = Some(secs);
+        }
+        Err(e) => {
+            crate::log::warn("limits", &format!("usage failed for {account_path}: {e}"));
+            if !out.have_usage {
+                return Err(e);
+            }
+        }
     }
 
     Ok(out)
-}
-
-type ProfileCache = std::collections::HashMap<String, (Option<String>, Option<String>)>;
-static PROFILE: std::sync::OnceLock<std::sync::Mutex<ProfileCache>> = std::sync::OnceLock::new();
-
-fn cached_profile(account_path: &str, token: &str) -> Option<(Option<String>, Option<String>)> {
-    let cache = PROFILE.get_or_init(Default::default);
-    if let Some(hit) = cache.lock().ok()?.get(account_path) {
-        return Some(hit.clone());
-    }
-    // Failures here are not worth surfacing: the usage bars matter, the plan label does not.
-    let profile = get_json("https://api.anthropic.com/api/oauth/profile", token).ok()?;
-    let entry = (
-        plan_label(&profile),
-        profile["account"]["email"].as_str().map(str::to_owned),
-    );
-    cache.lock().ok()?.insert(account_path.to_string(), entry.clone());
-    Some(entry)
 }

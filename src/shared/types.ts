@@ -43,8 +43,15 @@ export interface Account {
   name: string;
   path: string;
   plan: string;
+  email: string | null;
+  /** Whether the account can be used at all, independent of usage numbers. */
+  signedIn: boolean;
+  /** No usage figures known yet — render "—" instead of a confident 0%. */
+  haveUsage: boolean;
   limits: LimitSet;
   resets: { h5: string; week: string; fable: string };
+  /** Age of the numbers, e.g. "just now" / "4m ago". */
+  usageAge: string | null;
   sync: AccountSync;
 }
 
