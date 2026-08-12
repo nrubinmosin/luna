@@ -84,6 +84,7 @@ pub fn remove_worktree(folder: String, worktree_path: String) -> Result<(), Stri
         let _ = git(&folder).args(["worktree", "prune"]).output();
     }
 
+    crate::log::info("worktree", &format!("removed {worktree_path} (branch {branch:?})"));
     drop_branch(&folder, branch);
     Ok(())
 }

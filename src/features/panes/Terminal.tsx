@@ -4,6 +4,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 import { notifyWaiting } from '../../shared/lib/notify';
+import { logWarn } from '../../shared/lib/log';
 import { attachClipboardImage, attachFiles, filesFrom } from '../../shared/lib/attach';
 import { ACCENT, tint } from '../../shared/lib/format';
 import type { Chat } from '../../shared/types';
@@ -24,7 +25,7 @@ export const safely = (fn: () => void) => {
   try {
     fn();
   } catch (e) {
-    console.warn('[llm-desktop] terminal teardown', e);
+    logWarn('terminal', `teardown step failed: ${String(e)}`);
   }
 };
 

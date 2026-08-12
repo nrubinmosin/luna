@@ -1,4 +1,5 @@
 import { saveMedia, writeSession } from '../../ipc/commands';
+import { logInfo, logWarn } from './log';
 
 const EXT_BY_TYPE: Record<string, string> = {
   'image/png': 'png',
@@ -44,7 +45,7 @@ export async function attachFiles(chatId: string, files: File[]): Promise<number
       const path = await saveMedia(chatId, nameFor(file, i), toBase64(bytes));
       if (path) paths.push(path);
     } catch (e) {
-      console.warn('[llm-desktop] attach failed', file.name, e);
+      logWarn('attach', `${file.name} (${file.type}) failed: ${String(e)}`);
     }
   }
 
@@ -96,10 +97,13 @@ export async function attachClipboardImage(chatId: string): Promise<string | nul
 
     const bytes = new Uint8Array(await blob.arrayBuffer());
     const path = await saveMedia(chatId, `pasted-image.png`, toBase64(bytes));
+    logInfo('clipboard', `pasted ${size.width}x${size.height} image -> ${path}`);
     if (path) await writeSession(chatId, quote(path) + ' ');
     return path;
-  } catch {
-    // No image on the clipboard is the common case, not an error.
+  } catch (e) {
+    // No image on the clipboard is the common case, not an error — but log it,
+    // because a real failure here is otherwise completely silent.
+    logInfo('clipboard', `no image read from clipboard: ${String(e)}`);
     return null;
   }
 }

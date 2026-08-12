@@ -118,9 +118,13 @@ fn fetch_limits(account_path: &str) -> Result<AccountLimits, String> {
         Ok(v) => v,
         Err(e) if e.starts_with(RATE_429) => {
             let secs = e.rsplit(':').next().and_then(|s| s.parse().ok()).unwrap_or(0);
+            crate::log::warn("limits", &format!("429 for {account_path}, retry-after {secs}s"));
             return Ok(AccountLimits { rate_limited: Some(secs), ..Default::default() });
         }
-        Err(e) => return Err(e),
+        Err(e) => {
+            crate::log::warn("limits", &format!("usage failed for {account_path}: {e}"));
+            return Err(e);
+        }
     };
 
     let mut out = AccountLimits::default();

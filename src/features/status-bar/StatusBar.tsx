@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { clockDate, clockTime, clockWeekday, limitColor } from '../../shared/lib/format';
 import type { Account } from '../../shared/types';
 import { useAccounts } from '../accounts/accounts.store';
+import { logPath, revealLog } from '../../shared/lib/log';
 import { useChats } from '../chats/chats.store';
 import { AccountsPanel } from '../accounts/AccountsPanel';
 
@@ -21,6 +22,11 @@ export function StatusBar() {
   const open = useAccounts(s => s.open);
   const toggleOpen = useAccounts(s => s.toggleOpen);
   const folders = useChats(s => s.folders);
+
+  const [logFile, setLogFile] = useState('');
+  useEffect(() => {
+    void logPath().then(setLogFile).catch(() => {});
+  }, []);
 
   const barRef = useRef<HTMLDivElement>(null);
   const leftRef = useRef<HTMLDivElement>(null);
@@ -75,6 +81,18 @@ export function StatusBar() {
       </div>
 
       <div style={{ flex: 1, minWidth: 8 }} />
+
+      <span
+        onClick={() => void revealLog()}
+        title={logFile ? `Application log — click to show in Explorer\n${logFile}` : 'Application log'}
+        className="hover-bg"
+        style={{
+          flex: 'none', height: 20, padding: '0 8px', borderRadius: 6, display: 'flex',
+          alignItems: 'center', gap: 5, fontSize: 11, color: 'var(--faint)', cursor: 'default'
+        }}
+      >
+        <span style={{ fontSize: 10 }}>▤</span> log
+      </span>
 
       <div onClick={toggleOpen} style={{ display: 'flex', alignItems: 'center', gap: 12, cursor: 'default', flex: '0 1 auto', minWidth: 0, overflow: 'hidden' }}>
         {barAccounts.map(acc => (

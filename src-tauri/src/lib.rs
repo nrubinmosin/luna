@@ -1,5 +1,6 @@
 mod accounts;
 mod limits;
+mod log;
 mod media;
 mod pty;
 mod trust;
@@ -21,6 +22,9 @@ fn show_main(app: &tauri::AppHandle) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    log::install_panic_hook();
+    log::info("app", &format!("starting llm-desktop {}", env!("CARGO_PKG_VERSION")));
+
     tauri::Builder::default()
         // Must be the first plugin: a second launch focuses the running
         // instance instead of spawning a duplicate app + tray icon.
@@ -72,6 +76,9 @@ pub fn run() {
             accounts::create_account,
             accounts::delete_account,
             limits::account_limits,
+            log::append_log,
+            log::log_path,
+            log::reveal_log,
             media::save_media,
             media::clear_media,
             pty::ensure_session,

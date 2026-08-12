@@ -1,5 +1,6 @@
 import { Component } from 'react';
 import type { ErrorInfo, ReactNode } from 'react';
+import { logError } from '../shared/lib/log';
 
 // React tears down the whole root when an error escapes render *or* an effect
 // cleanup — which is how closing a pane used to blank the window until F5.
@@ -12,7 +13,7 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, { error: E
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
-    console.error('[llm-desktop] unhandled UI error', error, info.componentStack);
+    logError('react', `${error.stack ?? error} | ${info.componentStack ?? ''}`);
   }
 
   render() {

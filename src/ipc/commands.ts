@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { Effort, ModelLabel, PermMode } from '../shared/types';
 import { MODEL_CLI, PERM_CLI } from '../shared/types';
+import { logWarn, SLOW_MS } from '../shared/lib/log';
 
 const tauriAvailable = '__TAURI_INTERNALS__' in window;
 
@@ -8,7 +9,18 @@ const tauriAvailable = '__TAURI_INTERNALS__' in window;
 // UI stays workable.
 async function call<T>(cmd: string, args?: Record<string, unknown>, fallback?: T): Promise<T> {
   if (!tauriAvailable) return fallback as T;
-  return invoke<T>(cmd, args);
+  // Timed because a sync Tauri command runs on the main thread: a slow one is
+  // indistinguishable from the app hanging, and this names which one it was.
+  const started = performance.now();
+  try {
+    return await invoke<T>(cmd, args);
+  } catch (e) {
+    logWarn('ipc', `${cmd} failed: ${String(e)}`);
+    throw e;
+  } finally {
+    const ms = performance.now() - started;
+    if (ms > SLOW_MS) logWarn('ipc', `${cmd} took ${Math.round(ms)}ms`);
+  }
 }
 
 export interface AccountInfo {

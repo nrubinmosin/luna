@@ -95,7 +95,10 @@ pub fn ensure_session(
     }
     cmd.env("TERM", "xterm-256color");
 
-    let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
+    let child = pair.slave.spawn_command(cmd).map_err(|e| {
+        crate::log::error("pty", &format!("spawn failed for {id} in {folder}: {e}"));
+        e.to_string()
+    })?;
     drop(pair.slave);
 
     let pid = child.process_id();
@@ -150,9 +153,15 @@ pub fn ensure_session(
             }
             alive.store(false, Ordering::SeqCst);
             let code = child.wait().ok().map(|st| st.exit_code());
+            crate::log::info("pty", &format!("session {id} exited, code {code:?}"));
             let _ = app.emit("pty://exit", PtyExit { id: &id, code });
         });
     }
+
+    crate::log::info(
+        "pty",
+        &format!("spawned {id} pid {pid:?} model {model} perm {permission_mode} worktree {worktree} in {folder}"),
+    );
 
     sessions.insert(
         id,
@@ -251,7 +260,8 @@ pub fn delete_session(
         }
     }
 
-    let _ = crate::media::clear_media(id);
+    let _ = crate::media::clear_media(id.clone());
+    crate::log::info("delete", &format!("chat {id}, worktree {resolved:?}"));
 
     match &resolved {
         Some(wt) => crate::worktree::remove_worktree(folder, wt.clone()).map(|_| resolved.clone()),
