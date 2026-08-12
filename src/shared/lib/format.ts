@@ -33,7 +33,7 @@ export const limitColor = (v: number) => {
   return 'oklch(.64 .18 145)';
 };
 
-export const ACCENT = 'oklch(0.60 0.17 145)';
+export const ACCENT = 'var(--dialog-blue)';
 
 export const tint = (pct: number, base: string) =>
   `color-mix(in oklab, ${ACCENT} ${pct}%, ${base})`;

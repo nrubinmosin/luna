@@ -5,6 +5,7 @@ import { useChats } from '../chats/chats.store';
 
 const LK: Array<['h5' | 'week' | 'fable', string]> = [['h5', '5 hours'], ['week', 'week'], ['fable', 'fable']];
 
+/** Renders inline as the sidebar's account list — no longer a floating popover. */
 export function AccountsPanel() {
   const { accounts, adding, error } = useAccounts();
   const { add, remove, setAdding, setLoginFor } = useAccounts.getState();
@@ -15,24 +16,24 @@ export function AccountsPanel() {
     folders.some(f => f.chats.some(c => c.account === account));
 
   return (
-    <div style={{ position: 'absolute', right: 12, bottom: 44, width: 360, background: 'var(--bg)', border: '1px solid var(--line)', borderRadius: 12, boxShadow: 'var(--shadow)', padding: 12, zIndex: 40 }}>
-      <div style={{ display: 'flex', alignItems: 'center', marginBottom: 10 }}>
-        <div style={{ fontSize: 12, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--faint)' }}>
-          Claude accounts
+    <div style={{ borderTop: '1px solid var(--line)', padding: '7px 9px 9px', overflowY: 'auto' }}>
+      <div style={{ display: 'flex', alignItems: 'center', marginBottom: 6 }}>
+        <div style={{ fontSize: 10.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: 'var(--faint)' }}>
+          Accounts
         </div>
         <span style={{ flex: 1 }} />
         <div
           onClick={() => setAdding(!adding)}
           title="Add account — creates Documents/claude-accounts/<name>"
-          className="hover-bg"
-          style={{ height: 20, padding: '0 8px', borderRadius: 6, background: 'var(--chip)', display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, cursor: 'default' }}
+          className="hover-bg xp-raised"
+          style={{ height: 17, padding: '0 6px', borderRadius: 2, border: '1px solid var(--window-frame)', background: 'var(--panel)', display: 'flex', alignItems: 'center', gap: 3, fontSize: 10.5, cursor: 'default' }}
         >
-          <span style={{ fontSize: 13, lineHeight: 1 }}>+</span> Add
+          <span style={{ fontSize: 11, lineHeight: 1 }}>+</span> add
         </div>
       </div>
 
       {adding && (
-        <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
+        <div style={{ display: 'flex', gap: 4, marginBottom: 8 }}>
           <input
             autoFocus
             value={name}
@@ -45,9 +46,10 @@ export function AccountsPanel() {
               if (e.key === 'Escape') setAdding(false);
             }}
             placeholder="account name"
+            className="xp-field"
             style={{
-              flex: 1, height: 29, padding: '0 8px', border: '1px solid var(--line)', borderRadius: 7,
-              background: 'var(--panel)', color: 'var(--fg)', font: 'inherit', fontSize: 13, outline: 'none'
+              flex: 1, height: 21, padding: '0 5px', border: '1px solid var(--input-border-color)', borderRadius: 1,
+              background: '#fff', color: '#000', font: 'inherit', fontSize: 11, outline: 'none'
             }}
           />
           <div
@@ -58,17 +60,17 @@ export function AccountsPanel() {
               }
             }}
             className="hover-bright"
-            style={{ height: 29, padding: '0 10px', borderRadius: 7, background: 'var(--accent)', color: 'oklch(.99 .01 160)', display: 'flex', alignItems: 'center', fontSize: 12.5, fontWeight: 590, cursor: 'default' }}
+            style={{ height: 21, padding: '0 8px', borderRadius: 2, border: '1px solid var(--window-frame)', background: 'var(--accent)', color: '#fff', display: 'flex', alignItems: 'center', fontSize: 10.5, fontWeight: 700, cursor: 'default' }}
           >
             Create
           </div>
         </div>
       )}
-      {error && <div style={{ fontSize: 12, color: 'oklch(.58 .2 25)', marginBottom: 8 }}>{error}</div>}
+      {error && <div style={{ fontSize: 11, color: 'oklch(.58 .2 25)', marginBottom: 6 }}>{error}</div>}
 
       {accounts.length === 0 && (
-        <div style={{ fontSize: 12.5, color: 'var(--faint)', padding: '6px 0 2px' }}>
-          No accounts yet — add one to spawn sessions with an isolated Claude config.
+        <div style={{ fontSize: 11, color: 'var(--faint)', padding: '2px 0' }}>
+          No accounts yet — add one to spawn sessions.
         </div>
       )}
 
@@ -88,21 +90,21 @@ export function AccountsPanel() {
           : acc.sync === 'error' ? 'unreachable'
           : null;
         return (
-          <div key={acc.name} style={{ padding: '9px 0', borderTop: '1px solid var(--line)' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-              <span style={{ width: 7, height: 7, borderRadius: '50%', background: dot }} />
-              <span style={{ fontSize: 13.5, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={acc.path}>
+          <div key={acc.name} style={{ padding: '6px 0', borderTop: '1px solid var(--line)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 5 }}>
+              <span style={{ width: 6, height: 6, borderRadius: '50%', flex: 'none', background: dot }} />
+              <span style={{ fontSize: 11.5, fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={acc.path}>
                 {acc.name}
               </span>
               <span style={{ flex: 1 }} />
-              <span style={{ fontSize: 11.5, color: 'var(--faint)', whiteSpace: 'nowrap' }}>
+              <span style={{ fontSize: 10, color: 'var(--faint)', whiteSpace: 'nowrap' }}>
                 {note ?? acc.plan}
               </span>
               <span
                 onClick={() => setLoginFor(acc)}
                 title="Sign in / re-login this account"
                 className="hover-bg"
-                style={{ height: 18, padding: '0 7px', flex: 'none', borderRadius: 5, display: 'grid', placeItems: 'center', fontSize: 11.5, color: 'var(--dim)', background: 'var(--chip)', cursor: 'default' }}
+                style={{ height: 15, padding: '0 5px', flex: 'none', borderRadius: 2, display: 'grid', placeItems: 'center', fontSize: 10, color: 'var(--dim)', background: 'var(--chip)', cursor: 'default' }}
               >
                 login
               </span>
@@ -113,22 +115,19 @@ export function AccountsPanel() {
                 }}
                 title="Delete account folder"
                 className="hover-danger"
-                style={{ width: 18, height: 18, flex: 'none', borderRadius: 5, display: 'grid', placeItems: 'center', fontSize: 12, color: 'var(--faint)', cursor: 'default' }}
+                style={{ width: 15, height: 15, flex: 'none', borderRadius: 2, display: 'grid', placeItems: 'center', fontSize: 10, color: 'var(--faint)', cursor: 'default' }}
               >
                 ✕
               </span>
             </div>
             {LK.map(([k, full]) => (
-              <div key={k} style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 6 }}>
-                <span style={{ fontSize: 12, color: 'var(--dim)', width: 44, whiteSpace: 'nowrap' }}>{full}</span>
-                <div style={{ flex: 1, height: 7, borderRadius: 4, background: 'var(--track)', border: '1px solid var(--line)', overflow: 'hidden' }}>
-                  <div style={{ height: '100%', borderRadius: 3, width: `${Math.round(acc.limits[k] * 100)}%`, background: limitColor(acc.limits[k]) }} />
+              <div key={k} title={`${full}: ${Math.round(acc.limits[k] * 100)}% · resets in ${acc.resets[k]}`} style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 3 }}>
+                <span style={{ fontSize: 10, color: 'var(--dim)', width: 30, flex: 'none', whiteSpace: 'nowrap', overflow: 'hidden' }}>{full}</span>
+                <div className="xp-sunken" style={{ flex: 1, height: 6, background: 'var(--track)', overflow: 'hidden' }}>
+                  <div style={{ height: '100%', width: `${Math.round(acc.limits[k] * 100)}%`, background: limitColor(acc.limits[k]) }} />
                 </div>
-                <span style={{ fontSize: 12, color: 'var(--dim)', width: 34, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                <span style={{ fontSize: 10, color: 'var(--dim)', width: 26, flex: 'none', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
                   {Math.round(acc.limits[k] * 100)}%
-                </span>
-                <span style={{ fontSize: 11.5, color: 'var(--faint)', width: 58, textAlign: 'right', whiteSpace: 'nowrap' }}>
-                  ↻ {acc.resets[k]}
                 </span>
               </div>
             ))}

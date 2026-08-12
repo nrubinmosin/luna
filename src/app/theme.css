@@ -1,46 +1,87 @@
 * { box-sizing: border-box; }
 body { margin: 0; overflow: hidden; }
 
+/* Windows XP (Luna Blue) reskin. xp.css's *source* SCSS defines its palette
+   as :root custom properties, but its published, compiled dist/XP.css bakes
+   every one of xp.css's own selectors (button, .window, select, etc.) to
+   static literal colors and drops the :root block entirely — so those
+   variable names don't actually exist at runtime unless we declare them
+   ourselves. We do that here (matching xp.css's own Luna Blue values), which
+   is what lets our *own* elements (chips, dialogs, the .xp-raised/.xp-sunken/
+   .xp-field bevel helpers below) read the same palette and re-theme for dark
+   mode; xp.css's own compiled controls (native <select>, checkbox/radio
+   decorations) keep their fixed light Luna chrome regardless of theme, same
+   as the title-bar's blue gradient. */
 [data-app] {
-  --bg: oklch(.975 .011 145);
-  --panel: oklch(.937 .019 148);
-  --sidebar: oklch(.9 .027 150);
-  --fg: oklch(.21 .036 165);
-  --dim: oklch(.41 .042 162);
-  --faint: oklch(.535 .042 158);
-  --line: oklch(.78 .032 150);
-  --hover: oklch(.855 .042 150);
-  --chip: oklch(.868 .036 150);
+  --sans-serif: "Pixelated MS Sans Serif", Arial;
+  --surface: #ece9d8;
+  --button-highlight: #ffffff;
+  --button-face: #dfdfdf;
+  --button-shadow: #808080;
+  --window-frame: #0a0a0a;
+  --dialog-blue: #2267cb;
+  --input-border-color: #789dbc;
+  --link-blue: #0000ff;
+
+  --border-raised-outer: inset -1px -1px var(--window-frame), inset 1px 1px var(--button-highlight);
+  --border-raised-inner: inset -2px -2px var(--button-shadow), inset 2px 2px var(--button-face);
+  --border-sunken-outer: inset -1px -1px var(--button-highlight), inset 1px 1px var(--window-frame);
+  --border-sunken-inner: inset -2px -2px var(--button-face), inset 2px 2px var(--button-shadow);
+  --border-window-outer: inset -1px -1px var(--window-frame), inset 1px 1px var(--button-face);
+  --border-window-inner: inset -2px -2px var(--button-shadow), inset 2px 2px var(--button-highlight);
+  --border-field: inset -1px -1px var(--button-highlight), inset 1px 1px var(--button-shadow),
+    inset -2px -2px var(--button-face), inset 2px 2px var(--window-frame);
+  --scrollbar-bg: linear-gradient(90deg, #c5d5ff 0%, #b5d3ff 86%, #b6caf7 100%);
+  --scrollbar-shadow: inset 1px 1px white, inset -1px -1px white, inset 2px 2px #b9cdfa, inset -2px -2px #b6c9f7;
+
+  --bg: var(--surface);
+  --panel: var(--button-face);
+  --sidebar: var(--button-face);
+  --fg: #000000;
+  --dim: #3f3f3f;
+  --faint: #6e6e6e;
+  --line: var(--button-shadow);
+  --hover: #cfe1fa;
+  --chip: #d9d6c3;
   /* Progress tracks need to read against --sidebar and --chip alike, so they
      get their own step rather than reusing the chip fill. */
-  --track: oklch(.755 .042 152);
+  --track: #c7c7bd;
   --term: #f4faf6;
-  --shadow: 0 14px 44px oklch(.4 .05 150 / .18);
+  --shadow: 0 14px 44px rgba(0, 0, 0, .35);
 }
 [data-app][data-theme="dark"] {
-  --bg: oklch(.215 .022 195);
-  --panel: oklch(.255 .026 193);
-  --sidebar: oklch(.29 .03 190);
-  --fg: oklch(.955 .016 175);
-  --dim: oklch(.735 .028 180);
-  --faint: oklch(.6 .028 185);
-  --line: oklch(.375 .03 190);
-  --hover: oklch(.345 .035 190);
-  --chip: oklch(.335 .035 190);
-  --track: oklch(.4 .038 192);
+  --surface: #2b2b2e;
+  --button-highlight: #57575c;
+  --button-face: #3c3c40;
+  --button-shadow: #141416;
+  --window-frame: #000000;
+  --dialog-blue: #4a90e2;
+  --input-border-color: #4a5568;
+  --link-blue: #6ab0ff;
+
+  --bg: var(--surface);
+  --panel: var(--button-face);
+  --sidebar: var(--button-face);
+  --fg: #ececec;
+  --dim: #b8b8b8;
+  --faint: #8a8a8a;
+  --line: var(--button-shadow);
+  --hover: #2c3e55;
+  --chip: #3a3f47;
+  --track: #45484d;
   --term: #101a1d;
-  --shadow: 0 14px 44px oklch(.1 .04 200 / .55);
+  --shadow: 0 14px 44px rgba(0, 0, 0, .65);
 }
 
 @keyframes blink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
 
-::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-thumb { background: oklch(.6 .03 160 / .4); border-radius: 4px; }
-::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar { width: 16px; height: 16px; }
+::-webkit-scrollbar-thumb { background: var(--scrollbar-bg); box-shadow: var(--scrollbar-shadow); }
+::-webkit-scrollbar-track { background: var(--button-face); }
 
-a { color: oklch(.6 .13 165); text-decoration: none; }
-a:hover { color: oklch(.5 .14 165); }
+a { color: var(--link-blue); text-decoration: none; }
+a:hover { text-decoration: underline; }
 
 .hover-bright:hover { filter: brightness(1.07); }
 .hover-dim:hover { filter: brightness(.98); }
@@ -48,3 +89,29 @@ a:hover { color: oklch(.5 .14 165); }
 .hover-danger:hover { background: oklch(.63 .19 25 / .16) !important; color: oklch(.58 .2 25) !important; }
 
 .xterm .xterm-viewport { background: transparent !important; }
+
+/* Folder-row actions (new chat, orphan sweep) only cost width once the row
+   is hovered — the rest of the time that space goes to the folder name.
+   max-width (not opacity) is what actually gives the freed width back to
+   the flex sibling holding the name. */
+.folder-actions { max-width: 0; overflow: hidden; opacity: 0; }
+.folder-row:hover .folder-actions { max-width: 70px; opacity: 1; }
+
+/* Generic XP chrome, built from xp.css's own bevel variables so it reads
+   correctly against --button-face-derived backgrounds (panel/sidebar/chip). */
+.xp-raised {
+  box-shadow: var(--border-raised-outer), var(--border-raised-inner);
+}
+.xp-sunken {
+  box-shadow: var(--border-sunken-outer), var(--border-sunken-inner);
+}
+.xp-field {
+  box-shadow: var(--border-field);
+}
+/* The classic Luna title-bar gradient, sized for our own compact strips
+   rather than xp.css's fixed 28px .title-bar. Stays XP-blue in both themes. */
+.xp-titlebar {
+  background: linear-gradient(180deg, #0997ff 0%, #0053ee 8%, #0050ee 40%, #0066ff 88%, #005bff 95%, #003dd7 100%);
+  color: #ffffff;
+  text-shadow: 1px 1px #0f1089;
+}

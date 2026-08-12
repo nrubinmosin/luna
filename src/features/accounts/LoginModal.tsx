@@ -104,18 +104,18 @@ export function LoginModal({ account }: { account: Account }) {
   };
 
   return (
-    <div style={{ position: 'fixed', inset: 0, background: 'oklch(.2 .03 160 / .3)', backdropFilter: 'blur(2px)', display: 'grid', placeItems: 'center', zIndex: 70 }}>
-      <div style={{ width: 720, height: 500, background: 'var(--bg)', border: '1px solid var(--line)', borderRadius: 14, boxShadow: 'var(--shadow)', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-        <div style={{ flex: 'none', display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', borderBottom: '1px solid var(--line)', background: 'var(--panel)' }}>
-          <div style={{ fontSize: 14.5, fontWeight: 640 }}>Sign in — {account.name}</div>
-          <span style={{ fontSize: 12, color: 'var(--faint)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.32)', backdropFilter: 'blur(1px)', display: 'grid', placeItems: 'center', zIndex: 70 }}>
+      <div className="xp-raised" style={{ width: 720, height: 500, background: 'var(--bg)', borderRadius: 3, boxShadow: 'var(--shadow), var(--border-raised-outer), var(--border-raised-inner)', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+        <div className="xp-titlebar" style={{ flex: 'none', display: 'flex', alignItems: 'center', gap: 8, height: 27, padding: '0 4px 0 9px', fontSize: 12.5, fontWeight: 700 }}>
+          <span>Sign in — {account.name}</span>
+          <span style={{ fontSize: 11, color: 'rgba(255,255,255,.75)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textShadow: 'none' }}>
             {account.path}
           </span>
           <span style={{ flex: 1 }} />
           <span
             onClick={close}
             className="hover-bg"
-            style={{ width: 20, height: 20, borderRadius: 5, display: 'grid', placeItems: 'center', fontSize: 13, color: 'var(--dim)', cursor: 'default' }}
+            style={{ width: 18, height: 18, borderRadius: 2, display: 'grid', placeItems: 'center', fontSize: 11, color: '#fff', cursor: 'default' }}
           >
             ✕
           </span>

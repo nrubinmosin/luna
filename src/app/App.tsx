@@ -113,45 +113,48 @@ export function App() {
       style={{
         ['--accent' as string]: ACCENT,
         height: '100vh', display: 'flex', background: 'var(--bg)', color: 'var(--fg)',
-        fontFamily: "-apple-system, 'SF Pro Text', 'Segoe UI', 'Helvetica Neue', Helvetica, sans-serif",
-        fontSize: 14.5, WebkitFontSmoothing: 'antialiased', letterSpacing: '-0.01em'
+        fontFamily: 'var(--sans-serif)',
+        fontSize: 13.5
       }}
     >
-      <div style={{ width: sidebar, flex: 'none', background: 'var(--sidebar)', borderRight: '1px solid var(--line)', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-        <div style={{ flex: 'none', padding: '12px 10px 10px', display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <div style={{ display: 'flex', gap: 6 }}>
+      <div style={{ width: sidebar, flex: 'none', background: 'var(--sidebar)', borderRight: '1px solid var(--window-frame)', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+        <div style={{ flex: 'none', padding: '8px 8px 7px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <div style={{ display: 'flex', gap: 5 }}>
             <div
               onClick={openNewChat}
               className="hover-bright"
               style={{
-                flex: 1, height: 31, borderRadius: 8, background: 'var(--accent)', color: 'oklch(.99 .01 160)',
-                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, fontSize: 13.5,
-                fontWeight: 590, cursor: 'default', boxShadow: '0 1px 2px oklch(.3 .06 160 / .25)'
+                flex: 1, height: 27, borderRadius: 2, background: 'var(--accent)', color: '#fff',
+                border: '1px solid var(--window-frame)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5, fontSize: 12.5,
+                fontWeight: 700, cursor: 'default',
+                boxShadow: 'inset -1px -1px rgba(0,0,0,.5), inset 1px 1px rgba(255,255,255,.55)'
               }}
             >
-              <span style={{ fontSize: 15.5, lineHeight: 1, flex: 'none' }}>+</span>
+              <span style={{ fontSize: 14, lineHeight: 1, flex: 'none' }}>+</span>
               <span style={{ whiteSpace: 'nowrap' }}>New chat</span>
             </div>
             <div
               onClick={() => setPref(p => (p === 'system' ? 'light' : p === 'light' ? 'dark' : 'system'))}
               title={themeTitle}
-              className="hover-bg"
-              style={{ width: 33, height: 31, flex: 'none', borderRadius: 8, background: 'var(--chip)', display: 'grid', placeItems: 'center', fontSize: 14.5, cursor: 'default' }}
+              className="hover-bg xp-raised"
+              style={{ width: 29, height: 27, flex: 'none', borderRadius: 2, background: 'var(--panel)', border: '1px solid var(--window-frame)', display: 'grid', placeItems: 'center', fontSize: 13, cursor: 'default' }}
             >
               {THEMES[pref].glyph}
             </div>
           </div>
 
-          <div style={{ display: 'flex', gap: 3, padding: 3, background: 'var(--chip)', borderRadius: 9 }}>
+          <div className="xp-sunken" style={{ display: 'flex', gap: 2, padding: 2, background: 'var(--chip)', borderRadius: 2 }}>
             {([1, 2, 3, 4] as Layout[]).map(n => (
               <div
                 key={n}
                 onClick={() => setLayout(n)}
                 title={`${n} pane${n > 1 ? 's' : ''}`}
+                className={layout !== n ? 'hover-bg' : undefined}
                 style={{
-                  flex: 1, height: 26, borderRadius: 6, display: 'grid', placeItems: 'center', cursor: 'default',
+                  flex: 1, height: 23, borderRadius: 2, display: 'grid', placeItems: 'center', cursor: 'default',
                   background: layout === n ? 'var(--bg)' : 'transparent',
-                  boxShadow: layout === n ? '0 1px 2px oklch(.3 .04 160 / .18)' : 'none'
+                  boxShadow: layout === n ? 'var(--border-sunken-outer), var(--border-sunken-inner)' : 'none'
                 }}
               >
                 <LayoutIcon n={n} />
@@ -161,6 +164,7 @@ export function App() {
         </div>
 
         <ChatList />
+        <StatusBar />
       </div>
 
       <div
@@ -172,7 +176,6 @@ export function App() {
 
       <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
         <PaneGrid />
-        <StatusBar />
       </div>
 
       {modal && <NewChatDialog />}

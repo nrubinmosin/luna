@@ -14,14 +14,12 @@ interface AccountsState {
   /** False until list_accounts has answered once. Sessions must not spawn
    *  before that: an unresolved account path means no CLAUDE_CONFIG_DIR. */
   loaded: boolean;
-  open: boolean;
   adding: boolean;
   error: string | null;
   loginFor: Account | null;
   refresh: () => Promise<void>;
   add: (name: string) => Promise<void>;
   remove: (name: string) => Promise<void>;
-  toggleOpen: () => void;
   setAdding: (v: boolean) => void;
   setError: (e: string | null) => void;
   setLoginFor: (a: Account | null) => void;
@@ -52,7 +50,6 @@ const scheduleRetry = (afterS: number, run: () => void) => {
 export const useAccounts = create<AccountsState>()((set, get) => ({
   accounts: [],
   loaded: false,
-  open: false,
   adding: false,
   error: null,
   loginFor: null,
@@ -136,7 +133,6 @@ export const useAccounts = create<AccountsState>()((set, get) => ({
     }
   },
 
-  toggleOpen: () => set(s => ({ open: !s.open })),
   setAdding: v => set({ adding: v, error: null }),
   setError: e => set({ error: e }),
   setLoginFor: a => set({ loginFor: a })

@@ -4,7 +4,7 @@ import { ACCENT } from '../../shared/lib/format';
 import { currentSplits, usePanes, type SplitKey } from './panes.store';
 import { Pane } from './Pane';
 
-const GAP = 10;
+const GAP = 8;
 
 /**
  * Draggable divider between two panes. Sizes are fractions of the parent flex
@@ -47,7 +47,7 @@ function Splitter({ axis, split }: { axis: 'x' | 'y'; split: SplitKey }) {
   const style: CSSProperties = {
     flex: 'none',
     alignSelf: 'stretch',
-    borderRadius: 3,
+    borderRadius: 1,
     background: 'transparent',
     transition: 'background .12s',
     cursor: axis === 'x' ? 'col-resize' : 'row-resize',

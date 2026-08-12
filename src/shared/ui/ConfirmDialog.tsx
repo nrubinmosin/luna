@@ -38,33 +38,37 @@ export function ConfirmDialog({
         onCancel();
       }}
       style={{
-        position: 'fixed', inset: 0, background: 'oklch(.2 .03 160 / .34)', backdropFilter: 'blur(2px)',
+        position: 'fixed', inset: 0, background: 'rgba(0,0,0,.35)', backdropFilter: 'blur(1px)',
         display: 'grid', placeItems: 'center', zIndex: 80
       }}
     >
       <div
         onClick={e => e.stopPropagation()}
+        className="xp-raised"
         style={{
-          width: 420, background: 'var(--bg)', border: '1px solid var(--line)', borderRadius: 14,
-          boxShadow: 'var(--shadow)', overflow: 'hidden'
+          width: 400, background: 'var(--bg)', borderRadius: 3,
+          boxShadow: 'var(--shadow), var(--border-raised-outer), var(--border-raised-inner)', overflow: 'hidden'
         }}
       >
-        <div style={{ padding: '15px 18px 12px' }}>
-          <div style={{ fontSize: 15, fontWeight: 640, marginBottom: 7 }}>{title}</div>
+        <div className="xp-titlebar" style={{ height: 26, display: 'flex', alignItems: 'center', padding: '0 4px 0 9px', fontSize: 12.5, fontWeight: 700 }}>
+          <span style={{ flex: 1 }}>{title}</span>
+          <span onClick={onCancel} className="hover-bg" style={{ width: 18, height: 18, borderRadius: 2, display: 'grid', placeItems: 'center', fontSize: 11, color: '#fff', cursor: 'default' }}>✕</span>
+        </div>
+        <div style={{ padding: '14px 16px 12px' }}>
           <div style={{ fontSize: 12.5, lineHeight: 1.5, color: 'var(--dim)' }}>{body}</div>
         </div>
         <div
           style={{
-            padding: '11px 18px', borderTop: '1px solid var(--line)', background: 'var(--panel)',
+            padding: '10px 16px', borderTop: '1px solid var(--line)', background: 'var(--panel)',
             display: 'flex', justifyContent: 'flex-end', gap: 8
           }}
         >
           <div
             onClick={onCancel}
-            className="hover-bg"
+            className="hover-bg xp-raised"
             style={{
-              height: 31, padding: '0 14px', borderRadius: 8, border: '1px solid var(--line)',
-              background: 'var(--bg)', display: 'flex', alignItems: 'center', fontSize: 13.5, cursor: 'default'
+              height: 26, padding: '0 13px', borderRadius: 2, border: '1px solid var(--window-frame)',
+              background: 'var(--panel)', display: 'flex', alignItems: 'center', fontSize: 12.5, cursor: 'default'
             }}
           >
             Cancel
@@ -73,9 +77,10 @@ export function ConfirmDialog({
             onClick={onConfirm}
             className="hover-bright"
             style={{
-              height: 31, padding: '0 16px', borderRadius: 8, display: 'flex', alignItems: 'center',
-              fontSize: 13.5, fontWeight: 590, cursor: 'default', color: 'oklch(.99 .01 160)',
-              background: danger ? 'oklch(.55 .2 25)' : 'var(--accent)'
+              height: 26, padding: '0 15px', borderRadius: 2, display: 'flex', alignItems: 'center',
+              fontSize: 12.5, fontWeight: 700, cursor: 'default', color: '#fff', border: '1px solid var(--window-frame)',
+              background: danger ? '#c0392b' : 'var(--accent)',
+              boxShadow: 'inset -1px -1px rgba(0,0,0,.5), inset 1px 1px rgba(255,255,255,.55)'
             }}
           >
             {confirmLabel}

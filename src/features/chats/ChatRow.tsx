@@ -61,15 +61,15 @@ export function ChatRow({ chat }: { chat: Chat }) {
       title="Drag into a pane"
       className="hover-bg"
       style={{
-        display: 'flex', alignItems: 'center', gap: 8, height: 34, padding: '0 8px',
-        borderRadius: 7, cursor: 'grab',
-        background: active ? tint(18, 'transparent') : 'transparent',
+        display: 'flex', alignItems: 'center', gap: 6, height: 25, padding: '0 6px',
+        borderRadius: 2, cursor: 'grab',
+        background: active ? tint(22, 'transparent') : 'transparent',
         opacity: dragging ? 0.45 : 1
       }}
     >
       <span
         title={st.label}
-        style={{ width: 8, height: 8, borderRadius: '50%', flex: 'none', background: st.color, animation: st.anim }}
+        style={{ width: 7, height: 7, borderRadius: '50%', flex: 'none', background: st.color, animation: st.anim }}
       />
       {editing ? (
         <input
@@ -82,9 +82,10 @@ export function ChatRow({ chat }: { chat: Chat }) {
             if (e.key === 'Escape') setEditing(false);
           }}
           onClick={e => e.stopPropagation()}
+          className="xp-field"
           style={{
-            flex: '1 1 auto', minWidth: 40, height: 22, padding: '0 4px', border: '1px solid var(--line)',
-            borderRadius: 5, background: 'var(--panel)', color: 'var(--fg)', font: 'inherit', fontSize: 13.5, outline: 'none'
+            flex: '1 1 auto', minWidth: 40, height: 19, padding: '0 4px', border: '1px solid var(--input-border-color)',
+            borderRadius: 1, background: '#fff', color: '#000', font: 'inherit', fontSize: 12.5, outline: 'none'
           }}
         />
       ) : (
@@ -95,7 +96,7 @@ export function ChatRow({ chat }: { chat: Chat }) {
             setEditing(true);
           }}
           title="Double-click to rename"
-          style={{ flex: '1 1 auto', minWidth: 40, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 13.5, fontWeight: 500 }}
+          style={{ flex: '1 1 auto', minWidth: 40, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 12.5, fontWeight: 500 }}
         >
           {chat.name}
         </span>
@@ -112,8 +113,8 @@ export function ChatRow({ chat }: { chat: Chat }) {
         }
         className="hover-danger"
         style={{
-          width: 18, height: 18, flex: 'none', borderRadius: 5, display: 'grid',
-          placeItems: 'center', fontSize: 12, color: 'var(--faint)', cursor: 'default'
+          width: 16, height: 16, flex: 'none', borderRadius: 2, display: 'grid',
+          placeItems: 'center', fontSize: 11, color: 'var(--faint)', cursor: 'default'
         }}
       >
         ✕

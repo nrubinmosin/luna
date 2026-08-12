@@ -41,6 +41,9 @@ importers:
       react-dom:
         specifier: ^19.2.0
         version: 19.2.8(react@19.2.8)
+      xp.css:
+        specifier: ^0.2.6
+        version: 0.2.6
       zustand:
         specifier: ^5.0.8
         version: 5.0.14(@types/react@19.2.18)(react@19.2.8)
@@ -784,6 +787,9 @@ packages:
       yaml:
         optional: true
 
+  xp.css@0.2.6:
+    resolution: {integrity: sha512-v0qUB4wOvyXIMLNid5bIpm+0n5aL4i8wE5dqJH8LNVxE04PxUUxjwf2rNzengegUIK03XC4vbfLVCPAfMLtuqA==}
+
   yallist@3.1.1:
     resolution: {integrity: sha512-a4UGQaWPH59mOXUYnAG2ewncQS4i4F43Tv3JoAM+s2VDAmS9NsK8GpDMLrCHPksFT7h3K6TOoUNn2pb7RoXx4g==}
 
@@ -1374,6 +1380,8 @@ snapshots:
       tinyglobby: 0.2.17
     optionalDependencies:
       fsevents: 2.3.3
+
+  xp.css@0.2.6: {}
 
   yallist@3.1.1: {}
 

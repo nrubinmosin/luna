@@ -11,26 +11,27 @@ import { folderTrusted, pickFolder, trustFolder } from '../../ipc/commands';
 
 const BROWSE = '__browse';
 
-const segWrap: CSSProperties = { display: 'flex', gap: 3, padding: 3, background: 'var(--chip)', borderRadius: 9 };
+const segWrap: CSSProperties = { display: 'flex', gap: 2, padding: 2, background: 'var(--chip)', borderRadius: 2 };
 
-function Segmented<T extends string>({ items, value, onPick, height = 28 }: {
+function Segmented<T extends string>({ items, value, onPick, height = 24 }: {
   items: readonly T[];
   value: T;
   onPick: (v: T) => void;
   height?: number;
 }) {
   return (
-    <div style={segWrap}>
+    <div className="xp-sunken" style={segWrap}>
       {items.map(item => (
         <div
           key={item}
           onClick={() => onPick(item)}
+          className={value !== item ? 'hover-bg' : undefined}
           style={{
-            flex: 1, height, borderRadius: 6, display: 'grid', placeItems: 'center', fontSize: 13,
-            fontWeight: 500, cursor: 'default', whiteSpace: 'nowrap',
+            flex: 1, height, borderRadius: 2, display: 'grid', placeItems: 'center', fontSize: 12,
+            fontWeight: 600, cursor: 'default', whiteSpace: 'nowrap',
             background: value === item ? 'var(--bg)' : 'transparent',
             color: value === item ? 'var(--fg)' : 'var(--dim)',
-            boxShadow: value === item ? '0 1px 2px oklch(.3 .04 160 / .18)' : 'none'
+            boxShadow: value === item ? 'var(--border-sunken-outer), var(--border-sunken-inner)' : 'none'
           }}
         >
           {item}
@@ -129,23 +130,24 @@ export function NewChatDialog() {
     onClose();
   };
 
-  const labelStyle: CSSProperties = { fontSize: 12, color: 'var(--dim)', marginBottom: 5 };
+  const labelStyle: CSSProperties = { fontSize: 11.5, color: 'var(--dim)', marginBottom: 4, fontWeight: 600 };
 
   return (
-    <div style={{ position: 'fixed', inset: 0, background: 'oklch(.2 .03 160 / .3)', backdropFilter: 'blur(2px)', display: 'grid', placeItems: 'center', zIndex: 60 }}>
-      <div style={{ width: 500, background: 'var(--bg)', border: '1px solid var(--line)', borderRadius: 14, boxShadow: 'var(--shadow)', overflow: 'hidden' }}>
-        <div style={{ padding: '16px 18px 12px', borderBottom: '1px solid var(--line)', background: 'var(--panel)' }}>
-          <div style={{ fontSize: 16.5, fontWeight: 640 }}>New chat</div>
-          <div style={{ fontSize: 12.5, color: 'var(--faint)', marginTop: 2 }}>Model, effort and permission mode can be changed later</div>
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.32)', backdropFilter: 'blur(1px)', display: 'grid', placeItems: 'center', zIndex: 60 }}>
+      <div className="xp-raised" style={{ width: 480, background: 'var(--bg)', borderRadius: 3, boxShadow: 'var(--shadow), var(--border-raised-outer), var(--border-raised-inner)', overflow: 'hidden' }}>
+        <div className="xp-titlebar" style={{ height: 27, display: 'flex', alignItems: 'center', padding: '0 4px 0 9px', fontSize: 12.5, fontWeight: 700 }}>
+          <span style={{ flex: 1 }}>New chat</span>
+          <span onClick={onClose} className="hover-bg" style={{ width: 18, height: 18, borderRadius: 2, display: 'grid', placeItems: 'center', fontSize: 11, color: '#fff', cursor: 'default' }}>✕</span>
         </div>
+        <div style={{ padding: '5px 18px 2px', fontSize: 11, color: 'var(--faint)' }}>Model, effort and permission mode can be changed later</div>
 
-        <div style={{ padding: '16px 18px', display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <div style={{ padding: '10px 18px 16px', display: 'flex', flexDirection: 'column', gap: 12 }}>
           <div>
             <div style={labelStyle}>Folder</div>
             <select
               value={folder}
               onChange={e => void onFolderChange(e.target.value)}
-              style={{ width: '100%', height: 34, padding: '0 8px', border: '1px solid var(--line)', borderRadius: 8, background: 'var(--panel)', color: 'var(--fg)', font: 'inherit', fontSize: 13.5, outline: 'none' }}
+              style={{ width: '100%' }}
             >
               {folderOptions.length === 0 && <option value="">— pick a folder —</option>}
               {folderOptions.map(f => (
@@ -159,7 +161,7 @@ export function NewChatDialog() {
             {!trusted && effectiveFolder && (
               <div
                 style={{
-                  marginTop: 7, padding: '7px 9px', borderRadius: 8, fontSize: 11.5, lineHeight: 1.45,
+                  marginTop: 7, padding: '7px 9px', borderRadius: 2, fontSize: 11.5, lineHeight: 1.45,
                   border: `1px solid ${ACCENT}`, background: tint(10, 'transparent'), color: 'var(--dim)'
                 }}
               >
@@ -192,7 +194,7 @@ export function NewChatDialog() {
               <select
                 value={account}
                 onChange={e => setAccount(e.target.value)}
-                style={{ width: '100%', height: 34, padding: '0 6px', border: '1px solid var(--line)', borderRadius: 8, background: 'var(--panel)', color: 'var(--fg)', font: 'inherit', fontSize: 13.5, outline: 'none' }}
+                style={{ width: '100%' }}
               >
                 {accounts.length === 0 && <option value="">— add an account first —</option>}
                 {accounts.map(a => (
@@ -200,52 +202,51 @@ export function NewChatDialog() {
                 ))}
               </select>
             </div>
-            <div style={{ width: 170, flex: 'none' }}>
+            <div style={{ width: 150, flex: 'none' }}>
               <div style={labelStyle}>Isolation</div>
               <div
                 onClick={() => setWorktree(w => !w)}
                 title="Run the session in an isolated git worktree"
-                style={{
-                  display: 'flex', alignItems: 'center', gap: 8, height: 34, padding: '0 9px',
-                  border: `1px solid ${worktree ? ACCENT : 'var(--line)'}`, borderRadius: 8, cursor: 'default',
-                  background: worktree ? tint(11, 'transparent') : 'transparent'
-                }}
+                style={{ display: 'flex', alignItems: 'center', gap: 7, height: 21, cursor: 'default' }}
               >
-                <span
-                  style={{
-                    width: 14, height: 14, borderRadius: 4, flex: 'none', display: 'grid', placeItems: 'center',
-                    border: `1.5px solid ${worktree ? ACCENT : 'var(--faint)'}`,
-                    background: worktree ? ACCENT : 'transparent',
-                    color: 'oklch(.99 .01 160)', fontSize: 11, lineHeight: 1
-                  }}
-                >
-                  {worktree ? '✓' : ''}
-                </span>
-                <span style={{ fontSize: 13.5, fontWeight: 500, whiteSpace: 'nowrap' }}>Git worktree</span>
+                <input
+                  type="checkbox"
+                  id="worktree-toggle"
+                  checked={worktree}
+                  onChange={() => setWorktree(w => !w)}
+                  onClick={e => e.stopPropagation()}
+                />
+                <label htmlFor="worktree-toggle" style={{ fontSize: 12.5, fontWeight: 500, whiteSpace: 'nowrap', cursor: 'default' }}>
+                  Git worktree
+                </label>
               </div>
             </div>
           </div>
 
           <div>
             <div style={labelStyle}>Permission mode</div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
               {(Object.keys(PERM_HINTS) as PermMode[]).map(p => {
                 const on = perm === p;
+                const id = `perm-${p}`;
                 return (
                   <div
                     key={p}
                     onClick={() => setPerm(p)}
-                    style={{
-                      display: 'flex', alignItems: 'center', gap: 9, padding: '7px 9px',
-                      border: `1px solid ${on ? ACCENT : 'var(--line)'}`, borderRadius: 8, cursor: 'default',
-                      background: on ? tint(11, 'transparent') : 'transparent'
-                    }}
+                    style={{ display: 'flex', alignItems: 'center', gap: 9, padding: '2px 2px', cursor: 'default' }}
                   >
-                    <span style={{ width: 13, height: 13, borderRadius: '50%', border: `1.5px solid ${on ? ACCENT : 'var(--faint)'}`, display: 'grid', placeItems: 'center', flex: 'none' }}>
-                      <span style={{ width: 7, height: 7, borderRadius: '50%', background: on ? ACCENT : 'transparent' }} />
-                    </span>
-                    <span style={{ fontSize: 13.5, fontWeight: 500, whiteSpace: 'nowrap' }}>{p}</span>
-                    <span style={{ fontSize: 12, color: 'var(--faint)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{PERM_HINTS[p]}</span>
+                    <input
+                      type="radio"
+                      id={id}
+                      name="perm-mode"
+                      checked={on}
+                      onChange={() => setPerm(p)}
+                      onClick={e => e.stopPropagation()}
+                    />
+                    <label htmlFor={id} style={{ fontSize: 12.5, fontWeight: 600, whiteSpace: 'nowrap', cursor: 'default' }}>
+                      {p}
+                    </label>
+                    <span style={{ fontSize: 11, color: 'var(--faint)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{PERM_HINTS[p]}</span>
                   </div>
                 );
               })}
@@ -253,11 +254,11 @@ export function NewChatDialog() {
           </div>
         </div>
 
-        <div style={{ padding: '12px 18px', borderTop: '1px solid var(--line)', display: 'flex', justifyContent: 'flex-end', gap: 8, background: 'var(--panel)' }}>
+        <div style={{ padding: '10px 16px', borderTop: '1px solid var(--line)', display: 'flex', justifyContent: 'flex-end', gap: 8, background: 'var(--panel)' }}>
           <div
             onClick={onClose}
-            className="hover-bg"
-            style={{ height: 31, padding: '0 14px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--bg)', display: 'flex', alignItems: 'center', fontSize: 13.5, cursor: 'default' }}
+            className="hover-bg xp-raised"
+            style={{ height: 26, padding: '0 13px', borderRadius: 2, border: '1px solid var(--window-frame)', background: 'var(--panel)', display: 'flex', alignItems: 'center', fontSize: 12.5, cursor: 'default' }}
           >
             Cancel
           </div>
@@ -265,8 +266,9 @@ export function NewChatDialog() {
             onClick={() => void create()}
             className="hover-bright"
             style={{
-              height: 31, padding: '0 16px', borderRadius: 8, background: 'var(--accent)', color: 'oklch(.99 .01 160)',
-              display: 'flex', alignItems: 'center', fontSize: 13.5, fontWeight: 590, cursor: 'default',
+              height: 26, padding: '0 15px', borderRadius: 2, background: 'var(--accent)', color: '#fff',
+              border: '1px solid var(--window-frame)', boxShadow: 'inset -1px -1px rgba(0,0,0,.5), inset 1px 1px rgba(255,255,255,.55)',
+              display: 'flex', alignItems: 'center', fontSize: 12.5, fontWeight: 700, cursor: 'default',
               opacity: canCreate && !creating ? 1 : 0.5
             }}
           >
