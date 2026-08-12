@@ -43,8 +43,8 @@ export const themeFor = (isDark: boolean) =>
         brightBlue: '#a5d6ff', brightMagenta: '#e2c5ff', brightCyan: '#9df0e4', brightWhite: '#ffffff'
       }
     : {
-        background: '#f7fcf9', foreground: '#1e2b26', cursor: '#0f7a63',
-        cursorAccent: '#f7fcf9', selectionBackground: '#bfe0d2', selectionForeground: '#10201a',
+        background: '#f4faf6', foreground: '#16211c', cursor: '#0b6b56',
+        cursorAccent: '#f4faf6', selectionBackground: '#b6dcca', selectionForeground: '#0b1712',
         black: '#25302c', red: '#c0392b', green: '#1a7f4b', yellow: '#8a6a12',
         blue: '#1c5fa8', magenta: '#7d3ca8', cyan: '#0f736e', white: '#c8d6d0',
         brightBlack: '#5c6f68', brightRed: '#e04b3a', brightGreen: '#1fa460', brightYellow: '#a9820f',
@@ -161,7 +161,11 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
             useChats.getState();
           const fresh = findChat(chat.id);
           if (!fresh) return;
-          if (meta.name && !fresh.nameCustom) setName(chat.id, meta.name);
+          // nameSource "derived" just echoes the cwd folder — for a worktree
+          // session that is a random codename, not a title. Wait for the CLI's
+          // own AI-generated name instead of showing the directory.
+          const titled = meta.nameSource === 'auto' || meta.nameSource === 'user';
+          if (meta.name && titled && !fresh.nameCustom) setName(chat.id, meta.name);
           const next = mapStatus(meta.status);
           if (next === 'waiting' && fresh.status !== 'waiting') {
             void notifyWaiting(fresh.name);

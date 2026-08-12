@@ -4,15 +4,15 @@ import { STATUS } from '../../shared/ui/status';
 import { tint } from '../../shared/lib/format';
 import { useChats } from './chats.store';
 import { usePanes } from '../panes/panes.store';
-import { clearMedia, killSession, removeWorktree } from '../../ipc/commands';
+import { useAccounts } from '../accounts/accounts.store';
+import { deleteSession } from '../../ipc/commands';
 
 export function ChatRow({ chat }: { chat: Chat }) {
   const active = useChats(s => s.active === chat.id);
   const deleteChat = useChats(s => s.deleteChat);
   const setActive = useChats(s => s.setActive);
-  const paneIndex = usePanes(s => s.panes.indexOf(chat.id));
   const dragging = usePanes(s => s.drag === chat.id);
-  const { setDrag, setOver, evictChat } = usePanes.getState();
+  const { setDrag, setOver, evictChat, setSpot } = usePanes.getState();
   const st = STATUS[chat.status];
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
@@ -37,6 +37,8 @@ export function ChatRow({ chat }: { chat: Chat }) {
         setOver(-1);
       }}
       onClick={() => setActive(chat.id)}
+      onMouseEnter={() => setSpot(chat.id)}
+      onMouseLeave={() => setSpot(null)}
       title="Drag into a pane"
       className="hover-bg"
       style={{
@@ -46,7 +48,10 @@ export function ChatRow({ chat }: { chat: Chat }) {
         opacity: dragging ? 0.45 : 1
       }}
     >
-      <span style={{ width: 7, height: 7, borderRadius: '50%', flex: 'none', background: st.color, animation: st.anim }} />
+      <span
+        title={st.label}
+        style={{ width: 8, height: 8, borderRadius: '50%', flex: 'none', background: st.color, animation: st.anim }}
+      />
       {editing ? (
         <input
           autoFocus
@@ -76,24 +81,28 @@ export function ChatRow({ chat }: { chat: Chat }) {
           {chat.name}
         </span>
       )}
-      <span style={{ fontSize: 11.5, color: 'var(--faint)', flex: 'none', whiteSpace: 'nowrap' }}>{st.label}</span>
-      <span style={{ fontSize: 10, color: 'var(--accent)', flex: 'none', opacity: paneIndex >= 0 ? 1 : 0 }}>
-        ◱{paneIndex >= 0 ? paneIndex + 1 : ''}
-      </span>
       <span
         onClick={e => {
           e.stopPropagation();
           const folder = useChats.getState().folderOf(chat.id);
-          const wt = chat.worktreePath;
-          void killSession(chat.id).then(() => {
-            // remove_worktree retries while the killed process releases locks
-            if (folder && wt) removeWorktree(folder.path, wt).catch(() => {});
-            clearMedia(chat.id).catch(() => {});
-          });
+          const accountPath =
+            useAccounts.getState().accounts.find(a => a.name === chat.account)?.path ?? '';
+          if (folder) {
+            // One command kills the process tree and clears worktree, branch
+            // and attachments — it resolves the worktree itself, so deleting a
+            // chat seconds after creating it no longer orphans one.
+            void deleteSession(chat.id, folder.path, accountPath, chat.worktreePath ?? null).catch(
+              e => console.warn('[llm-desktop] delete failed', e)
+            );
+          }
           evictChat(chat.id);
           deleteChat(chat.id);
         }}
-        title="Delete chat (removes its worktree)"
+        title={
+          chat.worktree
+            ? 'Delete chat — also removes its worktree and branch'
+            : 'Delete chat'
+        }
         className="hover-danger"
         style={{
           width: 18, height: 18, flex: 'none', borderRadius: 5, display: 'grid',

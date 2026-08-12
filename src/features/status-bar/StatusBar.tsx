@@ -83,9 +83,9 @@ export function StatusBar() {
               <div
                 key={k}
                 title={`${full}: ${Math.round(acc.limits[k] * 100)}% · resets in ${acc.resets[k]}`}
-                style={{ width: 34, height: 4, borderRadius: 2, background: 'var(--chip)', overflow: 'hidden', flex: 'none' }}
+                style={{ width: 40, height: 6, borderRadius: 3, background: 'var(--track)', border: '1px solid var(--line)', overflow: 'hidden', flex: 'none' }}
               >
-                <div style={{ height: '100%', borderRadius: 2, width: `${Math.round(acc.limits[k] * 100)}%`, background: limitColor(acc.limits[k]) }} />
+                <div style={{ height: '100%', borderRadius: 3, width: `${Math.round(acc.limits[k] * 100)}%`, background: limitColor(acc.limits[k]) }} />
               </div>
             ))}
           </div>

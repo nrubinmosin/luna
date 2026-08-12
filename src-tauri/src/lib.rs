@@ -79,9 +79,12 @@ pub fn run() {
             pty::kill_session,
             pty::session_alive,
             pty::session_meta,
+            pty::delete_session,
             trust::folder_trusted,
             trust::trust_folder,
             worktree::remove_worktree,
+            worktree::orphan_worktrees,
+            worktree::remove_orphan_worktrees,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -72,6 +72,7 @@ export interface SessionMetaDto {
   status: string | null;
   cwd: string | null;
   sessionId: string | null;
+  nameSource: string | null;
   context: number | null;
   contextTokens: number | null;
 }
@@ -81,6 +82,29 @@ export const sessionMeta = (id: string, accountPath: string) =>
 
 export const removeWorktree = (folder: string, worktreePath: string) =>
   call<void>('remove_worktree', { folder, worktreePath });
+
+/**
+ * Kills the session and cleans up after it in one call: worktree, its branch
+ * and the chat's attachments. Resolves the worktree itself, so it works even
+ * when the UI never saw the path. Returns the worktree it removed, if any.
+ */
+export const deleteSession = (
+  chatId: string,
+  folder: string,
+  accountPath: string,
+  worktreePath: string | null
+) => call<string | null>('delete_session', { id: chatId, folder, accountPath, worktreePath }, null);
+
+/**
+ * Worktree dirs under the folder that no live chat is using. `accountPaths`
+ * lets the backend also spare any cwd a running CLI session sits in, which
+ * covers sessions whose path the UI has not learned yet.
+ */
+export const orphanWorktrees = (folder: string, inUse: string[], accountPaths: string[]) =>
+  call<string[]>('orphan_worktrees', { folder, inUse, accountPaths }, []);
+
+export const removeOrphanWorktrees = (folder: string, inUse: string[], accountPaths: string[]) =>
+  call<number>('remove_orphan_worktrees', { folder, inUse, accountPaths }, 0);
 
 /** Whether this account already accepted Claude Code's trust prompt for the folder. */
 export const folderTrusted = (accountPath: string, folder: string) =>

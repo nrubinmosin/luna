@@ -2,12 +2,13 @@ import type { CSSProperties } from 'react';
 import { STATUS } from '../../shared/ui/status';
 import { ACCENT, limitColor, tail2, tint } from '../../shared/lib/format';
 import { useChats } from '../chats/chats.store';
-import { usePanes } from './panes.store';
+import { currentSlots, usePanes } from './panes.store';
 import { Terminal } from './Terminal';
 
-export function Pane({ index, area }: { index: number; area: string }) {
-  const chatId = usePanes(s => s.panes[index]);
+export function Pane({ index }: { index: number }) {
+  const chatId = usePanes(s => currentSlots(s)[index]);
   const over = usePanes(s => s.over === index);
+  const spotted = usePanes(s => !!s.spot && s.spot === currentSlots(s)[index]);
   const layout = usePanes(s => s.layout);
   const { setOver, dropChat, closePane } = usePanes.getState();
   const chat = useChats(s => s.findChat(chatId));
@@ -44,10 +45,15 @@ export function Pane({ index, area }: { index: number; area: string }) {
         else setOver(-1);
       }}
       style={{
-        gridArea: area, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column',
-        background: 'var(--bg)', border: `1px solid ${over ? ACCENT : 'var(--line)'}`,
-        borderRadius: 11, overflow: 'hidden',
-        boxShadow: over ? `0 0 0 3px ${tint(28, 'transparent')}` : '0 1px 2px oklch(.4 .04 160 / .07)'
+        flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column',
+        background: 'var(--bg)',
+        border: `1px solid ${over || spotted ? ACCENT : 'var(--line)'}`,
+        borderRadius: 11, overflow: 'hidden', transition: 'box-shadow .12s, border-color .12s',
+        boxShadow: over
+          ? `0 0 0 3px ${tint(28, 'transparent')}`
+          : spotted
+            ? `0 0 0 3px ${tint(20, 'transparent')}`
+            : '0 1px 2px oklch(.4 .04 160 / .07)'
       }}
     >
       {chat && folder ? (
@@ -59,11 +65,13 @@ export function Pane({ index, area }: { index: number; area: string }) {
               borderBottom: '1px solid var(--line)'
             }}
           >
-            <span style={{ width: 7, height: 7, borderRadius: '50%', flex: 'none', background: st!.color, animation: st!.anim }} />
+            <span
+              title={st!.label}
+              style={{ width: 8, height: 8, borderRadius: '50%', flex: 'none', background: st!.color, animation: st!.anim }}
+            />
             <span style={{ flex: '1 1 auto', minWidth: 60, fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {chat.name}
             </span>
-            <span style={{ fontSize: 11.5, color: 'var(--faint)', flex: 'none', whiteSpace: 'nowrap' }}>{st!.label}</span>
             <span
               onClick={() => closePane(index)}
               className="hover-bg"
@@ -91,7 +99,7 @@ export function Pane({ index, area }: { index: number; area: string }) {
               title={ctxTitle}
               style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '2px 6px 2px 5px', borderRadius: 5, background: 'var(--chip)', whiteSpace: 'nowrap' }}
             >
-              <span style={{ width: 22, height: 4, borderRadius: 2, background: 'var(--hover)', overflow: 'hidden', flex: 'none' }}>
+              <span style={{ width: 26, height: 5, borderRadius: 3, background: 'var(--track)', overflow: 'hidden', flex: 'none' }}>
                 <span style={{ display: 'block', height: '100%', borderRadius: 2, width: `${ctx}%`, background: limitColor(chat.context ?? 0) }} />
               </span>
               <span style={{ fontSize: 11.5, color: limitColor(chat.context ?? 0), fontVariantNumeric: 'tabular-nums' }}>{ctx}%</span>

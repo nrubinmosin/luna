@@ -106,7 +106,7 @@ export function AccountsPanel() {
             {LK.map(([k, full]) => (
               <div key={k} style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 6 }}>
                 <span style={{ fontSize: 12, color: 'var(--dim)', width: 44, whiteSpace: 'nowrap' }}>{full}</span>
-                <div style={{ flex: 1, height: 5, borderRadius: 3, background: 'var(--chip)', overflow: 'hidden' }}>
+                <div style={{ flex: 1, height: 7, borderRadius: 4, background: 'var(--track)', border: '1px solid var(--line)', overflow: 'hidden' }}>
                   <div style={{ height: '100%', borderRadius: 3, width: `${Math.round(acc.limits[k] * 100)}%`, background: limitColor(acc.limits[k]) }} />
                 </div>
                 <span style={{ fontSize: 12, color: 'var(--dim)', width: 34, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>

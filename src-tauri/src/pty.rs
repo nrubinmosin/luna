@@ -2,6 +2,7 @@ use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, PtySize};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::io::{Read, Write};
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, State};
@@ -185,13 +186,71 @@ pub fn resize_session(state: PtyState, id: String, cols: u16, rows: u16) -> Resu
         .map_err(|e| e.to_string())
 }
 
+// The pty child is `claude.exe`; everything it spawned (node, MCP servers)
+// is a grandchild and survives a plain kill. Sweep the tree first, then kill
+// the child directly as a backstop.
+fn kill_tree(pid: Option<u32>) {
+    #[cfg(windows)]
+    if let Some(pid) = pid {
+        use std::os::windows::process::CommandExt;
+        let _ = Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+            .output();
+    }
+    #[cfg(not(windows))]
+    let _ = pid;
+}
+
 #[tauri::command]
 pub fn kill_session(state: PtyState, id: String) -> Result<(), String> {
     let mut sessions = state.sessions.lock().unwrap();
     if let Some(mut s) = sessions.remove(&id) {
+        kill_tree(s.pid);
         let _ = s.killer.kill();
     }
     Ok(())
+}
+
+/// Tears a chat down in one shot: resolve where the session actually lives,
+/// kill it, drop its worktree (and the branch the CLI made for it) and its
+/// attachments. Doing this in one command removes the race the UI had — it
+/// used to rely on a 4s poll having already reported the worktree path.
+#[tauri::command]
+pub fn delete_session(
+    state: PtyState,
+    id: String,
+    folder: String,
+    account_path: String,
+    worktree_path: Option<String>,
+) -> Result<Option<String>, String> {
+    // Resolve before killing: once the process is gone its registry entry goes too.
+    let resolved = worktree_path.filter(|p| !p.is_empty()).or_else(|| {
+        let (pid, cwd, spawned_at_ms) = {
+            let sessions = state.sessions.lock().unwrap();
+            let s = sessions.get(&id)?;
+            (s.pid, s.cwd.clone(), s.spawned_at_ms)
+        };
+        let dir = std::path::Path::new(&account_path).join("sessions");
+        let v = registry_entry(&dir, pid, &cwd, spawned_at_ms)?;
+        let scwd = v["cwd"].as_str()?.to_string();
+        crate::worktree::is_worktree_of(&folder, &scwd).then_some(scwd)
+    });
+
+    {
+        let mut sessions = state.sessions.lock().unwrap();
+        if let Some(mut s) = sessions.remove(&id) {
+            kill_tree(s.pid);
+            let _ = s.killer.kill();
+        }
+    }
+
+    let _ = crate::media::clear_media(id);
+
+    match &resolved {
+        Some(wt) => crate::worktree::remove_worktree(folder, wt.clone()).map(|_| resolved.clone()),
+        None => Ok(None),
+    }
 }
 
 #[derive(Serialize, Default)]
@@ -201,6 +260,9 @@ pub struct SessionMeta {
     pub status: Option<String>,
     pub cwd: Option<String>,
     pub session_id: Option<String>,
+    /// "auto" (AI-titled), "user" (renamed by hand) or "derived" (just the cwd
+    /// folder name, which for a worktree session is meaningless noise).
+    pub name_source: Option<String>,
     pub context: Option<f64>,
     pub context_tokens: Option<f64>,
 }
@@ -286,6 +348,7 @@ pub fn session_meta(state: PtyState, id: String, account_path: String) -> Result
             status: v["status"].as_str().map(str::to_owned),
             cwd: v["cwd"].as_str().map(str::to_owned),
             session_id: v["sessionId"].as_str().map(str::to_owned),
+            name_source: v["nameSource"].as_str().map(str::to_owned),
             context: None,
             context_tokens: None,
         };
@@ -296,18 +359,29 @@ pub fn session_meta(state: PtyState, id: String, account_path: String) -> Result
         m
     };
 
+    registry_entry(&dir, pid, &cwd, spawned_at_ms)
+        .map(|v| extract(&v))
+        .ok_or_else(|| "no session file".into())
+}
+
+/// Finds the CLI's registry entry for a pty session, by pid when that matches
+/// and otherwise by cwd + start time (launcher shims give the pty a different
+/// pid than the CLI process that writes the registry).
+fn registry_entry(
+    dir: &std::path::Path,
+    pid: Option<u32>,
+    cwd: &str,
+    spawned_at_ms: u128,
+) -> Option<serde_json::Value> {
     if let Some(pid) = pid {
-        let f = dir.join(format!("{pid}.json"));
-        if let Some(v) = parse_session_file(&f) {
-            return Ok(extract(&v));
+        if let Some(v) = parse_session_file(&dir.join(format!("{pid}.json"))) {
+            return Some(v);
         }
     }
 
-    // The CLI process pid may differ from the pty child (launcher shims);
-    // fall back to matching by cwd (chat folder or its worktree) + start time.
-    let want = norm_path(&cwd);
+    let want = norm_path(cwd);
     let mut best: Option<(u64, serde_json::Value)> = None;
-    for entry in std::fs::read_dir(&dir).map_err(|e| e.to_string())?.flatten() {
+    for entry in std::fs::read_dir(dir).ok()?.flatten() {
         if let Some(v) = parse_session_file(&entry.path()) {
             let scwd = norm_path(v["cwd"].as_str().unwrap_or(""));
             let started = v["startedAt"].as_u64().unwrap_or(0);
@@ -319,7 +393,7 @@ pub fn session_meta(state: PtyState, id: String, account_path: String) -> Result
             }
         }
     }
-    best.map(|(_, v)| extract(&v)).ok_or_else(|| "no session file".into())
+    best.map(|(_, v)| v)
 }
 
 #[tauri::command]

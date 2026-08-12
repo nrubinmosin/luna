@@ -2,16 +2,19 @@
 body { margin: 0; overflow: hidden; }
 
 [data-app] {
-  --bg: oklch(.993 .008 140);
-  --panel: oklch(.963 .016 145);
-  --sidebar: oklch(.935 .022 148);
-  --fg: oklch(.26 .03 160);
-  --dim: oklch(.51 .03 160);
-  --faint: oklch(.64 .03 158);
-  --line: oklch(.855 .025 150);
-  --hover: oklch(.9 .035 150);
-  --chip: oklch(.925 .028 150);
-  --term: #f7fcf9;
+  --bg: oklch(.975 .011 145);
+  --panel: oklch(.937 .019 148);
+  --sidebar: oklch(.9 .027 150);
+  --fg: oklch(.21 .036 165);
+  --dim: oklch(.41 .042 162);
+  --faint: oklch(.535 .042 158);
+  --line: oklch(.78 .032 150);
+  --hover: oklch(.855 .042 150);
+  --chip: oklch(.868 .036 150);
+  /* Progress tracks need to read against --sidebar and --chip alike, so they
+     get their own step rather than reusing the chip fill. */
+  --track: oklch(.755 .042 152);
+  --term: #f4faf6;
   --shadow: 0 14px 44px oklch(.4 .05 150 / .18);
 }
 [data-app][data-theme="dark"] {
@@ -24,6 +27,7 @@ body { margin: 0; overflow: hidden; }
   --line: oklch(.375 .03 190);
   --hover: oklch(.345 .035 190);
   --chip: oklch(.335 .035 190);
+  --track: oklch(.4 .038 192);
   --term: #101a1d;
   --shadow: 0 14px 44px oklch(.1 .04 200 / .55);
 }
