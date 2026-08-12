@@ -101,6 +101,10 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
       lineHeight: 1.35,
       allowTransparency: false,
       cursorBlink: true,
+      // The CLI runs fullscreen, i.e. on the alternate screen, which has no
+      // history to scroll through. Keeping a scrollback buffer only produced a
+      // scrollbar and a viewport that could sit parked above the prompt.
+      scrollback: 0,
       // Nudge unreadable theme-vs-content combinations without flattening colours.
       minimumContrastRatio: 3,
       theme: themeFor(dark())
@@ -189,7 +193,13 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
       // the buffer happened to end on — often just the prompt box, with the
       // conversation above it missing until you type. Resizing to a different
       // size and straight back forces a full repaint.
+      // The replayed bytes are a tail: the escape that entered the alternate
+      // screen sits at the very start of the session and has long since been
+      // trimmed by the scrollback cap, so replaying leaves the terminal on the
+      // normal screen with the CLI's UI scattered through its history. Reset
+      // first and let the repaint below redraw the real thing.
       term.write(backlog);
+      term.reset();
       void resizeSession(chat.id, term.cols, Math.max(1, term.rows - 1));
       repaintTimer = setTimeout(() => {
         if (disposed) return;
