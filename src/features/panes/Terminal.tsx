@@ -127,6 +127,11 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
       safely(() => fit.fit());
     };
     refit();
+    // The first fit runs before the stylesheet and webfont have had their say,
+    // so the height it measures is not the final one. Measure again once the
+    // browser has laid the pane out for real.
+    requestAnimationFrame(refit);
+    void document.fonts?.ready.then(refit).catch(() => {});
 
     if (!accountPath) {
       term.write(
@@ -185,10 +190,16 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
       // conversation above it missing until you type. Resizing to a different
       // size and straight back forces a full repaint.
       term.write(backlog);
-      const { cols, rows } = term;
-      void resizeSession(chat.id, cols, Math.max(1, rows - 1));
+      void resizeSession(chat.id, term.cols, Math.max(1, term.rows - 1));
       repaintTimer = setTimeout(() => {
-        if (!disposed) void resizeSession(chat.id, cols, rows);
+        if (disposed) return;
+        // Re-read the size instead of restoring the one captured above: the
+        // layout can settle within these 60ms (the metadata row rewrapping is
+        // enough), and sending a stale row count leaves the pty believing the
+        // viewport is taller than it is — which pushes the CLI's input box
+        // below the bottom of the pane until the pane is reopened.
+        refit();
+        void resizeSession(chat.id, term.cols, term.rows);
       }, 60);
     })();
 
