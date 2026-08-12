@@ -14,6 +14,7 @@ export interface Chat {
   effort: Effort;
   perm: PermMode;
   context: number; // 0..1
+  contextTokens?: number | null;
   account: string;
   worktree: boolean;
   worktreePath?: string | null;

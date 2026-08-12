@@ -1,6 +1,8 @@
 mod accounts;
 mod limits;
+mod media;
 mod pty;
+mod trust;
 mod worktree;
 
 use tauri::{
@@ -69,12 +71,16 @@ pub fn run() {
             accounts::create_account,
             accounts::delete_account,
             limits::account_limits,
+            media::save_media,
+            media::clear_media,
             pty::ensure_session,
             pty::write_session,
             pty::resize_session,
             pty::kill_session,
             pty::session_alive,
             pty::session_meta,
+            trust::folder_trusted,
+            trust::trust_folder,
             worktree::remove_worktree,
         ])
         .run(tauri::generate_context!())

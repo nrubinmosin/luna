@@ -53,7 +53,7 @@ function LayoutIcon({ n }: { n: Layout }) {
 export function App() {
   const [pref, setPref] = useState<ThemePref>(() => (localStorage.getItem('llm-desktop.theme') as ThemePref) || 'system');
   const [sysDark, setSysDark] = useState(() => window.matchMedia('(prefers-color-scheme: dark)').matches);
-  const [sidebar, setSidebar] = useState(260);
+  const [sidebar, setSidebar] = useState(280);
   const [resizing, setResizing] = useState(false);
   const modal = useNewChat(s => s.open);
   const layout = usePanes(s => s.layout);
@@ -88,7 +88,7 @@ export function App() {
   const startResize = (e: React.MouseEvent) => {
     e.preventDefault();
     const x0 = e.clientX, w0 = sidebarRef.current;
-    const onMove = (ev: MouseEvent) => setSidebar(Math.min(420, Math.max(200, w0 + ev.clientX - x0)));
+    const onMove = (ev: MouseEvent) => setSidebar(Math.min(480, Math.max(220, w0 + ev.clientX - x0)));
     const onUp = () => {
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
@@ -114,7 +114,7 @@ export function App() {
         ['--accent' as string]: ACCENT,
         height: '100vh', display: 'flex', background: 'var(--bg)', color: 'var(--fg)',
         fontFamily: "-apple-system, 'SF Pro Text', 'Segoe UI', 'Helvetica Neue', Helvetica, sans-serif",
-        fontSize: 13, WebkitFontSmoothing: 'antialiased', letterSpacing: '-0.01em'
+        fontSize: 14.5, WebkitFontSmoothing: 'antialiased', letterSpacing: '-0.01em'
       }}
     >
       <div style={{ width: sidebar, flex: 'none', background: 'var(--sidebar)', borderRight: '1px solid var(--line)', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
@@ -124,19 +124,19 @@ export function App() {
               onClick={openNewChat}
               className="hover-bright"
               style={{
-                flex: 1, height: 28, borderRadius: 8, background: 'var(--accent)', color: 'oklch(.99 .01 160)',
-                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, fontSize: 12.5,
+                flex: 1, height: 31, borderRadius: 8, background: 'var(--accent)', color: 'oklch(.99 .01 160)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, fontSize: 13.5,
                 fontWeight: 590, cursor: 'default', boxShadow: '0 1px 2px oklch(.3 .06 160 / .25)'
               }}
             >
-              <span style={{ fontSize: 14, lineHeight: 1, flex: 'none' }}>+</span>
+              <span style={{ fontSize: 15.5, lineHeight: 1, flex: 'none' }}>+</span>
               <span style={{ whiteSpace: 'nowrap' }}>New chat</span>
             </div>
             <div
               onClick={() => setPref(p => (p === 'system' ? 'light' : p === 'light' ? 'dark' : 'system'))}
               title={themeTitle}
               className="hover-bg"
-              style={{ width: 30, height: 28, flex: 'none', borderRadius: 8, background: 'var(--chip)', display: 'grid', placeItems: 'center', fontSize: 13, cursor: 'default' }}
+              style={{ width: 33, height: 31, flex: 'none', borderRadius: 8, background: 'var(--chip)', display: 'grid', placeItems: 'center', fontSize: 14.5, cursor: 'default' }}
             >
               {THEMES[pref].glyph}
             </div>
@@ -149,7 +149,7 @@ export function App() {
                 onClick={() => setLayout(n)}
                 title={`${n} pane${n > 1 ? 's' : ''}`}
                 style={{
-                  flex: 1, height: 24, borderRadius: 6, display: 'grid', placeItems: 'center', cursor: 'default',
+                  flex: 1, height: 26, borderRadius: 6, display: 'grid', placeItems: 'center', cursor: 'default',
                   background: layout === n ? 'var(--bg)' : 'transparent',
                   boxShadow: layout === n ? '0 1px 2px oklch(.3 .04 160 / .18)' : 'none'
                 }}
@@ -165,7 +165,7 @@ export function App() {
 
       <div
         onMouseDown={startResize}
-        onDoubleClick={() => setSidebar(260)}
+        onDoubleClick={() => setSidebar(280)}
         title="Drag to resize · double-click to reset"
         style={{ width: 5, marginLeft: -3, marginRight: -2, flex: 'none', cursor: 'col-resize', zIndex: 20, background: resizing ? ACCENT : 'transparent' }}
       />

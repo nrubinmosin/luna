@@ -5,3 +5,4 @@ src-tauri/target/
 multi-chat/
 *.local
 .DS_Store
+.claude/worktrees/

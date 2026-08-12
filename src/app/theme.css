@@ -11,7 +11,7 @@ body { margin: 0; overflow: hidden; }
   --line: oklch(.855 .025 150);
   --hover: oklch(.9 .035 150);
   --chip: oklch(.925 .028 150);
-  --term: oklch(.985 .012 145);
+  --term: #f7fcf9;
   --shadow: 0 14px 44px oklch(.4 .05 150 / .18);
 }
 [data-app][data-theme="dark"] {
@@ -24,7 +24,7 @@ body { margin: 0; overflow: hidden; }
   --line: oklch(.375 .03 190);
   --hover: oklch(.345 .035 190);
   --chip: oklch(.335 .035 190);
-  --term: oklch(.175 .025 200);
+  --term: #101a1d;
   --shadow: 0 14px 44px oklch(.1 .04 200 / .55);
 }
 

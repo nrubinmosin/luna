@@ -10,7 +10,7 @@ export function ChatList() {
         <FolderSection key={f.id} folder={f} />
       ))}
       {folders.length === 0 && (
-        <div style={{ padding: '24px 8px', textAlign: 'center', color: 'var(--faint)', fontSize: 12 }}>
+        <div style={{ padding: '24px 8px', textAlign: 'center', color: 'var(--faint)', fontSize: 13 }}>
           No chats yet.
           <br />
           Press <span style={{ fontWeight: 600 }}>New chat</span> to start.

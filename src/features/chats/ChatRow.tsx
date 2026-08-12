@@ -4,7 +4,7 @@ import { STATUS } from '../../shared/ui/status';
 import { tint } from '../../shared/lib/format';
 import { useChats } from './chats.store';
 import { usePanes } from '../panes/panes.store';
-import { killSession, removeWorktree } from '../../ipc/commands';
+import { clearMedia, killSession, removeWorktree } from '../../ipc/commands';
 
 export function ChatRow({ chat }: { chat: Chat }) {
   const active = useChats(s => s.active === chat.id);
@@ -40,7 +40,7 @@ export function ChatRow({ chat }: { chat: Chat }) {
       title="Drag into a pane"
       className="hover-bg"
       style={{
-        display: 'flex', alignItems: 'center', gap: 8, height: 31, padding: '0 8px',
+        display: 'flex', alignItems: 'center', gap: 8, height: 34, padding: '0 8px',
         borderRadius: 7, cursor: 'grab',
         background: active ? tint(18, 'transparent') : 'transparent',
         opacity: dragging ? 0.45 : 1
@@ -60,7 +60,7 @@ export function ChatRow({ chat }: { chat: Chat }) {
           onClick={e => e.stopPropagation()}
           style={{
             flex: '1 1 auto', minWidth: 40, height: 22, padding: '0 4px', border: '1px solid var(--line)',
-            borderRadius: 5, background: 'var(--panel)', color: 'var(--fg)', font: 'inherit', fontSize: 12.5, outline: 'none'
+            borderRadius: 5, background: 'var(--panel)', color: 'var(--fg)', font: 'inherit', fontSize: 13.5, outline: 'none'
           }}
         />
       ) : (
@@ -71,13 +71,13 @@ export function ChatRow({ chat }: { chat: Chat }) {
             setEditing(true);
           }}
           title="Double-click to rename"
-          style={{ flex: '1 1 auto', minWidth: 40, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 12.5, fontWeight: 500 }}
+          style={{ flex: '1 1 auto', minWidth: 40, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 13.5, fontWeight: 500 }}
         >
           {chat.name}
         </span>
       )}
-      <span style={{ fontSize: 10.5, color: 'var(--faint)', flex: 'none', whiteSpace: 'nowrap' }}>{st.label}</span>
-      <span style={{ fontSize: 9, color: 'var(--accent)', flex: 'none', opacity: paneIndex >= 0 ? 1 : 0 }}>
+      <span style={{ fontSize: 11.5, color: 'var(--faint)', flex: 'none', whiteSpace: 'nowrap' }}>{st.label}</span>
+      <span style={{ fontSize: 10, color: 'var(--accent)', flex: 'none', opacity: paneIndex >= 0 ? 1 : 0 }}>
         ◱{paneIndex >= 0 ? paneIndex + 1 : ''}
       </span>
       <span
@@ -88,6 +88,7 @@ export function ChatRow({ chat }: { chat: Chat }) {
           void killSession(chat.id).then(() => {
             // remove_worktree retries while the killed process releases locks
             if (folder && wt) removeWorktree(folder.path, wt).catch(() => {});
+            clearMedia(chat.id).catch(() => {});
           });
           evictChat(chat.id);
           deleteChat(chat.id);
@@ -96,7 +97,7 @@ export function ChatRow({ chat }: { chat: Chat }) {
         className="hover-danger"
         style={{
           width: 18, height: 18, flex: 'none', borderRadius: 5, display: 'grid',
-          placeItems: 'center', fontSize: 11, color: 'var(--faint)', cursor: 'default'
+          placeItems: 'center', fontSize: 12, color: 'var(--faint)', cursor: 'default'
         }}
       >
         ✕

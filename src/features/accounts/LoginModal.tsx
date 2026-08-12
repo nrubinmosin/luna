@@ -6,7 +6,7 @@ import '@xterm/xterm/css/xterm.css';
 import type { Account } from '../../shared/types';
 import { ensureSession, killSession, resizeSession, writeSession } from '../../ipc/commands';
 import { onPtyExit, onPtyOutput } from '../../ipc/events';
-import { dark, themeFor } from '../panes/Terminal';
+import { dark, safely, themeFor, TERM_FONT_FAMILY, TERM_FONT_SIZE } from '../panes/Terminal';
 import { useAccounts } from './accounts.store';
 
 // Bare `claude` session inside the account's config dir: on a fresh folder it
@@ -21,27 +21,33 @@ export function LoginModal({ account }: { account: Account }) {
     if (!host) return;
 
     const term = new XTerm({
-      fontFamily: "'JetBrains Mono', ui-monospace, monospace",
-      fontSize: 11.5,
-      lineHeight: 1.25,
-      allowTransparency: true,
+      fontFamily: TERM_FONT_FAMILY,
+      fontSize: TERM_FONT_SIZE,
+      lineHeight: 1.35,
+      allowTransparency: false,
       cursorBlink: true,
+      minimumContrastRatio: 3,
       theme: themeFor(dark())
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(host);
+    let webgl: WebglAddon | null = null;
     try {
-      const webgl = new WebglAddon();
-      webgl.onContextLoss(() => webgl.dispose());
+      webgl = new WebglAddon();
+      webgl.onContextLoss(() => safely(() => webgl?.dispose()));
       term.loadAddon(webgl);
     } catch {
-      // canvas/DOM renderer fallback
+      webgl = null; // canvas/DOM renderer fallback
     }
-    fit.fit();
 
     let disposed = false;
     const unlisteners: Array<() => void> = [];
+    const refit = () => {
+      if (disposed || !host.isConnected || !host.clientWidth || !host.clientHeight) return;
+      safely(() => fit.fit());
+    };
+    refit();
 
     void (async () => {
       const un1 = await onPtyOutput(p => {
@@ -50,8 +56,12 @@ export function LoginModal({ account }: { account: Account }) {
       const un2 = await onPtyExit(p => {
         if (p.id === id) term.write('\r\n\x1b[2m[session exited — you can close this window]\x1b[0m\r\n');
       });
+      if (disposed) {
+        safely(un1);
+        safely(un2);
+        return;
+      }
       unlisteners.push(un1, un2);
-      if (disposed) return;
 
       const backlog = await ensureSession({
         chatId: id,
@@ -68,17 +78,21 @@ export function LoginModal({ account }: { account: Account }) {
     })();
 
     const dataSub = term.onData(d => void writeSession(id, d));
-    const resizeSub = term.onResize(({ cols, rows }) => void resizeSession(id, cols, rows));
-    const ro = new ResizeObserver(() => fit.fit());
+    const resizeSub = term.onResize(({ cols, rows }) => {
+      if (disposed || cols < 1 || rows < 1) return;
+      void resizeSession(id, cols, rows);
+    });
+    const ro = new ResizeObserver(refit);
     ro.observe(host);
 
     return () => {
       disposed = true;
-      ro.disconnect();
-      dataSub.dispose();
-      resizeSub.dispose();
-      unlisteners.forEach(u => u());
-      term.dispose();
+      safely(() => ro.disconnect());
+      safely(() => dataSub.dispose());
+      safely(() => resizeSub.dispose());
+      unlisteners.forEach(u => safely(u));
+      safely(() => webgl?.dispose());
+      safely(() => term.dispose());
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
@@ -91,17 +105,17 @@ export function LoginModal({ account }: { account: Account }) {
 
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'oklch(.2 .03 160 / .3)', backdropFilter: 'blur(2px)', display: 'grid', placeItems: 'center', zIndex: 70 }}>
-      <div style={{ width: 640, height: 440, background: 'var(--bg)', border: '1px solid var(--line)', borderRadius: 14, boxShadow: 'var(--shadow)', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+      <div style={{ width: 720, height: 500, background: 'var(--bg)', border: '1px solid var(--line)', borderRadius: 14, boxShadow: 'var(--shadow)', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
         <div style={{ flex: 'none', display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', borderBottom: '1px solid var(--line)', background: 'var(--panel)' }}>
-          <div style={{ fontSize: 13, fontWeight: 640 }}>Sign in — {account.name}</div>
-          <span style={{ fontSize: 11, color: 'var(--faint)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          <div style={{ fontSize: 14.5, fontWeight: 640 }}>Sign in — {account.name}</div>
+          <span style={{ fontSize: 12, color: 'var(--faint)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {account.path}
           </span>
           <span style={{ flex: 1 }} />
           <span
             onClick={close}
             className="hover-bg"
-            style={{ width: 20, height: 20, borderRadius: 5, display: 'grid', placeItems: 'center', fontSize: 12, color: 'var(--dim)', cursor: 'default' }}
+            style={{ width: 20, height: 20, borderRadius: 5, display: 'grid', placeItems: 'center', fontSize: 13, color: 'var(--dim)', cursor: 'default' }}
           >
             ✕
           </span>

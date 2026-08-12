@@ -73,6 +73,7 @@ export interface SessionMetaDto {
   cwd: string | null;
   sessionId: string | null;
   context: number | null;
+  contextTokens: number | null;
 }
 
 export const sessionMeta = (id: string, accountPath: string) =>
@@ -80,6 +81,20 @@ export const sessionMeta = (id: string, accountPath: string) =>
 
 export const removeWorktree = (folder: string, worktreePath: string) =>
   call<void>('remove_worktree', { folder, worktreePath });
+
+/** Whether this account already accepted Claude Code's trust prompt for the folder. */
+export const folderTrusted = (accountPath: string, folder: string) =>
+  call<boolean>('folder_trusted', { accountPath, folder }, true);
+
+/** Writes the same trust bit the CLI's own prompt would write. */
+export const trustFolder = (accountPath: string, folder: string) =>
+  call<void>('trust_folder', { accountPath, folder });
+
+/** Copies a pasted/dropped file into the app's media store, returns its absolute path. */
+export const saveMedia = (chatId: string, name: string, base64: string) =>
+  call<string | null>('save_media', { chatId, name, data: base64 }, null);
+
+export const clearMedia = (chatId: string) => call<void>('clear_media', { chatId });
 
 export const pickFolder = async (): Promise<string | null> => {
   if (!tauriAvailable) return null;

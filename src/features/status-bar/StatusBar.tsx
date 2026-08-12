@@ -40,7 +40,7 @@ export function StatusBar() {
   const all = folders.flatMap(f => f.chats);
   const runSummary = `${all.filter(c => c.status === 'working').length} working · ${all.filter(c => c.status === 'waiting').length} waiting`;
 
-  const room = Math.floor((dims.barW - dims.leftW - 46) / 200);
+  const room = Math.floor((dims.barW - dims.leftW - 46) / 220);
   const visible = Math.max(1, Math.min(accounts.length, room));
   const barAccounts = accounts.slice(0, visible);
   const more = accounts.length > visible ? `+${accounts.length - visible}` : '';
@@ -49,12 +49,12 @@ export function StatusBar() {
     <div
       ref={barRef}
       style={{
-        flex: 'none', height: 34, display: 'flex', alignItems: 'center', gap: 12, padding: '0 12px',
-        background: 'var(--sidebar)', borderTop: '1px solid var(--line)', fontSize: 11.5, color: 'var(--dim)', position: 'relative'
+        flex: 'none', height: 38, display: 'flex', alignItems: 'center', gap: 12, padding: '0 12px',
+        background: 'var(--sidebar)', borderTop: '1px solid var(--line)', fontSize: 12.5, color: 'var(--dim)', position: 'relative'
       }}
     >
       <div ref={leftRef} style={{ display: 'flex', alignItems: 'center', gap: 12, flex: '0 1 auto', minWidth: 0, overflow: 'hidden' }}>
-        <span style={{ fontVariantNumeric: 'tabular-nums', fontWeight: 600, color: 'var(--fg)', fontSize: 12.5, whiteSpace: 'nowrap', flex: 'none' }}>
+        <span style={{ fontVariantNumeric: 'tabular-nums', fontWeight: 600, color: 'var(--fg)', fontSize: 13.5, whiteSpace: 'nowrap', flex: 'none' }}>
           {clockTime(now)}
         </span>
         <span style={{ whiteSpace: 'nowrap', flex: 'none' }}>{clockDate(now)}</span>
@@ -76,7 +76,7 @@ export function StatusBar() {
                 background: Math.max(acc.limits.h5, acc.limits.week) >= 0.85 ? 'oklch(.63 .19 25)' : 'oklch(.64 .18 145)'
               }}
             />
-            <span style={{ fontSize: 11.5, color: 'var(--fg)', fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', flex: '0 1 auto', minWidth: 48 }}>
+            <span style={{ fontSize: 12.5, color: 'var(--fg)', fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', flex: '0 1 auto', minWidth: 48 }}>
               {acc.name.split('@')[0]}
             </span>
             {LK.map(([k, full]) => (
@@ -91,10 +91,10 @@ export function StatusBar() {
           </div>
         ))}
         {accounts.length === 0 && (
-          <span style={{ fontSize: 11.5, color: 'var(--faint)', whiteSpace: 'nowrap' }}>no accounts — click to add</span>
+          <span style={{ fontSize: 12.5, color: 'var(--faint)', whiteSpace: 'nowrap' }}>no accounts — click to add</span>
         )}
-        <span style={{ fontSize: 10.5, color: 'var(--faint)', flex: 'none', whiteSpace: 'nowrap' }}>{more}</span>
-        <span style={{ fontSize: 10, color: 'var(--faint)', flex: 'none' }}>⌃</span>
+        <span style={{ fontSize: 11.5, color: 'var(--faint)', flex: 'none', whiteSpace: 'nowrap' }}>{more}</span>
+        <span style={{ fontSize: 11, color: 'var(--faint)', flex: 'none' }}>⌃</span>
       </div>
 
       {open && <AccountsPanel />}

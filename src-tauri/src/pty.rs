@@ -202,6 +202,7 @@ pub struct SessionMeta {
     pub cwd: Option<String>,
     pub session_id: Option<String>,
     pub context: Option<f64>,
+    pub context_tokens: Option<f64>,
 }
 
 // Claude Code encodes a project cwd into a transcript folder name by replacing
@@ -215,8 +216,9 @@ fn encode_project_dir(p: &str) -> String {
 const CONTEXT_WINDOW: f64 = 200_000.0;
 
 // Free context reading: the last assistant message in the session transcript
-// carries cumulative input-side token usage.
-fn read_context_pct(account_path: &str, cwd: &str, session_id: &str) -> Option<f64> {
+// carries cumulative input-side token usage. Returns raw tokens; the fraction
+// is derived from it.
+fn read_context_tokens(account_path: &str, cwd: &str, session_id: &str) -> Option<f64> {
     use std::io::{Read, Seek, SeekFrom};
     let path = std::path::Path::new(account_path)
         .join("projects")
@@ -236,13 +238,20 @@ fn read_context_pct(account_path: &str, cwd: &str, session_id: &str) -> Option<f
         let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
             continue;
         };
+        // Subagent turns are interleaved into the same transcript but run in
+        // their own context window — their usage says nothing about this chat.
+        if v["isSidechain"].as_bool().unwrap_or(false) {
+            continue;
+        }
         let u = &v["message"]["usage"];
         if u.is_object() {
+            // Input side only: output tokens of a turn become input of the
+            // next one, so counting them here would double-count.
             let total = u["input_tokens"].as_f64().unwrap_or(0.0)
                 + u["cache_read_input_tokens"].as_f64().unwrap_or(0.0)
                 + u["cache_creation_input_tokens"].as_f64().unwrap_or(0.0);
             if total > 0.0 {
-                return Some((total / CONTEXT_WINDOW).min(1.0));
+                return Some(total);
             }
         }
     }
@@ -278,9 +287,11 @@ pub fn session_meta(state: PtyState, id: String, account_path: String) -> Result
             cwd: v["cwd"].as_str().map(str::to_owned),
             session_id: v["sessionId"].as_str().map(str::to_owned),
             context: None,
+            context_tokens: None,
         };
         if let (Some(scwd), Some(sid)) = (m.cwd.as_deref(), m.session_id.as_deref()) {
-            m.context = read_context_pct(&account_path, scwd, sid);
+            m.context_tokens = read_context_tokens(&account_path, scwd, sid);
+            m.context = m.context_tokens.map(|t| (t / CONTEXT_WINDOW).min(1.0));
         }
         m
     };

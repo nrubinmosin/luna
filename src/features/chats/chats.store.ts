@@ -13,7 +13,7 @@ interface ChatsState {
   setName: (chatId: string, name: string) => void;
   setWorktreePath: (chatId: string, path: string) => void;
   setSessionId: (chatId: string, sessionId: string) => void;
-  setContext: (chatId: string, context: number) => void;
+  setContext: (chatId: string, context: number, tokens: number | null) => void;
   renameChat: (chatId: string, name: string) => void;
   findChat: (chatId: string | null) => Chat | null;
   folderOf: (chatId: string) => Folder | null;
@@ -90,11 +90,13 @@ export const useChats = create<ChatsState>()(
           }))
         })),
 
-      setContext: (chatId, context) =>
+      setContext: (chatId, context, tokens) =>
         set(s => ({
           folders: s.folders.map(f => ({
             ...f,
-            chats: f.chats.map(c => (c.id === chatId ? { ...c, context } : c))
+            chats: f.chats.map(c =>
+              c.id === chatId ? { ...c, context, contextTokens: tokens } : c
+            )
           }))
         })),
 
