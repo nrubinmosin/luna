@@ -1,0 +1,40 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "llm-desktop",
+  "version": "0.1.0",
+  "identifier": "ai.sprouter.llm-desktop",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Chats Workspace",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 900,
+        "minHeight": 600
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": ["icons/icon.ico", "icons/icon.png"],
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQyMjY4MUYwMDEwMkE0NzgKUldSNHBBSUI4SUVtMG9ORmN0TDJiRFM3RVozdEx6MXJ6aURqQmZHVnVCRzVuZFI1N09wN1dzRUUK",
+      "endpoints": [
+        "https://github.com/OWNER/llm-desktop/releases/latest/download/latest.json"
+      ]
+    }
+  }
+}
