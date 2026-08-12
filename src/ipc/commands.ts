@@ -19,6 +19,8 @@ export interface AccountInfo {
 export interface AccountLimitsDto {
   /** Token expired; the CLI refreshes it once a session runs. Not a logout. */
   stale: boolean;
+  /** Usage endpoint throttled us; seconds it asked for, 0 if it gave no hint. */
+  rateLimited: number | null;
   h5: number;
   week: number;
   model: number;
@@ -77,6 +79,8 @@ export interface SessionMetaDto {
   nameSource: string | null;
   context: number | null;
   contextTokens: number | null;
+  contextWindow: number | null;
+  firstPrompt: string | null;
 }
 
 export const sessionMeta = (id: string, accountPath: string) =>

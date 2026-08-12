@@ -37,6 +37,17 @@ const toAccount = (a: ipc.AccountInfo): Account => ({
 });
 
 let retryTimer: ReturnType<typeof setTimeout> | undefined;
+// Consecutive unhappy rounds. The previous fixed 8s retry turned a single 429
+// into a loop that kept the usage endpoint throttled indefinitely.
+let backoffStep = 0;
+const BACKOFF_S = [30, 60, 120, 300, 600, 900];
+
+const scheduleRetry = (afterS: number, run: () => void) => {
+  clearTimeout(retryTimer);
+  // Jitter keeps several accounts from hitting the endpoint in lockstep.
+  const ms = afterS * 1000 + Math.random() * 3000;
+  retryTimer = setTimeout(run, ms);
+};
 
 export const useAccounts = create<AccountsState>()((set, get) => ({
   accounts: [],
@@ -54,6 +65,7 @@ export const useAccounts = create<AccountsState>()((set, get) => ({
       loaded: true
     }));
 
+    let serverWait = 0;
     const patch = (path: string, next: Partial<Account>) =>
       set(s => ({ accounts: s.accounts.map(x => (x.path === path ? { ...x, ...next } : x)) }));
 
@@ -70,6 +82,13 @@ export const useAccounts = create<AccountsState>()((set, get) => ({
           patch(a.path, { sync: 'stale' });
           return;
         }
+        // Throttled: the numbers in this response are empty, not zero. Hold on
+        // to whatever we last knew and wait as long as the server asked.
+        if (lim.rateLimited != null) {
+          patch(a.path, { sync: 'throttled' });
+          serverWait = Math.max(serverWait, lim.rateLimited);
+          return;
+        }
         patch(a.path, {
           sync: 'ready',
           plan: lim.plan ?? '—',
@@ -83,11 +102,15 @@ export const useAccounts = create<AccountsState>()((set, get) => ({
       })
     );
 
-    // While any account is mid-refresh, come back sooner than the usual minute.
-    if (get().accounts.some(a => a.sync === 'stale' || a.sync === 'error')) {
-      clearTimeout(retryTimer);
-      retryTimer = setTimeout(() => void get().refresh(), 8000);
+    const unhappy = get().accounts.filter(a => a.sync !== 'ready');
+    if (unhappy.length === 0) {
+      backoffStep = 0;
+      return;
     }
+    // Back off on every unhappy round, and never sooner than the server asked.
+    const step = BACKOFF_S[Math.min(backoffStep, BACKOFF_S.length - 1)];
+    backoffStep += 1;
+    scheduleRetry(Math.max(step, serverWait), () => void get().refresh());
   },
 
   add: async name => {

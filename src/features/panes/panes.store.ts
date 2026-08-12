@@ -39,6 +39,8 @@ interface PanesState {
   splitsByLayout: PerLayout<Splits>;
   over: number;
   drag: string | null;
+  /** Index of the pane being dragged by its header, for swapping two panes. */
+  dragPane: number | null;
   /** Chat hovered in the sidebar — its pane lights up so you can spot it. */
   spot: string | null;
   setLayout: (n: Layout) => void;
@@ -50,6 +52,9 @@ interface PanesState {
   autoPlace: (chatId: string) => void;
   setOver: (i: number) => void;
   setDrag: (id: string | null) => void;
+  setDragPane: (i: number | null) => void;
+  /** Exchanges the contents of two panes on the active board. */
+  swapPanes: (a: number, b: number) => void;
   setSpot: (id: string | null) => void;
 }
 
@@ -70,6 +75,7 @@ export const usePanes = create<PanesState>()(
       splitsByLayout: blankSplits(),
       over: -1,
       drag: null,
+      dragPane: null,
       spot: null,
 
       setLayout: n => set({ layout: n, over: -1 }),
@@ -121,6 +127,16 @@ export const usePanes = create<PanesState>()(
 
       setOver: i => set({ over: i }),
       setDrag: id => set({ drag: id }),
+      setDragPane: i => set({ dragPane: i }),
+
+      swapPanes: (a, b) =>
+        set(s => {
+          if (a === b) return { over: -1, dragPane: null };
+          const slots = currentSlots(s).slice();
+          [slots[a], slots[b]] = [slots[b], slots[a]];
+          return { ...withBoard(s, slots), over: -1, dragPane: null };
+        }),
+
       setSpot: id => set({ spot: id }),
 
       setSplit: (key, value) =>

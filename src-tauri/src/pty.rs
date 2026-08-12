@@ -271,6 +271,12 @@ pub struct SessionMeta {
     pub name_source: Option<String>,
     pub context: Option<f64>,
     pub context_tokens: Option<f64>,
+    /// Window the percentage was computed against, so the UI can show what it
+    /// assumed instead of silently pinning a longer session at 100%.
+    pub context_window: Option<f64>,
+    /// First real prompt of the session, used as a chat title: the registry's
+    /// own name is always `derived` (the cwd folder) in practice.
+    pub first_prompt: Option<String>,
 }
 
 // Claude Code encodes a project cwd into a transcript folder name by replacing
@@ -281,17 +287,38 @@ fn encode_project_dir(p: &str) -> String {
         .collect()
 }
 
-const CONTEXT_WINDOW: f64 = 200_000.0;
+const DEFAULT_CONTEXT_WINDOW: f64 = 200_000.0;
+
+/// Context window per model, keyed off the id the transcript records. Sonnet
+/// and Haiku ship 200k; Opus is a megatoken; the `[1m]` suffix marks the
+/// long-context variants explicitly.
+fn window_for_model(model: &str) -> f64 {
+    let m = model.to_ascii_lowercase();
+    if m.contains("[1m]") || m.contains("opus") {
+        1_000_000.0
+    } else {
+        DEFAULT_CONTEXT_WINDOW
+    }
+}
+
+struct ContextRead {
+    tokens: f64,
+    window: f64,
+}
 
 // Free context reading: the last assistant message in the session transcript
 // carries cumulative input-side token usage. Returns raw tokens; the fraction
 // is derived from it.
-fn read_context_tokens(account_path: &str, cwd: &str, session_id: &str) -> Option<f64> {
-    use std::io::{Read, Seek, SeekFrom};
-    let path = std::path::Path::new(account_path)
+fn transcript_path(account_path: &str, cwd: &str, session_id: &str) -> std::path::PathBuf {
+    std::path::Path::new(account_path)
         .join("projects")
         .join(encode_project_dir(cwd))
-        .join(format!("{session_id}.jsonl"));
+        .join(format!("{session_id}.jsonl"))
+}
+
+fn read_context(account_path: &str, cwd: &str, session_id: &str) -> Option<ContextRead> {
+    use std::io::{Read, Seek, SeekFrom};
+    let path = transcript_path(account_path, cwd, session_id);
     let mut f = std::fs::File::open(&path).ok()?;
     let len = f.metadata().ok()?.len();
     let take = len.min(128 * 1024);
@@ -319,9 +346,57 @@ fn read_context_tokens(account_path: &str, cwd: &str, session_id: &str) -> Optio
                 + u["cache_read_input_tokens"].as_f64().unwrap_or(0.0)
                 + u["cache_creation_input_tokens"].as_f64().unwrap_or(0.0);
             if total > 0.0 {
-                return Some(total);
+                let model = v["message"]["model"].as_str().unwrap_or("");
+                return Some(ContextRead { tokens: total, window: window_for_model(model) });
             }
         }
+    }
+    None
+}
+
+/// Text of a transcript content field, which is either a bare string or an
+/// array of blocks.
+fn content_text(content: &serde_json::Value) -> Option<String> {
+    if let Some(t) = content.as_str() {
+        return Some(t.to_string());
+    }
+    let blocks = content.as_array()?;
+    for b in blocks {
+        if b["type"] == "text" {
+            if let Some(t) = b["text"].as_str() {
+                return Some(t.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// The session's opening prompt, trimmed to a title. Sessions are always named
+/// `derived` in the registry — i.e. after the cwd, which for a worktree run is
+/// a random codename — so the first thing the user actually said is a far
+/// better label for the chat.
+fn read_first_prompt(account_path: &str, cwd: &str, session_id: &str) -> Option<String> {
+    use std::io::{BufRead, BufReader};
+    let path = transcript_path(account_path, cwd, session_id);
+    let f = std::fs::File::open(&path).ok()?;
+    // The opening prompt is near the top; no need to walk a 700KB transcript.
+    for line in BufReader::new(f).lines().take(80).map_while(Result::ok) {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+        if v["type"] != "user" || v["isSidechain"].as_bool().unwrap_or(false) {
+            continue;
+        }
+        let Some(text) = content_text(&v["message"]["content"]) else { continue };
+        let text = text.trim();
+        // Slash commands, replayed tool output and system reminders are not titles.
+        if text.is_empty() || text.starts_with('<') || text.starts_with('/') {
+            continue;
+        }
+        let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        let mut title: String = flat.chars().take(48).collect();
+        if flat.chars().count() > 48 {
+            title.push('…');
+        }
+        return Some(title);
     }
     None
 }
@@ -357,10 +432,16 @@ pub fn session_meta(state: PtyState, id: String, account_path: String) -> Result
             name_source: v["nameSource"].as_str().map(str::to_owned),
             context: None,
             context_tokens: None,
+            context_window: None,
+            first_prompt: None,
         };
         if let (Some(scwd), Some(sid)) = (m.cwd.as_deref(), m.session_id.as_deref()) {
-            m.context_tokens = read_context_tokens(&account_path, scwd, sid);
-            m.context = m.context_tokens.map(|t| (t / CONTEXT_WINDOW).min(1.0));
+            if let Some(c) = read_context(&account_path, scwd, sid) {
+                m.context_tokens = Some(c.tokens);
+                m.context_window = Some(c.window);
+                m.context = Some((c.tokens / c.window).min(1.0));
+            }
+            m.first_prompt = read_first_prompt(&account_path, scwd, sid);
         }
         m
     };

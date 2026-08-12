@@ -11,7 +11,8 @@ const SYNC_HINT: Record<Account['sync'], string> = {
   loading: 'Loading usage…',
   ready: '',
   stale: 'Access token expired — the CLI renews it once a session runs',
-  error: 'Could not reach the usage endpoint — retrying'
+  throttled: 'Usage endpoint is rate-limited — showing the last known numbers, backing off',
+  error: 'Could not reach the usage endpoint — retrying with backoff'
 };
 
 export function StatusBar() {

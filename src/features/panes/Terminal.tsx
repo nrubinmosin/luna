@@ -4,7 +4,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 import { notifyWaiting } from '../../shared/lib/notify';
-import { attachFiles, filesFrom } from '../../shared/lib/attach';
+import { attachClipboardImage, attachFiles, filesFrom } from '../../shared/lib/attach';
 import { ACCENT, tint } from '../../shared/lib/format';
 import type { Chat } from '../../shared/types';
 import { ensureSession, resizeSession, sessionMeta, writeSession } from '../../ipc/commands';
@@ -82,6 +82,12 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
     if (!files.length) return;
     setAttaching(n => n + files.length);
     void attachFiles(chat.id, files).finally(() => setAttaching(n => Math.max(0, n - files.length)));
+  };
+
+  /** Ctrl+V with an image on the clipboard; falls through to normal paste otherwise. */
+  const takeClipboardImage = () => {
+    setAttaching(n => n + 1);
+    void attachClipboardImage(chat.id).finally(() => setAttaching(n => Math.max(0, n - 1)));
   };
 
   useEffect(() => {
@@ -175,17 +181,20 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
             useChats.getState();
           const fresh = findChat(chat.id);
           if (!fresh) return;
-          // nameSource "derived" just echoes the cwd folder — for a worktree
-          // session that is a random codename, not a title. Wait for the CLI's
-          // own AI-generated name instead of showing the directory.
+          // The registry name is `derived` in practice — the cwd folder, which
+          // for a worktree run is a random codename. Prefer the CLI's own title
+          // when it ever produces one, else the session's opening prompt.
           const titled = meta.nameSource === 'auto' || meta.nameSource === 'user';
-          if (meta.name && titled && !fresh.nameCustom) setName(chat.id, meta.name);
+          const title = (titled && meta.name) || meta.firstPrompt;
+          if (title && !fresh.nameCustom) setName(chat.id, title);
           const next = mapStatus(meta.status);
           if (next === 'waiting' && fresh.status !== 'waiting') {
             void notifyWaiting(fresh.name);
           }
           setSt(chat.id, next);
-          if (meta.context != null) setContext(chat.id, meta.context, meta.contextTokens ?? null);
+          if (meta.context != null) {
+            setContext(chat.id, meta.context, meta.contextTokens ?? null, meta.contextWindow ?? null);
+          }
           // Remember where --worktree actually put the session, for cleanup on delete.
           if (meta.cwd && /[\\/]\.claude[\\/]worktrees[\\/]/i.test(meta.cwd)) {
             setWorktreePath(chat.id, meta.cwd);
@@ -234,10 +243,20 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
     <div
       onPasteCapture={e => {
         const files = filesFrom(e.clipboardData);
-        if (!files.length) return; // plain text — let xterm paste it
-        e.preventDefault();
-        e.stopPropagation();
-        take(files);
+        if (files.length) {
+          e.preventDefault();
+          e.stopPropagation();
+          take(files);
+          return;
+        }
+        // WebView2 does not always expose a clipboard image to web content, and
+        // xterm would forward an empty paste. When there is no text either, go
+        // ask the OS whether it is holding an image.
+        if (!e.clipboardData?.getData('text')) {
+          e.preventDefault();
+          e.stopPropagation();
+          takeClipboardImage();
+        }
       }}
       onDragOver={e => {
         if (!hasFiles(e.dataTransfer)) return; // a chat drag — let the pane handle it

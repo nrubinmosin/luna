@@ -84,6 +84,7 @@ export function AccountsPanel() {
         const note =
           acc.sync === 'loading' ? 'loading…'
           : acc.sync === 'stale' ? 'refreshing token…'
+          : acc.sync === 'throttled' ? 'rate-limited'
           : acc.sync === 'error' ? 'unreachable'
           : null;
         return (

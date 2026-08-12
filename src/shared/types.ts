@@ -15,6 +15,7 @@ export interface Chat {
   perm: PermMode;
   context: number; // 0..1
   contextTokens?: number | null;
+  contextWindow?: number | null;
   account: string;
   worktree: boolean;
   worktreePath?: string | null;
@@ -36,7 +37,7 @@ export interface LimitSet {
 }
 
 /** 'idle' before the first fetch, 'stale' while the CLI refreshes the token. */
-export type AccountSync = 'loading' | 'ready' | 'stale' | 'error';
+export type AccountSync = 'loading' | 'ready' | 'stale' | 'throttled' | 'error';
 
 export interface Account {
   name: string;
