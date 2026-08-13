@@ -10,6 +10,7 @@ import type { Chat } from '../../shared/types';
 import { ensureSession, resizeSession, writeSession } from '../../ipc/commands';
 import { onPtyExit, onPtyOutput } from '../../ipc/events';
 import { useChats } from '../chats/chats.store';
+import { sendFirstPrompt } from '../chats/firstPrompt';
 import { useAccounts } from '../accounts/accounts.store';
 
 export const dark = () => document.querySelector('[data-app]')?.getAttribute('data-theme') === 'dark';
@@ -24,7 +25,10 @@ export const safely = (fn: () => void) => {
   try {
     fn();
   } catch (e) {
-    logWarn('terminal', `teardown step failed: ${String(e)}`);
+    // With the stack: the message alone ("cannot read _isDisposed") names an
+    // xterm internal and not which of the half-dozen guarded calls reached it.
+    const stack = (e as Error)?.stack;
+    logWarn('terminal', `teardown step failed: ${stack ?? String(e)}`);
   }
 };
 
@@ -51,25 +55,6 @@ export const themeFor = (isDark: boolean) =>
         brightBlue: '#2a7fd4', brightMagenta: '#9b52d1', brightCyan: '#12968f', brightWhite: '#0d1512'
       };
 
-
-// How long the CLI's output has to stay silent before its input box is assumed
-// drawn and ready, and how long to keep waiting for that silence before sending
-// anyway. The CLI can spend seconds on its welcome screen and update check.
-const PROMPT_QUIET_MS = 700;
-const PROMPT_WAIT_MS = 30_000;
-
-/**
- * Reads the chat's queued first message and clears it in the same tick, so two
- * panes racing on the same chat cannot both send it.
- */
-const takePendingPrompt = (chatId: string): string | null => {
-  const state = useChats.getState();
-  const chat = state.folders.flatMap(f => f.chats).find(c => c.id === chatId);
-  const prompt = chat?.pendingPrompt?.trim();
-  if (!prompt) return null;
-  state.clearPendingPrompt(chatId);
-  return prompt;
-};
 
 /** A drag carrying real files, as opposed to a chat row being dropped into a pane. */
 const hasFiles = (dt: DataTransfer | null) => !!dt && Array.from(dt.types).includes('Files');
@@ -142,8 +127,6 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
 
     let disposed = false;
     let repaintTimer: ReturnType<typeof setTimeout> | undefined;
-    let promptTimer: ReturnType<typeof setTimeout> | undefined;
-    let lastOutputAt = 0;
     const unlisteners: Array<() => void> = [];
     // Fitting a detached or zero-sized host throws; that happens on every
     // pane close and used to take the whole window down with it.
@@ -171,9 +154,7 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
 
     void (async () => {
       const un1 = await onPtyOutput(p => {
-        if (p.id !== chat.id) return;
-        lastOutputAt = Date.now();
-        term.write(p.data);
+        if (p.id === chat.id) term.write(p.data);
       });
       const un2 = await onPtyExit(p => {
         if (p.id === chat.id) {
@@ -203,32 +184,13 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
       });
       if (disposed) return;
 
-      // A chat opened from the command line with --prompt carries its first
-      // message. The CLI throws away anything written before it has entered raw
-      // mode and drawn its input box, and how long that takes varies with the
-      // machine and with what the CLI does on startup, so wait for its output to
-      // go quiet rather than guessing a delay. The prompt is taken from the
-      // store at the moment it is sent, not before: a pane that is torn down
-      // while still waiting — which happens routinely — must leave the message
-      // behind for the next mount instead of consuming it and dropping it.
-      if (chat.pendingPrompt?.trim()) {
-        // A session that was already running is past its startup: the replayed
-        // backlog does not arrive as pty output, so count it as the last thing
-        // heard rather than waiting out the ceiling in silence.
-        if (backlog) lastOutputAt = Date.now();
-        const deadline = Date.now() + PROMPT_WAIT_MS;
-        const poll = () => {
-          if (disposed) return;
-          const quiet = lastOutputAt > 0 && Date.now() - lastOutputAt >= PROMPT_QUIET_MS;
-          if (!quiet && Date.now() < deadline) {
-            promptTimer = setTimeout(poll, 150);
-            return;
-          }
-          const first = takePendingPrompt(chat.id);
-          if (first) void writeSession(chat.id, first + '\r');
-        };
-        promptTimer = setTimeout(poll, 150);
-      }
+      // Normally the CLI handler has already sent this — it starts the session
+      // itself rather than waiting for a pane. What is left here is the
+      // recovery case: a message queued while the app was closing, which no
+      // longer has a request handler behind it and would otherwise sit in the
+      // store forever. Deliberately not awaited or cancelled on teardown; the
+      // send is worth finishing whether or not this pane survives it.
+      if (chat.pendingPrompt?.trim()) void sendFirstPrompt(chat.id, !!backlog);
 
       if (!backlog) {
         // Fresh session: the pty starts at a placeholder size, so this is also
@@ -284,7 +246,6 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
     return () => {
       disposed = true;
       clearTimeout(repaintTimer);
-      clearTimeout(promptTimer);
       safely(() => ro.disconnect());
       safely(() => mo.disconnect());
       safely(() => dataSub.dispose());

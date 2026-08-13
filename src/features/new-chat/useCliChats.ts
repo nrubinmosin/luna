@@ -1,10 +1,11 @@
 import { useEffect } from 'react';
 import { EFFORTS, MODELS } from '../../shared/types';
 import type { Effort, ModelLabel } from '../../shared/types';
-import { ackChatRequest, trustFolder, type NewChatRequest } from '../../ipc/commands';
+import { ackChatRequest, ensureSession, trustFolder, type NewChatRequest } from '../../ipc/commands';
 import { onNewChatRequest } from '../../ipc/events';
 import { logInfo, logWarn } from '../../shared/lib/log';
 import { newId, useChats } from '../chats/chats.store';
+import { sendFirstPrompt } from '../chats/firstPrompt';
 import { usePanes } from '../panes/panes.store';
 import { useAccounts } from '../accounts/accounts.store';
 
@@ -75,24 +76,51 @@ export function useCliChats() {
       const { folders, addChat } = useChats.getState();
       const n = folders.reduce((a, f) => a + f.chats.length, 0) + 1;
       const id = newId('c');
+      const model = pick<ModelLabel>(MODELS, req.model) ?? 'Opus';
+      const effort = pick<Effort>(EFFORTS, req.effort) ?? 'medium';
+      const worktree = req.worktree ?? true;
 
       addChat(req.folder, {
         id,
         name: `chat ${n}`,
         status: 'resting',
-        model: pick<ModelLabel>(MODELS, req.model) ?? 'Opus',
-        effort: pick<Effort>(EFFORTS, req.effort) ?? 'medium',
+        model,
+        effort,
         // Not settable from the command line: whatever can run the command
         // would otherwise be choosing this session's permissions.
         perm: 'Bypass',
         context: 0,
         account: account.name,
-        worktree: req.worktree ?? true,
+        worktree,
         pendingPrompt: req.prompt?.trim() || null
       });
       usePanes.getState().autoPlace(id);
+
+      // Start the session here rather than leaving it to the pane. autoPlace
+      // only fills a free slot, so on a full board the chat is created and
+      // nothing else happens — the CLI would report a session that does not
+      // exist and the first message would wait, sometimes for minutes, until
+      // someone happened to open the chat.
+      try {
+        await ensureSession({
+          chatId: id,
+          folder: req.folder,
+          accountPath: account.path,
+          model,
+          effort,
+          perm: 'Bypass',
+          worktree,
+          resume: null
+        });
+      } catch (e) {
+        fail(req.id, `could not start the session: ${String(e)}`);
+        return;
+      }
+
       logInfo('cli', `opened chat ${id} in ${req.folder} on ${account.name}`);
+      // Only now is the exit code the CLI hands back a true one.
       void ackChatRequest(req.id, null);
+      void sendFirstPrompt(id);
     };
 
     let unlisten: (() => void) | undefined;
