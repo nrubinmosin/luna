@@ -216,6 +216,42 @@ a:hover { text-decoration: underline; }
 [data-app] button:disabled {
   color: var(--faint);
 }
+/* xp.css paints every button in the same beige, which is faithful to XP but
+   leaves the one button that matters indistinguishable from Cancel. These keep
+   the XP shape — 1px dark rim, 3px radius, top-lit gradient — and only swap the
+   face for a colour, the way the Luna title bar and Start button do. */
+[data-app] button.primary,
+[data-app] button.danger {
+  color: #fff;
+  font-weight: 700;
+  text-shadow: 0 1px 1px rgba(0, 0, 0, .35);
+}
+[data-app] button.primary {
+  border-color: #003c74;
+  background: linear-gradient(180deg, #7cc0ff, #2a86f0 45%, #0a5fd8 55%, #0b4fb8);
+}
+[data-app] button.danger {
+  border-color: #6e1b12;
+  background: linear-gradient(180deg, #f09a8e, #d5503c 45%, #b8301c 55%, #96240f);
+}
+[data-app] button.primary:not(:disabled):hover,
+[data-app] button.danger:not(:disabled):hover {
+  /* XP's hover is a warm rim rather than a lighter face; keep the rim and let
+     the colour show through it. */
+  box-shadow: inset -1px 1px #fff0cf, inset 1px 2px #fdd889, inset -2px 2px #fbc761, inset 2px -2px #e5a01a;
+}
+[data-app] button.primary:not(:disabled):active {
+  background: linear-gradient(180deg, #0b4fb8, #0a5fd8 45%, #2a86f0 55%, #7cc0ff);
+}
+[data-app] button.danger:not(:disabled):active {
+  background: linear-gradient(180deg, #96240f, #b8301c 45%, #d5503c 55%, #f09a8e);
+}
+[data-app] button.primary:disabled,
+[data-app] button.danger:disabled {
+  background: linear-gradient(180deg, #fff, #ecebe5 86%, #d8d0c4);
+  color: var(--faint);
+  text-shadow: none;
+}
 /* xp.css bakes .window's surface and bevel to light-mode literals; in dark mode
    they have to come from our own themed variables instead. */
 [data-app][data-theme="dark"] .window {
@@ -280,20 +316,6 @@ a:hover { text-decoration: underline; }
   align-items: center;
   justify-content: center;
   gap: 4px;
-}
-/* The per-group reset only appears on the tab it would act on, so the strip
-   doesn't read as eight controls. */
-[data-app] menu[role="tablist"] button .reset {
-  font-size: var(--fs-2);
-  font-weight: 400;
-  opacity: 0;
-  color: var(--faint);
-}
-[data-app] menu[role="tablist"] button:hover .reset {
-  opacity: 1;
-}
-[data-app] menu[role="tablist"] button .reset:hover {
-  color: #c0392b;
 }
 /* The chat list is the group tabs' panel: xp.css draws the frame and the seam
    under the selected tab, we take back its 14px padding and light gradient. */

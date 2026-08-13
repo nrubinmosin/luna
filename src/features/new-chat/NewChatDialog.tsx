@@ -250,11 +250,7 @@ export function NewChatDialog() {
 
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 2 }}>
             <button onClick={onClose}>Cancel</button>
-            <button
-              onClick={() => void create()}
-              disabled={!canCreate || creating}
-              style={{ fontWeight: 700 }}
-            >
+            <button onClick={() => void create()} disabled={!canCreate || creating} className="primary">
               {creating ? 'Trusting…' : 'Create'}
             </button>
           </div>

@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import type { CSSProperties } from 'react';
 import { STATUS } from '../../shared/ui/status';
 import { ACCENT, limitColor, tail2, tint } from '../../shared/lib/format';
@@ -14,6 +15,16 @@ export function Pane({ index }: { index: number }) {
   const beingDragged = usePanes(s => s.dragPane === index);
   const chat = useChats(s => s.findChat(chatId));
   const folder = useChats(s => (chatId ? s.folderOf(chatId) : null));
+
+  // A slot pointing at a chat that no longer exists renders as an empty pane,
+  // which is correct but silent — the board would keep the dead id forever.
+  // Deleting a chat clears the boards itself; this covers the rest: a chat that
+  // went away while the two persisted stores were out of step, which is what a
+  // restore from a half-written state looks like.
+  const stale = !!chatId && !chat;
+  useEffect(() => {
+    if (stale) closePane(index);
+  }, [stale, index, closePane]);
 
   const st = chat ? STATUS[chat.status] : null;
   const t = folder ? tail2(folder.path) : null;
