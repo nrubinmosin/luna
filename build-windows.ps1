@@ -19,7 +19,6 @@ set -e
 export TAURI_SIGNING_PRIVATE_KEY="`$(cat /keys/updater.key)"
 pnpm install --frozen-lockfile
 pnpm tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc $bundleArg
-cargo xwin build --release --target x86_64-pc-windows-msvc --manifest-path cli/Cargo.toml
 "@ -replace "`r`n", "`n"
 
 docker run --rm `

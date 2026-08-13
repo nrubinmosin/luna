@@ -21,9 +21,6 @@ export interface Chat {
   worktreePath?: string | null;
   sessionId?: string | null;
   nameCustom?: boolean;
-  /** Typed into the session once it starts; cleared afterwards. Set by the
-   *  --prompt flag when a chat is opened from the command line. */
-  pendingPrompt?: string | null;
   /** Folded away in the sidebar. Nothing else about the chat changes: the
    *  session, its worktree and its transcript are all left running. */
   archived?: boolean;

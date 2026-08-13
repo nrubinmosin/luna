@@ -1,5 +1,4 @@
 mod accounts;
-pub mod cli;
 mod limits;
 mod log;
 mod media;
@@ -10,51 +9,9 @@ mod worktree;
 
 use tauri::{
     menu::{Menu, MenuItem},
-    Emitter,
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Manager,
 };
-
-/// Requests already handed to the UI. The watcher polls a directory, so
-/// without this it would re-emit the same request every tick until the chat
-/// finishes opening.
-static CLAIMED: std::sync::Mutex<Option<std::collections::HashSet<String>>> =
-    std::sync::Mutex::new(None);
-
-fn claim(id: &str) -> bool {
-    let Ok(mut guard) = CLAIMED.lock() else { return false };
-    guard.get_or_insert_with(Default::default).insert(id.to_string())
-}
-
-/// Reports back to the waiting `llm-desktop-cli` process, and lets the same
-/// request be retried if it failed.
-#[tauri::command]
-fn ack_chat_request(id: String, error: Option<String>) {
-    if error.is_some() {
-        if let Ok(mut guard) = CLAIMED.lock() {
-            guard.get_or_insert_with(Default::default).remove(&id);
-        }
-    }
-    cli::acknowledge(&id, error.as_deref());
-}
-
-/// Watches the request directory. Polling rather than a filesystem notifier:
-/// one directory listing every half second costs nothing, and it also picks up
-/// anything submitted while the app was closed.
-fn watch_requests(app: tauri::AppHandle) {
-    std::thread::spawn(move || {
-        cli::sweep_stale();
-        loop {
-            for req in cli::pending_requests() {
-                if claim(&req.id) {
-                    log::info("cli", &format!("new chat requested: {req:?}"));
-                    let _ = app.emit("app://new-chat", req);
-                }
-            }
-            std::thread::sleep(std::time::Duration::from_millis(500));
-        }
-    });
-}
 
 fn show_main(app: &tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
@@ -84,7 +41,6 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .manage(pty::PtyManager::default())
         .setup(|app| {
-            watch_requests(app.handle().clone());
             models::refresh_soon();
 
             // Housekeeping off the startup path.
@@ -130,7 +86,6 @@ pub fn run() {
             accounts::create_account,
             accounts::delete_account,
             limits::account_limits,
-            ack_chat_request,
             log::append_log,
             log::log_path,
             log::reveal_log,
