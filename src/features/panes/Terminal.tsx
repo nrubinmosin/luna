@@ -110,23 +110,6 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(host);
-    let webgl: WebglAddon | null = null;
-    // Disposing the addon twice reaches into renderer state it has already
-    // freed and throws, which is what filled the log with teardown warnings on
-    // every pane close: a context loss disposes it, and so does the cleanup.
-    // Dropping the reference makes the second call a no-op.
-    const disposeWebgl = () => {
-      const addon = webgl;
-      webgl = null;
-      if (addon) safely(() => addon.dispose());
-    };
-    try {
-      webgl = new WebglAddon();
-      webgl.onContextLoss(disposeWebgl);
-      term.loadAddon(webgl);
-    } catch {
-      webgl = null; // canvas/DOM renderer fallback
-    }
 
     // Which screen the CLI is on decides whether scrolling means anything here:
     // the alternate screen is a single painted frame that must stay pinned to
@@ -155,6 +138,60 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
     // browser has laid the pane out for real.
     requestAnimationFrame(refit);
     void document.fonts?.ready.then(refit).catch(() => {});
+
+    /**
+     * Makes the CLI redraw its screen. It runs fullscreen, i.e. on the
+     * alternate screen, and only paints on input or on SIGWINCH — so anything
+     * that leaves this terminal holding a stale or empty frame has to ask for
+     * a repaint rather than wait for one. Resizing to a different size and
+     * straight back is what forces it.
+     */
+    const nudgeRepaint = () => {
+      if (disposed) return;
+      safely(() => term.refresh(0, term.rows - 1));
+      void resizeSession(chat.id, term.cols, Math.max(1, term.rows - 1));
+      clearTimeout(repaintTimer);
+      repaintTimer = setTimeout(() => {
+        if (disposed) return;
+        // Re-read the size instead of restoring the one captured above: the
+        // layout can settle within these 60ms (the metadata row rewrapping is
+        // enough), and sending a stale row count leaves the pty believing the
+        // viewport is taller than it is — which pushes the CLI's input box
+        // below the bottom of the pane until the pane is reopened.
+        refit();
+        void resizeSession(chat.id, term.cols, term.rows);
+      }, 60);
+    };
+
+    let webgl: WebglAddon | null = null;
+    // The addon cannot survive being disposed twice: the second pass walks into
+    // a texture atlas it has already dropped and throws, and the GL context it
+    // was holding is never released. Dropping our own reference is not enough —
+    // xterm's AddonManager disposes every loaded addon again from
+    // term.dispose(), which is the call the teardown warnings came from. Take
+    // the method itself out of play so that later call cannot reach the
+    // renderer, whatever happens in ours.
+    const disposeWebgl = () => {
+      const addon = webgl;
+      webgl = null;
+      if (!addon) return;
+      const real = addon.dispose.bind(addon);
+      addon.dispose = () => {};
+      safely(real);
+    };
+    try {
+      webgl = new WebglAddon();
+      webgl.onContextLoss(() => {
+        // Chromium force-loses the oldest context once too many are live, and
+        // the pane that owns it is usually still on screen. Falling back to the
+        // DOM renderer silently would leave it blank until the next keystroke.
+        disposeWebgl();
+        nudgeRepaint();
+      });
+      term.loadAddon(webgl);
+    } catch {
+      webgl = null; // canvas/DOM renderer fallback
+    }
 
     if (!accountPath) {
       term.write(
@@ -206,30 +243,24 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
         return;
       }
 
-      // Reattaching to a live session. The CLI runs in fullscreen mode, i.e. on
-      // the alternate screen, and only repaints on input or on SIGWINCH.
-      // Replaying its scrollback into a fresh xterm therefore leaves whatever
-      // the buffer happened to end on — often just the prompt box, with the
-      // conversation above it missing until you type. Resizing to a different
-      // size and straight back forces a full repaint.
-      // The replayed bytes are a tail: the escape that entered the alternate
-      // screen sits at the very start of the session and has long since been
-      // trimmed by the scrollback cap, so replaying leaves the terminal on the
-      // normal screen with the CLI's UI scattered through its history. Reset
-      // first and let the repaint below redraw the real thing.
-      term.write(backlog);
-      term.reset();
-      void resizeSession(chat.id, term.cols, Math.max(1, term.rows - 1));
-      repaintTimer = setTimeout(() => {
+      // Reattaching to a live session. The replayed bytes are a tail: the
+      // escape that entered the alternate screen sits at the very start of the
+      // session and has long since been trimmed by the scrollback cap, so
+      // replaying leaves the terminal on the normal screen with the CLI's UI
+      // scattered through its history. Wipe that and ask for a real repaint.
+      //
+      // The two steps have to be ordered explicitly. term.write() only queues
+      // the bytes — xterm parses them on its own schedule — while reset() runs
+      // there and then, so writing and resetting back to back usually reset an
+      // empty terminal and then painted the stale tail over the top of it, and
+      // the repaint went out before any of it landed. That is what left panes
+      // showing a bare prompt box with the conversation missing until the next
+      // keystroke. The callback is the only ordering guarantee xterm offers.
+      term.write(backlog, () => {
         if (disposed) return;
-        // Re-read the size instead of restoring the one captured above: the
-        // layout can settle within these 60ms (the metadata row rewrapping is
-        // enough), and sending a stale row count leaves the pty believing the
-        // viewport is taller than it is — which pushes the CLI's input box
-        // below the bottom of the pane until the pane is reopened.
-        refit();
-        void resizeSession(chat.id, term.cols, term.rows);
-      }, 60);
+        term.reset();
+        nudgeRepaint();
+      });
     })();
 
 

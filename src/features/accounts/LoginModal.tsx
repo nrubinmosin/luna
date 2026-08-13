@@ -33,9 +33,21 @@ export function LoginModal({ account }: { account: Account }) {
     term.loadAddon(fit);
     term.open(host);
     let webgl: WebglAddon | null = null;
+    // Same double-dispose trap as the chat terminals: xterm disposes every
+    // loaded addon again from term.dispose(), and the webgl renderer throws on
+    // the second pass, holding on to its GL context. Take the method out of
+    // play once we have called it.
+    const disposeWebgl = () => {
+      const addon = webgl;
+      webgl = null;
+      if (!addon) return;
+      const real = addon.dispose.bind(addon);
+      addon.dispose = () => {};
+      safely(real);
+    };
     try {
       webgl = new WebglAddon();
-      webgl.onContextLoss(() => safely(() => webgl?.dispose()));
+      webgl.onContextLoss(disposeWebgl);
       term.loadAddon(webgl);
     } catch {
       webgl = null; // canvas/DOM renderer fallback
@@ -91,7 +103,7 @@ export function LoginModal({ account }: { account: Account }) {
       safely(() => dataSub.dispose());
       safely(() => resizeSub.dispose());
       unlisteners.forEach(u => safely(u));
-      safely(() => webgl?.dispose());
+      disposeWebgl();
       safely(() => term.dispose());
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
