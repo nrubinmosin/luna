@@ -209,50 +209,8 @@ export const usePanes = create<PanesState>()(
     }),
     {
       name: 'luna.panes',
-      version: 2,
+      version: 1,
       partialize: s => ({ group: s.group, groups: s.groups }),
-      migrate: (persisted, version) => {
-        type V2 = { group: GroupId; groups: Group[] };
-        if (version >= 2) {
-          const p = (persisted ?? {}) as Partial<V2>;
-          return { group: p.group ?? 0, groups: reviveGroups(p.groups) };
-        }
-
-        // v1 had a single set of boards; v0 a single shared `panes` array and
-        // one `splits` object. Either way the whole arrangement becomes group I
-        // so an upgrade never wipes what is on screen.
-        const old = persisted as
-          | {
-              layout?: Layout;
-              boards?: Partial<PerLayout<Slots>>;
-              splitsByLayout?: Partial<PerLayout<Splits>>;
-              panes?: Slots;
-              splits?: Partial<Splits>;
-            }
-          | undefined;
-
-        const first: Group =
-          version >= 1
-            ? reviveGroup(old as Partial<Group>)
-            : (() => {
-                const seed = old?.panes ?? emptySlots();
-                const splits = { ...DEFAULT_SPLITS, ...(old?.splits ?? {}) };
-                return {
-                  layout: old?.layout ?? 1,
-                  boards: LAYOUTS.reduce((acc, n) => {
-                    // Slots past a board's pane count were never visible on it.
-                    acc[n] = seed.map((id, i) => (i < n ? id : null));
-                    return acc;
-                  }, {} as PerLayout<Slots>),
-                  splitsByLayout: LAYOUTS.reduce((acc, n) => {
-                    acc[n] = { ...splits };
-                    return acc;
-                  }, {} as PerLayout<Splits>)
-                };
-              })();
-
-        return { group: 0, groups: GROUPS.map(i => (i === 0 ? first : blankGroup())) };
-      },
       merge: (persisted, current) => {
         const p = (persisted ?? {}) as Partial<PanesState>;
         return { ...current, ...p, group: p.group ?? 0, groups: reviveGroups(p.groups) };

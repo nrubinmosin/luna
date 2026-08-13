@@ -63,11 +63,26 @@ Builds the toolchain image (rust + cargo-xwin + NSIS + node) and cross-compiles 
 The caches (node_modules, the Windows SDK, the cargo registry) live in named volumes, so
 repeat builds are fast.
 
+## Releases
+
+```powershell
+./release.ps1              # release the version in tauri.conf.json
+./release.ps1 -Notes "..." # with your own release notes
+./release.ps1 -DryRun      # build and compose the manifest, upload nothing
+```
+
+Bumping the version means editing `src-tauri/tauri.conf.json` and `package.json` together;
+the script refuses to run if they disagree, if the tree is dirty, if HEAD is ahead of
+`origin/master`, or if the tag already exists — a release has to be reproducible from a
+pushed commit, and the build stamp in the binary is only worth anything if it is.
+
+It builds the signed installer, writes the `latest.json` the updater reads, and uploads
+the portable exe, the setup, its `.sig` and the manifest to a `v<version>` release.
+
 ## Updates and signing
 
 - On startup the app checks `latest.json` from GitHub Releases (the endpoint lives in
-  `src-tauri/tauri.conf.json` → `plugins.updater.endpoints`; replace `OWNER` with your
-  own account or org once the repository exists on GitHub).
+  `src-tauri/tauri.conf.json` → `plugins.updater.endpoints`).
 - The update signing key is `C:\Users\Nikita\claude-accounts\llm-desktop-updater.key` —
   private and passwordless, so keep it safe; its `.pub` half is already baked into the
   config. The file name is left over from the pre-Luna brand: if you rename it, fix the

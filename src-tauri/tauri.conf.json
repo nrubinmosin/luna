@@ -41,7 +41,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQyMjY4MUYwMDEwMkE0NzgKUldSNHBBSUI4SUVtMG9ORmN0TDJiRFM3RVozdEx6MXJ6aURqQmZHVnVCRzVuZFI1N09wN1dzRUUK",
       "endpoints": [
-        "https://github.com/OWNER/luna/releases/latest/download/latest.json"
+        "https://github.com/nrubinmosin/luna/releases/latest/download/latest.json"
       ]
     }
   }

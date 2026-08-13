@@ -62,11 +62,26 @@ docker run --rm -v "${PWD}:/app" -w /app/src-tauri rust:1-bookworm bash -c `
 Кэши (node_modules, Windows SDK, cargo registry) живут в named volumes — повторные
 сборки быстрые.
 
+## Релизы
+
+```powershell
+./release.ps1              # выпустить версию из tauri.conf.json
+./release.ps1 -Notes "..." # со своим текстом релиза
+./release.ps1 -DryRun      # собрать и составить манифест, ничего не заливая
+```
+
+Версия поднимается правкой `src-tauri/tauri.conf.json` и `package.json` вместе; скрипт
+откажется работать, если они расходятся, если дерево грязное, если HEAD впереди
+`origin/master` или если тег уже есть — релиз обязан воспроизводиться из запушенного
+коммита, иначе штамп билда внутри бинаря ничего не стоит.
+
+Скрипт собирает подписанный инсталлятор, пишет `latest.json` для автообновления и
+заливает портативный exe, setup, его `.sig` и манифест в релиз `v<версия>`.
+
 ## Автообновление и подпись
 
 - Приложение при старте проверяет `latest.json` из GitHub Releases (эндпоинт в
-  `src-tauri/tauri.conf.json` → `plugins.updater.endpoints`; замени `OWNER` на свой
-  аккаунт/орг, когда появится репозиторий на GitHub).
+  `src-tauri/tauri.conf.json` → `plugins.updater.endpoints`).
 - Ключ подписи апдейтов — `C:\Users\Nikita\claude-accounts\llm-desktop-updater.key`:
   приватный, без пароля, береги его; `.pub` уже вшит в конфиг. Имя файла осталось с
   прежнего бренда — переименуешь, поправь путь в `build-windows.ps1`. Для подписанной
