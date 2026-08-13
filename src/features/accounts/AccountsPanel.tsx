@@ -59,8 +59,7 @@ export function AccountsPanel() {
               }
             }}
             disabled={!name.trim()}
-            className="slim"
-            style={{ fontWeight: 700 }}
+            className="slim primary"
           >
             Create
           </button>

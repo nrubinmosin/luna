@@ -13,7 +13,7 @@ export function ChatRow({ chat }: { chat: Chat }) {
   const deleteChat = useChats(s => s.deleteChat);
   const setActive = useChats(s => s.setActive);
   const dragging = usePanes(s => s.drag === chat.id);
-  const { setDrag, setOver, evictChat, setSpot } = usePanes.getState();
+  const { setDrag, setOver, setSpot } = usePanes.getState();
   const st = STATUS[chat.status];
   const [editing, setEditing] = useState(false);
   const [confirming, setConfirming] = useState(false);
@@ -38,15 +38,8 @@ export function ChatRow({ chat }: { chat: Chat }) {
         dropWorktree
       ).catch(err => console.warn('[luna] delete failed', err));
     }
-    evictChat(chat.id);
+    // Both stores clear the panes themselves, open or not.
     deleteChat(chat.id);
-  };
-
-  const archive = () => {
-    // Out of the panes as well as out of the list: a hidden chat holding a pane
-    // would leave a slab of terminal on screen with no row to close it from.
-    evictChat(chat.id);
-    useChats.getState().setArchived(chat.id, true);
   };
 
   const commitRename = () => {
@@ -127,8 +120,7 @@ export function ChatRow({ chat }: { chat: Chat }) {
       <span
         onClick={e => {
           e.stopPropagation();
-          if (chat.archived) useChats.getState().setArchived(chat.id, false);
-          else archive();
+          useChats.getState().setArchived(chat.id, !chat.archived);
         }}
         title={chat.archived ? 'Unarchive — put it back in the list' : 'Archive — hide it, keep everything'}
         className="hover-bg"

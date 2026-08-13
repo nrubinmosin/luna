@@ -63,10 +63,7 @@ export function ConfirmDialog({
           {extra && <div style={{ marginTop: 12 }}>{extra}</div>}
           <div style={{ marginTop: 16, display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
             <button onClick={onCancel}>Cancel</button>
-            <button
-              onClick={onConfirm}
-              style={{ fontWeight: 700, color: danger ? '#a02010' : undefined }}
-            >
+            <button onClick={onConfirm} className={danger ? 'danger' : 'primary'}>
               {confirmLabel}
             </button>
           </div>

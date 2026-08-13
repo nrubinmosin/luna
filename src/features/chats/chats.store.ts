@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { Chat, Folder } from '../../shared/types';
+import { usePanes } from '../panes/panes.store';
 
 interface ChatsState {
   folders: Folder[];
@@ -41,13 +42,18 @@ export const useChats = create<ChatsState>()(
           return { folders, active: chat.id };
         }),
 
-      deleteChat: chatId =>
+      deleteChat: chatId => {
+        // Panes are cleared here rather than by the caller: a chat can be
+        // deleted while it is open, and a board left holding the id of a chat
+        // that no longer exists is a pane with nothing to render.
+        usePanes.getState().evictChat(chatId);
         set(s => ({
           folders: s.folders
             .map(f => ({ ...f, chats: f.chats.filter(c => c.id !== chatId) }))
             .filter(f => f.chats.length > 0),
           active: s.active === chatId ? null : s.active
-        })),
+        }));
+      },
 
       toggleFolder: folderId =>
         set(s => ({
@@ -92,7 +98,11 @@ export const useChats = create<ChatsState>()(
           }))
         })),
 
-      setArchived: (chatId, archived) =>
+      setArchived: (chatId, archived) => {
+        // Out of the panes as well as out of the list: a hidden chat holding a
+        // pane would leave a slab of terminal on screen with no row to close
+        // it from.
+        if (archived) usePanes.getState().evictChat(chatId);
         set(s => ({
           folders: s.folders.map(f => ({
             ...f,
@@ -101,7 +111,8 @@ export const useChats = create<ChatsState>()(
           // An archived chat is out of sight; leaving it selected would leave
           // the rest of the UI reporting on something nobody can see.
           active: archived && s.active === chatId ? null : s.active
-        })),
+        }));
+      },
 
       toggleMark: chatId =>
         set(s => ({

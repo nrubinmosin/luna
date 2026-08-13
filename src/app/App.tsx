@@ -135,11 +135,23 @@ export function App() {
             <div style={{ display: 'flex', gap: 5 }}>
               <button
                 onClick={openNewChat}
-                className="slim"
-                style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5, fontWeight: 700 }}
+                className="slim primary"
+                style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5 }}
               >
                 <span style={{ fontSize: 'var(--fs-6)', lineHeight: 1, flex: 'none' }}>+</span>
                 <span style={{ whiteSpace: 'nowrap' }}>New chat</span>
+              </button>
+              {/* Acts on the group that is showing. It sat on the tabs themselves
+                  at first, where it was a 10px glyph a couple of pixels from the
+                  tab it must not be confused with. */}
+              <button
+                onClick={() => resetGroup(group)}
+                title={`Reset group ${GROUP_LABELS[group]} — empties its panes, keeps every chat`}
+                aria-label={`Reset group ${GROUP_LABELS[group]}`}
+                className="slim"
+                style={{ width: 30, flex: 'none' }}
+              >
+                ↺
               </button>
               <button
                 onClick={() => setPref(p => (p === 'system' ? 'light' : p === 'light' ? 'dark' : 'system'))}
@@ -183,16 +195,6 @@ export function App() {
                 title={`Window group ${GROUP_LABELS[g]} — its own panes and splits`}
               >
                 {GROUP_LABELS[g]}
-                <span
-                  className="reset"
-                  title={`Reset group ${GROUP_LABELS[g]} — empties its panes, keeps every chat`}
-                  onClick={e => {
-                    e.stopPropagation();
-                    resetGroup(g);
-                  }}
-                >
-                  ↺
-                </span>
               </button>
             ))}
           </menu>
