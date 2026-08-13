@@ -92,7 +92,7 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
     const term = new XTerm({
       fontFamily: TERM_FONT_FAMILY,
       fontSize: TERM_FONT_SIZE,
-      lineHeight: 1.35,
+      lineHeight: 1.25,
       allowTransparency: false,
       cursorBlink: true,
       // The CLI spends most of its life fullscreen, i.e. on the alternate
