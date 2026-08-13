@@ -30,7 +30,13 @@ struct PtyExit<'a> {
 
 struct Session {
     master: Box<dyn portable_pty::MasterPty + Send>,
-    writer: Box<dyn Write + Send>,
+    /// Input is handed to a writer thread instead of being written inline.
+    /// ConPTY stops accepting bytes while the child is not draining them, and a
+    /// write that blocks used to do so while holding the session map — freezing
+    /// every other chat's IPC behind one busy pane, for hundreds of ms at a
+    /// time. A channel also keeps keystrokes in the order they were typed,
+    /// which handing each write its own lock would not.
+    writer_tx: std::sync::mpsc::Sender<Vec<u8>>,
     killer: Box<dyn ChildKiller + Send + Sync>,
     scrollback: Arc<Mutex<VecDeque<u8>>>,
     alive: Arc<AtomicBool>,
@@ -119,8 +125,23 @@ pub async fn ensure_session(
         .unwrap_or(0);
     let killer = child.clone_killer();
     let mut child = child;
-    let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
+    let mut writer = pair.master.take_writer().map_err(|e| e.to_string())?;
     let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
+
+    // Drains on its own thread and ends when the session is dropped, which
+    // drops the sender with it.
+    let (writer_tx, writer_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    {
+        let id = id.clone();
+        std::thread::spawn(move || {
+            for chunk in writer_rx {
+                if let Err(e) = writer.write_all(&chunk).and_then(|()| writer.flush()) {
+                    crate::log::warn("pty", &format!("write to {id} failed: {e}"));
+                    break;
+                }
+            }
+        });
+    }
 
     let scrollback = Arc::new(Mutex::new(VecDeque::new()));
     let alive = Arc::new(AtomicBool::new(true));
@@ -216,7 +237,7 @@ pub async fn ensure_session(
         id,
         Session {
             master: pair.master,
-            writer,
+            writer_tx,
             killer,
             scrollback,
             alive,
@@ -231,9 +252,12 @@ pub async fn ensure_session(
 
 #[tauri::command]
 pub fn write_session(state: PtyState, id: String, data: String) -> Result<(), String> {
-    let mut sessions = state.sessions.lock().unwrap();
-    let s = sessions.get_mut(&id).ok_or("no such session")?;
-    s.writer.write_all(data.as_bytes()).map_err(|e| e.to_string())
+    let sessions = state.sessions.lock().unwrap();
+    let s = sessions.get(&id).ok_or("no such session")?;
+    // Queueing, so the command returns at once however busy the pty is.
+    s.writer_tx
+        .send(data.into_bytes())
+        .map_err(|_| "session writer is gone".to_string())
 }
 
 #[tauri::command]
@@ -501,23 +525,30 @@ fn parse_session_file(path: &std::path::Path) -> Option<serde_json::Value> {
 // the tail of a transcript that grows into the megabytes. As a sync command it
 // would do that on the main thread, i.e. with the window frozen.
 #[tauri::command]
+//
+// A chat with no live session answers None rather than failing: the watcher
+// polls every chat every few seconds, resting ones included, so treating an
+// absent session as an error meant thousands of warnings a day in the log —
+// enough to push everything worth reading out of it.
 pub async fn session_meta(
     state: PtyState<'_>,
     id: String,
     account_path: String,
-) -> Result<SessionMeta, String> {
+) -> Result<Option<SessionMeta>, String> {
     let (pid, cwd, spawned_at_ms) = {
         let sessions = state.sessions.lock().unwrap();
-        let s = sessions.get(&id).ok_or("no such session")?;
+        let Some(s) = sessions.get(&id) else {
+            return Ok(None);
+        };
         if !s.alive.load(Ordering::SeqCst) {
-            return Err("session exited".into());
+            return Ok(None);
         }
         (s.pid, s.cwd.clone(), s.spawned_at_ms)
     };
 
     tauri::async_runtime::spawn_blocking(move || meta_from_disk(pid, cwd, spawned_at_ms, account_path))
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
 }
 
 fn meta_from_disk(
@@ -525,7 +556,7 @@ fn meta_from_disk(
     cwd: String,
     spawned_at_ms: u128,
     account_path: String,
-) -> Result<SessionMeta, String> {
+) -> Option<SessionMeta> {
     let dir = std::path::Path::new(&account_path).join("sessions");
     let extract = |v: &serde_json::Value| {
         let mut m = SessionMeta {
@@ -550,9 +581,9 @@ fn meta_from_disk(
         m
     };
 
-    registry_entry(&dir, pid, &cwd, spawned_at_ms)
-        .map(|v| extract(&v))
-        .ok_or_else(|| "no session file".into())
+    // The CLI writes its registry entry a moment after the pty starts, so a
+    // missing file is a normal early answer, not a failure.
+    registry_entry(&dir, pid, &cwd, spawned_at_ms).map(|v| extract(&v))
 }
 
 /// Finds the CLI's registry entry for a pty session, by pid when that matches

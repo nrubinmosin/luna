@@ -5,6 +5,18 @@ import { logWarn, SLOW_MS } from '../shared/lib/log';
 
 const tauriAvailable = '__TAURI_INTERNALS__' in window;
 
+// Commands that do their real work off the main thread. A slow one means a slow
+// network or a big transcript — not a frozen window — so they get a budget of
+// their own rather than tripping the stall warning thousands of times a day.
+const SLOW_BUDGET_MS: Record<string, number> = {
+  account_limits: 5000,
+  session_meta: 2000,
+  ensure_session: 30_000,
+  delete_session: 10_000,
+  orphan_worktrees: 10_000,
+  remove_orphan_worktrees: 30_000
+};
+
 // In plain-browser dev (vite without tauri) all commands become no-ops so the
 // UI stays workable.
 async function call<T>(cmd: string, args?: Record<string, unknown>, fallback?: T): Promise<T> {
@@ -19,7 +31,7 @@ async function call<T>(cmd: string, args?: Record<string, unknown>, fallback?: T
     throw e;
   } finally {
     const ms = performance.now() - started;
-    if (ms > SLOW_MS) logWarn('ipc', `${cmd} took ${Math.round(ms)}ms`);
+    if (ms > (SLOW_BUDGET_MS[cmd] ?? SLOW_MS)) logWarn('ipc', `${cmd} took ${Math.round(ms)}ms`);
   }
 }
 
