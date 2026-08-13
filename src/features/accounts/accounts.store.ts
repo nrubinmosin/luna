@@ -38,8 +38,11 @@ const toAccount = (a: ipc.AccountInfo): Account => ({
   limits: emptyLimits,
   resets: emptyResets,
   usageAge: null,
+  fetchedAt: null,
   sync: 'loading'
 });
+
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 /** "just now" / "6m ago" / "2h ago" — how old the usage numbers are. */
 const ageLabel = (fetchedAtMs: number | null): string | null => {
@@ -58,6 +61,10 @@ let backoffStep = 0;
 const BACKOFF_S = [30, 60, 120, 300, 600, 900];
 
 const HEALTHY_S = 60;
+// The usage endpoint 429s without a retry-after header, so the server never
+// tells us how long to hold off. Sit out a few minutes after any 429: the
+// CLI's own cache keeps the bars honest while sessions are running anyway.
+const THROTTLED_S = 180;
 let polling = false;
 
 const scheduleRetry = (afterS: number, run: () => void) => {
@@ -96,46 +103,55 @@ export const useAccounts = create<AccountsState>()((set, get) => ({
     const patches = new Map<string, Partial<Account>>();
     const patch = (path: string, next: Partial<Account>) => patches.set(path, next);
 
-    await Promise.allSettled(
-      list.map(async a => {
-        const lim = await ipc.accountLimits(a.path).catch(() => null);
-        if (!lim) {
-          patch(a.path, { sync: 'error' });
-          return;
-        }
-        if (lim.rateLimited != null) serverWait = Math.max(serverWait, lim.rateLimited);
+    for (const [i, a] of list.entries()) {
+      // One account at a time, with daylight between them: fired together, the
+      // requests reached the usage endpoint in the same instant and the second
+      // account spent its life 429'd.
+      if (i > 0) await sleep(2000 + Math.random() * 2000);
 
-        // Identity always applies: it comes off disk and is right even when the
-        // usage endpoint is unreachable.
-        const base = {
-          plan: lim.plan ?? '—',
-          email: lim.email,
-          signedIn: lim.signedIn,
-          haveUsage: lim.haveUsage,
-          usageAge: ageLabel(lim.fetchedAtMs)
-        };
+      const lim = await ipc.accountLimits(a.path).catch(() => null);
+      if (!lim) {
+        patch(a.path, { sync: 'error' });
+        continue;
+      }
+      if (lim.rateLimited != null) serverWait = Math.max(serverWait, lim.rateLimited);
 
-        // Numbers may be from the CLI's own cache; keep them even when this
-        // round was throttled, and never overwrite real figures with zeros.
-        if (lim.haveUsage) {
-          patch(a.path, {
-            ...base,
-            limits: { h5: lim.h5, week: lim.week, fable: lim.model },
-            resets: {
-              h5: fmtReset(lim.resetH5),
-              week: fmtReset(lim.resetWeek),
-              fable: fmtReset(lim.resetModel)
-            },
-            sync: lim.rateLimited != null ? 'throttled' : lim.stale ? 'stale' : 'ready'
-          });
-          return;
-        }
+      // Identity always applies: it comes off disk and is right even when the
+      // usage endpoint is unreachable.
+      const base = {
+        plan: lim.plan ?? '—',
+        email: lim.email,
+        signedIn: lim.signedIn
+      };
+      const sync = lim.rateLimited != null ? 'throttled' as const : lim.stale ? 'stale' as const : null;
+
+      if (lim.haveUsage) {
         patch(a.path, {
           ...base,
-          sync: lim.rateLimited != null ? 'throttled' : lim.stale ? 'stale' : 'error'
+          haveUsage: true,
+          usageAge: ageLabel(lim.fetchedAtMs),
+          fetchedAt: lim.fetchedAtMs,
+          limits: { h5: lim.h5, week: lim.week, fable: lim.model },
+          resets: {
+            h5: fmtReset(lim.resetH5),
+            week: fmtReset(lim.resetWeek),
+            fable: fmtReset(lim.resetModel)
+          },
+          sync: sync ?? 'ready'
         });
-      })
-    );
+        continue;
+      }
+      // A round that brought nothing (throttled, token mid-refresh, transient
+      // error) keeps the last real numbers on the bars instead of wiping them
+      // to dashes for a minute — that alternation is what read as blinking.
+      // Only their age keeps ticking.
+      const prev = get().accounts.find(x => x.path === a.path);
+      patch(a.path, {
+        ...base,
+        usageAge: ageLabel(prev?.fetchedAt ?? null),
+        sync: sync ?? 'error'
+      });
+    }
 
     // Apply everything at once, and skip the write entirely when nothing moved
     // — an idle poll of unchanged accounts should cost no render at all.
@@ -166,10 +182,14 @@ export const useAccounts = create<AccountsState>()((set, get) => ({
     // One scheduler for both cases. A separate fixed-interval poll alongside
     // this would defeat the backoff entirely — which is exactly what a 60s
     // interval in the app shell used to do to a rate-limited endpoint.
+    // A 429 stretches even the healthy cadence: an account riding on kept
+    // numbers is fine to look at, but polling again in 60s just earns the
+    // next 429 — that loop is what kept the endpoint throttled for good.
+    const throttled = get().accounts.some(a => a.sync === 'throttled');
     const wait =
       unhappy.length === 0
-        ? HEALTHY_S
-        : Math.max(BACKOFF_S[Math.min(backoffStep++, BACKOFF_S.length - 1)], serverWait);
+        ? Math.max(HEALTHY_S, serverWait, throttled ? THROTTLED_S : 0)
+        : Math.max(BACKOFF_S[Math.min(backoffStep++, BACKOFF_S.length - 1)], serverWait, throttled ? THROTTLED_S : 0);
     scheduleRetry(wait, () => void get().refresh());
   },
 

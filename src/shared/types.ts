@@ -55,6 +55,9 @@ export interface Account {
   resets: { h5: string; week: string; fable: string };
   /** Age of the numbers, e.g. "just now" / "4m ago". */
   usageAge: string | null;
+  /** When the numbers on screen were actually taken, so their age keeps
+   *  ticking through rounds that brought nothing new. */
+  fetchedAt: number | null;
   sync: AccountSync;
 }
 
