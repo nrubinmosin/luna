@@ -115,6 +115,15 @@ a:hover { text-decoration: underline; }
 .xp-field {
   box-shadow: var(--border-field);
 }
+/* xp.css pins the checkbox tick (label::after) to the label's top but leaves
+   the box (label::before) at its static inline position, so any label whose
+   line-height exceeds the 13px box drops the box out from under the tick.
+   Pin the box to the top as well, keeping the two together on multi-line
+   labels. */
+[data-app] input[type="checkbox"] + label::before {
+  top: 0;
+}
+
 /* The classic Luna title-bar gradient, sized for our own compact strips
    rather than xp.css's fixed 28px .title-bar. Stays XP-blue in both themes. */
 .xp-titlebar {
