@@ -1,6 +1,6 @@
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, PtySize};
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -8,6 +8,13 @@ use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, State};
 
 const SCROLLBACK_CAP: usize = 2 * 1024 * 1024;
+/// Let the buffer run this far past the cap before trimming, so the trim costs
+/// one pass per slack rather than one per read.
+const SCROLLBACK_SLACK: usize = 256 * 1024;
+/// How long output is allowed to pile up before it is sent to the UI — one
+/// frame at 60Hz, short enough to feel immediate and long enough that a
+/// repainting TUI does not turn into hundreds of events per second.
+const FRAME: std::time::Duration = std::time::Duration::from_millis(16);
 
 #[derive(Serialize, Clone)]
 struct PtyOutput<'a> {
@@ -25,7 +32,7 @@ struct Session {
     master: Box<dyn portable_pty::MasterPty + Send>,
     writer: Box<dyn Write + Send>,
     killer: Box<dyn ChildKiller + Send + Sync>,
-    scrollback: Arc<Mutex<Vec<u8>>>,
+    scrollback: Arc<Mutex<VecDeque<u8>>>,
     alive: Arc<AtomicBool>,
     pid: Option<u32>,
     cwd: String,
@@ -61,8 +68,8 @@ pub async fn ensure_session(
 
     if let Some(s) = sessions.get(&id) {
         if s.alive.load(Ordering::SeqCst) {
-            let buf = s.scrollback.lock().unwrap();
-            return Ok(String::from_utf8_lossy(&buf).into_owned());
+            let mut buf = s.scrollback.lock().unwrap();
+            return Ok(String::from_utf8_lossy(buf.make_contiguous()).into_owned());
         }
         sessions.remove(&id);
     }
@@ -115,7 +122,7 @@ pub async fn ensure_session(
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
     let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
 
-    let scrollback = Arc::new(Mutex::new(Vec::new()));
+    let scrollback = Arc::new(Mutex::new(VecDeque::new()));
     let alive = Arc::new(AtomicBool::new(true));
 
     {
@@ -123,39 +130,77 @@ pub async fn ensure_session(
         let id = id.clone();
         let scrollback = Arc::clone(&scrollback);
         let alive = Arc::clone(&alive);
-        std::thread::spawn(move || {
-            let mut chunk = [0u8; 8192];
+
+        // The reader hands bytes to an emitter thread instead of emitting them
+        // itself. A repainting TUI produces a steady stream of small reads, and
+        // one event per read means one IPC message plus one JSON payload per
+        // read, per chat, all landing on the webview's single thread — the app
+        // got slower with every busy chat. The emitter coalesces whatever
+        // arrives inside a frame into one event.
+        let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        let emitter = std::thread::spawn(move || {
             // Carry bytes of a UTF-8 sequence split across reads.
             let mut carry: Vec<u8> = Vec::new();
+            while let Ok(first) = rx.recv() {
+                carry.extend_from_slice(&first);
+                // Keep collecting for one frame, so a burst becomes one event.
+                let deadline = std::time::Instant::now() + FRAME;
+                loop {
+                    let left = deadline.saturating_duration_since(std::time::Instant::now());
+                    if left.is_zero() {
+                        break;
+                    }
+                    match rx.recv_timeout(left) {
+                        Ok(more) => carry.extend_from_slice(&more),
+                        Err(_) => break,
+                    }
+                }
+
+                let valid_to = match std::str::from_utf8(&carry) {
+                    Ok(_) => carry.len(),
+                    Err(e) => e.valid_up_to(),
+                };
+                if valid_to > 0 {
+                    let text = unsafe { std::str::from_utf8_unchecked(&carry[..valid_to]) };
+                    let _ = app.emit("pty://output", PtyOutput { id: &id, data: text });
+                }
+                carry.drain(..valid_to);
+                if carry.len() > 4 {
+                    carry.clear(); // not a split sequence, just invalid bytes
+                }
+            }
+            (app, id)
+        });
+
+        std::thread::spawn(move || {
+            let mut chunk = [0u8; 8192];
             loop {
                 match reader.read(&mut chunk) {
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
                         {
                             let mut sb = scrollback.lock().unwrap();
-                            sb.extend_from_slice(&chunk[..n]);
-                            let len = sb.len();
-                            if len > SCROLLBACK_CAP {
-                                sb.drain(..len - SCROLLBACK_CAP);
+                            sb.extend(chunk[..n].iter().copied());
+                            // Trimming to the cap on every read used to move the
+                            // whole two megabytes each time; a deque drops from
+                            // the front without touching the rest, and trimming
+                            // in one go per overshoot keeps it off the hot path.
+                            if sb.len() > SCROLLBACK_CAP + SCROLLBACK_SLACK {
+                                let excess = sb.len() - SCROLLBACK_CAP;
+                                sb.drain(..excess);
                             }
                         }
-                        carry.extend_from_slice(&chunk[..n]);
-                        let valid_to = match std::str::from_utf8(&carry) {
-                            Ok(_) => carry.len(),
-                            Err(e) => e.valid_up_to(),
-                        };
-                        if valid_to > 0 {
-                            let text = unsafe { std::str::from_utf8_unchecked(&carry[..valid_to]) };
-                            let _ = app.emit("pty://output", PtyOutput { id: &id, data: text });
-                        }
-                        carry.drain(..valid_to);
-                        if carry.len() > 4 {
-                            carry.clear(); // not a split sequence, just invalid bytes
+                        if tx.send(chunk[..n].to_vec()).is_err() {
+                            break;
                         }
                     }
                 }
             }
             alive.store(false, Ordering::SeqCst);
+            // Closing the channel ends the emitter; join it so the last output
+            // of the session is on its way before the exit event goes out.
+            drop(tx);
+            let Ok((app, id)) = emitter.join() else { return };
             let code = child.wait().ok().map(|st| st.exit_code());
             crate::log::info("pty", &format!("session {id} exited, code {code:?}"));
             let _ = app.emit("pty://exit", PtyExit { id: &id, code });
