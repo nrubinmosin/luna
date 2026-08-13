@@ -7,10 +7,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Pasted / dropped attachments are copied here so the CLI has a stable
 /// absolute path to read, independent of wherever the original lived.
 fn media_root(chat_id: &str) -> Result<PathBuf, String> {
-    let base = dirs::data_local_dir()
-        .or_else(dirs::cache_dir)
-        .ok_or("No local data directory")?;
-    Ok(base.join("llm-desktop").join("media").join(sanitize(chat_id)))
+    let base = crate::paths::local_dir().ok_or("No local data directory")?;
+    Ok(base.join("media").join(sanitize(chat_id)))
 }
 
 fn sanitize(raw: &str) -> String {
@@ -69,10 +67,8 @@ const KEEP_DAYS: u64 = 14;
 
 #[tauri::command]
 pub fn prune_media() -> Result<usize, String> {
-    let base = dirs::data_local_dir()
-        .or_else(dirs::cache_dir)
+    let base = crate::paths::local_dir()
         .ok_or("No local data directory")?
-        .join("llm-desktop")
         .join("media");
     if !base.exists() {
         return Ok(0);
