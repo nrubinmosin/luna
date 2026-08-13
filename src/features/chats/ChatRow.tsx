@@ -17,6 +17,7 @@ export function ChatRow({ chat }: { chat: Chat }) {
   const st = STATUS[chat.status];
   const [editing, setEditing] = useState(false);
   const [confirming, setConfirming] = useState(false);
+  const [dropWorktree, setDropWorktree] = useState(false);
   const [draft, setDraft] = useState('');
 
   const doDelete = () => {
@@ -25,15 +26,27 @@ export function ChatRow({ chat }: { chat: Chat }) {
     const accountPath =
       useAccounts.getState().accounts.find(a => a.name === chat.account)?.path ?? '';
     if (folder) {
-      // One command kills the process tree and clears worktree, branch and
-      // attachments — it resolves the worktree itself, so deleting a chat
-      // seconds after creating it no longer orphans one.
-      void deleteSession(chat.id, folder.path, accountPath, chat.worktreePath ?? null).catch(err =>
-        console.warn('[llm-desktop] delete failed', err)
-      );
+      // One command kills the process tree and clears the attachments — and the
+      // worktree and its branch only if that was asked for. It resolves the
+      // worktree itself, so deleting a chat seconds after creating it no longer
+      // orphans one.
+      void deleteSession(
+        chat.id,
+        folder.path,
+        accountPath,
+        chat.worktreePath ?? null,
+        dropWorktree
+      ).catch(err => console.warn('[llm-desktop] delete failed', err));
     }
     evictChat(chat.id);
     deleteChat(chat.id);
+  };
+
+  const archive = () => {
+    // Out of the panes as well as out of the list: a hidden chat holding a pane
+    // would leave a slab of terminal on screen with no row to close it from.
+    evictChat(chat.id);
+    useChats.getState().setArchived(chat.id, true);
   };
 
   const commitRename = () => {
@@ -104,13 +117,25 @@ export function ChatRow({ chat }: { chat: Chat }) {
       <span
         onClick={e => {
           e.stopPropagation();
+          if (chat.archived) useChats.getState().setArchived(chat.id, false);
+          else archive();
+        }}
+        title={chat.archived ? 'Unarchive — put it back in the list' : 'Archive — hide it, keep everything'}
+        className="hover-bg"
+        style={{
+          width: 16, height: 16, flex: 'none', borderRadius: 2, display: 'grid',
+          placeItems: 'center', fontSize: 11, color: 'var(--faint)', cursor: 'default'
+        }}
+      >
+        {chat.archived ? '↥' : '↧'}
+      </span>
+      <span
+        onClick={e => {
+          e.stopPropagation();
+          setDropWorktree(false);
           setConfirming(true);
         }}
-        title={
-          chat.worktree
-            ? 'Delete chat — also removes its worktree and branch'
-            : 'Delete chat'
-        }
+        title="Delete chat"
         className="hover-danger"
         style={{
           width: 16, height: 16, flex: 'none', borderRadius: 2, display: 'grid',
@@ -125,16 +150,34 @@ export function ChatRow({ chat }: { chat: Chat }) {
           title={`Delete "${chat.name}"?`}
           body={
             <>
-              The session is stopped and its scrollback is lost.
+              The session is stopped and its scrollback is lost. Pasted attachments are removed.
+              The transcript is kept, so the session can still be resumed from the CLI.
               {chat.worktree && (
                 <>
-                  {' '}Its git worktree{chat.worktreePath ? ` (${chat.worktreePath})` : ''} and the
-                  throwaway <code>worktree-…</code> branch go with it, including any uncommitted work.
+                  {' '}Its git worktree{chat.worktreePath ? ` (${chat.worktreePath})` : ''} stays on
+                  disk unless you say otherwise.
                 </>
-              )}{' '}
-              Pasted attachments are removed. The transcript is kept, so the session can still be
-              resumed from the CLI.
+              )}
             </>
+          }
+          extra={
+            chat.worktree && (
+              <label
+                onClick={e => e.stopPropagation()}
+                style={{ display: 'flex', alignItems: 'flex-start', gap: 7, fontSize: 12.5, color: 'var(--dim)', cursor: 'default' }}
+              >
+                <input
+                  type="checkbox"
+                  checked={dropWorktree}
+                  onChange={e => setDropWorktree(e.target.checked)}
+                  style={{ marginTop: 2, flex: 'none' }}
+                />
+                <span>
+                  Delete the worktree and its throwaway <code>worktree-…</code> branch too,
+                  including any uncommitted work.
+                </span>
+              </label>
+            )
           }
           onConfirm={doDelete}
           onCancel={() => setConfirming(false)}

@@ -15,6 +15,7 @@ interface ChatsState {
   setSessionId: (chatId: string, sessionId: string) => void;
   setContext: (chatId: string, context: number, tokens: number | null, window: number | null) => void;
   clearPendingPrompt: (chatId: string) => void;
+  setArchived: (chatId: string, archived: boolean) => void;
   renameChat: (chatId: string, name: string) => void;
   findChat: (chatId: string | null) => Chat | null;
   folderOf: (chatId: string) => Folder | null;
@@ -97,6 +98,17 @@ export const useChats = create<ChatsState>()(
             ...f,
             chats: f.chats.map(c => (c.id === chatId ? { ...c, pendingPrompt: null } : c))
           }))
+        })),
+
+      setArchived: (chatId, archived) =>
+        set(s => ({
+          folders: s.folders.map(f => ({
+            ...f,
+            chats: f.chats.map(c => (c.id === chatId ? { ...c, archived } : c))
+          })),
+          // An archived chat is out of sight; leaving it selected would leave
+          // the rest of the UI reporting on something nobody can see.
+          active: archived && s.active === chatId ? null : s.active
         })),
 
       setContext: (chatId, context, tokens, window) =>

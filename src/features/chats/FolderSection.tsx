@@ -10,6 +10,12 @@ import { orphanWorktrees, removeOrphanWorktrees } from '../../ipc/commands';
 export function FolderSection({ folder }: { folder: Folder }) {
   const toggleFolder = useChats(s => s.toggleFolder);
   const t = tail2(folder.path);
+  const live = folder.chats.filter(c => !c.archived);
+  const archived = folder.chats.filter(c => c.archived);
+  // Kept out of the store: which archive drawers are open is worth exactly as
+  // much as the current window, and persisting it would only mean one more
+  // shape to migrate.
+  const [showArchived, setShowArchived] = useState(false);
 
   // Worktrees left behind by crashes or by chats deleted before their path was
   // known. Recheck whenever the folder's chats change — that is when one is
@@ -92,14 +98,32 @@ export function FolderSection({ folder }: { folder: Folder }) {
           </span>
         </span>
         <span style={{ fontSize: 10.5, color: 'var(--faint)', flex: 'none', background: 'var(--chip)', padding: '1px 5px', borderRadius: 2 }}>
-          {folder.chats.length}
+          {live.length}
         </span>
       </div>
       {folder.open && (
         <div style={{ display: 'flex', flexDirection: 'column', padding: 4 }}>
-          {folder.chats.map(c => (
+          {live.map(c => (
             <ChatRow key={c.id} chat={c} />
           ))}
+          {archived.length > 0 && (
+            <>
+              <div
+                onClick={() => setShowArchived(v => !v)}
+                className="hover-bg"
+                title="Chats hidden from the list. Their sessions are untouched."
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 6, height: 22, padding: '0 6px',
+                  borderRadius: 2, cursor: 'default', fontSize: 11, color: 'var(--faint)'
+                }}
+              >
+                <span style={{ width: 8, flex: 'none', fontSize: 9, transform: showArchived ? 'rotate(90deg)' : 'none' }}>▶</span>
+                <span style={{ flex: 1 }}>Archived</span>
+                <span style={{ background: 'var(--chip)', padding: '1px 5px', borderRadius: 2 }}>{archived.length}</span>
+              </div>
+              {showArchived && archived.map(c => <ChatRow key={c.id} chat={c} />)}
+            </>
+          )}
         </div>
       )}
     </div>
