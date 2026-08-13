@@ -186,7 +186,10 @@ export function ChatRow({ chat }: { chat: Chat }) {
                   checked={dropWorktree}
                   onChange={e => setDropWorktree(e.target.checked)}
                 />
-                <label htmlFor={`drop-worktree-${chat.id}`} style={{ cursor: 'default', lineHeight: 1.5 }}>
+                {/* xp.css makes every label inline-flex, which chops a wrapping
+                    label into unwrappable flex columns around the <code> child;
+                    block restores normal text flow. */}
+                <label htmlFor={`drop-worktree-${chat.id}`} style={{ display: 'block', cursor: 'default', lineHeight: 1.5 }}>
                   Delete the worktree and its throwaway <code>worktree-…</code> branch too,
                   including any uncommitted work.
                 </label>
