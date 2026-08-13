@@ -150,22 +150,6 @@ export const saveMedia = (chatId: string, name: string, base64: string) =>
 
 export const clearMedia = (chatId: string) => call<void>('clear_media', { chatId });
 
-/** A chat requested on the command line. */
-export interface NewChatRequest {
-  /** Identifies the waiting llm-desktop-cli process to answer. */
-  id: string;
-  folder: string;
-  model: string | null;
-  effort: string | null;
-  worktree: boolean | null;
-  account: string | null;
-  prompt: string | null;
-}
-
-/** Unblocks the waiting llm-desktop-cli process with the outcome. */
-export const ackChatRequest = (id: string, error: string | null) =>
-  call<void>('ack_chat_request', { id, error });
-
 export const pickFolder = async (): Promise<string | null> => {
   if (!tauriAvailable) return null;
   const { open } = await import('@tauri-apps/plugin-dialog');

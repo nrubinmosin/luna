@@ -7,7 +7,6 @@ import { NewChatDialog } from '../features/new-chat/NewChatDialog';
 import { usePanes, type Layout } from '../features/panes/panes.store';
 import { useAccounts } from '../features/accounts/accounts.store';
 import { useNewChat } from '../features/new-chat/newchat.store';
-import { useCliChats } from '../features/new-chat/useCliChats';
 import { useSessionWatch } from '../features/chats/useSessionWatch';
 import { LoginModal } from '../features/accounts/LoginModal';
 import { checkForUpdates } from '../shared/lib/updater';
@@ -86,7 +85,6 @@ export function App() {
   const openNewChat = useCallback(() => useNewChat.getState().openDialog(), []);
   const closeModal = useCallback(() => useNewChat.getState().close(), []);
   useKeymap({ openNewChat, closeModal });
-  useCliChats();
   useSessionWatch();
 
   const startResize = (e: React.MouseEvent) => {

@@ -10,7 +10,6 @@ import type { Chat } from '../../shared/types';
 import { ensureSession, resizeSession, writeSession } from '../../ipc/commands';
 import { onPtyExit, onPtyOutput } from '../../ipc/events';
 import { useChats } from '../chats/chats.store';
-import { sendFirstPrompt } from '../chats/firstPrompt';
 import { useAccounts } from '../accounts/accounts.store';
 
 export const dark = () => document.querySelector('[data-app]')?.getAttribute('data-theme') === 'dark';
@@ -199,14 +198,6 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
         resume: chat.sessionId ?? null
       });
       if (disposed) return;
-
-      // Normally the CLI handler has already sent this — it starts the session
-      // itself rather than waiting for a pane. What is left here is the
-      // recovery case: a message queued while the app was closing, which no
-      // longer has a request handler behind it and would otherwise sit in the
-      // store forever. Deliberately not awaited or cancelled on teardown; the
-      // send is worth finishing whether or not this pane survives it.
-      if (chat.pendingPrompt?.trim()) void sendFirstPrompt(chat.id, !!backlog);
 
       if (!backlog) {
         // Fresh session: the pty starts at a placeholder size, so this is also
