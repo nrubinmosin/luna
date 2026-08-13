@@ -89,6 +89,12 @@ a:hover { text-decoration: underline; }
 .hover-danger:hover { background: oklch(.63 .19 25 / .16) !important; color: oklch(.58 .2 25) !important; }
 
 .xterm .xterm-viewport { background: transparent !important; }
+/* The CLI runs on the alternate screen and the terminal is built with no
+   scrollback, so this viewport has nothing to scroll — but xterm gives it
+   overflow-y: scroll unconditionally, which the app's own scrollbar styling
+   then paints as a faint stripe down the side of every chat. */
+.xterm .xterm-viewport { overflow-y: hidden; scrollbar-width: none; }
+.xterm .xterm-viewport::-webkit-scrollbar { width: 0; height: 0; }
 
 /* Folder-row actions (new chat, orphan sweep) only cost width once the row
    is hovered — the rest of the time that space goes to the folder name.
