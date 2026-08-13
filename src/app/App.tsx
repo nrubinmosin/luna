@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ACCENT } from '../shared/lib/format';
 import { ChatList } from '../features/chats/ChatList';
+import { OrphanSessions } from '../features/chats/OrphanSessions';
 import { PaneGrid } from '../features/panes/PaneGrid';
 import { StatusBar } from '../features/status-bar/StatusBar';
 import { NewChatDialog } from '../features/new-chat/NewChatDialog';
@@ -200,6 +201,7 @@ export function App() {
           </menu>
 
           <div className="tab-panel" role="tabpanel">
+            <OrphanSessions />
             <ChatList />
           </div>
           <StatusBar />

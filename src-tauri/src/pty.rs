@@ -2,6 +2,9 @@ use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, PtySize};
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
+// Only the Windows kill path shells out; on other targets this is dead weight
+// and warns about itself on every build.
+#[cfg(windows)]
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -43,6 +46,9 @@ struct Session {
     pid: Option<u32>,
     cwd: String,
     spawned_at_ms: u128,
+    /// Kept so a session that has lost its chat row can still be described:
+    /// its title and status live in this account's registry.
+    account_path: String,
 }
 
 #[derive(Default)]
@@ -244,6 +250,7 @@ pub async fn ensure_session(
             pid,
             cwd: folder,
             spawned_at_ms,
+            account_path,
         },
     );
 
@@ -354,6 +361,73 @@ pub async fn delete_session(
         Some(_) => Ok(resolved),
         None => Ok(None),
     }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrphanSession {
+    /// The chat id the session was spawned under. Re-creating a chat row with
+    /// this exact id is what reattaches it, scrollback included.
+    pub id: String,
+    pub pid: Option<u32>,
+    pub cwd: String,
+    pub account_path: String,
+    pub title: Option<String>,
+    pub status: Option<String>,
+}
+
+/// Sessions this app is still running that no chat claims any more.
+///
+/// A chat row can go missing while its session keeps working — archived by a
+/// misclick, dropped by a half-written state restore — and there is then no
+/// way to reach the session from the UI at all: it holds an account's tokens
+/// and answers to nobody. The frontend passes the chat ids it knows, and
+/// anything alive outside that set comes back here.
+///
+/// Only this app's own ptys are considered. The CLI registers its subagents
+/// and shells in the same account registry, so walking that instead would
+/// report every busy chat's children as orphans.
+#[tauri::command]
+pub async fn orphan_sessions(
+    state: PtyState<'_>,
+    known: Vec<String>,
+) -> Result<Vec<OrphanSession>, String> {
+    let candidates: Vec<(String, Option<u32>, String, String, u128)> = {
+        let sessions = state.sessions.lock().unwrap();
+        sessions
+            .iter()
+            .filter(|(id, s)| !known.contains(id) && s.alive.load(Ordering::SeqCst))
+            .map(|(id, s)| {
+                (id.clone(), s.pid, s.cwd.clone(), s.account_path.clone(), s.spawned_at_ms)
+            })
+            .collect()
+    };
+    if candidates.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Naming one means reading the head of its transcript, so do it off the
+    // main thread like session_meta does.
+    tauri::async_runtime::spawn_blocking(move || {
+        candidates
+            .into_iter()
+            .map(|(id, pid, cwd, account_path, spawned_at_ms)| {
+                let meta = meta_from_disk(pid, cwd.clone(), spawned_at_ms, account_path.clone());
+                OrphanSession {
+                    id,
+                    pid,
+                    cwd,
+                    account_path,
+                    title: meta
+                        .as_ref()
+                        .and_then(|m| m.first_prompt.clone().or_else(|| m.name.clone())),
+                    status: meta.and_then(|m| m.status),
+                }
+            })
+            .collect()
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 #[derive(Serialize, Default)]
