@@ -105,22 +105,22 @@ export function LoginModal({ account }: { account: Account }) {
 
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.32)', backdropFilter: 'blur(1px)', display: 'grid', placeItems: 'center', zIndex: 70 }}>
-      <div className="xp-raised" style={{ width: 720, height: 500, background: 'var(--bg)', borderRadius: 3, boxShadow: 'var(--shadow), var(--border-raised-outer), var(--border-raised-inner)', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-        <div className="xp-titlebar" style={{ flex: 'none', display: 'flex', alignItems: 'center', gap: 8, height: 27, padding: '0 4px 0 9px', fontSize: 12.5, fontWeight: 700 }}>
-          <span>Sign in — {account.name}</span>
-          <span style={{ fontSize: 11, color: 'rgba(255,255,255,.75)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textShadow: 'none' }}>
-            {account.path}
-          </span>
-          <span style={{ flex: 1 }} />
-          <span
-            onClick={close}
-            className="hover-bg"
-            style={{ width: 18, height: 18, borderRadius: 2, display: 'grid', placeItems: 'center', fontSize: 11, color: '#fff', cursor: 'default' }}
+      <div
+        className="window"
+        style={{ width: 720, height: 500, boxShadow: 'var(--shadow), var(--border-window-outer), var(--border-window-inner)', display: 'flex', flexDirection: 'column' }}
+      >
+        <div className="title-bar" style={{ flex: 'none', gap: 8 }}>
+          <div className="title-bar-text" style={{ flex: 'none' }}>Sign in — {account.name}</div>
+          <div
+            style={{ flex: 1, minWidth: 0, fontSize: 'var(--fs-2)', color: 'rgba(255,255,255,.75)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
           >
-            ✕
-          </span>
+            {account.path}
+          </div>
+          <div className="title-bar-controls">
+            <button aria-label="Close" onClick={close} />
+          </div>
         </div>
-        <div style={{ flex: 1, minHeight: 0, background: 'var(--term)', padding: '10px 12px' }}>
+        <div style={{ flex: 1, minHeight: 0, background: 'var(--term)', margin: 3, padding: '8px 10px' }}>
           <div ref={hostRef} style={{ width: '100%', height: '100%' }} />
         </div>
       </div>

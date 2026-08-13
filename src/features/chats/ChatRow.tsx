@@ -36,7 +36,7 @@ export function ChatRow({ chat }: { chat: Chat }) {
         accountPath,
         chat.worktreePath ?? null,
         dropWorktree
-      ).catch(err => console.warn('[llm-desktop] delete failed', err));
+      ).catch(err => console.warn('[luna] delete failed', err));
     }
     evictChat(chat.id);
     deleteChat(chat.id);
@@ -72,14 +72,27 @@ export function ChatRow({ chat }: { chat: Chat }) {
       onMouseEnter={() => setSpot(chat.id)}
       onMouseLeave={() => setSpot(null)}
       title="Drag into a pane"
-      className="hover-bg"
+      className="hover-bg chat-row"
       style={{
-        display: 'flex', alignItems: 'center', gap: 6, height: 25, padding: '0 6px',
+        display: 'flex', alignItems: 'center', gap: 6, height: 27, padding: '0 6px',
         borderRadius: 2, cursor: 'grab',
         background: active ? tint(22, 'transparent') : 'transparent',
         opacity: dragging ? 0.45 : 1
       }}
     >
+      {/* Kept in flow whether it is set or not — fading it in on hover instead
+          of adding it would shift every name in the list on mouse-over. */}
+      <span
+        onClick={e => {
+          e.stopPropagation();
+          useChats.getState().toggleMark(chat.id);
+        }}
+        title={chat.marked ? 'Marked — click to clear' : 'Mark this chat'}
+        className="mark"
+        data-on={chat.marked ? 'yes' : 'no'}
+      >
+        {chat.marked ? '★' : '☆'}
+      </span>
       <span
         title={st.label}
         style={{ width: 7, height: 7, borderRadius: '50%', flex: 'none', background: st.color, animation: st.anim }}
@@ -95,11 +108,8 @@ export function ChatRow({ chat }: { chat: Chat }) {
             if (e.key === 'Escape') setEditing(false);
           }}
           onClick={e => e.stopPropagation()}
-          className="xp-field"
-          style={{
-            flex: '1 1 auto', minWidth: 40, height: 19, padding: '0 4px', border: '1px solid var(--input-border-color)',
-            borderRadius: 1, background: '#fff', color: '#000', font: 'inherit', fontSize: 12.5, outline: 'none'
-          }}
+          type="text"
+          style={{ flex: '1 1 auto', minWidth: 40, height: 'calc(var(--ui) * 1.4)' }}
         />
       ) : (
         <span
@@ -109,7 +119,7 @@ export function ChatRow({ chat }: { chat: Chat }) {
             setEditing(true);
           }}
           title="Double-click to rename"
-          style={{ flex: '1 1 auto', minWidth: 40, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 12.5, fontWeight: 500 }}
+          style={{ flex: '1 1 auto', minWidth: 40, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 'var(--fs-4)', fontWeight: 500 }}
         >
           {chat.name}
         </span>
@@ -123,8 +133,8 @@ export function ChatRow({ chat }: { chat: Chat }) {
         title={chat.archived ? 'Unarchive — put it back in the list' : 'Archive — hide it, keep everything'}
         className="hover-bg"
         style={{
-          width: 16, height: 16, flex: 'none', borderRadius: 2, display: 'grid',
-          placeItems: 'center', fontSize: 11, color: 'var(--faint)', cursor: 'default'
+          width: 17, height: 17, flex: 'none', borderRadius: 2, display: 'grid',
+          placeItems: 'center', fontSize: 'var(--fs-2)', color: 'var(--faint)', cursor: 'default'
         }}
       >
         {chat.archived ? '↥' : '↧'}
@@ -138,8 +148,8 @@ export function ChatRow({ chat }: { chat: Chat }) {
         title="Delete chat"
         className="hover-danger"
         style={{
-          width: 16, height: 16, flex: 'none', borderRadius: 2, display: 'grid',
-          placeItems: 'center', fontSize: 11, color: 'var(--faint)', cursor: 'default'
+          width: 17, height: 17, flex: 'none', borderRadius: 2, display: 'grid',
+          placeItems: 'center', fontSize: 'var(--fs-2)', color: 'var(--faint)', cursor: 'default'
         }}
       >
         ✕
@@ -162,7 +172,7 @@ export function ChatRow({ chat }: { chat: Chat }) {
                   title={chat.worktreePath}
                   style={{
                     marginTop: 8, padding: '4px 6px', borderRadius: 2, background: 'var(--chip)',
-                    fontFamily: 'ui-monospace, Consolas, monospace', fontSize: 11.5,
+                    fontFamily: 'ui-monospace, Consolas, monospace', fontSize: 'var(--fs-3)',
                     color: 'var(--faint)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'
                   }}
                 >
@@ -178,7 +188,7 @@ export function ChatRow({ chat }: { chat: Chat }) {
               // inside one, the checkbox renders as nothing at all.
               <div
                 onClick={e => e.stopPropagation()}
-                style={{ display: 'flex', alignItems: 'flex-start', gap: 7, fontSize: 12.5, color: 'var(--dim)' }}
+                style={{ display: 'flex', alignItems: 'flex-start', gap: 7, fontSize: 'var(--fs-4)', color: 'var(--dim)' }}
               >
                 <input
                   type="checkbox"

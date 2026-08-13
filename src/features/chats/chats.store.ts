@@ -15,6 +15,7 @@ interface ChatsState {
   setSessionId: (chatId: string, sessionId: string) => void;
   setContext: (chatId: string, context: number, tokens: number | null, window: number | null) => void;
   setArchived: (chatId: string, archived: boolean) => void;
+  toggleMark: (chatId: string) => void;
   renameChat: (chatId: string, name: string) => void;
   findChat: (chatId: string | null) => Chat | null;
   folderOf: (chatId: string) => Folder | null;
@@ -102,6 +103,14 @@ export const useChats = create<ChatsState>()(
           active: archived && s.active === chatId ? null : s.active
         })),
 
+      toggleMark: chatId =>
+        set(s => ({
+          folders: s.folders.map(f => ({
+            ...f,
+            chats: f.chats.map(c => (c.id === chatId ? { ...c, marked: !c.marked } : c))
+          }))
+        })),
+
       setContext: (chatId, context, tokens, window) =>
         set(s => ({
           folders: s.folders.map(f => ({
@@ -131,6 +140,6 @@ export const useChats = create<ChatsState>()(
 
       folderOf: chatId => get().folders.find(f => f.chats.some(c => c.id === chatId)) ?? null
     }),
-    { name: 'llm-desktop.chats' }
+    { name: 'luna.chats' }
   )
 );

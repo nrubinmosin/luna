@@ -15,6 +15,22 @@ export type SplitKey = keyof Splits;
 export type Slots = (string | null)[];
 type PerLayout<T> = Record<Layout, T>;
 
+export type GroupId = 0 | 1 | 2 | 3;
+export const GROUPS: GroupId[] = [0, 1, 2, 3];
+export const GROUP_LABELS = ['I', 'II', 'III', 'IV'] as const;
+
+/**
+ * One remembered workspace: which layout it was left on, what sat in the panes
+ * of each of its four boards, and how those boards were split. Groups are the
+ * level above layouts — switching group swaps the whole arrangement at once,
+ * so a set of chats can be parked and brought back untouched.
+ */
+export interface Group {
+  layout: Layout;
+  boards: PerLayout<Slots>;
+  splitsByLayout: PerLayout<Splits>;
+}
+
 const DEFAULT_SPLITS: Splits = { col: 0.5, rowL: 0.5, rowR: 0.5 };
 export const SPLIT_MIN = 0.15;
 export const SPLIT_MAX = 0.85;
@@ -27,22 +43,35 @@ const blankSplits = (): PerLayout<Splits> => ({
   3: { ...DEFAULT_SPLITS },
   4: { ...DEFAULT_SPLITS }
 });
+const blankGroup = (): Group => ({ layout: 1, boards: blankBoards(), splitsByLayout: blankSplits() });
+const blankGroups = (): Group[] => GROUPS.map(blankGroup);
+
+/** Fills in whatever a persisted group is missing, without dropping what it has. */
+const reviveGroup = (g: Partial<Group> | undefined): Group => ({
+  layout: g?.layout ?? 1,
+  boards: { ...blankBoards(), ...(g?.boards ?? {}) },
+  splitsByLayout: { ...blankSplits(), ...(g?.splitsByLayout ?? {}) }
+});
+const reviveGroups = (list: unknown): Group[] =>
+  GROUPS.map(i => reviveGroup(Array.isArray(list) ? (list[i] as Partial<Group> | undefined) : undefined));
 
 interface PanesState {
-  layout: Layout;
+  group: GroupId;
   /**
-   * Each layout is its own board: switching 4 → 1 → 4 must bring back exactly
-   * the chats that were on the four-pane board, so nothing is cleared on
-   * switch and every layout keeps its own slots and its own split fractions.
+   * Each group is its own remembered set of boards, and inside a group each
+   * layout is its own board: switching 4 → 1 → 4, or II → I → II, must bring
+   * back exactly what was there, so nothing is ever cleared on a switch.
    */
-  boards: PerLayout<Slots>;
-  splitsByLayout: PerLayout<Splits>;
+  groups: Group[];
   over: number;
   drag: string | null;
   /** Index of the pane being dragged by its header, for swapping two panes. */
   dragPane: number | null;
   /** Chat hovered in the sidebar — its pane lights up so you can spot it. */
   spot: string | null;
+  setGroup: (g: GroupId) => void;
+  /** Empties one group's boards and evens out its splits. Chats are untouched. */
+  resetGroup: (g: GroupId) => void;
   setLayout: (n: Layout) => void;
   setSplit: (key: SplitKey, value: number) => void;
   resetSplits: () => void;
@@ -58,27 +87,52 @@ interface PanesState {
   setSpot: (id: string | null) => void;
 }
 
+/** The group currently on screen. */
+export const currentGroup = (s: PanesState): Group => s.groups[s.group] ?? s.groups[0];
+export const currentLayout = (s: PanesState): Layout => currentGroup(s).layout;
 /** Slots of the board currently on screen. */
-export const currentSlots = (s: PanesState): Slots => s.boards[s.layout];
-export const currentSplits = (s: PanesState): Splits => s.splitsByLayout[s.layout];
+export const currentSlots = (s: PanesState): Slots => currentGroup(s).boards[currentLayout(s)];
+export const currentSplits = (s: PanesState): Splits => currentGroup(s).splitsByLayout[currentLayout(s)];
 
-/** Replaces only the active board, leaving the other three untouched. */
-const withBoard = (s: PanesState, next: Slots) => ({
-  boards: { ...s.boards, [s.layout]: next }
+/** Replaces the active group, leaving the other three untouched. */
+const withGroup = (s: PanesState, patch: Partial<Group>) => ({
+  groups: s.groups.map((g, i) => (i === s.group ? { ...g, ...patch } : g))
+});
+
+/** Replaces only the active board, leaving the other three layouts untouched. */
+const withBoard = (s: PanesState, next: Slots) =>
+  withGroup(s, { boards: { ...currentGroup(s).boards, [currentLayout(s)]: next } });
+
+/** Applies a slot rewrite to every board of every group. */
+const mapAllBoards = (s: PanesState, fn: (slots: Slots, layout: Layout) => Slots) => ({
+  groups: s.groups.map(g => ({
+    ...g,
+    boards: LAYOUTS.reduce((acc, n) => {
+      acc[n] = fn(g.boards[n], n);
+      return acc;
+    }, {} as PerLayout<Slots>)
+  }))
 });
 
 export const usePanes = create<PanesState>()(
   persist(
     set => ({
-      layout: 1,
-      boards: blankBoards(),
-      splitsByLayout: blankSplits(),
+      group: 0,
+      groups: blankGroups(),
       over: -1,
       drag: null,
       dragPane: null,
       spot: null,
 
-      setLayout: n => set({ layout: n, over: -1 }),
+      setGroup: g => set({ group: g, over: -1, dragPane: null }),
+
+      resetGroup: g =>
+        set(s => ({
+          groups: s.groups.map((old, i) => (i === g ? { ...blankGroup(), layout: old.layout } : old)),
+          over: -1
+        })),
+
+      setLayout: n => set(s => ({ ...withGroup(s, { layout: n }), over: -1 })),
 
       dropChat: (paneIndex, chatId) =>
         set(s => {
@@ -94,27 +148,20 @@ export const usePanes = create<PanesState>()(
           return withBoard(s, slots);
         }),
 
-      // A deleted chat has to disappear from every board, not just the visible one.
-      evictChat: chatId =>
-        set(s => ({
-          boards: LAYOUTS.reduce((acc, n) => {
-            acc[n] = s.boards[n].map(p => (p === chatId ? null : p));
-            return acc;
-          }, {} as PerLayout<Slots>)
-        })),
+      // A deleted chat has to disappear from every board of every group, not
+      // just the visible one.
+      evictChat: chatId => set(s => mapAllBoards(s, slots => slots.map(p => (p === chatId ? null : p)))),
 
-      // Seat a new chat on every board that still has room, so switching layout
-      // right after creating it doesn't land on an empty grid.
+      // Seat a new chat on every board of the active group that still has room,
+      // so switching layout right after creating it doesn't land on an empty
+      // grid. Parked groups are left alone: they are parked on purpose.
       autoPlace: chatId =>
-        set(s => ({
-          boards: LAYOUTS.reduce((acc, n) => {
-            const slots = s.boards[n];
-            if (slots.includes(chatId)) {
-              acc[n] = slots;
-              return acc;
-            }
+        set(s => {
+          const g = currentGroup(s);
+          const boards = LAYOUTS.reduce((acc, n) => {
+            const slots = g.boards[n];
             const free = slots.findIndex((x, i) => i < n && !x);
-            if (free < 0) {
+            if (slots.includes(chatId) || free < 0) {
               acc[n] = slots;
               return acc;
             }
@@ -122,8 +169,9 @@ export const usePanes = create<PanesState>()(
             next[free] = chatId;
             acc[n] = next;
             return acc;
-          }, {} as PerLayout<Slots>)
-        })),
+          }, {} as PerLayout<Slots>);
+          return withGroup(s, { boards });
+        }),
 
       setOver: i => set({ over: i }),
       setDrag: id => set({ drag: id }),
@@ -140,61 +188,74 @@ export const usePanes = create<PanesState>()(
       setSpot: id => set({ spot: id }),
 
       setSplit: (key, value) =>
-        set(s => ({
-          splitsByLayout: {
-            ...s.splitsByLayout,
-            [s.layout]: {
-              ...currentSplits(s),
-              [key]: Math.min(SPLIT_MAX, Math.max(SPLIT_MIN, value))
+        set(s =>
+          withGroup(s, {
+            splitsByLayout: {
+              ...currentGroup(s).splitsByLayout,
+              [currentLayout(s)]: {
+                ...currentSplits(s),
+                [key]: Math.min(SPLIT_MAX, Math.max(SPLIT_MIN, value))
+              }
             }
-          }
-        })),
+          })
+        ),
 
       resetSplits: () =>
-        set(s => ({
-          splitsByLayout: { ...s.splitsByLayout, [s.layout]: { ...DEFAULT_SPLITS } }
-        }))
+        set(s =>
+          withGroup(s, {
+            splitsByLayout: { ...currentGroup(s).splitsByLayout, [currentLayout(s)]: { ...DEFAULT_SPLITS } }
+          })
+        )
     }),
     {
-      name: 'llm-desktop.panes',
-      version: 1,
-      partialize: s => ({ layout: s.layout, boards: s.boards, splitsByLayout: s.splitsByLayout }),
-      // v0 kept a single shared `panes` array and one `splits` object. Seed every
-      // board from it so an upgrade doesn't wipe the user's current arrangement.
+      name: 'luna.panes',
+      version: 2,
+      partialize: s => ({ group: s.group, groups: s.groups }),
       migrate: (persisted, version) => {
-        type Stored = { layout: Layout; boards: PerLayout<Slots>; splitsByLayout: PerLayout<Splits> };
-        if (version >= 1) {
-          const p = (persisted ?? {}) as Partial<Stored>;
-          return {
-            layout: p.layout ?? 1,
-            boards: { ...blankBoards(), ...(p.boards ?? {}) },
-            splitsByLayout: { ...blankSplits(), ...(p.splitsByLayout ?? {}) }
-          };
+        type V2 = { group: GroupId; groups: Group[] };
+        if (version >= 2) {
+          const p = (persisted ?? {}) as Partial<V2>;
+          return { group: p.group ?? 0, groups: reviveGroups(p.groups) };
         }
-        const old = persisted as { layout?: Layout; panes?: Slots; splits?: Partial<Splits> } | undefined;
-        const seed = old?.panes ?? emptySlots();
-        const splits = { ...DEFAULT_SPLITS, ...(old?.splits ?? {}) };
-        return {
-          layout: old?.layout ?? 1,
-          boards: LAYOUTS.reduce((acc, n) => {
-            // Slots past a board's pane count were never visible on it.
-            acc[n] = seed.map((id, i) => (i < n ? id : null));
-            return acc;
-          }, {} as PerLayout<Slots>),
-          splitsByLayout: LAYOUTS.reduce((acc, n) => {
-            acc[n] = { ...splits };
-            return acc;
-          }, {} as PerLayout<Splits>)
-        };
+
+        // v1 had a single set of boards; v0 a single shared `panes` array and
+        // one `splits` object. Either way the whole arrangement becomes group I
+        // so an upgrade never wipes what is on screen.
+        const old = persisted as
+          | {
+              layout?: Layout;
+              boards?: Partial<PerLayout<Slots>>;
+              splitsByLayout?: Partial<PerLayout<Splits>>;
+              panes?: Slots;
+              splits?: Partial<Splits>;
+            }
+          | undefined;
+
+        const first: Group =
+          version >= 1
+            ? reviveGroup(old as Partial<Group>)
+            : (() => {
+                const seed = old?.panes ?? emptySlots();
+                const splits = { ...DEFAULT_SPLITS, ...(old?.splits ?? {}) };
+                return {
+                  layout: old?.layout ?? 1,
+                  boards: LAYOUTS.reduce((acc, n) => {
+                    // Slots past a board's pane count were never visible on it.
+                    acc[n] = seed.map((id, i) => (i < n ? id : null));
+                    return acc;
+                  }, {} as PerLayout<Slots>),
+                  splitsByLayout: LAYOUTS.reduce((acc, n) => {
+                    acc[n] = { ...splits };
+                    return acc;
+                  }, {} as PerLayout<Splits>)
+                };
+              })();
+
+        return { group: 0, groups: GROUPS.map(i => (i === 0 ? first : blankGroup())) };
       },
       merge: (persisted, current) => {
         const p = (persisted ?? {}) as Partial<PanesState>;
-        return {
-          ...current,
-          ...p,
-          boards: { ...blankBoards(), ...(p.boards ?? {}) },
-          splitsByLayout: { ...blankSplits(), ...(p.splitsByLayout ?? {}) }
-        };
+        return { ...current, ...p, group: p.group ?? 0, groups: reviveGroups(p.groups) };
       }
     }
   )

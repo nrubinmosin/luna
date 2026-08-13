@@ -2,14 +2,14 @@ import type { CSSProperties } from 'react';
 import { STATUS } from '../../shared/ui/status';
 import { ACCENT, limitColor, tail2, tint } from '../../shared/lib/format';
 import { useChats } from '../chats/chats.store';
-import { currentSlots, usePanes } from './panes.store';
+import { currentLayout, currentSlots, usePanes } from './panes.store';
 import { Terminal } from './Terminal';
 
 export function Pane({ index }: { index: number }) {
   const chatId = usePanes(s => currentSlots(s)[index]);
   const over = usePanes(s => s.over === index);
   const spotted = usePanes(s => !!s.spot && s.spot === currentSlots(s)[index]);
-  const layout = usePanes(s => s.layout);
+  const layout = usePanes(currentLayout);
   const { setOver, dropChat, closePane, setDragPane, swapPanes } = usePanes.getState();
   const beingDragged = usePanes(s => s.dragPane === index);
   const chat = useChats(s => s.findChat(chatId));
@@ -29,7 +29,7 @@ export function Pane({ index }: { index: number }) {
       : 'Context window usage — waiting for the first turn';
 
   const chip: CSSProperties = {
-    fontSize: 10.5, color: '#0a1f5c', background: 'rgba(255,255,255,.82)',
+    fontSize: 'var(--fs-1)', color: '#0a1f5c', background: 'rgba(255,255,255,.82)',
     padding: '1px 5px', borderRadius: 2, whiteSpace: 'nowrap', flex: 'none'
   };
 
@@ -85,14 +85,14 @@ export function Pane({ index }: { index: number }) {
               setOver(-1);
             }}
             title="Drag to swap this pane with another"
-            className="xp-titlebar"
-            style={{ flex: 'none', height: 24, display: 'flex', alignItems: 'center', gap: 5, padding: '0 3px 0 8px', cursor: 'grab' }}
+            className="title-bar"
+            style={{ flex: 'none', gap: 5, cursor: 'grab' }}
           >
             <span
               title={st!.label}
               style={{ width: 7, height: 7, borderRadius: '50%', flex: 'none', background: st!.color, animation: st!.anim }}
             />
-            <span style={{ flex: '1 1 auto', minWidth: 40, fontSize: 12, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            <span className="title-bar-text" style={{ flex: '1 1 auto', minWidth: 40 }}>
               {chat.name}
             </span>
 
@@ -118,12 +118,12 @@ export function Pane({ index }: { index: number }) {
               </span>
             </span>
 
-            <span
-              onClick={() => closePane(index)}
-              className="hover-bg"
-              style={{ width: 17, height: 17, borderRadius: 2, display: 'grid', placeItems: 'center', fontSize: 11, color: '#fff', cursor: 'default', flex: 'none' }}
-            >
-              ✕
+            <span className="title-bar-controls" style={{ flex: 'none' }}>
+              <button
+                aria-label="Close"
+                title="Close this pane — the chat keeps running"
+                onClick={() => closePane(index)}
+              />
             </span>
           </div>
           <Terminal chat={chat} folderPath={folder.path} />
@@ -131,8 +131,8 @@ export function Pane({ index }: { index: number }) {
       ) : (
         <div style={{ flex: 1, display: 'grid', placeItems: 'center', gap: 6, alignContent: 'center', color: 'var(--faint)' }}>
           <div style={{ width: 40, height: 30, border: '1.5px dashed var(--line)', borderRadius: 3 }} />
-          <div style={{ fontSize: 13, whiteSpace: 'nowrap' }}>Drag a chat here</div>
-          <div style={{ fontSize: 11.5, opacity: 0.75, whiteSpace: 'nowrap' }}>
+          <div style={{ fontSize: 'var(--fs-5)', whiteSpace: 'nowrap' }}>Drag a chat here</div>
+          <div style={{ fontSize: 'var(--fs-3)', opacity: 0.75, whiteSpace: 'nowrap' }}>
             pane {index + 1} of {layout}
           </div>
         </div>

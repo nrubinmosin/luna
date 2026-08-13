@@ -4,7 +4,14 @@ import { ChatList } from '../features/chats/ChatList';
 import { PaneGrid } from '../features/panes/PaneGrid';
 import { StatusBar } from '../features/status-bar/StatusBar';
 import { NewChatDialog } from '../features/new-chat/NewChatDialog';
-import { usePanes, type Layout } from '../features/panes/panes.store';
+import {
+  currentLayout,
+  GROUP_LABELS,
+  GROUPS,
+  usePanes,
+  type Layout
+} from '../features/panes/panes.store';
+import { AppFrame } from './AppFrame';
 import { useAccounts } from '../features/accounts/accounts.store';
 import { useNewChat } from '../features/new-chat/newchat.store';
 import { useSessionWatch } from '../features/chats/useSessionWatch';
@@ -52,13 +59,16 @@ function LayoutIcon({ n }: { n: Layout }) {
 }
 
 export function App() {
-  const [pref, setPref] = useState<ThemePref>(() => (localStorage.getItem('llm-desktop.theme') as ThemePref) || 'system');
+  const [pref, setPref] = useState<ThemePref>(() => (localStorage.getItem('luna.theme') as ThemePref) || 'system');
   const [sysDark, setSysDark] = useState(() => window.matchMedia('(prefers-color-scheme: dark)').matches);
   const [sidebar, setSidebar] = useState(280);
   const [resizing, setResizing] = useState(false);
   const modal = useNewChat(s => s.open);
-  const layout = usePanes(s => s.layout);
+  const layout = usePanes(currentLayout);
   const setLayout = usePanes(s => s.setLayout);
+  const group = usePanes(s => s.group);
+  const setGroup = usePanes(s => s.setGroup);
+  const resetGroup = usePanes(s => s.resetGroup);
   const loginFor = useAccounts(s => s.loginFor);
   const sidebarRef = useRef(sidebar);
   sidebarRef.current = sidebar;
@@ -79,7 +89,7 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    localStorage.setItem('llm-desktop.theme', pref);
+    localStorage.setItem('luna.theme', pref);
   }, [pref]);
 
   const openNewChat = useCallback(() => useNewChat.getState().openDialog(), []);
@@ -114,71 +124,96 @@ export function App() {
       data-theme={theme}
       style={{
         ['--accent' as string]: ACCENT,
-        height: '100vh', display: 'flex', background: 'var(--bg)', color: 'var(--fg)',
+        height: '100vh', background: 'var(--bg)', color: 'var(--fg)',
         fontFamily: 'var(--sans-serif)',
-        fontSize: 13.5
+        fontSize: 'var(--ui)'
       }}
     >
-      <div style={{ width: sidebar, flex: 'none', background: 'var(--sidebar)', borderRight: '1px solid var(--window-frame)', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-        <div style={{ flex: 'none', padding: '8px 8px 7px', display: 'flex', flexDirection: 'column', gap: 6 }}>
-          <div style={{ display: 'flex', gap: 5 }}>
-            <div
-              onClick={openNewChat}
-              className="hover-bright"
-              style={{
-                flex: 1, height: 27, borderRadius: 2, background: 'var(--accent)', color: '#fff',
-                border: '1px solid var(--window-frame)',
-                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5, fontSize: 12.5,
-                fontWeight: 700, cursor: 'default',
-                boxShadow: 'inset -1px -1px rgba(0,0,0,.5), inset 1px 1px rgba(255,255,255,.55)'
-              }}
-            >
-              <span style={{ fontSize: 14, lineHeight: 1, flex: 'none' }}>+</span>
-              <span style={{ whiteSpace: 'nowrap' }}>New chat</span>
+      <AppFrame>
+        <div style={{ width: sidebar, flex: 'none', background: 'var(--sidebar)', borderRight: '1px solid var(--window-frame)', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+          <div style={{ flex: 'none', padding: '8px 8px 0', display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <div style={{ display: 'flex', gap: 5 }}>
+              <button
+                onClick={openNewChat}
+                className="slim"
+                style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5, fontWeight: 700 }}
+              >
+                <span style={{ fontSize: 'var(--fs-6)', lineHeight: 1, flex: 'none' }}>+</span>
+                <span style={{ whiteSpace: 'nowrap' }}>New chat</span>
+              </button>
+              <button
+                onClick={() => setPref(p => (p === 'system' ? 'light' : p === 'light' ? 'dark' : 'system'))}
+                title={themeTitle}
+                className="slim"
+                aria-label={themeTitle}
+                style={{ width: 30, flex: 'none' }}
+              >
+                {THEMES[pref].glyph}
+              </button>
             </div>
-            <div
-              onClick={() => setPref(p => (p === 'system' ? 'light' : p === 'light' ? 'dark' : 'system'))}
-              title={themeTitle}
-              className="hover-bg xp-raised"
-              style={{ width: 29, height: 27, flex: 'none', borderRadius: 2, background: 'var(--panel)', border: '1px solid var(--window-frame)', display: 'grid', placeItems: 'center', fontSize: 13, cursor: 'default' }}
-            >
-              {THEMES[pref].glyph}
+
+            <div className="xp-sunken" style={{ display: 'flex', gap: 2, padding: 2, background: 'var(--chip)', borderRadius: 2 }}>
+              {([1, 2, 3, 4] as Layout[]).map(n => (
+                <div
+                  key={n}
+                  onClick={() => setLayout(n)}
+                  title={`${n} pane${n > 1 ? 's' : ''}`}
+                  className={layout !== n ? 'hover-bg' : undefined}
+                  style={{
+                    flex: 1, height: 23, borderRadius: 2, display: 'grid', placeItems: 'center', cursor: 'default',
+                    background: layout === n ? 'var(--bg)' : 'transparent',
+                    boxShadow: layout === n ? 'var(--border-sunken-outer), var(--border-sunken-inner)' : 'none'
+                  }}
+                >
+                  <LayoutIcon n={n} />
+                </div>
+              ))}
             </div>
           </div>
 
-          <div className="xp-sunken" style={{ display: 'flex', gap: 2, padding: 2, background: 'var(--chip)', borderRadius: 2 }}>
-            {([1, 2, 3, 4] as Layout[]).map(n => (
-              <div
-                key={n}
-                onClick={() => setLayout(n)}
-                title={`${n} pane${n > 1 ? 's' : ''}`}
-                className={layout !== n ? 'hover-bg' : undefined}
-                style={{
-                  flex: 1, height: 23, borderRadius: 2, display: 'grid', placeItems: 'center', cursor: 'default',
-                  background: layout === n ? 'var(--bg)' : 'transparent',
-                  boxShadow: layout === n ? 'var(--border-sunken-outer), var(--border-sunken-inner)' : 'none'
-                }}
+          {/* One level above the layouts: each group remembers its own four
+              boards, so a set of chats can be parked and brought back whole. */}
+          <menu role="tablist" style={{ marginTop: 7 }}>
+            {GROUPS.map(g => (
+              <button
+                key={g}
+                role="tab"
+                aria-selected={group === g}
+                onClick={() => setGroup(g)}
+                title={`Window group ${GROUP_LABELS[g]} — its own panes and splits`}
               >
-                <LayoutIcon n={n} />
-              </div>
+                {GROUP_LABELS[g]}
+                <span
+                  className="reset"
+                  title={`Reset group ${GROUP_LABELS[g]} — empties its panes, keeps every chat`}
+                  onClick={e => {
+                    e.stopPropagation();
+                    resetGroup(g);
+                  }}
+                >
+                  ↺
+                </span>
+              </button>
             ))}
+          </menu>
+
+          <div className="tab-panel" role="tabpanel">
+            <ChatList />
           </div>
+          <StatusBar />
         </div>
 
-        <ChatList />
-        <StatusBar />
-      </div>
+        <div
+          onMouseDown={startResize}
+          onDoubleClick={() => setSidebar(280)}
+          title="Drag to resize · double-click to reset"
+          style={{ width: 5, marginLeft: -3, marginRight: -2, flex: 'none', cursor: 'col-resize', zIndex: 20, background: resizing ? ACCENT : 'transparent' }}
+        />
 
-      <div
-        onMouseDown={startResize}
-        onDoubleClick={() => setSidebar(280)}
-        title="Drag to resize · double-click to reset"
-        style={{ width: 5, marginLeft: -3, marginRight: -2, flex: 'none', cursor: 'col-resize', zIndex: 20, background: resizing ? ACCENT : 'transparent' }}
-      />
-
-      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
-        <PaneGrid />
-      </div>
+        <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+          <PaneGrid />
+        </div>
+      </AppFrame>
 
       {modal && <NewChatDialog />}
       {loginFor && <LoginModal account={loginFor} />}

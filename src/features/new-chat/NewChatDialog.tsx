@@ -27,7 +27,7 @@ function Segmented<T extends string>({ items, value, onPick, height = 24 }: {
           onClick={() => onPick(item)}
           className={value !== item ? 'hover-bg' : undefined}
           style={{
-            flex: 1, height, borderRadius: 2, display: 'grid', placeItems: 'center', fontSize: 12,
+            flex: 1, height, borderRadius: 2, display: 'grid', placeItems: 'center', fontSize: 'var(--fs-4)',
             fontWeight: 600, cursor: 'default', whiteSpace: 'nowrap',
             background: value === item ? 'var(--bg)' : 'transparent',
             color: value === item ? 'var(--fg)' : 'var(--dim)',
@@ -130,18 +130,19 @@ export function NewChatDialog() {
     onClose();
   };
 
-  const labelStyle: CSSProperties = { fontSize: 11.5, color: 'var(--dim)', marginBottom: 4, fontWeight: 600 };
+  const labelStyle: CSSProperties = { fontSize: 'var(--fs-3)', color: 'var(--dim)', marginBottom: 4, fontWeight: 600 };
 
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.32)', backdropFilter: 'blur(1px)', display: 'grid', placeItems: 'center', zIndex: 60 }}>
-      <div className="xp-raised" style={{ width: 480, background: 'var(--bg)', borderRadius: 3, boxShadow: 'var(--shadow), var(--border-raised-outer), var(--border-raised-inner)', overflow: 'hidden' }}>
-        <div className="xp-titlebar" style={{ height: 27, display: 'flex', alignItems: 'center', padding: '0 4px 0 9px', fontSize: 12.5, fontWeight: 700 }}>
-          <span style={{ flex: 1 }}>New chat</span>
-          <span onClick={onClose} className="hover-bg" style={{ width: 18, height: 18, borderRadius: 2, display: 'grid', placeItems: 'center', fontSize: 11, color: '#fff', cursor: 'default' }}>✕</span>
+      <div className="window" style={{ width: 480, boxShadow: 'var(--shadow), var(--border-window-outer), var(--border-window-inner)' }}>
+        <div className="title-bar">
+          <div className="title-bar-text">New chat</div>
+          <div className="title-bar-controls">
+            <button aria-label="Close" onClick={onClose} />
+          </div>
         </div>
-        <div style={{ padding: '5px 18px 2px', fontSize: 11, color: 'var(--faint)' }}>Model, effort and permission mode can be changed later</div>
-
-        <div style={{ padding: '10px 18px 16px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <div className="window-body" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div style={{ fontSize: 'var(--fs-2)', color: 'var(--faint)' }}>Model, effort and permission mode can be changed later</div>
           <div>
             <div style={labelStyle}>Folder</div>
             <select
@@ -155,13 +156,13 @@ export function NewChatDialog() {
               ))}
               <option value={BROWSE}>Browse…</option>
             </select>
-            <div style={{ fontSize: 11.5, color: 'var(--faint)', marginTop: 4, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            <div style={{ fontSize: 'var(--fs-3)', color: 'var(--faint)', marginTop: 4, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
               {effectiveFolder || 'Opens the system folder picker'}
             </div>
             {!trusted && effectiveFolder && (
               <div
                 style={{
-                  marginTop: 7, padding: '7px 9px', borderRadius: 2, fontSize: 11.5, lineHeight: 1.45,
+                  marginTop: 7, padding: '7px 9px', borderRadius: 2, fontSize: 'var(--fs-3)', lineHeight: 1.45,
                   border: `1px solid ${ACCENT}`, background: tint(10, 'transparent'), color: 'var(--dim)'
                 }}
               >
@@ -172,7 +173,7 @@ export function NewChatDialog() {
               </div>
             )}
             {trustError && (
-              <div style={{ marginTop: 7, fontSize: 11.5, color: 'oklch(.58 .2 25)' }}>
+              <div style={{ marginTop: 7, fontSize: 'var(--fs-3)', color: 'oklch(.58 .2 25)' }}>
                 Could not write trust setting: {trustError}
               </div>
             )}
@@ -205,18 +206,17 @@ export function NewChatDialog() {
             <div style={{ width: 150, flex: 'none' }}>
               <div style={labelStyle}>Isolation</div>
               <div
-                onClick={() => setWorktree(w => !w)}
+                className="field-row"
                 title="Run the session in an isolated git worktree"
-                style={{ display: 'flex', alignItems: 'center', gap: 7, height: 21, cursor: 'default' }}
+                style={{ height: 'calc(var(--ui) * 1.6)' }}
               >
                 <input
                   type="checkbox"
                   id="worktree-toggle"
                   checked={worktree}
                   onChange={() => setWorktree(w => !w)}
-                  onClick={e => e.stopPropagation()}
                 />
-                <label htmlFor="worktree-toggle" style={{ fontSize: 12.5, fontWeight: 500, whiteSpace: 'nowrap', cursor: 'default' }}>
+                <label htmlFor="worktree-toggle" style={{ whiteSpace: 'nowrap', cursor: 'default' }}>
                   Git worktree
                 </label>
               </div>
@@ -230,49 +230,33 @@ export function NewChatDialog() {
                 const on = perm === p;
                 const id = `perm-${p}`;
                 return (
-                  <div
-                    key={p}
-                    onClick={() => setPerm(p)}
-                    style={{ display: 'flex', alignItems: 'center', gap: 9, padding: '2px 2px', cursor: 'default' }}
-                  >
+                  <div key={p} className="field-row">
                     <input
                       type="radio"
                       id={id}
                       name="perm-mode"
                       checked={on}
                       onChange={() => setPerm(p)}
-                      onClick={e => e.stopPropagation()}
                     />
-                    <label htmlFor={id} style={{ fontSize: 12.5, fontWeight: 600, whiteSpace: 'nowrap', cursor: 'default' }}>
+                    <label htmlFor={id} style={{ fontWeight: 600, whiteSpace: 'nowrap', cursor: 'default' }}>
                       {p}
                     </label>
-                    <span style={{ fontSize: 11, color: 'var(--faint)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{PERM_HINTS[p]}</span>
+                    <span style={{ fontSize: 'var(--fs-2)', color: 'var(--faint)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{PERM_HINTS[p]}</span>
                   </div>
                 );
               })}
             </div>
           </div>
-        </div>
 
-        <div style={{ padding: '10px 16px', borderTop: '1px solid var(--line)', display: 'flex', justifyContent: 'flex-end', gap: 8, background: 'var(--panel)' }}>
-          <div
-            onClick={onClose}
-            className="hover-bg xp-raised"
-            style={{ height: 26, padding: '0 13px', borderRadius: 2, border: '1px solid var(--window-frame)', background: 'var(--panel)', display: 'flex', alignItems: 'center', fontSize: 12.5, cursor: 'default' }}
-          >
-            Cancel
-          </div>
-          <div
-            onClick={() => void create()}
-            className="hover-bright"
-            style={{
-              height: 26, padding: '0 15px', borderRadius: 2, background: 'var(--accent)', color: '#fff',
-              border: '1px solid var(--window-frame)', boxShadow: 'inset -1px -1px rgba(0,0,0,.5), inset 1px 1px rgba(255,255,255,.55)',
-              display: 'flex', alignItems: 'center', fontSize: 12.5, fontWeight: 700, cursor: 'default',
-              opacity: canCreate && !creating ? 1 : 0.5
-            }}
-          >
-            {creating ? 'Trusting…' : 'Create'}
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 2 }}>
+            <button onClick={onClose}>Cancel</button>
+            <button
+              onClick={() => void create()}
+              disabled={!canCreate || creating}
+              style={{ fontWeight: 700 }}
+            >
+              {creating ? 'Trusting…' : 'Create'}
+            </button>
           </div>
         </div>
       </div>

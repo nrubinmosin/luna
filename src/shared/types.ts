@@ -24,6 +24,9 @@ export interface Chat {
   /** Folded away in the sidebar. Nothing else about the chat changes: the
    *  session, its worktree and its transcript are all left running. */
   archived?: boolean;
+  /** A flag the user sets by hand, for their own bookkeeping. It means
+   *  whatever they decide it means — nothing in the app reads it. */
+  marked?: boolean;
 }
 
 export interface Folder {
