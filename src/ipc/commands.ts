@@ -115,6 +115,19 @@ export interface SessionMetaDto {
 export const sessionMeta = (id: string, accountPath: string) =>
   call<SessionMetaDto | null>('session_meta', { id, accountPath }, null);
 
+export interface OrphanSessionDto {
+  id: string;
+  pid: number | null;
+  cwd: string;
+  accountPath: string;
+  title: string | null;
+  status: string | null;
+}
+
+/** Sessions this app is running that no chat in the sidebar claims. */
+export const orphanSessions = (known: string[]) =>
+  call<OrphanSessionDto[]>('orphan_sessions', { known }, []);
+
 export const removeWorktree = (folder: string, worktreePath: string) =>
   call<void>('remove_worktree', { folder, worktreePath });
 

@@ -50,10 +50,8 @@ pub fn run() {
         .setup(|app| {
             models::refresh_soon();
 
-            // Housekeeping off the startup path.
-            std::thread::spawn(|| {
-                let _ = media::prune_media();
-            });
+            // Housekeeping off the startup path, and again every few hours.
+            media::prune_periodically();
 
             let open = MenuItem::with_id(app, "open", "Open", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
@@ -105,6 +103,7 @@ pub fn run() {
             pty::kill_session,
             pty::session_alive,
             pty::session_meta,
+            pty::orphan_sessions,
             pty::delete_session,
             trust::folder_trusted,
             trust::trust_folder,
