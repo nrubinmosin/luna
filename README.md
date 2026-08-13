@@ -1,63 +1,78 @@
-# llm-desktop
+# Luna
 
-Тонкая desktop-обёртка (Rust + Tauri) над Claude Code CLI: несколько сессий в панелях,
-папки-проекты, аккаунты с изолированными конфигами. Использует **глобально установленный**
-бинарник `claude`.
+*[Русская версия](README.ru.md)*
 
-Подробности по устройству — в [ARCHITECTURE.md](ARCHITECTURE.md).
+A thin desktop shell (Rust + Tauri) around the Claude Code CLI: several sessions side by
+side in panes, project folders, and accounts with isolated configs. It drives the
+**globally installed** `claude` binary.
 
-## Возможности
+For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
-- Сетка 1/2/3/4 панелей, drag&drop чатов из сайдбара (⌘/Ctrl+1..4).
-- Новый чат (⌘/Ctrl+N): папка, модель, effort (`low/medium/high/xhigh/max`, дефолт `medium`),
-  permission mode, аккаунт, чекбокс **Git worktree** (по умолчанию включён → `claude --worktree`).
-- Аккаунты: панель в статус-баре. «Add» создаёт `Documents/claude-accounts/<name>`,
-  «✕» удаляет папку. Сессия чата стартует с `CLAUDE_CONFIG_DIR=<папка аккаунта>`.
-- Живые лимиты аккаунтов (5h / week / model-weekly + reset) — без расхода токенов,
-  через OAuth usage-эндпоинт; обновление раз в минуту.
-- Закрытие окна прячет приложение в трей, сессии продолжают работать в фоне.
-  Выход — через меню трея (Quit).
-- Темы light/dark/system.
+## Features
 
-## Разработка
+- A Windows XP shell (xp.css, Luna Blue): the native window frame is replaced by our own
+  title bar with minimize / maximize / close, and the UI runs on Tahoma. The whole
+  interface scales from one variable, `--ui` in `src/app/theme.css`.
+- A grid of 1/2/3/4 panes, with chats dragged in from the sidebar (⌘/Ctrl+1..4).
+- Window groups I/II/III/IV — tabs under the layout selector. Each group remembers its
+  own four boards (one per layout) and their splits, and has its own reset button (↺ on
+  the tab) that clears only the arrangement and leaves every chat alone.
+- New chat (⌘/Ctrl+N): folder, model, effort (`low/medium/high/xhigh/max`, defaults to
+  `medium`), permission mode, account, and a **Git worktree** checkbox (on by default →
+  `claude --worktree`).
+- Accounts: a panel in the status bar. "Add" creates `Documents/claude-accounts/<name>`,
+  "✕" deletes the folder. A chat's session starts with
+  `CLAUDE_CONFIG_DIR=<account folder>`.
+- Chat marks: a ★ at the head of the row, set and cleared by clicking it. It means
+  whatever you decide it means — nothing in the app reads it. On unmarked rows it only
+  shows under the cursor.
+- Live account limits (5h / week / model-weekly, plus reset times) — taken from the OAuth
+  usage endpoint, so they cost no tokens; refreshed once a minute.
+- Closing the window hides the app to the tray and leaves the sessions running. Quit from
+  the tray menu.
+- Light / dark / system themes.
+
+## Development
 
 ```sh
 pnpm install
-pnpm dev          # только фронт в браузере (tauri-команды — no-op)
-pnpm tauri dev    # полное приложение (нужен Rust-тулчейн)
+pnpm dev          # frontend only, in a browser (tauri commands are no-ops)
+pnpm tauri dev    # the whole app (needs a Rust toolchain)
 ```
 
-## Проверка Rust-части без локального тулчейна (Docker)
+## Checking the Rust side without a local toolchain (Docker)
 
 ```powershell
-docker run --rm -v "${PWD}:/app" -w /app/src-tauri rust:1-bookworm bash -lc `
+docker run --rm -v "${PWD}:/app" -w /app/src-tauri rust:1-bookworm bash -c `
   "apt-get update -qq && apt-get install -y -qq libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev pkg-config build-essential libxdo-dev >/dev/null && cargo check"
 ```
 
-## Windows-сборка через Docker
+## Windows build through Docker
 
 ```powershell
 ./build-windows.ps1
 ```
 
-Собирает toolchain-образ (rust + cargo-xwin + NSIS + node) и кросс-компилирует под
+Builds the toolchain image (rust + cargo-xwin + NSIS + node) and cross-compiles for
 `x86_64-pc-windows-msvc`:
 
-- портативный exe — `src-tauri\target\x86_64-pc-windows-msvc\release\llm-desktop.exe`
-  (самодостаточен, нужен только системный WebView2);
-- NSIS-инсталлятор — `...\release\bundle\nsis\llm-desktop_*_x64-setup.exe`.
+- the portable exe — `src-tauri\target\x86_64-pc-windows-msvc\release\luna.exe`
+  (self-contained; it only needs the system WebView2);
+- the NSIS installer — `...\release\bundle\nsis\Luna_*_x64-setup.exe`.
 
-Кэши (node_modules, Windows SDK, cargo registry) живут в named volumes — повторные
-сборки быстрые.
+The caches (node_modules, the Windows SDK, the cargo registry) live in named volumes, so
+repeat builds are fast.
 
-## Автообновление и подпись
+## Updates and signing
 
-- Приложение при старте проверяет `latest.json` из GitHub Releases (эндпоинт в
-  `src-tauri/tauri.conf.json` → `plugins.updater.endpoints`; замени `OWNER` на свой
-  аккаунт/орг, когда появится репозиторий на GitHub).
-- Ключ подписи апдейтов: `C:\Users\Nikita\claude-accounts\llm-desktop-updater.key`
-  (приватный, без пароля — береги; `.pub` уже вшит в конфиг). Для подписанной
-  сборки задай в окружении сборки `TAURI_SIGNING_PRIVATE_KEY_PATH` — тогда рядом с
-  бандлом появятся `.sig`-файлы, их и `latest.json` заливаешь в Release.
-- Authenticode-подпись exe (чтобы SmartScreen не ругался) требует сертификат:
-  когда будет, добавь в `tauri.conf.json` → `bundle.windows.signCommand`.
+- On startup the app checks `latest.json` from GitHub Releases (the endpoint lives in
+  `src-tauri/tauri.conf.json` → `plugins.updater.endpoints`; replace `OWNER` with your
+  own account or org once the repository exists on GitHub).
+- The update signing key is `C:\Users\Nikita\claude-accounts\llm-desktop-updater.key` —
+  private and passwordless, so keep it safe; its `.pub` half is already baked into the
+  config. The file name is left over from the pre-Luna brand: if you rename it, fix the
+  path in `build-windows.ps1` too. For a signed build, set
+  `TAURI_SIGNING_PRIVATE_KEY_PATH` in the build environment — `.sig` files then appear
+  next to the bundle, and those plus `latest.json` are what you upload to the Release.
+- Authenticode-signing the exe (so SmartScreen stops complaining) needs a certificate.
+  When there is one, add it under `tauri.conf.json` → `bundle.windows.signCommand`.
