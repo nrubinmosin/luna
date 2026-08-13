@@ -25,7 +25,13 @@ fn show_main(app: &tauri::AppHandle) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     log::install_panic_hook();
-    log::info("app", &format!("starting luna {}", env!("CARGO_PKG_VERSION")));
+    // The build stamp, not just the version: 0.1.0 has never moved, and a log
+    // that outlives a few builds is unreadable without knowing which one wrote
+    // which line.
+    log::info(
+        "app",
+        &format!("starting luna {} build {}", env!("CARGO_PKG_VERSION"), env!("LUNA_BUILD")),
+    );
 
     tauri::Builder::default()
         // Must be the first plugin: a second launch focuses the running
