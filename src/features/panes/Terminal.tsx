@@ -96,10 +96,14 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
       lineHeight: 1.35,
       allowTransparency: false,
       cursorBlink: true,
-      // The CLI runs fullscreen, i.e. on the alternate screen, which has no
-      // history to scroll through. Keeping a scrollback buffer only produced a
-      // scrollbar and a viewport that could sit parked above the prompt.
-      scrollback: 0,
+      // The CLI spends most of its life fullscreen, i.e. on the alternate
+      // screen, where there is no history and a scrollback buffer only bought a
+      // viewport that could sit parked above the prompt. But it does leave that
+      // screen — opening a shell's details prints straight onto the normal one —
+      // and with no buffer at all everything scrolled past was gone for good,
+      // including the CLI's own UI. Keep a buffer for those stretches; the
+      // alternate screen is pinned to the bottom below.
+      scrollback: 1000,
       // Nudge unreadable theme-vs-content combinations without flattening colours.
       minimumContrastRatio: 3,
       theme: themeFor(dark())
@@ -124,6 +128,18 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
     } catch {
       webgl = null; // canvas/DOM renderer fallback
     }
+
+    // Which screen the CLI is on decides whether scrolling means anything here:
+    // the alternate screen is a single painted frame that must stay pinned to
+    // the bottom, the normal one is output worth scrolling back through. The
+    // stylesheet reads this to show a scrollbar only where it can do something.
+    const markScreen = () => {
+      const alt = term.buffer.active.type === 'alternate';
+      host.dataset.altScreen = alt ? 'yes' : 'no';
+      if (alt) term.scrollToBottom();
+    };
+    markScreen();
+    const bufferSub = term.buffer.onBufferChange(markScreen);
 
     let disposed = false;
     let repaintTimer: ReturnType<typeof setTimeout> | undefined;
@@ -248,6 +264,7 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
       clearTimeout(repaintTimer);
       safely(() => ro.disconnect());
       safely(() => mo.disconnect());
+      safely(() => bufferSub.dispose());
       safely(() => dataSub.dispose());
       safely(() => resizeSub.dispose());
       unlisteners.forEach(u => safely(u));
