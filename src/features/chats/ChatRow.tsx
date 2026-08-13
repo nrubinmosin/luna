@@ -147,36 +147,50 @@ export function ChatRow({ chat }: { chat: Chat }) {
 
       {confirming && (
         <ConfirmDialog
-          title={`Delete "${chat.name}"?`}
+          // Trimmed here rather than left to the ellipsis in the title bar, so
+          // the closing quote and question mark survive a long chat name.
+          title={`Delete "${chat.name.length > 38 ? `${chat.name.slice(0, 38)}…` : chat.name}"?`}
           body={
             <>
               The session is stopped and its scrollback is lost. Pasted attachments are removed.
               The transcript is kept, so the session can still be resumed from the CLI.
-              {chat.worktree && (
-                <>
-                  {' '}Its git worktree{chat.worktreePath ? ` (${chat.worktreePath})` : ''} stays on
-                  disk unless you say otherwise.
-                </>
+              {chat.worktree && <> Its git worktree stays on disk unless you say otherwise.</>}
+              {chat.worktree && chat.worktreePath && (
+                // On its own line: a Windows worktree path is long enough to
+                // break the sentence it sits in across three ragged lines.
+                <div
+                  title={chat.worktreePath}
+                  style={{
+                    marginTop: 8, padding: '4px 6px', borderRadius: 2, background: 'var(--chip)',
+                    fontFamily: 'ui-monospace, Consolas, monospace', fontSize: 11.5,
+                    color: 'var(--faint)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'
+                  }}
+                >
+                  {chat.worktreePath}
+                </div>
               )}
             </>
           }
           extra={
             chat.worktree && (
-              <label
+              // The box itself is drawn by xp.css on the label, which is why
+              // the input needs an id and the label a matching `for`: nested
+              // inside one, the checkbox renders as nothing at all.
+              <div
                 onClick={e => e.stopPropagation()}
-                style={{ display: 'flex', alignItems: 'flex-start', gap: 7, fontSize: 12.5, color: 'var(--dim)', cursor: 'default' }}
+                style={{ display: 'flex', alignItems: 'flex-start', gap: 7, fontSize: 12.5, color: 'var(--dim)' }}
               >
                 <input
                   type="checkbox"
+                  id={`drop-worktree-${chat.id}`}
                   checked={dropWorktree}
                   onChange={e => setDropWorktree(e.target.checked)}
-                  style={{ marginTop: 2, flex: 'none' }}
                 />
-                <span>
+                <label htmlFor={`drop-worktree-${chat.id}`} style={{ cursor: 'default', lineHeight: 1.5 }}>
                   Delete the worktree and its throwaway <code>worktree-…</code> branch too,
                   including any uncommitted work.
-                </span>
-              </label>
+                </label>
+              </div>
             )
           }
           onConfirm={doDelete}

@@ -54,7 +54,11 @@ export function ConfirmDialog({
         }}
       >
         <div className="xp-titlebar" style={{ height: 26, display: 'flex', alignItems: 'center', padding: '0 4px 0 9px', fontSize: 12.5, fontWeight: 700 }}>
-          <span style={{ flex: 1 }}>{title}</span>
+          {/* A chat can be named after a whole task, and a title that wraps
+              pushes the close button off its own row. */}
+          <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {title}
+          </span>
           <span onClick={onCancel} className="hover-bg" style={{ width: 18, height: 18, borderRadius: 2, display: 'grid', placeItems: 'center', fontSize: 11, color: '#fff', cursor: 'default' }}>✕</span>
         </div>
         <div style={{ padding: '14px 16px 12px' }}>
