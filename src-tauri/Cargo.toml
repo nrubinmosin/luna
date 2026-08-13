@@ -1,11 +1,11 @@
 [package]
-name = "llm-desktop"
+name = "luna"
 version = "0.1.0"
 description = "Thin desktop UI over Claude Code CLI sessions"
 edition = "2021"
 
 [lib]
-name = "llm_desktop_lib"
+name = "luna_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

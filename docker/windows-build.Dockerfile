@@ -1,5 +1,5 @@
 # Toolchain image for cross-compiling the Windows build from Linux.
-# Build:  docker build -t llm-desktop-winbuild -f docker/windows-build.Dockerfile docker
+# Build:  docker build -t luna-winbuild -f docker/windows-build.Dockerfile docker
 # Usage:  see build-windows.ps1
 FROM rust:1-bookworm
 

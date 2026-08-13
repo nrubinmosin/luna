@@ -11,18 +11,16 @@ const MAX_BYTES: u64 = 4 * 1024 * 1024;
 fn resolve_path() -> PathBuf {
     let beside_exe = std::env::current_exe()
         .ok()
-        .and_then(|p| p.parent().map(|d| d.join("llm-desktop.log")));
+        .and_then(|p| p.parent().map(|d| d.join("luna.log")));
 
     if let Some(p) = beside_exe {
         if OpenOptions::new().create(true).append(true).open(&p).is_ok() {
             return p;
         }
     }
-    let dir = dirs::data_local_dir()
-        .unwrap_or_else(std::env::temp_dir)
-        .join("llm-desktop");
+    let dir = crate::paths::local_dir().unwrap_or_else(|| std::env::temp_dir().join("luna"));
     let _ = std::fs::create_dir_all(&dir);
-    dir.join("llm-desktop.log")
+    dir.join("luna.log")
 }
 
 fn path() -> &'static PathBuf {

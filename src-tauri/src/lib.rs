@@ -3,6 +3,7 @@ mod limits;
 mod log;
 mod media;
 mod models;
+mod paths;
 mod pty;
 mod trust;
 mod worktree;
@@ -24,7 +25,7 @@ fn show_main(app: &tauri::AppHandle) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     log::install_panic_hook();
-    log::info("app", &format!("starting llm-desktop {}", env!("CARGO_PKG_VERSION")));
+    log::info("app", &format!("starting luna {}", env!("CARGO_PKG_VERSION")));
 
     tauri::Builder::default()
         // Must be the first plugin: a second launch focuses the running
@@ -53,7 +54,7 @@ pub fn run() {
             let menu = Menu::with_items(app, &[&open, &quit])?;
             TrayIconBuilder::with_id("main")
                 .icon(app.default_window_icon().unwrap().clone())
-                .tooltip("llm-desktop")
+                .tooltip("Luna")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
