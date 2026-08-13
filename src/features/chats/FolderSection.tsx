@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { Folder } from '../../shared/types';
 import { tail2, tint } from '../../shared/lib/format';
-import { useChats } from './chats.store';
+import { allChats, useChats } from './chats.store';
 import { useNewChat } from '../new-chat/newchat.store';
 import { useAccounts } from '../accounts/accounts.store';
 import { ChatRow } from './ChatRow';
@@ -21,8 +21,15 @@ export function FolderSection({ folder }: { folder: Folder }) {
   // known. Recheck whenever the folder's chats change — that is when one is
   // most likely to have just been created or dropped.
   const [orphans, setOrphans] = useState<string[]>([]);
-  const inUse = folder.chats.map(c => c.worktreePath).filter((p): p is string => !!p);
-  const inUseKey = inUse.join('|');
+  // Every group's chats, not just the ones listed here: the sidebar shows one
+  // group, and sweeping on that view would delete the worktrees belonging to
+  // chats parked in the other three.
+  const inUseKey = useChats(s =>
+    allChats(s.folders)
+      .map(c => c.worktreePath)
+      .filter((p): p is string => !!p)
+      .join('|')
+  );
 
   const rescan = useCallback(() => {
     const accountPaths = useAccounts.getState().accounts.map(a => a.path);
