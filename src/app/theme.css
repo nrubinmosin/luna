@@ -13,7 +13,21 @@ body { margin: 0; overflow: hidden; }
    decorations) keep their fixed light Luna chrome regardless of theme, same
    as the title-bar's blue gradient. */
 [data-app] {
-  --sans-serif: "Pixelated MS Sans Serif", Arial;
+  /* XP's own shell font is Tahoma — the pixel face xp.css ships is a bitmap
+     that only lands crisp at 11px, so it can't carry a UI scaled past that.
+     Tahoma is the authentic choice *and* the one that scales. */
+  --sans-serif: Tahoma, "Pixelated MS Sans Serif", Arial, sans-serif;
+  /* Every type size in the app derives from this one knob. calc() keeps each
+     step an absolute length, so a small size nested inside a large one can't
+     compound the way em would. Terminals are deliberately outside it. */
+  --ui: 15px;
+  --fs-1: calc(var(--ui) * 0.72);
+  --fs-2: calc(var(--ui) * 0.79);
+  --fs-3: calc(var(--ui) * 0.86);
+  --fs-4: calc(var(--ui) * 0.93);
+  --fs-5: var(--ui);
+  --fs-6: calc(var(--ui) * 1.07);
+
   --surface: #ece9d8;
   --button-highlight: #ffffff;
   --button-face: #dfdfdf;
@@ -97,6 +111,28 @@ a:hover { text-decoration: underline; }
 [data-alt-screen='yes'] .xterm-viewport { overflow-y: hidden; scrollbar-width: none; }
 [data-alt-screen='yes'] .xterm-viewport::-webkit-scrollbar { width: 0; height: 0; }
 
+/* A chat's own mark. Unset it is invisible until the row is hovered, so an
+   unmarked list stays quiet; set it stays on, and reads down the left edge. */
+[data-app] .mark {
+  flex: none;
+  width: 13px;
+  text-align: center;
+  font-size: var(--fs-4);
+  line-height: 1;
+  cursor: default;
+  color: var(--faint);
+  opacity: 0;
+  transition: opacity .1s;
+}
+[data-app] .chat-row:hover .mark {
+  opacity: 1;
+}
+[data-app] .mark[data-on="yes"] {
+  opacity: 1;
+  color: #e0a021;
+  text-shadow: 0 0 3px rgba(224, 160, 33, .45);
+}
+
 /* Folder-row actions (new chat, orphan sweep) only cost width once the row
    is hovered — the rest of the time that space goes to the folder name.
    max-width (not opacity) is what actually gives the freed width back to
@@ -124,10 +160,152 @@ a:hover { text-decoration: underline; }
   top: 0;
 }
 
-/* The classic Luna title-bar gradient, sized for our own compact strips
-   rather than xp.css's fixed 28px .title-bar. Stays XP-blue in both themes. */
-.xp-titlebar {
-  background: linear-gradient(180deg, #0997ff 0%, #0053ee 8%, #0050ee 40%, #0066ff 88%, #005bff 95%, #003dd7 100%);
-  color: #ffffff;
+/* xp.css's compiled dist pins every control to "Pixelated MS Sans Serif" at a
+   literal 11px, which is the one size that bitmap face is drawn for. Since the
+   app runs on Tahoma at --ui, its own controls have to be re-pointed at the
+   same font and scale, or dialogs end up with two typefaces in them. */
+[data-app] button,
+[data-app] select,
+[data-app] input,
+[data-app] textarea,
+[data-app] label,
+[data-app] .window,
+[data-app] .window-body,
+[data-app] .status-bar,
+[data-app] ul.tree-view {
+  font-family: var(--sans-serif);
+  font-size: var(--fs-4);
+}
+/* Title bars are the one place XP does *not* use Tahoma. */
+[data-app] .title-bar {
+  font-family: "Trebuchet MS", Tahoma, sans-serif;
+  font-size: var(--fs-4);
+}
+[data-app] .title-bar-text {
   text-shadow: 1px 1px #0f1089;
+  /* xp.css reserves 24px so a title can never touch the controls; our strips
+     put chips in that gap and manage the spacing themselves. */
+  margin-right: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Fixed 21px control heights are sized to the 8pt shell font; grow with --ui. */
+[data-app] select,
+[data-app] input[type="text"],
+[data-app] input[type="email"],
+[data-app] input[type="password"] {
+  height: calc(var(--ui) * 1.6);
+  line-height: normal;
+}
+[data-app] button {
+  min-height: calc(var(--ui) * 1.7);
+}
+/* The window-control glyphs are pixel art at a fixed 21px — scaling the box
+   under them just smears the artwork. */
+[data-app] .title-bar-controls button {
+  min-width: 21px;
+  min-height: 21px;
+}
+/* XP sizes dialog buttons to a 75px minimum. Toolbar-sized buttons (the icon
+   squares in the sidebar and pane strips) opt out of it. */
+[data-app] button.slim {
+  min-width: 0;
+  padding: 0 6px;
+}
+[data-app] button:disabled {
+  color: var(--faint);
+}
+/* xp.css bakes .window's surface and bevel to light-mode literals; in dark mode
+   they have to come from our own themed variables instead. */
+[data-app][data-theme="dark"] .window {
+  background: var(--surface);
+  color: var(--fg);
+  box-shadow: var(--border-window-outer), var(--border-window-inner);
+}
+[data-app] .window-body {
+  margin: 10px 12px;
+}
+
+/* The app's own frame, standing in for the native title bar. xp.css's .window
+   bevel is baked to light-mode literals, so the frame is drawn from our themed
+   bevel variables instead. */
+.app-frame {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  padding: 3px;
+  background: var(--surface);
+  box-shadow: var(--border-window-outer), var(--border-window-inner);
+}
+.app-frame > .title-bar {
+  flex: none;
+}
+/* A maximised XP window loses its rounded corners and its frame padding —
+   without this the desktop shows through a 3px band on every edge. */
+.app-frame[data-max="yes"] {
+  padding: 0;
+  box-shadow: none;
+}
+.app-frame[data-max="yes"] > .title-bar {
+  border-radius: 0;
+  border-left: none;
+  border-right: none;
+  border-top: none;
+}
+.app-frame > .app-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+/* Group tabs: xp.css's own tab strip, shrunk to sidebar width. Its buttons
+   inherit the tab chrome from menu[role="tablist"] button. */
+[data-app] menu[role="tablist"] {
+  display: flex;
+  /* xp.css's own -2px pulls the strip down over the panel's top border, which
+     is what makes the selected tab merge into it. Keep it. */
+  margin: 0 0 -2px;
+  padding: 0 5px 0 8px;
+  list-style: none;
+}
+[data-app] menu[role="tablist"] button {
+  flex: 1;
+  min-width: 0;
+  min-height: calc(var(--ui) * 1.35);
+  padding: 0 4px 2px;
+  font-size: var(--fs-3);
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+/* The per-group reset only appears on the tab it would act on, so the strip
+   doesn't read as eight controls. */
+[data-app] menu[role="tablist"] button .reset {
+  font-size: var(--fs-2);
+  font-weight: 400;
+  opacity: 0;
+  color: var(--faint);
+}
+[data-app] menu[role="tablist"] button:hover .reset {
+  opacity: 1;
+}
+[data-app] menu[role="tablist"] button .reset:hover {
+  color: #c0392b;
+}
+/* The chat list is the group tabs' panel: xp.css draws the frame and the seam
+   under the selected tab, we take back its 14px padding and light gradient. */
+[data-app] .tab-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  margin: 0 5px 0 5px;
+  padding: 0;
+  background: var(--bg);
+}
+[data-app][data-theme="dark"] .tab-panel {
+  box-shadow: none;
 }

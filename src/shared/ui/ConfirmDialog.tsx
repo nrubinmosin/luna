@@ -47,51 +47,28 @@ export function ConfirmDialog({
     >
       <div
         onClick={e => e.stopPropagation()}
-        className="xp-raised"
-        style={{
-          width: 400, background: 'var(--bg)', borderRadius: 3,
-          boxShadow: 'var(--shadow), var(--border-raised-outer), var(--border-raised-inner)', overflow: 'hidden'
-        }}
+        className="window"
+        style={{ width: 400, boxShadow: 'var(--shadow), var(--border-window-outer), var(--border-window-inner)' }}
       >
-        <div className="xp-titlebar" style={{ height: 26, display: 'flex', alignItems: 'center', padding: '0 4px 0 9px', fontSize: 12.5, fontWeight: 700 }}>
+        <div className="title-bar">
           {/* A chat can be named after a whole task, and a title that wraps
               pushes the close button off its own row. */}
-          <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {title}
-          </span>
-          <span onClick={onCancel} className="hover-bg" style={{ width: 18, height: 18, borderRadius: 2, display: 'grid', placeItems: 'center', fontSize: 11, color: '#fff', cursor: 'default' }}>✕</span>
-        </div>
-        <div style={{ padding: '14px 16px 12px' }}>
-          <div style={{ fontSize: 12.5, lineHeight: 1.5, color: 'var(--dim)' }}>{body}</div>
-          {extra && <div style={{ marginTop: 12 }}>{extra}</div>}
-        </div>
-        <div
-          style={{
-            padding: '10px 16px', borderTop: '1px solid var(--line)', background: 'var(--panel)',
-            display: 'flex', justifyContent: 'flex-end', gap: 8
-          }}
-        >
-          <div
-            onClick={onCancel}
-            className="hover-bg xp-raised"
-            style={{
-              height: 26, padding: '0 13px', borderRadius: 2, border: '1px solid var(--window-frame)',
-              background: 'var(--panel)', display: 'flex', alignItems: 'center', fontSize: 12.5, cursor: 'default'
-            }}
-          >
-            Cancel
+          <div className="title-bar-text">{title}</div>
+          <div className="title-bar-controls">
+            <button aria-label="Close" onClick={onCancel} />
           </div>
-          <div
-            onClick={onConfirm}
-            className="hover-bright"
-            style={{
-              height: 26, padding: '0 15px', borderRadius: 2, display: 'flex', alignItems: 'center',
-              fontSize: 12.5, fontWeight: 700, cursor: 'default', color: '#fff', border: '1px solid var(--window-frame)',
-              background: danger ? '#c0392b' : 'var(--accent)',
-              boxShadow: 'inset -1px -1px rgba(0,0,0,.5), inset 1px 1px rgba(255,255,255,.55)'
-            }}
-          >
-            {confirmLabel}
+        </div>
+        <div className="window-body">
+          <div style={{ fontSize: 'var(--fs-4)', lineHeight: 1.5, color: 'var(--dim)' }}>{body}</div>
+          {extra && <div style={{ marginTop: 12 }}>{extra}</div>}
+          <div style={{ marginTop: 16, display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+            <button onClick={onCancel}>Cancel</button>
+            <button
+              onClick={onConfirm}
+              style={{ fontWeight: 700, color: danger ? '#a02010' : undefined }}
+            >
+              {confirmLabel}
+            </button>
           </div>
         </div>
       </div>

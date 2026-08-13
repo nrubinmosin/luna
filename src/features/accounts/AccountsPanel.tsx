@@ -20,18 +20,18 @@ export function AccountsPanel() {
   return (
     <div style={{ borderTop: '1px solid var(--line)', padding: '7px 9px 9px', overflowY: 'auto' }}>
       <div style={{ display: 'flex', alignItems: 'center', marginBottom: 6 }}>
-        <div style={{ fontSize: 10.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: 'var(--faint)' }}>
+        <div style={{ fontSize: 'var(--fs-1)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: 'var(--faint)' }}>
           Accounts
         </div>
         <span style={{ flex: 1 }} />
-        <div
+        <button
           onClick={() => setAdding(!adding)}
           title="Add account — creates Documents/claude-accounts/<name>"
-          className="hover-bg xp-raised"
-          style={{ height: 17, padding: '0 6px', borderRadius: 2, border: '1px solid var(--window-frame)', background: 'var(--panel)', display: 'flex', alignItems: 'center', gap: 3, fontSize: 10.5, cursor: 'default' }}
+          className="slim"
+          style={{ minHeight: 'calc(var(--ui) * 1.35)', fontSize: 'var(--fs-2)' }}
         >
-          <span style={{ fontSize: 11, lineHeight: 1 }}>+</span> add
-        </div>
+          + add
+        </button>
       </div>
 
       {adding && (
@@ -48,30 +48,28 @@ export function AccountsPanel() {
               if (e.key === 'Escape') setAdding(false);
             }}
             placeholder="account name"
-            className="xp-field"
-            style={{
-              flex: 1, height: 21, padding: '0 5px', border: '1px solid var(--input-border-color)', borderRadius: 1,
-              background: '#fff', color: '#000', font: 'inherit', fontSize: 11, outline: 'none'
-            }}
+            type="text"
+            style={{ flex: 1, minWidth: 0 }}
           />
-          <div
+          <button
             onClick={() => {
               if (name.trim()) {
                 void add(name);
                 setName('');
               }
             }}
-            className="hover-bright"
-            style={{ height: 21, padding: '0 8px', borderRadius: 2, border: '1px solid var(--window-frame)', background: 'var(--accent)', color: '#fff', display: 'flex', alignItems: 'center', fontSize: 10.5, fontWeight: 700, cursor: 'default' }}
+            disabled={!name.trim()}
+            className="slim"
+            style={{ fontWeight: 700 }}
           >
             Create
-          </div>
+          </button>
         </div>
       )}
-      {error && <div style={{ fontSize: 11, color: 'oklch(.58 .2 25)', marginBottom: 6 }}>{error}</div>}
+      {error && <div style={{ fontSize: 'var(--fs-2)', color: 'oklch(.58 .2 25)', marginBottom: 6 }}>{error}</div>}
 
       {accounts.length === 0 && (
-        <div style={{ fontSize: 11, color: 'var(--faint)', padding: '2px 0' }}>
+        <div style={{ fontSize: 'var(--fs-2)', color: 'var(--faint)', padding: '2px 0' }}>
           No accounts yet — add one to spawn sessions.
         </div>
       )}
@@ -107,7 +105,7 @@ export function AccountsPanel() {
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 5 }}>
               <span style={{ width: 6, height: 6, borderRadius: '50%', flex: 'none', background: dot }} />
               <span
-                style={{ fontSize: 11.5, fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+                style={{ fontSize: 'var(--fs-3)', fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
                 title={[acc.email, acc.path].filter(Boolean).join('\n')}
               >
                 {acc.name}
@@ -116,20 +114,20 @@ export function AccountsPanel() {
               <span
                 title={acc.signedIn ? 'Signed in' : 'No usable credentials — click login'}
                 style={{
-                  fontSize: 10, whiteSpace: 'nowrap',
+                  fontSize: 'var(--fs-1)', whiteSpace: 'nowrap',
                   color: acc.signedIn ? 'var(--faint)' : 'oklch(.58 .2 25)'
                 }}
               >
                 {note}
               </span>
-              <span
+              <button
                 onClick={() => setLoginFor(acc)}
                 title="Sign in / re-login this account"
-                className="hover-bg"
-                style={{ height: 15, padding: '0 5px', flex: 'none', borderRadius: 2, display: 'grid', placeItems: 'center', fontSize: 10, color: 'var(--dim)', background: 'var(--chip)', cursor: 'default' }}
+                className="slim"
+                style={{ flex: 'none', minHeight: 'calc(var(--ui) * 1.25)', fontSize: 'var(--fs-1)' }}
               >
                 login
-              </span>
+              </button>
               <span
                 onClick={() => {
                   if (inUse(acc.name) && !window.confirm(`"${acc.name}" is used by existing chats. Delete its folder anyway?`)) return;
@@ -137,7 +135,7 @@ export function AccountsPanel() {
                 }}
                 title="Delete account folder"
                 className="hover-danger"
-                style={{ width: 15, height: 15, flex: 'none', borderRadius: 2, display: 'grid', placeItems: 'center', fontSize: 10, color: 'var(--faint)', cursor: 'default' }}
+                style={{ width: 16, height: 16, flex: 'none', borderRadius: 2, display: 'grid', placeItems: 'center', fontSize: 'var(--fs-1)', color: 'var(--faint)', cursor: 'default' }}
               >
                 ✕
               </span>
@@ -152,19 +150,19 @@ export function AccountsPanel() {
                 }
                 style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 3 }}
               >
-                <span style={{ fontSize: 10, color: 'var(--dim)', width: 30, flex: 'none', whiteSpace: 'nowrap', overflow: 'hidden' }}>{full}</span>
+                <span style={{ fontSize: 'var(--fs-1)', color: 'var(--dim)', width: 34, flex: 'none', whiteSpace: 'nowrap', overflow: 'hidden' }}>{full}</span>
                 <div className="xp-sunken" style={{ flex: 1, height: 6, background: 'var(--track)', overflow: 'hidden' }}>
                   {acc.haveUsage && (
                     <div style={{ height: '100%', width: `${Math.round(acc.limits[k] * 100)}%`, background: limitColor(acc.limits[k]) }} />
                   )}
                 </div>
-                <span style={{ fontSize: 10, color: 'var(--dim)', width: 26, flex: 'none', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                <span style={{ fontSize: 'var(--fs-1)', color: 'var(--dim)', width: 30, flex: 'none', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
                   {acc.haveUsage ? `${Math.round(acc.limits[k] * 100)}%` : '—'}
                 </span>
               </div>
             ))}
             {usageNote && (
-              <div style={{ fontSize: 9.5, color: 'var(--faint)', textAlign: 'right', marginTop: 1 }}>
+              <div style={{ fontSize: 'var(--fs-1)', color: 'var(--faint)', textAlign: 'right', marginTop: 1 }}>
                 {usageNote}
               </div>
             )}

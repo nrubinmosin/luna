@@ -1,3 +1,4 @@
+import './shared/lib/storage-brand';
 import 'xp.css/dist/XP.css';
 import React from 'react';
 import ReactDOM from 'react-dom/client';

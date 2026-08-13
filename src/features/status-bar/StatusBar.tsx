@@ -18,11 +18,11 @@ function Clock() {
 
   return (
     <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-      <span style={{ fontVariantNumeric: 'tabular-nums', fontWeight: 700, color: 'var(--fg)', fontSize: 13 }}>
+      <span style={{ fontVariantNumeric: 'tabular-nums', fontWeight: 700, color: 'var(--fg)', fontSize: 'var(--fs-4)' }}>
         {clockTime(now)}
       </span>
-      <span style={{ fontSize: 10.5, color: 'var(--dim)' }}>{clockDate(now)}</span>
-      <span style={{ fontSize: 10.5, color: 'var(--faint)' }}>{clockWeekday(now)}</span>
+      <span style={{ fontSize: 'var(--fs-1)', color: 'var(--dim)' }}>{clockDate(now)}</span>
+      <span style={{ fontSize: 'var(--fs-1)', color: 'var(--faint)' }}>{clockWeekday(now)}</span>
     </div>
   );
 }
@@ -40,28 +40,29 @@ export function StatusBar() {
 
   return (
     <div style={{ flex: 'none', maxHeight: '58%', display: 'flex', flexDirection: 'column', borderTop: '1px solid var(--window-frame)', background: 'var(--sidebar)' }}>
-      <div style={{ flex: 'none', padding: '7px 9px 6px', display: 'flex', flexDirection: 'column', gap: 3 }}>
-        <Clock />
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
-          <span style={{ fontSize: 10.5, color: 'var(--dim)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-            {runSummary}
-          </span>
-          <span
-            onClick={() => void revealLog()}
-            title={logFile ? `Application log — click to show in Explorer\n${logFile}` : 'Application log'}
-            className="hover-bg"
-            style={{
-              flex: 'none', height: 15, padding: '0 5px', borderRadius: 2, display: 'flex',
-              alignItems: 'center', gap: 3, fontSize: 10, color: 'var(--faint)', cursor: 'default'
-            }}
-          >
-            <span style={{ fontSize: 9 }}>▤</span> log
-          </span>
-        </div>
-      </div>
-
       <div style={{ flex: '1 1 auto', minHeight: 0, overflowY: 'auto' }}>
         <AccountsPanel />
+      </div>
+
+      {/* Bottom edge of the window, where XP puts its status bar. */}
+      <div className="status-bar" style={{ flex: 'none' }}>
+        <div className="status-bar-field" style={{ flexGrow: 0 }}>
+          <Clock />
+        </div>
+        <div
+          className="status-bar-field"
+          style={{ fontSize: 'var(--fs-2)', color: 'var(--dim)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+        >
+          {runSummary}
+        </div>
+        <div
+          onClick={() => void revealLog()}
+          title={logFile ? `Application log — click to show in Explorer\n${logFile}` : 'Application log'}
+          className="status-bar-field hover-bg"
+          style={{ flexGrow: 0, fontSize: 'var(--fs-2)', color: 'var(--faint)', cursor: 'default', whiteSpace: 'nowrap' }}
+        >
+          ▤ log
+        </div>
       </div>
     </div>
   );

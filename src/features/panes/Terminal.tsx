@@ -319,7 +319,8 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
           style={{
             position: 'absolute', inset: 6, borderRadius: 9, pointerEvents: 'none',
             border: `1.5px dashed ${ACCENT}`, background: tint(14, 'transparent'),
-            display: 'grid', placeItems: 'center', fontSize: 13, fontWeight: 590, color: ACCENT
+            display: 'grid', placeItems: 'center', fontSize: 'var(--fs-5)', fontWeight: 590, color: ACCENT,
+            fontFamily: 'var(--sans-serif)'
           }}
         >
           Drop to attach
@@ -330,7 +331,7 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
           style={{
             position: 'absolute', right: 12, bottom: 10, pointerEvents: 'none',
             padding: '3px 9px', borderRadius: 7, background: 'var(--chip)',
-            fontSize: 11.5, color: 'var(--dim)'
+            fontSize: 'var(--fs-3)', color: 'var(--dim)', fontFamily: 'var(--sans-serif)'
           }}
         >
           attaching {attaching} file{attaching > 1 ? 's' : ''}…

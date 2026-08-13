@@ -56,12 +56,12 @@ export function FolderSection({ folder }: { folder: Folder }) {
           borderBottom: `1px solid ${folder.open ? 'var(--line)' : 'transparent'}`
         }}
       >
-        <span style={{ fontSize: 10, color: 'var(--faint)', width: 8, flex: 'none', transform: folder.open ? 'rotate(90deg)' : 'rotate(0deg)' }}>▶</span>
-        <span style={{ fontSize: 11, color: 'var(--faint)', flex: 'none', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 60 }}>
+        <span style={{ fontSize: 'var(--fs-1)', color: 'var(--faint)', width: 8, flex: 'none', transform: folder.open ? 'rotate(90deg)' : 'rotate(0deg)' }}>▶</span>
+        <span style={{ fontSize: 'var(--fs-2)', color: 'var(--faint)', flex: 'none', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 70 }}>
           {t.parent}
           <span style={{ opacity: 0.6 }}> / </span>
         </span>
-        <span style={{ flex: '1 1 auto', minWidth: 40, fontSize: 12.5, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        <span style={{ flex: '1 1 auto', minWidth: 40, fontSize: 'var(--fs-4)', fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {t.leaf}
         </span>
         <span className="folder-actions" style={{ display: 'flex', alignItems: 'center', gap: 4, flex: 'none' }}>
@@ -78,7 +78,7 @@ export function FolderSection({ folder }: { folder: Folder }) {
               }
               className="hover-danger"
               style={{
-                fontSize: 10.5, color: 'var(--dim)', flex: 'none', background: 'var(--chip)',
+                fontSize: 'var(--fs-1)', color: 'var(--dim)', flex: 'none', background: 'var(--chip)',
                 padding: '1px 6px', borderRadius: 2, cursor: 'default', whiteSpace: 'nowrap'
               }}
             >
@@ -92,12 +92,12 @@ export function FolderSection({ folder }: { folder: Folder }) {
             }}
             title="New chat in this folder"
             className="hover-bg"
-            style={{ width: 16, height: 16, flex: 'none', borderRadius: 2, display: 'grid', placeItems: 'center', fontSize: 13, color: 'var(--dim)', cursor: 'default', lineHeight: 1 }}
+            style={{ width: 17, height: 17, flex: 'none', borderRadius: 2, display: 'grid', placeItems: 'center', fontSize: 'var(--fs-5)', color: 'var(--dim)', cursor: 'default', lineHeight: 1 }}
           >
             +
           </span>
         </span>
-        <span style={{ fontSize: 10.5, color: 'var(--faint)', flex: 'none', background: 'var(--chip)', padding: '1px 5px', borderRadius: 2 }}>
+        <span style={{ fontSize: 'var(--fs-1)', color: 'var(--faint)', flex: 'none', background: 'var(--chip)', padding: '1px 5px', borderRadius: 2 }}>
           {live.length}
         </span>
       </div>
@@ -114,10 +114,10 @@ export function FolderSection({ folder }: { folder: Folder }) {
                 title="Chats hidden from the list. Their sessions are untouched."
                 style={{
                   display: 'flex', alignItems: 'center', gap: 6, height: 22, padding: '0 6px',
-                  borderRadius: 2, cursor: 'default', fontSize: 11, color: 'var(--faint)'
+                  borderRadius: 2, cursor: 'default', fontSize: 'var(--fs-2)', color: 'var(--faint)'
                 }}
               >
-                <span style={{ width: 8, flex: 'none', fontSize: 9, transform: showArchived ? 'rotate(90deg)' : 'none' }}>▶</span>
+                <span style={{ width: 8, flex: 'none', fontSize: 'var(--fs-1)', transform: showArchived ? 'rotate(90deg)' : 'none' }}>▶</span>
                 <span style={{ flex: 1 }}>Archived</span>
                 <span style={{ background: 'var(--chip)', padding: '1px 5px', borderRadius: 2 }}>{archived.length}</span>
               </div>

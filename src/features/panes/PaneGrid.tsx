@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import type { CSSProperties } from 'react';
 import { ACCENT } from '../../shared/lib/format';
-import { currentSplits, usePanes, type SplitKey } from './panes.store';
+import { currentLayout, currentSplits, usePanes, type SplitKey } from './panes.store';
 import { Pane } from './Pane';
 
 const GAP = 8;
@@ -97,7 +97,7 @@ const slot = (fraction: number): CSSProperties => ({
 });
 
 export function PaneGrid() {
-  const layout = usePanes(s => s.layout);
+  const layout = usePanes(currentLayout);
   const { col, rowL, rowR } = usePanes(currentSplits);
 
   const pane = (i: number) => <Pane index={i} />;
