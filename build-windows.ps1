@@ -12,6 +12,13 @@ $bundleArg = if ($Installer) { '--bundles nsis' } else { '--no-bundle' }
 
 $updaterKey = "C:\Users\Nikita\claude-accounts\llm-desktop-updater.key"
 
+# Resolved here rather than in build.rs: inside the container the repo's .git is
+# a worktree pointer at a path that only exists on the host. A trailing + means
+# the tree had uncommitted changes when this ran.
+$build = (git rev-parse --short HEAD).Trim()
+if (git status --porcelain) { $build = "$build+" }
+Write-Host "build stamp: $build"
+
 docker build -t luna-winbuild -f docker/windows-build.Dockerfile docker
 
 $cmd = @"
@@ -23,6 +30,7 @@ pnpm tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc $bundleArg
 
 docker run --rm `
   -e COREPACK_ENABLE_DOWNLOAD_PROMPT=0 `
+  -e LUNA_BUILD=$build `
   -e TAURI_SIGNING_PRIVATE_KEY_PASSWORD= `
   -v "${updaterKey}:/keys/updater.key:ro" `
   -v "${PWD}:/app" `
