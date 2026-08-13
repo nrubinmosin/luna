@@ -41,9 +41,13 @@ pub type PtyState<'a> = State<'a, PtyManager>;
 
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
-pub fn ensure_session(
+// Creating a session means `git worktree add` plus a process spawn — seconds of
+// blocking work that must not run on the main thread, where it would stall
+// every other chat's IPC. The sessions lock is held for the whole body, so
+// concurrent calls still serialise and cannot double-spawn one chat.
+pub async fn ensure_session(
     app: AppHandle,
-    state: PtyState,
+    state: PtyState<'_>,
     id: String,
     folder: String,
     account_path: String,
@@ -232,8 +236,11 @@ pub fn kill_session(state: PtyState, id: String) -> Result<(), String> {
 /// attachments. Doing this in one command removes the race the UI had — it
 /// used to rely on a 4s poll having already reported the worktree path.
 #[tauri::command]
-pub fn delete_session(
-    state: PtyState,
+// Async for the same reason as the worktree commands: removing a worktree can
+// take seconds, and on the main thread every keystroke in every other chat
+// waits behind it.
+pub async fn delete_session(
+    state: PtyState<'_>,
     id: String,
     folder: String,
     account_path: String,
@@ -264,7 +271,9 @@ pub fn delete_session(
     crate::log::info("delete", &format!("chat {id}, worktree {resolved:?}"));
 
     match &resolved {
-        Some(wt) => crate::worktree::remove_worktree(folder, wt.clone()).map(|_| resolved.clone()),
+        Some(wt) => {
+            crate::worktree::remove_worktree_now(folder, wt.clone()).map(|_| resolved.clone())
+        }
         None => Ok(None),
     }
 }

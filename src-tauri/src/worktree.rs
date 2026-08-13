@@ -49,8 +49,18 @@ fn branch_of(folder: &str, worktree_path: &str) -> Option<String> {
     None
 }
 
+// Every git call below is slow enough to be felt — `worktree remove` on a large
+// checkout has taken ten seconds here. Tauri runs a synchronous command on the
+// main thread, where that time is charged to every other pending IPC call:
+// pasting into a chat froze for as long as an unrelated chat's worktree took to
+// delete. The commands are therefore `async` wrappers, which Tauri runs off the
+// main thread, over the blocking helpers the rest of the crate keeps calling.
 #[tauri::command]
-pub fn remove_worktree(folder: String, worktree_path: String) -> Result<(), String> {
+pub async fn remove_worktree(folder: String, worktree_path: String) -> Result<(), String> {
+    remove_worktree_now(folder, worktree_path)
+}
+
+pub fn remove_worktree_now(folder: String, worktree_path: String) -> Result<(), String> {
     if !is_worktree_of(&folder, &worktree_path) {
         return Err("refusing: path is not a worktree of this folder".into());
     }
@@ -134,7 +144,15 @@ fn younger_than(path: &Path, secs: u64) -> bool {
 /// Worktree directories under this folder that no live chat claims — leftovers
 /// from crashes, or from chats deleted before their path was known.
 #[tauri::command]
-pub fn orphan_worktrees(
+pub async fn orphan_worktrees(
+    folder: String,
+    in_use: Vec<String>,
+    account_paths: Vec<String>,
+) -> Result<Vec<String>, String> {
+    orphan_worktrees_now(folder, in_use, account_paths)
+}
+
+fn orphan_worktrees_now(
     folder: String,
     in_use: Vec<String>,
     account_paths: Vec<String>,
@@ -165,17 +183,17 @@ pub fn orphan_worktrees(
 }
 
 #[tauri::command]
-pub fn remove_orphan_worktrees(
+pub async fn remove_orphan_worktrees(
     folder: String,
     in_use: Vec<String>,
     account_paths: Vec<String>,
 ) -> Result<usize, String> {
     // Re-derive the list here rather than trusting one from the UI: it may be
     // seconds stale, and everything below is destructive.
-    let orphans = orphan_worktrees(folder.clone(), in_use, account_paths)?;
+    let orphans = orphan_worktrees_now(folder.clone(), in_use, account_paths)?;
     let mut n = 0;
     for path in orphans {
-        if remove_worktree(folder.clone(), path).is_ok() {
+        if remove_worktree_now(folder.clone(), path).is_ok() {
             n += 1;
         }
     }
