@@ -264,7 +264,34 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
     })();
 
 
-    const dataSub = term.onData(d => void writeSession(chat.id, d));
+    // The title is the first thing typed into the chat, taken as it is typed.
+    // The registry route — CLI writes its entry, the watcher polls it a few
+    // seconds later — leaves a new chat sitting in the list as "chat 12" while
+    // everything around it is named after its prompt, which is a very easy row
+    // to lose track of. Reading the keystrokes is a guess (an edited line keeps
+    // the characters that were rubbed out), but the watcher replaces it with
+    // the transcript's own version as soon as there is one.
+    let typed = '';
+    let titled = false;
+    const dataSub = term.onData(d => {
+      if (!titled) {
+        const enter = d.indexOf('\r');
+        typed += enter < 0 ? d : d.slice(0, enter);
+        if (typed.length > 400) typed = typed.slice(-400);
+        if (enter >= 0) {
+          const line = typed.replace(/[\x00-\x1f\x7f]/g, '').trim();
+          typed = '';
+          const fresh = useChats.getState().findChat(chat.id);
+          // A slash command is the CLI's business, not a title, and a chat the
+          // user has named by hand keeps that name.
+          if (line.length > 1 && !line.startsWith('/') && fresh && !fresh.nameCustom) {
+            titled = true;
+            useChats.getState().setName(chat.id, line.slice(0, 80));
+          }
+        }
+      }
+      void writeSession(chat.id, d);
+    });
     const resizeSub = term.onResize(({ cols, rows }) => {
       if (disposed || cols < 1 || rows < 1) return;
       void resizeSession(chat.id, cols, rows);
