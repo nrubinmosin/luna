@@ -62,6 +62,10 @@ export function OrphanSessions() {
       perm: 'Bypass',
       context: 0,
       account,
+      // Into the group that is on screen: that is where the person doing the
+      // adopting is looking, and a chat dropped into a parked group would just
+      // go missing a second time.
+      group: usePanes.getState().group,
       worktree: !!m,
       worktreePath: m ? o.cwd : null
     });

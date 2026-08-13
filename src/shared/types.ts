@@ -1,5 +1,11 @@
 export type ChatStatus = 'working' | 'waiting' | 'resting';
 
+/** Which window group a chat belongs to. Lives here rather than in the panes
+ *  store so chats can carry it without the two stores importing each other. */
+export type GroupId = 0 | 1 | 2 | 3;
+export const GROUPS: GroupId[] = [0, 1, 2, 3];
+export const GROUP_LABELS = ['I', 'II', 'III', 'IV'] as const;
+
 export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 export type PermMode = 'Ask' | 'Edits' | 'Plan only' | 'Bypass';
@@ -17,6 +23,9 @@ export interface Chat {
   contextTokens?: number | null;
   contextWindow?: number | null;
   account: string;
+  /** The group whose sidebar lists it. Chats are not shared between groups:
+   *  each one is its own workspace, list and all. */
+  group: GroupId;
   worktree: boolean;
   worktreePath?: string | null;
   sessionId?: string | null;

@@ -9,8 +9,6 @@ import { useAccounts } from '../accounts/accounts.store';
 import { useNewChat } from './newchat.store';
 import { folderTrusted, pickFolder, trustFolder } from '../../ipc/commands';
 
-const BROWSE = '__browse';
-
 const segWrap: CSSProperties = { display: 'flex', gap: 2, padding: 2, background: 'var(--chip)', borderRadius: 2 };
 
 function Segmented<T extends string>({ items, value, onPick, height = 24 }: {
@@ -50,19 +48,14 @@ export function NewChatDialog() {
   const { autoPlace } = usePanes.getState();
 
   const [folder, setFolder] = useState(initialFolder ?? folders[0]?.path ?? '');
-  const [pickedFolder, setPickedFolder] = useState<string | null>(null);
+  const group = usePanes(s => s.group);
   const [model, setModel] = useState<ModelLabel>('Opus');
   const [effort, setEffort] = useState<Effort>('medium');
   const [perm, setPerm] = useState<PermMode>('Bypass');
   const [account, setAccount] = useState(accounts[0]?.name ?? '');
   const [worktree, setWorktree] = useState(true);
 
-  const folderOptions = folders.map(f => ({ value: f.path, label: `${tail2(f.path).parent} / ${tail2(f.path).leaf}` }));
-  if (pickedFolder && !folders.some(f => f.path === pickedFolder)) {
-    folderOptions.push({ value: pickedFolder, label: `${tail2(pickedFolder).parent} / ${tail2(pickedFolder).leaf}` });
-  }
-
-  const effectiveFolder = folder === BROWSE ? '' : folder;
+  const effectiveFolder = folder;
   const canCreate = !!effectiveFolder && !!account;
   const accountPath = accounts.find(a => a.name === account)?.path ?? '';
 
@@ -86,16 +79,13 @@ export function NewChatDialog() {
     };
   }, [effectiveFolder, accountPath]);
 
-  const onFolderChange = async (value: string) => {
-    if (value === BROWSE) {
-      const picked = await pickFolder();
-      if (picked) {
-        setPickedFolder(picked);
-        setFolder(picked);
-      }
-      return;
-    }
-    setFolder(value);
+  const browse = async () => {
+    const picked = await pickFolder();
+    if (!picked) return;
+    // Remembered on the way in, not on create: a folder you went looking for
+    // is one you will look for again, even if you close this dialog now.
+    useChats.getState().rememberFolder(picked);
+    setFolder(picked);
   };
 
   const create = async () => {
@@ -113,7 +103,7 @@ export function NewChatDialog() {
       }
       setCreating(false);
     }
-    const n = folders.reduce((a, f) => a + f.chats.length, 0) + 1;
+    const n = folders.reduce((a, f) => a + f.chats.filter(c => c.group === group).length, 0) + 1;
     const id = newId('c');
     addChat(effectiveFolder, {
       id,
@@ -124,6 +114,7 @@ export function NewChatDialog() {
       perm,
       context: 0,
       account,
+      group,
       worktree
     });
     autoPlace(id);
@@ -145,19 +136,67 @@ export function NewChatDialog() {
           <div style={{ fontSize: 'var(--fs-2)', color: 'var(--faint)' }}>Model, effort and permission mode can be changed later</div>
           <div>
             <div style={labelStyle}>Folder</div>
-            <select
-              value={folder}
-              onChange={e => void onFolderChange(e.target.value)}
-              style={{ width: '100%' }}
+            {/* A list rather than a select: every folder needs its own way out
+                of the list, and a <select> has nowhere to put one. */}
+            <div
+              className="xp-field"
+              style={{ background: '#fff', maxHeight: 132, overflowY: 'auto', padding: 2 }}
             >
-              {folderOptions.length === 0 && <option value="">— pick a folder —</option>}
-              {folderOptions.map(f => (
-                <option key={f.value} value={f.value}>{f.label}</option>
-              ))}
-              <option value={BROWSE}>Browse…</option>
-            </select>
-            <div style={{ fontSize: 'var(--fs-3)', color: 'var(--faint)', marginTop: 4, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-              {effectiveFolder || 'Opens the system folder picker'}
+              {folders.length === 0 && (
+                <div style={{ padding: '6px 7px', fontSize: 'var(--fs-3)', color: '#666' }}>
+                  Nothing here yet — browse for a folder.
+                </div>
+              )}
+              {folders.map(f => {
+                const t = tail2(f.path);
+                const on = f.path === folder;
+                const held = f.chats.length;
+                return (
+                  <div
+                    key={f.id}
+                    onClick={() => setFolder(f.path)}
+                    title={f.path}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 6, padding: '3px 6px', cursor: 'default',
+                      background: on ? 'var(--dialog-blue)' : 'transparent',
+                      color: on ? '#fff' : '#000'
+                    }}
+                  >
+                    <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 'var(--fs-4)' }}>
+                      <span style={{ opacity: 0.7 }}>{t.parent} / </span>
+                      {t.leaf}
+                    </span>
+                    {held > 0 && (
+                      <span style={{ fontSize: 'var(--fs-1)', opacity: 0.7 }}>{held}</span>
+                    )}
+                    <span
+                      onClick={e => {
+                        e.stopPropagation();
+                        useChats.getState().removeFolder(f.id);
+                        if (on) setFolder('');
+                      }}
+                      title={
+                        held
+                          ? `Still holds ${held} chat${held > 1 ? 's' : ''} — delete those first`
+                          : 'Forget this folder'
+                      }
+                      className={held ? undefined : 'hover-danger'}
+                      style={{
+                        width: 15, height: 15, flex: 'none', display: 'grid', placeItems: 'center',
+                        fontSize: 'var(--fs-1)', cursor: 'default', opacity: held ? 0.25 : 0.65
+                      }}
+                    >
+                      ✕
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 5 }}>
+              <button className="slim" onClick={() => void browse()}>Browse…</button>
+              <span style={{ flex: 1, minWidth: 0, fontSize: 'var(--fs-2)', color: 'var(--faint)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                {effectiveFolder || 'no folder chosen'}
+              </span>
             </div>
             {!trusted && effectiveFolder && (
               <div

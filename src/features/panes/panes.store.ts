@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { GROUPS, type GroupId } from '../../shared/types';
 
 export type Layout = 1 | 2 | 3 | 4;
 export const LAYOUTS: Layout[] = [1, 2, 3, 4];
@@ -15,9 +16,8 @@ export type SplitKey = keyof Splits;
 export type Slots = (string | null)[];
 type PerLayout<T> = Record<Layout, T>;
 
-export type GroupId = 0 | 1 | 2 | 3;
-export const GROUPS: GroupId[] = [0, 1, 2, 3];
-export const GROUP_LABELS = ['I', 'II', 'III', 'IV'] as const;
+export { GROUPS, GROUP_LABELS } from '../../shared/types';
+export type { GroupId } from '../../shared/types';
 
 /**
  * One remembered workspace: which layout it was left on, what sat in the panes
