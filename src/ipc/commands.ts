@@ -107,16 +107,23 @@ export const removeWorktree = (folder: string, worktreePath: string) =>
   call<void>('remove_worktree', { folder, worktreePath });
 
 /**
- * Kills the session and cleans up after it in one call: worktree, its branch
- * and the chat's attachments. Resolves the worktree itself, so it works even
- * when the UI never saw the path. Returns the worktree it removed, if any.
+ * Kills the session and cleans up after it in one call: the chat's attachments
+ * always, its worktree and branch only when asked. Resolves the worktree
+ * itself, so it works even when the UI never saw the path. Returns that
+ * worktree whether or not it was removed.
  */
 export const deleteSession = (
   chatId: string,
   folder: string,
   accountPath: string,
-  worktreePath: string | null
-) => call<string | null>('delete_session', { id: chatId, folder, accountPath, worktreePath }, null);
+  worktreePath: string | null,
+  dropWorktree: boolean
+) =>
+  call<string | null>(
+    'delete_session',
+    { id: chatId, folder, accountPath, worktreePath, dropWorktree },
+    null
+  );
 
 /**
  * Worktree dirs under the folder that no live chat is using. `accountPaths`

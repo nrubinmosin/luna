@@ -8,6 +8,7 @@ import type { ReactNode } from 'react';
 export function ConfirmDialog({
   title,
   body,
+  extra,
   confirmLabel = 'Delete',
   danger = true,
   onConfirm,
@@ -15,6 +16,8 @@ export function ConfirmDialog({
 }: {
   title: string;
   body: ReactNode;
+  /** Controls that change what confirming does, e.g. an opt-in checkbox. */
+  extra?: ReactNode;
   confirmLabel?: string;
   danger?: boolean;
   onConfirm: () => void;
@@ -56,6 +59,7 @@ export function ConfirmDialog({
         </div>
         <div style={{ padding: '14px 16px 12px' }}>
           <div style={{ fontSize: 12.5, lineHeight: 1.5, color: 'var(--dim)' }}>{body}</div>
+          {extra && <div style={{ marginTop: 12 }}>{extra}</div>}
         </div>
         <div
           style={{

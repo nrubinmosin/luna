@@ -290,6 +290,11 @@ pub async fn delete_session(
     folder: String,
     account_path: String,
     worktree_path: Option<String>,
+    // Off by default at the call site: the worktree may hold work that exists
+    // nowhere else, and a deleted chat is a cheaper mistake than a deleted
+    // branch. Returns the path either way, so the caller can say where the
+    // kept worktree is.
+    drop_worktree: bool,
 ) -> Result<Option<String>, String> {
     // Resolve before killing: once the process is gone its registry entry goes too.
     let resolved = worktree_path.filter(|p| !p.is_empty()).or_else(|| {
@@ -313,12 +318,16 @@ pub async fn delete_session(
     }
 
     let _ = crate::media::clear_media(id.clone());
-    crate::log::info("delete", &format!("chat {id}, worktree {resolved:?}"));
+    crate::log::info(
+        "delete",
+        &format!("chat {id}, worktree {resolved:?}, dropping {drop_worktree}"),
+    );
 
     match &resolved {
-        Some(wt) => {
+        Some(wt) if drop_worktree => {
             crate::worktree::remove_worktree_now(folder, wt.clone()).map(|_| resolved.clone())
         }
+        Some(_) => Ok(resolved),
         None => Ok(None),
     }
 }
