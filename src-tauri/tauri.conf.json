@@ -39,7 +39,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQyMjY4MUYwMDEwMkE0NzgKUldSNHBBSUI4SUVtMG9ORmN0TDJiRFM3RVozdEx6MXJ6aURqQmZHVnVCRzVuZFI1N09wN1dzRUUK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDJCNDNDMUIxMkFEMjg2MjIKUldRaWh0SXFzY0ZESzN5VytwM1d2VFlzdVM4Qy9IRGJQbC9SeURzYTIzMkVjVVM5SHlBbnF6UGkK",
       "endpoints": [
         "https://github.com/nrubinmosin/luna/releases/latest/download/latest.json"
       ]
