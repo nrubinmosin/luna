@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { clockDate, clockTime, clockWeekday } from '../../shared/lib/format';
 import { logPath, revealLog } from '../../shared/lib/log';
+import { STATUS } from '../../shared/ui/status';
 import { useChats } from '../chats/chats.store';
 import { AccountsPanel } from '../accounts/AccountsPanel';
 import { UpdateField } from '../updates/UpdateField';
@@ -37,7 +38,8 @@ export function StatusBar() {
   }, []);
 
   const all = folders.flatMap(f => f.chats);
-  const runSummary = `${all.filter(c => c.status === 'working').length} working · ${all.filter(c => c.status === 'waiting').length} waiting`;
+  const working = all.filter(c => c.status === 'working').length;
+  const waiting = all.filter(c => c.status === 'waiting').length;
 
   return (
     <div style={{ flex: 'none', maxHeight: '58%', display: 'flex', flexDirection: 'column', borderTop: '1px solid var(--window-frame)', background: 'var(--sidebar)' }}>
@@ -50,11 +52,24 @@ export function StatusBar() {
         <div className="status-bar-field" style={{ flexGrow: 0 }}>
           <Clock />
         </div>
+        {/* Two counts and nothing else: the field is the narrowest strip in the
+            window, and spelled-out labels only got themselves ellipsised away. */}
         <div
           className="status-bar-field"
-          style={{ fontSize: 'var(--fs-2)', color: 'var(--dim)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+          title={`${working} working · ${waiting} waiting for you`}
+          style={{
+            flexGrow: 0, display: 'flex', alignItems: 'center', gap: 7,
+            fontSize: 'var(--fs-3)', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap'
+          }}
         >
-          {runSummary}
+          <span style={{ display: 'flex', alignItems: 'center', gap: 3, color: working ? STATUS.working.color : 'var(--faint)' }}>
+            <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'currentColor' }} />
+            {working}
+          </span>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 3, color: waiting ? STATUS.waiting.color : 'var(--faint)' }}>
+            <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'currentColor' }} />
+            {waiting}
+          </span>
         </div>
         <UpdateField />
         <div

@@ -166,9 +166,6 @@ export function NewChatDialog() {
                       <span style={{ opacity: 0.7 }}>{t.parent} / </span>
                       {t.leaf}
                     </span>
-                    {held > 0 && (
-                      <span style={{ fontSize: 'var(--fs-1)', opacity: 0.7 }}>{held}</span>
-                    )}
                     <span
                       onClick={e => {
                         e.stopPropagation();
@@ -176,9 +173,7 @@ export function NewChatDialog() {
                         if (on) setFolder('');
                       }}
                       title={
-                        held
-                          ? `Still holds ${held} chat${held > 1 ? 's' : ''} — delete those first`
-                          : 'Forget this folder'
+                        held ? 'Still holds chats — delete those first' : 'Forget this folder'
                       }
                       className={held ? undefined : 'hover-danger'}
                       style={{
