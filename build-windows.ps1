@@ -10,7 +10,7 @@ $ErrorActionPreference = 'Stop'
 
 $bundleArg = if ($Installer) { '--bundles nsis' } else { '--no-bundle' }
 
-$updaterKey = "C:\Users\Nikita\claude-accounts\llm-desktop-updater.key"
+$updaterKey = "C:\Users\Nikita\claude-accounts\luna-updater.key"
 
 # Resolved here rather than in build.rs: inside the container the repo's .git is
 # a worktree pointer at a path that only exists on the host. A trailing + means
