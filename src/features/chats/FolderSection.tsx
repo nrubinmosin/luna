@@ -104,9 +104,6 @@ export function FolderSection({ folder }: { folder: Folder }) {
             +
           </span>
         </span>
-        <span style={{ fontSize: 'var(--fs-1)', color: 'var(--faint)', flex: 'none', background: 'var(--chip)', padding: '1px 5px', borderRadius: 2 }}>
-          {live.length}
-        </span>
       </div>
       {folder.open && (
         <div style={{ display: 'flex', flexDirection: 'column', padding: 4 }}>

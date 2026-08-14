@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import type { ReactNode } from 'react';
 
 /**
@@ -32,7 +33,15 @@ export function ConfirmDialog({
     return () => window.removeEventListener('keydown', onKey);
   }, [onCancel, onConfirm]);
 
-  return (
+  // Out of the caller's subtree and into the app root. A chat row is
+  // `draggable`, and Chromium hands every mouse press inside a draggable
+  // subtree to the drag machinery — the dialog rendered there paints fine but
+  // takes no hover and no click, checkbox and buttons included. The app root
+  // rather than <body> because the theme variables and xp.css overrides all
+  // hang off `[data-app]`.
+  const host = document.querySelector('[data-app]') ?? document.body;
+
+  return createPortal(
     <div
       onClick={e => {
         // The dialog often renders inside a clickable row; don't let a
@@ -69,6 +78,7 @@ export function ConfirmDialog({
           </div>
         </div>
       </div>
-    </div>
+    </div>,
+    host
   );
 }
