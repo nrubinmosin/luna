@@ -111,13 +111,17 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
     term.loadAddon(fit);
     term.open(host);
 
-    // The alternate screen is a single painted frame that must stay pinned to
-    // the bottom rather than sit parked above the prompt.
-    const pinAlternate = () => {
-      if (term.buffer.active.type === 'alternate') term.scrollToBottom();
-    };
-    pinAlternate();
-    const bufferSub = term.buffer.onBufferChange(pinAlternate);
+    // Both screens have to be pinned to the bottom the moment they are switched
+    // to. The alternate screen is a single painted frame that reads as a broken
+    // one when parked above the prompt — and the normal screen is worse: opening
+    // a shell's details drops the CLI onto it at whatever scroll position the
+    // normal buffer was left at, which is the top of the conversation. The
+    // details then print below the viewport, out of sight, and the CLI's own
+    // footer with them. xterm follows new output on its own once the viewport is
+    // at the bottom, so landing there is the whole fix.
+    const pinBottom = () => term.scrollToBottom();
+    pinBottom();
+    const bufferSub = term.buffer.onBufferChange(pinBottom);
 
     // Whether there is any history above the viewport to reach. xterm gives its
     // viewport `overflow-y: scroll` unconditionally, so a session that has not
