@@ -28,6 +28,12 @@ dirs = "6"
 portable-pty = "0.9"
 ureq = { version = "2", features = ["json"] }
 
+# Only for subclassing the window to drop the Alt menu (see src/sysmenu.rs).
+# Pinned to the version tauri already resolves, so this adds features to a crate
+# in the tree rather than a second copy of it.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+
 [profile.release]
 strip = true
 lto = true
