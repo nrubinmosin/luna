@@ -111,17 +111,28 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
     term.loadAddon(fit);
     term.open(host);
 
-    // Which screen the CLI is on decides whether scrolling means anything here:
-    // the alternate screen is a single painted frame that must stay pinned to
-    // the bottom, the normal one is output worth scrolling back through. The
-    // stylesheet reads this to show a scrollbar only where it can do something.
-    const markScreen = () => {
-      const alt = term.buffer.active.type === 'alternate';
-      host.dataset.altScreen = alt ? 'yes' : 'no';
-      if (alt) term.scrollToBottom();
+    // The alternate screen is a single painted frame that must stay pinned to
+    // the bottom rather than sit parked above the prompt.
+    const pinAlternate = () => {
+      if (term.buffer.active.type === 'alternate') term.scrollToBottom();
     };
-    markScreen();
-    const bufferSub = term.buffer.onBufferChange(markScreen);
+    pinAlternate();
+    const bufferSub = term.buffer.onBufferChange(pinAlternate);
+
+    // Whether there is any history above the viewport to reach. xterm gives its
+    // viewport `overflow-y: scroll` unconditionally, so a session that has not
+    // filled a screen yet — or one on the alternate screen, which keeps no
+    // history at all — carried a dead 16px scrollbar down the side of the pane:
+    // both arrows, no thumb, nothing to scroll. The stylesheet reads this and
+    // takes the gutter back until scrolling can actually do something.
+    const markScrollable = () => {
+      const on = term.buffer.active.baseY > 0 ? 'yes' : 'no';
+      if (host.dataset.scrollable !== on) host.dataset.scrollable = on;
+    };
+    markScrollable();
+    // onRender rather than onScroll: what matters is lines entering the
+    // scrollback, which moves baseY without any scrolling happening.
+    const renderSub = term.onRender(markScrollable);
 
     let disposed = false;
     let repaintTimer: ReturnType<typeof setTimeout> | undefined;
@@ -314,6 +325,7 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
       safely(() => ro.disconnect());
       safely(() => mo.disconnect());
       safely(() => bufferSub.dispose());
+      safely(() => renderSub.dispose());
       safely(() => dataSub.dispose());
       safely(() => resizeSub.dispose());
       unlisteners.forEach(u => safely(u));

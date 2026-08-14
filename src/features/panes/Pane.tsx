@@ -71,7 +71,12 @@ export function Pane({ index }: { index: number }) {
         flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column',
         background: 'var(--bg)',
         border: `1px solid ${over || spotted ? ACCENT : 'var(--window-frame)'}`,
-        borderRadius: 3, overflow: 'hidden', transition: 'box-shadow .12s, border-color .12s',
+        // The top corners sit one pixel outside the title bar's own 8px curve,
+        // which is what makes the frame hug it. At the 3px they used to share
+        // with the bottom, the bar curved away from a frame that stayed square
+        // and left a wedge of pane background showing in each corner.
+        borderRadius: '9px 9px 3px 3px',
+        overflow: 'hidden', transition: 'box-shadow .12s, border-color .12s',
         opacity: beingDragged ? 0.4 : 1,
         boxShadow: over
           ? `0 0 0 3px ${tint(28, 'transparent')}`

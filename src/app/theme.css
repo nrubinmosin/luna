@@ -103,13 +103,13 @@ a:hover { text-decoration: underline; }
 .hover-danger:hover { background: oklch(.63 .19 25 / .16) !important; color: oklch(.58 .2 25) !important; }
 
 .xterm .xterm-viewport { background: transparent !important; }
-/* xterm gives its viewport overflow-y: scroll unconditionally, and the app's
-   scrollbar styling paints that as a faint stripe down the side of every chat.
-   On the alternate screen — where the CLI lives most of the time — there is
-   genuinely nothing to scroll, so hide it there and leave it alone on the
-   normal screen, where output does scroll past. */
-[data-alt-screen='yes'] .xterm-viewport { overflow-y: hidden; scrollbar-width: none; }
-[data-alt-screen='yes'] .xterm-viewport::-webkit-scrollbar { width: 0; height: 0; }
+/* xterm gives its viewport overflow-y: scroll unconditionally, so every chat
+   carried a scrollbar whether or not it had anywhere to go — arrows top and
+   bottom, no thumb, 16px of pane spent on it. Terminal.tsx sets the flag from
+   the buffer's own baseY, so the gutter appears exactly when there is history
+   above the viewport to scroll back to. */
+[data-scrollable='no'] .xterm-viewport { overflow-y: hidden; scrollbar-width: none; }
+[data-scrollable='no'] .xterm-viewport::-webkit-scrollbar { width: 0; height: 0; }
 
 /* A chat's own mark. Unset it is invisible until the row is hovered, so an
    unmarked list stays quiet; set it stays on, and reads down the left edge. */
@@ -180,6 +180,11 @@ a:hover { text-decoration: underline; }
 [data-app] .title-bar {
   font-family: "Trebuchet MS", Tahoma, sans-serif;
   font-size: var(--fs-4);
+  /* xp.css rounds the two top corners by 8px and 7px. The odd pixel is
+     invisible on its own .window, whose frame is the same blue as the bar, but
+     a pane wraps this in a dark 1px frame that has to follow the curve — and it
+     can only follow one radius. Even them up. */
+  border-top-right-radius: 8px;
 }
 [data-app] .title-bar-text {
   text-shadow: 1px 1px #0f1089;
