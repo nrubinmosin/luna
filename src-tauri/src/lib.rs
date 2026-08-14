@@ -5,6 +5,7 @@ mod media;
 mod models;
 mod paths;
 mod pty;
+mod sysmenu;
 mod trust;
 mod worktree;
 
@@ -49,6 +50,10 @@ pub fn run() {
         .manage(pty::PtyManager::default())
         .setup(|app| {
             models::refresh_soon();
+
+            if let Some(w) = app.get_webview_window("main") {
+                sysmenu::silence(&w);
+            }
 
             // Housekeeping off the startup path, and again every few hours.
             media::prune_periodically();
