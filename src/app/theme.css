@@ -104,12 +104,13 @@ a:hover { text-decoration: underline; }
 
 .xterm .xterm-viewport { background: transparent !important; }
 /* xterm gives its viewport overflow-y: scroll unconditionally, so every chat
-   carried a scrollbar whether or not it had anywhere to go — arrows top and
-   bottom, no thumb, 16px of pane spent on it. Terminal.tsx sets the flag from
-   the buffer's own baseY, so the gutter appears exactly when there is history
-   above the viewport to scroll back to. */
-[data-scrollable='no'] .xterm-viewport { overflow-y: hidden; scrollbar-width: none; }
-[data-scrollable='no'] .xterm-viewport::-webkit-scrollbar { width: 0; height: 0; }
+   carried a scrollbar down the side of the pane — 16px of terminal spent on
+   chrome the CLI never asks for. The terminal has no scrollbar at all: the
+   viewport still scrolls (wheel, shift+PgUp, and xterm's own scrollToBottom
+   all drive scrollTop directly), it is only never painted. Scrollbars stay on
+   everywhere else in the app. */
+.xterm .xterm-viewport { scrollbar-width: none; }
+.xterm .xterm-viewport::-webkit-scrollbar { display: none; width: 0; height: 0; }
 
 /* A chat's own mark. Unset it is invisible until the row is hovered, so an
    unmarked list stays quiet; set it stays on, and reads down the left edge. */
