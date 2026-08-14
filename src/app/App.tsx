@@ -17,7 +17,7 @@ import { useAccounts } from '../features/accounts/accounts.store';
 import { useNewChat } from '../features/new-chat/newchat.store';
 import { useSessionWatch } from '../features/chats/useSessionWatch';
 import { LoginModal } from '../features/accounts/LoginModal';
-import { checkForUpdates } from '../shared/lib/updater';
+import { useUpdates } from '../features/updates/updates.store';
 import { useKeymap } from './keymap';
 import './theme.css';
 
@@ -85,7 +85,10 @@ export function App() {
     // The store owns the cadence: a fixed interval here would keep hitting a
     // rate-limited endpoint straight through the backoff it just scheduled.
     useAccounts.getState().startPolling();
-    void checkForUpdates();
+    // Quietly: a release found at startup lights up the status bar's update
+    // field and waits there. The modal this used to throw up arrived before the
+    // panes had even painted, over whatever was mid-turn.
+    void useUpdates.getState().check(false);
     return () => useAccounts.getState().stopPolling();
   }, []);
 

@@ -3,6 +3,7 @@ import { clockDate, clockTime, clockWeekday } from '../../shared/lib/format';
 import { logPath, revealLog } from '../../shared/lib/log';
 import { useChats } from '../chats/chats.store';
 import { AccountsPanel } from '../accounts/AccountsPanel';
+import { UpdateField } from '../updates/UpdateField';
 
 /** Sidebar footer: clock, run summary, log link, then the account list —
  *  the horizontal top-level status bar this used to be didn't have room for
@@ -55,6 +56,7 @@ export function StatusBar() {
         >
           {runSummary}
         </div>
+        <UpdateField />
         <div
           onClick={() => void revealLog()}
           title={logFile ? `Application log — click to show in Explorer\n${logFile}` : 'Application log'}
