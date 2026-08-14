@@ -32,7 +32,12 @@ Write-Host "Releasing $tag" -ForegroundColor Cyan
 
 $release = 'src-tauri/target/x86_64-pc-windows-msvc/release'
 $portable = Join-Path $release 'luna.exe'
-$setup = Get-ChildItem (Join-Path $release 'bundle/nsis') -Filter '*-setup.exe' | Select-Object -First 1
+# By version, not by whatever comes first: the bundle directory keeps every
+# installer ever built there, and picking the first one alphabetically is how
+# v0.2.0 went out carrying the 0.1.0 setup and its signature — an update that
+# offered a build its own version.
+$setup = Get-ChildItem (Join-Path $release 'bundle/nsis') -Filter "*_${version}_*-setup.exe" | Select-Object -First 1
+if (-not $setup) { throw "no installer for $version in $release/bundle/nsis" }
 $sig = "$($setup.FullName).sig"
 foreach ($f in @($portable, $setup.FullName, $sig)) {
     if (-not (Test-Path $f)) { throw "missing build artifact: $f" }
