@@ -50,7 +50,7 @@ export function NewChatDialog() {
   const [folder, setFolder] = useState(initialFolder ?? folders[0]?.path ?? '');
   const group = usePanes(s => s.group);
   const [model, setModel] = useState<ModelLabel>('Opus');
-  const [effort, setEffort] = useState<Effort>('medium');
+  const [effort, setEffort] = useState<Effort>('high');
   const [perm, setPerm] = useState<PermMode>('Bypass');
   const [account, setAccount] = useState(accounts[0]?.name ?? '');
   const [worktree, setWorktree] = useState(true);

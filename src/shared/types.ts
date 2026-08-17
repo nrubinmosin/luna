@@ -75,7 +75,7 @@ export interface Account {
 
 export type PaneIndex = 0 | 1 | 2 | 3;
 
-export const MODELS: ModelLabel[] = ['Opus', 'Fable', 'Haiku', 'Sonnet'];
+export const MODELS: ModelLabel[] = ['Fable', 'Opus', 'Sonnet', 'Haiku'];
 export const EFFORTS: Effort[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 
 export const MODEL_CLI: Record<ModelLabel, string> = {
