@@ -119,14 +119,16 @@ export function AccountsPanel() {
               >
                 {note}
               </span>
-              <button
-                onClick={() => setLoginFor(acc)}
-                title="Sign in / re-login this account"
-                className="slim"
-                style={{ flex: 'none', minHeight: 'calc(var(--ui) * 1.25)', fontSize: 'var(--fs-1)' }}
-              >
-                login
-              </button>
+              {!acc.signedIn && (
+                <button
+                  onClick={() => setLoginFor(acc)}
+                  title="Sign in this account"
+                  className="slim"
+                  style={{ flex: 'none', minHeight: 'calc(var(--ui) * 1.25)', fontSize: 'var(--fs-1)' }}
+                >
+                  login
+                </button>
+              )}
               <span
                 onClick={() => {
                   if (inUse(acc.name) && !window.confirm(`"${acc.name}" is used by existing chats. Delete its folder anyway?`)) return;
@@ -157,6 +159,9 @@ export function AccountsPanel() {
                 </div>
                 <span style={{ fontSize: 'var(--fs-1)', color: 'var(--dim)', width: 30, flex: 'none', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
                   {acc.haveUsage ? `${Math.round(acc.limits[k] * 100)}%` : '—'}
+                </span>
+                <span style={{ fontSize: 'var(--fs-1)', color: 'var(--faint)', width: 42, flex: 'none', textAlign: 'right', whiteSpace: 'nowrap', overflow: 'hidden', fontVariantNumeric: 'tabular-nums' }}>
+                  {acc.haveUsage ? acc.resets[k] : ''}
                 </span>
               </div>
             ))}
