@@ -1,6 +1,6 @@
 [package]
 name = "luna"
-version = "0.2.2"
+version = "0.2.3"
 description = "Thin desktop UI over Claude Code CLI sessions"
 edition = "2021"
 
