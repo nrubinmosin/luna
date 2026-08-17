@@ -19,7 +19,9 @@ function Clock() {
   }, []);
 
   return (
-    <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+    {/* nowrap keeps the bar's height still: "August 17" breaking into two
+        lines once a squeeze got narrow enough made the whole footer jump. */}
+    <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, whiteSpace: 'nowrap' }}>
       <span style={{ fontVariantNumeric: 'tabular-nums', fontWeight: 700, color: 'var(--fg)', fontSize: 'var(--fs-4)' }}>
         {clockTime(now)}
       </span>
