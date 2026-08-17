@@ -64,7 +64,6 @@ export function ChatRow({ chat }: { chat: Chat }) {
       onClick={() => setActive(chat.id)}
       onMouseEnter={() => setSpot(chat.id)}
       onMouseLeave={() => setSpot(null)}
-      title="Drag into a pane"
       className="hover-bg chat-row"
       style={{
         display: 'flex', alignItems: 'center', gap: 6, height: 27, padding: '0 6px',
@@ -111,7 +110,9 @@ export function ChatRow({ chat }: { chat: Chat }) {
             setDraft(chat.name);
             setEditing(true);
           }}
-          title="Double-click to rename"
+          // The full name first: the row is narrow enough that the ellipsis is
+          // the common case, and the rename hint alone hid what was cut off.
+          title={`${chat.name}\nDouble-click to rename`}
           style={{ flex: '1 1 auto', minWidth: 40, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 'var(--fs-4)', fontWeight: 500 }}
         >
           {chat.name}

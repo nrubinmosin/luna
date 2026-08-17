@@ -100,7 +100,6 @@ export function Pane({ index }: { index: number }) {
               setDragPane(null);
               setOver(-1);
             }}
-            title="Drag to swap this pane with another"
             className="title-bar"
             style={{ flex: 'none', gap: 5, cursor: 'grab' }}
           >
@@ -108,7 +107,7 @@ export function Pane({ index }: { index: number }) {
               title={st!.label}
               style={{ width: 7, height: 7, borderRadius: '50%', flex: 'none', background: st!.color, animation: st!.anim }}
             />
-            <span className="title-bar-text" style={{ flex: '1 1 auto', minWidth: 40 }}>
+            <span title={chat.name} className="title-bar-text" style={{ flex: '1 1 auto', minWidth: 40 }}>
               {chat.name}
             </span>
 
