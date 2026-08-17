@@ -58,7 +58,7 @@ export function OrphanSessions() {
       name: o.title?.slice(0, 80) || `recovered session ${o.id.slice(-4)}`,
       status: 'resting',
       model: 'Opus',
-      effort: 'medium',
+      effort: 'high',
       perm: 'Bypass',
       context: 0,
       account,
