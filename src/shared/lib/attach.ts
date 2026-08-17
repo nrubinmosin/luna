@@ -20,7 +20,7 @@ const nameFor = (file: File, index: number) => {
   return `${kind}${index ? `-${index + 1}` : ''}.${ext}`;
 };
 
-const quote = (p: string) => (/[\s"']/.test(p) ? `"${p}"` : p);
+const quote = (p: string) => `"${p}"`;
 
 // btoa() on a megabyte-sized string blows the argument limit if fed in one go.
 const toBase64 = (bytes: Uint8Array) => {
