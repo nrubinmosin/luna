@@ -7,6 +7,10 @@ export function useKeymap(opts: { openNewChat: () => void; closeModal: () => voi
       const mod = e.metaKey || e.ctrlKey;
       if (e.key === 'Escape') {
         opts.closeModal();
+        // A maximised pane steps back to the grid on Escape. The key still
+        // reaches the CLI underneath — swallowing it here would eat the
+        // interrupt the person was probably also asking for.
+        usePanes.getState().setFocus(null);
         return;
       }
       if (!mod) return;
