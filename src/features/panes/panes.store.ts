@@ -69,6 +69,13 @@ interface PanesState {
   dragPane: number | null;
   /** Chat hovered in the sidebar — its pane lights up so you can spot it. */
   spot: string | null;
+  /**
+   * Pane blown up to fill the grid on its own. Only a way of looking at the
+   * board — the layout, its slots and its splits all stay exactly as they
+   * were, so restoring brings the grid back untouched. Deliberately not
+   * persisted: a focus is a moment, not an arrangement.
+   */
+  focus: number | null;
   setGroup: (g: GroupId) => void;
   /** Empties one group's boards and evens out its splits. Chats are untouched. */
   resetGroup: (g: GroupId) => void;
@@ -85,6 +92,7 @@ interface PanesState {
   /** Exchanges the contents of two panes on the active board. */
   swapPanes: (a: number, b: number) => void;
   setSpot: (id: string | null) => void;
+  setFocus: (i: number | null) => void;
 }
 
 /** The group currently on screen. */
@@ -123,16 +131,22 @@ export const usePanes = create<PanesState>()(
       drag: null,
       dragPane: null,
       spot: null,
+      focus: null,
 
-      setGroup: g => set({ group: g, over: -1, dragPane: null }),
+      // Switching group or layout lands on a different board, where the old
+      // focus index would point at an unrelated pane — so both drop it.
+      setGroup: g => set({ group: g, over: -1, dragPane: null, focus: null }),
 
       resetGroup: g =>
         set(s => ({
           groups: s.groups.map((old, i) => (i === g ? { ...blankGroup(), layout: old.layout } : old)),
-          over: -1
+          over: -1,
+          // Resetting the visible group empties the focused pane too, and an
+          // empty pane offers no way back out of focus.
+          ...(g === s.group ? { focus: null } : {})
         })),
 
-      setLayout: n => set(s => ({ ...withGroup(s, { layout: n }), over: -1 })),
+      setLayout: n => set(s => ({ ...withGroup(s, { layout: n }), over: -1, focus: null })),
 
       dropChat: (paneIndex, chatId) =>
         set(s => {
@@ -145,12 +159,20 @@ export const usePanes = create<PanesState>()(
         set(s => {
           const slots = currentSlots(s).slice();
           slots[paneIndex] = null;
-          return withBoard(s, slots);
+          // An emptied pane has no title bar, so a focus on it would have no
+          // Restore button left to press — back to the grid instead.
+          return { ...withBoard(s, slots), ...(s.focus === paneIndex ? { focus: null } : {}) };
         }),
 
       // A deleted chat has to disappear from every board of every group, not
       // just the visible one.
-      evictChat: chatId => set(s => mapAllBoards(s, slots => slots.map(p => (p === chatId ? null : p)))),
+      evictChat: chatId =>
+        set(s => ({
+          ...mapAllBoards(s, slots => slots.map(p => (p === chatId ? null : p))),
+          // Same as closePane: a focus on the pane it just emptied would trap
+          // the view with no Restore button to leave by.
+          ...(s.focus != null && currentSlots(s)[s.focus] === chatId ? { focus: null } : {})
+        })),
 
       // Seat a new chat on every board of the active group that still has room,
       // so switching layout right after creating it doesn't land on an empty
@@ -186,6 +208,7 @@ export const usePanes = create<PanesState>()(
         }),
 
       setSpot: id => set({ spot: id }),
+      setFocus: i => set({ focus: i }),
 
       setSplit: (key, value) =>
         set(s =>

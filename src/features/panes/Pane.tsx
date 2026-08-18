@@ -11,7 +11,8 @@ export function Pane({ index }: { index: number }) {
   const over = usePanes(s => s.over === index);
   const spotted = usePanes(s => !!s.spot && s.spot === currentSlots(s)[index]);
   const layout = usePanes(currentLayout);
-  const { setOver, dropChat, closePane, setDragPane, swapPanes } = usePanes.getState();
+  const { setOver, dropChat, closePane, setDragPane, swapPanes, setFocus } = usePanes.getState();
+  const focused = usePanes(s => s.focus === index);
   const beingDragged = usePanes(s => s.dragPane === index);
   const chat = useChats(s => s.findChat(chatId));
   const folder = useChats(s => (chatId ? s.folderOf(chatId) : null));
@@ -134,6 +135,13 @@ export function Pane({ index }: { index: number }) {
             </span>
 
             <span className="title-bar-controls" style={{ flex: 'none' }}>
+              {layout > 1 && (
+                <button
+                  aria-label={focused ? 'Restore' : 'Maximize'}
+                  title={focused ? 'Back to the grid' : 'Focus this pane — the grid stays as it is'}
+                  onClick={() => setFocus(focused ? null : index)}
+                />
+              )}
               <button
                 aria-label="Close"
                 title="Close this pane — the chat keeps running"
