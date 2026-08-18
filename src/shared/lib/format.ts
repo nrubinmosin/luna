@@ -27,6 +27,16 @@ export const fmtReset = (iso: string | null): string => {
   return `${Math.round(h / 24)}d`;
 };
 
+// "2026-08-17T21:00:00+00:00" -> "Aug 24, 21:00" in the system timezone.
+export const fmtResetDate = (iso: string | null): string | null => {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (!Number.isFinite(d.getTime())) return null;
+  return d.toLocaleString(undefined, {
+    day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit'
+  });
+};
+
 export const limitColor = (v: number) => {
   if (v >= 0.85) return 'oklch(.63 .19 25)';
   if (v >= 0.6) return 'oklch(.78 .15 78)';
