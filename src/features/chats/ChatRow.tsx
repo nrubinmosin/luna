@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import type { Chat } from '../../shared/types';
-import { STATUS } from '../../shared/ui/status';
+import { StatusDot } from '../../shared/ui/StatusDot';
 import { chatColorTheme } from '../../shared/ui/chatColors';
 import { tint } from '../../shared/lib/format';
 import { useChats } from './chats.store';
@@ -12,7 +12,6 @@ export function ChatRow({ chat }: { chat: Chat }) {
   const setActive = useChats(s => s.setActive);
   const dragging = usePanes(s => s.drag === chat.id);
   const { setDrag, setOver, setSpot } = usePanes.getState();
-  const st = STATUS[chat.status];
   const [editing, setEditing] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [draft, setDraft] = useState('');
@@ -69,10 +68,7 @@ export function ChatRow({ chat }: { chat: Chat }) {
       >
         {chat.marked ? '★' : '☆'}
       </span>
-      <span
-        title={st.label}
-        style={{ width: 7, height: 7, borderRadius: '50%', flex: 'none', background: st.color, animation: st.anim }}
-      />
+      <StatusDot status={chat.status} />
       {editing ? (
         <input
           autoFocus

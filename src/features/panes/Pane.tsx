@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { CSSProperties } from 'react';
-import { STATUS } from '../../shared/ui/status';
+import { StatusDot } from '../../shared/ui/StatusDot';
 import { CHAT_COLORS, chatColorTheme } from '../../shared/ui/chatColors';
 import { ACCENT, limitColor, tail2, tint } from '../../shared/lib/format';
 import { useChats } from '../chats/chats.store';
@@ -57,7 +57,6 @@ export function Pane({ index }: { index: number }) {
     return () => document.removeEventListener('click', close);
   }, [picking]);
 
-  const st = chat ? STATUS[chat.status] : null;
   const t = folder ? tail2(folder.path) : null;
   const colorTheme = chatColorTheme(chat?.color);
   const ctx = chat ? Math.round((chat.context ?? 0) * 100) : 0;
@@ -153,10 +152,7 @@ export function Pane({ index }: { index: number }) {
               })
             }}
           >
-            <span
-              title={st!.label}
-              style={{ width: 7, height: 7, borderRadius: '50%', flex: 'none', background: st!.color, animation: st!.anim }}
-            />
+            <StatusDot status={chat.status} />
             {editing ? (
               <input
                 autoFocus
