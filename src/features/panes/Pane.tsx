@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { STATUS } from '../../shared/ui/status';
+import { CHAT_COLORS, chatColorTheme } from '../../shared/ui/chatColors';
 import { ACCENT, limitColor, tail2, tint } from '../../shared/lib/format';
 import { useChats } from '../chats/chats.store';
 import { DeleteChatDialog } from '../chats/DeleteChatDialog';
@@ -19,6 +20,7 @@ export function Pane({ index }: { index: number }) {
   const folder = useChats(s => (chatId ? s.folderOf(chatId) : null));
   const [confirming, setConfirming] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [picking, setPicking] = useState(false);
   const [draft, setDraft] = useState('');
 
   const commitRename = () => {
@@ -42,10 +44,22 @@ export function Pane({ index }: { index: number }) {
   useEffect(() => {
     setEditing(false);
     setConfirming(false);
+    setPicking(false);
   }, [chatId]);
+
+  // Any click that the popover didn't swallow dismisses it. Attached only
+  // while it is open, and after the opening click's dispatch has finished.
+  useEffect(() => {
+    if (!picking) return;
+    const close = () => setPicking(false);
+    // `window` is shadowed here by the chat's context window.
+    document.addEventListener('click', close);
+    return () => document.removeEventListener('click', close);
+  }, [picking]);
 
   const st = chat ? STATUS[chat.status] : null;
   const t = folder ? tail2(folder.path) : null;
+  const colorTheme = chatColorTheme(chat?.color);
   const ctx = chat ? Math.round((chat.context ?? 0) * 100) : 0;
   const tokens = chat?.contextTokens ?? null;
   const window = chat?.contextWindow ?? null;
@@ -109,7 +123,7 @@ export function Pane({ index }: { index: number }) {
             // Chromium hands every mouse press inside a draggable subtree to
             // the drag machinery, and selecting text in the rename input would
             // start a pane drag instead.
-            draggable={!editing}
+            draggable={!editing && !picking}
             onDragStart={e => {
               e.dataTransfer.effectAllowed = 'move';
               // Something must be set or Firefox/WebView2 cancels the drag; the
@@ -122,7 +136,17 @@ export function Pane({ index }: { index: number }) {
               setOver(-1);
             }}
             className="title-bar"
-            style={{ flex: 'none', gap: 5, cursor: 'grab' }}
+            // Inline wins over xp.css's Luna-blue gradient and frame colours,
+            // so an unset chat colour leaves the stock look untouched.
+            style={{
+              flex: 'none', gap: 5, cursor: 'grab',
+              ...(colorTheme && {
+                background: colorTheme.grad,
+                borderTopColor: colorTheme.top,
+                borderLeftColor: colorTheme.top,
+                borderRightColor: colorTheme.right
+              })
+            }}
           >
             <span
               title={st!.label}
@@ -150,7 +174,9 @@ export function Pane({ index }: { index: number }) {
                 }}
                 title={`${chat.name}\nDouble-click to rename`}
                 className="title-bar-text"
-                style={{ flex: '1 1 auto', minWidth: 40 }}
+                // theme.css bakes a navy text shadow into .title-bar-text; on a
+                // recoloured bar it reads as a blue smudge.
+                style={{ flex: '1 1 auto', minWidth: 40, ...(colorTheme && { textShadow: `1px 1px ${colorTheme.shadow}` }) }}
               >
                 {chat.name}
               </span>
@@ -176,6 +202,62 @@ export function Pane({ index }: { index: number }) {
               <span style={{ fontVariantNumeric: 'tabular-nums' }}>
                 {window != null ? `${ctx}%` : '—'}
               </span>
+            </span>
+
+            <span style={{ position: 'relative', flex: 'none', display: 'flex', alignItems: 'center' }}>
+              <span
+                onClick={e => {
+                  e.stopPropagation();
+                  setPicking(p => !p);
+                }}
+                title="Chat colour — tints this title bar and the chat's row in the list"
+                style={{
+                  width: 13, height: 13, borderRadius: 2, cursor: 'default',
+                  border: '1px solid rgba(255,255,255,.85)',
+                  background: colorTheme?.swatch ?? 'rgba(255,255,255,.35)'
+                }}
+              />
+              {picking && (
+                <span
+                  onClick={e => e.stopPropagation()}
+                  style={{
+                    position: 'absolute', top: 'calc(100% + 6px)', right: -2, zIndex: 60,
+                    display: 'flex', gap: 4, padding: 5, borderRadius: 3, background: 'var(--surface)',
+                    boxShadow: 'var(--border-window-outer), var(--border-window-inner), var(--shadow)'
+                  }}
+                >
+                  <span
+                    onClick={() => {
+                      useChats.getState().setColor(chat.id, null);
+                      setPicking(false);
+                    }}
+                    title="No colour — stock Luna blue"
+                    style={{
+                      width: 15, height: 15, borderRadius: 2, cursor: 'default', flex: 'none',
+                      display: 'grid', placeItems: 'center', fontSize: 10, color: 'var(--faint)',
+                      outline: !chat.color ? '2px solid var(--fg)' : '1px solid var(--line)',
+                      background: 'var(--chip)'
+                    }}
+                  >
+                    ✕
+                  </span>
+                  {CHAT_COLORS.map(c => (
+                    <span
+                      key={c.key}
+                      onClick={() => {
+                        useChats.getState().setColor(chat.id, c.key);
+                        setPicking(false);
+                      }}
+                      title={c.label}
+                      style={{
+                        width: 15, height: 15, borderRadius: 2, cursor: 'default', flex: 'none',
+                        background: chatColorTheme(c.key)!.swatch,
+                        outline: chat.color === c.key ? '2px solid var(--fg)' : '1px solid rgba(0,0,0,.25)'
+                      }}
+                    />
+                  ))}
+                </span>
+              )}
             </span>
 
             <span className="title-bar-controls" style={{ flex: 'none' }}>
