@@ -135,6 +135,11 @@ export function Pane({ index }: { index: number }) {
               setDragPane(null);
               setOver(-1);
             }}
+            // The bar itself toggles the same focus as its Maximize control;
+            // children with a double-click of their own stop the bubble.
+            onDoubleClick={() => {
+              if (layout > 1) setFocus(focused ? null : index);
+            }}
             className="title-bar"
             // Inline wins over xp.css's Luna-blue gradient and frame colours,
             // so an unset chat colour leaves the stock look untouched.
@@ -163,12 +168,15 @@ export function Pane({ index }: { index: number }) {
                   if (e.key === 'Escape') setEditing(false);
                 }}
                 onClick={e => e.stopPropagation()}
+                // Double-clicking a word to select it is not a focus toggle.
+                onDoubleClick={e => e.stopPropagation()}
                 type="text"
                 style={{ flex: '1 1 auto', minWidth: 40, height: 'calc(var(--ui) * 1.4)' }}
               />
             ) : (
               <span
-                onDoubleClick={() => {
+                onDoubleClick={e => {
+                  e.stopPropagation();
                   setDraft(chat.name);
                   setEditing(true);
                 }}
@@ -204,7 +212,10 @@ export function Pane({ index }: { index: number }) {
               </span>
             </span>
 
-            <span style={{ position: 'relative', flex: 'none', display: 'flex', alignItems: 'center' }}>
+            <span
+              onDoubleClick={e => e.stopPropagation()}
+              style={{ position: 'relative', flex: 'none', display: 'flex', alignItems: 'center' }}
+            >
               <span
                 onClick={e => {
                   e.stopPropagation();
@@ -260,7 +271,7 @@ export function Pane({ index }: { index: number }) {
               )}
             </span>
 
-            <span className="title-bar-controls" style={{ flex: 'none' }}>
+            <span className="title-bar-controls" onDoubleClick={e => e.stopPropagation()} style={{ flex: 'none' }}>
               <button
                 aria-label="Delete"
                 title="Delete chat — same confirmation as the list"

@@ -28,6 +28,20 @@ export const CHAT_COLORS: ChatColor[] = [
   { key: 'graphite', label: 'Graphite', h: 220, s: 12, l: 40 }
 ];
 
+/**
+ * A random colour for a newborn chat, dodging the ones already worn — pass in
+ * every colour in use in its group, archived chats included: an archived chat
+ * comes back, and it comes back wearing its colour. Only once the whole
+ * palette is worn does chance run free; a colour freed by a deleted chat is
+ * simply back in the pool next time.
+ */
+export const pickChatColor = (worn: Array<string | null | undefined>): string => {
+  const taken = new Set(worn.filter(Boolean));
+  const free = CHAT_COLORS.filter(c => !taken.has(c.key));
+  const pool = free.length ? free : CHAT_COLORS;
+  return pool[Math.floor(Math.random() * pool.length)].key;
+};
+
 export interface ChatColorTheme {
   /** Title-bar face, shaped like xp.css's own Luna gradient. */
   grad: string;
