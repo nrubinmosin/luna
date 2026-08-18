@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { Chat } from '../../shared/types';
 import { STATUS } from '../../shared/ui/status';
+import { chatColorTheme } from '../../shared/ui/chatColors';
 import { tint } from '../../shared/lib/format';
 import { useChats } from './chats.store';
 import { usePanes } from '../panes/panes.store';
@@ -46,6 +47,15 @@ export function ChatRow({ chat }: { chat: Chat }) {
         opacity: dragging ? 0.45 : 1
       }}
     >
+      {/* The chat's colour, so a row and the pane wearing the same tint link up
+          by eye. In flow whether set or not, same as the mark star below. */}
+      <span
+        title={chat.color ? 'Chat colour — set from the pane title bar' : undefined}
+        style={{
+          width: 3, height: 15, borderRadius: 2, flex: 'none',
+          background: chatColorTheme(chat.color)?.swatch ?? 'transparent'
+        }}
+      />
       {/* Kept in flow whether it is set or not — fading it in on hover instead
           of adding it would shift every name in the list on mouse-over. */}
       <span

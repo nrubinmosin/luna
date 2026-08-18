@@ -36,6 +36,9 @@ export interface Chat {
   /** A flag the user sets by hand, for their own bookkeeping. It means
    *  whatever they decide it means — nothing in the app reads it. */
   marked?: boolean;
+  /** Key of a preset from CHAT_COLORS. The pane title bar wears it and the
+   *  sidebar row shows a stripe of it; unset means stock Luna blue. */
+  color?: string | null;
 }
 
 export interface Folder {
