@@ -4,13 +4,19 @@ import { StatusDot } from '../../shared/ui/StatusDot';
 import { chatColorTheme } from '../../shared/ui/chatColors';
 import { tint } from '../../shared/lib/format';
 import { useChats } from './chats.store';
-import { usePanes } from '../panes/panes.store';
+import { currentLayout, currentSlots, usePanes } from '../panes/panes.store';
 import { DeleteChatDialog } from './DeleteChatDialog';
 
 export function ChatRow({ chat }: { chat: Chat }) {
   const active = useChats(s => s.active === chat.id);
   const setActive = useChats(s => s.setActive);
   const dragging = usePanes(s => s.drag === chat.id);
+  // Which tile of the board on screen holds this chat, 1-based to match the
+  // "pane N of M" wording in an empty pane; null when it isn't on this board.
+  const paneNo = usePanes(s => {
+    const i = currentSlots(s).indexOf(chat.id);
+    return i >= 0 && i < currentLayout(s) ? i + 1 : null;
+  });
   const { setDrag, setOver, setSpot } = usePanes.getState();
   const [editing, setEditing] = useState(false);
   const [confirming, setConfirming] = useState(false);
@@ -96,6 +102,20 @@ export function ChatRow({ chat }: { chat: Chat }) {
           style={{ flex: '1 1 auto', minWidth: 40, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 'var(--fs-4)', fontWeight: 500 }}
         >
           {chat.name}
+        </span>
+      )}
+      {/* Sits after the flexible name, so appearing or vanishing on a layout
+          switch only nudges the controls on the right, never the names. */}
+      {paneNo != null && (
+        <span
+          title={`Showing in pane ${paneNo} of the current layout`}
+          style={{
+            minWidth: 15, height: 15, padding: '0 2px', flex: 'none', borderRadius: 2,
+            display: 'grid', placeItems: 'center', fontSize: 'var(--fs-1)', fontWeight: 600,
+            fontVariantNumeric: 'tabular-nums', color: 'var(--faint)', border: '1px solid var(--line)'
+          }}
+        >
+          {paneNo}
         </span>
       )}
       <span
