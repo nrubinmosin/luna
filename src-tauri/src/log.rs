@@ -38,8 +38,13 @@ fn stamp() -> String {
 }
 
 /// Appends one line. Never returns an error: logging must not be able to break
-/// the thing it is logging.
+/// the thing it is logging. Only warnings and errors reach the file — with no
+/// log button in the UI any more, the file exists for post-mortems, and info
+/// chatter would just push the lines that matter over the rotation edge.
 pub fn write(level: &str, source: &str, message: &str) {
+    if level == "INFO" {
+        return;
+    }
     let p = path();
     let Ok(_guard) = lock().lock() else { return };
 
@@ -76,31 +81,6 @@ pub fn append_log(level: String, source: String, message: String) {
         _ => "INFO",
     };
     write(level, &source, &message);
-}
-
-#[tauri::command]
-pub fn log_path() -> String {
-    path().to_string_lossy().into_owned()
-}
-
-/// Opens the log in the system file browser, selecting the file itself.
-#[tauri::command]
-pub fn reveal_log() -> Result<(), String> {
-    let p = path();
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        std::process::Command::new("explorer")
-            .arg(format!("/select,{}", p.display()))
-            .creation_flags(0x0800_0000)
-            .spawn()
-            .map_err(|e| e.to_string())?;
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = p;
-    }
-    Ok(())
 }
 
 /// A panic in a worker thread would otherwise vanish silently.

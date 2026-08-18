@@ -1,12 +1,11 @@
 import { useEffect, useState } from 'react';
 import { clockDate, clockTime, clockWeekday } from '../../shared/lib/format';
-import { logPath, revealLog } from '../../shared/lib/log';
 import { STATUS } from '../../shared/ui/status';
 import { useChats } from '../chats/chats.store';
 import { AccountsPanel } from '../accounts/AccountsPanel';
 import { UpdateField } from '../updates/UpdateField';
 
-/** Sidebar footer: clock, run summary, log link, then the account list —
+/** Sidebar footer: clock, run summary, then the account list —
  *  the horizontal top-level status bar this used to be didn't have room for
  *  any of that once panes reclaimed its height. */
 /** Its own component so the once-a-second tick re-renders three spans rather
@@ -33,11 +32,6 @@ function Clock() {
 
 export function StatusBar() {
   const folders = useChats(s => s.folders);
-
-  const [logFile, setLogFile] = useState('');
-  useEffect(() => {
-    void logPath().then(setLogFile).catch(() => {});
-  }, []);
 
   const all = folders.flatMap(f => f.chats);
   const working = all.filter(c => c.status === 'working').length;
@@ -74,14 +68,6 @@ export function StatusBar() {
           </span>
         </div>
         <UpdateField />
-        <div
-          onClick={() => void revealLog()}
-          title={logFile ? `Application log — click to show in Explorer\n${logFile}` : 'Application log'}
-          className="status-bar-field hover-bg"
-          style={{ flexGrow: 0, fontSize: 'var(--fs-2)', color: 'var(--faint)', cursor: 'default', whiteSpace: 'nowrap' }}
-        >
-          ▤ log
-        </div>
       </div>
     </div>
   );

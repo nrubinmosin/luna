@@ -97,8 +97,6 @@ pub fn run() {
             accounts::delete_account,
             limits::account_limits,
             log::append_log,
-            log::log_path,
-            log::reveal_log,
             media::save_media,
             media::clear_media,
             media::prune_media,
