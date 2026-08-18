@@ -99,8 +99,19 @@ const slot = (fraction: number): CSSProperties => ({
 export function PaneGrid() {
   const layout = usePanes(currentLayout);
   const { col, rowL, rowR } = usePanes(currentSplits);
+  const focus = usePanes(s => s.focus);
 
   const pane = (i: number) => <Pane index={i} />;
+
+  // A focused pane borrows the whole grid; the board and its splits are still
+  // there underneath, untouched, waiting for Restore.
+  if (focus != null && focus < layout) {
+    return (
+      <div style={{ flex: 1, minHeight: 0, padding: GAP, background: 'var(--panel)', display: 'flex' }}>
+        <div style={box('row')}>{pane(focus)}</div>
+      </div>
+    );
+  }
 
   const column = (top: number, bottom: number, fraction: number, split: SplitKey) => (
     <div style={box('column')}>
