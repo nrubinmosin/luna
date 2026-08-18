@@ -3,7 +3,8 @@ import type { CSSProperties } from 'react';
 import { EFFORTS, MODELS, PERM_HINTS } from '../../shared/types';
 import type { Effort, ModelLabel, PermMode } from '../../shared/types';
 import { ACCENT, tail2, tint } from '../../shared/lib/format';
-import { newId, useChats } from '../chats/chats.store';
+import { newId, useChats, wornColors } from '../chats/chats.store';
+import { pickChatColor } from '../../shared/ui/chatColors';
 import { usePanes } from '../panes/panes.store';
 import { useAccounts } from '../accounts/accounts.store';
 import { useNewChat } from './newchat.store';
@@ -115,7 +116,8 @@ export function NewChatDialog() {
       context: 0,
       account,
       group,
-      worktree
+      worktree,
+      color: pickChatColor(wornColors(folders, group))
     });
     autoPlace(id);
     onClose();

@@ -3,7 +3,8 @@ import { killSession, orphanSessions, type OrphanSessionDto } from '../../ipc/co
 import { tail2 } from '../../shared/lib/format';
 import { ConfirmDialog } from '../../shared/ui/ConfirmDialog';
 import { usePanes } from '../panes/panes.store';
-import { useChats } from './chats.store';
+import { pickChatColor } from '../../shared/ui/chatColors';
+import { useChats, wornColors } from './chats.store';
 
 const EVERY_MS = 30_000;
 
@@ -67,7 +68,8 @@ export function OrphanSessions() {
       // go missing a second time.
       group: usePanes.getState().group,
       worktree: !!m,
-      worktreePath: m ? o.cwd : null
+      worktreePath: m ? o.cwd : null,
+      color: pickChatColor(wornColors(folders, usePanes.getState().group))
     });
     usePanes.getState().autoPlace(o.id);
     rescan();

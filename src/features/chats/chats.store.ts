@@ -45,6 +45,13 @@ export const foldersOfGroup = (folders: Folder[], group: GroupId): Folder[] =>
  *  working out which running sessions nothing claims. */
 export const allChats = (folders: Folder[]): Chat[] => folders.flatMap(f => f.chats);
 
+/** The colours worn in one group, for dealing a new chat one of its own.
+ *  Archived chats count — their colour is not free while they can come back. */
+export const wornColors = (folders: Folder[], group: GroupId): Array<string | null | undefined> =>
+  allChats(folders)
+    .filter(c => c.group === group)
+    .map(c => c.color);
+
 let seq = 0;
 export const newId = (prefix: string) => `${prefix}${Date.now().toString(36)}${(seq++).toString(36)}`;
 
