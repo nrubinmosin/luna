@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { limitColor } from '../../shared/lib/format';
+import { fmtResetDate, limitColor } from '../../shared/lib/format';
 import { useAccounts } from './accounts.store';
 import { useChats } from '../chats/chats.store';
 
@@ -99,6 +99,7 @@ export function AccountsPanel() {
                 ? 'usage unavailable'
                 : 'no usage data yet'
           : acc.usageAge;
+        const weekReset = acc.haveUsage ? fmtResetDate(acc.weekResetAt) : null;
         return (
           <div key={acc.name} style={{ padding: '6px 0', borderTop: '1px solid var(--line)' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 5 }}>
@@ -142,15 +143,7 @@ export function AccountsPanel() {
               </span>
             </div>
             {LK.map(([k, full]) => (
-              <div
-                key={k}
-                title={
-                  acc.haveUsage
-                    ? `${full}: ${Math.round(acc.limits[k] * 100)}% · resets in ${acc.resets[k]}`
-                    : usageNote ?? ''
-                }
-                style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 3 }}
-              >
+              <div key={k} style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 3 }}>
                 <span style={{ fontSize: 'var(--fs-1)', color: 'var(--dim)', width: 34, flex: 'none', whiteSpace: 'nowrap', overflow: 'hidden' }}>{full}</span>
                 <div className="xp-sunken" style={{ flex: 1, height: 6, background: 'var(--track)', overflow: 'hidden' }}>
                   {acc.haveUsage && (
@@ -165,9 +158,11 @@ export function AccountsPanel() {
                 </span>
               </div>
             ))}
-            {usageNote && (
-              <div style={{ fontSize: 'var(--fs-1)', color: 'var(--faint)', textAlign: 'right', marginTop: 1 }}>
-                {usageNote}
+            {(weekReset || usageNote) && (
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, fontSize: 'var(--fs-1)', color: 'var(--faint)', marginTop: 1 }}>
+                {weekReset && <span style={{ whiteSpace: 'nowrap' }}>resets {weekReset}</span>}
+                <span style={{ flex: 1 }} />
+                {usageNote && <span style={{ textAlign: 'right' }}>{usageNote}</span>}
               </div>
             )}
           </div>

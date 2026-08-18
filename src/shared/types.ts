@@ -68,6 +68,9 @@ export interface Account {
   haveUsage: boolean;
   limits: LimitSet;
   resets: { h5: string; week: string; fable: string };
+  /** Raw ISO instant the overall weekly limit resets, for showing the exact
+   *  local date and time rather than a countdown. */
+  weekResetAt: string | null;
   /** Age of the numbers, e.g. "just now" / "4m ago". */
   usageAge: string | null;
   /** When the numbers on screen were actually taken, so their age keeps

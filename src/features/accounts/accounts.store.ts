@@ -37,6 +37,7 @@ const toAccount = (a: ipc.AccountInfo): Account => ({
   haveUsage: false,
   limits: emptyLimits,
   resets: emptyResets,
+  weekResetAt: null,
   usageAge: null,
   fetchedAt: null,
   sync: 'loading'
@@ -137,6 +138,7 @@ export const useAccounts = create<AccountsState>()((set, get) => ({
             week: fmtReset(lim.resetWeek),
             fable: fmtReset(lim.resetModel)
           },
+          weekResetAt: lim.resetWeek ?? null,
           sync: sync ?? 'ready'
         });
         continue;
