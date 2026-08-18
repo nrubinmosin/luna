@@ -17,9 +17,6 @@ export const logInfo = (source: string, message: string) => send('info', source,
 export const logWarn = (source: string, message: string) => send('warn', source, message);
 export const logError = (source: string, message: string) => send('error', source, message);
 
-export const logPath = () => (tauriAvailable ? invoke<string>('log_path') : Promise.resolve(''));
-export const revealLog = () => (tauriAvailable ? invoke<void>('reveal_log') : Promise.resolve());
-
 /** Anything above this is long enough for the window to feel stuck. */
 export const SLOW_MS = 400;
 
