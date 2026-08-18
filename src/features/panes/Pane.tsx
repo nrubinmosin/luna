@@ -1,8 +1,9 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { STATUS } from '../../shared/ui/status';
 import { ACCENT, limitColor, tail2, tint } from '../../shared/lib/format';
 import { useChats } from '../chats/chats.store';
+import { DeleteChatDialog } from '../chats/DeleteChatDialog';
 import { currentLayout, currentSlots, usePanes } from './panes.store';
 import { Terminal } from './Terminal';
 
@@ -16,6 +17,15 @@ export function Pane({ index }: { index: number }) {
   const beingDragged = usePanes(s => s.dragPane === index);
   const chat = useChats(s => s.findChat(chatId));
   const folder = useChats(s => (chatId ? s.folderOf(chatId) : null));
+  const [confirming, setConfirming] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState('');
+
+  const commitRename = () => {
+    setEditing(false);
+    const name = draft.trim();
+    if (chat && name && name !== chat.name) useChats.getState().renameChat(chat.id, name);
+  };
 
   // A slot pointing at a chat that no longer exists renders as an empty pane,
   // which is correct but silent — the board would keep the dead id forever.
@@ -26,6 +36,13 @@ export function Pane({ index }: { index: number }) {
   useEffect(() => {
     if (stale) closePane(index);
   }, [stale, index, closePane]);
+
+  // The slot can be handed a different chat while a rename or a delete prompt
+  // is open; neither belongs to the newcomer.
+  useEffect(() => {
+    setEditing(false);
+    setConfirming(false);
+  }, [chatId]);
 
   const st = chat ? STATUS[chat.status] : null;
   const t = folder ? tail2(folder.path) : null;
@@ -89,7 +106,10 @@ export function Pane({ index }: { index: number }) {
       {chat && folder ? (
         <>
           <div
-            draggable
+            // Chromium hands every mouse press inside a draggable subtree to
+            // the drag machinery, and selecting text in the rename input would
+            // start a pane drag instead.
+            draggable={!editing}
             onDragStart={e => {
               e.dataTransfer.effectAllowed = 'move';
               // Something must be set or Firefox/WebView2 cancels the drag; the
@@ -108,9 +128,33 @@ export function Pane({ index }: { index: number }) {
               title={st!.label}
               style={{ width: 7, height: 7, borderRadius: '50%', flex: 'none', background: st!.color, animation: st!.anim }}
             />
-            <span title={chat.name} className="title-bar-text" style={{ flex: '1 1 auto', minWidth: 40 }}>
-              {chat.name}
-            </span>
+            {editing ? (
+              <input
+                autoFocus
+                value={draft}
+                onChange={e => setDraft(e.target.value)}
+                onBlur={commitRename}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') commitRename();
+                  if (e.key === 'Escape') setEditing(false);
+                }}
+                onClick={e => e.stopPropagation()}
+                type="text"
+                style={{ flex: '1 1 auto', minWidth: 40, height: 'calc(var(--ui) * 1.4)' }}
+              />
+            ) : (
+              <span
+                onDoubleClick={() => {
+                  setDraft(chat.name);
+                  setEditing(true);
+                }}
+                title={`${chat.name}\nDouble-click to rename`}
+                className="title-bar-text"
+                style={{ flex: '1 1 auto', minWidth: 40 }}
+              >
+                {chat.name}
+              </span>
+            )}
 
             <span title={`${t!.parent} / ${t!.leaf}`} style={{ ...chip, maxWidth: 90, overflow: 'hidden', textOverflow: 'ellipsis' }}>
               {t!.leaf}
@@ -135,6 +179,11 @@ export function Pane({ index }: { index: number }) {
             </span>
 
             <span className="title-bar-controls" style={{ flex: 'none' }}>
+              <button
+                aria-label="Delete"
+                title="Delete chat — same confirmation as the list"
+                onClick={() => setConfirming(true)}
+              />
               {layout > 1 && (
                 <button
                   aria-label={focused ? 'Restore' : 'Maximize'}
@@ -149,6 +198,7 @@ export function Pane({ index }: { index: number }) {
               />
             </span>
           </div>
+          {confirming && <DeleteChatDialog chat={chat} onClose={() => setConfirming(false)} />}
           <Terminal chat={chat} folderPath={folder.path} />
         </>
       ) : (
