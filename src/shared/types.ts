@@ -6,7 +6,7 @@ export type GroupId = 0 | 1 | 2 | 3;
 export const GROUPS: GroupId[] = [0, 1, 2, 3];
 export const GROUP_LABELS = ['I', 'II', 'III', 'IV'] as const;
 
-export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultracode';
 
 export type PermMode = 'Ask' | 'Edits' | 'Plan only' | 'Bypass';
 
@@ -82,7 +82,7 @@ export interface Account {
 export type PaneIndex = 0 | 1 | 2 | 3;
 
 export const MODELS: ModelLabel[] = ['Fable', 'Opus', 'Sonnet', 'Haiku'];
-export const EFFORTS: Effort[] = ['low', 'medium', 'high', 'xhigh', 'max'];
+export const EFFORTS: Effort[] = ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'];
 
 export const MODEL_CLI: Record<ModelLabel, string> = {
   Opus: 'opus',
