@@ -126,6 +126,22 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
     let disposed = false;
     let repaintTimer: ReturnType<typeof setTimeout> | undefined;
     const unlisteners: Array<() => void> = [];
+    // The pty session exists only between ensure_session resolving and
+    // pty://exit. Outside that window every write/resize came straight back as
+    // "no such session" — once as an ipc warning and once more as an unhandled
+    // rejection — and the layout resizes a pane goes through while it is
+    // opening or after its CLI exited kept both logs busy. Gate the senders on
+    // the session actually being there; the .catch covers the race where the
+    // pty dies while a call is in flight.
+    let sessionLive = false;
+    const sendResize = (cols: number, rows: number) => {
+      if (!sessionLive || cols < 1 || rows < 1) return;
+      resizeSession(chat.id, cols, rows).catch(() => {});
+    };
+    const sendWrite = (data: string) => {
+      if (!sessionLive) return;
+      writeSession(chat.id, data).catch(() => {});
+    };
     // Fitting a detached or zero-sized host throws; that happens on every
     // pane close and used to take the whole window down with it.
     const refit = () => {
@@ -149,7 +165,7 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
     const nudgeRepaint = () => {
       if (disposed) return;
       safely(() => term.refresh(0, term.rows - 1));
-      void resizeSession(chat.id, term.cols, Math.max(1, term.rows - 1));
+      sendResize(term.cols, Math.max(1, term.rows - 1));
       clearTimeout(repaintTimer);
       repaintTimer = setTimeout(() => {
         if (disposed) return;
@@ -159,29 +175,41 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
         // viewport is taller than it is — which pushes the CLI's input box
         // below the bottom of the pane until the pane is reopened.
         refit();
-        void resizeSession(chat.id, term.cols, term.rows);
+        sendResize(term.cols, term.rows);
       }, 60);
     };
 
     let webgl: WebglAddon | null = null;
-    // The addon cannot survive being disposed twice: the second pass walks into
-    // a texture atlas it has already dropped and throws, and the GL context it
-    // was holding is never released. Dropping our own reference is not enough —
-    // xterm's AddonManager disposes every loaded addon again from
-    // term.dispose(), which is the call the teardown warnings came from. Take
-    // the method itself out of play so that later call cannot reach the
-    // renderer, whatever happens in ours.
+    let ctxLossSub: { dispose(): void } | null = null;
+    // Dispose the addon through its own dispose(): loadAddon replaced that
+    // method with the AddonManager's wrapper, which is idempotent and marks the
+    // addon disposed so term.dispose() skips it later. The previous fix here
+    // bound the wrapper, then swapped in a no-op — which worked, but only by
+    // accident of the wrapper's own bookkeeping, and it hid the real story:
+    // the addon's genuine first dispose throws a TypeError from deep inside
+    // its listener teardown (upstream @xterm/addon-webgl, after the renderer
+    // and its GL context are already released). That known-benign throw was
+    // being logged as a teardown warning on every single pane close — 2k+
+    // lines a day. Drop our own context-loss subscription first (it is the
+    // teardown path the throw walks through), and if the addon still throws a
+    // bare TypeError, swallow it; anything else is a real failure and is kept.
     const disposeWebgl = () => {
       const addon = webgl;
       webgl = null;
       if (!addon) return;
-      const real = addon.dispose.bind(addon);
-      addon.dispose = () => {};
-      safely(real);
+      safely(() => ctxLossSub?.dispose());
+      ctxLossSub = null;
+      try {
+        addon.dispose();
+      } catch (e) {
+        if (!(e instanceof TypeError)) {
+          logWarn('terminal', `webgl dispose failed: ${(e as Error)?.stack ?? String(e)}`);
+        }
+      }
     };
     try {
       webgl = new WebglAddon();
-      webgl.onContextLoss(() => {
+      ctxLossSub = webgl.onContextLoss(() => {
         // Chromium force-loses the oldest context once too many are live, and
         // the pane that owns it is usually still on screen. Falling back to the
         // DOM renderer silently would leave it blank until the next keystroke.
@@ -210,6 +238,7 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
       });
       const un2 = await onPtyExit(p => {
         if (p.id === chat.id) {
+          sessionLive = false;
           setStatus(chat.id, 'resting');
           term.write('\r\n\x1b[2m[session exited]\x1b[0m\r\n');
         }
@@ -224,22 +253,35 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
 
       // Resume a known session after an app restart; if it lived in a
       // worktree, relaunch from that worktree instead of creating a new one.
-      const backlog = await ensureSession({
-        chatId: chat.id,
-        folder: chat.worktreePath || folderPath,
-        accountPath,
-        model: chat.model,
-        effort: chat.effort,
-        perm: chat.perm,
-        worktree: chat.worktree && !chat.worktreePath,
-        resume: chat.sessionId ?? null
-      });
+      let backlog: string;
+      try {
+        backlog = await ensureSession({
+          chatId: chat.id,
+          folder: chat.worktreePath || folderPath,
+          accountPath,
+          model: chat.model,
+          effort: chat.effort,
+          perm: chat.perm,
+          worktree: chat.worktree && !chat.worktreePath,
+          resume: chat.sessionId ?? null
+        });
+      } catch {
+        // The ipc layer already logged the cause. Without this catch the
+        // failure escaped the async block as an unhandled rejection and the
+        // pane just sat empty with no explanation.
+        if (!disposed) {
+          setStatus(chat.id, 'resting');
+          term.write('\r\n\x1b[31m[failed to start session]\x1b[0m\r\n');
+        }
+        return;
+      }
       if (disposed) return;
+      sessionLive = true;
 
       if (!backlog) {
         // Fresh session: the pty starts at a placeholder size, so this is also
         // the first real SIGWINCH and the CLI paints itself.
-        void resizeSession(chat.id, term.cols, term.rows);
+        sendResize(term.cols, term.rows);
         return;
       }
 
@@ -290,11 +332,11 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
           }
         }
       }
-      void writeSession(chat.id, d);
+      sendWrite(d);
     });
     const resizeSub = term.onResize(({ cols, rows }) => {
-      if (disposed || cols < 1 || rows < 1) return;
-      void resizeSession(chat.id, cols, rows);
+      if (disposed) return;
+      sendResize(cols, rows);
     });
 
     const ro = new ResizeObserver(refit);

@@ -1,6 +1,8 @@
 use serde::Serialize;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::path::Path;
+use std::sync::{Mutex, OnceLock};
 
 const BETA_HEADER: &str = "oauth-2025-04-20";
 const RATE_401: &str = "token expired — run a session to refresh";
@@ -8,6 +10,20 @@ pub const RATE_429: &str = "rate-limited";
 
 /// How old the CLI's own cached usage may be before we bother the network.
 const CACHE_FRESH_MS: u64 = 5 * 60 * 1000;
+
+/// The usage endpoint answers a throttled client with 429 and retry-after 0,
+/// i.e. it never says how long the sentence is — and observed behaviour is
+/// that coming back a few minutes later just earns the next 429. Sit out a
+/// full cool-off after one, without a request and without another log line;
+/// the UI keeps the last real numbers (and the CLI's cache keeps refreshing
+/// them whenever a session runs) so nothing on screen goes dark meanwhile.
+const THROTTLE_COOLOFF_MS: u64 = 15 * 60 * 1000;
+
+/// Per-account "leave the endpoint alone until" deadline, ms since the epoch.
+fn throttled_until() -> &'static Mutex<HashMap<String, u64>> {
+    static MAP: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
+    MAP.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 #[derive(Serialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -180,6 +196,16 @@ fn fetch_limits(account_path: &str) -> Result<AccountLimits, String> {
         return Ok(out);
     }
 
+    // Inside a 429 cool-off: report the remaining hold instead of poking the
+    // endpoint again. The frontend folds this into its own retry cadence.
+    if let Some(&until) = throttled_until().lock().unwrap().get(account_path) {
+        let now = now_ms();
+        if now < until {
+            out.rate_limited = Some(((until - now) / 1000).max(1));
+            return Ok(out);
+        }
+    }
+
     let token = match read_token(account_path) {
         Ok(t) => t,
         // Cached numbers beat failing the whole read over a credentials hiccup.
@@ -201,9 +227,20 @@ fn fetch_limits(account_path: &str) -> Result<AccountLimits, String> {
             out.fetched_at_ms = Some(now_ms() as f64);
         }
         Err(e) if e.starts_with(RATE_429) => {
-            let secs = e.rsplit(':').next().and_then(|s| s.parse().ok()).unwrap_or(0);
-            crate::log::warn("limits", &format!("429 for {account_path}, retry-after {secs}s"));
-            out.rate_limited = Some(secs);
+            let secs: u64 = e.rsplit(':').next().and_then(|s| s.parse().ok()).unwrap_or(0);
+            // Honour a real retry-after if one ever appears, but never come
+            // back sooner than the cool-off — retry-after 0 is what turned
+            // this warning into hundreds of log lines a day.
+            let cool_ms = (secs * 1000).max(THROTTLE_COOLOFF_MS);
+            throttled_until()
+                .lock()
+                .unwrap()
+                .insert(account_path.to_string(), now_ms() + cool_ms);
+            crate::log::warn(
+                "limits",
+                &format!("429 for {account_path}, retry-after {secs}s — cooling off {}s", cool_ms / 1000),
+            );
+            out.rate_limited = Some(cool_ms / 1000);
         }
         Err(e) => {
             crate::log::warn("limits", &format!("usage failed for {account_path}: {e}"));

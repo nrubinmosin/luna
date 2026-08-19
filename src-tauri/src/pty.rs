@@ -19,6 +19,15 @@ const SCROLLBACK_SLACK: usize = 256 * 1024;
 /// repainting TUI does not turn into hundreds of events per second.
 const FRAME: std::time::Duration = std::time::Duration::from_millis(16);
 
+/// Set once the app has been asked to exit. Sessions outlive the window by
+/// design (quit only comes from the tray), so their reader threads are still
+/// streaming when the event loop starts tearing down — and an emit landing on
+/// a destroyed tao loop is a panic ("cannot move state from Destroyed"), not
+/// an Err. Checking the flag narrows that window to the emit already in
+/// flight; it cannot close it completely, but the panic it guards against
+/// fired at shutdown, where the process is going away regardless.
+pub static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
+
 #[derive(Serialize, Clone)]
 struct PtyOutput<'a> {
     id: &'a str,
@@ -187,7 +196,7 @@ pub async fn ensure_session(
                     Ok(_) => carry.len(),
                     Err(e) => e.valid_up_to(),
                 };
-                if valid_to > 0 {
+                if valid_to > 0 && !SHUTTING_DOWN.load(Ordering::SeqCst) {
                     let text = unsafe { std::str::from_utf8_unchecked(&carry[..valid_to]) };
                     let _ = app.emit("pty://output", PtyOutput { id: &id, data: text });
                 }
@@ -230,7 +239,9 @@ pub async fn ensure_session(
             let Ok((app, id)) = emitter.join() else { return };
             let code = child.wait().ok().map(|st| st.exit_code());
             crate::log::info("pty", &format!("session {id} exited, code {code:?}"));
-            let _ = app.emit("pty://exit", PtyExit { id: &id, code });
+            if !SHUTTING_DOWN.load(Ordering::SeqCst) {
+                let _ = app.emit("pty://exit", PtyExit { id: &id, code });
+            }
         });
     }
 

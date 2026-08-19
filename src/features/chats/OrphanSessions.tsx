@@ -77,7 +77,9 @@ export function OrphanSessions() {
 
   const kill = (o: OrphanSessionDto) => {
     setKilling(null);
-    void killSession(o.id).finally(rescan);
+    // .finally alone still rejects through, and a session that beat us to
+    // exiting is exactly the case the rescan handles anyway.
+    killSession(o.id).catch(() => {}).finally(rescan);
   };
 
   if (!found.length) return null;

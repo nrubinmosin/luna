@@ -6,6 +6,7 @@ import '@xterm/xterm/css/xterm.css';
 import type { Account } from '../../shared/types';
 import { ensureSession, killSession, resizeSession, writeSession } from '../../ipc/commands';
 import { onPtyExit, onPtyOutput } from '../../ipc/events';
+import { logWarn } from '../../shared/lib/log';
 import { dark, safely, themeFor, TERM_FONT_FAMILY, TERM_FONT_SIZE } from '../panes/Terminal';
 import { useAccounts } from './accounts.store';
 
@@ -33,21 +34,30 @@ export function LoginModal({ account }: { account: Account }) {
     term.loadAddon(fit);
     term.open(host);
     let webgl: WebglAddon | null = null;
-    // Same double-dispose trap as the chat terminals: xterm disposes every
-    // loaded addon again from term.dispose(), and the webgl renderer throws on
-    // the second pass, holding on to its GL context. Take the method out of
-    // play once we have called it.
+    let ctxLossSub: { dispose(): void } | null = null;
+    // Same story as the chat terminals (see Terminal.tsx): dispose through the
+    // AddonManager's idempotent wrapper so term.dispose() skips the addon, and
+    // swallow the known-benign TypeError the addon's own teardown throws after
+    // its renderer is already gone.
     const disposeWebgl = () => {
       const addon = webgl;
       webgl = null;
       if (!addon) return;
-      const real = addon.dispose.bind(addon);
-      addon.dispose = () => {};
-      safely(real);
+      safely(() => ctxLossSub?.dispose());
+      ctxLossSub = null;
+      try {
+        addon.dispose();
+      } catch (e) {
+        // A throw escaping a React effect cleanup takes the root down, so even
+        // the unexpected case only gets logged.
+        if (!(e instanceof TypeError)) {
+          logWarn('terminal', `webgl dispose failed: ${(e as Error)?.stack ?? String(e)}`);
+        }
+      }
     };
     try {
       webgl = new WebglAddon();
-      webgl.onContextLoss(disposeWebgl);
+      ctxLossSub = webgl.onContextLoss(disposeWebgl);
       term.loadAddon(webgl);
     } catch {
       webgl = null; // canvas/DOM renderer fallback
@@ -55,6 +65,14 @@ export function LoginModal({ account }: { account: Account }) {
 
     let disposed = false;
     const unlisteners: Array<() => void> = [];
+    // Same gate as the chat terminals: the session only exists between
+    // ensure_session resolving and pty://exit, and talking to it outside that
+    // window logged a "no such session" pair on every login window close.
+    let sessionLive = false;
+    const sendResize = (cols: number, rows: number) => {
+      if (!sessionLive || cols < 1 || rows < 1) return;
+      resizeSession(id, cols, rows).catch(() => {});
+    };
     const refit = () => {
       if (disposed || !host.isConnected || !host.clientWidth || !host.clientHeight) return;
       safely(() => fit.fit());
@@ -66,7 +84,10 @@ export function LoginModal({ account }: { account: Account }) {
         if (p.id === id) term.write(p.data);
       });
       const un2 = await onPtyExit(p => {
-        if (p.id === id) term.write('\r\n\x1b[2m[session exited — you can close this window]\x1b[0m\r\n');
+        if (p.id === id) {
+          sessionLive = false;
+          term.write('\r\n\x1b[2m[session exited — you can close this window]\x1b[0m\r\n');
+        }
       });
       if (disposed) {
         safely(un1);
@@ -75,24 +96,36 @@ export function LoginModal({ account }: { account: Account }) {
       }
       unlisteners.push(un1, un2);
 
-      const backlog = await ensureSession({
-        chatId: id,
-        folder: account.path,
-        accountPath: account.path,
-        model: 'Sonnet',
-        effort: 'medium',
-        perm: 'Ask',
-        worktree: false
-      });
+      let backlog: string;
+      try {
+        backlog = await ensureSession({
+          chatId: id,
+          folder: account.path,
+          accountPath: account.path,
+          model: 'Sonnet',
+          effort: 'medium',
+          perm: 'Ask',
+          worktree: false
+        });
+      } catch {
+        // Already logged by the ipc layer; keep the rejection out of the
+        // global unhandled-promise log and say what happened in the window.
+        if (!disposed) term.write('\r\n\x1b[31m[failed to start login session]\x1b[0m\r\n');
+        return;
+      }
       if (disposed) return;
+      sessionLive = true;
       if (backlog) term.write(backlog);
-      void resizeSession(id, term.cols, term.rows);
+      sendResize(term.cols, term.rows);
     })();
 
-    const dataSub = term.onData(d => void writeSession(id, d));
+    const dataSub = term.onData(d => {
+      if (!sessionLive) return;
+      writeSession(id, d).catch(() => {});
+    });
     const resizeSub = term.onResize(({ cols, rows }) => {
-      if (disposed || cols < 1 || rows < 1) return;
-      void resizeSession(id, cols, rows);
+      if (disposed) return;
+      sendResize(cols, rows);
     });
     const ro = new ResizeObserver(refit);
     ro.observe(host);
@@ -110,7 +143,9 @@ export function LoginModal({ account }: { account: Account }) {
   }, [id]);
 
   const close = () => {
-    void killSession(id);
+    // The session is usually already gone by now (login flows exit on their
+    // own); a failed kill is not worth an unhandled-rejection entry.
+    killSession(id).catch(() => {});
     useAccounts.getState().setLoginFor(null);
     void useAccounts.getState().refresh();
   };
