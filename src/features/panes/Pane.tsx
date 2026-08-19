@@ -8,14 +8,20 @@ import { DeleteChatDialog } from '../chats/DeleteChatDialog';
 import { currentLayout, currentSlots, usePanes } from './panes.store';
 import { Terminal } from './Terminal';
 
-export function Pane({ index }: { index: number }) {
-  const chatId = usePanes(s => currentSlots(s)[index]);
-  const over = usePanes(s => s.over === index);
-  const spotted = usePanes(s => !!s.spot && s.spot === currentSlots(s)[index]);
+/**
+ * `soloChat` renders the pane as the double-click-a-row fullscreen: the chat
+ * comes from the prop instead of a board slot, so it needs no seat in any
+ * pane, and every control that would touch the board (drag, drop, close)
+ * turns into a plain "back to the grid".
+ */
+export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: string }) {
+  const chatId = usePanes(s => soloChat ?? currentSlots(s)[index]);
+  const over = usePanes(s => !soloChat && s.over === index);
+  const spotted = usePanes(s => !!s.spot && s.spot === (soloChat ?? currentSlots(s)[index]));
   const layout = usePanes(currentLayout);
-  const { setOver, dropChat, closePane, setDragPane, swapPanes, setFocus } = usePanes.getState();
-  const focused = usePanes(s => s.focus === index);
-  const beingDragged = usePanes(s => s.dragPane === index);
+  const { setOver, dropChat, closePane, setDragPane, swapPanes, setFocus, setFocusChat } = usePanes.getState();
+  const focused = usePanes(s => (soloChat ? true : s.focus === index));
+  const beingDragged = usePanes(s => !soloChat && s.dragPane === index);
   const chat = useChats(s => s.findChat(chatId));
   const folder = useChats(s => (chatId ? s.folderOf(chatId) : null));
   const [confirming, setConfirming] = useState(false);
@@ -36,8 +42,10 @@ export function Pane({ index }: { index: number }) {
   // restore from a half-written state looks like.
   const stale = !!chatId && !chat;
   useEffect(() => {
-    if (stale) closePane(index);
-  }, [stale, index, closePane]);
+    if (!stale) return;
+    if (soloChat) setFocusChat(null);
+    else closePane(index);
+  }, [stale, index, soloChat, closePane, setFocusChat]);
 
   // The slot can be handed a different chat while a rename or a delete prompt
   // is open; neither belongs to the newcomer.
@@ -78,6 +86,8 @@ export function Pane({ index }: { index: number }) {
   return (
     <div
       onDragOver={e => {
+        // A fullscreen chat is not a slot — nothing can be dropped into it.
+        if (soloChat) return;
         // File drags belong to the terminal's attach handler, not pane placement.
         if (Array.from(e.dataTransfer.types).includes('Files')) return;
         e.preventDefault();
@@ -87,6 +97,7 @@ export function Pane({ index }: { index: number }) {
       }}
       onDragLeave={() => usePanes.setState(s => (s.over === index ? { over: -1 } : s))}
       onDrop={e => {
+        if (soloChat) return;
         if (Array.from(e.dataTransfer.types).includes('Files')) return;
         e.preventDefault();
         const { dragPane, drag } = usePanes.getState();
@@ -122,7 +133,7 @@ export function Pane({ index }: { index: number }) {
             // Chromium hands every mouse press inside a draggable subtree to
             // the drag machinery, and selecting text in the rename input would
             // start a pane drag instead.
-            draggable={!editing && !picking}
+            draggable={!soloChat && !editing && !picking}
             onDragStart={e => {
               e.dataTransfer.effectAllowed = 'move';
               // Something must be set or Firefox/WebView2 cancels the drag; the
@@ -137,7 +148,8 @@ export function Pane({ index }: { index: number }) {
             // The bar itself toggles the same focus as its Maximize control;
             // children with a double-click of their own stop the bubble.
             onDoubleClick={() => {
-              if (layout > 1) setFocus(focused ? null : index);
+              if (soloChat) setFocusChat(null);
+              else if (layout > 1) setFocus(focused ? null : index);
             }}
             className="title-bar"
             // Inline wins over xp.css's Luna-blue gradient and frame colours,
@@ -273,18 +285,22 @@ export function Pane({ index }: { index: number }) {
                 title="Delete chat — same confirmation as the list"
                 onClick={() => setConfirming(true)}
               />
-              {layout > 1 && (
+              {(soloChat || layout > 1) && (
                 <button
                   aria-label={focused ? 'Restore' : 'Maximize'}
                   title={focused ? 'Back to the grid' : 'Focus this pane — the grid stays as it is'}
-                  onClick={() => setFocus(focused ? null : index)}
+                  onClick={() => (soloChat ? setFocusChat(null) : setFocus(focused ? null : index))}
                 />
               )}
-              <button
-                aria-label="Close"
-                title="Close this pane — the chat keeps running"
-                onClick={() => closePane(index)}
-              />
+              {/* A fullscreen chat holds no pane to close — leaving is all
+                  Close could mean, and Restore already says it better. */}
+              {!soloChat && (
+                <button
+                  aria-label="Close"
+                  title="Close this pane — the chat keeps running"
+                  onClick={() => closePane(index)}
+                />
+              )}
             </span>
           </div>
           {confirming && <DeleteChatDialog chat={chat} onClose={() => setConfirming(false)} />}

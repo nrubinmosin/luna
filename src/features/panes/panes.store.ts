@@ -76,6 +76,13 @@ interface PanesState {
    * persisted: a focus is a moment, not an arrangement.
    */
   focus: number | null;
+  /**
+   * Chat blown up to fill the grid without sitting in any pane — the
+   * double-click-a-row fullscreen. Same nature as `focus`: a way of looking,
+   * not an arrangement, so it is not persisted and the boards stay untouched.
+   * At most one of `focus` / `focusChat` is set at a time.
+   */
+  focusChat: string | null;
   setGroup: (g: GroupId) => void;
   /** Empties one group's boards and evens out its splits. Chats are untouched. */
   resetGroup: (g: GroupId) => void;
@@ -93,6 +100,7 @@ interface PanesState {
   swapPanes: (a: number, b: number) => void;
   setSpot: (id: string | null) => void;
   setFocus: (i: number | null) => void;
+  setFocusChat: (id: string | null) => void;
 }
 
 /** The group currently on screen. */
@@ -132,10 +140,13 @@ export const usePanes = create<PanesState>()(
       dragPane: null,
       spot: null,
       focus: null,
+      focusChat: null,
 
       // Switching group or layout lands on a different board, where the old
-      // focus index would point at an unrelated pane — so both drop it.
-      setGroup: g => set({ group: g, over: -1, dragPane: null, focus: null }),
+      // focus index would point at an unrelated pane — so both drop it. The
+      // chat fullscreen goes with it: like focus, it is a moment in the old
+      // workspace, not something to carry into the next.
+      setGroup: g => set({ group: g, over: -1, dragPane: null, focus: null, focusChat: null }),
 
       resetGroup: g =>
         set(s => ({
@@ -146,7 +157,7 @@ export const usePanes = create<PanesState>()(
           ...(g === s.group ? { focus: null } : {})
         })),
 
-      setLayout: n => set(s => ({ ...withGroup(s, { layout: n }), over: -1, focus: null })),
+      setLayout: n => set(s => ({ ...withGroup(s, { layout: n }), over: -1, focus: null, focusChat: null })),
 
       dropChat: (paneIndex, chatId) =>
         set(s => {
@@ -171,7 +182,10 @@ export const usePanes = create<PanesState>()(
           ...mapAllBoards(s, slots => slots.map(p => (p === chatId ? null : p))),
           // Same as closePane: a focus on the pane it just emptied would trap
           // the view with no Restore button to leave by.
-          ...(s.focus != null && currentSlots(s)[s.focus] === chatId ? { focus: null } : {})
+          ...(s.focus != null && currentSlots(s)[s.focus] === chatId ? { focus: null } : {}),
+          // A fullscreen of a chat that just got deleted or archived has
+          // nothing left to show.
+          ...(s.focusChat === chatId ? { focusChat: null } : {})
         })),
 
       // Seat a new chat on every board of the active group that still has room,
@@ -208,7 +222,10 @@ export const usePanes = create<PanesState>()(
         }),
 
       setSpot: id => set({ spot: id }),
-      setFocus: i => set({ focus: i }),
+      // Only one thing can fill the grid, so each kind of fullscreen replaces
+      // the other when it opens.
+      setFocus: i => set(s => ({ focus: i, ...(i != null && s.focusChat != null ? { focusChat: null } : {}) })),
+      setFocusChat: id => set(s => ({ focusChat: id, ...(id != null && s.focus != null ? { focus: null } : {}) })),
 
       setSplit: (key, value) =>
         set(s =>

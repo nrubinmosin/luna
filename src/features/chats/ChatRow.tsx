@@ -42,6 +42,17 @@ export function ChatRow({ chat }: { chat: Chat }) {
         setOver(-1);
       }}
       onClick={() => setActive(chat.id)}
+      // Fullscreen straight from the list. A chat already on the visible board
+      // goes through the pane focus, so Restore lands it back in its tile; one
+      // that is not seated anywhere opens as a solo fullscreen and returns to
+      // being just a list row. The name span keeps its own double-click
+      // (rename) and stops the bubble.
+      onDoubleClick={() => {
+        const s = usePanes.getState();
+        const i = currentSlots(s).indexOf(chat.id);
+        if (i >= 0 && i < currentLayout(s)) s.setFocus(i);
+        else s.setFocusChat(chat.id);
+      }}
       onMouseEnter={() => setSpot(chat.id)}
       onMouseLeave={() => setSpot(null)}
       className="hover-bg chat-row"
@@ -68,6 +79,7 @@ export function ChatRow({ chat }: { chat: Chat }) {
           e.stopPropagation();
           useChats.getState().toggleMark(chat.id);
         }}
+        onDoubleClick={e => e.stopPropagation()}
         title={chat.marked ? 'Marked — click to clear' : 'Mark this chat'}
         className="mark"
         data-on={chat.marked ? 'yes' : 'no'}
@@ -123,6 +135,7 @@ export function ChatRow({ chat }: { chat: Chat }) {
           e.stopPropagation();
           useChats.getState().setArchived(chat.id, !chat.archived);
         }}
+        onDoubleClick={e => e.stopPropagation()}
         title={chat.archived ? 'Unarchive — put it back in the list' : 'Archive — hide it, keep everything'}
         className="hover-bg"
         style={{
@@ -137,6 +150,7 @@ export function ChatRow({ chat }: { chat: Chat }) {
           e.stopPropagation();
           setConfirming(true);
         }}
+        onDoubleClick={e => e.stopPropagation()}
         title="Delete chat"
         className="hover-danger"
         style={{
