@@ -100,8 +100,21 @@ export function PaneGrid() {
   const layout = usePanes(currentLayout);
   const { col, rowL, rowR } = usePanes(currentSplits);
   const focus = usePanes(s => s.focus);
+  const focusChat = usePanes(s => s.focusChat);
 
   const pane = (i: number) => <Pane index={i} />;
+
+  // A chat opened fullscreen straight from the list, without a seat in any
+  // pane. Like a pane focus, the board underneath stays exactly as it was.
+  if (focusChat) {
+    return (
+      <div style={{ flex: 1, minHeight: 0, padding: GAP, background: 'var(--panel)', display: 'flex' }}>
+        <div style={box('row')}>
+          <Pane soloChat={focusChat} />
+        </div>
+      </div>
+    );
+  }
 
   // A focused pane borrows the whole grid; the board and its splits are still
   // there underneath, untouched, waiting for Restore.
