@@ -165,6 +165,30 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
             }}
           >
             <StatusDot status={chat.status} />
+            {/* Status chips sit before the name, so the left end of the bar is
+                free of the name span's rename double-click and a double-click
+                near the corner reaches the bar's focus toggle. */}
+            <span title={`${t!.parent} / ${t!.leaf}`} style={{ ...chip, maxWidth: 90, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              {t!.leaf}
+            </span>
+            <span title={`Running on Claude account "${chat.account}"`} style={{ ...chip, maxWidth: 80, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              {chat.account}
+            </span>
+            <span title="Model" style={chip}>{chat.model}</span>
+            <span title={`Effort: ${chat.effort}`} style={chip}>{chat.effort}</span>
+            <span title={`Permission mode: ${chat.perm}`} style={chip}>{chat.perm[0]}</span>
+            {chat.worktree && <span title="Isolated git worktree" style={chip}>wt</span>}
+            <span
+              title={ctxTitle}
+              style={{ ...chip, display: 'flex', alignItems: 'center', gap: 4 }}
+            >
+              <span style={{ width: 20, height: 4, borderRadius: 2, background: 'var(--track)', overflow: 'hidden', flex: 'none' }}>
+                <span style={{ display: 'block', height: '100%', width: `${ctx}%`, background: limitColor(chat.context ?? 0) }} />
+              </span>
+              <span style={{ fontVariantNumeric: 'tabular-nums' }}>
+                {window != null ? `${ctx}%` : '—'}
+              </span>
+            </span>
             {editing ? (
               <input
                 autoFocus
@@ -197,28 +221,6 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
                 {chat.name}
               </span>
             )}
-
-            <span title={`${t!.parent} / ${t!.leaf}`} style={{ ...chip, maxWidth: 90, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-              {t!.leaf}
-            </span>
-            <span title={`Running on Claude account "${chat.account}"`} style={{ ...chip, maxWidth: 80, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-              {chat.account}
-            </span>
-            <span title="Model" style={chip}>{chat.model}</span>
-            <span title={`Effort: ${chat.effort}`} style={chip}>{chat.effort}</span>
-            <span title={`Permission mode: ${chat.perm}`} style={chip}>{chat.perm[0]}</span>
-            {chat.worktree && <span title="Isolated git worktree" style={chip}>wt</span>}
-            <span
-              title={ctxTitle}
-              style={{ ...chip, display: 'flex', alignItems: 'center', gap: 4 }}
-            >
-              <span style={{ width: 20, height: 4, borderRadius: 2, background: 'var(--track)', overflow: 'hidden', flex: 'none' }}>
-                <span style={{ display: 'block', height: '100%', width: `${ctx}%`, background: limitColor(chat.context ?? 0) }} />
-              </span>
-              <span style={{ fontVariantNumeric: 'tabular-nums' }}>
-                {window != null ? `${ctx}%` : '—'}
-              </span>
-            </span>
 
             <span
               onDoubleClick={e => e.stopPropagation()}
