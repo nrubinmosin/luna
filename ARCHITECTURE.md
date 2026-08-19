@@ -40,7 +40,7 @@ src-tauri/src/
   Список чатов, раскладка, настройки — persisted-состояние фронта. Меньше IPC-поверхность,
   проще эволюция UI.
 - **Сессия = запуск глобального `claude`** с аргументами:
-  `--model <alias> --effort <low|medium|high|xhigh|max> --permission-mode <mode> [--worktree]`,
+  `--model <alias> --effort <low|medium|high|xhigh|max|ultracode> --permission-mode <mode> [--worktree]`,
   `cwd` = папка чата, `CLAUDE_CONFIG_DIR` = папка аккаунта (изоляция логина/настроек на аккаунт).
 - **Аккаунт = папка** `Documents/claude-accounts/<name>`. Создание — mkdir, удаление — rm -rf,
   список — readdir. Никакой собственной БД.

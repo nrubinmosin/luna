@@ -17,7 +17,7 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
 - Window groups I/II/III/IV — tabs under the layout selector. Each group remembers its
   own four boards (one per layout) and their splits, and has its own reset button (↺ on
   the tab) that clears only the arrangement and leaves every chat alone.
-- New chat (⌘/Ctrl+N): folder, model, effort (`low/medium/high/xhigh/max`, defaults to
+- New chat (⌘/Ctrl+N): folder, model, effort (`low/medium/high/xhigh/max/ultracode`, defaults to
   `medium`), permission mode, account, and a **Git worktree** checkbox (on by default →
   `claude --worktree`).
 - Accounts: a panel in the status bar. "Add" creates `Documents/claude-accounts/<name>`,
