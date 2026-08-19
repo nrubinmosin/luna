@@ -114,6 +114,18 @@ pub fn run() {
             worktree::orphan_worktrees,
             worktree::remove_orphan_worktrees,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        // Quit comes from the tray while pty sessions are still streaming;
+        // their emits raced the event loop's teardown and could panic inside
+        // tao ("cannot move state from Destroyed"). Flag the shutdown so the
+        // emitter threads go quiet before the loop is torn down.
+        .run(|_app, event| {
+            if matches!(
+                event,
+                tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
+            ) {
+                pty::SHUTTING_DOWN.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        });
 }
