@@ -50,7 +50,7 @@ export async function attachFiles(chatId: string, files: File[]): Promise<number
   }
 
   if (paths.length) {
-    await writeSession(chatId, paths.map(quote).join(' ') + ' ');
+    await writeSession(chatId, paths.map(quote).join(' '));
   }
   return paths.length;
 }
@@ -98,7 +98,7 @@ export async function attachClipboardImage(chatId: string): Promise<string | nul
     const bytes = new Uint8Array(await blob.arrayBuffer());
     const path = await saveMedia(chatId, `pasted-image.png`, toBase64(bytes));
     logInfo('clipboard', `pasted ${size.width}x${size.height} image -> ${path}`);
-    if (path) await writeSession(chatId, quote(path) + ' ');
+    if (path) await writeSession(chatId, quote(path));
     return path;
   } catch (e) {
     // No image on the clipboard is the common case, not an error — but log it,

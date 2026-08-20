@@ -82,6 +82,11 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
     fontSize: 'var(--fs-1)', color: '#0a1f5c', background: 'rgba(255,255,255,.82)',
     padding: '1px 5px', borderRadius: 2, whiteSpace: 'nowrap', flex: 'none'
   };
+  // Text-bearing chips give way on a narrow pane instead of pushing the name
+  // and the window controls out of the bar; minWidth keeps a legible stub.
+  const softChip: CSSProperties = {
+    ...chip, flex: '0 1 auto', minWidth: 26, overflow: 'hidden', textOverflow: 'ellipsis'
+  };
 
   return (
     <div
@@ -168,14 +173,14 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
             {/* Status chips sit before the name, so the left end of the bar is
                 free of the name span's rename double-click and a double-click
                 near the corner reaches the bar's focus toggle. */}
-            <span title={`${t!.parent} / ${t!.leaf}`} style={{ ...chip, maxWidth: 90, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            <span title={`${t!.parent} / ${t!.leaf}`} style={{ ...softChip, maxWidth: 90 }}>
               {t!.leaf}
             </span>
-            <span title={`Running on Claude account "${chat.account}"`} style={{ ...chip, maxWidth: 80, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            <span title={`Running on Claude account "${chat.account}"`} style={{ ...softChip, maxWidth: 80 }}>
               {chat.account}
             </span>
-            <span title="Model" style={chip}>{chat.model}</span>
-            <span title={`Effort: ${chat.effort}`} style={chip}>{chat.effort}</span>
+            <span title="Model" style={softChip}>{chat.model}</span>
+            <span title={`Effort: ${chat.effort}`} style={softChip}>{chat.effort}</span>
             <span title={`Permission mode: ${chat.perm}`} style={chip}>{chat.perm[0]}</span>
             {chat.worktree && <span title="Isolated git worktree" style={chip}>wt</span>}
             <span
