@@ -28,7 +28,12 @@ src/                          фронт (feature-sliced)
   ipc/        commands.ts (invoke), events.ts (listen) — единственная граница с Rust
 
 src-tauri/src/
-  accounts.rs   list/create/delete папок в Documents/claude-accounts/<name>
+  accounts.rs   list/create/delete папок в <accounts root>/<name>
+  settings.rs   <data>/settings.json: accountsRoot (по умолчанию Documents/claude-accounts),
+                меняется через ⚙ в панели аккаунтов
+  cli.rs        собственная копия Claude Code CLI: скачивание с downloads.claude.ai
+                (sha256 по manifest.json), versions/<ver>/, автообновление раз в 6ч
+  paths.rs      data_dir(): рядом с exe (portable) либо LOCALAPPDATA\luna
   pty.rs        менеджер сессий: спавн `claude` в pty, scrollback-буфер,
                 события pty://output и pty://exit, write/resize/kill
   lib.rs        Builder + generate_handler
@@ -39,11 +44,19 @@ src-tauri/src/
 - **Тонкое Rust-ядро.** Rust не знает про «чаты» — только про pty-сессии по id и папки аккаунтов.
   Список чатов, раскладка, настройки — persisted-состояние фронта. Меньше IPC-поверхность,
   проще эволюция UI.
-- **Сессия = запуск глобального `claude`** с аргументами:
+- **Свой бинарник CLI.** Luna не зависит от глобального `claude`: `cli.rs` держит копию в
+  `<data>/claude-cli/versions/<ver>/claude.exe` (`<data>` — папка exe для портативной сборки,
+  чтобы всё жило на одном диске), `current` указывает на активную версию. Версии никогда не
+  перезаписываются (запущенный exe на Windows не заменить) — новая ложится рядом, указатель
+  переключается, старые сметаются, когда их никто не держит. Сессиям ставится
+  `DISABLE_AUTOUPDATER=1`, так что обновляет CLI только Luna. Пока копии нет — fallback на PATH.
+- **Сессия = запуск `claude`** с аргументами:
   `--model <alias> --effort <low|medium|high|xhigh|max|ultracode> --permission-mode <mode> [--worktree]`,
   `cwd` = папка чата, `CLAUDE_CONFIG_DIR` = папка аккаунта (изоляция логина/настроек на аккаунт).
-- **Аккаунт = папка** `Documents/claude-accounts/<name>`. Создание — mkdir, удаление — rm -rf,
-  список — readdir. Никакой собственной БД.
+- **Аккаунт = папка** `<accounts root>/<name>` (по умолчанию `Documents/claude-accounts`,
+  корень выбирается в настройках и хранится в Rust — его читает и фоновый поток `models.rs`).
+  Создание — mkdir, удаление — rm -rf, список — readdir. Никакой собственной БД. Чаты помнят
+  аккаунт по имени, поэтому смена корня не требует миграции — только перенести папки.
 - **Scrollback в Rust.** Буфер вывода (2MB cap) живёт в ядре, чтобы перенос чата между панелями
   или пересоздание xterm восстанавливали экран (`ensure_session` возвращает бэклог).
 - **События вместо поллинга (pty).** Вывод pty стримится событием `pty://output`; завершение —

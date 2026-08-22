@@ -4,6 +4,7 @@ import { STATUS } from '../../shared/ui/status';
 import { useChats } from '../chats/chats.store';
 import { AccountsPanel } from '../accounts/AccountsPanel';
 import { UpdateField } from '../updates/UpdateField';
+import { CliField } from '../updates/CliField';
 
 /** Sidebar footer: clock, run summary, then the account list —
  *  the horizontal top-level status bar this used to be didn't have room for
@@ -67,6 +68,7 @@ export function StatusBar() {
             {waiting}
           </span>
         </div>
+        <CliField />
         <UpdateField />
       </div>
     </div>

@@ -63,7 +63,18 @@ export interface AccountLimitsDto {
 export const listAccounts = () => call<AccountInfo[]>('list_accounts', {}, []);
 export const accountLimits = (accountPath: string) =>
   call<AccountLimitsDto | null>('account_limits', { accountPath }, null);
-export const createAccount = (name: string) => call<AccountInfo>('create_account', { name });
+export interface AccountsRootInfo {
+  path: string;
+  isDefault: boolean;
+}
+
+export const getAccountsRoot = () =>
+  call<AccountsRootInfo | null>('get_accounts_root', {}, null);
+/** Empty string restores the default (Documents/claude-accounts). */
+export const setAccountsRoot = (path: string) =>
+  call<AccountsRootInfo>('set_accounts_root', { path });
+
+export const createAccount =(name: string) => call<AccountInfo>('create_account', { name });
 export const deleteAccount = (name: string) => call<void>('delete_account', { name });
 
 export interface SessionSpec {
@@ -174,6 +185,23 @@ export const saveMedia = (chatId: string, name: string, base64: string) =>
   call<string | null>('save_media', { chatId, name, data: base64 }, null);
 
 export const clearMedia = (chatId: string) => call<void>('clear_media', { chatId });
+
+export interface CliStatusDto {
+  phase: 'idle' | 'checking' | 'downloading' | 'error';
+  /** Version Luna's own CLI copy is at; null until the first download lands. */
+  version: string | null;
+  /** The binary sessions spawn — `claude` (PATH) while there is no managed copy. */
+  path: string;
+  latest: string | null;
+  got: number;
+  total: number | null;
+  error: string | null;
+  checkedAtMs: number | null;
+}
+
+export const cliStatus = () => call<CliStatusDto | null>('cli_status', {}, null);
+/** Check the release bucket now and install whatever is newer. */
+export const cliUpdateNow = () => call<void>('cli_update_now', {});
 
 export const pickFolder = async (): Promise<string | null> => {
   if (!tauriAvailable) return null;

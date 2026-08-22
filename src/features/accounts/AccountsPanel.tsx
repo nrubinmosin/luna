@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { fmtResetDate, limitColor } from '../../shared/lib/format';
 import { useAccounts } from './accounts.store';
 import { useChats } from '../chats/chats.store';
+import { AccountsRoot } from './AccountsRoot';
 
 const LK: Array<['h5' | 'week' | 'fable', string]> = [['h5', '5 hours'], ['week', 'week'], ['fable', 'fable']];
 
@@ -12,6 +13,7 @@ export function AccountsPanel() {
   const error = useAccounts(s => s.error);
   const { add, remove, setAdding, setLoginFor } = useAccounts.getState();
   const [name, setName] = useState('');
+  const [rootOpen, setRootOpen] = useState(false);
   const folders = useChats(s => s.folders);
 
   const inUse = (account: string) =>
@@ -25,14 +27,25 @@ export function AccountsPanel() {
         </div>
         <span style={{ flex: 1 }} />
         <button
+          onClick={() => setRootOpen(!rootOpen)}
+          title="Accounts folder — where the account directories live"
+          aria-label="Accounts folder"
+          className="slim"
+          style={{ minHeight: 'calc(var(--ui) * 1.35)', fontSize: 'var(--fs-2)', marginRight: 4, width: 26 }}
+        >
+          ⚙
+        </button>
+        <button
           onClick={() => setAdding(!adding)}
-          title="Add account — creates Documents/claude-accounts/<name>"
+          title="Add account — creates <accounts folder>/<name>"
           className="slim"
           style={{ minHeight: 'calc(var(--ui) * 1.35)', fontSize: 'var(--fs-2)' }}
         >
           + add
         </button>
       </div>
+
+      {rootOpen && <AccountsRoot onClose={() => setRootOpen(false)} />}
 
       {adding && (
         <div style={{ display: 'flex', gap: 4, marginBottom: 8 }}>

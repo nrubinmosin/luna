@@ -27,6 +27,7 @@ serde_json = "1"
 dirs = "6"
 portable-pty = "0.9"
 ureq = { version = "2", features = ["json"] }
+sha2 = "0.10"
 
 # Only for subclassing the window to drop the Alt menu (see src/sysmenu.rs).
 # Pinned to the version tauri already resolves, so this adds features to a crate
