@@ -9,7 +9,11 @@ pub struct AccountInfo {
     pub path: String,
 }
 
-fn accounts_root() -> Result<PathBuf, String> {
+/// The folder the user picked in settings, or `Documents/claude-accounts`.
+pub fn accounts_root() -> Result<PathBuf, String> {
+    if let Some(p) = crate::settings::get().accounts_root {
+        return Ok(PathBuf::from(p));
+    }
     let docs = dirs::document_dir().ok_or("Documents directory not found")?;
     Ok(docs.join("claude-accounts"))
 }

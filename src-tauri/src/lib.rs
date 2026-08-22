@@ -1,10 +1,12 @@
 mod accounts;
+mod cli;
 mod limits;
 mod log;
 mod media;
 mod models;
 mod paths;
 mod pty;
+mod settings;
 mod sysmenu;
 mod trust;
 mod worktree;
@@ -50,6 +52,8 @@ pub fn run() {
         .manage(pty::PtyManager::default())
         .setup(|app| {
             models::refresh_soon();
+            // Installs the CLI on a fresh machine and keeps it current after.
+            cli::refresh_periodically(app.handle().clone());
 
             if let Some(w) = app.get_webview_window("main") {
                 sysmenu::silence(&w);
@@ -95,6 +99,8 @@ pub fn run() {
             accounts::list_accounts,
             accounts::create_account,
             accounts::delete_account,
+            cli::cli_status,
+            cli::cli_update_now,
             limits::account_limits,
             log::append_log,
             media::save_media,
@@ -108,6 +114,8 @@ pub fn run() {
             pty::session_meta,
             pty::orphan_sessions,
             pty::delete_session,
+            settings::get_accounts_root,
+            settings::set_accounts_root,
             trust::folder_trusted,
             trust::trust_folder,
             worktree::remove_worktree,

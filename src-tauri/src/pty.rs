@@ -111,7 +111,9 @@ pub async fn ensure_session(
         })
         .map_err(|e| e.to_string())?;
 
-    let mut cmd = CommandBuilder::new("claude");
+    // Luna's own copy of the CLI (see cli.rs), or `claude` on PATH until the
+    // first download has landed.
+    let mut cmd = CommandBuilder::new(crate::cli::binary());
     cmd.cwd(&folder);
     cmd.args(["--model", &model]);
     cmd.args(["--effort", &effort]);
@@ -126,6 +128,9 @@ pub async fn ensure_session(
         cmd.env("CLAUDE_CONFIG_DIR", &account_path);
     }
     cmd.env("TERM", "xterm-256color");
+    // Luna updates the CLI itself; the CLI's own updater would install a
+    // second copy under the user profile that nothing here ever runs.
+    cmd.env("DISABLE_AUTOUPDATER", "1");
 
     let child = pair.slave.spawn_command(cmd).map_err(|e| {
         crate::log::error("pty", &format!("spawn failed for {id} in {folder}: {e}"));
