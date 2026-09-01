@@ -177,6 +177,17 @@ a:hover { text-decoration: underline; }
   font-family: var(--sans-serif);
   font-size: var(--fs-4);
 }
+/* The footer carries four fields — clock, run summary, CLI version, app
+   version — and they add up to more than the sidebar is wide at its default
+   280px. A flex row that cannot wrap deals with that by cutting the last field
+   in half, which is what it had been doing. Wrapping is the only arrangement
+   that can never clip: narrow, the two version fields drop to a line of their
+   own; wide, the strip is a single row again. The height then only changes
+   when the sidebar is dragged past the fit, which is a thing the user is doing
+   at the time. */
+[data-app] .status-bar {
+  flex-wrap: wrap;
+}
 /* Title bars are the one place XP does *not* use Tahoma. */
 [data-app] .title-bar {
   font-family: "Trebuchet MS", Tahoma, sans-serif;
@@ -299,6 +310,12 @@ a:hover { text-decoration: underline; }
 }
 .app-frame > .title-bar {
   flex: none;
+  /* xp.css keeps 5px of blue between the close button and the frame. On a
+     maximised window that strip sits at the very edge of the screen, which is
+     where the pointer is thrown when you shove it into the corner — and it
+     lands on nothing. Give the corner to the button; the bar keeps its left
+     padding, so only the controls move. */
+  padding-right: 0;
 }
 /* A maximised XP window loses its rounded corners and its frame padding —
    without this the desktop shows through a 3px band on every edge. */
