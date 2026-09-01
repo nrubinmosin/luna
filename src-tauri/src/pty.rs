@@ -406,8 +406,8 @@ pub struct OrphanSession {
 
 /// Sessions this app is still running that no chat claims any more.
 ///
-/// A chat row can go missing while its session keeps working — archived by a
-/// misclick, dropped by a half-written state restore — and there is then no
+/// A chat row can go missing while its session keeps working — dropped by a
+/// half-written state restore, say — and there is then no
 /// way to reach the session from the UI at all: it holds an account's tokens
 /// and answers to nobody. The frontend passes the chat ids it knows, and
 /// anything alive outside that set comes back here.

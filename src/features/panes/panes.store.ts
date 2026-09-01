@@ -70,19 +70,23 @@ interface PanesState {
   /** Chat hovered in the sidebar — its pane lights up so you can spot it. */
   spot: string | null;
   /**
-   * Pane blown up to fill the grid on its own. Only a way of looking at the
-   * board — the layout, its slots and its splits all stay exactly as they
-   * were, so restoring brings the grid back untouched. Deliberately not
-   * persisted: a focus is a moment, not an arrangement.
+   * Pane held up over the board as a temporary sheet. The grid stays mounted
+   * and visible behind it, only dimmed, which is the whole point: a peek has
+   * to read as a way of looking and not as an arrangement. The board, its
+   * slots and its splits are untouched, and none of this is persisted.
    */
-  focus: number | null;
+  peek: number | null;
   /**
-   * Chat blown up to fill the grid without sitting in any pane — the
-   * double-click-a-row fullscreen. Same nature as `focus`: a way of looking,
-   * not an arrangement, so it is not persisted and the boards stay untouched.
-   * At most one of `focus` / `focusChat` is set at a time.
+   * The same sheet for a chat with no seat on the board — clicking a chat that
+   * is not in any pane shows it without disturbing what is. At most one of
+   * `peek` / `peekChat` is set at a time.
    */
-  focusChat: string | null;
+  peekChat: string | null;
+  /**
+   * The pane last worked in. Nothing but placement reads it: it is where a new
+   * chat lands when the board has no free pane left.
+   */
+  activePane: number;
   setGroup: (g: GroupId) => void;
   /** Empties one group's boards and evens out its splits. Chats are untouched. */
   resetGroup: (g: GroupId) => void;
@@ -93,14 +97,18 @@ interface PanesState {
   closePane: (paneIndex: number) => void;
   evictChat: (chatId: string) => void;
   autoPlace: (chatId: string) => void;
+  /** One click in the sidebar — see the comment on the implementation. */
+  showChat: (chatId: string) => void;
   setOver: (i: number) => void;
   setDrag: (id: string | null) => void;
   setDragPane: (i: number | null) => void;
   /** Exchanges the contents of two panes on the active board. */
   swapPanes: (a: number, b: number) => void;
   setSpot: (id: string | null) => void;
-  setFocus: (i: number | null) => void;
-  setFocusChat: (id: string | null) => void;
+  setActivePane: (i: number) => void;
+  setPeek: (i: number | null) => void;
+  setPeekChat: (id: string | null) => void;
+  closePeek: () => void;
 }
 
 /** The group currently on screen. */
@@ -109,6 +117,8 @@ export const currentLayout = (s: PanesState): Layout => currentGroup(s).layout;
 /** Slots of the board currently on screen. */
 export const currentSlots = (s: PanesState): Slots => currentGroup(s).boards[currentLayout(s)];
 export const currentSplits = (s: PanesState): Splits => currentGroup(s).splitsByLayout[currentLayout(s)];
+/** Whether a sheet is up over the board, of either kind. */
+export const peeking = (s: PanesState): boolean => s.peek != null || s.peekChat != null;
 
 /** Replaces the active group, leaving the other three untouched. */
 const withGroup = (s: PanesState, patch: Partial<Group>) => ({
@@ -130,6 +140,8 @@ const mapAllBoards = (s: PanesState, fn: (slots: Slots, layout: Layout) => Slots
   }))
 });
 
+const NO_PEEK = { peek: null, peekChat: null } as const;
+
 export const usePanes = create<PanesState>()(
   persist(
     set => ({
@@ -139,40 +151,40 @@ export const usePanes = create<PanesState>()(
       drag: null,
       dragPane: null,
       spot: null,
-      focus: null,
-      focusChat: null,
+      peek: null,
+      peekChat: null,
+      activePane: 0,
 
       // Switching group or layout lands on a different board, where the old
-      // focus index would point at an unrelated pane — so both drop it. The
-      // chat fullscreen goes with it: like focus, it is a moment in the old
-      // workspace, not something to carry into the next.
-      setGroup: g => set({ group: g, over: -1, dragPane: null, focus: null, focusChat: null }),
+      // pane index would point at an unrelated pane — so both drop the peek and
+      // the active pane with it.
+      setGroup: g => set({ group: g, over: -1, dragPane: null, activePane: 0, ...NO_PEEK }),
 
       resetGroup: g =>
         set(s => ({
           groups: s.groups.map((old, i) => (i === g ? { ...blankGroup(), layout: old.layout } : old)),
           over: -1,
-          // Resetting the visible group empties the focused pane too, and an
-          // empty pane offers no way back out of focus.
-          ...(g === s.group ? { focus: null } : {})
+          // Resetting the visible group empties the pane under the sheet too,
+          // and an empty pane offers no way back out of the peek.
+          ...(g === s.group ? { activePane: 0, ...NO_PEEK } : {})
         })),
 
-      setLayout: n => set(s => ({ ...withGroup(s, { layout: n }), over: -1, focus: null, focusChat: null })),
+      setLayout: n => set(s => ({ ...withGroup(s, { layout: n }), over: -1, activePane: 0, ...NO_PEEK })),
 
       dropChat: (paneIndex, chatId) =>
         set(s => {
           const slots = currentSlots(s).map(p => (p === chatId ? null : p));
           slots[paneIndex] = chatId;
-          return { ...withBoard(s, slots), over: -1, drag: null };
+          return { ...withBoard(s, slots), over: -1, drag: null, activePane: paneIndex };
         }),
 
       closePane: paneIndex =>
         set(s => {
           const slots = currentSlots(s).slice();
           slots[paneIndex] = null;
-          // An emptied pane has no title bar, so a focus on it would have no
-          // Restore button left to press — back to the grid instead.
-          return { ...withBoard(s, slots), ...(s.focus === paneIndex ? { focus: null } : {}) };
+          // An emptied pane has no title bar, so a sheet held up over it would
+          // have no Return button left to press — back to the grid instead.
+          return { ...withBoard(s, slots), ...(s.peek === paneIndex ? { peek: null } : {}) };
         }),
 
       // A deleted chat has to disappear from every board of every group, not
@@ -180,33 +192,71 @@ export const usePanes = create<PanesState>()(
       evictChat: chatId =>
         set(s => ({
           ...mapAllBoards(s, slots => slots.map(p => (p === chatId ? null : p))),
-          // Same as closePane: a focus on the pane it just emptied would trap
-          // the view with no Restore button to leave by.
-          ...(s.focus != null && currentSlots(s)[s.focus] === chatId ? { focus: null } : {}),
-          // A fullscreen of a chat that just got deleted or archived has
-          // nothing left to show.
-          ...(s.focusChat === chatId ? { focusChat: null } : {})
+          // Same as closePane: a sheet over the pane it just emptied would trap
+          // the view with no Return button to leave by.
+          ...(s.peek != null && currentSlots(s)[s.peek] === chatId ? { peek: null } : {}),
+          // And a sheet showing a chat that has just been deleted has nothing
+          // left to show.
+          ...(s.peekChat === chatId ? { peekChat: null } : {})
         })),
 
-      // Seat a new chat on every board of the active group that still has room,
-      // so switching layout right after creating it doesn't land on an empty
-      // grid. Parked groups are left alone: they are parked on purpose.
+      // Seat a new chat wherever it will be seen. On the board that is on
+      // screen that means a free pane if there is one and the pane last worked
+      // in otherwise — a new chat you cannot see is one you have to go hunting
+      // for, which in the one-pane layout used to be every new chat. The other
+      // layouts of the group take it only if they have room, and parked groups
+      // are left alone: they are parked on purpose.
       autoPlace: chatId =>
         set(s => {
           const g = currentGroup(s);
+          const live = currentLayout(s);
           const boards = LAYOUTS.reduce((acc, n) => {
             const slots = g.boards[n];
+            if (slots.includes(chatId)) {
+              acc[n] = slots;
+              return acc;
+            }
             const free = slots.findIndex((x, i) => i < n && !x);
-            if (slots.includes(chatId) || free < 0) {
+            const seat = free >= 0 ? free : n === live ? Math.min(s.activePane, n - 1) : -1;
+            if (seat < 0) {
               acc[n] = slots;
               return acc;
             }
             const next = slots.slice();
-            next[free] = chatId;
+            next[seat] = chatId;
             acc[n] = next;
             return acc;
           }, {} as PerLayout<Slots>);
-          return withGroup(s, { boards });
+
+          // A sheet that is already up follows the new chat rather than hiding
+          // it: creating a chat is asking to work in it, now.
+          const seated = boards[live].indexOf(chatId);
+          return {
+            ...withGroup(s, { boards }),
+            activePane: seated >= 0 ? seated : s.activePane,
+            ...(peeking(s) ? { peek: seated >= 0 ? seated : null, peekChat: null } : {})
+          };
+        }),
+
+      /**
+       * One click on a row in the sidebar. With a single pane there is nothing
+       * to arrange and dragging is pure ceremony, so the click simply swaps
+       * what that pane shows. With more panes the board is an arrangement the
+       * user made, and a click must not rewrite it: a chat already on it just
+       * becomes the active pane (or, while a sheet is up, the one on the
+       * sheet), and a chat that is not on it comes up as its own sheet, which
+       * leaves the board exactly as it was.
+       */
+      showChat: chatId =>
+        set(s => {
+          if (currentLayout(s) === 1) {
+            const slots = currentSlots(s).slice();
+            slots[0] = chatId;
+            return { ...withBoard(s, slots), activePane: 0, ...NO_PEEK };
+          }
+          const i = currentSlots(s).indexOf(chatId);
+          if (i < 0 || i >= currentLayout(s)) return { peekChat: chatId, peek: null };
+          return { activePane: i, ...(peeking(s) ? { peek: i, peekChat: null } : {}) };
         }),
 
       setOver: i => set({ over: i }),
@@ -218,14 +268,15 @@ export const usePanes = create<PanesState>()(
           if (a === b) return { over: -1, dragPane: null };
           const slots = currentSlots(s).slice();
           [slots[a], slots[b]] = [slots[b], slots[a]];
-          return { ...withBoard(s, slots), over: -1, dragPane: null };
+          return { ...withBoard(s, slots), over: -1, dragPane: null, activePane: b };
         }),
 
       setSpot: id => set({ spot: id }),
-      // Only one thing can fill the grid, so each kind of fullscreen replaces
-      // the other when it opens.
-      setFocus: i => set(s => ({ focus: i, ...(i != null && s.focusChat != null ? { focusChat: null } : {}) })),
-      setFocusChat: id => set(s => ({ focusChat: id, ...(id != null && s.focus != null ? { focus: null } : {}) })),
+      setActivePane: i => set({ activePane: i }),
+      // Only one thing can be up on the sheet, so each kind replaces the other.
+      setPeek: i => set(i == null ? { peek: null } : { peek: i, peekChat: null, activePane: i }),
+      setPeekChat: id => set({ peekChat: id, peek: null }),
+      closePeek: () => set(NO_PEEK),
 
       setSplit: (key, value) =>
         set(s =>

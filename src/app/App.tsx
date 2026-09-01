@@ -146,6 +146,11 @@ export function App() {
             <div style={{ display: 'flex', gap: 5 }}>
               <button
                 onClick={openNewChat}
+                title={
+                  'New chat (Ctrl+N)\n' +
+                  'Ctrl+Shift+N skips the dialog: same folder and account as the chat on screen, ' +
+                  'settings as they stand'
+                }
                 className="slim primary"
                 style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5 }}
               >
@@ -180,7 +185,12 @@ export function App() {
                 <div
                   key={n}
                   onClick={() => setLayout(n)}
-                  title={`${n} pane${n > 1 ? 's' : ''}`}
+                  title={
+                    `${n} pane${n > 1 ? 's' : ''} — Ctrl+Shift+${n}` +
+                    (n === 1
+                      ? '\nOne window: a click in the list swaps what it shows, Ctrl+<digit> too'
+                      : `\nCtrl+1…${n} holds a pane up over the board for a moment`)
+                  }
                   className={layout !== n ? 'hover-bg' : undefined}
                   style={{
                     flex: 1, height: 23, borderRadius: 2, display: 'grid', placeItems: 'center', cursor: 'default',

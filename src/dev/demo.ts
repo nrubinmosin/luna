@@ -12,15 +12,15 @@
  */
 import type { Terminal as XTerm } from '@xterm/xterm';
 import type { Account, Chat, Folder } from '../shared/types';
-import type { AccountsRootInfo, CliStatusDto } from '../ipc/commands';
+import type { AccountsRootInfo, ClaudeDefaultsDto, CliStatusDto } from '../ipc/commands';
 import { useAccounts } from '../features/accounts/accounts.store';
 import { useChats } from '../features/chats/chats.store';
 import { useNewChat } from '../features/new-chat/newchat.store';
 import { usePanes, type Group, type Layout, type Slots } from '../features/panes/panes.store';
 import { useUpdates } from '../features/updates/updates.store';
 
-/** `?demo`, `?demo=dark`, `?demo=newchat`, `?demo=settings`. */
-export type Scene = 'main' | 'dark' | 'newchat' | 'settings';
+/** `?demo`, `?demo=dark`, `?demo=peek`, `?demo=newchat`, `?demo=settings`. */
+export type Scene = 'main' | 'dark' | 'peek' | 'newchat' | 'settings';
 
 const hoursFromNow = (h: number) => new Date(Date.now() + h * 3600_000).toISOString();
 
@@ -252,6 +252,15 @@ const CLI: CliStatusDto = {
 
 const ROOT: AccountsRootInfo = { path: 'C:\\src\\claude-accounts', isDefault: true };
 
+// What the new-chat dialog opens on. Left unanswered it would show every
+// control sitting on Luna's own fallback, which is the one state the shot is
+// least likely to be taken in and says nothing about where defaults come from.
+const DEFAULTS: ClaudeDefaultsDto = {
+  model: { value: 'opus', source: 'account' },
+  effort: { value: 'xhigh', source: 'account' },
+  permissionMode: { value: 'bypassPermissions', source: 'project' }
+};
+
 let seeded = false;
 
 /**
@@ -264,6 +273,7 @@ export function answer<T>(cmd: string, fallback: T): T {
   if (!seeded) return fallback;
   if (cmd === 'cli_status') return CLI as unknown as T;
   if (cmd === 'get_accounts_root') return ROOT as unknown as T;
+  if (cmd === 'claude_defaults') return DEFAULTS as unknown as T;
   return fallback;
 }
 
@@ -297,7 +307,10 @@ export function seedDemo(scene: Scene) {
   // actually used in both end up in the README.
   usePanes.setState({
     group: 0,
-    groups: [filled(scene === 'dark' ? 2 : 4), parked(), parked(), parked()]
+    groups: [filled(scene === 'dark' ? 2 : scene === 'peek' ? 3 : 4), parked(), parked(), parked()],
+    // The peek scene is that sheet and nothing else: the second pane of three,
+    // held up over a board that is still there behind it.
+    peek: scene === 'peek' ? 1 : null
   });
 
   if (scene === 'newchat') useNewChat.getState().openDialog('C:\\src\\luna');
@@ -307,5 +320,7 @@ export function seedDemo(scene: Scene) {
 export function sceneFromUrl(search: string): Scene | null {
   const value = new URLSearchParams(search).get('demo');
   if (value === null) return null;
-  return value === 'dark' || value === 'newchat' || value === 'settings' ? value : 'main';
+  return value === 'dark' || value === 'peek' || value === 'newchat' || value === 'settings'
+    ? value
+    : 'main';
 }

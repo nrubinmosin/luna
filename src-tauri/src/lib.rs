@@ -1,5 +1,6 @@
 mod accounts;
 mod cli;
+mod defaults;
 mod emit;
 mod limits;
 mod log;
@@ -102,6 +103,7 @@ pub fn run() {
             accounts::delete_account,
             cli::cli_status,
             cli::cli_update_now,
+            defaults::claude_defaults,
             limits::account_limits,
             log::append_log,
             media::save_media,

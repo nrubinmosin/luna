@@ -14,10 +14,10 @@ const WORKTREE = /^(.*)[\\/]\.claude[\\/]worktrees[\\/][^\\/]+$/;
 /**
  * Sessions that are still running with no chat row to reach them through.
  *
- * The app used to have no answer for this: a chat archived by a misclick, or
- * lost to a half-written state restore, left its session burning an account's
- * tokens with no way to see it, stop it or talk to it — the only route back was
- * a terminal and `claude --resume`.
+ * The app used to have no answer for this: a chat lost to a half-written state
+ * restore left its session burning an account's tokens with no way to see it,
+ * stop it or talk to it — the only route back was a terminal and
+ * `claude --resume`.
  */
 export function OrphanSessions() {
   const folders = useChats(s => s.folders);

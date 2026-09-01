@@ -16,13 +16,18 @@ Desktop-обёртка над Claude Code CLI. Принцип: **всё сост
 
 ```
 src/                          фронт (feature-sliced)
-  app/        App, theme.css (токены light/dark), keymap (⌘N, ⌘1..4)
+  app/        App, theme.css (токены light/dark), keymap: Ctrl+N / Ctrl+Shift+N,
+              Ctrl+1..4 (peek), Ctrl+0 (выход), Ctrl+Shift+1..4 (раскладка) —
+              слушается в capture-фазе, иначе xterm гасит их до window
   shared/     types, format, status
   features/
-    chats/    сайдбар: папки + чаты (drag source), chats.store
-    panes/    сетка 1/2/3/4, Pane (drop target), Terminal (xterm), panes.store
-    new-chat/ диалог создания: папка, модель, effort (5 уровней), аккаунт,
-              чекбокс "Git worktree" (по умолчанию вкл), permission mode
+    chats/    сайдбар: папки + чаты (drag source, клик = показать), chats.store
+    panes/    сетка 1/2/3/4, Pane (drop target), Terminal (xterm), panes.store;
+              peek — лист поверх притемнённой доски, той же панелью без перемонтирования
+    new-chat/ диалог создания: папка, аккаунт, чекбокс "Git worktree" (по умолчанию
+              вкл), плюс модель/effort/permission mode — они открываются на том, что
+              скажет claude_defaults; create.ts — общий путь создания для диалога и
+              для Ctrl+Shift+N
     accounts/ панель аккаунтов: лимиты + добавление/удаление, accounts.store
     settings/ диалог за ⚙: папка аккаунтов, версии Luna/CLI и кнопки обновления
     status-bar/ часы, сводка, лимиты аккаунтов; чип обновления — только когда есть новость
@@ -32,6 +37,9 @@ src-tauri/src/
   accounts.rs   list/create/delete папок в <accounts root>/<name>
   settings.rs   <data>/settings.json: accountsRoot (по умолчанию Documents/claude-accounts),
                 меняется через ⚙ в панели аккаунтов
+  defaults.rs   model/effortLevel/permissions.defaultMode из настроек самого Claude Code,
+                в его же порядке приоритета: settings.json аккаунта → .claude/settings.json
+                проекта → .claude/settings.local.json → machine-wide managed
   cli.rs        собственная копия Claude Code CLI: скачивание с downloads.claude.ai
                 (sha256 по manifest.json), versions/<ver>/, автообновление раз в 6ч
   paths.rs      data_dir(): рядом с exe (portable) либо LOCALAPPDATA\luna
@@ -54,6 +62,9 @@ src-tauri/src/
 - **Сессия = запуск `claude`** с аргументами:
   `--model <alias> --effort <low|medium|high|xhigh|max|ultracode> --permission-mode <mode> [--worktree]`,
   `cwd` = папка чата, `CLAUDE_CONFIG_DIR` = папка аккаунта (изоляция логина/настроек на аккаунт).
+  Флаги ставятся всегда, поэтому собственные настройки CLI были бы перекрыты на каждой
+  сессии — `defaults.rs` читает их сам и подставляет в диалог, так что по умолчанию флаги
+  совпадают с файлами, а расхождение бывает только там, где его попросили руками.
 - **Аккаунт = папка** `<accounts root>/<name>` (по умолчанию `Documents/claude-accounts`,
   корень выбирается в настройках и хранится в Rust — его читает и фоновый поток `models.rs`).
   Создание — mkdir, удаление — rm -rf, список — readdir. Никакой собственной БД. Чаты помнят
