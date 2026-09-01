@@ -16,13 +16,19 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
 - A Windows XP shell (xp.css, Luna Blue): the native window frame is replaced by our own
   title bar with minimize / maximize / close, and the UI runs on Tahoma. The whole
   interface scales from one variable, `--ui` in `src/app/theme.css`.
-- A grid of 1/2/3/4 panes with draggable splits, and chats dragged into them from the
-  sidebar (⌘/Ctrl+1..4 pick the layout, ⌘/Ctrl+N opens a new chat). Panes can be swapped
-  by dragging one title bar onto another.
-- Double-click a pane's title bar and it takes the whole grid; double-click a sidebar row
-  and the chat fills the grid without being seated in a pane at all. Both are ways of
-  looking, not arrangements: the board underneath is untouched, and another double-click
-  (or Escape, for a pane) puts it back.
+- A grid of 1/2/3/4 panes with draggable splits (Ctrl+Shift+1..4 picks the layout).
+  **One click** on a sidebar row shows that chat: with a single pane it simply becomes
+  what that pane shows — dragging a row across an empty board to the one place it can go
+  was ceremony — and with more panes a chat that is not on the board comes up on the peek
+  sheet instead, so a click never rewrites an arrangement. Dragging is what seats a chat
+  in a particular pane, and panes swap by dragging one title bar onto another.
+- **Peek** is the temporary view, and looks like one: the pane is held up on a sheet with
+  the board still there behind it, dimmed. Ctrl+1..4 holds up that pane and puts it back,
+  the numbered chips in the sheet's own bar move between panes in a click, and the dimmed
+  board, the Return button or Ctrl+0 all go back. Double-clicking a pane's title bar does
+  the same. Escape is deliberately left alone — it is how the CLI is interrupted.
+- Luna claims its shortcuts in the capture phase, so they work while a terminal has focus;
+  everything it does not claim travels on to the CLI untouched.
 - Window groups I/II/III/IV — tabs under the layout selector. Each group remembers its own
   four boards (one per layout) and their splits, and has its own reset button (↺) that
   clears only the arrangement and leaves every chat alone.
@@ -32,11 +38,18 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Chats
 
-- New chat (⌘/Ctrl+N): folder, model, effort
-  (`low/medium/high/xhigh/max/ultracode`), permission mode, account, and a **Git
-  worktree** checkbox — on by default, which runs the session as `claude --worktree` in
-  `<folder>/.claude/worktrees/<name>`. It opens on Opus, high effort and Bypass; all three
-  can be changed later from the CLI itself.
+- New chat (Ctrl+N): folder, model, effort (`low/medium/high/xhigh/max/ultracode`),
+  permission mode, account, and a **Git worktree** checkbox — on by default, which runs
+  the session as `claude --worktree` in `<folder>/.claude/worktrees/<name>`.
+- Those three open on whatever Claude Code's own settings say for that account in that
+  folder, resolved in the CLI's own order: the account's `settings.json`, then the
+  project's `.claude/settings.json` and `.claude/settings.local.json`, then the
+  machine-wide managed file. The line under each control names the file it came from, and
+  changing one says so and offers the way back — an override belongs to that chat and is
+  never remembered as the new default.
+- Ctrl+Shift+N skips the dialog: same folder and account as the chat on screen, the rest
+  as the settings have it. Either way the new chat lands in a pane you can see — a free
+  one, or the pane you were last working in when the board is full.
 - A chat's pane title bar carries its folder, account, model, effort, permission mode,
   worktree flag and how much of the context window is gone — and the buttons to rename or
   delete it. The same chips shrink to fit a narrow pane.
@@ -50,10 +63,9 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
 - Titles come from the first thing typed into the chat, then from the transcript's own
   opening prompt once there is one. Rename by double-clicking the name; a name you set by
   hand is never overwritten.
-- Marks: a ★ at the head of the row, set and cleared by clicking it. It means whatever you
-  decide it means — nothing in the app reads it. On unmarked rows it only shows under the
-  cursor.
-- Archive folds a chat away without touching its session, its worktree or its transcript.
+- The number on a row is what Ctrl+&lt;digit&gt; reaches: the pane it is showing in, or its
+  place in the list when there is only one pane. It is filled in while the chat is on the
+  board.
 - Paste or drop images and files into a pane: they are copied into the app's own media
   store and their absolute paths are typed into the prompt, which is the only thing a
   webview's clipboard leaves usable.
@@ -80,8 +92,8 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 - Closing the window hides the app to the tray and leaves the sessions running. Quit from
   the tray menu.
-- Sessions with no chat row left to reach them — a chat archived by a misclick, or lost to
-  a half-written state restore — are listed at the top of the sidebar, with what they are
+- Sessions with no chat row left to reach them — lost to a half-written state restore, say
+  — are listed at the top of the sidebar, with what they are
   working on, and can be adopted back or killed.
 - A folder with worktrees left behind by deleted chats offers to sweep them; nothing a
   live session sits in is ever swept. Deleting a chat offers to take its worktree and the

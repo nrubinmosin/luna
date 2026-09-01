@@ -25,8 +25,6 @@ interface ChatsState {
   setWorktreePath: (chatId: string, path: string) => void;
   setSessionId: (chatId: string, sessionId: string) => void;
   setContext: (chatId: string, context: number, tokens: number | null, window: number | null) => void;
-  setArchived: (chatId: string, archived: boolean) => void;
-  toggleMark: (chatId: string) => void;
   setColor: (chatId: string, color: string | null) => void;
   renameChat: (chatId: string, name: string) => void;
   findChat: (chatId: string | null) => Chat | null;
@@ -41,12 +39,22 @@ export const foldersOfGroup = (folders: Folder[], group: GroupId): Folder[] =>
     .map(f => ({ ...f, chats: f.chats.filter(c => c.group === group) }))
     .filter(f => f.chats.length > 0);
 
+/**
+ * One group's chats in the order the sidebar lists them, folded-away folders
+ * skipped. This is the run the numbers on the rows count through and the one
+ * Ctrl+<digit> resolves against, so the two cannot disagree about which chat
+ * is the third one.
+ */
+export const numberedChats = (folders: Folder[], group: GroupId): Chat[] =>
+  foldersOfGroup(folders, group)
+    .filter(f => f.open)
+    .flatMap(f => f.chats);
+
 /** Every chat, whatever group it belongs to — for the session watcher and for
  *  working out which running sessions nothing claims. */
 export const allChats = (folders: Folder[]): Chat[] => folders.flatMap(f => f.chats);
 
-/** The colours worn in one group, for dealing a new chat one of its own.
- *  Archived chats count — their colour is not free while they can come back. */
+/** The colours worn in one group, for dealing a new chat one of its own. */
 export const wornColors = (folders: Folder[], group: GroupId): Array<string | null | undefined> =>
   allChats(folders)
     .filter(c => c.group === group)
@@ -136,30 +144,6 @@ export const useChats = create<ChatsState>()(
             chats: f.chats.map(c =>
               c.id === chatId && c.sessionId !== sessionId ? { ...c, sessionId } : c
             )
-          }))
-        })),
-
-      setArchived: (chatId, archived) => {
-        // Out of the panes as well as out of the list: a hidden chat holding a
-        // pane would leave a slab of terminal on screen with no row to close
-        // it from.
-        if (archived) usePanes.getState().evictChat(chatId);
-        set(s => ({
-          folders: s.folders.map(f => ({
-            ...f,
-            chats: f.chats.map(c => (c.id === chatId ? { ...c, archived } : c))
-          })),
-          // An archived chat is out of sight; leaving it selected would leave
-          // the rest of the UI reporting on something nobody can see.
-          active: archived && s.active === chatId ? null : s.active
-        }));
-      },
-
-      toggleMark: chatId =>
-        set(s => ({
-          folders: s.folders.map(f => ({
-            ...f,
-            chats: f.chats.map(c => (c.id === chatId ? { ...c, marked: !c.marked } : c))
           }))
         })),
 

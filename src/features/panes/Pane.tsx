@@ -9,18 +9,19 @@ import { currentLayout, currentSlots, usePanes } from './panes.store';
 import { Terminal } from './Terminal';
 
 /**
- * `soloChat` renders the pane as the double-click-a-row fullscreen: the chat
- * comes from the prop instead of a board slot, so it needs no seat in any
- * pane, and every control that would touch the board (drag, drop, close)
- * turns into a plain "back to the grid".
+ * `soloChat` renders the pane on the peek sheet for a chat with no seat on the
+ * board: the chat comes from the prop instead of a slot, so every control that
+ * would touch the board (drag, drop, close) turns into a plain "back to the
+ * grid".
  */
 export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: string }) {
   const chatId = usePanes(s => soloChat ?? currentSlots(s)[index]);
   const over = usePanes(s => !soloChat && s.over === index);
   const spotted = usePanes(s => !!s.spot && s.spot === (soloChat ?? currentSlots(s)[index]));
   const layout = usePanes(currentLayout);
-  const { setOver, dropChat, closePane, setDragPane, swapPanes, setFocus, setFocusChat } = usePanes.getState();
-  const focused = usePanes(s => (soloChat ? true : s.focus === index));
+  const { setOver, dropChat, closePane, setDragPane, swapPanes, setPeek, setPeekChat, setActivePane } =
+    usePanes.getState();
+  const peeked = usePanes(s => (soloChat ? true : s.peek === index));
   const beingDragged = usePanes(s => !soloChat && s.dragPane === index);
   const chat = useChats(s => s.findChat(chatId));
   const folder = useChats(s => (chatId ? s.folderOf(chatId) : null));
@@ -43,9 +44,9 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
   const stale = !!chatId && !chat;
   useEffect(() => {
     if (!stale) return;
-    if (soloChat) setFocusChat(null);
+    if (soloChat) setPeekChat(null);
     else closePane(index);
-  }, [stale, index, soloChat, closePane, setFocusChat]);
+  }, [stale, index, soloChat, closePane, setPeekChat]);
 
   // The slot can be handed a different chat while a rename or a delete prompt
   // is open; neither belongs to the newcomer.
@@ -90,8 +91,13 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
 
   return (
     <div
+      // Where a new chat lands when the board has no room: the pane you were
+      // last working in, which is the one you just clicked into.
+      onMouseDown={() => {
+        if (!soloChat) setActivePane(index);
+      }}
       onDragOver={e => {
-        // A fullscreen chat is not a slot — nothing can be dropped into it.
+        // A chat on the peek sheet is not a slot — nothing can be dropped in.
         if (soloChat) return;
         // File drags belong to the terminal's attach handler, not pane placement.
         if (Array.from(e.dataTransfer.types).includes('Files')) return;
@@ -150,11 +156,12 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
               setDragPane(null);
               setOver(-1);
             }}
-            // The bar itself toggles the same focus as its Maximize control;
-            // children with a double-click of their own stop the bubble.
+            // The bar itself holds the pane up as its own sheet, same as its
+            // Peek control; children with a double-click of their own stop the
+            // bubble.
             onDoubleClick={() => {
-              if (soloChat) setFocusChat(null);
-              else if (layout > 1) setFocus(focused ? null : index);
+              if (soloChat) setPeekChat(null);
+              else if (layout > 1) setPeek(peeked ? null : index);
             }}
             className="title-bar"
             // Inline wins over xp.css's Luna-blue gradient and frame colours,
@@ -172,7 +179,7 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
             <StatusDot status={chat.status} />
             {/* Status chips sit before the name, so the left end of the bar is
                 free of the name span's rename double-click and a double-click
-                near the corner reaches the bar's focus toggle. */}
+                near the corner reaches the bar’s peek toggle. */}
             <span title={`${t!.parent} / ${t!.leaf}`} style={{ ...softChip, maxWidth: 90 }}>
               {t!.leaf}
             </span>
@@ -205,7 +212,7 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
                   if (e.key === 'Escape') setEditing(false);
                 }}
                 onClick={e => e.stopPropagation()}
-                // Double-clicking a word to select it is not a focus toggle.
+                // Double-clicking a word to select it is not a peek toggle.
                 onDoubleClick={e => e.stopPropagation()}
                 type="text"
                 style={{ flex: '1 1 auto', minWidth: 40, height: 'calc(var(--ui) * 1.4)' }}
@@ -294,13 +301,17 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
               />
               {(soloChat || layout > 1) && (
                 <button
-                  aria-label={focused ? 'Restore' : 'Maximize'}
-                  title={focused ? 'Back to the grid' : 'Focus this pane — the grid stays as it is'}
-                  onClick={() => (soloChat ? setFocusChat(null) : setFocus(focused ? null : index))}
+                  aria-label={peeked ? 'Restore' : 'Maximize'}
+                  title={
+                    peeked
+                      ? 'Back to the grid — Ctrl+0'
+                      : `Peek — hold this pane up over the board, which stays as it is (Ctrl+${index + 1})`
+                  }
+                  onClick={() => (soloChat ? setPeekChat(null) : setPeek(peeked ? null : index))}
                 />
               )}
-              {/* A fullscreen chat holds no pane to close — leaving is all
-                  Close could mean, and Restore already says it better. */}
+              {/* A chat on the sheet holds no pane to close — leaving is all
+                  Close could mean, and Return already says it better. */}
               {!soloChat && (
                 <button
                   aria-label="Close"
@@ -316,7 +327,11 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
       ) : (
         <div style={{ flex: 1, display: 'grid', placeItems: 'center', gap: 6, alignContent: 'center', color: 'var(--faint)' }}>
           <div style={{ width: 40, height: 30, border: '1.5px dashed var(--line)', borderRadius: 3 }} />
-          <div style={{ fontSize: 'var(--fs-5)', whiteSpace: 'nowrap' }}>Drag a chat here</div>
+          {/* With one pane a click in the list fills it; with more, which pane
+              a chat goes to is a choice, and the drag is how it is made. */}
+          <div style={{ fontSize: 'var(--fs-5)', whiteSpace: 'nowrap' }}>
+            {layout === 1 ? 'Click a chat in the list' : 'Drag a chat here'}
+          </div>
           <div style={{ fontSize: 'var(--fs-3)', opacity: 0.75, whiteSpace: 'nowrap' }}>
             pane {index + 1} of {layout}
           </div>

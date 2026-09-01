@@ -30,12 +30,6 @@ export interface Chat {
   worktreePath?: string | null;
   sessionId?: string | null;
   nameCustom?: boolean;
-  /** Folded away in the sidebar. Nothing else about the chat changes: the
-   *  session, its worktree and its transcript are all left running. */
-  archived?: boolean;
-  /** A flag the user sets by hand, for their own bookkeeping. It means
-   *  whatever they decide it means — nothing in the app reads it. */
-  marked?: boolean;
   /** Key of a preset from CHAT_COLORS. The pane title bar wears it and the
    *  sidebar row shows a stripe of it; unset means stock Luna blue. */
   color?: string | null;
@@ -104,3 +98,28 @@ export const PERM_HINTS: Record<PermMode, string> = {
   'Plan only': 'no disk writes',
   Bypass: 'full access, no prompts'
 };
+
+// ------------------------------------------------ Claude Code's own settings
+
+/** `permissions.defaultMode` as the CLI spells it, back onto Luna's labels. */
+const PERM_OF_CLI: Record<string, PermMode> = {
+  default: 'Ask',
+  acceptEdits: 'Edits',
+  plan: 'Plan only',
+  bypassPermissions: 'Bypass'
+};
+
+/**
+ * `model` from a settings file. It can be an alias (`opus`), a compound one
+ * (`opusplan`) or a full id (`claude-sonnet-5`); all three name their model
+ * plainly enough to match on, and anything else means Luna keeps its own.
+ */
+export const modelFromSetting = (raw: string): ModelLabel | null => {
+  const v = raw.toLowerCase();
+  return MODELS.find(m => v.includes(m.toLowerCase())) ?? null;
+};
+
+export const effortFromSetting = (raw: string): Effort | null =>
+  EFFORTS.find(e => e === raw.toLowerCase()) ?? null;
+
+export const permFromSetting = (raw: string): PermMode | null => PERM_OF_CLI[raw] ?? null;

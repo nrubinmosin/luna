@@ -178,6 +178,32 @@ export const orphanWorktrees = (folder: string, inUse: string[], accountPaths: s
 export const removeOrphanWorktrees = (folder: string, inUse: string[], accountPaths: string[]) =>
   call<number>('remove_orphan_worktrees', { folder, inUse, accountPaths }, 0);
 
+/** Where a resolved default came from, for the line under the control. */
+export type DefaultSource = 'account' | 'project' | 'project-local' | 'managed';
+
+export interface SettingDto {
+  value: string;
+  source: DefaultSource;
+}
+
+export interface ClaudeDefaultsDto {
+  model: SettingDto | null;
+  effort: SettingDto | null;
+  permissionMode: SettingDto | null;
+}
+
+/**
+ * Model, effort and permission mode as Claude Code itself would resolve them
+ * for this account in this folder. Null fields mean nobody said, so Luna's own
+ * defaults stand.
+ */
+export const claudeDefaults = (accountPath: string, folder: string) =>
+  call<ClaudeDefaultsDto>(
+    'claude_defaults',
+    { accountPath, folder },
+    { model: null, effort: null, permissionMode: null }
+  );
+
 /** Whether this account already accepted Claude Code's trust prompt for the folder. */
 export const folderTrusted = (accountPath: string, folder: string) =>
   call<boolean>('folder_trusted', { accountPath, folder }, true);

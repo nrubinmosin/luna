@@ -29,11 +29,9 @@ export const CHAT_COLORS: ChatColor[] = [
 ];
 
 /**
- * A random colour for a newborn chat, dodging the ones already worn — pass in
- * every colour in use in its group, archived chats included: an archived chat
- * comes back, and it comes back wearing its colour. Only once the whole
- * palette is worn does chance run free; a colour freed by a deleted chat is
- * simply back in the pool next time.
+ * A random colour for a newborn chat, dodging the ones already worn in its
+ * group. Only once the whole palette is worn does chance run free; a colour
+ * freed by a deleted chat is simply back in the pool next time.
  */
 export const pickChatColor = (worn: Array<string | null | undefined>): string => {
   const taken = new Set(worn.filter(Boolean));

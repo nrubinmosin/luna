@@ -1,14 +1,13 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { EFFORTS, MODELS, PERM_HINTS } from '../../shared/types';
 import type { Effort, ModelLabel, PermMode } from '../../shared/types';
 import { ACCENT, tail2, tint } from '../../shared/lib/format';
-import { newId, useChats, wornColors } from '../chats/chats.store';
-import { pickChatColor } from '../../shared/ui/chatColors';
-import { usePanes } from '../panes/panes.store';
+import { useChats } from '../chats/chats.store';
 import { useAccounts } from '../accounts/accounts.store';
 import { useNewChat } from './newchat.store';
-import { folderTrusted, pickFolder, trustFolder } from '../../ipc/commands';
+import { createChat, settingsDefaults, SOURCE_LABELS, STOCK, type ChatSettings, type SettingsFrom } from './create';
+import { folderTrusted, pickFolder } from '../../ipc/commands';
 
 const segWrap: CSSProperties = { display: 'flex', gap: 2, padding: 2, background: 'var(--chip)', borderRadius: 2 };
 
@@ -45,20 +44,45 @@ export function NewChatDialog() {
   const accounts = useAccounts(s => s.accounts);
   const initialFolder = useNewChat(s => s.initialFolder);
   const onClose = useNewChat(s => s.close);
-  const { addChat } = useChats.getState();
-  const { autoPlace } = usePanes.getState();
 
-  const [folder, setFolder] = useState(initialFolder ?? folders[0]?.path ?? '');
-  const group = usePanes(s => s.group);
-  const [model, setModel] = useState<ModelLabel>('Opus');
-  const [effort, setEffort] = useState<Effort>('high');
-  const [perm, setPerm] = useState<PermMode>('Bypass');
-  const [account, setAccount] = useState(accounts[0]?.name ?? '');
-  const [worktree, setWorktree] = useState(true);
+  const [folder, setFolder] = useState(
+    () => initialFolder ?? useNewChat.getState().lastFolder ?? folders[0]?.path ?? ''
+  );
+  const [account, setAccount] = useState(() => {
+    const last = useNewChat.getState().lastAccount;
+    return (last && accounts.some(a => a.name === last) ? last : accounts[0]?.name) ?? '';
+  });
+  const [worktree, setWorktree] = useState(() => useNewChat.getState().lastWorktree);
 
-  const effectiveFolder = folder;
-  const canCreate = !!effectiveFolder && !!account;
+  // What the settings files say, and what this chat will actually open on —
+  // the same thing until something here is changed by hand.
+  const [resolved, setResolved] = useState<ChatSettings>(STOCK);
+  const [from, setFrom] = useState<SettingsFrom>({});
+  const [settings, setSettings] = useState<ChatSettings>(STOCK);
+  // A control the user has touched is theirs: re-resolving after a change of
+  // account or folder must not quietly take it back. In a ref because the
+  // resolver should not re-run just because something was touched.
+  const touched = useRef<Partial<Record<keyof ChatSettings, true>>>({});
+
+  const canCreate = !!folder && !!account;
   const accountPath = accounts.find(a => a.name === account)?.path ?? '';
+
+  useEffect(() => {
+    let stale = false;
+    void settingsDefaults(accountPath, folder).then(({ values, from: sources }) => {
+      if (stale) return;
+      setResolved(values);
+      setFrom(sources);
+      setSettings(prev => ({
+        model: touched.current.model ? prev.model : values.model,
+        effort: touched.current.effort ? prev.effort : values.effort,
+        perm: touched.current.perm ? prev.perm : values.perm
+      }));
+    });
+    return () => {
+      stale = true;
+    };
+  }, [accountPath, folder]);
 
   // The CLI can't show its trust prompt under --worktree; it just tells you to
   // open the folder without isolation first. Detect the untrusted case up front
@@ -68,17 +92,17 @@ export function NewChatDialog() {
   const [trustError, setTrustError] = useState<string | null>(null);
   useEffect(() => {
     let stale = false;
-    if (!effectiveFolder || !accountPath) {
+    if (!folder || !accountPath) {
       setTrusted(true);
       return;
     }
-    void folderTrusted(accountPath, effectiveFolder)
+    void folderTrusted(accountPath, folder)
       .then(ok => !stale && setTrusted(ok))
       .catch(() => !stale && setTrusted(true));
     return () => {
       stale = true;
     };
-  }, [effectiveFolder, accountPath]);
+  }, [folder, accountPath]);
 
   const browse = async () => {
     const picked = await pickFolder();
@@ -91,39 +115,75 @@ export function NewChatDialog() {
 
   const create = async () => {
     if (!canCreate || creating) return;
-    // Must land *before* the session spawns — adding the chat mounts the
-    // terminal, which starts the CLI immediately.
-    if (!trusted) {
-      setCreating(true);
-      try {
-        await trustFolder(accountPath, effectiveFolder);
-      } catch (e) {
-        setCreating(false);
-        setTrustError(String(e));
-        return;
-      }
+    setCreating(true);
+    try {
+      await createChat({ folder, account, ...settings, worktree });
+    } catch (e) {
       setCreating(false);
+      setTrustError(String(e));
+      return;
     }
-    const n = folders.reduce((a, f) => a + f.chats.filter(c => c.group === group).length, 0) + 1;
-    const id = newId('c');
-    addChat(effectiveFolder, {
-      id,
-      name: `chat ${n}`,
-      status: 'resting',
-      model,
-      effort,
-      perm,
-      context: 0,
-      account,
-      group,
-      worktree,
-      color: pickChatColor(wornColors(folders, group))
-    });
-    autoPlace(id);
+    setCreating(false);
     onClose();
   };
 
+  // Enter creates: reaching for the mouse to confirm a form that is already
+  // filled in is the thing this dialog is trying to save. Escape closes it,
+  // through the app keymap.
+  //
+  // In the capture phase, and swallowed there: the dialog opens over a focused
+  // terminal, and xterm cancels the keys it handles — an Enter left to travel
+  // would never reach a listener bound the ordinary way, and would post a bare
+  // newline into the session behind the dialog on the way past.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Enter' || e.metaKey || e.ctrlKey || e.altKey) return;
+      e.preventDefault();
+      e.stopPropagation();
+      void create();
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  });
+
+  const pick = <K extends keyof ChatSettings>(key: K, value: ChatSettings[K]) => {
+    touched.current[key] = true;
+    setSettings(s => ({ ...s, [key]: value }));
+  };
+  const revert = <K extends keyof ChatSettings>(key: K) => {
+    delete touched.current[key];
+    setSettings(s => ({ ...s, [key]: resolved[key] }));
+  };
+
   const labelStyle: CSSProperties = { fontSize: 'var(--fs-3)', color: 'var(--dim)', marginBottom: 4, fontWeight: 600 };
+  const noteStyle: CSSProperties = { fontSize: 'var(--fs-2)', color: 'var(--faint)', marginTop: 3 };
+
+  /** Where the value on screen came from, or the way back if it was changed.
+   *  A plain call rather than a component: a component declared in here is a
+   *  new type on every render, and React would tear the node down and build
+   *  it again each time. */
+  const origin = (field: keyof ChatSettings) => {
+    if (settings[field] !== resolved[field]) {
+      return (
+        <div style={noteStyle}>
+          just for this chat —{' '}
+          <span
+            onClick={() => revert(field)}
+            className="hover-bg"
+            style={{ cursor: 'default', color: 'var(--dim)', textDecoration: 'underline', borderRadius: 2 }}
+          >
+            back to {resolved[field]}
+          </span>
+        </div>
+      );
+    }
+    const src = from[field];
+    return (
+      <div style={noteStyle}>
+        {src ? `from ${SOURCE_LABELS[src]}` : 'nothing in settings says — Luna’s own default'}
+      </div>
+    );
+  };
 
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.32)', backdropFilter: 'blur(1px)', display: 'grid', placeItems: 'center', zIndex: 60 }}>
@@ -135,7 +195,9 @@ export function NewChatDialog() {
           </div>
         </div>
         <div className="window-body" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          <div style={{ fontSize: 'var(--fs-2)', color: 'var(--faint)' }}>Model, effort and permission mode can be changed later</div>
+          <div style={{ fontSize: 'var(--fs-2)', color: 'var(--faint)' }}>
+            Opens on this account’s Claude Code settings; anything changed here applies to this chat only
+          </div>
           <div>
             <div style={labelStyle}>Folder</div>
             {/* A list rather than a select: every folder needs its own way out
@@ -192,10 +254,10 @@ export function NewChatDialog() {
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 5 }}>
               <button className="slim" onClick={() => void browse()}>Browse…</button>
               <span style={{ flex: 1, minWidth: 0, fontSize: 'var(--fs-2)', color: 'var(--faint)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                {effectiveFolder || 'no folder chosen'}
+                {folder || 'no folder chosen'}
               </span>
             </div>
-            {!trusted && effectiveFolder && (
+            {!trusted && folder && (
               <div
                 style={{
                   marginTop: 7, padding: '7px 9px', borderRadius: 2, fontSize: 'var(--fs-3)', lineHeight: 1.45,
@@ -217,12 +279,14 @@ export function NewChatDialog() {
 
           <div>
             <div style={labelStyle}>Model</div>
-            <Segmented items={MODELS} value={model} onPick={setModel} />
+            <Segmented items={MODELS} value={settings.model} onPick={(v: ModelLabel) => pick('model', v)} />
+            {origin('model')}
           </div>
 
           <div>
             <div style={labelStyle}>Effort</div>
-            <Segmented items={EFFORTS} value={effort} onPick={setEffort} />
+            <Segmented items={EFFORTS} value={settings.effort} onPick={(v: Effort) => pick('effort', v)} />
+            {origin('effort')}
           </div>
 
           <div style={{ display: 'flex', gap: 12 }}>
@@ -263,7 +327,7 @@ export function NewChatDialog() {
             <div style={labelStyle}>Permission mode</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
               {(Object.keys(PERM_HINTS) as PermMode[]).map(p => {
-                const on = perm === p;
+                const on = settings.perm === p;
                 const id = `perm-${p}`;
                 return (
                   <div key={p} className="field-row">
@@ -272,7 +336,7 @@ export function NewChatDialog() {
                       id={id}
                       name="perm-mode"
                       checked={on}
-                      onChange={() => setPerm(p)}
+                      onChange={() => pick('perm', p)}
                     />
                     <label htmlFor={id} style={{ fontWeight: 600, whiteSpace: 'nowrap', cursor: 'default' }}>
                       {p}
@@ -282,12 +346,13 @@ export function NewChatDialog() {
                 );
               })}
             </div>
+            {origin('perm')}
           </div>
 
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 2 }}>
             <button onClick={onClose}>Cancel</button>
             <button onClick={() => void create()} disabled={!canCreate || creating} className="primary">
-              {creating ? 'Trusting…' : 'Create'}
+              {creating ? 'Creating…' : 'Create'}
             </button>
           </div>
         </div>

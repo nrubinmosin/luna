@@ -112,28 +112,6 @@ a:hover { text-decoration: underline; }
 .xterm .xterm-viewport { scrollbar-width: none; }
 .xterm .xterm-viewport::-webkit-scrollbar { display: none; width: 0; height: 0; }
 
-/* A chat's own mark. Unset it is invisible until the row is hovered, so an
-   unmarked list stays quiet; set it stays on, and reads down the left edge. */
-[data-app] .mark {
-  flex: none;
-  width: 13px;
-  text-align: center;
-  font-size: var(--fs-4);
-  line-height: 1;
-  cursor: default;
-  color: var(--faint);
-  opacity: 0;
-  transition: opacity .1s;
-}
-[data-app] .chat-row:hover .mark {
-  opacity: 1;
-}
-[data-app] .mark[data-on="yes"] {
-  opacity: 1;
-  color: #e0a021;
-  text-shadow: 0 0 3px rgba(224, 160, 33, .45);
-}
-
 /* Folder-row actions (new chat, orphan sweep) only cost width once the row
    is hovered — the rest of the time that space goes to the folder name.
    max-width (not opacity) is what actually gives the freed width back to
