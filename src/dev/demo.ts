@@ -12,10 +12,12 @@
  */
 import type { Terminal as XTerm } from '@xterm/xterm';
 import type { Account, Chat, Folder } from '../shared/types';
+import type { CliStatusDto } from '../ipc/commands';
 import { useAccounts } from '../features/accounts/accounts.store';
 import { useChats } from '../features/chats/chats.store';
 import { useNewChat } from '../features/new-chat/newchat.store';
 import { usePanes, type Group, type Layout, type Slots } from '../features/panes/panes.store';
+import { useUpdates } from '../features/updates/updates.store';
 
 /** `?demo`, `?demo=dark`, `?demo=newchat`. */
 export type Scene = 'main' | 'dark' | 'newchat';
@@ -235,10 +237,39 @@ export function paint(term: XTerm, chatId: string) {
   if (screen) term.write(screen);
 }
 
+// ------------------------------------------------------------- ipc stand-in --
+
+const CLI: CliStatusDto = {
+  phase: 'idle',
+  version: '2.1.252',
+  path: 'C:\\src\\luna\\claude-cli\\versions\\2.1.252\\claude.exe',
+  latest: '2.1.252',
+  got: 0,
+  total: null,
+  error: null,
+  checkedAtMs: Date.now() - 42 * 60_000
+};
+
+let seeded = false;
+
+/**
+ * Answers the few commands whose emptiness would show. Without this the CLI
+ * field draws nothing in a browser, and the status bar in a screenshot has one
+ * fewer field than the app it is a picture of. Everything else keeps the
+ * caller's own fallback, and outside `?demo` this does nothing at all.
+ */
+export function answer<T>(cmd: string, fallback: T): T {
+  if (!seeded) return fallback;
+  return cmd === 'cli_status' ? (CLI as unknown as T) : fallback;
+}
+
 // ------------------------------------------------------------------ seed --
 
 export function seedDemo(scene: Scene) {
+  seeded = true;
   localStorage.setItem('luna.theme', scene === 'dark' ? 'dark' : 'light');
+  // The version readout, which in a browser has no app to ask.
+  useUpdates.setState({ current: '0.2.17', checkedAt: Date.now() - 12 * 60_000 });
 
   // The app polls for the account list and for each chat's status on a timer, and
   // in a browser both come back empty — which wiped the fixture a second after
