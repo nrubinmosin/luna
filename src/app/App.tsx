@@ -18,6 +18,8 @@ import { useNewChat } from '../features/new-chat/newchat.store';
 import { useSessionWatch } from '../features/chats/useSessionWatch';
 import { LoginModal } from '../features/accounts/LoginModal';
 import { useUpdates } from '../features/updates/updates.store';
+import { useCli } from '../features/updates/cli.store';
+import { UpdateConfirm } from '../features/updates/UpdateConfirm';
 import { useKeymap } from './keymap';
 import { healScaleDrift } from './dpi';
 import './theme.css';
@@ -88,10 +90,12 @@ export function App() {
     // The store owns the cadence: a fixed interval here would keep hitting a
     // rate-limited endpoint straight through the backoff it just scheduled.
     useAccounts.getState().startPolling();
-    // Quietly: a release found at startup lights up the status bar's update
-    // field and waits there. The modal this used to throw up arrived before the
+    // Quietly: a release found at startup lights up a status-bar chip and
+    // waits there. The modal this used to throw up arrived before the
     // panes had even painted, over whatever was mid-turn.
     void useUpdates.getState().check(false);
+    // The CLI readout feeds the settings dialog and the bar's download chip.
+    useCli.getState().init();
     return () => useAccounts.getState().stopPolling();
   }, []);
 
@@ -227,6 +231,8 @@ export function App() {
 
       {modal && <NewChatDialog />}
       {loginFor && <LoginModal account={loginFor} />}
+      {/* Raised by the settings dialog or the status-bar chip alike. */}
+      <UpdateConfirm />
     </div>
   );
 }

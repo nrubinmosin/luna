@@ -37,6 +37,15 @@ export const fmtResetDate = (iso: string | null): string | null => {
   });
 };
 
+// 1755463200000 -> "just now" / "42m ago" / "3h ago"; null -> "never".
+export const agoLabel = (at: number | null) => {
+  if (!at) return 'never';
+  const m = Math.round((Date.now() - at) / 60000);
+  if (m < 1) return 'just now';
+  if (m < 60) return `${m}m ago`;
+  return `${Math.round(m / 60)}h ago`;
+};
+
 export const limitColor = (v: number) => {
   if (v >= 0.85) return 'oklch(.63 .19 25)';
   if (v >= 0.6) return 'oklch(.78 .15 78)';

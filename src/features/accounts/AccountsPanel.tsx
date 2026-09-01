@@ -4,7 +4,7 @@ import { ConfirmDialog } from '../../shared/ui/ConfirmDialog';
 import type { Account } from '../../shared/types';
 import { useAccounts } from './accounts.store';
 import { useChats } from '../chats/chats.store';
-import { AccountsRoot } from './AccountsRoot';
+import { SettingsDialog } from '../settings/SettingsDialog';
 
 const LK: Array<['h5' | 'week' | 'fable', string]> = [['h5', '5 hours'], ['week', 'week'], ['fable', 'fable']];
 
@@ -15,7 +15,11 @@ export function AccountsPanel() {
   const error = useAccounts(s => s.error);
   const { add, remove, setAdding, setLoginFor } = useAccounts.getState();
   const [name, setName] = useState('');
-  const [rootOpen, setRootOpen] = useState(false);
+  // `?demo=settings` opens the dialog for its screenshot; the check compiles
+  // away in a release build along with the rest of the fixture.
+  const [settingsOpen, setSettingsOpen] = useState(
+    () => import.meta.env.DEV && new URLSearchParams(location.search).get('demo') === 'settings'
+  );
   // `window.confirm` is what stood here, and in a webview that is the dialog
   // plugin's `confirm` command — which this app's ACL does not allow. It threw
   // into an unhandled rejection and returned nothing, so the guard read as
@@ -34,9 +38,9 @@ export function AccountsPanel() {
         </div>
         <span style={{ flex: 1 }} />
         <button
-          onClick={() => setRootOpen(!rootOpen)}
-          title="Accounts folder — where the account directories live"
-          aria-label="Accounts folder"
+          onClick={() => setSettingsOpen(true)}
+          title="Settings — accounts folder, versions and updates"
+          aria-label="Settings"
           className="slim"
           style={{ minHeight: 'calc(var(--ui) * 1.35)', fontSize: 'var(--fs-2)', marginRight: 4, width: 26 }}
         >
@@ -52,7 +56,7 @@ export function AccountsPanel() {
         </button>
       </div>
 
-      {rootOpen && <AccountsRoot onClose={() => setRootOpen(false)} />}
+      {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} />}
 
       {adding && (
         <div style={{ display: 'flex', gap: 4, marginBottom: 8 }}>
