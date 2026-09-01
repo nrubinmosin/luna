@@ -1,2 +1,16 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# The Windows build runs in a Linux container (build-windows.ps1), so every
+# file it rewrites comes back with LF endings. With core.autocrlf on, git wants
+# CRLF in the working tree and reports those files as modified even though the
+# content is byte-identical — which is enough to trip release.ps1's "working
+# tree is dirty" check on the first release after any build, and to leave
+# `git status` lying in every worktree until someone checks the files out again.
+#
+# Pin what the container writes to LF, and the two stop disagreeing. These are
+# build outputs and manifests, never hand-edited on Windows, so nothing is lost
+# by keeping them in the endings the toolchain already produces.
+src-tauri/Cargo.toml         eol=lf
+src-tauri/Cargo.lock         eol=lf
+src-tauri/gen/schemas/*.json eol=lf
