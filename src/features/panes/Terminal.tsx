@@ -1,75 +1,20 @@
 import { useEffect, useRef, useState } from 'react';
-import { Terminal as XTerm } from '@xterm/xterm';
-import { FitAddon } from '@xterm/addon-fit';
-import { WebglAddon } from '@xterm/addon-webgl';
-import '@xterm/xterm/css/xterm.css';
-import { logWarn } from '../../shared/lib/log';
 import { attachClipboardImage, attachFiles, filesFrom } from '../../shared/lib/attach';
 import { ACCENT, tint } from '../../shared/lib/format';
 import type { Chat } from '../../shared/types';
-import { ensureSession, resizeSession, writeSession } from '../../ipc/commands';
-import { onPtyExit, onPtyOutput } from '../../ipc/events';
-import { useChats } from '../chats/chats.store';
 import { useAccounts } from '../accounts/accounts.store';
-
-export const dark = () => document.querySelector('[data-app]')?.getAttribute('data-theme') === 'dark';
-
-export const TERM_FONT_SIZE = 14;
-export const TERM_FONT_FAMILY = "'JetBrains Mono', 'Cascadia Mono', ui-monospace, monospace";
-
-// xterm's webgl renderer and the fit addon both throw if they are poked while
-// the host element is detached or already torn down. Any throw here escapes a
-// React effect cleanup and kills the entire root, so every call is guarded.
-export const safely = (fn: () => void) => {
-  try {
-    fn();
-  } catch (e) {
-    // With the stack: the message alone ("cannot read _isDisposed") names an
-    // xterm internal and not which of the half-dozen guarded calls reached it.
-    const stack = (e as Error)?.stack;
-    logWarn('terminal', `teardown step failed: ${stack ?? String(e)}`);
-  }
-};
-
-// A transparent background makes the webgl renderer blend every glyph against
-// the pane, which is what washed the text out. Paint an opaque background that
-// matches --term instead, and ship a full 16-colour ANSI ramp — without one
-// xterm falls back to its stock palette, which is muddy against these panels.
-export const themeFor = (isDark: boolean) =>
-  isDark
-    ? {
-        background: '#101a1d', foreground: '#e8f4f0', cursor: '#7ef0d4',
-        cursorAccent: '#101a1d', selectionBackground: '#2f5f57', selectionForeground: '#ffffff',
-        black: '#2a3538', red: '#ff6b6b', green: '#78e08f', yellow: '#ffd479',
-        blue: '#79b8ff', magenta: '#d2a8ff', cyan: '#5fe3d0', white: '#dfeeea',
-        brightBlack: '#587076', brightRed: '#ff9492', brightGreen: '#a4f7b0', brightYellow: '#ffe9a8',
-        brightBlue: '#a5d6ff', brightMagenta: '#e2c5ff', brightCyan: '#9df0e4', brightWhite: '#ffffff'
-      }
-    : {
-        background: '#f4faf6', foreground: '#16211c', cursor: '#0b6b56',
-        cursorAccent: '#f4faf6', selectionBackground: '#b6dcca', selectionForeground: '#0b1712',
-        black: '#25302c', red: '#c0392b', green: '#1a7f4b', yellow: '#8a6a12',
-        blue: '#1c5fa8', magenta: '#7d3ca8', cyan: '#0f736e', white: '#c8d6d0',
-        brightBlack: '#5c6f68', brightRed: '#e04b3a', brightGreen: '#1fa460', brightYellow: '#a9820f',
-        brightBlue: '#2a7fd4', brightMagenta: '#9b52d1', brightCyan: '#12968f', brightWhite: '#0d1512'
-      };
-
+import { acquire, release, TERM_FONT_FAMILY, TERM_FONT_SIZE } from './terminals';
 
 /** A drag carrying real files, as opposed to a chat row being dropped into a pane. */
 const hasFiles = (dt: DataTransfer | null) => !!dt && Array.from(dt.types).includes('Files');
 
 /**
- * Keystrokes only. xterm's `onData` also carries what the terminal itself
- * answers: the cursor-position reply the CLI asks for at startup, focus in/out,
- * and an SGR mouse report for every pointer move across a pane. Dropping just
- * the escape byte left their parameters behind as text, which is how a chat
- * came to be titled `[1;1R[O[O[<35;1;14M…` — so take the whole sequence out.
+ * The pane's end of a terminal: where it sits, and what can be dropped on it.
+ * The xterm itself belongs to `terminals.ts` and outlives this component, so
+ * showing a chat again is a reattach rather than a fresh session handshake.
  */
-const typedOnly = (d: string) => d.replace(/\x1b(?:\[[\d;<>?]*[ -/]*[@-~]|O.|.)?/g, '');
-
 export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string }) {
-  const hostRef = useRef<HTMLDivElement>(null);
-  const setStatus = useChats(s => s.setStatus);
+  const boxRef = useRef<HTMLDivElement>(null);
   // Resolved from the store rather than read once at mount: on a cold start the
   // account list arrives after the panes do, and spawning with an empty path
   // drops CLAUDE_CONFIG_DIR — the CLI then boots on the default config and
@@ -95,288 +40,14 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
   };
 
   useEffect(() => {
-    const host = hostRef.current;
-    if (!host || !accountsLoaded) return;
-
-    const term = new XTerm({
-      fontFamily: TERM_FONT_FAMILY,
-      fontSize: TERM_FONT_SIZE,
-      lineHeight: 1.25,
-      allowTransparency: false,
-      cursorBlink: true,
-      // The CLI spends most of its life fullscreen, i.e. on the alternate
-      // screen, where there is no history and a scrollback buffer only bought a
-      // viewport that could sit parked above the prompt. But it does leave that
-      // screen — opening a shell's details prints straight onto the normal one —
-      // and with no buffer at all everything scrolled past was gone for good,
-      // including the CLI's own UI. Keep a buffer for those stretches; the
-      // alternate screen is pinned to the bottom below.
-      scrollback: 1000,
-      // Nudge unreadable theme-vs-content combinations without flattening colours.
-      minimumContrastRatio: 3,
-      theme: themeFor(dark())
-    });
-    const fit = new FitAddon();
-    term.loadAddon(fit);
-    term.open(host);
-
-    // Both screens have to be pinned to the bottom the moment they are switched
-    // to. The alternate screen is a single painted frame that reads as a broken
-    // one when parked above the prompt — and the normal screen is worse: opening
-    // a shell's details drops the CLI onto it at whatever scroll position the
-    // normal buffer was left at, which is the top of the conversation. The
-    // details then print below the viewport, out of sight, and the CLI's own
-    // footer with them. xterm follows new output on its own once the viewport is
-    // at the bottom, so landing there is the whole fix.
-    const pinBottom = () => term.scrollToBottom();
-    pinBottom();
-    const bufferSub = term.buffer.onBufferChange(pinBottom);
-
-    let disposed = false;
-    let repaintTimer: ReturnType<typeof setTimeout> | undefined;
-    const unlisteners: Array<() => void> = [];
-    // The pty session exists only between ensure_session resolving and
-    // pty://exit. Outside that window every write/resize came straight back as
-    // "no such session" — once as an ipc warning and once more as an unhandled
-    // rejection — and the layout resizes a pane goes through while it is
-    // opening or after its CLI exited kept both logs busy. Gate the senders on
-    // the session actually being there; the .catch covers the race where the
-    // pty dies while a call is in flight.
-    let sessionLive = false;
-    const sendResize = (cols: number, rows: number) => {
-      if (!sessionLive || cols < 1 || rows < 1) return;
-      resizeSession(chat.id, cols, rows).catch(() => {});
-    };
-    const sendWrite = (data: string) => {
-      if (!sessionLive) return;
-      writeSession(chat.id, data).catch(() => {});
-    };
-    // Fitting a detached or zero-sized host throws; that happens on every
-    // pane close and used to take the whole window down with it.
-    const refit = () => {
-      if (disposed || !host.isConnected || !host.clientWidth || !host.clientHeight) return;
-      safely(() => fit.fit());
-    };
-    refit();
-    // The first fit runs before the stylesheet and webfont have had their say,
-    // so the height it measures is not the final one. Measure again once the
-    // browser has laid the pane out for real.
-    requestAnimationFrame(refit);
-    void document.fonts?.ready.then(refit).catch(() => {});
-
-    /**
-     * Makes the CLI redraw its screen. It runs fullscreen, i.e. on the
-     * alternate screen, and only paints on input or on SIGWINCH — so anything
-     * that leaves this terminal holding a stale or empty frame has to ask for
-     * a repaint rather than wait for one. Resizing to a different size and
-     * straight back is what forces it.
-     */
-    const nudgeRepaint = () => {
-      if (disposed) return;
-      safely(() => term.refresh(0, term.rows - 1));
-      sendResize(term.cols, Math.max(1, term.rows - 1));
-      clearTimeout(repaintTimer);
-      repaintTimer = setTimeout(() => {
-        if (disposed) return;
-        // Re-read the size instead of restoring the one captured above: the
-        // layout can settle within these 60ms (the metadata row rewrapping is
-        // enough), and sending a stale row count leaves the pty believing the
-        // viewport is taller than it is — which pushes the CLI's input box
-        // below the bottom of the pane until the pane is reopened.
-        refit();
-        sendResize(term.cols, term.rows);
-      }, 60);
-    };
-
-    let webgl: WebglAddon | null = null;
-    let ctxLossSub: { dispose(): void } | null = null;
-    // Dispose the addon through its own dispose(): loadAddon replaced that
-    // method with the AddonManager's wrapper, which is idempotent and marks the
-    // addon disposed so term.dispose() skips it later. The previous fix here
-    // bound the wrapper, then swapped in a no-op — which worked, but only by
-    // accident of the wrapper's own bookkeeping, and it hid the real story:
-    // the addon's genuine first dispose throws a TypeError from deep inside
-    // its listener teardown (upstream @xterm/addon-webgl, after the renderer
-    // and its GL context are already released). That known-benign throw was
-    // being logged as a teardown warning on every single pane close — 2k+
-    // lines a day. Drop our own context-loss subscription first (it is the
-    // teardown path the throw walks through), and if the addon still throws a
-    // bare TypeError, swallow it; anything else is a real failure and is kept.
-    const disposeWebgl = () => {
-      const addon = webgl;
-      webgl = null;
-      if (!addon) return;
-      safely(() => ctxLossSub?.dispose());
-      ctxLossSub = null;
-      try {
-        addon.dispose();
-      } catch (e) {
-        if (!(e instanceof TypeError)) {
-          logWarn('terminal', `webgl dispose failed: ${(e as Error)?.stack ?? String(e)}`);
-        }
-      }
-    };
-    try {
-      webgl = new WebglAddon();
-      ctxLossSub = webgl.onContextLoss(() => {
-        // Chromium force-loses the oldest context once too many are live, and
-        // the pane that owns it is usually still on screen. Falling back to the
-        // DOM renderer silently would leave it blank until the next keystroke.
-        disposeWebgl();
-        nudgeRepaint();
-      });
-      term.loadAddon(webgl);
-    } catch {
-      webgl = null; // canvas/DOM renderer fallback
-    }
-
-    if (!accountPath) {
-      term.write(
-        `\r\n\x1b[33mAccount "${chat.account}" is not on disk.\x1b[0m\r\n` +
-          'Add it in the accounts panel, or delete this chat.\r\n'
-      );
-      return () => {
-        disposeWebgl();
-        safely(() => term.dispose());
-      };
-    }
-
-    void (async () => {
-      const un1 = await onPtyOutput(p => {
-        if (p.id === chat.id) term.write(p.data);
-      });
-      const un2 = await onPtyExit(p => {
-        if (p.id === chat.id) {
-          sessionLive = false;
-          setStatus(chat.id, 'resting');
-          term.write('\r\n\x1b[2m[session exited]\x1b[0m\r\n');
-        }
-      });
-      // The cleanup may already have run while these were still in flight.
-      if (disposed) {
-        safely(un1);
-        safely(un2);
-        return;
-      }
-      unlisteners.push(un1, un2);
-
-      // Resume a known session after an app restart; if it lived in a
-      // worktree, relaunch from that worktree instead of creating a new one.
-      let backlog: string;
-      try {
-        backlog = await ensureSession({
-          chatId: chat.id,
-          folder: chat.worktreePath || folderPath,
-          accountPath,
-          model: chat.model,
-          effort: chat.effort,
-          perm: chat.perm,
-          worktree: chat.worktree && !chat.worktreePath,
-          resume: chat.sessionId ?? null
-        });
-      } catch {
-        // The ipc layer already logged the cause. Without this catch the
-        // failure escaped the async block as an unhandled rejection and the
-        // pane just sat empty with no explanation.
-        if (!disposed) {
-          setStatus(chat.id, 'resting');
-          term.write('\r\n\x1b[31m[failed to start session]\x1b[0m\r\n');
-        }
-        return;
-      }
-      if (disposed) return;
-      sessionLive = true;
-
-      if (!backlog) {
-        // Fresh session: the pty starts at a placeholder size, so this is also
-        // the first real SIGWINCH and the CLI paints itself.
-        sendResize(term.cols, term.rows);
-        // Nothing spawns a session in a browser, so the README fixture paints
-        // its own. Dropped from a release build along with the module.
-        if (import.meta.env.DEV) void import('../../dev/demo').then(m => m.paint(term, chat.id));
-        return;
-      }
-
-      // Reattaching to a live session. The replayed bytes are a tail: the
-      // escape that entered the alternate screen sits at the very start of the
-      // session and has long since been trimmed by the scrollback cap, so
-      // replaying leaves the terminal on the normal screen with the CLI's UI
-      // scattered through its history. Wipe that and ask for a real repaint.
-      //
-      // The two steps have to be ordered explicitly. term.write() only queues
-      // the bytes — xterm parses them on its own schedule — while reset() runs
-      // there and then, so writing and resetting back to back usually reset an
-      // empty terminal and then painted the stale tail over the top of it, and
-      // the repaint went out before any of it landed. That is what left panes
-      // showing a bare prompt box with the conversation missing until the next
-      // keystroke. The callback is the only ordering guarantee xterm offers.
-      term.write(backlog, () => {
-        if (disposed) return;
-        term.reset();
-        nudgeRepaint();
-      });
-    })();
-
-
-    // The title is the first thing typed into the chat, taken as it is typed.
-    // The registry route — CLI writes its entry, the watcher polls it a few
-    // seconds later — leaves a new chat sitting in the list as "chat 12" while
-    // everything around it is named after its prompt, which is a very easy row
-    // to lose track of. Reading the keystrokes is a guess (an edited line keeps
-    // the characters that were rubbed out), but the watcher replaces it with
-    // the transcript's own version as soon as there is one.
-    let typed = '';
-    let titled = false;
-    const dataSub = term.onData(d => {
-      if (!titled) {
-        const clean = typedOnly(d);
-        const enter = clean.indexOf('\r');
-        typed += enter < 0 ? clean : clean.slice(0, enter);
-        if (typed.length > 400) typed = typed.slice(-400);
-        if (enter >= 0) {
-          const line = typed.replace(/[\x00-\x1f\x7f]/g, '').trim();
-          typed = '';
-          const fresh = useChats.getState().findChat(chat.id);
-          // A slash command is the CLI's business, not a title, and a chat the
-          // user has named by hand keeps that name.
-          if (line.length > 1 && !line.startsWith('/') && fresh && !fresh.nameCustom) {
-            titled = true;
-            useChats.getState().setName(chat.id, line.slice(0, 80));
-          }
-        }
-      }
-      sendWrite(d);
-    });
-    const resizeSub = term.onResize(({ cols, rows }) => {
-      if (disposed) return;
-      sendResize(cols, rows);
-    });
-
-    const ro = new ResizeObserver(refit);
-    ro.observe(host);
-
-    const mo = new MutationObserver(() => {
-      safely(() => {
-        term.options.theme = themeFor(dark());
-      });
-    });
-    const appEl = document.querySelector('[data-app]');
-    if (appEl) mo.observe(appEl, { attributes: true, attributeFilter: ['data-theme'] });
-
-    return () => {
-      disposed = true;
-      clearTimeout(repaintTimer);
-      safely(() => ro.disconnect());
-      safely(() => mo.disconnect());
-      safely(() => bufferSub.dispose());
-      safely(() => dataSub.dispose());
-      safely(() => resizeSub.dispose());
-      unlisteners.forEach(u => safely(u));
-      // Drop the webgl context before the terminal: disposing it afterwards
-      // hits already-freed renderer state and throws.
-      disposeWebgl();
-      safely(() => term.dispose());
-    };
+    const box = boxRef.current;
+    if (!box || !accountsLoaded) return;
+    const term = acquire({ chat, folderPath, accountPath });
+    // An appendChild moves the element, so a terminal that was showing in
+    // another pane simply arrives here — no second xterm for one session.
+    box.appendChild(term.host);
+    term.wake();
+    return () => release(chat.id, box);
     // Session identity is the chat id; the rest is captured at spawn time.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chat.id, accountsLoaded, accountPath]);
@@ -425,7 +96,7 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
         position: 'relative'
       }}
     >
-      <div ref={hostRef} style={{ flex: 1, minHeight: 0 }} />
+      <div ref={boxRef} style={{ flex: 1, minHeight: 0, display: 'flex' }} />
 
       {dropping && (
         <div

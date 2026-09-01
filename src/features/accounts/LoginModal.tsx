@@ -7,7 +7,7 @@ import type { Account } from '../../shared/types';
 import { ensureSession, killSession, resizeSession, writeSession } from '../../ipc/commands';
 import { onPtyExit, onPtyOutput } from '../../ipc/events';
 import { logWarn } from '../../shared/lib/log';
-import { dark, safely, themeFor, TERM_FONT_FAMILY, TERM_FONT_SIZE } from '../panes/Terminal';
+import { dark, safely, themeFor, TERM_FONT_FAMILY, TERM_FONT_SIZE } from '../panes/terminals';
 import { useAccounts } from './accounts.store';
 
 // Bare `claude` session inside the account's config dir: on a fresh folder it

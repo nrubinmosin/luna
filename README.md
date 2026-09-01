@@ -29,6 +29,9 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   the same. Escape is deliberately left alone — it is how the CLI is interrupted.
 - Luna claims its shortcuts in the capture phase, so they work while a terminal has focus;
   everything it does not claim travels on to the CLI untouched.
+- Terminals outlive the pane that showed them: the last three put down wait off-screen with
+  their listeners still on, so switching back is a refit rather than a fresh session
+  handshake and a 2MB replay of the scrollback.
 - Window groups I/II/III/IV — tabs under the layout selector. Each group remembers its own
   four boards (one per layout) and their splits, and has its own reset button (↺) that
   clears only the arrangement and leaves every chat alone.
