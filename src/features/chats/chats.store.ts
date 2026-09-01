@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { Chat, Folder, GroupId } from '../../shared/types';
 import { usePanes } from '../panes/panes.store';
+import { forget } from '../panes/terminals';
 
 interface ChatsState {
   /**
@@ -85,6 +86,9 @@ export const useChats = create<ChatsState>()(
         // deleted while it is open, and a board left holding the id of a chat
         // that no longer exists is a pane with nothing to render.
         usePanes.getState().evictChat(chatId);
+        // And its terminal, which would otherwise sit in the warm set holding
+        // listeners for a session that is being killed as this runs.
+        forget(chatId);
         set(s => ({
           // The folder stays behind on purpose, empty or not — it is a place
           // you launch chats from, and having to browse for it again after
