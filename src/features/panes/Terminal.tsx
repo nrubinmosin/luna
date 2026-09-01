@@ -282,6 +282,9 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
         // Fresh session: the pty starts at a placeholder size, so this is also
         // the first real SIGWINCH and the CLI paints itself.
         sendResize(term.cols, term.rows);
+        // Nothing spawns a session in a browser, so the README fixture paints
+        // its own. Dropped from a release build along with the module.
+        if (import.meta.env.DEV) void import('../../dev/demo').then(m => m.paint(term, chat.id));
         return;
       }
 

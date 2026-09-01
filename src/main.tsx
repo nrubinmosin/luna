@@ -15,10 +15,23 @@ logInfo('ui', 'renderer started');
 // would call preventDefault themselves anyway.
 window.addEventListener('contextmenu', e => e.preventDefault());
 
-ReactDOM.createRoot(document.getElementById('root')!).render(
-  <React.StrictMode>
-    <ErrorBoundary>
-      <App />
-    </ErrorBoundary>
-  </React.StrictMode>
-);
+const boot = () =>
+  ReactDOM.createRoot(document.getElementById('root')!).render(
+    <React.StrictMode>
+      <ErrorBoundary>
+        <App />
+      </ErrorBoundary>
+    </React.StrictMode>
+  );
+
+// `pnpm dev` + `?demo` stands the UI up on invented chats and accounts, which
+// is how the README screenshots are taken without anyone's real data in them.
+// The whole branch goes away in a release build.
+if (import.meta.env.DEV && new URLSearchParams(location.search).has('demo')) {
+  void import('./dev/demo').then(m => {
+    m.seedDemo(m.sceneFromUrl(location.search) ?? 'main');
+    boot();
+  });
+} else {
+  boot();
+}
