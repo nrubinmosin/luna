@@ -19,6 +19,7 @@ import { useSessionWatch } from '../features/chats/useSessionWatch';
 import { LoginModal } from '../features/accounts/LoginModal';
 import { useUpdates } from '../features/updates/updates.store';
 import { useKeymap } from './keymap';
+import { healScaleDrift } from './dpi';
 import './theme.css';
 
 type ThemePref = 'system' | 'light' | 'dark';
@@ -80,6 +81,8 @@ export function App() {
     mql.addEventListener('change', onSys);
     return () => mql.removeEventListener('change', onSys);
   }, []);
+
+  useEffect(() => healScaleDrift(), []);
 
   useEffect(() => {
     // The store owns the cadence: a fixed interval here would keep hitting a
