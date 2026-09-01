@@ -20,7 +20,13 @@ const SLOW_BUDGET_MS: Record<string, number> = {
 // In plain-browser dev (vite without tauri) all commands become no-ops so the
 // UI stays workable.
 async function call<T>(cmd: string, args?: Record<string, unknown>, fallback?: T): Promise<T> {
-  if (!tauriAvailable) return fallback as T;
+  if (!tauriAvailable) {
+    // The README fixture answers the handful of commands whose emptiness would
+    // show in a screenshot; without `?demo` it hands back the same fallback as
+    // ever. Compiled out of a release build along with the module.
+    if (import.meta.env.DEV) return (await import('../dev/demo')).answer(cmd, fallback as T);
+    return fallback as T;
+  }
   // Timed because a sync Tauri command runs on the main thread: a slow one is
   // indistinguishable from the app hanging, and this names which one it was.
   const started = performance.now();
