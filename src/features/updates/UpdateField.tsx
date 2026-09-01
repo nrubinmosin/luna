@@ -63,7 +63,10 @@ export function UpdateField() {
         title={title}
         className="status-bar-field hover-bg"
         style={{
-          flexGrow: 0, fontSize: 'var(--fs-2)', cursor: 'default', whiteSpace: 'nowrap',
+          // Last field of the strip, so it takes the right edge of whichever
+          // row it lands on once the bar wraps.
+          flexGrow: 0, marginLeft: 'auto', fontSize: 'var(--fs-2)', cursor: 'default',
+          whiteSpace: 'nowrap',
           color: loud ? ACCENT : 'var(--faint)', fontWeight: loud ? 700 : 400
         }}
       >

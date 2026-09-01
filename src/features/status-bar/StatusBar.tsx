@@ -44,9 +44,13 @@ export function StatusBar() {
         <AccountsPanel />
       </div>
 
-      {/* Bottom edge of the window, where XP puts its status bar. */}
+      {/* Bottom edge of the window, where XP puts its status bar. It wraps
+          (see theme.css): four fields do not fit a 280px sidebar, and the row
+          that could not wrap cut the last one down the middle. */}
       <div className="status-bar" style={{ flex: 'none' }}>
-        <div className="status-bar-field" style={{ flexGrow: 0 }}>
+        {/* Takes the slack on its row, so the fields after it sit against the
+            right edge instead of trailing off into dead space. */}
+        <div className="status-bar-field" style={{ flexGrow: 1, minWidth: 0 }}>
           <Clock />
         </div>
         {/* Two counts and nothing else: the field is the narrowest strip in the
