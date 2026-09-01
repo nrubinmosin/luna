@@ -66,6 +66,9 @@ export function App() {
   const [pref, setPref] = useState<ThemePref>(() => (localStorage.getItem('luna.theme') as ThemePref) || 'system');
   const [sysDark, setSysDark] = useState(() => window.matchMedia('(prefers-color-scheme: dark)').matches);
   const [sidebar, setSidebar] = useState(280);
+  // The width is per-session, but a hidden sidebar is a deliberate choice about
+  // what the window is for — it outlives the run, the way the theme does.
+  const [hidden, setHidden] = useState(() => localStorage.getItem('luna.sidebar') === 'off');
   const [resizing, setResizing] = useState(false);
   const modal = useNewChat(s => s.open);
   const layout = usePanes(currentLayout);
@@ -102,6 +105,10 @@ export function App() {
   useEffect(() => {
     localStorage.setItem('luna.theme', pref);
   }, [pref]);
+
+  useEffect(() => {
+    localStorage.setItem('luna.sidebar', hidden ? 'off' : 'on');
+  }, [hidden]);
 
   const openNewChat = useCallback(() => useNewChat.getState().openDialog(), []);
   const closeModal = useCallback(() => useNewChat.getState().close(), []);
@@ -141,7 +148,27 @@ export function App() {
       }}
     >
       <AppFrame>
-        <div style={{ width: sidebar, flex: 'none', background: 'var(--sidebar)', borderRight: '1px solid var(--window-frame)', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+        {/* Hidden, the sidebar leaves this strip behind — the whole of it is the
+            way back, so finding the sidebar again is never a hunt for a glyph. */}
+        {hidden && (
+          <div
+            onClick={() => setHidden(false)}
+            title="Show the sidebar"
+            aria-label="Show the sidebar"
+            role="button"
+            className="hover-bg"
+            style={{
+              width: 16, flex: 'none', background: 'var(--sidebar)',
+              borderRight: '1px solid var(--window-frame)',
+              display: 'flex', justifyContent: 'center', paddingTop: 9,
+              cursor: 'default', color: 'var(--dim)', fontSize: 'var(--fs-3)'
+            }}
+          >
+            »
+          </div>
+        )}
+
+        <div style={{ width: sidebar, flex: 'none', background: 'var(--sidebar)', borderRight: '1px solid var(--window-frame)', display: hidden ? 'none' : 'flex', flexDirection: 'column', minHeight: 0 }}>
           <div style={{ flex: 'none', padding: '8px 8px 0', display: 'flex', flexDirection: 'column', gap: 6 }}>
             <div style={{ display: 'flex', gap: 5 }}>
               <button
@@ -177,6 +204,17 @@ export function App() {
                 style={{ width: 30, flex: 'none' }}
               >
                 {THEMES[pref].glyph}
+              </button>
+              {/* Hides rather than unmounts: the list keeps its scroll, the
+                  accounts keep polling, and coming back costs a repaint. */}
+              <button
+                onClick={() => setHidden(true)}
+                title="Hide the sidebar — the strip it leaves behind brings it back"
+                aria-label="Hide the sidebar"
+                className="slim"
+                style={{ width: 30, flex: 'none' }}
+              >
+                «
               </button>
             </div>
 
@@ -227,12 +265,14 @@ export function App() {
           <StatusBar />
         </div>
 
-        <div
-          onMouseDown={startResize}
-          onDoubleClick={() => setSidebar(280)}
-          title="Drag to resize · double-click to reset"
-          style={{ width: 5, marginLeft: -3, marginRight: -2, flex: 'none', cursor: 'col-resize', zIndex: 20, background: resizing ? ACCENT : 'transparent' }}
-        />
+        {!hidden && (
+          <div
+            onMouseDown={startResize}
+            onDoubleClick={() => setSidebar(280)}
+            title="Drag to resize · double-click to reset"
+            style={{ width: 5, marginLeft: -3, marginRight: -2, flex: 'none', cursor: 'col-resize', zIndex: 20, background: resizing ? ACCENT : 'transparent' }}
+          />
+        )}
 
         <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
           <PaneGrid />
