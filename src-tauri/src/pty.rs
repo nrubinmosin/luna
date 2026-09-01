@@ -8,7 +8,7 @@ use std::io::{Read, Write};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, State};
 
 const SCROLLBACK_CAP: usize = 2 * 1024 * 1024;
 /// Let the buffer run this far past the cap before trimming, so the trim costs
@@ -19,14 +19,8 @@ const SCROLLBACK_SLACK: usize = 256 * 1024;
 /// repainting TUI does not turn into hundreds of events per second.
 const FRAME: std::time::Duration = std::time::Duration::from_millis(16);
 
-/// Set once the app has been asked to exit. Sessions outlive the window by
-/// design (quit only comes from the tray), so their reader threads are still
-/// streaming when the event loop starts tearing down — and an emit landing on
-/// a destroyed tao loop is a panic ("cannot move state from Destroyed"), not
-/// an Err. Checking the flag narrows that window to the emit already in
-/// flight; it cannot close it completely, but the panic it guards against
-/// fired at shutdown, where the process is going away regardless.
-pub static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
+// Output and exit events go out through `emit::to_ui`, which holds them
+// against the event loop tearing down at quit — see that module.
 
 #[derive(Serialize, Clone)]
 struct PtyOutput<'a> {
@@ -63,6 +57,11 @@ struct Session {
 #[derive(Default)]
 pub struct PtyManager {
     sessions: Mutex<HashMap<String, Session>>,
+    /// One lock per chat id, held for as long as that chat is being spawned.
+    /// It replaces holding `sessions` across the spawn: two calls for the same
+    /// chat still cannot race into two processes, while a chat starting up no
+    /// longer blocks every other pane's keystrokes.
+    spawning: Mutex<HashMap<String, Arc<Mutex<()>>>>,
 }
 
 pub type PtyState<'a> = State<'a, PtyManager>;
@@ -71,8 +70,11 @@ pub type PtyState<'a> = State<'a, PtyManager>;
 #[tauri::command]
 // Creating a session means `git worktree add` plus a process spawn — seconds of
 // blocking work that must not run on the main thread, where it would stall
-// every other chat's IPC. The sessions lock is held for the whole body, so
-// concurrent calls still serialise and cannot double-spawn one chat.
+// every other chat's IPC. It used to hold the session map for that whole
+// stretch to keep two calls from double-spawning one chat, which put every
+// other pane's write_session behind it: the log shows keystrokes taking well
+// over a second whenever a chat was starting. The per-chat gate below buys the
+// same guarantee without the map.
 pub async fn ensure_session(
     app: AppHandle,
     state: PtyState<'_>,
@@ -85,14 +87,25 @@ pub async fn ensure_session(
     worktree: bool,
     resume: Option<String>,
 ) -> Result<String, String> {
-    let mut sessions = state.sessions.lock().unwrap();
+    let gate = {
+        let mut gates = state.spawning.lock().unwrap();
+        // Nobody holds a gate whose only reference is the map's own, so this
+        // keeps the table to the chats actually starting right now.
+        gates.retain(|_, g| Arc::strong_count(g) > 1);
+        Arc::clone(gates.entry(id.clone()).or_default())
+    };
+    let _spawning = gate.lock().unwrap();
 
-    if let Some(s) = sessions.get(&id) {
-        if s.alive.load(Ordering::SeqCst) {
-            let mut buf = s.scrollback.lock().unwrap();
-            return Ok(String::from_utf8_lossy(buf.make_contiguous()).into_owned());
+    // Under the gate: whoever waited here may find the session already spawned.
+    {
+        let mut sessions = state.sessions.lock().unwrap();
+        if let Some(s) = sessions.get(&id) {
+            if s.alive.load(Ordering::SeqCst) {
+                let mut buf = s.scrollback.lock().unwrap();
+                return Ok(String::from_utf8_lossy(buf.make_contiguous()).into_owned());
+            }
+            sessions.remove(&id);
         }
-        sessions.remove(&id);
     }
 
     // Spawning without one would silently fall back to the default ~/.claude
@@ -201,9 +214,9 @@ pub async fn ensure_session(
                     Ok(_) => carry.len(),
                     Err(e) => e.valid_up_to(),
                 };
-                if valid_to > 0 && !SHUTTING_DOWN.load(Ordering::SeqCst) {
+                if valid_to > 0 {
                     let text = unsafe { std::str::from_utf8_unchecked(&carry[..valid_to]) };
-                    let _ = app.emit("pty://output", PtyOutput { id: &id, data: text });
+                    crate::emit::to_ui(&app, "pty://output", PtyOutput { id: &id, data: text });
                 }
                 carry.drain(..valid_to);
                 if carry.len() > 4 {
@@ -244,9 +257,7 @@ pub async fn ensure_session(
             let Ok((app, id)) = emitter.join() else { return };
             let code = child.wait().ok().map(|st| st.exit_code());
             crate::log::info("pty", &format!("session {id} exited, code {code:?}"));
-            if !SHUTTING_DOWN.load(Ordering::SeqCst) {
-                let _ = app.emit("pty://exit", PtyExit { id: &id, code });
-            }
+            crate::emit::to_ui(&app, "pty://exit", PtyExit { id: &id, code });
         });
     }
 
@@ -255,7 +266,7 @@ pub async fn ensure_session(
         &format!("spawned {id} pid {pid:?} model {model} perm {permission_mode} worktree {worktree} in {folder}"),
     );
 
-    sessions.insert(
+    state.sessions.lock().unwrap().insert(
         id,
         Session {
             master: pair.master,
@@ -313,13 +324,20 @@ fn kill_tree(pid: Option<u32>) {
     let _ = pid;
 }
 
-#[tauri::command]
-pub fn kill_session(state: PtyState, id: String) -> Result<(), String> {
-    let mut sessions = state.sessions.lock().unwrap();
-    if let Some(mut s) = sessions.remove(&id) {
+/// Takes the session out of the map first and kills it after: `taskkill` is a
+/// process spawn of its own, and doing that under the map put every other
+/// chat's keystrokes behind it.
+fn take_and_kill(state: &PtyState, id: &str) {
+    let session = state.sessions.lock().unwrap().remove(id);
+    if let Some(mut s) = session {
         kill_tree(s.pid);
         let _ = s.killer.kill();
     }
+}
+
+#[tauri::command]
+pub fn kill_session(state: PtyState, id: String) -> Result<(), String> {
+    take_and_kill(&state, &id);
     Ok(())
 }
 
@@ -356,13 +374,7 @@ pub async fn delete_session(
         crate::worktree::is_worktree_of(&folder, &scwd).then_some(scwd)
     });
 
-    {
-        let mut sessions = state.sessions.lock().unwrap();
-        if let Some(mut s) = sessions.remove(&id) {
-            kill_tree(s.pid);
-            let _ = s.killer.kill();
-        }
-    }
+    take_and_kill(&state, &id);
 
     let _ = crate::media::clear_media(id.clone());
     crate::log::info(
@@ -570,6 +582,15 @@ fn cached_first_prompt(account_path: &str, cwd: &str, session_id: &str) -> Optio
     found
 }
 
+/// A title has to be something a person can read. Both sources have handed us
+/// strings that were not: a registry name made of the terminal's own cursor
+/// and mouse reports, which is what a chat row read as for its first minutes.
+/// Rejecting them here keeps that out of every place a title is shown.
+fn sane_title(s: &str) -> Option<String> {
+    let t = s.trim();
+    (!t.is_empty() && !t.chars().any(char::is_control)).then(|| t.to_string())
+}
+
 /// The session's opening prompt, trimmed to a title. Sessions are always named
 /// `derived` in the registry — i.e. after the cwd, which for a worktree run is
 /// a random codename — so the first thing the user actually said is a far
@@ -581,7 +602,13 @@ fn read_first_prompt(account_path: &str, cwd: &str, session_id: &str) -> Option<
     // The opening prompt is near the top; no need to walk a 700KB transcript.
     for line in BufReader::new(f).lines().take(80).map_while(Result::ok) {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
-        if v["type"] != "user" || v["isSidechain"].as_bool().unwrap_or(false) {
+        // `isMeta` marks a turn the CLI injected rather than one the user
+        // typed — a hook's instructions, a resumed-session preamble. One of
+        // those titled a chat "A session-scoped Stop hook is now active…".
+        if v["type"] != "user"
+            || v["isSidechain"].as_bool().unwrap_or(false)
+            || v["isMeta"].as_bool().unwrap_or(false)
+        {
             continue;
         }
         let Some(text) = content_text(&v["message"]["content"]) else { continue };
@@ -595,7 +622,7 @@ fn read_first_prompt(account_path: &str, cwd: &str, session_id: &str) -> Option<
         if flat.chars().count() > 48 {
             title.push('…');
         }
-        return Some(title);
+        return sane_title(&title);
     }
     None
 }
@@ -650,7 +677,7 @@ fn meta_from_disk(
     let dir = std::path::Path::new(&account_path).join("sessions");
     let extract = |v: &serde_json::Value| {
         let mut m = SessionMeta {
-            name: v["name"].as_str().map(str::to_owned),
+            name: v["name"].as_str().and_then(sane_title),
             status: v["status"].as_str().map(str::to_owned),
             cwd: v["cwd"].as_str().map(str::to_owned),
             session_id: v["sessionId"].as_str().map(str::to_owned),

@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import { fmtResetDate, limitColor } from '../../shared/lib/format';
+import { ConfirmDialog } from '../../shared/ui/ConfirmDialog';
+import type { Account } from '../../shared/types';
 import { useAccounts } from './accounts.store';
 import { useChats } from '../chats/chats.store';
 import { AccountsRoot } from './AccountsRoot';
@@ -14,6 +16,11 @@ export function AccountsPanel() {
   const { add, remove, setAdding, setLoginFor } = useAccounts.getState();
   const [name, setName] = useState('');
   const [rootOpen, setRootOpen] = useState(false);
+  // `window.confirm` is what stood here, and in a webview that is the dialog
+  // plugin's `confirm` command — which this app's ACL does not allow. It threw
+  // into an unhandled rejection and returned nothing, so the guard read as
+  // "cancelled" and an account in use simply could not be deleted.
+  const [deleting, setDeleting] = useState<Account | null>(null);
   const folders = useChats(s => s.folders);
 
   const inUse = (account: string) =>
@@ -144,10 +151,7 @@ export function AccountsPanel() {
                 </button>
               )}
               <span
-                onClick={() => {
-                  if (inUse(acc.name) && !window.confirm(`"${acc.name}" is used by existing chats. Delete its folder anyway?`)) return;
-                  void remove(acc.name);
-                }}
+                onClick={() => setDeleting(acc)}
                 title="Delete account folder"
                 className="hover-danger"
                 style={{ width: 16, height: 16, flex: 'none', borderRadius: 2, display: 'grid', placeItems: 'center', fontSize: 'var(--fs-1)', color: 'var(--faint)', cursor: 'default' }}
@@ -181,6 +185,29 @@ export function AccountsPanel() {
           </div>
         );
       })}
+
+      {deleting && (
+        <ConfirmDialog
+          title="Delete account"
+          body={
+            <>
+              Deletes the folder <b>{deleting.path}</b> and the login stored in it. Nothing
+              signs you out anywhere else, and nothing here can bring it back.
+              {inUse(deleting.name) && (
+                <div style={{ marginTop: 8 }}>
+                  Chats are still set to this account — they have nowhere to spawn until you
+                  point them somewhere else.
+                </div>
+              )}
+            </>
+          }
+          onCancel={() => setDeleting(null)}
+          onConfirm={() => {
+            void remove(deleting.name);
+            setDeleting(null);
+          }}
+        />
+      )}
     </div>
   );
 }

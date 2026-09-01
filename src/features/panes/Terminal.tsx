@@ -58,6 +58,15 @@ export const themeFor = (isDark: boolean) =>
 /** A drag carrying real files, as opposed to a chat row being dropped into a pane. */
 const hasFiles = (dt: DataTransfer | null) => !!dt && Array.from(dt.types).includes('Files');
 
+/**
+ * Keystrokes only. xterm's `onData` also carries what the terminal itself
+ * answers: the cursor-position reply the CLI asks for at startup, focus in/out,
+ * and an SGR mouse report for every pointer move across a pane. Dropping just
+ * the escape byte left their parameters behind as text, which is how a chat
+ * came to be titled `[1;1R[O[O[<35;1;14M…` — so take the whole sequence out.
+ */
+const typedOnly = (d: string) => d.replace(/\x1b(?:\[[\d;<>?]*[ -/]*[@-~]|O.|.)?/g, '');
+
 export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const setStatus = useChats(s => s.setStatus);
@@ -320,8 +329,9 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
     let titled = false;
     const dataSub = term.onData(d => {
       if (!titled) {
-        const enter = d.indexOf('\r');
-        typed += enter < 0 ? d : d.slice(0, enter);
+        const clean = typedOnly(d);
+        const enter = clean.indexOf('\r');
+        typed += enter < 0 ? clean : clean.slice(0, enter);
         if (typed.length > 400) typed = typed.slice(-400);
         if (enter >= 0) {
           const line = typed.replace(/[\x00-\x1f\x7f]/g, '').trim();
