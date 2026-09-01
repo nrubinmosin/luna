@@ -3,34 +3,92 @@
 *[Русская версия](README.ru.md)*
 
 A thin desktop shell (Rust + Tauri) around the Claude Code CLI: several sessions side by
-side in panes, project folders, and accounts with isolated configs. It drives the
-**globally installed** `claude` binary.
+side in panes, project folders, and accounts with isolated configs. It carries its own
+copy of the `claude` binary and keeps it current, so nothing here depends on a global
+install.
+
+![Four chats in one window](docs/screenshots/panes.png)
 
 For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
-## Features
+## The window
 
 - A Windows XP shell (xp.css, Luna Blue): the native window frame is replaced by our own
   title bar with minimize / maximize / close, and the UI runs on Tahoma. The whole
   interface scales from one variable, `--ui` in `src/app/theme.css`.
-- A grid of 1/2/3/4 panes, with chats dragged in from the sidebar (⌘/Ctrl+1..4).
-- Window groups I/II/III/IV — tabs under the layout selector. Each group remembers its
-  own four boards (one per layout) and their splits, and has its own reset button (↺ on
-  the tab) that clears only the arrangement and leaves every chat alone.
-- New chat (⌘/Ctrl+N): folder, model, effort (`low/medium/high/xhigh/max/ultracode`, defaults to
-  `medium`), permission mode, account, and a **Git worktree** checkbox (on by default →
-  `claude --worktree`).
-- Accounts: a panel in the status bar. "Add" creates `Documents/claude-accounts/<name>`,
-  "✕" deletes the folder. A chat's session starts with
-  `CLAUDE_CONFIG_DIR=<account folder>`.
-- Chat marks: a ★ at the head of the row, set and cleared by clicking it. It means
-  whatever you decide it means — nothing in the app reads it. On unmarked rows it only
-  shows under the cursor.
-- Live account limits (5h / week / model-weekly, plus reset times) — taken from the OAuth
-  usage endpoint, so they cost no tokens; refreshed once a minute.
+- A grid of 1/2/3/4 panes with draggable splits, and chats dragged into them from the
+  sidebar (⌘/Ctrl+1..4 pick the layout, ⌘/Ctrl+N opens a new chat). Panes can be swapped
+  by dragging one title bar onto another.
+- Double-click a pane's title bar and it takes the whole grid; double-click a sidebar row
+  and the chat fills the grid without being seated in a pane at all. Both are ways of
+  looking, not arrangements: the board underneath is untouched, and another double-click
+  (or Escape, for a pane) puts it back.
+- Window groups I/II/III/IV — tabs under the layout selector. Each group remembers its own
+  four boards (one per layout) and their splits, and has its own reset button (↺) that
+  clears only the arrangement and leaves every chat alone.
+- Light / dark / system themes.
+
+![The dark theme, two panes](docs/screenshots/dark.png)
+
+## Chats
+
+- New chat (⌘/Ctrl+N): folder, model, effort
+  (`low/medium/high/xhigh/max/ultracode`), permission mode, account, and a **Git
+  worktree** checkbox — on by default, which runs the session as `claude --worktree` in
+  `<folder>/.claude/worktrees/<name>`. It opens on Opus, high effort and Bypass; all three
+  can be changed later from the CLI itself.
+- A chat's pane title bar carries its folder, account, model, effort, permission mode,
+  worktree flag and how much of the context window is gone — and the buttons to rename or
+  delete it. The same chips shrink to fit a narrow pane.
+- Colours: every new chat is dealt one of ten presets, worn by its pane's title bar and as
+  a stripe on its sidebar row, so a glance links the two without reading either name.
+- Status per chat — working / waiting for you / resting — read from the CLI's own session
+  registry, so it is right whether or not the chat has a pane. A chat turning to waiting
+  raises a desktop notification, since the window may well be in the tray.
+- Context use is read straight out of the session transcript against the model's real
+  window (fetched from the Models API), so it costs nothing and cannot drift.
+- Titles come from the first thing typed into the chat, then from the transcript's own
+  opening prompt once there is one. Rename by double-clicking the name; a name you set by
+  hand is never overwritten.
+- Marks: a ★ at the head of the row, set and cleared by clicking it. It means whatever you
+  decide it means — nothing in the app reads it. On unmarked rows it only shows under the
+  cursor.
+- Archive folds a chat away without touching its session, its worktree or its transcript.
+- Paste or drop images and files into a pane: they are copied into the app's own media
+  store and their absolute paths are typed into the prompt, which is the only thing a
+  webview's clipboard leaves usable.
+
+![The new-chat dialog](docs/screenshots/new-chat.png)
+
+## Accounts
+
+- An account is a folder — `<accounts root>/<name>`, by default
+  `Documents/claude-accounts`, and the ⚙ in the panel moves that root anywhere. "Add"
+  creates the folder, "✕" deletes it after a confirmation. A chat's session starts with
+  `CLAUDE_CONFIG_DIR=<account folder>`, so logins, settings and history are per account.
+- Live limits (5h / week / model-weekly, with reset times) come from the OAuth usage
+  endpoint — the same one `/usage` uses inside Claude Code — so they cost no tokens. The
+  CLI's own cache answers most rounds; the endpoint is polled around it, and a 429 backs
+  off for longer each time rather than hammering through it.
+- Signing in a fresh account is a button on its row: it runs `claude` in a modal, so
+  there is no reason to leave the app.
+- Luna writes the CLI's own trust bit for a folder when it has to. The CLI cannot show its
+  trust prompt under `--worktree`, which used to mean opening every new folder once
+  without isolation first.
+
+## Sessions and cleanup
+
 - Closing the window hides the app to the tray and leaves the sessions running. Quit from
   the tray menu.
-- Light / dark / system themes.
+- Sessions with no chat row left to reach them — a chat archived by a misclick, or lost to
+  a half-written state restore — are listed at the top of the sidebar, with what they are
+  working on, and can be adopted back or killed.
+- A folder with worktrees left behind by deleted chats offers to sweep them; nothing a
+  live session sits in is ever swept. Deleting a chat offers to take its worktree and the
+  branch the CLI made for it, and keeps them unless asked.
+- Warnings and errors from both halves of the app land in `luna.log`, next to the exe for
+  the portable build and under `%LOCALAPPDATA%\luna` otherwise. Info-level chatter never
+  reaches it, so what is in there is worth reading.
 
 ## Development
 
@@ -39,6 +97,17 @@ pnpm install
 pnpm dev          # frontend only, in a browser (tauri commands are no-ops)
 pnpm tauri dev    # the whole app (needs a Rust toolchain)
 ```
+
+## Screenshots
+
+```powershell
+./screenshots.ps1
+```
+
+Rewrites `docs/screenshots/*.png` in Docker: the frontend alone, standing on the invented
+chats and accounts in `src/dev/demo.ts` (`pnpm dev` + `?demo`), photographed by a headless
+Chromium. Shooting a running Luna would mean shooting whatever is open in it, and the
+fixture is also the only way to retake all three shots from the same state.
 
 ## Checking the Rust side without a local toolchain (Docker)
 
@@ -82,12 +151,18 @@ the portable exe, the setup, its `.sig` and the manifest to a `v<version>` relea
 ## Updates and signing
 
 - On startup the app checks `latest.json` from GitHub Releases (the endpoint lives in
-  `src-tauri/tauri.conf.json` → `plugins.updater.endpoints`).
-- The update signing key is `C:\Users\Nikita\claude-accounts\llm-desktop-updater.key` —
-  private and passwordless, so keep it safe; its `.pub` half is already baked into the
-  config. The file name is left over from the pre-Luna brand: if you rename it, fix the
-  path in `build-windows.ps1` too. For a signed build, set
-  `TAURI_SIGNING_PRIVATE_KEY_PATH` in the build environment — `.sig` files then appear
-  next to the bundle, and those plus `latest.json` are what you upload to the Release.
+  `src-tauri/tauri.conf.json` → `plugins.updater.endpoints`). A release found there lights
+  up a field in the status bar and waits to be clicked, rather than throwing up a modal
+  over whatever was mid-turn.
+- The CLI updates on the same principle and separately: `cli.rs` checks the release bucket
+  every six hours, verifies the sha256 from its manifest, and installs into
+  `<data>/claude-cli/versions/<ver>/`. The status bar shows the version in use and takes a
+  click to check now. Sessions run with `DISABLE_AUTOUPDATER=1`, so Luna is the only thing
+  that moves that binary.
+- The update signing key is `C:\Users\Nikita\.ssh\luna-updater.key` — private and
+  passwordless, so keep it safe; its `.pub` half is already baked into the config. For a
+  signed build, set `TAURI_SIGNING_PRIVATE_KEY_PATH` in the build environment (which is
+  what `build-windows.ps1` mounts) — `.sig` files then appear next to the bundle, and
+  those plus `latest.json` are what you upload to the Release.
 - Authenticode-signing the exe (so SmartScreen stops complaining) needs a certificate.
   When there is one, add it under `tauri.conf.json` → `bundle.windows.signCommand`.
