@@ -21,6 +21,15 @@ export const logError = (source: string, message: string) => send('error', sourc
 export const SLOW_MS = 400;
 
 /**
+ * Past this, nothing was blocked: the machine slept, or the window sat in the
+ * tray where the webview throttles its timers to a crawl. Every "stall" the
+ * log ever recorded was one of those — the shortest was 25 minutes, the
+ * longest five hours — and a warning that only ever fires for something it
+ * cannot see is worse than none.
+ */
+const SLEEP_MS = 30_000;
+
+/**
  * Watches for the UI thread going away. A timer that should fire every second
  * but fires late by a lot means the main thread was blocked for that long —
  * which is what a "the app froze for a couple of seconds" report looks like
@@ -33,7 +42,7 @@ export function watchMainThreadStalls(thresholdMs = 900) {
     const now = performance.now();
     const drift = now - last - 1000;
     last = now;
-    if (drift > thresholdMs) {
+    if (drift > thresholdMs && drift < SLEEP_MS && !document.hidden) {
       logWarn('stall', `UI thread blocked for ~${Math.round(drift)}ms`);
     }
   }, 1000);

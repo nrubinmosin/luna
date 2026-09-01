@@ -31,7 +31,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 
 const RELEASES: &str = "https://downloads.claude.ai/claude-code-releases";
 /// `latest` or `stable` — the same two channels the official installer takes.
@@ -138,9 +138,7 @@ fn publish(app: Option<&AppHandle>, f: impl FnOnce(&mut CliStatus)) {
         s.clone()
     };
     if let Some(app) = app {
-        if !crate::pty::SHUTTING_DOWN.load(Ordering::SeqCst) {
-            let _ = app.emit(EVENT, snapshot);
-        }
+        crate::emit::to_ui(app, EVENT, snapshot);
     }
 }
 
