@@ -12,15 +12,15 @@
  */
 import type { Terminal as XTerm } from '@xterm/xterm';
 import type { Account, Chat, Folder } from '../shared/types';
-import type { CliStatusDto } from '../ipc/commands';
+import type { AccountsRootInfo, CliStatusDto } from '../ipc/commands';
 import { useAccounts } from '../features/accounts/accounts.store';
 import { useChats } from '../features/chats/chats.store';
 import { useNewChat } from '../features/new-chat/newchat.store';
 import { usePanes, type Group, type Layout, type Slots } from '../features/panes/panes.store';
 import { useUpdates } from '../features/updates/updates.store';
 
-/** `?demo`, `?demo=dark`, `?demo=newchat`. */
-export type Scene = 'main' | 'dark' | 'newchat';
+/** `?demo`, `?demo=dark`, `?demo=newchat`, `?demo=settings`. */
+export type Scene = 'main' | 'dark' | 'newchat' | 'settings';
 
 const hoursFromNow = (h: number) => new Date(Date.now() + h * 3600_000).toISOString();
 
@@ -250,17 +250,21 @@ const CLI: CliStatusDto = {
   checkedAtMs: Date.now() - 42 * 60_000
 };
 
+const ROOT: AccountsRootInfo = { path: 'C:\\src\\claude-accounts', isDefault: true };
+
 let seeded = false;
 
 /**
- * Answers the few commands whose emptiness would show. Without this the CLI
- * field draws nothing in a browser, and the status bar in a screenshot has one
- * fewer field than the app it is a picture of. Everything else keeps the
+ * Answers the few commands whose emptiness would show. Without this the
+ * settings dialog draws no CLI version and no accounts folder in a browser,
+ * and a screenshot of it is a picture of blanks. Everything else keeps the
  * caller's own fallback, and outside `?demo` this does nothing at all.
  */
 export function answer<T>(cmd: string, fallback: T): T {
   if (!seeded) return fallback;
-  return cmd === 'cli_status' ? (CLI as unknown as T) : fallback;
+  if (cmd === 'cli_status') return CLI as unknown as T;
+  if (cmd === 'get_accounts_root') return ROOT as unknown as T;
+  return fallback;
 }
 
 // ------------------------------------------------------------------ seed --
@@ -303,5 +307,5 @@ export function seedDemo(scene: Scene) {
 export function sceneFromUrl(search: string): Scene | null {
   const value = new URLSearchParams(search).get('demo');
   if (value === null) return null;
-  return value === 'dark' || value === 'newchat' ? value : 'main';
+  return value === 'dark' || value === 'newchat' || value === 'settings' ? value : 'main';
 }

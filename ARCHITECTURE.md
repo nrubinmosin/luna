@@ -24,7 +24,8 @@ src/                          фронт (feature-sliced)
     new-chat/ диалог создания: папка, модель, effort (5 уровней), аккаунт,
               чекбокс "Git worktree" (по умолчанию вкл), permission mode
     accounts/ панель аккаунтов: лимиты + добавление/удаление, accounts.store
-    status-bar/ часы, сводка, лимиты аккаунтов
+    settings/ диалог за ⚙: папка аккаунтов, версии Luna/CLI и кнопки обновления
+    status-bar/ часы, сводка, лимиты аккаунтов; чип обновления — только когда есть новость
   ipc/        commands.ts (invoke), events.ts (listen) — единственная граница с Rust
 
 src-tauri/src/

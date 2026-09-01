@@ -152,13 +152,15 @@ the portable exe, the setup, its `.sig` and the manifest to a `v<version>` relea
 
 - On startup the app checks `latest.json` from GitHub Releases (the endpoint lives in
   `src-tauri/tauri.conf.json` → `plugins.updater.endpoints`). A release found there lights
-  up a field in the status bar and waits to be clicked, rather than throwing up a modal
+  up a chip in the status bar and waits to be clicked, rather than throwing up a modal
   over whatever was mid-turn.
 - The CLI updates on the same principle and separately: `cli.rs` checks the release bucket
   every six hours, verifies the sha256 from its manifest, and installs into
-  `<data>/claude-cli/versions/<ver>/`. The status bar shows the version in use and takes a
-  click to check now. Sessions run with `DISABLE_AUTOUPDATER=1`, so Luna is the only thing
-  that moves that binary.
+  `<data>/claude-cli/versions/<ver>/`. Sessions run with `DISABLE_AUTOUPDATER=1`, so Luna
+  is the only thing that moves that binary.
+- Both versions live in Settings (the ⚙ by the account list), each with its "checked …
+  ago" and a check-now button; the status bar itself only speaks up while there is news —
+  an update on offer, a download running, or a failure worth a retry.
 - The update signing key is `C:\Users\Nikita\.ssh\luna-updater.key` — private and
   passwordless, so keep it safe; its `.pub` half is already baked into the config. For a
   signed build, set `TAURI_SIGNING_PRIVATE_KEY_PATH` in the build environment (which is
