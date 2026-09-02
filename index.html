@@ -4,8 +4,12 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Luna</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+    <!-- The terminal face ships with the app (declared in theme.css). Fetching
+         it here, ahead of the scripts, has it on hand before the first terminal
+         measures itself. Font preloads are ignored without crossorigin, even
+         from the page's own origin. -->
+    <link rel="preload" href="/fonts/JetBrainsMono-Regular.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="/fonts/JetBrainsMono-Bold.woff2" as="font" type="font/woff2" crossorigin />
   </head>
   <body>
     <div id="root"></div>

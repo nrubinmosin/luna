@@ -14,8 +14,9 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
 ## The window
 
 - A Windows XP shell (xp.css, Luna Blue): the native window frame is replaced by our own
-  title bar with minimize / maximize / close, and the UI runs on Tahoma. The whole
-  interface scales from one variable, `--ui` in `src/app/theme.css`.
+  title bar with minimize / maximize / close, and the UI runs on Segoe UI. The whole
+  interface scales from one variable, `--ui` in `src/app/theme.css`, and follows
+  Windows' own text-size setting on top of that.
 - A grid of 1/2/3/4 panes with draggable splits (Ctrl+Shift+1..4 picks the layout).
   **One click** on a sidebar row shows that chat: with a single pane it simply becomes
   what that pane shows — dragging a row across an empty board to the one place it can go

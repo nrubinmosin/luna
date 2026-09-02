@@ -1,6 +1,26 @@
 * { box-sizing: border-box; }
 body { margin: 0; overflow: hidden; }
 
+/* The terminal face, shipped with the app. Fetched from Google Fonts it needed
+   the network on every start, and without it xterm measured its cells on
+   whatever monospace it found first. Regular and Bold are the two weights
+   xterm asks for; the 500 that used to stand in for bold was being emboldened
+   by hand. Files under public/fonts, licence alongside. */
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+  src: url("/fonts/JetBrainsMono-Regular.woff2") format("woff2");
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 700;
+  font-display: block;
+  src: url("/fonts/JetBrainsMono-Bold.woff2") format("woff2");
+}
+
 /* Windows XP (Luna Blue) reskin. xp.css's *source* SCSS defines its palette
    as :root custom properties, but its published, compiled dist/XP.css bakes
    every one of xp.css's own selectors (button, .window, select, etc.) to
@@ -13,14 +33,20 @@ body { margin: 0; overflow: hidden; }
    decorations) keep their fixed light Luna chrome regardless of theme, same
    as the title-bar's blue gradient. */
 [data-app] {
-  /* XP's own shell font is Tahoma — the pixel face xp.css ships is a bitmap
-     that only lands crisp at 11px, so it can't carry a UI scaled past that.
-     Tahoma is the authentic choice *and* the one that scales. */
-  --sans-serif: Tahoma, "Pixelated MS Sans Serif", Arial, sans-serif;
+  /* XP's own shell font is Tahoma, and it is hinted for the 11px it was drawn
+     at: past that its stems land unevenly and bold grows heavy ClearType
+     fringes — and past that is every label in the app once Windows text
+     scaling is on, since WebView2 turns a 150% "Text size" into a 1.5× page
+     zoom. Segoe UI is Windows' own UI face, drawn for ClearType at any size;
+     the Text optical size of the variable cut is what Windows 11 itself uses
+     at these sizes. Tahoma stays as the fallback on older systems. */
+  --sans-serif: "Segoe UI Variable Text", "Segoe UI", Tahoma, sans-serif;
   /* Every type size in the app derives from this one knob. calc() keeps each
      step an absolute length, so a small size nested inside a large one can't
-     compound the way em would. Terminals are deliberately outside it. */
-  --ui: 15px;
+     compound the way em would. Terminals are deliberately outside it. 13px is
+     Windows' own 9pt shell size; anyone who wants it larger has the OS text
+     scaling, which the page honours on its own. */
+  --ui: 13px;
   --fs-1: calc(var(--ui) * 0.72);
   --fs-2: calc(var(--ui) * 0.79);
   --fs-3: calc(var(--ui) * 0.86);
@@ -159,6 +185,10 @@ a:hover { text-decoration: underline; }
 [data-app] .title-bar {
   font-family: "Trebuchet MS", Tahoma, sans-serif;
   font-size: var(--fs-4);
+  /* xp.css puts the title's navy shadow on the whole bar, so every chip in a
+     pane strip — navy text on white — carried a navy ghost a pixel off, which
+     read as doubled type. The shadow belongs to the white title text only. */
+  text-shadow: none;
   /* xp.css rounds the two top corners by 8px and 7px. The odd pixel is
      invisible on its own .window, whose frame is the same blue as the bar, but
      a pane wraps this in a dark 1px frame that has to follow the curve — and it
