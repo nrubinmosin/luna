@@ -16,19 +16,33 @@ const tauriAvailable = '__TAURI_INTERNALS__' in window;
  * at whatever ratio is current. Here that costs almost nothing: the sessions
  * live in the Rust side, so every pane comes straight back with its scrollback.
  *
- * Only on a real mismatch, so a scale change WebView2 did handle (moving the
- * window to a monitor with a different DPI, usually) costs nothing at all.
+ * Drift is the page and the window disagreeing *differently from how they did
+ * when the page was laid out*. They do not simply agree: Windows' accessibility
+ * text scaling reaches WebView2 as a page zoom, so with "Text size" at 150% a
+ * page laid out perfectly well reports 1.5× against a window at 1×, and always
+ * will. Asserting page == window there reloaded on every launch and then, its
+ * one attempt spent, sat out any real drift for the rest of the session. The
+ * ratio at load is the one to hold to: a scale change WebView2 handled moves
+ * both sides and keeps it; one it dropped moves only the window and breaks it.
  */
 export function healScaleDrift() {
   if (!tauriAvailable) return () => {};
   let stopped = false;
   let un: (() => void) | undefined;
+  /** page ÷ window as this page was laid out; null until the first reading. */
+  let baseline: number | null = null;
 
   const check = async () => {
     const { getCurrentWindow } = await import('@tauri-apps/api/window');
     const os = await getCurrentWindow().scaleFactor();
     const page = window.devicePixelRatio;
-    if (stopped || Math.abs(os - page) < 0.01) return;
+    if (stopped || !os || !page) return;
+    const ratio = page / os;
+    if (baseline == null) {
+      baseline = ratio;
+      return;
+    }
+    if (Math.abs(ratio - baseline) < 0.01) return;
 
     // A reload that does not fix it must not be tried again on the next tick,
     // or the app spends its life reloading. One attempt per pair of ratios:
@@ -36,7 +50,10 @@ export function healScaleDrift() {
     const key = `luna.dpi-heal:${os}:${page}`;
     if (sessionStorage.getItem(key)) return;
     sessionStorage.setItem(key, '1');
-    logWarn('dpi', `window is at ${os}× and the page at ${page}× — reloading to re-lay it out`);
+    logWarn(
+      'dpi',
+      `window is at ${os}× and the page at ${page}×, laid out at ${baseline}:1 — reloading to re-lay it out`
+    );
     location.reload();
   };
 
