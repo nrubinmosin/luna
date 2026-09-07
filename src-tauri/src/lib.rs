@@ -60,6 +60,8 @@ pub fn run() {
             if let Some(w) = app.get_webview_window("main") {
                 sysmenu::silence(&w);
             }
+            // Once the window and tao's own hidden one both exist.
+            sysmenu::exit_with_session();
 
             // Housekeeping off the startup path, and again every few hours.
             media::prune_periodically();
