@@ -34,16 +34,32 @@ struct PtyExit<'a> {
     code: Option<u32>,
 }
 
+/// What the UI sends a session, in the order it sent it.
+enum Input {
+    Bytes(Vec<u8>),
+    Resize(PtySize),
+}
+
 struct Session {
-    master: Box<dyn portable_pty::MasterPty + Send>,
     /// Input is handed to a writer thread instead of being written inline.
     /// ConPTY stops accepting bytes while the child is not draining them, and a
     /// write that blocks used to do so while holding the session map — freezing
     /// every other chat's IPC behind one busy pane, for hundreds of ms at a
     /// time. A channel also keeps keystrokes in the order they were typed,
     /// which handing each write its own lock would not.
-    writer_tx: std::sync::mpsc::Sender<Vec<u8>>,
+    ///
+    /// Resizes travel the same channel, for the same reason: ConPTY's resize
+    /// is synchronous and stalls like a write while the child is busy, and it
+    /// used to run on the main thread under the session map — the log showed
+    /// every pane's keystrokes queued for over a second behind one pane's
+    /// window drag. The writer thread owns the master end, so the resize
+    /// happens there, after the bytes that preceded it and before the ones
+    /// that follow.
+    input_tx: std::sync::mpsc::Sender<Input>,
     killer: Box<dyn ChildKiller + Send + Sync>,
+    /// For asking whether the process is still there without blocking on it;
+    /// the reader thread shares it to collect the exit code.
+    child: Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>>,
     scrollback: Arc<Mutex<VecDeque<u8>>>,
     alive: Arc<AtomicBool>,
     pid: Option<u32>,
@@ -157,20 +173,36 @@ pub async fn ensure_session(
         .map(|d| d.as_millis())
         .unwrap_or(0);
     let killer = child.clone_killer();
-    let mut child = child;
+    let child = Arc::new(Mutex::new(child));
     let mut writer = pair.master.take_writer().map_err(|e| e.to_string())?;
     let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
 
     // Drains on its own thread and ends when the session is dropped, which
-    // drops the sender with it.
-    let (writer_tx, writer_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    // drops the sender with it — and the master end, which the thread owns,
+    // goes down with the thread, exactly when the session used to take it.
+    let (input_tx, input_rx) = std::sync::mpsc::channel::<Input>();
     {
         let id = id.clone();
+        let master = pair.master;
         std::thread::spawn(move || {
-            for chunk in writer_rx {
-                if let Err(e) = writer.write_all(&chunk).and_then(|()| writer.flush()) {
-                    crate::log::warn("pty", &format!("write to {id} failed: {e}"));
-                    break;
+            // A broken pipe stays broken: say so once, then keep the master
+            // alive for the session's own teardown rather than closing the pty
+            // out from under a child that may still be on its way out.
+            let mut writable = true;
+            for msg in input_rx {
+                match msg {
+                    Input::Bytes(chunk) if writable => {
+                        if let Err(e) = writer.write_all(&chunk).and_then(|()| writer.flush()) {
+                            crate::log::warn("pty", &format!("write to {id} failed: {e}"));
+                            writable = false;
+                        }
+                    }
+                    Input::Bytes(_) => {}
+                    Input::Resize(size) => {
+                        if let Err(e) = master.resize(size) {
+                            crate::log::warn("pty", &format!("resize of {id} failed: {e}"));
+                        }
+                    }
                 }
             }
         });
@@ -184,6 +216,7 @@ pub async fn ensure_session(
         let id = id.clone();
         let scrollback = Arc::clone(&scrollback);
         let alive = Arc::clone(&alive);
+        let child = Arc::clone(&child);
 
         // The reader hands bytes to an emitter thread instead of emitting them
         // itself. A repainting TUI produces a steady stream of small reads, and
@@ -255,7 +288,12 @@ pub async fn ensure_session(
             // of the session is on its way before the exit event goes out.
             drop(tx);
             let Ok((app, id)) = emitter.join() else { return };
-            let code = child.wait().ok().map(|st| st.exit_code());
+            let code = child
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .wait()
+                .ok()
+                .map(|st| st.exit_code());
             crate::log::info("pty", &format!("session {id} exited, code {code:?}"));
             crate::emit::to_ui(&app, "pty://exit", PtyExit { id: &id, code });
         });
@@ -269,9 +307,9 @@ pub async fn ensure_session(
     state.sessions.lock().unwrap().insert(
         id,
         Session {
-            master: pair.master,
-            writer_tx,
+            input_tx,
             killer,
+            child,
             scrollback,
             alive,
             pid,
@@ -289,23 +327,26 @@ pub fn write_session(state: PtyState, id: String, data: String) -> Result<(), St
     let sessions = state.sessions.lock().unwrap();
     let s = sessions.get(&id).ok_or("no such session")?;
     // Queueing, so the command returns at once however busy the pty is.
-    s.writer_tx
-        .send(data.into_bytes())
+    s.input_tx
+        .send(Input::Bytes(data.into_bytes()))
         .map_err(|_| "session writer is gone".to_string())
 }
 
+/// Queued behind the keystrokes that preceded it and applied on the writer
+/// thread. A failure there is logged rather than returned: by the time it
+/// happens the caller has moved on, and it never looked at the result anyway.
 #[tauri::command]
 pub fn resize_session(state: PtyState, id: String, cols: u16, rows: u16) -> Result<(), String> {
     let sessions = state.sessions.lock().unwrap();
     let s = sessions.get(&id).ok_or("no such session")?;
-    s.master
-        .resize(PtySize {
+    s.input_tx
+        .send(Input::Resize(PtySize {
             rows,
             cols,
             pixel_width: 0,
             pixel_height: 0,
-        })
-        .map_err(|e| e.to_string())
+        }))
+        .map_err(|_| "session writer is gone".to_string())
 }
 
 // The pty child is `claude.exe`; everything it spawned (node, MCP servers)
@@ -324,20 +365,69 @@ fn kill_tree(pid: Option<u32>) {
     let _ = pid;
 }
 
-/// Takes the session out of the map first and kills it after: `taskkill` is a
-/// process spawn of its own, and doing that under the map put every other
-/// chat's keystrokes behind it.
-fn take_and_kill(state: &PtyState, id: &str) {
+/// How long a session gets to leave on its own before it is taken down.
+const GRACE: std::time::Duration = std::time::Duration::from_millis(1500);
+/// Ctrl+C is one keystroke to the CLI and two in a row mean quit; one write
+/// carrying both lands in a single input tick, where the second cannot see
+/// the state the first set. Space them the way a hand would.
+const CTRL_C_GAP: std::time::Duration = std::time::Duration::from_millis(150);
+
+/// Asks the CLI to quit, and kills it only if it does not.
+///
+/// `taskkill /F` ends the process without its exit hooks, and the CLI keeps
+/// state that only those hooks clean up. A fullscreen launch records itself as
+/// pending until it has been healthy for ten seconds; a launch that dies with
+/// the record still there costs the next launch on that account its fullscreen
+/// renderer ("didn't finish starting last time"), and two of them turn the
+/// renderer off. Deleting a chat you had just made, or closing the login
+/// window, did exactly that. So first the keystrokes a user would type —
+/// Ctrl+C, and again when it asks — and the hard kill only for a process that
+/// is past listening.
+///
+/// Blocks for up to GRACE: callers run it off the main thread.
+fn shut_down(mut s: Session) {
+    let exited = || {
+        s.child
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .try_wait()
+            .map(|status| status.is_some())
+            .unwrap_or(true)
+    };
+    let deadline = std::time::Instant::now() + GRACE;
+    // A turn in flight takes one Ctrl+C to interrupt before the next two ask
+    // for and confirm the exit.
+    for _ in 0..3 {
+        if exited() || s.input_tx.send(Input::Bytes(b"\x03".to_vec())).is_err() {
+            break;
+        }
+        std::thread::sleep(CTRL_C_GAP);
+    }
+    while !exited() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    if !exited() {
+        crate::log::warn("pty", &format!("pid {:?} did not quit on Ctrl+C within {GRACE:?}; killing it", s.pid));
+    }
+    // Either way: the CLI's own children (shells, MCP servers) do not follow it
+    // out, and a taskkill on a pid that has just exited is a no-op.
+    kill_tree(s.pid);
+    let _ = s.killer.kill();
+}
+
+/// Takes the session out of the map first and shuts it down after: the
+/// shutdown waits on the process, and waiting under the map would put every
+/// other chat's keystrokes behind it.
+async fn take_and_shut_down(state: &PtyState<'_>, id: &str) {
     let session = state.sessions.lock().unwrap().remove(id);
-    if let Some(mut s) = session {
-        kill_tree(s.pid);
-        let _ = s.killer.kill();
+    if let Some(s) = session {
+        let _ = tauri::async_runtime::spawn_blocking(move || shut_down(s)).await;
     }
 }
 
 #[tauri::command]
-pub fn kill_session(state: PtyState, id: String) -> Result<(), String> {
-    take_and_kill(&state, &id);
+pub async fn kill_session(state: PtyState<'_>, id: String) -> Result<(), String> {
+    take_and_shut_down(&state, &id).await;
     Ok(())
 }
 
@@ -374,7 +464,7 @@ pub async fn delete_session(
         crate::worktree::is_worktree_of(&folder, &scwd).then_some(scwd)
     });
 
-    take_and_kill(&state, &id);
+    take_and_shut_down(&state, &id).await;
 
     let _ = crate::media::clear_media(id.clone());
     crate::log::info(

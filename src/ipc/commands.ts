@@ -12,6 +12,8 @@ const SLOW_BUDGET_MS: Record<string, number> = {
   account_limits: 5000,
   session_meta: 2000,
   ensure_session: 30_000,
+  // Both give the CLI a moment to quit on its own before killing it.
+  kill_session: 5000,
   delete_session: 10_000,
   orphan_worktrees: 10_000,
   remove_orphan_worktrees: 30_000
