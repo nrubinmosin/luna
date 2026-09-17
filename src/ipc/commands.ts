@@ -294,6 +294,18 @@ export const codexDefaults = (accountPath: string, folder: string) =>
     { model: null, effort: null, approval: null, sandbox: null }
   );
 
+export interface CodexModelDto {
+  slug: string;
+  displayName: string;
+  defaultEffort: string | null;
+  efforts: string[];
+}
+
+/** The models Codex lists for this account, off its own cache — with the
+ *  reasoning levels each one takes. Empty until the CLI has run once. */
+export const codexModels = (accountPath: string) =>
+  call<CodexModelDto[]>('codex_models', { accountPath }, []);
+
 // ----------------------------------------------------------------- trust --
 
 /** Whether this account already accepted Claude Code's trust prompt for the folder. */

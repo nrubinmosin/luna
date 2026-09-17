@@ -274,7 +274,7 @@ export function NewChatDialog() {
           </div>
 
           {provider === 'codex' ? (
-            <codex.Fields draft={codexDraft} origin={originOf(codexDraft, codex.describe)} />
+            <codex.Fields draft={codexDraft} origin={originOf(codexDraft, codex.describe)} accountPath={accountPath} />
           ) : (
             <claude.Fields draft={claudeDraft} origin={originOf(claudeDraft, claude.describe)} />
           )}

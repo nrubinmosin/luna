@@ -5,5 +5,6 @@ pub mod cli;
 pub mod config;
 pub mod defaults;
 pub mod limits;
+pub mod models;
 pub mod session;
 pub mod trust;

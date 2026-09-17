@@ -111,6 +111,7 @@ pub fn run() {
             claude::trust::claude_trust_folder,
             codex::defaults::codex_defaults,
             codex::limits::codex_limits,
+            codex::models::codex_models,
             codex::trust::codex_folder_trusted,
             codex::trust::codex_trust_folder,
             log::append_log,

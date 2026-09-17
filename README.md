@@ -52,9 +52,10 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   - **Claude Code**: model, effort (`low/medium/high/xhigh/max/ultracode`) and permission
     mode. Isolation runs the session as `claude --worktree` in
     `<folder>/.claude/worktrees/<name>`.
-  - **Codex**: model (a free text box — empty means Codex's own default; what it actually
-    runs shows up in the title bar once the first turn is in), reasoning effort
-    (`minimal/low/medium/high/xhigh`), approval policy (`on-request/never`) and sandbox
+  - **Codex**: model — buttons off the list Codex itself caches for the account
+    (`models_cache.json`, so a fresh account shows a text box until the CLI has run once),
+    plus "default" for whatever Codex would pick; reasoning effort as that model takes it
+    (`low … ultra`, from the same list), approval policy (`on-request/never`) and sandbox
     mode (`read-only/workspace-write/danger-full-access`), with the three usual pairs as
     one-click presets; `never` + `danger-full-access` is passed as
     `--dangerously-bypass-approvals-and-sandbox`, as Codex spells it. Isolation makes a
