@@ -5,6 +5,8 @@ import { CHAT_COLORS, chatColorTheme } from '../../shared/ui/chatColors';
 import { ACCENT, limitColor, tail2, tint } from '../../shared/lib/format';
 import { useChats } from '../chats/chats.store';
 import { DeleteChatDialog } from '../chats/DeleteChatDialog';
+import { claude, codex } from '../providers';
+import { PROVIDER_LABEL } from '../../shared/types';
 import { currentLayout, currentSlots, usePanes } from './panes.store';
 import { Terminal } from './Terminal';
 
@@ -75,8 +77,10 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
   const ctxTitle =
     tokens != null && window != null
       ? `Context: ${fmtTokens(tokens)} of ${fmtTokens(window)} tokens (${ctx}%)` +
-        '\nInput plus cache on the last turn. The window comes from the model the ' +
-        'transcript recorded, not from the chat setting.'
+        (chat?.provider === 'codex'
+          ? '\nTokens in the window after the last turn, as Codex counts them; the window is the one it reported.'
+          : '\nInput plus cache on the last turn. The window comes from the model the ' +
+            'transcript recorded, not from the chat setting.')
       : 'Context window usage — waiting for the first turn';
 
   const chip: CSSProperties = {
@@ -183,12 +187,14 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
             <span title={`${t!.parent} / ${t!.leaf}`} style={{ ...softChip, maxWidth: 90 }}>
               {t!.leaf}
             </span>
-            <span title={`Running on Claude account "${chat.account}"`} style={{ ...softChip, maxWidth: 80 }}>
+            <span title={`Running on ${PROVIDER_LABEL[chat.provider]} account "${chat.account}"`} style={{ ...softChip, maxWidth: 80 }}>
               {chat.account}
             </span>
-            <span title="Model" style={softChip}>{chat.model}</span>
-            <span title={`Effort: ${chat.effort}`} style={softChip}>{chat.effort}</span>
-            <span title={`Permission mode: ${chat.perm}`} style={chip}>{chat.perm[0]}</span>
+            {chat.provider === 'codex' ? (
+              <codex.Chips chat={chat} chip={chip} softChip={softChip} />
+            ) : (
+              <claude.Chips chat={chat} chip={chip} softChip={softChip} />
+            )}
             {chat.worktree && <span title="Isolated git worktree" style={chip}>wt</span>}
             <span
               title={ctxTitle}

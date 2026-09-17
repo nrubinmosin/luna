@@ -7,3 +7,5 @@ multi-chat/
 .DS_Store
 .claude/worktrees/
 cli/target/
+.codex/worktrees/
+src-tauri/target-out/

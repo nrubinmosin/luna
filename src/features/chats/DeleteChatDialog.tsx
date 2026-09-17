@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import type { Chat } from '../../shared/types';
 import { useChats } from './chats.store';
-import { useAccounts } from '../accounts/accounts.store';
+import { accountOfChat, useAccounts } from '../accounts/accounts.store';
+import { ui } from '../providers';
 import { deleteSession } from '../../ipc/commands';
 import { ConfirmDialog } from '../../shared/ui/ConfirmDialog';
 
@@ -16,8 +17,7 @@ export function DeleteChatDialog({ chat, onClose }: { chat: Chat; onClose: () =>
   const doDelete = () => {
     onClose();
     const folder = useChats.getState().folderOf(chat.id);
-    const accountPath =
-      useAccounts.getState().accounts.find(a => a.name === chat.account)?.path ?? '';
+    const accountPath = accountOfChat(useAccounts.getState().accounts, chat)?.path ?? '';
     if (folder) {
       // One command kills the process tree and clears the attachments — and the
       // worktree and its branch only if that was asked for. It resolves the
@@ -80,7 +80,7 @@ export function DeleteChatDialog({ chat, onClose }: { chat: Chat; onClose: () =>
                 label into unwrappable flex columns around the <code> child;
                 block restores normal text flow. */}
             <label htmlFor={`drop-worktree-${chat.id}`} style={{ display: 'block', cursor: 'default', lineHeight: 1.5 }}>
-              Delete the worktree and its throwaway <code>worktree-…</code> branch too,
+              Delete the worktree and its throwaway <code>{ui(chat.provider).branchPrefix}…</code> branch too,
               including any uncommitted work.
             </label>
           </div>

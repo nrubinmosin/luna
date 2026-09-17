@@ -1,3 +1,4 @@
+use crate::provider::Provider;
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, PtySize};
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
@@ -6,7 +7,7 @@ use std::io::{Read, Write};
 // and warns about itself on every build.
 #[cfg(windows)]
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, State};
 
@@ -41,6 +42,7 @@ enum Input {
 }
 
 struct Session {
+    provider: Provider,
     /// Input is handed to a writer thread instead of being written inline.
     /// ConPTY stops accepting bytes while the child is not draining them, and a
     /// write that blocks used to do so while holding the session map — freezing
@@ -62,11 +64,18 @@ struct Session {
     child: Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>>,
     scrollback: Arc<Mutex<VecDeque<u8>>>,
     alive: Arc<AtomicBool>,
+    /// When the child last wrote anything — Codex has no live status file, so
+    /// a quiet screen mid-turn is how an approval prompt is told apart from
+    /// work in progress.
+    last_output_ms: Arc<AtomicU64>,
     pid: Option<u32>,
     cwd: String,
     spawned_at_ms: u128,
+    /// The session id this was resumed with, if any: Codex is found on disk
+    /// by it.
+    resume: Option<String>,
     /// Kept so a session that has lost its chat row can still be described:
-    /// its title and status live in this account's registry.
+    /// its title and status live under this account.
     account_path: String,
 }
 
@@ -82,8 +91,27 @@ pub struct PtyManager {
 
 pub type PtyState<'a> = State<'a, PtyManager>;
 
-#[allow(clippy::too_many_arguments)]
-#[tauri::command]
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Everything a spawn needs that is not the provider's business to work out.
+struct Launch {
+    provider: Provider,
+    id: String,
+    /// Where the process starts. For a Codex worktree chat this is the
+    /// worktree itself; Claude Code gets the project folder and `--worktree`.
+    cwd: String,
+    account_path: String,
+    args: Vec<String>,
+    envs: Vec<(&'static str, String)>,
+    resume: Option<String>,
+    describe: String,
+}
+
 // Creating a session means `git worktree add` plus a process spawn — seconds of
 // blocking work that must not run on the main thread, where it would stall
 // every other chat's IPC. It used to hold the session map for that whole
@@ -91,18 +119,8 @@ pub type PtyState<'a> = State<'a, PtyManager>;
 // other pane's write_session behind it: the log shows keystrokes taking well
 // over a second whenever a chat was starting. The per-chat gate below buys the
 // same guarantee without the map.
-pub async fn ensure_session(
-    app: AppHandle,
-    state: PtyState<'_>,
-    id: String,
-    folder: String,
-    account_path: String,
-    model: String,
-    effort: String,
-    permission_mode: String,
-    worktree: bool,
-    resume: Option<String>,
-) -> Result<String, String> {
+async fn spawn(app: AppHandle, state: PtyState<'_>, launch: Launch) -> Result<String, String> {
+    let Launch { provider, id, cwd, account_path, args, envs, resume, describe } = launch;
     let gate = {
         let mut gates = state.spawning.lock().unwrap();
         // Nobody holds a gate whose only reference is the map's own, so this
@@ -124,8 +142,9 @@ pub async fn ensure_session(
         }
     }
 
-    // Spawning without one would silently fall back to the default ~/.claude
-    // config: wrong account, and first-run onboarding in every pane.
+    // Spawning without one would silently fall back to the CLI's default
+    // config dir under the user profile: wrong account, and first-run
+    // onboarding in every pane.
     if account_path.is_empty() {
         return Err("no account config dir for this chat".into());
     }
@@ -140,42 +159,33 @@ pub async fn ensure_session(
         })
         .map_err(|e| e.to_string())?;
 
-    // Luna's own copy of the CLI (see cli.rs), or `claude` on PATH until the
-    // first download has landed.
-    let mut cmd = CommandBuilder::new(crate::cli::binary());
-    cmd.cwd(&folder);
-    cmd.args(["--model", &model]);
-    cmd.args(["--effort", &effort]);
-    cmd.args(["--permission-mode", &permission_mode]);
-    if let Some(session_id) = &resume {
-        cmd.args(["--resume", session_id]);
-    }
-    if worktree {
-        cmd.arg("--worktree");
-    }
-    if !account_path.is_empty() {
-        cmd.env("CLAUDE_CONFIG_DIR", &account_path);
+    // Luna's own copy of the CLI (see cli.rs), or the bare name on PATH until
+    // the first download has landed.
+    let mut cmd = CommandBuilder::new(crate::cli::binary(provider));
+    cmd.cwd(&cwd);
+    cmd.args(&args);
+    for (k, v) in &envs {
+        cmd.env(k, v);
     }
     cmd.env("TERM", "xterm-256color");
-    // Luna updates the CLI itself; the CLI's own updater would install a
-    // second copy under the user profile that nothing here ever runs.
-    cmd.env("DISABLE_AUTOUPDATER", "1");
 
     let child = pair.slave.spawn_command(cmd).map_err(|e| {
-        crate::log::error("pty", &format!("spawn failed for {id} in {folder}: {e}"));
+        crate::log::error("pty", &format!("spawn failed for {id} in {cwd}: {e}"));
         e.to_string()
     })?;
     drop(pair.slave);
 
     let pid = child.process_id();
-    let spawned_at_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
+    let spawned_at_ms = now_ms() as u128;
     let killer = child.clone_killer();
     let child = Arc::new(Mutex::new(child));
     let mut writer = pair.master.take_writer().map_err(|e| e.to_string())?;
     let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
+
+    // A respawn is a new process and, for Codex, a new rollout file.
+    if provider == Provider::Codex {
+        crate::codex::session::release(&id);
+    }
 
     // Drains on its own thread and ends when the session is dropped, which
     // drops the sender with it — and the master end, which the thread owns,
@@ -210,12 +220,14 @@ pub async fn ensure_session(
 
     let scrollback = Arc::new(Mutex::new(VecDeque::new()));
     let alive = Arc::new(AtomicBool::new(true));
+    let last_output_ms = Arc::new(AtomicU64::new(now_ms()));
 
     {
         let app = app.clone();
         let id = id.clone();
         let scrollback = Arc::clone(&scrollback);
         let alive = Arc::clone(&alive);
+        let last_output_ms = Arc::clone(&last_output_ms);
         let child = Arc::clone(&child);
 
         // The reader hands bytes to an emitter thread instead of emitting them
@@ -265,6 +277,7 @@ pub async fn ensure_session(
                 match reader.read(&mut chunk) {
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
+                        last_output_ms.store(now_ms(), Ordering::Relaxed);
                         {
                             let mut sb = scrollback.lock().unwrap();
                             sb.extend(chunk[..n].iter().copied());
@@ -301,25 +314,147 @@ pub async fn ensure_session(
 
     crate::log::info(
         "pty",
-        &format!("spawned {id} pid {pid:?} model {model} perm {permission_mode} worktree {worktree} in {folder}"),
+        &format!("spawned {id} ({}) pid {pid:?} {describe} in {cwd}", provider.as_str()),
     );
 
     state.sessions.lock().unwrap().insert(
         id,
         Session {
+            provider,
             input_tx,
             killer,
             child,
             scrollback,
             alive,
+            last_output_ms,
             pid,
-            cwd: folder,
+            cwd,
             spawned_at_ms,
+            resume,
             account_path,
         },
     );
 
     Ok(String::new())
+}
+
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+pub async fn ensure_claude_session(
+    app: AppHandle,
+    state: PtyState<'_>,
+    id: String,
+    folder: String,
+    account_path: String,
+    model: String,
+    effort: String,
+    permission_mode: String,
+    worktree: bool,
+    resume: Option<String>,
+) -> Result<String, String> {
+    let mut args = vec![
+        "--model".to_string(),
+        model.clone(),
+        "--effort".to_string(),
+        effort,
+        "--permission-mode".to_string(),
+        permission_mode.clone(),
+    ];
+    if let Some(session_id) = &resume {
+        args.push("--resume".into());
+        args.push(session_id.clone());
+    }
+    if worktree {
+        args.push("--worktree".into());
+    }
+    let envs = vec![
+        ("CLAUDE_CONFIG_DIR", account_path.clone()),
+        // Luna updates the CLI itself; the CLI's own updater would install a
+        // second copy under the user profile that nothing here ever runs.
+        ("DISABLE_AUTOUPDATER", "1".to_string()),
+    ];
+    spawn(
+        app,
+        state,
+        Launch {
+            provider: Provider::Claude,
+            id,
+            cwd: folder,
+            account_path,
+            args,
+            envs,
+            resume,
+            describe: format!("model {model} perm {permission_mode} worktree {worktree}"),
+        },
+    )
+    .await
+}
+
+/// A Codex session. `folder` is where it runs — for a worktree chat, the
+/// worktree Luna made. `login` runs `codex login` instead of a chat.
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+pub async fn ensure_codex_session(
+    app: AppHandle,
+    state: PtyState<'_>,
+    id: String,
+    folder: String,
+    account_path: String,
+    model: Option<String>,
+    effort: String,
+    approval: String,
+    sandbox: String,
+    resume: Option<String>,
+    login: bool,
+) -> Result<String, String> {
+    let mut args: Vec<String> = vec![];
+    let describe;
+    if login {
+        args.push("login".into());
+        describe = "login".to_string();
+    } else {
+        if let Some(session_id) = &resume {
+            args.push("resume".into());
+            args.push(session_id.clone());
+        }
+        args.push("-C".into());
+        args.push(folder.clone());
+        if let Some(m) = model.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
+            args.push("--model".into());
+            args.push(m.to_string());
+        }
+        args.push("-c".into());
+        args.push(format!("model_reasoning_effort=\"{effort}\""));
+        // The pair Codex itself spells as one flag.
+        if approval == "never" && sandbox == "danger-full-access" {
+            args.push("--dangerously-bypass-approvals-and-sandbox".into());
+        } else {
+            args.push("--ask-for-approval".into());
+            args.push(approval.clone());
+            args.push("--sandbox".into());
+            args.push(sandbox.clone());
+        }
+        describe = format!(
+            "model {} effort {effort} approval {approval} sandbox {sandbox}",
+            model.as_deref().unwrap_or("default")
+        );
+    }
+    let envs = vec![("CODEX_HOME", account_path.clone())];
+    spawn(
+        app,
+        state,
+        Launch {
+            provider: Provider::Codex,
+            id,
+            cwd: folder,
+            account_path,
+            args,
+            envs,
+            resume: if login { None } else { resume },
+            describe,
+        },
+    )
+    .await
 }
 
 #[tauri::command]
@@ -349,7 +484,7 @@ pub fn resize_session(state: PtyState, id: String, cols: u16, rows: u16) -> Resu
         .map_err(|_| "session writer is gone".to_string())
 }
 
-// The pty child is `claude.exe`; everything it spawned (node, MCP servers)
+// The pty child is the CLI; everything it spawned (node, MCP servers, shells)
 // is a grandchild and survives a plain kill. Sweep the tree first, then kill
 // the child directly as a backstop.
 fn kill_tree(pid: Option<u32>) {
@@ -382,7 +517,7 @@ const CTRL_C_GAP: std::time::Duration = std::time::Duration::from_millis(150);
 /// renderer off. Deleting a chat you had just made, or closing the login
 /// window, did exactly that. So first the keystrokes a user would type —
 /// Ctrl+C, and again when it asks — and the hard kill only for a process that
-/// is past listening.
+/// is past listening. Codex reads Ctrl+C the same way: interrupt, then quit.
 ///
 /// Blocks for up to GRACE: callers run it off the main thread.
 fn shut_down(mut s: Session) {
@@ -432,7 +567,7 @@ pub async fn kill_session(state: PtyState<'_>, id: String) -> Result<(), String>
 }
 
 /// Tears a chat down in one shot: resolve where the session actually lives,
-/// kill it, drop its worktree (and the branch the CLI made for it) and its
+/// kill it, drop its worktree (and the branch made for it) and its
 /// attachments. Doing this in one command removes the race the UI had — it
 /// used to rely on a 4s poll having already reported the worktree path.
 #[tauri::command]
@@ -453,14 +588,18 @@ pub async fn delete_session(
 ) -> Result<Option<String>, String> {
     // Resolve before killing: once the process is gone its registry entry goes too.
     let resolved = worktree_path.filter(|p| !p.is_empty()).or_else(|| {
-        let (pid, cwd, spawned_at_ms) = {
+        let (provider, pid, cwd, spawned_at_ms) = {
             let sessions = state.sessions.lock().unwrap();
             let s = sessions.get(&id)?;
-            (s.pid, s.cwd.clone(), s.spawned_at_ms)
+            (s.provider, s.pid, s.cwd.clone(), s.spawned_at_ms)
         };
-        let dir = std::path::Path::new(&account_path).join("sessions");
-        let v = registry_entry(&dir, pid, &cwd, spawned_at_ms)?;
-        let scwd = v["cwd"].as_str()?.to_string();
+        let scwd = match provider {
+            // Claude Code moves into the worktree itself; only the registry
+            // knows where.
+            Provider::Claude => crate::claude::session::session_cwd(pid, &cwd, spawned_at_ms, &account_path)?,
+            // A Codex session runs where Luna started it.
+            Provider::Codex => cwd,
+        };
         crate::worktree::is_worktree_of(&folder, &scwd).then_some(scwd)
     });
 
@@ -481,12 +620,24 @@ pub async fn delete_session(
     }
 }
 
+/// The cwd of every live session this app runs. A running session must never
+/// have its worktree swept, even if the UI has not yet learned where it lives.
+pub fn live_cwds(state: &PtyState<'_>) -> Vec<String> {
+    let sessions = state.sessions.lock().unwrap();
+    sessions
+        .values()
+        .filter(|s| s.alive.load(Ordering::SeqCst))
+        .map(|s| s.cwd.clone())
+        .collect()
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OrphanSession {
     /// The chat id the session was spawned under. Re-creating a chat row with
     /// this exact id is what reattaches it, scrollback included.
     pub id: String,
+    pub provider: Provider,
     pub pid: Option<u32>,
     pub cwd: String,
     pub account_path: String,
@@ -502,22 +653,20 @@ pub struct OrphanSession {
 /// and answers to nobody. The frontend passes the chat ids it knows, and
 /// anything alive outside that set comes back here.
 ///
-/// Only this app's own ptys are considered. The CLI registers its subagents
-/// and shells in the same account registry, so walking that instead would
-/// report every busy chat's children as orphans.
+/// Only this app's own ptys are considered. Claude Code registers its
+/// subagents and shells in the same account registry, so walking that instead
+/// would report every busy chat's children as orphans.
 #[tauri::command]
 pub async fn orphan_sessions(
     state: PtyState<'_>,
     known: Vec<String>,
 ) -> Result<Vec<OrphanSession>, String> {
-    let candidates: Vec<(String, Option<u32>, String, String, u128)> = {
+    let candidates: Vec<Probe> = {
         let sessions = state.sessions.lock().unwrap();
         sessions
             .iter()
             .filter(|(id, s)| !known.contains(id) && s.alive.load(Ordering::SeqCst))
-            .map(|(id, s)| {
-                (id.clone(), s.pid, s.cwd.clone(), s.account_path.clone(), s.spawned_at_ms)
-            })
+            .map(|(id, s)| probe_of(id, s))
             .collect()
     };
     if candidates.is_empty() {
@@ -529,13 +678,14 @@ pub async fn orphan_sessions(
     tauri::async_runtime::spawn_blocking(move || {
         candidates
             .into_iter()
-            .map(|(id, pid, cwd, account_path, spawned_at_ms)| {
-                let meta = meta_from_disk(pid, cwd.clone(), spawned_at_ms, account_path.clone());
+            .map(|p| {
+                let meta = meta_from_disk(&p);
                 OrphanSession {
-                    id,
-                    pid,
-                    cwd,
-                    account_path,
+                    id: p.id,
+                    provider: p.provider,
+                    pid: p.pid,
+                    cwd: p.cwd,
+                    account_path: p.account_path,
                     title: meta
                         .as_ref()
                         .and_then(|m| m.first_prompt.clone().or_else(|| m.name.clone())),
@@ -552,12 +702,17 @@ pub async fn orphan_sessions(
 #[serde(rename_all = "camelCase")]
 pub struct SessionMeta {
     pub name: Option<String>,
+    /// Claude Code's own vocabulary as the registry has it, or for Codex
+    /// `working` | `waiting` | `resting`.
     pub status: Option<String>,
     pub cwd: Option<String>,
     pub session_id: Option<String>,
     /// "auto" (AI-titled), "user" (renamed by hand) or "derived" (just the cwd
     /// folder name, which for a worktree session is meaningless noise).
     pub name_source: Option<String>,
+    /// The model the session is actually running, where the CLI records it
+    /// (Codex's `turn_context`); None where the chat setting is the truth.
+    pub model: Option<String>,
     pub context: Option<f64>,
     pub context_tokens: Option<f64>,
     /// Window the percentage was computed against, so the UI can show what it
@@ -568,165 +723,83 @@ pub struct SessionMeta {
     pub first_prompt: Option<String>,
 }
 
-// Claude Code encodes a project cwd into a transcript folder name by replacing
-// every non-alphanumeric character with '-'.
-fn encode_project_dir(p: &str) -> String {
-    p.chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect()
-}
-
-struct ContextRead {
-    tokens: f64,
-    window: f64,
-}
-
-// Free context reading: the last assistant message in the session transcript
-// carries cumulative input-side token usage. Returns raw tokens; the fraction
-// is derived from it.
-fn transcript_path(account_path: &str, cwd: &str, session_id: &str) -> std::path::PathBuf {
-    std::path::Path::new(account_path)
-        .join("projects")
-        .join(encode_project_dir(cwd))
-        .join(format!("{session_id}.jsonl"))
-}
-
-fn read_context(account_path: &str, cwd: &str, session_id: &str) -> Option<ContextRead> {
-    use std::io::{Read, Seek, SeekFrom};
-    let path = transcript_path(account_path, cwd, session_id);
-    let mut f = std::fs::File::open(&path).ok()?;
-    let len = f.metadata().ok()?.len();
-    let take = len.min(128 * 1024);
-    f.seek(SeekFrom::End(-(take as i64))).ok()?;
-    let mut bytes = Vec::with_capacity(take as usize);
-    f.read_to_end(&mut bytes).ok()?;
-    let text = String::from_utf8_lossy(&bytes);
-    for line in text.lines().rev() {
-        if !line.contains("\"usage\"") {
-            continue;
-        }
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
-            continue;
-        };
-        // Subagent turns are interleaved into the same transcript but run in
-        // their own context window — their usage says nothing about this chat.
-        if v["isSidechain"].as_bool().unwrap_or(false) {
-            continue;
-        }
-        let u = &v["message"]["usage"];
-        if u.is_object() {
-            // Input side only: output tokens of a turn become input of the
-            // next one, so counting them here would double-count.
-            let total = u["input_tokens"].as_f64().unwrap_or(0.0)
-                + u["cache_read_input_tokens"].as_f64().unwrap_or(0.0)
-                + u["cache_creation_input_tokens"].as_f64().unwrap_or(0.0);
-            if total > 0.0 {
-                let model = v["message"]["model"].as_str().unwrap_or("");
-                return Some(ContextRead {
-                    tokens: total,
-                    window: crate::models::context_window(model),
-                });
-            }
-        }
-    }
-    None
-}
-
-/// Text of a transcript content field, which is either a bare string or an
-/// array of blocks.
-fn content_text(content: &serde_json::Value) -> Option<String> {
-    if let Some(t) = content.as_str() {
-        return Some(t.to_string());
-    }
-    let blocks = content.as_array()?;
-    for b in blocks {
-        if b["type"] == "text" {
-            if let Some(t) = b["text"].as_str() {
-                return Some(t.to_string());
-            }
-        }
-    }
-    None
-}
-
-/// The opening prompt of a session never changes, but session_meta asks for it
-/// every few seconds per pane — so read the file once and remember the answer.
-fn cached_first_prompt(account_path: &str, cwd: &str, session_id: &str) -> Option<String> {
-    static CACHE: std::sync::OnceLock<Mutex<HashMap<String, Option<String>>>> =
-        std::sync::OnceLock::new();
-    let cache = CACHE.get_or_init(Default::default);
-
-    if let Ok(map) = cache.lock() {
-        if let Some(hit) = map.get(session_id) {
-            return hit.clone();
-        }
-    }
-    let found = read_first_prompt(account_path, cwd, session_id);
-    // A miss is worth caching too, but only once the transcript exists: before
-    // the first turn there is genuinely nothing to read yet.
-    if found.is_some() {
-        if let Ok(mut map) = cache.lock() {
-            map.insert(session_id.to_string(), found.clone());
-        }
-    }
-    found
-}
-
 /// A title has to be something a person can read. Both sources have handed us
 /// strings that were not: a registry name made of the terminal's own cursor
 /// and mouse reports, which is what a chat row read as for its first minutes.
 /// Rejecting them here keeps that out of every place a title is shown.
-fn sane_title(s: &str) -> Option<String> {
+pub fn sane_title(s: &str) -> Option<String> {
     let t = s.trim();
     (!t.is_empty() && !t.chars().any(char::is_control)).then(|| t.to_string())
 }
 
-/// The session's opening prompt, trimmed to a title. Sessions are always named
-/// `derived` in the registry — i.e. after the cwd, which for a worktree run is
-/// a random codename — so the first thing the user actually said is a far
-/// better label for the chat.
-fn read_first_prompt(account_path: &str, cwd: &str, session_id: &str) -> Option<String> {
-    use std::io::{BufRead, BufReader};
-    let path = transcript_path(account_path, cwd, session_id);
-    let f = std::fs::File::open(&path).ok()?;
-    // The opening prompt is near the top; no need to walk a 700KB transcript.
-    for line in BufReader::new(f).lines().take(80).map_while(Result::ok) {
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
-        // `isMeta` marks a turn the CLI injected rather than one the user
-        // typed — a hook's instructions, a resumed-session preamble. One of
-        // those titled a chat "A session-scoped Stop hook is now active…".
-        if v["type"] != "user"
-            || v["isSidechain"].as_bool().unwrap_or(false)
-            || v["isMeta"].as_bool().unwrap_or(false)
-        {
-            continue;
-        }
-        let Some(text) = content_text(&v["message"]["content"]) else { continue };
-        let text = text.trim();
-        // Slash commands, replayed tool output and system reminders are not titles.
-        if text.is_empty() || text.starts_with('<') || text.starts_with('/') {
-            continue;
-        }
-        let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
-        let mut title: String = flat.chars().take(48).collect();
-        if flat.chars().count() > 48 {
-            title.push('…');
-        }
-        return sane_title(&title);
+/// A prompt trimmed to a title: whitespace flattened, 48 characters. Slash
+/// commands, replayed tool output and system reminders are not titles.
+pub fn title_from_prompt(text: &str) -> Option<String> {
+    let text = text.trim();
+    if text.is_empty() || text.starts_with('<') || text.starts_with('/') {
+        return None;
     }
-    None
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut title: String = flat.chars().take(48).collect();
+    if flat.chars().count() > 48 {
+        title.push('…');
+    }
+    sane_title(&title)
 }
 
-fn norm_path(p: &str) -> String {
-    p.replace('/', "\\").trim_end_matches('\\').to_lowercase()
+/// The last `max` bytes of a file as text, or None if it cannot be read.
+pub fn tail(path: &std::path::Path, max: u64) -> Option<String> {
+    use std::io::{Seek, SeekFrom};
+    let mut f = std::fs::File::open(path).ok()?;
+    let len = f.metadata().ok()?.len();
+    let take = len.min(max);
+    f.seek(SeekFrom::End(-(take as i64))).ok()?;
+    let mut bytes = Vec::with_capacity(take as usize);
+    f.read_to_end(&mut bytes).ok()?;
+    Some(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-fn parse_session_file(path: &std::path::Path) -> Option<serde_json::Value> {
-    serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
+/// What a session-meta read needs, copied out from under the map.
+struct Probe {
+    id: String,
+    provider: Provider,
+    pid: Option<u32>,
+    cwd: String,
+    spawned_at_ms: u128,
+    resume: Option<String>,
+    account_path: String,
+    last_output_ms: u64,
 }
 
-// Claude Code maintains a live registry at <config>/sessions/<pid>.json with
-// the AI-derived session name and current status — free to read, no tokens.
+fn probe_of(id: &str, s: &Session) -> Probe {
+    Probe {
+        id: id.to_string(),
+        provider: s.provider,
+        pid: s.pid,
+        cwd: s.cwd.clone(),
+        spawned_at_ms: s.spawned_at_ms,
+        resume: s.resume.clone(),
+        account_path: s.account_path.clone(),
+        last_output_ms: s.last_output_ms.load(Ordering::Relaxed),
+    }
+}
+
+fn meta_from_disk(p: &Probe) -> Option<SessionMeta> {
+    match p.provider {
+        Provider::Claude => crate::claude::session::meta(p.pid, &p.cwd, p.spawned_at_ms, &p.account_path),
+        Provider::Codex => crate::codex::session::meta(&crate::codex::session::Live {
+            chat_id: &p.id,
+            cwd: &p.cwd,
+            spawned_at_ms: p.spawned_at_ms,
+            resume: p.resume.as_deref(),
+            account_path: &p.account_path,
+            last_output_ms: p.last_output_ms,
+        }),
+    }
+}
+
+// Name, status and context of a live session, read off what its CLI leaves on
+// disk — free, no tokens.
 //
 // Async on purpose: this runs every few seconds for every open pane and reads
 // the tail of a transcript that grows into the megabytes. As a sync command it
@@ -742,7 +815,7 @@ pub async fn session_meta(
     id: String,
     account_path: String,
 ) -> Result<Option<SessionMeta>, String> {
-    let (pid, cwd, spawned_at_ms) = {
+    let probe = {
         let sessions = state.sessions.lock().unwrap();
         let Some(s) = sessions.get(&id) else {
             return Ok(None);
@@ -750,79 +823,18 @@ pub async fn session_meta(
         if !s.alive.load(Ordering::SeqCst) {
             return Ok(None);
         }
-        (s.pid, s.cwd.clone(), s.spawned_at_ms)
+        let mut p = probe_of(&id, s);
+        // The caller's idea of the account wins, as it always has: the chat
+        // row is the source of truth for which folder a chat belongs to.
+        if !account_path.is_empty() {
+            p.account_path = account_path;
+        }
+        p
     };
 
-    tauri::async_runtime::spawn_blocking(move || meta_from_disk(pid, cwd, spawned_at_ms, account_path))
+    tauri::async_runtime::spawn_blocking(move || meta_from_disk(&probe))
         .await
         .map_err(|e| e.to_string())
-}
-
-fn meta_from_disk(
-    pid: Option<u32>,
-    cwd: String,
-    spawned_at_ms: u128,
-    account_path: String,
-) -> Option<SessionMeta> {
-    let dir = std::path::Path::new(&account_path).join("sessions");
-    let extract = |v: &serde_json::Value| {
-        let mut m = SessionMeta {
-            name: v["name"].as_str().and_then(sane_title),
-            status: v["status"].as_str().map(str::to_owned),
-            cwd: v["cwd"].as_str().map(str::to_owned),
-            session_id: v["sessionId"].as_str().map(str::to_owned),
-            name_source: v["nameSource"].as_str().map(str::to_owned),
-            context: None,
-            context_tokens: None,
-            context_window: None,
-            first_prompt: None,
-        };
-        if let (Some(scwd), Some(sid)) = (m.cwd.as_deref(), m.session_id.as_deref()) {
-            if let Some(c) = read_context(&account_path, scwd, sid) {
-                m.context_tokens = Some(c.tokens);
-                m.context_window = Some(c.window);
-                m.context = Some((c.tokens / c.window).min(1.0));
-            }
-            m.first_prompt = cached_first_prompt(&account_path, scwd, sid);
-        }
-        m
-    };
-
-    // The CLI writes its registry entry a moment after the pty starts, so a
-    // missing file is a normal early answer, not a failure.
-    registry_entry(&dir, pid, &cwd, spawned_at_ms).map(|v| extract(&v))
-}
-
-/// Finds the CLI's registry entry for a pty session, by pid when that matches
-/// and otherwise by cwd + start time (launcher shims give the pty a different
-/// pid than the CLI process that writes the registry).
-fn registry_entry(
-    dir: &std::path::Path,
-    pid: Option<u32>,
-    cwd: &str,
-    spawned_at_ms: u128,
-) -> Option<serde_json::Value> {
-    if let Some(pid) = pid {
-        if let Some(v) = parse_session_file(&dir.join(format!("{pid}.json"))) {
-            return Some(v);
-        }
-    }
-
-    let want = norm_path(cwd);
-    let mut best: Option<(u64, serde_json::Value)> = None;
-    for entry in std::fs::read_dir(dir).ok()?.flatten() {
-        if let Some(v) = parse_session_file(&entry.path()) {
-            let scwd = norm_path(v["cwd"].as_str().unwrap_or(""));
-            let started = v["startedAt"].as_u64().unwrap_or(0);
-            if scwd.starts_with(&want) && (started as u128) + 5000 >= spawned_at_ms {
-                let updated = v["updatedAt"].as_u64().unwrap_or(started);
-                if best.as_ref().map(|(u, _)| updated > *u).unwrap_or(true) {
-                    best = Some((updated, v));
-                }
-            }
-        }
-    }
-    best.map(|(_, v)| v)
 }
 
 #[tauri::command]

@@ -1,18 +1,17 @@
 import { create } from 'zustand';
-import type { Account, LimitSet } from '../../shared/types';
+import type { Account, Chat, Provider } from '../../shared/types';
+import { EMPTY_CLAUDE_LIMITS, EMPTY_CODEX_LIMITS } from '../../shared/types';
 import { fmtReset } from '../../shared/lib/format';
 import * as ipc from '../../ipc/commands';
 
 // Folders on disk are the source of truth for the account list; limits come
-// from the OAuth usage endpoint per account (zero token cost) and refresh on
-// a timer.
-const emptyLimits: LimitSet = { h5: 0, week: 0, fable: 0 };
-const emptyResets = { h5: '—', week: '—', fable: '—' };
+// from each provider's usage endpoint per account (zero token cost) and
+// refresh on a timer.
 
 interface AccountsState {
   accounts: Account[];
   /** False until list_accounts has answered once. Sessions must not spawn
-   *  before that: an unresolved account path means no CLAUDE_CONFIG_DIR. */
+   *  before that: an unresolved account path means no config dir. */
   loaded: boolean;
   adding: boolean;
   error: string | null;
@@ -21,23 +20,29 @@ interface AccountsState {
   /** Refreshes now and keeps refreshing, honouring the backoff between rounds. */
   startPolling: () => void;
   stopPolling: () => void;
-  add: (name: string) => Promise<void>;
-  remove: (name: string) => Promise<void>;
+  add: (provider: Provider, name: string) => Promise<void>;
+  remove: (provider: Provider, name: string) => Promise<void>;
   setAdding: (v: boolean) => void;
   setError: (e: string | null) => void;
   setLoginFor: (a: Account | null) => void;
 }
 
+/** Names repeat across providers, so an account is found by both. */
+export const findAccount = (accounts: Account[], provider: Provider, name: string): Account | null =>
+  accounts.find(a => a.provider === provider && a.name === name) ?? null;
+
+export const accountOfChat = (accounts: Account[], chat: Chat): Account | null =>
+  findAccount(accounts, chat.provider, chat.account);
+
 const toAccount = (a: ipc.AccountInfo): Account => ({
+  provider: a.provider,
   name: a.name,
   path: a.path,
   plan: '—',
   email: null,
   signedIn: false,
   haveUsage: false,
-  limits: emptyLimits,
-  resets: emptyResets,
-  weekResetAt: null,
+  limits: a.provider === 'codex' ? EMPTY_CODEX_LIMITS : EMPTY_CLAUDE_LIMITS,
   usageAge: null,
   fetchedAt: null,
   sync: 'loading'
@@ -62,7 +67,7 @@ let backoffStep = 0;
 const BACKOFF_S = [30, 60, 120, 300, 600, 900];
 
 const HEALTHY_S = 60;
-// The usage endpoint 429s without a retry-after header, so the server never
+// The usage endpoints 429 without a retry-after header, so the server never
 // tells us how long to hold off. Sit out a few minutes after any 429: the
 // CLI's own cache keeps the bars honest while sessions are running anyway.
 const THROTTLED_S = 180;
@@ -73,6 +78,64 @@ const scheduleRetry = (afterS: number, run: () => void) => {
   // Jitter keeps several accounts from hitting the endpoint in lockstep.
   const ms = afterS * 1000 + Math.random() * 3000;
   retryTimer = setTimeout(run, ms);
+};
+
+/** One provider's answer, folded into the fields the row draws. */
+interface Round {
+  plan: string | null;
+  email: string | null;
+  signedIn: boolean;
+  haveUsage: boolean;
+  fetchedAtMs: number | null;
+  stale: boolean;
+  rateLimited: number | null;
+  limits: Account['limits'] | null;
+}
+
+const askClaude = async (path: string): Promise<Round | null> => {
+  const lim = await ipc.accountLimits(path).catch(() => null);
+  if (!lim) return null;
+  return {
+    plan: lim.plan,
+    email: lim.email,
+    signedIn: lim.signedIn,
+    haveUsage: lim.haveUsage,
+    fetchedAtMs: lim.fetchedAtMs,
+    stale: lim.stale,
+    rateLimited: lim.rateLimited,
+    limits: lim.haveUsage
+      ? {
+          kind: 'claude',
+          h5: lim.h5,
+          week: lim.week,
+          fable: lim.model,
+          resets: { h5: fmtReset(lim.resetH5), week: fmtReset(lim.resetWeek), fable: fmtReset(lim.resetModel) },
+          weekResetAt: lim.resetWeek ?? null
+        }
+      : null
+  };
+};
+
+const askCodex = async (path: string): Promise<Round | null> => {
+  const lim = await ipc.codexLimits(path).catch(() => null);
+  if (!lim) return null;
+  return {
+    plan: lim.plan,
+    email: lim.email,
+    signedIn: lim.signedIn,
+    haveUsage: lim.haveUsage,
+    fetchedAtMs: lim.fetchedAtMs,
+    stale: lim.stale,
+    rateLimited: lim.rateLimited,
+    limits: lim.haveUsage
+      ? {
+          kind: 'codex',
+          windows: lim.windows.map(w => ({
+            id: w.id, label: w.label, used: w.used, reset: fmtReset(w.resetsAt), resetAt: w.resetsAt
+          }))
+        }
+      : null
+  };
 };
 
 export const useAccounts = create<AccountsState>()((set, get) => ({
@@ -110,7 +173,7 @@ export const useAccounts = create<AccountsState>()((set, get) => ({
       // account spent its life 429'd.
       if (i > 0) await sleep(2000 + Math.random() * 2000);
 
-      const lim = await ipc.accountLimits(a.path).catch(() => null);
+      const lim = a.provider === 'codex' ? await askCodex(a.path) : await askClaude(a.path);
       if (!lim) {
         patch(a.path, { sync: 'error' });
         continue;
@@ -126,19 +189,13 @@ export const useAccounts = create<AccountsState>()((set, get) => ({
       };
       const sync = lim.rateLimited != null ? 'throttled' as const : lim.stale ? 'stale' as const : null;
 
-      if (lim.haveUsage) {
+      if (lim.haveUsage && lim.limits) {
         patch(a.path, {
           ...base,
           haveUsage: true,
           usageAge: ageLabel(lim.fetchedAtMs),
           fetchedAt: lim.fetchedAtMs,
-          limits: { h5: lim.h5, week: lim.week, fable: lim.model },
-          resets: {
-            h5: fmtReset(lim.resetH5),
-            week: fmtReset(lim.resetWeek),
-            fable: fmtReset(lim.resetModel)
-          },
-          weekResetAt: lim.resetWeek ?? null,
+          limits: lim.limits,
           sync: sync ?? 'ready'
         });
         continue;
@@ -206,23 +263,23 @@ export const useAccounts = create<AccountsState>()((set, get) => ({
     clearTimeout(retryTimer);
   },
 
-  add: async name => {
+  add: async (provider, name) => {
     const trimmed = name.trim();
     if (!trimmed) return;
     try {
-      const created = await ipc.createAccount(trimmed);
+      const created = await ipc.createAccount(provider, trimmed);
       set({ adding: false, error: null });
       await get().refresh();
       // Open a first-login terminal so credentials land in the new folder.
-      if (created) set({ loginFor: get().accounts.find(a => a.name === created.name) ?? null });
+      if (created) set({ loginFor: findAccount(get().accounts, created.provider, created.name) });
     } catch (e) {
       set({ error: String(e) });
     }
   },
 
-  remove: async name => {
+  remove: async (provider, name) => {
     try {
-      await ipc.deleteAccount(name);
+      await ipc.deleteAccount(provider, name);
       await get().refresh();
     } catch (e) {
       set({ error: String(e) });

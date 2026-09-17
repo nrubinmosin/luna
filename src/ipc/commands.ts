@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { Effort, ModelLabel, PermMode } from '../shared/types';
+import type { CodexApproval, CodexEffort, CodexSandbox, Effort, ModelLabel, PermMode, Provider } from '../shared/types';
 import { MODEL_CLI, PERM_CLI } from '../shared/types';
 import { logWarn, SLOW_MS } from '../shared/lib/log';
 
@@ -10,8 +10,11 @@ const tauriAvailable = '__TAURI_INTERNALS__' in window;
 // their own rather than tripping the stall warning thousands of times a day.
 const SLOW_BUDGET_MS: Record<string, number> = {
   account_limits: 5000,
+  codex_limits: 5000,
   session_meta: 2000,
-  ensure_session: 30_000,
+  ensure_claude_session: 30_000,
+  ensure_codex_session: 30_000,
+  create_worktree: 30_000,
   // Both give the CLI a moment to quit on its own before killing it.
   kill_session: 5000,
   delete_session: 10_000,
@@ -26,7 +29,7 @@ async function call<T>(cmd: string, args?: Record<string, unknown>, fallback?: T
     // The README fixture answers the handful of commands whose emptiness would
     // show in a screenshot; without `?demo` it hands back the same fallback as
     // ever. Compiled out of a release build along with the module.
-    if (import.meta.env.DEV) return (await import('../dev/demo')).answer(cmd, fallback as T);
+    if (import.meta.env.DEV) return (await import('../dev/demo')).answer(cmd, args ?? {}, fallback as T);
     return fallback as T;
   }
   // Timed because a sync Tauri command runs on the main thread: a slow one is
@@ -43,7 +46,10 @@ async function call<T>(cmd: string, args?: Record<string, unknown>, fallback?: T
   }
 }
 
+// -------------------------------------------------------------- accounts --
+
 export interface AccountInfo {
+  provider: Provider;
   name: string;
   path: string;
 }
@@ -68,9 +74,33 @@ export interface AccountLimitsDto {
   rateLimited: number | null;
 }
 
+export interface CodexLimitWindowDto {
+  id: string;
+  label: string;
+  used: number;
+  windowMinutes: number | null;
+  resetsAt: string | null;
+}
+
+export interface CodexLimitsDto {
+  signedIn: boolean;
+  email: string | null;
+  plan: string | null;
+  haveUsage: boolean;
+  windows: CodexLimitWindowDto[];
+  /** 'network' or 'rollout' (the last turn's own numbers). */
+  source: string | null;
+  fetchedAtMs: number | null;
+  stale: boolean;
+  rateLimited: number | null;
+}
+
 export const listAccounts = () => call<AccountInfo[]>('list_accounts', {}, []);
 export const accountLimits = (accountPath: string) =>
   call<AccountLimitsDto | null>('account_limits', { accountPath }, null);
+export const codexLimits = (accountPath: string) =>
+  call<CodexLimitsDto | null>('codex_limits', { accountPath }, null);
+
 export interface AccountsRootInfo {
   path: string;
   isDefault: boolean;
@@ -78,14 +108,18 @@ export interface AccountsRootInfo {
 
 export const getAccountsRoot = () =>
   call<AccountsRootInfo | null>('get_accounts_root', {}, null);
-/** Empty string restores the default (Documents/claude-accounts). */
+/** Empty string restores the default (Documents/luna-accounts). */
 export const setAccountsRoot = (path: string) =>
   call<AccountsRootInfo>('set_accounts_root', { path });
 
-export const createAccount =(name: string) => call<AccountInfo>('create_account', { name });
-export const deleteAccount = (name: string) => call<void>('delete_account', { name });
+export const createAccount = (provider: Provider, name: string) =>
+  call<AccountInfo>('create_account', { provider, name });
+export const deleteAccount = (provider: Provider, name: string) =>
+  call<void>('delete_account', { provider, name });
 
-export interface SessionSpec {
+// -------------------------------------------------------------- sessions --
+
+export interface ClaudeSessionSpec {
   chatId: string;
   folder: string;
   accountPath: string;
@@ -96,8 +130,8 @@ export interface SessionSpec {
   resume?: string | null;
 }
 
-export const ensureSession = (spec: SessionSpec) =>
-  call<string>('ensure_session', {
+export const ensureClaudeSession = (spec: ClaudeSessionSpec) =>
+  call<string>('ensure_claude_session', {
     id: spec.chatId,
     folder: spec.folder,
     accountPath: spec.accountPath,
@@ -107,6 +141,33 @@ export const ensureSession = (spec: SessionSpec) =>
     permissionMode: PERM_CLI[spec.perm],
     worktree: spec.worktree,
     resume: spec.resume ?? null
+  }, '');
+
+export interface CodexSessionSpec {
+  chatId: string;
+  /** Where Codex runs — the worktree itself for an isolated chat. */
+  folder: string;
+  accountPath: string;
+  model: string | null;
+  effort: CodexEffort;
+  approval: CodexApproval;
+  sandbox: CodexSandbox;
+  resume?: string | null;
+  /** `codex login` instead of a chat. */
+  login?: boolean;
+}
+
+export const ensureCodexSession = (spec: CodexSessionSpec) =>
+  call<string>('ensure_codex_session', {
+    id: spec.chatId,
+    folder: spec.folder,
+    accountPath: spec.accountPath,
+    model: spec.model,
+    effort: spec.effort,
+    approval: spec.approval,
+    sandbox: spec.sandbox,
+    resume: spec.resume ?? null,
+    login: spec.login ?? false
   }, '');
 
 export const writeSession = (id: string, data: string) =>
@@ -125,6 +186,8 @@ export interface SessionMetaDto {
   cwd: string | null;
   sessionId: string | null;
   nameSource: string | null;
+  /** The model the CLI reports running, where it records one (Codex). */
+  model: string | null;
   context: number | null;
   contextTokens: number | null;
   contextWindow: number | null;
@@ -136,6 +199,7 @@ export const sessionMeta = (id: string, accountPath: string) =>
 
 export interface OrphanSessionDto {
   id: string;
+  provider: Provider;
   pid: number | null;
   cwd: string;
   accountPath: string;
@@ -146,6 +210,11 @@ export interface OrphanSessionDto {
 /** Sessions this app is running that no chat in the sidebar claims. */
 export const orphanSessions = (known: string[]) =>
   call<OrphanSessionDto[]>('orphan_sessions', { known }, []);
+
+// ------------------------------------------------------------- worktrees --
+
+/** Makes `<folder>/.codex/worktrees/codex-xxxxxx` on a fresh branch; returns the path. */
+export const createWorktree = (folder: string) => call<string>('create_worktree', { folder });
 
 export const removeWorktree = (folder: string, worktreePath: string) =>
   call<void>('remove_worktree', { folder, worktreePath });
@@ -180,18 +249,21 @@ export const orphanWorktrees = (folder: string, inUse: string[], accountPaths: s
 export const removeOrphanWorktrees = (folder: string, inUse: string[], accountPaths: string[]) =>
   call<number>('remove_orphan_worktrees', { folder, inUse, accountPaths }, 0);
 
-/** Where a resolved default came from, for the line under the control. */
-export type DefaultSource = 'account' | 'project' | 'project-local' | 'managed';
+// -------------------------------------------------------------- defaults --
 
-export interface SettingDto {
+/** Where a resolved default came from, for the line under the control. */
+export type ClaudeDefaultSource = 'account' | 'project' | 'project-local' | 'managed';
+export type CodexDefaultSource = 'account' | 'project';
+
+export interface SettingDto<S extends string = string> {
   value: string;
-  source: DefaultSource;
+  source: S;
 }
 
 export interface ClaudeDefaultsDto {
-  model: SettingDto | null;
-  effort: SettingDto | null;
-  permissionMode: SettingDto | null;
+  model: SettingDto<ClaudeDefaultSource> | null;
+  effort: SettingDto<ClaudeDefaultSource> | null;
+  permissionMode: SettingDto<ClaudeDefaultSource> | null;
 }
 
 /**
@@ -206,13 +278,39 @@ export const claudeDefaults = (accountPath: string, folder: string) =>
     { model: null, effort: null, permissionMode: null }
   );
 
+export interface CodexDefaultsDto {
+  model: SettingDto<CodexDefaultSource> | null;
+  effort: SettingDto<CodexDefaultSource> | null;
+  approval: SettingDto<CodexDefaultSource> | null;
+  sandbox: SettingDto<CodexDefaultSource> | null;
+}
+
+/** The same out of Codex's `config.toml` — the account's, then the project's
+ *  (which Codex only reads once the folder is trusted). */
+export const codexDefaults = (accountPath: string, folder: string) =>
+  call<CodexDefaultsDto>(
+    'codex_defaults',
+    { accountPath, folder },
+    { model: null, effort: null, approval: null, sandbox: null }
+  );
+
+// ----------------------------------------------------------------- trust --
+
 /** Whether this account already accepted Claude Code's trust prompt for the folder. */
-export const folderTrusted = (accountPath: string, folder: string) =>
-  call<boolean>('folder_trusted', { accountPath, folder }, true);
+export const claudeFolderTrusted = (accountPath: string, folder: string) =>
+  call<boolean>('claude_folder_trusted', { accountPath, folder }, true);
 
 /** Writes the same trust bit the CLI's own prompt would write. */
-export const trustFolder = (accountPath: string, folder: string) =>
-  call<void>('trust_folder', { accountPath, folder });
+export const claudeTrustFolder = (accountPath: string, folder: string) =>
+  call<void>('claude_trust_folder', { accountPath, folder });
+
+export const codexFolderTrusted = (accountPath: string, folder: string) =>
+  call<boolean>('codex_folder_trusted', { accountPath, folder }, true);
+
+export const codexTrustFolder = (accountPath: string, folder: string) =>
+  call<void>('codex_trust_folder', { accountPath, folder });
+
+// ----------------------------------------------------------------- media --
 
 /** Copies a pasted/dropped file into the app's media store, returns its absolute path. */
 export const saveMedia = (chatId: string, name: string, base64: string) =>
@@ -220,11 +318,14 @@ export const saveMedia = (chatId: string, name: string, base64: string) =>
 
 export const clearMedia = (chatId: string) => call<void>('clear_media', { chatId });
 
+// ------------------------------------------------------------------- cli --
+
 export interface CliStatusDto {
+  provider: Provider;
   phase: 'idle' | 'checking' | 'downloading' | 'error';
-  /** Version Luna's own CLI copy is at; null until the first download lands. */
+  /** Version Luna's own copy is at; null until the first download lands. */
   version: string | null;
-  /** The binary sessions spawn — `claude` (PATH) while there is no managed copy. */
+  /** The binary sessions spawn — the bare name on PATH while there is no managed copy. */
   path: string;
   latest: string | null;
   got: number;
@@ -233,9 +334,10 @@ export interface CliStatusDto {
   checkedAtMs: number | null;
 }
 
-export const cliStatus = () => call<CliStatusDto | null>('cli_status', {}, null);
-/** Check the release bucket now and install whatever is newer. */
-export const cliUpdateNow = () => call<void>('cli_update_now', {});
+export const cliStatus = (provider: Provider) =>
+  call<CliStatusDto | null>('cli_status', { provider }, null);
+/** Check the release channel now and install whatever is newer. */
+export const cliUpdateNow = (provider: Provider) => call<void>('cli_update_now', { provider });
 
 export const pickFolder = async (): Promise<string | null> => {
   if (!tauriAvailable) return null;

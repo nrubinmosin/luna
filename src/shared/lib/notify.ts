@@ -1,7 +1,7 @@
 const tauriAvailable = '__TAURI_INTERNALS__' in window;
 
 // Toast when a session flips to "waiting" — the app may be hidden in the tray.
-export async function notifyWaiting(chatName: string): Promise<void> {
+export async function notifyWaiting(chatName: string, who: string): Promise<void> {
   if (!tauriAvailable) return;
   try {
     const { isPermissionGranted, requestPermission, sendNotification } = await import(
@@ -10,7 +10,7 @@ export async function notifyWaiting(chatName: string): Promise<void> {
     let granted = await isPermissionGranted();
     if (!granted) granted = (await requestPermission()) === 'granted';
     if (granted) {
-      sendNotification({ title: 'Claude is waiting', body: `“${chatName}” needs your input` });
+      sendNotification({ title: `${who} is waiting`, body: `“${chatName}” needs your input` });
     }
   } catch {
     // notifications are best-effort

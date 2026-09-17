@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { attachClipboardImage, attachFiles, filesFrom } from '../../shared/lib/attach';
 import { ACCENT, tint } from '../../shared/lib/format';
 import type { Chat } from '../../shared/types';
-import { useAccounts } from '../accounts/accounts.store';
+import { accountOfChat, useAccounts } from '../accounts/accounts.store';
 import { acquire, release, TERM_FONT_FAMILY, TERM_FONT_SIZE } from './terminals';
 
 /** A drag carrying real files, as opposed to a chat row being dropped into a pane. */
@@ -20,7 +20,7 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
   // drops CLAUDE_CONFIG_DIR — the CLI then boots on the default config and
   // greets every pane with first-run onboarding.
   const accountsLoaded = useAccounts(s => s.loaded);
-  const accountPath = useAccounts(s => s.accounts.find(a => a.name === chat.account)?.path ?? null);
+  const accountPath = useAccounts(s => accountOfChat(s.accounts, chat)?.path ?? null);
   const [dropping, setDropping] = useState(false);
   const [attaching, setAttaching] = useState(0);
 

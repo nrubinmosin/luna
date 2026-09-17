@@ -1,7 +1,7 @@
 [package]
 name = "luna"
 version = "0.2.3"
-description = "Thin desktop UI over Claude Code CLI sessions"
+description = "Thin desktop UI over Claude Code and Codex CLI sessions"
 edition = "2021"
 
 [lib]
@@ -28,6 +28,9 @@ dirs = "6"
 portable-pty = "0.9"
 ureq = { version = "2", features = ["json"] }
 sha2 = "0.10"
+toml_edit = "0.22"
+flate2 = "1"
+tar = "0.4"
 
 # Only for subclassing the windows — the Alt menu and WM_ENDSESSION (see
 # src/sysmenu.rs). Pinned to the version tauri already resolves, so this adds

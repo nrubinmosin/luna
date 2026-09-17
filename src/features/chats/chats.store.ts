@@ -25,6 +25,8 @@ interface ChatsState {
   setName: (chatId: string, name: string) => void;
   setWorktreePath: (chatId: string, path: string) => void;
   setSessionId: (chatId: string, sessionId: string) => void;
+  /** The model a Codex session reports running (its `turn_context`). */
+  setModelSeen: (chatId: string, model: string) => void;
   setContext: (chatId: string, context: number, tokens: number | null, window: number | null) => void;
   setColor: (chatId: string, color: string | null) => void;
   renameChat: (chatId: string, name: string) => void;
@@ -151,6 +153,16 @@ export const useChats = create<ChatsState>()(
           }))
         })),
 
+      setModelSeen: (chatId, model) =>
+        set(s => ({
+          folders: s.folders.map(f => ({
+            ...f,
+            chats: f.chats.map(c =>
+              c.id === chatId && c.provider === 'codex' && c.modelSeen !== model ? { ...c, modelSeen: model } : c
+            )
+          }))
+        })),
+
       setColor: (chatId, color) =>
         set(s => ({
           folders: s.folders.map(f => ({
@@ -190,6 +202,12 @@ export const useChats = create<ChatsState>()(
     }),
     {
       name: 'luna.chats',
+      // Chats gained a provider and per-provider settings; what was stored
+      // before has neither, and a row that cannot say which CLI it runs is
+      // not worth carrying over.
+      version: 2,
+      migrate: (persisted, version) =>
+        version < 2 ? { folders: [], active: null } : (persisted as Partial<ChatsState>),
       merge: (persisted, current) => {
         const p = (persisted ?? {}) as Partial<ChatsState>;
         return {
