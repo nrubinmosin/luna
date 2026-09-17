@@ -11,7 +11,8 @@ import {
   codexApprovalFromSetting, codexEffortFromSetting, codexSandboxFromSetting
 } from '../../../shared/types';
 import {
-  codexDefaults, codexFolderTrusted, codexTrustFolder, ensureCodexSession, type CodexDefaultSource
+  codexDefaults, codexFolderTrusted, codexModels, codexTrustFolder, ensureCodexSession,
+  type CodexDefaultSource, type CodexModelDto
 } from '../../../ipc/commands';
 import { limitColor } from '../../../shared/lib/format';
 import { Segmented } from '../../../shared/ui/Segmented';
@@ -125,14 +126,32 @@ export const rememberModel = (model: string | null) => {
   }
 };
 
-export function Fields({ draft, origin }: {
+/** The label Codex's list gives a slug, or the slug itself. */
+const displayOf = (models: CodexModelDto[], slug: string) =>
+  models.find(m => m.slug === slug)?.displayName ?? slug;
+
+export function Fields({ draft, origin, accountPath }: {
   draft: Draft<CodexSettings>;
   origin: (field: keyof CodexSettings) => ReactNode;
+  accountPath: string;
 }) {
   const { settings, pick } = draft;
   const labelStyle: CSSProperties = { fontSize: 'var(--fs-3)', color: 'var(--dim)', marginBottom: 4, fontWeight: 600 };
   const hintStyle: CSSProperties = { fontSize: 'var(--fs-2)', color: 'var(--faint)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' };
   const [recent] = useState(recentModels);
+
+  // Codex's own model list, cached in the account folder by the CLI. With it
+  // the model is a row of buttons like the Claude side; without it (a fresh
+  // account that has not run yet) a text box is all there is to offer.
+  const [models, setModels] = useState<CodexModelDto[]>([]);
+  useEffect(() => {
+    let stale = false;
+    void codexModels(accountPath).then(m => !stale && setModels(m)).catch(() => {});
+    return () => {
+      stale = true;
+    };
+  }, [accountPath]);
+
   // The box edits a local copy so a half-typed name is not a picked one:
   // `pick` marks the field touched, and an empty box means "Codex default".
   const [typed, setTyped] = useState(settings.model ?? '');
@@ -143,34 +162,55 @@ export function Fields({ draft, origin }: {
   };
   const preset = CODEX_PRESETS.find(p => p.approval === settings.approval && p.sandbox === settings.sandbox);
 
+  // The levels the chosen model takes; Codex's default model is the first
+  // listed, so "default" borrows its ladder. A model from a settings file
+  // that the list does not know keeps the stock ladder.
+  const listed = settings.model ? models.find(m => m.slug === settings.model) : models[0];
+  const efforts = listed?.efforts.length ? listed.efforts : CODEX_EFFORTS;
+  const effortItems = efforts.includes(settings.effort) ? efforts : [...efforts, settings.effort];
+
+  const modelItems = ['default', ...models.map(m => m.displayName)];
+  const modelValue = settings.model ? displayOf(models, settings.model) : 'default';
+  const knownModel = !settings.model || models.some(m => m.slug === settings.model);
+
   return (
     <>
       <div>
         <div style={labelStyle}>Model</div>
-        <input
-          type="text"
-          list="codex-models"
-          value={typed}
-          placeholder={DEFAULT_MODEL_LABEL}
-          onChange={e => setTyped(e.target.value)}
-          onBlur={commit}
-          onKeyDown={e => {
-            // Enter also creates the chat (the dialog listens in capture);
-            // commit first so what was typed is what gets created.
-            if (e.key === 'Enter') commit();
-          }}
-          spellCheck={false}
-          style={{ width: '100%' }}
-        />
-        <datalist id="codex-models">
-          {recent.map(m => <option key={m} value={m} />)}
-        </datalist>
+        {models.length > 0 && knownModel ? (
+          <Segmented
+            items={modelItems}
+            value={modelValue}
+            onPick={label => pick('model', label === 'default' ? null : models.find(m => m.displayName === label)?.slug ?? null)}
+          />
+        ) : (
+          <>
+            <input
+              type="text"
+              list="codex-models"
+              value={typed}
+              placeholder={DEFAULT_MODEL_LABEL}
+              onChange={e => setTyped(e.target.value)}
+              onBlur={commit}
+              onKeyDown={e => {
+                // Enter also creates the chat (the dialog listens in capture);
+                // commit first so what was typed is what gets created.
+                if (e.key === 'Enter') commit();
+              }}
+              spellCheck={false}
+              style={{ width: '100%' }}
+            />
+            <datalist id="codex-models">
+              {[...models.map(m => m.slug), ...recent].map(m => <option key={m} value={m} />)}
+            </datalist>
+          </>
+        )}
         {origin('model')}
       </div>
 
       <div>
         <div style={labelStyle}>Reasoning effort</div>
-        <Segmented items={CODEX_EFFORTS} value={settings.effort} onPick={(v: CodexEffort) => pick('effort', v)} />
+        <Segmented items={effortItems} value={settings.effort} onPick={(v: CodexEffort) => pick('effort', v)} />
         {origin('effort')}
       </div>
 

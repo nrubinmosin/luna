@@ -34,7 +34,9 @@ export interface ClaudeSettings {
 
 // ---------------------------------------------------------------- Codex --
 
-export type CodexEffort = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+/** A reasoning level as Codex names it. The set is per model and comes off
+ *  the CLI's own model list (`low … ultra` today), so it is not closed here. */
+export type CodexEffort = string;
 export type CodexApproval = 'on-request' | 'never';
 export type CodexSandbox = 'read-only' | 'workspace-write' | 'danger-full-access';
 
@@ -202,7 +204,8 @@ export const permFromSetting = (raw: string): PermMode | null => PERM_OF_CLI[raw
 
 // ------------------------------------------------------ Codex's own settings
 
-export const CODEX_EFFORTS: CodexEffort[] = ['minimal', 'low', 'medium', 'high', 'xhigh'];
+/** The levels shown when the account has no model list cached yet. */
+export const CODEX_EFFORTS: CodexEffort[] = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 export const CODEX_APPROVALS: CodexApproval[] = ['on-request', 'never'];
 export const CODEX_SANDBOXES: CodexSandbox[] = ['read-only', 'workspace-write', 'danger-full-access'];
 
@@ -226,8 +229,10 @@ export const CODEX_PRESETS: Array<{ label: string; approval: CodexApproval; sand
   { label: 'Read only', approval: 'on-request', sandbox: 'read-only', hint: 'asks before any write' }
 ];
 
-export const codexEffortFromSetting = (raw: string): CodexEffort | null =>
-  CODEX_EFFORTS.find(e => e === raw.toLowerCase()) ?? null;
+export const codexEffortFromSetting = (raw: string): CodexEffort | null => {
+  const v = raw.trim().toLowerCase();
+  return /^[a-z]+$/.test(v) ? v : null;
+};
 export const codexApprovalFromSetting = (raw: string): CodexApproval | null =>
   CODEX_APPROVALS.find(e => e === raw.toLowerCase()) ?? null;
 export const codexSandboxFromSetting = (raw: string): CodexSandbox | null =>
