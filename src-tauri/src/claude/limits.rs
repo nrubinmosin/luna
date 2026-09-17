@@ -1,8 +1,7 @@
+use crate::throttle::{self, now_ms};
 use serde::Serialize;
 use serde_json::Value;
-use std::collections::HashMap;
 use std::path::Path;
-use std::sync::{Mutex, OnceLock};
 
 const BETA_HEADER: &str = "oauth-2025-04-20";
 const RATE_401: &str = "token expired — run a session to refresh";
@@ -10,32 +9,6 @@ pub const RATE_429: &str = "rate-limited";
 
 /// How old the CLI's own cached usage may be before we bother the network.
 const CACHE_FRESH_MS: u64 = 5 * 60 * 1000;
-
-/// The usage endpoint answers a throttled client with 429 and retry-after 0,
-/// i.e. it never says how long the sentence is — and observed behaviour is
-/// that coming back a few minutes later just earns the next 429. Sit out a
-/// full cool-off after one, without a request and without another log line;
-/// the UI keeps the last real numbers (and the CLI's cache keeps refreshing
-/// them whenever a session runs) so nothing on screen goes dark meanwhile.
-const THROTTLE_COOLOFF_MS: u64 = 15 * 60 * 1000;
-/// An account can stay throttled for a whole day, and a fixed cool-off then
-/// walks back into the same 429 four times an hour, every hour. Each 429 in a
-/// row doubles the wait up to this, which is both gentler on the endpoint and
-/// what turned hundreds of log lines a day into a handful.
-const THROTTLE_MAX_MS: u64 = 60 * 60 * 1000;
-
-/// Per-account throttle state: when the endpoint may be asked again, and the
-/// hold that got us there — the next 429 in the row doubles it.
-#[derive(Clone, Copy)]
-struct Throttle {
-    until_ms: u64,
-    cool_ms: u64,
-}
-
-fn throttles() -> &'static Mutex<HashMap<String, Throttle>> {
-    static MAP: OnceLock<Mutex<HashMap<String, Throttle>>> = OnceLock::new();
-    MAP.get_or_init(|| Mutex::new(HashMap::new()))
-}
 
 #[derive(Serialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -65,13 +38,6 @@ pub struct AccountLimits {
     pub stale: bool,
     /// The usage endpoint throttled us. Any numbers above came from the cache.
     pub rate_limited: Option<u64>,
-}
-
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 fn read_json(path: &Path) -> Option<Value> {
@@ -210,12 +176,9 @@ fn fetch_limits(account_path: &str) -> Result<AccountLimits, String> {
 
     // Inside a 429 cool-off: report the remaining hold instead of poking the
     // endpoint again. The frontend folds this into its own retry cadence.
-    if let Some(&t) = throttles().lock().unwrap().get(account_path) {
-        let now = now_ms();
-        if now < t.until_ms {
-            out.rate_limited = Some(((t.until_ms - now) / 1000).max(1));
-            return Ok(out);
-        }
+    if let Some(secs) = throttle::remaining(account_path) {
+        out.rate_limited = Some(secs);
+        return Ok(out);
     }
 
     let token = match read_token(account_path) {
@@ -237,36 +200,11 @@ fn fetch_limits(account_path: &str) -> Result<AccountLimits, String> {
             apply_limits(&mut out, &usage["limits"]);
             out.source = Some("network".into());
             out.fetched_at_ms = Some(now_ms() as f64);
-            // An answer means the sentence is served; the next 429 starts over
-            // at the short cool-off.
-            throttles().lock().unwrap().remove(account_path);
+            throttle::clear(account_path);
         }
         Err(e) if e.starts_with(RATE_429) => {
             let secs: u64 = e.rsplit(':').next().and_then(|s| s.parse().ok()).unwrap_or(0);
-            let mut map = throttles().lock().unwrap();
-            let previous = map.get(account_path).map(|t| t.cool_ms);
-            // Honour a real retry-after if one ever appears, but never come
-            // back sooner than the cool-off — retry-after 0 is what turned
-            // this warning into hundreds of log lines a day. Each 429 in a row
-            // doubles the wait, so an account that stays throttled is asked
-            // once an hour rather than four times.
-            let cool_ms = (secs * 1000)
-                .max(previous.map_or(THROTTLE_COOLOFF_MS, |c| (c * 2).min(THROTTLE_MAX_MS)));
-            map.insert(
-                account_path.to_string(),
-                Throttle { until_ms: now_ms() + cool_ms, cool_ms },
-            );
-            drop(map);
-            // Only while the hold is still growing: at the cap this repeats
-            // every hour for as long as the account is throttled, and that is
-            // the flood the escalation exists to stop.
-            if previous != Some(cool_ms) {
-                crate::log::warn(
-                    "limits",
-                    &format!("429 for {account_path}, retry-after {secs}s — cooling off {}s", cool_ms / 1000),
-                );
-            }
-            out.rate_limited = Some(cool_ms / 1000);
+            out.rate_limited = Some(throttle::hit("limits", account_path, secs));
         }
         Err(e) => {
             crate::log::warn("limits", &format!("usage failed for {account_path}: {e}"));

@@ -24,7 +24,7 @@ import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 import { logWarn } from '../../shared/lib/log';
 import type { Chat } from '../../shared/types';
-import { ensureSession, resizeSession, writeSession } from '../../ipc/commands';
+import { ensureClaudeSession, ensureCodexSession, resizeSession, writeSession } from '../../ipc/commands';
 import { onPtyExit, onPtyOutput } from '../../ipc/events';
 import { useChats } from '../chats/chats.store';
 
@@ -374,16 +374,30 @@ function create(spec: TermSpec): Entry {
     // worktree, relaunch from that worktree instead of creating a new one.
     let backlog: string;
     try {
-      backlog = await ensureSession({
-        chatId,
-        folder: chat.worktreePath || folderPath,
-        accountPath,
-        model: chat.model,
-        effort: chat.effort,
-        perm: chat.perm,
-        worktree: chat.worktree && !chat.worktreePath,
-        resume: chat.sessionId ?? null
-      });
+      backlog =
+        chat.provider === 'codex'
+          ? await ensureCodexSession({
+              chatId,
+              // Luna made the worktree before the row existed, so the path is
+              // always known; a chat without one runs in the folder itself.
+              folder: chat.worktreePath || folderPath,
+              accountPath,
+              model: chat.model,
+              effort: chat.effort,
+              approval: chat.approval,
+              sandbox: chat.sandbox,
+              resume: chat.sessionId ?? null
+            })
+          : await ensureClaudeSession({
+              chatId,
+              folder: chat.worktreePath || folderPath,
+              accountPath,
+              model: chat.model,
+              effort: chat.effort,
+              perm: chat.perm,
+              worktree: chat.worktree && !chat.worktreePath,
+              resume: chat.sessionId ?? null
+            });
     } catch {
       // The ipc layer already logged the cause. Without this catch the
       // failure escaped the async block as an unhandled rejection and the

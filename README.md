@@ -2,10 +2,15 @@
 
 *[Русская версия](README.ru.md)*
 
-A thin desktop shell (Rust + Tauri) around the Claude Code CLI: several sessions side by
-side in panes, project folders, and accounts with isolated configs. It carries its own
-copy of the `claude` binary and keeps it current, so nothing here depends on a global
-install.
+A thin desktop shell (Rust + Tauri) around the Claude Code and Codex CLIs: several
+sessions side by side in panes, project folders, and accounts with isolated configs —
+an Anthropic subscription and a ChatGPT one in the same window. It carries its own copies
+of the `claude` and `codex` binaries and keeps them current, so nothing here depends on a
+global install.
+
+The two CLIs are two separate layers. A Codex chat is described in Codex's own words
+(model, reasoning effort, approval policy, sandbox mode), reads Codex's own `config.toml`,
+and shows Codex's own rate-limit windows; nothing from the Claude side is mapped onto it.
 
 ![Four chats in one window](docs/screenshots/panes.png)
 
@@ -42,21 +47,34 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Chats
 
-- New chat (Ctrl+N): folder, model, effort (`low/medium/high/xhigh/max/ultracode`),
-  permission mode, account, and a **Git worktree** checkbox — on by default, which runs
-  the session as `claude --worktree` in `<folder>/.claude/worktrees/<name>`.
-- Those three open on whatever Claude Code's own settings say for that account in that
-  folder, resolved in the CLI's own order: the account's `settings.json`, then the
-  project's `.claude/settings.json` and `.claude/settings.local.json`, then the
-  machine-wide managed file. The line under each control names the file it came from, and
-  changing one says so and offers the way back — an override belongs to that chat and is
-  never remembered as the new default.
+- New chat (Ctrl+N): folder, account, and a **Git worktree** checkbox (on by default).
+  The account decides which CLI the chat runs, and the rest of the dialog follows:
+  - **Claude Code**: model, effort (`low/medium/high/xhigh/max/ultracode`) and permission
+    mode. Isolation runs the session as `claude --worktree` in
+    `<folder>/.claude/worktrees/<name>`.
+  - **Codex**: model (a free text box — empty means Codex's own default; what it actually
+    runs shows up in the title bar once the first turn is in), reasoning effort
+    (`minimal/low/medium/high/xhigh`), approval policy (`on-request/never`) and sandbox
+    mode (`read-only/workspace-write/danger-full-access`), with the three usual pairs as
+    one-click presets; `never` + `danger-full-access` is passed as
+    `--dangerously-bypass-approvals-and-sandbox`, as Codex spells it. Isolation makes a
+    worktree on a fresh `codex-…` branch under `<folder>/.codex/worktrees/` and runs
+    `codex -C` inside it — Codex's own worktree feature is left alone (it is experimental,
+    puts the checkout under the account folder and never cleans up).
+- Those controls open on whatever the CLI's own settings say for that account in that
+  folder. Claude Code: the account's `settings.json`, then the project's
+  `.claude/settings.json` and `.claude/settings.local.json`, then the machine-wide managed
+  file. Codex: the account's `config.toml`, then the project's `.codex/config.toml` (which
+  Codex, and so Luna, only reads for a trusted folder). The line under each control names
+  the file it came from, and changing one says so and offers the way back — an override
+  belongs to that chat and is never remembered as the new default.
 - Ctrl+Shift+N skips the dialog: same folder and account as the chat on screen, the rest
   as the settings have it. Either way the new chat lands in a pane you can see — a free
   one, or the pane you were last working in when the board is full.
-- A chat's pane title bar carries its folder, account, model, effort, permission mode,
-  worktree flag and how much of the context window is gone — and the buttons to rename or
-  delete it. The same chips shrink to fit a narrow pane.
+- A chat's pane title bar carries its folder, account, model, effort, the permission mode
+  (Claude Code) or approval and sandbox (Codex), the worktree flag and how much of the
+  context window is gone — and the buttons to rename or delete it. The same chips shrink
+  to fit a narrow pane.
 - Colours: every new chat is dealt one of ten presets, worn by its pane's title bar and as
   a stripe on its sidebar row, so a glance links the two without reading either name.
 - Status per chat — working / waiting for you / resting — read from the CLI's own session
@@ -78,19 +96,31 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Accounts
 
-- An account is a folder — `<accounts root>/<name>`, by default
-  `Documents/claude-accounts`, and the ⚙ in the panel moves that root anywhere. "Add"
-  creates the folder, "✕" deletes it after a confirmation. A chat's session starts with
-  `CLAUDE_CONFIG_DIR=<account folder>`, so logins, settings and history are per account.
-- Live limits (5h / week / model-weekly, with reset times) come from the OAuth usage
-  endpoint — the same one `/usage` uses inside Claude Code — so they cost no tokens. The
-  CLI's own cache answers most rounds; the endpoint is polled around it, and a 429 backs
-  off for longer each time rather than hammering through it.
-- Signing in a fresh account is a button on its row: it runs `claude` in a modal, so
-  there is no reason to leave the app.
-- Luna writes the CLI's own trust bit for a folder when it has to. The CLI cannot show its
-  trust prompt under `--worktree`, which used to mean opening every new folder once
-  without isolation first.
+- An account is a folder under one root, by default `Documents/luna-accounts`, split by
+  vendor: `anthropic/<name>` for Claude Code, `openai/<name>` for Codex. The ⚙ in the
+  panel moves that root anywhere. "Add" asks which CLI and creates the folder, "✕" deletes
+  it after a confirmation. A Claude Code session starts with
+  `CLAUDE_CONFIG_DIR=<account folder>`, a Codex session with `CODEX_HOME=<account folder>`,
+  so logins, settings and history are per account either way. A fresh Codex account gets a
+  `config.toml` with `check_for_update_on_startup = false` — Luna updates that CLI itself.
+- Live limits cost no tokens. Claude Code: 5h / week / model-weekly with reset times, from
+  the OAuth usage endpoint `/usage` itself uses, with the CLI's own cache answering most
+  rounds. Codex: the rate-limit windows of the ChatGPT plan (typically 5 hours and a
+  week, plus any per-model limits), from the same endpoint Codex's `/status` reads, with
+  the token in the account's `auth.json`; when that is unreachable, the last
+  `token_count` line of a rollout has the same numbers as of the last turn. Either way a
+  429 backs off for longer each time rather than hammering through it.
+- Signing in a fresh account is a button on its row: it runs `claude`, or `codex login`,
+  in a modal, so there is no reason to leave the app.
+- Luna writes the CLI's own trust bit for a folder when it has to. Claude Code cannot show
+  its trust prompt under `--worktree`, which used to mean opening every new folder once
+  without isolation first; Codex would follow its trust screen with a Windows sandbox
+  setup question. Luna writes `hasTrustDialogAccepted` into `.claude.json`, or a
+  `[projects.'<path>'] trust_level = "trusted"` entry into `config.toml`, before the
+  session starts.
+- Codex on Windows: without the Windows sandbox set up (`[windows] sandbox` in
+  `config.toml`, Codex's own affair), `workspace-write` behaves as `read-only` and Codex
+  asks before every write. Luna does not touch that setting.
 
 ## Sessions and cleanup
 
@@ -170,11 +200,16 @@ the portable exe, the setup, its `.sig` and the manifest to a `v<version>` relea
   `src-tauri/tauri.conf.json` → `plugins.updater.endpoints`). A release found there lights
   up a chip in the status bar and waits to be clicked, rather than throwing up a modal
   over whatever was mid-turn.
-- The CLI updates on the same principle and separately: `cli.rs` checks the release bucket
-  every six hours, verifies the sha256 from its manifest, and installs into
-  `<data>/claude-cli/versions/<ver>/`. Sessions run with `DISABLE_AUTOUPDATER=1`, so Luna
-  is the only thing that moves that binary.
-- Both versions live in Settings (the ⚙ by the account list), each with its "checked …
+- The CLIs update on the same principle and separately: `cli.rs` checks each one's release
+  channel every six hours and installs into `<data>/claude-cli/versions/<ver>/` or
+  `<data>/codex-cli/versions/<ver>/`. Claude Code comes as a bare exe from the official
+  release bucket, verified against its manifest's sha256. Codex comes from GitHub Releases
+  (`openai/codex`, tag `rust-v<ver>`) as the package tarball — the only asset with a line
+  in the release's `SHA256SUMS`, and the one that carries the helpers the Windows sandbox
+  needs next to `bin/codex.exe`. Claude sessions run with `DISABLE_AUTOUPDATER=1` and Codex
+  accounts are created with `check_for_update_on_startup = false`, so Luna is the only
+  thing that moves either binary.
+- All three versions live in Settings (the ⚙ by the account list), each with its "checked …
   ago" and a check-now button; the status bar itself only speaks up while there is news —
   an update on offer, a download running, or a failure worth a retry.
 - The update signing key is `C:\Users\Nikita\.ssh\luna-updater.key` — private and

@@ -6,6 +6,7 @@ import { AccountsPanel } from '../accounts/AccountsPanel';
 import { useUpdates } from '../updates/updates.store';
 import { useCli } from '../updates/cli.store';
 import { cliUpdateNow } from '../../ipc/commands';
+import { PROVIDER_LABEL, PROVIDERS } from '../../shared/types';
 
 /** Sidebar footer: clock, run summary, then the account list —
  *  the horizontal top-level status bar this used to be didn't have room for
@@ -54,7 +55,7 @@ const pct = (got: number, total: number | null) =>
  */
 function UpdateChips() {
   const { phase, next, got, total } = useUpdates();
-  const cli = useCli(s => s.status);
+  const clis = useCli(s => s.status);
 
   const chips = [];
 
@@ -96,32 +97,36 @@ function UpdateChips() {
     );
   }
 
-  if (cli?.phase === 'downloading') {
-    const done = pct(cli.got, cli.total);
-    // The first download is the one that matters — without it a fresh install
-    // has nothing to run; it is the only CLI state drawn loud.
-    chips.push(
-      <div
-        key="cli"
-        title={`Downloading Claude Code ${cli.latest ?? ''}… new chats use it once it lands.`}
-        className="status-bar-field"
-        style={chipStyle(!cli.version)}
-      >
-        {`cli ↓ ${done == null ? '…' : `${done}%`}`}
-      </div>
-    );
-  } else if (cli?.phase === 'error') {
-    chips.push(
-      <div
-        key="cli"
-        onClick={() => void cliUpdateNow()}
-        title={`Claude CLI update failed — click to try again\n${cli.error ?? ''}`}
-        className="status-bar-field hover-bg"
-        style={chipStyle(false)}
-      >
-        cli ⚠
-      </div>
-    );
+  for (const p of PROVIDERS) {
+    const cli = clis[p];
+    const short = p === 'codex' ? 'codex' : 'claude';
+    if (cli?.phase === 'downloading') {
+      const done = pct(cli.got, cli.total);
+      // The first download is the one that matters — without it a fresh install
+      // has nothing to run; it is the only CLI state drawn loud.
+      chips.push(
+        <div
+          key={`cli-${p}`}
+          title={`Downloading ${PROVIDER_LABEL[p]} ${cli.latest ?? ''}… new chats use it once it lands.`}
+          className="status-bar-field"
+          style={chipStyle(!cli.version)}
+        >
+          {`${short} ↓ ${done == null ? '…' : `${done}%`}`}
+        </div>
+      );
+    } else if (cli?.phase === 'error') {
+      chips.push(
+        <div
+          key={`cli-${p}`}
+          onClick={() => void cliUpdateNow(p)}
+          title={`${PROVIDER_LABEL[p]} update failed — click to try again\n${cli.error ?? ''}`}
+          className="status-bar-field hover-bg"
+          style={chipStyle(false)}
+        >
+          {short} ⚠
+        </div>
+      );
+    }
   }
 
   return <>{chips}</>;

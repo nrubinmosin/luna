@@ -5,11 +5,10 @@ import { ConfirmDialog } from '../../shared/ui/ConfirmDialog';
 import { usePanes } from '../panes/panes.store';
 import { pickChatColor } from '../../shared/ui/chatColors';
 import { useChats, wornColors } from './chats.store';
+import { claude, codex, ui } from '../providers';
+import { PROVIDER_LABEL, type Chat } from '../../shared/types';
 
 const EVERY_MS = 30_000;
-
-/** `<repo>/.claude/worktrees/<name>` is a session's worktree, not its project. */
-const WORKTREE = /^(.*)[\\/]\.claude[\\/]worktrees[\\/][^\\/]+$/;
 
 /**
  * Sessions that are still running with no chat row to reach them through.
@@ -47,20 +46,17 @@ export function OrphanSessions() {
   }, [found.length]);
 
   const adopt = (o: OrphanSessionDto) => {
-    const m = WORKTREE.exec(o.cwd);
+    const m = ui(o.provider).worktreeParentRe.exec(o.cwd);
     const folder = m ? m[1] : o.cwd;
     const account = o.accountPath.split(/[\\/]/).filter(Boolean).pop() ?? '';
     // The row is built with the session's own id, which is what reattaches the
     // running pty — backlog included — the moment a pane mounts it. Model,
-    // effort and permission mode are the session's own business and cannot be
-    // read back from it; these are labels for a row that already exists.
-    useChats.getState().addChat(folder, {
+    // effort and the modes are the session's own business and cannot be read
+    // back from it; these are labels for a row that already exists.
+    const base = {
       id: o.id,
       name: o.title?.slice(0, 80) || `recovered session ${o.id.slice(-4)}`,
-      status: 'resting',
-      model: 'Opus',
-      effort: 'high',
-      perm: 'Bypass',
+      status: 'resting' as const,
       context: 0,
       account,
       // Into the group that is on screen: that is where the person doing the
@@ -70,7 +66,12 @@ export function OrphanSessions() {
       worktree: !!m,
       worktreePath: m ? o.cwd : null,
       color: pickChatColor(wornColors(folders, usePanes.getState().group))
-    });
+    };
+    const chat: Chat =
+      o.provider === 'codex'
+        ? { ...base, provider: 'codex', ...codex.STOCK }
+        : { ...base, provider: 'claude', ...claude.STOCK };
+    useChats.getState().addChat(folder, chat);
     usePanes.getState().autoPlace(o.id);
     rescan();
   };
@@ -138,6 +139,7 @@ export function OrphanSessions() {
                           style={{ fontSize: 'var(--fs-1)', color: 'var(--faint)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
                         >
                           {t.parent} / {t.leaf}
+                          {` · ${PROVIDER_LABEL[o.provider]}`}
                           {o.status ? ` · ${o.status}` : ''}
                           {o.pid ? ` · pid ${o.pid}` : ''}
                         </div>

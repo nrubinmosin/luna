@@ -37,7 +37,7 @@ fn read_config(path: &Path) -> Value {
 }
 
 #[tauri::command]
-pub fn folder_trusted(account_path: String, folder: String) -> Result<bool, String> {
+pub fn claude_folder_trusted(account_path: String, folder: String) -> Result<bool, String> {
     let cfg = read_config(&config_file(&account_path)?);
     Ok(cfg["projects"][project_key(&folder)]["hasTrustDialogAccepted"]
         .as_bool()
@@ -47,7 +47,7 @@ pub fn folder_trusted(account_path: String, folder: String) -> Result<bool, Stri
 /// Marks the folder trusted for this account — the same bit the CLI's own trust
 /// prompt writes. Leaves every other key in the config untouched.
 #[tauri::command]
-pub fn trust_folder(account_path: String, folder: String) -> Result<(), String> {
+pub fn claude_trust_folder(account_path: String, folder: String) -> Result<(), String> {
     let path = config_file(&account_path)?;
     let mut cfg = read_config(&path);
 

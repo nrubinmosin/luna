@@ -1,8 +1,9 @@
 import { useEffect } from 'react';
 import { sessionMeta } from '../../ipc/commands';
 import { notifyWaiting } from '../../shared/lib/notify';
-import type { Chat } from '../../shared/types';
-import { useAccounts } from '../accounts/accounts.store';
+import { PROVIDER_LABEL, type Chat } from '../../shared/types';
+import { accountOfChat, useAccounts } from '../accounts/accounts.store';
+import { ui } from '../providers';
 import { useChats } from './chats.store';
 
 const EVERY_MS = 4000;
@@ -39,7 +40,7 @@ export function useSessionWatch() {
       // them across many chats is exactly the main-thread hiccup we just fixed.
       for (const chat of chats) {
         if (stopped) return;
-        const accountPath = accounts.find(a => a.name === chat.account)?.path;
+        const accountPath = accountOfChat(accounts, chat)?.path;
         if (!accountPath) continue;
 
         const store = useChats.getState();
@@ -62,18 +63,26 @@ export function useSessionWatch() {
         if (title && !fresh.nameCustom && title !== fresh.name) store.setName(chat.id, title);
 
         const next = mapStatus(meta.status);
-        if (next === 'waiting' && fresh.status !== 'waiting') void notifyWaiting(fresh.name);
+        if (next === 'waiting' && fresh.status !== 'waiting') {
+          void notifyWaiting(fresh.name, PROVIDER_LABEL[fresh.provider]);
+        }
         if (next !== fresh.status) store.setStatus(chat.id, next);
 
         if (meta.context != null && meta.context !== fresh.context) {
           store.setContext(chat.id, meta.context, meta.contextTokens ?? null, meta.contextWindow ?? null);
         }
-        // Remember where --worktree actually put the session, for cleanup on delete.
-        if (meta.cwd && /[\\/]\.claude[\\/]worktrees[\\/]/i.test(meta.cwd) && meta.cwd !== fresh.worktreePath) {
+        // Remember where the worktree actually is, for cleanup on delete.
+        // Codex chats know theirs from birth; Claude Code's `--worktree` only
+        // tells us through the registry.
+        if (meta.cwd && ui(fresh.provider).worktreeRe.test(meta.cwd) && meta.cwd !== fresh.worktreePath) {
           store.setWorktreePath(chat.id, meta.cwd);
         }
-        // Remember the CLI session id so an app restart can --resume it.
+        // Remember the CLI session id so an app restart can resume it.
         if (meta.sessionId && meta.sessionId !== fresh.sessionId) store.setSessionId(chat.id, meta.sessionId);
+        // What Codex reports running, for a chat that left the model to it.
+        if (fresh.provider === 'codex' && meta.model && meta.model !== fresh.modelSeen) {
+          store.setModelSeen(chat.id, meta.model);
+        }
       }
     };
 

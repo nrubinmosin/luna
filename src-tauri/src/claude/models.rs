@@ -121,6 +121,7 @@ pub fn refresh_soon() {
             let token = crate::accounts::list_accounts()
                 .unwrap_or_default()
                 .into_iter()
+                .filter(|a| a.provider == crate::provider::Provider::Claude)
                 .find_map(|a| read_token(&a.path));
 
             if let Some(map) = token.as_deref().and_then(fetch) {

@@ -1,12 +1,11 @@
 import { useState } from 'react';
-import { fmtResetDate, limitColor } from '../../shared/lib/format';
+import { fmtResetDate } from '../../shared/lib/format';
 import { ConfirmDialog } from '../../shared/ui/ConfirmDialog';
-import type { Account } from '../../shared/types';
+import { PROVIDER_LABEL, PROVIDER_VENDOR, PROVIDERS, accountKey, type Account, type Provider } from '../../shared/types';
 import { useAccounts } from './accounts.store';
 import { useChats } from '../chats/chats.store';
 import { SettingsDialog } from '../settings/SettingsDialog';
-
-const LK: Array<['h5' | 'week' | 'fable', string]> = [['h5', '5 hours'], ['week', 'week'], ['fable', 'fable']];
+import { ui } from '../providers';
 
 /** Renders inline as the sidebar's account list — no longer a floating popover. */
 export function AccountsPanel() {
@@ -15,6 +14,7 @@ export function AccountsPanel() {
   const error = useAccounts(s => s.error);
   const { add, remove, setAdding, setLoginFor } = useAccounts.getState();
   const [name, setName] = useState('');
+  const [provider, setProvider] = useState<Provider>('claude');
   // `?demo=settings` opens the dialog for its screenshot; the check compiles
   // away in a release build along with the rest of the fixture.
   const [settingsOpen, setSettingsOpen] = useState(
@@ -27,8 +27,14 @@ export function AccountsPanel() {
   const [deleting, setDeleting] = useState<Account | null>(null);
   const folders = useChats(s => s.folders);
 
-  const inUse = (account: string) =>
-    folders.some(f => f.chats.some(c => c.account === account));
+  const inUse = (account: Account) =>
+    folders.some(f => f.chats.some(c => c.provider === account.provider && c.account === account.name));
+
+  const submit = () => {
+    if (!name.trim()) return;
+    void add(provider, name);
+    setName('');
+  };
 
   return (
     <div style={{ borderTop: '1px solid var(--line)', padding: '7px 9px 9px', overflowY: 'auto' }}>
@@ -48,7 +54,7 @@ export function AccountsPanel() {
         </button>
         <button
           onClick={() => setAdding(!adding)}
-          title="Add account — creates <accounts folder>/<name>"
+          title="Add account — creates <accounts folder>/anthropic/<name> or /openai/<name>"
           className="slim"
           style={{ minHeight: 'calc(var(--ui) * 1.35)', fontSize: 'var(--fs-2)' }}
         >
@@ -60,31 +66,29 @@ export function AccountsPanel() {
 
       {adding && (
         <div style={{ display: 'flex', gap: 4, marginBottom: 8 }}>
+          <select
+            value={provider}
+            onChange={e => setProvider(e.target.value as Provider)}
+            title="Which CLI this account signs in to"
+            style={{ flex: 'none', width: 92 }}
+          >
+            {PROVIDERS.map(p => (
+              <option key={p} value={p}>{PROVIDER_LABEL[p]}</option>
+            ))}
+          </select>
           <input
             autoFocus
             value={name}
             onChange={e => setName(e.target.value)}
             onKeyDown={e => {
-              if (e.key === 'Enter' && name.trim()) {
-                void add(name);
-                setName('');
-              }
+              if (e.key === 'Enter') submit();
               if (e.key === 'Escape') setAdding(false);
             }}
             placeholder="account name"
             type="text"
             style={{ flex: 1, minWidth: 0 }}
           />
-          <button
-            onClick={() => {
-              if (name.trim()) {
-                void add(name);
-                setName('');
-              }
-            }}
-            disabled={!name.trim()}
-            className="slim primary"
-          >
+          <button onClick={submit} disabled={!name.trim()} className="slim primary">
             Create
           </button>
         </div>
@@ -98,13 +102,14 @@ export function AccountsPanel() {
       )}
 
       {accounts.map(acc => {
+        const p = ui(acc.provider);
         // The dot answers "can this account be used", which is the sign-in
         // state — not whether the usage endpoint happened to answer.
         const dot = !acc.signedIn
           ? 'oklch(.63 .19 25)'
           : acc.sync === 'loading'
             ? 'var(--faint)'
-            : Math.max(acc.limits.h5, acc.limits.week) >= 0.85
+            : p.worstLimit(acc) >= 0.85
               ? 'oklch(.63 .19 25)'
               : 'oklch(.64 .18 145)';
         const note = !acc.signedIn
@@ -123,9 +128,9 @@ export function AccountsPanel() {
                 ? 'usage unavailable'
                 : 'no usage data yet'
           : acc.usageAge;
-        const weekReset = acc.haveUsage ? fmtResetDate(acc.weekResetAt) : null;
+        const weekReset = acc.haveUsage ? fmtResetDate(p.longResetAt(acc)) : null;
         return (
-          <div key={acc.name} style={{ padding: '6px 0', borderTop: '1px solid var(--line)' }}>
+          <div key={accountKey(acc.provider, acc.name)} style={{ padding: '6px 0', borderTop: '1px solid var(--line)' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 5 }}>
               <span style={{ width: 6, height: 6, borderRadius: '50%', flex: 'none', background: dot }} />
               <span
@@ -133,6 +138,15 @@ export function AccountsPanel() {
                 title={[acc.email, acc.path].filter(Boolean).join('\n')}
               >
                 {acc.name}
+              </span>
+              <span
+                title={`${PROVIDER_LABEL[acc.provider]} — a ${PROVIDER_VENDOR[acc.provider]} subscription`}
+                style={{
+                  fontSize: 'var(--fs-1)', color: 'var(--dim)', background: 'var(--chip)', borderRadius: 2,
+                  padding: '0 4px', flex: 'none', whiteSpace: 'nowrap'
+                }}
+              >
+                {p.label}
               </span>
               <span style={{ flex: 1 }} />
               <span
@@ -163,22 +177,7 @@ export function AccountsPanel() {
                 ✕
               </span>
             </div>
-            {LK.map(([k, full]) => (
-              <div key={k} style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 3 }}>
-                <span style={{ fontSize: 'var(--fs-1)', color: 'var(--dim)', width: 34, flex: 'none', whiteSpace: 'nowrap', overflow: 'hidden' }}>{full}</span>
-                <div className="xp-sunken" style={{ flex: 1, height: 6, background: 'var(--track)', overflow: 'hidden' }}>
-                  {acc.haveUsage && (
-                    <div style={{ height: '100%', width: `${Math.round(acc.limits[k] * 100)}%`, background: limitColor(acc.limits[k]) }} />
-                  )}
-                </div>
-                <span style={{ fontSize: 'var(--fs-1)', color: 'var(--dim)', width: 30, flex: 'none', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
-                  {acc.haveUsage ? `${Math.round(acc.limits[k] * 100)}%` : '—'}
-                </span>
-                <span style={{ fontSize: 'var(--fs-1)', color: 'var(--faint)', width: 42, flex: 'none', textAlign: 'right', whiteSpace: 'nowrap', overflow: 'hidden', fontVariantNumeric: 'tabular-nums' }}>
-                  {acc.haveUsage ? acc.resets[k] : ''}
-                </span>
-              </div>
-            ))}
+            <p.LimitBars account={acc} />
             {(weekReset || usageNote) && (
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, fontSize: 'var(--fs-1)', color: 'var(--faint)', marginTop: 1 }}>
                 {weekReset && <span style={{ whiteSpace: 'nowrap' }}>resets {weekReset}</span>}
@@ -197,7 +196,7 @@ export function AccountsPanel() {
             <>
               Deletes the folder <b>{deleting.path}</b> and the login stored in it. Nothing
               signs you out anywhere else, and nothing here can bring it back.
-              {inUse(deleting.name) && (
+              {inUse(deleting) && (
                 <div style={{ marginTop: 8 }}>
                   Chats are still set to this account — they have nowhere to spawn until you
                   point them somewhere else.
@@ -207,7 +206,7 @@ export function AccountsPanel() {
           }
           onCancel={() => setDeleting(null)}
           onConfirm={() => {
-            void remove(deleting.name);
+            void remove(deleting.provider, deleting.name);
             setDeleting(null);
           }}
         />

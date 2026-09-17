@@ -1,16 +1,16 @@
 mod accounts;
+mod claude;
 mod cli;
-mod defaults;
+mod codex;
 mod emit;
-mod limits;
 mod log;
 mod media;
-mod models;
 mod paths;
+mod provider;
 mod pty;
 mod settings;
 mod sysmenu;
-mod trust;
+mod throttle;
 mod worktree;
 
 use tauri::{
@@ -53,8 +53,8 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .manage(pty::PtyManager::default())
         .setup(|app| {
-            models::refresh_soon();
-            // Installs the CLI on a fresh machine and keeps it current after.
+            claude::models::refresh_soon();
+            // Installs the CLIs on a fresh machine and keeps them current after.
             cli::refresh_periodically(app.handle().clone());
 
             if let Some(w) = app.get_webview_window("main") {
@@ -105,13 +105,20 @@ pub fn run() {
             accounts::delete_account,
             cli::cli_status,
             cli::cli_update_now,
-            defaults::claude_defaults,
-            limits::account_limits,
+            claude::defaults::claude_defaults,
+            claude::limits::account_limits,
+            claude::trust::claude_folder_trusted,
+            claude::trust::claude_trust_folder,
+            codex::defaults::codex_defaults,
+            codex::limits::codex_limits,
+            codex::trust::codex_folder_trusted,
+            codex::trust::codex_trust_folder,
             log::append_log,
             media::save_media,
             media::clear_media,
             media::prune_media,
-            pty::ensure_session,
+            pty::ensure_claude_session,
+            pty::ensure_codex_session,
             pty::write_session,
             pty::resize_session,
             pty::kill_session,
@@ -121,8 +128,7 @@ pub fn run() {
             pty::delete_session,
             settings::get_accounts_root,
             settings::set_accounts_root,
-            trust::folder_trusted,
-            trust::trust_folder,
+            worktree::create_worktree,
             worktree::remove_worktree,
             worktree::orphan_worktrees,
             worktree::remove_orphan_worktrees,

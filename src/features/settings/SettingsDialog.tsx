@@ -6,6 +6,7 @@ import { getAccountsRoot, pickFolder, setAccountsRoot, cliUpdateNow, type Accoun
 import { useAccounts } from '../accounts/accounts.store';
 import { useUpdates } from '../updates/updates.store';
 import { useCli } from '../updates/cli.store';
+import { PROVIDER_LABEL, type Provider } from '../../shared/types';
 
 const pct = (got: number, total: number | null) =>
   total ? Math.min(100, Math.round((got / total) * 100)) : null;
@@ -105,17 +106,18 @@ function LunaRow() {
   );
 }
 
-function CliRow() {
-  const s = useCli(st => st.status);
+function CliRow({ provider }: { provider: Provider }) {
+  const s = useCli(st => st.status[provider]);
+  const name = PROVIDER_LABEL[provider];
 
   if (!s) {
     return (
       <VersionRow
-        name="Claude Code"
+        name={name}
         version="—"
         status="no status yet"
         actionLabel="Check"
-        action={() => void cliUpdateNow()}
+        action={() => void cliUpdateNow(provider)}
       />
     );
   }
@@ -131,18 +133,18 @@ function CliRow() {
           ? `update failed — ${s.error ?? 'unknown error'}`
           : s.version
             ? `checked ${agoLabel(s.checkedAtMs)}`
-            : 'no private copy yet — sessions use claude from PATH';
+            : `no private copy yet — sessions use ${provider} from PATH`;
 
   return (
     <VersionRow
-      name="Claude Code"
+      name={name}
       version={s.version ?? '—'}
       status={status}
       statusTitle={s.phase === 'error' ? (s.error ?? undefined) : s.path}
       error={s.phase === 'error'}
       disabled={busy}
       actionLabel="Check"
-      action={() => void cliUpdateNow()}
+      action={() => void cliUpdateNow(provider)}
     />
   );
 }
@@ -189,13 +191,14 @@ function AccountsFolder() {
         <button
           onClick={() => void apply('')}
           disabled={!info || info.isDefault}
-          title="Back to Documents/claude-accounts"
+          title="Back to Documents/luna-accounts"
           className="slim"
         >
           Default
         </button>
       </div>
       <div style={{ fontSize: 'var(--fs-1)', color: 'var(--faint)', marginTop: 5 }}>
+        Claude Code accounts live under <code>anthropic/</code>, Codex accounts under <code>openai/</code>.
         Only the location changes — move the account folders yourself. Running sessions keep their
         current paths.
       </div>
@@ -253,9 +256,10 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
           </Section>
           <Section label="Versions & updates">
             <LunaRow />
-            <CliRow />
+            <CliRow provider="claude" />
+            <CliRow provider="codex" />
             <div style={{ fontSize: 'var(--fs-1)', color: 'var(--faint)', marginTop: 4 }}>
-              Luna checks for its own updates on launch; the Claude CLI re-checks every 6 hours.
+              Luna checks for its own updates on launch; each CLI is re-checked every 6 hours.
               New chats spawn on a fresh CLI — running sessions keep the version they started with.
             </div>
           </Section>

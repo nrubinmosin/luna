@@ -10,7 +10,7 @@ use std::sync::{Mutex, OnceLock};
 #[derive(Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
-    /// Absolute path; None means the default (`Documents/claude-accounts`).
+    /// Absolute path; None means the default (`Documents/luna-accounts`).
     pub accounts_root: Option<String>,
 }
 

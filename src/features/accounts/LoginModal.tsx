@@ -4,18 +4,19 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 import type { Account } from '../../shared/types';
-import { ensureSession, killSession, resizeSession, writeSession } from '../../ipc/commands';
+import { killSession, resizeSession, writeSession } from '../../ipc/commands';
 import { onPtyExit, onPtyOutput } from '../../ipc/events';
 import { logWarn } from '../../shared/lib/log';
 import { dark, safely, themeFor, TERM_FONT_FAMILY, TERM_FONT_SIZE } from '../panes/terminals';
 import { useAccounts } from './accounts.store';
+import { ui } from '../providers';
+import { PROVIDER_LABEL } from '../../shared/types';
 
-// Bare `claude` session inside the account's config dir: on a fresh folder it
-// walks through the login flow and drops credentials there; on an existing one
-// the user can run /login to re-authenticate.
+// The provider's login session inside the account's config dir — a bare
+// `claude`, or `codex login` — so credentials land in that folder.
 export function LoginModal({ account }: { account: Account }) {
   const hostRef = useRef<HTMLDivElement>(null);
-  const id = `login:${account.name}`;
+  const id = `login:${account.provider}:${account.name}`;
 
   useEffect(() => {
     const host = hostRef.current;
@@ -98,15 +99,7 @@ export function LoginModal({ account }: { account: Account }) {
 
       let backlog: string;
       try {
-        backlog = await ensureSession({
-          chatId: id,
-          folder: account.path,
-          accountPath: account.path,
-          model: 'Sonnet',
-          effort: 'medium',
-          perm: 'Ask',
-          worktree: false
-        });
+        backlog = await ui(account.provider).loginSession(id, account);
       } catch {
         // Already logged by the ipc layer; keep the rejection out of the
         // global unhandled-promise log and say what happened in the window.
@@ -157,7 +150,7 @@ export function LoginModal({ account }: { account: Account }) {
         style={{ width: 720, height: 500, boxShadow: 'var(--shadow), var(--border-window-outer), var(--border-window-inner)', display: 'flex', flexDirection: 'column' }}
       >
         <div className="title-bar" style={{ flex: 'none', gap: 8 }}>
-          <div className="title-bar-text" style={{ flex: 'none' }}>Sign in — {account.name}</div>
+          <div className="title-bar-text" style={{ flex: 'none' }}>Sign in — {account.name} · {PROVIDER_LABEL[account.provider]}</div>
           <div
             style={{ flex: 1, minWidth: 0, fontSize: 'var(--fs-2)', color: 'rgba(255,255,255,.75)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
           >

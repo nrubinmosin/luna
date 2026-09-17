@@ -11,8 +11,8 @@
  * so none of this is in a release build.
  */
 import type { Terminal as XTerm } from '@xterm/xterm';
-import type { Account, Chat, Folder } from '../shared/types';
-import type { AccountsRootInfo, ClaudeDefaultsDto, CliStatusDto } from '../ipc/commands';
+import type { Account, Chat, ClaudeChat, CodexChat, Folder, Provider } from '../shared/types';
+import type { AccountsRootInfo, ClaudeDefaultsDto, CliStatusDto, CodexDefaultsDto } from '../ipc/commands';
 import { useAccounts } from '../features/accounts/accounts.store';
 import { useChats } from '../features/chats/chats.store';
 import { useNewChat } from '../features/new-chat/newchat.store';
@@ -24,11 +24,27 @@ export type Scene = 'main' | 'dark' | 'peek' | 'newchat' | 'settings';
 
 const hoursFromNow = (h: number) => new Date(Date.now() + h * 3600_000).toISOString();
 
-const chat = (c: Partial<Chat> & Pick<Chat, 'id' | 'name'>): Chat => ({
+const chat = (c: Partial<ClaudeChat> & Pick<Chat, 'id' | 'name'>): ClaudeChat => ({
+  provider: 'claude',
   status: 'resting',
   model: 'Opus',
   effort: 'high',
   perm: 'Bypass',
+  context: 0.2,
+  account: 'personal',
+  group: 0,
+  worktree: true,
+  ...c
+});
+
+const codexChat = (c: Partial<CodexChat> & Pick<Chat, 'id' | 'name'>): CodexChat => ({
+  provider: 'codex',
+  status: 'resting',
+  model: null,
+  modelSeen: 'gpt-5.4-codex',
+  effort: 'high',
+  approval: 'never',
+  sandbox: 'danger-full-access',
   context: 0.2,
   account: 'personal',
   group: 0,
@@ -68,15 +84,14 @@ const CHATS: Chat[] = [
     worktree: false,
     color: 'teal'
   }),
-  chat({
+  codexChat({
     id: 'demo-4',
     name: 'Draft the 0.3 release notes',
     status: 'working',
-    model: 'Haiku',
-    effort: 'low',
-    perm: 'Plan only',
+    effort: 'medium',
+    approval: 'on-request',
+    sandbox: 'workspace-write',
     context: 0.08,
-    account: 'work',
     worktree: false,
     color: 'magenta'
   })
@@ -88,14 +103,16 @@ const FOLDERS: Folder[] = [
 ];
 
 const account = (a: Partial<Account> & Pick<Account, 'name'>): Account => ({
-  path: `C:\\src\\claude-accounts\\${a.name}`,
+  provider: 'claude',
+  path: `C:\\src\\luna-accounts\\anthropic\\${a.name}`,
   plan: 'Max 20×',
   email: null,
   signedIn: true,
   haveUsage: true,
-  limits: { h5: 0.12, week: 0.41, fable: 0.27 },
-  resets: { h5: '3h 40m', week: '4d', fable: '4d' },
-  weekResetAt: hoursFromNow(96),
+  limits: {
+    kind: 'claude', h5: 0.12, week: 0.41, fable: 0.27,
+    resets: { h5: '3h 40m', week: '4d', fable: '4d' }, weekResetAt: hoursFromNow(96)
+  },
   usageAge: 'just now',
   fetchedAt: Date.now(),
   sync: 'ready',
@@ -107,20 +124,33 @@ const ACCOUNTS: Account[] = [
   account({
     name: 'work',
     plan: 'Max 5×',
-    limits: { h5: 0.63, week: 0.78, fable: 0.44 },
-    resets: { h5: '52m', week: '2d', fable: '2d' }
+    limits: {
+      kind: 'claude', h5: 0.63, week: 0.78, fable: 0.44,
+      resets: { h5: '52m', week: '2d', fable: '2d' }, weekResetAt: hoursFromNow(50)
+    }
   }),
   account({
     name: 'spare',
     plan: '—',
     signedIn: false,
     haveUsage: false,
-    limits: { h5: 0, week: 0, fable: 0 },
-    resets: { h5: '—', week: '—', fable: '—' },
-    weekResetAt: null,
+    limits: { kind: 'claude', h5: 0, week: 0, fable: 0, resets: { h5: '—', week: '—', fable: '—' }, weekResetAt: null },
     usageAge: null,
     fetchedAt: null,
     sync: 'ready'
+  }),
+  account({
+    provider: 'codex',
+    name: 'personal',
+    path: 'C:\\src\\luna-accounts\\openai\\personal',
+    plan: 'Pro',
+    limits: {
+      kind: 'codex',
+      windows: [
+        { id: 'primary', label: '5 hours', used: 0.22, reset: '2h 10m', resetAt: hoursFromNow(2.2) },
+        { id: 'secondary', label: 'week', used: 0.57, reset: '3d', resetAt: hoursFromNow(70) }
+      ]
+    }
   })
 ];
 
@@ -158,6 +188,16 @@ const header = (model: string, effort: string, cwd: string) =>
     `${c(35, '  ▄▀▄▀▄  ')}${bold('Claude Code')} ${dim('v2.1.252')}`,
     `${c(35, '  █ ▄ █  ')}${model} with ${effort} effort ${dim('·')} Claude Max`,
     `${c(35, '  ▀▄▄▄▀  ')}${dim(cwd)}`,
+    ''
+  ].join('\r\n');
+
+const codexHeader = (model: string, effort: string, cwd: string) =>
+  [
+    `${c(36, '>_')} ${bold('OpenAI Codex')} ${dim('(v0.154.0)')}`,
+    '',
+    `${dim('model:')}     ${model} ${dim(`(${effort})`)}`,
+    `${dim('directory:')} ${cwd}`,
+    `${dim('approval:')}  on-request ${dim('·')} ${dim('sandbox:')} workspace-write`,
     ''
   ].join('\r\n');
 
@@ -217,18 +257,19 @@ const SCREENS: Record<string, string> = {
     '\r\n',
 
   'demo-4':
-    header('Haiku 4.5', 'low', 'C:\\src\\notes') +
+    codexHeader('gpt-5.4-codex', 'medium', 'C:\\src\\notes') +
     '\r\n' +
-    user('draft release notes for 0.3 from the log since 0.2.16\r\n') +
+    `${c(36, '›')} draft release notes for 0.3 from the log since 0.2.16\r\n` +
     '\r\n' +
-    bullet('Reading 41 commits…') +
+    `${c(35, '•')} ${bold('Reading 41 commits')}\r\n` +
+    `  ${dim('$ git log --oneline 0.2.16..HEAD')}\r\n` +
     '\r\n' +
     `  ${bold('Luna 0.3')}\r\n` +
     '  • Chats keep their own colour across panes and the sidebar\r\n' +
     '  • Window groups I–IV, each with its own four boards\r\n' +
-    '  • The app ships and updates its own copy of the CLI\r\n' +
+    '  • The app ships and updates its own copies of both CLIs\r\n' +
     '\r\n' +
-    `${c(33, '✻')} Drafting… ${dim('(8s · ↓ 1.2k tokens)')}\r\n`
+    `${c(33, '•')} Working ${dim('(8s · 1.2k tokens used)')}\r\n`
 };
 
 /** Paints one pane's invented session. Called from Terminal only in dev. */
@@ -239,18 +280,32 @@ export function paint(term: XTerm, chatId: string) {
 
 // ------------------------------------------------------------- ipc stand-in --
 
-const CLI: CliStatusDto = {
-  phase: 'idle',
-  version: '2.1.252',
-  path: 'C:\\src\\luna\\claude-cli\\versions\\2.1.252\\claude.exe',
-  latest: '2.1.252',
-  got: 0,
-  total: null,
-  error: null,
-  checkedAtMs: Date.now() - 42 * 60_000
+const CLI: Record<Provider, CliStatusDto> = {
+  claude: {
+    provider: 'claude',
+    phase: 'idle',
+    version: '2.1.252',
+    path: 'C:\\src\\luna\\claude-cli\\versions\\2.1.252\\claude.exe',
+    latest: '2.1.252',
+    got: 0,
+    total: null,
+    error: null,
+    checkedAtMs: Date.now() - 42 * 60_000
+  },
+  codex: {
+    provider: 'codex',
+    phase: 'idle',
+    version: '0.154.0',
+    path: 'C:\\src\\luna\\codex-cli\\versions\\0.154.0\\bin\\codex.exe',
+    latest: '0.154.0',
+    got: 0,
+    total: null,
+    error: null,
+    checkedAtMs: Date.now() - 42 * 60_000
+  }
 };
 
-const ROOT: AccountsRootInfo = { path: 'C:\\src\\claude-accounts', isDefault: true };
+const ROOT: AccountsRootInfo = { path: 'C:\\src\\luna-accounts', isDefault: true };
 
 // What the new-chat dialog opens on. Left unanswered it would show every
 // control sitting on Luna's own fallback, which is the one state the shot is
@@ -261,6 +316,13 @@ const DEFAULTS: ClaudeDefaultsDto = {
   permissionMode: { value: 'bypassPermissions', source: 'project' }
 };
 
+const CODEX_DEFAULTS: CodexDefaultsDto = {
+  model: { value: 'gpt-5.4-codex', source: 'account' },
+  effort: { value: 'high', source: 'account' },
+  approval: null,
+  sandbox: { value: 'workspace-write', source: 'project' }
+};
+
 let seeded = false;
 
 /**
@@ -269,11 +331,12 @@ let seeded = false;
  * and a screenshot of it is a picture of blanks. Everything else keeps the
  * caller's own fallback, and outside `?demo` this does nothing at all.
  */
-export function answer<T>(cmd: string, fallback: T): T {
+export function answer<T>(cmd: string, args: Record<string, unknown>, fallback: T): T {
   if (!seeded) return fallback;
-  if (cmd === 'cli_status') return CLI as unknown as T;
+  if (cmd === 'cli_status') return (CLI[args.provider as Provider] ?? CLI.claude) as unknown as T;
   if (cmd === 'get_accounts_root') return ROOT as unknown as T;
   if (cmd === 'claude_defaults') return DEFAULTS as unknown as T;
+  if (cmd === 'codex_defaults') return CODEX_DEFAULTS as unknown as T;
   return fallback;
 }
 
