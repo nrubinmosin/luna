@@ -12,6 +12,7 @@ const SLOW_BUDGET_MS: Record<string, number> = {
   account_limits: 5000,
   codex_limits: 5000,
   session_meta: 2000,
+  saved_title: 5000,
   ensure_claude_session: 30_000,
   ensure_codex_session: 30_000,
   create_worktree: 30_000,
@@ -194,11 +195,17 @@ export interface SessionMetaDto {
   context: number | null;
   contextTokens: number | null;
   contextWindow: number | null;
+  /** The CLI's own title: a rename, else the one it generated. */
+  title: string | null;
   firstPrompt: string | null;
 }
 
 export const sessionMeta = (id: string, accountPath: string) =>
   call<SessionMetaDto | null>('session_meta', { id, accountPath }, null);
+
+/** The CLI's title for a session that is not running, by its id. */
+export const savedTitle = (provider: Provider, accountPath: string, sessionId: string) =>
+  call<string | null>('saved_title', { provider, accountPath, sessionId }, null);
 
 export interface OrphanSessionDto {
   id: string;

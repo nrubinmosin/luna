@@ -1,7 +1,8 @@
 //! What a Claude Code session leaves on disk, and how Luna reads it back:
 //! the live registry at `<config>/sessions/<pid>.json` (name, status, cwd,
 //! session id) and the transcript at `<config>/projects/<cwd>/<sid>.jsonl`
-//! (context usage, opening prompt). All of it is free to read — no tokens.
+//! (context usage, the titles the CLI gave it, opening prompt). All of it is
+//! free to read — no tokens.
 
 use crate::pty::{sane_title, SessionMeta};
 use std::collections::HashMap;
@@ -21,9 +22,6 @@ struct ContextRead {
     window: f64,
 }
 
-// Free context reading: the last assistant message in the session transcript
-// carries cumulative input-side token usage. Returns raw tokens; the fraction
-// is derived from it.
 fn transcript_path(account_path: &str, cwd: &str, session_id: &str) -> PathBuf {
     Path::new(account_path)
         .join("projects")
@@ -31,9 +29,10 @@ fn transcript_path(account_path: &str, cwd: &str, session_id: &str) -> PathBuf {
         .join(format!("{session_id}.jsonl"))
 }
 
-fn read_context(account_path: &str, cwd: &str, session_id: &str) -> Option<ContextRead> {
-    let path = transcript_path(account_path, cwd, session_id);
-    let text = crate::pty::tail(&path, 128 * 1024)?;
+// Free context reading: the last assistant message in the session transcript
+// carries cumulative input-side token usage. Returns raw tokens; the fraction
+// is derived from it.
+fn context_in(text: &str) -> Option<ContextRead> {
     for line in text.lines().rev() {
         if !line.contains("\"usage\"") {
             continue;
@@ -63,6 +62,75 @@ fn read_context(account_path: &str, cwd: &str, session_id: &str) -> Option<Conte
         }
     }
     None
+}
+
+/// The titles the CLI keeps in the transcript. Both are re-appended with the
+/// session's other metadata as the transcript grows, so the last of each is
+/// the current one and sits near the end.
+#[derive(Default, Clone)]
+struct Titles {
+    /// `/rename`.
+    custom: Option<String>,
+    /// What the CLI generated from the opening of the conversation — the same
+    /// title it puts on the terminal tab.
+    ai: Option<String>,
+}
+
+fn titles_in(text: &str) -> Titles {
+    let mut t = Titles::default();
+    for line in text.lines().rev() {
+        if t.custom.is_some() && t.ai.is_some() {
+            break;
+        }
+        if !line.contains("-title\"") {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        match v["type"].as_str() {
+            Some("custom-title") if t.custom.is_none() => t.custom = v["customTitle"].as_str().and_then(sane_title),
+            Some("ai-title") if t.ai.is_none() => t.ai = v["aiTitle"].as_str().and_then(sane_title),
+            _ => {}
+        }
+    }
+    t
+}
+
+/// A long tool run can push the last title out of the tail for a while, so
+/// the titles seen before are kept per session and the tail only updates them.
+fn remembered_titles(session_id: &str, seen: Titles) -> Titles {
+    static CACHE: std::sync::OnceLock<Mutex<HashMap<String, Titles>>> = std::sync::OnceLock::new();
+    let mut map = CACHE.get_or_init(Default::default).lock().unwrap();
+    let t = map.entry(session_id.to_string()).or_default();
+    if seen.custom.is_some() {
+        t.custom = seen.custom;
+    }
+    if seen.ai.is_some() {
+        t.ai = seen.ai;
+    }
+    t.clone()
+}
+
+/// The CLI's title for a session that is not running — a chat restored from
+/// an earlier run, which session_meta cannot see. The transcript is found by
+/// name: the folder it sits in comes from a cwd that, for a worktree session,
+/// is long gone.
+pub fn saved_title(account_path: &str, session_id: &str) -> Option<String> {
+    if session_id.is_empty() || !session_id.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
+        return None;
+    }
+    let file = format!("{session_id}.jsonl");
+    let path = std::fs::read_dir(Path::new(account_path).join("projects"))
+        .ok()?
+        .flatten()
+        .map(|e| e.path().join(&file))
+        .find(|p| p.is_file())?;
+    let mut t = crate::pty::tail(&path, 256 * 1024).map(|s| titles_in(&s)).unwrap_or_default();
+    if t.custom.is_none() && t.ai.is_none() {
+        // Asked once per chat per run, so the whole file is affordable when
+        // a session ended with its last title further back than the tail.
+        t = titles_in(&std::fs::read_to_string(&path).ok()?);
+    }
+    t.custom.or(t.ai)
 }
 
 /// Text of a transcript content field, which is either a bare string or an
@@ -105,10 +173,8 @@ fn cached_first_prompt(account_path: &str, cwd: &str, session_id: &str) -> Optio
     found
 }
 
-/// The session's opening prompt, trimmed to a title. Sessions are always named
-/// `derived` in the registry — i.e. after the cwd, which for a worktree run is
-/// a random codename — so the first thing the user actually said is a far
-/// better label for the chat.
+/// The session's opening prompt, trimmed to a title — what the chat is called
+/// for the few seconds before the CLI's own title lands in the transcript.
 fn read_first_prompt(account_path: &str, cwd: &str, session_id: &str) -> Option<String> {
     use std::io::{BufRead, BufReader};
     let path = transcript_path(account_path, cwd, session_id);
@@ -141,9 +207,9 @@ fn parse_session_file(path: &Path) -> Option<serde_json::Value> {
     serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
 }
 
-/// Name, status, cwd, session id, context and opening prompt of a live session,
-/// off the registry entry the CLI writes a moment after the pty starts — so a
-/// missing entry is a normal early answer, not a failure.
+/// Name, status, cwd, session id, context, title and opening prompt of a live
+/// session, off the registry entry the CLI writes a moment after the pty
+/// starts — so a missing entry is a normal early answer, not a failure.
 pub fn meta(pid: Option<u32>, cwd: &str, spawned_at_ms: u128, account_path: &str) -> Option<SessionMeta> {
     let dir = Path::new(account_path).join("sessions");
     let v = registry_entry(&dir, pid, cwd, spawned_at_ms)?;
@@ -156,11 +222,18 @@ pub fn meta(pid: Option<u32>, cwd: &str, spawned_at_ms: u128, account_path: &str
         ..Default::default()
     };
     if let (Some(scwd), Some(sid)) = (m.cwd.clone(), m.session_id.clone()) {
-        if let Some(c) = read_context(account_path, &scwd, &sid) {
+        let text = crate::pty::tail(&transcript_path(account_path, &scwd, &sid), 128 * 1024);
+        if let Some(c) = text.as_deref().and_then(context_in) {
             m.context_tokens = Some(c.tokens);
             m.context_window = Some(c.window);
             m.context = Some((c.tokens / c.window).min(1.0));
         }
+        let titles = remembered_titles(&sid, text.as_deref().map(titles_in).unwrap_or_default());
+        // The registry name is the cwd folder when `derived` — a worktree's
+        // random codename — and a kebab-case handle when `auto`; a rename
+        // there is as good as one in the transcript.
+        let registry = |source: &str| m.name.clone().filter(|_| m.name_source.as_deref() == Some(source));
+        m.title = titles.custom.or_else(|| registry("user")).or(titles.ai).or_else(|| registry("auto"));
         m.first_prompt = cached_first_prompt(account_path, &scwd, &sid);
     }
     Some(m)
@@ -215,4 +288,55 @@ fn registry_entry(
         }
     }
     best.map(|(_, v)| v)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_the_latest_titles_from_the_tail() {
+        let text = concat!(
+            r#"{"type":"ai-title","aiTitle":"First guess","sessionId":"s"}"#, "\n",
+            r#"{"type":"user","message":{"role":"user","content":"mention \"type\":\"ai-title\" in passing"}}"#, "\n",
+            r#"{"type":"ai-title","aiTitle":"Token refresh and chat titles","sessionId":"s"}"#, "\n",
+            r#"{"type":"last-prompt","lastPrompt":"…","sessionId":"s"}"#, "\n",
+        );
+        let t = titles_in(text);
+        assert_eq!(t.ai.as_deref(), Some("Token refresh and chat titles"));
+        assert_eq!(t.custom, None);
+
+        let renamed = format!("{text}{}\n", r#"{"type":"custom-title","customTitle":"Luna auth","sessionId":"s"}"#);
+        let t = titles_in(&renamed);
+        assert_eq!(t.custom.as_deref(), Some("Luna auth"));
+        assert_eq!(t.ai.as_deref(), Some("Token refresh and chat titles"));
+    }
+
+    #[test]
+    fn keeps_a_title_the_tail_no_longer_shows() {
+        let sid = format!("test-{}", std::process::id());
+        let seen = Titles { ai: Some("Issue 4489".into()), custom: None };
+        assert_eq!(remembered_titles(&sid, seen).ai.as_deref(), Some("Issue 4489"));
+        assert_eq!(remembered_titles(&sid, Titles::default()).ai.as_deref(), Some("Issue 4489"));
+    }
+
+    #[test]
+    fn finds_a_saved_title_by_session_id() {
+        let root = std::env::temp_dir().join(format!("luna-claude-title-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("projects").join("E--p--claude-worktrees-gone");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("28c18d5b-64d5-40a8-a1ec-fb55573139d9.jsonl"),
+            r#"{"type":"ai-title","aiTitle":"Онборд нового юзера","sessionId":"28c18d5b-64d5-40a8-a1ec-fb55573139d9"}"#,
+        )
+        .unwrap();
+        let acct = root.to_string_lossy();
+        assert_eq!(
+            saved_title(&acct, "28c18d5b-64d5-40a8-a1ec-fb55573139d9").as_deref(),
+            Some("Онборд нового юзера")
+        );
+        assert_eq!(saved_title(&acct, "../../etc"), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

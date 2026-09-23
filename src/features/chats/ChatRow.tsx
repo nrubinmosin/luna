@@ -2,7 +2,7 @@ import { useState } from 'react';
 import type { Chat } from '../../shared/types';
 import { StatusDot } from '../../shared/ui/StatusDot';
 import { chatColorTheme } from '../../shared/ui/chatColors';
-import { ACCENT, tint } from '../../shared/lib/format';
+import { ACCENT, shortSessionId, tint } from '../../shared/lib/format';
 import { numberedChats, useChats } from './chats.store';
 import { currentLayout, currentSlots, usePanes } from '../panes/panes.store';
 import { DeleteChatDialog } from './DeleteChatDialog';
@@ -105,7 +105,12 @@ export function ChatRow({ chat }: { chat: Chat }) {
           }}
           // The full name first: the row is narrow enough that the ellipsis is
           // the common case, and the rename hint alone hid what was cut off.
-          title={`${chat.name}\nDouble-click to rename`}
+          // The session id is how issue claims and logs name this chat.
+          title={[
+            chat.name,
+            chat.sessionId && `Session ${shortSessionId(chat.sessionId)}  (${chat.sessionId})`,
+            'Double-click to rename'
+          ].filter(Boolean).join('\n')}
           style={{ flex: '1 1 auto', minWidth: 40, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 'var(--fs-4)', fontWeight: 500 }}
         >
           {chat.name}

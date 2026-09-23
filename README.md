@@ -83,9 +83,13 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   raises a desktop notification, since the window may well be in the tray.
 - Context use is read straight out of the session transcript against the model's real
   window (fetched from the Models API), so it costs nothing and cannot drift.
-- Titles come from the first thing typed into the chat, then from the transcript's own
-  opening prompt once there is one. Rename by double-clicking the name; a name you set by
-  hand is never overwritten.
+- Titles are the CLI's own: Claude Code names a session from its opening exchange — the
+  same title it puts on a terminal tab — and writes it into the transcript, where Luna
+  reads it for free; a `/rename` wins over it. Codex threads use their name from
+  `session_index.jsonl`. The opening prompt only stands in until that title exists.
+  Rename by double-clicking the name; a name you set by hand is never overwritten.
+- The session id's first 8 characters — the form issue claims and logs quote — sit on the
+  pane's title bar (a click copies them), and the full id is in the row's tooltip.
 - The number on a row is what Ctrl+&lt;digit&gt; reaches: the pane it is showing in, or its
   place in the list when there is only one pane. It is filled in while the chat is on the
   board.

@@ -46,6 +46,10 @@ export const agoLabel = (at: number | null) => {
   return `${Math.round(m / 60)}h ago`;
 };
 
+// "28c18d5b-64d5-…" -> "28c18d5b": a session uuid the way issue claims and
+// people quote it — the first 8 characters, lowercase.
+export const shortSessionId = (id: string) => id.slice(0, 8).toLowerCase();
+
 export const limitColor = (v: number) => {
   if (v >= 0.85) return 'oklch(.63 .19 25)';
   if (v >= 0.6) return 'oklch(.78 .15 78)';

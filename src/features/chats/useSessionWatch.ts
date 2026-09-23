@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { sessionMeta } from '../../ipc/commands';
+import { savedTitle, sessionMeta } from '../../ipc/commands';
 import { notifyWaiting } from '../../shared/lib/notify';
 import { PROVIDER_LABEL, type Chat } from '../../shared/types';
 import { accountOfChat, useAccounts } from '../accounts/accounts.store';
@@ -7,6 +7,10 @@ import { ui } from '../providers';
 import { useChats } from './chats.store';
 
 const EVERY_MS = 4000;
+
+/** Chats whose saved title has been looked up this run — once is enough for
+ *  a session that is not running, since nothing is writing to it. */
+const titleLooked = new Set<string>();
 
 // The CLI registry reports its own status vocabulary; fold it into the
 // three-state design palette.
@@ -52,14 +56,22 @@ export function useSessionWatch() {
           // No live session — the pty exited or was never started. Anything
           // other than resting would be a lie the sidebar keeps telling.
           if (fresh.status !== 'resting') store.setStatus(chat.id, 'resting');
+          // A chat restored from an earlier run may still wear the opening
+          // prompt it was named after; the CLI's title is on disk by now.
+          if (fresh.sessionId && !fresh.nameCustom && !titleLooked.has(chat.id)) {
+            titleLooked.add(chat.id);
+            const saved = await savedTitle(fresh.provider, accountPath, fresh.sessionId).catch(() => null);
+            const now = useChats.getState().findChat(chat.id);
+            if (saved && now && !now.nameCustom && saved !== now.name) store.setName(chat.id, saved);
+          }
           continue;
         }
 
-        // The registry name is `derived` in practice — the cwd folder, which
-        // for a worktree run is a random codename. Prefer the CLI's own title
-        // when it ever produces one, else the session's opening prompt.
-        const titled = meta.nameSource === 'auto' || meta.nameSource === 'user';
-        const title = (titled && meta.name) || meta.firstPrompt;
+        // The CLI's own title — a rename, else the one it generated from the
+        // conversation, the same it puts on a terminal tab — and the opening
+        // prompt only until that exists. A first line alone rarely says what
+        // the chat is about.
+        const title = meta.title || meta.firstPrompt;
         if (title && !fresh.nameCustom && title !== fresh.name) store.setName(chat.id, title);
 
         const next = mapStatus(meta.status);

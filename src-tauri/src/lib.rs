@@ -125,6 +125,7 @@ pub fn run() {
             pty::kill_session,
             pty::session_alive,
             pty::session_meta,
+            pty::saved_title,
             pty::orphan_sessions,
             pty::delete_session,
             settings::get_accounts_root,

@@ -223,6 +223,19 @@ fn read_first_prompt(path: &Path) -> Option<String> {
     None
 }
 
+/// The thread's name, if it has one. Codex appends `{id, thread_name,
+/// updated_at}` to `<CODEX_HOME>/session_index.jsonl` whenever a thread is
+/// named, so the last line for an id is the current name.
+pub fn thread_name(account_path: &str, thread_id: &str) -> Option<String> {
+    let text = std::fs::read_to_string(Path::new(account_path).join("session_index.jsonl")).ok()?;
+    text.lines()
+        .rev()
+        .filter(|l| l.contains(thread_id))
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .find(|v| v["id"] == thread_id)
+        .and_then(|v| v["thread_name"].as_str().and_then(sane_title))
+}
+
 /// What the tail of a rollout says right now.
 #[derive(Default)]
 pub struct Tail {
@@ -291,7 +304,7 @@ pub fn read_tail(path: &Path) -> Tail {
     out
 }
 
-/// Status, thread id, model, context and opening prompt of a live session.
+/// Status, thread id, model, context, name and opening prompt of a live session.
 /// None until the rollout file exists, which is a normal early answer.
 pub fn meta(live: &Live) -> Option<SessionMeta> {
     let path = rollout_for(live)?;
@@ -311,6 +324,7 @@ pub fn meta(live: &Live) -> Option<SessionMeta> {
     let mut m = SessionMeta {
         status: status.map(str::to_owned),
         cwd: Some(live.cwd.to_string()),
+        title: thread_name(live.account_path, &id),
         session_id: Some(id),
         model: t.model,
         first_prompt: cached_first_prompt(&path).and_then(|s| sane_title(&s)),
@@ -382,6 +396,26 @@ mod tests {
         assert_eq!(ts, "2026-09-17T10:00:09.000Z");
         assert_eq!(read_first_prompt(&path).as_deref(), Some("fix the build please"));
 
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn reads_the_latest_thread_name() {
+        let root = std::env::temp_dir().join(format!("luna-codex-names-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("session_index.jsonl"),
+            concat!(
+                r#"{"id":"abc","thread_name":"First name","updated_at":"2026-09-17T10:00:00Z"}"#, "\n",
+                r#"{"id":"other","thread_name":"Not ours","updated_at":"2026-09-17T10:01:00Z"}"#, "\n",
+                r#"{"id":"abc","thread_name":"Renamed","updated_at":"2026-09-17T10:02:00Z"}"#, "\n",
+            ),
+        )
+        .unwrap();
+        let acct = root.to_string_lossy();
+        assert_eq!(thread_name(&acct, "abc").as_deref(), Some("Renamed"));
+        assert_eq!(thread_name(&acct, "missing"), None);
         let _ = std::fs::remove_dir_all(&root);
     }
 }
