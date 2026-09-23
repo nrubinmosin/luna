@@ -64,6 +64,7 @@ src-tauri/src/
                 порядке: settings.json аккаунта → .claude/settings.json проекта →
                 .claude/settings.local.json → machine-wide managed
     limits.rs   OAuth usage + кэш CLI (.claude.json)
+    oauth.rs    рефреш протухшего access-токена так же, как это делает CLI (его локи, CAS)
     models.rs   окна контекста из Models API
     trust.rs    hasTrustDialogAccepted в .claude.json
     session.rs  registry <config>/sessions/<pid>.json + транскрипт projects/<cwd>/<sid>.jsonl
@@ -144,8 +145,18 @@ src-tauri/src/
   план — из claims `id_token`) и дергает `chatgpt.com/backend-api/wham/usage` — то же, что
   `/status` внутри Codex; окна `primary`/`secondary` плюс `additional_rate_limits` отдаются как
   список с подписями (300 мин → «5 hours», 10080 → «week»). Если сети или токена нет — последний
-  `token_count.rate_limits` из rollout. Фронт поллит раз в 60с. Если токен протух — бары показывают
-  «—» до первого запуска сессии (CLI сам рефрешит токен). Cool-off после 429 общий (`throttle.rs`).
+  `token_count.rate_limits` из rollout. Фронт поллит раз в 60с; ↻ в ряду аккаунта спрашивает сразу,
+  мимо свежего кэша CLI и cool-off. Cool-off после 429 общий (`throttle.rs`).
+- **Рефреш токена Claude.** Access-токен живёт ~8 ч, и раньше аккаунт, который давно не открывали,
+  висел на «waiting for token refresh» до первой сессии. Теперь `claude/oauth.rs` меняет refresh-токен
+  сам — тот же `POST platform.claude.com/v1/oauth/token` с client_id и scopes CLI. Refresh-токены
+  ротируются, поэтому только по правилам CLI: оба его mkdir-лока (`<config>/.oauth_refresh.lock` и
+  `<config>.lock`, stale через 60 с), перечитать файл под локом, записать только если refresh-токен
+  на диске всё ещё тот, что отправили. CLI, пришедший рефрешить после нас, видит на диске другой
+  access-токен и берёт его (его собственная ветка «race resolved»). `invalid_grant` = нужен новый
+  логин, аккаунт показывается signed out. Codex не трогаем: его токен живёт 10 дней, рефрешит он
+  сам, а уже использованный refresh-токен сервер отвергает («refresh token was already used. Please
+  log out and sign in again») — наш рефреш рядом с живым Codex, помнящим старый токен, его разлогинит.
 - **Trust.** Ни один CLI не может показать свой trust-промпт так, как его запускает Luna (Claude
   Code отказывается под `--worktree`, Codex после него задаёт вопрос про Windows-песочницу),
   поэтому бит пишется до спавна: `hasTrustDialogAccepted` в `.claude.json` либо

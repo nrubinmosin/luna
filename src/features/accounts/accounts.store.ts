@@ -16,7 +16,12 @@ interface AccountsState {
   adding: boolean;
   error: string | null;
   loginFor: Account | null;
+  /** Paths of accounts a click on refresh is waiting on. */
+  refreshing: string[];
   refresh: () => Promise<void>;
+  /** One account, now, past the CLI's cache and any 429 cool-off — the
+   *  refresh button. Renews an expired token on the way. */
+  refreshAccount: (account: Account) => Promise<void>;
   /** Refreshes now and keeps refreshing, honouring the backoff between rounds. */
   startPolling: () => void;
   stopPolling: () => void;
@@ -45,7 +50,8 @@ const toAccount = (a: ipc.AccountInfo): Account => ({
   limits: a.provider === 'codex' ? EMPTY_CODEX_LIMITS : EMPTY_CLAUDE_LIMITS,
   usageAge: null,
   fetchedAt: null,
-  sync: 'loading'
+  sync: 'loading',
+  refreshError: null
 });
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
@@ -88,12 +94,13 @@ interface Round {
   haveUsage: boolean;
   fetchedAtMs: number | null;
   stale: boolean;
+  refreshError: string | null;
   rateLimited: number | null;
   limits: Account['limits'] | null;
 }
 
-const askClaude = async (path: string): Promise<Round | null> => {
-  const lim = await ipc.accountLimits(path).catch(() => null);
+const askClaude = async (path: string, force = false): Promise<Round | null> => {
+  const lim = await ipc.accountLimits(path, force).catch(() => null);
   if (!lim) return null;
   return {
     plan: lim.plan,
@@ -102,6 +109,7 @@ const askClaude = async (path: string): Promise<Round | null> => {
     haveUsage: lim.haveUsage,
     fetchedAtMs: lim.fetchedAtMs,
     stale: lim.stale,
+    refreshError: lim.refreshError,
     rateLimited: lim.rateLimited,
     limits: lim.haveUsage
       ? {
@@ -116,8 +124,8 @@ const askClaude = async (path: string): Promise<Round | null> => {
   };
 };
 
-const askCodex = async (path: string): Promise<Round | null> => {
-  const lim = await ipc.codexLimits(path).catch(() => null);
+const askCodex = async (path: string, force = false): Promise<Round | null> => {
+  const lim = await ipc.codexLimits(path, force).catch(() => null);
   if (!lim) return null;
   return {
     plan: lim.plan,
@@ -126,6 +134,8 @@ const askCodex = async (path: string): Promise<Round | null> => {
     haveUsage: lim.haveUsage,
     fetchedAtMs: lim.fetchedAtMs,
     stale: lim.stale,
+    // Codex renews its own token; Luna does not try.
+    refreshError: null,
     rateLimited: lim.rateLimited,
     limits: lim.haveUsage
       ? {
@@ -138,12 +148,59 @@ const askCodex = async (path: string): Promise<Round | null> => {
   };
 };
 
+/** One answer, folded into the fields its row draws. */
+const patchOf = (lim: Round | null, prev: Account | undefined): Partial<Account> => {
+  if (!lim) return { sync: 'error' };
+  // Identity always applies: it comes off disk and is right even when the
+  // usage endpoint is unreachable.
+  const base = {
+    plan: lim.plan ?? '—',
+    email: lim.email,
+    signedIn: lim.signedIn,
+    refreshError: lim.refreshError
+  };
+  const sync = lim.rateLimited != null ? 'throttled' as const : lim.stale ? 'stale' as const : null;
+
+  if (lim.haveUsage && lim.limits) {
+    return {
+      ...base,
+      haveUsage: true,
+      usageAge: ageLabel(lim.fetchedAtMs),
+      fetchedAt: lim.fetchedAtMs,
+      limits: lim.limits,
+      sync: sync ?? 'ready'
+    };
+  }
+  // A round that brought nothing (throttled, token mid-refresh, transient
+  // error) keeps the last real numbers on the bars instead of wiping them
+  // to dashes for a minute — that alternation is what read as blinking.
+  // Only their age keeps ticking.
+  return {
+    ...base,
+    usageAge: ageLabel(prev?.fetchedAt ?? null),
+    sync: sync ?? 'error'
+  };
+};
+
+const changed = (a: Account, p: Partial<Account>) =>
+  (Object.keys(p) as (keyof Account)[]).some(k => {
+    const before = a[k];
+    const after = p[k];
+    return typeof before === 'object' && before !== null
+      ? JSON.stringify(before) !== JSON.stringify(after)
+      : before !== after;
+  });
+
+/** When a click on refresh last answered, per account path. */
+const answeredAt = new Map<string, number>();
+
 export const useAccounts = create<AccountsState>()((set, get) => ({
   accounts: [],
   loaded: false,
   adding: false,
   error: null,
   loginFor: null,
+  refreshing: [],
 
   refresh: async () => {
     const list = await ipc.listAccounts();
@@ -164,70 +221,35 @@ export const useAccounts = create<AccountsState>()((set, get) => ({
     let serverWait = 0;
     // Collected and applied in one write at the end: one store update per
     // round instead of one per account.
-    const patches = new Map<string, Partial<Account>>();
-    const patch = (path: string, next: Partial<Account>) => patches.set(path, next);
+    const patches = new Map<string, { askedAt: number; patch: Partial<Account> }>();
 
     for (const [i, a] of list.entries()) {
       // One account at a time, with daylight between them: fired together, the
       // requests reached the usage endpoint in the same instant and the second
       // account spent its life 429'd.
       if (i > 0) await sleep(2000 + Math.random() * 2000);
+      // A click on refresh is asking about this one already.
+      if (get().refreshing.includes(a.path)) continue;
 
+      const askedAt = Date.now();
       const lim = a.provider === 'codex' ? await askCodex(a.path) : await askClaude(a.path);
-      if (!lim) {
-        patch(a.path, { sync: 'error' });
-        continue;
-      }
-      if (lim.rateLimited != null) serverWait = Math.max(serverWait, lim.rateLimited);
-
-      // Identity always applies: it comes off disk and is right even when the
-      // usage endpoint is unreachable.
-      const base = {
-        plan: lim.plan ?? '—',
-        email: lim.email,
-        signedIn: lim.signedIn
-      };
-      const sync = lim.rateLimited != null ? 'throttled' as const : lim.stale ? 'stale' as const : null;
-
-      if (lim.haveUsage && lim.limits) {
-        patch(a.path, {
-          ...base,
-          haveUsage: true,
-          usageAge: ageLabel(lim.fetchedAtMs),
-          fetchedAt: lim.fetchedAtMs,
-          limits: lim.limits,
-          sync: sync ?? 'ready'
-        });
-        continue;
-      }
-      // A round that brought nothing (throttled, token mid-refresh, transient
-      // error) keeps the last real numbers on the bars instead of wiping them
-      // to dashes for a minute — that alternation is what read as blinking.
-      // Only their age keeps ticking.
-      const prev = get().accounts.find(x => x.path === a.path);
-      patch(a.path, {
-        ...base,
-        usageAge: ageLabel(prev?.fetchedAt ?? null),
-        sync: sync ?? 'error'
-      });
+      if (lim?.rateLimited != null) serverWait = Math.max(serverWait, lim.rateLimited);
+      patches.set(a.path, { askedAt, patch: patchOf(lim, get().accounts.find(x => x.path === a.path)) });
     }
 
+    // The round takes seconds per account; a click on refresh that answered
+    // in the meantime is newer than what the round asked before it.
+    const due = (a: Account) => {
+      const p = patches.get(a.path);
+      return p && p.askedAt >= (answeredAt.get(a.path) ?? 0) && changed(a, p.patch) ? p.patch : null;
+    };
     // Apply everything at once, and skip the write entirely when nothing moved
     // — an idle poll of unchanged accounts should cost no render at all.
-    const changed = (a: Account, p: Partial<Account>) =>
-      (Object.keys(p) as (keyof Account)[]).some(k => {
-        const before = a[k];
-        const after = p[k];
-        return typeof before === 'object' && before !== null
-          ? JSON.stringify(before) !== JSON.stringify(after)
-          : before !== after;
-      });
-
-    if (get().accounts.some(a => { const p = patches.get(a.path); return p && changed(a, p); })) {
+    if (get().accounts.some(due)) {
       set(s => ({
         accounts: s.accounts.map(a => {
-          const p = patches.get(a.path);
-          return p && changed(a, p) ? { ...a, ...p } : a;
+          const p = due(a);
+          return p ? { ...a, ...p } : a;
         })
       }));
     }
@@ -250,6 +272,21 @@ export const useAccounts = create<AccountsState>()((set, get) => ({
         ? Math.max(HEALTHY_S, serverWait, throttled ? THROTTLED_S : 0)
         : Math.max(BACKOFF_S[Math.min(backoffStep++, BACKOFF_S.length - 1)], serverWait, throttled ? THROTTLED_S : 0);
     scheduleRetry(wait, () => void get().refresh());
+  },
+
+  refreshAccount: async account => {
+    const { path, provider } = account;
+    if (get().refreshing.includes(path)) return;
+    set(s => ({ refreshing: [...s.refreshing, path] }));
+    try {
+      const lim = provider === 'codex' ? await askCodex(path, true) : await askClaude(path, true);
+      answeredAt.set(path, Date.now());
+      set(s => ({
+        accounts: s.accounts.map(a => (a.path === path ? { ...a, ...patchOf(lim, a) } : a))
+      }));
+    } finally {
+      set(s => ({ refreshing: s.refreshing.filter(p => p !== path) }));
+    }
   },
 
   startPolling: () => {

@@ -244,15 +244,17 @@ fn from_rollout(out: &mut CodexLimits, account_path: &str) {
     }
 }
 
-/// Async so the blocking HTTP work leaves the main thread free.
+/// Async so the blocking HTTP work leaves the main thread free. `force` is a
+/// click on refresh: it looks past a 429 cool-off.
 #[tauri::command]
-pub async fn codex_limits(account_path: String) -> Result<CodexLimits, String> {
-    tauri::async_runtime::spawn_blocking(move || fetch_limits(&account_path))
+pub async fn codex_limits(account_path: String, force: Option<bool>) -> Result<CodexLimits, String> {
+    let force = force.unwrap_or(false);
+    tauri::async_runtime::spawn_blocking(move || fetch_limits(&account_path, force))
         .await
         .map_err(|e| e.to_string())?
 }
 
-fn fetch_limits(account_path: &str) -> Result<CodexLimits, String> {
+fn fetch_limits(account_path: &str, force: bool) -> Result<CodexLimits, String> {
     let mut out = CodexLimits::default();
     let Some(auth) = read_auth(account_path) else {
         return Ok(out);
@@ -267,7 +269,7 @@ fn fetch_limits(account_path: &str) -> Result<CodexLimits, String> {
         return Ok(out);
     }
 
-    if let Some(secs) = throttle::remaining(account_path) {
+    if let Some(secs) = throttle::remaining(account_path).filter(|_| !force) {
         out.rate_limited = Some(secs);
         from_rollout(&mut out, account_path);
         return Ok(out);

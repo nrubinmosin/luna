@@ -1,10 +1,11 @@
+use super::oauth;
 use crate::throttle::{self, now_ms};
 use serde::Serialize;
 use serde_json::Value;
 use std::path::Path;
 
 const BETA_HEADER: &str = "oauth-2025-04-20";
-const RATE_401: &str = "token expired — run a session to refresh";
+const RATE_401: &str = "token rejected (401)";
 pub const RATE_429: &str = "rate-limited";
 
 /// How old the CLI's own cached usage may be before we bother the network.
@@ -14,8 +15,8 @@ const CACHE_FRESH_MS: u64 = 5 * 60 * 1000;
 #[serde(rename_all = "camelCase")]
 pub struct AccountLimits {
     /// Credentials are present and the refresh token has not expired. The
-    /// access token expiring is routine — the CLI renews it — so it is not a
-    /// sign-out and must not be reported as one.
+    /// access token expiring is routine — Luna or the CLI renews it — so it is
+    /// not a sign-out and must not be reported as one.
     pub signed_in: bool,
     pub email: Option<String>,
     pub plan: Option<String>,
@@ -34,8 +35,10 @@ pub struct AccountLimits {
     pub source: Option<String>,
     pub fetched_at_ms: Option<f64>,
 
-    /// The stored access token has expired; the CLI refreshes it on next use.
+    /// The stored access token has expired and could not be renewed just now.
     pub stale: bool,
+    /// Why not, when the renewal was tried and failed.
+    pub refresh_error: Option<String>,
     /// The usage endpoint throttled us. Any numbers above came from the cache.
     pub rate_limited: Option<u64>,
 }
@@ -61,8 +64,8 @@ fn read_token(account_path: &str) -> Result<Token, String> {
     Ok(Token { access, expired })
 }
 
-/// Being signed in is about the *refresh* token: while it lives, the CLI can
-/// mint a new access token without the user doing anything.
+/// Being signed in is about the *refresh* token: while it lives, a new access
+/// token can be minted without the user doing anything.
 fn signed_in(account_path: &str) -> bool {
     read_json(&Path::new(account_path).join(".credentials.json"))
         .map(|v| {
@@ -133,15 +136,17 @@ fn get_json(url: &str, token: &str) -> Result<Value, String> {
     resp.into_json().map_err(|e| e.to_string())
 }
 
-/// Async so the blocking HTTP work leaves the main thread free.
+/// Async so the blocking HTTP work leaves the main thread free. `force` is a
+/// click on refresh: it looks past a fresh cache and a 429 cool-off.
 #[tauri::command]
-pub async fn account_limits(account_path: String) -> Result<AccountLimits, String> {
-    tauri::async_runtime::spawn_blocking(move || fetch_limits(&account_path))
+pub async fn account_limits(account_path: String, force: Option<bool>) -> Result<AccountLimits, String> {
+    let force = force.unwrap_or(false);
+    tauri::async_runtime::spawn_blocking(move || fetch_limits(&account_path, force))
         .await
         .map_err(|e| e.to_string())?
 }
 
-fn fetch_limits(account_path: &str) -> Result<AccountLimits, String> {
+fn fetch_limits(account_path: &str, force: bool) -> Result<AccountLimits, String> {
     let mut out = AccountLimits {
         signed_in: signed_in(account_path),
         ..Default::default()
@@ -163,7 +168,7 @@ fn fetch_limits(account_path: &str) -> Result<AccountLimits, String> {
             if out.have_usage {
                 out.source = Some("cache".into());
                 out.fetched_at_ms = Some(fetched as f64);
-                if now_ms().saturating_sub(fetched) < CACHE_FRESH_MS {
+                if !force && now_ms().saturating_sub(fetched) < CACHE_FRESH_MS {
                     return Ok(out);
                 }
             }
@@ -176,12 +181,14 @@ fn fetch_limits(account_path: &str) -> Result<AccountLimits, String> {
 
     // Inside a 429 cool-off: report the remaining hold instead of poking the
     // endpoint again. The frontend folds this into its own retry cadence.
-    if let Some(secs) = throttle::remaining(account_path) {
-        out.rate_limited = Some(secs);
-        return Ok(out);
+    if !force {
+        if let Some(secs) = throttle::remaining(account_path) {
+            out.rate_limited = Some(secs);
+            return Ok(out);
+        }
     }
 
-    let token = match read_token(account_path) {
+    let mut token = match read_token(account_path) {
         Ok(t) => t,
         // Cached numbers beat failing the whole read over a credentials hiccup.
         Err(e) if out.have_usage => {
@@ -191,8 +198,21 @@ fn fetch_limits(account_path: &str) -> Result<AccountLimits, String> {
         Err(e) => return Err(e),
     };
     if token.expired {
-        out.stale = true;
-        return Ok(out);
+        match oauth::refresh(account_path, force) {
+            oauth::Outcome::Fresh => token = read_token(account_path)?,
+            // A CLI is renewing it right now; the next round has the result.
+            oauth::Outcome::Busy => {}
+            oauth::Outcome::Rejected => {
+                out.signed_in = false;
+                out.refresh_error = Some("sign-in expired — log in again".into());
+                return Ok(out);
+            }
+            oauth::Outcome::Failed(e) => out.refresh_error = Some(e),
+        }
+        if token.expired {
+            out.stale = true;
+            return Ok(out);
+        }
     }
 
     match get_json("https://api.anthropic.com/api/oauth/usage", &token.access) {

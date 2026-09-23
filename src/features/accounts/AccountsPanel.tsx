@@ -12,7 +12,8 @@ export function AccountsPanel() {
   const accounts = useAccounts(s => s.accounts);
   const adding = useAccounts(s => s.adding);
   const error = useAccounts(s => s.error);
-  const { add, remove, setAdding, setLoginFor } = useAccounts.getState();
+  const refreshing = useAccounts(s => s.refreshing);
+  const { add, remove, setAdding, setLoginFor, refreshAccount } = useAccounts.getState();
   const [name, setName] = useState('');
   const [provider, setProvider] = useState<Provider>('claude');
   // `?demo=settings` opens the dialog for its screenshot; the check compiles
@@ -121,7 +122,9 @@ export function AccountsPanel() {
         // the plan, so a throttled endpoint never reads as a broken account.
         const usageNote = !acc.haveUsage
           ? acc.sync === 'stale'
-            ? 'waiting for token refresh'
+            ? acc.refreshError
+              ? 'token refresh failed'
+              : 'waiting for token refresh'
             : acc.sync === 'throttled'
               ? 'usage rate-limited'
               : acc.sync === 'error'
@@ -129,6 +132,7 @@ export function AccountsPanel() {
                 : 'no usage data yet'
           : acc.usageAge;
         const weekReset = acc.haveUsage ? fmtResetDate(p.longResetAt(acc)) : null;
+        const busy = refreshing.includes(acc.path);
         return (
           <div key={accountKey(acc.provider, acc.name)} style={{ padding: '6px 0', borderTop: '1px solid var(--line)' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 5 }}>
@@ -150,7 +154,7 @@ export function AccountsPanel() {
               </span>
               <span style={{ flex: 1 }} />
               <span
-                title={acc.signedIn ? 'Signed in' : 'No usable credentials — click login'}
+                title={acc.signedIn ? 'Signed in' : acc.refreshError ?? 'No usable credentials — click login'}
                 style={{
                   fontSize: 'var(--fs-1)', whiteSpace: 'nowrap',
                   color: acc.signedIn ? 'var(--faint)' : 'oklch(.58 .2 25)'
@@ -169,6 +173,24 @@ export function AccountsPanel() {
                 </button>
               )}
               <span
+                onClick={() => void refreshAccount(acc)}
+                title={
+                  busy
+                    ? 'Refreshing…'
+                    : acc.provider === 'claude'
+                      ? 'Refresh limits now — renews an expired token on the way'
+                      : 'Refresh limits now'
+                }
+                className="hover-bg"
+                style={{
+                  width: 16, height: 16, flex: 'none', borderRadius: 2, display: 'grid', placeItems: 'center',
+                  fontSize: 'var(--fs-2)', color: 'var(--faint)', cursor: 'default',
+                  ...(busy && { animation: 'spin .9s linear infinite', pointerEvents: 'none' })
+                }}
+              >
+                ↻
+              </span>
+              <span
                 onClick={() => setDeleting(acc)}
                 title="Delete account folder"
                 className="hover-danger"
@@ -182,7 +204,11 @@ export function AccountsPanel() {
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, fontSize: 'var(--fs-1)', color: 'var(--faint)', marginTop: 1 }}>
                 {weekReset && <span style={{ whiteSpace: 'nowrap' }}>resets {weekReset}</span>}
                 <span style={{ flex: 1 }} />
-                {usageNote && <span style={{ textAlign: 'right' }}>{usageNote}</span>}
+                {usageNote && (
+                  <span title={acc.refreshError ?? undefined} style={{ textAlign: 'right' }}>
+                    {usageNote}
+                  </span>
+                )}
               </div>
             )}
           </div>

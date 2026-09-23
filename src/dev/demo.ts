@@ -116,6 +116,7 @@ const account = (a: Partial<Account> & Pick<Account, 'name'>): Account => ({
   usageAge: 'just now',
   fetchedAt: Date.now(),
   sync: 'ready',
+  refreshError: null,
   ...a
 });
 
