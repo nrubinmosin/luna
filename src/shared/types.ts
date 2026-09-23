@@ -126,7 +126,8 @@ export const EMPTY_CLAUDE_LIMITS: ClaudeLimits = {
 };
 export const EMPTY_CODEX_LIMITS: CodexLimits = { kind: 'codex', windows: [] };
 
-/** 'idle' before the first fetch, 'stale' while the CLI refreshes the token. */
+/** 'loading' before the first fetch, 'stale' while an expired token has not
+ *  been renewed yet (by Luna for Claude Code, by the CLI itself for Codex). */
 export type AccountSync = 'loading' | 'ready' | 'stale' | 'throttled' | 'error';
 
 export interface Account {
@@ -146,6 +147,8 @@ export interface Account {
    *  ticking through rounds that brought nothing new. */
   fetchedAt: number | null;
   sync: AccountSync;
+  /** Why renewing an expired token failed, when Luna tried. */
+  refreshError: string | null;
 }
 
 /** `codex/work` — one string that names an account across both providers. */

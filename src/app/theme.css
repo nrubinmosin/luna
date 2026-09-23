@@ -115,6 +115,7 @@ body { margin: 0; overflow: hidden; }
 
 @keyframes blink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+@keyframes spin { to { transform: rotate(360deg); } }
 
 ::-webkit-scrollbar { width: 16px; height: 16px; }
 ::-webkit-scrollbar-thumb { background: var(--scrollbar-bg); box-shadow: var(--scrollbar-shadow); }

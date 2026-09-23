@@ -55,10 +55,16 @@ pub fn list_accounts() -> Result<Vec<AccountInfo>, String> {
         }
         for entry in fs::read_dir(&root).map_err(|e| e.to_string())? {
             let entry = entry.map_err(|e| e.to_string())?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            // `<name>.lock` beside an account is Claude Code's token-refresh
+            // lock (Luna takes it too) — there for a second, never an account.
+            if name.ends_with(".lock") {
+                continue;
+            }
             if entry.file_type().map_err(|e| e.to_string())?.is_dir() {
                 out.push(AccountInfo {
                     provider,
-                    name: entry.file_name().to_string_lossy().into_owned(),
+                    name,
                     path: entry.path().to_string_lossy().into_owned(),
                 });
             }

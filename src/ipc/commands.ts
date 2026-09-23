@@ -71,6 +71,8 @@ export interface AccountLimitsDto {
   source: string | null;
   fetchedAtMs: number | null;
   stale: boolean;
+  /** Why an expired token could not be renewed, when that was tried. */
+  refreshError: string | null;
   rateLimited: number | null;
 }
 
@@ -96,10 +98,11 @@ export interface CodexLimitsDto {
 }
 
 export const listAccounts = () => call<AccountInfo[]>('list_accounts', {}, []);
-export const accountLimits = (accountPath: string) =>
-  call<AccountLimitsDto | null>('account_limits', { accountPath }, null);
-export const codexLimits = (accountPath: string) =>
-  call<CodexLimitsDto | null>('codex_limits', { accountPath }, null);
+/** `force` is a click on refresh: past the CLI's fresh cache and a 429 cool-off. */
+export const accountLimits = (accountPath: string, force = false) =>
+  call<AccountLimitsDto | null>('account_limits', { accountPath, force }, null);
+export const codexLimits = (accountPath: string, force = false) =>
+  call<CodexLimitsDto | null>('codex_limits', { accountPath, force }, null);
 
 export interface AccountsRootInfo {
   path: string;

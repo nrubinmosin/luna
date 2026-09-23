@@ -110,7 +110,11 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   week, plus any per-model limits), from the same endpoint Codex's `/status` reads, with
   the token in the account's `auth.json`; when that is unreachable, the last
   `token_count` line of a rollout has the same numbers as of the last turn. Either way a
-  429 backs off for longer each time rather than hammering through it.
+  429 backs off for longer each time rather than hammering through it, and ↻ on the row
+  asks right now.
+- A Claude Code access token lasts about eight hours; an account nobody has opened since
+  gets its token renewed by Luna the way the CLI does it — under the CLI's own lock, so
+  a session running beside it picks up the new token instead of fighting over it.
 - Signing in a fresh account is a button on its row: it runs `claude`, or `codex login`,
   in a modal, so there is no reason to leave the app.
 - Luna writes the CLI's own trust bit for a folder when it has to. Claude Code cannot show
