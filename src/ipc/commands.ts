@@ -367,3 +367,47 @@ export const pickFolder = async (): Promise<string | null> => {
   const res = await open({ directory: true, multiple: false });
   return typeof res === 'string' ? res : null;
 };
+
+// ----------------------------------------------------------------- power --
+
+export type Turn = 'busy' | 'waiting' | 'idle';
+export type PowerAction = 'shutdown' | 'hibernate' | 'sleep' | 'log';
+
+export interface SessionActivityDto {
+  id: string;
+  turn: Turn;
+  /** Exe names of the children keeping it busy, when any. */
+  procs: string[];
+  outputFresh: boolean;
+  busy: boolean;
+}
+
+export interface ActivitySummaryDto {
+  busy: number;
+  waiting: number;
+  idleSinceMs: number | null;
+  sessions: SessionActivityDto[];
+}
+
+export interface PowerStateDto {
+  keepAwake: boolean;
+  /** The awake request is in force right now. */
+  holding: boolean;
+  armed: { action: PowerAction; quietS: number; armedAtMs: number } | null;
+  countdownEndsAtMs: number | null;
+  summary: ActivitySummaryDto;
+}
+
+export const IDLE_POWER: PowerStateDto = {
+  keepAwake: true,
+  holding: false,
+  armed: null,
+  countdownEndsAtMs: null,
+  summary: { busy: 0, waiting: 0, idleSinceMs: null, sessions: [] }
+};
+
+export const powerState = () => call<PowerStateDto>('power_state', {}, IDLE_POWER);
+export const setKeepAwake = (on: boolean) => call<PowerStateDto>('set_keep_awake', { on }, IDLE_POWER);
+export const armPowerOff = (action: PowerAction, quietS: number) =>
+  call<PowerStateDto>('arm_power_off', { action, quietS }, IDLE_POWER);
+export const disarmPowerOff = () => call<PowerStateDto>('disarm_power_off', {}, IDLE_POWER);

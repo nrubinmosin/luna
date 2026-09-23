@@ -12,7 +12,7 @@
  */
 import type { Terminal as XTerm } from '@xterm/xterm';
 import type { Account, Chat, ClaudeChat, CodexChat, Folder, Provider } from '../shared/types';
-import type { AccountsRootInfo, ClaudeDefaultsDto, CliStatusDto, CodexDefaultsDto } from '../ipc/commands';
+import type { AccountsRootInfo, ClaudeDefaultsDto, CliStatusDto, CodexDefaultsDto, PowerStateDto } from '../ipc/commands';
 import { useAccounts } from '../features/accounts/accounts.store';
 import { useChats } from '../features/chats/chats.store';
 import { useNewChat } from '../features/new-chat/newchat.store';
@@ -308,6 +308,15 @@ const CLI: Record<Provider, CliStatusDto> = {
 
 const ROOT: AccountsRootInfo = { path: 'C:\\src\\luna-accounts', isDefault: true };
 
+// The chip in the footer: two sessions at work, the machine held awake.
+const POWER: PowerStateDto = {
+  keepAwake: true,
+  holding: true,
+  armed: null,
+  countdownEndsAtMs: null,
+  summary: { busy: 2, waiting: 1, idleSinceMs: null, sessions: [] }
+};
+
 // What the new-chat dialog opens on. Left unanswered it would show every
 // control sitting on Luna's own fallback, which is the one state the shot is
 // least likely to be taken in and says nothing about where defaults come from.
@@ -338,6 +347,7 @@ export function answer<T>(cmd: string, args: Record<string, unknown>, fallback: 
   if (cmd === 'get_accounts_root') return ROOT as unknown as T;
   if (cmd === 'claude_defaults') return DEFAULTS as unknown as T;
   if (cmd === 'codex_defaults') return CODEX_DEFAULTS as unknown as T;
+  if (cmd === 'power_state') return POWER as unknown as T;
   return fallback;
 }
 

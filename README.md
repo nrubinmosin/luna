@@ -145,6 +145,29 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   the portable build and under `%LOCALAPPDATA%\luna` otherwise. Info-level chatter never
   reaches it, so what is in there is worth reading.
 
+## Power
+
+The ⏻ chip at the bottom of the sidebar opens the two rules the machine follows.
+
+- **Keep the PC awake while sessions work** (on by default). Luna holds a Windows power
+  request — `powercfg /requests` lists it as Luna's — while any session is busy, and lets it
+  go a minute after the last one goes quiet. A session waiting for your answer does not hold
+  the machine.
+- **When every session is done: shut down, hibernate or sleep.** Armed for the run, not
+  saved. The chip shows what the rule is waiting on; once everything has been quiet for the
+  chosen window it counts down a minute with a notification, and a click on the chip cancels.
+  Any activity during the count cancels it too and leaves the rule armed. Shutdown asks each
+  CLI to quit first; sleep and hibernate leave the sessions running, and the same rule applies
+  again after the wake.
+
+"Busy" is measured, not guessed, from three signals per session: the turn (Claude Code's
+own hooks and registry, Codex's rollout), the processes under the CLI (put in a Job Object at
+spawn, so a build, a test run or a `sleep` it left in the background counts as long as it
+moves or was started by the turn), and recent output. "Done" means no session is busy *or*
+waiting for a permission. To hear the turn boundaries, Luna starts every Claude Code session
+with a `--settings` file that adds a few hooks posting to a loopback listener; they print
+nothing, so nothing reaches the model's context.
+
 ## Development
 
 ```sh

@@ -1,11 +1,15 @@
 mod accounts;
+mod activity;
 mod claude;
 mod cli;
 mod codex;
 mod emit;
+mod hub;
 mod log;
 mod media;
 mod paths;
+mod power;
+mod procs;
 mod provider;
 mod pty;
 mod settings;
@@ -65,6 +69,11 @@ pub fn run() {
 
             // Housekeeping off the startup path, and again every few hours.
             media::prune_periodically();
+
+            // The hook listener before any session can be spawned with hooks
+            // pointing at it; the activity sampler feeds power.rs from then on.
+            hub::start();
+            activity::start(app.handle().clone());
 
             let open = MenuItem::with_id(app, "open", "Open", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
@@ -128,6 +137,10 @@ pub fn run() {
             pty::saved_title,
             pty::orphan_sessions,
             pty::delete_session,
+            power::power_state,
+            power::set_keep_awake,
+            power::arm_power_off,
+            power::disarm_power_off,
             settings::get_accounts_root,
             settings::set_accounts_root,
             worktree::create_worktree,
@@ -148,6 +161,7 @@ pub fn run() {
                 tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
             ) {
                 emit::stop();
+                power::clear();
             }
         });
 }

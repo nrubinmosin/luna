@@ -7,11 +7,28 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
-#[derive(Serialize, Deserialize, Clone, Default)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
     /// Absolute path; None means the default (`Documents/luna-accounts`).
     pub accounts_root: Option<String>,
+    /// Hold the machine awake while any session is busy (power.rs).
+    pub keep_awake: bool,
+    /// How long everything has to be quiet before an armed power-off counts down.
+    pub quiet_window_s: u64,
+    /// The last action armed, so the menu opens on it: shutdown | hibernate | sleep.
+    pub power_action: String,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Settings {
+            accounts_root: None,
+            keep_awake: true,
+            quiet_window_s: 120,
+            power_action: "shutdown".into(),
+        }
+    }
 }
 
 fn file() -> PathBuf {
@@ -44,6 +61,13 @@ fn save(s: &Settings) -> Result<(), String> {
         *c = s.clone();
     }
     Ok(())
+}
+
+/// Changes one or more fields and writes the file.
+pub fn update(f: impl FnOnce(&mut Settings)) -> Result<(), String> {
+    let mut s = get();
+    f(&mut s);
+    save(&s)
 }
 
 #[derive(Serialize, Clone)]

@@ -41,6 +41,8 @@ src/                          фронт (feature-sliced)
     accounts/ панель аккаунтов: бейдж провайдера, лимиты + добавление/удаление, accounts.store
     settings/ диалог за ⚙: папка аккаунтов, версии Luna/Claude Code/Codex и кнопки обновления
     status-bar/ часы, сводка, лимиты аккаунтов; чип обновления — только когда есть новость
+    power/    чип ⏻ и меню: keep-awake, взвод «выключить/усыпить, когда всё закончится»;
+              power.store слушает power://state, сам ничего не считает
   ipc/        commands.ts (invoke), events.ts (listen) — единственная граница с Rust
 
 src-tauri/src/
@@ -58,6 +60,14 @@ src-tauri/src/
   worktree.rs   уборка worktree обоих провайдеров (.claude/worktrees, .codex/worktrees),
                 create_worktree для Codex, поиск сирот
   throttle.rs   cool-off после 429 usage-эндпоинтов, общий на оба
+  procs.rs      что у CLI запущено под ним: Job Object на сессию, список pid,
+                CPU/IO/время старта каждого, правило «занят» (judge)
+  hub.rs        loopback HTTP (tiny_http) на случайном порту с секретом на запуск;
+                POST /hook/<chat>/<secret> принимает stdin hook'ов Claude Code
+  activity.rs   семплер раз в 5 с: ход (hooks + registry / rollout), потомки, вывод →
+                busy / waiting / idle на сессию и сводка
+  power.rs      keep-awake (PowerSetRequest) и «выключить, когда всё закончится»:
+                взвод, тихое окно, отсчёт, действие; команды и событие power://state
   claude/
     cli.rs      Source: downloads.claude.ai, latest + manifest.json, голый exe
     defaults.rs model/effortLevel/permissions.defaultMode из настроек Claude Code в его
@@ -170,6 +180,23 @@ src-tauri/src/
   поэтому бит пишется до спавна: `hasTrustDialogAccepted` в `.claude.json` либо
   `[projects.'<native путь>'] trust_level = "trusted"` в `config.toml` (через `toml_edit`, чтобы
   не потерять комментарии пользователя; ключ сравнивается без регистра и с любым слэшем).
+- **Занятость сессии измеряется, а не читается из одного статуса.** `activity.rs` раз в 5 с
+  сводит три сигнала: ход (у Claude — hooks через `--settings`-файл с `curl.exe` на loopback
+  `hub.rs`, сверенные с registry; у Codex — rollout плюс тишина экрана), потомки CLI
+  (`procs.rs`: при спавне CLI кладётся в Job Object, потомки наследуют его; «занят» = прирост
+  CPU/IO за окно либо процесс, родившийся после начала последнего хода и ещё живой — так
+  ловится `sleep` в фоне, а MCP-серверы, поднявшиеся вместе с сессией, считаются мебелью) и
+  вывод pty за последние 30 с. Hooks ничего не печатают: stdout hook'а с кодом 0 Claude Code
+  добавляет в контекст, а молчание бесплатно. Регистр Claude бьёт «idle» от hook (пропущенный
+  Stop стареет за 15 с), hook «waiting» бьёт «busy» регистра (промпт разрешения — внутри хода).
+- **Питание следует за занятостью** (`power.rs`). Keep-awake — `PowerSetRequest(SystemRequired)`
+  с причиной, видимой в `powercfg /requests`, пока busy > 0, отпускается через 60 с тишины;
+  `waiting` машину не держит (никто не отвечает), но блокирует выключение (работа не
+  закончена). Взвод живёт до выхода Luna; при взводе hold держится всегда, иначе ПК уснёт в
+  тихом окне. Автомат: busy = 0 и waiting = 0 непрерывно quiet_s → отсчёт 60 с с
+  уведомлением → действие. Shutdown закрывает сессии через `shut_down` с grace 5 с (exit-hooks
+  CLI) и `shutdown /s /t 0`; sleep/hibernate — `SetSuspendState`, сессии живут, взвод остаётся,
+  а скачок часов при пробуждении сбрасывает тихое окно и отсчёт.
 - **Тема** — токены в CSS custom properties (`[data-app][data-theme]`), переключение
   system/light/dark без перерисовки терминалов (xterm получает тему через MutationObserver).
 

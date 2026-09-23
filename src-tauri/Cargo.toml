@@ -31,12 +31,28 @@ sha2 = "0.10"
 toml_edit = "0.22"
 flate2 = "1"
 tar = "0.4"
+# The loopback listener the sessions' hooks post to (src/hub.rs): a few
+# requests a minute, answered in microseconds — a blocking server on one
+# thread, no async runtime.
+tiny_http = "0.12"
 
-# Only for subclassing the windows — the Alt menu and WM_ENDSESSION (see
-# src/sysmenu.rs). Pinned to the version tauri already resolves, so this adds
-# features to a crate in the tree rather than a second copy of it.
+# Subclassing the windows — the Alt menu and WM_ENDSESSION (src/sysmenu.rs);
+# Job Objects and process counters for what a session has running under it
+# (src/procs.rs); power requests and suspend for keep-awake and
+# shutdown-when-done (src/power.rs). Pinned to the version tauri already
+# resolves, so this adds features to a crate in the tree rather than a second
+# copy of it.
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_JobObjects",
+    "Win32_System_Power",
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [profile.release]
 strip = true
