@@ -239,6 +239,14 @@ pub fn meta(pid: Option<u32>, cwd: &str, spawned_at_ms: u128, account_path: &str
     Some(m)
 }
 
+/// Just the registry's status word for a live session — one small file, no
+/// transcript — for the activity sampler, which asks every few seconds.
+pub fn status(pid: Option<u32>, cwd: &str, spawned_at_ms: u128, account_path: &str) -> Option<String> {
+    let dir = Path::new(account_path).join("sessions");
+    let v = registry_entry(&dir, pid, cwd, spawned_at_ms)?;
+    v["status"].as_str().map(str::to_owned)
+}
+
 /// The cwd the CLI reports for a live pty session — under `--worktree` that
 /// is the worktree, not the folder the session was spawned in.
 pub fn session_cwd(pid: Option<u32>, cwd: &str, spawned_at_ms: u128, account_path: &str) -> Option<String> {

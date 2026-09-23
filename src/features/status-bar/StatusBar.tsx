@@ -7,6 +7,7 @@ import { useUpdates } from '../updates/updates.store';
 import { useCli } from '../updates/cli.store';
 import { cliUpdateNow } from '../../ipc/commands';
 import { PROVIDER_LABEL, PROVIDERS } from '../../shared/types';
+import { PowerChip } from '../power/PowerChip';
 
 /** Sidebar footer: clock, run summary, then the account list —
  *  the horizontal top-level status bar this used to be didn't have room for
@@ -156,6 +157,7 @@ export function StatusBar() {
           <Clock />
         </div>
         <UpdateChips />
+        <PowerChip />
         {/* Two counts and nothing else: the field is the narrowest strip in the
             window, and spelled-out labels only got themselves ellipsised away. */}
         <div

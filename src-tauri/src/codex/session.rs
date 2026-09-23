@@ -304,6 +304,28 @@ pub fn read_tail(path: &Path) -> Tail {
     out
 }
 
+/// `working` | `waiting` | `resting` off the rollout's tail and the screen.
+fn fold_status(tail_status: Option<&'static str>, last_output_ms: u64) -> &'static str {
+    match tail_status {
+        Some("working") => {
+            let still = crate::throttle::now_ms().saturating_sub(last_output_ms) > STILL_MS;
+            if still {
+                "waiting"
+            } else {
+                "working"
+            }
+        }
+        Some(s) => s,
+        None => "resting",
+    }
+}
+
+/// Just the status of a live session, for the activity sampler.
+pub fn status(live: &Live) -> Option<String> {
+    let path = rollout_for(live)?;
+    Some(fold_status(read_tail(&path).status, live.last_output_ms).to_string())
+}
+
 /// Status, thread id, model, context, name and opening prompt of a live session.
 /// None until the rollout file exists, which is a normal early answer.
 pub fn meta(live: &Live) -> Option<SessionMeta> {
@@ -312,14 +334,7 @@ pub fn meta(live: &Live) -> Option<SessionMeta> {
     let (_, id) = parse_name(&name)?;
     let t = read_tail(&path);
 
-    let status = match t.status {
-        Some("working") => {
-            let still = crate::throttle::now_ms().saturating_sub(live.last_output_ms) > STILL_MS;
-            Some(if still { "waiting" } else { "working" })
-        }
-        Some(s) => Some(s),
-        None => Some("resting"),
-    };
+    let status = Some(fold_status(t.status, live.last_output_ms));
 
     let mut m = SessionMeta {
         status: status.map(str::to_owned),

@@ -77,6 +77,9 @@ struct Session {
     /// Kept so a session that has lost its chat row can still be described:
     /// its title and status live under this account.
     account_path: String,
+    /// The job the CLI was put in at spawn, for listing what it has running
+    /// under it (procs.rs). None where Windows refused or off Windows.
+    job: Option<Arc<crate::procs::Job>>,
 }
 
 #[derive(Default)]
@@ -177,6 +180,9 @@ async fn spawn(app: AppHandle, state: PtyState<'_>, launch: Launch) -> Result<St
 
     let pid = child.process_id();
     let spawned_at_ms = now_ms() as u128;
+    // Into a job before it has had time to spawn anything, so every child it
+    // ever starts is listed with it.
+    let job = pid.and_then(crate::procs::adopt).map(Arc::new);
     let killer = child.clone_killer();
     let child = Arc::new(Mutex::new(child));
     let mut writer = pair.master.take_writer().map_err(|e| e.to_string())?;
@@ -332,10 +338,92 @@ async fn spawn(app: AppHandle, state: PtyState<'_>, launch: Launch) -> Result<St
             spawned_at_ms,
             resume,
             account_path,
+            job,
         },
     );
 
     Ok(String::new())
+}
+
+/// The hooks a Claude Code session is started with: each event posts its
+/// stdin to Luna's loopback listener (hub.rs) and prints nothing — a hook's
+/// stdout is added to the model's context, silence is free. Written to a file
+/// under the data dir rather than passed inline, so the command line stays
+/// readable and quoting is not a concern. None while the listener is off.
+fn claude_hooks_file(chat_id: &str) -> Option<std::path::PathBuf> {
+    let url = crate::hub::hook_url(chat_id)?;
+    // curl.exe by name: on Windows `curl` in PowerShell is an alias for
+    // Invoke-WebRequest. Its stdin — the hook's JSON — goes up as the body;
+    // the 204 answer has no body, so nothing comes back to print.
+    let command = format!("curl.exe -s -m 3 -X POST --data-binary @- {url}");
+    let hook = |timeout: u32| {
+        serde_json::json!([{ "hooks": [{ "type": "command", "command": command, "timeout": timeout }] }])
+    };
+    let settings = serde_json::json!({
+        "hooks": {
+            "UserPromptSubmit": hook(5),
+            "PostToolUse": hook(5),
+            "Stop": hook(5),
+            "Notification": hook(5),
+            "SessionEnd": hook(5),
+        }
+    });
+    let dir = crate::paths::data_dir().join("hooks");
+    std::fs::create_dir_all(&dir).ok()?;
+    let path = dir.join(format!("{chat_id}.json"));
+    std::fs::write(&path, serde_json::to_string_pretty(&settings).ok()?).ok()?;
+    Some(path)
+}
+
+/// What the activity sampler needs of a live session (activity.rs).
+pub struct ActivityProbe {
+    pub id: String,
+    pub provider: Provider,
+    pub pid: Option<u32>,
+    pub cwd: String,
+    pub spawned_at_ms: u128,
+    pub resume: Option<String>,
+    pub account_path: String,
+    pub last_output_ms: u64,
+    pub job: Option<Arc<crate::procs::Job>>,
+}
+
+impl PtyManager {
+    /// Every live session, copied out from under the map.
+    pub fn activity_probes(&self) -> Vec<ActivityProbe> {
+        let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        sessions
+            .iter()
+            .filter(|(_, s)| s.alive.load(Ordering::SeqCst))
+            .map(|(id, s)| ActivityProbe {
+                id: id.clone(),
+                provider: s.provider,
+                pid: s.pid,
+                cwd: s.cwd.clone(),
+                spawned_at_ms: s.spawned_at_ms,
+                resume: s.resume.clone(),
+                account_path: s.account_path.clone(),
+                last_output_ms: s.last_output_ms.load(Ordering::Relaxed),
+                job: s.job.clone(),
+            })
+            .collect()
+    }
+
+    /// Asks every live session to quit, each with `grace` to do it on its
+    /// own, and returns how many there were. Blocks; for the shutdown path.
+    pub fn shut_down_all(&self, grace: std::time::Duration) -> usize {
+        let taken: Vec<Session> = {
+            let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+            let ids: Vec<String> = sessions.iter().filter(|(_, s)| s.alive.load(Ordering::SeqCst)).map(|(id, _)| id.clone()).collect();
+            ids.into_iter().filter_map(|id| sessions.remove(&id)).collect()
+        };
+        let n = taken.len();
+        let handles: Vec<_> = taken.into_iter().map(|s| std::thread::spawn(move || shut_down(s, grace))).collect();
+        for h in handles {
+            let _ = h.join();
+        }
+        n
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -366,6 +454,11 @@ pub async fn ensure_claude_session(
     }
     if worktree {
         args.push("--worktree".into());
+    }
+    // Rewritten at every spawn: the listener's port is new with every Luna run.
+    if let Some(hooks) = claude_hooks_file(&id) {
+        args.push("--settings".into());
+        args.push(hooks.to_string_lossy().into_owned());
     }
     let envs = vec![
         ("CLAUDE_CONFIG_DIR", account_path.clone()),
@@ -519,8 +612,8 @@ const CTRL_C_GAP: std::time::Duration = std::time::Duration::from_millis(150);
 /// Ctrl+C, and again when it asks — and the hard kill only for a process that
 /// is past listening. Codex reads Ctrl+C the same way: interrupt, then quit.
 ///
-/// Blocks for up to GRACE: callers run it off the main thread.
-fn shut_down(mut s: Session) {
+/// Blocks for up to `grace`: callers run it off the main thread.
+fn shut_down(mut s: Session, grace: std::time::Duration) {
     let exited = || {
         s.child
             .lock()
@@ -529,7 +622,7 @@ fn shut_down(mut s: Session) {
             .map(|status| status.is_some())
             .unwrap_or(true)
     };
-    let deadline = std::time::Instant::now() + GRACE;
+    let deadline = std::time::Instant::now() + grace;
     // A turn in flight takes one Ctrl+C to interrupt before the next two ask
     // for and confirm the exit.
     for _ in 0..3 {
@@ -542,7 +635,7 @@ fn shut_down(mut s: Session) {
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
     if !exited() {
-        crate::log::warn("pty", &format!("pid {:?} did not quit on Ctrl+C within {GRACE:?}; killing it", s.pid));
+        crate::log::warn("pty", &format!("pid {:?} did not quit on Ctrl+C within {grace:?}; killing it", s.pid));
     }
     // Either way: the CLI's own children (shells, MCP servers) do not follow it
     // out, and a taskkill on a pid that has just exited is a no-op.
@@ -556,7 +649,7 @@ fn shut_down(mut s: Session) {
 async fn take_and_shut_down(state: &PtyState<'_>, id: &str) {
     let session = state.sessions.lock().unwrap().remove(id);
     if let Some(s) = session {
-        let _ = tauri::async_runtime::spawn_blocking(move || shut_down(s)).await;
+        let _ = tauri::async_runtime::spawn_blocking(move || shut_down(s, GRACE)).await;
     }
 }
 
@@ -606,6 +699,7 @@ pub async fn delete_session(
     take_and_shut_down(&state, &id).await;
 
     let _ = crate::media::clear_media(id.clone());
+    let _ = std::fs::remove_file(crate::paths::data_dir().join("hooks").join(format!("{id}.json")));
     crate::log::info(
         "delete",
         &format!("chat {id}, worktree {resolved:?}, dropping {drop_worktree}"),
