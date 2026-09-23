@@ -686,9 +686,9 @@ pub async fn orphan_sessions(
                     pid: p.pid,
                     cwd: p.cwd,
                     account_path: p.account_path,
-                    title: meta
-                        .as_ref()
-                        .and_then(|m| m.first_prompt.clone().or_else(|| m.name.clone())),
+                    title: meta.as_ref().and_then(|m| {
+                        m.title.clone().or_else(|| m.first_prompt.clone()).or_else(|| m.name.clone())
+                    }),
                     status: meta.and_then(|m| m.status),
                 }
             })
@@ -718,8 +718,12 @@ pub struct SessionMeta {
     /// Window the percentage was computed against, so the UI can show what it
     /// assumed instead of silently pinning a longer session at 100%.
     pub context_window: Option<f64>,
-    /// First real prompt of the session, used as a chat title: the registry's
-    /// own name is always `derived` (the cwd folder) in practice.
+    /// The CLI's own title for the session: a rename, else the one it
+    /// generated (Claude Code's `ai-title`, the same it puts on the terminal
+    /// tab), else None.
+    pub title: Option<String>,
+    /// First real prompt of the session — the chat's title until the CLI
+    /// comes up with one.
     pub first_prompt: Option<String>,
 }
 
@@ -835,6 +839,19 @@ pub async fn session_meta(
     tauri::async_runtime::spawn_blocking(move || meta_from_disk(&probe))
         .await
         .map_err(|e| e.to_string())
+}
+
+/// The CLI's title for a session that is not running, by its id — how a chat
+/// restored from an earlier run picks up the title its CLI gave it.
+#[tauri::command]
+pub async fn saved_title(provider: Provider, account_path: String, session_id: String) -> Option<String> {
+    tauri::async_runtime::spawn_blocking(move || match provider {
+        Provider::Claude => crate::claude::session::saved_title(&account_path, &session_id),
+        Provider::Codex => crate::codex::session::thread_name(&account_path, &session_id),
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
 #[tauri::command]

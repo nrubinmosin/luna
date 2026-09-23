@@ -67,7 +67,8 @@ src-tauri/src/
     oauth.rs    рефреш протухшего access-токена так же, как это делает CLI (его локи, CAS)
     models.rs   окна контекста из Models API
     trust.rs    hasTrustDialogAccepted в .claude.json
-    session.rs  registry <config>/sessions/<pid>.json + транскрипт projects/<cwd>/<sid>.jsonl
+    session.rs  registry <config>/sessions/<pid>.json + транскрипт projects/<cwd>/<sid>.jsonl:
+                контекст, тайтл CLI (custom-title / ai-title), первый промпт
   codex/
     cli.rs      Source: GitHub Releases openai/codex, rust-v<ver>, package-тарбол + SHA256SUMS
     config.rs   config.toml через toml_edit (комментарии и формат сохраняются), seed
@@ -77,7 +78,7 @@ src-tauri/src/
                 из последнего token_count в rollout
     trust.rs    [projects.'<путь>'] trust_level = "trusted" в config.toml
     session.rs  rollout-файлы sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl: какой наш,
-                статус, модель, контекст, первый промпт
+                статус, модель, контекст, первый промпт; имя треда из session_index.jsonl
   paths.rs      data_dir(): рядом с exe (portable) либо LOCALAPPDATA\luna
   lib.rs        Builder + generate_handler
 ```
@@ -157,6 +158,13 @@ src-tauri/src/
   логин, аккаунт показывается signed out. Codex не трогаем: его токен живёт 10 дней, рефрешит он
   сам, а уже использованный refresh-токен сервер отвергает («refresh token was already used. Please
   log out and sign in again») — наш рефреш рядом с живым Codex, помнящим старый токен, его разлогинит.
+- **Тайтлы чатов — от CLI.** Claude Code после первого сообщения генерирует название сессии (то же,
+  что ставит на вкладку терминала) и пишет его в транскрипт строкой `ai-title`; `/rename` пишет
+  `custom-title`. Обе перезаписываются в хвост по ходу сессии, так что читаются вместе с контекстом.
+  Порядок: `custom-title` → имя registry с `nameSource: user` → `ai-title` → имя с `nameSource:
+  auto` → первый промпт (только пока тайтла ещё нет). Для чатов без живой сессии `saved_title`
+  один раз за запуск находит транскрипт по session id. У Codex — последняя строка с этим id в
+  `<CODEX_HOME>/session_index.jsonl`.
 - **Trust.** Ни один CLI не может показать свой trust-промпт так, как его запускает Luna (Claude
   Code отказывается под `--worktree`, Codex после него задаёт вопрос про Windows-песочницу),
   поэтому бит пишется до спавна: `hasTrustDialogAccepted` в `.claude.json` либо

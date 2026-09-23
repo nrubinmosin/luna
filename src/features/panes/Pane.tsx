@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { StatusDot } from '../../shared/ui/StatusDot';
 import { CHAT_COLORS, chatColorTheme } from '../../shared/ui/chatColors';
-import { ACCENT, limitColor, tail2, tint } from '../../shared/lib/format';
+import { ACCENT, limitColor, shortSessionId, tail2, tint } from '../../shared/lib/format';
 import { useChats } from '../chats/chats.store';
 import { DeleteChatDialog } from '../chats/DeleteChatDialog';
 import { claude, codex } from '../providers';
@@ -30,6 +30,7 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
   const [confirming, setConfirming] = useState(false);
   const [editing, setEditing] = useState(false);
   const [picking, setPicking] = useState(false);
+  const [copied, setCopied] = useState(false);
   const [draft, setDraft] = useState('');
 
   const commitRename = () => {
@@ -237,6 +238,28 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
                 style={{ flex: '1 1 auto', minWidth: 40, ...(colorTheme && { textShadow: `1px 1px ${colorTheme.shadow}` }) }}
               >
                 {chat.name}
+              </span>
+            )}
+
+            {/* How issue claims and logs name this session: the uuid's first
+                8 characters. A click copies exactly that. */}
+            {chat.sessionId && (
+              <span
+                onClick={e => {
+                  e.stopPropagation();
+                  navigator.clipboard
+                    .writeText(shortSessionId(chat.sessionId!))
+                    .then(() => {
+                      setCopied(true);
+                      setTimeout(() => setCopied(false), 1200);
+                    })
+                    .catch(() => {});
+                }}
+                onDoubleClick={e => e.stopPropagation()}
+                title={`Session ${chat.sessionId}\nClick to copy ${shortSessionId(chat.sessionId)}`}
+                style={{ ...chip, fontFamily: '"JetBrains Mono", monospace', cursor: 'default', minWidth: '8ch', textAlign: 'center' }}
+              >
+                {copied ? 'copied' : shortSessionId(chat.sessionId)}
               </span>
             )}
 
