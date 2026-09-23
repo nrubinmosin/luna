@@ -145,6 +145,29 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   the portable build and under `%LOCALAPPDATA%\luna` otherwise. Info-level chatter never
   reaches it, so what is in there is worth reading.
 
+## Agents: sessions that run sessions
+
+A chat created with **Luna tools** ticked (off by default) gets Luna as an MCP server, and
+with it seven tools: `luna_list`, `luna_spawn`, `luna_send`, `luna_read`, `luna_wait`,
+`luna_kill`, `luna_delete`. The model can start a helper session — another model, another
+account, Codex instead of Claude — with an opening prompt, wait for its reply, send
+follow-ups, and delete it when done, worktree and branch included if it asked for one. The
+tools and a five-line instruction cost about 2k tokens of context once per session; a chat
+without the box ticked knows nothing of Luna at all.
+
+- A spawned session is a normal chat row, nested under the one that made it and folded by
+  default; the count on the parent row unfolds it. It is not seated in a pane unless you
+  open it. Its own status, context and title work as for any chat.
+- An agent can only reach sessions it spawned (and theirs); never yours. At most eight
+  under one chat, and a helper's helpers get no tools of their own.
+- Every account is available to agents unless you switch it off with the ◎ mark in its
+  row. `luna_list` names the ones that are, so you can tell a chat which one to use.
+- Deleting a parent by hand leaves its helpers as orphans, marked ↳ at the top level,
+  unless you tick the box to take them along. Helpers deleted by their agent are gone for
+  good, transcript aside.
+- `luna_read` reads the transcript, not the screen; `luna_wait` returns the reply itself,
+  so the usual loop is spawn → wait → send → wait → delete with nothing else in context.
+
 ## Power
 
 The ⏻ chip at the bottom of the sidebar opens the two rules the machine follows.

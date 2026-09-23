@@ -132,6 +132,12 @@ export interface ClaudeSessionSpec {
   perm: PermMode;
   worktree: boolean;
   resume?: string | null;
+  /** Attach Luna's MCP tools (spawn/drive other sessions). */
+  tools?: boolean;
+  /** The chat whose agent spawned this one. */
+  parent?: string | null;
+  /** An opening prompt, for a chat an agent starts. */
+  prompt?: string | null;
 }
 
 export const ensureClaudeSession = (spec: ClaudeSessionSpec) =>
@@ -144,7 +150,10 @@ export const ensureClaudeSession = (spec: ClaudeSessionSpec) =>
     effort: spec.effort,
     permissionMode: PERM_CLI[spec.perm],
     worktree: spec.worktree,
-    resume: spec.resume ?? null
+    resume: spec.resume ?? null,
+    tools: spec.tools ?? false,
+    parent: spec.parent ?? null,
+    prompt: spec.prompt ?? null
   }, '');
 
 export interface CodexSessionSpec {
@@ -159,6 +168,9 @@ export interface CodexSessionSpec {
   resume?: string | null;
   /** `codex login` instead of a chat. */
   login?: boolean;
+  tools?: boolean;
+  parent?: string | null;
+  prompt?: string | null;
 }
 
 export const ensureCodexSession = (spec: CodexSessionSpec) =>
@@ -171,7 +183,10 @@ export const ensureCodexSession = (spec: CodexSessionSpec) =>
     approval: spec.approval,
     sandbox: spec.sandbox,
     resume: spec.resume ?? null,
-    login: spec.login ?? false
+    login: spec.login ?? false,
+    tools: spec.tools ?? false,
+    parent: spec.parent ?? null,
+    prompt: spec.prompt ?? null
   }, '');
 
 export const writeSession = (id: string, data: string) =>
@@ -411,3 +426,32 @@ export const setKeepAwake = (on: boolean) => call<PowerStateDto>('set_keep_awake
 export const armPowerOff = (action: PowerAction, quietS: number) =>
   call<PowerStateDto>('arm_power_off', { action, quietS }, IDLE_POWER);
 export const disarmPowerOff = () => call<PowerStateDto>('disarm_power_off', {}, IDLE_POWER);
+
+// ---------------------------------------------------------------- agents --
+
+/** What an agent asked for (agents.rs SpawnParams), as `agent://spawn` carries it. */
+export interface AgentSpawnRequest {
+  requestId: number;
+  parentId: string;
+  provider: Provider;
+  account: string;
+  model?: string | null;
+  effort?: string | null;
+  permissionMode?: string | null;
+  approval?: string | null;
+  sandbox?: string | null;
+  folder: string;
+  worktree?: boolean | null;
+  prompt: string;
+  name?: string | null;
+  tools?: boolean | null;
+}
+
+/** Answers `agent://spawn`: the chat made for it, or why not. */
+export const agentSpawned = (requestId: number, chatId: string | null, name: string | null, error: string | null) =>
+  call<void>('agent_spawned', { requestId, chatId, name, error });
+
+/** `provider/name` keys of accounts agents may not use. */
+export const agentBlockedAccounts = () => call<string[]>('agent_blocked_accounts', {}, []);
+export const setAgentAccount = (provider: Provider, name: string, allowed: boolean) =>
+  call<string[]>('set_agent_account', { provider, name, allowed }, []);

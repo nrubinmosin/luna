@@ -7,7 +7,20 @@ import { numberedChats, useChats } from './chats.store';
 import { currentLayout, currentSlots, usePanes } from '../panes/panes.store';
 import { DeleteChatDialog } from './DeleteChatDialog';
 
-export function ChatRow({ chat }: { chat: Chat }) {
+export function ChatRow({
+  chat,
+  depth = 0,
+  childCount = 0,
+  orphan = false
+}: {
+  chat: Chat;
+  /** Nesting under the chat whose agent spawned it (FolderSection.tree). */
+  depth?: number;
+  /** Chats this one's agent spawned, shown when unfolded. */
+  childCount?: number;
+  /** Spawned by a chat that is gone. */
+  orphan?: boolean;
+}) {
   const active = useChats(s => s.active === chat.id);
   const setActive = useChats(s => s.setActive);
   const dragging = usePanes(s => s.drag === chat.id);
@@ -67,6 +80,7 @@ export function ChatRow({ chat }: { chat: Chat }) {
       className="hover-bg chat-row"
       style={{
         display: 'flex', alignItems: 'center', gap: 6, height: 27, padding: '0 6px',
+        paddingLeft: 6 + depth * 14,
         borderRadius: 2, cursor: 'grab',
         background: active ? tint(22, 'transparent') : 'transparent',
         opacity: dragging ? 0.45 : 1
@@ -81,6 +95,33 @@ export function ChatRow({ chat }: { chat: Chat }) {
           background: chatColorTheme(chat.color)?.swatch ?? 'transparent'
         }}
       />
+      {/* Sessions this chat's agent spawned, folded by default. The count
+          stays visible folded, so a parent at work is never a mystery. */}
+      {childCount > 0 && (
+        <span
+          onClick={e => {
+            e.stopPropagation();
+            useChats.getState().setChildrenOpen(chat.id, !chat.childrenOpen);
+          }}
+          title={`${childCount} session${childCount > 1 ? 's' : ''} spawned by this chat — click to ${chat.childrenOpen ? 'fold' : 'unfold'}`}
+          className="hover-bg"
+          style={{
+            flex: 'none', display: 'flex', alignItems: 'center', gap: 2, padding: '0 3px', borderRadius: 2,
+            fontSize: 'var(--fs-1)', color: 'var(--dim)', fontVariantNumeric: 'tabular-nums', cursor: 'default'
+          }}
+        >
+          <span style={{ display: 'inline-block', transform: chat.childrenOpen ? 'rotate(90deg)' : 'none' }}>▶</span>
+          {childCount}
+        </span>
+      )}
+      {(depth > 0 || orphan) && (
+        <span
+          title={orphan ? 'Spawned by a chat that no longer exists' : 'Spawned by the chat above'}
+          style={{ flex: 'none', fontSize: 'var(--fs-1)', color: 'var(--faint)', lineHeight: 1 }}
+        >
+          ↳
+        </span>
+      )}
       <StatusDot status={chat.status} />
       {editing ? (
         <input

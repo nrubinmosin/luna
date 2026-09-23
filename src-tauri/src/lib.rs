@@ -1,11 +1,13 @@
 mod accounts;
 mod activity;
+mod agents;
 mod claude;
 mod cli;
 mod codex;
 mod emit;
 mod hub;
 mod log;
+mod mcp;
 mod media;
 mod paths;
 mod power;
@@ -73,6 +75,7 @@ pub fn run() {
             // The hook listener before any session can be spawned with hooks
             // pointing at it; the activity sampler feeds power.rs from then on.
             hub::start();
+            agents::init(app.handle().clone());
             activity::start(app.handle().clone());
 
             let open = MenuItem::with_id(app, "open", "Open", true, None::<&str>)?;
@@ -112,6 +115,9 @@ pub fn run() {
             accounts::list_accounts,
             accounts::create_account,
             accounts::delete_account,
+            agents::agent_spawned,
+            agents::agent_blocked_accounts,
+            agents::set_agent_account,
             cli::cli_status,
             cli::cli_update_now,
             claude::defaults::claude_defaults,

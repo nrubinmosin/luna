@@ -61,6 +61,9 @@ export function NewChatDialog() {
     return a ? accountKey(a.provider, a.name) : '';
   });
   const [worktree, setWorktree] = useState(() => useNewChat.getState().lastWorktree);
+  // Off every time: a session with tools pays ~2k tokens of context for
+  // them, and a plain chat should not carry that by habit.
+  const [tools, setTools] = useState(false);
 
   const account = accounts.find(a => accountKey(a.provider, a.name) === accountId) ?? null;
   const provider = account?.provider ?? 'claude';
@@ -105,9 +108,9 @@ export function NewChatDialog() {
     setCreating(true);
     try {
       if (account.provider === 'claude') {
-        await createChat({ provider: 'claude', folder, account, settings: claudeDraft.settings, worktree });
+        await createChat({ provider: 'claude', folder, account, settings: claudeDraft.settings, worktree, tools });
       } else {
-        await createChat({ provider: 'codex', folder, account, settings: codexDraft.settings, worktree });
+        await createChat({ provider: 'codex', folder, account, settings: codexDraft.settings, worktree, tools });
       }
     } catch (e) {
       setCreating(false);
@@ -268,6 +271,20 @@ export function NewChatDialog() {
                 />
                 <label htmlFor="worktree-toggle" style={{ whiteSpace: 'nowrap', cursor: 'default' }}>
                   Git worktree
+                </label>
+              </div>
+              <div
+                className="field-row"
+                title={
+                  'Attach Luna\'s MCP tools: the session can spawn helper sessions (another model or ' +
+                  'account), send them text, read their replies, wait for them, kill and delete them. ' +
+                  'Costs about 2k tokens of context once; a plain chat knows nothing of Luna.'
+                }
+                style={{ height: 'calc(var(--ui) * 1.6)' }}
+              >
+                <input type="checkbox" id="tools-toggle" checked={tools} onChange={() => setTools(t => !t)} />
+                <label htmlFor="tools-toggle" style={{ whiteSpace: 'nowrap', cursor: 'default' }}>
+                  Luna tools
                 </label>
               </div>
             </div>

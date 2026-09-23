@@ -5,6 +5,8 @@ import { OrphanSessions } from '../features/chats/OrphanSessions';
 import { PaneGrid } from '../features/panes/PaneGrid';
 import { StatusBar } from '../features/status-bar/StatusBar';
 import { NewChatDialog } from '../features/new-chat/NewChatDialog';
+import { useAgentBridge } from '../features/agents/bridge';
+import { useAgentAccounts } from '../features/agents/agentAccounts.store';
 import {
   currentLayout,
   GROUP_LABELS,
@@ -114,6 +116,10 @@ export function App() {
   const closeModal = useCallback(() => useNewChat.getState().close(), []);
   useKeymap({ openNewChat, closeModal });
   useSessionWatch();
+  useAgentBridge();
+  useEffect(() => {
+    void useAgentAccounts.getState().init();
+  }, []);
 
   const startResize = (e: React.MouseEvent) => {
     e.preventDefault();

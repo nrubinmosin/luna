@@ -375,6 +375,27 @@ fn claude_hooks_file(chat_id: &str) -> Option<std::path::PathBuf> {
     Some(path)
 }
 
+/// The MCP config a tooled Claude Code session starts with: Luna's server on
+/// the hub listener, the session's own bearer token in the header. A file
+/// per chat under the data dir, like the hooks.
+fn claude_mcp_file(chat_id: &str, token: &str) -> Option<std::path::PathBuf> {
+    let url = crate::hub::mcp_url()?;
+    let config = serde_json::json!({
+        "mcpServers": {
+            "luna": {
+                "type": "http",
+                "url": url,
+                "headers": { "Authorization": format!("Bearer {token}") }
+            }
+        }
+    });
+    let dir = crate::paths::data_dir().join("mcp");
+    std::fs::create_dir_all(&dir).ok()?;
+    let path = dir.join(format!("{chat_id}.json"));
+    std::fs::write(&path, serde_json::to_string_pretty(&config).ok()?).ok()?;
+    Some(path)
+}
+
 /// What the activity sampler needs of a live session (activity.rs).
 pub struct ActivityProbe {
     pub id: String,
@@ -388,6 +409,20 @@ pub struct ActivityProbe {
     pub job: Option<Arc<crate::procs::Job>>,
 }
 
+fn activity_probe(id: &str, s: &Session) -> ActivityProbe {
+    ActivityProbe {
+        id: id.to_string(),
+        provider: s.provider,
+        pid: s.pid,
+        cwd: s.cwd.clone(),
+        spawned_at_ms: s.spawned_at_ms,
+        resume: s.resume.clone(),
+        account_path: s.account_path.clone(),
+        last_output_ms: s.last_output_ms.load(Ordering::Relaxed),
+        job: s.job.clone(),
+    }
+}
+
 impl PtyManager {
     /// Every live session, copied out from under the map.
     pub fn activity_probes(&self) -> Vec<ActivityProbe> {
@@ -395,18 +430,76 @@ impl PtyManager {
         sessions
             .iter()
             .filter(|(_, s)| s.alive.load(Ordering::SeqCst))
-            .map(|(id, s)| ActivityProbe {
-                id: id.clone(),
-                provider: s.provider,
-                pid: s.pid,
-                cwd: s.cwd.clone(),
-                spawned_at_ms: s.spawned_at_ms,
-                resume: s.resume.clone(),
-                account_path: s.account_path.clone(),
-                last_output_ms: s.last_output_ms.load(Ordering::Relaxed),
-                job: s.job.clone(),
-            })
+            .map(|(id, s)| activity_probe(id, s))
             .collect()
+    }
+
+    /// One live session, or None.
+    pub fn probe(&self, id: &str) -> Option<ActivityProbe> {
+        let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        sessions.get(id).filter(|s| s.alive.load(Ordering::SeqCst)).map(|s| activity_probe(id, s))
+    }
+
+    pub fn alive(&self, id: &str) -> bool {
+        let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        sessions.get(id).map(|s| s.alive.load(Ordering::SeqCst)).unwrap_or(false)
+    }
+
+    /// Queues bytes for the session's writer thread.
+    pub fn write(&self, id: &str, data: &[u8]) -> Result<(), String> {
+        let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        let s = sessions.get(id).ok_or("no such session")?;
+        s.input_tx.send(Input::Bytes(data.to_vec())).map_err(|_| "session writer is gone".to_string())
+    }
+
+    /// Asks the session to quit and kills it if it does not.
+    pub async fn kill(&self, id: &str) {
+        take_and_shut_down(self, id).await;
+    }
+
+    /// Tears a chat's session down: resolve its worktree, quit the process,
+    /// drop attachments and the hooks file, and the worktree only if asked.
+    /// Returns the worktree path either way.
+    pub async fn delete(
+        &self,
+        id: &str,
+        folder: &str,
+        account_path: &str,
+        worktree_path: Option<String>,
+        drop_worktree: bool,
+    ) -> Result<Option<String>, String> {
+        // Resolve before killing: once the process is gone its registry entry goes too.
+        let resolved = worktree_path.filter(|p| !p.is_empty()).or_else(|| {
+            let (provider, pid, cwd, spawned_at_ms) = {
+                let sessions = self.sessions.lock().unwrap();
+                let s = sessions.get(id)?;
+                (s.provider, s.pid, s.cwd.clone(), s.spawned_at_ms)
+            };
+            let scwd = match provider {
+                // Claude Code moves into the worktree itself; only the registry
+                // knows where.
+                Provider::Claude => crate::claude::session::session_cwd(pid, &cwd, spawned_at_ms, account_path)?,
+                // A Codex session runs where Luna started it.
+                Provider::Codex => cwd,
+            };
+            crate::worktree::is_worktree_of(folder, &scwd).then_some(scwd)
+        });
+
+        take_and_shut_down(self, id).await;
+
+        let _ = crate::media::clear_media(id.to_string());
+        for sub in ["hooks", "mcp"] {
+            let _ = std::fs::remove_file(crate::paths::data_dir().join(sub).join(format!("{id}.json")));
+        }
+        crate::log::info("delete", &format!("chat {id}, worktree {resolved:?}, dropping {drop_worktree}"));
+
+        match &resolved {
+            Some(wt) if drop_worktree => {
+                crate::worktree::remove_worktree_now(folder.to_string(), wt.clone()).map(|_| resolved.clone())
+            }
+            Some(_) => Ok(resolved),
+            None => Ok(None),
+        }
     }
 
     /// Asks every live session to quit, each with `grace` to do it on its
@@ -439,6 +532,12 @@ pub async fn ensure_claude_session(
     permission_mode: String,
     worktree: bool,
     resume: Option<String>,
+    // Luna's MCP tools (agents.rs): off unless the chat asked.
+    tools: Option<bool>,
+    // The chat that spawned this one, if an agent did.
+    parent: Option<String>,
+    // An opening prompt, for a chat an agent starts.
+    prompt: Option<String>,
 ) -> Result<String, String> {
     let mut args = vec![
         "--model".to_string(),
@@ -459,6 +558,15 @@ pub async fn ensure_claude_session(
     if let Some(hooks) = claude_hooks_file(&id) {
         args.push("--settings".into());
         args.push(hooks.to_string_lossy().into_owned());
+    }
+    let tools = tools.unwrap_or(false);
+    let token = crate::agents::register(&id, Provider::Claude, &folder, &account_path, parent.as_deref(), tools);
+    if let Some(mcp) = token.as_deref().and_then(|t| claude_mcp_file(&id, t)) {
+        args.push("--mcp-config".into());
+        args.push(mcp.to_string_lossy().into_owned());
+    }
+    if let Some(p) = prompt.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+        args.push(p.to_string());
     }
     let envs = vec![
         ("CLAUDE_CONFIG_DIR", account_path.clone()),
@@ -499,8 +607,12 @@ pub async fn ensure_codex_session(
     sandbox: String,
     resume: Option<String>,
     login: bool,
+    tools: Option<bool>,
+    parent: Option<String>,
+    prompt: Option<String>,
 ) -> Result<String, String> {
     let mut args: Vec<String> = vec![];
+    let mut envs = vec![("CODEX_HOME", account_path.clone())];
     let describe;
     if login {
         args.push("login".into());
@@ -527,12 +639,25 @@ pub async fn ensure_codex_session(
             args.push("--sandbox".into());
             args.push(sandbox.clone());
         }
+        // Luna's MCP server as a config override, the token through the
+        // environment: neither touches the account's config.toml.
+        let tools = tools.unwrap_or(false);
+        let token = crate::agents::register(&id, Provider::Codex, &folder, &account_path, parent.as_deref(), tools);
+        if let (Some(token), Some(url)) = (token, crate::hub::mcp_url()) {
+            args.push("-c".into());
+            args.push(format!("mcp_servers.luna.url=\"{url}\""));
+            args.push("-c".into());
+            args.push("mcp_servers.luna.bearer_token_env_var=\"LUNA_MCP_TOKEN\"".into());
+            envs.push(("LUNA_MCP_TOKEN", token));
+        }
+        if let Some(p) = prompt.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+            args.push(p.to_string());
+        }
         describe = format!(
             "model {} effort {effort} approval {approval} sandbox {sandbox}",
             model.as_deref().unwrap_or("default")
         );
     }
-    let envs = vec![("CODEX_HOME", account_path.clone())];
     spawn(
         app,
         state,
@@ -646,7 +771,7 @@ fn shut_down(mut s: Session, grace: std::time::Duration) {
 /// Takes the session out of the map first and shuts it down after: the
 /// shutdown waits on the process, and waiting under the map would put every
 /// other chat's keystrokes behind it.
-async fn take_and_shut_down(state: &PtyState<'_>, id: &str) {
+async fn take_and_shut_down(state: &PtyManager, id: &str) {
     let session = state.sessions.lock().unwrap().remove(id);
     if let Some(s) = session {
         let _ = tauri::async_runtime::spawn_blocking(move || shut_down(s, GRACE)).await;
@@ -679,39 +804,7 @@ pub async fn delete_session(
     // kept worktree is.
     drop_worktree: bool,
 ) -> Result<Option<String>, String> {
-    // Resolve before killing: once the process is gone its registry entry goes too.
-    let resolved = worktree_path.filter(|p| !p.is_empty()).or_else(|| {
-        let (provider, pid, cwd, spawned_at_ms) = {
-            let sessions = state.sessions.lock().unwrap();
-            let s = sessions.get(&id)?;
-            (s.provider, s.pid, s.cwd.clone(), s.spawned_at_ms)
-        };
-        let scwd = match provider {
-            // Claude Code moves into the worktree itself; only the registry
-            // knows where.
-            Provider::Claude => crate::claude::session::session_cwd(pid, &cwd, spawned_at_ms, &account_path)?,
-            // A Codex session runs where Luna started it.
-            Provider::Codex => cwd,
-        };
-        crate::worktree::is_worktree_of(&folder, &scwd).then_some(scwd)
-    });
-
-    take_and_shut_down(&state, &id).await;
-
-    let _ = crate::media::clear_media(id.clone());
-    let _ = std::fs::remove_file(crate::paths::data_dir().join("hooks").join(format!("{id}.json")));
-    crate::log::info(
-        "delete",
-        &format!("chat {id}, worktree {resolved:?}, dropping {drop_worktree}"),
-    );
-
-    match &resolved {
-        Some(wt) if drop_worktree => {
-            crate::worktree::remove_worktree_now(folder, wt.clone()).map(|_| resolved.clone())
-        }
-        Some(_) => Ok(resolved),
-        None => Ok(None),
-    }
+    state.delete(&id, &folder, &account_path, worktree_path, drop_worktree).await
 }
 
 /// The cwd of every live session this app runs. A running session must never

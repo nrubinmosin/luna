@@ -18,6 +18,9 @@ pub struct Settings {
     pub quiet_window_s: u64,
     /// The last action armed, so the menu opens on it: shutdown | hibernate | sleep.
     pub power_action: String,
+    /// `provider/name` of accounts agents may not spawn on (agents.rs). Every
+    /// account is available unless listed here.
+    pub agent_blocked_accounts: Vec<String>,
 }
 
 impl Default for Settings {
@@ -27,6 +30,7 @@ impl Default for Settings {
             keep_awake: true,
             quiet_window_s: 120,
             power_action: "shutdown".into(),
+            agent_blocked_accounts: Vec::new(),
         }
     }
 }
