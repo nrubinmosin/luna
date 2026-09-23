@@ -15,6 +15,12 @@ export type ChatSpec = {
   folder: string;
   account: Account;
   worktree: boolean;
+  /** Attach Luna's MCP tools so the session can spawn and drive others. */
+  tools?: boolean;
+  /** Set when an agent spawns it: the row nests under this chat, and it is
+   *  not seated in a pane — the parent is what the user is watching. */
+  parentId?: string;
+  name?: string;
 } & ({ provider: 'claude'; settings: ClaudeSettings } | { provider: 'codex'; settings: CodexSettings });
 
 /**
@@ -46,16 +52,21 @@ export async function createChat(spec: ChatSpec): Promise<string> {
   const n = folders.reduce((a, f) => a + f.chats.filter(c => c.group === group).length, 0) + 1;
   const id = newId('c');
 
+  // A child lives in its parent's group, wherever the user is looking now.
+  const parent = spec.parentId ? useChats.getState().findChat(spec.parentId) : null;
   const base = {
     id,
-    name: `chat ${n}`,
+    name: spec.name?.trim() || `chat ${n}`,
+    nameCustom: !!spec.name?.trim(),
     status: 'resting' as const,
     context: 0,
     account: spec.account.name,
-    group,
+    group: parent?.group ?? group,
     worktree: spec.worktree,
     worktreePath,
-    color: pickChatColor(wornColors(folders, group))
+    color: pickChatColor(wornColors(folders, group)),
+    tools: spec.tools ?? false,
+    parentId: spec.parentId ?? null
   };
   const chat: Chat =
     spec.provider === 'claude'
@@ -63,8 +74,10 @@ export async function createChat(spec: ChatSpec): Promise<string> {
       : { ...base, provider: 'codex', ...spec.settings };
 
   useChats.getState().addChat(spec.folder, chat);
-  usePanes.getState().autoPlace(id);
-  useNewChat.getState().remember(spec.folder, { provider: spec.provider, name: spec.account.name }, spec.worktree);
+  if (!spec.parentId) {
+    usePanes.getState().autoPlace(id);
+    useNewChat.getState().remember(spec.folder, { provider: spec.provider, name: spec.account.name }, spec.worktree);
+  }
   return id;
 }
 

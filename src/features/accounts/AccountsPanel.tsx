@@ -6,6 +6,7 @@ import { useAccounts } from './accounts.store';
 import { useChats } from '../chats/chats.store';
 import { SettingsDialog } from '../settings/SettingsDialog';
 import { ui } from '../providers';
+import { useAgentAccounts } from '../agents/agentAccounts.store';
 
 /** Renders inline as the sidebar's account list — no longer a floating popover. */
 export function AccountsPanel() {
@@ -27,6 +28,9 @@ export function AccountsPanel() {
   // "cancelled" and an account in use simply could not be deleted.
   const [deleting, setDeleting] = useState<Account | null>(null);
   const folders = useChats(s => s.folders);
+  const blocked = useAgentAccounts(s => s.blocked);
+  const agentsMay = (p: Provider, n: string) => !blocked.includes(`${p}/${n}`);
+  const setAgentAllowed = useAgentAccounts.getState().setAllowed;
 
   const inUse = (account: Account) =>
     folders.some(f => f.chats.some(c => c.provider === account.provider && c.account === account.name));
@@ -172,6 +176,23 @@ export function AccountsPanel() {
                   login
                 </button>
               )}
+              <span
+                onClick={() => void setAgentAllowed(acc.provider, acc.name, !agentsMay(acc.provider, acc.name))}
+                title={
+                  agentsMay(acc.provider, acc.name)
+                    ? 'Agents may spawn sessions on this account — click to forbid'
+                    : 'Agents may not use this account — click to allow'
+                }
+                className="hover-bg"
+                style={{
+                  width: 16, height: 16, flex: 'none', borderRadius: 2, display: 'grid', placeItems: 'center',
+                  fontSize: 'var(--fs-2)', cursor: 'default',
+                  color: agentsMay(acc.provider, acc.name) ? 'var(--faint)' : 'oklch(.58 .2 25)',
+                  textDecoration: agentsMay(acc.provider, acc.name) ? 'none' : 'line-through'
+                }}
+              >
+                ◎
+              </span>
               <span
                 onClick={() => void refreshAccount(acc)}
                 title={

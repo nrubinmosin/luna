@@ -348,3 +348,73 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 }
+
+/// The transcript file of a live session, once the registry knows it.
+pub fn transcript_of(pid: Option<u32>, cwd: &str, spawned_at_ms: u128, account_path: &str) -> Option<PathBuf> {
+    let dir = Path::new(account_path).join("sessions");
+    let v = registry_entry(&dir, pid, cwd, spawned_at_ms)?;
+    let scwd = v["cwd"].as_str()?;
+    let sid = v["sessionId"].as_str()?;
+    Some(transcript_path(account_path, scwd, sid))
+}
+
+/// The conversation as another agent reads it: user and assistant turns from
+/// byte offset `from` on, tool calls folded to one line each when asked for
+/// and left out otherwise. Returns the messages and the offset to continue
+/// from. Subagent sidechains and CLI-injected turns are skipped.
+pub fn messages_from(path: &Path, from: u64, with_tools: bool) -> (Vec<crate::agents::Message>, u64) {
+    use std::io::{BufRead, BufReader, Seek, SeekFrom};
+    let mut out = Vec::new();
+    let Ok(mut f) = std::fs::File::open(path) else { return (out, from) };
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    let from = from.min(len);
+    if f.seek(SeekFrom::Start(from)).is_err() {
+        return (out, from);
+    }
+    let mut read = from;
+    for line in BufReader::new(f).lines().map_while(Result::ok) {
+        read += line.len() as u64 + 1;
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+        if v["isSidechain"].as_bool().unwrap_or(false) || v["isMeta"].as_bool().unwrap_or(false) {
+            continue;
+        }
+        let role = match v["type"].as_str() {
+            Some("user") => "user",
+            Some("assistant") => "assistant",
+            _ => continue,
+        };
+        let content = &v["message"]["content"];
+        let mut text = String::new();
+        if let Some(s) = content.as_str() {
+            text.push_str(s);
+        } else if let Some(blocks) = content.as_array() {
+            for b in blocks {
+                match b["type"].as_str() {
+                    Some("text") => {
+                        if let Some(t) = b["text"].as_str() {
+                            if !text.is_empty() {
+                                text.push('\n');
+                            }
+                            text.push_str(t);
+                        }
+                    }
+                    Some("tool_use") if with_tools => {
+                        if !text.is_empty() {
+                            text.push('\n');
+                        }
+                        text.push_str(&format!("[tool: {}]", b["name"].as_str().unwrap_or("?")));
+                    }
+                    // tool_result blocks are the user side of a tool call:
+                    // bulk, and already reflected in what the assistant did.
+                    _ => {}
+                }
+            }
+        }
+        let text = text.trim().to_string();
+        if text.is_empty() || text.starts_with("<local-command") || text.starts_with("<command-name") {
+            continue;
+        }
+        out.push(crate::agents::Message { role: role.to_string(), text });
+    }
+    (out, read.min(len).max(from))
+}

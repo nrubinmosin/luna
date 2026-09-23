@@ -434,3 +434,40 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 }
+
+/// The conversation as another agent reads it: `user_message` and
+/// `agent_message` events from byte offset `from` on. Returns the messages
+/// and the offset to continue from.
+pub fn messages_from(path: &Path, from: u64) -> (Vec<crate::agents::Message>, u64) {
+    use std::io::{BufRead, BufReader, Seek, SeekFrom};
+    let mut out = Vec::new();
+    let Ok(mut f) = std::fs::File::open(path) else { return (out, from) };
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    let from = from.min(len);
+    if f.seek(SeekFrom::Start(from)).is_err() {
+        return (out, from);
+    }
+    let mut read = from;
+    for line in BufReader::new(f).lines().map_while(Result::ok) {
+        read += line.len() as u64 + 1;
+        if !line.contains("_message") {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
+        if v["type"] != "event_msg" {
+            continue;
+        }
+        let role = match v["payload"]["type"].as_str() {
+            Some("user_message") => "user",
+            Some("agent_message") => "assistant",
+            _ => continue,
+        };
+        let Some(text) = v["payload"]["message"].as_str() else { continue };
+        let text = text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        out.push(crate::agents::Message { role: role.to_string(), text: text.to_string() });
+    }
+    (out, read.min(len).max(from))
+}

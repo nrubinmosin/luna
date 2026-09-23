@@ -71,6 +71,13 @@ interface ChatBase {
   /** Key of a preset from CHAT_COLORS. The pane title bar wears it and the
    *  sidebar row shows a stripe of it; unset means stock Luna blue. */
   color?: string | null;
+  /** Luna's MCP tools attached: this session can spawn and drive others. */
+  tools?: boolean;
+  /** The chat whose agent spawned this one. A parent that no longer exists
+   *  leaves the child an orphan, listed at the top level with a mark. */
+  parentId?: string | null;
+  /** Whether the children under this row are unfolded; folded by default. */
+  childrenOpen?: boolean;
 }
 
 export interface ClaudeChat extends ChatBase, ClaudeSettings {

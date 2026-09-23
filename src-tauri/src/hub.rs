@@ -41,9 +41,26 @@ pub fn start() {
     std::thread::Builder::new()
         .name("luna-hub".into())
         .spawn(move || {
+            // A thread per request: an MCP `wait` holds its request for
+            // minutes, and a hook must not queue behind it.
             for mut req in server.incoming_requests() {
-                let status = handle(&mut req);
-                let _ = req.respond(tiny_http::Response::empty(status));
+                std::thread::spawn(move || {
+                    let path = req.url().to_string();
+                    if path == "/mcp" || path.starts_with("/mcp?") {
+                        let (status, body) = handle_mcp(&mut req);
+                        let _ = match body {
+                            Some(json) => req.respond(
+                                tiny_http::Response::from_string(json)
+                                    .with_status_code(status)
+                                    .with_header(tiny_http::Header::from_bytes("Content-Type", "application/json").unwrap()),
+                            ),
+                            None => req.respond(tiny_http::Response::empty(status)),
+                        };
+                    } else {
+                        let status = handle(&mut req);
+                        let _ = req.respond(tiny_http::Response::empty(status));
+                    }
+                });
             }
         })
         .expect("spawn hub thread");
@@ -53,6 +70,36 @@ pub fn start() {
 pub fn hook_url(chat_id: &str) -> Option<String> {
     let l = LISTENER.get()?;
     Some(format!("http://127.0.0.1:{}/hook/{}/{}", l.port, chat_id, l.secret))
+}
+
+/// The MCP endpoint, or None while the listener is off.
+pub fn mcp_url() -> Option<String> {
+    let l = LISTENER.get()?;
+    Some(format!("http://127.0.0.1:{}/mcp", l.port))
+}
+
+/// `POST /mcp` with `Authorization: Bearer <session token>`. GET is refused
+/// (no server-initiated stream is offered), which the transport allows.
+fn handle_mcp(req: &mut tiny_http::Request) -> (u16, Option<String>) {
+    if *req.method() != tiny_http::Method::Post {
+        return (405, None);
+    }
+    let token = req
+        .headers()
+        .iter()
+        .find(|h| h.field.equiv("Authorization"))
+        .map(|h| h.value.as_str().to_string())
+        .and_then(|v| v.strip_prefix("Bearer ").map(str::to_owned))
+        .unwrap_or_default();
+    let Some(caller) = crate::agents::caller_of(token.trim()) else {
+        return (401, Some(r#"{"error":"unknown or expired session token"}"#.into()));
+    };
+    let mut body = String::new();
+    let _ = req.as_reader().take(4 * 1024 * 1024).read_to_string(&mut body);
+    match crate::mcp::handle(&caller, &body) {
+        Some(v) => (200, Some(v.to_string())),
+        None => (202, None),
+    }
 }
 
 fn handle(req: &mut tiny_http::Request) -> u16 {

@@ -92,6 +92,25 @@ struct Track {
     prev: Vec<ProcRead>,
     procs: Option<procs::Busy>,
     output_fresh: bool,
+    /// Busy → not-busy transitions seen: what an agent's `wait` counts.
+    turns_ended: u32,
+    /// The last verdict `busy` was computed from, for the transition above.
+    was_busy: bool,
+}
+
+/// What an agent's `wait`/`read` asks about a session.
+#[derive(Clone, Copy)]
+pub struct TurnState {
+    pub turn: Turn,
+    pub busy: bool,
+    pub turns_ended: u32,
+}
+
+pub fn turn_state(chat_id: &str) -> Option<TurnState> {
+    let st = state().lock().unwrap_or_else(|e| e.into_inner());
+    let t = st.tracks.get(chat_id)?;
+    let busy = st.summary.sessions.iter().find(|s| s.id == chat_id).map(|s| s.busy).unwrap_or(false);
+    Some(TurnState { turn: t.turn, busy, turns_ended: t.turns_ended })
 }
 
 impl Default for Turn {
@@ -262,7 +281,16 @@ pub fn sample(probes: Vec<crate::pty::ActivityProbe>) -> Summary {
         names.sort();
         names.dedup();
 
-        let busy = t.turn == Turn::Busy || t.procs.is_some() || t.output_fresh;
+        // A turn "ends" for an agent when the model stops, not when its
+        // background jobs do: `wait` wants the reply, and the children are
+        // the machine's concern (power.rs), not the caller's.
+        let model_busy = t.turn == Turn::Busy;
+        if t.was_busy && !model_busy {
+            t.turns_ended += 1;
+        }
+        t.was_busy = model_busy;
+
+        let busy = model_busy || t.procs.is_some() || t.output_fresh;
         sessions.push(SessionActivity { id: p.id.clone(), turn: t.turn, procs: names, output_fresh: t.output_fresh, busy });
     }
 

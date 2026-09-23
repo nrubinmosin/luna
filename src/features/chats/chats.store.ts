@@ -22,6 +22,8 @@ interface ChatsState {
   toggleFolder: (folderId: string) => void;
   setActive: (chatId: string | null) => void;
   setStatus: (chatId: string, status: Chat['status']) => void;
+  /** Unfold or fold the children an agent spawned under this chat. */
+  setChildrenOpen: (chatId: string, open: boolean) => void;
   setName: (chatId: string, name: string) => void;
   setWorktreePath: (chatId: string, path: string) => void;
   setSessionId: (chatId: string, sessionId: string) => void;
@@ -80,8 +82,18 @@ export const useChats = create<ChatsState>()(
                 f.path === folderPath ? { ...f, open: true, chats: [...f.chats, chat] } : f
               )
             : [...s.folders, { id: newId('f'), path: folderPath, open: true, chats: [chat] }];
-          return { folders, active: chat.id };
+          // A child an agent spawned does not take the selection: the parent
+          // is what the user is looking at.
+          return { folders, active: chat.parentId ? s.active : chat.id };
         }),
+
+      setChildrenOpen: (chatId, open) =>
+        set(s => ({
+          folders: s.folders.map(f => ({
+            ...f,
+            chats: f.chats.map(c => (c.id === chatId ? { ...c, childrenOpen: open } : c))
+          }))
+        })),
 
       deleteChat: chatId => {
         // Panes are cleared here rather than by the caller: a chat can be

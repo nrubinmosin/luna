@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import type { Chat } from '../../shared/types';
-import { useChats } from './chats.store';
+import { allChats, useChats } from './chats.store';
 import { accountOfChat, useAccounts } from '../accounts/accounts.store';
 import { ui } from '../providers';
 import { deleteSession } from '../../ipc/commands';
@@ -11,28 +11,55 @@ import { ConfirmDialog } from '../../shared/ui/ConfirmDialog';
  * came from — the sidebar row or a pane's title bar. Owns the worktree
  * checkbox and the deletion itself, so the two entry points cannot drift.
  */
+/** Every chat spawned under this one, any depth, deepest last. */
+function descendantsOf(chat: Chat): Chat[] {
+  const all = allChats(useChats.getState().folders);
+  const out: Chat[] = [];
+  const walk = (id: string) => {
+    for (const c of all) {
+      if (c.parentId === id) {
+        out.push(c);
+        walk(c.id);
+      }
+    }
+  };
+  walk(chat.id);
+  return out;
+}
+
+function deleteOne(chat: Chat, dropWorktree: boolean) {
+  const folder = useChats.getState().folderOf(chat.id);
+  const accountPath = accountOfChat(useAccounts.getState().accounts, chat)?.path ?? '';
+  if (folder) {
+    // One command kills the process tree and clears the attachments — and the
+    // worktree and its branch only if that was asked for. It resolves the
+    // worktree itself, so deleting a chat seconds after creating it no longer
+    // orphans one.
+    void deleteSession(
+      chat.id,
+      folder.path,
+      accountPath,
+      chat.worktreePath ?? null,
+      dropWorktree
+    ).catch(err => console.warn('[luna] delete failed', err));
+  }
+  // Both stores clear the panes themselves, open or not.
+  useChats.getState().deleteChat(chat.id);
+}
+
 export function DeleteChatDialog({ chat, onClose }: { chat: Chat; onClose: () => void }) {
   const [dropWorktree, setDropWorktree] = useState(false);
+  // The helpers this chat's agent spawned. Kept by default — they may hold
+  // an answer nothing else has — and listed as orphans once the parent goes.
+  const [withChildren, setWithChildren] = useState(false);
+  const children = descendantsOf(chat);
 
   const doDelete = () => {
     onClose();
-    const folder = useChats.getState().folderOf(chat.id);
-    const accountPath = accountOfChat(useAccounts.getState().accounts, chat)?.path ?? '';
-    if (folder) {
-      // One command kills the process tree and clears the attachments — and the
-      // worktree and its branch only if that was asked for. It resolves the
-      // worktree itself, so deleting a chat seconds after creating it no longer
-      // orphans one.
-      void deleteSession(
-        chat.id,
-        folder.path,
-        accountPath,
-        chat.worktreePath ?? null,
-        dropWorktree
-      ).catch(err => console.warn('[luna] delete failed', err));
+    if (withChildren) {
+      for (const c of [...children].reverse()) deleteOne(c, dropWorktree);
     }
-    // Both stores clear the panes themselves, open or not.
-    useChats.getState().deleteChat(chat.id);
+    deleteOne(chat, dropWorktree);
   };
 
   return (
@@ -62,27 +89,42 @@ export function DeleteChatDialog({ chat, onClose }: { chat: Chat; onClose: () =>
         </>
       }
       extra={
-        chat.worktree && (
-          // The box itself is drawn by xp.css on the label, which is why
-          // the input needs an id and the label a matching `for`: nested
-          // inside one, the checkbox renders as nothing at all.
-          <div
-            onClick={e => e.stopPropagation()}
-            style={{ display: 'flex', alignItems: 'flex-start', gap: 7, fontSize: 'var(--fs-4)', color: 'var(--dim)' }}
-          >
-            <input
-              type="checkbox"
-              id={`drop-worktree-${chat.id}`}
-              checked={dropWorktree}
-              onChange={e => setDropWorktree(e.target.checked)}
-            />
-            {/* xp.css makes every label inline-flex, which chops a wrapping
-                label into unwrappable flex columns around the <code> child;
-                block restores normal text flow. */}
-            <label htmlFor={`drop-worktree-${chat.id}`} style={{ display: 'block', cursor: 'default', lineHeight: 1.5 }}>
-              Delete the worktree and its throwaway <code>{ui(chat.provider).branchPrefix}…</code> branch too,
-              including any uncommitted work.
-            </label>
+        (chat.worktree || children.length > 0) && (
+          <div onClick={e => e.stopPropagation()} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {(chat.worktree || (withChildren && children.some(c => c.worktree))) && (
+              // The box itself is drawn by xp.css on the label, which is why
+              // the input needs an id and the label a matching `for`: nested
+              // inside one, the checkbox renders as nothing at all.
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 7, fontSize: 'var(--fs-4)', color: 'var(--dim)' }}>
+                <input
+                  type="checkbox"
+                  id={`drop-worktree-${chat.id}`}
+                  checked={dropWorktree}
+                  onChange={e => setDropWorktree(e.target.checked)}
+                />
+                {/* xp.css makes every label inline-flex, which chops a wrapping
+                    label into unwrappable flex columns around the <code> child;
+                    block restores normal text flow. */}
+                <label htmlFor={`drop-worktree-${chat.id}`} style={{ display: 'block', cursor: 'default', lineHeight: 1.5 }}>
+                  Delete the worktree and its throwaway <code>{ui(chat.provider).branchPrefix}…</code> branch too,
+                  including any uncommitted work.
+                </label>
+              </div>
+            )}
+            {children.length > 0 && (
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 7, fontSize: 'var(--fs-4)', color: 'var(--dim)' }}>
+                <input
+                  type="checkbox"
+                  id={`drop-children-${chat.id}`}
+                  checked={withChildren}
+                  onChange={e => setWithChildren(e.target.checked)}
+                />
+                <label htmlFor={`drop-children-${chat.id}`} style={{ display: 'block', cursor: 'default', lineHeight: 1.5 }}>
+                  Also delete the {children.length} session{children.length > 1 ? 's' : ''} its agent spawned
+                  ({children.map(c => c.name).join(', ')}). Left alone, they stay listed as orphans.
+                </label>
+              </div>
+            )}
           </div>
         )
       }

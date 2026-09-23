@@ -43,6 +43,9 @@ src/                          фронт (feature-sliced)
     status-bar/ часы, сводка, лимиты аккаунтов; чип обновления — только когда есть новость
     power/    чип ⏻ и меню: keep-awake, взвод «выключить/усыпить, когда всё закончится»;
               power.store слушает power://state, сам ничего не считает
+    agents/   bridge.ts — фронтовая половина агентов: agent://spawn → createChat с parentId
+              и ensure_* с промптом → agent_spawned; agent://deleted → deleteChat;
+              agentAccounts.store — какие аккаунты агентам нельзя (settings.json ядра)
   ipc/        commands.ts (invoke), events.ts (listen) — единственная граница с Rust
 
 src-tauri/src/
@@ -63,7 +66,13 @@ src-tauri/src/
   procs.rs      что у CLI запущено под ним: Job Object на сессию, список pid,
                 CPU/IO/время старта каждого, правило «занят» (judge)
   hub.rs        loopback HTTP (tiny_http) на случайном порту с секретом на запуск;
-                POST /hook/<chat>/<secret> принимает stdin hook'ов Claude Code
+                POST /hook/<chat>/<secret> принимает stdin hook'ов Claude Code;
+                POST /mcp с bearer-токеном сессии — MCP для агентов; поток на запрос
+  mcp.rs        JSON-RPC MCP-сервера: initialize (с instructions), tools/list, tools/call;
+                семь инструментов luna_* с короткими описаниями (~2k токенов)
+  agents.rs     реестр сессий с инструментами и порождённых ими: токены, родство,
+                права (только потомки), spawn через фронт (agent://spawn ↔ agent_spawned),
+                send в pty, read из транскрипта, wait по activity, kill, delete (+worktree)
   activity.rs   семплер раз в 5 с: ход (hooks + registry / rollout), потомки, вывод →
                 busy / waiting / idle на сессию и сводка
   power.rs      keep-awake (PowerSetRequest) и «выключить, когда всё закончится»:
@@ -197,6 +206,20 @@ src-tauri/src/
   уведомлением → действие. Shutdown закрывает сессии через `shut_down` с grace 5 с (exit-hooks
   CLI) и `shutdown /s /t 0`; sleep/hibernate — `SetSuspendState`, сессии живут, взвод остаётся,
   а скачок часов при пробуждении сбрасывает тихое окно и отсчёт.
+- **Агенты — через MCP, а не через промпт.** Сессия с галочкой «Luna tools» получает
+  `--mcp-config <data>/mcp/<chat>.json` (Claude) или `-c mcp_servers.luna.url=… -c
+  mcp_servers.luna.bearer_token_env_var=LUNA_MCP_TOKEN` (Codex) — Luna-сервер на loopback
+  `hub.rs`, токен на сессию, перевыпускается при каждом спавне. Инструкция агенту едет в
+  `instructions` ответа `initialize`, поэтому системный промпт не трогается ни флагом, ни
+  файлом; всё вместе ~2k токенов один раз. Чистые сессии не получают ни MCP, ни знания о Luna.
+  Ядро чатов не знает, поэтому spawn — round trip: `agent://spawn` во фронт, тот делает чат
+  (`parentId`, без посадки в панель) и `ensure_*` с промптом позиционным аргументом CLI,
+  и отвечает `agent_spawned`; ядро ждёт на Condvar до 90 с. `read` — из транскрипта Claude
+  (user/assistant, без tool_result) или rollout Codex (`user_message`/`agent_message`) с
+  байтовым курсором; `wait(turn_done)` считает переходы busy→idle в `activity.rs`
+  (`turns_ended`) и возвращает последний ответ, чтобы `read` был не нужен. Права: только
+  потомки вызывающего; глубина инструментов 1; максимум 8 потомков. Дети переживают
+  родителя (сироты с ↳); удаление ребёнком через `delete` убирает worktree, если попросили.
 - **Тема** — токены в CSS custom properties (`[data-app][data-theme]`), переключение
   system/light/dark без перерисовки терминалов (xterm получает тему через MutationObserver).
 

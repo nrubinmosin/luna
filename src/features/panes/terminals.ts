@@ -386,7 +386,9 @@ function create(spec: TermSpec): Entry {
               effort: chat.effort,
               approval: chat.approval,
               sandbox: chat.sandbox,
-              resume: chat.sessionId ?? null
+              resume: chat.sessionId ?? null,
+              tools: chat.tools ?? false,
+              parent: chat.parentId ?? null
             })
           : await ensureClaudeSession({
               chatId,
@@ -396,7 +398,9 @@ function create(spec: TermSpec): Entry {
               effort: chat.effort,
               perm: chat.perm,
               worktree: chat.worktree && !chat.worktreePath,
-              resume: chat.sessionId ?? null
+              resume: chat.sessionId ?? null,
+              tools: chat.tools ?? false,
+              parent: chat.parentId ?? null
             });
     } catch {
       // The ipc layer already logged the cause. Without this catch the
