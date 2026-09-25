@@ -242,10 +242,11 @@ export const usePanes = create<PanesState>()(
        * One click on a row in the sidebar. With a single pane there is nothing
        * to arrange and dragging is pure ceremony, so the click simply swaps
        * what that pane shows. With more panes the board is an arrangement the
-       * user made, and a click must not rewrite it: a chat already on it just
-       * becomes the active pane (or, while a sheet is up, the one on the
-       * sheet), and a chat that is not on it comes up as its own sheet, which
-       * leaves the board exactly as it was.
+       * user made, and a click must not rewrite it — but it still opens the
+       * chat full size, the same as in the one-pane layout: a chat already on
+       * the board is held up on the sheet from its own pane, and a chat that
+       * is not on it comes up as a sheet of its own. Either way the board is
+       * left exactly as it was.
        */
       showChat: chatId =>
         set(s => {
@@ -256,7 +257,7 @@ export const usePanes = create<PanesState>()(
           }
           const i = currentSlots(s).indexOf(chatId);
           if (i < 0 || i >= currentLayout(s)) return { peekChat: chatId, peek: null };
-          return { activePane: i, ...(peeking(s) ? { peek: i, peekChat: null } : {}) };
+          return { activePane: i, peek: i, peekChat: null };
         }),
 
       setOver: i => set({ over: i }),
