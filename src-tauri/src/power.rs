@@ -25,6 +25,11 @@ const COUNTDOWN_MS: u64 = 60_000;
 /// How long a CLI gets to quit on its own before the shutdown proceeds — more
 /// than a chat delete gives it, since its exit hooks are what we are waiting for.
 const QUIT_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+/// While armed and held up, the log says by whom: at once when the reason
+/// changes (but not more often than this), and at least this often regardless,
+/// so a night that ends with the PC still on can be read back.
+const BLOCKED_LOG_MIN_MS: u64 = 60_000;
+const BLOCKED_LOG_EVERY_MS: u64 = 10 * 60_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -86,6 +91,32 @@ struct State {
     /// The last state sent to the UI, to send only changes.
     last_sent: Option<PowerState>,
     firing: bool,
+    /// The last "armed, not firing" line and when it went out.
+    blocked_why: String,
+    blocked_logged_ms: u64,
+}
+
+/// One line naming every session that holds the machine, or "" when none does.
+fn blockers(summary: &Summary) -> String {
+    summary
+        .sessions
+        .iter()
+        .filter(|s| s.busy || s.turn == crate::activity::Turn::Waiting)
+        .map(|s| format!("{} {}", s.id, s.why()))
+        .collect::<Vec<_>>()
+        .join(" | ")
+}
+
+/// Whether the blocked line is due: on a change after a minute's quiet, or
+/// every ten minutes while nothing changes. Pure, for the test.
+fn blocked_log_due(st: &mut State, why: &str, now: u64) -> bool {
+    let since = now.saturating_sub(st.blocked_logged_ms);
+    let due = (why != st.blocked_why && since >= BLOCKED_LOG_MIN_MS) || since >= BLOCKED_LOG_EVERY_MS || st.blocked_logged_ms == 0;
+    if due {
+        st.blocked_why = why.to_string();
+        st.blocked_logged_ms = now;
+    }
+    due
 }
 
 fn state() -> &'static Mutex<State> {
@@ -201,6 +232,22 @@ pub fn tick(app: &tauri::AppHandle, summary: &Summary) {
         }
     }
 
+    // -- say why an armed rule is not firing --------------------------------
+    if st.armed.is_some() && st.countdown_ends_at_ms.is_none() && !st.firing {
+        let blocked = summary.busy > 0 || summary.waiting > 0;
+        if blocked {
+            let why = blockers(summary);
+            if blocked_log_due(&mut st, &why, now) {
+                crate::log::warn("power", &format!("armed, not firing: {why}"));
+            }
+        } else if !st.blocked_why.is_empty() {
+            let quiet_for = summary.idle_since_ms.map(|t| now.saturating_sub(t)).unwrap_or(0) / 1000;
+            crate::log::warn("power", &format!("armed, all quiet for {quiet_for}s; countdown when the window is full"));
+            st.blocked_why.clear();
+            st.blocked_logged_ms = 0;
+        }
+    }
+
     publish(app, &mut st, summary);
 }
 
@@ -288,6 +335,8 @@ pub fn arm_power_off(app: tauri::AppHandle, action: String, quiet_s: u64) -> Res
     let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
     st.armed = Some(Armed { action, quiet_s, armed_at_ms: now_ms() });
     st.countdown_ends_at_ms = None;
+    st.blocked_why.clear();
+    st.blocked_logged_ms = 0;
     crate::log::warn("power", &format!("armed: {} after {quiet_s}s quiet", action.as_str()));
     publish(&app, &mut st, &crate::activity::summary());
     Ok(snapshot(&st, &crate::activity::summary()))
@@ -491,6 +540,21 @@ mod tests {
         advance(&mut st, true, &board(0, 0, Some(0)), 60_000);
         assert_eq!(advance(&mut st, true, &board(0, 0, Some(0)), 60_000 + COUNTDOWN_MS), vec![Effect::Fire(Action::Sleep)]);
         assert!(st.armed.is_some());
+    }
+
+    #[test]
+    fn blocked_line_goes_out_on_change_and_on_schedule() {
+        let mut st = State::default();
+        assert!(blocked_log_due(&mut st, "a mid-turn", 1_000));
+        // Same reason, too soon: quiet.
+        assert!(!blocked_log_due(&mut st, "a mid-turn", 1_000 + BLOCKED_LOG_MIN_MS));
+        // A new reason within the minute waits; after it, goes out.
+        assert!(!blocked_log_due(&mut st, "b printing", 1_000 + BLOCKED_LOG_MIN_MS - 1));
+        assert!(blocked_log_due(&mut st, "b printing", 1_000 + BLOCKED_LOG_MIN_MS));
+        // Nothing changes: the ten-minute heartbeat.
+        let t = 1_000 + BLOCKED_LOG_MIN_MS;
+        assert!(!blocked_log_due(&mut st, "b printing", t + BLOCKED_LOG_EVERY_MS - 1));
+        assert!(blocked_log_due(&mut st, "b printing", t + BLOCKED_LOG_EVERY_MS));
     }
 
     #[test]
