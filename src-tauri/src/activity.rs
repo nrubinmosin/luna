@@ -30,6 +30,15 @@ const MIN_CPU_MS: u64 = 50;
 /// A hook said busy but the registry has said idle for this long: the Stop
 /// hook was missed (a crash, a CLI too old for that event), the registry wins.
 const STALE_HOOK_MS: u64 = 15_000;
+/// A hook said waiting (a permission or a question) but the registry has said
+/// idle for this long: the prompt was dismissed with the turn (Esc), and no
+/// Stop followed. A live prompt sits inside a turn the registry calls busy, so
+/// an idle registry this old means nobody is being asked anything.
+const STALE_WAIT_MS: u64 = 60_000;
+/// The hook said the turn ended, and since then the registry has kept saying
+/// busy for this long with no hook at all: a turn that starts or does anything
+/// fires a hook, so the registry has simply been left behind.
+const STALE_DISK_MS: u64 = 60_000;
 /// A process born up to this long before the sampled turn start still belongs
 /// to the turn: without hooks the start is only seen at the next sample.
 const TURN_SLACK_MS: u64 = SAMPLE_EVERY.as_millis() as u64;
@@ -84,6 +93,11 @@ struct Track {
     hook_at_ms: u64,
     /// When the registry / rollout last reported idle, for aging a stale hook.
     disk_idle_since_ms: Option<u64>,
+    /// When the registry / rollout started saying busy, for aging it against
+    /// a hook that has since said the turn is over.
+    disk_busy_since_ms: Option<u64>,
+    /// The two words as last read, for the log.
+    disk: Option<Turn>,
     /// The combined verdict of the last sample.
     turn: Turn,
     /// When the first turn began (0 = never): children born after it are the
@@ -129,6 +143,42 @@ pub struct SessionActivity {
     pub procs: Vec<String>,
     pub output_fresh: bool,
     pub busy: bool,
+    /// Where the verdict came from, for the log: the hook's word, the
+    /// registry's word, and how long ago the screen last moved.
+    #[serde(skip)]
+    pub hook: Option<Turn>,
+    #[serde(skip)]
+    pub disk: Option<Turn>,
+    #[serde(skip)]
+    pub output_age_ms: u64,
+}
+
+impl SessionActivity {
+    /// Why this session holds the machine, or "" when it does not.
+    pub fn why(&self) -> String {
+        let word = |t: Option<Turn>| match t {
+            Some(Turn::Busy) => "busy",
+            Some(Turn::Waiting) => "waiting",
+            Some(Turn::Idle) => "idle",
+            None => "-",
+        };
+        let mut parts = Vec::new();
+        match self.turn {
+            Turn::Busy => parts.push("mid-turn".to_string()),
+            Turn::Waiting => parts.push("waiting for a person".to_string()),
+            Turn::Idle => {}
+        }
+        if !self.procs.is_empty() {
+            parts.push(format!("running {}", self.procs.join(", ")));
+        }
+        if self.output_fresh {
+            parts.push(format!("printed {}s ago", self.output_age_ms / 1000));
+        }
+        if parts.is_empty() {
+            return String::new();
+        }
+        format!("{} [hook {}, registry {}]", parts.join(", "), word(self.hook), word(self.disk))
+    }
 }
 
 /// The whole board at one sample.
@@ -218,20 +268,47 @@ pub fn turn_of(raw: &str) -> Turn {
 
 /// One session's verdict from its hook word, the disk's word, and the clock.
 fn combine(t: &mut Track, disk: Option<Turn>, now: u64) -> Turn {
+    t.disk = disk;
     match disk {
         Some(Turn::Idle) => {
             t.disk_idle_since_ms.get_or_insert(now);
         }
         _ => t.disk_idle_since_ms = None,
     }
+    match disk {
+        Some(Turn::Busy) => {
+            t.disk_busy_since_ms.get_or_insert(now);
+        }
+        _ => t.disk_busy_since_ms = None,
+    }
+    let idle_for = t.disk_idle_since_ms.map(|s| now.saturating_sub(s)).unwrap_or(0);
     let hook = match t.hook {
         // A hook that says busy against a registry that has said idle for a
         // while has missed its Stop.
-        Some(Turn::Busy) if t.disk_idle_since_ms.is_some_and(|s| now.saturating_sub(s) > STALE_HOOK_MS) => {
+        Some(Turn::Busy) if idle_for > STALE_HOOK_MS => {
+            t.hook = Some(Turn::Idle);
+            Some(Turn::Idle)
+        }
+        // A hook that says waiting against a registry that has said idle for
+        // a while: the prompt went away with its turn, and no Stop followed.
+        Some(Turn::Waiting) if idle_for > STALE_WAIT_MS => {
             t.hook = Some(Turn::Idle);
             Some(Turn::Idle)
         }
         h => h,
+    };
+    // The registry says busy, but the hook said the turn ended and nothing
+    // has spoken since: a registry left behind, not a turn.
+    let disk = match (hook, disk) {
+        (Some(Turn::Idle), Some(Turn::Busy)) => {
+            let since = t.disk_busy_since_ms.unwrap_or(now).max(t.hook_at_ms);
+            if now.saturating_sub(since) > STALE_DISK_MS {
+                Some(Turn::Idle)
+            } else {
+                disk
+            }
+        }
+        _ => disk,
     };
     match (hook, disk) {
         // A permission prompt sits inside a turn the registry calls busy.
@@ -291,7 +368,16 @@ pub fn sample(probes: Vec<crate::pty::ActivityProbe>) -> Summary {
         t.was_busy = model_busy;
 
         let busy = model_busy || t.procs.is_some() || t.output_fresh;
-        sessions.push(SessionActivity { id: p.id.clone(), turn: t.turn, procs: names, output_fresh: t.output_fresh, busy });
+        sessions.push(SessionActivity {
+            id: p.id.clone(),
+            turn: t.turn,
+            procs: names,
+            output_fresh: t.output_fresh,
+            busy,
+            hook: t.hook,
+            disk: t.disk,
+            output_age_ms: now.saturating_sub(p.last_output_ms),
+        });
     }
 
     let busy = sessions.iter().filter(|s| s.busy).count();
@@ -319,7 +405,7 @@ pub fn start(app: tauri::AppHandle) {
                 // A sample that took far longer than its period to come round
                 // is the machine having been asleep, not the sessions idle.
                 if gap > SAMPLE_EVERY * 6 {
-                    crate::log::info("activity", &format!("clock jumped {gap:?}; idle stretch reset"));
+                    crate::log::warn("activity", &format!("clock jumped {gap:?}; idle stretch reset"));
                     reset_idle();
                     crate::power::woke(&app);
                 }
@@ -378,6 +464,42 @@ mod tests {
         assert_eq!(combine(&mut t, Some(Turn::Idle), 1000), Turn::Busy);
         assert_eq!(combine(&mut t, Some(Turn::Idle), 1000 + STALE_HOOK_MS + 1), Turn::Idle);
         assert_eq!(t.hook, Some(Turn::Idle));
+    }
+
+    #[test]
+    fn stale_waiting_hook_yields_to_idle_registry() {
+        let mut t = Track { hook: Some(Turn::Waiting), ..Default::default() };
+        // A live prompt: the registry calls the turn busy, waiting stands.
+        assert_eq!(combine(&mut t, Some(Turn::Busy), 1000), Turn::Waiting);
+        // The turn was dismissed; the registry says idle, and for a while the
+        // hook's word still holds, in case a Stop is on its way.
+        assert_eq!(combine(&mut t, Some(Turn::Idle), 2000), Turn::Waiting);
+        assert_eq!(combine(&mut t, Some(Turn::Idle), 2000 + STALE_WAIT_MS), Turn::Waiting);
+        assert_eq!(combine(&mut t, Some(Turn::Idle), 2000 + STALE_WAIT_MS + 1), Turn::Idle);
+        assert_eq!(t.hook, Some(Turn::Idle));
+    }
+
+    #[test]
+    fn stale_busy_registry_yields_to_idle_hook() {
+        // Stop arrived at t=1000; the registry keeps saying busy.
+        let mut t = Track { hook: Some(Turn::Idle), hook_at_ms: 1000, ..Default::default() };
+        assert_eq!(combine(&mut t, Some(Turn::Busy), 1000), Turn::Busy);
+        assert_eq!(combine(&mut t, Some(Turn::Busy), 1000 + STALE_DISK_MS), Turn::Busy);
+        assert_eq!(combine(&mut t, Some(Turn::Busy), 1000 + STALE_DISK_MS + 1), Turn::Idle);
+        // A registry that goes idle and busy again starts the clock over.
+        assert_eq!(combine(&mut t, Some(Turn::Idle), 200_000), Turn::Idle);
+        assert_eq!(combine(&mut t, Some(Turn::Busy), 200_005), Turn::Busy);
+        // And a hook that speaks again is believed at once.
+        t.hook = Some(Turn::Busy);
+        t.hook_at_ms = 200_010;
+        assert_eq!(combine(&mut t, Some(Turn::Busy), 400_000), Turn::Busy);
+    }
+
+    #[test]
+    fn without_hooks_a_busy_registry_stands() {
+        let mut t = Track::default();
+        assert_eq!(combine(&mut t, Some(Turn::Busy), 1), Turn::Busy);
+        assert_eq!(combine(&mut t, Some(Turn::Busy), 1 + 10 * STALE_DISK_MS), Turn::Busy);
     }
 
     #[test]

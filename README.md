@@ -181,7 +181,8 @@ The ⏻ chip at the bottom of the sidebar opens the two rules the machine follow
   chosen window it counts down a minute with a notification, and a click on the chip cancels.
   Any activity during the count cancels it too and leaves the rule armed. Shutdown asks each
   CLI to quit first; sleep and hibernate leave the sessions running, and the same rule applies
-  again after the wake.
+  again after the wake. While the rule is armed and something holds it up, `luna.log` says
+  which session and why, so a morning with the PC still on can be read back.
 
 "Busy" is measured, not guessed, from three signals per session: the turn (Claude Code's
 own hooks and registry, Codex's rollout), the processes under the CLI (put in a Job Object at
