@@ -6,9 +6,12 @@
 #   ./release.ps1                 # release the current version
 #   ./release.ps1 -Notes "..."    # with release notes of your own
 #   ./release.ps1 -DryRun         # build and compose, upload nothing
+#   ./release.ps1 -SkipBuild      # upload what the last build of this commit
+#                                 # left behind, e.g. after a failed upload
 param(
     [string]$Notes,
-    [switch]$DryRun
+    [switch]$DryRun,
+    [switch]$SkipBuild
 )
 $ErrorActionPreference = 'Stop'
 
@@ -28,7 +31,13 @@ if (git log origin/master..HEAD --oneline) { throw 'HEAD is ahead of origin/mast
 if (gh release view $tag 2>$null) { throw "$tag already exists — bump the version." }
 
 Write-Host "Releasing $tag" -ForegroundColor Cyan
-./build-windows.ps1 -Installer
+# A native command failing does not trip $ErrorActionPreference, so each one
+# that matters is checked by hand: a failed build would otherwise go on to
+# upload whatever the previous build left behind.
+if (-not $SkipBuild) {
+    ./build-windows.ps1 -Installer
+    if ($LASTEXITCODE) { throw "build failed (exit $LASTEXITCODE)" }
+}
 
 $release = 'src-tauri/target/x86_64-pc-windows-msvc/release'
 $portable = Join-Path $release 'luna.exe'
@@ -73,4 +82,9 @@ Copy-Item $portable $portableAsset -Force
 $notesBody = if ($Notes) { $Notes } else { "Luna $version" }
 gh release create $tag $portableAsset $setup.FullName $sig $manifestPath `
     --title "Luna $version" --notes $notesBody --target master
+# How v0.4.2 first went out: gh timed out on the TLS handshake, created nothing,
+# and the script still said Released.
+if ($LASTEXITCODE) {
+    throw "gh release create failed (exit $LASTEXITCODE). If 'gh release view $tag' finds nothing, rerun with -SkipBuild; if the release is there with assets missing, finish it with 'gh release upload $tag'."
+}
 Write-Host "Released $tag" -ForegroundColor Green
