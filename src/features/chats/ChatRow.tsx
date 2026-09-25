@@ -66,10 +66,10 @@ export function ChatRow({
         setDrag(null);
         setOver(-1);
       }}
-      // One click shows it. With a single pane that means the pane swaps to
-      // this chat — dragging a row across an empty board to the one place it
-      // can go was the ceremony this replaces. With more panes the board is
-      // an arrangement, so a chat that isn't on it comes up on the peek sheet
+      // One click shows it full size. With a single pane that means the pane
+      // swaps to this chat — dragging a row across an empty board to the one
+      // place it can go was the ceremony this replaces. With more panes the
+      // board is an arrangement, so the chat comes up on the peek sheet
       // instead of pushing something out. See showChat.
       onClick={() => {
         setActive(chat.id);
