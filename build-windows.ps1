@@ -19,7 +19,11 @@ $build = (git rev-parse --short HEAD).Trim()
 if (git status --porcelain) { $build = "$build+" }
 Write-Host "build stamp: $build"
 
+# A native command failing does not trip $ErrorActionPreference, so each docker
+# step is checked by hand: a failed image build would otherwise go on to build
+# the app in whatever image was left from last time.
 docker build -t luna-winbuild -f docker/windows-build.Dockerfile docker
+if ($LASTEXITCODE) { throw "docker build failed (exit $LASTEXITCODE)" }
 
 $cmd = @"
 set -e
@@ -41,3 +45,4 @@ docker run --rm `
   -w /app `
   luna-winbuild `
   bash -c $cmd
+if ($LASTEXITCODE) { throw "app build failed (exit $LASTEXITCODE)" }
