@@ -763,7 +763,11 @@ fn kill_tree(pid: Option<u32>) {
 }
 
 /// How long a session gets to leave on its own before it is taken down.
-const GRACE: std::time::Duration = std::time::Duration::from_millis(1500);
+/// Neither CLI is out within two seconds of its second Ctrl+C: Claude Code
+/// runs its exit hooks first — among them Luna's own SessionEnd hook, a curl
+/// with a 3 s timeout — and Codex shuts its MCP servers down. At 1.5 s every
+/// deleted chat ended in the hard kill this is meant to avoid.
+const GRACE: std::time::Duration = std::time::Duration::from_secs(10);
 /// Ctrl+C is one keystroke to the CLI and two in a row mean quit; one write
 /// carrying both lands in a single input tick, where the second cannot see
 /// the state the first set. Space them the way a hand would.
