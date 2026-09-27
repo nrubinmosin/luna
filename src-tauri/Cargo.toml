@@ -1,6 +1,6 @@
 [package]
 name = "luna"
-version = "0.4.3"
+version = "0.4.4"
 description = "Thin desktop UI over Claude Code and Codex CLI sessions"
 edition = "2021"
 
@@ -35,6 +35,9 @@ tar = "0.4"
 # requests a minute, answered in microseconds — a blocking server on one
 # thread, no async runtime.
 tiny_http = "0.12"
+# A terminal emulator in memory, for showing an agent what its helper's
+# screen says (src/pty.rs `screen`): the scrollback replayed into a grid.
+vt100 = "0.15"
 
 # Subclassing the windows — the Alt menu and WM_ENDSESSION (src/sysmenu.rs);
 # Job Objects and process counters for what a session has running under it

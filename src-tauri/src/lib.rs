@@ -44,12 +44,21 @@ pub fn run() {
         &format!("starting luna {} build {}", env!("CARGO_PKG_VERSION"), env!("LUNA_BUILD")),
     );
 
-    tauri::Builder::default()
+    // A build under test runs beside the Luna a person is using: same
+    // identifier, so without this the second launch would only focus the
+    // first. The same variable turns on the dev caller (agents.rs).
+    let dev = std::env::var_os("LUNA_DEV_TOKEN").is_some();
+    let builder = tauri::Builder::default();
+    let builder = if dev {
+        builder
+    } else {
         // Must be the first plugin: a second launch focuses the running
         // instance instead of spawning a duplicate app + tray icon.
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             show_main(app);
         }))
+    };
+    builder
         // Restores size, position and maximised state from last run.
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_clipboard_manager::init())
@@ -76,6 +85,7 @@ pub fn run() {
             // pointing at it; the activity sampler feeds power.rs from then on.
             hub::start();
             agents::init(app.handle().clone());
+            agents::register_dev_caller();
             activity::start(app.handle().clone());
 
             let open = MenuItem::with_id(app, "open", "Open", true, None::<&str>)?;

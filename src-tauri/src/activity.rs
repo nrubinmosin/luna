@@ -106,7 +106,12 @@ struct Track {
     prev: Vec<ProcRead>,
     procs: Option<procs::Busy>,
     output_fresh: bool,
-    /// Busy → not-busy transitions seen: what an agent's `wait` counts.
+    /// Turns finished: what an agent's `wait` counts. From the CLI's own
+    /// record where there is one — Claude Code's `Stop` hook, Codex's
+    /// rollout — and from busy → not-busy transitions between samples only
+    /// for a session with neither (a Claude Code that outlived a Luna
+    /// restart). A turn shorter than the sampling period is invisible to
+    /// the transitions, and a one-word answer is exactly that short.
     turns_ended: u32,
     /// The last verdict `busy` was computed from, for the transition above.
     was_busy: bool,
@@ -217,7 +222,13 @@ pub fn on_hook(chat_id: &str, ev: HookEvent) {
             t.hook = Some(Turn::Busy);
         }
         HookEvent::Waiting => t.hook = Some(Turn::Waiting),
-        HookEvent::Idle | HookEvent::Gone => t.hook = Some(Turn::Idle),
+        HookEvent::Idle => {
+            t.hook = Some(Turn::Idle);
+            // `Stop`: a turn is over, whether or not any sample saw it run.
+            t.turns_ended += 1;
+            t.was_busy = false;
+        }
+        HookEvent::Gone => t.hook = Some(Turn::Idle),
     }
     t.hook_at_ms = now;
 }
@@ -255,6 +266,21 @@ fn disk_turn(p: &crate::pty::ActivityProbe) -> Option<Turn> {
         })?,
     };
     Some(turn_of(&raw))
+}
+
+/// Turns the CLI's own record says are finished, where it keeps one.
+fn disk_turns_ended(p: &crate::pty::ActivityProbe) -> Option<u32> {
+    match p.provider {
+        Provider::Claude => None,
+        Provider::Codex => crate::codex::session::turns_completed(&crate::codex::session::Live {
+            chat_id: &p.id,
+            cwd: &p.cwd,
+            spawned_at_ms: p.spawned_at_ms,
+            resume: p.resume.as_deref(),
+            account_path: &p.account_path,
+            last_output_ms: p.last_output_ms,
+        }),
+    }
 }
 
 /// The CLIs' words for a turn, folded the way the chat rows fold them.
@@ -362,8 +388,13 @@ pub fn sample(probes: Vec<crate::pty::ActivityProbe>) -> Summary {
         // background jobs do: `wait` wants the reply, and the children are
         // the machine's concern (power.rs), not the caller's.
         let model_busy = t.turn == Turn::Busy;
-        if t.was_busy && !model_busy {
-            t.turns_ended += 1;
+        match disk_turns_ended(p) {
+            // Codex: the rollout's count is the truth.
+            Some(n) => t.turns_ended = t.turns_ended.max(n),
+            // Claude Code with hooks: `Stop` counts (on_hook). Without any
+            // hook heard, the transitions are all there is.
+            None if t.hook.is_none() && t.was_busy && !model_busy => t.turns_ended += 1,
+            None => {}
         }
         t.was_busy = model_busy;
 
@@ -434,6 +465,18 @@ mod tests {
         assert_eq!(ev("Notification", r#","notification_type":"idle_prompt""#), None);
         assert_eq!(ev("PreToolUse", ""), None);
         assert_eq!(HookEvent::parse("not json"), None);
+    }
+
+    #[test]
+    fn a_stop_hook_ends_a_turn_no_sample_saw() {
+        on_hook("chat-fast-turn", HookEvent::Busy);
+        on_hook("chat-fast-turn", HookEvent::Idle);
+        on_hook("chat-fast-turn", HookEvent::Busy);
+        on_hook("chat-fast-turn", HookEvent::Idle);
+        assert_eq!(turn_state("chat-fast-turn").map(|t| t.turns_ended), Some(2));
+        // SessionEnd is not a turn.
+        on_hook("chat-fast-turn", HookEvent::Gone);
+        assert_eq!(turn_state("chat-fast-turn").map(|t| t.turns_ended), Some(2));
     }
 
     #[test]

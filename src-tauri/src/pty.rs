@@ -19,6 +19,10 @@ const SCROLLBACK_SLACK: usize = 256 * 1024;
 /// frame at 60Hz, short enough to feel immediate and long enough that a
 /// repainting TUI does not turn into hundreds of events per second.
 const FRAME: std::time::Duration = std::time::Duration::from_millis(16);
+/// A session's pty before any pane has sized it — and for good, when no pane
+/// ever does (a chat an agent spawned and nobody opened).
+const INITIAL_ROWS: u16 = 30;
+const INITIAL_COLS: u16 = 100;
 
 // Output and exit events go out through `emit::to_ui`, which holds them
 // against the event loop tearing down at quit — see that module.
@@ -80,6 +84,9 @@ struct Session {
     /// The job the CLI was put in at spawn, for listing what it has running
     /// under it (procs.rs). None where Windows refused or off Windows.
     job: Option<Arc<crate::procs::Job>>,
+    /// The last size the pty was given (rows, cols), so `screen` can render
+    /// the scrollback the way the CLI laid it out.
+    size: Arc<Mutex<(u16, u16)>>,
 }
 
 #[derive(Default)]
@@ -155,8 +162,8 @@ async fn spawn(app: AppHandle, state: PtyState<'_>, launch: Launch) -> Result<St
     let pty_system = native_pty_system();
     let pair = pty_system
         .openpty(PtySize {
-            rows: 30,
-            cols: 100,
+            rows: INITIAL_ROWS,
+            cols: INITIAL_COLS,
             pixel_width: 0,
             pixel_height: 0,
         })
@@ -171,6 +178,11 @@ async fn spawn(app: AppHandle, state: PtyState<'_>, launch: Launch) -> Result<St
         cmd.env(k, v);
     }
     cmd.env("TERM", "xterm-256color");
+    // A Luna started from inside a Claude Code session inherits its marker,
+    // and every Claude Code under it would then take itself for a subagent
+    // and stop saving transcripts — which is where `luna_read` and the chat
+    // titles come from. The sessions here are nobody's children.
+    cmd.env_remove("CLAUDE_CODE_CHILD_SESSION");
 
     let child = pair.slave.spawn_command(cmd).map_err(|e| {
         crate::log::error("pty", &format!("spawn failed for {id} in {cwd}: {e}"));
@@ -197,9 +209,11 @@ async fn spawn(app: AppHandle, state: PtyState<'_>, launch: Launch) -> Result<St
     // drops the sender with it — and the master end, which the thread owns,
     // goes down with the thread, exactly when the session used to take it.
     let (input_tx, input_rx) = std::sync::mpsc::channel::<Input>();
+    let size = Arc::new(Mutex::new((INITIAL_ROWS, INITIAL_COLS)));
     {
         let id = id.clone();
         let master = pair.master;
+        let size_slot = Arc::clone(&size);
         std::thread::spawn(move || {
             // A broken pipe stays broken: say so once, then keep the master
             // alive for the session's own teardown rather than closing the pty
@@ -217,6 +231,9 @@ async fn spawn(app: AppHandle, state: PtyState<'_>, launch: Launch) -> Result<St
                     Input::Resize(size) => {
                         if let Err(e) = master.resize(size) {
                             crate::log::warn("pty", &format!("resize of {id} failed: {e}"));
+                        }
+                        if let Ok(mut s) = size_slot.lock() {
+                            *s = (size.rows, size.cols);
                         }
                     }
                 }
@@ -339,6 +356,7 @@ async fn spawn(app: AppHandle, state: PtyState<'_>, launch: Launch) -> Result<St
             resume,
             account_path,
             job,
+            size,
         },
     );
 
@@ -443,6 +461,25 @@ impl PtyManager {
     pub fn alive(&self, id: &str) -> bool {
         let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
         sessions.get(id).map(|s| s.alive.load(Ordering::SeqCst)).unwrap_or(false)
+    }
+
+    /// What the session's terminal shows right now: the scrollback replayed
+    /// through a terminal emulator at the pty's size, as plain text, rows
+    /// joined by newlines. This is how an agent sees what its helper is
+    /// stuck on — a first-run notice, a picker, an error the transcript will
+    /// never carry — and what a person would see in the pane.
+    pub fn screen(&self, id: &str) -> Option<String> {
+        let (scrollback, size) = {
+            let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+            let s = sessions.get(id)?;
+            (Arc::clone(&s.scrollback), Arc::clone(&s.size))
+        };
+        let bytes: Vec<u8> = {
+            let mut sb = scrollback.lock().unwrap_or_else(|e| e.into_inner());
+            sb.make_contiguous().to_vec()
+        };
+        let (rows, cols) = *size.lock().unwrap_or_else(|e| e.into_inner());
+        Some(render_screen(&bytes, rows, cols))
     }
 
     /// Queues bytes for the session's writer thread.
@@ -560,7 +597,10 @@ pub async fn ensure_claude_session(
         args.push(hooks.to_string_lossy().into_owned());
     }
     let tools = tools.unwrap_or(false);
-    let token = crate::agents::register(&id, Provider::Claude, &folder, &account_path, parent.as_deref(), tools);
+    let settings = serde_json::json!({
+        "model": model, "effort": args[3], "permissionMode": permission_mode, "worktree": worktree,
+    });
+    let token = crate::agents::register(&id, Provider::Claude, &folder, &account_path, parent.as_deref(), tools, settings);
     if let Some(mcp) = token.as_deref().and_then(|t| claude_mcp_file(&id, t)) {
         args.push("--mcp-config".into());
         args.push(mcp.to_string_lossy().into_owned());
@@ -642,7 +682,11 @@ pub async fn ensure_codex_session(
         // Luna's MCP server as a config override, the token through the
         // environment: neither touches the account's config.toml.
         let tools = tools.unwrap_or(false);
-        let token = crate::agents::register(&id, Provider::Codex, &folder, &account_path, parent.as_deref(), tools);
+        let settings = serde_json::json!({
+            "model": model.as_deref().map(str::trim).filter(|m| !m.is_empty()),
+            "effort": effort, "approval": approval, "sandbox": sandbox,
+        });
+        let token = crate::agents::register(&id, Provider::Codex, &folder, &account_path, parent.as_deref(), tools, settings);
         if let (Some(token), Some(url)) = (token, crate::hub::mcp_url()) {
             args.push("-c".into());
             args.push(format!("mcp_servers.luna.url=\"{url}\""));
@@ -936,6 +980,21 @@ pub fn title_from_prompt(text: &str) -> Option<String> {
         title.push('…');
     }
     sane_title(&title)
+}
+
+/// Replays raw pty output through a terminal emulator and returns the visible
+/// screen as text, blank trailing lines dropped. The scrollback is capped
+/// (SCROLLBACK_CAP), so a very long session starts mid-stream; a fullscreen
+/// TUI repaints everything on each frame, so that costs nothing visible.
+pub fn render_screen(bytes: &[u8], rows: u16, cols: u16) -> String {
+    let mut parser = vt100::Parser::new(rows.max(1), cols.max(1), 0);
+    parser.process(bytes);
+    let contents = parser.screen().contents();
+    let mut lines: Vec<&str> = contents.lines().map(str::trim_end).collect();
+    while lines.last().map(|l| l.is_empty()).unwrap_or(false) {
+        lines.pop();
+    }
+    lines.join("\n")
 }
 
 /// The last `max` bytes of a file as text, or None if it cannot be read.

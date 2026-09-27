@@ -143,11 +143,15 @@ src-tauri/src/
   `{timestamp,type,payload}`. Какой файл наш: для свежей сессии — самый ранний из появившихся
   после спавна с тем же cwd в `session_meta`, для возобновлённой — по uuid в имени; ответ
   запоминается на чат, так что два чата в одной папке не делят файл. Из хвоста (128 KiB):
-  `turn_started`/`turn_complete`/`turn_aborted` → working/resting, `token_count.info` →
-  контекст (`last_token_usage.total_tokens − reasoning_output_tokens` к `model_context_window`,
-  как считает сам Codex), `turn_context.model` → модель, `token_count.rate_limits` → fallback
-  лимитов. Approval-запросы в rollout не пишутся, поэтому «waiting» для Codex — это turn в
-  полёте при экране, который не менялся 3 с (спиннер Codex рисует непрерывно).
+  `task_started`/`task_complete` (до 0.157 — `turn_started`/`turn_complete`/`turn_aborted`) →
+  working/resting, `token_count.info` → контекст (`last_token_usage.total_tokens −
+  reasoning_output_tokens` к `model_context_window`, как считает сам Codex),
+  `turn_context.model` → модель, `token_count.rate_limits` → fallback лимитов. Сама беседа —
+  строки `response_item` типа `message` с `role` user/assistant (developer-сообщения и
+  подмешанный контекст вроде `# AGENTS.md instructions` и `<environment_context>` — не беседа).
+  Approval-запросы в rollout не пишутся, поэтому «waiting» для Codex — это turn в полёте при
+  экране, который не менялся 3 с (спиннер Codex рисует непрерывно). Rollout появляется только
+  с первым ходом: сессия, которая стоит на стартовом попапе, файла не имеет вовсе.
 - **Scrollback в Rust.** Буфер вывода (2MB cap) живёт в ядре, чтобы перенос чата между панелями
   или пересоздание xterm восстанавливали экран (`ensure_session` возвращает бэклог).
 - **Терминал переживает панель.** Раньше xterm принадлежал панели, и смена чата в ней стоила
@@ -221,12 +225,21 @@ src-tauri/src/
   файлом; всё вместе ~2k токенов один раз. Чистые сессии не получают ни MCP, ни знания о Luna.
   Ядро чатов не знает, поэтому spawn — round trip: `agent://spawn` во фронт, тот делает чат
   (`parentId`, без посадки в панель) и `ensure_*` с промптом позиционным аргументом CLI,
-  и отвечает `agent_spawned`; ядро ждёт на Condvar до 90 с. `read` — из транскрипта Claude
-  (user/assistant, без tool_result) или rollout Codex (`user_message`/`agent_message`) с
-  байтовым курсором; `wait(turn_done)` считает переходы busy→idle в `activity.rs`
-  (`turns_ended`) и возвращает последний ответ, чтобы `read` был не нужен. Права: только
+  и отвечает `agent_spawned`; ядро ждёт на Condvar до 90 с, а потом ещё до 30 с — пока
+  сессия не возьмётся за промпт (`started`); если не взялась, ответ несёт `screen`. `read` —
+  из транскрипта Claude (user/assistant, без tool_result) или rollout Codex (`response_item`
+  message user/assistant) с байтовым курсором; `wait(turn_done)` считает переходы busy→idle в
+  `activity.rs` (`turns_ended`) и возвращает последний ответ, чтобы `read` был не нужен.
+  `send` после Enter ждёт до 12 с начала хода и тоже отвечает `started`/`screen`. `screen` —
+  это scrollback pty, прогнанный через эмулятор терминала (`vt100`) на размере pty: последние
+  40 строк того, что видит человек в панели — попап, ошибка, вопрос, которых в транскрипте
+  нет; `read(screen: true)` отдаёт его по запросу, `wait` — на `timeout` и `waiting`. `list` и
+  `spawn` отдают `settings` — флаги, с которыми сессия реально запущена. Права: только
   потомки вызывающего; глубина инструментов 1; максимум 8 потомков. Дети переживают
   родителя (сироты с ↳); удаление ребёнком через `delete` убирает worktree, если попросили.
+  Для проверки сборки без второй Luna в роли родителя: `LUNA_DEV_TOKEN` (+ `LUNA_DEV_FOLDER`,
+  `LUNA_DEV_ACCOUNT`) регистрирует вызывающего `dev` с этим bearer-токеном и отключает
+  single-instance, чтобы тестовый exe жил рядом с рабочим; его спавны — чаты верхнего уровня.
 - **Тема** — токены в CSS custom properties (`[data-app][data-theme]`), переключение
   system/light/dark без перерисовки терминалов (xterm получает тему через MutationObserver).
 
