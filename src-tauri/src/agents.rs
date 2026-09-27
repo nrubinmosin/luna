@@ -25,7 +25,29 @@ const MAX_DESCENDANTS: usize = 8;
 /// A child of a child may exist; a child of that may not have tools.
 const MAX_TOOL_DEPTH: usize = 1;
 /// Enter, sent after the text so the TUI sees a paste and then a keypress.
-const ENTER_GAP: std::time::Duration = std::time::Duration::from_millis(80);
+/// Both CLIs treat bytes arriving in a quick burst as one paste, and an Enter
+/// inside the burst as a newline in it: at 80 ms Codex 0.157 left the text
+/// sitting in its composer. Well past the burst window, then.
+const ENTER_GAP: std::time::Duration = std::time::Duration::from_millis(400);
+/// If no turn has begun this long after Enter, Enter is pressed once more:
+/// on a composer still holding the text it submits; on an empty one it is a
+/// no-op in both CLIs.
+const ENTER_RETRY: std::time::Duration = std::time::Duration::from_secs(3);
+/// How long a fresh session gets to start working on its opening prompt
+/// before `spawn` answers without that assurance. Codex brings up its MCP
+/// servers first, which can take a while; a session still not busy after
+/// this is on a notice, a picker or an error, and the answer carries its
+/// screen so the caller can see which.
+const START_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// The same for text typed into a running session: a turn should begin
+/// within a few samples of Enter.
+const SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(12);
+/// The activity sampler runs every 5 s; the probes here look between samples
+/// so the answer comes as soon as the verdict is in.
+const POLL: std::time::Duration = std::time::Duration::from_millis(500);
+/// The rendered screen as an agent gets it: the last lines of the terminal,
+/// enough to read a dialog, not a transcript.
+const SCREEN_LINES: usize = 40;
 
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
 pub struct Message {
@@ -43,6 +65,10 @@ struct Known {
     account: String,
     parent: Option<String>,
     name: String,
+    /// What the session was started with, as the CLI's flags spell it:
+    /// model, effort and permission mode (Claude) or approval and sandbox
+    /// (Codex). Echoed by `list` and `spawn`.
+    settings: serde_json::Value,
 }
 
 /// What an agent asks for. Everything but the prompt may be left to the
@@ -90,11 +116,37 @@ struct Registry {
     known: HashMap<String, Known>,
     pending: HashMap<u64, std::sync::Arc<(Mutex<Pending>, Condvar)>>,
     next_request: u64,
+    /// The `turnsEnded` each caller was last shown for each session, by
+    /// (caller, session). `wait(turn_done)` without `afterTurn` waits for a
+    /// turn past that — the one the caller has not seen — rather than past
+    /// the count at the moment of the call, which a fast reply had already
+    /// moved on: `spawn`, a two-second answer, `wait` → timeout.
+    seen: HashMap<(String, String), u32>,
 }
 
 fn reg() -> &'static Mutex<Registry> {
     static R: OnceLock<Mutex<Registry>> = OnceLock::new();
-    R.get_or_init(|| Mutex::new(Registry { tokens: HashMap::new(), known: HashMap::new(), pending: HashMap::new(), next_request: 1 }))
+    R.get_or_init(|| {
+        Mutex::new(Registry {
+            tokens: HashMap::new(),
+            known: HashMap::new(),
+            pending: HashMap::new(),
+            next_request: 1,
+            seen: HashMap::new(),
+        })
+    })
+}
+
+/// Records what a tool answer told `caller` about `id`'s turn count.
+fn shown(caller: &str, id: &str, turns_ended: u32) {
+    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    r.seen.insert((caller.to_string(), id.to_string()), turns_ended);
+}
+
+/// The last count `caller` was shown for `id`, if any.
+fn last_shown(caller: &str, id: &str) -> Option<u32> {
+    let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    r.seen.get(&(caller.to_string(), id.to_string())).copied()
 }
 
 static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
@@ -117,6 +169,7 @@ pub fn register(
     account_path: &str,
     parent: Option<&str>,
     tools: bool,
+    settings: serde_json::Value,
 ) -> Option<String> {
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
     let account = std::path::Path::new(account_path)
@@ -133,6 +186,7 @@ pub fn register(
             account,
             parent: parent.map(str::to_owned).or_else(|| previous.as_ref().and_then(|k| k.parent.clone())),
             name: previous.map(|k| k.name).unwrap_or_default(),
+            settings,
         },
     );
     // One token per session: a respawn invalidates the last one.
@@ -144,6 +198,31 @@ pub fn register(
     r.tokens.insert(token.clone(), id.to_string());
     Some(token)
 }
+
+/// A caller that is not a session: for driving the agent layer from outside
+/// — a test against a build, `curl` against the MCP endpoint. Registered only
+/// when `LUNA_DEV_TOKEN` is set in the environment, with `LUNA_DEV_FOLDER`
+/// as its project folder and `LUNA_DEV_ACCOUNT` as its account directory;
+/// spawns it asks for come up as top-level chats, since it has no row of its
+/// own. Never set for a Luna a person uses.
+pub fn register_dev_caller() {
+    let Ok(token) = std::env::var("LUNA_DEV_TOKEN") else { return };
+    let folder = std::env::var("LUNA_DEV_FOLDER").unwrap_or_default();
+    let account_path = std::env::var("LUNA_DEV_ACCOUNT").unwrap_or_default();
+    if token.trim().is_empty() || folder.is_empty() || account_path.is_empty() {
+        crate::log::warn("agents", "LUNA_DEV_TOKEN needs LUNA_DEV_FOLDER and LUNA_DEV_ACCOUNT too; dev caller off");
+        return;
+    }
+    let provider = if account_path.replace('\\', "/").contains("/openai/") { Provider::Codex } else { Provider::Claude };
+    register(DEV_CALLER, provider, &folder, &account_path, None, false, serde_json::json!({}));
+    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    r.tokens.insert(token.trim().to_string(), DEV_CALLER.to_string());
+    let url = crate::hub::mcp_url().unwrap_or_default();
+    crate::log::warn("agents", &format!("dev caller registered for {folder} ({account_path}); MCP at {url}"));
+}
+
+/// The id of the dev caller (see `register_dev_caller`).
+pub const DEV_CALLER: &str = "dev";
 
 /// The frontend's name for a chat, for `list` — set when it spawns one.
 pub fn set_name(id: &str, name: &str) {
@@ -226,6 +305,8 @@ pub struct SessionRow {
     pub turn: Option<crate::activity::Turn>,
     pub busy: bool,
     pub turns_ended: u32,
+    /// The flags it runs with (see `Known::settings`).
+    pub settings: serde_json::Value,
 }
 
 #[derive(Serialize)]
@@ -265,16 +346,20 @@ pub fn list(caller: &str) -> Listing {
         .into_iter()
         .map(|(id, k)| {
             let ts = crate::activity::turn_state(&id);
+            // A listing is not a reading: it does not move what the caller
+            // is taken to have seen of a session's turns.
+            let turns_ended = ts.map(|t| t.turns_ended).unwrap_or(0);
             SessionRow {
                 alive: pty.as_ref().map(|p| p.alive(&id)).unwrap_or(false),
                 turn: ts.map(|t| t.turn),
                 busy: ts.map(|t| t.busy).unwrap_or(false),
-                turns_ended: ts.map(|t| t.turns_ended).unwrap_or(0),
+                turns_ended,
                 id,
                 name: k.name,
                 provider: k.provider,
                 account: k.account,
                 parent: k.parent,
+                settings: k.settings,
             }
         })
         .collect();
@@ -287,6 +372,48 @@ pub struct Spawned {
     pub id: String,
     /// Pass to `wait` as `afterTurn`: the reply to the prompt ends turn 1.
     pub turns_ended: u32,
+    /// The flags the session runs with, as resolved from the request and the
+    /// account's defaults.
+    pub settings: serde_json::Value,
+    /// True when the session was seen working on the prompt (or already done
+    /// with it) within START_TIMEOUT. False means the prompt has not been
+    /// taken up: look at `screen`.
+    pub started: bool,
+    /// The terminal as it stands, only when `started` is false.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub screen: Option<String>,
+}
+
+/// The last lines of a session's terminal, for a caller that has to see
+/// what a helper is stuck on.
+fn screen_of(pty: &crate::pty::PtyManager, id: &str) -> Option<String> {
+    let full = pty.screen(id)?;
+    let lines: Vec<&str> = full.lines().collect();
+    let from = lines.len().saturating_sub(SCREEN_LINES);
+    Some(lines[from..].join("\n"))
+}
+
+/// True once the session has begun a turn — or finished one — since
+/// `after_turn` turns had ended.
+fn has_started(id: &str, after_turn: u32) -> bool {
+    crate::activity::turn_state(id)
+        .map(|t| t.turn == crate::activity::Turn::Busy || t.turns_ended > after_turn)
+        .unwrap_or(false)
+}
+
+/// Polls until the session starts working (see `has_started`), it exits, or
+/// `timeout` passes. Returns whether it started.
+fn await_start(pty: &crate::pty::PtyManager, id: &str, after_turn: u32, timeout: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if has_started(id, after_turn) {
+            return true;
+        }
+        if !pty.alive(id) || std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(POLL);
+    }
 }
 
 /// Asks the frontend to make the chat and start its session; blocks until it
@@ -352,11 +479,29 @@ pub fn spawn(caller: &str, mut params: SpawnParams) -> Result<Spawned, String> {
     let outcome = p.done.take();
     drop(p);
     reg().lock().unwrap_or_else(|e| e.into_inner()).pending.remove(&request_id);
-    match outcome {
-        Some(Ok(id)) => Ok(Spawned { id, turns_ended: 0 }),
-        Some(Err(e)) => Err(e),
-        None => Err("the app did not start the session in time".into()),
+    let id = match outcome {
+        Some(Ok(id)) => id,
+        Some(Err(e)) => return Err(e),
+        None => return Err("the app did not start the session in time".into()),
+    };
+    // The frontend has registered the session by now (ensure_* ran before it
+    // answered), so its settings are known; whether it took the prompt is
+    // what the wait below finds out.
+    let settings = reg()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .known
+        .get(&id)
+        .map(|k| k.settings.clone())
+        .unwrap_or(serde_json::Value::Null);
+    let pty = app.state::<crate::pty::PtyManager>();
+    let started = await_start(&pty, &id, 0, START_TIMEOUT);
+    if !started {
+        crate::log::warn("agents", &format!("session {id} spawned by {caller} did not start on its prompt within {START_TIMEOUT:?}"));
     }
+    let screen = (!started).then(|| screen_of(&pty, &id)).flatten();
+    shown(caller, &id, 0);
+    Ok(Spawned { id, turns_ended: 0, settings, started, screen })
 }
 
 /// The frontend's answer to `agent://spawn`.
@@ -377,17 +522,53 @@ pub fn agent_spawned(request_id: u64, chat_id: Option<String>, name: Option<Stri
     cv.notify_all();
 }
 
-/// Types text into the session and presses Enter after it.
-pub fn send(caller: &str, id: &str, text: &str) -> Result<(), String> {
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Sent {
+    pub ok: bool,
+    /// The turn state when the text went in. `busy` means the CLI has queued
+    /// the text behind the turn in flight, and `started` says nothing new.
+    pub turn_before: Option<crate::activity::Turn>,
+    /// A turn began within SEND_TIMEOUT of Enter. False on an idle session
+    /// means the text did not become a prompt: `screen` shows where it went.
+    pub started: bool,
+    /// Turns over before this text went in — the `afterTurn` for the `wait`
+    /// that collects the reply.
+    pub turns_ended: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub screen: Option<String>,
+}
+
+/// Types text into the session, presses Enter after it, and reports whether
+/// a turn began.
+pub fn send(caller: &str, id: &str, text: &str) -> Result<Sent, String> {
     authorize(caller, id)?;
     let app = app().ok_or("app not ready")?;
     let pty = app.state::<crate::pty::PtyManager>();
     if !pty.alive(id) {
         return Err(format!("session {id} is not running"));
     }
+    let before = crate::activity::turn_state(id);
+    let turn_before = before.map(|t| t.turn);
+    let baseline = before.map(|t| t.turns_ended).unwrap_or(0);
     pty.write(id, text.as_bytes())?;
     std::thread::sleep(ENTER_GAP);
-    pty.write(id, b"\r")
+    pty.write(id, b"\r")?;
+    // Mid-turn the text is queued by the CLI and nothing here can tell when
+    // it is taken up; only an idle session is expected to start now.
+    let started = if turn_before == Some(crate::activity::Turn::Busy) {
+        true
+    } else if await_start(&pty, id, baseline, ENTER_RETRY) {
+        true
+    } else {
+        pty.write(id, b"\r")?;
+        await_start(&pty, id, baseline, SEND_TIMEOUT.saturating_sub(ENTER_RETRY))
+    };
+    let screen = (!started).then(|| screen_of(&pty, id)).flatten();
+    // The count before the text went in: the reply to it ends the next
+    // turn, which the caller has not seen even if it is already over.
+    shown(caller, id, baseline);
+    Ok(Sent { ok: true, turn_before, started, turns_ended: baseline, screen })
 }
 
 #[derive(Serialize)]
@@ -400,6 +581,9 @@ pub struct Reading {
     pub busy: bool,
     pub turns_ended: u32,
     pub alive: bool,
+    /// The terminal's last lines, when asked for (`screen: true`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub screen: Option<String>,
 }
 
 fn transcript_path(pty: &crate::pty::PtyManager, id: &str) -> Option<std::path::PathBuf> {
@@ -419,7 +603,14 @@ fn transcript_path(pty: &crate::pty::PtyManager, id: &str) -> Option<std::path::
 
 /// The conversation of a session from `since` (a cursor from an earlier read;
 /// None = from the start), trimmed to the last `last` messages when asked.
-pub fn read(caller: &str, id: &str, since: Option<u64>, last: Option<usize>, with_tools: bool) -> Result<Reading, String> {
+pub fn read(
+    caller: &str,
+    id: &str,
+    since: Option<u64>,
+    last: Option<usize>,
+    with_tools: bool,
+    with_screen: bool,
+) -> Result<Reading, String> {
     let known = authorize(caller, id)?;
     let app = app().ok_or("app not ready")?;
     let pty = app.state::<crate::pty::PtyManager>();
@@ -437,13 +628,16 @@ pub fn read(caller: &str, id: &str, since: Option<u64>, last: Option<usize>, wit
         }
     }
     let ts = crate::activity::turn_state(id);
+    let turns_ended = ts.map(|t| t.turns_ended).unwrap_or(0);
+    shown(caller, id, turns_ended);
     Ok(Reading {
         messages,
         cursor,
         turn: ts.map(|t| t.turn),
         busy: ts.map(|t| t.busy).unwrap_or(false),
-        turns_ended: ts.map(|t| t.turns_ended).unwrap_or(0),
+        turns_ended,
         alive: pty.alive(id),
+        screen: with_screen.then(|| screen_of(&pty, id)).flatten(),
     })
 }
 
@@ -456,17 +650,25 @@ pub struct Waited {
     pub alive: bool,
     /// On `turn_done`: what the session said last, so no `read` is needed.
     pub reply: Option<String>,
+    /// On `timeout` and `waiting`: the terminal's last lines, so the caller
+    /// sees what the session is on — a permission prompt, a question, a
+    /// notice nobody dismissed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub screen: Option<String>,
 }
 
 /// Blocks until the session reaches `until`, or `timeout_s` passes:
-/// `turn_done` — a turn ended after `after_turn` (default: the count when
-/// the call was made, so a turn already over does not count twice);
+/// `turn_done` — a turn ended after `after_turn` (default: the count the
+/// caller was last shown, so the reply to a prompt it just sent counts even
+/// if it landed before this call, and a turn it has already read does not);
 /// `waiting` — it stopped for a permission; `exit` — the process ended.
 pub fn wait(caller: &str, id: &str, until: &str, timeout_s: u64, after_turn: Option<u32>) -> Result<Waited, String> {
     authorize(caller, id)?;
     let app = app().ok_or("app not ready")?;
     let pty = app.state::<crate::pty::PtyManager>();
-    let baseline = after_turn.unwrap_or_else(|| crate::activity::turn_state(id).map(|t| t.turns_ended).unwrap_or(0));
+    let baseline = after_turn
+        .or_else(|| last_shown(caller, id))
+        .unwrap_or_else(|| crate::activity::turn_state(id).map(|t| t.turns_ended).unwrap_or(0));
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_s.clamp(1, 1800));
     loop {
         let alive = pty.alive(id);
@@ -487,13 +689,17 @@ pub fn wait(caller: &str, id: &str, until: &str, timeout_s: u64, after_turn: Opt
                 "turn_done"
             };
             let reply = (outcome == "turn_done")
-                .then(|| read(caller, id, None, Some(1), false).ok())
+                .then(|| read(caller, id, None, Some(1), false, false).ok())
                 .flatten()
                 .and_then(|r| r.messages.into_iter().rev().find(|m| m.role == "assistant").map(|m| m.text));
-            return Ok(Waited { outcome, turn, turns_ended, alive, reply });
+            let screen = (outcome == "waiting").then(|| screen_of(&pty, id)).flatten();
+            shown(caller, id, turns_ended);
+            return Ok(Waited { outcome, turn, turns_ended, alive, reply, screen });
         }
         if std::time::Instant::now() >= deadline {
-            return Ok(Waited { outcome: "timeout", turn, turns_ended, alive, reply: None });
+            let screen = screen_of(&pty, id);
+            shown(caller, id, turns_ended);
+            return Ok(Waited { outcome: "timeout", turn, turns_ended, alive, reply: None, screen });
         }
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
@@ -520,6 +726,7 @@ pub fn delete(caller: &str, id: &str, drop_worktree: bool) -> Result<Option<Stri
         let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
         r.known.remove(id);
         r.tokens.retain(|_, chat| chat != id);
+        r.seen.retain(|(_, chat), _| chat != id);
     }
     crate::emit::to_ui(app, "agent://deleted", Deleted { id: id.to_string() });
     Ok(worktree)
@@ -551,11 +758,12 @@ mod tests {
 
     #[test]
     fn lineage_and_reach() {
-        let a = register("a", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true).expect("token");
+        let none = serde_json::json!({});
+        let a = register("a", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, none.clone()).expect("token");
         assert_eq!(caller_of(&a).as_deref(), Some("a"));
-        register("b", Provider::Codex, "C:\\p", "C:\\acc\\openai\\two", Some("a"), false);
-        register("c", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("b"), false);
-        register("x", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, false);
+        register("b", Provider::Codex, "C:\\p", "C:\\acc\\openai\\two", Some("a"), false, none.clone());
+        register("c", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("b"), false, none.clone());
+        register("x", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, false, none);
         assert!(authorize("a", "b").is_ok());
         assert!(authorize("a", "c").is_ok(), "grandchildren are reachable");
         assert!(authorize("b", "a").is_err(), "not upwards");
@@ -570,8 +778,9 @@ mod tests {
 
     #[test]
     fn a_respawn_replaces_the_token() {
-        let t1 = register("r", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true).unwrap();
-        let t2 = register("r", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true).unwrap();
+        let none = serde_json::json!({});
+        let t1 = register("r", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, none.clone()).unwrap();
+        let t2 = register("r", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, none).unwrap();
         assert_ne!(t1, t2);
         assert_eq!(caller_of(&t1), None);
         assert_eq!(caller_of(&t2).as_deref(), Some("r"));

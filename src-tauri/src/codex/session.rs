@@ -4,9 +4,12 @@
 //! `<CODEX_HOME>/sessions/YYYY/MM/DD/rollout-<local ts>-<uuid>.jsonl`, one
 //! JSON object per line: `{"timestamp","type","payload"}`. The first line is
 //! `session_meta` (thread id, cwd); `turn_context` lines carry the model;
-//! `event_msg` lines carry `user_message`, `turn_started` / `turn_complete` /
-//! `turn_aborted` and `token_count` (context usage plus rate limits). All of it
-//! is free to read — no tokens.
+//! `event_msg` lines mark the turn — `task_started` / `task_complete` since
+//! 0.157, `turn_started` / `turn_complete` / `turn_aborted` before — and carry
+//! `token_count` (context usage plus rate limits); `response_item` lines of
+//! type `message` are the conversation itself, `role` user / assistant /
+//! developer with `input_text` / `output_text` blocks. All of it is free to
+//! read — no tokens.
 //!
 //! Which file is ours is the one thing to work out: a fresh session gets the
 //! newest rollout whose cwd matches and that appeared after the spawn, and a
@@ -132,6 +135,78 @@ pub fn release(chat_id: &str) {
     if let Ok(mut m) = claims().lock() {
         m.remove(chat_id);
     }
+    if let Ok(mut m) = turn_counts().lock() {
+        m.remove(chat_id);
+    }
+}
+
+/// Where the turn counter of each chat has read its rollout up to, and what
+/// it has counted so far.
+struct TurnCount {
+    path: PathBuf,
+    /// Bytes consumed: the end of the last complete line.
+    offset: u64,
+    completed: u32,
+}
+
+fn turn_counts() -> &'static Mutex<HashMap<String, TurnCount>> {
+    static C: OnceLock<Mutex<HashMap<String, TurnCount>>> = OnceLock::new();
+    C.get_or_init(Default::default)
+}
+
+/// How many turns the session has finished, per its rollout: one per
+/// `task_complete` (`turn_complete` / `turn_aborted` before 0.157). Counted
+/// off the file rather than off sampled state, so a turn that starts and
+/// ends between two samples of the activity tracker still counts — a
+/// one-word answer takes two seconds, the sampler looks every five. Reads
+/// incrementally from where it stopped last time. None until the rollout
+/// exists, i.e. before the first turn.
+pub fn turns_completed(live: &Live) -> Option<u32> {
+    let path = rollout_for(live)?;
+    let mut counts = turn_counts().lock().ok()?;
+    let entry = counts.entry(live.chat_id.to_string()).or_insert_with(|| TurnCount { path: path.clone(), offset: 0, completed: 0 });
+    if entry.path != path {
+        *entry = TurnCount { path: path.clone(), offset: 0, completed: 0 };
+    }
+    let (n, consumed) = count_turn_ends(&path, entry.offset);
+    entry.completed += n;
+    entry.offset = consumed;
+    Some(entry.completed)
+}
+
+/// Turn-ending events in the complete lines from byte `from` on, and the
+/// offset just past the last complete line.
+fn count_turn_ends(path: &Path, from: u64) -> (u32, u64) {
+    use std::io::{BufRead, BufReader, Seek, SeekFrom};
+    let Ok(mut f) = std::fs::File::open(path) else { return (0, from) };
+    if f.seek(SeekFrom::Start(from)).is_err() {
+        return (0, from);
+    }
+    let mut reader = BufReader::new(f);
+    let mut line = String::new();
+    let mut consumed = from;
+    let mut n = 0;
+    loop {
+        line.clear();
+        let Ok(read) = reader.read_line(&mut line) else { break };
+        if read == 0 || !line.ends_with('\n') {
+            break;
+        }
+        consumed += read as u64;
+        if !line.contains("\"event_msg\"") {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
+        if v["type"] == "event_msg"
+            && matches!(
+                v["payload"]["type"].as_str(),
+                Some("task_complete") | Some("turn_complete") | Some("turn_aborted") | Some("task_aborted")
+            )
+        {
+            n += 1;
+        }
+    }
+    (n, consumed)
 }
 
 /// The rollout file this live session writes to, once it exists.
@@ -208,19 +283,50 @@ fn read_first_prompt(path: &Path) -> Option<String> {
     use std::io::{BufRead, BufReader};
     let f = std::fs::File::open(path).ok()?;
     for line in BufReader::new(f).lines().take(200).map_while(Result::ok) {
-        if !line.contains("user_message") {
+        if !line.contains("\"message\"") {
             continue;
         }
         let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
-        if v["type"] != "event_msg" || v["payload"]["type"] != "user_message" {
+        let Some(m) = message_of(&v) else { continue };
+        if m.role != "user" {
             continue;
         }
-        let Some(text) = v["payload"]["message"].as_str() else { continue };
-        if let Some(t) = title_from_prompt(text) {
+        if let Some(t) = title_from_prompt(&m.text) {
             return Some(t);
         }
     }
     None
+}
+
+/// A rollout line as one turn of the conversation, if it is one: a
+/// `response_item` of type `message` with a user or assistant role. Developer
+/// messages (skills, agent-mode preambles) and the context Codex injects as
+/// a user turn — `AGENTS.md`, `<environment_context>` — are not conversation
+/// and are left out, the way `luna_read` leaves out Claude Code's meta turns.
+fn message_of(v: &Value) -> Option<crate::agents::Message> {
+    if v["type"] != "response_item" || v["payload"]["type"] != "message" {
+        return None;
+    }
+    let role = match v["payload"]["role"].as_str()? {
+        "user" => "user",
+        "assistant" => "assistant",
+        _ => return None,
+    };
+    let mut text = String::new();
+    for block in v["payload"]["content"].as_array()? {
+        let Some(t) = block["text"].as_str() else { continue };
+        if matches!(block["type"].as_str(), Some("input_text") | Some("output_text") | Some("text")) {
+            if !text.is_empty() {
+                text.push('\n');
+            }
+            text.push_str(t);
+        }
+    }
+    let text = text.trim().to_string();
+    if text.is_empty() || (role == "user" && (text.starts_with('<') || text.starts_with("# AGENTS.md"))) {
+        return None;
+    }
+    Some(crate::agents::Message { role: role.to_string(), text })
 }
 
 /// The thread's name, if it has one. Codex appends `{id, thread_name,
@@ -239,8 +345,9 @@ pub fn thread_name(account_path: &str, thread_id: &str) -> Option<String> {
 /// What the tail of a rollout says right now.
 #[derive(Default)]
 pub struct Tail {
-    /// `working` after `turn_started`, `resting` after `turn_complete` /
-    /// `turn_aborted`; None before the first turn.
+    /// `working` after `task_started` (`turn_started` before 0.157),
+    /// `resting` after `task_complete` / `turn_complete` / `turn_aborted`;
+    /// None before the first turn.
     pub status: Option<&'static str>,
     pub model: Option<String>,
     pub context_tokens: Option<f64>,
@@ -268,8 +375,12 @@ pub fn read_tail(path: &Path) -> Tail {
                 }
             }
             Some("event_msg") => match payload["type"].as_str() {
-                Some("turn_started") if out.status.is_none() => out.status = Some("working"),
-                Some("turn_complete") | Some("turn_aborted") if out.status.is_none() => {
+                Some("task_started") | Some("turn_started") if out.status.is_none() => {
+                    out.status = Some("working")
+                }
+                Some("task_complete") | Some("turn_complete") | Some("turn_aborted") | Some("task_aborted")
+                    if out.status.is_none() =>
+                {
                     out.status = Some("resting")
                 }
                 Some("token_count") => {
@@ -394,6 +505,7 @@ mod tests {
                 r#"{"timestamp":"2026-09-17T10:00:00.000Z","type":"session_meta","payload":{"id":"abc","cwd":"E:\\p"}}"#, "\n",
                 r#"{"timestamp":"2026-09-17T10:00:01.000Z","type":"turn_context","payload":{"model":"gpt-5-codex","cwd":"E:\\p"}}"#, "\n",
                 r#"{"timestamp":"2026-09-17T10:00:02.000Z","type":"event_msg","payload":{"type":"user_message","message":"  fix   the build\nplease "}}"#, "\n",
+                r#"{"timestamp":"2026-09-17T10:00:02.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"  fix   the build\nplease "}]}}"#, "\n",
                 r#"{"timestamp":"2026-09-17T10:00:02.000Z","type":"event_msg","payload":{"type":"turn_started","turn_id":"t1"}}"#, "\n",
                 r#"{"timestamp":"2026-09-17T10:00:09.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":9000},"last_token_usage":{"input_tokens":4000,"output_tokens":600,"reasoning_output_tokens":500,"total_tokens":4600},"model_context_window":258400},"rate_limits":{"primary":{"used_percent":12.5,"window_minutes":300,"resets_at":1789000000},"secondary":null,"plan_type":"plus"}}}"#, "\n",
                 r#"{"timestamp":"2026-09-17T10:00:10.000Z","type":"event_msg","payload":{"type":"turn_complete","turn_id":"t1"}}"#, "\n",
@@ -435,9 +547,9 @@ mod tests {
     }
 }
 
-/// The conversation as another agent reads it: `user_message` and
-/// `agent_message` events from byte offset `from` on. Returns the messages
-/// and the offset to continue from.
+/// The conversation as another agent reads it: user and assistant messages
+/// from byte offset `from` on. Returns the messages and the offset to
+/// continue from.
 pub fn messages_from(path: &Path, from: u64) -> (Vec<crate::agents::Message>, u64) {
     use std::io::{BufRead, BufReader, Seek, SeekFrom};
     let mut out = Vec::new();
@@ -450,24 +562,70 @@ pub fn messages_from(path: &Path, from: u64) -> (Vec<crate::agents::Message>, u6
     let mut read = from;
     for line in BufReader::new(f).lines().map_while(Result::ok) {
         read += line.len() as u64 + 1;
-        if !line.contains("_message") {
+        if !line.contains("\"response_item\"") {
             continue;
         }
         let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
-        if v["type"] != "event_msg" {
-            continue;
+        if let Some(m) = message_of(&v) {
+            out.push(m);
         }
-        let role = match v["payload"]["type"].as_str() {
-            Some("user_message") => "user",
-            Some("agent_message") => "assistant",
-            _ => continue,
-        };
-        let Some(text) = v["payload"]["message"].as_str() else { continue };
-        let text = text.trim();
-        if text.is_empty() {
-            continue;
-        }
-        out.push(crate::agents::Message { role: role.to_string(), text: text.to_string() });
     }
     (out, read.min(len).max(from))
+}
+
+#[cfg(test)]
+mod format_tests {
+    use super::*;
+
+    /// The 0.157 rollout: `task_started` / `task_complete` for the turn, and
+    /// the conversation as `response_item` messages with roles.
+    #[test]
+    fn reads_the_current_rollout_format() {
+        let root = std::env::temp_dir().join(format!("luna-codex-fmt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("rollout-2026-09-26T15-43-59-abc.jsonl");
+        let lines = [
+            r#"{"timestamp":"t","type":"session_meta","payload":{"id":"abc","cwd":"E:\\p"}}"#,
+            r#"{"timestamp":"t","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}"#,
+            r#"{"timestamp":"t","type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"<skills_instructions>…"}]}}"#,
+            r##"{"timestamp":"t","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions for E:\\p\n\nrules"}]}}"##,
+            r#"{"timestamp":"t","type":"turn_context","payload":{"turn_id":"t1","cwd":"E:\\p","model":"gpt-6-astra"}}"#,
+            r#"{"timestamp":"t","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Reply with the single word READY."}]}}"#,
+            r#"{"timestamp":"t","type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","text":"Reply with the single word READY."}}}"#,
+            r#"{"timestamp":"t","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"READY"}]}}"#,
+            r#"{"timestamp":"t","type":"event_msg","payload":{"type":"task_complete","turn_id":"t1","last_agent_message":"READY"}}"#,
+        ];
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+
+        let t = read_tail(&path);
+        assert_eq!(t.status, Some("resting"));
+        assert_eq!(t.model.as_deref(), Some("gpt-6-astra"));
+        assert_eq!(read_first_prompt(&path).as_deref(), Some("Reply with the single word READY."));
+
+        let (msgs, cursor) = messages_from(&path, 0);
+        let got: Vec<(&str, &str)> = msgs.iter().map(|m| (m.role.as_str(), m.text.as_str())).collect();
+        assert_eq!(got, vec![("user", "Reply with the single word READY."), ("assistant", "READY")]);
+        assert_eq!(cursor, std::fs::metadata(&path).unwrap().len());
+        let (more, _) = messages_from(&path, cursor);
+        assert!(more.is_empty(), "nothing new after the cursor");
+
+        // Turn ends are counted off complete lines only, and incrementally.
+        let (n, consumed) = count_turn_ends(&path, 0);
+        assert_eq!(n, 1);
+        assert_eq!(consumed, std::fs::metadata(&path).unwrap().len());
+        let mut grown = std::fs::read_to_string(&path).unwrap();
+        grown.push_str(r#"{"timestamp":"t","type":"event_msg","payload":{"type":"task_complete","turn_id":"t2"}}"#);
+        std::fs::write(&path, &grown).unwrap();
+        assert_eq!(count_turn_ends(&path, consumed), (0, consumed), "a line without its newline is not there yet");
+        grown.push('\n');
+        std::fs::write(&path, &grown).unwrap();
+        assert_eq!(count_turn_ends(&path, consumed).0, 1);
+
+        // Mid-turn: the tail says working.
+        std::fs::write(&path, lines[..2].join("\n") + "\n").unwrap();
+        assert_eq!(read_tail(&path).status, Some("working"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

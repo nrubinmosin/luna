@@ -36,11 +36,13 @@ function permLabel(cli: string | null | undefined, fallback: PermMode): PermMode
 
 async function spawn(req: AgentSpawnRequest): Promise<void> {
   const chats = useChats.getState();
+  // A caller without a row of its own — the dev caller of agents.rs, or a
+  // chat whose row was dropped while its session lived on — gets a top-level
+  // chat in the folder it asked for.
   const parent = chats.findChat(req.parentId);
-  if (!parent) throw new Error('the requesting chat no longer exists');
   const account = findAccount(useAccounts.getState().accounts, req.provider, req.account);
   if (!account) throw new Error(`no ${req.provider} account named ${req.account}`);
-  const folder = req.folder || chats.folderOf(parent.id)?.path;
+  const folder = req.folder || (parent ? chats.folderOf(parent.id)?.path : undefined);
   if (!folder) throw new Error('no folder to run in');
   const worktree = req.worktree ?? false;
   const tools = req.tools ?? false;
@@ -54,7 +56,7 @@ async function spawn(req: AgentSpawnRequest): Promise<void> {
       effort: (req.effort && EFFORTS.includes(req.effort) ? req.effort : values.effort) as Effort,
       perm: permLabel(req.permissionMode, values.perm)
     };
-    id = await createChat({ provider: 'claude', folder, account, settings, worktree, tools, parentId: parent.id, name });
+    id = await createChat({ provider: 'claude', folder, account, settings, worktree, tools, parentId: parent?.id, name });
     const chat = useChats.getState().findChat(id);
     await ensureClaudeSession({
       chatId: id,
@@ -65,7 +67,7 @@ async function spawn(req: AgentSpawnRequest): Promise<void> {
       perm: settings.perm,
       worktree,
       tools,
-      parent: parent.id,
+      parent: parent?.id ?? req.parentId,
       prompt: req.prompt
     });
   } else {
@@ -78,7 +80,7 @@ async function spawn(req: AgentSpawnRequest): Promise<void> {
         ? req.sandbox
         : values.sandbox) as CodexSandbox
     };
-    id = await createChat({ provider: 'codex', folder, account, settings, worktree, tools, parentId: parent.id, name });
+    id = await createChat({ provider: 'codex', folder, account, settings, worktree, tools, parentId: parent?.id, name });
     const chat = useChats.getState().findChat(id);
     await ensureCodexSession({
       chatId: id,
@@ -89,7 +91,7 @@ async function spawn(req: AgentSpawnRequest): Promise<void> {
       approval: settings.approval,
       sandbox: settings.sandbox,
       tools,
-      parent: parent.id,
+      parent: parent?.id ?? req.parentId,
       prompt: req.prompt
     });
   }

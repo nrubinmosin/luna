@@ -58,12 +58,12 @@ fn tools() -> Value {
     json!([
         {
             "name": "luna_list",
-            "description": "Sessions you spawned (id, name, provider, account, turn, busy, turnsEnded) and the accounts you may spawn on.",
+            "description": "Sessions you spawned (id, name, provider, account, settings, turn, busy, turnsEnded) and the accounts you may spawn on.",
             "inputSchema": s(json!({}), &[])
         },
         {
             "name": "luna_spawn",
-            "description": "Start a helper session with an opening prompt; it appears under yours in Luna. Omitted settings take the account's defaults. Returns its id; follow with luna_wait.",
+            "description": "Start a helper session with an opening prompt; it appears under yours in Luna. Omitted settings take the account's defaults. Returns its id, the resolved settings and started (false = the prompt was not taken up; screen shows what the terminal is on). Follow with luna_wait.",
             "inputSchema": s(json!({
                 "prompt": { "type": "string" },
                 "provider": { "type": "string", "enum": ["claude", "codex"], "description": "default: yours" },
@@ -81,22 +81,23 @@ fn tools() -> Value {
         },
         {
             "name": "luna_send",
-            "description": "Type text into a session and press Enter.",
+            "description": "Type text into a session and press Enter. Returns started (a turn began; false on an idle session means the text did not become a prompt, see screen), turnBefore (busy = queued behind the current turn) and turnsEnded to pass to luna_wait as afterTurn.",
             "inputSchema": s(json!({ "id": { "type": "string" }, "text": { "type": "string" } }), &["id", "text"])
         },
         {
             "name": "luna_read",
-            "description": "Messages of a session from the transcript. `since` = cursor from an earlier read; `last` = only the last N messages (default 1). Also returns turn state.",
+            "description": "Messages of a session from the transcript. `since` = cursor from an earlier read; `last` = only the last N messages (default 1). Also returns turn state, and the terminal's last lines with screen: true.",
             "inputSchema": s(json!({
                 "id": { "type": "string" },
                 "since": { "type": "integer" },
                 "last": { "type": "integer" },
-                "tools": { "type": "boolean", "description": "include one-line tool call markers" }
+                "tools": { "type": "boolean", "description": "include one-line tool call markers" },
+                "screen": { "type": "boolean", "description": "include what the terminal shows (dialogs, errors, prompts)" }
             }), &["id"])
         },
         {
             "name": "luna_wait",
-            "description": "Block until a session finishes a turn (returns its reply), stops for a permission, or exits. `afterTurn`: the turnsEnded you last saw (default: now).",
+            "description": "Block until a session finishes a turn (returns its reply), stops for a permission, or exits. On timeout or waiting the answer carries the screen. `afterTurn`: wait for a turn past this turnsEnded (default: the value you were last shown).",
             "inputSchema": s(json!({
                 "id": { "type": "string" },
                 "until": { "type": "string", "enum": ["turn_done", "waiting", "exit"] },
@@ -127,13 +128,14 @@ fn call(caller: &str, params: &Value) -> Value {
             .map_err(|e| format!("bad arguments: {e}"))
             .and_then(|p| agents::spawn(caller, p))
             .map(|s| json!(s)),
-        "luna_send" => agents::send(caller, &id, a["text"].as_str().unwrap_or("")).map(|()| json!({ "ok": true })),
+        "luna_send" => agents::send(caller, &id, a["text"].as_str().unwrap_or("")).map(|s| json!(s)),
         "luna_read" => agents::read(
             caller,
             &id,
             a["since"].as_u64(),
             Some(a["last"].as_u64().unwrap_or(1) as usize),
             a["tools"].as_bool().unwrap_or(false),
+            a["screen"].as_bool().unwrap_or(false),
         )
         .map(|r| json!(r)),
         "luna_wait" => agents::wait(
