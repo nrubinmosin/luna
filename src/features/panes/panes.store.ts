@@ -82,10 +82,7 @@ interface PanesState {
    * `peek` / `peekChat` is set at a time.
    */
   peekChat: string | null;
-  /**
-   * The pane last worked in. Nothing but placement reads it: it is where a new
-   * chat lands when the board has no free pane left.
-   */
+  /** The pane last worked in — a new chat takes its folder and account after it. */
   activePane: number;
   setGroup: (g: GroupId) => void;
   /** Empties one group's boards and evens out its splits. Chats are untouched. */
@@ -200,41 +197,39 @@ export const usePanes = create<PanesState>()(
           ...(s.peekChat === chatId ? { peekChat: null } : {})
         })),
 
-      // Seat a new chat wherever it will be seen. On the board that is on
-      // screen that means a free pane if there is one and the pane last worked
-      // in otherwise — a new chat you cannot see is one you have to go hunting
-      // for, which in the one-pane layout used to be every new chat. The other
-      // layouts of the group take it only if they have room, and parked groups
-      // are left alone: they are parked on purpose.
+      // Seat a new chat wherever it will be seen: a free pane of the board on
+      // screen if there is one. When there is none — every pane taken, the
+      // one-pane layout included — the chat comes up full size as a sheet of
+      // its own and the board stays as the user arranged it: taking over the
+      // pane last worked in swapped out a chat that was being watched. The
+      // other layouts of the group take it only if they have room, and parked
+      // groups are left alone: they are parked on purpose.
       autoPlace: chatId =>
         set(s => {
           const g = currentGroup(s);
           const live = currentLayout(s);
           const boards = LAYOUTS.reduce((acc, n) => {
             const slots = g.boards[n];
-            if (slots.includes(chatId)) {
-              acc[n] = slots;
-              return acc;
-            }
             const free = slots.findIndex((x, i) => i < n && !x);
-            const seat = free >= 0 ? free : n === live ? Math.min(s.activePane, n - 1) : -1;
-            if (seat < 0) {
+            if (slots.includes(chatId) || free < 0) {
               acc[n] = slots;
               return acc;
             }
             const next = slots.slice();
-            next[seat] = chatId;
+            next[free] = chatId;
             acc[n] = next;
             return acc;
           }, {} as PerLayout<Slots>);
 
-          // A sheet that is already up follows the new chat rather than hiding
-          // it: creating a chat is asking to work in it, now.
+          // Creating a chat is asking to work in it, now: with no pane to show
+          // it in it goes up on the sheet, and a sheet that is already up
+          // follows the new chat rather than hiding it.
           const seated = boards[live].indexOf(chatId);
+          if (seated < 0 || seated >= live) return { ...withGroup(s, { boards }), peekChat: chatId, peek: null };
           return {
             ...withGroup(s, { boards }),
-            activePane: seated >= 0 ? seated : s.activePane,
-            ...(peeking(s) ? { peek: seated >= 0 ? seated : null, peekChat: null } : {})
+            activePane: seated,
+            ...(peeking(s) ? { peek: seated, peekChat: null } : {})
           };
         }),
 
