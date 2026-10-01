@@ -57,7 +57,7 @@ export async function createChat(spec: ChatSpec): Promise<string> {
   const base = {
     id,
     name: spec.name?.trim() || `chat ${n}`,
-    nameCustom: !!spec.name?.trim(),
+    nameSource: spec.name?.trim() ? ('user' as const) : undefined,
     status: 'resting' as const,
     context: 0,
     account: spec.account.name,

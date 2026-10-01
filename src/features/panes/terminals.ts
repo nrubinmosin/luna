@@ -322,7 +322,9 @@ function create(spec: TermSpec): Entry {
   // everything around it is named after its prompt, which is a very easy row
   // to lose track of. Reading the keystrokes is a guess (an edited line keeps
   // the characters that were rubbed out), but the watcher replaces it with
-  // the transcript's own version as soon as there is one.
+  // the transcript's own version as soon as there is one. Only a chat still
+  // on its placeholder takes it: this terminal is rebuilt whenever its pane
+  // comes back, and the next line typed used to rename a long-named chat.
   let typed = '';
   let titled = false;
   const dataSub = term.onData(d => {
@@ -334,12 +336,12 @@ function create(spec: TermSpec): Entry {
       if (enter >= 0) {
         const line = typed.replace(/[\x00-\x1f\x7f]/g, '').trim();
         typed = '';
-        const fresh = useChats.getState().findChat(chatId);
-        // A slash command is the CLI's business, not a title, and a chat the
-        // user has named by hand keeps that name.
-        if (line.length > 1 && !line.startsWith('/') && fresh && !fresh.nameCustom) {
+        // A slash command is the CLI's business, not a title.
+        if (line.length > 1 && !line.startsWith('/')) {
           titled = true;
-          useChats.getState().setName(chatId, line.slice(0, 80));
+          if (useChats.getState().findChat(chatId)?.nameSource === undefined) {
+            useChats.getState().setName(chatId, line.slice(0, 80), 'prompt');
+          }
         }
       }
     }

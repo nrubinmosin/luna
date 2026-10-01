@@ -957,9 +957,20 @@ pub struct SessionMeta {
     /// generated (Claude Code's `ai-title`, the same it puts on the terminal
     /// tab), else None.
     pub title: Option<String>,
+    /// The title is a rename the user gave it in the CLI, not one the CLI
+    /// came up with.
+    pub title_renamed: bool,
     /// First real prompt of the session — the chat's title until the CLI
     /// comes up with one.
     pub first_prompt: Option<String>,
+}
+
+/// A session's title as its CLI has it, and whether the user typed it.
+#[derive(Serialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CliTitle {
+    pub title: String,
+    pub renamed: bool,
 }
 
 /// A title has to be something a person can read. Both sources have handed us
@@ -1094,10 +1105,10 @@ pub async fn session_meta(
 /// The CLI's title for a session that is not running, by its id — how a chat
 /// restored from an earlier run picks up the title its CLI gave it.
 #[tauri::command]
-pub async fn saved_title(provider: Provider, account_path: String, session_id: String) -> Option<String> {
+pub async fn saved_title(provider: Provider, account_path: String, session_id: String) -> Option<CliTitle> {
     tauri::async_runtime::spawn_blocking(move || match provider {
         Provider::Claude => crate::claude::session::saved_title(&account_path, &session_id),
-        Provider::Codex => crate::codex::session::thread_name(&account_path, &session_id),
+        Provider::Codex => crate::codex::session::thread_title(&account_path, &session_id),
     })
     .await
     .ok()

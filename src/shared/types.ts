@@ -6,6 +6,9 @@ export type GroupId = 0 | 1 | 2 | 3;
 export const GROUPS: GroupId[] = [0, 1, 2, 3];
 export const GROUP_LABELS = ['I', 'II', 'III', 'IV'] as const;
 
+/** Where a chat's name came from — see `Chat.nameSource`. */
+export type NameSource = 'user' | 'rename' | 'cli' | 'prompt';
+
 // ------------------------------------------------------------- providers --
 
 /** The two CLIs Luna drives. Each keeps its own vocabulary end to end: a
@@ -67,7 +70,13 @@ interface ChatBase {
   worktree: boolean;
   worktreePath?: string | null;
   sessionId?: string | null;
-  nameCustom?: boolean;
+  /** Where the name came from, which decides what may still replace it:
+   *  - `user`: given in Luna. Final — nothing replaces it.
+   *  - `rename`: a `/rename` in the CLI. Only another one replaces it.
+   *  - `cli`: the title the CLI made up. Taken once; only a rename replaces it.
+   *  - `prompt`: the opening prompt, until the CLI's title lands.
+   *  - unset: the placeholder ("chat 12") a new chat starts with. */
+  nameSource?: NameSource;
   /** Key of a preset from CHAT_COLORS. The pane title bar wears it and the
    *  sidebar row shows a stripe of it; unset means stock Luna blue. */
   color?: string | null;

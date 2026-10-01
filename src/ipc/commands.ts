@@ -212,7 +212,14 @@ export interface SessionMetaDto {
   contextWindow: number | null;
   /** The CLI's own title: a rename, else the one it generated. */
   title: string | null;
+  /** `title` is the user's rename, not one the CLI made up. */
+  titleRenamed: boolean;
   firstPrompt: string | null;
+}
+
+export interface CliTitleDto {
+  title: string;
+  renamed: boolean;
 }
 
 export const sessionMeta = (id: string, accountPath: string) =>
@@ -220,7 +227,7 @@ export const sessionMeta = (id: string, accountPath: string) =>
 
 /** The CLI's title for a session that is not running, by its id. */
 export const savedTitle = (provider: Provider, accountPath: string, sessionId: string) =>
-  call<string | null>('saved_title', { provider, accountPath, sessionId }, null);
+  call<CliTitleDto | null>('saved_title', { provider, accountPath, sessionId }, null);
 
 export interface OrphanSessionDto {
   id: string;

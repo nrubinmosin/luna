@@ -16,7 +16,7 @@
 //! resumed one is found by the uuid in its name. Either way the answer is
 //! remembered per chat, so two chats in one folder never share a file.
 
-use crate::pty::{sane_title, tail, title_from_prompt, SessionMeta};
+use crate::pty::{sane_title, tail, title_from_prompt, CliTitle, SessionMeta};
 use chrono::{Datelike, Local, NaiveDate, NaiveDateTime, TimeZone};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -331,15 +331,20 @@ fn message_of(v: &Value) -> Option<crate::agents::Message> {
 
 /// The thread's name, if it has one. Codex appends `{id, thread_name,
 /// updated_at}` to `<CODEX_HOME>/session_index.jsonl` whenever a thread is
-/// named, so the last line for an id is the current name.
-pub fn thread_name(account_path: &str, thread_id: &str) -> Option<String> {
+/// named, so the last line for an id is the current name. It names a thread
+/// once on its own, from the opening prompt; a name that differs from that
+/// first one is the user's `/rename`.
+pub fn thread_title(account_path: &str, thread_id: &str) -> Option<CliTitle> {
     let text = std::fs::read_to_string(Path::new(account_path).join("session_index.jsonl")).ok()?;
-    text.lines()
-        .rev()
+    let names: Vec<String> = text
+        .lines()
         .filter(|l| l.contains(thread_id))
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-        .find(|v| v["id"] == thread_id)
-        .and_then(|v| v["thread_name"].as_str().and_then(sane_title))
+        .filter(|v| v["id"] == thread_id)
+        .filter_map(|v| v["thread_name"].as_str().and_then(sane_title))
+        .collect();
+    let title = names.last()?.clone();
+    Some(CliTitle { renamed: title != names[0], title })
 }
 
 /// What the tail of a rollout says right now.
@@ -446,11 +451,13 @@ pub fn meta(live: &Live) -> Option<SessionMeta> {
     let t = read_tail(&path);
 
     let status = Some(fold_status(t.status, live.last_output_ms));
+    let named = thread_title(live.account_path, &id);
 
     let mut m = SessionMeta {
         status: status.map(str::to_owned),
         cwd: Some(live.cwd.to_string()),
-        title: thread_name(live.account_path, &id),
+        title_renamed: named.as_ref().is_some_and(|n| n.renamed),
+        title: named.map(|n| n.title),
         session_id: Some(id),
         model: t.model,
         first_prompt: cached_first_prompt(&path).and_then(|s| sane_title(&s)),
@@ -541,8 +548,9 @@ mod tests {
         )
         .unwrap();
         let acct = root.to_string_lossy();
-        assert_eq!(thread_name(&acct, "abc").as_deref(), Some("Renamed"));
-        assert_eq!(thread_name(&acct, "missing"), None);
+        assert_eq!(thread_title(&acct, "abc"), Some(CliTitle { title: "Renamed".into(), renamed: true }));
+        assert_eq!(thread_title(&acct, "other"), Some(CliTitle { title: "Not ours".into(), renamed: false }));
+        assert_eq!(thread_title(&acct, "missing"), None);
         let _ = std::fs::remove_dir_all(&root);
     }
 }
