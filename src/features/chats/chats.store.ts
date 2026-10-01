@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { Chat, Folder, GroupId } from '../../shared/types';
+import type { Chat, Folder, GroupId, NameSource } from '../../shared/types';
 import { usePanes } from '../panes/panes.store';
 import { forget } from '../panes/terminals';
 
@@ -24,7 +24,9 @@ interface ChatsState {
   setStatus: (chatId: string, status: Chat['status']) => void;
   /** Unfold or fold the children an agent spawned under this chat. */
   setChildrenOpen: (chatId: string, open: boolean) => void;
-  setName: (chatId: string, name: string) => void;
+  /** Names a chat from somewhere other than the user — a no-op where the
+   *  name it has may not be replaced from there (see `mayRename`). */
+  setName: (chatId: string, name: string, source: NameSource) => void;
   setWorktreePath: (chatId: string, path: string) => void;
   setSessionId: (chatId: string, sessionId: string) => void;
   /** The model a Codex session reports running (its `turn_context`). */
@@ -64,6 +66,37 @@ export const wornColors = (folders: Folder[], group: GroupId): Array<string | nu
   allChats(folders)
     .filter(c => c.group === group)
     .map(c => c.color);
+
+/**
+ * Whether a name from `next` may replace one from `current`. A chat is named
+ * once and then left alone: the title bar used to swap between the CLI's
+ * title, the line just typed and a plan's handle with every message. Only the
+ * user's own word moves it on — a rename in Luna, which is final, or one in
+ * the CLI.
+ */
+export const mayRename = (current: NameSource | undefined, next: NameSource): boolean => {
+  switch (next) {
+    case 'user':
+      return true;
+    case 'rename':
+      return current !== 'user';
+    case 'cli':
+      return current === undefined || current === 'prompt';
+    case 'prompt':
+      return current === undefined || current === 'prompt';
+  }
+};
+
+/** A stored chat without a `nameSource`: from before there was one, when a
+ *  flag said only whether the user had named it, or still on its placeholder.
+ *  One with a session has been called something by now, and the CLI's title
+ *  may still replace it — that is what puts right the ones a plan's handle got
+ *  to. */
+const named = (c: Chat & { nameCustom?: boolean }): Chat => {
+  if (c.nameSource) return c;
+  const { nameCustom, ...rest } = c;
+  return { ...rest, nameSource: nameCustom ? 'user' : rest.sessionId ? 'prompt' : undefined };
+};
 
 let seq = 0;
 export const newId = (prefix: string) => `${prefix}${Date.now().toString(36)}${(seq++).toString(36)}`;
@@ -137,13 +170,18 @@ export const useChats = create<ChatsState>()(
           }))
         })),
 
-      setName: (chatId, name) =>
+      setName: (chatId, name, source) => {
+        // The watcher offers every chat its title every few seconds; most of
+        // those change nothing and should not cost a render.
+        const c = get().findChat(chatId);
+        if (!c || !mayRename(c.nameSource, source) || (c.name === name && c.nameSource === source)) return;
         set(s => ({
           folders: s.folders.map(f => ({
             ...f,
-            chats: f.chats.map(c => (c.id === chatId && c.name !== name ? { ...c, name } : c))
+            chats: f.chats.map(x => (x.id === chatId ? { ...x, name, nameSource: source } : x))
           }))
-        })),
+        }));
+      },
 
       setWorktreePath: (chatId, path) =>
         set(s => ({
@@ -197,7 +235,7 @@ export const useChats = create<ChatsState>()(
         set(s => ({
           folders: s.folders.map(f => ({
             ...f,
-            chats: f.chats.map(c => (c.id === chatId ? { ...c, name, nameCustom: true } : c))
+            chats: f.chats.map(c => (c.id === chatId ? { ...c, name, nameSource: 'user' as const } : c))
           }))
         })),
 
@@ -229,7 +267,7 @@ export const useChats = create<ChatsState>()(
           // chat without one would be invisible in every group.
           folders: (p.folders ?? []).map(f => ({
             ...f,
-            chats: (f.chats ?? []).map(c => ({ ...c, group: c.group ?? 0 }))
+            chats: (f.chats ?? []).map(c => named({ ...c, group: c.group ?? 0 }))
           }))
         };
       }

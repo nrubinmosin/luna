@@ -4,7 +4,7 @@
 //! (context usage, the titles the CLI gave it, opening prompt). All of it is
 //! free to read — no tokens.
 
-use crate::pty::{sane_title, SessionMeta};
+use crate::pty::{sane_title, CliTitle, SessionMeta};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -72,34 +72,68 @@ struct Titles {
     /// `/rename`.
     custom: Option<String>,
     /// What the CLI generated from the opening of the conversation — the same
-    /// title it puts on the terminal tab.
+    /// title it puts on the terminal tab. Never a plan's handle.
     ai: Option<String>,
+}
+
+/// Accepting a plan makes the CLI write a second `ai-title`: the plan's
+/// kebab-case handle (`fix-account-status-migration`), echoed by an
+/// `agent-name` line. It is not a title anyone would give the chat, and in
+/// every transcript on disk it is the only thing that ever replaced the first.
+fn is_handle(s: &str) -> bool {
+    s.contains('-') && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
 fn titles_in(text: &str) -> Titles {
     let mut t = Titles::default();
+    // The `agent-name` follows its `ai-title`, so reading backwards it is
+    // known by the time the title it rules out comes up.
+    let mut handles: Vec<String> = Vec::new();
     for line in text.lines().rev() {
         if t.custom.is_some() && t.ai.is_some() {
             break;
         }
-        if !line.contains("-title\"") {
+        if !line.contains("-title\"") && !line.contains("\"agent-name\"") {
             continue;
         }
         let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
         match v["type"].as_str() {
+            Some("agent-name") => handles.extend(v["agentName"].as_str().map(str::to_owned)),
             Some("custom-title") if t.custom.is_none() => t.custom = v["customTitle"].as_str().and_then(sane_title),
-            Some("ai-title") if t.ai.is_none() => t.ai = v["aiTitle"].as_str().and_then(sane_title),
+            Some("ai-title") if t.ai.is_none() => {
+                t.ai = v["aiTitle"]
+                    .as_str()
+                    .and_then(sane_title)
+                    .filter(|s| !is_handle(s) && !handles.contains(s))
+            }
             _ => {}
         }
     }
     t
 }
 
-/// A long tool run can push the last title out of the tail for a while, so
-/// the titles seen before are kept per session and the tail only updates them.
-fn remembered_titles(session_id: &str, seen: Titles) -> Titles {
+fn title_cache() -> &'static Mutex<HashMap<String, Titles>> {
     static CACHE: std::sync::OnceLock<Mutex<HashMap<String, Titles>>> = std::sync::OnceLock::new();
-    let mut map = CACHE.get_or_init(Default::default).lock().unwrap();
+    CACHE.get_or_init(Default::default)
+}
+
+/// The titles of a live session. A long tool run can push the last title out
+/// of the tail for a while, so the titles seen before are kept per session and
+/// the tail only updates them. The first look reads the whole transcript: a
+/// long session Luna has just restarted on may hold no title in its tail, and
+/// the opening prompt would take the chat's name until one came round again.
+fn titles_of(session_id: &str, path: &Path, tail: Option<&str>) -> Titles {
+    let first_look = !title_cache().lock().unwrap().contains_key(session_id);
+    let seen = if first_look {
+        std::fs::read_to_string(path).ok().map(|s| titles_in(&s))
+    } else {
+        tail.map(titles_in)
+    };
+    remembered_titles(session_id, seen.unwrap_or_default())
+}
+
+fn remembered_titles(session_id: &str, seen: Titles) -> Titles {
+    let mut map = title_cache().lock().unwrap();
     let t = map.entry(session_id.to_string()).or_default();
     if seen.custom.is_some() {
         t.custom = seen.custom;
@@ -114,7 +148,7 @@ fn remembered_titles(session_id: &str, seen: Titles) -> Titles {
 /// an earlier run, which session_meta cannot see. The transcript is found by
 /// name: the folder it sits in comes from a cwd that, for a worktree session,
 /// is long gone.
-pub fn saved_title(account_path: &str, session_id: &str) -> Option<String> {
+pub fn saved_title(account_path: &str, session_id: &str) -> Option<CliTitle> {
     if session_id.is_empty() || !session_id.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
         return None;
     }
@@ -130,7 +164,11 @@ pub fn saved_title(account_path: &str, session_id: &str) -> Option<String> {
         // a session ended with its last title further back than the tail.
         t = titles_in(&std::fs::read_to_string(&path).ok()?);
     }
-    t.custom.or(t.ai)
+    match (t.custom, t.ai) {
+        (Some(title), _) => Some(CliTitle { title, renamed: true }),
+        (None, Some(title)) => Some(CliTitle { title, renamed: false }),
+        (None, None) => None,
+    }
 }
 
 /// Text of a transcript content field, which is either a bare string or an
@@ -222,18 +260,22 @@ pub fn meta(pid: Option<u32>, cwd: &str, spawned_at_ms: u128, account_path: &str
         ..Default::default()
     };
     if let (Some(scwd), Some(sid)) = (m.cwd.clone(), m.session_id.clone()) {
-        let text = crate::pty::tail(&transcript_path(account_path, &scwd, &sid), 128 * 1024);
+        let path = transcript_path(account_path, &scwd, &sid);
+        let text = crate::pty::tail(&path, 128 * 1024);
         if let Some(c) = text.as_deref().and_then(context_in) {
             m.context_tokens = Some(c.tokens);
             m.context_window = Some(c.window);
             m.context = Some((c.tokens / c.window).min(1.0));
         }
-        let titles = remembered_titles(&sid, text.as_deref().map(titles_in).unwrap_or_default());
+        let titles = titles_of(&sid, &path, text.as_deref());
         // The registry name is the cwd folder when `derived` — a worktree's
-        // random codename — and a kebab-case handle when `auto`; a rename
-        // there is as good as one in the transcript.
-        let registry = |source: &str| m.name.clone().filter(|_| m.name_source.as_deref() == Some(source));
-        m.title = titles.custom.or_else(|| registry("user")).or(titles.ai).or_else(|| registry("auto"));
+        // random codename — and a kebab-case handle when `auto`, neither of
+        // them a title; a rename there is as good as one in the transcript.
+        let renamed = titles
+            .custom
+            .or_else(|| m.name.clone().filter(|_| m.name_source.as_deref() == Some("user")));
+        m.title_renamed = renamed.is_some();
+        m.title = renamed.or(titles.ai);
         m.first_prompt = cached_first_prompt(account_path, &scwd, &sid);
     }
     Some(m)
@@ -321,11 +363,39 @@ mod tests {
     }
 
     #[test]
+    fn a_plan_handle_is_not_a_title() {
+        // As a transcript has it after a plan is accepted.
+        let text = concat!(
+            r#"{"type":"ai-title","aiTitle":"Issue #5244","sessionId":"s"}"#, "\n",
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"ExitPlanMode"}]}}"#, "\n",
+            r#"{"type":"ai-title","aiTitle":"fix-connector-logging-and-model-picker","sessionId":"s"}"#, "\n",
+            r#"{"type":"agent-name","agentName":"fix-connector-logging-and-model-picker","sessionId":"s"}"#, "\n",
+        );
+        assert_eq!(titles_in(text).ai.as_deref(), Some("Issue #5244"));
+        // The first title already out of the tail: nothing beats the handle.
+        let tail = text.lines().skip(1).collect::<Vec<_>>().join("\n");
+        assert_eq!(titles_in(&tail).ai, None);
+        assert!(!is_handle("Fix login-flow"));
+        assert!(!is_handle("Онборд нового юзера"));
+    }
+
+    #[test]
     fn keeps_a_title_the_tail_no_longer_shows() {
         let sid = format!("test-{}", std::process::id());
         let seen = Titles { ai: Some("Issue 4489".into()), custom: None };
         assert_eq!(remembered_titles(&sid, seen).ai.as_deref(), Some("Issue 4489"));
         assert_eq!(remembered_titles(&sid, Titles::default()).ai.as_deref(), Some("Issue 4489"));
+    }
+
+    #[test]
+    fn the_first_look_reads_past_the_tail() {
+        let sid = format!("first-look-{}", std::process::id());
+        let path = std::env::temp_dir().join(format!("{sid}.jsonl"));
+        std::fs::write(&path, r#"{"type":"ai-title","aiTitle":"Chat titles","sessionId":"s"}"#).unwrap();
+        // A tail with no title in it, as a long tool run leaves one.
+        assert_eq!(titles_of(&sid, &path, Some("{}")).ai.as_deref(), Some("Chat titles"));
+        assert_eq!(titles_of(&sid, &path, Some("{}")).ai.as_deref(), Some("Chat titles"));
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
@@ -341,8 +411,8 @@ mod tests {
         .unwrap();
         let acct = root.to_string_lossy();
         assert_eq!(
-            saved_title(&acct, "28c18d5b-64d5-40a8-a1ec-fb55573139d9").as_deref(),
-            Some("Онборд нового юзера")
+            saved_title(&acct, "28c18d5b-64d5-40a8-a1ec-fb55573139d9"),
+            Some(CliTitle { title: "Онборд нового юзера".into(), renamed: false })
         );
         assert_eq!(saved_title(&acct, "../../etc"), None);
         let _ = std::fs::remove_dir_all(&root);

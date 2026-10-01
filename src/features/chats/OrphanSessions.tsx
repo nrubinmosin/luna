@@ -56,6 +56,7 @@ export function OrphanSessions() {
     const base = {
       id: o.id,
       name: o.title?.slice(0, 80) || `recovered session ${o.id.slice(-4)}`,
+      nameSource: o.title ? ('prompt' as const) : undefined,
       status: 'resting' as const,
       context: 0,
       account,
