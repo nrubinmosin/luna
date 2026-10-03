@@ -402,11 +402,14 @@ export interface SessionActivityDto {
   procs: string[];
   outputFresh: boolean;
   busy: boolean;
+  /** Waiting only on what an API error left — a usage limit: counted as done. */
+  stalled: string | null;
 }
 
 export interface ActivitySummaryDto {
   busy: number;
   waiting: number;
+  stalled: number;
   idleSinceMs: number | null;
   sessions: SessionActivityDto[];
 }
@@ -425,7 +428,7 @@ export const IDLE_POWER: PowerStateDto = {
   holding: false,
   armed: null,
   countdownEndsAtMs: null,
-  summary: { busy: 0, waiting: 0, idleSinceMs: null, sessions: [] }
+  summary: { busy: 0, waiting: 0, stalled: 0, idleSinceMs: null, sessions: [] }
 };
 
 export const powerState = () => call<PowerStateDto>('power_state', {}, IDLE_POWER);

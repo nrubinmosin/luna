@@ -5,7 +5,9 @@
 //!
 //! - the turn: Claude Code says so through its hooks (see hub.rs) and its
 //!   registry file, Codex through the rollout; a permission prompt counts as
-//!   *waiting*, which is neither working nor done;
+//!   *waiting*, which is neither working nor done — unless what it waits
+//!   on is the dialog an API error left (a usage limit), which is *stalled*:
+//!   the turn is over and nothing more happens by itself, so it counts as done;
 //! - the children: the processes the CLI has under it (procs.rs) — moving
 //!   ones, and ones born of the current turn even if they only sleep;
 //! - the screen: pty output in the last half minute.
@@ -62,8 +64,22 @@ pub enum HookEvent {
     Waiting,
     /// `Stop`: the turn is over.
     Idle,
+    /// `StopFailure`: the turn is over because the API refused it — a usage
+    /// limit, a lost login. No `Stop` follows.
+    Failed(&'static str),
     /// `SessionEnd`.
     Gone,
+}
+
+/// Claude Code's word for why a turn failed, as a static string. Anything it
+/// adds later reads as `unknown` until it is listed here.
+pub fn api_error_kind(s: &str) -> &'static str {
+    const KINDS: [&str; 13] = [
+        "authentication_failed", "oauth_org_not_allowed", "account_on_hold", "verification_required",
+        "billing_error", "rate_limit", "overloaded", "invalid_request", "model_not_found", "server_error",
+        "max_output_tokens", "cloud_credential_error", "unknown",
+    ];
+    KINDS.iter().copied().find(|k| *k == s).unwrap_or("unknown")
 }
 
 impl HookEvent {
@@ -72,6 +88,7 @@ impl HookEvent {
         match v["hook_event_name"].as_str()? {
             "UserPromptSubmit" | "PostToolUse" | "PostToolUseFailure" | "SubagentStop" => Some(HookEvent::Busy),
             "Stop" => Some(HookEvent::Idle),
+            "StopFailure" => Some(HookEvent::Failed(api_error_kind(v["error"].as_str().unwrap_or("")))),
             "SessionEnd" => Some(HookEvent::Gone),
             "Notification" => match v["notification_type"].as_str().unwrap_or("") {
                 "permission_prompt" | "elicitation_dialog" => Some(HookEvent::Waiting),
@@ -115,6 +132,9 @@ struct Track {
     turns_ended: u32,
     /// The last verdict `busy` was computed from, for the transition above.
     was_busy: bool,
+    /// The API error the last turn ended on, per `StopFailure`; cleared by
+    /// any other hook.
+    failed: Option<&'static str>,
 }
 
 /// What an agent's `wait`/`read` asks about a session.
@@ -148,6 +168,11 @@ pub struct SessionActivity {
     pub procs: Vec<String>,
     pub output_fresh: bool,
     pub busy: bool,
+    /// Waiting, but on what an API error left on screen — a usage limit, a
+    /// lost login — rather than on a question from its turn: the turn is
+    /// over, and the session cannot go on by itself before someone acts or
+    /// the limit resets hours later. Done, as far as the power-off goes.
+    pub stalled: Option<&'static str>,
     /// Where the verdict came from, for the log: the hook's word, the
     /// registry's word, and how long ago the screen last moved.
     #[serde(skip)]
@@ -170,7 +195,10 @@ impl SessionActivity {
         let mut parts = Vec::new();
         match self.turn {
             Turn::Busy => parts.push("mid-turn".to_string()),
-            Turn::Waiting => parts.push("waiting for a person".to_string()),
+            Turn::Waiting => match self.stalled {
+                Some(e) => parts.push(format!("stopped on {e}")),
+                None => parts.push("waiting for a person".to_string()),
+            },
             Turn::Idle => {}
         }
         if !self.procs.is_empty() {
@@ -191,7 +219,10 @@ impl SessionActivity {
 #[serde(rename_all = "camelCase")]
 pub struct Summary {
     pub busy: usize,
+    /// Waiting for a person — stalled sessions not counted.
     pub waiting: usize,
+    /// Waiting only on what an API error left (see `SessionActivity::stalled`).
+    pub stalled: usize,
     /// Since when nothing has been busy or waiting, if that is the case.
     pub idle_since_ms: Option<u64>,
     pub sessions: Vec<SessionActivity>,
@@ -214,6 +245,7 @@ pub fn on_hook(chat_id: &str, ev: HookEvent) {
     let now = now_ms();
     let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
     let t = st.tracks.entry(chat_id.to_string()).or_default();
+    t.failed = None;
     match ev {
         HookEvent::Busy => {
             if t.first_turn_ms == 0 {
@@ -227,6 +259,12 @@ pub fn on_hook(chat_id: &str, ev: HookEvent) {
             // `Stop`: a turn is over, whether or not any sample saw it run.
             t.turns_ended += 1;
             t.was_busy = false;
+        }
+        HookEvent::Failed(error) => {
+            t.hook = Some(Turn::Idle);
+            t.turns_ended += 1;
+            t.was_busy = false;
+            t.failed = Some(error);
         }
         HookEvent::Gone => t.hook = Some(Turn::Idle),
     }
@@ -266,6 +304,15 @@ fn disk_turn(p: &crate::pty::ActivityProbe) -> Option<Turn> {
         })?,
     };
     Some(turn_of(&raw))
+}
+
+/// The API error a session's last turn ended on, per its transcript. Codex
+/// ends such a turn like any other, so it never sits waiting on one.
+fn disk_api_error(p: &crate::pty::ActivityProbe) -> Option<&'static str> {
+    match p.provider {
+        Provider::Claude => crate::claude::session::last_api_error(p.pid, &p.cwd, p.spawned_at_ms, &p.account_path),
+        Provider::Codex => None,
+    }
 }
 
 /// Turns the CLI's own record says are finished, where it keeps one.
@@ -339,6 +386,10 @@ fn combine(t: &mut Track, disk: Option<Turn>, now: u64) -> Turn {
     match (hook, disk) {
         // A permission prompt sits inside a turn the registry calls busy.
         (Some(Turn::Waiting), _) => Turn::Waiting,
+        // The registry says a dialog is up, so the model is not working,
+        // whatever the last hook said: a turn that died on an API error
+        // before Claude Code fired `StopFailure` left its hook at busy.
+        (Some(Turn::Busy), Some(Turn::Waiting)) => Turn::Waiting,
         (Some(Turn::Busy), _) | (_, Some(Turn::Busy)) => Turn::Busy,
         (None, Some(d)) => d,
         (Some(h), None) => h,
@@ -399,12 +450,16 @@ pub fn sample(probes: Vec<crate::pty::ActivityProbe>) -> Summary {
         t.was_busy = model_busy;
 
         let busy = model_busy || t.procs.is_some() || t.output_fresh;
+        // Only a waiting session is asked: the hook's word if one came, else
+        // the transcript's last line.
+        let stalled = (t.turn == Turn::Waiting).then(|| t.failed.or_else(|| disk_api_error(p))).flatten();
         sessions.push(SessionActivity {
             id: p.id.clone(),
             turn: t.turn,
             procs: names,
             output_fresh: t.output_fresh,
             busy,
+            stalled,
             hook: t.hook,
             disk: t.disk,
             output_age_ms: now.saturating_sub(p.last_output_ms),
@@ -412,13 +467,15 @@ pub fn sample(probes: Vec<crate::pty::ActivityProbe>) -> Summary {
     }
 
     let busy = sessions.iter().filter(|s| s.busy).count();
-    let waiting = sessions.iter().filter(|s| !s.busy && s.turn == Turn::Waiting).count();
+    let parked = |s: &&SessionActivity| !s.busy && s.turn == Turn::Waiting;
+    let waiting = sessions.iter().filter(parked).filter(|s| s.stalled.is_none()).count();
+    let stalled = sessions.iter().filter(parked).filter(|s| s.stalled.is_some()).count();
     if busy == 0 && waiting == 0 {
         st.idle_since_ms.get_or_insert(now);
     } else {
         st.idle_since_ms = None;
     }
-    st.summary = Summary { busy, waiting, idle_since_ms: st.idle_since_ms, sessions };
+    st.summary = Summary { busy, waiting, stalled, idle_since_ms: st.idle_since_ms, sessions };
     st.summary.clone()
 }
 
@@ -465,6 +522,30 @@ mod tests {
         assert_eq!(ev("Notification", r#","notification_type":"idle_prompt""#), None);
         assert_eq!(ev("PreToolUse", ""), None);
         assert_eq!(HookEvent::parse("not json"), None);
+        assert_eq!(ev("StopFailure", r#","error":"rate_limit""#), Some(HookEvent::Failed("rate_limit")));
+        assert_eq!(ev("StopFailure", r#","error":"something_new""#), Some(HookEvent::Failed("unknown")));
+    }
+
+    #[test]
+    fn a_failed_turn_is_over_and_remembers_why() {
+        on_hook("chat-limit", HookEvent::Busy);
+        on_hook("chat-limit", HookEvent::Failed("rate_limit"));
+        {
+            let st = state().lock().unwrap();
+            let t = st.tracks.get("chat-limit").unwrap();
+            assert_eq!((t.hook, t.failed, t.turns_ended), (Some(Turn::Idle), Some("rate_limit"), 1));
+        }
+        // The next prompt is a new turn, and the error is behind it.
+        on_hook("chat-limit", HookEvent::Busy);
+        assert_eq!(state().lock().unwrap().tracks.get("chat-limit").unwrap().failed, None);
+    }
+
+    #[test]
+    fn a_dialog_in_the_registry_beats_a_busy_hook() {
+        // The turn died on a usage limit with no Stop: the hook still says
+        // busy, the registry says the limit dialog is up.
+        let mut t = Track { hook: Some(Turn::Busy), ..Default::default() };
+        assert_eq!(combine(&mut t, Some(Turn::Waiting), 1000), Turn::Waiting);
     }
 
     #[test]

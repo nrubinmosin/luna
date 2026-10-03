@@ -382,6 +382,7 @@ fn claude_hooks_file(chat_id: &str) -> Option<std::path::PathBuf> {
             "UserPromptSubmit": hook(5),
             "PostToolUse": hook(5),
             "Stop": hook(5),
+            "StopFailure": hook(5),
             "Notification": hook(5),
             "SessionEnd": hook(5),
         }

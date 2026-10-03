@@ -40,7 +40,11 @@ export function PowerMenu({ onClose }: { onClose: () => void }) {
   }, [onClose]);
 
   const chats = allChats(folders);
-  const waiting = chats.filter(c => c.status === 'waiting');
+  // From the power tracker, not the chat rows: it is what the rule obeys.
+  const name = (id: string) => chats.find(c => c.id === id)?.name ?? id.slice(0, 8);
+  const parked = state.summary.sessions.filter(s => !s.busy && s.turn === 'waiting');
+  const waiting = parked.filter(s => !s.stalled).map(s => name(s.id));
+  const stalled = parked.filter(s => s.stalled).map(s => `${name(s.id)} (${s.stalled})`);
   const worktrees = chats.filter(c => c.worktreePath);
   const armed = state.armed;
 
@@ -108,13 +112,19 @@ export function PowerMenu({ onClose }: { onClose: () => void }) {
             <div style={fine}>
               {ACTIONS.find(a => a.value === action)?.note}. Done means: no session mid-turn or
               waiting for you, nothing running under any of them, screens quiet — for the whole
-              window. Then a one-minute countdown with a notification; any activity in it cancels
-              the count and keeps the rule armed.
+              window. A session stopped on a usage limit counts as done: nothing moves there
+              before the reset. Then a one-minute countdown with a notification; any activity in it
+              cancels the count and keeps the rule armed.
             </div>
             {waiting.length > 0 && (
               <div style={{ ...fine, color: 'var(--dim)' }}>
-                Waiting for you now: {waiting.map(c => c.name).join(', ')} — the rule will not fire
-                until they are answered.
+                Waiting for you now: {waiting.join(', ')} — the rule will not fire until they are
+                answered.
+              </div>
+            )}
+            {stalled.length > 0 && (
+              <div style={{ ...fine, color: 'var(--dim)' }}>
+                Stopped on an API error, counted as done: {stalled.join(', ')}.
               </div>
             )}
             {worktrees.length > 0 && (

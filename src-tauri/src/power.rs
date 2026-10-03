@@ -8,7 +8,9 @@
 //!
 //! Shutdown-when-done is armed for the run, not saved. Armed, it waits for a
 //! quiet window in which nothing is busy *or waiting* — a pending permission
-//! is unfinished work — then counts down a minute with a notification, and
+//! is unfinished work, while a session parked on a usage limit is not: its
+//! turn is over and nothing moves before the reset (activity.rs, *stalled*);
+//! arming with someone waiting says so in a notification — then counts down a minute with a notification, and
 //! any activity in that minute cancels the count and leaves the arm in place.
 //! Sleep and hibernate leave the sessions running and stay armed, so after a
 //! wake the same rule applies again; shutdown first asks each CLI to quit.
@@ -101,7 +103,7 @@ fn blockers(summary: &Summary) -> String {
     summary
         .sessions
         .iter()
-        .filter(|s| s.busy || s.turn == crate::activity::Turn::Waiting)
+        .filter(|s| s.busy || (s.turn == crate::activity::Turn::Waiting && s.stalled.is_none()))
         .map(|s| format!("{} {}", s.id, s.why()))
         .collect::<Vec<_>>()
         .join(" | ")
@@ -220,7 +222,11 @@ pub fn tick(app: &tauri::AppHandle, summary: &Summary) {
             Effect::Countdown { quiet_for_s } => {
                 let a = action.unwrap_or(Action::Log);
                 crate::log::warn("power", &format!("all sessions quiet for {quiet_for_s}s; {} in {}s", a.as_str(), COUNTDOWN_MS / 1000));
-                notify(app, &format!("Luna will {} the PC in a minute", verb(a)), "Every session is done. Click the power chip in Luna to cancel.");
+                let body = match summary.stalled {
+                    0 => "Every session is done. Click the power chip in Luna to cancel.".to_string(),
+                    n => format!("Every session is done ({n} stopped on a usage limit or another API error). Click the power chip in Luna to cancel."),
+                };
+                notify(app, &format!("Luna will {} the PC in a minute", verb(a)), &body);
             }
             Effect::Fire(a) => {
                 let app = app.clone();
@@ -258,6 +264,25 @@ pub fn woke(app: &tauri::AppHandle) {
         crate::log::info("power", "countdown dropped across a sleep");
     }
     publish(app, &mut st, &crate::activity::summary());
+}
+
+/// The sessions that wait for a person, and those stalled on an API error,
+/// by their chat names.
+fn parked(summary: &Summary) -> (Vec<String>, Vec<String>) {
+    let name = |id: &str| crate::agents::chat_name(id).unwrap_or_else(|| id.to_string());
+    let mut waiting = Vec::new();
+    let mut stalled = Vec::new();
+    for s in summary.sessions.iter().filter(|s| !s.busy && s.turn == crate::activity::Turn::Waiting) {
+        match s.stalled {
+            Some(e) => stalled.push(format!("{} ({e})", name(&s.id))),
+            None => waiting.push(name(&s.id)),
+        }
+    }
+    (waiting, stalled)
+}
+
+fn plural(n: usize) -> String {
+    if n == 1 { "1 session is".to_string() } else { format!("{n} sessions are") }
 }
 
 fn verb(a: Action) -> &'static str {
@@ -337,8 +362,26 @@ pub fn arm_power_off(app: tauri::AppHandle, action: String, quiet_s: u64) -> Res
     st.countdown_ends_at_ms = None;
     st.blocked_why.clear();
     st.blocked_logged_ms = 0;
-    crate::log::warn("power", &format!("armed: {} after {quiet_s}s quiet", action.as_str()));
-    publish(&app, &mut st, &crate::activity::summary());
+    let summary = crate::activity::summary();
+    let (waiting, stalled) = parked(&summary);
+    let mut line = format!("armed: {} after {quiet_s}s quiet", action.as_str());
+    if !waiting.is_empty() {
+        line.push_str(&format!("; waiting for a person: {}", waiting.join(", ")));
+    }
+    if !stalled.is_empty() {
+        line.push_str(&format!("; stopped on an API error, counted as done: {}", stalled.join(", ")));
+    }
+    crate::log::warn("power", &line);
+    // Said at once, not found out in the morning: the menu closes on Arm,
+    // and nothing else would tell that the rule cannot fire as things stand.
+    if !waiting.is_empty() {
+        notify(
+            &app,
+            &format!("{} waiting for you — Luna will not {} until answered", plural(waiting.len()), verb(action)),
+            &waiting.join(", "),
+        );
+    }
+    publish(&app, &mut st, &summary);
     Ok(snapshot(&st, &crate::activity::summary()))
 }
 
@@ -457,7 +500,7 @@ mod tests {
     use super::*;
 
     fn board(busy: usize, waiting: usize, idle_since_ms: Option<u64>) -> Summary {
-        Summary { busy, waiting, idle_since_ms, sessions: vec![] }
+        Summary { busy, waiting, stalled: 0, idle_since_ms, sessions: vec![] }
     }
 
     fn armed(action: Action, quiet_s: u64) -> State {
@@ -531,6 +574,15 @@ mod tests {
         st.holding = true;
         assert_eq!(advance(&mut st, true, &board(0, 1, None), 600_000), vec![]);
         assert_eq!(st.countdown_ends_at_ms, None);
+    }
+
+    #[test]
+    fn stalled_sessions_do_not_block_the_countdown() {
+        // Two sessions sit on the usage-limit dialog; nothing else is up.
+        let mut st = armed(Action::Shutdown, 60);
+        st.holding = true;
+        let b = Summary { stalled: 2, ..board(0, 0, Some(0)) };
+        assert_eq!(advance(&mut st, true, &b, 60_000), vec![Effect::Countdown { quiet_for_s: 60 }]);
     }
 
     #[test]
