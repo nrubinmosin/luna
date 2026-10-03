@@ -1,6 +1,6 @@
 //! Luna as an MCP server, for the sessions that asked for it: JSON-RPC over
 //! streamable HTTP on the hub listener (`POST /mcp`, bearer token per
-//! session). Seven tools, described as briefly as a model can still use
+//! session). Eight tools, described as briefly as a model can still use
 //! them — every word here lands in the caller's context once per session —
 //! and a short `instructions` string in place of any system-prompt flag.
 //!
@@ -16,8 +16,9 @@ pub const PROTOCOL: &str = "2025-06-18";
 const INSTRUCTIONS: &str = "Luna runs your session and can run helper sessions for you: another model, \
 another account, or Codex. Flow: luna_spawn with a prompt → luna_wait(id, \"turn_done\") returns the \
 reply → luna_send for follow-ups, luna_wait again → luna_delete when finished (dropWorktree: true if \
-you asked for one). You only reach sessions you spawned; luna_list shows them and the accounts you may \
-use. Prefer one helper at a time; each costs its account's quota.";
+you asked for one). luna_list shows the sessions you spawned and the accounts you may use; only those \
+take every tool. luna_sessions lists every session in Luna (account, folder, transcript), and luna_send \
+can write to any of them. Prefer one helper at a time; each costs its account's quota.";
 
 /// One JSON-RPC message in, at most one out (None for notifications).
 pub fn handle(caller: &str, body: &str) -> Option<Value> {
@@ -62,6 +63,11 @@ fn tools() -> Value {
             "inputSchema": s(json!({}), &[])
         },
         {
+            "name": "luna_sessions",
+            "description": "Every session in Luna, the user's own chats included: id, name, provider, account, accountPath, folder, cwd, sessionId, transcript path, pid, parent, you/yours, alive, turn, busy, settings.",
+            "inputSchema": s(json!({}), &[])
+        },
+        {
             "name": "luna_spawn",
             "description": "Start a helper session with an opening prompt; it appears under yours in Luna. Omitted settings take the account's defaults. Returns its id, the resolved settings and started (false = the prompt was not taken up; screen shows what the terminal is on). Follow with luna_wait.",
             "inputSchema": s(json!({
@@ -81,7 +87,7 @@ fn tools() -> Value {
         },
         {
             "name": "luna_send",
-            "description": "Type text into a session and press Enter. Returns started (a turn began; false on an idle session means the text did not become a prompt, see screen), turnBefore (busy = queued behind the current turn) and turnsEnded to pass to luna_wait as afterTurn.",
+            "description": "Type text into a session (any from luna_sessions) and press Enter; it reads as the user's, so say who you are to one you did not spawn. Returns started (a turn began; false on an idle session means the text did not become a prompt, see screen), turnBefore (busy = queued behind the current turn) and turnsEnded to pass to luna_wait as afterTurn.",
             "inputSchema": s(json!({ "id": { "type": "string" }, "text": { "type": "string" } }), &["id", "text"])
         },
         {
@@ -124,6 +130,7 @@ fn call(caller: &str, params: &Value) -> Value {
     let id = a["id"].as_str().unwrap_or("").to_string();
     let out: Result<Value, String> = match name {
         "luna_list" => Ok(json!(agents::list(caller))),
+        "luna_sessions" => Ok(json!({ "sessions": agents::sessions(caller) })),
         "luna_spawn" => serde_json::from_value::<agents::SpawnParams>(a.clone())
             .map_err(|e| format!("bad arguments: {e}"))
             .and_then(|p| agents::spawn(caller, p))
@@ -169,7 +176,7 @@ mod tests {
         assert!(handle("me", r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#).is_none());
         let list = handle("me", r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#).unwrap();
         let names: Vec<&str> = list["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names, ["luna_list", "luna_spawn", "luna_send", "luna_read", "luna_wait", "luna_kill", "luna_delete"]);
+        assert_eq!(names, ["luna_list", "luna_sessions", "luna_spawn", "luna_send", "luna_read", "luna_wait", "luna_kill", "luna_delete"]);
         assert_eq!(handle("me", r#"{"jsonrpc":"2.0","id":3,"method":"ping"}"#).unwrap()["result"], json!({}));
         assert_eq!(handle("me", r#"{"jsonrpc":"2.0","id":4,"method":"nope"}"#).unwrap()["error"]["code"], -32601);
         assert_eq!(handle("me", "{").unwrap()["error"]["code"], -32700);
@@ -177,9 +184,13 @@ mod tests {
 
     #[test]
     fn a_tool_on_a_foreign_session_is_an_error_result() {
-        let r = handle("me", r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"luna_send","arguments":{"id":"someone","text":"hi"}}}"#).unwrap();
+        let r = handle("me", r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"luna_kill","arguments":{"id":"someone"}}}"#).unwrap();
         assert_eq!(r["result"]["isError"], true);
         assert!(r["result"]["content"][0]["text"].as_str().unwrap().contains("not one you spawned"));
+        // Text may go to any session, but only one Luna runs.
+        let r = handle("me", r#"{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"luna_send","arguments":{"id":"nobody","text":"hi"}}}"#).unwrap();
+        assert_eq!(r["result"]["isError"], true);
+        assert!(r["result"]["content"][0]["text"].as_str().unwrap().contains("unknown session"));
     }
 
     #[test]

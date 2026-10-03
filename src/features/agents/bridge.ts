@@ -7,7 +7,7 @@
  * to drop the row.
  */
 import { useEffect } from 'react';
-import { agentSpawned, ensureClaudeSession, ensureCodexSession, type AgentSpawnRequest } from '../../ipc/commands';
+import { agentSpawned, chatNames, ensureClaudeSession, ensureCodexSession, type AgentSpawnRequest } from '../../ipc/commands';
 import { onAgentDeleted, onAgentSpawn } from '../../ipc/events';
 import { logWarn } from '../../shared/lib/log';
 import {
@@ -15,7 +15,7 @@ import {
   type CodexApproval, type CodexEffort, type CodexSandbox, type Effort, type ModelLabel, type PermMode
 } from '../../shared/types';
 import { findAccount, useAccounts } from '../accounts/accounts.store';
-import { useChats } from '../chats/chats.store';
+import { allChats, useChats } from '../chats/chats.store';
 import { createChat } from '../new-chat/create';
 import { claude, codex } from '../providers';
 
@@ -119,5 +119,20 @@ export function useAgentBridge() {
       dead = true;
       offs.forEach(off => off());
     };
+  }, []);
+
+  // The core knows sessions by id only; `luna_sessions` names them with the
+  // rows' names, sent now and again whenever one changes.
+  useEffect(() => {
+    let last = '';
+    const push = () => {
+      const names = Object.fromEntries(allChats(useChats.getState().folders).map(c => [c.id, c.name]));
+      const key = JSON.stringify(names);
+      if (key === last) return;
+      last = key;
+      void chatNames(names);
+    };
+    push();
+    return useChats.subscribe(push);
   }, []);
 }

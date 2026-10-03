@@ -69,10 +69,10 @@ src-tauri/src/
                 POST /hook/<chat>/<secret> принимает stdin hook'ов Claude Code;
                 POST /mcp с bearer-токеном сессии — MCP для агентов; поток на запрос
   mcp.rs        JSON-RPC MCP-сервера: initialize (с instructions), tools/list, tools/call;
-                семь инструментов luna_* с короткими описаниями (~2k токенов)
+                восемь инструментов luna_* с короткими описаниями (~2k токенов)
   agents.rs     реестр сессий с инструментами и порождённых ими: токены, родство,
-                права (только потомки), spawn через фронт (agent://spawn ↔ agent_spawned),
-                send в pty, read из транскрипта, wait по activity, kill, delete (+worktree)
+                права (только потомки; sessions и send — все), spawn через фронт
+                (agent://spawn ↔ agent_spawned), send в pty, read из транскрипта, wait по activity, kill, delete (+worktree)
   activity.rs   семплер раз в 5 с: ход (hooks + registry / rollout), потомки, вывод →
                 busy / waiting / idle на сессию и сводка
   power.rs      keep-awake (PowerSetRequest) и «выключить, когда всё закончится»:
@@ -241,8 +241,10 @@ src-tauri/src/
   40 строк того, что видит человек в панели — попап, ошибка, вопрос, которых в транскрипте
   нет; `read(screen: true)` отдаёт его по запросу, `wait` — на `timeout` и `waiting`. `list` и
   `spawn` отдают `settings` — флаги, с которыми сессия реально запущена. Права: только
-  потомки вызывающего; глубина инструментов 1; максимум 8 потомков. Дети переживают
-  родителя (сироты с ↳); удаление ребёнком через `delete` убирает worktree, если попросили.
+  потомки вызывающего — кроме `sessions` (все сессии этого запуска Luna: аккаунт и его папка,
+  папка чата, cwd, sessionId CLI, путь к транскрипту/rollout, pid; имена чатов фронт шлёт
+  `chat_names` при каждом изменении) и `send`, который пишет в любую из них, кроме своей;
+  глубина инструментов 1; максимум 8 потомков. Дети переживают родителя (сироты с ↳); удаление ребёнком через `delete` убирает worktree, если попросили.
   Для проверки сборки без второй Luna в роли родителя: `LUNA_DEV_TOKEN` (+ `LUNA_DEV_FOLDER`,
   `LUNA_DEV_ACCOUNT`) регистрирует вызывающего `dev` с этим bearer-токеном и отключает
   single-instance, чтобы тестовый exe жил рядом с рабочим; его спавны — чаты верхнего уровня.

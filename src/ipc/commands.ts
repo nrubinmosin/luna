@@ -458,6 +458,9 @@ export interface AgentSpawnRequest {
 export const agentSpawned = (requestId: number, chatId: string | null, name: string | null, error: string | null) =>
   call<void>('agent_spawned', { requestId, chatId, name, error });
 
+/** Every chat's name by id, for `luna_sessions` (agents.rs). */
+export const chatNames = (names: Record<string, string>) => call<void>('chat_names', { names });
+
 /** `provider/name` keys of accounts agents may not use. */
 export const agentBlockedAccounts = () => call<string[]>('agent_blocked_accounts', {}, []);
 export const setAgentAccount = (provider: Provider, name: string, allowed: boolean) =>
