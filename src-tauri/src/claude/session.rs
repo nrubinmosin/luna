@@ -345,6 +345,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_turn_that_ended_on_a_usage_limit() {
+        let limited = concat!(
+            r#"{"type":"user","message":{"role":"user","content":"go on"}}"#, "\n",
+            r#"{"type":"assistant","isApiErrorMessage":true,"error":"rate_limit","message":{"content":[{"type":"text","text":"You've hit your session limit"}]}}"#, "\n",
+            r#"{"type":"system","subtype":"turn_duration"}"#, "\n",
+        );
+        assert_eq!(api_error_in(limited), Some("rate_limit"));
+        // A prompt typed after the error is a new turn, not the stall.
+        let retried = format!("{limited}{}\n", r#"{"type":"user","message":{"role":"user","content":"continue"}}"#);
+        assert_eq!(api_error_in(&retried), None);
+        // A sidechain's error is a subagent's, not the session's.
+        let side = r#"{"type":"assistant","isSidechain":true,"isApiErrorMessage":true,"error":"rate_limit"}"#;
+        assert_eq!(api_error_in(&format!("{}\n{side}\n", r#"{"type":"assistant","message":{}}"#)), None);
+    }
+
+    #[test]
     fn reads_the_latest_titles_from_the_tail() {
         let text = concat!(
             r#"{"type":"ai-title","aiTitle":"First guess","sessionId":"s"}"#, "\n",
@@ -417,6 +433,33 @@ mod tests {
         assert_eq!(saved_title(&acct, "../../etc"), None);
         let _ = std::fs::remove_dir_all(&root);
     }
+}
+
+/// The API error the last turn of a live session ended on — a usage limit, a
+/// lost login — when the conversation's last word is such an error. That is
+/// how a session is seen to have stopped on one when no `StopFailure` hook
+/// was heard: one that has sat on the limit dialog since before Luna started.
+pub fn last_api_error(pid: Option<u32>, cwd: &str, spawned_at_ms: u128, account_path: &str) -> Option<&'static str> {
+    let path = transcript_of(pid, cwd, spawned_at_ms, account_path)?;
+    api_error_in(&crate::pty::tail(&path, 64 * 1024)?)
+}
+
+/// See `last_api_error`: the last user or assistant line decides.
+fn api_error_in(text: &str) -> Option<&'static str> {
+    for line in text.lines().rev() {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        if v["isSidechain"].as_bool() == Some(true) {
+            continue;
+        }
+        match v["type"].as_str() {
+            Some("assistant") if v["isApiErrorMessage"].as_bool() == Some(true) => {
+                return Some(crate::activity::api_error_kind(v["error"].as_str().unwrap_or("")));
+            }
+            Some("assistant") | Some("user") => return None,
+            _ => {}
+        }
+    }
+    None
 }
 
 /// The transcript file of a live session, once the registry knows it.

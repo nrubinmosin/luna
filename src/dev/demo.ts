@@ -314,7 +314,7 @@ const POWER: PowerStateDto = {
   holding: true,
   armed: null,
   countdownEndsAtMs: null,
-  summary: { busy: 2, waiting: 1, idleSinceMs: null, sessions: [] }
+  summary: { busy: 2, waiting: 1, stalled: 0, idleSinceMs: null, sessions: [] }
 };
 
 // What the new-chat dialog opens on. Left unanswered it would show every

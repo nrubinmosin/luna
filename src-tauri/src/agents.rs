@@ -236,6 +236,11 @@ pub fn set_name(id: &str, name: &str) {
     r.names.insert(id.to_string(), name.to_string());
 }
 
+/// A chat's name as the user sees it, if the frontend has sent one.
+pub fn chat_name(id: &str) -> Option<String> {
+    reg().lock().unwrap_or_else(|e| e.into_inner()).names.get(id).cloned().filter(|n| !n.trim().is_empty())
+}
+
 fn mint(id: &str) -> String {
     use sha2::{Digest, Sha256};
     use std::sync::atomic::{AtomicU64, Ordering};

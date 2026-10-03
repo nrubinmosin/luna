@@ -191,7 +191,11 @@ The ⏻ chip at the bottom of the sidebar opens the two rules the machine follow
 own hooks and registry, Codex's rollout), the processes under the CLI (put in a Job Object at
 spawn, so a build, a test run or a `sleep` it left in the background counts as long as it
 moves or was started by the turn), and recent output. "Done" means no session is busy *or*
-waiting for a permission. To hear the turn boundaries, Luna starts every Claude Code session
+waiting for a permission. A session whose turn ended on a usage limit (or another API error:
+a lost login, a billing problem) and sits on the dialog it left counts as done — nothing moves
+there before the reset — and the countdown notification says how many there were. Arming
+the rule while a session waits for your answer brings a notification naming it, and the chip
+reads `· N waiting for you` for as long as that holds the rule. To hear the turn boundaries, Luna starts every Claude Code session
 with a `--settings` file that adds a few hooks posting to a loopback listener; they print
 nothing, so nothing reaches the model's context.
 
