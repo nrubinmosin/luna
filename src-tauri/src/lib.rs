@@ -128,6 +128,7 @@ pub fn run() {
             agents::agent_spawned,
             agents::agent_blocked_accounts,
             agents::set_agent_account,
+            agents::chat_names,
             cli::cli_status,
             cli::cli_update_now,
             claude::defaults::claude_defaults,

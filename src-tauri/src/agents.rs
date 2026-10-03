@@ -9,7 +9,9 @@
 //! back — and a delete tells the frontend to drop the row after the session
 //! and its worktree are gone. Lineage lives here: every session registered
 //! with a parent is that parent's, and a caller may only reach its own
-//! descendants. Children outlive their parent; the UI marks them orphaned.
+//! descendants — except to list every session and type a message into one,
+//! which is how sessions talk to each other. Children outlive their parent;
+//! the UI marks them orphaned.
 
 use crate::provider::Provider;
 use crate::throttle::now_ms;
@@ -64,7 +66,6 @@ struct Known {
     account_path: String,
     account: String,
     parent: Option<String>,
-    name: String,
     /// What the session was started with, as the CLI's flags spell it:
     /// model, effort and permission mode (Claude) or approval and sandbox
     /// (Codex). Echoed by `list` and `spawn`.
@@ -122,6 +123,10 @@ struct Registry {
     /// the count at the moment of the call, which a fast reply had already
     /// moved on: `spawn`, a two-second answer, `wait` → timeout.
     seen: HashMap<(String, String), u32>,
+    /// The chat rows' names by chat id, as the frontend last sent them. Every
+    /// chat's, not only the known ones: a name may arrive before its session
+    /// registers.
+    names: HashMap<String, String>,
 }
 
 fn reg() -> &'static Mutex<Registry> {
@@ -133,6 +138,7 @@ fn reg() -> &'static Mutex<Registry> {
             pending: HashMap::new(),
             next_request: 1,
             seen: HashMap::new(),
+            names: HashMap::new(),
         })
     })
 }
@@ -185,7 +191,6 @@ pub fn register(
             account_path: account_path.to_string(),
             account,
             parent: parent.map(str::to_owned).or_else(|| previous.as_ref().and_then(|k| k.parent.clone())),
-            name: previous.map(|k| k.name).unwrap_or_default(),
             settings,
         },
     );
@@ -224,12 +229,11 @@ pub fn register_dev_caller() {
 /// The id of the dev caller (see `register_dev_caller`).
 pub const DEV_CALLER: &str = "dev";
 
-/// The frontend's name for a chat, for `list` — set when it spawns one.
+/// The frontend's name for a chat — set when it spawns one, ahead of the next
+/// `chat_names`.
 pub fn set_name(id: &str, name: &str) {
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(k) = r.known.get_mut(id) {
-        k.name = name.to_string();
-    }
+    r.names.insert(id.to_string(), name.to_string());
 }
 
 fn mint(id: &str) -> String {
@@ -291,6 +295,17 @@ fn authorize(caller: &str, target: &str) -> Result<Known, String> {
     r.known.get(target).cloned().ok_or_else(|| format!("unknown session {target}"))
 }
 
+/// Text may go to any session Luna runs, the user's own chats included —
+/// that is how one session passes a message to another — but not back into
+/// the caller's own composer.
+fn authorize_send(caller: &str, target: &str) -> Result<Known, String> {
+    if caller == target {
+        return Err("that is your own session".into());
+    }
+    let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    r.known.get(target).cloned().ok_or_else(|| format!("unknown session {target}; luna_sessions lists them"))
+}
+
 // ------------------------------------------------------------------ tools --
 
 #[derive(Serialize)]
@@ -337,14 +352,20 @@ pub fn allowed_accounts() -> Vec<AccountRow> {
 }
 
 pub fn list(caller: &str) -> Listing {
-    let rows: Vec<(String, Known)> = {
+    let rows: Vec<(String, Known, String)> = {
         let r = reg().lock().unwrap_or_else(|e| e.into_inner());
-        descendants(&r, caller).into_iter().filter_map(|id| r.known.get(&id).cloned().map(|k| (id, k))).collect()
+        descendants(&r, caller)
+            .into_iter()
+            .filter_map(|id| {
+                let name = r.names.get(&id).cloned().unwrap_or_default();
+                r.known.get(&id).cloned().map(|k| (id, k, name))
+            })
+            .collect()
     };
     let pty = app().map(|a| a.state::<crate::pty::PtyManager>());
     let sessions = rows
         .into_iter()
-        .map(|(id, k)| {
+        .map(|(id, k, name)| {
             let ts = crate::activity::turn_state(&id);
             // A listing is not a reading: it does not move what the caller
             // is taken to have seen of a session's turns.
@@ -355,7 +376,7 @@ pub fn list(caller: &str) -> Listing {
                 busy: ts.map(|t| t.busy).unwrap_or(false),
                 turns_ended,
                 id,
-                name: k.name,
+                name,
                 provider: k.provider,
                 account: k.account,
                 parent: k.parent,
@@ -364,6 +385,110 @@ pub fn list(caller: &str) -> Listing {
         })
         .collect();
     Listing { me: caller.to_string(), accounts: allowed_accounts(), sessions }
+}
+
+/// One row of `sessions`: any chat Luna has run a session for since it
+/// started, whoever started it.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnySession {
+    pub id: String,
+    pub name: String,
+    pub provider: Provider,
+    pub account: String,
+    /// The account directory — `CLAUDE_CONFIG_DIR` / `CODEX_HOME` of the
+    /// session, where its registry and transcripts live.
+    pub account_path: String,
+    /// The chat's project folder.
+    pub folder: String,
+    /// Where the CLI actually runs: the worktree, for a chat in one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// The CLI's own id for the conversation (`--resume` / `codex resume`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// The transcript (Claude Code) or rollout (Codex) file.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transcript: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+    pub parent: Option<String>,
+    /// The caller itself.
+    pub you: bool,
+    /// Spawned by the caller (directly or through a child): every tool
+    /// reaches it, not only `luna_send`.
+    pub yours: bool,
+    pub alive: bool,
+    pub turn: Option<crate::activity::Turn>,
+    pub busy: bool,
+    pub settings: serde_json::Value,
+}
+
+/// Every session Luna runs, for a caller that has to find another one — to
+/// write to it, or to read its transcript off the disk.
+pub fn sessions(caller: &str) -> Vec<AnySession> {
+    let rows: Vec<(String, Known, String, bool)> = {
+        let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+        r.known
+            .iter()
+            .filter(|(id, _)| id.as_str() != DEV_CALLER || caller == DEV_CALLER)
+            .map(|(id, k)| {
+                let name = r.names.get(id).cloned().unwrap_or_default();
+                (id.clone(), k.clone(), name, is_descendant(&r, caller, id))
+            })
+            .collect()
+    };
+    let pty = app().map(|a| a.state::<crate::pty::PtyManager>());
+    let mut out: Vec<AnySession> = rows
+        .into_iter()
+        .map(|(id, k, name, yours)| {
+            let probe = pty.as_ref().and_then(|p| p.probe(&id));
+            let meta = probe.as_ref().and_then(disk_meta);
+            let transcript = pty.as_ref().and_then(|p| transcript_path(p, &id)).map(|p| p.to_string_lossy().into_owned());
+            // The row's name, else what the CLI calls the conversation.
+            let name = Some(name)
+                .filter(|n| !n.trim().is_empty())
+                .or_else(|| meta.as_ref().and_then(|m| m.title.clone().or_else(|| m.first_prompt.clone())))
+                .unwrap_or_default();
+            let ts = crate::activity::turn_state(&id);
+            AnySession {
+                you: id == caller,
+                yours,
+                alive: probe.is_some(),
+                turn: ts.map(|t| t.turn),
+                busy: ts.map(|t| t.busy).unwrap_or(false),
+                pid: probe.as_ref().and_then(|p| p.pid),
+                cwd: meta.as_ref().and_then(|m| m.cwd.clone()).or_else(|| probe.as_ref().map(|p| p.cwd.clone())),
+                session_id: meta.and_then(|m| m.session_id),
+                transcript,
+                id,
+                name,
+                provider: k.provider,
+                account: k.account,
+                account_path: k.account_path,
+                folder: k.folder,
+                parent: k.parent,
+                settings: k.settings,
+            }
+        })
+        .collect();
+    out.sort_by(|a, b| b.alive.cmp(&a.alive).then_with(|| (&a.account, &a.name).cmp(&(&b.account, &b.name))));
+    out
+}
+
+/// What the CLI has on disk about a live session: its cwd, ids and title.
+fn disk_meta(p: &crate::pty::ActivityProbe) -> Option<crate::pty::SessionMeta> {
+    match p.provider {
+        Provider::Claude => crate::claude::session::meta(p.pid, &p.cwd, p.spawned_at_ms, &p.account_path),
+        Provider::Codex => crate::codex::session::meta(&crate::codex::session::Live {
+            chat_id: &p.id,
+            cwd: &p.cwd,
+            spawned_at_ms: p.spawned_at_ms,
+            resume: p.resume.as_deref(),
+            account_path: &p.account_path,
+            last_output_ms: p.last_output_ms,
+        }),
+    }
 }
 
 #[derive(Serialize)]
@@ -542,7 +667,7 @@ pub struct Sent {
 /// Types text into the session, presses Enter after it, and reports whether
 /// a turn began.
 pub fn send(caller: &str, id: &str, text: &str) -> Result<Sent, String> {
-    authorize(caller, id)?;
+    authorize_send(caller, id)?;
     let app = app().ok_or("app not ready")?;
     let pty = app.state::<crate::pty::PtyManager>();
     if !pty.alive(id) {
@@ -734,6 +859,13 @@ pub fn delete(caller: &str, id: &str, drop_worktree: bool) -> Result<Option<Stri
 
 // --------------------------------------------------------------- commands --
 
+/// Every chat's name, sent whenever one changes: what `luna_sessions` calls
+/// the user's own chats, which the core otherwise knows only by id.
+#[tauri::command]
+pub fn chat_names(names: HashMap<String, String>) {
+    reg().lock().unwrap_or_else(|e| e.into_inner()).names = names;
+}
+
 /// Account names the user has switched off for agents, as `provider/name`.
 #[tauri::command]
 pub fn agent_blocked_accounts() -> Vec<String> {
@@ -769,6 +901,10 @@ mod tests {
         assert!(authorize("b", "a").is_err(), "not upwards");
         assert!(authorize("a", "x").is_err(), "not the user's own chats");
         assert!(authorize("a", "a").is_err(), "not itself");
+        assert!(authorize_send("a", "x").is_ok(), "text may go to the user's own chats");
+        assert!(authorize_send("b", "a").is_ok(), "and upwards");
+        assert!(authorize_send("a", "a").is_err(), "but not into its own composer");
+        assert!(authorize_send("a", "nobody").is_err());
         let r = reg().lock().unwrap();
         assert_eq!(depth_of(&r, "c"), 2);
         let mut d = descendants(&r, "a");
