@@ -9,7 +9,7 @@ import { newId, useChats, wornColors } from '../chats/chats.store';
 import { findAccount, useAccounts } from '../accounts/accounts.store';
 import { currentSlots, usePanes } from '../panes/panes.store';
 import { claude, codex, ui } from '../providers';
-import { useNewChat } from './newchat.store';
+import { startsOn, useNewChat } from './newchat.store';
 
 export type ChatSpec = {
   folder: string;
@@ -76,7 +76,9 @@ export async function createChat(spec: ChatSpec): Promise<string> {
   useChats.getState().addChat(spec.folder, chat);
   if (!spec.parentId) {
     usePanes.getState().autoPlace(id);
-    useNewChat.getState().remember(spec.folder, { provider: spec.provider, name: spec.account.name }, spec.worktree);
+    useNewChat.getState().remember(
+      spec.folder, { provider: spec.provider, name: spec.account.name }, spec.worktree, spec.tools ?? false
+    );
   }
   return id;
 }
@@ -118,14 +120,16 @@ export async function quickChat(): Promise<void> {
     return;
   }
 
-  const worktree = near?.worktree ?? ui.lastWorktree;
+  // A fixed start from Settings wins; "last" takes after the chat on screen.
+  const worktree = startsOn(ui.worktreeStart, near?.worktree ?? ui.lastWorktree);
+  const tools = startsOn(ui.toolsStart, near?.tools ?? ui.lastTools);
   try {
     if (account.provider === 'claude') {
       const { values } = await claude.settingsDefaults(account.path, folder);
-      await createChat({ provider: 'claude', folder, account, settings: values, worktree });
+      await createChat({ provider: 'claude', folder, account, settings: values, worktree, tools });
     } else {
       const { values } = await codex.settingsDefaults(account.path, folder);
-      await createChat({ provider: 'codex', folder, account, settings: values, worktree });
+      await createChat({ provider: 'codex', folder, account, settings: values, worktree, tools });
     }
   } catch {
     // The trust write or worktree failed; the dialog is where that has a

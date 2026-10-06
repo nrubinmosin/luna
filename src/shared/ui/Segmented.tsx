@@ -8,11 +8,13 @@ const segWrap: CSSProperties = { display: 'flex', flexWrap: 'wrap', gap: 2, padd
  * instead of spilling out of the dialog: every choice is at least as wide as
  * its label, and a line shares out whatever room is left over evenly.
  */
-export function Segmented<T extends string>({ items, value, onPick, height = 24 }: {
+export function Segmented<T extends string>({ items, value, onPick, height = 24, labels }: {
   items: readonly T[];
   value: T;
   onPick: (v: T) => void;
   height?: number;
+  /** What to show for an item, when that is not the value itself. */
+  labels?: Partial<Record<T, string>>;
 }) {
   return (
     <div className="xp-sunken" style={segWrap}>
@@ -29,7 +31,7 @@ export function Segmented<T extends string>({ items, value, onPick, height = 24 
             boxShadow: value === item ? 'var(--border-sunken-outer), var(--border-sunken-inner)' : 'none'
           }}
         >
-          {item}
+          {labels?.[item] ?? item}
         </div>
       ))}
     </div>

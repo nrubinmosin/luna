@@ -5,7 +5,7 @@ import { ACCENT, tail2, tint } from '../../shared/lib/format';
 import { useChats } from '../chats/chats.store';
 import { findAccount, useAccounts } from '../accounts/accounts.store';
 import { claude, codex, ui } from '../providers';
-import { useNewChat } from './newchat.store';
+import { startsOn, useNewChat } from './newchat.store';
 import { createChat } from './create';
 import { useSettingsDraft, type Draft } from './draft';
 import { pickFolder } from '../../ipc/commands';
@@ -60,10 +60,14 @@ export function NewChatDialog() {
     const a = (last && findAccount(accounts, last.provider, last.name)) ?? accounts[0];
     return a ? accountKey(a.provider, a.name) : '';
   });
-  const [worktree, setWorktree] = useState(() => useNewChat.getState().lastWorktree);
-  // Off every time: a session with tools pays ~2k tokens of context for
-  // them, and a plain chat should not carry that by habit.
-  const [tools, setTools] = useState(false);
+  const [worktree, setWorktree] = useState(() => {
+    const ui = useNewChat.getState();
+    return startsOn(ui.worktreeStart, ui.lastWorktree);
+  });
+  const [tools, setTools] = useState(() => {
+    const ui = useNewChat.getState();
+    return startsOn(ui.toolsStart, ui.lastTools);
+  });
 
   const account = accounts.find(a => accountKey(a.provider, a.name) === accountId) ?? null;
   const provider = account?.provider ?? 'claude';
