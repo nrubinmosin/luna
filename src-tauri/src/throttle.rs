@@ -53,10 +53,12 @@ pub fn hit(tag: &str, key: &str, retry_after_secs: u64) -> u64 {
         (retry_after_secs * 1000).max(previous.map_or(COOLOFF_MS, |c| (c * 2).min(MAX_MS)));
     m.insert(key.to_string(), Throttle { until_ms: now_ms() + cool_ms, cool_ms });
     drop(m);
-    // Only while the hold is still growing: at the cap this repeats every
-    // hour for as long as the account is throttled, and that is the flood
-    // the escalation exists to stop.
-    if previous != Some(cool_ms) {
+    // A single 429 is routine — the UI shows the hold and keeps the last
+    // numbers — and logging each one was most of the log file. Only a second
+    // one in a row says something, and only while the hold is still growing:
+    // at the cap this repeats every hour for as long as the account is
+    // throttled, and that is the flood the escalation exists to stop.
+    if previous.is_some_and(|p| p != cool_ms) {
         crate::log::warn(
             tag,
             &format!("429 for {key}, retry-after {retry_after_secs}s — cooling off {}s", cool_ms / 1000),
