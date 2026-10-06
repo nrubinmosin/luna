@@ -213,7 +213,10 @@ fn younger_than(path: &Path, secs: u64) -> bool {
 }
 
 /// Worktree directories under this folder that no live chat claims — leftovers
-/// from crashes, or from chats deleted before their path was known.
+/// from crashes, from chats deleted before their path was known, and from
+/// chats deleted with their worktree kept. Cheap on purpose: it runs every
+/// minute per folder, so it reads directories only; what each one holds is
+/// `inspect_worktrees`' job, asked for when someone means to delete.
 #[tauri::command]
 pub async fn orphan_worktrees(
     state: crate::pty::PtyState<'_>,
@@ -222,7 +225,24 @@ pub async fn orphan_worktrees(
     account_paths: Vec<String>,
 ) -> Result<Vec<String>, String> {
     let live = crate::pty::live_cwds(&state);
-    orphan_worktrees_now(folder, in_use, account_paths, live)
+    tauri::async_runtime::spawn_blocking(move || orphan_worktrees_now(folder, in_use, account_paths, live))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// True when the (normalised) `cwd` is the worktree or anywhere inside it.
+fn claims(cwd: &str, worktree: &str) -> bool {
+    cwd == worktree || cwd.strip_prefix(worktree).is_some_and(|rest| rest.starts_with('\\'))
+}
+
+/// The user's own Claude Code config, for sessions started from a terminal
+/// rather than from Luna: they sit in worktrees too, and Luna's accounts know
+/// nothing of them.
+fn own_claude_dir() -> Option<String> {
+    std::env::var("CLAUDE_CONFIG_DIR")
+        .ok()
+        .filter(|d| !d.is_empty())
+        .or_else(|| std::env::var("USERPROFILE").ok().map(|h| format!("{h}\\.claude")))
 }
 
 fn orphan_worktrees_now(
@@ -234,8 +254,8 @@ fn orphan_worktrees_now(
     let mut claimed: Vec<String> = in_use.iter().map(|p| norm(p)).collect();
     // Claude Code moves into its worktree on its own; only its registry says
     // where. Codex sessions run where Luna put them.
-    for account in &account_paths {
-        claimed.extend(crate::claude::session::live_cwds(account).iter().map(|p| norm(p)));
+    for account in account_paths.iter().cloned().chain(own_claude_dir()) {
+        claimed.extend(crate::claude::session::live_cwds(&account).iter().map(|p| norm(p)));
     }
     claimed.extend(live_pty_cwds.iter().map(|p| norm(p)));
 
@@ -254,7 +274,9 @@ fn orphan_worktrees_now(
                 continue;
             }
             let path = path.to_string_lossy().into_owned();
-            if !claimed.contains(&norm(&path)) {
+            let key = norm(&path);
+            // A session sitting in a subfolder of the worktree is still using it.
+            if !claimed.iter().any(|c| claims(c, &key)) {
                 out.push(path);
             }
         }
@@ -263,24 +285,134 @@ fn orphan_worktrees_now(
     Ok(out)
 }
 
+/// What deleting a worktree would throw away.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreeInfo {
+    pub path: String,
+    pub branch: Option<String>,
+    /// Entries `git status` lists: modified, staged, untracked.
+    pub uncommitted: Option<u32>,
+    /// Commits on the worktree's HEAD that no other branch, local or remote,
+    /// has — the ones `branch -D` would lose for good.
+    pub unique_commits: Option<u32>,
+    /// Newest of the directory's and its index's change times, ms since epoch.
+    pub touched_ms: Option<u64>,
+    /// Git cannot read it as a checkout (a half-deleted directory, say), so
+    /// nothing above could be counted.
+    pub broken: bool,
+}
+
+fn mtime_ms(p: &Path) -> Option<u64> {
+    let t = std::fs::metadata(p).ok()?.modified().ok()?;
+    Some(t.duration_since(std::time::UNIX_EPOCH).ok()?.as_millis() as u64)
+}
+
+fn inspect(folder: &str, path: &str) -> WorktreeInfo {
+    let branch = branch_of(folder, path);
+    let wt = Path::new(path);
+    // A linked worktree's `.git` is a file naming its admin dir; the index
+    // lives there and moves with every add, commit and checkout.
+    let index = std::fs::read_to_string(wt.join(".git"))
+        .ok()
+        .and_then(|t| t.trim().strip_prefix("gitdir:").map(|g| PathBuf::from(g.trim()).join("index")));
+    let touched_ms = [mtime_ms(wt), index.as_deref().and_then(mtime_ms)].into_iter().flatten().max();
+
+    // Without its own `.git`, git would walk up and answer for the main
+    // checkout instead.
+    let status = wt
+        .join(".git")
+        .exists()
+        .then(|| git(path).args(["status", "--porcelain", "--untracked-files=normal"]).output().ok())
+        .flatten()
+        .filter(|o| o.status.success());
+    let Some(status) = status else {
+        return WorktreeInfo { path: path.to_string(), branch, uncommitted: None, unique_commits: None, touched_ms, broken: true };
+    };
+    let uncommitted = String::from_utf8_lossy(&status.stdout).lines().filter(|l| !l.is_empty()).count() as u32;
+
+    let mut rev = git(path);
+    rev.args(["rev-list", "--count", "HEAD", "--not"]);
+    if let Some(b) = &branch {
+        // Or the branch itself counts as another place the commits live.
+        rev.arg(format!("--exclude={b}"));
+    }
+    rev.args(["--branches", "--remotes"]);
+    let unique_commits = rev
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok());
+
+    WorktreeInfo { path: path.to_string(), branch, uncommitted: Some(uncommitted), unique_commits, touched_ms, broken: false }
+}
+
+/// Looks inside each worktree before it is offered for deletion. One git
+/// status per worktree, side by side: a large checkout takes a second or two.
+#[tauri::command]
+pub async fn inspect_worktrees(folder: String, paths: Vec<String>) -> Result<Vec<WorktreeInfo>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        std::thread::scope(|scope| {
+            let jobs: Vec<_> = paths
+                .iter()
+                .filter(|p| is_worktree_of(&folder, p))
+                .map(|p| scope.spawn(|| inspect(&folder, p)))
+                .collect();
+            jobs.into_iter().filter_map(|j| j.join().ok()).collect()
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SweepFailure {
+    pub path: String,
+    pub error: String,
+}
+
+/// What a sweep did, path by path.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SweepResult {
+    pub removed: Vec<String>,
+    pub failed: Vec<SweepFailure>,
+}
+
+/// Removes the worktrees the user picked, and of those only the ones that are
+/// still orphans: the list is re-derived here rather than trusted from the UI,
+/// which may be minutes stale by the time the dialog is confirmed.
 #[tauri::command]
 pub async fn remove_orphan_worktrees(
     state: crate::pty::PtyState<'_>,
     folder: String,
     in_use: Vec<String>,
     account_paths: Vec<String>,
-) -> Result<usize, String> {
-    // Re-derive the list here rather than trusting one from the UI: it may be
-    // seconds stale, and everything below is destructive.
+    paths: Vec<String>,
+) -> Result<SweepResult, String> {
     let live = crate::pty::live_cwds(&state);
-    let orphans = orphan_worktrees_now(folder.clone(), in_use, account_paths, live)?;
-    let mut n = 0;
-    for path in orphans {
-        if remove_worktree_now(folder.clone(), path).is_ok() {
-            n += 1;
+    tauri::async_runtime::spawn_blocking(move || {
+        let orphans: Vec<String> =
+            orphan_worktrees_now(folder.clone(), in_use, account_paths, live)?.iter().map(|p| norm(p)).collect();
+        let mut result = SweepResult { removed: vec![], failed: vec![] };
+        for path in paths {
+            if !orphans.contains(&norm(&path)) {
+                result.failed.push(SweepFailure { path, error: "in use again — left alone".into() });
+                continue;
+            }
+            match remove_worktree_now(folder.clone(), path.clone()) {
+                Ok(()) => result.removed.push(path),
+                Err(error) => {
+                    crate::log::warn("worktree", &format!("could not remove {path}: {error}"));
+                    result.failed.push(SweepFailure { path, error });
+                }
+            }
         }
-    }
-    Ok(n)
+        Ok(result)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[cfg(test)]
@@ -293,6 +425,15 @@ mod tests {
         assert!(is_worktree_of(r"E:\p", r"e:/p/.codex/worktrees/codex-abc"));
         assert!(!is_worktree_of(r"E:\p", r"E:\p\.codex\worktrees"));
         assert!(!is_worktree_of(r"E:\p", r"E:\q\.codex\worktrees\x"));
+    }
+
+    #[test]
+    fn a_session_in_a_subfolder_claims_the_worktree() {
+        let wt = norm(r"E:\p\.claude\worktrees\a");
+        assert!(claims(&norm(r"e:/p/.claude/worktrees/a"), &wt));
+        assert!(claims(&norm(r"E:\p\.claude\worktrees\a\src"), &wt));
+        assert!(!claims(&norm(r"E:\p\.claude\worktrees\ab"), &wt));
+        assert!(!claims(&norm(r"E:\p"), &wt));
     }
 
     #[test]

@@ -43,7 +43,8 @@ export const agoLabel = (at: number | null) => {
   const m = Math.round((Date.now() - at) / 60000);
   if (m < 1) return 'just now';
   if (m < 60) return `${m}m ago`;
-  return `${Math.round(m / 60)}h ago`;
+  const h = Math.round(m / 60);
+  return h < 48 ? `${h}h ago` : `${Math.round(h / 24)}d ago`;
 };
 
 // "28c18d5b-64d5-…" -> "28c18d5b": a session uuid the way issue claims and

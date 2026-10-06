@@ -164,6 +164,7 @@ pub fn run() {
             worktree::remove_worktree,
             worktree::orphan_worktrees,
             worktree::remove_orphan_worktrees,
+            worktree::inspect_worktrees,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")

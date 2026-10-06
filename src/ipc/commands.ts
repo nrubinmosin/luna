@@ -278,8 +278,30 @@ export const deleteSession = (
 export const orphanWorktrees = (folder: string, inUse: string[], accountPaths: string[]) =>
   call<string[]>('orphan_worktrees', { folder, inUse, accountPaths }, []);
 
-export const removeOrphanWorktrees = (folder: string, inUse: string[], accountPaths: string[]) =>
-  call<number>('remove_orphan_worktrees', { folder, inUse, accountPaths }, 0);
+/** What deleting a worktree would throw away. */
+export interface WorktreeInfoDto {
+  path: string;
+  branch: string | null;
+  /** Entries `git status` lists, untracked included. */
+  uncommitted: number | null;
+  /** Commits no other branch, local or remote, has. */
+  uniqueCommits: number | null;
+  touchedMs: number | null;
+  /** Git cannot read it as a checkout; nothing could be counted. */
+  broken: boolean;
+}
+
+export const inspectWorktrees = (folder: string, paths: string[]) =>
+  call<WorktreeInfoDto[]>('inspect_worktrees', { folder, paths }, []);
+
+export interface SweepResultDto {
+  removed: string[];
+  failed: { path: string; error: string }[];
+}
+
+/** Removes the picked worktrees that are still orphans when the call lands. */
+export const removeOrphanWorktrees = (folder: string, inUse: string[], accountPaths: string[], paths: string[]) =>
+  call<SweepResultDto>('remove_orphan_worktrees', { folder, inUse, accountPaths, paths }, { removed: [], failed: [] });
 
 // -------------------------------------------------------------- defaults --
 
