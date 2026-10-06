@@ -773,6 +773,9 @@ const GRACE: std::time::Duration = std::time::Duration::from_secs(10);
 /// carrying both lands in a single input tick, where the second cannot see
 /// the state the first set. Space them the way a hand would.
 const CTRL_C_GAP: std::time::Duration = std::time::Duration::from_millis(150);
+/// How long the CLI gets after the Ctrl+Cs to be on its way out before an
+/// exit dialog is assumed to be holding it.
+const EXIT_DIALOG_WAIT: std::time::Duration = std::time::Duration::from_millis(1500);
 
 /// Asks the CLI to quit, and kills it only if it does not.
 ///
@@ -805,9 +808,23 @@ fn shut_down(mut s: Session, grace: std::time::Duration) {
         }
         std::thread::sleep(CTRL_C_GAP);
     }
-    while !exited() && std::time::Instant::now() < deadline {
-        std::thread::sleep(std::time::Duration::from_millis(25));
+    let wait = |until: std::time::Instant| {
+        while !exited() && std::time::Instant::now() < until.min(deadline) {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+    };
+    // Claude Code in a worktree answers the quit with "Exiting worktree
+    // session — keep or remove?", which Ctrl+C does not dismiss: every deleted
+    // worktree chat sat out the whole grace and then took the hard kill. Enter
+    // takes the focused default, Keep — the right answer either way, since
+    // Luna removes the worktree itself afterwards when the delete asks for
+    // that. The Ctrl+Cs have already cleared the prompt, so an Enter that
+    // finds no dialog submits nothing.
+    wait(std::time::Instant::now() + EXIT_DIALOG_WAIT);
+    if !exited() {
+        let _ = s.input_tx.send(Input::Bytes(b"\r".to_vec()));
     }
+    wait(deadline);
     if !exited() {
         crate::log::warn("pty", &format!("pid {:?} did not quit on Ctrl+C within {grace:?}; killing it", s.pid));
     }

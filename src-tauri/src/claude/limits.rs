@@ -2,14 +2,32 @@ use super::oauth;
 use crate::throttle::{self, now_ms};
 use serde::Serialize;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::path::Path;
+use std::sync::{Mutex, OnceLock};
 
 const BETA_HEADER: &str = "oauth-2025-04-20";
 const RATE_401: &str = "token rejected (401)";
 pub const RATE_429: &str = "rate-limited";
+/// The request never reached the server: no network, DNS down, the machine
+/// just woke up. Says nothing about the account, so it is not logged.
+const OFFLINE: &str = "offline";
 
 /// How old the CLI's own cached usage may be before we bother the network.
 const CACHE_FRESH_MS: u64 = 5 * 60 * 1000;
+/// How long Luna's own last answer from the endpoint stands in for a new one.
+/// The CLI's cache only moves while a session runs on the account, so an idle
+/// account used to go to the network on every one-minute poll — and the
+/// endpoint answered that with a 429 roughly every hour, per account, for as
+/// long as Luna was open. Idle numbers barely move; a click on refresh still
+/// asks right away.
+const NETWORK_EVERY_MS: u64 = 10 * 60 * 1000;
+
+/// The last `limits` the endpoint returned, per account path, and when.
+fn last_answer() -> &'static Mutex<HashMap<String, (u64, Value)>> {
+    static LAST: OnceLock<Mutex<HashMap<String, (u64, Value)>>> = OnceLock::new();
+    LAST.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 #[derive(Serialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -131,6 +149,7 @@ fn get_json(url: &str, token: &str) -> Result<Value, String> {
                 "{RATE_429}:{}",
                 r.header("retry-after").and_then(|h| h.trim().parse::<u64>().ok()).unwrap_or(0)
             ),
+            ureq::Error::Transport(t) => format!("{OFFLINE}: {t}"),
             other => other.to_string(),
         })?;
     resp.into_json().map_err(|e| e.to_string())
@@ -171,6 +190,19 @@ fn fetch_limits(account_path: &str, force: bool) -> Result<AccountLimits, String
                 if !force && now_ms().saturating_sub(fetched) < CACHE_FRESH_MS {
                     return Ok(out);
                 }
+            }
+        }
+    }
+
+    // Luna's own last answer, when it is newer than what the CLI cached.
+    let remembered = last_answer().lock().ok().and_then(|m| m.get(account_path).cloned());
+    if let Some((at, limits)) = remembered {
+        if out.fetched_at_ms.map_or(true, |cached| (at as f64) > cached) {
+            apply_limits(&mut out, &limits);
+            out.source = Some("network".into());
+            out.fetched_at_ms = Some(at as f64);
+            if !force && now_ms().saturating_sub(at) < NETWORK_EVERY_MS {
+                return Ok(out);
             }
         }
     }
@@ -217,15 +249,22 @@ fn fetch_limits(account_path: &str, force: bool) -> Result<AccountLimits, String
 
     match get_json("https://api.anthropic.com/api/oauth/usage", &token.access) {
         Ok(usage) => {
+            let at = now_ms();
             apply_limits(&mut out, &usage["limits"]);
             out.source = Some("network".into());
-            out.fetched_at_ms = Some(now_ms() as f64);
+            out.fetched_at_ms = Some(at as f64);
             throttle::clear(account_path);
+            if let Ok(mut m) = last_answer().lock() {
+                m.insert(account_path.to_string(), (at, usage["limits"].clone()));
+            }
         }
         Err(e) if e.starts_with(RATE_429) => {
             let secs: u64 = e.rsplit(':').next().and_then(|s| s.parse().ok()).unwrap_or(0);
             out.rate_limited = Some(throttle::hit("limits", account_path, secs));
         }
+        // Every account fails at once, on every poll, until the network is
+        // back; the row already says it has no fresh numbers.
+        Err(e) if e.starts_with(OFFLINE) => {}
         Err(e) => {
             crate::log::warn("limits", &format!("usage failed for {account_path}: {e}"));
             if !out.have_usage {
