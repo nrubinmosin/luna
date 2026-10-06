@@ -7,6 +7,8 @@ import { useAccounts } from '../accounts/accounts.store';
 import { useUpdates } from '../updates/updates.store';
 import { useCli } from '../updates/cli.store';
 import { PROVIDER_LABEL, type Provider } from '../../shared/types';
+import { Segmented } from '../../shared/ui/Segmented';
+import { useNewChat, type Start } from '../new-chat/newchat.store';
 
 const pct = (got: number, total: number | null) =>
   total ? Math.min(100, Math.round((got / total) * 100)) : null;
@@ -149,6 +151,28 @@ function CliRow({ provider }: { provider: Provider }) {
   );
 }
 
+const STARTS = ['last', 'on', 'off'] as const;
+const START_LABELS: Record<Start, string> = { last: 'as last time', on: 'on', off: 'off' };
+
+/** Where one of the new-chat dialog's checkboxes starts out. */
+function StartRow({ label, which }: { label: string; which: 'worktreeStart' | 'toolsStart' }) {
+  const start = useNewChat(s => s[which]);
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '3px 0' }}>
+      <span style={{ flex: 1, fontSize: 'var(--fs-4)' }}>{label}</span>
+      <div style={{ width: 220, flex: 'none' }}>
+        <Segmented
+          items={STARTS}
+          labels={START_LABELS}
+          value={start}
+          onPick={v => useNewChat.getState().setStart(which, v)}
+          height={20}
+        />
+      </div>
+    </div>
+  );
+}
+
 /** The accounts-folder mover, formerly its own fold-out card in the sidebar. */
 function AccountsFolder() {
   const [info, setInfo] = useState<AccountsRootInfo | null>(null);
@@ -253,6 +277,14 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
         <div className="window-body">
           <Section label="Accounts folder">
             <AccountsFolder />
+          </Section>
+          <Section label="New chats">
+            <StartRow label="Git worktree" which="worktreeStart" />
+            <StartRow label="Luna tools" which="toolsStart" />
+            <div style={{ fontSize: 'var(--fs-1)', color: 'var(--faint)', marginTop: 4 }}>
+              Where the two checkboxes start in a new chat — “as last time” follows the chat you made
+              before (or the one on screen, for a quick chat). Either can still be flipped per chat.
+            </div>
           </Section>
           <Section label="Versions & updates">
             <LunaRow />
