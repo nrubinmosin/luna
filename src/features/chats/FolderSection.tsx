@@ -5,7 +5,8 @@ import { allChats, useChats } from './chats.store';
 import { useNewChat } from '../new-chat/newchat.store';
 import { useAccounts } from '../accounts/accounts.store';
 import { ChatRow } from './ChatRow';
-import { orphanWorktrees, removeOrphanWorktrees } from '../../ipc/commands';
+import { orphanWorktrees } from '../../ipc/commands';
+import { SweepWorktreesDialog } from './SweepWorktreesDialog';
 
 /**
  * The folder's rows in sidebar order: a chat with no parent, then the chats
@@ -47,8 +48,8 @@ export function FolderSection({ folder }: { folder: Folder }) {
   const toggleFolder = useChats(s => s.toggleFolder);
   const t = tail2(folder.path);
 
-  // Worktrees left behind by crashes or by chats deleted before their path was
-  // known. Recheck whenever the folder's chats change — that is when one is
+  // Worktrees left behind by crashes, by chats deleted before their path was
+  // known, or by chats deleted with the worktree kept. Recheck whenever the folder's chats change — that is when one is
   // most likely to have just been created or dropped.
   const [orphans, setOrphans] = useState<string[]>([]);
   // Every group's chats, not just the ones listed here: the sidebar shows one
@@ -74,12 +75,7 @@ export function FolderSection({ folder }: { folder: Folder }) {
     return () => clearInterval(t);
   }, [rescan]);
 
-  const sweep = () => {
-    const accountPaths = useAccounts.getState().accounts.map(a => a.path);
-    void removeOrphanWorktrees(folder.path, inUseKey ? inUseKey.split('|') : [], accountPaths)
-      .then(rescan)
-      .catch(rescan);
-  };
+  const [sweeping, setSweeping] = useState(false);
 
   return (
     <div className="xp-raised" style={{ background: 'var(--bg)', overflow: 'hidden' }}>
@@ -106,11 +102,11 @@ export function FolderSection({ folder }: { folder: Folder }) {
             <span
               onClick={e => {
                 e.stopPropagation();
-                sweep();
+                setSweeping(true);
               }}
               title={
                 `${orphans.length} stale worktree${orphans.length > 1 ? 's' : ''} no chat is using — ` +
-                `click to delete them and their branches:\n` +
+                `click to review and delete:\n` +
                 orphans.join('\n')
               }
               className="hover-danger"
@@ -135,6 +131,18 @@ export function FolderSection({ folder }: { folder: Folder }) {
           </span>
         </span>
       </div>
+      {sweeping && (
+        <SweepWorktreesDialog
+          folder={folder.path}
+          orphans={orphans}
+          inUse={inUseKey ? inUseKey.split('|') : []}
+          accountPaths={useAccounts.getState().accounts.map(a => a.path)}
+          onClose={() => {
+            setSweeping(false);
+            rescan();
+          }}
+        />
+      )}
       {folder.open && (
         <div style={{ display: 'flex', flexDirection: 'column', padding: 4 }}>
           {/* Children folded unless unfolded by hand: an agent can spawn a
