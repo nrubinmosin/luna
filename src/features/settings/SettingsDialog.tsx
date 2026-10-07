@@ -173,6 +173,24 @@ function StartRow({ label, which }: { label: string; which: 'worktreeStart' | 't
   );
 }
 
+/** Whether a folder chats were made in starts the way its last one did. */
+function PerFolderRow() {
+  const on = useNewChat(s => s.perFolder);
+  return (
+    <div className="field-row" style={{ padding: '3px 0' }}>
+      <input
+        type="checkbox"
+        id="per-folder-toggle"
+        checked={on}
+        onChange={e => useNewChat.getState().setPerFolder(e.target.checked)}
+      />
+      <label htmlFor="per-folder-toggle" style={{ cursor: 'default', fontSize: 'var(--fs-4)' }}>
+        Remember per folder
+      </label>
+    </div>
+  );
+}
+
 /** The accounts-folder mover, formerly its own fold-out card in the sidebar. */
 function AccountsFolder() {
   const [info, setInfo] = useState<AccountsRootInfo | null>(null);
@@ -281,9 +299,13 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
           <Section label="New chats">
             <StartRow label="Git worktree" which="worktreeStart" />
             <StartRow label="Luna tools" which="toolsStart" />
+            <PerFolderRow />
             <div style={{ fontSize: 'var(--fs-1)', color: 'var(--faint)', marginTop: 4 }}>
               Where the two checkboxes start in a new chat — “as last time” follows the chat you made
               before (or the one on screen, for a quick chat). Either can still be flipped per chat.
+              Remembered per folder, a folder you have made chats in starts the way the last one there
+              did, and the switches above only cover folders new to Luna; forgetting a folder in the
+              new-chat dialog forgets this too.
             </div>
           </Section>
           <Section label="Versions & updates">

@@ -107,6 +107,15 @@ export interface Folder {
   path: string;
   open: boolean;
   chats: Chat[];
+  /** What the last chat made here started with — the new-chat checkboxes
+   *  start from it when "per folder" is on. Lives on the folder so that
+   *  forgetting the folder forgets this too. */
+  last?: FolderStart;
+}
+
+export interface FolderStart {
+  worktree: boolean;
+  tools: boolean;
 }
 
 // -------------------------------------------------------------- accounts --

@@ -5,7 +5,7 @@ import { ACCENT, tail2, tint } from '../../shared/lib/format';
 import { useChats } from '../chats/chats.store';
 import { findAccount, useAccounts } from '../accounts/accounts.store';
 import { claude, codex, ui } from '../providers';
-import { startsOn, useNewChat } from './newchat.store';
+import { startFor, useNewChat } from './newchat.store';
 import { createChat } from './create';
 import { useSettingsDraft, type Draft } from './draft';
 import { pickFolder } from '../../ipc/commands';
@@ -60,14 +60,23 @@ export function NewChatDialog() {
     const a = (last && findAccount(accounts, last.provider, last.name)) ?? accounts[0];
     return a ? accountKey(a.provider, a.name) : '';
   });
-  const [worktree, setWorktree] = useState(() => {
+  const startIn = (path: string) => {
     const ui = useNewChat.getState();
-    return startsOn(ui.worktreeStart, ui.lastWorktree);
-  });
-  const [tools, setTools] = useState(() => {
-    const ui = useNewChat.getState();
-    return startsOn(ui.toolsStart, ui.lastTools);
-  });
+    const known = useChats.getState().folders.find(f => f.path === path);
+    return startFor(known, { worktree: ui.lastWorktree, tools: ui.lastTools });
+  };
+  const [worktree, setWorktree] = useState(() => startIn(folder).worktree);
+  const [tools, setTools] = useState(() => startIn(folder).tools);
+  // Kept per folder, the boxes belong to the folder picked, so picking
+  // another one resets them to its start — a flip made for the first folder
+  // was not made for this one.
+  const chooseFolder = (path: string) => {
+    setFolder(path);
+    if (!useNewChat.getState().perFolder) return;
+    const start = startIn(path);
+    setWorktree(start.worktree);
+    setTools(start.tools);
+  };
 
   const account = accounts.find(a => accountKey(a.provider, a.name) === accountId) ?? null;
   const provider = account?.provider ?? 'claude';
@@ -104,7 +113,7 @@ export function NewChatDialog() {
     // Remembered on the way in, not on create: a folder you went looking for
     // is one you will look for again, even if you close this dialog now.
     useChats.getState().rememberFolder(picked);
-    setFolder(picked);
+    chooseFolder(picked);
   };
 
   const create = async () => {
@@ -183,7 +192,7 @@ export function NewChatDialog() {
                 return (
                   <div
                     key={f.id}
-                    onClick={() => setFolder(f.path)}
+                    onClick={() => chooseFolder(f.path)}
                     title={f.path}
                     style={{
                       display: 'flex', alignItems: 'center', gap: 6, padding: '3px 6px', cursor: 'default',
