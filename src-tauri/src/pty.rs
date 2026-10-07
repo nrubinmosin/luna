@@ -111,7 +111,6 @@ fn now_ms() -> u64 {
 /// Everything a spawn needs that is not the provider's business to work out.
 struct Launch {
     provider: Provider,
-    id: String,
     /// Where the process starts. For a Codex worktree chat this is the
     /// worktree itself; Claude Code gets the project folder and `--worktree`.
     cwd: String,
@@ -129,8 +128,18 @@ struct Launch {
 // other pane's write_session behind it: the log shows keystrokes taking well
 // over a second whenever a chat was starting. The per-chat gate below buys the
 // same guarantee without the map.
-async fn spawn(app: AppHandle, state: PtyState<'_>, launch: Launch) -> Result<String, String> {
-    let Launch { provider, id, cwd, account_path, args, envs, resume, describe } = launch;
+//
+// `launch` runs only once the gate finds no live process, since building one
+// has side effects: it mints the chat's MCP token, which voids the last one,
+// and rewrites the files the process reads at start. A pane attaching to a
+// running chat ensures it too, and doing all that then left the running
+// process holding a token Luna no longer knew.
+async fn spawn(
+    app: AppHandle,
+    state: PtyState<'_>,
+    id: String,
+    launch: impl FnOnce() -> Launch,
+) -> Result<String, String> {
     let gate = {
         let mut gates = state.spawning.lock().unwrap();
         // Nobody holds a gate whose only reference is the map's own, so this
@@ -151,6 +160,7 @@ async fn spawn(app: AppHandle, state: PtyState<'_>, launch: Launch) -> Result<St
             sessions.remove(&id);
         }
     }
+    let Launch { provider, cwd, account_path, args, envs, resume, describe } = launch();
 
     // Spawning without one would silently fall back to the CLI's default
     // config dir under the user profile: wrong account, and first-run
@@ -577,58 +587,56 @@ pub async fn ensure_claude_session(
     // An opening prompt, for a chat an agent starts.
     prompt: Option<String>,
 ) -> Result<String, String> {
-    let mut args = vec![
-        "--model".to_string(),
-        model.clone(),
-        "--effort".to_string(),
-        effort,
-        "--permission-mode".to_string(),
-        permission_mode.clone(),
-    ];
-    if let Some(session_id) = &resume {
-        args.push("--resume".into());
-        args.push(session_id.clone());
-    }
-    if worktree {
-        args.push("--worktree".into());
-    }
-    // Rewritten at every spawn: the listener's port is new with every Luna run.
-    if let Some(hooks) = claude_hooks_file(&id) {
-        args.push("--settings".into());
-        args.push(hooks.to_string_lossy().into_owned());
-    }
-    let tools = tools.unwrap_or(false);
-    let settings = serde_json::json!({
-        "model": model, "effort": args[3], "permissionMode": permission_mode, "worktree": worktree,
-    });
-    let token = crate::agents::register(&id, Provider::Claude, &folder, &account_path, parent.as_deref(), tools, settings);
-    if let Some(mcp) = token.as_deref().and_then(|t| claude_mcp_file(&id, t)) {
-        args.push("--mcp-config".into());
-        args.push(mcp.to_string_lossy().into_owned());
-    }
-    if let Some(p) = prompt.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
-        args.push(p.to_string());
-    }
-    let envs = vec![
-        ("CLAUDE_CONFIG_DIR", account_path.clone()),
-        // Luna updates the CLI itself; the CLI's own updater would install a
-        // second copy under the user profile that nothing here ever runs.
-        ("DISABLE_AUTOUPDATER", "1".to_string()),
-    ];
-    spawn(
-        app,
-        state,
+    // Built only if no process is running (see `spawn`).
+    spawn(app, state, id.clone(), move || {
+        let mut args = vec![
+            "--model".to_string(),
+            model.clone(),
+            "--effort".to_string(),
+            effort,
+            "--permission-mode".to_string(),
+            permission_mode.clone(),
+        ];
+        if let Some(session_id) = &resume {
+            args.push("--resume".into());
+            args.push(session_id.clone());
+        }
+        if worktree {
+            args.push("--worktree".into());
+        }
+        // Rewritten at every spawn: the listener's port is new with every Luna run.
+        if let Some(hooks) = claude_hooks_file(&id) {
+            args.push("--settings".into());
+            args.push(hooks.to_string_lossy().into_owned());
+        }
+        let tools = tools.unwrap_or(false);
+        let settings = serde_json::json!({
+            "model": model, "effort": args[3], "permissionMode": permission_mode, "worktree": worktree,
+        });
+        let token = crate::agents::register(&id, Provider::Claude, &folder, &account_path, parent.as_deref(), tools, settings);
+        if let Some(mcp) = token.as_deref().and_then(|t| claude_mcp_file(&id, t)) {
+            args.push("--mcp-config".into());
+            args.push(mcp.to_string_lossy().into_owned());
+        }
+        if let Some(p) = prompt.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+            args.push(p.to_string());
+        }
+        let envs = vec![
+            ("CLAUDE_CONFIG_DIR", account_path.clone()),
+            // Luna updates the CLI itself; the CLI's own updater would install a
+            // second copy under the user profile that nothing here ever runs.
+            ("DISABLE_AUTOUPDATER", "1".to_string()),
+        ];
         Launch {
             provider: Provider::Claude,
-            id,
             cwd: folder,
             account_path,
             args,
             envs,
             resume,
             describe: format!("model {model} perm {permission_mode} worktree {worktree}"),
-        },
-    )
+        }
+    })
     .await
 }
 
@@ -652,71 +660,69 @@ pub async fn ensure_codex_session(
     parent: Option<String>,
     prompt: Option<String>,
 ) -> Result<String, String> {
-    let mut args: Vec<String> = vec![];
-    let mut envs = vec![("CODEX_HOME", account_path.clone())];
-    let describe;
-    if login {
-        args.push("login".into());
-        describe = "login".to_string();
-    } else {
-        if let Some(session_id) = &resume {
-            args.push("resume".into());
-            args.push(session_id.clone());
-        }
-        args.push("-C".into());
-        args.push(folder.clone());
-        if let Some(m) = model.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
-            args.push("--model".into());
-            args.push(m.to_string());
-        }
-        args.push("-c".into());
-        args.push(format!("model_reasoning_effort=\"{effort}\""));
-        // The pair Codex itself spells as one flag.
-        if approval == "never" && sandbox == "danger-full-access" {
-            args.push("--dangerously-bypass-approvals-and-sandbox".into());
+    // Built only if no process is running (see `spawn`).
+    spawn(app, state, id.clone(), move || {
+        let mut args: Vec<String> = vec![];
+        let mut envs = vec![("CODEX_HOME", account_path.clone())];
+        let describe;
+        if login {
+            args.push("login".into());
+            describe = "login".to_string();
         } else {
-            args.push("--ask-for-approval".into());
-            args.push(approval.clone());
-            args.push("--sandbox".into());
-            args.push(sandbox.clone());
-        }
-        // Luna's MCP server as a config override, the token through the
-        // environment: neither touches the account's config.toml.
-        let tools = tools.unwrap_or(false);
-        let settings = serde_json::json!({
-            "model": model.as_deref().map(str::trim).filter(|m| !m.is_empty()),
-            "effort": effort, "approval": approval, "sandbox": sandbox,
-        });
-        let token = crate::agents::register(&id, Provider::Codex, &folder, &account_path, parent.as_deref(), tools, settings);
-        if let (Some(token), Some(url)) = (token, crate::hub::mcp_url()) {
+            if let Some(session_id) = &resume {
+                args.push("resume".into());
+                args.push(session_id.clone());
+            }
+            args.push("-C".into());
+            args.push(folder.clone());
+            if let Some(m) = model.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
+                args.push("--model".into());
+                args.push(m.to_string());
+            }
             args.push("-c".into());
-            args.push(format!("mcp_servers.luna.url=\"{url}\""));
-            args.push("-c".into());
-            args.push("mcp_servers.luna.bearer_token_env_var=\"LUNA_MCP_TOKEN\"".into());
-            envs.push(("LUNA_MCP_TOKEN", token));
+            args.push(format!("model_reasoning_effort=\"{effort}\""));
+            // The pair Codex itself spells as one flag.
+            if approval == "never" && sandbox == "danger-full-access" {
+                args.push("--dangerously-bypass-approvals-and-sandbox".into());
+            } else {
+                args.push("--ask-for-approval".into());
+                args.push(approval.clone());
+                args.push("--sandbox".into());
+                args.push(sandbox.clone());
+            }
+            // Luna's MCP server as a config override, the token through the
+            // environment: neither touches the account's config.toml.
+            let tools = tools.unwrap_or(false);
+            let settings = serde_json::json!({
+                "model": model.as_deref().map(str::trim).filter(|m| !m.is_empty()),
+                "effort": effort, "approval": approval, "sandbox": sandbox,
+            });
+            let token = crate::agents::register(&id, Provider::Codex, &folder, &account_path, parent.as_deref(), tools, settings);
+            if let (Some(token), Some(url)) = (token, crate::hub::mcp_url()) {
+                args.push("-c".into());
+                args.push(format!("mcp_servers.luna.url=\"{url}\""));
+                args.push("-c".into());
+                args.push("mcp_servers.luna.bearer_token_env_var=\"LUNA_MCP_TOKEN\"".into());
+                envs.push(("LUNA_MCP_TOKEN", token));
+            }
+            if let Some(p) = prompt.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+                args.push(p.to_string());
+            }
+            describe = format!(
+                "model {} effort {effort} approval {approval} sandbox {sandbox}",
+                model.as_deref().unwrap_or("default")
+            );
         }
-        if let Some(p) = prompt.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
-            args.push(p.to_string());
-        }
-        describe = format!(
-            "model {} effort {effort} approval {approval} sandbox {sandbox}",
-            model.as_deref().unwrap_or("default")
-        );
-    }
-    spawn(
-        app,
-        state,
         Launch {
             provider: Provider::Codex,
-            id,
             cwd: folder,
             account_path,
             args,
             envs,
             resume: if login { None } else { resume },
             describe,
-        },
-    )
+        }
+    })
     .await
 }
 
