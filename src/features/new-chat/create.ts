@@ -9,7 +9,7 @@ import { newId, useChats, wornColors } from '../chats/chats.store';
 import { findAccount, useAccounts } from '../accounts/accounts.store';
 import { currentSlots, usePanes } from '../panes/panes.store';
 import { claude, codex, ui } from '../providers';
-import { startsOn, useNewChat } from './newchat.store';
+import { startFor, useNewChat } from './newchat.store';
 
 export type ChatSpec = {
   folder: string;
@@ -79,6 +79,7 @@ export async function createChat(spec: ChatSpec): Promise<string> {
     useNewChat.getState().remember(
       spec.folder, { provider: spec.provider, name: spec.account.name }, spec.worktree, spec.tools ?? false
     );
+    useChats.getState().rememberStart(spec.folder, { worktree: spec.worktree, tools: spec.tools ?? false });
   }
   return id;
 }
@@ -120,9 +121,12 @@ export async function quickChat(): Promise<void> {
     return;
   }
 
-  // A fixed start from Settings wins; "last" takes after the chat on screen.
-  const worktree = startsOn(ui.worktreeStart, near?.worktree ?? ui.lastWorktree);
-  const tools = startsOn(ui.toolsStart, near?.tools ?? ui.lastTools);
+  // The folder's own last chat, when kept per folder; else a fixed start from
+  // Settings; else "as last time", which here means the chat on screen.
+  const { worktree, tools } = startFor(chats.folders.find(f => f.path === folder), {
+    worktree: near?.worktree ?? ui.lastWorktree,
+    tools: near?.tools ?? ui.lastTools
+  });
   try {
     if (account.provider === 'claude') {
       const { values } = await claude.settingsDefaults(account.path, folder);

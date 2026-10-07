@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { Chat, Folder, GroupId, NameSource } from '../../shared/types';
+import type { Chat, Folder, FolderStart, GroupId, NameSource } from '../../shared/types';
 import { usePanes } from '../panes/panes.store';
 import { forget } from '../panes/terminals';
 
@@ -19,6 +19,8 @@ interface ChatsState {
   removeFolder: (folderId: string) => void;
   /** Records a folder without creating anything in it, e.g. after Browse. */
   rememberFolder: (folderPath: string) => void;
+  /** What a chat the user just made in a folder started with. */
+  rememberStart: (folderPath: string, start: FolderStart) => void;
   toggleFolder: (folderId: string) => void;
   setActive: (chatId: string | null) => void;
   setStatus: (chatId: string, status: Chat['status']) => void;
@@ -98,6 +100,13 @@ const named = (c: Chat & { nameCustom?: boolean }): Chat => {
   return { ...rest, nameSource: nameCustom ? 'user' : rest.sessionId ? 'prompt' : undefined };
 };
 
+/** The newest chat the user made in a folder, for folders that had chats
+ *  before the folder kept its own record of them. */
+const lastMade = (chats: Chat[]): FolderStart | undefined => {
+  const c = chats.filter(c => !c.parentId).at(-1);
+  return c && { worktree: c.worktree, tools: c.tools ?? false };
+};
+
 let seq = 0;
 export const newId = (prefix: string) => `${prefix}${Date.now().toString(36)}${(seq++).toString(36)}`;
 
@@ -147,6 +156,9 @@ export const useChats = create<ChatsState>()(
 
       removeFolder: folderId =>
         set(s => ({ folders: s.folders.filter(f => f.id !== folderId || f.chats.length > 0) })),
+
+      rememberStart: (folderPath, start) =>
+        set(s => ({ folders: s.folders.map(f => (f.path === folderPath ? { ...f, last: start } : f)) })),
 
       rememberFolder: folderPath =>
         set(s =>
@@ -267,7 +279,8 @@ export const useChats = create<ChatsState>()(
           // chat without one would be invisible in every group.
           folders: (p.folders ?? []).map(f => ({
             ...f,
-            chats: (f.chats ?? []).map(c => named({ ...c, group: c.group ?? 0 }))
+            chats: (f.chats ?? []).map(c => named({ ...c, group: c.group ?? 0 })),
+            last: f.last ?? lastMade(f.chats ?? [])
           }))
         };
       }
