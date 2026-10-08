@@ -18,10 +18,14 @@ export function ChatRow({
   depth?: number;
   /** Chats this one's agent spawned, shown when unfolded. */
   childCount?: number;
-  /** Spawned by a chat that is gone. */
+  /** Spawned, yet listed on its own: the parent is gone, or sits in
+   *  another folder. */
   orphan?: boolean;
 }) {
   const active = useChats(s => s.active === chat.id);
+  // An agent may spawn into any folder, so a parent missing from this one
+  // is not necessarily gone.
+  const parentName = useChats(s => (orphan ? s.findChat(chat.parentId ?? null)?.name ?? null : null));
   const setActive = useChats(s => s.setActive);
   const dragging = usePanes(s => s.drag === chat.id);
   const layout = usePanes(currentLayout);
@@ -116,7 +120,13 @@ export function ChatRow({
       )}
       {(depth > 0 || orphan) && (
         <span
-          title={orphan ? 'Spawned by a chat that no longer exists' : 'Spawned by the chat above'}
+          title={
+            !orphan
+              ? 'Spawned by the chat above'
+              : parentName
+                ? `Spawned by "${parentName}" in another folder`
+                : 'Spawned by a chat that no longer exists'
+          }
           style={{ flex: 'none', fontSize: 'var(--fs-1)', color: 'var(--faint)', lineHeight: 1 }}
         >
           ↳

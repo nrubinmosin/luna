@@ -69,7 +69,7 @@ fn tools() -> Value {
         },
         {
             "name": "luna_spawn",
-            "description": "Start a helper session with an opening prompt; it appears under yours in Luna. Omitted settings take the account's defaults. Returns its id, the resolved settings and started (false = the prompt was not taken up; screen shows what the terminal is on). Follow with luna_wait.",
+            "description": "Start a helper session with an opening prompt; it appears under yours in Luna. Omitted settings take the account's defaults. Returns its id, the resolved settings and started (false = the prompt was not taken up; screen shows what the terminal is on) and starting (true = the CLI has drawn nothing yet, which can take minutes; the prompt is held, do not resend). Follow with luna_wait.",
             "inputSchema": s(json!({
                 "prompt": { "type": "string" },
                 "provider": { "type": "string", "enum": ["claude", "codex"], "description": "default: yours" },
