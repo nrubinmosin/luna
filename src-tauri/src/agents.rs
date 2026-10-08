@@ -39,7 +39,8 @@ const ENTER_RETRY: std::time::Duration = std::time::Duration::from_secs(3);
 /// before `spawn` answers without that assurance. Codex brings up its MCP
 /// servers first, which can take a while; a session still not busy after
 /// this is on a notice, a picker or an error, and the answer carries its
-/// screen so the caller can see which.
+/// screen so the caller can see which — or has not drawn at all yet, and the
+/// answer says `starting` instead.
 const START_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 /// The same for text typed into a running session: a turn should begin
 /// within a few samples of Enter.
@@ -509,9 +510,13 @@ pub struct Spawned {
     /// with it) within START_TIMEOUT. False means the prompt has not been
     /// taken up: look at `screen`.
     pub started: bool,
-    /// The terminal as it stands, only when `started` is false.
+    /// The terminal as it stands, only when `started` is false and the CLI
+    /// has drawn something.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub screen: Option<String>,
+    /// See `still_starting`: not stuck, just not up yet.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub starting: bool,
 }
 
 /// The last lines of a session's terminal, for a caller that has to see
@@ -529,6 +534,15 @@ fn has_started(id: &str, after_turn: u32) -> bool {
     crate::activity::turn_state(id)
         .map(|t| t.turn == crate::activity::Turn::Busy || t.turns_ended > after_turn)
         .unwrap_or(false)
+}
+
+/// True while the CLI has not drawn anything yet: alive, no turn begun or
+/// over, and a blank terminal. Claude Code syncs the org's skills and plugins
+/// and makes its worktree before it draws a thing — minutes on a bad day,
+/// with the session looking dead all along. The opening prompt is a CLI
+/// argument and waits for it intact; text typed now would be lost.
+fn still_starting(pty: &crate::pty::PtyManager, id: &str) -> bool {
+    pty.alive(id) && !has_started(id, 0) && pty.screen(id).is_some_and(|s| s.trim().is_empty())
 }
 
 /// Polls until the session starts working (see `has_started`), it exits, or
@@ -626,12 +640,15 @@ pub fn spawn(caller: &str, mut params: SpawnParams) -> Result<Spawned, String> {
         .unwrap_or(serde_json::Value::Null);
     let pty = app.state::<crate::pty::PtyManager>();
     let started = await_start(&pty, &id, 0, START_TIMEOUT);
-    if !started {
+    let starting = !started && still_starting(&pty, &id);
+    if starting {
+        crate::log::info("agents", &format!("session {id} spawned by {caller} has drawn nothing within {START_TIMEOUT:?}; still starting"));
+    } else if !started {
         crate::log::warn("agents", &format!("session {id} spawned by {caller} did not start on its prompt within {START_TIMEOUT:?}"));
     }
-    let screen = (!started).then(|| screen_of(&pty, &id)).flatten();
+    let screen = (!started && !starting).then(|| screen_of(&pty, &id)).flatten();
     shown(caller, &id, 0);
-    Ok(Spawned { id, turns_ended: 0, settings, started, screen })
+    Ok(Spawned { id, turns_ended: 0, settings, started, screen, starting })
 }
 
 /// The frontend's answer to `agent://spawn`.
@@ -678,6 +695,11 @@ pub fn send(caller: &str, id: &str, text: &str) -> Result<Sent, String> {
     if !pty.alive(id) {
         return Err(format!("session {id} is not running"));
     }
+    if still_starting(&pty, id) {
+        return Err(format!(
+            "session {id} has not come up yet (its terminal is still blank), so typed text would be lost;              an opening prompt from luna_spawn is held and runs once it is up — luna_wait(turn_done) for the reply"
+        ));
+    }
     let before = crate::activity::turn_state(id);
     let turn_before = before.map(|t| t.turn);
     let baseline = before.map(|t| t.turns_ended).unwrap_or(0);
@@ -714,6 +736,9 @@ pub struct Reading {
     /// The terminal's last lines, when asked for (`screen: true`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub screen: Option<String>,
+    /// See `still_starting`.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub starting: bool,
 }
 
 fn transcript_path(pty: &crate::pty::PtyManager, id: &str) -> Option<std::path::PathBuf> {
@@ -768,6 +793,7 @@ pub fn read(
         turns_ended,
         alive: pty.alive(id),
         screen: with_screen.then(|| screen_of(&pty, id)).flatten(),
+        starting: still_starting(&pty, id),
     })
 }
 
@@ -785,6 +811,9 @@ pub struct Waited {
     /// notice nobody dismissed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub screen: Option<String>,
+    /// On `timeout`: see `still_starting`.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub starting: bool,
 }
 
 /// Blocks until the session reaches `until`, or `timeout_s` passes:
@@ -824,12 +853,13 @@ pub fn wait(caller: &str, id: &str, until: &str, timeout_s: u64, after_turn: Opt
                 .and_then(|r| r.messages.into_iter().rev().find(|m| m.role == "assistant").map(|m| m.text));
             let screen = (outcome == "waiting").then(|| screen_of(&pty, id)).flatten();
             shown(caller, id, turns_ended);
-            return Ok(Waited { outcome, turn, turns_ended, alive, reply, screen });
+            return Ok(Waited { outcome, turn, turns_ended, alive, reply, screen, starting: false });
         }
         if std::time::Instant::now() >= deadline {
             let screen = screen_of(&pty, id);
+            let starting = still_starting(&pty, id);
             shown(caller, id, turns_ended);
-            return Ok(Waited { outcome: "timeout", turn, turns_ended, alive, reply: None, screen });
+            return Ok(Waited { outcome: "timeout", turn, turns_ended, alive, reply: None, screen, starting });
         }
         std::thread::sleep(std::time::Duration::from_millis(500));
     }

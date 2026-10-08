@@ -10,8 +10,9 @@ import { SweepWorktreesDialog } from './SweepWorktreesDialog';
 
 /**
  * The folder's rows in sidebar order: a chat with no parent, then the chats
- * an agent of its spawned. A child whose parent is gone — deleted, or in
- * another folder — is listed on its own, marked as an orphan. One level:
+ * an agent of its spawned. A child whose parent is not here — deleted, or
+ * in another folder — is listed on its own, marked as an orphan (ChatRow
+ * tells the two apart). One level:
  * a grandchild is shown under the child, which sits under its own parent
  * only when both are unfolded.
  */

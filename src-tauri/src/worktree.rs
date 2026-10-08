@@ -156,6 +156,7 @@ pub fn remove_worktree_now(folder: String, worktree_path: String) -> Result<(), 
     if !Path::new(&worktree_path).exists() {
         // Still worth pruning a stale admin entry and its branch.
         let branch = branch_of(&folder, &worktree_path);
+        let _ = git(&folder).args(["worktree", "unlock", &worktree_path]).output();
         let _ = git(&folder).args(["worktree", "prune"]).output();
         drop_branch(&folder, branch);
         return Ok(());
@@ -165,10 +166,13 @@ pub fn remove_worktree_now(folder: String, worktree_path: String) -> Result<(), 
     let branch = branch_of(&folder, &worktree_path);
 
     // The killed session may hold file locks for a moment — retry briefly.
+    // Claude Code locks the worktree it makes ("claude session <name> (pid
+    // N)") and leaves the lock behind when killed; one --force refuses a
+    // locked worktree, the second overrides the lock.
     let mut removed = false;
     for _ in 0..3 {
         match git(&folder)
-            .args(["worktree", "remove", "--force", &worktree_path])
+            .args(["worktree", "remove", "--force", "--force", &worktree_path])
             .output()
         {
             Ok(o) if o.status.success() => {
@@ -180,6 +184,9 @@ pub fn remove_worktree_now(folder: String, worktree_path: String) -> Result<(), 
     }
     if !removed {
         std::fs::remove_dir_all(&worktree_path).map_err(|e| e.to_string())?;
+        // prune skips a locked entry, and the branch it keeps checked out
+        // would then refuse `branch -D` below.
+        let _ = git(&folder).args(["worktree", "unlock", &worktree_path]).output();
         let _ = git(&folder).args(["worktree", "prune"]).output();
     }
 
