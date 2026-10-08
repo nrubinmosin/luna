@@ -420,6 +420,19 @@ pub fn read_tail(path: &Path) -> Tail {
     out
 }
 
+/// Whether a Codex screen shows an approval dialog — a command to run, an edit
+/// to make, a permission to grant. The rollout records none of them, and the
+/// screen does not go quiet under one (the quiet-screen guess below misses
+/// it), but each ends in the same footer.
+pub fn asks(screen: &str) -> bool {
+    const MARKS: [&str; 3] = [
+        "Press enter to confirm or esc to cancel",
+        "Would you like to run the following command?",
+        "Would you like to make the following edits?",
+    ];
+    MARKS.iter().any(|m| screen.contains(m))
+}
+
 /// `working` | `waiting` | `resting` off the rollout's tail and the screen.
 fn fold_status(tail_status: Option<&'static str>, last_output_ms: u64) -> &'static str {
     match tail_status {

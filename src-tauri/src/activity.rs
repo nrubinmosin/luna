@@ -143,13 +143,16 @@ pub struct TurnState {
     pub turn: Turn,
     pub busy: bool,
     pub turns_ended: u32,
+    /// Processes under the CLI are at work — moving, or started by a turn and
+    /// still alive: a job it left running in the background.
+    pub children_busy: bool,
 }
 
 pub fn turn_state(chat_id: &str) -> Option<TurnState> {
     let st = state().lock().unwrap_or_else(|e| e.into_inner());
     let t = st.tracks.get(chat_id)?;
     let busy = st.summary.sessions.iter().find(|s| s.id == chat_id).map(|s| s.busy).unwrap_or(false);
-    Some(TurnState { turn: t.turn, busy, turns_ended: t.turns_ended })
+    Some(TurnState { turn: t.turn, busy, turns_ended: t.turns_ended, children_busy: t.procs.is_some() })
 }
 
 impl Default for Turn {
@@ -303,6 +306,10 @@ fn disk_turn(p: &crate::pty::ActivityProbe) -> Option<Turn> {
             last_output_ms: p.last_output_ms,
         })?,
     };
+    // Codex keeps no record of a pending approval; its screen says so.
+    if p.asking && turn_of(&raw) == Turn::Busy {
+        return Some(Turn::Waiting);
+    }
     Some(turn_of(&raw))
 }
 
@@ -497,7 +504,11 @@ pub fn start(app: tauri::AppHandle) {
                     reset_idle();
                     crate::power::woke(&app);
                 }
-                let probes = app.state::<crate::pty::PtyManager>().activity_probes();
+                let pty = app.state::<crate::pty::PtyManager>();
+                let mut probes = pty.activity_probes();
+                for p in probes.iter_mut().filter(|p| p.provider == Provider::Codex) {
+                    p.asking = pty.screen(&p.id).is_some_and(|s| crate::codex::session::asks(&s));
+                }
                 let summary = sample(probes);
                 crate::power::tick(&app, &summary);
             }

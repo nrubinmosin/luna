@@ -14,11 +14,14 @@ use serde_json::{json, Value};
 pub const PROTOCOL: &str = "2025-06-18";
 
 const INSTRUCTIONS: &str = "Luna runs your session and can run helper sessions for you: another model, \
-another account, or Codex. Flow: luna_spawn with a prompt → luna_wait(id, \"turn_done\") returns the \
-reply → luna_send for follow-ups, luna_wait again → luna_delete when finished (dropWorktree: true if \
-you asked for one). luna_list shows the sessions you spawned and the accounts you may use; only those \
-take every tool. luna_sessions lists every session in Luna (account, folder, transcript), and luna_send \
-can write to any of them. Prefer one helper at a time; each costs its account's quota.";
+another account, or Codex. Your CLI's own subagents cannot run the other provider (Claude/Codex), \
+another account or folder, or a chat the user sees in Luna: for those use luna_spawn. Flow: \
+luna_spawn with a prompt → luna_wait(id, \"turn_done\") returns the reply → luna_send for \
+follow-ups, luna_wait again → luna_delete when finished (dropWorktree: true if you asked for one). If you end your turn instead, Luna types a notice into your session once a session \
+you spawned or wrote to answers, stops on a prompt or exits. luna_list shows the sessions you spawned \
+and the accounts you may use; only those can be killed or deleted. luna_sessions lists every session in \
+Luna; luna_send, luna_read and luna_wait work on any of them. Prefer one helper at a time; each costs \
+its account's quota.";
 
 /// One JSON-RPC message in, at most one out (None for notifications).
 pub fn handle(caller: &str, body: &str) -> Option<Value> {
@@ -64,7 +67,7 @@ fn tools() -> Value {
         },
         {
             "name": "luna_sessions",
-            "description": "Every session in Luna, the user's own chats included: id, name, provider, account, accountPath, folder, cwd, sessionId, transcript path, pid, parent, you/yours, alive, turn, busy, settings.",
+            "description": "Every session in Luna, the user's own chats included: id, name, provider, account, folders, sessionId, transcript path, parent, you/yours, turn, settings.",
             "inputSchema": s(json!({}), &[])
         },
         {
@@ -78,7 +81,7 @@ fn tools() -> Value {
                 "effort": { "type": "string", "description": "low|medium|high|xhigh|max" },
                 "permissionMode": { "type": "string", "description": "claude: default|acceptEdits|plan|bypassPermissions" },
                 "approval": { "type": "string", "description": "codex: on-request|never" },
-                "sandbox": { "type": "string", "description": "codex: read-only|workspace-write|danger-full-access" },
+                "sandbox": { "type": "string", "description": "codex: read-only|workspace-write|danger-full-access; on Windows the first two may reject or ask about every command" },
                 "folder": { "type": "string", "description": "project folder; default: yours" },
                 "worktree": { "type": "boolean", "description": "run in its own git worktree" },
                 "name": { "type": "string", "description": "row title in Luna" },
@@ -92,7 +95,7 @@ fn tools() -> Value {
         },
         {
             "name": "luna_read",
-            "description": "Messages of a session from the transcript. `since` = cursor from an earlier read; `last` = only the last N messages (default 1). Also returns turn state, and the terminal's last lines with screen: true.",
+            "description": "Messages of any session from its transcript. `since` = cursor from an earlier read; `last` = only the last N messages (default 1). Also returns turn state, and the terminal's last lines with screen: true.",
             "inputSchema": s(json!({
                 "id": { "type": "string" },
                 "since": { "type": "integer" },
@@ -103,7 +106,7 @@ fn tools() -> Value {
         },
         {
             "name": "luna_wait",
-            "description": "Block until a session finishes a turn (returns its reply), stops for a permission, or exits. On timeout or waiting the answer carries the screen. `afterTurn`: wait for a turn past this turnsEnded (default: the value you were last shown).",
+            "description": "Block until a session (not yours) ends a turn (returns its reply), stops for a permission, or exits. Timeout, waiting and a reply-less turn come with the screen. `afterTurn`: wait for a turn past this turnsEnded (default: the last one you were shown).",
             "inputSchema": s(json!({
                 "id": { "type": "string" },
                 "until": { "type": "string", "enum": ["turn_done", "waiting", "exit"] },
@@ -199,6 +202,6 @@ mod tests {
         // under a few thousand characters.
         let text = tools().to_string();
         assert!(text.len() < 4000, "tools/list is {} chars", text.len());
-        assert!(INSTRUCTIONS.len() < 700);
+        assert!(INSTRUCTIONS.len() < 1000);
     }
 }
