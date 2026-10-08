@@ -294,7 +294,7 @@ fn verb(a: Action) -> &'static str {
     }
 }
 
-fn notify(app: &tauri::AppHandle, title: &str, body: &str) {
+pub fn notify(app: &tauri::AppHandle, title: &str, body: &str) {
     use tauri_plugin_notification::NotificationExt;
     if let Err(e) = app.notification().builder().title(title).body(body).show() {
         crate::log::warn("power", &format!("notification failed: {e}"));

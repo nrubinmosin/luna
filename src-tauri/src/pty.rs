@@ -23,6 +23,14 @@ const FRAME: std::time::Duration = std::time::Duration::from_millis(16);
 /// ever does (a chat an agent spawned and nobody opened).
 const INITIAL_ROWS: u16 = 30;
 const INITIAL_COLS: u16 = 100;
+/// The cursor-position query (DSR 6). ConPTY sends one before anything else
+/// (portable-pty opens it with INHERIT_CURSOR) and holds the child's output
+/// until the terminal answers; a CLI may ask again later. The core answers
+/// every one itself and keeps it out of the stream: a chat an agent spawned
+/// has no terminal to answer for it, and sat on a blank screen until someone
+/// opened its pane; and the query left in the scrollback was answered again
+/// by every pane that later attached, typing `[1;1R` into a running CLI.
+const DSR: &[u8] = b"\x1b[6n";
 
 // Output and exit events go out through `emit::to_ui`, which holds them
 // against the event loop tearing down at quit — see that module.
@@ -61,7 +69,7 @@ struct Session {
     /// window drag. The writer thread owns the master end, so the resize
     /// happens there, after the bytes that preceded it and before the ones
     /// that follow.
-    input_tx: std::sync::mpsc::Sender<Input>,
+    input_tx: Arc<std::sync::mpsc::Sender<Input>>,
     killer: Box<dyn ChildKiller + Send + Sync>,
     /// For asking whether the process is still there without blocking on it;
     /// the reader thread shares it to collect the exit code.
@@ -87,6 +95,13 @@ struct Session {
     /// The last size the pty was given (rows, cols), so `screen` can render
     /// the scrollback the way the CLI laid it out.
     size: Arc<Mutex<(u16, u16)>>,
+    /// When a person last typed into it (see `write_session`), so a notice
+    /// from Luna does not land in the middle of their sentence.
+    typed_ms: Arc<AtomicU64>,
+    /// Characters a person has typed since their last Enter, as far as the
+    /// keys tell (see `draft_after`): a notice typed on top of a draft would
+    /// go out with it.
+    draft: Arc<AtomicU64>,
 }
 
 #[derive(Default)]
@@ -219,6 +234,11 @@ async fn spawn(
     // drops the sender with it — and the master end, which the thread owns,
     // goes down with the thread, exactly when the session used to take it.
     let (input_tx, input_rx) = std::sync::mpsc::channel::<Input>();
+    // The reader answers cursor queries through a weak handle: a strong one
+    // would keep the writer thread, and with it the pty, alive past the
+    // session (see the note above).
+    let input_tx = Arc::new(input_tx);
+    let replies = Arc::downgrade(&input_tx);
     let size = Arc::new(Mutex::new((INITIAL_ROWS, INITIAL_COLS)));
     {
         let id = id.clone();
@@ -232,6 +252,7 @@ async fn spawn(
             for msg in input_rx {
                 match msg {
                     Input::Bytes(chunk) if writable => {
+                        let chunk = if provider == Provider::Codex { as_key_events(&chunk) } else { chunk };
                         if let Err(e) = writer.write_all(&chunk).and_then(|()| writer.flush()) {
                             crate::log::warn("pty", &format!("write to {id} failed: {e}"));
                             writable = false;
@@ -262,6 +283,7 @@ async fn spawn(
         let alive = Arc::clone(&alive);
         let last_output_ms = Arc::clone(&last_output_ms);
         let child = Arc::clone(&child);
+        let size = Arc::clone(&size);
 
         // The reader hands bytes to an emitter thread instead of emitting them
         // itself. A repainting TUI produces a steady stream of small reads, and
@@ -306,25 +328,42 @@ async fn spawn(
 
         std::thread::spawn(move || {
             let mut chunk = [0u8; 8192];
-            loop {
+            // The start of a cursor query cut off at the end of a read.
+            let mut carry: Vec<u8> = Vec::new();
+            'read: loop {
                 match reader.read(&mut chunk) {
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
                         last_output_ms.store(now_ms(), Ordering::Relaxed);
-                        {
-                            let mut sb = scrollback.lock().unwrap();
-                            sb.extend(chunk[..n].iter().copied());
-                            // Trimming to the cap on every read used to move the
-                            // whole two megabytes each time; a deque drops from
-                            // the front without touching the rest, and trimming
-                            // in one go per overshoot keeps it off the hot path.
-                            if sb.len() > SCROLLBACK_CAP + SCROLLBACK_SLACK {
-                                let excess = sb.len() - SCROLLBACK_CAP;
-                                sb.drain(..excess);
+                        let pieces = split_dsr(&mut carry, &chunk[..n]);
+                        let last = pieces.len() - 1;
+                        for (i, piece) in pieces.into_iter().enumerate() {
+                            if !piece.is_empty() {
+                                let mut sb = scrollback.lock().unwrap();
+                                sb.extend(piece.iter().copied());
+                                // Trimming to the cap on every read used to move the
+                                // whole two megabytes each time; a deque drops from
+                                // the front without touching the rest, and trimming
+                                // in one go per overshoot keeps it off the hot path.
+                                if sb.len() > SCROLLBACK_CAP + SCROLLBACK_SLACK {
+                                    let excess = sb.len() - SCROLLBACK_CAP;
+                                    sb.drain(..excess);
+                                }
+                                drop(sb);
+                                if tx.send(piece).is_err() {
+                                    break 'read;
+                                }
                             }
-                        }
-                        if tx.send(chunk[..n].to_vec()).is_err() {
-                            break;
+                            if i < last {
+                                // A query followed this piece: answer with where the
+                                // cursor stands after it, as a terminal would.
+                                let bytes = scrollback.lock().unwrap().make_contiguous().to_vec();
+                                let (rows, cols) = *size.lock().unwrap_or_else(|e| e.into_inner());
+                                let (row, col) = cursor_at(&bytes, rows, cols);
+                                if let Some(input) = replies.upgrade() {
+                                    let _ = input.send(Input::Bytes(format!("\x1b[{};{}R", row + 1, col + 1).into_bytes()));
+                                }
+                            }
                         }
                     }
                 }
@@ -367,6 +406,8 @@ async fn spawn(
             account_path,
             job,
             size,
+            typed_ms: Arc::new(AtomicU64::new(0)),
+            draft: Arc::new(AtomicU64::new(0)),
         },
     );
 
@@ -436,6 +477,10 @@ pub struct ActivityProbe {
     pub account_path: String,
     pub last_output_ms: u64,
     pub job: Option<Arc<crate::procs::Job>>,
+    /// Codex only: its screen shows an approval dialog (see
+    /// `codex::session::asks`). Filled in by the activity sampler, which
+    /// renders the screen outside the session map.
+    pub asking: bool,
 }
 
 fn activity_probe(id: &str, s: &Session) -> ActivityProbe {
@@ -449,6 +494,7 @@ fn activity_probe(id: &str, s: &Session) -> ActivityProbe {
         account_path: s.account_path.clone(),
         last_output_ms: s.last_output_ms.load(Ordering::Relaxed),
         job: s.job.clone(),
+        asking: false,
     }
 }
 
@@ -467,6 +513,20 @@ impl PtyManager {
     pub fn probe(&self, id: &str) -> Option<ActivityProbe> {
         let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
         sessions.get(id).filter(|s| s.alive.load(Ordering::SeqCst)).map(|s| activity_probe(id, s))
+    }
+
+    /// How long ago a person last typed into the session, None if never.
+    pub fn typed_ago_ms(&self, id: &str) -> Option<u64> {
+        let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        let at = sessions.get(id)?.typed_ms.load(Ordering::Relaxed);
+        (at > 0).then(|| now_ms().saturating_sub(at))
+    }
+
+    /// Whether a person has left something typed and not sent in the
+    /// session's composer.
+    pub fn has_draft(&self, id: &str) -> bool {
+        let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        sessions.get(id).is_some_and(|s| s.draft.load(Ordering::Relaxed) & !DRAFT_BACKSLASH > 0)
     }
 
     pub fn alive(&self, id: &str) -> bool {
@@ -619,6 +679,9 @@ pub async fn ensure_claude_session(
             args.push(mcp.to_string_lossy().into_owned());
         }
         if let Some(p) = prompt.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+            // `--mcp-config` takes any number of files, and took the prompt
+            // after it for one more: "MCP config file not found: <prompt>".
+            args.push("--".into());
             args.push(p.to_string());
         }
         let envs = vec![
@@ -703,9 +766,15 @@ pub async fn ensure_codex_session(
                 args.push(format!("mcp_servers.luna.url=\"{url}\""));
                 args.push("-c".into());
                 args.push("mcp_servers.luna.bearer_token_env_var=\"LUNA_MCP_TOKEN\"".into());
+                // Codex gives an MCP call 60 s by default; `wait` holds its
+                // request for up to 30 min and `spawn` for up to two.
+                args.push("-c".into());
+                args.push("mcp_servers.luna.tool_timeout_sec=1900".into());
                 envs.push(("LUNA_MCP_TOKEN", token));
             }
             if let Some(p) = prompt.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+                // A prompt that starts with a dash is still a prompt.
+                args.push("--".into());
                 args.push(p.to_string());
             }
             describe = format!(
@@ -730,6 +799,13 @@ pub async fn ensure_codex_session(
 pub fn write_session(state: PtyState, id: String, data: String) -> Result<(), String> {
     let sessions = state.sessions.lock().unwrap();
     let s = sessions.get(&id).ok_or("no such session")?;
+    // Keys, not what the terminal reports by itself (focus, mouse), which
+    // arrives as escape sequences on the same path.
+    if !data.starts_with('\x1b') {
+        s.typed_ms.store(now_ms(), Ordering::Relaxed);
+    }
+    let draft = draft_after(s.draft.load(Ordering::Relaxed), &data);
+    s.draft.store(draft, Ordering::Relaxed);
     // Queueing, so the command returns at once however busy the pty is.
     s.input_tx
         .send(Input::Bytes(data.into_bytes()))
@@ -1036,6 +1112,135 @@ pub fn render_screen(bytes: &[u8], rows: u16, cols: u16) -> String {
     lines.join("\n")
 }
 
+/// Codex reads key presses, not text. ConPTY makes a key press out of each
+/// character it is given, on the console's keyboard layout, and a character
+/// that layout has no key for reached Codex as nothing: on a Russian layout
+/// `[ ] { } < > ' ` ~ @ # $ ^ & |` and typographic quotes and dashes all
+/// vanished, from a person's typing and from `luna_send` alike. Given as
+/// win32-input-mode key events (ConPTY is opened with WIN32_INPUT_MODE), every
+/// character arrives as itself whatever the layout. Control characters and
+/// escape sequences — Enter, arrows, focus and mouse reports, a cursor
+/// report — go through as they are.
+fn as_key_events(bytes: &[u8]) -> Vec<u8> {
+    use std::fmt::Write as _;
+    let text = String::from_utf8_lossy(bytes);
+    let mut out = String::with_capacity(bytes.len() * 24);
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            out.push(c);
+            match chars.next() {
+                // CSI: parameters and intermediates up to the final byte.
+                Some('[') => {
+                    out.push('[');
+                    for n in chars.by_ref() {
+                        out.push(n);
+                        if ('\x40'..='\x7e').contains(&n) {
+                            break;
+                        }
+                    }
+                }
+                // SS3 (application cursor keys, F1-F4): one more character.
+                Some('O') => {
+                    out.push('O');
+                    if let Some(n) = chars.next() {
+                        out.push(n);
+                    }
+                }
+                // Alt with a key.
+                Some(n) => out.push(n),
+                None => {}
+            }
+        } else if c < ' ' || c == '\x7f' {
+            out.push(c);
+        } else {
+            let mut units = [0u16; 2];
+            let units = c.encode_utf16(&mut units);
+            // Vk;Sc;Uc;Kd;Cs;Rc — down, then up. The halves of a surrogate
+            // pair go down only: Codex took the release of the first half for
+            // the end of the character and dropped it.
+            let pair = units.len() == 2;
+            for u in units.iter() {
+                let _ = write!(out, "\x1b[0;0;{u};1;0;1_");
+                if !pair {
+                    let _ = write!(out, "\x1b[0;0;{u};0;0;1_");
+                }
+            }
+        }
+    }
+    out.into_bytes()
+}
+
+/// Set in the draft state when the last character typed was a backslash.
+const DRAFT_BACKSLASH: u64 = 1 << 63;
+
+/// The composer's length after a person's keys, roughly: characters add,
+/// Backspace takes one off, Enter, Ctrl+C and Ctrl+U empty it — but not an
+/// Enter right after a backslash, which is how a Claude Code prompt gets its
+/// next line — and the sequences a terminal sends for other keys (arrows,
+/// focus, mouse) do nothing, except a bracketed paste, whose text counts.
+/// Edits it cannot follow (a word deleted with Ctrl+W, a selection cut) leave
+/// it high, which only holds a notice until the next Enter. The top bit
+/// carries the backslash across writes, one key arriving per write.
+fn draft_after(state: u64, data: &str) -> u64 {
+    let mut n = state & !DRAFT_BACKSLASH;
+    let mut backslash = state & DRAFT_BACKSLASH != 0;
+    let mut chars = data.chars().peekable();
+    while let Some(c) = chars.next() {
+        let was_backslash = std::mem::replace(&mut backslash, c == '\\');
+        match c {
+            '\r' if was_backslash => n += 1,
+            '\r' | '\x03' | '\x15' => n = 0,
+            '\x7f' | '\x08' => n = n.saturating_sub(1),
+            // A sequence types nothing — the paste markers included; the
+            // text between them is counted as it comes.
+            '\x1b' => {
+                if chars.peek() == Some(&'[') {
+                    chars.next();
+                    for p in chars.by_ref() {
+                        if ('\x40'..='\x7e').contains(&p) {
+                            break;
+                        }
+                    }
+                } else if chars.next() == Some('O') {
+                    // SS3: arrows in application mode, F1-F4.
+                    chars.next();
+                }
+            }
+            c if c < ' ' => {}
+            _ => n += 1,
+        }
+    }
+    n | if backslash { DRAFT_BACKSLASH } else { 0 }
+}
+
+/// Where the cursor stands once `bytes` have been drawn at this size, zero-based
+/// (row, col).
+fn cursor_at(bytes: &[u8], rows: u16, cols: u16) -> (u16, u16) {
+    let mut parser = vt100::Parser::new(rows.max(1), cols.max(1), 0);
+    parser.process(bytes);
+    parser.screen().cursor_position()
+}
+
+/// Cuts the cursor queries (DSR) out of a read. Returns the output between
+/// them, a query following every piece but the last; `carry` keeps the start
+/// of a query split across reads for the next one.
+fn split_dsr(carry: &mut Vec<u8>, chunk: &[u8]) -> Vec<Vec<u8>> {
+    let mut data = std::mem::take(carry);
+    data.extend_from_slice(chunk);
+    let mut pieces = Vec::new();
+    let mut start = 0;
+    while let Some(at) = data[start..].windows(DSR.len()).position(|w| w == DSR) {
+        pieces.push(data[start..start + at].to_vec());
+        start += at + DSR.len();
+    }
+    let tail = &data[start..];
+    let keep = (1..DSR.len()).rev().find(|&n| tail.ends_with(&DSR[..n])).unwrap_or(0);
+    pieces.push(tail[..tail.len() - keep].to_vec());
+    *carry = tail[tail.len() - keep..].to_vec();
+    pieces
+}
+
 /// The last `max` bytes of a file as text, or None if it cannot be read.
 pub fn tail(path: &std::path::Path, max: u64) -> Option<String> {
     use std::io::{Seek, SeekFrom};
@@ -1121,9 +1326,19 @@ pub async fn session_meta(
         p
     };
 
-    tauri::async_runtime::spawn_blocking(move || meta_from_disk(&probe))
+    let codex = probe.provider == Provider::Codex;
+    let mut meta = tauri::async_runtime::spawn_blocking(move || meta_from_disk(&probe))
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    // Codex's approval dialog is not in its rollout and the screen does not
+    // go quiet under it, so the rollout calls the session working; the
+    // activity sampler reads the dialog off the screen (`codex::session::asks`).
+    if let Some(m) = meta.as_mut().filter(|m| codex && m.status.as_deref() == Some("working")) {
+        if crate::activity::turn_state(&id).is_some_and(|t| t.turn == crate::activity::Turn::Waiting) {
+            m.status = Some("waiting".into());
+        }
+    }
+    Ok(meta)
 }
 
 /// The CLI's title for a session that is not running, by its id — how a chat
@@ -1146,4 +1361,63 @@ pub fn session_alive(state: PtyState, id: String) -> bool {
         .get(&id)
         .map(|s| s.alive.load(Ordering::SeqCst))
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cursor_queries_are_cut_out_even_across_reads() {
+        let mut carry = Vec::new();
+        // ConPTY's opening query alone.
+        assert_eq!(split_dsr(&mut carry, b"\x1b[6n"), vec![b"".to_vec(), b"".to_vec()]);
+        // Output, a query, more output.
+        assert_eq!(split_dsr(&mut carry, b"ab\x1b[6ncd"), vec![b"ab".to_vec(), b"cd".to_vec()]);
+        // A query split over two reads is held back, then answered once.
+        assert_eq!(split_dsr(&mut carry, b"x\x1b["), vec![b"x".to_vec()]);
+        assert_eq!(carry, b"\x1b[");
+        assert_eq!(split_dsr(&mut carry, b"6ny"), vec![b"".to_vec(), b"y".to_vec()]);
+        assert!(carry.is_empty());
+        // A held-back escape that turns out to be something else goes through.
+        assert_eq!(split_dsr(&mut carry, b"\x1b"), vec![b"".to_vec()]);
+        assert_eq!(split_dsr(&mut carry, b"[31m"), vec![b"\x1b[31m".to_vec()]);
+    }
+
+    #[test]
+    fn codex_gets_characters_as_key_events_and_sequences_as_they_are() {
+        let k = |u: u32| format!("\x1b[0;0;{u};1;0;1_\x1b[0;0;{u};0;0;1_");
+        assert_eq!(String::from_utf8(as_key_events(b"[")).unwrap(), k(91));
+        // Enter, an arrow, a focus report, a cursor report, Alt+x: untouched.
+        let raw = "\r\x1b[A\x1b[I\x1b[12;3R\x1bx\x1bOP\x7f";
+        assert_eq!(String::from_utf8(as_key_events(raw.as_bytes())).unwrap(), raw);
+        // Outside the basic plane: both halves of the surrogate pair, pressed.
+        let down = |u: u32| format!("\x1b[0;0;{u};1;0;1_");
+        assert_eq!(String::from_utf8(as_key_events("😀".as_bytes())).unwrap(), format!("{}{}", down(0xD83D), down(0xDE00)));
+        assert_eq!(String::from_utf8(as_key_events("a\rя".as_bytes())).unwrap(), format!("{}\r{}", k(97), k(0x44F)));
+    }
+
+    #[test]
+    fn a_draft_is_what_was_typed_since_enter() {
+        assert_eq!(draft_after(0, "abc"), 3);
+        assert_eq!(draft_after(3, "\x7f"), 2);
+        assert_eq!(draft_after(2, "\r"), 0);
+        assert_eq!(draft_after(0, "\x1b[A\x1b[I\x1b[<35;1;14M\x1bOP"), 0, "keys that type nothing");
+        assert_eq!(draft_after(0, "\x1b[200~hi\x1b[201~"), 2, "a paste is text");
+        assert_eq!(draft_after(5, "\x03"), 0);
+        assert_eq!(draft_after(5, "\x15"), 0);
+        assert_eq!(draft_after(0, "привет"), 6);
+        assert_eq!(draft_after(1, "\x7f\x7f\x7f"), 0);
+        // A backslash and Enter, one key per write: a second line, not a send.
+        let s = draft_after(draft_after(0, "ab\\"), "\r");
+        assert_eq!(s & !DRAFT_BACKSLASH, 4);
+        assert_eq!(draft_after(draft_after(s, "c"), "\r"), 0);
+    }
+
+    #[test]
+    fn the_answer_is_where_the_cursor_stands() {
+        assert_eq!(cursor_at(b"", 30, 100), (0, 0));
+        assert_eq!(cursor_at(b"hello\r\nab", 30, 100), (1, 2));
+        assert_eq!(cursor_at(b"\x1b[5;7H", 30, 100), (4, 6));
+    }
 }

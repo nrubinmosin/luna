@@ -41,6 +41,20 @@ pub fn is_worktree_of(folder: &str, candidate: &str) -> bool {
     })
 }
 
+/// The project folder a Luna-made worktree belongs to: the part of the path
+/// before `.claude\worktrees` or `.codex\worktrees`. A Codex chat in a
+/// worktree is started in the worktree itself, so that is the folder it knows.
+pub fn project_of(path: &str) -> Option<String> {
+    let p = path.replace('/', "\\");
+    let lower = p.to_ascii_lowercase();
+    ["\\.claude\\worktrees\\", "\\.codex\\worktrees\\"]
+        .iter()
+        .filter_map(|m| lower.find(m))
+        .min()
+        .filter(|&at| at > 0)
+        .map(|at| p[..at].to_string())
+}
+
 /// Branch checked out in the given worktree, per `git worktree list`.
 fn branch_of(folder: &str, worktree_path: &str) -> Option<String> {
     let out = git(folder)
@@ -424,6 +438,15 @@ pub async fn remove_orphan_worktrees(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_worktree_path_names_its_project() {
+        assert_eq!(project_of(r"E:\p\x\.codex\worktrees\codex-1a2b3c").as_deref(), Some(r"E:\p\x"));
+        assert_eq!(project_of("E:/p/x/.claude/worktrees/a-b-c").as_deref(), Some(r"E:\p\x"));
+        assert_eq!(project_of(r"E:\p\x"), None);
+        let wt = r"E:\P\X\.Codex\Worktrees\codex-1";
+        assert!(is_worktree_of(&project_of(wt).unwrap(), wt));
+    }
+
     use super::*;
 
     #[test]

@@ -158,10 +158,11 @@ without the box ticked knows nothing of Luna at all.
 - A spawned session is a normal chat row, nested under the one that made it and folded by
   default; the count on the parent row unfolds it. It is not seated in a pane unless you
   open it. Its own status, context and title work as for any chat.
-- An agent controls only sessions it spawned (and theirs). It can see every other one, yours
-  included, with `luna_sessions` — name, account and its folder, project folder, cwd, the
-  CLI's session id and transcript path — and type a message into any of them with
-  `luna_send`, so you can tell one chat to pass word to another. At most eight helpers under
+- An agent kills and deletes only sessions it spawned (and theirs). It can see every other
+  one, yours included, with `luna_sessions` — name, account and its folder, project folder,
+  cwd, the CLI's session id and transcript path — type a message into any of them with
+  `luna_send`, and read or wait on the answer, so you can tell one chat to pass word to
+  another. At most eight helpers under
   one chat, and a helper's helpers get no tools of their own.
 - Every account is available to agents unless you switch it off with the ◎ mark in its
   row. `luna_list` names the ones that are, so you can tell a chat which one to use.
@@ -170,6 +171,11 @@ without the box ticked knows nothing of Luna at all.
   good, transcript aside.
 - `luna_read` reads the transcript, not the screen; `luna_wait` returns the reply itself,
   so the usual loop is spawn → wait → send → wait → delete with nothing else in context.
+- An agent that asked something and ended its turn without waiting is not left idle: once
+  the answer comes — or the helper stops on a permission prompt, or exits — Luna types a
+  one-line `[Luna notice, not typed by the user]` into the agent's chat, as soon as that
+  chat is between turns, you have not typed into it for 20 seconds, and nothing you typed
+  sits unsent in it (a minute's hold on a draft is announced on the desktop instead).
 
 ## Power
 
