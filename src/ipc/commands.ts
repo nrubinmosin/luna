@@ -198,6 +198,8 @@ export const resizeSession = (id: string, cols: number, rows: number) =>
 export const killSession = (id: string) => call<void>('kill_session', { id });
 
 export const sessionAlive = (id: string) => call<boolean>('session_alive', { id }, false);
+/** Escapes restoring the terminal modes the session's CLI switched. */
+export const sessionModes = (id: string) => call<string>('session_modes', { id }, '');
 
 export interface SessionMetaDto {
   name: string | null;

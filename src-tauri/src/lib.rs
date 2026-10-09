@@ -150,6 +150,7 @@ pub fn run() {
             pty::resize_session,
             pty::kill_session,
             pty::session_alive,
+            pty::session_modes,
             pty::session_meta,
             pty::saved_title,
             pty::orphan_sessions,

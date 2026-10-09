@@ -24,7 +24,7 @@ import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 import { logWarn } from '../../shared/lib/log';
 import type { Chat } from '../../shared/types';
-import { ensureClaudeSession, ensureCodexSession, resizeSession, writeSession } from '../../ipc/commands';
+import { ensureClaudeSession, ensureCodexSession, resizeSession, sessionModes, writeSession } from '../../ipc/commands';
 import { onPtyExit, onPtyOutput } from '../../ipc/events';
 import { useChats } from '../chats/chats.store';
 
@@ -440,10 +440,20 @@ function create(spec: TermSpec): Entry {
     // the repaint went out before any of it landed. That is what left panes
     // showing a bare prompt box with the conversation missing until the next
     // keystroke. The callback is the only ordering guarantee xterm offers.
+    //
+    // The reset also clears the modes the CLI switched at start — a hidden
+    // cursor above all, and bracketed paste — and a repaint does not switch
+    // them again, so xterm's own cursor showed up wherever the CLI last wrote
+    // and wandered the screen from there. The core keeps them for the whole
+    // session; they go back in before the repaint is asked for.
     term.write(backlog, () => {
       if (disposed) return;
       term.reset();
-      nudgeRepaint();
+      void sessionModes(chatId).catch(() => '').then(modes => {
+        if (disposed) return;
+        if (modes) term.write(modes);
+        nudgeRepaint();
+      });
     });
   })();
 
