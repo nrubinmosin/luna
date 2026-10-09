@@ -9,6 +9,7 @@ import { useCli } from '../updates/cli.store';
 import { PROVIDER_LABEL, type Provider } from '../../shared/types';
 import { Segmented } from '../../shared/ui/Segmented';
 import { useNewChat, type Start } from '../new-chat/newchat.store';
+import { useDeletePrefs } from '../chats/deletePrefs.store';
 
 const pct = (got: number, total: number | null) =>
   total ? Math.min(100, Math.round((got / total) * 100)) : null;
@@ -191,6 +192,24 @@ function PerFolderRow() {
   );
 }
 
+/** Where the delete dialog's worktree checkbox starts. */
+function DropWorktreeRow() {
+  const on = useDeletePrefs(s => s.dropWorktree);
+  return (
+    <div className="field-row" style={{ padding: '3px 0' }}>
+      <input
+        type="checkbox"
+        id="drop-worktree-toggle"
+        checked={on}
+        onChange={e => useDeletePrefs.getState().setDropWorktree(e.target.checked)}
+      />
+      <label htmlFor="drop-worktree-toggle" style={{ cursor: 'default', fontSize: 'var(--fs-4)' }}>
+        Delete the worktree and its branch too
+      </label>
+    </div>
+  );
+}
+
 /** The accounts-folder mover, formerly its own fold-out card in the sidebar. */
 function AccountsFolder() {
   const [info, setInfo] = useState<AccountsRootInfo | null>(null);
@@ -306,6 +325,13 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
               Remembered per folder, a folder you have made chats in starts the way the last one there
               did, and the switches above only cover folders new to Luna; forgetting a folder in the
               new-chat dialog forgets this too.
+            </div>
+          </Section>
+          <Section label="Deleting chats">
+            <DropWorktreeRow />
+            <div style={{ fontSize: 'var(--fs-1)', color: 'var(--faint)', marginTop: 4 }}>
+              Where the worktree checkbox starts when you delete a chat that has one. It can still
+              be flipped per chat; uncommitted work in a deleted worktree is lost.
             </div>
           </Section>
           <Section label="Versions & updates">
