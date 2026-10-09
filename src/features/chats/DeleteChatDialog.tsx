@@ -5,6 +5,7 @@ import { accountOfChat, useAccounts } from '../accounts/accounts.store';
 import { ui } from '../providers';
 import { deleteSession } from '../../ipc/commands';
 import { ConfirmDialog } from '../../shared/ui/ConfirmDialog';
+import { useDeletePrefs } from './deletePrefs.store';
 
 /**
  * The one gate every "delete chat" click goes through, wherever the click
@@ -48,7 +49,8 @@ function deleteOne(chat: Chat, dropWorktree: boolean) {
 }
 
 export function DeleteChatDialog({ chat, onClose }: { chat: Chat; onClose: () => void }) {
-  const [dropWorktree, setDropWorktree] = useState(false);
+  // Starts where Settings says; flipping it here is for this delete only.
+  const [dropWorktree, setDropWorktree] = useState(() => useDeletePrefs.getState().dropWorktree);
   // The helpers this chat's agent spawned. Kept by default — they may hold
   // an answer nothing else has — and listed as orphans once the parent goes.
   const [withChildren, setWithChildren] = useState(false);
@@ -71,7 +73,9 @@ export function DeleteChatDialog({ chat, onClose }: { chat: Chat; onClose: () =>
         <>
           The session is stopped and its scrollback is lost. Pasted attachments are removed.
           The transcript is kept, so the session can still be resumed from the CLI.
-          {chat.worktree && <> Its git worktree stays on disk unless you say otherwise.</>}
+          {chat.worktree && (dropWorktree
+            ? <> Its git worktree goes too, unless you untick the box below.</>
+            : <> Its git worktree stays on disk unless you say otherwise.</>)}
           {chat.worktree && chat.worktreePath && (
             // On its own line: a Windows worktree path is long enough to
             // break the sentence it sits in across three ragged lines.

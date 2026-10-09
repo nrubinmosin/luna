@@ -139,8 +139,9 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   — are listed at the top of the sidebar, with what they are
   working on, and can be adopted back or killed.
 - A folder with worktrees left behind by deleted chats offers to sweep them; nothing a
-  live session sits in is ever swept. Deleting a chat offers to take its worktree and the
-  branch the CLI made for it, and keeps them unless asked.
+  live session sits in is ever swept. Deleting a chat takes its worktree and the branch
+  the CLI made for it along by default; the checkbox can be unticked per chat, and where it
+  starts is set in Settings.
 - Warnings and errors from both halves of the app land in `luna.log`, next to the exe for
   the portable build and under `%LOCALAPPDATA%\luna` otherwise. Info-level chatter never
   reaches it, so what is in there is worth reading.
