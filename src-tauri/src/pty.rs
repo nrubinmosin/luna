@@ -75,6 +75,8 @@ struct Session {
     /// the reader thread shares it to collect the exit code.
     child: Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>>,
     scrollback: Arc<Mutex<VecDeque<u8>>>,
+    /// The terminal modes the CLI has switched, whole-session — see `Modes`.
+    modes: Arc<Mutex<Modes>>,
     alive: Arc<AtomicBool>,
     /// When the child last wrote anything — Codex has no live status file, so
     /// a quiet screen mid-turn is how an approval prompt is told apart from
@@ -273,6 +275,7 @@ async fn spawn(
     }
 
     let scrollback = Arc::new(Mutex::new(VecDeque::new()));
+    let modes = Arc::new(Mutex::new(Modes::default()));
     let alive = Arc::new(AtomicBool::new(true));
     let last_output_ms = Arc::new(AtomicU64::new(now_ms()));
 
@@ -280,6 +283,7 @@ async fn spawn(
         let app = app.clone();
         let id = id.clone();
         let scrollback = Arc::clone(&scrollback);
+        let modes = Arc::clone(&modes);
         let alive = Arc::clone(&alive);
         let last_output_ms = Arc::clone(&last_output_ms);
         let child = Arc::clone(&child);
@@ -335,6 +339,7 @@ async fn spawn(
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
                         last_output_ms.store(now_ms(), Ordering::Relaxed);
+                        modes.lock().unwrap_or_else(|e| e.into_inner()).feed(&chunk[..n]);
                         let pieces = split_dsr(&mut carry, &chunk[..n]);
                         let last = pieces.len() - 1;
                         for (i, piece) in pieces.into_iter().enumerate() {
@@ -397,6 +402,7 @@ async fn spawn(
             killer,
             child,
             scrollback,
+            modes,
             alive,
             last_output_ms,
             pid,
@@ -1241,6 +1247,69 @@ fn split_dsr(carry: &mut Vec<u8>, chunk: &[u8]) -> Vec<Vec<u8>> {
     pieces
 }
 
+/// The DEC private modes worth carrying over to a pane that attaches late:
+/// cursor visibility, cursor-key mode, mouse reporting, focus reporting and
+/// bracketed paste. A CLI switches these once, at start, and never again —
+/// so they are long gone from the capped scrollback, and a reattaching pane
+/// resets its terminal anyway (see terminals.ts). Without them the pane drew
+/// its own cursor wherever the CLI last wrote, on top of the one the CLI
+/// draws in its input box, and the stray one wandered the screen with every
+/// repaint. The alternate screen (1049) is left out on purpose: the pane
+/// repaints onto the normal screen after the reset. So is synchronized output
+/// (2026), which would freeze the pane if it were replayed mid-frame.
+const KEPT_MODES: &[u16] = &[1, 25, 1000, 1002, 1003, 1004, 1006, 2004];
+
+/// The last state of each of `KEPT_MODES`, read off the output as it streams,
+/// so the scrollback cap cannot take it away. The scanner keeps its place
+/// between reads, so a sequence split across two of them still counts.
+#[derive(Default)]
+struct Modes {
+    on: std::collections::BTreeMap<u16, bool>,
+    /// 0 ground, 1 after ESC, 2 after ESC [, 3 in the parameters of ESC [ ?.
+    state: u8,
+    params: Vec<u8>,
+}
+
+impl Modes {
+    fn feed(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.state = match (self.state, b) {
+                (_, 0x1b) => 1,
+                (1, b'[') => 2,
+                (2, b'?') => {
+                    self.params.clear();
+                    3
+                }
+                (3, b'0'..=b'9' | b';') if self.params.len() < 64 => {
+                    self.params.push(b);
+                    3
+                }
+                (3, b'h' | b'l') => {
+                    self.apply(b == b'h');
+                    0
+                }
+                _ => 0,
+            };
+        }
+    }
+
+    fn apply(&mut self, set: bool) {
+        for p in self.params.split(|&c| c == b';') {
+            let n = std::str::from_utf8(p).ok().and_then(|p| p.parse::<u16>().ok());
+            if let Some(n) = n.filter(|n| KEPT_MODES.contains(n)) {
+                self.on.insert(n, set);
+            }
+        }
+    }
+
+    fn replay(&self) -> String {
+        self.on
+            .iter()
+            .map(|(n, set)| format!("\x1b[?{n}{}", if *set { 'h' } else { 'l' }))
+            .collect()
+    }
+}
+
 /// The last `max` bytes of a file as text, or None if it cannot be read.
 pub fn tail(path: &std::path::Path, max: u64) -> Option<String> {
     use std::io::{Seek, SeekFrom};
@@ -1354,6 +1423,22 @@ pub async fn saved_title(provider: Provider, account_path: String, session_id: S
     .flatten()
 }
 
+/// The escapes that put a pane's terminal back in the modes the session's CLI
+/// switched — written after a reattaching pane resets (see `Modes`). Empty for
+/// a session that is not there.
+#[tauri::command]
+pub fn session_modes(state: PtyState, id: String) -> String {
+    let modes = {
+        let sessions = state.sessions.lock().unwrap();
+        match sessions.get(&id) {
+            Some(s) => Arc::clone(&s.modes),
+            None => return String::new(),
+        }
+    };
+    let replay = modes.lock().unwrap_or_else(|e| e.into_inner()).replay();
+    replay
+}
+
 #[tauri::command]
 pub fn session_alive(state: PtyState, id: String) -> bool {
     let sessions = state.sessions.lock().unwrap();
@@ -1366,6 +1451,16 @@ pub fn session_alive(state: PtyState, id: String) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn modes_survive_split_reads_and_keep_only_the_last_word() {
+        let mut m = Modes::default();
+        m.feed(b"\x1b[?25l\x1b[?20");
+        m.feed(b"04h\x1b[?1049h\x1b[?2026h\x1b[?1000;1006h");
+        m.feed(b"text\x1b[?1000l\x1b[31m\x1b[?");
+        m.feed(b"1004h");
+        assert_eq!(m.replay(), "\x1b[?25l\x1b[?1000l\x1b[?1004h\x1b[?1006h\x1b[?2004h");
+    }
 
     #[test]
     fn cursor_queries_are_cut_out_even_across_reads() {
