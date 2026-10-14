@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react';
 import { ACCENT } from '../../shared/lib/format';
+import { Icon } from '../../shared/ui/icons';
 import { useChats, allChats } from '../chats/chats.store';
 import { usePower } from './power.store';
 import { PowerMenu } from './PowerMenu';
 
 const chipStyle = (loud: boolean) => ({
   flexGrow: 0,
-  fontSize: 'var(--fs-2)',
   cursor: 'default',
   whiteSpace: 'nowrap' as const,
   fontVariantNumeric: 'tabular-nums',
@@ -62,20 +62,20 @@ export function PowerChip() {
   let loud = false;
   if (countdownEndsAtMs) {
     const left = Math.max(0, Math.ceil((countdownEndsAtMs - now) / 1000));
-    text = `⏻ ${VERB[armed?.action ?? 'shutdown']} in ${left}s`;
+    text = `${VERB[armed?.action ?? 'shutdown']} in ${left}s`;
     title = 'Every session is done. Click to cancel.';
     loud = true;
   } else if (armed) {
     // Someone waiting for an answer holds the rule indefinitely: say so on
     // the chip itself, not only in its tooltip.
-    text = `⏻ ${VERB[armed.action]} when done${summary.waiting ? ` · ${summary.waiting} waiting for you` : ''}`;
+    text = `${VERB[armed.action]} when done${summary.waiting ? ` · ${summary.waiting} waiting for you` : ''}`;
     title = blockers.length
       ? `Waiting on:\n${blockers.join('\n')}`
       : `All quiet — ${VERB[armed.action]} once it stays that way for ${armed.quietS / 60} min. Click to change or disarm.`;
     if (stalled.length) title += `\n\nCounted as done:\n${stalled.join('\n')}`;
     loud = true;
   } else {
-    text = holding ? '⏻ awake' : '⏻';
+    text = holding ? 'awake' : '';
     title = holding
       ? `The PC is held awake by:\n${blockers.join('\n') || 'a session that just went quiet'}\nClick for the power rules.`
       : 'Power: keep awake, shut down when done. Click to set up.';
@@ -89,9 +89,10 @@ export function PowerChip() {
           else usePower.getState().setOpen(true);
         }}
         title={title}
-        className="status-bar-field hover-bg"
+        className="sb-field click"
         style={chipStyle(loud)}
       >
+        <Icon name="power" />
         {text}
       </div>
       {open && <PowerMenu onClose={() => usePower.getState().setOpen(false)} />}

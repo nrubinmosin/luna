@@ -6,15 +6,6 @@ export const tail2 = (p: string) => {
   };
 };
 
-export const clockTime = (d: Date) =>
-  d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-
-export const clockDate = (d: Date) =>
-  d.toLocaleDateString('en-US', { day: 'numeric', month: 'long' });
-
-export const clockWeekday = (d: Date) =>
-  d.toLocaleDateString('en-US', { weekday: 'long' });
-
 // "2026-08-17T21:00:00+00:00" -> "41m" / "2h 12m" / "4d"
 export const fmtReset = (iso: string | null): string => {
   if (!iso) return '—';

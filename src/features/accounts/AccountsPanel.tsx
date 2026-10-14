@@ -1,15 +1,79 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { create } from 'zustand';
 import { fmtResetDate } from '../../shared/lib/format';
+import { ToolButton } from '../../shared/ui/icons';
+import { useDialogHost } from '../../shared/ui/dialogHost';
 import { ConfirmDialog } from '../../shared/ui/ConfirmDialog';
 import { PROVIDER_LABEL, PROVIDER_VENDOR, PROVIDERS, accountKey, type Account, type Provider } from '../../shared/types';
 import { useAccounts } from './accounts.store';
 import { useChats } from '../chats/chats.store';
-import { SettingsDialog } from '../settings/SettingsDialog';
+import { useSettings } from '../settings/SettingsDialog';
 import { ui } from '../providers';
 import { useAgentAccounts } from '../agents/agentAccounts.store';
 
-/** Renders inline as the sidebar's account list — no longer a floating popover. */
-export function AccountsPanel() {
+/** Raised from the status bar: its account summary, or its Accounts button. */
+export const useAccountsWindow = create<{ open: boolean; setOpen: (v: boolean) => void }>(set => ({
+  open: false,
+  setOpen: v => set({ open: v })
+}));
+
+/**
+ * Every account and everything that can be done to one, in a window of its
+ * own. The sidebar used to carry all of it inline — five lines an account,
+ * near half the sidebar's height on three accounts — for what is mostly
+ * glanced at; the glance now lives in the status bar.
+ */
+export function AccountsWindow() {
+  const open = useAccountsWindow(s => s.open);
+  const close = () => useAccountsWindow.getState().setOpen(false);
+  const host = useDialogHost();
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      // Dialogs raised from inside (login, delete, settings) close themselves first.
+      if (e.key === 'Escape' && !document.querySelector('.scrim ~ .scrim')) close();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open]);
+
+  if (!open || !host) return null;
+
+  return createPortal(
+    <div
+      className="scrim"
+      onClick={e => {
+        e.stopPropagation();
+        close();
+      }}
+      style={{
+        position: 'fixed', inset: 0, background: 'rgba(0,0,0,.35)', backdropFilter: 'blur(1px)',
+        display: 'grid', placeItems: 'center', zIndex: 65
+      }}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        className="window"
+        style={{ width: 560, maxWidth: 'calc(100vw - 32px)', boxShadow: 'var(--shadow), var(--border-window-outer), var(--border-window-inner)' }}
+      >
+        <div className="title-bar">
+          <div className="title-bar-text">Accounts</div>
+          <div className="title-bar-controls">
+            <button aria-label="Close" onClick={close} />
+          </div>
+        </div>
+        <div className="window-body" style={{ maxHeight: 'calc(100vh - 140px)', overflowY: 'auto' }}>
+          <AccountsPanel />
+        </div>
+      </div>
+    </div>,
+    host
+  );
+}
+
+function AccountsPanel() {
   const accounts = useAccounts(s => s.accounts);
   const adding = useAccounts(s => s.adding);
   const error = useAccounts(s => s.error);
@@ -17,11 +81,6 @@ export function AccountsPanel() {
   const { add, remove, setAdding, setLoginFor, refreshAccount } = useAccounts.getState();
   const [name, setName] = useState('');
   const [provider, setProvider] = useState<Provider>('claude');
-  // `?demo=settings` opens the dialog for its screenshot; the check compiles
-  // away in a release build along with the rest of the fixture.
-  const [settingsOpen, setSettingsOpen] = useState(
-    () => import.meta.env.DEV && new URLSearchParams(location.search).get('demo') === 'settings'
-  );
   // `window.confirm` is what stood here, and in a webview that is the dialog
   // plugin's `confirm` command — which this app's ACL does not allow. It threw
   // into an unhandled rejection and returned nothing, so the guard read as
@@ -42,32 +101,24 @@ export function AccountsPanel() {
   };
 
   return (
-    <div style={{ borderTop: '1px solid var(--line)', padding: '7px 9px 9px', overflowY: 'auto' }}>
-      <div style={{ display: 'flex', alignItems: 'center', marginBottom: 6 }}>
-        <div style={{ fontSize: 'var(--fs-1)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: 'var(--faint)' }}>
-          Accounts
-        </div>
-        <span style={{ flex: 1 }} />
-        <button
-          onClick={() => setSettingsOpen(true)}
-          title="Settings — accounts folder, versions and updates"
-          aria-label="Settings"
-          className="slim"
-          style={{ minHeight: 'calc(var(--ui) * 1.35)', fontSize: 'var(--fs-2)', marginRight: 4, width: 26 }}
-        >
-          ⚙
-        </button>
-        <button
-          onClick={() => setAdding(!adding)}
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 8 }}>
+        <ToolButton
+          icon="plus"
+          label="Add account"
+          active={adding}
           title="Add account — creates <accounts folder>/anthropic/<name> or /openai/<name>"
-          className="slim"
-          style={{ minHeight: 'calc(var(--ui) * 1.35)', fontSize: 'var(--fs-2)' }}
-        >
-          + add
-        </button>
+          onClick={() => setAdding(!adding)}
+        />
+        <span style={{ flex: 1 }} />
+        <ToolButton
+          icon="gear"
+          label="Settings"
+          title="Settings — accounts folder, new chats, versions and updates"
+          onClick={() => useSettings.getState().setOpen(true)}
+        />
       </div>
 
-      {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} />}
 
       {adding && (
         <div style={{ display: 'flex', gap: 4, marginBottom: 8 }}>
@@ -138,11 +189,11 @@ export function AccountsPanel() {
         const weekReset = acc.haveUsage ? fmtResetDate(p.longResetAt(acc)) : null;
         const busy = refreshing.includes(acc.path);
         return (
-          <div key={accountKey(acc.provider, acc.name)} style={{ padding: '6px 0', borderTop: '1px solid var(--line)' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 5 }}>
-              <span style={{ width: 6, height: 6, borderRadius: '50%', flex: 'none', background: dot }} />
+          <div key={accountKey(acc.provider, acc.name)} style={{ padding: '8px 0 6px', borderTop: '1px solid var(--line)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+              <span style={{ width: 8, height: 8, borderRadius: '50%', flex: 'none', background: dot }} />
               <span
-                style={{ fontSize: 'var(--fs-3)', fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+                style={{ fontSize: 'var(--fs-5)', fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
                 title={[acc.email, acc.path].filter(Boolean).join('\n')}
               >
                 {acc.name}
@@ -158,43 +209,34 @@ export function AccountsPanel() {
               </span>
               <span style={{ flex: 1 }} />
               <span
-                title={acc.signedIn ? 'Signed in' : acc.refreshError ?? 'No usable credentials — click login'}
+                title={acc.signedIn ? 'Signed in' : acc.refreshError ?? 'No usable credentials — sign in'}
                 style={{
-                  fontSize: 'var(--fs-1)', whiteSpace: 'nowrap',
+                  fontSize: 'var(--fs-3)', whiteSpace: 'nowrap', marginRight: 4,
                   color: acc.signedIn ? 'var(--faint)' : 'oklch(.58 .2 25)'
                 }}
               >
                 {note}
               </span>
               {!acc.signedIn && (
-                <button
-                  onClick={() => setLoginFor(acc)}
-                  title="Sign in this account"
-                  className="slim"
-                  style={{ flex: 'none', minHeight: 'calc(var(--ui) * 1.25)', fontSize: 'var(--fs-1)' }}
-                >
-                  login
-                </button>
+                <ToolButton icon="key" size={24} label="Sign in" title="Sign in this account" onClick={() => setLoginFor(acc)} />
               )}
-              <span
-                onClick={() => void setAgentAllowed(acc.provider, acc.name, !agentsMay(acc.provider, acc.name))}
+              <ToolButton
+                icon="agents"
+                size={24}
+                active={agentsMay(acc.provider, acc.name)}
                 title={
                   agentsMay(acc.provider, acc.name)
                     ? 'Agents may spawn sessions on this account — click to forbid'
                     : 'Agents may not use this account — click to allow'
                 }
-                className="hover-bg"
-                style={{
-                  width: 16, height: 16, flex: 'none', borderRadius: 2, display: 'grid', placeItems: 'center',
-                  fontSize: 'var(--fs-2)', cursor: 'default',
-                  color: agentsMay(acc.provider, acc.name) ? 'var(--faint)' : 'oklch(.58 .2 25)',
-                  textDecoration: agentsMay(acc.provider, acc.name) ? 'none' : 'line-through'
-                }}
-              >
-                ◎
-              </span>
-              <span
-                onClick={() => void refreshAccount(acc)}
+                style={agentsMay(acc.provider, acc.name) ? undefined : { opacity: 0.55 }}
+                onClick={() => void setAgentAllowed(acc.provider, acc.name, !agentsMay(acc.provider, acc.name))}
+              />
+              <ToolButton
+                icon="refresh"
+                size={24}
+                spin={busy}
+                disabled={busy}
                 title={
                   busy
                     ? 'Refreshing…'
@@ -202,23 +244,9 @@ export function AccountsPanel() {
                       ? 'Refresh limits now — renews an expired token on the way'
                       : 'Refresh limits now'
                 }
-                className="hover-bg"
-                style={{
-                  width: 16, height: 16, flex: 'none', borderRadius: 2, display: 'grid', placeItems: 'center',
-                  fontSize: 'var(--fs-2)', color: 'var(--faint)', cursor: 'default',
-                  ...(busy && { animation: 'spin .9s linear infinite', pointerEvents: 'none' })
-                }}
-              >
-                ↻
-              </span>
-              <span
-                onClick={() => setDeleting(acc)}
-                title="Delete account folder"
-                className="hover-danger"
-                style={{ width: 16, height: 16, flex: 'none', borderRadius: 2, display: 'grid', placeItems: 'center', fontSize: 'var(--fs-1)', color: 'var(--faint)', cursor: 'default' }}
-              >
-                ✕
-              </span>
+                onClick={() => void refreshAccount(acc)}
+              />
+              <ToolButton icon="trash" size={24} danger title="Delete account folder — asks first" onClick={() => setDeleting(acc)} />
             </div>
             <p.LimitBars account={acc} />
             {(weekReset || usageNote) && (

@@ -17,7 +17,7 @@ const KEYBOARD: Row[] = [
   ['Ctrl+Shift+1…4', 'Layout: one to four panes'],
   ['Ctrl+1…4', 'Several panes: hold that pane up on the sheet, again to put it back'],
   ['Ctrl+1…9', 'One pane: show the chat with that number in the list'],
-  ['Ctrl+Tab', 'Sheet up: the next pane — with Shift, the previous one'],
+  ['Ctrl+Tab', 'Next window group, I → II → III → IV and round (Ctrl+Shift+Tab stays with the CLI)'],
   ['Ctrl+0', 'Back to the grid'],
   ['Hold Alt', 'Over a chat in the list: a look at it on the sheet until Alt is let go — a click keeps it'],
   ['F1', 'This list'],
@@ -29,9 +29,12 @@ const MOUSE: Row[] = [
   ['Click outside the sheet', 'Back to the grid — so do the mouse’s Back button and, in the sheet’s bar, the chip of the pane that is up'],
   ['Drag a chat onto a pane', 'Seats it in that pane'],
   ['Drag a title bar onto a pane', 'Swaps the two panes'],
-  ['Double-click a name', 'Renames the chat — in the list or in its title bar'],
-  ['Double-click a divider', 'Evens the split out; the sidebar’s edge goes back to its width'],
-  ['Click the session id', 'Copies it — the 8 characters issue claims and logs go by']
+  ['Drag a divider', 'Resizes the panes; Even out in the sidebar puts every split back to half'],
+  ['Pencil / bin', 'Rename / delete the chat — on its row in the list and on its title bar'],
+  ['_ on a title bar', 'Takes the chat off the board; it keeps running and stays in the list'],
+  ['Click the session id', 'Copies it — the 8 characters issue claims and logs go by'],
+  ['“Waiting” in the status bar', 'Goes to the next chat that is waiting for you'],
+  ['Accounts in the status bar', 'Opens the Accounts window: sign in, limits, agents, add, delete']
 ];
 
 function Section({ label, rows }: { label: string; rows: Row[] }) {
@@ -88,6 +91,7 @@ export function ShortcutsDialog() {
         e.stopPropagation();
         close();
       }}
+      className="scrim"
       style={{
         position: 'fixed', inset: 0, background: 'rgba(0,0,0,.35)', backdropFilter: 'blur(1px)',
         display: 'grid', placeItems: 'center', zIndex: 70

@@ -1,43 +1,22 @@
-import { useEffect, useState } from 'react';
-import { clockDate, clockTime, clockWeekday, ACCENT } from '../../shared/lib/format';
+import type { CSSProperties } from 'react';
+import { ACCENT, limitColor } from '../../shared/lib/format';
 import { STATUS } from '../../shared/ui/status';
-import { useChats } from '../chats/chats.store';
-import { AccountsPanel } from '../accounts/AccountsPanel';
+import { Icon } from '../../shared/ui/icons';
+import { allChats, useChats } from '../chats/chats.store';
+import { AccountsWindow, useAccountsWindow } from '../accounts/AccountsPanel';
+import { useAccounts } from '../accounts/accounts.store';
+import { currentLayout, currentSlots, usePanes } from '../panes/panes.store';
+import { ui } from '../providers';
 import { useUpdates } from '../updates/updates.store';
 import { useCli } from '../updates/cli.store';
 import { cliUpdateNow } from '../../ipc/commands';
-import { PROVIDER_LABEL, PROVIDERS } from '../../shared/types';
+import { PROVIDER_LABEL, PROVIDERS, accountKey, type Account } from '../../shared/types';
 import { PowerChip } from '../power/PowerChip';
 import { useShortcuts } from '../shortcuts/ShortcutsDialog';
-
-/** Sidebar footer: clock, run summary, then the account list —
- *  the horizontal top-level status bar this used to be didn't have room for
- *  any of that once panes reclaimed its height. */
-/** Its own component so the once-a-second tick re-renders three spans rather
- *  than the whole footer, account rows and limit bars included. */
-function Clock() {
-  const [now, setNow] = useState(() => new Date());
-  useEffect(() => {
-    const t = setInterval(() => setNow(new Date()), 1000);
-    return () => clearInterval(t);
-  }, []);
-
-  return (
-    // nowrap keeps the bar's height still: "August 17" breaking into two
-    // lines once a squeeze got narrow enough made the whole footer jump.
-    <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, whiteSpace: 'nowrap' }}>
-      <span style={{ fontVariantNumeric: 'tabular-nums', fontWeight: 700, color: 'var(--fg)', fontSize: 'var(--fs-4)' }}>
-        {clockTime(now)}
-      </span>
-      <span style={{ fontSize: 'var(--fs-1)', color: 'var(--dim)' }}>{clockDate(now)}</span>
-      <span style={{ fontSize: 'var(--fs-1)', color: 'var(--faint)' }}>{clockWeekday(now)}</span>
-    </div>
-  );
-}
+import { useSettings } from '../settings/SettingsDialog';
 
 const chipStyle = (loud: boolean) => ({
   flexGrow: 0,
-  fontSize: 'var(--fs-2)',
   cursor: 'default',
   whiteSpace: 'nowrap' as const,
   fontVariantNumeric: 'tabular-nums',
@@ -67,7 +46,7 @@ function UpdateChips() {
         key="app"
         onClick={() => useUpdates.getState().setAsking(true)}
         title={`Version ${next} is out — click for the release notes`}
-        className="status-bar-field hover-bg"
+        className="sb-field click"
         style={chipStyle(true)}
       >
         {`↑ ${next}`}
@@ -79,7 +58,7 @@ function UpdateChips() {
       <div
         key="app"
         title={`Downloading ${next}… Luna closes on its own to install it.`}
-        className="status-bar-field"
+        className="sb-field"
         style={chipStyle(true)}
       >
         {`↓ ${done == null ? '…' : `${done}%`}`}
@@ -91,7 +70,7 @@ function UpdateChips() {
         key="app"
         onClick={() => void useUpdates.getState().check(true)}
         title="Update check failed — click to try again"
-        className="status-bar-field hover-bg"
+        className="sb-field click"
         style={chipStyle(false)}
       >
         ⚠ update
@@ -110,7 +89,7 @@ function UpdateChips() {
         <div
           key={`cli-${p}`}
           title={`Downloading ${PROVIDER_LABEL[p]} ${cli.latest ?? ''}… new chats use it once it lands.`}
-          className="status-bar-field"
+          className="sb-field"
           style={chipStyle(!cli.version)}
         >
           {`${short} ↓ ${done == null ? '…' : `${done}%`}`}
@@ -122,7 +101,7 @@ function UpdateChips() {
           key={`cli-${p}`}
           onClick={() => void cliUpdateNow(p)}
           title={`${PROVIDER_LABEL[p]} update failed — click to try again\n${cli.error ?? ''}`}
-          className="status-bar-field hover-bg"
+          className="sb-field click"
           style={chipStyle(false)}
         >
           {short} ⚠
@@ -134,60 +113,140 @@ function UpdateChips() {
   return <>{chips}</>;
 }
 
-export function StatusBar() {
-  const folders = useChats(s => s.folders);
-
-  const all = folders.flatMap(f => f.chats);
-  const working = all.filter(c => c.status === 'working').length;
-  const waiting = all.filter(c => c.status === 'waiting').length;
+/** One account as the status bar shows it: a dot, the name, two meters. */
+function AccountGlance({ account }: { account: Account }) {
+  const p = ui(account.provider);
+  const windows: Array<{ k: string; v: number }> =
+    account.limits.kind === 'claude'
+      ? [{ k: '5h', v: account.limits.h5 }, { k: 'week', v: account.limits.week }]
+      : account.limits.windows.slice(0, 2).map(w => ({ k: w.label === '5 hours' ? '5h' : w.label, v: w.used }));
+  const dot = !account.signedIn
+    ? 'oklch(.63 .19 25)'
+    : p.worstLimit(account) >= 0.85
+      ? 'oklch(.63 .19 25)'
+      : account.haveUsage
+        ? 'oklch(.64 .18 145)'
+        : 'var(--faint)';
 
   return (
-    <div style={{ flex: 'none', maxHeight: '58%', display: 'flex', flexDirection: 'column', borderTop: '1px solid var(--window-frame)', background: 'var(--sidebar)' }}>
-      <div style={{ flex: '1 1 auto', minHeight: 0, overflowY: 'auto' }}>
-        <AccountsPanel />
+    <span
+      className="sb-acc"
+      title={
+        `${account.name} — ${PROVIDER_LABEL[account.provider]}${account.plan ? `, ${account.plan}` : ''}\n` +
+        (account.signedIn
+          ? account.haveUsage
+            ? windows.map(w => `${w.k}: ${Math.round(w.v * 100)}%`).join(' · ')
+            : 'no usage data yet'
+          : 'signed out')
+      }
+    >
+      <span className="sb-dot" style={{ background: dot }} />
+      <b>{account.name}</b>
+      {account.provider === 'codex' && <span style={{ color: 'var(--faint)' }}>codex</span>}
+      {!account.signedIn ? (
+        <span style={{ color: 'oklch(.58 .2 25)' }}>signed out</span>
+      ) : account.haveUsage ? (
+        windows.map(w => (
+          <span key={w.k} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            <span className="sb-mini">
+              <i style={{ width: `${Math.round(w.v * 100)}%`, ['--m' as string]: limitColor(w.v) } as CSSProperties} />
+            </span>
+            {Math.round(w.v * 100)}%
+          </span>
+        ))
+      ) : (
+        <span style={{ color: 'var(--faint)' }}>—</span>
+      )}
+    </span>
+  );
+}
+
+/**
+ * The window's status bar, the full width of it as XP drew one: what the
+ * sessions are doing, every account at a glance, and the way into the rest.
+ * The clock that used to sit here is gone — Windows keeps one in the taskbar.
+ */
+export function StatusBar() {
+  const folders = useChats(s => s.folders);
+  const accounts = useAccounts(s => s.accounts);
+
+  const all = allChats(folders);
+  const working = all.filter(c => c.status === 'working').length;
+  const waiting = all.filter(c => c.status === 'waiting');
+  const openAccounts = () => useAccountsWindow.getState().setOpen(true);
+
+  // Each click goes to the next chat that is waiting, round the list.
+  const jumpToWaiting = () => {
+    if (!waiting.length) return;
+    const active = useChats.getState().active;
+    const at = waiting.findIndex(c => c.id === active);
+    const chat = waiting[(at + 1) % waiting.length];
+    let panes = usePanes.getState();
+    if (chat.group !== panes.group) {
+      panes.setGroup(chat.group);
+      panes = usePanes.getState();
+    }
+    useChats.getState().setActive(chat.id);
+    const seat = currentSlots(panes).indexOf(chat.id);
+    if (seat >= 0 && seat < currentLayout(panes)) {
+      panes.closePeek();
+      panes.setActivePane(seat);
+    } else {
+      panes.showChat(chat.id);
+    }
+  };
+
+  return (
+    <div className="app-status">
+      <div className={`sb-field${working ? ' loud' : ''}`} title={`${working} session${working === 1 ? '' : 's'} working`}>
+        <span className="sb-dot" style={{ background: working ? STATUS.working.color : 'var(--faint)' }} />
+        {working} working
+      </div>
+      <div
+        onClick={jumpToWaiting}
+        className={`sb-field${waiting.length ? ' waiting click' : ''}`}
+        title={
+          waiting.length
+            ? `Waiting for you:\n${waiting.map(c => c.name).join('\n')}\nClick to go to ${waiting.length > 1 ? 'the next one' : 'it'}`
+            : 'Nothing is waiting for you'
+        }
+      >
+        <span className="sb-dot" style={{ background: waiting.length ? 'var(--wait)' : 'var(--faint)' }} />
+        {waiting.length} waiting
       </div>
 
-      {/* Bottom edge of the window, where XP puts its status bar. One row for
-          good: clock, sometimes an update chip, and the two counts. The date
-          clips first when the sidebar is dragged narrow — better a shorter
-          date than the two-line wrap this bar used to fall into. */}
-      <div className="status-bar" style={{ flex: 'none' }}>
-        {/* Takes the slack on its row, so the fields after it sit against the
-            right edge instead of trailing off into dead space. */}
-        <div className="status-bar-field" style={{ flexGrow: 1, minWidth: 0, overflow: 'hidden' }}>
-          <Clock />
-        </div>
-        <UpdateChips />
-        <PowerChip />
-        {/* Where a mouse user finds what the keyboard can do; F1 is the same. */}
-        <div
-          onClick={() => useShortcuts.getState().setOpen(true)}
-          title="Shortcuts and mouse gestures — F1"
-          className="status-bar-field hover-bg"
-          style={chipStyle(false)}
-        >
-          ?
-        </div>
-        {/* Two counts and nothing else: the field is the narrowest strip in the
-            window, and spelled-out labels only got themselves ellipsised away. */}
-        <div
-          className="status-bar-field"
-          title={`${working} working · ${waiting} waiting for you`}
-          style={{
-            flexGrow: 0, display: 'flex', alignItems: 'center', gap: 7,
-            fontSize: 'var(--fs-3)', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap'
-          }}
-        >
-          <span style={{ display: 'flex', alignItems: 'center', gap: 3, color: working ? STATUS.working.color : 'var(--faint)' }}>
-            <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'currentColor' }} />
-            {working}
-          </span>
-          <span style={{ display: 'flex', alignItems: 'center', gap: 3, color: waiting ? STATUS.waiting.color : 'var(--faint)' }}>
-            <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'currentColor' }} />
-            {waiting}
-          </span>
-        </div>
+      <div onClick={openAccounts} className="sb-field grow click" title="Accounts — click to manage them">
+        {accounts.length === 0 ? (
+          <span style={{ color: 'var(--faint)' }}>No accounts yet — click to add one</span>
+        ) : (
+          accounts.map(a => <AccountGlance key={accountKey(a.provider, a.name)} account={a} />)
+        )}
       </div>
+
+      <UpdateChips />
+      <div onClick={openAccounts} className="sb-field click" title="Accounts: sign in, limits, agents, add and delete">
+        <Icon name="accounts" />
+        Accounts
+      </div>
+      <PowerChip />
+      <div
+        onClick={() => useSettings.getState().setOpen(true)}
+        title="Settings — accounts folder, board, new chats, versions and updates"
+        className="sb-field click"
+        style={{ padding: '0 6px' }}
+      >
+        <Icon name="gear" />
+      </div>
+      {/* Where a mouse user finds what the keyboard can do; F1 is the same. */}
+      <div
+        onClick={() => useShortcuts.getState().setOpen(true)}
+        title="Shortcuts and mouse gestures — F1"
+        className="sb-field click"
+        style={{ padding: '0 6px' }}
+      >
+        <Icon name="help" />
+      </div>
+      <AccountsWindow />
     </div>
   );
 }

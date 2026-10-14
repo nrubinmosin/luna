@@ -25,51 +25,34 @@ import { UpdateConfirm } from '../features/updates/UpdateConfirm';
 import { useKeymap } from './keymap';
 import { useAltPeek } from '../features/panes/altPeek';
 import { ShortcutsDialog } from '../features/shortcuts/ShortcutsDialog';
+import { SettingsDialog } from '../features/settings/SettingsDialog';
 import { healScaleDrift } from './dpi';
+import { Icon, ToolButton, type IconName } from '../shared/ui/icons';
 import './theme.css';
 
 type ThemePref = 'system' | 'light' | 'dark';
-const THEMES: Record<ThemePref, { glyph: string; title: string }> = {
-  system: { glyph: '◐', title: 'Theme: system' },
-  light: { glyph: '☀', title: 'Theme: light' },
-  dark: { glyph: '☾', title: 'Theme: dark' }
+const THEMES: Record<ThemePref, { icon: IconName; title: string }> = {
+  system: { icon: 'auto', title: 'Theme: system' },
+  light: { icon: 'sun', title: 'Theme: light' },
+  dark: { icon: 'moon', title: 'Theme: dark' }
 };
 
+/** A board's shape, drawn as a little XP window with its panes. */
 function LayoutIcon({ n }: { n: Layout }) {
-  const b = '1.4px solid var(--dim)';
-  const box = { width: 14, height: 11, border: b, borderRadius: 2 } as const;
-  if (n === 1) return <div style={box} />;
-  if (n === 2)
-    return (
-      <div style={{ ...box, display: 'flex' }}>
-        <div style={{ width: '50%', borderRight: b }} />
-      </div>
-    );
-  if (n === 3)
-    return (
-      <div style={{ ...box, display: 'flex' }}>
-        <div style={{ width: '52%', borderRight: b }} />
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
-          <div style={{ height: '50%', borderBottom: b }} />
-        </div>
-      </div>
-    );
+  const lines = { 1: '', 2: 'M9 5v9', 3: 'M9 5v9M9 9.5h7', 4: 'M9 5v9M2 9.5h14' }[n];
   return (
-    <div style={{ ...box, display: 'flex' }}>
-      <div style={{ width: '50%', borderRight: b, display: 'flex', flexDirection: 'column' }}>
-        <div style={{ height: '50%', borderBottom: b }} />
-      </div>
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
-        <div style={{ height: '50%', borderBottom: b }} />
-      </div>
-    </div>
+    <svg width="18" height="16" viewBox="0 0 18 16" aria-hidden style={{ display: 'block' }}>
+      <rect x="1.5" y="1.5" width="15" height="13" rx="1.5" fill="#fff" stroke="#1d3f86" />
+      <rect x="1.5" y="1.5" width="15" height="3.5" rx="1.5" fill="#2a6ff0" stroke="#1d3f86" />
+      {lines && <path d={lines} stroke="#1d3f86" fill="none" />}
+    </svg>
   );
 }
 
 export function App() {
   const [pref, setPref] = useState<ThemePref>(() => (localStorage.getItem('luna.theme') as ThemePref) || 'system');
   const [sysDark, setSysDark] = useState(() => window.matchMedia('(prefers-color-scheme: dark)').matches);
-  const [sidebar, setSidebar] = useState(280);
+  const [sidebar, setSidebar] = useState(300);
   // The width is per-session, but a hidden sidebar is a deliberate choice about
   // what the window is for — it outlives the run, the way the theme does.
   const [hidden, setHidden] = useState(() => localStorage.getItem('luna.sidebar') === 'off');
@@ -157,29 +140,33 @@ export function App() {
       }}
     >
       <AppFrame>
-        {/* Hidden, the sidebar leaves this strip behind — the whole of it is the
-            way back, so finding the sidebar again is never a hunt for a glyph. */}
-        {hidden && (
-          <div
-            onClick={() => setHidden(false)}
-            title="Show the sidebar"
-            aria-label="Show the sidebar"
-            role="button"
-            className="hover-bg"
-            style={{
-              width: 16, flex: 'none', background: 'var(--sidebar)',
-              borderRight: '1px solid var(--window-frame)',
-              display: 'flex', justifyContent: 'center', paddingTop: 9,
-              cursor: 'default', color: 'var(--dim)', fontSize: 'var(--fs-3)'
-            }}
-          >
-            »
-          </div>
-        )}
+        <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+          <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
+            {/* Hidden, the sidebar leaves this strip behind — the whole of it is the
+                way back, so finding the sidebar again is never a hunt for a glyph. */}
+            {hidden && (
+              <div
+                onClick={() => setHidden(false)}
+                title="Show the sidebar"
+                aria-label="Show the sidebar"
+                role="button"
+                className="taskpane"
+                style={{
+                  width: 26, flex: 'none', borderRight: '1px solid var(--window-frame)',
+                  display: 'flex', justifyContent: 'center', paddingTop: 10, cursor: 'default'
+                }}
+              >
+                <Icon name="show" size={18} />
+              </div>
+            )}
 
-        <div style={{ width: sidebar, flex: 'none', background: 'var(--sidebar)', borderRight: '1px solid var(--window-frame)', display: hidden ? 'none' : 'flex', flexDirection: 'column', minHeight: 0 }}>
-          <div style={{ flex: 'none', padding: '8px 8px 0', display: 'flex', flexDirection: 'column', gap: 6 }}>
-            <div style={{ display: 'flex', gap: 5 }}>
+            <div
+              className="taskpane"
+              style={{
+                width: sidebar, flex: 'none', borderRight: '1px solid var(--window-frame)', minHeight: 0,
+                display: hidden ? 'none' : 'flex', flexDirection: 'column', gap: 10, padding: '10px 9px 10px'
+              }}
+            >
               <button
                 onClick={openNewChat}
                 title={
@@ -187,104 +174,100 @@ export function App() {
                   'Ctrl+Shift+N skips the dialog: same folder and account as the chat on screen, ' +
                   'settings as they stand'
                 }
-                className="slim primary"
-                style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5 }}
+                className="start-btn"
+                style={{ flex: 'none' }}
               >
-                <span style={{ fontSize: 'var(--fs-6)', lineHeight: 1, flex: 'none' }}>+</span>
-                <span style={{ whiteSpace: 'nowrap' }}>New chat</span>
+                <Icon name="plus" size={18} />
+                New chat
+                <kbd>Ctrl+N</kbd>
               </button>
-              {/* Acts on the group that is showing. It sat on the tabs themselves
-                  at first, where it was a 10px glyph a couple of pixels from the
-                  tab it must not be confused with. */}
-              <button
-                onClick={() => resetGroup(group)}
-                title={`Reset group ${GROUP_LABELS[group]} — empties its panes, keeps every chat`}
-                aria-label={`Reset group ${GROUP_LABELS[group]}`}
-                className="slim"
-                style={{ width: 30, flex: 'none' }}
-              >
-                ↺
-              </button>
-              <button
-                onClick={() => setPref(p => (p === 'system' ? 'light' : p === 'light' ? 'dark' : 'system'))}
-                title={themeTitle}
-                className="slim"
-                aria-label={themeTitle}
-                style={{ width: 30, flex: 'none' }}
-              >
-                {THEMES[pref].glyph}
-              </button>
-              {/* Hides rather than unmounts: the list keeps its scroll, the
-                  accounts keep polling, and coming back costs a repaint. */}
-              <button
-                onClick={() => setHidden(true)}
-                title="Hide the sidebar — the strip it leaves behind brings it back"
-                aria-label="Hide the sidebar"
-                className="slim"
-                style={{ width: 30, flex: 'none' }}
-              >
-                «
-              </button>
-            </div>
 
-            <div className="xp-sunken" style={{ display: 'flex', gap: 2, padding: 2, background: 'var(--chip)', borderRadius: 2 }}>
-              {([1, 2, 3, 4] as Layout[]).map(n => (
-                <div
-                  key={n}
-                  onClick={() => setLayout(n)}
-                  title={
-                    `${n} pane${n > 1 ? 's' : ''} — Ctrl+Shift+${n}` +
-                    (n === 1
-                      ? '\nOne window: a click in the list swaps what it shows, Ctrl+<digit> too'
-                      : `\nCtrl+1…${n} holds a pane up over the board for a moment`)
-                  }
-                  className={layout !== n ? 'hover-bg' : undefined}
-                  style={{
-                    flex: 1, height: 23, borderRadius: 2, display: 'grid', placeItems: 'center', cursor: 'default',
-                    background: layout === n ? 'var(--bg)' : 'transparent',
-                    boxShadow: layout === n ? 'var(--border-sunken-outer), var(--border-sunken-inner)' : 'none'
-                  }}
-                >
-                  <LayoutIcon n={n} />
+              <div className="tp-group">
+                <div className="tp-head">
+                  Board
+                  <span style={{ fontWeight: 400, opacity: 0.7 }}>· group {GROUP_LABELS[group]}</span>
                 </div>
-              ))}
+                <div className="tp-body" style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: 6 }}>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <div className="seg" style={{ flex: 1 }}>
+                      {([1, 2, 3, 4] as Layout[]).map(n => (
+                        <button
+                          key={n}
+                          aria-pressed={layout === n}
+                          onClick={() => setLayout(n)}
+                          title={
+                            `${n} pane${n > 1 ? 's' : ''} — Ctrl+Shift+${n}` +
+                            (n === 1
+                              ? '\nOne window: a click in the list swaps what it shows, Ctrl+<digit> too'
+                              : `\nCtrl+1…${n} holds a pane up over the board for a moment`)
+                          }
+                        >
+                          <LayoutIcon n={n} />
+                        </button>
+                      ))}
+                    </div>
+                    {/* One level above the layouts: each group remembers its own four
+                        boards, so a set of chats can be parked and brought back whole. */}
+                    <div className="seg roman" style={{ flex: 1 }}>
+                      {GROUPS.map(g => (
+                        <button
+                          key={g}
+                          aria-pressed={group === g}
+                          onClick={() => setGroup(g)}
+                          title={`Window group ${GROUP_LABELS[g]} — its own panes and splits\nCtrl+Tab goes to the next group`}
+                        >
+                          {GROUP_LABELS[g]}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                    <ToolButton
+                      icon="even"
+                      label="Even out"
+                      title="Even out the splits of this board"
+                      onClick={() => usePanes.getState().resetSplits()}
+                    />
+                    <ToolButton
+                      icon="reset"
+                      label="Clear"
+                      title={`Clear group ${GROUP_LABELS[group]} — empties its panes, keeps every chat`}
+                      onClick={() => resetGroup(group)}
+                    />
+                    <span style={{ flex: 1 }} />
+                    <ToolButton
+                      icon={THEMES[pref].icon}
+                      title={themeTitle + '\nClick for the next one'}
+                      onClick={() => setPref(p => (p === 'system' ? 'light' : p === 'light' ? 'dark' : 'system'))}
+                    />
+                    {/* Hides rather than unmounts: the list keeps its scroll and
+                        coming back costs a repaint. */}
+                    <ToolButton
+                      icon="hide"
+                      title="Hide the sidebar — the strip it leaves behind brings it back"
+                      onClick={() => setHidden(true)}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <OrphanSessions />
+              <ChatList />
             </div>
-          </div>
 
-          {/* One level above the layouts: each group remembers its own four
-              boards, so a set of chats can be parked and brought back whole. */}
-          <menu role="tablist" style={{ marginTop: 7 }}>
-            {GROUPS.map(g => (
-              <button
-                key={g}
-                role="tab"
-                aria-selected={group === g}
-                onClick={() => setGroup(g)}
-                title={`Window group ${GROUP_LABELS[g]} — its own panes and splits`}
-              >
-                {GROUP_LABELS[g]}
-              </button>
-            ))}
-          </menu>
+            {!hidden && (
+              <div
+                onMouseDown={startResize}
+                title="Drag to resize"
+                style={{ width: 5, marginLeft: -3, marginRight: -2, flex: 'none', cursor: 'col-resize', zIndex: 20, background: resizing ? ACCENT : 'transparent' }}
+              />
+            )}
 
-          <div className="tab-panel" role="tabpanel">
-            <OrphanSessions />
-            <ChatList />
+            <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+              <PaneGrid />
+            </div>
           </div>
           <StatusBar />
-        </div>
-
-        {!hidden && (
-          <div
-            onMouseDown={startResize}
-            onDoubleClick={() => setSidebar(280)}
-            title="Drag to resize · double-click to reset"
-            style={{ width: 5, marginLeft: -3, marginRight: -2, flex: 'none', cursor: 'col-resize', zIndex: 20, background: resizing ? ACCENT : 'transparent' }}
-          />
-        )}
-
-        <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
-          <PaneGrid />
         </div>
       </AppFrame>
 
@@ -293,6 +276,7 @@ export function App() {
       {/* Raised by the settings dialog or the status-bar chip alike. */}
       <UpdateConfirm />
       <ShortcutsDialog />
+      <SettingsDialog />
     </div>
   );
 }

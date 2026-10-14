@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { numberedChats, useChats } from '../features/chats/chats.store';
 import { quickChat } from '../features/new-chat/create';
-import { currentLayout, peeking, usePanes, type Layout } from '../features/panes/panes.store';
+import { currentLayout, usePanes, type Layout } from '../features/panes/panes.store';
 import { useShortcuts } from '../features/shortcuts/ShortcutsDialog';
 
 /**
@@ -26,8 +26,8 @@ function digitOf(e: KeyboardEvent): number | null {
  * travels on untouched.
  *
  * Ctrl+<digit> is safe to take: a terminal has no encoding for it, so nothing
- * downstream could have used it anyway. Ctrl+Tab is taken only while a sheet
- * is up, and F1 always: the CLIs bind neither. Ctrl+arrows were the obvious
+ * downstream could have used it anyway. Ctrl+Tab (without Shift, which Claude
+ * Code binds) and F1 are taken always: the CLIs bind neither. Ctrl+arrows were the obvious
  * pick for moving between panes and are left alone — they move by word in the
  * CLI's prompt. Escape is deliberately left alone —
  * it is how the CLI is interrupted, and no view of Luna's is worth eating it.
@@ -62,11 +62,12 @@ export function useKeymap(opts: { openNewChat: () => void; closeModal: () => voi
         return;
       }
 
+      // Ctrl+Tab walks the four groups round. Ctrl+Shift+Tab is Claude Code's
+      // own and travels on to the terminal untouched.
       if (e.key === 'Tab') {
-        const panes = usePanes.getState();
-        if (!peeking(panes)) return;
+        if (e.shiftKey) return;
         take();
-        panes.cyclePeek(e.shiftKey ? -1 : 1);
+        usePanes.getState().nextGroup();
         return;
       }
 

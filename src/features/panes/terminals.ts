@@ -57,20 +57,22 @@ export const safely = (fn: () => void) => {
 export const themeFor = (isDark: boolean) =>
   isDark
     ? {
-        background: '#101a1d', foreground: '#e8f4f0', cursor: '#7ef0d4',
-        cursorAccent: '#101a1d', selectionBackground: '#2f5f57', selectionForeground: '#ffffff',
-        black: '#2a3538', red: '#ff6b6b', green: '#78e08f', yellow: '#ffd479',
-        blue: '#79b8ff', magenta: '#d2a8ff', cyan: '#5fe3d0', white: '#dfeeea',
-        brightBlack: '#587076', brightRed: '#ff9492', brightGreen: '#a4f7b0', brightYellow: '#ffe9a8',
-        brightBlue: '#a5d6ff', brightMagenta: '#e2c5ff', brightCyan: '#9df0e4', brightWhite: '#ffffff'
+        background: '#1b1a17', foreground: '#ece6da', cursor: '#f0b45a',
+        cursorAccent: '#1b1a17', selectionBackground: '#4a4234', selectionForeground: '#ffffff',
+        black: '#34312b', red: '#ff7b6b', green: '#8fd99a', yellow: '#f0c674',
+        blue: '#8ab8f0', magenta: '#d4a8f5', cyan: '#7fd4c4', white: '#e2dccf',
+        brightBlack: '#7a7262', brightRed: '#ff9c8e', brightGreen: '#b0ecb6', brightYellow: '#ffe0a0',
+        brightBlue: '#b0d2ff', brightMagenta: '#e6c8ff', brightCyan: '#a8ece0', brightWhite: '#ffffff'
       }
     : {
-        background: '#f4faf6', foreground: '#16211c', cursor: '#0b6b56',
-        cursorAccent: '#f4faf6', selectionBackground: '#b6dcca', selectionForeground: '#0b1712',
-        black: '#25302c', red: '#c0392b', green: '#1a7f4b', yellow: '#8a6a12',
-        blue: '#1c5fa8', magenta: '#7d3ca8', cyan: '#0f736e', white: '#c8d6d0',
-        brightBlack: '#5c6f68', brightRed: '#e04b3a', brightGreen: '#1fa460', brightYellow: '#a9820f',
-        brightBlue: '#2a7fd4', brightMagenta: '#9b52d1', brightCyan: '#12968f', brightWhite: '#0d1512'
+        // Warm paper: the cool green-white this used to be is hard on the eyes
+        // over a day of reading. Matches --term in theme.css.
+        background: '#fbf7ee', foreground: '#2a251d', cursor: '#8a5a14',
+        cursorAccent: '#fbf7ee', selectionBackground: '#ecdcb8', selectionForeground: '#1c1812',
+        black: '#2f2a22', red: '#b8382a', green: '#2b7a3d', yellow: '#8a6410',
+        blue: '#2a5fa0', magenta: '#7d3ca8', cyan: '#1d7068', white: '#d9cfbd',
+        brightBlack: '#7a6f5e', brightRed: '#d24a38', brightGreen: '#349a4c', brightYellow: '#a87e14',
+        brightBlue: '#3a78c4', brightMagenta: '#9b52d1', brightCyan: '#22908a', brightWhite: '#1c1812'
       };
 
 /**

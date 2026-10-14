@@ -14,13 +14,14 @@ import type { Terminal as XTerm } from '@xterm/xterm';
 import type { Account, Chat, ClaudeChat, CodexChat, Folder, Provider } from '../shared/types';
 import type { AccountsRootInfo, ClaudeDefaultsDto, CliStatusDto, CodexDefaultsDto, PowerStateDto } from '../ipc/commands';
 import { useAccounts } from '../features/accounts/accounts.store';
+import { useAccountsWindow } from '../features/accounts/AccountsPanel';
 import { useChats } from '../features/chats/chats.store';
 import { useNewChat } from '../features/new-chat/newchat.store';
 import { usePanes, type Group, type Layout, type Slots } from '../features/panes/panes.store';
 import { useUpdates } from '../features/updates/updates.store';
 
-/** `?demo`, `?demo=dark`, `?demo=peek`, `?demo=newchat`, `?demo=settings`. */
-export type Scene = 'main' | 'dark' | 'peek' | 'newchat' | 'settings';
+/** `?demo`, `?demo=dark`, `?demo=peek`, `?demo=newchat`, `?demo=settings`, `?demo=accounts`. */
+export type Scene = 'main' | 'dark' | 'peek' | 'newchat' | 'settings' | 'accounts';
 
 const hoursFromNow = (h: number) => new Date(Date.now() + h * 3600_000).toISOString();
 
@@ -388,13 +389,14 @@ export function seedDemo(scene: Scene) {
   });
 
   if (scene === 'newchat') useNewChat.getState().openDialog('C:\\src\\luna');
+  if (scene === 'accounts') useAccountsWindow.getState().setOpen(true);
 }
 
 /** `?demo` / `?demo=dark` — which fixture the URL is asking for, if any. */
 export function sceneFromUrl(search: string): Scene | null {
   const value = new URLSearchParams(search).get('demo');
   if (value === null) return null;
-  return value === 'dark' || value === 'peek' || value === 'newchat' || value === 'settings'
+  return value === 'dark' || value === 'peek' || value === 'newchat' || value === 'settings' || value === 'accounts'
     ? value
     : 'main';
 }

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { Chat, Folder } from '../../shared/types';
-import { tail2, tint } from '../../shared/lib/format';
+import { tail2 } from '../../shared/lib/format';
+import { Chevron, Icon, ToolButton } from '../../shared/ui/icons';
 import { allChats, useChats } from './chats.store';
 import { useNewChat } from '../new-chat/newchat.store';
 import { useAccounts } from '../accounts/accounts.store';
@@ -79,58 +80,33 @@ export function FolderSection({ folder }: { folder: Folder }) {
   const [sweeping, setSweeping] = useState(false);
 
   return (
-    <div className="xp-raised" style={{ background: 'var(--bg)', overflow: 'hidden' }}>
-      <div
-        onClick={() => toggleFolder(folder.id)}
-        title={folder.path}
-        className="hover-dim folder-row"
-        style={{
-          display: 'flex', alignItems: 'center', gap: 6, height: 27, padding: '0 7px', cursor: 'default',
-          background: folder.open ? tint(9, 'var(--panel)') : 'var(--panel)',
-          borderBottom: `1px solid ${folder.open ? 'var(--line)' : 'transparent'}`
-        }}
-      >
-        <span style={{ fontSize: 'var(--fs-1)', color: 'var(--faint)', width: 8, flex: 'none', transform: folder.open ? 'rotate(90deg)' : 'rotate(0deg)' }}>▶</span>
-        <span style={{ fontSize: 'var(--fs-2)', color: 'var(--faint)', flex: 'none', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 70 }}>
-          {t.parent}
-          <span style={{ opacity: 0.6 }}> / </span>
-        </span>
-        <span style={{ flex: '1 1 auto', minWidth: 40, fontSize: 'var(--fs-4)', fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+    <div className="tp-group">
+      <div onClick={() => toggleFolder(folder.id)} title={folder.path} className="tp-head">
+        <Icon name="folder" />
+        <span style={{ flex: '1 1 auto', minWidth: 40, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          <span style={{ fontWeight: 400, opacity: 0.7 }}>{t.parent} / </span>
           {t.leaf}
         </span>
-        <span className="folder-actions" style={{ display: 'flex', alignItems: 'center', gap: 4, flex: 'none' }}>
-          {orphans.length > 0 && (
-            <span
-              onClick={e => {
-                e.stopPropagation();
-                setSweeping(true);
-              }}
-              title={
-                `${orphans.length} stale worktree${orphans.length > 1 ? 's' : ''} no chat is using — ` +
-                `click to review and delete:\n` +
-                orphans.join('\n')
-              }
-              className="hover-danger"
-              style={{
-                fontSize: 'var(--fs-1)', color: 'var(--dim)', flex: 'none', background: 'var(--chip)',
-                padding: '1px 6px', borderRadius: 2, cursor: 'default', whiteSpace: 'nowrap'
-              }}
-            >
-              ⌫ {orphans.length}
-            </span>
-          )}
-          <span
-            onClick={e => {
-              e.stopPropagation();
-              useNewChat.getState().openDialog(folder.path);
-            }}
-            title="New chat in this folder"
-            className="hover-bg"
-            style={{ width: 17, height: 17, flex: 'none', borderRadius: 2, display: 'grid', placeItems: 'center', fontSize: 'var(--fs-5)', color: 'var(--dim)', cursor: 'default', lineHeight: 1 }}
-          >
-            +
-          </span>
-        </span>
+        {orphans.length > 0 && (
+          <ToolButton
+            icon="sweep"
+            size={22}
+            label={orphans.length}
+            title={
+              `${orphans.length} stale worktree${orphans.length > 1 ? 's' : ''} no chat is using — ` +
+              `click to review and delete:\n` +
+              orphans.join('\n')
+            }
+            onClick={() => setSweeping(true)}
+          />
+        )}
+        <ToolButton
+          icon="plus"
+          size={22}
+          title="New chat in this folder"
+          onClick={() => useNewChat.getState().openDialog(folder.path)}
+        />
+        <Chevron open={folder.open} />
       </div>
       {sweeping && (
         <SweepWorktreesDialog
@@ -145,7 +121,7 @@ export function FolderSection({ folder }: { folder: Folder }) {
         />
       )}
       {folder.open && (
-        <div style={{ display: 'flex', flexDirection: 'column', padding: 4 }}>
+        <div className="tp-body" style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
           {/* Children folded unless unfolded by hand: an agent can spawn a
               helper per task, and the list would otherwise grow with every one. */}
           {tree(folder.chats).map(({ chat, depth, childCount, orphan }) => (

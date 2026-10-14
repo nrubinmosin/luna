@@ -2,7 +2,8 @@ import { useState } from 'react';
 import type { Chat } from '../../shared/types';
 import { StatusDot } from '../../shared/ui/StatusDot';
 import { chatColorTheme } from '../../shared/ui/chatColors';
-import { ACCENT, shortSessionId, tint } from '../../shared/lib/format';
+import { ACCENT, shortSessionId } from '../../shared/lib/format';
+import { ToolButton } from '../../shared/ui/icons';
 import { numberedChats, useChats } from './chats.store';
 import { currentLayout, currentSlots, usePanes } from '../panes/panes.store';
 import { DeleteChatDialog } from './DeleteChatDialog';
@@ -83,21 +84,17 @@ export function ChatRow({
       }}
       onMouseEnter={() => setSpot(chat.id)}
       onMouseLeave={() => setSpot(null)}
-      className="hover-bg chat-row"
-      style={{
-        display: 'flex', alignItems: 'center', gap: 6, height: 27, padding: '0 6px',
-        paddingLeft: 6 + depth * 14,
-        borderRadius: 2, cursor: 'grab',
-        background: active ? tint(22, 'transparent') : 'transparent',
-        opacity: dragging ? 0.45 : 1
-      }}
+      className="chat-row"
+      data-active={active ? 'yes' : 'no'}
+      data-waiting={chat.status === 'waiting' ? 'yes' : 'no'}
+      style={{ paddingLeft: 5 + depth * 14, opacity: dragging ? 0.45 : 1 }}
     >
       {/* The chat's colour, so a row and the pane wearing the same tint link up
           by eye. In flow whether set or not. */}
       <span
         title={chat.color ? 'Chat colour — set from the pane title bar' : undefined}
         style={{
-          width: 3, height: 15, borderRadius: 2, flex: 'none',
+          width: 4, height: 17, borderRadius: 2, flex: 'none',
           background: chatColorTheme(chat.color)?.swatch ?? 'transparent'
         }}
       />
@@ -151,24 +148,21 @@ export function ChatRow({
         />
       ) : (
         <span
-          onDoubleClick={e => {
-            e.stopPropagation();
-            setDraft(chat.name);
-            setEditing(true);
-          }}
           // The full name first: the row is narrow enough that the ellipsis is
-          // the common case, and the rename hint alone hid what was cut off.
-          // The session id is how issue claims and logs name this chat.
-          title={[
-            chat.name,
-            chat.sessionId && `Session ${shortSessionId(chat.sessionId)}  (${chat.sessionId})`,
-            'Double-click to rename'
-          ].filter(Boolean).join('\n')}
-          style={{ flex: '1 1 auto', minWidth: 40, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 'var(--fs-4)', fontWeight: 500 }}
+          // the common case. The session id is how issue claims and logs name
+          // this chat.
+          title={[chat.name, chat.sessionId && `Session ${shortSessionId(chat.sessionId)}  (${chat.sessionId})`]
+            .filter(Boolean)
+            .join('\n')}
+          style={{
+            flex: '1 1 auto', minWidth: 40, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+            fontSize: 'var(--fs-4)', fontWeight: chat.status === 'waiting' ? 700 : 500
+          }}
         >
           {chat.name}
         </span>
       )}
+      {chat.status === 'waiting' && !editing && <span className="row-tag">waiting</span>}
       {/* Sits after the flexible name, so appearing or vanishing on a layout
           switch only nudges the controls on the right, never the names. */}
       {badge != null && (
@@ -179,32 +173,28 @@ export function ChatRow({
               : `Showing in pane ${badge} of the current layout — Ctrl+${badge} holds it up on its own`
           }
           style={{
-            minWidth: 15, height: 15, padding: '0 2px', flex: 'none', borderRadius: 2,
+            minWidth: 18, height: 18, padding: '0 3px', flex: 'none', borderRadius: 3,
             display: 'grid', placeItems: 'center', fontSize: 'var(--fs-1)', fontWeight: 600,
             fontVariantNumeric: 'tabular-nums',
-            color: onScreen ? '#fff' : 'var(--faint)',
+            color: onScreen ? '#fff' : 'inherit',
+            opacity: onScreen ? 1 : 0.6,
             background: onScreen ? ACCENT : 'transparent',
-            border: `1px solid ${onScreen ? ACCENT : 'var(--line)'}`
+            border: `1px solid ${onScreen ? (active ? '#fff' : ACCENT) : 'currentColor'}`
           }}
         >
           {badge}
         </span>
       )}
-      <span
-        onClick={e => {
-          e.stopPropagation();
-          setConfirming(true);
+      <ToolButton
+        icon="pencil"
+        size={22}
+        title="Rename chat"
+        onClick={() => {
+          setDraft(chat.name);
+          setEditing(true);
         }}
-        onDoubleClick={e => e.stopPropagation()}
-        title="Delete chat"
-        className="hover-danger"
-        style={{
-          width: 17, height: 17, flex: 'none', borderRadius: 2, display: 'grid',
-          placeItems: 'center', fontSize: 'var(--fs-2)', color: 'var(--faint)', cursor: 'default'
-        }}
-      >
-        ✕
-      </span>
+      />
+      <ToolButton icon="trash" size={22} danger title="Delete chat — asks first" onClick={() => setConfirming(true)} />
 
       {confirming && <DeleteChatDialog chat={chat} onClose={() => setConfirming(false)} />}
     </div>

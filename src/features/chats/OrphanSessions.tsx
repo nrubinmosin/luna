@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { Icon } from '../../shared/ui/icons';
 import { killSession, orphanSessions, type OrphanSessionDto } from '../../ipc/commands';
 import { tail2 } from '../../shared/lib/format';
 import { ConfirmDialog } from '../../shared/ui/ConfirmDialog';
@@ -93,20 +94,20 @@ export function OrphanSessions() {
         title="Sessions still running with no chat to reach them through"
         className="hover-bg"
         style={{
-          margin: '0 8px 6px', padding: '4px 7px', display: 'flex', alignItems: 'center', gap: 6,
-          fontSize: 'var(--fs-2)', color: 'var(--fg)', background: 'var(--chip)', cursor: 'default',
-          boxShadow: 'var(--border-sunken-outer), var(--border-sunken-inner)'
+          flex: 'none', padding: '5px 8px', display: 'flex', alignItems: 'center', gap: 7, borderRadius: 4,
+          fontSize: 'var(--fs-3)', color: '#000', background: 'var(--balloon)', cursor: 'default',
+          border: '1px solid #c9b25a'
         }}
       >
-        <span style={{ color: '#c0392b', fontWeight: 700 }}>!</span>
+        <Icon name="warn" />
         <span style={{ flex: 1 }}>
           {found.length} session{found.length > 1 ? 's' : ''} with no chat
         </span>
-        <span style={{ color: 'var(--faint)' }}>show</span>
+        <span style={{ color: '#555', textDecoration: 'underline' }}>show</span>
       </div>
 
       {open && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.32)', display: 'grid', placeItems: 'center', zIndex: 75 }}>
+        <div className="scrim" style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.32)', display: 'grid', placeItems: 'center', zIndex: 75 }}>
           <div className="window" style={{ width: 560, boxShadow: 'var(--shadow), var(--border-window-outer), var(--border-window-inner)' }}>
             <div className="title-bar">
               <div className="title-bar-text">Sessions with no chat</div>

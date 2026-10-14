@@ -5,7 +5,7 @@
  * branches on `chat.provider` and imports the module it needs, because the
  * settings have nothing in common but the word.
  */
-import type { CSSProperties, ComponentType } from 'react';
+import type { ComponentType } from 'react';
 import type { Account, Provider } from '../../shared/types';
 import * as claude from './claude';
 import * as codex from './codex';
@@ -30,6 +30,3 @@ export interface ProviderUi {
 const UI: Record<Provider, ProviderUi> = { claude, codex };
 
 export const ui = (provider: Provider): ProviderUi => UI[provider];
-
-/** The chip styles a pane hands its provider's `Chips`. */
-export type ChipStyles = { chip: CSSProperties; softChip: CSSProperties };

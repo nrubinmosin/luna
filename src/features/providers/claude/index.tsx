@@ -145,13 +145,13 @@ export function Fields({ draft, origin }: {
 
 // ------------------------------------------------------------------ pane --
 
-/** The chat's flags in the pane title bar. */
-export function Chips({ chat, chip, softChip }: { chat: ClaudeChat; chip: CSSProperties; softChip: CSSProperties }) {
+/** The chat's settings as one run of text in the pane title bar. */
+export function Meta({ chat }: { chat: ClaudeChat }) {
   return (
     <>
-      <span title="Model" style={softChip}>{chat.model}</span>
-      <span title={`Effort: ${chat.effort}`} style={softChip}>{chat.effort}</span>
-      <span title={`Permission mode: ${chat.perm}`} style={chip}>{chat.perm[0]}</span>
+      <b title="Model">{chat.model}</b> <span title="Effort">{chat.effort}</span>
+      {' · '}
+      <span title={`Permission mode: ${chat.perm} — ${PERM_HINTS[chat.perm]}`}>{chat.perm}</span>
     </>
   );
 }

@@ -22,13 +22,14 @@ Desktop-обёртка над Claude Code CLI и Codex CLI. Принцип: **в
 ```
 src/                          фронт (feature-sliced)
   app/        App, theme.css (токены light/dark), keymap: Ctrl+N / Ctrl+Shift+N,
-              Ctrl+1..4 (peek), Ctrl+Tab (по листу), Ctrl+0 (выход), Ctrl+Shift+1..4
+              Ctrl+1..4 (peek), Ctrl+Tab (следующая группа), Ctrl+0 (выход), Ctrl+Shift+1..4
               (раскладка), F1 (шорткаты) — слушается в capture-фазе, иначе xterm
               гасит их до window
-  shared/     types, format, status
+  shared/     types, format, status; ui/icons.tsx — XP-иконки и ToolButton, ui/dialogHost.ts
   features/
     chats/    сайдбар: папки + чаты (drag source, клик = показать), chats.store
-    panes/    сетка 1/2/3/4, Pane (drop target), Terminal (xterm), panes.store;
+    panes/    сетка 1/2/3/4, Pane (drop target), Terminal (xterm), panes.store
+              (там же автоплитка: TILE_ORDER, рост/сжатие доски на ±1 панель);
               peek — лист поверх притемнённой доски, той же панелью без перемонтирования;
               altPeek.ts — взгляд на чат, пока над его строкой зажат Alt;
               terminals.ts — реестр живых xterm'ов, переживающих свои панели
@@ -38,12 +39,14 @@ src/                          фронт (feature-sliced)
               черновик настроек с пометкой «тронуто рукой»; create.ts — общий путь
               создания для диалога и для Ctrl+Shift+N (для Codex здесь же делается worktree)
     providers/ claude/ и codex/ — всё, что UI знает о каждом CLI: STOCK, defaults,
-              Fields диалога, Chips титлбара, LimitBars ряда аккаунта, login, trust,
+              Fields диалога, Meta титлбара, LimitBars ряда аккаунта, login, trust,
               регэкспы worktree; index.ts — ui(provider) для того немногого, что общее
-    accounts/ панель аккаунтов: бейдж провайдера, лимиты + добавление/удаление, accounts.store
-    settings/ диалог за ⚙: папка аккаунтов, версии Luna/Claude Code/Codex и кнопки обновления
-    status-bar/ часы, сводка, лимиты аккаунтов; чип обновления — только когда есть новость
-    power/    чип ⏻ и меню: keep-awake, взвод «выключить/усыпить, когда всё закончится»;
+    accounts/ окно Accounts (из статус-бара): лимиты, вход, агенты, добавление/удаление; accounts.store
+    settings/ Settings (шестерёнка в статус-баре и в Accounts): папка аккаунтов, автоплитка,
+              новые чаты, удаление, версии Luna/Claude Code/Codex и кнопки обновления
+    status-bar/ строка на всю ширину окна: working / waiting (клик — к ждущему), лимиты всех
+              аккаунтов, Accounts, питание, настройки, справка; чип обновления — только когда есть новость
+    power/    поле питания в статус-баре и меню: keep-awake, взвод «выключить/усыпить, когда всё закончится»;
               power.store слушает power://state, сам ничего не считает
     shortcuts/ окно F1 / «?» в статус-баре: все шорткаты и жесты мышью одним списком
     agents/   bridge.ts — фронтовая половина агентов: agent://spawn → createChat с parentId
@@ -56,7 +59,7 @@ src-tauri/src/
   accounts.rs   list/create/delete папок в <accounts root>/{anthropic,openai}/<name>;
                 Codex-аккаунт при создании получает seed config.toml
   settings.rs   <data>/settings.json: accountsRoot (по умолчанию Documents/luna-accounts),
-                меняется через ⚙ в панели аккаунтов
+                меняется в Settings
   cli.rs        общая механика собственных копий CLI: versions/<ver>/, current, sha256,
                 прогресс, prune, автообновление раз в 6ч; откуда брать версию — Source
                 провайдера
