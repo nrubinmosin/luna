@@ -19,6 +19,7 @@ import { useChats } from '../features/chats/chats.store';
 import { useNewChat } from '../features/new-chat/newchat.store';
 import { usePanes, type Group, type Layout, type Slots } from '../features/panes/panes.store';
 import { useUpdates } from '../features/updates/updates.store';
+import { useShell } from '../app/shell.store';
 
 /** `?demo`, `?demo=dark`, `?demo=peek`, `?demo=newchat`, `?demo=settings`, `?demo=accounts`. */
 export type Scene = 'main' | 'dark' | 'peek' | 'newchat' | 'settings' | 'accounts';
@@ -103,6 +104,12 @@ const FOLDERS: Folder[] = [
   { id: 'f-2', path: 'C:\\src\\notes', open: true, chats: CHATS.slice(3) }
 ];
 
+const claudeLimits = (h5: number, week: number, fable: number, h5In: number, weekIn: number): Account['limits'] => [
+  { id: 'h5', label: '5 hours', short: '5H', used: h5, resetAt: hoursFromNow(h5In) },
+  { id: 'week', label: 'week', short: 'W', used: week, resetAt: hoursFromNow(weekIn) },
+  { id: 'scoped:Fable', label: 'Fable · week', short: 'F', used: fable, resetAt: hoursFromNow(weekIn) }
+];
+
 const account = (a: Partial<Account> & Pick<Account, 'name'>): Account => ({
   provider: 'claude',
   path: `C:\\src\\luna-accounts\\anthropic\\${a.name}`,
@@ -110,10 +117,7 @@ const account = (a: Partial<Account> & Pick<Account, 'name'>): Account => ({
   email: null,
   signedIn: true,
   haveUsage: true,
-  limits: {
-    kind: 'claude', h5: 0.12, week: 0.41, fable: 0.27,
-    resets: { h5: '3h 40m', week: '4d', fable: '4d' }, weekResetAt: hoursFromNow(96)
-  },
+  limits: claudeLimits(0.12, 0.41, 0.27, 3.6, 96),
   usageAge: 'just now',
   fetchedAt: Date.now(),
   sync: 'ready',
@@ -126,17 +130,14 @@ const ACCOUNTS: Account[] = [
   account({
     name: 'work',
     plan: 'Max 5×',
-    limits: {
-      kind: 'claude', h5: 0.63, week: 0.78, fable: 0.44,
-      resets: { h5: '52m', week: '2d', fable: '2d' }, weekResetAt: hoursFromNow(50)
-    }
+    limits: claudeLimits(0.63, 0.78, 0.44, 0.9, 50)
   }),
   account({
     name: 'spare',
     plan: '—',
     signedIn: false,
     haveUsage: false,
-    limits: { kind: 'claude', h5: 0, week: 0, fable: 0, resets: { h5: '—', week: '—', fable: '—' }, weekResetAt: null },
+    limits: [],
     usageAge: null,
     fetchedAt: null,
     sync: 'ready'
@@ -146,13 +147,10 @@ const ACCOUNTS: Account[] = [
     name: 'personal',
     path: 'C:\\src\\luna-accounts\\openai\\personal',
     plan: 'Pro',
-    limits: {
-      kind: 'codex',
-      windows: [
-        { id: 'primary', label: '5 hours', used: 0.22, reset: '2h 10m', resetAt: hoursFromNow(2.2) },
-        { id: 'secondary', label: 'week', used: 0.57, reset: '3d', resetAt: hoursFromNow(70) }
-      ]
-    }
+    limits: [
+      { id: 'primary', label: '5 hours', short: '5H', used: 0.22, resetAt: hoursFromNow(2.2) },
+      { id: 'secondary', label: 'week', short: 'W', used: 0.57, resetAt: hoursFromNow(70) }
+    ]
   })
 ];
 
@@ -356,9 +354,10 @@ export function answer<T>(cmd: string, args: Record<string, unknown>, fallback: 
 
 export function seedDemo(scene: Scene) {
   seeded = true;
-  localStorage.setItem('luna.theme', scene === 'dark' ? 'dark' : 'light');
+  // The shell store has read the theme by now; tell it, not localStorage.
+  useShell.setState({ theme: scene === 'dark' ? 'dark' : 'light', pinned: true });
   // The version readout, which in a browser has no app to ask.
-  useUpdates.setState({ current: '0.2.17', checkedAt: Date.now() - 12 * 60_000 });
+  useUpdates.setState({ current: '0.6.0', checkedAt: Date.now() - 12 * 60_000 });
 
   // The app polls for the account list and for each chat's status on a timer, and
   // in a browser both come back empty — which wiped the fixture a second after

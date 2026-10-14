@@ -1,0 +1,23 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Luna Test",
+  "identifier": "ai.sprouter.luna.test",
+  "app": {
+    "windows": [
+      {
+        "title": "Luna Test",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 900,
+        "minHeight": 600,
+        "dragDropEnabled": false,
+        "maximized": false,
+        "decorations": false,
+        "shadow": true
+      }
+    ]
+  },
+  "bundle": {
+    "createUpdaterArtifacts": false
+  }
+}

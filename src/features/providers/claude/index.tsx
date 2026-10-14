@@ -5,19 +5,17 @@
  * but the shape.
  */
 import type { CSSProperties, ReactNode } from 'react';
-import type { Account, Chat, ClaudeChat, ClaudeSettings, Effort, ModelLabel, PermMode } from '../../../shared/types';
+import type { Account, ClaudeChat, ClaudeSettings, Effort, ModelLabel, PermMode } from '../../../shared/types';
 import {
   EFFORTS, MODELS, PERM_HINTS, effortFromSetting, modelFromSetting, permFromSetting
 } from '../../../shared/types';
 import {
   claudeDefaults, claudeFolderTrusted, claudeTrustFolder, ensureClaudeSession, type ClaudeDefaultSource
 } from '../../../ipc/commands';
-import { limitColor } from '../../../shared/lib/format';
 import { Segmented } from '../../../shared/ui/Segmented';
 import type { Draft, From } from '../../new-chat/draft';
 
 export const label = 'Claude Code';
-export const vendor = 'Anthropic';
 
 /** Where a chat opens when no settings file says otherwise. */
 export const STOCK: ClaudeSettings = { model: 'Opus', effort: 'high', perm: 'Bypass' };
@@ -145,54 +143,14 @@ export function Fields({ draft, origin }: {
 
 // ------------------------------------------------------------------ pane --
 
-/** The chat's settings as one run of text in the pane title bar. */
+/** The chat's settings as chips on the pane title bar. */
 export function Meta({ chat }: { chat: ClaudeChat }) {
   return (
     <>
-      <b title="Model">{chat.model}</b> <span title="Effort">{chat.effort}</span>
-      {' · '}
-      <span title={`Permission mode: ${chat.perm} — ${PERM_HINTS[chat.perm]}`}>{chat.perm}</span>
+      <span className="pchip" title={`Model and effort: ${chat.model}, ${chat.effort}`}>
+        <b>{chat.model}</b> {chat.effort}
+      </span>
+      <span className="pchip opt-2" title={`Permission mode: ${chat.perm} — ${PERM_HINTS[chat.perm]}`}>{chat.perm}</span>
     </>
   );
 }
-
-/** One line for the sidebar row's tooltip and the like. */
-export const summary = (chat: Chat) =>
-  chat.provider === 'claude' ? `${chat.model} · ${chat.effort} · ${chat.perm}` : '';
-
-// -------------------------------------------------------------- accounts --
-
-const LK: Array<['h5' | 'week' | 'fable', string]> = [['h5', '5 hours'], ['week', 'week'], ['fable', 'fable']];
-
-export function LimitBars({ account }: { account: Account }) {
-  const lim = account.limits;
-  if (lim.kind !== 'claude') return null;
-  return (
-    <>
-      {LK.map(([k, full]) => (
-        <div key={k} style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 3 }}>
-          <span style={{ fontSize: 'var(--fs-1)', color: 'var(--dim)', width: 34, flex: 'none', whiteSpace: 'nowrap', overflow: 'hidden' }}>{full}</span>
-          <div className="xp-sunken" style={{ flex: 1, height: 6, background: 'var(--track)', overflow: 'hidden' }}>
-            {account.haveUsage && (
-              <div style={{ height: '100%', width: `${Math.round(lim[k] * 100)}%`, background: limitColor(lim[k]) }} />
-            )}
-          </div>
-          <span style={{ fontSize: 'var(--fs-1)', color: 'var(--dim)', width: 30, flex: 'none', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
-            {account.haveUsage ? `${Math.round(lim[k] * 100)}%` : '—'}
-          </span>
-          <span style={{ fontSize: 'var(--fs-1)', color: 'var(--faint)', width: 42, flex: 'none', textAlign: 'right', whiteSpace: 'nowrap', overflow: 'hidden', fontVariantNumeric: 'tabular-nums' }}>
-            {account.haveUsage ? lim.resets[k] : ''}
-          </span>
-        </div>
-      ))}
-    </>
-  );
-}
-
-/** The worst of the account's bars, for the row's dot. */
-export const worstLimit = (account: Account) =>
-  account.limits.kind === 'claude' ? Math.max(account.limits.h5, account.limits.week) : 0;
-
-/** The instant the long window resets, for "resets Aug 24, 21:00". */
-export const longResetAt = (account: Account) =>
-  account.limits.kind === 'claude' ? account.limits.weekResetAt : null;

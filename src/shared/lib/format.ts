@@ -7,9 +7,9 @@ export const tail2 = (p: string) => {
 };
 
 // "2026-08-17T21:00:00+00:00" -> "41m" / "2h 12m" / "4d"
-export const fmtReset = (iso: string | null): string => {
+export const fmtReset = (iso: string | null, now = Date.now()): string => {
   if (!iso) return '—';
-  const ms = new Date(iso).getTime() - Date.now();
+  const ms = new Date(iso).getTime() - now;
   if (!Number.isFinite(ms) || ms <= 0) return 'now';
   const m = Math.round(ms / 60000);
   if (m < 60) return `${m}m`;
@@ -48,7 +48,7 @@ export const limitColor = (v: number) => {
   return 'oklch(.64 .18 145)';
 };
 
-export const ACCENT = 'var(--dialog-blue)';
+export const ACCENT = 'var(--accent)';
 
 export const tint = (pct: number, base: string) =>
   `color-mix(in oklab, ${ACCENT} ${pct}%, ${base})`;

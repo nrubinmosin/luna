@@ -50,8 +50,8 @@ export const useUpdates = create<UpdatesState>(set => ({
 
   check: async (manual: boolean) => {
     if (!tauriAvailable) return;
-    // A second check while one is in flight, or on top of a finished download,
-    // would drop the handle the restart button is waiting on.
+    // A second check while one is in flight, or on top of a download, would
+    // drop the update handle the download is running on.
     const { phase } = useUpdates.getState();
     if (phase === 'checking' || phase === 'downloading') return;
 
@@ -62,7 +62,8 @@ export const useUpdates = create<UpdatesState>(set => ({
         import('@tauri-apps/api/app')
       ]);
       set({ current: await getVersion() });
-      const update = await check();
+      // The test build (test-build.ps1) must never install a release over itself.
+      const update = import.meta.env.VITE_LUNA_FLAVOR === 'test' ? null : await check();
       if (!update) {
         pending = null;
         set({ phase: 'idle', next: null, notes: null, checkedAt: Date.now() });

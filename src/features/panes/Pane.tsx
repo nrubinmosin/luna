@@ -1,14 +1,89 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
+import { createPortal } from 'react-dom';
+import { useDialogHost } from '../../shared/ui/dialogHost';
+import { Icon } from '../../shared/ui/icons';
 import { StatusDot } from '../../shared/ui/StatusDot';
 import { CHAT_COLORS, chatColorTheme } from '../../shared/ui/chatColors';
 import { ACCENT, limitColor, shortSessionId, tail2, tint } from '../../shared/lib/format';
 import { useChats } from '../chats/chats.store';
 import { DeleteChatDialog } from '../chats/DeleteChatDialog';
 import { claude, codex } from '../providers';
-import { PROVIDER_LABEL } from '../../shared/types';
+import { PROVIDER_LABEL, type Chat } from '../../shared/types';
 import { currentLayout, currentSlots, usePanes } from './panes.store';
 import { Terminal } from './Terminal';
+
+/**
+ * The chat's colour, picked from a popover under the swatch button. Portalled
+ * and placed by the button's own rect, clamped to the window: drawn inside
+ * the pane it was cut off by the pane's edge, or ran off the window's.
+ */
+function ColorPicker({ chat, anchor, onClose }: { chat: Chat; anchor: HTMLElement; onClose: () => void }) {
+  const host = useDialogHost();
+  const ref = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
+
+  useLayoutEffect(() => {
+    const r = anchor.getBoundingClientRect();
+    const w = ref.current?.offsetWidth ?? 180;
+    const h = ref.current?.offsetHeight ?? 70;
+    const left = Math.min(Math.max(8, r.left - 4), window.innerWidth - w - 8);
+    const below = r.bottom + 8;
+    setPos({ left, top: below + h > window.innerHeight - 8 ? Math.max(8, r.top - h - 8) : below });
+  }, [anchor, host]);
+
+  // Any click the popover didn't swallow dismisses it, and so does Escape.
+  useEffect(() => {
+    const close = () => onClose();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    document.addEventListener('click', close);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('click', close);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [onClose]);
+
+  if (!host) return null;
+  const set = (key: string | null) => {
+    useChats.getState().setColor(chat.id, key);
+    onClose();
+  };
+  return createPortal(
+    <div
+      ref={ref}
+      className="popover"
+      onClick={e => e.stopPropagation()}
+      style={{
+        left: pos?.left ?? -9999, top: pos?.top ?? 0,
+        display: 'grid', gridTemplateColumns: 'repeat(6, 22px)', gap: 6
+      }}
+    >
+      <span
+        className="swatch"
+        data-on={!chat.color ? 'yes' : 'no'}
+        onClick={() => set(null)}
+        title="No colour — stock Luna blue"
+        style={{ background: 'var(--chip)' }}
+      >
+        <Icon name="close" size={12} />
+      </span>
+      {CHAT_COLORS.map(c => (
+        <span
+          key={c.key}
+          className="swatch"
+          data-on={chat.color === c.key ? 'yes' : 'no'}
+          onClick={() => set(c.key)}
+          title={c.label}
+          style={{ background: chatColorTheme(c.key)!.swatch }}
+        />
+      ))}
+    </div>,
+    host
+  );
+}
 
 /**
  * `soloChat` renders the pane on the peek sheet for a chat with no seat on the
@@ -33,7 +108,7 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
   const folder = useChats(s => (chatId ? s.folderOf(chatId) : null));
   const [confirming, setConfirming] = useState(false);
   const [editing, setEditing] = useState(false);
-  const [picking, setPicking] = useState(false);
+  const [picking, setPicking] = useState<HTMLElement | null>(null);
   const [copied, setCopied] = useState(false);
   const [draft, setDraft] = useState('');
 
@@ -60,18 +135,8 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
   useEffect(() => {
     setEditing(false);
     setConfirming(false);
-    setPicking(false);
+    setPicking(null);
   }, [chatId]);
-
-  // Any click that the popover didn't swallow dismisses it. Attached only
-  // while it is open, and after the opening click's dispatch has finished.
-  useEffect(() => {
-    if (!picking) return;
-    const close = () => setPicking(false);
-    // `window` is shadowed here by the chat's context window.
-    document.addEventListener('click', close);
-    return () => document.removeEventListener('click', close);
-  }, [picking]);
 
   const t = folder ? tail2(folder.path) : null;
   const colorTheme = chatColorTheme(chat?.color);
@@ -161,123 +226,20 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
             className="title-bar pane-bar"
             style={{ ['--c' as string]: colorTheme?.swatch ?? 'var(--luna-blue)' } as CSSProperties}
           >
-            <StatusDot status={chat.status} />
-            {editing ? (
-              <input
-                autoFocus
-                value={draft}
-                onChange={e => setDraft(e.target.value)}
-                onBlur={commitRename}
-                onKeyDown={e => {
-                  if (e.key === 'Enter') commitRename();
-                  if (e.key === 'Escape') setEditing(false);
-                }}
-                onClick={e => e.stopPropagation()}
-                onMouseDown={e => e.stopPropagation()}
-                type="text"
-                style={{ flex: '1 1 auto', minWidth: 60, height: 'calc(var(--ui) * 1.55)' }}
-              />
-            ) : (
-              <span title={chat.name} className="title-bar-text">
-                {chat.name}
-              </span>
-            )}
-
-            {!editing && (
-              <span className="pane-meta">
-                <span title={`${t!.parent} / ${t!.leaf}`}>{t!.leaf}</span>
-                {' · '}
-                <span title={`Running on ${PROVIDER_LABEL[chat.provider]} account "${chat.account}"`}>{chat.account}</span>
-                {' · '}
-                {chat.provider === 'codex' ? <codex.Meta chat={chat} /> : <claude.Meta chat={chat} />}
-                {chat.worktree && <span title="Isolated git worktree"> · worktree</span>}
-              </span>
-            )}
-
-            <span title={ctxTitle} className="ctx-meter">
-              <span className="track">
-                <span
-                  className="fill"
-                  style={{ width: `${ctx}%`, ['--m' as string]: limitColor(chat.context ?? 0) } as CSSProperties}
-                />
-              </span>
-              {window != null || (chat.context ?? 0) > 0 ? `${ctx}%` : '—'}
-            </span>
-
-            {/* How issue claims and logs name this session: the uuid's first
-                8 characters. A click copies exactly that. */}
-            {chat.sessionId && (
-              <span
-                onClick={e => {
-                  e.stopPropagation();
-                  navigator.clipboard
-                    .writeText(shortSessionId(chat.sessionId!))
-                    .then(() => {
-                      setCopied(true);
-                      setTimeout(() => setCopied(false), 1200);
-                    })
-                    .catch(() => {});
-                }}
-                title={`Session ${chat.sessionId}\nClick to copy ${shortSessionId(chat.sessionId)}`}
-                className="pane-sid"
-              >
-                {copied ? 'copied' : shortSessionId(chat.sessionId)}
-              </span>
-            )}
-
-            <span className="title-bar-controls" style={{ flex: 'none', position: 'relative' }}>
+            {/* Controls first: the hand reaches the left of a bar before its
+                right, and the name reads as well from either end. */}
+            <span className="title-bar-controls">
               <button
                 data-glyph="swatch"
                 aria-label="Chat colour"
                 title="Chat colour — tints this title bar and the chat's row in the list"
                 onClick={e => {
                   e.stopPropagation();
-                  setPicking(p => !p);
+                  const at = e.currentTarget;
+                  setPicking(p => (p ? null : at));
                 }}
                 style={{ ['--swatch' as string]: colorTheme?.swatch } as CSSProperties}
               />
-              {picking && (
-                <span
-                  onClick={e => e.stopPropagation()}
-                  style={{
-                    position: 'absolute', top: 'calc(100% + 8px)', left: -4, zIndex: 60,
-                    display: 'grid', gridTemplateColumns: 'repeat(6, 22px)', gap: 5, padding: 7, borderRadius: 4,
-                    background: 'var(--surface)', animation: 'pop-in .16s ease-out',
-                    boxShadow: 'var(--border-window-outer), var(--border-window-inner), var(--shadow)'
-                  }}
-                >
-                  <span
-                    onClick={() => {
-                      useChats.getState().setColor(chat.id, null);
-                      setPicking(false);
-                    }}
-                    title="No colour — stock Luna blue"
-                    style={{
-                      width: 22, height: 22, borderRadius: 3, cursor: 'default',
-                      display: 'grid', placeItems: 'center', fontSize: 'var(--fs-2)', color: 'var(--faint)',
-                      outline: !chat.color ? '2px solid var(--fg)' : '1px solid var(--line)',
-                      background: 'var(--chip)'
-                    }}
-                  >
-                    ✕
-                  </span>
-                  {CHAT_COLORS.map(c => (
-                    <span
-                      key={c.key}
-                      onClick={() => {
-                        useChats.getState().setColor(chat.id, c.key);
-                        setPicking(false);
-                      }}
-                      title={c.label}
-                      style={{
-                        width: 22, height: 22, borderRadius: 3, cursor: 'default',
-                        background: chatColorTheme(c.key)!.swatch,
-                        outline: chat.color === c.key ? '2px solid var(--fg)' : '1px solid rgba(0,0,0,.25)'
-                      }}
-                    />
-                  ))}
-                </span>
-              )}
               <button
                 data-glyph="pencil"
                 aria-label="Rename"
@@ -298,11 +260,7 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
                 <button
                   data-glyph={peeked ? 'restore' : 'max'}
                   aria-label={peeked ? 'Back to the grid' : 'Peek'}
-                  title={
-                    peeked
-                      ? 'Back to the grid — Ctrl+0'
-                      : `Peek — hold this pane up over the board, which stays as it is (Ctrl+${index + 1})`
-                  }
+                  title={peeked ? 'Back to the grid' : 'Peek — hold this pane up over the board, which stays as it is'}
                   onClick={() => (soloChat ? setPeekChat(null) : setPeek(peeked ? null : index))}
                 />
               )}
@@ -315,6 +273,71 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
                   title="Take this chat off the board — it keeps running and stays in the list"
                   onClick={() => closePane(index)}
                 />
+              )}
+            </span>
+            {picking && <ColorPicker chat={chat} anchor={picking} onClose={() => setPicking(null)} />}
+
+            <span className="pane-head">
+              <StatusDot status={chat.status} />
+              {editing ? (
+                <input
+                  autoFocus
+                  value={draft}
+                  onChange={e => setDraft(e.target.value)}
+                  onBlur={commitRename}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') commitRename();
+                    if (e.key === 'Escape') setEditing(false);
+                  }}
+                  onClick={e => e.stopPropagation()}
+                  onMouseDown={e => e.stopPropagation()}
+                  type="text"
+                  style={{ flex: '1 1 auto', minWidth: 60, height: 'calc(var(--ui) * 1.6)' }}
+                />
+              ) : (
+                <span title={chat.name} className="title-bar-text">
+                  {chat.name}
+                </span>
+              )}
+
+              {!editing && (
+                <span className="pane-chips">
+                  <span className="pchip opt-3" title={folder.path}>{t!.leaf}</span>
+                  <span className="pchip opt-1" title={`Running on ${PROVIDER_LABEL[chat.provider]} account "${chat.account}"`}>
+                    <Icon name={chat.provider} size={12} />
+                    {chat.account}
+                  </span>
+                  {chat.provider === 'codex' ? <codex.Meta chat={chat} /> : <claude.Meta chat={chat} />}
+                  {chat.worktree && <span className="pchip opt-3" title="Isolated git worktree">worktree</span>}
+                </span>
+              )}
+
+              <span title={ctxTitle} className="ctx-meter">
+                <span className="track meter">
+                  <i style={{ width: `${ctx}%`, ['--m' as string]: limitColor(chat.context ?? 0) } as CSSProperties} />
+                </span>
+                {window != null || (chat.context ?? 0) > 0 ? `${ctx}%` : '—'}
+              </span>
+
+              {/* How issue claims and logs name this session: the uuid's first
+                  8 characters. A click copies exactly that. */}
+              {chat.sessionId && (
+                <span
+                  onClick={e => {
+                    e.stopPropagation();
+                    navigator.clipboard
+                      .writeText(shortSessionId(chat.sessionId!))
+                      .then(() => {
+                        setCopied(true);
+                        setTimeout(() => setCopied(false), 1200);
+                      })
+                      .catch(() => {});
+                  }}
+                  title={`Session ${chat.sessionId}\nClick to copy ${shortSessionId(chat.sessionId)}`}
+                  className="pane-sid"
+                >
+                  {copied ? 'copied' : shortSessionId(chat.sessionId)}
+                </span>
               )}
             </span>
           </div>

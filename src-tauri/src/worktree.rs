@@ -154,15 +154,9 @@ fn create_worktree_now(folder: &str) -> Result<String, String> {
 
 // Every git call below is slow enough to be felt — `worktree remove` on a large
 // checkout has taken ten seconds here. Tauri runs a synchronous command on the
-// main thread, where that time is charged to every other pending IPC call:
-// pasting into a chat froze for as long as an unrelated chat's worktree took to
-// delete. The commands are therefore `async` wrappers, which Tauri runs off the
+// main thread, where that time is charged to every other pending IPC call, so
+// the commands that reach these are `async` wrappers, which Tauri runs off the
 // main thread, over the blocking helpers the rest of the crate keeps calling.
-#[tauri::command]
-pub async fn remove_worktree(folder: String, worktree_path: String) -> Result<(), String> {
-    remove_worktree_now(folder, worktree_path)
-}
-
 pub fn remove_worktree_now(folder: String, worktree_path: String) -> Result<(), String> {
     if !is_worktree_of(&folder, &worktree_path) {
         return Err("refusing: path is not a worktree of this folder".into());
@@ -179,12 +173,15 @@ pub fn remove_worktree_now(folder: String, worktree_path: String) -> Result<(), 
     // Resolve the branch before the worktree disappears from git's records.
     let branch = branch_of(&folder, &worktree_path);
 
-    // The killed session may hold file locks for a moment — retry briefly.
-    // Claude Code locks the worktree it makes ("claude session <name> (pid
-    // N)") and leaves the lock behind when killed; one --force refuses a
-    // locked worktree, the second overrides the lock.
+    // The killed session's processes — the CLI, and whatever shell or build it
+    // had running — let go of their files over a few seconds, not at once:
+    // three tries half a second apart lost that race to an open handle
+    // ("os error 32"). Back off for up to ~8s in all. Claude Code locks the
+    // worktree it makes and leaves the lock behind when killed; one --force
+    // refuses a locked worktree, the second overrides the lock.
     let mut removed = false;
-    for _ in 0..3 {
+    let mut why = String::new();
+    for attempt in 1..=6u64 {
         match git(&folder)
             .args(["worktree", "remove", "--force", "--force", &worktree_path])
             .output()
@@ -193,11 +190,24 @@ pub fn remove_worktree_now(folder: String, worktree_path: String) -> Result<(), 
                 removed = true;
                 break;
             }
-            _ => std::thread::sleep(std::time::Duration::from_millis(500)),
+            Ok(o) => why = String::from_utf8_lossy(&o.stderr).trim().to_string(),
+            Err(e) => why = e.to_string(),
         }
+        std::thread::sleep(std::time::Duration::from_millis(300 * attempt));
     }
     if !removed {
-        std::fs::remove_dir_all(&worktree_path).map_err(|e| e.to_string())?;
+        let mut gone = std::fs::remove_dir_all(&worktree_path);
+        for _ in 0..3 {
+            if gone.is_ok() || !Path::new(&worktree_path).exists() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1000));
+            gone = std::fs::remove_dir_all(&worktree_path);
+        }
+        if let Err(e) = gone {
+            crate::log::warn("worktree", &format!("could not remove {worktree_path}: git said {why:?}; {e}"));
+            return Err(e.to_string());
+        }
         // prune skips a locked entry, and the branch it keeps checked out
         // would then refuse `branch -D` below.
         let _ = git(&folder).args(["worktree", "unlock", &worktree_path]).output();

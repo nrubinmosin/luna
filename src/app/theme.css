@@ -4,8 +4,7 @@ body { margin: 0; overflow: hidden; }
 /* The terminal face, shipped with the app. Fetched from Google Fonts it needed
    the network on every start, and without it xterm measured its cells on
    whatever monospace it found first. Regular and Bold are the two weights
-   xterm asks for; the 500 that used to stand in for bold was being emboldened
-   by hand. Files under public/fonts, licence alongside. */
+   xterm asks for. Files under public/fonts, licence alongside. */
 @font-face {
   font-family: "JetBrains Mono";
   font-style: normal;
@@ -21,31 +20,23 @@ body { margin: 0; overflow: hidden; }
   src: url("/fonts/JetBrainsMono-Bold.woff2") format("woff2");
 }
 
-/* Windows XP (Luna Blue) reskin. xp.css's *source* SCSS defines its palette
-   as :root custom properties, but its published, compiled dist/XP.css bakes
-   every one of xp.css's own selectors (button, .window, select, etc.) to
-   static literal colors and drops the :root block entirely — so those
-   variable names don't actually exist at runtime unless we declare them
-   ourselves. We do that here (matching xp.css's own Luna Blue values), which
-   is what lets our *own* elements (chips, dialogs, the .xp-raised/.xp-sunken/
-   .xp-field bevel helpers below) read the same palette and re-theme for dark
-   mode; xp.css's own compiled controls (native <select>, checkbox/radio
-   decorations) keep their fixed light Luna chrome regardless of theme, same
-   as the title-bar's blue gradient. */
+/* ------------------------------------------------------------------------
+   Palette. The shapes are Windows XP's Luna — glossy title bars, bevels,
+   Explorer's task pane, the green Start button — and the tones are picked for
+   long reading: no pure black or white, and no blue cast in any surface, since
+   a bluish ground is what read as haze. Surfaces step in lightness alone
+   (OKLCH, chroma 0 in the dark theme, a little warmth in the light one); the
+   terminal is the deepest well in either, the chrome a step or two out of it.
+   xp.css's compiled dist bakes its controls to literal colours, so every
+   control the app shows is restyled below from these tokens.
+   ------------------------------------------------------------------------ */
 [data-app] {
-  /* XP's own shell font is Tahoma, and it is hinted for the 11px it was drawn
-     at: past that its stems land unevenly and bold grows heavy ClearType
-     fringes — and past that is every label in the app once Windows text
-     scaling is on, since WebView2 turns a 150% "Text size" into a 1.5× page
-     zoom. Segoe UI is Windows' own UI face, drawn for ClearType at any size;
-     the Text optical size of the variable cut is what Windows 11 itself uses
-     at these sizes. Tahoma stays as the fallback on older systems. */
+  /* Segoe UI is Windows' own UI face, drawn for ClearType at any size; the
+     Text optical size of the variable cut is what Windows 11 itself uses at
+     these sizes. Tahoma, XP's own, stays as the fallback. */
   --sans-serif: "Segoe UI Variable Text", "Segoe UI", Tahoma, sans-serif;
-  /* Every type size in the app derives from this one knob. calc() keeps each
-     step an absolute length, so a small size nested inside a large one can't
-     compound the way em would. Terminals are deliberately outside it. 13px is
-     Windows' own 9pt shell size; anyone who wants it larger has the OS text
-     scaling, which the page honours on its own. */
+  /* Every type size in the app derives from this one knob. Terminals are
+     deliberately outside it. 13px is Windows' own 9pt shell size. */
   --ui: 13px;
   --fs-1: calc(var(--ui) * 0.72);
   --fs-2: calc(var(--ui) * 0.79);
@@ -54,48 +45,44 @@ body { margin: 0; overflow: hidden; }
   --fs-5: var(--ui);
   --fs-6: calc(var(--ui) * 1.07);
 
-  --surface: #ece9d8;
-  --button-highlight: #ffffff;
-  --button-face: #dfdfdf;
-  --button-shadow: #808080;
-  --window-frame: #0a0a0a;
-  --dialog-blue: #2267cb;
-  --input-border-color: #789dbc;
-  --link-blue: #0000ff;
+  /* Light: XP's own warm beige under its blue title bars (L1), the terminal
+     on paper a little warmer still. The board and the sidebar keep XP's blue:
+     Control Panel behind the panes, Explorer's task pane beside them — the
+     panes and the dialogs stand on that, not in a wash of one paper. */
+  --term: #fdf2e2;
+  --board: linear-gradient(180deg, #7a9be4 0%, #6886db 45%, #5a74d3 100%);
+  --surface: #f6efe6;
+  --card: #fff9f0;
+  --field: #fffbf5;
+  --field-line: #c9c1b4;
+  --chip: #e4ddd4;
+  --hover: #e2dbd2;
+  --line: #d3cdc4;
+  --track: #ddd6cb;
+  --fg: #26211a;
+  --dim: #544f47;
+  --faint: #767169;
+  --selection: #ddcfbc;
+  --accent: #2a62c9;
+  --focus: #e5a01a;
+  --shadow: 0 14px 44px rgba(40, 30, 15, .28);
 
-  --border-raised-outer: inset -1px -1px var(--window-frame), inset 1px 1px var(--button-highlight);
-  --border-raised-inner: inset -2px -2px var(--button-shadow), inset 2px 2px var(--button-face);
-  --border-sunken-outer: inset -1px -1px var(--button-highlight), inset 1px 1px var(--window-frame);
-  --border-sunken-inner: inset -2px -2px var(--button-face), inset 2px 2px var(--button-shadow);
+  --button-highlight: #ffffff;
+  --button-face: #ece5dc;
+  --button-shadow: #aca597;
+  --window-frame: #4a4339;
+  --border-sunken-outer: inset -1px -1px var(--button-highlight), inset 1px 1px var(--button-shadow);
+  --border-sunken-inner: inset -2px -2px var(--button-face), inset 2px 2px var(--line);
   --border-window-outer: inset -1px -1px var(--window-frame), inset 1px 1px var(--button-face);
   --border-window-inner: inset -2px -2px var(--button-shadow), inset 2px 2px var(--button-highlight);
-  --border-field: inset -1px -1px var(--button-highlight), inset 1px 1px var(--button-shadow),
-    inset -2px -2px var(--button-face), inset 2px 2px var(--window-frame);
-  --scrollbar-bg: linear-gradient(90deg, #c5d5ff 0%, #b5d3ff 86%, #b6caf7 100%);
-  --scrollbar-shadow: inset 1px 1px white, inset -1px -1px white, inset 2px 2px #b9cdfa, inset -2px -2px #b6c9f7;
 
-  --bg: var(--surface);
-  --panel: var(--button-face);
-  --sidebar: var(--button-face);
-  --fg: #000000;
-  --dim: #3f3f3f;
-  --faint: #6e6e6e;
-  --line: var(--button-shadow);
-  --hover: #cfe1fa;
-  --chip: #d9d6c3;
-  /* Progress tracks need to read against --sidebar and --chip alike, so they
-     get their own step rather than reusing the chip fill. */
-  --track: #c7c7bd;
-  /* Warm paper rather than the cool green-white it used to be: a terminal is
-     read for hours, and a page with a little yellow in it is easier on the
-     eyes than one with blue. terminals.ts paints the same colour. */
-  --term: #fbf7ee;
-  --shadow: 0 14px 44px rgba(0, 0, 0, .35);
+  --btn-rim: #7a6f60;
+  --btn-face: linear-gradient(180deg, #fffdf9, #f4efe7 86%, #e2d9cb);
+  --btn-face-down: linear-gradient(180deg, #e2d9cb, #ece5da 30%, #f4efe7);
+  --btn-ink: var(--fg);
 
-  /* The board behind the panes is XP's Control Panel blue, and the sidebar is
-     Explorer's task pane: a blue wash with white group boxes on it. */
-  --board: linear-gradient(180deg, #7a9be4 0%, #6886db 45%, #5a74d3 100%);
   --taskpane: linear-gradient(180deg, #7ba2e7 0%, #6375d6 100%);
+  --taskpane-ink: #ffffff;
   --group-head: linear-gradient(90deg, #ffffff 0%, #c6d3f7 100%);
   --group-ink: #215dc6;
   --group-ink-hover: #428eff;
@@ -103,64 +90,87 @@ body { margin: 0; overflow: hidden; }
   --group-line: #ffffff;
   --row-hover: #c1d2ee;
   --row-sel: #316ac5;
-  /* Stock Luna blue, for a chat with no colour of its own. */
-  --luna-blue: hsl(220 90% 45%);
+  --row-sel-ink: #ffffff;
+
+  /* Luna blue, toned down, for a chat with no colour of its own. */
+  --luna-blue: hsl(218 40% 42%);
   /* XP's flashing taskbar button: the one colour reserved for "your turn". */
-  --wait: #ff8a00;
-  --balloon: #ffffe1;
-  --balloon-ink: #000000;
+  --wait: #c46a10;
+  --balloon: #fffbe0;
+  --balloon-ink: #26211a;
+  --scroll-thumb: #c9c1b4;
+  --scroll-thumb-hover: #aaa192;
 }
 [data-app][data-theme="dark"] {
-  --surface: #2b2b2e;
-  --button-highlight: #57575c;
-  --button-face: #3c3c40;
-  --button-shadow: #141416;
+  /* Dark: neutral graphite (A), the terminal a shade deeper still. */
+  --term: #101010;
+  --board: #191919;
+  --surface: #202020;
+  --card: #262626;
+  --field: #141414;
+  --field-line: #444444;
+  --chip: #333333;
+  --hover: #373737;
+  --line: #393939;
+  --track: #141414;
+  --fg: #dbdbdb;
+  --dim: #a8a8a8;
+  --faint: #808080;
+  --selection: #494137;
+  --accent: #7a9cc6;
+  --focus: #d9a441;
+  --shadow: 0 14px 44px rgba(0, 0, 0, .6);
+
+  --button-highlight: #4a4a4a;
+  --button-face: #2e2e2e;
+  --button-shadow: #0c0c0c;
   --window-frame: #000000;
-  --dialog-blue: #4a90e2;
-  --input-border-color: #4a5568;
-  --link-blue: #6ab0ff;
 
-  --bg: var(--surface);
-  --panel: var(--button-face);
-  --sidebar: var(--button-face);
-  --fg: #ececec;
-  --dim: #b8b8b8;
-  --faint: #8a8a8a;
-  --line: var(--button-shadow);
-  --hover: #2c3e55;
-  --chip: #3a3f47;
-  --track: #45484d;
-  --term: #1b1a17;
-  --shadow: 0 14px 44px rgba(0, 0, 0, .65);
+  --btn-rim: #575757;
+  --btn-face: linear-gradient(180deg, #424242, #353535 86%, #2c2c2c);
+  --btn-face-down: linear-gradient(180deg, #262626, #2e2e2e 30%, #353535);
+  --btn-ink: var(--fg);
 
-  /* Royale Noir, the dark XP theme: graphite instead of blue. */
-  --board: linear-gradient(180deg, #2a2b31 0%, #1f2024 100%);
-  --taskpane: linear-gradient(180deg, #2c2c33 0%, #1e1e23 100%);
-  --group-head: linear-gradient(90deg, #3d3d46 0%, #2d2d34 100%);
-  --group-ink: #e8e8ec;
+  --taskpane: linear-gradient(180deg, #212121 0%, #1b1b1b 100%);
+  --taskpane-ink: var(--dim);
+  --group-head: linear-gradient(90deg, #333333 0%, #2a2a2a 100%);
+  --group-body: var(--card);
+  --group-line: var(--line);
+  --group-ink: #dbdbdb;
   --group-ink-hover: #ffffff;
-  --group-body: #26262b;
-  --group-line: #34343c;
-  --row-hover: #33343c;
-  --row-sel: #3a5d99;
-  --balloon: #34321f;
-  --balloon-ink: #f3f0c8;
-}
+  --row-hover: #323232;
+  --row-sel: #424242;
+  --row-sel-ink: #f0f0f0;
 
-@keyframes blink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
+  --wait: #f0a556;
+  --balloon: #2f2b22;
+  --balloon-ink: #efe6cf;
+  --scroll-thumb: #3d3d3d;
+  --scroll-thumb-hover: #555555;
+}
+[data-app] { --bg: var(--surface); --panel: var(--card); }
+
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-::-webkit-scrollbar { width: 16px; height: 16px; }
-::-webkit-scrollbar-thumb { background: var(--scrollbar-bg); box-shadow: var(--scrollbar-shadow); }
-::-webkit-scrollbar-track { background: var(--button-face); }
+/* Thin rounded scrollbars in the theme's own greys, in place of XP's blue
+   bitmaps — which, in the dark theme, were the brightest thing on screen. */
+[data-app] ::-webkit-scrollbar { width: 10px; height: 10px; }
+[data-app] ::-webkit-scrollbar-button { display: none; }
+[data-app] ::-webkit-scrollbar-track,
+[data-app] ::-webkit-scrollbar-corner { background: transparent; }
+[data-app] ::-webkit-scrollbar-thumb {
+  background: var(--scroll-thumb);
+  background-clip: padding-box;
+  border: 2px solid transparent;
+  border-radius: 6px;
+  box-shadow: none;
+}
+[data-app] ::-webkit-scrollbar-thumb:hover { background-color: var(--scroll-thumb-hover); }
 
-a { color: var(--link-blue); text-decoration: none; }
-a:hover { text-decoration: underline; }
-
-.hover-bright:hover { filter: brightness(1.07); }
-.hover-dim:hover { filter: brightness(.98); }
+.hover-bg { transition: background .14s; }
 .hover-bg:hover { background: var(--hover) !important; }
+.hover-danger { transition: background .14s, color .14s; }
 .hover-danger:hover { background: oklch(.63 .19 25 / .16) !important; color: oklch(.58 .2 25) !important; }
 
 /* An app, not a page: a drag across the sidebar or a stray double-click on a
@@ -172,99 +182,61 @@ a:hover { text-decoration: underline; }
 [data-app] [contenteditable] { -webkit-user-select: text; user-select: text; }
 
 .xterm .xterm-viewport { background: transparent !important; }
-/* xterm gives its viewport overflow-y: scroll unconditionally, so every chat
-   carried a scrollbar down the side of the pane — 16px of terminal spent on
-   chrome the CLI never asks for. The terminal has no scrollbar at all: the
-   viewport still scrolls (wheel, shift+PgUp, and xterm's own scrollToBottom
-   all drive scrollTop directly), it is only never painted. Scrollbars stay on
-   everywhere else in the app. */
+/* xterm gives its viewport overflow-y: scroll unconditionally. The terminal
+   has no scrollbar at all: the viewport still scrolls (wheel, shift+PgUp, and
+   xterm's own scrollToBottom), it is only never painted. */
 .xterm .xterm-viewport { scrollbar-width: none; }
 .xterm .xterm-viewport::-webkit-scrollbar { display: none; width: 0; height: 0; }
 
-
-/* Generic XP chrome, built from xp.css's own bevel variables so it reads
-   correctly against --button-face-derived backgrounds (panel/sidebar/chip). */
-.xp-raised {
-  box-shadow: var(--border-raised-outer), var(--border-raised-inner);
-}
-.xp-sunken {
-  box-shadow: var(--border-sunken-outer), var(--border-sunken-inner);
-}
-.xp-field {
-  box-shadow: var(--border-field);
-}
-/* xp.css pins the checkbox tick (label::after) to the label's top but leaves
-   the box (label::before) at its static inline position, so any label whose
-   line-height exceeds the 13px box drops the box out from under the tick.
-   Pin the box to the top as well, keeping the two together on multi-line
-   labels. */
-[data-app] input[type="checkbox"] + label::before {
-  top: 0;
-}
-
-/* xp.css's compiled dist pins every control to "Pixelated MS Sans Serif" at a
-   literal 11px, which is the one size that bitmap face is drawn for. Since the
-   app runs on Tahoma at --ui, its own controls have to be re-pointed at the
-   same font and scale, or dialogs end up with two typefaces in them. */
+/* ------------------------------------------------------------------------
+   Controls. XP's shapes — a 1px rim, a 3px radius, a top-lit face and the
+   warm rim on hover — drawn from the tokens, so they read in both themes.
+   Focus: nothing for the mouse (xp.css drew a dotted rectangle on every
+   pressed button), a ring for the keyboard.
+   ------------------------------------------------------------------------ */
 [data-app] button,
 [data-app] select,
 [data-app] input,
 [data-app] textarea,
 [data-app] label,
 [data-app] .window,
-[data-app] .window-body,
-[data-app] .status-bar,
-[data-app] ul.tree-view {
+[data-app] .window-body {
   font-family: var(--sans-serif);
   font-size: var(--fs-4);
 }
-/* Title bars are the one place XP does *not* use Tahoma. */
-[data-app] .title-bar {
-  font-family: "Trebuchet MS", Tahoma, sans-serif;
-  font-size: var(--fs-4);
-  /* xp.css puts the title's navy shadow on the whole bar, so every chip in a
-     pane strip — navy text on white — carried a navy ghost a pixel off, which
-     read as doubled type. The shadow belongs to the white title text only. */
-  text-shadow: none;
-  /* xp.css rounds the two top corners by 8px and 7px. The odd pixel is
-     invisible on its own .window, whose frame is the same blue as the bar, but
-     a pane wraps this in a dark 1px frame that has to follow the curve — and it
-     can only follow one radius. Even them up. */
-  border-top-right-radius: 8px;
+[data-app] :focus { outline: none; }
+[data-app] button:focus-visible,
+[data-app] [role="button"]:focus-visible,
+[data-app] select:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
 }
-[data-app] .title-bar-text {
-  text-shadow: 1px 1px #0f1089;
-  /* xp.css reserves 24px so a title can never touch the controls; our strips
-     put chips in that gap and manage the spacing themselves. */
-  margin-right: 8px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-/* Fixed 21px control heights are sized to the 8pt shell font; grow with --ui. */
-[data-app] select,
-[data-app] input[type="text"],
-[data-app] input[type="email"],
-[data-app] input[type="password"] {
-  height: calc(var(--ui) * 1.6);
-  line-height: normal;
-}
+
 [data-app] button {
-  min-height: calc(var(--ui) * 1.7);
+  min-height: calc(var(--ui) * 1.85);
+  border: 1px solid var(--btn-rim);
+  border-radius: 4px;
+  background: var(--btn-face);
+  color: var(--btn-ink);
+  box-shadow: none;
+  transition: transform .12s ease, box-shadow .14s ease, filter .14s ease, background .14s;
 }
-/* XP sizes dialog buttons to a 75px minimum. Toolbar-sized buttons (the icon
-   squares in the sidebar and pane strips) opt out of it. */
-[data-app] button.slim {
-  min-width: 0;
-  padding: 0 6px;
+[data-app] button:not(:disabled):hover {
+  box-shadow: inset -1px 1px #fff0cf, inset 1px 2px #fdd889, inset -2px 2px #fbc761, inset 2px -2px #e5a01a;
 }
-[data-app] button:disabled {
-  color: var(--faint);
+[data-app][data-theme="dark"] button:not(:disabled):hover {
+  box-shadow: inset 0 0 0 1px #c98e2a, inset 0 0 0 2px rgba(240, 180, 80, .25);
 }
-/* xp.css paints every button in the same beige, which is faithful to XP but
-   leaves the one button that matters indistinguishable from Cancel. These keep
-   the XP shape — 1px dark rim, 3px radius, top-lit gradient — and only swap the
-   face for a colour, the way the Luna title bar and Start button do. */
+[data-app] button:not(:disabled):active {
+  background: var(--btn-face-down);
+  transform: scale(.97);
+}
+[data-app] button:disabled { color: var(--faint); opacity: .7; }
+/* XP sizes dialog buttons to a 75px minimum; small ones opt out. */
+[data-app] button.slim { min-width: 0; padding: 0 8px; }
+
+/* The one button that matters wears a colour, the way XP's Start button and
+   default dialog buttons stood out: green to go ahead, red to destroy. */
 [data-app] button.primary,
 [data-app] button.danger {
   color: #fff;
@@ -272,86 +244,269 @@ a:hover { text-decoration: underline; }
   text-shadow: 0 1px 1px rgba(0, 0, 0, .35);
 }
 [data-app] button.primary {
-  border-color: #003c74;
-  background: linear-gradient(180deg, #7cc0ff, #2a86f0 45%, #0a5fd8 55%, #0b4fb8);
+  border-color: #1f5f1f;
+  background: linear-gradient(180deg, #7cc36f, #3f9a3c 45%, #2f8a2f 55%, #2a7a2a);
 }
 [data-app] button.danger {
   border-color: #6e1b12;
-  background: linear-gradient(180deg, #f09a8e, #d5503c 45%, #b8301c 55%, #96240f);
-}
-[data-app] button.primary:not(:disabled):hover,
-[data-app] button.danger:not(:disabled):hover {
-  /* XP's hover is a warm rim rather than a lighter face; keep the rim and let
-     the colour show through it. */
-  box-shadow: inset -1px 1px #fff0cf, inset 1px 2px #fdd889, inset -2px 2px #fbc761, inset 2px -2px #e5a01a;
+  background: linear-gradient(180deg, #ea9286, #cf5038 45%, #b8301c 55%, #96240f);
 }
 [data-app] button.primary:not(:disabled):active {
-  background: linear-gradient(180deg, #0b4fb8, #0a5fd8 45%, #2a86f0 55%, #7cc0ff);
+  background: linear-gradient(180deg, #2a7a2a, #2f8a2f 45%, #3f9a3c 55%, #7cc36f);
 }
 [data-app] button.danger:not(:disabled):active {
-  background: linear-gradient(180deg, #96240f, #b8301c 45%, #d5503c 55%, #f09a8e);
+  background: linear-gradient(180deg, #96240f, #b8301c 45%, #cf5038 55%, #ea9286);
 }
 [data-app] button.primary:disabled,
 [data-app] button.danger:disabled {
-  background: linear-gradient(180deg, #fff, #ecebe5 86%, #d8d0c4);
+  background: var(--btn-face);
+  border-color: var(--btn-rim);
   color: var(--faint);
   text-shadow: none;
 }
-/* xp.css bakes .window's surface and bevel to light-mode literals; in dark mode
-   they have to come from our own themed variables instead. */
-[data-app][data-theme="dark"] .window {
-  background: var(--surface);
+
+/* Fields: XP's single-line border, rounded like the rest. */
+[data-app] select,
+[data-app] input[type="text"],
+[data-app] input[type="email"],
+[data-app] input[type="password"],
+[data-app] textarea {
+  height: calc(var(--ui) * 1.85);
+  line-height: normal;
+  padding: 0 8px;
+  border: 1px solid var(--field-line);
+  border-radius: 5px;
+  background-color: var(--field);
   color: var(--fg);
-  box-shadow: var(--border-window-outer), var(--border-window-inner);
+  transition: border-color .14s, box-shadow .14s;
 }
-[data-app] .window-body {
-  margin: 10px 12px;
+[data-app] textarea { height: auto; padding: 5px 8px; }
+[data-app] select {
+  padding-right: 26px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.6 6 7.6l3-3' fill='none' stroke='%23908a80' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  background-size: 12px 12px;
+}
+[data-app] select:hover,
+[data-app] input[type="text"]:hover,
+[data-app] input[type="password"]:hover,
+[data-app] input[type="email"]:hover { border-color: var(--faint); }
+[data-app] select:focus,
+[data-app] input[type="text"]:focus,
+[data-app] input[type="password"]:focus,
+[data-app] input[type="email"]:focus,
+[data-app] textarea:focus {
+  outline: none;
+  color: var(--fg);
+  background-color: var(--field);
+  border-color: var(--focus);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--focus) 22%, transparent);
+}
+[data-app] select:active { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.6 6 7.6l3-3' fill='none' stroke='%23908a80' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"); }
+[data-app] select option { background: var(--field); color: var(--fg); }
+[data-app] input::placeholder { color: var(--faint); }
+
+/* Checkboxes and radios: xp.css hides the input and draws the box on the
+   label's ::before. Same structure, redrawn round-cornered and smooth, with
+   XP's green tick and its warm hover rim. */
+[data-app] input[type="checkbox"] + label,
+[data-app] input[type="radio"] + label {
+  position: relative;
+  margin-left: 22px;
+  line-height: 16px;
+  outline: none;
+}
+[data-app] input[type="checkbox"] + label::before,
+[data-app] input[type="radio"] + label::before {
+  content: "";
+  position: absolute;
+  left: -22px;
+  top: 50%;
+  width: 15px;
+  height: 15px;
+  margin: -7.5px 0 0;
+  border: 1px solid var(--field-line);
+  border-radius: 4px;
+  background: var(--field);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, .12);
+  transition: border-color .14s, box-shadow .14s, background .14s;
+}
+[data-app] input[type="radio"] + label::before { border-radius: 50%; }
+[data-app] input[type="checkbox"]:not([disabled]) + label:hover::before,
+[data-app] input[type="radio"]:not([disabled]) + label:hover::before {
+  border-color: #e5a01a;
+  box-shadow: inset 0 0 0 1px #fbc761;
+}
+[data-app] input[type="checkbox"]:focus-visible + label::before,
+[data-app] input[type="radio"]:focus-visible + label::before {
+  box-shadow: 0 0 0 2px var(--focus);
+}
+[data-app] input[type="checkbox"]:active + label::before,
+[data-app] input[type="radio"]:active + label::before { background: var(--hover); }
+[data-app] input[type="checkbox"] + label::after,
+[data-app] input[type="radio"] + label::after {
+  content: "";
+  position: absolute;
+  left: -22px;
+  top: 50%;
+  width: 15px;
+  height: 15px;
+  margin-top: -7.5px;
+  background: none;
+  transform: scale(.3);
+  opacity: 0;
+  transition: transform .1s ease-out, opacity .1s;
+}
+[data-app] input[type="checkbox"]:checked + label::after {
+  display: block;
+  opacity: 1;
+  transform: scale(1);
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 15 15'%3E%3Cpath d='M3.6 7.8l2.6 2.6 5.2-5.6' fill='none' stroke='%2322a122' stroke-width='2.1' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / 15px 15px no-repeat;
+}
+[data-app] input[type="radio"]:checked + label::after {
+  display: block;
+  opacity: 1;
+  transform: scale(1);
+  top: 50%;
+  left: -22px;
+  background: radial-gradient(circle at 50% 50%, #5fc25a 0 2.6px, #22a122 3.4px, transparent 4px);
+}
+[data-app] input[type="checkbox"][disabled] + label,
+[data-app] input[type="radio"][disabled] + label { color: var(--faint); }
+[data-app] input[type="checkbox"][disabled] + label::before,
+[data-app] input[type="radio"][disabled] + label::before { background: var(--hover); }
+
+[data-app] .xp-sunken { box-shadow: var(--border-sunken-outer), var(--border-sunken-inner); }
+/* A list box in a dialog: the field's own frame and ground. */
+[data-app] .xp-field {
+  border: 1px solid var(--field-line);
+  border-radius: 5px;
+  background: var(--field);
+  color: var(--fg);
 }
 
-/* The app's own frame, standing in for the native title bar. xp.css's .window
-   bevel is baked to light-mode literals, so the frame is drawn from our themed
-   bevel variables instead. */
+/* ------------------------------------------------------------------------
+   Windows and dialogs. xp.css keeps the light Luna frame; the body is ours.
+   ------------------------------------------------------------------------ */
+[data-app] .window { background: var(--surface); color: var(--fg); }
+[data-app][data-theme="dark"] .window {
+  box-shadow: var(--border-window-outer), var(--border-window-inner);
+}
+[data-app] .window-body { margin: 10px 12px; }
+
+/* Title bars: XP's Luna blue gloss in the light theme, graphite in the dark
+   one (Royale Noir, without its blue). Title text in Trebuchet, as XP had it. */
+[data-app] .title-bar {
+  font-family: "Trebuchet MS", Tahoma, sans-serif;
+  font-size: var(--fs-4);
+  text-shadow: none;
+  /* xp.css rounds the two top corners by 8px and 7px; a pane's frame can
+     only follow one radius. */
+  border-top-right-radius: 8px;
+}
+[data-app] .title-bar-text {
+  text-shadow: 1px 1px #0f1089;
+  margin-right: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-app][data-theme="dark"] .title-bar {
+  background: linear-gradient(180deg, #555555 0%, #303030 8%, #282828 45%, #1f1f1f 55%, #262626 100%);
+  border-color: #3a3a3a;
+}
+[data-app][data-theme="dark"] .title-bar-text { text-shadow: 1px 1px #000; }
+
+/* The app's own title bar over the window's native edge: no frame of its
+   own drawn round it, so Windows keeps the border, the rounded corners and
+   the shadow it gives every window, maximised or not. */
 .app-frame {
   height: 100vh;
   display: flex;
   flex-direction: column;
-  padding: 3px;
   background: var(--surface);
-  box-shadow: var(--border-window-outer), var(--border-window-inner);
 }
 .app-frame > .title-bar {
   flex: none;
-  /* xp.css keeps 5px of blue between the close button and the frame. On a
-     maximised window that strip sits at the very edge of the screen, which is
-     where the pointer is thrown when you shove it into the corner — and it
-     lands on nothing. Give the corner to the button; the bar keeps its left
-     padding, so only the controls move. */
-  padding-right: 0;
-}
-/* A maximised XP window loses its rounded corners and its frame padding —
-   without this the desktop shows through a 3px band on every edge. */
-.app-frame[data-max="yes"] {
-  padding: 0;
-  box-shadow: none;
-}
-.app-frame[data-max="yes"] > .title-bar {
+  height: 34px;
+  gap: 6px;
+  padding-right: 5px;
   border-radius: 0;
   border-left: none;
   border-right: none;
   border-top: none;
 }
-.app-frame > .app-body {
-  flex: 1;
-  min-height: 0;
+.app-frame > .app-body { flex: 1; min-height: 0; display: flex; }
+.app-frame .title-bar-text { flex: none; display: flex; align-items: center; gap: 6px; }
+
+/* The board's controls, on the title bar: glass pills on the gloss, so they
+   are part of the bar rather than a toolbar under it. */
+[data-app] .tb-tools {
+  flex: 1 1 auto;
+  min-width: 0;
   display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--sans-serif);
 }
+[data-app] .tb-seg {
+  flex: none;
+  display: flex;
+  height: 24px;
+  border: 1px solid rgba(255, 255, 255, .38);
+  border-radius: 6px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, .12);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .18), 0 1px 1px rgba(0, 0, 40, .2);
+}
+[data-app][data-theme="dark"] .tb-seg { border-color: rgba(255, 255, 255, .14); background: rgba(255, 255, 255, .04); }
+[data-app] .tb-seg > button,
+[data-app] button.tb-btn {
+  min-width: 30px;
+  min-height: 0;
+  height: 100%;
+  padding: 0 7px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: #fff;
+  display: grid;
+  place-items: center;
+  font: 700 var(--fs-4) "Times New Roman", serif;
+  text-shadow: 0 1px 1px rgba(0, 0, 40, .45);
+  transition: background .14s, transform .12s;
+}
+[data-app] .tb-seg > button + button { border-left: 1px solid rgba(255, 255, 255, .22); }
+[data-app] .tb-seg > button:not(:disabled):hover,
+[data-app] button.tb-btn:not(:disabled):hover {
+  background: rgba(255, 255, 255, .22);
+  box-shadow: none;
+}
+[data-app] .tb-seg > button[aria-pressed="true"] {
+  background: linear-gradient(180deg, rgba(255, 255, 255, .5), rgba(255, 255, 255, .26));
+  box-shadow: inset 0 1px 2px rgba(0, 0, 40, .3);
+}
+[data-app][data-theme="dark"] .tb-seg > button[aria-pressed="true"] {
+  background: linear-gradient(180deg, #5a5a5a, #464646);
+}
+[data-app] button.tb-btn {
+  height: 24px;
+  gap: 5px;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  font: 600 var(--fs-3) var(--sans-serif);
+}
+[data-app] button.tb-btn:not(:disabled):hover { border-color: rgba(255, 255, 255, .35); }
+[data-app] .tb-seg > button:not(:disabled):active,
+[data-app] button.tb-btn:not(:disabled):active { transform: scale(.94); background: rgba(0, 0, 40, .15); }
+[data-app] .tb-sep { width: 1px; height: 18px; background: rgba(255, 255, 255, .28); flex: none; }
 
 /* ------------------------------------------------------------------------
-   Window controls. xp.css ships pixel art for Minimize / Maximize / Restore /
-   Close and nothing else, so every control Luna added (delete, rename) came
-   out in a different hand: a 21px bitmap beside a CSS-drawn trash beside a
-   swatch. Every control in a title bar (the window, a pane, a dialog) is
-   drawn here instead, from one face and one set of white glyphs, at 22px.
+   Window controls: every control in a title bar (the window's, a pane's, a
+   dialog's) drawn from one face and one set of white glyphs, at 22px.
    ------------------------------------------------------------------------ */
 [data-app] {
   --g-min: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='4' y='10.6' width='8' height='2.6' rx='.5' fill='white'/%3E%3C/svg%3E");
@@ -366,9 +521,9 @@ a:hover { text-decoration: underline; }
   --ctl-rim: #ffffff;
 }
 [data-app][data-theme="dark"] {
-  --ctl-face: linear-gradient(180deg, #686872 0%, #3f3f47 48%, #303036 52%, #3a3a41 100%);
-  --ctl-red: linear-gradient(180deg, #e98a78 0%, #c84a30 48%, #a8321a 52%, #9e2a10 100%);
-  --ctl-rim: #8a8a94;
+  --ctl-face: linear-gradient(180deg, #686868 0%, #404040 48%, #313131 52%, #3a3a3a 100%);
+  --ctl-red: linear-gradient(180deg, #e08a78 0%, #c04a30 48%, #a3321a 52%, #962a10 100%);
+  --ctl-rim: #8a8a8a;
 }
 [data-app] .title-bar-controls {
   display: flex;
@@ -385,13 +540,13 @@ a:hover { text-decoration: underline; }
   margin: 0;
   padding: 0;
   border: 1px solid var(--ctl-rim);
-  border-radius: 3px;
+  border-radius: 4px;
   background: var(--glyph) center / 16px 16px no-repeat, var(--face) !important;
   box-shadow: inset -1px -1px rgba(0, 0, 40, .22) !important;
-  transition: filter .1s, opacity .15s;
+  transition: filter .12s, opacity .15s, transform .12s;
 }
-[data-app] .title-bar-controls button:not(:disabled):hover { filter: brightness(1.13); }
-[data-app] .title-bar-controls button:not(:disabled):active { filter: brightness(.86); }
+[data-app] .title-bar-controls button:not(:disabled):hover { filter: brightness(1.18); transform: translateY(-1px); }
+[data-app] .title-bar-controls button:not(:disabled):active { filter: brightness(.85); transform: scale(.92); }
 [data-app] .title-bar-controls button[aria-label="Minimize"],
 [data-app] .title-bar-controls button[data-glyph="min"] { --glyph: var(--g-min); }
 [data-app] .title-bar-controls button[aria-label="Maximize"],
@@ -399,15 +554,13 @@ a:hover { text-decoration: underline; }
 [data-app] .title-bar-controls button[aria-label="Restore"],
 [data-app] .title-bar-controls button[data-glyph="restore"] { --glyph: var(--g-restore); }
 [data-app] .title-bar-controls button[data-glyph="pencil"] { --glyph: var(--g-pencil); }
-[data-app] .title-bar-controls button[aria-label="Close"],
-[data-app] .title-bar-controls button[data-glyph="close"] { --glyph: var(--g-close); --face: var(--ctl-red); }
+[data-app] .title-bar-controls button[aria-label="Close"] { --glyph: var(--g-close); --face: var(--ctl-red); }
 [data-app] .title-bar-controls button[data-glyph="trash"] { --glyph: var(--g-trash); --face: var(--ctl-red); }
 /* The colour button wears the chat's colour instead of a glyph. */
 [data-app] .title-bar-controls button[data-glyph="swatch"] {
   background:
     linear-gradient(var(--swatch, transparent), var(--swatch, transparent)) center / 10px 10px no-repeat,
     var(--face) !important;
-  box-shadow: inset 0 0 0 5px transparent, inset -1px -1px rgba(0, 0, 40, .22) !important;
 }
 [data-app] .title-bar-controls button[data-glyph="swatch"]::after {
   content: "";
@@ -416,31 +569,24 @@ a:hover { text-decoration: underline; }
   height: 12px;
   margin: auto;
   border: 1px solid #fff;
-  border-radius: 2px;
+  border-radius: 3px;
 }
-
-/* Royale Noir draws every title bar in graphite, the window's and the
-   dialogs' alike; a pane's own bar adds its chat's colour below. */
-[data-app][data-theme="dark"] .title-bar {
-  background: linear-gradient(180deg, #5d5d66 0%, #2f2f35 8%, #26262b 45%, #1c1c20 55%, #232328 100%);
-  border-color: #3a3a42;
-}
-[data-app][data-theme="dark"] .title-bar-text { text-shadow: 1px 1px #000; }
 
 /* ------------------------------------------------------------------------
    Pane title bar. The chat's colour arrives as --c, set inline, and the Luna
-   gloss is mixed from it here: focus, waiting and the dark theme are a
-   matter of CSS rather than a precomputed gradient per colour.
+   gloss is mixed from it here. Controls sit on the left, where the hand
+   reaches first; the name and the chat's details on the right.
    ------------------------------------------------------------------------ */
 [data-app] .pane {
   container-type: inline-size;
+  transition: border-color .12s, box-shadow .12s, opacity .12s;
 }
 [data-app] .pane-bar {
   --c: var(--luna-blue);
   flex: none;
   height: 30px;
-  gap: 7px;
-  padding: 0 4px 0 8px;
+  gap: 6px;
+  padding: 0 8px 0 4px;
   cursor: grab;
   border-top-color: color-mix(in oklab, var(--c) 75%, black);
   border-left-color: color-mix(in oklab, var(--c) 75%, black);
@@ -448,32 +594,60 @@ a:hover { text-decoration: underline; }
   background: linear-gradient(180deg,
     color-mix(in oklab, var(--c) 45%, white) 0%, var(--c) 9%, color-mix(in oklab, var(--c) 88%, white) 40%,
     var(--c) 86%, color-mix(in oklab, var(--c) 75%, black) 100%);
+  transition: background .15s, box-shadow .15s;
+}
+[data-app] .pane-bar .title-bar-controls { flex: none; position: relative; }
+[data-app] .pane-head {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  overflow: hidden;
 }
 [data-app] .pane-bar .title-bar-text {
   flex: 0 1 auto;
   min-width: 40px;
   margin-right: 0;
+  font-weight: 700;
   text-shadow: 1px 1px color-mix(in oklab, var(--c) 45%, black);
 }
-[data-app] .pane-meta {
-  flex: 1 1 0;
+/* The chat's details as separate chips, not one run of text. */
+[data-app] .pane-chips {
+  flex: 0 1 auto;
   min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font: 400 var(--fs-2) var(--sans-serif);
-  color: rgba(255, 255, 255, .9);
 }
-[data-app] .pane-meta b { font-weight: 700; }
+[data-app] .pchip {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 18px;
+  padding: 0 7px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, .2);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .18);
+  color: rgba(255, 255, 255, .95);
+  font: 400 var(--fs-2) var(--sans-serif);
+  white-space: nowrap;
+  text-shadow: none;
+}
+[data-app] .pchip b { font-weight: 700; }
 [data-app] .pane-sid {
   flex: none;
   font: 400 var(--fs-1) "JetBrains Mono", monospace;
   color: rgba(255, 255, 255, .85);
   padding: 2px 4px;
-  border-radius: 3px;
+  border-radius: 4px;
   min-width: 8.5ch;
   text-align: center;
   cursor: copy;
+  transition: background .14s;
 }
 [data-app] .pane-sid:hover { background: rgba(255, 255, 255, .2); }
 /* Context: an XP block meter with the number beside it. */
@@ -487,59 +661,57 @@ a:hover { text-decoration: underline; }
   color: #fff;
 }
 [data-app] .ctx-meter .track {
-  width: 46px;
-  height: 11px;
-  padding: 1px;
-  border-radius: 2px;
-  background: rgba(255, 255, 255, .88);
-  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .28);
-}
-[data-app] .ctx-meter .fill {
-  display: block;
-  height: 100%;
-  background: repeating-linear-gradient(90deg, var(--m) 0 4px, transparent 4px 5px);
-  transition: width .4s ease;
+  width: 52px;
+  height: 12px;
 }
 
 /* An inactive XP window is pale, not grey: the hue survives, the shout goes. */
 [data-app] .pane[data-focus="no"] .pane-bar {
-  border-color: color-mix(in oklab, var(--c) 35%, #b9c3d9);
-  background: linear-gradient(180deg, color-mix(in oklab, var(--c) 30%, #e3e9f6), color-mix(in oklab, var(--c) 42%, #c6d1ea));
+  border-color: color-mix(in oklab, var(--c) 35%, #c9bfb0);
+  background: linear-gradient(180deg, color-mix(in oklab, var(--c) 30%, #f1e9dd), color-mix(in oklab, var(--c) 42%, #d8cdbc));
 }
 [data-app] .pane[data-focus="no"] .pane-bar .title-bar-text,
 [data-app] .pane[data-focus="no"] .ctx-meter {
   color: #fff;
-  text-shadow: 1px 1px color-mix(in oklab, var(--c) 55%, #56617c);
+  text-shadow: 1px 1px color-mix(in oklab, var(--c) 55%, #5c5446);
 }
-[data-app] .pane[data-focus="no"] .pane-meta,
+[data-app] .pane[data-focus="no"] .pchip { background: rgba(255, 255, 255, .16); }
 [data-app] .pane[data-focus="no"] .pane-sid { color: rgba(255, 255, 255, .88); }
 [data-app] .pane[data-focus="no"] .title-bar-controls button { opacity: .72; }
 [data-app] .pane[data-focus="no"] .title-bar-controls button:hover { opacity: 1; }
 
 [data-app][data-theme="dark"] .pane-bar {
-  border-color: #3a3a42;
-  background: linear-gradient(180deg, #5a5a63 0%, #34343b 10%, #2b2b31 45%, #202025 55%, #29292f 100%);
-  box-shadow: inset 0 -2px 0 var(--c);
+  border-color: #3a3a3a;
+  background: linear-gradient(180deg, #525252 0%, #333333 10%, #2a2a2a 45%, #212121 55%, #282828 100%);
+  box-shadow: inset 0 -3px 0 var(--c);
 }
 [data-app][data-theme="dark"] .pane-bar .title-bar-text { text-shadow: 1px 1px #000; }
+[data-app][data-theme="dark"] .pchip {
+  background: rgba(255, 255, 255, .07);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .08);
+  color: var(--dim);
+}
+[data-app][data-theme="dark"] .pchip b { color: var(--fg); }
 [data-app][data-theme="dark"] .pane[data-focus="no"] .pane-bar {
-  border-color: #3a3a42;
-  background: #232328;
-  box-shadow: inset 0 -2px 0 color-mix(in oklab, var(--c) 45%, #232328);
+  border-color: #333333;
+  background: #232323;
+  box-shadow: inset 0 -3px 0 color-mix(in oklab, var(--c) 40%, #232323);
 }
 [data-app][data-theme="dark"] .pane[data-focus="no"] .pane-bar .title-bar-text,
-[data-app][data-theme="dark"] .pane[data-focus="no"] .ctx-meter { color: #a3a3ab; text-shadow: none; }
-[data-app][data-theme="dark"] .pane[data-focus="no"] .pane-meta,
-[data-app][data-theme="dark"] .pane[data-focus="no"] .pane-sid { color: #85858d; }
-[data-app][data-theme="dark"] .ctx-meter .track { background: #111114; }
+[data-app][data-theme="dark"] .pane[data-focus="no"] .ctx-meter { color: #a3a3a3; text-shadow: none; }
+[data-app][data-theme="dark"] .pane[data-focus="no"] .pchip,
+[data-app][data-theme="dark"] .pane[data-focus="no"] .pchip b,
+[data-app][data-theme="dark"] .pane[data-focus="no"] .pane-sid { color: #858585; }
 
-/* A narrow pane gives up the details before the name and the controls. */
-@container (max-width: 640px) { [data-app] .pane-meta { display: none; } }
-@container (max-width: 480px) { [data-app] .pane-sid, [data-app] .ctx-meter .track { display: none; } }
+/* A narrow pane gives up its details chip by chip before the name and the
+   controls. */
+@container (max-width: 720px) { [data-app] .pchip.opt-3 { display: none; } }
+@container (max-width: 600px) { [data-app] .pchip.opt-2, [data-app] .pane-sid { display: none; } }
+@container (max-width: 500px) { [data-app] .pchip.opt-1, [data-app] .ctx-meter .track { display: none; } }
+@container (max-width: 380px) { [data-app] .pane-chips { display: none; } }
 
 /* Waiting for you: the bar flashes orange the way an XP taskbar button did,
-   and a balloon says so over a pane you are not looking at. The flash is an
-   inset shadow, which paints over the gloss but under the text. */
+   and a balloon says so over a pane you are not looking at. */
 [data-app] .pane[data-waiting="yes"] .pane-bar { animation: taskbar-flash 2.4s ease-in-out infinite; }
 @keyframes taskbar-flash {
   0%, 50%, 100% { box-shadow: inset 0 0 0 40px rgba(255, 128, 0, 0); }
@@ -547,8 +719,8 @@ a:hover { text-decoration: underline; }
 }
 [data-app][data-theme="dark"] .pane[data-waiting="yes"] .pane-bar { animation-name: taskbar-flash-dark; }
 @keyframes taskbar-flash-dark {
-  0%, 50%, 100% { box-shadow: inset 0 -2px 0 var(--c), inset 0 0 0 40px rgba(255, 128, 0, 0); }
-  62%, 88% { box-shadow: inset 0 -2px 0 var(--c), inset 0 0 0 40px rgba(255, 128, 0, .5); }
+  0%, 50%, 100% { box-shadow: inset 0 -3px 0 var(--c), inset 0 0 0 40px rgba(255, 140, 20, 0); }
+  62%, 88% { box-shadow: inset 0 -3px 0 var(--c), inset 0 0 0 40px rgba(255, 140, 20, .4); }
 }
 [data-app] .balloon {
   position: absolute;
@@ -565,8 +737,9 @@ a:hover { text-decoration: underline; }
   line-height: 1.35;
   box-shadow: 2px 3px 7px rgba(0, 0, 0, .28);
   pointer-events: none;
-  animation: pop-in .22s cubic-bezier(.2, .8, .3, 1);
+  animation: balloon-in .16s ease-out;
 }
+@keyframes balloon-in { from { opacity: 0; transform: translateY(-8px) scale(.9); } }
 [data-app] .balloon b { display: flex; align-items: center; gap: 6px; }
 [data-app] .balloon b::before {
   content: "!";
@@ -592,29 +765,98 @@ a:hover { text-decoration: underline; }
   transform: rotate(45deg);
 }
 [data-app][data-theme="dark"] .balloon,
-[data-app][data-theme="dark"] .balloon::after { border-color: #8a8660; }
+[data-app][data-theme="dark"] .balloon::after { border-color: #6f6650; }
 
 /* ------------------------------------------------------------------------
-   Sidebar: Explorer's task pane.
+   Sidebar: Explorer's task pane. Pinned, it sits in the row; hidden, it
+   leaves a strip, and hovering the strip slides it out over the board.
    ------------------------------------------------------------------------ */
 [data-app] .taskpane { background: var(--taskpane); }
+[data-app] .dock {
+  position: relative;
+  flex: none;
+  z-index: 30;
+  /* Clipped on the left only: the slid-away sidebar must not show over the
+     window's frame, while the slid-out one overhangs the board on the right. */
+  clip-path: inset(0 -100vw 0 0);
+  transition: width .13s ease-out;
+}
+/* Slid out over the board, it goes over the peek sheet too. */
+[data-app] .dock[data-mode="hidden"][data-shown="yes"] { z-index: 60; }
+[data-app] .dock > .taskpane {
+  position: absolute;
+  inset: 0 auto 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 7px 7px 8px;
+  border-right: 1px solid var(--line);
+  transition: transform .13s ease-out, box-shadow .13s;
+}
+[data-app] .dock[data-shown="no"] > .taskpane { transform: translateX(-100%); pointer-events: none; }
+[data-app] .dock[data-mode="hidden"][data-shown="yes"] > .taskpane { box-shadow: 8px 0 28px rgba(0, 0, 0, .35); }
+[data-app] .dock-strip {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  justify-content: center;
+  padding-top: 12px;
+  background: var(--taskpane);
+  border-right: 1px solid var(--line);
+  transition: background .15s;
+}
+/* The board's own 8px margin beside the strip answers the hover too, so
+   the pointer need not find the strip itself. */
+[data-app] .dock-strip::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 100%;
+  width: 10px;
+}
+[data-app] .dock-strip::before {
+  content: "";
+  width: 3px;
+  height: 36px;
+  border-radius: 2px;
+  background: var(--faint);
+  opacity: .55;
+  transition: opacity .12s, height .12s;
+}
+[data-app] .dock-strip:hover::before { opacity: 1; height: 52px; }
+[data-app] .dock-grip {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: -3px;
+  width: 6px;
+  z-index: 2;
+  cursor: col-resize;
+  transition: background .15s;
+}
+[data-app] .dock-grip:hover,
+[data-app] .dock-grip[data-on="yes"] { background: color-mix(in oklab, var(--accent) 60%, transparent); }
+
 [data-app] .tp-group {
   flex: none;
-  border-radius: 5px 5px 0 0;
+  border-radius: 6px 6px 0 0;
   overflow: hidden;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, .18);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .14);
+  animation: pop-in .12s ease-out;
 }
 [data-app] .tp-head {
   display: flex;
   align-items: center;
   gap: 6px;
-  height: calc(var(--ui) * 2.1);
-  padding: 0 4px 0 9px;
+  height: calc(var(--ui) * 2);
+  padding: 0 4px 0 8px;
   background: var(--group-head);
   color: var(--group-ink);
   font-size: var(--fs-4);
   font-weight: 700;
   cursor: default;
+  transition: color .14s;
 }
 [data-app] .tp-head:hover { color: var(--group-ink-hover); }
 [data-app] .tp-chev {
@@ -624,64 +866,36 @@ a:hover { text-decoration: underline; }
   border-radius: 50%;
   display: grid;
   place-items: center;
-  background: #fff;
-  border: 1px solid #c3cbe6;
+  background: var(--card);
+  border: 1px solid var(--line);
   color: var(--group-ink);
-  font-size: 9px;
-  line-height: 1;
-  transition: transform .18s ease;
+  transition: transform .13s ease-out, background .12s;
 }
-[data-app][data-theme="dark"] .tp-chev { background: #4a4a54; border-color: #5a5a64; }
+[data-app] .tp-head:hover .tp-chev { background: var(--hover); }
 [data-app] .tp-chev[data-open="no"] { transform: rotate(180deg); }
+/* The body folds by animating its row height, not by vanishing. */
+[data-app] .tp-fold {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition: grid-template-rows .14s ease-out;
+}
+[data-app] .tp-fold[data-open="no"] { grid-template-rows: 0fr; }
+[data-app] .tp-fold > div { min-height: 0; overflow: hidden; }
 [data-app] .tp-body {
   background: var(--group-body);
   border: 1px solid var(--group-line);
   border-top: 0;
-  padding: 3px;
+  padding: 2px;
 }
 
-/* The board picker: layouts and groups as two XP segmented strips. */
-[data-app] .seg {
-  display: flex;
-  border: 1px solid #7f9db9;
-  border-radius: 3px;
-  overflow: hidden;
-  background: var(--button-highlight);
-}
-[data-app][data-theme="dark"] .seg { border-color: #4a4a52; background: #1b1b1e; }
-[data-app] .seg > button {
-  flex: 1;
-  min-width: 0;
-  min-height: 0;
-  height: 26px;
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  box-shadow: none !important;
-  display: grid;
-  place-items: center;
-  color: var(--dim);
-  transition: background .12s;
-}
-[data-app] .seg > button + button { border-left: 1px solid #c6d3f7; }
-[data-app][data-theme="dark"] .seg > button + button { border-left-color: #34343b; }
-[data-app] .seg > button:hover { background: var(--hover); }
-[data-app] .seg > button[aria-pressed="true"] {
-  background: linear-gradient(180deg, #fff1cc, #ffd47a);
-  color: #000;
-}
-[data-app][data-theme="dark"] .seg > button[aria-pressed="true"] {
-  background: linear-gradient(180deg, #5a6f98, #3a5585);
-  color: #fff;
-}
-[data-app] .seg.roman > button { font: 700 var(--fs-5) "Times New Roman", serif; }
-
-/* New chat: the one green button, shaped after XP's Start. */
+/* New chat: the one green button, shaped after XP's Start. A gloss sweeps
+   across it on hover. */
 [data-app] button.start-btn {
-  flex: 1;
+  position: relative;
+  overflow: hidden;
+  flex: none;
   min-width: 0;
-  height: 32px;
+  height: 30px;
   padding: 0 12px;
   display: flex;
   align-items: center;
@@ -693,42 +907,56 @@ a:hover { text-decoration: underline; }
   text-shadow: 1px 1px 1px rgba(0, 0, 0, .45);
   background: linear-gradient(180deg, #5eac56 0%, #3c9a3c 12%, #2f8b2f 50%, #2d8a2d 85%, #1f6b1f 100%);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, .4), 0 1px 2px rgba(0, 0, 0, .3) !important;
-  transition: filter .12s;
 }
-[data-app] button.start-btn:hover { filter: brightness(1.08); }
-[data-app] button.start-btn:active { filter: brightness(.92); }
-[data-app] button.start-btn kbd {
-  margin-left: auto;
-  font: 400 var(--fs-2) var(--sans-serif);
-  opacity: .85;
+[data-app] button.start-btn::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 -60%;
+  width: 45%;
+  background: linear-gradient(100deg, transparent, rgba(255, 255, 255, .35), transparent);
+  transform: skewX(-18deg);
+  pointer-events: none;
 }
+[data-app] button.start-btn:hover { filter: brightness(1.08); transform: translateY(-1px); }
+[data-app] button.start-btn:hover::after { animation: gloss .45s ease-out; }
+@keyframes gloss { to { left: 120%; } }
+[data-app] button.start-btn:active { filter: brightness(.92); transform: scale(.98); }
 
 /* Chat rows. */
 [data-app] .chat-row {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 6px;
-  height: calc(var(--ui) * 2.2);
+  height: calc(var(--ui) * 2.15);
   padding: 0 2px 0 5px;
-  border-radius: 3px;
+  border-radius: 4px;
   cursor: grab;
-  transition: background .12s;
+  transition: background .15s, color .15s, transform .15s;
+  animation: row-in .12s ease-out;
 }
-[data-app] .chat-row:hover { background: var(--row-hover); }
+[data-app] .chat-row:hover { background: var(--row-hover); transform: translateX(2px); }
 [data-app] .chat-row[data-waiting="yes"] {
-  background: linear-gradient(90deg, rgba(255, 138, 0, .32), rgba(255, 138, 0, .08));
+  background: linear-gradient(90deg, rgba(255, 138, 0, .3), rgba(255, 138, 0, .06));
 }
-[data-app] .chat-row[data-active="yes"] { background: var(--row-sel); color: #fff; }
+[data-app] .chat-row[data-active="yes"] {
+  background: var(--row-sel);
+  color: var(--row-sel-ink);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--row-sel) 70%, var(--fg));
+}
 [data-app] .chat-row .row-tag {
   flex: none;
   font-size: var(--fs-1);
   font-weight: 700;
-  letter-spacing: .03em;
+  letter-spacing: .04em;
   text-transform: uppercase;
-  color: #b35c00;
+  color: var(--wait);
 }
-[data-app][data-theme="dark"] .chat-row .row-tag,
 [data-app] .chat-row[data-active="yes"] .row-tag { color: #ffc27a; }
+/* Rename and delete stay put but quiet until the row is under the pointer. */
+[data-app] .chat-row .row-tools { display: flex; gap: 1px; opacity: .45; transition: opacity .15s; }
+[data-app] .chat-row:hover .row-tools,
+[data-app] .chat-row[data-active="yes"] .row-tools { opacity: 1; }
 
 /* XP's flat toolbar button: nothing until hovered, then a raised bevel. */
 [data-app] button.tool-btn {
@@ -741,44 +969,176 @@ a:hover { text-decoration: underline; }
   gap: 5px;
   flex: none;
   border: 1px solid transparent;
-  border-radius: 3px;
+  border-radius: 4px;
   background: transparent;
   box-shadow: none !important;
   color: inherit;
   font-size: var(--fs-3);
-  transition: background .12s, border-color .12s;
+  transition: background .14s, border-color .14s, transform .12s;
 }
+[data-app] button.tool-btn svg { transition: transform .12s ease-out; }
 [data-app] button.tool-btn:not(:disabled):hover {
-  background: linear-gradient(180deg, #ffffff, #e6edf9);
-  border-color: #9fb4dd;
-  color: #000;
+  background: var(--btn-face);
+  border-color: color-mix(in oklab, var(--btn-rim) 70%, transparent);
 }
+[data-app] button.tool-btn:not(:disabled):hover svg { transform: scale(1.12); }
 [data-app] button.tool-btn:not(:disabled):active {
-  background: #d6e0f3;
-  border-color: #7f9db9;
-  box-shadow: inset 1px 1px 2px rgba(0, 0, 0, .2) !important;
+  background: var(--btn-face-down);
+  transform: scale(.94);
 }
 [data-app] button.tool-btn-danger:not(:disabled):hover {
-  background: linear-gradient(180deg, #ffffff, #fbe1da);
+  background: linear-gradient(180deg, #fff7f4, #f7d9d0);
   border-color: #e0907c;
+}
+[data-app][data-theme="dark"] button.tool-btn-danger:not(:disabled):hover {
+  background: linear-gradient(180deg, #4e3430, #3e2a27);
+  border-color: #8a5048;
 }
 [data-app] button.tool-btn-on {
   background: linear-gradient(180deg, #fff6dc, #ffe2a0);
   border-color: #e5a01a;
-  color: #000;
+  color: #26211a;
 }
-[data-app][data-theme="dark"] button.tool-btn:not(:disabled):hover {
-  background: linear-gradient(180deg, #4a4a54, #3a3a42);
-  border-color: #62626c;
+[data-app][data-theme="dark"] button.tool-btn-on {
+  background: linear-gradient(180deg, #4a4232, #3a3427);
+  border-color: #a07a2a;
   color: var(--fg);
-}
-[data-app][data-theme="dark"] button.tool-btn:not(:disabled):active { background: #2c2c33; }
-[data-app][data-theme="dark"] button.tool-btn-danger:not(:disabled):hover {
-  background: linear-gradient(180deg, #5a3a36, #47302d);
-  border-color: #8a5048;
 }
 [data-app] button.tool-btn:disabled svg { filter: grayscale(1); opacity: .45; }
 [data-app] .tool-btn-label { white-space: nowrap; }
+
+/* Segmented strips in dialogs: one row of choices, one of them pressed. */
+[data-app] .seg {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--field-line);
+  border-radius: 6px;
+  background: var(--field);
+}
+[data-app] .seg > [role="radio"] {
+  flex: 1 1 0;
+  min-width: max-content;
+  padding: 0 8px;
+  border-radius: 4px;
+  display: grid;
+  place-items: center;
+  font-size: var(--fs-4);
+  font-weight: 600;
+  white-space: nowrap;
+  color: var(--dim);
+  cursor: default;
+  transition: background .14s, color .14s, box-shadow .14s;
+}
+[data-app] .seg > [role="radio"]:hover { background: var(--hover); color: var(--fg); }
+[data-app] .seg > [role="radio"][aria-checked="true"] {
+  background: var(--btn-face);
+  color: var(--fg);
+  box-shadow: inset 0 0 0 1px var(--btn-rim), 0 1px 2px rgba(0, 0, 0, .15);
+}
+
+/* Meters: XP's boot-screen progress bar — a sunken rounded track and a run of
+   separate glossy blocks in it, green, turning amber and red as a limit
+   fills (--m, from limitColor). Used for context, limits, every bar. */
+[data-app] .meter {
+  display: block;
+  padding: 2px;
+  border-radius: 4px;
+  border: 1px solid #7a7a7a;
+  background: linear-gradient(180deg, #e9e9e9, #ffffff 60%);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, .25);
+  overflow: hidden;
+}
+[data-app][data-theme="dark"] .meter { border-color: #4a4a4a; background: linear-gradient(180deg, #0c0c0c, #181818); }
+[data-app] .meter > i {
+  --block: 6px;
+  display: block;
+  height: 100%;
+  min-width: 0;
+  border-radius: 1px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, .55) 0%, rgba(255, 255, 255, .1) 45%, rgba(0, 0, 0, .12) 55%, rgba(255, 255, 255, .15) 100%),
+    var(--m);
+  -webkit-mask: repeating-linear-gradient(90deg, #000 0 var(--block), transparent var(--block) calc(var(--block) + 2px));
+  mask: repeating-linear-gradient(90deg, #000 0 var(--block), transparent var(--block) calc(var(--block) + 2px));
+  transition: width .3s ease-out;
+}
+[data-app] .sb-mini.meter { padding: 1px; border-radius: 3px; }
+[data-app] .sb-mini.meter > i { --block: 4px; }
+
+/* The account box: a select drawn by hand, so its rows can carry icons. */
+[data-app] .picker { position: relative; }
+[data-app] button.picker-face {
+  width: 100%;
+  min-width: 0;
+  height: calc(var(--ui) * 1.85);
+  min-height: 0;
+  padding: 0 26px 0 8px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--field-line);
+  border-radius: 5px;
+  background: var(--field) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.6 6 7.6l3-3' fill='none' stroke='%23908a80' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat right 8px center / 12px 12px;
+  color: var(--fg);
+  text-align: left;
+}
+[data-app] button.picker-face:not(:disabled):hover { border-color: var(--faint); box-shadow: none; }
+[data-app] button.picker-face:not(:disabled):active { transform: none; background-color: var(--field); }
+[data-app] .picker[data-picker-open] button.picker-face { border-color: var(--focus); }
+[data-app] .picker-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+[data-app] .picker-list {
+  position: absolute;
+  z-index: 10;
+  top: calc(100% + 3px);
+  left: 0;
+  right: 0;
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 3px;
+  border: 1px solid var(--field-line);
+  border-radius: 5px;
+  background: var(--field);
+  box-shadow: var(--shadow);
+  animation: pop-in .1s ease-out;
+}
+[data-app] .picker-list > [role="option"] {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 26px;
+  padding: 0 8px;
+  border-radius: 4px;
+  color: var(--fg);
+  cursor: default;
+}
+[data-app] .picker-list > [aria-selected="true"] { font-weight: 600; }
+[data-app] .picker-list > [data-hot="yes"] { background: var(--row-sel); color: var(--row-sel-ink); }
+
+/* Popovers (the colour picker): an XP menu, rising from where it was asked for. */
+[data-app] .popover {
+  position: fixed;
+  z-index: 90;
+  padding: 7px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  animation: pop-in .12s ease-out;
+  transform-origin: var(--origin, top left);
+}
+[data-app] .swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  cursor: default;
+  display: grid;
+  place-items: center;
+  transition: transform .1s ease-out, box-shadow .1s;
+}
+[data-app] .swatch:hover { transform: scale(1.15); }
+[data-app] .swatch[data-on="yes"] { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--fg); }
 
 /* ------------------------------------------------------------------------
    Status bar: the whole width of the window, the way XP drew it.
@@ -791,7 +1151,7 @@ a:hover { text-decoration: underline; }
   height: calc(var(--ui) * 2.25);
   padding: 2px 3px;
   background: var(--surface);
-  border-top: 1px solid var(--button-highlight);
+  border-top: 1px solid var(--line);
   font-size: var(--fs-3);
   white-space: nowrap;
   overflow: hidden;
@@ -803,54 +1163,59 @@ a:hover { text-decoration: underline; }
   gap: 6px;
   padding: 0 8px;
   min-width: 0;
+  border-radius: 3px;
   box-shadow: inset -1px -1px var(--button-highlight), inset 1px 1px var(--button-shadow);
   color: var(--dim);
   font-variant-numeric: tabular-nums;
   cursor: default;
+  transition: background .14s, color .14s;
 }
+[data-app][data-theme="dark"] .sb-field { box-shadow: inset 0 0 0 1px var(--line); }
 [data-app] .sb-field.grow { flex: 1 1 auto; overflow: hidden; }
-[data-app] .sb-field.click { transition: background .12s; }
 [data-app] .sb-field.click:hover { background: var(--hover); color: var(--fg); }
+[data-app] .sb-field.click:active { background: var(--chip); }
 [data-app] .sb-field.loud { color: var(--fg); font-weight: 700; }
-[data-app] .sb-field.waiting { color: #b35c00; font-weight: 700; animation: sb-glow 2.4s ease-in-out infinite; }
-[data-app][data-theme="dark"] .sb-field.waiting { color: #ffb15c; }
+[data-app] .sb-field.waiting { color: var(--wait); font-weight: 700; animation: sb-glow 2.4s ease-in-out infinite; }
 @keyframes sb-glow {
   0%, 50%, 100% { background: transparent; }
-  62%, 88% { background: rgba(255, 138, 0, .24); }
+  62%, 88% { background: rgba(255, 138, 0, .22); }
 }
-[data-app] .sb-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+[data-app] .sb-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; transition: background .15s; }
 [data-app] .sb-acc { display: flex; align-items: center; gap: 5px; }
 [data-app] .sb-acc + .sb-acc { margin-left: 6px; padding-left: 10px; border-left: 1px solid var(--line); }
 [data-app] .sb-acc b { color: var(--fg); font-weight: 600; }
-[data-app] .sb-mini {
-  width: 28px;
-  height: 8px;
-  padding: 1px;
-  border-radius: 2px;
-  border: 1px solid #8e9bb5;
-  background: var(--button-highlight);
+[data-app] .sb-win { display: flex; align-items: center; gap: 4px; }
+[data-app] .sb-win small { color: var(--faint); font-size: var(--fs-1); }
+[data-app] .sb-key {
+  min-width: 14px;
+  padding: 0 3px;
+  border-radius: 3px;
+  background: var(--chip);
+  color: var(--dim);
+  font: 700 var(--fs-1) var(--sans-serif);
+  text-align: center;
 }
-[data-app][data-theme="dark"] .sb-mini { border-color: #4a4a52; background: #111114; }
-[data-app] .sb-mini i {
-  display: block;
-  height: 100%;
-  background: repeating-linear-gradient(90deg, var(--m) 0 3px, transparent 3px 4px);
+[data-app] .sb-mini {
+  width: 34px;
+  height: 10px;
 }
 
 /* ------------------------------------------------------------------------
-   Motion. Short, and from where the thing came; nothing loops except the
-   two signals that ask for you. All of it gives way to reduced motion.
+   Motion. On everything that changes, and never something to wait for: an
+   app for work, so nothing takes longer than ~150ms, and nothing loops except
+   the signals that ask for you and work in progress. All of it gives way to
+   reduced motion.
    ------------------------------------------------------------------------ */
 @keyframes fade-in { from { opacity: 0; } }
-@keyframes pop-in { from { opacity: 0; transform: translateY(6px) scale(.98); } }
-@keyframes sheet-in { from { opacity: 0; transform: scale(.965); } }
+@keyframes pop-in { from { opacity: 0; transform: translateY(6px) scale(.96); } }
+@keyframes sheet-in { from { opacity: 0; transform: scale(.95); } }
 @keyframes cover-out { to { opacity: 0; visibility: hidden; } }
-@keyframes row-in { from { opacity: 0; transform: translateX(-8px); } }
-[data-app] .scrim { animation: fade-in .14s ease-out; }
-[data-app] .scrim > .window { animation: pop-in .18s cubic-bezier(.2, .8, .3, 1); }
-[data-app] .peek-sheet { animation: sheet-in .2s cubic-bezier(.2, .8, .3, 1); }
-[data-app] .peek-dim { animation: fade-in .2s ease-out; }
-[data-app] .chat-row { animation: row-in .2s ease-out; }
+@keyframes row-in { from { opacity: 0; transform: translateX(-10px); } }
+[data-app] .scrim { animation: fade-in .1s ease-out; }
+[data-app] .scrim > .window,
+[data-app] .scrim > * > .window { animation: pop-in .13s ease-out; }
+[data-app] .peek-sheet { animation: sheet-in .12s ease-out; }
+[data-app] .peek-dim { animation: fade-in .1s ease-out; }
 /* A pane that has just been handed a chat fades its terminal in from blank
    paper instead of snapping from one session to the next. */
 [data-app] .pane-cover {
@@ -859,7 +1224,7 @@ a:hover { text-decoration: underline; }
   z-index: 5;
   background: var(--term);
   pointer-events: none;
-  animation: cover-out .32s ease-out forwards;
+  animation: cover-out .16s ease-out forwards;
 }
 @media (prefers-reduced-motion: reduce) {
   [data-app] *, [data-app] *::before, [data-app] *::after {

@@ -474,60 +474,82 @@ pub fn transcript_of(pid: Option<u32>, cwd: &str, spawned_at_ms: u128, account_p
 /// The conversation as another agent reads it: user and assistant turns from
 /// byte offset `from` on, tool calls folded to one line each when asked for
 /// and left out otherwise. Returns the messages and the offset to continue
-/// from. Subagent sidechains and CLI-injected turns are skipped.
+/// from: the end of the last complete line, so a line still being written is
+/// read whole next time rather than skipped. Subagent sidechains and
+/// CLI-injected turns are skipped.
 pub fn messages_from(path: &Path, from: u64, with_tools: bool) -> (Vec<crate::agents::Message>, u64) {
-    use std::io::{BufRead, BufReader, Seek, SeekFrom};
     let mut out = Vec::new();
-    let Ok(mut f) = std::fs::File::open(path) else { return (out, from) };
-    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
-    let from = from.min(len);
-    if f.seek(SeekFrom::Start(from)).is_err() {
-        return (out, from);
-    }
-    let mut read = from;
-    for line in BufReader::new(f).lines().map_while(Result::ok) {
-        read += line.len() as u64 + 1;
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
-        if v["isSidechain"].as_bool().unwrap_or(false) || v["isMeta"].as_bool().unwrap_or(false) {
-            continue;
+    let read = crate::pty::complete_lines(path, from, |line| {
+        if let Some(m) = message_of(line, with_tools) {
+            out.push(m);
         }
-        let role = match v["type"].as_str() {
-            Some("user") => "user",
-            Some("assistant") => "assistant",
-            _ => continue,
-        };
-        let content = &v["message"]["content"];
-        let mut text = String::new();
-        if let Some(s) = content.as_str() {
-            text.push_str(s);
-        } else if let Some(blocks) = content.as_array() {
-            for b in blocks {
-                match b["type"].as_str() {
-                    Some("text") => {
-                        if let Some(t) = b["text"].as_str() {
-                            if !text.is_empty() {
-                                text.push('\n');
-                            }
-                            text.push_str(t);
-                        }
-                    }
-                    Some("tool_use") if with_tools => {
+    });
+    (out, read)
+}
+
+/// One transcript line as a turn of the conversation, if it is one.
+fn message_of(line: &str, with_tools: bool) -> Option<crate::agents::Message> {
+    let v = serde_json::from_str::<serde_json::Value>(line).ok()?;
+    if v["isSidechain"].as_bool().unwrap_or(false) || v["isMeta"].as_bool().unwrap_or(false) {
+        return None;
+    }
+    let role = match v["type"].as_str() {
+        Some("user") => "user",
+        Some("assistant") => "assistant",
+        _ => return None,
+    };
+    let content = &v["message"]["content"];
+    let mut text = String::new();
+    if let Some(s) = content.as_str() {
+        text.push_str(s);
+    } else if let Some(blocks) = content.as_array() {
+        for b in blocks {
+            match b["type"].as_str() {
+                Some("text") => {
+                    if let Some(t) = b["text"].as_str() {
                         if !text.is_empty() {
                             text.push('\n');
                         }
-                        text.push_str(&format!("[tool: {}]", b["name"].as_str().unwrap_or("?")));
+                        text.push_str(t);
                     }
-                    // tool_result blocks are the user side of a tool call:
-                    // bulk, and already reflected in what the assistant did.
-                    _ => {}
                 }
+                Some("tool_use") if with_tools => {
+                    if !text.is_empty() {
+                        text.push('\n');
+                    }
+                    text.push_str(&format!("[tool: {}]", b["name"].as_str().unwrap_or("?")));
+                }
+                // tool_result blocks are the user side of a tool call:
+                // bulk, and already reflected in what the assistant did.
+                _ => {}
             }
         }
-        let text = text.trim().to_string();
-        if text.is_empty() || text.starts_with("<local-command") || text.starts_with("<command-name") {
-            continue;
-        }
-        out.push(crate::agents::Message { role: role.to_string(), text });
     }
-    (out, read.min(len).max(from))
+    let text = text.trim().to_string();
+    if text.is_empty() || text.starts_with("<local-command") || text.starts_with("<command-name") {
+        return None;
+    }
+    Some(crate::agents::Message { role: role.to_string(), text })
+}
+
+#[cfg(test)]
+mod reading_tests {
+    use super::*;
+
+    #[test]
+    fn the_cursor_stops_before_a_line_still_being_written() {
+        let path = std::env::temp_dir().join(format!("luna-claude-read-{}.jsonl", std::process::id()));
+        let first = r#"{"type":"user","message":{"role":"user","content":"ping"}}"#;
+        let half = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"po"#;
+        std::fs::write(&path, format!("{first}\n{half}")).unwrap();
+        let (msgs, cursor) = messages_from(&path, 0, false);
+        assert_eq!(msgs, vec![crate::agents::Message { role: "user".into(), text: "ping".into() }]);
+        assert_eq!(cursor, first.len() as u64 + 1, "the half line is not consumed");
+        // Finished: the next read from the cursor has it whole.
+        std::fs::write(&path, format!("{first}\n{half}ng\"}}]}}}}\n")).unwrap();
+        let (msgs, next) = messages_from(&path, cursor, false);
+        assert_eq!(msgs, vec![crate::agents::Message { role: "assistant".into(), text: "pong".into() }]);
+        assert_eq!(next, std::fs::metadata(&path).unwrap().len());
+        let _ = std::fs::remove_file(&path);
+    }
 }

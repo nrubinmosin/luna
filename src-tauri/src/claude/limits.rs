@@ -44,10 +44,11 @@ pub struct AccountLimits {
     pub have_usage: bool,
     pub h5: f64,
     pub week: f64,
-    pub model: f64,
     pub reset_h5: Option<String>,
     pub reset_week: Option<String>,
-    pub reset_model: Option<String>,
+    /// Every weekly limit scoped to one model (Fable, Opus, ...), each with
+    /// its own reset. One field used to hold them all, so the last row won.
+    pub scoped: Vec<ScopedLimit>,
 
     /// Where the numbers came from, and when they were taken.
     pub source: Option<String>,
@@ -59,6 +60,15 @@ pub struct AccountLimits {
     pub refresh_error: Option<String>,
     /// The usage endpoint throttled us. Any numbers above came from the cache.
     pub rate_limited: Option<u64>,
+}
+
+#[derive(Serialize, Default, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ScopedLimit {
+    /// What the limit is scoped to, as the endpoint names it ("Fable").
+    pub label: String,
+    pub used: f64,
+    pub resets_at: Option<String>,
 }
 
 fn read_json(path: &Path) -> Option<Value> {
@@ -109,6 +119,7 @@ fn plan_from_tier(tier: &str) -> Option<String> {
 /// the CLI's on-disk cache — into the DTO.
 fn apply_limits(out: &mut AccountLimits, limits: &Value) {
     let Some(arr) = limits.as_array() else { return };
+    out.scoped.clear();
     for lim in arr {
         let pct = lim["percent"].as_f64().unwrap_or(0.0) / 100.0;
         let reset = lim["resets_at"].as_str().map(str::to_owned);
@@ -122,8 +133,13 @@ fn apply_limits(out: &mut AccountLimits, limits: &Value) {
                 out.reset_week = reset;
             }
             "weekly_scoped" => {
-                out.model = pct;
-                out.reset_model = reset;
+                let scope = &lim["scope"];
+                let label = scope["model"]["display_name"]
+                    .as_str()
+                    .or_else(|| scope["surface"]["display_name"].as_str())
+                    .unwrap_or("model")
+                    .to_string();
+                out.scoped.push(ScopedLimit { label, used: pct, resets_at: reset });
             }
             _ => {}
         }
@@ -274,4 +290,34 @@ fn fetch_limits(account_path: &str, force: bool) -> Result<AccountLimits, String
     }
 
     Ok(out)
+}
+
+#[cfg(test)]
+mod scoped_tests {
+    use super::*;
+
+    #[test]
+    fn every_scoped_limit_is_kept_with_its_own_reset() {
+        let limits: Value = serde_json::from_str(
+            r#"[
+              {"kind":"session","percent":12,"resets_at":"2026-10-15T05:00:00Z"},
+              {"kind":"weekly_all","percent":41,"resets_at":"2026-10-19T21:00:00Z"},
+              {"kind":"weekly_scoped","percent":63,"resets_at":"2026-10-19T21:00:00Z",
+               "scope":{"model":{"display_name":"Fable"}}},
+              {"kind":"weekly_scoped","percent":5,"resets_at":"2026-10-20T09:00:00Z",
+               "scope":{"model":{"display_name":"Opus"}}}
+            ]"#,
+        )
+        .unwrap();
+        let mut out = AccountLimits::default();
+        apply_limits(&mut out, &limits);
+        assert!(out.have_usage);
+        assert_eq!(out.h5, 0.12);
+        assert_eq!(out.week, 0.41);
+        assert_eq!(out.scoped.len(), 2);
+        assert_eq!(out.scoped[0].label, "Fable");
+        assert_eq!(out.scoped[0].used, 0.63);
+        assert_eq!(out.scoped[1].label, "Opus");
+        assert_eq!(out.scoped[1].resets_at.as_deref(), Some("2026-10-20T09:00:00Z"));
+    }
 }

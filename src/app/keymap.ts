@@ -2,6 +2,8 @@ import { useEffect } from 'react';
 import { numberedChats, useChats } from '../features/chats/chats.store';
 import { quickChat } from '../features/new-chat/create';
 import { currentLayout, usePanes, type Layout } from '../features/panes/panes.store';
+import { focusPane, jumpToWaiting } from '../features/panes/navigate';
+import { useShell } from './shell.store';
 import { useShortcuts } from '../features/shortcuts/ShortcutsDialog';
 
 /**
@@ -26,7 +28,9 @@ function digitOf(e: KeyboardEvent): number | null {
  * travels on untouched.
  *
  * Ctrl+<digit> is safe to take: a terminal has no encoding for it, so nothing
- * downstream could have used it anyway. Ctrl+Tab (without Shift, which Claude
+ * downstream could have used it anyway. Nor has it one for Ctrl+Shift+<letter>
+ * apart from Ctrl+<letter>, so Ctrl+Shift+B and Ctrl+Shift+W take nothing from
+ * the CLIs — Ctrl+B and Ctrl+W themselves travel on. Ctrl+Tab (without Shift, which Claude
  * Code binds) and F1 are taken always: the CLIs bind neither. Ctrl+arrows were the obvious
  * pick for moving between panes and are left alone — they move by word in the
  * CLI's prompt. Escape is deliberately left alone —
@@ -36,6 +40,8 @@ export function useKeymap(opts: { openNewChat: () => void; closeModal: () => voi
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
+        // An open account list closes first, on its own.
+        if (document.querySelector('[data-picker-open]')) return;
         opts.closeModal();
         return;
       }
@@ -59,6 +65,21 @@ export function useKeymap(opts: { openNewChat: () => void; closeModal: () => voi
         take();
         if (e.shiftKey) void quickChat();
         else opts.openNewChat();
+        return;
+      }
+
+      // Ctrl+Shift+B pins the sidebar or lets it slide away; Ctrl+Shift+W
+      // goes to the next chat that is waiting for you. By physical key, so a
+      // Cyrillic layout gets them too.
+      if (e.shiftKey && e.code === 'KeyB') {
+        take();
+        const shell = useShell.getState();
+        shell.setPinned(!shell.pinned);
+        return;
+      }
+      if (e.shiftKey && e.code === 'KeyW') {
+        take();
+        jumpToWaiting();
         return;
       }
 
@@ -92,14 +113,21 @@ export function useKeymap(opts: { openNewChat: () => void; closeModal: () => voi
         return;
       }
 
-      // With panes to choose between, a digit holds that pane up on the sheet
-      // and pressing it again puts it back. With only one pane there is nothing
-      // to hold up, so the digits count through the list instead — the same
-      // numbers the rows are wearing.
+      // With panes to choose between, a digit walks the keyboard into that
+      // pane; the same digit again holds it up on the sheet, and once more puts
+      // it back. With only one pane the digits count through the list instead
+      // — the same numbers the rows are wearing.
       if (layout > 1) {
         if (digit > layout) return;
         take();
-        panes.setPeek(panes.peek === digit - 1 ? null : digit - 1);
+        const i = digit - 1;
+        if (panes.peek === i) panes.closePeek();
+        else if (panes.peek == null && panes.activePane === i) panes.setPeek(i);
+        else {
+          panes.closePeek();
+          panes.setActivePane(i);
+        }
+        focusPane(i);
         return;
       }
 

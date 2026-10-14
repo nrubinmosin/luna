@@ -243,7 +243,18 @@ pub fn tick(app: &tauri::AppHandle, summary: &Summary) {
         let blocked = summary.busy > 0 || summary.waiting > 0;
         if blocked {
             let why = blockers(summary);
-            if blocked_log_due(&mut st, &why, now) {
+            // Changes are judged on who is holding and how, not on the full
+            // line: that carries "printed 12s ago" and whichever grep or
+            // sleep happened to be running, so it differed on every check
+            // and the line went out every minute for hours.
+            let who = summary
+                .sessions
+                .iter()
+                .filter(|s| s.busy || (s.turn == crate::activity::Turn::Waiting && s.stalled.is_none()))
+                .map(|s| format!("{} {}", s.id, if s.busy { "busy" } else { "waiting" }))
+                .collect::<Vec<_>>()
+                .join(" | ");
+            if blocked_log_due(&mut st, &who, now) {
                 crate::log::warn("power", &format!("armed, not firing: {why}"));
             }
         } else if !st.blocked_why.is_empty() {

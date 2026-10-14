@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
-import { accountKey, PROVIDER_LABEL, type ClaudeSettings, type CodexSettings } from '../../shared/types';
+import { accountKey, type ClaudeSettings, type CodexSettings } from '../../shared/types';
 import { ACCENT, tail2, tint } from '../../shared/lib/format';
 import { useChats } from '../chats/chats.store';
 import { findAccount, useAccounts } from '../accounts/accounts.store';
@@ -9,6 +9,8 @@ import { startFor, useNewChat } from './newchat.store';
 import { createChat } from './create';
 import { useSettingsDraft, type Draft } from './draft';
 import { pickFolder } from '../../ipc/commands';
+import { Icon } from '../../shared/ui/icons';
+import { AccountPicker } from './AccountPicker';
 
 const noteStyle: CSSProperties = { fontSize: 'var(--fs-2)', color: 'var(--faint)', marginTop: 3 };
 
@@ -145,6 +147,8 @@ export function NewChatDialog() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Enter' || e.metaKey || e.ctrlKey || e.altKey) return;
+      // An open account list takes its own Enter.
+      if (document.querySelector('[data-picker-open]')) return;
       e.preventDefault();
       e.stopPropagation();
       // A text box commits on blur; let its own Enter handler run first.
@@ -178,10 +182,10 @@ export function NewChatDialog() {
                 of the list, and a <select> has nowhere to put one. */}
             <div
               className="xp-field"
-              style={{ background: '#fff', maxHeight: 132, overflowY: 'auto', padding: 2 }}
+              style={{ maxHeight: 132, overflowY: 'auto', padding: 2 }}
             >
               {folders.length === 0 && (
-                <div style={{ padding: '6px 7px', fontSize: 'var(--fs-3)', color: '#666' }}>
+                <div style={{ padding: '6px 7px', fontSize: 'var(--fs-3)', color: 'var(--faint)' }}>
                   Nothing here yet — browse for a folder.
                 </div>
               )}
@@ -195,10 +199,13 @@ export function NewChatDialog() {
                     onClick={() => chooseFolder(f.path)}
                     title={f.path}
                     style={{
-                      display: 'flex', alignItems: 'center', gap: 6, padding: '3px 6px', cursor: 'default',
-                      background: on ? 'var(--dialog-blue)' : 'transparent',
-                      color: on ? '#fff' : '#000'
+                      display: 'flex', alignItems: 'center', gap: 6, padding: '3px 6px', cursor: 'default', borderRadius: 4,
+                      background: on ? 'var(--row-sel)' : 'transparent',
+                      color: on ? 'var(--row-sel-ink)' : 'var(--fg)',
+                      fontWeight: on ? 600 : 400,
+                      transition: 'background .14s'
                     }}
+                    className={on ? undefined : 'hover-bg'}
                   >
                     <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 'var(--fs-4)' }}>
                       <span style={{ opacity: 0.7 }}>{t.parent} / </span>
@@ -215,11 +222,11 @@ export function NewChatDialog() {
                       }
                       className={held ? undefined : 'hover-danger'}
                       style={{
-                        width: 15, height: 15, flex: 'none', display: 'grid', placeItems: 'center',
-                        fontSize: 'var(--fs-1)', cursor: 'default', opacity: held ? 0.25 : 0.65
+                        width: 18, height: 18, flex: 'none', display: 'grid', placeItems: 'center', borderRadius: 4,
+                        cursor: 'default', opacity: held ? 0.3 : 0.8
                       }}
                     >
-                      ✕
+                      <Icon name="close" size={13} />
                     </span>
                   </div>
                 );
@@ -252,18 +259,7 @@ export function NewChatDialog() {
           <div style={{ display: 'flex', gap: 12 }}>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={labelStyle}>Account</div>
-              <select
-                value={accountId}
-                onChange={e => setAccountId(e.target.value)}
-                style={{ width: '100%' }}
-              >
-                {accounts.length === 0 && <option value="">— add an account first —</option>}
-                {accounts.map(a => (
-                  <option key={accountKey(a.provider, a.name)} value={accountKey(a.provider, a.name)}>
-                    {a.name} · {PROVIDER_LABEL[a.provider]}
-                  </option>
-                ))}
-              </select>
+              <AccountPicker accounts={accounts} value={accountId} onChange={setAccountId} />
             </div>
             <div style={{ width: 150, flex: 'none' }}>
               <div style={labelStyle}>Isolation</div>

@@ -53,26 +53,28 @@ export const safely = (fn: () => void) => {
 // A transparent background makes the webgl renderer blend every glyph against
 // the pane, which is what washed the text out. Paint an opaque background that
 // matches --term instead, and ship a full 16-colour ANSI ramp — without one
-// xterm falls back to its stock palette, which is muddy against these panels.
+// xterm falls back to its stock palette. Both ramps are the same hues at one
+// lightness each, low in chroma: readable at 4.5:1 or better, never neon.
 export const themeFor = (isDark: boolean) =>
   isDark
     ? {
-        background: '#1b1a17', foreground: '#ece6da', cursor: '#f0b45a',
-        cursorAccent: '#1b1a17', selectionBackground: '#4a4234', selectionForeground: '#ffffff',
-        black: '#34312b', red: '#ff7b6b', green: '#8fd99a', yellow: '#f0c674',
-        blue: '#8ab8f0', magenta: '#d4a8f5', cyan: '#7fd4c4', white: '#e2dccf',
-        brightBlack: '#7a7262', brightRed: '#ff9c8e', brightGreen: '#b0ecb6', brightYellow: '#ffe0a0',
-        brightBlue: '#b0d2ff', brightMagenta: '#e6c8ff', brightCyan: '#a8ece0', brightWhite: '#ffffff'
+        // Neutral graphite, no blue in it: a blue-black ground is what read
+        // as haze. Text at ~13:1 rather than pure white's 19:1, which blooms.
+        background: '#101010', foreground: '#d7d7d7', cursor: '#d9b56a',
+        cursorAccent: '#101010', selectionBackground: '#494137', selectionForeground: '#f0f0f0',
+        black: '#2a2a2a', red: '#e29d93', green: '#8fc090', yellow: '#caad71',
+        blue: '#88b6e6', magenta: '#c9a0d3', cyan: '#6bc3bd', white: '#c8c8c8',
+        brightBlack: '#8c8c8c', brightRed: '#f8b9af', brightGreen: '#add8ad', brightYellow: '#e1c792',
+        brightBlue: '#a6cffa', brightMagenta: '#e1bbe9', brightCyan: '#90dbd5', brightWhite: '#ececec'
       }
     : {
-        // Warm paper: the cool green-white this used to be is hard on the eyes
-        // over a day of reading. Matches --term in theme.css.
-        background: '#fbf7ee', foreground: '#2a251d', cursor: '#8a5a14',
-        cursorAccent: '#fbf7ee', selectionBackground: '#ecdcb8', selectionForeground: '#1c1812',
-        black: '#2f2a22', red: '#b8382a', green: '#2b7a3d', yellow: '#8a6410',
-        blue: '#2a5fa0', magenta: '#7d3ca8', cyan: '#1d7068', white: '#d9cfbd',
-        brightBlack: '#7a6f5e', brightRed: '#d24a38', brightGreen: '#349a4c', brightYellow: '#a87e14',
-        brightBlue: '#3a78c4', brightMagenta: '#9b52d1', brightCyan: '#22908a', brightWhite: '#1c1812'
+        // Warm paper. Matches --term in theme.css.
+        background: '#fdf2e2', foreground: '#26211a', cursor: '#8a5a14',
+        cursorAccent: '#fdf2e2', selectionBackground: '#ddcfbc', selectionForeground: '#1c1812',
+        black: '#26211a', red: '#9c443b', green: '#2f7434', yellow: '#825c00',
+        blue: '#2266a4', magenta: '#814a8d', cyan: '#007872', white: '#d3cdc4',
+        brightBlack: '#68625b', brightRed: '#862721', brightGreen: '#045e17', brightYellow: '#6d4400',
+        brightBlue: '#004e90', brightMagenta: '#6b3078', brightCyan: '#00615d', brightWhite: '#1c1812'
       };
 
 /**
@@ -287,7 +289,23 @@ function create(spec: TermSpec): Entry {
   const appEl = document.querySelector('[data-app]');
   if (appEl) mo.observe(appEl, { attributes: true, attributeFilter: ['data-theme'] });
 
-  const ro = new ResizeObserver(refit);
+  // At most one fit per 80ms while a size is animating (the sidebar sliding,
+  // a split dragged), plus one when it settles: every fit is a pty resize, and
+  // every resize makes the CLI repaint its whole screen.
+  let lastFit = 0;
+  let fitTimer: ReturnType<typeof setTimeout> | undefined;
+  const ro = new ResizeObserver(() => {
+    clearTimeout(fitTimer);
+    const now = performance.now();
+    if (now - lastFit >= 80) {
+      lastFit = now;
+      refit();
+    }
+    fitTimer = setTimeout(() => {
+      lastFit = performance.now();
+      refit();
+    }, 90);
+  });
   ro.observe(host);
 
   entry.wake = () => {
@@ -530,6 +548,12 @@ export function release(chatId: string, from?: HTMLElement) {
   entry.idleAt = ++releases;
   parkingLot().appendChild(entry.host);
   sweepSoon();
+}
+
+/** Gives this chat's terminal the keyboard, if it is on screen. */
+export function focusTerminal(chatId: string) {
+  const entry = live.get(chatId);
+  if (entry?.attached) entry.host.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea')?.focus();
 }
 
 /** Nothing to come back to: the chat is gone, so its terminal goes with it. */

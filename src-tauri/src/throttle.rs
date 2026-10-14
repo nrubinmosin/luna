@@ -61,7 +61,11 @@ pub fn hit(tag: &str, key: &str, retry_after_secs: u64) -> u64 {
     if previous.is_some_and(|p| p != cool_ms) {
         crate::log::warn(
             tag,
-            &format!("429 for {key}, retry-after {retry_after_secs}s — cooling off {}s", cool_ms / 1000),
+            &format!(
+                "429 for {key}{} — cooling off {}s",
+                if retry_after_secs > 0 { format!(", retry-after {retry_after_secs}s") } else { String::new() },
+                cool_ms / 1000
+            ),
         );
     }
     cool_ms / 1000

@@ -96,11 +96,11 @@ export function SweepWorktreesDialog({
         <code>worktree-…</code> / <code>codex-…</code> branch; work that exists nowhere else is gone for good.
         <div
           className="xp-field"
-          style={{ marginTop: 8, background: '#fff', maxHeight: 240, overflowY: 'auto', padding: 2 }}
+          style={{ marginTop: 8, maxHeight: 240, overflowY: 'auto', padding: 2 }}
         >
-          {!infos && <div style={{ padding: '6px 7px', fontSize: 'var(--fs-3)', color: '#666' }}>Looking inside…</div>}
+          {!infos && <div style={{ padding: '6px 7px', fontSize: 'var(--fs-3)', color: 'var(--faint)' }}>Looking inside…</div>}
           {infos?.length === 0 && (
-            <div style={{ padding: '6px 7px', fontSize: 'var(--fs-3)', color: '#666' }}>Nothing left to sweep.</div>
+            <div style={{ padding: '6px 7px', fontSize: 'var(--fs-3)', color: 'var(--faint)' }}>Nothing left to sweep.</div>
           )}
           {infos?.map(w => {
             const stake = atStake(w);
@@ -110,16 +110,16 @@ export function SweepWorktreesDialog({
                 {/* The box is drawn by xp.css on the label, so the input wants
                     an id and the label a matching `for`. */}
                 <input type="checkbox" id={id} checked={picked.has(w.path)} onChange={() => toggle(w.path)} />
-                <label htmlFor={id} style={{ display: 'block', cursor: 'default', minWidth: 0, color: '#000' }}>
+                <label htmlFor={id} style={{ display: 'block', cursor: 'default', minWidth: 0, color: 'var(--fg)' }}>
                   <div style={{ fontSize: 'var(--fs-4)', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {leaf(w.path)}
                     {w.branch && w.branch !== leaf(w.path) && (
-                      <span style={{ fontWeight: 400, color: '#666' }}> · {w.branch}</span>
+                      <span style={{ fontWeight: 400, color: 'var(--faint)' }}> · {w.branch}</span>
                     )}
                   </div>
-                  <div style={{ fontSize: 'var(--fs-2)', marginTop: 1, color: stake ? 'oklch(.58 .2 25)' : '#666' }}>
+                  <div style={{ fontSize: 'var(--fs-2)', marginTop: 1, color: stake ? 'oklch(.58 .2 25)' : 'var(--faint)' }}>
                     {stake ?? 'clean — nothing that is not elsewhere'}
-                    <span style={{ color: '#666' }}> · touched {agoLabel(w.touchedMs)}</span>
+                    <span style={{ color: 'var(--faint)' }}> · touched {agoLabel(w.touchedMs)}</span>
                   </div>
                 </label>
               </div>

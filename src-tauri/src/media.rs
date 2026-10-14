@@ -141,11 +141,6 @@ fn sweep() -> Result<usize, String> {
     Ok(removed)
 }
 
-#[tauri::command]
-pub fn prune_media() -> Result<usize, String> {
-    sweep()
-}
-
 /// Sweeps at startup and every few hours after it. Closing the window only
 /// hides the app, so a session can run for weeks — a startup-only sweep would
 /// never fire again on exactly the installs that accumulate the most.
@@ -157,7 +152,6 @@ pub fn prune_periodically() {
 }
 
 /// Drops everything a chat accumulated; called when the chat is deleted.
-#[tauri::command]
 pub fn clear_media(chat_id: String) -> Result<(), String> {
     let dir = media_root(&chat_id)?;
     if dir.exists() {

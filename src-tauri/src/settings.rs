@@ -21,6 +21,18 @@ pub struct Settings {
     /// `provider/name` of accounts agents may not spawn on (agents.rs). Every
     /// account is available unless listed here.
     pub agent_blocked_accounts: Vec<String>,
+    /// Per provider, the account whose settings file the others copy
+    /// (account_settings.rs), by name.
+    pub settings_parents: SettingsParents,
+    /// Copy them once at every launch.
+    pub settings_sync_on_start: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(default)]
+pub struct SettingsParents {
+    pub claude: Option<String>,
+    pub codex: Option<String>,
 }
 
 impl Default for Settings {
@@ -31,6 +43,8 @@ impl Default for Settings {
             quiet_window_s: 120,
             power_action: "shutdown".into(),
             agent_blocked_accounts: Vec::new(),
+            settings_parents: SettingsParents::default(),
+            settings_sync_on_start: false,
         }
     }
 }

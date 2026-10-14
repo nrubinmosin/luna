@@ -1,12 +1,12 @@
-import type { CSSProperties } from 'react';
-import { ACCENT, limitColor } from '../../shared/lib/format';
+import { useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
+import { ACCENT, fmtReset, limitColor } from '../../shared/lib/format';
 import { STATUS } from '../../shared/ui/status';
 import { Icon } from '../../shared/ui/icons';
 import { allChats, useChats } from '../chats/chats.store';
 import { AccountsWindow, useAccountsWindow } from '../accounts/AccountsPanel';
 import { useAccounts } from '../accounts/accounts.store';
-import { currentLayout, currentSlots, usePanes } from '../panes/panes.store';
-import { ui } from '../providers';
+import { jumpToWaiting } from '../panes/navigate';
+import { useNow, worstLimit } from '../accounts/limits';
 import { useUpdates } from '../updates/updates.store';
 import { useCli } from '../updates/cli.store';
 import { cliUpdateNow } from '../../ipc/commands';
@@ -16,7 +16,6 @@ import { useShortcuts } from '../shortcuts/ShortcutsDialog';
 import { useSettings } from '../settings/SettingsDialog';
 
 const chipStyle = (loud: boolean) => ({
-  flexGrow: 0,
   cursor: 'default',
   whiteSpace: 'nowrap' as const,
   fontVariantNumeric: 'tabular-nums',
@@ -49,7 +48,8 @@ function UpdateChips() {
         className="sb-field click"
         style={chipStyle(true)}
       >
-        {`↑ ${next}`}
+        <Icon name="update" />
+        {next}
       </div>
     );
   } else if (phase === 'downloading') {
@@ -61,7 +61,8 @@ function UpdateChips() {
         className="sb-field"
         style={chipStyle(true)}
       >
-        {`↓ ${done == null ? '…' : `${done}%`}`}
+        <Icon name="download" />
+        {done == null ? '…' : `${done}%`}
       </div>
     );
   } else if (phase === 'error') {
@@ -73,14 +74,14 @@ function UpdateChips() {
         className="sb-field click"
         style={chipStyle(false)}
       >
-        ⚠ update
+        <Icon name="warn" />
+        update
       </div>
     );
   }
 
   for (const p of PROVIDERS) {
     const cli = clis[p];
-    const short = p === 'codex' ? 'codex' : 'claude';
     if (cli?.phase === 'downloading') {
       const done = pct(cli.got, cli.total);
       // The first download is the one that matters — without it a fresh install
@@ -92,7 +93,9 @@ function UpdateChips() {
           className="sb-field"
           style={chipStyle(!cli.version)}
         >
-          {`${short} ↓ ${done == null ? '…' : `${done}%`}`}
+          <Icon name={p} size={14} />
+          <Icon name="download" />
+          {done == null ? '…' : `${done}%`}
         </div>
       );
     } else if (cli?.phase === 'error') {
@@ -104,7 +107,8 @@ function UpdateChips() {
           className="sb-field click"
           style={chipStyle(false)}
         >
-          {short} ⚠
+          <Icon name={p} size={14} />
+          <Icon name="warn" />
         </div>
       );
     }
@@ -113,20 +117,28 @@ function UpdateChips() {
   return <>{chips}</>;
 }
 
-/** One account as the status bar shows it: a dot, the name, two meters. */
-function AccountGlance({ account }: { account: Account }) {
-  const p = ui(account.provider);
-  const windows: Array<{ k: string; v: number }> =
-    account.limits.kind === 'claude'
-      ? [{ k: '5h', v: account.limits.h5 }, { k: 'week', v: account.limits.week }]
-      : account.limits.windows.slice(0, 2).map(w => ({ k: w.label === '5 hours' ? '5h' : w.label, v: w.used }));
-  const dot = !account.signedIn
+/**
+ * How much of each window the bar can afford, most first: everything; no
+ * countdowns; no meters (key and number); only the fullest window.
+ */
+type Fit = 0 | 1 | 2 | 3;
+
+/**
+ * One account as the status bar shows it: a dot, the provider's icon, the
+ * name, and every window it has — which one (5h, w, f), how full, and how long
+ * until it resets — as far as `fit` leaves room for.
+ */
+function AccountGlance({ account, fit, now }: { account: Account; fit: Fit; now: number }) {
+  const worst = worstLimit(account);
+  const dot = account.sync === 'loading' && !account.haveUsage
+    ? 'var(--faint)'
+    : !account.signedIn || worst >= 0.85
     ? 'oklch(.63 .19 25)'
-    : p.worstLimit(account) >= 0.85
-      ? 'oklch(.63 .19 25)'
-      : account.haveUsage
-        ? 'oklch(.64 .18 145)'
-        : 'var(--faint)';
+    : account.haveUsage
+      ? 'oklch(.64 .18 145)'
+      : 'var(--faint)';
+  const windows = account.haveUsage ? account.limits : [];
+  const shown = fit === 3 ? windows.filter(w => w.used === worst).slice(0, 1) : windows;
 
   return (
     <span
@@ -134,24 +146,33 @@ function AccountGlance({ account }: { account: Account }) {
       title={
         `${account.name} — ${PROVIDER_LABEL[account.provider]}${account.plan ? `, ${account.plan}` : ''}\n` +
         (account.signedIn
-          ? account.haveUsage
-            ? windows.map(w => `${w.k}: ${Math.round(w.v * 100)}%`).join(' · ')
+          ? windows.length
+            ? windows.map(w => `${w.label}: ${Math.round(w.used * 100)}%${w.resetAt ? `, resets in ${fmtReset(w.resetAt, now)}` : ''}`).join('\n')
             : 'no usage data yet'
           : 'signed out')
       }
     >
       <span className="sb-dot" style={{ background: dot }} />
+      <Icon name={account.provider} size={14} />
       <b>{account.name}</b>
-      {account.provider === 'codex' && <span style={{ color: 'var(--faint)' }}>codex</span>}
-      {!account.signedIn ? (
+      {/* Signed-in is only known once the first answer is in: until then the
+          account is loading, not signed out. */}
+      {account.sync === 'loading' && !account.haveUsage ? (
+        <span style={{ color: 'var(--faint)' }}>…</span>
+      ) : !account.signedIn ? (
         <span style={{ color: 'oklch(.58 .2 25)' }}>signed out</span>
-      ) : account.haveUsage ? (
-        windows.map(w => (
-          <span key={w.k} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-            <span className="sb-mini">
-              <i style={{ width: `${Math.round(w.v * 100)}%`, ['--m' as string]: limitColor(w.v) } as CSSProperties} />
-            </span>
-            {Math.round(w.v * 100)}%
+      ) : shown.length ? (
+        shown.map(w => (
+          <span key={w.id} className="sb-win">
+            {/* Which window this is, before its meter: 5H, W(eek), F(able). */}
+            <span className="sb-key">{w.short}</span>
+            {fit < 2 && (
+              <span className="sb-mini meter">
+                <i style={{ width: `${Math.round(w.used * 100)}%`, ['--m' as string]: limitColor(w.used) } as CSSProperties} />
+              </span>
+            )}
+            <span style={fit >= 2 ? { color: limitColor(w.used) } : undefined}>{Math.round(w.used * 100)}%</span>
+            {fit === 0 && w.resetAt && <small>↻{fmtReset(w.resetAt, now)}</small>}
           </span>
         ))
       ) : (
@@ -169,32 +190,34 @@ function AccountGlance({ account }: { account: Account }) {
 export function StatusBar() {
   const folders = useChats(s => s.folders);
   const accounts = useAccounts(s => s.accounts);
+  const now = useNow();
+  // Every window of every account, until they no longer fit; then the bar
+  // gives up detail a step at a time (see Fit), never the windows themselves
+  // until the last step. The width each step needed is kept, so widening the
+  // window steps back up.
+  const field = useRef<HTMLDivElement>(null);
+  const [fit, setFit] = useState<Fit>(0);
+  const needed = useRef<number[]>([]);
+  useLayoutEffect(() => {
+    const el = field.current;
+    if (!el) return;
+    const check = () => {
+      needed.current[fit] = el.scrollWidth;
+      if (el.scrollWidth > el.clientWidth + 1 && fit < 3) setFit((fit + 1) as Fit);
+      else if (fit > 0 && el.clientWidth >= (needed.current[fit - 1] ?? Infinity)) setFit((fit - 1) as Fit);
+    };
+    check();
+    const ro = new ResizeObserver(check);
+    ro.observe(el);
+    return () => ro.disconnect();
+  });
 
   const all = allChats(folders);
   const working = all.filter(c => c.status === 'working').length;
   const waiting = all.filter(c => c.status === 'waiting');
   const openAccounts = () => useAccountsWindow.getState().setOpen(true);
 
-  // Each click goes to the next chat that is waiting, round the list.
-  const jumpToWaiting = () => {
-    if (!waiting.length) return;
-    const active = useChats.getState().active;
-    const at = waiting.findIndex(c => c.id === active);
-    const chat = waiting[(at + 1) % waiting.length];
-    let panes = usePanes.getState();
-    if (chat.group !== panes.group) {
-      panes.setGroup(chat.group);
-      panes = usePanes.getState();
-    }
-    useChats.getState().setActive(chat.id);
-    const seat = currentSlots(panes).indexOf(chat.id);
-    if (seat >= 0 && seat < currentLayout(panes)) {
-      panes.closePeek();
-      panes.setActivePane(seat);
-    } else {
-      panes.showChat(chat.id);
-    }
-  };
+
 
   return (
     <div className="app-status">
@@ -215,19 +238,21 @@ export function StatusBar() {
         {waiting.length} waiting
       </div>
 
-      <div onClick={openAccounts} className="sb-field grow click" title="Accounts — click to manage them">
+      <div
+        ref={field}
+        onClick={openAccounts}
+        className="sb-field grow click"
+        title="Accounts — sign in, limits, agents, settings; click to open"
+      >
+        <Icon name="accounts" />
         {accounts.length === 0 ? (
           <span style={{ color: 'var(--faint)' }}>No accounts yet — click to add one</span>
         ) : (
-          accounts.map(a => <AccountGlance key={accountKey(a.provider, a.name)} account={a} />)
+          accounts.map(a => <AccountGlance key={accountKey(a.provider, a.name)} account={a} fit={fit} now={now} />)
         )}
       </div>
 
       <UpdateChips />
-      <div onClick={openAccounts} className="sb-field click" title="Accounts: sign in, limits, agents, add and delete">
-        <Icon name="accounts" />
-        Accounts
-      </div>
       <PowerChip />
       <div
         onClick={() => useSettings.getState().setOpen(true)}
@@ -240,7 +265,7 @@ export function StatusBar() {
       {/* Where a mouse user finds what the keyboard can do; F1 is the same. */}
       <div
         onClick={() => useShortcuts.getState().setOpen(true)}
-        title="Shortcuts and mouse gestures — F1"
+        title="Shortcuts and mouse gestures"
         className="sb-field click"
         style={{ padding: '0 6px' }}
       >

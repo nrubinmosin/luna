@@ -15,10 +15,12 @@ const KEYBOARD: Row[] = [
   ['Ctrl+N', 'New chat'],
   ['Ctrl+Shift+N', 'Quick chat — no dialog: the folder and account of the chat on screen'],
   ['Ctrl+Shift+1…4', 'Layout: one to four panes'],
-  ['Ctrl+1…4', 'Several panes: hold that pane up on the sheet, again to put it back'],
+  ['Ctrl+1…4', 'Several panes: type into that pane; again holds it up on the sheet, once more puts it back'],
   ['Ctrl+1…9', 'One pane: show the chat with that number in the list'],
   ['Ctrl+Tab', 'Next window group, I → II → III → IV and round (Ctrl+Shift+Tab stays with the CLI)'],
   ['Ctrl+0', 'Back to the grid'],
+  ['Ctrl+Shift+W', 'The next chat that is waiting for you'],
+  ['Ctrl+Shift+B', 'Keep the sidebar open, or let it slide away to the edge'],
   ['Hold Alt', 'Over a chat in the list: a look at it on the sheet until Alt is let go — a click keeps it'],
   ['F1', 'This list'],
   ['Esc', 'Closes a dialog; otherwise left to the CLI, where it interrupts']
@@ -27,14 +29,10 @@ const KEYBOARD: Row[] = [
 const MOUSE: Row[] = [
   ['Click a chat', 'Shows it: one pane swaps to it, several put it on the sheet — the same chat again goes back'],
   ['Click outside the sheet', 'Back to the grid — so do the mouse’s Back button and, in the sheet’s bar, the chip of the pane that is up'],
+  ['Hover the left edge', 'With the sidebar hidden: slides it out over the board until the pointer leaves'],
   ['Drag a chat onto a pane', 'Seats it in that pane'],
   ['Drag a title bar onto a pane', 'Swaps the two panes'],
-  ['Drag a divider', 'Resizes the panes; Even out in the sidebar puts every split back to half'],
-  ['Pencil / bin', 'Rename / delete the chat — on its row in the list and on its title bar'],
-  ['_ on a title bar', 'Takes the chat off the board; it keeps running and stays in the list'],
-  ['Click the session id', 'Copies it — the 8 characters issue claims and logs go by'],
-  ['“Waiting” in the status bar', 'Goes to the next chat that is waiting for you'],
-  ['Accounts in the status bar', 'Opens the Accounts window: sign in, limits, agents, add, delete']
+  ['“Waiting” in the status bar', 'Goes to the next chat that is waiting for you']
 ];
 
 function Section({ label, rows }: { label: string; rows: Row[] }) {

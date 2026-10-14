@@ -67,6 +67,9 @@ const NOTIFY_IDLE_LOOKS: u32 = 2;
 /// A person typed into the caller this recently: hold the notice, it would
 /// land in the middle of what they are writing.
 const TYPING_QUIET_MS: u64 = 20_000;
+/// The same for `send`, which refuses rather than waits: the agent can try
+/// again, and a person who stopped typing this long ago has likely paused.
+const SEND_TYPING_MS: u64 = 5_000;
 /// A notice held this long by an unsent draft in the caller is announced on
 /// the desktop instead, once: the draft may be forgotten, the notice is not.
 const DRAFT_ALERT_MS: u64 = 60_000;
@@ -148,6 +151,9 @@ struct Registry {
     tokens: HashMap<String, String>,
     known: HashMap<String, Known>,
     pending: HashMap<u64, std::sync::Arc<(Mutex<Pending>, Condvar)>>,
+    /// Spawns whose caller stopped waiting (SPAWN_TIMEOUT), by request id:
+    /// the caller to hand the chat to should the frontend still make it.
+    abandoned: HashMap<u64, String>,
     next_request: u64,
     /// The `turnsEnded` each caller was last shown for each session, by
     /// (caller, session). `wait(turn_done)` without `afterTurn` waits for a
@@ -188,6 +194,7 @@ fn reg() -> &'static Mutex<Registry> {
             tokens: HashMap::new(),
             known: HashMap::new(),
             pending: HashMap::new(),
+            abandoned: HashMap::new(),
             next_request: 1,
             seen: HashMap::new(),
             names: HashMap::new(),
@@ -429,13 +436,34 @@ pub struct AccountRow {
 /// Accounts an agent may spawn on: every account folder on disk, minus the
 /// ones the user switched off for agents.
 pub fn allowed_accounts() -> Vec<AccountRow> {
+    allowed_account_dirs().into_iter().map(|a| AccountRow { provider: a.provider, name: a.name }).collect()
+}
+
+/// The same with each account's folder.
+fn allowed_account_dirs() -> Vec<crate::accounts::AccountInfo> {
     let blocked = crate::settings::get().agent_blocked_accounts;
     crate::accounts::list_accounts()
         .unwrap_or_default()
         .into_iter()
         .filter(|a| !blocked.iter().any(|b| b == &format!("{}/{}", a.provider.as_str(), a.name)))
-        .map(|a| AccountRow { provider: a.provider, name: a.name })
         .collect()
+}
+
+/// Whether an account folder holds a login its CLI can start on: Claude
+/// Code's OAuth refresh token, or Codex's ChatGPT tokens or API key. A
+/// helper sent to an account nobody signed in to sits on a login screen.
+fn signed_in(provider: Provider, account_path: &str) -> bool {
+    let read = |file: &str| {
+        std::fs::read_to_string(std::path::Path::new(account_path).join(file))
+            .ok()
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+    };
+    match provider {
+        Provider::Claude => read(".credentials.json").is_some_and(|v| v["claudeAiOauth"]["refreshToken"].is_string()),
+        Provider::Codex => read("auth.json").is_some_and(|v| {
+            v["tokens"].is_object() || v["OPENAI_API_KEY"].as_str().is_some_and(|k| !k.is_empty())
+        }),
+    }
 }
 
 pub fn list(caller: &str) -> Listing {
@@ -644,12 +672,26 @@ fn await_start(pty: &crate::pty::PtyManager, id: &str, after_turn: u32, timeout:
     }
 }
 
+/// The worktree a Claude Code caller started with `--worktree` runs in. It
+/// registers with the project folder, the only one known at spawn, and makes
+/// the worktree itself; its registry entry says where that went.
+fn caller_worktree(caller: &str) -> Option<String> {
+    let folder = reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(caller)?.folder.clone();
+    let pty = app()?.state::<crate::pty::PtyManager>();
+    let p = pty.probe(caller).filter(|p| p.provider == Provider::Claude)?;
+    let cwd = crate::claude::session::session_cwd(p.pid, &p.cwd, p.spawned_at_ms, &p.account_path)?;
+    crate::worktree::is_worktree_of(&folder, &cwd).then_some(cwd)
+}
+
 /// Asks the frontend to make the chat and start its session; blocks until it
 /// answers or the timeout passes.
 pub fn spawn(caller: &str, mut params: SpawnParams) -> Result<Spawned, String> {
     if params.prompt.trim().is_empty() {
         return Err("prompt is required".into());
     }
+    // Off the registry lock: this reads the CLI's registry from disk. A
+    // helper works where its caller does, worktree and all.
+    let worktree = if params.folder.is_none() { caller_worktree(caller) } else { None };
     let (request_id, slot) = {
         let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
         let me = r.known.get(caller).cloned().ok_or("caller is not a registered session")?;
@@ -660,7 +702,7 @@ pub fn spawn(caller: &str, mut params: SpawnParams) -> Result<Spawned, String> {
             return Err("a session this deep cannot spawn sessions with tools of their own".into());
         }
         if params.folder.is_none() {
-            params.folder = Some(me.folder.clone());
+            params.folder = Some(worktree.unwrap_or_else(|| me.folder.clone()));
         }
         let provider = match params.provider.as_deref() {
             None => me.provider,
@@ -669,18 +711,27 @@ pub fn spawn(caller: &str, mut params: SpawnParams) -> Result<Spawned, String> {
             Some(other) => return Err(format!("unknown provider {other}; use claude or codex")),
         };
         params.provider = Some(provider.as_str().to_string());
-        let account = params.account.clone().unwrap_or_else(|| if provider == me.provider { me.account.clone() } else { String::new() });
-        let allowed = allowed_accounts();
-        let pick = if account.is_empty() {
-            allowed.iter().find(|a| a.provider == provider).map(|a| a.name.clone())
-        } else {
-            allowed.iter().find(|a| a.provider == provider && a.name == account).map(|a| a.name.clone())
+        let allowed = allowed_account_dirs();
+        let mut ours = allowed.iter().filter(|a| a.provider == provider);
+        let pick = match params.account.as_deref() {
+            Some(name) => ours.find(|a| a.name == name),
+            // The caller's own account, else one somebody signed in to, else
+            // any: the user said which accounts agents may use, not which
+            // of them works.
+            None => allowed
+                .iter()
+                .find(|a| a.provider == provider && provider == me.provider && a.name == me.account)
+                .or_else(|| allowed.iter().find(|a| a.provider == provider && signed_in(provider, &a.path)))
+                .or_else(|| ours.next()),
         };
-        let Some(account) = pick else {
-            return Err(format!(
-                "no {} account named {account:?} is available to agents; luna_list shows the ones that are",
-                provider.as_str()
-            ));
+        let Some(account) = pick.map(|a| a.name.clone()) else {
+            return Err(match params.account.as_deref() {
+                Some(name) => format!(
+                    "no {} account named {name:?} is available to agents; luna_list shows the ones that are",
+                    provider.as_str()
+                ),
+                None => format!("no {} account is available to agents", provider.as_str()),
+            });
         };
         params.account = Some(account);
         let id = r.next_request;
@@ -704,13 +755,34 @@ pub fn spawn(caller: &str, mut params: SpawnParams) -> Result<Spawned, String> {
         let (guard, _) = cv.wait_timeout(p, left).unwrap_or_else(|e| e.into_inner());
         p = guard;
     }
-    let outcome = p.done.take();
+    let mut outcome = p.done.take();
     drop(p);
-    reg().lock().unwrap_or_else(|e| e.into_inner()).pending.remove(&request_id);
+    {
+        let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+        r.pending.remove(&request_id);
+        if outcome.is_none() {
+            // The frontend may still make the chat (a slow trust write, a
+            // worktree): `agent_spawned` then hands it to the caller.
+            r.abandoned.insert(request_id, caller.to_string());
+        }
+    }
+    if outcome.is_none() {
+        // An answer that landed between the timeout and the line above.
+        outcome = lock.lock().unwrap_or_else(|e| e.into_inner()).done.take();
+        if outcome.is_some() {
+            reg().lock().unwrap_or_else(|e| e.into_inner()).abandoned.remove(&request_id);
+        }
+    }
     let id = match outcome {
         Some(Ok(id)) => id,
         Some(Err(e)) => return Err(e),
-        None => return Err("the app did not start the session in time".into()),
+        None => {
+            return Err(format!(
+                "the app did not start the session within {}s. It may still come up: luna_list will show it as yours \
+                 and Luna will tell you when it answers, so check luna_list before spawning again",
+                SPAWN_TIMEOUT.as_secs()
+            ))
+        }
     };
     // The frontend has registered the session by now (ensure_* ran before it
     // answered), so its settings are known; whether it took the prompt is
@@ -739,11 +811,26 @@ pub fn spawn(caller: &str, mut params: SpawnParams) -> Result<Spawned, String> {
 /// The frontend's answer to `agent://spawn`.
 #[tauri::command]
 pub fn agent_spawned(request_id: u64, chat_id: Option<String>, name: Option<String>, error: Option<String>) {
-    let slot = reg().lock().unwrap_or_else(|e| e.into_inner()).pending.get(&request_id).cloned();
     if let (Some(id), Some(n)) = (&chat_id, &name) {
         set_name(id, n);
     }
-    let Some(slot) = slot else { return };
+    // The answer goes in under the registry lock, which `spawn` takes to
+    // give up on it: either it is in before the caller stops waiting, or the
+    // request is found abandoned here.
+    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    let Some(slot) = r.pending.get(&request_id).cloned() else {
+        let caller = r.abandoned.remove(&request_id);
+        drop(r);
+        // Too late for the caller's spawn, not for the caller: the session
+        // registered as its child, so `luna_list` shows it, and the answer
+        // to its prompt is owed like any other.
+        if let (Some(caller), Some(id)) = (caller, chat_id) {
+            crate::log::warn("agents", &format!("session {id} for {caller} came up after its spawn timed out"));
+            shown(&caller, &id, 0);
+            owe(&caller, &id, 0);
+        }
+        return;
+    };
     let (lock, cv) = &*slot;
     let mut p = lock.lock().unwrap_or_else(|e| e.into_inner());
     p.done = Some(match (chat_id, error) {
@@ -752,6 +839,8 @@ pub fn agent_spawned(request_id: u64, chat_id: Option<String>, name: Option<Stri
         (None, None) => Err("spawn failed".into()),
     });
     cv.notify_all();
+    drop(p);
+    drop(r);
 }
 
 #[derive(Serialize)]
@@ -806,8 +895,20 @@ pub fn send(caller: &str, id: &str, text: &str) -> Result<Sent, String> {
     }
     if still_starting(&pty, id) {
         return Err(format!(
-            "session {id} has not come up yet (its terminal is still blank), so typed text would be lost;              an opening prompt from luna_spawn is held and runs once it is up — luna_wait(turn_done) for the reply"
+            "session {id} has not come up yet (its terminal is still blank), so typed text would be lost; \
+             an opening prompt from luna_spawn is held and runs once it is up — luna_wait(turn_done) for the reply"
         ));
+    }
+    // Text typed now would go out with what a person has in the composer, or
+    // land in the middle of what they are typing (see `ready_for_notice`).
+    if pty.has_draft(id) {
+        return Err(format!(
+            "session {id} has something the user typed and has not sent yet; your text would be sent along with it. \
+             Try again later, or ask the user"
+        ));
+    }
+    if pty.typed_ago_ms(id).is_some_and(|ms| ms < SEND_TYPING_MS) {
+        return Err(format!("the user is typing in session {id}; try again in a little while"));
     }
     let before = crate::activity::turn_state(id);
     let turn_before = before.map(|t| t.turn);
@@ -924,12 +1025,21 @@ pub struct Waited {
 /// or the turn stopped on a prompt, which nothing but an answer moves on);
 /// `waiting` — it stopped for a permission; `exit` — the process ended.
 pub fn wait(caller: &str, id: &str, until: &str, timeout_s: u64, after_turn: Option<u32>) -> Result<Waited, String> {
+    if !matches!(until, "turn_done" | "waiting" | "exit") {
+        return Err(format!("unknown until {until:?}; use turn_done, waiting or exit"));
+    }
     authorize_view(caller, id)?;
     let app = app().ok_or("app not ready")?;
     let pty = app.state::<crate::pty::PtyManager>();
-    let baseline = after_turn
-        .or_else(|| last_shown(caller, id))
-        .unwrap_or_else(|| crate::activity::turn_state(id).map(|t| t.turns_ended).unwrap_or(0));
+    let now = crate::activity::turn_state(id).map(|t| t.turns_ended);
+    let baseline = match (after_turn, last_shown(caller, id), now) {
+        (Some(n), _, _) => n,
+        // A count the session is behind has been left over from before it
+        // was respawned; waiting past it would sit out the whole timeout.
+        (None, Some(seen), Some(now)) => seen.min(now),
+        (None, Some(seen), None) => seen,
+        (None, None, now) => now.unwrap_or(0),
+    };
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_s.clamp(1, 1800));
     let answered_at = reg().lock().unwrap_or_else(|e| e.into_inner()).answered.get(&(caller.to_string(), id.to_string())).copied();
     loop {

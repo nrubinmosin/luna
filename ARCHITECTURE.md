@@ -21,11 +21,15 @@ Desktop-обёртка над Claude Code CLI и Codex CLI. Принцип: **в
 
 ```
 src/                          фронт (feature-sliced)
-  app/        App, theme.css (токены light/dark), keymap: Ctrl+N / Ctrl+Shift+N,
-              Ctrl+1..4 (peek), Ctrl+Tab (следующая группа), Ctrl+0 (выход), Ctrl+Shift+1..4
-              (раскладка), F1 (шорткаты) — слушается в capture-фазе, иначе xterm
-              гасит их до window
-  shared/     types, format, status; ui/icons.tsx — XP-иконки и ToolButton, ui/dialogHost.ts
+  app/        App (док сайдбара: закреплён или выезжает по наведению), AppFrame + BoardTools
+              (раскладки, группы, Even out, Clear, тема — в титлбаре окна), shell.store
+              (тема, закреп и ширина сайдбара), theme.css (токены light/dark и все контролы),
+              keymap: Ctrl+N / Ctrl+Shift+N, Ctrl+1..4 (фокус панели, повторно — peek),
+              Ctrl+Shift+W (следующий ждущий), Ctrl+Shift+B (сайдбар), Ctrl+Tab (следующая группа),
+              Ctrl+0 (выход), Ctrl+Shift+1..4 (раскладка), F1 (шорткаты) — слушается в
+              capture-фазе, иначе xterm гасит их до window
+  shared/     types, format, status; ui/icons.tsx — XP-иконки (и значки провайдеров),
+              ToolButton, глифы титлбара; ui/dialogHost.ts
   features/
     chats/    сайдбар: папки + чаты (drag source, клик = показать), chats.store
     panes/    сетка 1/2/3/4, Pane (drop target), Terminal (xterm), panes.store
@@ -89,7 +93,7 @@ src-tauri/src/
     defaults.rs model/effortLevel/permissions.defaultMode из настроек Claude Code в его
                 порядке: settings.json аккаунта → .claude/settings.json проекта →
                 .claude/settings.local.json → machine-wide managed
-    limits.rs   OAuth usage + кэш CLI (.claude.json)
+    limits.rs   OAuth usage + кэш CLI (.claude.json); 5h, week и каждый weekly_scoped
     oauth.rs    рефреш протухшего access-токена так же, как это делает CLI (его локи, CAS)
     models.rs   окна контекста из Models API
     trust.rs    hasTrustDialogAccepted в .claude.json
@@ -98,6 +102,8 @@ src-tauri/src/
   codex/
     cli.rs      Source: GitHub Releases openai/codex, rust-v<ver>, package-тарбол + SHA256SUMS
     config.rs   config.toml через toml_edit (комментарии и формат сохраняются), seed
+    models.rs   каталог моделей: models_cache.json аккаунта → чужого Codex-аккаунта →
+                `codex debug models` → `codex debug models --bundled`
     defaults.rs model / model_reasoning_effort / approval_policy / sandbox_mode из
                 config.toml аккаунта, затем .codex/config.toml проекта (только trusted)
     limits.rs   chatgpt.com/backend-api/wham/usage по auth.json; fallback — rate_limits
@@ -105,7 +111,10 @@ src-tauri/src/
     trust.rs    [projects.'<путь>'] trust_level = "trusted" в config.toml
     session.rs  rollout-файлы sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl: какой наш,
                 статус, модель, контекст, первый промпт; имя треда из session_index.jsonl
-  paths.rs      data_dir(): рядом с exe (portable) либо LOCALAPPDATA\luna
+  account_settings.rs  рекомендуемые настройки (settings.json / config.toml, ключ за
+                ключом, с учётом платформы) и синхронизация от родительского аккаунта
+  paths.rs      data_dir(): рядом с exe (portable) либо LOCALAPPDATA\luna; тестовая
+                сборка (LUNA_FLAVOR=test) держит всё рядом со своим exe в test-build/
   lib.rs        Builder + generate_handler
 ```
 
@@ -207,7 +216,7 @@ src-tauri/src/
   `[projects.'<native путь>'] trust_level = "trusted"` в `config.toml` (через `toml_edit`, чтобы
   не потерять комментарии пользователя; ключ сравнивается без регистра и с любым слэшем).
 - **Занятость сессии измеряется, а не читается из одного статуса.** `activity.rs` раз в 5 с
-  сводит три сигнала: ход (у Claude — hooks через `--settings`-файл с `curl.exe` на loopback
+  сводит три сигнала: ход (у Claude — hooks через `--settings`-файл с `curl.exe` (вне Windows — `curl`) на loopback
   `hub.rs`, сверенные с registry; у Codex — rollout плюс тишина экрана, а диалог одобрения
   (команда, правка), которого нет в rollout и под которым экран не молчит, — по его тексту на
   отрисованном экране; тот же вердикт отдаёт и строке чата в UI вместо `working`), потомки CLI
@@ -238,9 +247,12 @@ src-tauri/src/
   registry …]` при смене причины (не чаще раза в минуту) и раз в 10 минут без перемен; в
   `luna.log` идут только WARN/ERROR, поэтому всё, что решает судьбу ночи, пишется этим уровнем.
 - **Агенты — через MCP, а не через промпт.** Сессия с галочкой «Luna tools» получает
-  `--mcp-config <data>/mcp/<chat>.json` (Claude) или `-c mcp_servers.luna.url=… -c
-  mcp_servers.luna.bearer_token_env_var=LUNA_MCP_TOKEN -c mcp_servers.luna.tool_timeout_sec=1900`
-  (Codex: по умолчанию он даёт MCP-вызову 60 с, а `wait` держит запрос до 30 мин) — Luna-сервер на loopback
+  `--mcp-config <data>/mcp/<chat>.json` с `"timeout": 1900000` у сервера и `--allowedTools mcp__luna`
+  (Claude: без `timeout` он рвёт HTTP-вызов, молчащий 5 мин) или `-c mcp_servers.luna.url=… -c
+  mcp_servers.luna.bearer_token_env_var=LUNA_MCP_TOKEN -c mcp_servers.luna.tool_timeout_sec=1900
+  -c mcp_servers.luna.default_tools_approval_mode="approve"`
+  (Codex: по умолчанию он даёт MCP-вызову 60 с, а `wait` держит запрос до 30 мин; инструменты
+  Luna не спрашивают разрешения ни в одном режиме, галочка и есть разрешение) — Luna-сервер на loopback
   `hub.rs`, токен на сессию, перевыпускается при каждом спавне. Инструкция агенту едет в
   `instructions` ответа `initialize`, поэтому системный промпт не трогается ни флагом, ни
   файлом; всё вместе ~2k токенов один раз. Чистые сессии не получают ни MCP, ни знания о Luna.
@@ -253,8 +265,9 @@ src-tauri/src/
   делает worktree, и это бывает минутами. Промпт при этом лежит в аргументах CLI, а напечатанное в pty
   пропало бы, поэтому `send` в такую сессию отказывает. `read` и `wait` по таймауту тоже отдают `starting`. `read` —
   из транскрипта Claude (user/assistant, без tool_result) или rollout Codex (`response_item`
-  message user/assistant) с байтовым курсором; `wait(turn_done)` считает переходы busy→idle в
-  `activity.rs` (`turns_ended`) и возвращает последний ответ, чтобы `read` был не нужен.
+  message user/assistant) с байтовым курсором (только по целым строкам); `wait(turn_done)` считает переходы busy→idle в
+  `activity.rs` (`turns_ended`; счёт растёт и через респавн/resume — у Codex из rollout берутся
+  только ходы после спавна процесса) и возвращает последний ответ, чтобы `read` был не нужен.
   `send` после Enter ждёт до 12 с начала хода и тоже отвечает `started`/`screen`. `screen` —
   это scrollback pty, прогнанный через эмулятор терминала (`vt100`) на размере pty: последние
   40 строк того, что видит человек в панели — попап, ошибка, вопрос, которых в транскрипте
@@ -310,12 +323,19 @@ src-tauri/src/
   инструкция говорит, что встроенные субагенты CLI не умеют ни другого провайдера, ни другого
   аккаунта, ни видимой в Luna сессии: без этого Codex-оркестратор брал свой `spawn_agent`.
   Для проверки сборки без второй Luna в роли родителя: `LUNA_DEV_TOKEN` (+ `LUNA_DEV_FOLDER`,
-  `LUNA_DEV_ACCOUNT`) регистрирует вызывающего `dev` с этим bearer-токеном и отключает
-  single-instance, чтобы тестовый exe жил рядом с рабочим; его спавны — чаты верхнего уровня.
+  `LUNA_DEV_ACCOUNT`) регистрирует вызывающего `dev` с этим bearer-токеном; его спавны —
+  чаты верхнего уровня. `test-build.ps1 -Run -DevCaller` выставляет их сам.
 - **Тема** — токены в CSS custom properties (`[data-app][data-theme]`), переключение
   system/light/dark без перерисовки терминалов (xterm получает тему через MutationObserver).
+  Формы — XP (глянцевые титлбары, фаски, task pane, Start-кнопка), тона — под долгое чтение:
+  нейтрали без синевы, слои различаются светлотой (OKLCH), терминал — самый тёмный «колодец».
+  Скомпилированный xp.css прибивает свои контролы к светлым литералам, поэтому кнопки, поля,
+  чекбоксы, радио и скроллбары перерисованы в theme.css из токенов.
 
 ## Сборка
 
 - Локально: `pnpm install`, `pnpm build` (фронт), `pnpm tauri dev` (нужен Rust-тулчейн).
 - Прод-сборка — в Docker, см. README.
+- Тестовая сборка — `test-build.ps1` (тоже Docker): `test-build/luna-test.exe` со своим
+  identifier (`tauri.test.conf.json`), без апдейтера, всё своё рядом с exe; `-Test` собирает
+  Rust-тесты и гоняет их на хосте. Правила — в AGENTS.md.

@@ -9,19 +9,25 @@ const tauriAvailable = '__TAURI_INTERNALS__' in window;
 // network or a big transcript — not a frozen window — so they get a budget of
 // their own rather than tripping the stall warning thousands of times a day.
 const SLOW_BUDGET_MS: Record<string, number> = {
-  account_limits: 5000,
-  codex_limits: 5000,
+  // A usage request may wait out a 10s read timeout, and a token renewal before it.
+  account_limits: 15_000,
+  codex_limits: 15_000,
   session_meta: 2000,
   saved_title: 5000,
   ensure_claude_session: 30_000,
   ensure_codex_session: 30_000,
   create_worktree: 30_000,
-  // Both give the CLI a moment to quit on its own before killing it.
+  // Both give the CLI a moment to quit on its own before killing it; deleting
+  // then waits for the worktree to come free.
   kill_session: 5000,
-  delete_session: 10_000,
+  delete_session: 20_000,
   orphan_worktrees: 10_000,
   remove_orphan_worktrees: 30_000
 };
+
+// The Rust side already logs why these failed, with more to say than this
+// layer has; logging them here as well wrote every failure twice.
+const LOGGED_BEHIND: ReadonlySet<string> = new Set(['account_limits', 'codex_limits']);
 
 // In plain-browser dev (vite without tauri) all commands become no-ops so the
 // UI stays workable.
@@ -39,7 +45,7 @@ async function call<T>(cmd: string, args?: Record<string, unknown>, fallback?: T
   try {
     return await invoke<T>(cmd, args);
   } catch (e) {
-    logWarn('ipc', `${cmd} failed: ${String(e)}`);
+    if (!LOGGED_BEHIND.has(cmd)) logWarn('ipc', `${cmd} failed: ${String(e)}`);
     throw e;
   } finally {
     const ms = performance.now() - started;
@@ -64,10 +70,10 @@ export interface AccountLimitsDto {
   haveUsage: boolean;
   h5: number;
   week: number;
-  model: number;
   resetH5: string | null;
   resetWeek: string | null;
-  resetModel: string | null;
+  /** Weekly limits scoped to one model, each with its own reset. */
+  scoped: Array<{ label: string; used: number; resetsAt: string | null }>;
   /** 'cache' (the CLI's own, free) or 'network'. */
   source: string | null;
   fetchedAtMs: number | null;
@@ -197,7 +203,6 @@ export const resizeSession = (id: string, cols: number, rows: number) =>
 
 export const killSession = (id: string) => call<void>('kill_session', { id });
 
-export const sessionAlive = (id: string) => call<boolean>('session_alive', { id }, false);
 /** Escapes restoring the terminal modes the session's CLI switched. */
 export const sessionModes = (id: string) => call<string>('session_modes', { id }, '');
 
@@ -250,8 +255,6 @@ export const orphanSessions = (known: string[]) =>
 /** Makes `<folder>/.codex/worktrees/codex-xxxxxx` on a fresh branch; returns the path. */
 export const createWorktree = (folder: string) => call<string>('create_worktree', { folder });
 
-export const removeWorktree = (folder: string, worktreePath: string) =>
-  call<void>('remove_worktree', { folder, worktreePath });
 
 /**
  * Kills the session and cleans up after it in one call: the chat's attachments
@@ -384,7 +387,6 @@ export const codexTrustFolder = (accountPath: string, folder: string) =>
 export const saveMedia = (chatId: string, name: string, base64: string) =>
   call<string | null>('save_media', { chatId, name, data: base64 }, null);
 
-export const clearMedia = (chatId: string) => call<void>('clear_media', { chatId });
 
 // ------------------------------------------------------------------- cli --
 
@@ -492,3 +494,40 @@ export const chatNames = (names: Record<string, string>) => call<void>('chat_nam
 export const agentBlockedAccounts = () => call<string[]>('agent_blocked_accounts', {}, []);
 export const setAgentAccount = (provider: Provider, name: string, allowed: boolean) =>
   call<string[]>('set_agent_account', { provider, name, allowed }, []);
+
+/** The page is alive: watchdog.rs rebuilds a window whose page stops saying so. */
+export const uiHeartbeat = () => call<void>('ui_heartbeat');
+
+// ------------------------------------------------------ account settings --
+
+export interface RecommendationDto {
+  /** Dotted path in the settings file, e.g. `tui` or `tui.show_tooltips`. */
+  key: string;
+  current: string | null;
+  recommended: string;
+  why: string;
+  defaultOn: boolean;
+  applied: boolean;
+}
+
+export const recommendedSettings = (provider: Provider, accountPath: string) =>
+  call<RecommendationDto[]>('recommended_settings', { provider, accountPath }, []);
+export const applyRecommended = (provider: Provider, accountPath: string, keys: string[]) =>
+  call<void>('apply_recommended', { provider, accountPath, keys });
+
+export interface SyncStateDto {
+  claude: string | null;
+  codex: string | null;
+  onStart: boolean;
+}
+export interface SyncReportDto {
+  synced: string[];
+  failed: string[];
+}
+
+const NO_SYNC: SyncStateDto = { claude: null, codex: null, onStart: false };
+export const settingsSyncState = () => call<SyncStateDto>('settings_sync_state', {}, NO_SYNC);
+export const setSettingsParent = (provider: Provider, parent: string | null) =>
+  call<SyncStateDto>('set_settings_parent', { provider, parent }, NO_SYNC);
+export const setSettingsSyncOnStart = (on: boolean) => call<SyncStateDto>('set_settings_sync_on_start', { on }, NO_SYNC);
+export const syncSettingsNow = (provider: Provider) => call<SyncReportDto>('sync_settings_now', { provider });
