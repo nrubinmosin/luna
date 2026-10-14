@@ -614,12 +614,18 @@ body { margin: 0; overflow: hidden; }
   text-shadow: 1px 1px color-mix(in oklab, var(--c) 45%, black);
 }
 /* The chat's details as separate chips, not one run of text. */
+/* One row tall and wrapping: a chip that does not fit whole goes to a second
+   row nobody sees, rather than showing cut in half. The least needed come
+   last, so they are the first to go. */
 [data-app] .pane-chips {
   flex: 0 1 auto;
   min-width: 0;
+  height: 18px;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 4px;
+  align-content: flex-start;
+  gap: 0 4px;
   overflow: hidden;
 }
 [data-app] .pchip {
@@ -630,9 +636,11 @@ body { margin: 0; overflow: hidden; }
   height: 18px;
   padding: 0 7px;
   border-radius: 9px;
-  background: rgba(255, 255, 255, .2);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .18);
-  color: rgba(255, 255, 255, .95);
+  /* Dark glass, not light: white text needs a darker ground on the pale bar
+     of an inactive pane as much as on a saturated one. */
+  background: rgba(0, 0, 0, .24);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .16);
+  color: #fff;
   font: 400 var(--fs-2) var(--sans-serif);
   white-space: nowrap;
   text-shadow: none;
@@ -667,15 +675,15 @@ body { margin: 0; overflow: hidden; }
 
 /* An inactive XP window is pale, not grey: the hue survives, the shout goes. */
 [data-app] .pane[data-focus="no"] .pane-bar {
-  border-color: color-mix(in oklab, var(--c) 35%, #c9bfb0);
-  background: linear-gradient(180deg, color-mix(in oklab, var(--c) 30%, #f1e9dd), color-mix(in oklab, var(--c) 42%, #d8cdbc));
+  border-color: color-mix(in oklab, var(--c) 50%, #a89c8a);
+  background: linear-gradient(180deg, color-mix(in oklab, var(--c) 52%, #d9d0c2), color-mix(in oklab, var(--c) 64%, #b3a794));
 }
 [data-app] .pane[data-focus="no"] .pane-bar .title-bar-text,
 [data-app] .pane[data-focus="no"] .ctx-meter {
   color: #fff;
   text-shadow: 1px 1px color-mix(in oklab, var(--c) 55%, #5c5446);
 }
-[data-app] .pane[data-focus="no"] .pchip { background: rgba(255, 255, 255, .16); }
+[data-app] .pane[data-focus="no"] .pchip { background: rgba(0, 0, 0, .2); color: rgba(255, 255, 255, .92); }
 [data-app] .pane[data-focus="no"] .pane-sid { color: rgba(255, 255, 255, .88); }
 [data-app] .pane[data-focus="no"] .title-bar-controls button { opacity: .72; }
 [data-app] .pane[data-focus="no"] .title-bar-controls button:hover { opacity: 1; }
