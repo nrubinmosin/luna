@@ -16,9 +16,8 @@ export type NameSource = 'user' | 'rename' | 'cli' | 'prompt';
 export type Provider = 'claude' | 'codex';
 export const PROVIDERS: Provider[] = ['claude', 'codex'];
 export const PROVIDER_LABEL: Record<Provider, string> = { claude: 'Claude Code', codex: 'Codex' };
-/** Whose subscription the account is, and the sub-folder it lives in. */
+/** Whose subscription the account is. */
 export const PROVIDER_VENDOR: Record<Provider, string> = { claude: 'Anthropic', codex: 'OpenAI' };
-export const PROVIDER_DIR: Record<Provider, string> = { claude: 'anthropic', codex: 'openai' };
 
 // ---------------------------------------------------------- Claude Code --
 
@@ -120,36 +119,17 @@ export interface FolderStart {
 
 // -------------------------------------------------------------- accounts --
 
-export interface ClaudeLimits {
-  kind: 'claude';
-  h5: number;
-  week: number;
-  fable: number;
-  resets: { h5: string; week: string; fable: string };
-  /** Raw ISO instant the overall weekly limit resets, for showing the exact
-   *  local date and time rather than a countdown. */
-  weekResetAt: string | null;
-}
-
-export interface CodexLimitWindow {
+/** One usage window, the same shape for both providers. */
+export interface LimitWindow {
   id: string;
-  /** "5 hours", "week", or the limit's own name. */
+  /** "5 hours", "week", a model ("Fable"), or the limit's own name. */
   label: string;
+  /** The status bar's key for it: "5H", "W", "F" (Fable). */
+  short: string;
   used: number; // 0..1
-  /** Countdown, e.g. "3h 40m". */
-  reset: string;
+  /** The instant it resets; countdowns are worked out from it as they show. */
   resetAt: string | null;
 }
-
-export interface CodexLimits {
-  kind: 'codex';
-  windows: CodexLimitWindow[];
-}
-
-export const EMPTY_CLAUDE_LIMITS: ClaudeLimits = {
-  kind: 'claude', h5: 0, week: 0, fable: 0, resets: { h5: '—', week: '—', fable: '—' }, weekResetAt: null
-};
-export const EMPTY_CODEX_LIMITS: CodexLimits = { kind: 'codex', windows: [] };
 
 /** 'loading' before the first fetch, 'stale' while an expired token has not
  *  been renewed yet (by Luna for Claude Code, by the CLI itself for Codex). */
@@ -165,7 +145,8 @@ export interface Account {
   signedIn: boolean;
   /** No usage figures known yet — render "—" instead of a confident 0%. */
   haveUsage: boolean;
-  limits: ClaudeLimits | CodexLimits;
+  /** Every usage window the provider reports, the shortest first. */
+  limits: LimitWindow[];
   /** Age of the numbers, e.g. "just now" / "4m ago". */
   usageAge: string | null;
   /** When the numbers on screen were actually taken, so their age keeps
@@ -179,7 +160,6 @@ export interface Account {
 /** `codex/work` — one string that names an account across both providers. */
 export const accountKey = (provider: Provider, name: string) => `${provider}/${name}`;
 
-export type PaneIndex = 0 | 1 | 2 | 3;
 
 // ------------------------------------------------ Claude Code's own settings
 

@@ -20,15 +20,17 @@ docker build -t luna-shots -f docker/screenshots.Dockerfile docker
 
 New-Item -ItemType Directory -Force $Out | Out-Null
 
-# The UI is Tahoma, the way XP was. Without the real face every shot comes out
-# in a substitute, i.e. not in the app's own type.
-$tahoma = 'C:\Windows\Fonts\tahoma.ttf'
+# The UI is Segoe UI with Tahoma behind it, and title bars and the New chat
+# button are Trebuchet MS, as on XP. Without the real faces every shot comes
+# out in a substitute, i.e. not in the app's own type.
+$faces = 'SegUIVar.ttf', 'segoeui.ttf', 'segoeuib.ttf', 'seguisb.ttf', 'tahoma.ttf', 'tahomabd.ttf',
+         'trebuc.ttf', 'trebucbd.ttf', 'trebucit.ttf', 'trebucbi.ttf'
 $fontArgs = @()
-if (Test-Path $tahoma) {
-    $fontArgs = @('-v', "${tahoma}:/usr/share/fonts/truetype/tahoma/tahoma.ttf:ro")
-} else {
-    Write-Warning "no $tahoma — the shots will fall back to another sans face"
+foreach ($f in $faces) {
+    $src = Join-Path 'C:\Windows\Fonts' $f
+    if (Test-Path $src) { $fontArgs += @('-v', "${src}:/usr/share/fonts/truetype/windows/${f}:ro") }
 }
+if (-not $fontArgs) { Write-Warning 'no Windows fonts found — the shots will fall back to other faces' }
 
 # Single-quoted: the container's shell owns every $ in here.
 $cmd = @'

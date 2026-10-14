@@ -5,7 +5,7 @@
  * windows as the usage endpoint names them.
  */
 import { useEffect, useState, type CSSProperties, type ReactNode } from 'react';
-import type { Account, Chat, CodexApproval, CodexChat, CodexEffort, CodexSandbox, CodexSettings } from '../../../shared/types';
+import type { Account, CodexApproval, CodexChat, CodexEffort, CodexSandbox, CodexSettings } from '../../../shared/types';
 import {
   CODEX_APPROVAL_HINTS, CODEX_APPROVALS, CODEX_EFFORTS, CODEX_PRESETS, CODEX_SANDBOX_HINTS, CODEX_SANDBOXES,
   codexApprovalFromSetting, codexEffortFromSetting, codexSandboxFromSetting
@@ -14,12 +14,10 @@ import {
   codexDefaults, codexFolderTrusted, codexModels, codexTrustFolder, ensureCodexSession,
   type CodexDefaultSource, type CodexModelDto
 } from '../../../ipc/commands';
-import { limitColor } from '../../../shared/lib/format';
 import { Segmented } from '../../../shared/ui/Segmented';
 import type { Draft, From } from '../../new-chat/draft';
 
 export const label = 'Codex';
-export const vendor = 'OpenAI';
 
 /** Where a chat opens when config.toml says nothing: Codex's own default
  *  model, and the same "just do it" stance the Claude side opens on. */
@@ -105,27 +103,6 @@ export const branchPrefix = 'codex-';
 
 // ---------------------------------------------------------------- dialog --
 
-/** Models typed into earlier chats, newest first — the datalist behind the
- *  model box, since Codex's own list is not something Luna can ask for. */
-const RECENT_KEY = 'luna.codex.models';
-export const recentModels = (): string[] => {
-  try {
-    const raw = JSON.parse(localStorage.getItem(RECENT_KEY) ?? '[]');
-    return Array.isArray(raw) ? raw.filter((s): s is string => typeof s === 'string') : [];
-  } catch {
-    return [];
-  }
-};
-export const rememberModel = (model: string | null) => {
-  if (!model) return;
-  const next = [model, ...recentModels().filter(m => m !== model)].slice(0, 8);
-  try {
-    localStorage.setItem(RECENT_KEY, JSON.stringify(next));
-  } catch {
-    // a full or blocked localStorage only loses the suggestion list
-  }
-};
-
 /** The label Codex's list gives a slug, or the slug itself. */
 const displayOf = (models: CodexModelDto[], slug: string) =>
   models.find(m => m.slug === slug)?.displayName ?? slug;
@@ -138,72 +115,48 @@ export function Fields({ draft, origin, accountPath }: {
   const { settings, pick } = draft;
   const labelStyle: CSSProperties = { fontSize: 'var(--fs-3)', color: 'var(--dim)', marginBottom: 4, fontWeight: 600 };
   const hintStyle: CSSProperties = { fontSize: 'var(--fs-2)', color: 'var(--faint)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' };
-  const [recent] = useState(recentModels);
-
-  // Codex's own model list, cached in the account folder by the CLI. With it
-  // the model is a row of buttons like the Claude side; without it (a fresh
-  // account that has not run yet) a text box is all there is to offer.
-  const [models, setModels] = useState<CodexModelDto[]>([]);
+  // Codex's own model list: its cache file, another account's, or the CLI
+  // asked directly (codex/models.rs) — never a box to type a slug into.
+  const [models, setModels] = useState<CodexModelDto[] | null>(null);
   useEffect(() => {
     let stale = false;
-    void codexModels(accountPath).then(m => !stale && setModels(m)).catch(() => {});
+    setModels(null);
+    void codexModels(accountPath).then(m => !stale && setModels(m)).catch(() => !stale && setModels([]));
     return () => {
       stale = true;
     };
   }, [accountPath]);
+  const list = models ?? [];
 
-  // The box edits a local copy so a half-typed name is not a picked one:
-  // `pick` marks the field touched, and an empty box means "Codex default".
-  const [typed, setTyped] = useState(settings.model ?? '');
-  useEffect(() => setTyped(settings.model ?? ''), [settings.model]);
-  const commit = () => {
-    const v = typed.trim() || null;
-    if (v !== settings.model) pick('model', v);
-  };
   const preset = CODEX_PRESETS.find(p => p.approval === settings.approval && p.sandbox === settings.sandbox);
 
   // The levels the chosen model takes; Codex's default model is the first
   // listed, so "default" borrows its ladder. A model from a settings file
   // that the list does not know keeps the stock ladder.
-  const listed = settings.model ? models.find(m => m.slug === settings.model) : models[0];
+  const listed = settings.model ? list.find(m => m.slug === settings.model) : list[0];
   const efforts = listed?.efforts.length ? listed.efforts : CODEX_EFFORTS;
   const effortItems = efforts.includes(settings.effort) ? efforts : [...efforts, settings.effort];
 
-  const modelItems = ['default', ...models.map(m => m.displayName)];
-  const modelValue = settings.model ? displayOf(models, settings.model) : 'default';
-  const knownModel = !settings.model || models.some(m => m.slug === settings.model);
+  // A model a settings file names that the list does not know still gets a
+  // button of its own, pressed, rather than reading as "default".
+  const unknown = settings.model && !list.some(m => m.slug === settings.model) ? settings.model : null;
+  const modelItems = ['default', ...list.map(m => m.displayName), ...(unknown ? [unknown] : [])];
+  const modelValue = settings.model ? displayOf(list, settings.model) : 'default';
 
   return (
     <>
       <div>
         <div style={labelStyle}>Model</div>
-        {models.length > 0 && knownModel ? (
-          <Segmented
-            items={modelItems}
-            value={modelValue}
-            onPick={label => pick('model', label === 'default' ? null : models.find(m => m.displayName === label)?.slug ?? null)}
-          />
-        ) : (
-          <>
-            <input
-              type="text"
-              list="codex-models"
-              value={typed}
-              placeholder={DEFAULT_MODEL_LABEL}
-              onChange={e => setTyped(e.target.value)}
-              onBlur={commit}
-              onKeyDown={e => {
-                // Enter also creates the chat (the dialog listens in capture);
-                // commit first so what was typed is what gets created.
-                if (e.key === 'Enter') commit();
-              }}
-              spellCheck={false}
-              style={{ width: '100%' }}
-            />
-            <datalist id="codex-models">
-              {[...models.map(m => m.slug), ...recent].map(m => <option key={m} value={m} />)}
-            </datalist>
-          </>
+        <Segmented
+          items={modelItems}
+          value={modelValue}
+          onPick={label =>
+            pick('model', label === 'default' ? null : list.find(m => m.displayName === label)?.slug ?? label)
+          }
+        />
+        {models === null && <div style={hintStyle}>Asking Codex for its models…</div>}
+        {models !== null && list.length === 0 && (
+          <div style={hintStyle}>Codex gave no model list — the chat runs on its default model.</div>
         )}
         {origin('model')}
       </div>
@@ -279,70 +232,22 @@ export function Meta({ chat }: { chat: CodexChat }) {
   const bypass = chat.approval === 'never' && chat.sandbox === 'danger-full-access';
   return (
     <>
-      <b title={chat.model ? 'Model' : `Model: ${DEFAULT_MODEL_LABEL}${chat.modelSeen ? ` (running ${chat.modelSeen})` : ''}`}>
-        {model ?? 'default'}
-      </b>{' '}
-      <span title="Reasoning effort">{chat.effort}</span>
-      {' · '}
+      <span
+        className="pchip"
+        title={(chat.model ? `Model: ${chat.model}` : `Model: ${DEFAULT_MODEL_LABEL}${chat.modelSeen ? ` (running ${chat.modelSeen})` : ''}`) + `\nReasoning effort: ${chat.effort}`}
+      >
+        <b>{model ?? 'default'}</b> {chat.effort}
+      </span>
       {bypass ? (
-        <span title="Approval: never · Sandbox: danger-full-access (--dangerously-bypass-approvals-and-sandbox)">bypass</span>
+        <span className="pchip opt-2" title="Approval: never · Sandbox: danger-full-access (--dangerously-bypass-approvals-and-sandbox)">bypass</span>
       ) : (
-        <>
-          <span title={`Approval: ${chat.approval} — ${CODEX_APPROVAL_HINTS[chat.approval]}`}>{chat.approval}</span>
-          {' · '}
-          <span title={`Sandbox: ${chat.sandbox} — ${CODEX_SANDBOX_HINTS[chat.sandbox]}`}>{chat.sandbox}</span>
-        </>
+        <span
+          className="pchip opt-2"
+          title={`Approval: ${chat.approval} — ${CODEX_APPROVAL_HINTS[chat.approval]}\nSandbox: ${chat.sandbox} — ${CODEX_SANDBOX_HINTS[chat.sandbox]}`}
+        >
+          {chat.approval} · {chat.sandbox}
+        </span>
       )}
     </>
   );
 }
-
-export const summary = (chat: Chat) =>
-  chat.provider === 'codex'
-    ? `${chat.model ?? chat.modelSeen ?? DEFAULT_MODEL_LABEL} · ${chat.effort} · ${chat.approval} / ${chat.sandbox}`
-    : '';
-
-// -------------------------------------------------------------- accounts --
-
-export function LimitBars({ account }: { account: Account }) {
-  const lim = account.limits;
-  if (lim.kind !== 'codex') return null;
-  if (lim.windows.length === 0) {
-    return (
-      <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 3 }}>
-        <span style={{ fontSize: 'var(--fs-1)', color: 'var(--dim)', width: 34, flex: 'none' }}>usage</span>
-        <div className="xp-sunken" style={{ flex: 1, height: 6, background: 'var(--track)' }} />
-        <span style={{ fontSize: 'var(--fs-1)', color: 'var(--dim)', width: 30, flex: 'none', textAlign: 'right' }}>—</span>
-        <span style={{ width: 42, flex: 'none' }} />
-      </div>
-    );
-  }
-  return (
-    <>
-      {lim.windows.map(w => (
-        <div key={w.id} style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 3 }} title={w.label}>
-          <span style={{ fontSize: 'var(--fs-1)', color: 'var(--dim)', width: 34, flex: 'none', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{w.label}</span>
-          <div className="xp-sunken" style={{ flex: 1, height: 6, background: 'var(--track)', overflow: 'hidden' }}>
-            <div style={{ height: '100%', width: `${Math.round(w.used * 100)}%`, background: limitColor(w.used) }} />
-          </div>
-          <span style={{ fontSize: 'var(--fs-1)', color: 'var(--dim)', width: 30, flex: 'none', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
-            {`${Math.round(w.used * 100)}%`}
-          </span>
-          <span style={{ fontSize: 'var(--fs-1)', color: 'var(--faint)', width: 42, flex: 'none', textAlign: 'right', whiteSpace: 'nowrap', overflow: 'hidden', fontVariantNumeric: 'tabular-nums' }}>
-            {w.reset}
-          </span>
-        </div>
-      ))}
-    </>
-  );
-}
-
-export const worstLimit = (account: Account) =>
-  account.limits.kind === 'codex' ? Math.max(0, ...account.limits.windows.map(w => w.used)) : 0;
-
-/** The longest window's reset — the weekly one where there is one. */
-export const longResetAt = (account: Account) => {
-  if (account.limits.kind !== 'codex') return null;
-  const w = account.limits.windows.filter(w => w.id === 'primary' || w.id === 'secondary');
-  return w.find(x => x.label === 'week')?.resetAt ?? w[w.length - 1]?.resetAt ?? null;
-};

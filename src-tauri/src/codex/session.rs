@@ -17,7 +17,7 @@
 //! remembered per chat, so two chats in one folder never share a file.
 
 use crate::pty::{sane_title, tail, title_from_prompt, CliTitle, SessionMeta};
-use chrono::{Datelike, Local, NaiveDate, NaiveDateTime, TimeZone};
+use chrono::{Datelike, Local, NaiveDate, NaiveDateTime, TimeZone, Timelike};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -154,13 +154,14 @@ fn turn_counts() -> &'static Mutex<HashMap<String, TurnCount>> {
     C.get_or_init(Default::default)
 }
 
-/// How many turns the session has finished, per its rollout: one per
-/// `task_complete` (`turn_complete` / `turn_aborted` before 0.157). Counted
-/// off the file rather than off sampled state, so a turn that starts and
-/// ends between two samples of the activity tracker still counts — a
-/// one-word answer takes two seconds, the sampler looks every five. Reads
-/// incrementally from where it stopped last time. None until the rollout
-/// exists, i.e. before the first turn.
+/// How many turns this process of the session has finished, per its rollout:
+/// one per `task_complete` (`turn_complete` / `turn_aborted` before 0.157)
+/// written since it was spawned — a resumed thread's rollout holds the turns
+/// of every earlier run too. Counted off the file rather than off sampled
+/// state, so a turn that starts and ends between two samples of the activity
+/// tracker still counts — a one-word answer takes two seconds, the sampler
+/// looks every five. Reads incrementally from where it stopped last time.
+/// None until the rollout exists, i.e. before the first turn.
 pub fn turns_completed(live: &Live) -> Option<u32> {
     let path = rollout_for(live)?;
     let mut counts = turn_counts().lock().ok()?;
@@ -168,15 +169,16 @@ pub fn turns_completed(live: &Live) -> Option<u32> {
     if entry.path != path {
         *entry = TurnCount { path: path.clone(), offset: 0, completed: 0 };
     }
-    let (n, consumed) = count_turn_ends(&path, entry.offset);
+    let (n, consumed) = count_turn_ends(&path, entry.offset, live.spawned_at_ms as i64);
     entry.completed += n;
     entry.offset = consumed;
     Some(entry.completed)
 }
 
-/// Turn-ending events in the complete lines from byte `from` on, and the
-/// offset just past the last complete line.
-fn count_turn_ends(path: &Path, from: u64) -> (u32, u64) {
+/// Turn-ending events written at or after `since_ms` in the complete lines
+/// from byte `from` on, and the offset just past the last complete line. A
+/// line whose timestamp does not read is taken as new.
+fn count_turn_ends(path: &Path, from: u64, since_ms: i64) -> (u32, u64) {
     use std::io::{BufRead, BufReader, Seek, SeekFrom};
     let Ok(mut f) = std::fs::File::open(path) else { return (0, from) };
     if f.seek(SeekFrom::Start(from)).is_err() {
@@ -202,6 +204,10 @@ fn count_turn_ends(path: &Path, from: u64) -> (u32, u64) {
                 v["payload"]["type"].as_str(),
                 Some("task_complete") | Some("turn_complete") | Some("turn_aborted") | Some("task_aborted")
             )
+            && v["timestamp"]
+                .as_str()
+                .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+                .map_or(true, |t| t.timestamp_millis() >= since_ms)
         {
             n += 1;
         }
@@ -219,45 +225,57 @@ pub fn rollout_for(live: &Live) -> Option<PathBuf> {
         }
     }
 
-    let found = if let Some(id) = live.resume {
-        rollout_by_id(live.account_path, id)
-    } else {
-        let spawned = Local
-            .timestamp_millis_opt(live.spawned_at_ms as i64)
-            .single()
-            .map(|t| t.naive_local())?;
-        // Codex writes the file right after start; allow the clock to disagree
-        // by a few seconds either way.
-        let not_before = spawned - chrono::Duration::seconds(5);
-        let taken: Vec<PathBuf> = claims()
-            .lock()
-            .map(|m| m.iter().filter(|(k, _)| *k != live.chat_id).map(|(_, v)| v.clone()).collect())
-            .unwrap_or_default();
-        let want = norm_path(live.cwd);
-        let today = Local::now().date_naive();
-        let mut candidates: Vec<(NaiveDateTime, PathBuf)> = rollouts_on(live.account_path, days_back(today, 2))
-            .into_iter()
-            .filter(|(ts, _, p)| *ts >= not_before && !taken.contains(p))
-            .filter(|(_, _, p)| {
-                first_line(p)
-                    .and_then(|v| v["payload"]["cwd"].as_str().map(norm_path))
-                    .map(|c| c == want)
-                    .unwrap_or(false)
-            })
-            .map(|(ts, _, p)| (ts, p))
-            .collect();
-        // Earliest after the spawn: the one that appeared when this session
-        // started, not one a later chat in the same folder made.
-        candidates.sort_by(|a, b| a.0.cmp(&b.0));
-        candidates.into_iter().next().map(|(_, p)| p)
-    };
-
-    if let Some(p) = &found {
+    // A resumed thread is found by its id, which says whose file it is.
+    if let Some(id) = live.resume {
+        let found = rollout_by_id(live.account_path, id)?;
         if let Ok(mut m) = claims().lock() {
-            m.insert(live.chat_id.to_string(), p.clone());
+            m.insert(live.chat_id.to_string(), found.clone());
         }
+        return Some(found);
     }
-    found
+
+    let spawned = Local
+        .timestamp_millis_opt(live.spawned_at_ms as i64)
+        .single()
+        .map(|t| t.naive_local())?;
+    // Codex writes the file right after start; allow the clock to disagree
+    // by a few seconds either way.
+    let not_before = spawned - chrono::Duration::seconds(5);
+    let taken: Vec<PathBuf> = claims()
+        .lock()
+        .map(|m| m.iter().filter(|(k, _)| *k != live.chat_id).map(|(_, v)| v.clone()).collect())
+        .unwrap_or_default();
+    let want = norm_path(live.cwd);
+    let today = Local::now().date_naive();
+    let mut candidates: Vec<(NaiveDateTime, PathBuf)> = rollouts_on(live.account_path, days_back(today, 2))
+        .into_iter()
+        .filter(|(ts, _, p)| *ts >= not_before && !taken.contains(p))
+        .filter(|(_, _, p)| {
+            first_line(p)
+                .and_then(|v| v["payload"]["cwd"].as_str().map(norm_path))
+                .map(|c| c == want)
+                .unwrap_or(false)
+        })
+        .map(|(ts, _, p)| (ts, p))
+        .collect();
+    // Earliest after the spawn: the one that appeared when this session
+    // started, not one a later chat in the same folder made. A file named in
+    // the second the session started or later goes first: one from just
+    // before it is a chat started a moment earlier that has not claimed its
+    // own yet.
+    let started = spawned.with_nanosecond(0).unwrap_or(spawned);
+    candidates.sort_by_key(|(ts, _)| (*ts < started, *ts));
+    let (_, found) = candidates.into_iter().next()?;
+
+    // A guessed rollout is one chat's. The look above ran without the lock,
+    // and another chat may have claimed the same file since: the first claim
+    // stands, and this chat looks again next time.
+    let mut m = claims().lock().ok()?;
+    if m.iter().any(|(k, v)| *k != live.chat_id && *v == found) {
+        return None;
+    }
+    m.insert(live.chat_id.to_string(), found.clone());
+    Some(found)
 }
 
 /// The opening prompt never changes, but session_meta asks every few seconds
@@ -547,6 +565,39 @@ mod tests {
     }
 
     #[test]
+    fn two_chats_in_one_folder_get_a_rollout_each() {
+        let root = std::env::temp_dir().join(format!("luna-codex-claims-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let acct = root.to_string_lossy().into_owned();
+        let t0 = crate::throttle::now_ms() - 60_000;
+        // A rollout appears a second after its chat starts; chat b starts two
+        // seconds after chat a.
+        let write = |at_ms: u64, uuid: &str| {
+            let ts = Local.timestamp_millis_opt(at_ms as i64).single().unwrap().naive_local();
+            let dir = day_dir(&acct, ts.date());
+            std::fs::create_dir_all(&dir).unwrap();
+            let name = format!("rollout-{}-{uuid}.jsonl", ts.format("%Y-%m-%dT%H-%M-%S"));
+            std::fs::write(dir.join(name), format!("{}\n", r#"{"type":"session_meta","payload":{"cwd":"E:\\p"}}"#)).unwrap();
+        };
+        write(t0 + 1_000, "aaaa");
+        write(t0 + 3_000, "bbbb");
+        let (a, b, c) = (format!("claim-a-{t0}"), format!("claim-b-{t0}"), format!("claim-c-{t0}"));
+        let live = |chat: &str, at_ms: u64| {
+            rollout_for(&Live { chat_id: chat, cwd: "E:\\p", spawned_at_ms: at_ms as u128, resume: None, account_path: &acct, last_output_ms: 0 })
+                .and_then(|p| parse_name(&p.file_name()?.to_string_lossy()).map(|(_, id)| id))
+        };
+        // b looks first: the file of the chat started just before it is not b's.
+        assert_eq!(live(b.as_str(), t0 + 2_000).as_deref(), Some("bbbb"));
+        assert_eq!(live(a.as_str(), t0).as_deref(), Some("aaaa"));
+        // Both taken: a third chat in the folder gets neither.
+        assert_eq!(live(c.as_str(), t0), None);
+        for chat in [a, b, c] {
+            release(&chat);
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn reads_the_latest_thread_name() {
         let root = std::env::temp_dir().join(format!("luna-codex-names-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
@@ -570,28 +621,20 @@ mod tests {
 
 /// The conversation as another agent reads it: user and assistant messages
 /// from byte offset `from` on. Returns the messages and the offset to
-/// continue from.
+/// continue from: the end of the last complete line, so a line Codex is
+/// still writing is read whole next time rather than skipped.
 pub fn messages_from(path: &Path, from: u64) -> (Vec<crate::agents::Message>, u64) {
-    use std::io::{BufRead, BufReader, Seek, SeekFrom};
     let mut out = Vec::new();
-    let Ok(mut f) = std::fs::File::open(path) else { return (out, from) };
-    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
-    let from = from.min(len);
-    if f.seek(SeekFrom::Start(from)).is_err() {
-        return (out, from);
-    }
-    let mut read = from;
-    for line in BufReader::new(f).lines().map_while(Result::ok) {
-        read += line.len() as u64 + 1;
+    let read = crate::pty::complete_lines(path, from, |line| {
         if !line.contains("\"response_item\"") {
-            continue;
+            return;
         }
-        let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
+        let Ok(v) = serde_json::from_str::<Value>(line) else { return };
         if let Some(m) = message_of(&v) {
             out.push(m);
         }
-    }
-    (out, read.min(len).max(from))
+    });
+    (out, read)
 }
 
 #[cfg(test)]
@@ -630,18 +673,37 @@ mod format_tests {
         assert_eq!(cursor, std::fs::metadata(&path).unwrap().len());
         let (more, _) = messages_from(&path, cursor);
         assert!(more.is_empty(), "nothing new after the cursor");
+        // A reply still being written is not read, nor stepped over.
+        let reply = r#"{"timestamp":"t","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"DONE"}]}}"#;
+        let whole = lines.join("\n") + "\n";
+        std::fs::write(&path, format!("{whole}{}", &reply[..40])).unwrap();
+        assert_eq!(messages_from(&path, cursor), (vec![], cursor));
+        std::fs::write(&path, format!("{whole}{reply}\n")).unwrap();
+        let (more, _) = messages_from(&path, cursor);
+        assert_eq!(more, vec![crate::agents::Message { role: "assistant".into(), text: "DONE".into() }]);
+        std::fs::write(&path, &whole).unwrap();
 
         // Turn ends are counted off complete lines only, and incrementally.
-        let (n, consumed) = count_turn_ends(&path, 0);
+        let (n, consumed) = count_turn_ends(&path, 0, 0);
         assert_eq!(n, 1);
         assert_eq!(consumed, std::fs::metadata(&path).unwrap().len());
         let mut grown = std::fs::read_to_string(&path).unwrap();
         grown.push_str(r#"{"timestamp":"t","type":"event_msg","payload":{"type":"task_complete","turn_id":"t2"}}"#);
         std::fs::write(&path, &grown).unwrap();
-        assert_eq!(count_turn_ends(&path, consumed), (0, consumed), "a line without its newline is not there yet");
+        assert_eq!(count_turn_ends(&path, consumed, 0), (0, consumed), "a line without its newline is not there yet");
         grown.push('\n');
         std::fs::write(&path, &grown).unwrap();
-        assert_eq!(count_turn_ends(&path, consumed).0, 1);
+        assert_eq!(count_turn_ends(&path, consumed, 0).0, 1);
+
+        // A resumed thread: the turns of an earlier run are not this one's.
+        let resumed = [
+            r#"{"timestamp":"2026-09-26T15:44:00.000Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"t1"}}"#,
+            r#"{"timestamp":"2026-09-26T16:10:00.500Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"t2"}}"#,
+        ];
+        std::fs::write(&path, resumed.join("\n") + "\n").unwrap();
+        let spawned = chrono::DateTime::parse_from_rfc3339("2026-09-26T16:00:00Z").unwrap().timestamp_millis();
+        assert_eq!(count_turn_ends(&path, 0, spawned).0, 1);
+        assert_eq!(count_turn_ends(&path, 0, 0).0, 2);
 
         // Mid-turn: the tail says working.
         std::fs::write(&path, lines[..2].join("\n") + "\n").unwrap();

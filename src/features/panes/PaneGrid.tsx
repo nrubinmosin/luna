@@ -5,6 +5,7 @@ import { chatColorTheme } from '../../shared/ui/chatColors';
 import { useChats } from '../chats/chats.store';
 import { currentLayout, currentSlots, currentSplits, peeking, usePanes, type SplitKey } from './panes.store';
 import { Pane } from './Pane';
+import { STRIP, useShell } from '../../app/shell.store';
 
 const GAP = 8;
 /** How far the sheet sits inside the grid, so the board stays visible around it. */
@@ -71,12 +72,12 @@ function Splitter({ axis, split }: { axis: 'x' | 'y'; split: SplitKey }) {
       ref={ref}
       onMouseDown={start}
       onMouseEnter={e => {
-        if (!dragging.current) e.currentTarget.style.background = 'rgba(255,255,255,.55)';
+        if (!dragging.current) e.currentTarget.style.background = 'color-mix(in oklab, var(--accent) 45%, transparent)';
       }}
       onMouseLeave={e => {
         if (!dragging.current) e.currentTarget.style.background = 'transparent';
       }}
-      title="Drag to resize — the Even out button in the sidebar resets every split"
+      title="Drag to resize — Even out on the title bar resets every split"
       style={style}
     />
   );
@@ -99,9 +100,13 @@ const slot = (fraction: number): CSSProperties => ({
   display: 'flex'
 });
 
-const sheetStyle: CSSProperties = {
+/** The sheet, clear of the sidebar when that has slid out over the board —
+ *  an Alt glance at a chat in the list would otherwise land half under it. */
+const sheetStyle = (left: number): CSSProperties => ({
   position: 'absolute',
   inset: SHEET_INSET,
+  left,
+  transition: 'left .12s ease-out',
   zIndex: 50,
   display: 'flex',
   flexDirection: 'column',
@@ -112,7 +117,11 @@ const sheetStyle: CSSProperties = {
   background: 'var(--panel)',
   boxShadow: '0 24px 70px rgba(0,0,0,.5)',
   overflow: 'hidden'
-};
+});
+
+/** Where the sheet's left edge goes. */
+const useSheetLeft = () =>
+  useShell(s => (s.overlay && !s.pinned ? Math.max(SHEET_INSET, s.width - STRIP + 12) : SHEET_INSET));
 
 const inFlowStyle: CSSProperties = { flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column' };
 
@@ -127,11 +136,7 @@ function PaneChip({ index }: { index: number }) {
     <span
       // The chip of the pane already up puts it back, as its Ctrl+<digit> does.
       onClick={() => usePanes.getState().setPeek(on ? null : index)}
-      title={
-        (chat ? chat.name : `Pane ${index + 1} is empty`) +
-        `\nCtrl+${index + 1}` +
-        (on ? ' — click again to go back to the grid' : '')
-      }
+      title={(chat ? chat.name : `Pane ${index + 1} is empty`) + (on ? ' — click again to go back to the grid' : '')}
       className={on ? undefined : 'hover-bg'}
       style={{
         minWidth: 19, height: 19, padding: '0 4px', flex: 'none', borderRadius: 3,
@@ -139,6 +144,7 @@ function PaneChip({ index }: { index: number }) {
         fontSize: 'var(--fs-2)', fontWeight: 700, fontVariantNumeric: 'tabular-nums',
         cursor: 'default', opacity: chat ? 1 : 0.5,
         color: on ? '#fff' : 'var(--dim)',
+        transition: 'background .14s, color .14s',
         background: on ? ACCENT : 'var(--chip)',
         border: `1px solid ${on ? ACCENT : 'var(--line)'}`
       }}
@@ -180,9 +186,9 @@ function PeekBar({ name }: { name: string | null }) {
       </span>
       <button
         onClick={() => usePanes.getState().closePeek()}
-        title={"Back to the grid — Ctrl+0\nor a click anywhere outside the sheet, or on this chat's row in the list"}
+        title="Back to the grid — or a click anywhere outside the sheet, or on this chat's row in the list"
         className="slim"
-        style={{ flex: 'none', height: 19, padding: '0 8px' }}
+        style={{ flex: 'none', height: 21, minHeight: 0, padding: '0 10px' }}
       >
         Return
       </button>
@@ -201,9 +207,10 @@ function Sheet({ index, children }: { index: number; children: ReactNode }) {
   const peeked = usePanes(s => s.peek === index);
   const chatId = usePanes(s => currentSlots(s)[index] ?? null);
   const name = useChats(s => s.findChat(chatId)?.name ?? null);
+  const left = useSheetLeft();
 
   return (
-    <div style={peeked ? sheetStyle : inFlowStyle} className={peeked ? 'peek-sheet' : undefined} data-peek-sheet={peeked || undefined}>
+    <div style={peeked ? sheetStyle(left) : inFlowStyle} className={peeked ? 'peek-sheet' : undefined} data-peek-sheet={peeked || undefined}>
       {peeked && <PeekBar name={name} />}
       {children}
     </div>
@@ -213,8 +220,9 @@ function Sheet({ index, children }: { index: number; children: ReactNode }) {
 /** The same sheet for a chat that has no seat on the board at all. */
 function ChatSheet({ chatId }: { chatId: string }) {
   const name = useChats(s => s.findChat(chatId)?.name ?? null);
+  const left = useSheetLeft();
   return (
-    <div style={sheetStyle} className="peek-sheet" data-peek-sheet>
+    <div style={sheetStyle(left)} className="peek-sheet" data-peek-sheet>
       <PeekBar name={name} />
       <Pane soloChat={chatId} />
     </div>
@@ -226,9 +234,27 @@ export function PaneGrid() {
   const { col, rowL, rowR } = usePanes(currentSplits);
   const peekChat = usePanes(s => s.peekChat);
   const up = usePanes(peeking);
+  const group = usePanes(s => s.group);
+
+  // Another group's board fades in rather than snapping over the last one.
+  // Web Animations, not a keyed remount: remounting would tear every pane's
+  // terminal off its session and back.
+  const root = useRef<HTMLDivElement>(null);
+  const firstGroup = useRef(true);
+  useEffect(() => {
+    if (firstGroup.current) {
+      firstGroup.current = false;
+      return;
+    }
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    root.current?.animate(
+      [{ opacity: 0.3, transform: 'scale(.994)' }, { opacity: 1, transform: 'none' }],
+      { duration: 260, easing: 'cubic-bezier(.2,.8,.3,1)' }
+    );
+  }, [group]);
 
   // A press anywhere in the app outside the sheet puts it back — the sidebar,
-  // the toolbar, the dimmed board around it. Exceptions: a chat row, whose own
+  // the dimmed board around it. Exceptions: a chat row, whose own
   // click switches the sheet or, on the chat already up, closes it; the
   // window's title bar, which drags the window; and dialogs, which all sit
   // outside .app-body — a delete confirmation raised from the sheet's
@@ -278,7 +304,7 @@ export function PaneGrid() {
   );
 
   return (
-    <div style={{ flex: 1, minHeight: 0, padding: GAP, background: 'var(--board)', display: 'flex', position: 'relative' }}>
+    <div ref={root} style={{ flex: 1, minHeight: 0, padding: GAP, background: 'var(--board)', display: 'flex', position: 'relative' }}>
       {layout === 1 && <div style={box('row')}>{pane(0)}</div>}
 
       {layout === 2 && (

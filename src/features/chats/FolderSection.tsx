@@ -51,8 +51,9 @@ export function FolderSection({ folder }: { folder: Folder }) {
   const t = tail2(folder.path);
 
   // Worktrees left behind by crashes, by chats deleted before their path was
-  // known, or by chats deleted with the worktree kept. Recheck whenever the folder's chats change — that is when one is
-  // most likely to have just been created or dropped.
+  // known, or by chats deleted with the worktree kept. Recheck whenever the
+  // folder's chats change — that is when one is most likely to have just been
+  // created or dropped.
   const [orphans, setOrphans] = useState<string[]>([]);
   // Every group's chats, not just the ones listed here: the sidebar shows one
   // group, and sweeping on that view would delete the worktrees belonging to
@@ -120,15 +121,18 @@ export function FolderSection({ folder }: { folder: Folder }) {
           }}
         />
       )}
-      {folder.open && (
-        <div className="tp-body" style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-          {/* Children folded unless unfolded by hand: an agent can spawn a
-              helper per task, and the list would otherwise grow with every one. */}
-          {tree(folder.chats).map(({ chat, depth, childCount, orphan }) => (
-            <ChatRow key={chat.id} chat={chat} depth={depth} childCount={childCount} orphan={orphan} />
-          ))}
+      {/* Always mounted, folded by its row height: the fold animates both ways. */}
+      <div className="tp-fold" data-open={folder.open ? 'yes' : 'no'}>
+        <div>
+          <div className="tp-body" style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+            {/* Children folded unless unfolded by hand: an agent can spawn a
+                helper per task, and the list would otherwise grow with every one. */}
+            {tree(folder.chats).map(({ chat, depth, childCount, orphan }) => (
+              <ChatRow key={chat.id} chat={chat} depth={depth} childCount={childCount} orphan={orphan} />
+            ))}
+          </div>
         </div>
-      )}
+      </div>
     </div>
   );
 }

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import iconUrl from '../../src-tauri/icons/32x32.png';
+import { BoardTools } from './BoardTools';
 
 const tauriAvailable = '__TAURI_INTERNALS__' in window;
 
@@ -12,8 +13,9 @@ async function appWindow() {
 /**
  * The window's own XP chrome. The native decorations are off, so this strip is
  * the title bar: `data-tauri-drag-region` moves the window (and maximises it on
- * a double-click, which is the platform's own behaviour, not ours), and the
- * three controls are xp.css's, which is where their pixel-art glyphs come from.
+ * a double-click, which is the platform's own behaviour, not ours). The board's
+ * controls sit on it between the name and the window's three buttons, whose
+ * glyphs theme.css draws.
  *
  * Closing hides to tray rather than exiting — the Rust side intercepts the
  * close request, so this only has to ask for it.
@@ -47,13 +49,14 @@ export function AppFrame({ children }: { children: ReactNode }) {
   };
 
   return (
-    <div className="app-frame" data-max={maximized ? 'yes' : 'no'}>
+    <div className="app-frame">
       <div className="title-bar" data-tauri-drag-region>
         <div className="title-bar-text" data-tauri-drag-region>
           {/* XP puts the app's own icon at the head of the title bar. */}
-          <img src={iconUrl} alt="" width={16} height={16} style={{ marginRight: 6, verticalAlign: -3 }} />
+          <img src={iconUrl} alt="" width={16} height={16} />
           Luna
         </div>
+        <BoardTools />
         <div className="title-bar-controls">
           <button aria-label="Minimize" onClick={act(w => w.minimize())} />
           <button

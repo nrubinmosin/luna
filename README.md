@@ -18,12 +18,17 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## The window
 
-- A Windows XP shell (xp.css, Luna Blue): the native window frame is replaced by our own
-  title bar with minimize / maximize / close, and the UI runs on Segoe UI. The board sits
-  on XP's Control Panel blue, the sidebar is Explorer's task pane, and every control in
-  every title bar is drawn from one set of glyphs; the sidebar's own buttons share one
-  family of XP-style icons. The whole interface scales from one variable, `--ui` in
-  `src/app/theme.css`, and follows Windows' own text-size setting on top of that.
+- A Windows XP shell (xp.css, Luna): the native window frame is replaced by our own
+  title bar with minimize / maximize / close, and the UI runs on Segoe UI. The sidebar is
+  Explorer's task pane, every control in every title bar is drawn from one set of
+  glyphs, and every other button, the provider marks included, comes from one family of
+  XP-style icons. Checkboxes, radios, fields and scrollbars are XP's, rounded off and
+  themed. The whole interface scales from one variable, `--ui` in `src/app/theme.css`,
+  and follows Windows' own text-size setting on top of that.
+- The window's title bar carries the board's controls: the sidebar button, the four
+  layouts, the four window groups, Even out, Clear and the theme. Hiding the sidebar
+  leaves a strip at the left edge; resting the pointer on it slides the sidebar out over
+  the board until the pointer leaves, and the title bar's button pins it back.
 - Only the pane you are working in wears its full colour; the others go pale, the way XP
   drew inactive windows. A chat waiting for you flashes its title bar orange like an XP
   taskbar button, and over a pane you are not in a balloon says so.
@@ -38,30 +43,37 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   where it was. Taking a chat off the board or deleting it shrinks the board by one. Off,
   a new chat with nowhere to go comes up on the sheet and the board is left as arranged.
 - **Peek** is the temporary view, and looks like one: the pane is held up on a sheet with
-  the board still there behind it, dimmed. Ctrl+1..4 holds up that pane and puts it back,
+  the board still there behind it, dimmed. Ctrl+1..4 moves the keyboard into that pane,
+  the same key again holds it up on the sheet and once more puts it back; Ctrl+Shift+W
+  goes to the next chat waiting for you, Ctrl+Shift+B pins or hides the sidebar;
   the numbered chips in the sheet's own bar move between panes, and a click anywhere
   outside the sheet, a second click on the same chat's row or
   on the chip of the pane that is up, the mouse's Back button, the Return button or Ctrl+0
   all go back. Holding Alt over a chat in the list is a glance: the chat comes up on the
   sheet and letting go of Alt puts back what was there (a click keeps it). Escape is
   deliberately left alone — it is how the CLI is interrupted.
-- F1, or the **?** in the status bar, lists every shortcut and mouse gesture. Nothing hides
-  behind a double-click: rename, delete, even out the splits are all buttons. The chrome
+- F1, or the **?** in the status bar, lists every shortcut and mouse gesture; the buttons
+  themselves carry none. Nothing hides behind a double-click: rename, delete, even out
+  the splits are all buttons. The chrome
   does not select as text, so a drag across the sidebar paints nothing blue.
 - Luna claims its shortcuts in the capture phase, so they work while a terminal has focus;
   everything it does not claim travels on to the CLI untouched.
 - Terminals outlive the pane that showed them: the last three put down wait off-screen with
   their listeners still on, so switching back is a refit rather than a fresh session
   handshake and a 2MB replay of the scrollback.
-- Window groups I/II/III/IV — beside the layout selector in the sidebar's Board box, and
+- Window groups I/II/III/IV — beside the layout selector on the title bar, and
   Ctrl+Tab goes round them (Ctrl+Shift+Tab is left to the CLI). Each group remembers its
   own four boards (one per layout) and their splits; **Clear** empties the group's panes
   and leaves every chat alone, **Even out** puts the splits back to half.
 - The status bar runs the width of the window: how many chats are working, how many are
-  waiting (a click goes to the next one), every account with its two limit meters, and the
-  Accounts window, power, settings and help. There is no clock — the taskbar has one.
-- Light / dark / system themes; dark is XP's Royale Noir, graphite instead of blue. The
-  terminals sit on warm paper in the light theme and warm charcoal in the dark one.
+  waiting (a click goes to the next one), and every account with every one of its limit
+  windows — how full, and how long until it resets (a click opens the Accounts window) —
+  then power, settings and help. When the bar runs out of room each account keeps its
+  name and its fullest window. There is no clock — the taskbar has one.
+- Light / dark / system themes, toned for reading all day: no pure black or white and no
+  blue cast in any surface, surfaces stepped apart by lightness, the terminal the deepest
+  of them, ANSI colours softened but at 4.5:1 or better. Light is XP's own warm beige
+  under its blue title bars, on warm paper; dark is neutral graphite.
 
 ![The dark theme, two panes](docs/screenshots/dark.png)
 
@@ -72,9 +84,10 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   - **Claude Code**: model, effort (`low/medium/high/xhigh/max/ultracode`) and permission
     mode. Isolation runs the session as `claude --worktree` in
     `<folder>/.claude/worktrees/<name>`.
-  - **Codex**: model — buttons off the list Codex itself caches for the account
-    (`models_cache.json`, so a fresh account shows a text box until the CLI has run once),
-    plus "default" for whatever Codex would pick; reasoning effort as that model takes it
+  - **Codex**: model — buttons off Codex's own catalogue: the list it caches for the
+    account (`models_cache.json`), another account's when this one has never run, or
+    `codex debug models` asked directly — never a box to type a slug into — plus
+    "default" for whatever Codex would pick; reasoning effort as that model takes it
     (`low … ultra`, from the same list), approval policy (`on-request/never`) and sandbox
     mode (`read-only/workspace-write/danger-full-access`), with the three usual pairs as
     one-click presets; `never` + `danger-full-access` is passed as
@@ -92,11 +105,12 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
 - Ctrl+Shift+N skips the dialog: same folder and account as the chat on screen, the rest
   as the settings have it. Either way the new chat lands in a pane you can see — a free
   one, or the pane you were last working in when the board is full.
-- A chat's pane title bar carries its folder, account, model, effort, the permission mode
-  (Claude Code) or approval and sandbox (Codex), the worktree flag and how much of the
-  context window is gone, as a meter and as a number — and the buttons to recolour,
-  rename, delete, peek it or take it off the board. A narrow pane drops the details
-  before the name and the buttons.
+- A chat's pane title bar starts with the buttons to recolour, rename, delete, peek it or
+  take it off the board — on the left, where the hand gets first — and then its name and,
+  as separate chips, folder, account, model and effort, the permission mode (Claude Code)
+  or approval and sandbox (Codex), the worktree flag, and how much of the context window
+  is gone, as a meter and as a number. A narrow pane drops the chips one by one before
+  the name and the buttons.
 - Colours: every new chat is dealt one of ten presets, worn by its pane's title bar and as
   a stripe on its sidebar row, so a glance links the two without reading either name.
 - Status per chat — working / waiting for you / resting — read from the CLI's own session
@@ -131,7 +145,8 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   `CLAUDE_CONFIG_DIR=<account folder>`, a Codex session with `CODEX_HOME=<account folder>`,
   so logins, settings and history are per account either way. A fresh Codex account gets a
   `config.toml` with `check_for_update_on_startup = false` — Luna updates that CLI itself.
-- Live limits cost no tokens. Claude Code: 5h / week / model-weekly with reset times, from
+- Live limits cost no tokens. Claude Code: 5h / week / every per-model weekly limit, each
+  with its reset (in so long, and the exact date and time in the Accounts window), from
   the OAuth usage endpoint `/usage` itself uses, with the CLI's own cache answering most
   rounds. Codex: the rate-limit windows of the ChatGPT plan (typically 5 hours and a
   week, plus any per-model limits), from the same endpoint Codex's `/status` reads, with
@@ -150,6 +165,17 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   setup question. Luna writes `hasTrustDialogAccepted` into `.claude.json`, or a
   `[projects.'<path>'] trust_level = "trusted"` entry into `config.toml`, before the
   session starts.
+- **Recommended settings**, per account in the Accounts window: what works well for the
+  CLI inside Luna, each with a tick, what the file says now and why — `tui: fullscreen`,
+  no spinner tips or feedback prompts, no away recap, no second Bypass confirmation,
+  PowerShell for `!` commands on Windows only (Claude Code); no update check, tooltips,
+  desktop notifications, analytics or feedback prompts, live web search (Codex). Matters
+  of taste (attribution, default effort, Bypass by default) are offered unticked. Only
+  the ticked keys are written; the rest of the file, comments included, stays.
+- **Shared settings**: pick a parent account per CLI and its settings file is copied onto
+  the others — now, with Sync now, or at every launch with the box ticked. The parent's
+  keys overwrite and keys only the child has stay; logins and Codex's trusted folders are
+  never copied.
 - Codex on Windows: without the Windows sandbox set up (`[windows] sandbox` in
   `config.toml`, Codex's own affair), `workspace-write` behaves as `read-only` and Codex
   asks before every write. Luna does not touch that setting.
@@ -186,7 +212,8 @@ without the box ticked knows nothing of Luna at all.
   one, yours included, with `luna_sessions` — name, account and its folder, project folder,
   cwd, the CLI's session id and transcript path — type a message into any of them with
   `luna_send`, and read or wait on the answer, so you can tell one chat to pass word to
-  another. At most eight helpers under
+  another. `luna_send` will not type into a chat you are typing in or have left an unsent
+  draft in; the agent is told to try later. At most eight helpers under
   one chat, and a helper's helpers get no tools of their own.
 - Every account is available to agents unless you switch it off with the robot button on
   its row in the Accounts window. `luna_list` names the ones that are, so you can tell a chat which one to use.

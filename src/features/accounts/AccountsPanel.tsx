@@ -1,15 +1,16 @@
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { create } from 'zustand';
-import { fmtResetDate } from '../../shared/lib/format';
-import { ToolButton } from '../../shared/ui/icons';
+import { Icon, ToolButton } from '../../shared/ui/icons';
 import { useDialogHost } from '../../shared/ui/dialogHost';
 import { ConfirmDialog } from '../../shared/ui/ConfirmDialog';
 import { PROVIDER_LABEL, PROVIDER_VENDOR, PROVIDERS, accountKey, type Account, type Provider } from '../../shared/types';
 import { useAccounts } from './accounts.store';
 import { useChats } from '../chats/chats.store';
 import { useSettings } from '../settings/SettingsDialog';
-import { ui } from '../providers';
+import { LimitBars, worstLimit } from './limits';
+import { RecommendedDialog } from './RecommendedDialog';
+import { SettingsSync } from './SettingsSync';
 import { useAgentAccounts } from '../agents/agentAccounts.store';
 
 /** Raised from the status bar: its account summary, or its Accounts button. */
@@ -56,7 +57,7 @@ export function AccountsWindow() {
       <div
         onClick={e => e.stopPropagation()}
         className="window"
-        style={{ width: 560, maxWidth: 'calc(100vw - 32px)', boxShadow: 'var(--shadow), var(--border-window-outer), var(--border-window-inner)' }}
+        style={{ width: 640, maxWidth: 'calc(100vw - 32px)', boxShadow: 'var(--shadow), var(--border-window-outer), var(--border-window-inner)' }}
       >
         <div className="title-bar">
           <div className="title-bar-text">Accounts</div>
@@ -86,6 +87,7 @@ function AccountsPanel() {
   // into an unhandled rejection and returned nothing, so the guard read as
   // "cancelled" and an account in use simply could not be deleted.
   const [deleting, setDeleting] = useState<Account | null>(null);
+  const [recommending, setRecommending] = useState<Account | null>(null);
   const folders = useChats(s => s.folders);
   const blocked = useAgentAccounts(s => s.blocked);
   const agentsMay = (p: Provider, n: string) => !blocked.includes(`${p}/${n}`);
@@ -157,15 +159,16 @@ function AccountsPanel() {
         </div>
       )}
 
+      <SettingsSync accounts={accounts} />
+
       {accounts.map(acc => {
-        const p = ui(acc.provider);
         // The dot answers "can this account be used", which is the sign-in
         // state — not whether the usage endpoint happened to answer.
         const dot = !acc.signedIn
           ? 'oklch(.63 .19 25)'
           : acc.sync === 'loading'
             ? 'var(--faint)'
-            : p.worstLimit(acc) >= 0.85
+            : worstLimit(acc) >= 0.85
               ? 'oklch(.63 .19 25)'
               : 'oklch(.64 .18 145)';
         const note = !acc.signedIn
@@ -186,26 +189,19 @@ function AccountsPanel() {
                 ? 'usage unavailable'
                 : 'no usage data yet'
           : acc.usageAge;
-        const weekReset = acc.haveUsage ? fmtResetDate(p.longResetAt(acc)) : null;
         const busy = refreshing.includes(acc.path);
         return (
-          <div key={accountKey(acc.provider, acc.name)} style={{ padding: '8px 0 6px', borderTop: '1px solid var(--line)' }}>
+          <div key={accountKey(acc.provider, acc.name)} style={{ padding: '9px 0 8px', borderTop: '1px solid var(--line)', animation: 'pop-in .2s ease-out' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
               <span style={{ width: 8, height: 8, borderRadius: '50%', flex: 'none', background: dot }} />
+              <span title={`${PROVIDER_LABEL[acc.provider]} — a ${PROVIDER_VENDOR[acc.provider]} subscription`} style={{ flex: 'none', display: 'flex' }}>
+                <Icon name={acc.provider} />
+              </span>
               <span
                 style={{ fontSize: 'var(--fs-5)', fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
                 title={[acc.email, acc.path].filter(Boolean).join('\n')}
               >
                 {acc.name}
-              </span>
-              <span
-                title={`${PROVIDER_LABEL[acc.provider]} — a ${PROVIDER_VENDOR[acc.provider]} subscription`}
-                style={{
-                  fontSize: 'var(--fs-1)', color: 'var(--dim)', background: 'var(--chip)', borderRadius: 2,
-                  padding: '0 4px', flex: 'none', whiteSpace: 'nowrap'
-                }}
-              >
-                {p.label}
               </span>
               <span style={{ flex: 1 }} />
               <span
@@ -220,6 +216,12 @@ function AccountsPanel() {
               {!acc.signedIn && (
                 <ToolButton icon="key" size={24} label="Sign in" title="Sign in this account" onClick={() => setLoginFor(acc)} />
               )}
+              <ToolButton
+                icon="recommend"
+                size={24}
+                title="Recommended settings for this account"
+                onClick={() => setRecommending(acc)}
+              />
               <ToolButton
                 icon="agents"
                 size={24}
@@ -248,21 +250,17 @@ function AccountsPanel() {
               />
               <ToolButton icon="trash" size={24} danger title="Delete account folder — asks first" onClick={() => setDeleting(acc)} />
             </div>
-            <p.LimitBars account={acc} />
-            {(weekReset || usageNote) && (
-              <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, fontSize: 'var(--fs-1)', color: 'var(--faint)', marginTop: 1 }}>
-                {weekReset && <span style={{ whiteSpace: 'nowrap' }}>resets {weekReset}</span>}
-                <span style={{ flex: 1 }} />
-                {usageNote && (
-                  <span title={acc.refreshError ?? undefined} style={{ textAlign: 'right' }}>
-                    {usageNote}
-                  </span>
-                )}
+            <LimitBars account={acc} />
+            {usageNote && (
+              <div title={acc.refreshError ?? undefined} style={{ fontSize: 'var(--fs-1)', color: 'var(--faint)', marginTop: 4, textAlign: 'right' }}>
+                {usageNote}
               </div>
             )}
           </div>
         );
       })}
+
+      {recommending && <RecommendedDialog account={recommending} onClose={() => setRecommending(null)} />}
 
       {deleting && (
         <ConfirmDialog

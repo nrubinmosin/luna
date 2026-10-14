@@ -59,50 +59,60 @@ fn error(id: Value, code: i64, message: &str) -> Value {
 
 fn tools() -> Value {
     let s = |props: Value, required: &[&str]| json!({ "type": "object", "properties": props, "required": required });
+    // What a client may assume of each tool without asking the user. All of
+    // them stay inside this Luna.
+    let reads = json!({ "readOnlyHint": true, "openWorldHint": false });
+    let acts = json!({ "readOnlyHint": false, "destructiveHint": false, "openWorldHint": false });
+    let ends = json!({ "readOnlyHint": false, "destructiveHint": true, "openWorldHint": false });
     json!([
         {
             "name": "luna_list",
-            "description": "Sessions you spawned (id, name, provider, account, settings, turn, busy, turnsEnded) and the accounts you may spawn on.",
-            "inputSchema": s(json!({}), &[])
+            "description": "Sessions you spawned (id, name, provider, account, settings, turn, busy, turnsEnded) and the accounts you may use.",
+            "inputSchema": s(json!({}), &[]),
+            "annotations": reads
         },
         {
             "name": "luna_sessions",
             "description": "Every session in Luna, the user's own chats included: id, name, provider, account, folders, sessionId, transcript path, parent, you/yours, turn, settings.",
-            "inputSchema": s(json!({}), &[])
+            "inputSchema": s(json!({}), &[]),
+            "annotations": reads
         },
         {
             "name": "luna_spawn",
-            "description": "Start a helper session with an opening prompt; it appears under yours in Luna. Omitted settings take the account's defaults. Returns its id, the resolved settings and started (false = the prompt was not taken up; screen shows what the terminal is on) and starting (true = the CLI has drawn nothing yet, which can take minutes; the prompt is held, do not resend). Follow with luna_wait.",
+            "description": "Start a helper session with an opening prompt; it appears under yours in Luna. Omitted settings take the account's defaults. Returns its id, the resolved settings, started (false = prompt not taken up; screen shows the terminal) and starting (true = the CLI has not drawn yet, can take minutes; prompt held, do not resend).",
             "inputSchema": s(json!({
                 "prompt": { "type": "string" },
                 "provider": { "type": "string", "enum": ["claude", "codex"], "description": "default: yours" },
                 "account": { "type": "string", "description": "account name from luna_list; default: yours" },
-                "model": { "type": "string", "description": "claude: opus|sonnet|haiku|fable; codex: any model id" },
-                "effort": { "type": "string", "description": "low|medium|high|xhigh|max" },
+                "model": { "type": "string", "description": "claude: opus|sonnet|haiku|fable or a full id; codex: one the account lists" },
+                "effort": { "type": "string", "description": "low|medium|high|xhigh|max; claude also ultracode; codex per model" },
                 "permissionMode": { "type": "string", "description": "claude: default|acceptEdits|plan|bypassPermissions" },
                 "approval": { "type": "string", "description": "codex: on-request|never" },
-                "sandbox": { "type": "string", "description": "codex: read-only|workspace-write|danger-full-access; on Windows the first two may reject or ask about every command" },
+                "sandbox": { "type": "string", "description": "codex: read-only|workspace-write|danger-full-access; on Windows the first two may block or ask often" },
                 "folder": { "type": "string", "description": "project folder; default: yours" },
                 "worktree": { "type": "boolean", "description": "run in its own git worktree" },
                 "name": { "type": "string", "description": "row title in Luna" },
                 "tools": { "type": "boolean", "description": "give it these tools too (one level only)" }
-            }), &["prompt"])
+            }), &["prompt"]),
+            "annotations": acts
         },
         {
             "name": "luna_send",
-            "description": "Type text into a session (any from luna_sessions) and press Enter; it reads as the user's, so say who you are to one you did not spawn. Returns started (a turn began; false on an idle session means the text did not become a prompt, see screen), turnBefore (busy = queued behind the current turn) and turnsEnded to pass to luna_wait as afterTurn.",
-            "inputSchema": s(json!({ "id": { "type": "string" }, "text": { "type": "string" } }), &["id", "text"])
+            "description": "Type text into a session (any from luna_sessions) and press Enter; it reads as the user's, so say who you are to one you did not spawn. Returns started (a turn began; false when idle = not taken as a prompt, see screen), turnBefore (busy = queued behind the current turn) and turnsEnded to pass to luna_wait as afterTurn.",
+            "inputSchema": s(json!({ "id": { "type": "string" }, "text": { "type": "string" } }), &["id", "text"]),
+            "annotations": acts
         },
         {
             "name": "luna_read",
-            "description": "Messages of any session from its transcript. `since` = cursor from an earlier read; `last` = only the last N messages (default 1). Also returns turn state, and the terminal's last lines with screen: true.",
+            "description": "Messages of any session from its transcript. `since` = cursor from an earlier read; `last` = only the last N messages (default 1; all after `since`). Also returns turn state, and the terminal's last lines with screen: true.",
             "inputSchema": s(json!({
                 "id": { "type": "string" },
                 "since": { "type": "integer" },
                 "last": { "type": "integer" },
                 "tools": { "type": "boolean", "description": "include one-line tool call markers" },
                 "screen": { "type": "boolean", "description": "include what the terminal shows (dialogs, errors, prompts)" }
-            }), &["id"])
+            }), &["id"]),
+            "annotations": reads
         },
         {
             "name": "luna_wait",
@@ -112,17 +122,20 @@ fn tools() -> Value {
                 "until": { "type": "string", "enum": ["turn_done", "waiting", "exit"] },
                 "timeoutS": { "type": "integer", "description": "default 600, max 1800" },
                 "afterTurn": { "type": "integer" }
-            }), &["id"])
+            }), &["id"]),
+            "annotations": reads
         },
         {
             "name": "luna_kill",
             "description": "Stop a session's process; its row stays in Luna.",
-            "inputSchema": s(json!({ "id": { "type": "string" } }), &["id"])
+            "inputSchema": s(json!({ "id": { "type": "string" } }), &["id"]),
+            "annotations": ends
         },
         {
             "name": "luna_delete",
             "description": "Stop a session and remove its row; dropWorktree also deletes the worktree and branch it ran in.",
-            "inputSchema": s(json!({ "id": { "type": "string" }, "dropWorktree": { "type": "boolean" } }), &["id"])
+            "inputSchema": s(json!({ "id": { "type": "string" }, "dropWorktree": { "type": "boolean" } }), &["id"]),
+            "annotations": ends
         }
     ])
 }
@@ -143,7 +156,9 @@ fn call(caller: &str, params: &Value) -> Value {
             caller,
             &id,
             a["since"].as_u64(),
-            Some(a["last"].as_u64().unwrap_or(1) as usize),
+            // A cursor asks for everything after it; a bare read, for the
+            // last word.
+            a["last"].as_u64().map(|n| n as usize).or(a["since"].as_u64().is_none().then_some(1)),
             a["tools"].as_bool().unwrap_or(false),
             a["screen"].as_bool().unwrap_or(false),
         )
@@ -199,9 +214,36 @@ mod tests {
     #[test]
     fn the_tool_text_stays_small() {
         // The whole list is what every tooled session pays for once; keep it
-        // under a few thousand characters.
-        let text = tools().to_string();
+        // under a few thousand characters. The annotations are the client's,
+        // not the model's.
+        let mut list = tools();
+        for t in list.as_array_mut().unwrap() {
+            t.as_object_mut().unwrap().remove("annotations");
+        }
+        let text = list.to_string();
         assert!(text.len() < 4000, "tools/list is {} chars", text.len());
         assert!(INSTRUCTIONS.len() < 1000);
+    }
+
+    #[test]
+    fn reading_tools_say_so() {
+        let list = tools();
+        let hint = |name: &str, key: &str| {
+            list.as_array().unwrap().iter().find(|t| t["name"] == name).unwrap()["annotations"][key].as_bool()
+        };
+        for name in ["luna_list", "luna_sessions", "luna_read", "luna_wait"] {
+            assert_eq!(hint(name, "readOnlyHint"), Some(true), "{name}");
+        }
+        for name in ["luna_kill", "luna_delete"] {
+            assert_eq!(hint(name, "destructiveHint"), Some(true), "{name}");
+        }
+        assert_eq!(hint("luna_spawn", "readOnlyHint"), Some(false));
+    }
+
+    #[test]
+    fn an_unknown_until_is_an_error_result() {
+        let r = handle("me", r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"luna_wait","arguments":{"id":"x","until":"forever"}}}"#).unwrap();
+        assert_eq!(r["result"]["isError"], true);
+        assert!(r["result"]["content"][0]["text"].as_str().unwrap().contains("unknown until"));
     }
 }

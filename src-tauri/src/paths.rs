@@ -2,8 +2,22 @@ use std::path::PathBuf;
 
 const APP_DIR: &str = "luna";
 
+/// The build test-build.ps1 makes. It runs beside the Luna in use, so it keeps
+/// everything — log, attachments, settings, downloaded CLIs — next to its exe
+/// in the repo's ignored `test-build/`, and shares none of it.
+pub fn is_test() -> bool {
+    env!("LUNA_FLAVOR") == "test"
+}
+
+fn exe_dir() -> Option<PathBuf> {
+    std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf()))
+}
+
 /// `LOCALAPPDATA\luna` — where the log and pasted attachments live.
 pub fn local_dir() -> Option<PathBuf> {
+    if is_test() {
+        return exe_dir();
+    }
     let base = dirs::data_local_dir().or_else(dirs::cache_dir)?;
     Some(base.join(APP_DIR))
 }
@@ -16,11 +30,8 @@ pub fn local_dir() -> Option<PathBuf> {
 pub fn data_dir() -> PathBuf {
     static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     DIR.get_or_init(|| {
-        let beside_exe = std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|d| d.to_path_buf()));
-        if let Some(dir) = beside_exe {
-            if writable(&dir) {
+        if let Some(dir) = exe_dir() {
+            if is_test() || writable(&dir) {
                 return dir;
             }
         }

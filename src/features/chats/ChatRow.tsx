@@ -3,7 +3,7 @@ import type { Chat } from '../../shared/types';
 import { StatusDot } from '../../shared/ui/StatusDot';
 import { chatColorTheme } from '../../shared/ui/chatColors';
 import { ACCENT, shortSessionId } from '../../shared/lib/format';
-import { ToolButton } from '../../shared/ui/icons';
+import { Icon, ToolButton } from '../../shared/ui/icons';
 import { numberedChats, useChats } from './chats.store';
 import { currentLayout, currentSlots, usePanes } from '../panes/panes.store';
 import { DeleteChatDialog } from './DeleteChatDialog';
@@ -113,7 +113,9 @@ export function ChatRow({
             fontSize: 'var(--fs-1)', color: 'var(--dim)', fontVariantNumeric: 'tabular-nums', cursor: 'default'
           }}
         >
-          <span style={{ display: 'inline-block', transform: chat.childrenOpen ? 'rotate(90deg)' : 'none' }}>▶</span>
+          <svg width="8" height="8" viewBox="0 0 8 8" aria-hidden style={{ transition: 'transform .2s', transform: chat.childrenOpen ? 'rotate(90deg)' : 'none' }}>
+            <path d="M2 1l4 3-4 3z" fill="currentColor" />
+          </svg>
           {childCount}
         </span>
       )}
@@ -126,9 +128,9 @@ export function ChatRow({
                 ? `Spawned by "${parentName}" in another folder`
                 : 'Spawned by a chat that no longer exists'
           }
-          style={{ flex: 'none', fontSize: 'var(--fs-1)', color: 'var(--faint)', lineHeight: 1 }}
+          style={{ flex: 'none', color: 'var(--faint)', display: 'flex' }}
         >
-          ↳
+          <Icon name="child" size={13} />
         </span>
       )}
       <StatusDot status={chat.status} />
@@ -167,34 +169,33 @@ export function ChatRow({
           switch only nudges the controls on the right, never the names. */}
       {badge != null && (
         <span
-          title={
-            layout === 1
-              ? `Ctrl+${badge} shows this chat`
-              : `Showing in pane ${badge} of the current layout — Ctrl+${badge} holds it up on its own`
-          }
+          title={layout === 1 ? `Number ${badge} in the list` : `Showing in pane ${badge}`}
           style={{
-            minWidth: 18, height: 18, padding: '0 3px', flex: 'none', borderRadius: 3,
+            minWidth: 18, height: 18, padding: '0 3px', flex: 'none', borderRadius: 4,
             display: 'grid', placeItems: 'center', fontSize: 'var(--fs-1)', fontWeight: 600,
             fontVariantNumeric: 'tabular-nums',
             color: onScreen ? '#fff' : 'inherit',
             opacity: onScreen ? 1 : 0.6,
             background: onScreen ? ACCENT : 'transparent',
-            border: `1px solid ${onScreen ? (active ? '#fff' : ACCENT) : 'currentColor'}`
+            border: `1px solid ${onScreen ? (active ? '#fff' : ACCENT) : 'currentColor'}`,
+            transition: 'background .2s, color .2s'
           }}
         >
           {badge}
         </span>
       )}
-      <ToolButton
-        icon="pencil"
-        size={22}
-        title="Rename chat"
-        onClick={() => {
-          setDraft(chat.name);
-          setEditing(true);
-        }}
-      />
-      <ToolButton icon="trash" size={22} danger title="Delete chat — asks first" onClick={() => setConfirming(true)} />
+      <span className="row-tools">
+        <ToolButton
+          icon="pencil"
+          size={22}
+          title="Rename chat"
+          onClick={() => {
+            setDraft(chat.name);
+            setEditing(true);
+          }}
+        />
+        <ToolButton icon="trash" size={22} danger title="Delete chat — asks first" onClick={() => setConfirming(true)} />
+      </span>
 
       {confirming && <DeleteChatDialog chat={chat} onClose={() => setConfirming(false)} />}
     </div>

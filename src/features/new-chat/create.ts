@@ -44,7 +44,6 @@ export async function createChat(spec: ChatSpec): Promise<string> {
   let worktreePath: string | null = null;
   if (spec.provider === 'codex' && spec.worktree) {
     worktreePath = await createWorktree(spec.folder);
-    codex.rememberModel(spec.settings.model);
   }
 
   const { folders } = useChats.getState();

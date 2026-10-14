@@ -1,7 +1,5 @@
 import { create } from 'zustand';
 import type { Account, Chat, Provider } from '../../shared/types';
-import { EMPTY_CLAUDE_LIMITS, EMPTY_CODEX_LIMITS } from '../../shared/types';
-import { fmtReset } from '../../shared/lib/format';
 import * as ipc from '../../ipc/commands';
 
 // Folders on disk are the source of truth for the account list; limits come
@@ -47,7 +45,7 @@ const toAccount = (a: ipc.AccountInfo): Account => ({
   email: null,
   signedIn: false,
   haveUsage: false,
-  limits: a.provider === 'codex' ? EMPTY_CODEX_LIMITS : EMPTY_CLAUDE_LIMITS,
+  limits: [],
   usageAge: null,
   fetchedAt: null,
   sync: 'loading',
@@ -99,6 +97,16 @@ interface Round {
   limits: Account['limits'] | null;
 }
 
+/** The status bar's key for a window: "5H", "W", or a limit's initial ("F"
+ *  for Fable). Codex names its extra limits "<name> · <window>", so those get
+ *  the initial and the window ("G5H", "GW"). The full name is in the tooltip
+ *  and the Accounts window. */
+const shortOf = (label: string) => {
+  const [name, window] = label.split(' · ');
+  const key = window === '5 hours' ? '5H' : window === 'week' ? 'W' : '';
+  return (name.trim().charAt(0).toUpperCase() || '?') + key;
+};
+
 const askClaude = async (path: string, force = false): Promise<Round | null> => {
   const lim = await ipc.accountLimits(path, force).catch(() => null);
   if (!lim) return null;
@@ -112,14 +120,17 @@ const askClaude = async (path: string, force = false): Promise<Round | null> => 
     refreshError: lim.refreshError,
     rateLimited: lim.rateLimited,
     limits: lim.haveUsage
-      ? {
-          kind: 'claude',
-          h5: lim.h5,
-          week: lim.week,
-          fable: lim.model,
-          resets: { h5: fmtReset(lim.resetH5), week: fmtReset(lim.resetWeek), fable: fmtReset(lim.resetModel) },
-          weekResetAt: lim.resetWeek ?? null
-        }
+      ? [
+          { id: 'h5', label: '5 hours', short: '5H', used: lim.h5, resetAt: lim.resetH5 },
+          { id: 'week', label: 'week', short: 'W', used: lim.week, resetAt: lim.resetWeek },
+          ...lim.scoped.map(s => ({
+            id: `scoped:${s.label}`,
+            label: `${s.label} · week`,
+            short: shortOf(s.label),
+            used: s.used,
+            resetAt: s.resetsAt
+          }))
+        ]
       : null
   };
 };
@@ -138,12 +149,13 @@ const askCodex = async (path: string, force = false): Promise<Round | null> => {
     refreshError: null,
     rateLimited: lim.rateLimited,
     limits: lim.haveUsage
-      ? {
-          kind: 'codex',
-          windows: lim.windows.map(w => ({
-            id: w.id, label: w.label, used: w.used, reset: fmtReset(w.resetsAt), resetAt: w.resetsAt
-          }))
-        }
+      ? lim.windows.map(w => ({
+          id: w.id,
+          label: w.label,
+          short: w.label === '5 hours' ? '5H' : w.label === 'week' ? 'W' : shortOf(w.label),
+          used: w.used,
+          resetAt: w.resetsAt
+        }))
       : null
   };
 };

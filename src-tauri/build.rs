@@ -39,5 +39,8 @@ fn build_stamp() -> String {
 fn main() {
     println!("cargo:rustc-env=LUNA_BUILD={}", build_stamp());
     println!("cargo:rerun-if-env-changed=LUNA_BUILD");
+    // "test" for the build test-build.ps1 makes (paths.rs); empty otherwise.
+    println!("cargo:rustc-env=LUNA_FLAVOR={}", std::env::var("LUNA_FLAVOR").unwrap_or_default().trim());
+    println!("cargo:rerun-if-env-changed=LUNA_FLAVOR");
     tauri_build::build()
 }

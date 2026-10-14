@@ -1,3 +1,4 @@
+mod account_settings;
 mod accounts;
 mod activity;
 mod agents;
@@ -17,6 +18,7 @@ mod pty;
 mod settings;
 mod sysmenu;
 mod throttle;
+mod watchdog;
 mod worktree;
 
 use tauri::{
@@ -44,9 +46,10 @@ pub fn run() {
         &format!("starting luna {} build {}", env!("CARGO_PKG_VERSION"), env!("LUNA_BUILD")),
     );
 
-    // A build under test runs beside the Luna a person is using: same
-    // identifier, so without this the second launch would only focus the
-    // first. The same variable turns on the dev caller (agents.rs).
+    // A dev build driven by a script runs beside the Luna a person is using,
+    // possibly under the same identifier, and the second launch would only
+    // focus the first. The same variable turns on the dev caller (agents.rs);
+    // the test flavour (test-build.ps1) has an identifier of its own anyway.
     let dev = std::env::var_os("LUNA_DEV_TOKEN").is_some();
     let builder = tauri::Builder::default();
     let builder = if dev {
@@ -65,7 +68,6 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_process::init())
         .manage(pty::PtyManager::default())
         .setup(|app| {
             claude::models::refresh_soon();
@@ -87,6 +89,10 @@ pub fn run() {
             agents::init(app.handle().clone());
             agents::register_dev_caller();
             activity::start(app.handle().clone());
+            // A parent account's settings onto the others, when that is asked for.
+            account_settings::sync_on_start();
+            // A window whose page has died is rebuilt rather than left black.
+            watchdog::start(app.handle().clone());
 
             let open = MenuItem::with_id(app, "open", "Open", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
@@ -122,6 +128,12 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            account_settings::recommended_settings,
+            account_settings::apply_recommended,
+            account_settings::settings_sync_state,
+            account_settings::set_settings_parent,
+            account_settings::set_settings_sync_on_start,
+            account_settings::sync_settings_now,
             accounts::list_accounts,
             accounts::create_account,
             accounts::delete_account,
@@ -142,14 +154,11 @@ pub fn run() {
             codex::trust::codex_trust_folder,
             log::append_log,
             media::save_media,
-            media::clear_media,
-            media::prune_media,
             pty::ensure_claude_session,
             pty::ensure_codex_session,
             pty::write_session,
             pty::resize_session,
             pty::kill_session,
-            pty::session_alive,
             pty::session_modes,
             pty::session_meta,
             pty::saved_title,
@@ -161,8 +170,8 @@ pub fn run() {
             power::disarm_power_off,
             settings::get_accounts_root,
             settings::set_accounts_root,
+            watchdog::ui_heartbeat,
             worktree::create_worktree,
-            worktree::remove_worktree,
             worktree::orphan_worktrees,
             worktree::remove_orphan_worktrees,
             worktree::inspect_worktrees,
@@ -175,6 +184,13 @@ pub fn run() {
         // which both stops new events and waits for the ones in flight, so the
         // loop is torn down with nothing left to land on it.
         .run(|_app, event| {
+            // The watchdog closing the last window to rebuild it is not a quit.
+            if let tauri::RunEvent::ExitRequested { code: None, api, .. } = &event {
+                if watchdog::rebuilding() {
+                    api.prevent_exit();
+                    return;
+                }
+            }
             if matches!(
                 event,
                 tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit

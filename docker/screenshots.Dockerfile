@@ -5,8 +5,8 @@
 # Usage:  see screenshots.ps1
 FROM node:22-bookworm-slim
 
-# fonts-jetbrains-mono so the terminals read right even if Google Fonts is
-# unreachable; the UI's own Tahoma is mounted in from the host at run time.
+# The terminals' JetBrains Mono ships with the app (public/fonts); the UI's
+# own Windows faces are mounted in from the host at run time.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     chromium fontconfig fonts-jetbrains-mono fonts-dejavu-core curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*

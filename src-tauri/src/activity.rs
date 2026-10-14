@@ -129,7 +129,16 @@ struct Track {
     /// for a session with neither (a Claude Code that outlived a Luna
     /// restart). A turn shorter than the sampling period is invisible to
     /// the transitions, and a one-word answer is exactly that short.
+    ///
+    /// It only grows, across respawns and resumes too: an agent keeps the
+    /// count it was last shown and waits for a turn past it, and a count
+    /// that started over would leave it waiting out its whole timeout.
     turns_ended: u32,
+    /// The process the count is taken for, by its spawn time, and
+    /// `turns_ended` when it started: Codex's count of its own turns goes on
+    /// from there (`count_on`).
+    spawned_at_ms: u128,
+    turns_before: u32,
     /// The last verdict `busy` was computed from, for the transition above.
     was_busy: bool,
     /// The API error the last turn ended on, per `StopFailure`; cleared by
@@ -233,13 +242,51 @@ pub struct Summary {
 
 struct State {
     tracks: HashMap<String, Track>,
+    /// The turn count of each session whose track was dropped when it went
+    /// away, for the track it gets when it comes back (see `turns_ended`).
+    ended: HashMap<String, u32>,
     summary: Summary,
     idle_since_ms: Option<u64>,
 }
 
 fn state() -> &'static Mutex<State> {
     static S: OnceLock<Mutex<State>> = OnceLock::new();
-    S.get_or_init(|| Mutex::new(State { tracks: HashMap::new(), summary: Summary::default(), idle_since_ms: None }))
+    S.get_or_init(|| {
+        Mutex::new(State { tracks: HashMap::new(), ended: HashMap::new(), summary: Summary::default(), idle_since_ms: None })
+    })
+}
+
+/// A session's track, made on first sight with the turn count it had when it
+/// last went away.
+fn track<'a>(tracks: &'a mut HashMap<String, Track>, ended: &mut HashMap<String, u32>, id: &str) -> &'a mut Track {
+    tracks
+        .entry(id.to_string())
+        .or_insert_with(|| Track { turns_ended: ended.remove(id).unwrap_or(0), ..Default::default() })
+}
+
+/// Drops the tracks of sessions that are no longer live, keeping their counts.
+fn drop_gone(tracks: &mut HashMap<String, Track>, ended: &mut HashMap<String, u32>, live: &[&str]) {
+    tracks.retain(|id, t| {
+        let keep = live.contains(&id.as_str());
+        if !keep {
+            ended.insert(id.clone(), t.turns_ended);
+        }
+        keep
+    });
+}
+
+/// Counts a sample's turns for the process it was taken of: a new one (a
+/// respawn, a resume) starts from the count so far, and `disk` — the turns
+/// its own rollout records since it started, where it keeps one — adds to
+/// that.
+fn count_on(t: &mut Track, spawned_at_ms: u128, disk: Option<u32>) {
+    if t.spawned_at_ms != spawned_at_ms {
+        t.spawned_at_ms = spawned_at_ms;
+        t.turns_before = t.turns_ended;
+    }
+    if let Some(n) = disk {
+        t.turns_ended = t.turns_ended.max(t.turns_before + n);
+    }
 }
 
 /// A hook arrived for a session (hub.rs). Takes effect at the next sample;
@@ -247,7 +294,8 @@ fn state() -> &'static Mutex<State> {
 pub fn on_hook(chat_id: &str, ev: HookEvent) {
     let now = now_ms();
     let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
-    let t = st.tracks.entry(chat_id.to_string()).or_default();
+    let st = &mut *st;
+    let t = track(&mut st.tracks, &mut st.ended, chat_id);
     t.failed = None;
     match ev {
         HookEvent::Busy => {
@@ -322,7 +370,8 @@ fn disk_api_error(p: &crate::pty::ActivityProbe) -> Option<&'static str> {
     }
 }
 
-/// Turns the CLI's own record says are finished, where it keeps one.
+/// Turns the CLI's own record says this process has finished, where it
+/// keeps one.
 fn disk_turns_ended(p: &crate::pty::ActivityProbe) -> Option<u32> {
     match p.provider {
         Provider::Claude => None,
@@ -413,11 +462,11 @@ pub fn sample(probes: Vec<crate::pty::ActivityProbe>) -> Summary {
     let st = &mut *st;
 
     let live: Vec<&str> = probes.iter().map(|p| p.id.as_str()).collect();
-    st.tracks.retain(|id, _| live.contains(&id.as_str()));
+    drop_gone(&mut st.tracks, &mut st.ended, &live);
 
     let mut sessions = Vec::with_capacity(probes.len());
     for p in &probes {
-        let t = st.tracks.entry(p.id.clone()).or_default();
+        let t = track(&mut st.tracks, &mut st.ended, &p.id);
 
         let disk = disk_turn(p);
         let turn = combine(t, disk, now);
@@ -446,13 +495,13 @@ pub fn sample(probes: Vec<crate::pty::ActivityProbe>) -> Summary {
         // background jobs do: `wait` wants the reply, and the children are
         // the machine's concern (power.rs), not the caller's.
         let model_busy = t.turn == Turn::Busy;
-        match disk_turns_ended(p) {
-            // Codex: the rollout's count is the truth.
-            Some(n) => t.turns_ended = t.turns_ended.max(n),
-            // Claude Code with hooks: `Stop` counts (on_hook). Without any
-            // hook heard, the transitions are all there is.
-            None if t.hook.is_none() && t.was_busy && !model_busy => t.turns_ended += 1,
-            None => {}
+        let disk = disk_turns_ended(p);
+        // Codex: the rollout's count is the truth.
+        count_on(t, p.spawned_at_ms, disk);
+        // Claude Code with hooks: `Stop` counts (on_hook). Without any hook
+        // heard, the transitions are all there is.
+        if disk.is_none() && t.hook.is_none() && t.was_busy && !model_busy {
+            t.turns_ended += 1;
         }
         t.was_busy = model_busy;
 
@@ -569,6 +618,33 @@ mod tests {
         // SessionEnd is not a turn.
         on_hook("chat-fast-turn", HookEvent::Gone);
         assert_eq!(turn_state("chat-fast-turn").map(|t| t.turns_ended), Some(2));
+    }
+
+    #[test]
+    fn a_session_that_comes_back_counts_on() {
+        let mut tracks = HashMap::new();
+        let mut ended = HashMap::new();
+        // Codex, first process: its rollout says two turns.
+        count_on(track(&mut tracks, &mut ended, "c"), 100, Some(2));
+        assert_eq!(tracks["c"].turns_ended, 2);
+        // Gone at a sample; back as a resumed process whose rollout has had
+        // no turn of its own yet.
+        drop_gone(&mut tracks, &mut ended, &[]);
+        assert!(tracks.is_empty());
+        let t = track(&mut tracks, &mut ended, "c");
+        count_on(t, 200, Some(0));
+        assert_eq!(t.turns_ended, 2, "not back to 0");
+        count_on(t, 200, Some(1));
+        assert_eq!(t.turns_ended, 3);
+        // Respawned before any sample saw it gone: the same.
+        count_on(t, 300, None);
+        count_on(t, 300, Some(1));
+        assert_eq!(t.turns_ended, 4);
+        // Claude Code counts by hooks; a new process keeps the count.
+        let mut tracks = HashMap::new();
+        let mut ended = HashMap::from([("k".to_string(), 5)]);
+        assert_eq!(track(&mut tracks, &mut ended, "k").turns_ended, 5);
+        assert!(ended.is_empty());
     }
 
     #[test]

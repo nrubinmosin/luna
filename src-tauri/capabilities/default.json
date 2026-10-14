@@ -15,7 +15,6 @@
     "clipboard-manager:allow-read-image",
     "dialog:allow-open",
     "notification:default",
-    "updater:default",
-    "process:default"
+    "updater:default"
   ]
 }

@@ -6,7 +6,6 @@ import { usePower } from './power.store';
 import { PowerMenu } from './PowerMenu';
 
 const chipStyle = (loud: boolean) => ({
-  flexGrow: 0,
   cursor: 'default',
   whiteSpace: 'nowrap' as const,
   fontVariantNumeric: 'tabular-nums',

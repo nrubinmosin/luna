@@ -2,10 +2,9 @@ node_modules/
 dist/
 .pnpm-store/
 src-tauri/target/
-multi-chat/
 *.local
 .DS_Store
 .claude/worktrees/
-cli/target/
 .codex/worktrees/
-src-tauri/target-out/
+# The test flavour: exe, its own cargo target, log, settings, CLIs (test-build.ps1).
+test-build/

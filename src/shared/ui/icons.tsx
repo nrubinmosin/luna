@@ -13,7 +13,8 @@ import type { CSSProperties, ReactNode } from 'react';
 export type IconName =
   | 'plus' | 'pencil' | 'trash' | 'reset' | 'sun' | 'moon' | 'auto' | 'hide' | 'show'
   | 'even' | 'gear' | 'refresh' | 'accounts' | 'key' | 'power' | 'help' | 'folder'
-  | 'agents' | 'sweep' | 'palette' | 'download' | 'warn';
+  | 'agents' | 'sweep' | 'download' | 'warn' | 'update' | 'close' | 'check' | 'child' | 'claude' | 'codex'
+  | 'recommend' | 'sync';
 
 const grad = (id: string, top: string, bottom: string) => (
   <linearGradient id={id} x1="0" y1="0" x2="0" y2="1">
@@ -189,14 +190,67 @@ function draw(name: IconName, p: string): ReactNode {
           <path d="M5.2 10.2l2 1.3M4.4 11.6l1.8 1.3" stroke="#8a6400" strokeWidth=".8" />
         </>
       );
-    case 'palette':
+    case 'update':
       return (
         <>
-          <path d="M8 1.4C4.2 1.4 1.4 4.1 1.4 7.6c0 3.4 2.6 6.9 6 6.9 1.2 0 1.6-.8 1.2-1.6-.5-1 .1-2 1.2-2h1.6c1.9 0 3.2-1.4 3.2-3.4 0-3.4-3-6.1-6.6-6.1z" fill="#f6ead2" stroke="#7a6440" strokeLinejoin="round" />
-          <circle cx="4.6" cy="7.6" r="1.2" fill="#d4370f" />
-          <circle cx="6.4" cy="4.4" r="1.2" fill="#f5b400" />
-          <circle cx="9.9" cy="4.3" r="1.2" fill="#2b8a1d" />
-          <circle cx="12" cy="7.2" r="1.2" fill="#1f63c9" />
+          <defs>{grad(`${p}g`, '#86d873', '#2b8a1d')}</defs>
+          <path d="M8 1.5 12.8 6.6H10v5.4H6V6.6H3.2z" fill={`url(#${p}g)`} stroke="#1c5c12" strokeLinejoin="round" />
+          <path d="M2 14.5h12" stroke="#7a7062" strokeWidth="1.6" strokeLinecap="round" />
+        </>
+      );
+    case 'close':
+      return (
+        <>
+          <defs>{grad(`${p}g`, '#f0a694', '#c8401c')}</defs>
+          <circle cx="8" cy="8" r="6.6" fill={`url(#${p}g)`} stroke="#7e1f06" />
+          <path d="M5.6 5.6l4.8 4.8M10.4 5.6l-4.8 4.8" stroke="#fff" strokeWidth="1.7" strokeLinecap="round" />
+        </>
+      );
+    case 'check':
+      return (
+        <>
+          <defs>{grad(`${p}g`, '#86d873', '#2b8a1d')}</defs>
+          <circle cx="8" cy="8" r="6.6" fill={`url(#${p}g)`} stroke="#1c5c12" />
+          <path d="M4.9 8.2l2.1 2.1 4.1-4.4" fill="none" stroke="#fff" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+        </>
+      );
+    case 'child':
+      return (
+        <path d="M4.5 2.5v6.2a1.8 1.8 0 0 0 1.8 1.8h6M10 8l2.6 2.5L10 13" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" opacity=".7" />
+      );
+    // The provider marks are drawn in the colour of the text around them:
+    // they say which CLI, and should not pull the eye any more than its name.
+    case 'claude': {
+      // Claude: a starburst.
+      const rays = Array.from({ length: 12 }, (_, i) => {
+        const a = (i * Math.PI) / 6;
+        const r = i % 2 ? 4.6 : 6.6;
+        return `M8 8L${(8 + Math.cos(a) * r).toFixed(2)} ${(8 + Math.sin(a) * r).toFixed(2)}`;
+      }).join('');
+      return <path d={rays} stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />;
+    }
+    case 'codex':
+      // OpenAI's knot: three rounded links, a third of a turn apart.
+      return (
+        <g fill="none" stroke="currentColor" strokeWidth="1.3">
+          {[0, 60, 120].map(a => (
+            <rect key={a} x="5.4" y="1.6" width="5.2" height="12.8" rx="2.6" transform={`rotate(${a} 8 8)`} />
+          ))}
+        </g>
+      );
+    case 'recommend':
+      return (
+        <>
+          <defs>{grad(`${p}g`, '#fff3a0', '#f0b400')}</defs>
+          <path d="M8 1.4l1.9 4 4.4.5-3.3 3 .9 4.4L8 11.1l-3.9 2.2.9-4.4-3.3-3 4.4-.5z" fill={`url(#${p}g)`} stroke="#8a6400" strokeLinejoin="round" />
+        </>
+      );
+    case 'sync':
+      return (
+        <>
+          <defs>{grad(`${p}g`, '#8ec0ff', '#1f63c9')}</defs>
+          <path d="M2.6 7.2A5.4 5.4 0 0 1 12.2 4.3L13.4 3v4H9.4l1.4-1.4A3.5 3.5 0 0 0 4.6 7.2z" fill={`url(#${p}g)`} stroke="#123f86" strokeLinejoin="round" />
+          <path d="M13.4 8.8A5.4 5.4 0 0 1 3.8 11.7L2.6 13V9h4l-1.4 1.4a3.5 3.5 0 0 0 6.2-1.6z" fill={`url(#${p}g)`} stroke="#123f86" strokeLinejoin="round" />
         </>
       );
     case 'download':
@@ -204,7 +258,7 @@ function draw(name: IconName, p: string): ReactNode {
         <>
           <defs>{grad(`${p}g`, '#86d873', '#2b8a1d')}</defs>
           <path d="M6 1.5h4v5.4h2.8L8 12 3.2 6.9H6z" fill={`url(#${p}g)`} stroke="#1c5c12" strokeLinejoin="round" />
-          <path d="M2 14.5h12" stroke="#45597a" strokeWidth="1.6" strokeLinecap="round" />
+          <path d="M2 14.5h12" stroke="#7a7062" strokeWidth="1.6" strokeLinecap="round" />
         </>
       );
     case 'warn':
@@ -294,5 +348,27 @@ export function Chevron({ open }: { open: boolean }) {
         <path d="M2 5.2 5 2.4l3 2.8M2 8.2 5 5.4l3 2.8" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
       </svg>
     </span>
+  );
+}
+
+/** A board's shape as a white line glyph, for the glass buttons on the title bar. */
+export function LayoutGlyph({ n }: { n: 1 | 2 | 3 | 4 }) {
+  const lines = { 1: '', 2: 'M9 3v11', 3: 'M9 3v11M9 8.5h7', 4: 'M9 3v11M2 8.5h14' }[n];
+  return (
+    <svg width="18" height="16" viewBox="0 0 18 16" aria-hidden style={{ display: 'block' }}>
+      <rect x="1.5" y="1.5" width="15" height="13" rx="2" fill="rgba(255,255,255,.14)" stroke="currentColor" strokeWidth="1.3" />
+      <path d="M1.5 4.2h15" stroke="currentColor" strokeWidth="2.2" />
+      {lines && <path d={lines} stroke="currentColor" strokeWidth="1.2" fill="none" />}
+    </svg>
+  );
+}
+
+/** The sidebar toggle on the title bar: a window with its left pane, filled while pinned. */
+export function SidebarGlyph({ pinned }: { pinned: boolean }) {
+  return (
+    <svg width="18" height="16" viewBox="0 0 18 16" aria-hidden style={{ display: 'block' }}>
+      <rect x="1.5" y="1.5" width="15" height="13" rx="2" fill="none" stroke="currentColor" strokeWidth="1.3" />
+      <rect x="2.2" y="2.2" width="4.8" height="11.6" rx="1" fill="currentColor" opacity={pinned ? 0.85 : 0.25} />
+    </svg>
   );
 }

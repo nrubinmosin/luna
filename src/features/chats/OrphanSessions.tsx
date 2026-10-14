@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { useDialogHost } from '../../shared/ui/dialogHost';
 import { Icon } from '../../shared/ui/icons';
 import { killSession, orphanSessions, type OrphanSessionDto } from '../../ipc/commands';
 import { tail2 } from '../../shared/lib/format';
@@ -23,6 +25,7 @@ export function OrphanSessions() {
   const folders = useChats(s => s.folders);
   const [found, setFound] = useState<OrphanSessionDto[]>([]);
   const [open, setOpen] = useState(false);
+  const host = useDialogHost();
   const [killing, setKilling] = useState<OrphanSessionDto | null>(null);
 
   const knownKey = folders.flatMap(f => f.chats.map(c => c.id)).sort().join('|');
@@ -95,18 +98,20 @@ export function OrphanSessions() {
         className="hover-bg"
         style={{
           flex: 'none', padding: '5px 8px', display: 'flex', alignItems: 'center', gap: 7, borderRadius: 4,
-          fontSize: 'var(--fs-3)', color: '#000', background: 'var(--balloon)', cursor: 'default',
-          border: '1px solid #c9b25a'
+          fontSize: 'var(--fs-3)', color: 'var(--balloon-ink)', background: 'var(--balloon)', cursor: 'default',
+          border: '1px solid color-mix(in oklab, var(--wait) 45%, transparent)'
         }}
       >
         <Icon name="warn" />
         <span style={{ flex: 1 }}>
           {found.length} session{found.length > 1 ? 's' : ''} with no chat
         </span>
-        <span style={{ color: '#555', textDecoration: 'underline' }}>show</span>
+        <span style={{ color: 'var(--dim)', textDecoration: 'underline' }}>show</span>
       </div>
 
-      {open && (
+      {/* Portalled: the sidebar slides away under the pointer, and a dialog
+          left inside it would slide away too. */}
+      {open && host && createPortal(
         <div className="scrim" style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.32)', display: 'grid', placeItems: 'center', zIndex: 75 }}>
           <div className="window" style={{ width: 560, boxShadow: 'var(--shadow), var(--border-window-outer), var(--border-window-inner)' }}>
             <div className="title-bar">
@@ -158,7 +163,8 @@ export function OrphanSessions() {
               </div>
             </div>
           </div>
-        </div>
+        </div>,
+        host
       )}
 
       {killing && (

@@ -3,9 +3,9 @@ use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, PtySize};
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
-// Only the Windows kill path shells out; on other targets this is dead weight
-// and warns about itself on every build.
-#[cfg(windows)]
+// The kill path shells out (taskkill, pkill); a target with neither has no
+// use for it and would warn about it on every build.
+#[cfg(any(windows, unix))]
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -21,6 +21,22 @@ const SCROLLBACK_SLACK: usize = 256 * 1024;
 const FRAME: std::time::Duration = std::time::Duration::from_millis(16);
 /// A session's pty before any pane has sized it — and for good, when no pane
 /// ever does (a chat an agent spawned and nobody opened).
+/// What a Claude Code or Codex session puts in the environment of everything
+/// it runs: its identity, its IPC, its sandbox flags. None of it belongs to a
+/// session Luna starts (see spawn).
+const INHERITED_SESSION_VARS: &[&str] = &[
+    "CLAUDECODE",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_SESSION_ATTENDED",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+    "CLAUDE_PID",
+    "CODEX_THREAD_ID",
+    "CODEX_SANDBOX",
+    "CODEX_SANDBOX_NETWORK_DISABLED",
+];
 const INITIAL_ROWS: u16 = 30;
 const INITIAL_COLS: u16 = 100;
 /// The cursor-position query (DSR 6). ConPTY sends one before anything else
@@ -201,15 +217,23 @@ async fn spawn(
     let mut cmd = CommandBuilder::new(crate::cli::binary(provider));
     cmd.cwd(&cwd);
     cmd.args(&args);
+    // A Luna started from inside a CLI session — a test build run by an
+    // agent, say — inherits that session's identity and its tool environment.
+    // Claude Code under CLAUDE_CODE_CHILD_SESSION takes itself for a subagent
+    // and stops saving transcripts (where `luna_read` and the chat titles come
+    // from), and the NO_COLOR an agent's shell sets turned every terminal here
+    // black and white. The sessions here are nobody's children. NO_COLOR is
+    // only dropped when it came with such a session: set by hand, it stays.
+    for k in INHERITED_SESSION_VARS {
+        cmd.env_remove(k);
+    }
+    if INHERITED_SESSION_VARS.iter().any(|k| std::env::var_os(k).is_some()) {
+        cmd.env_remove("NO_COLOR");
+    }
     for (k, v) in &envs {
         cmd.env(k, v);
     }
     cmd.env("TERM", "xterm-256color");
-    // A Luna started from inside a Claude Code session inherits its marker,
-    // and every Claude Code under it would then take itself for a subagent
-    // and stop saving transcripts — which is where `luna_read` and the chat
-    // titles come from. The sessions here are nobody's children.
-    cmd.env_remove("CLAUDE_CODE_CHILD_SESSION");
 
     let child = pair.slave.spawn_command(cmd).map_err(|e| {
         crate::log::error("pty", &format!("spawn failed for {id} in {cwd}: {e}"));
@@ -254,7 +278,8 @@ async fn spawn(
             for msg in input_rx {
                 match msg {
                     Input::Bytes(chunk) if writable => {
-                        let chunk = if provider == Provider::Codex { as_key_events(&chunk) } else { chunk };
+                        // Key events only where ConPTY reads them (see `as_key_events`).
+                        let chunk = if cfg!(windows) && provider == Provider::Codex { as_key_events(&chunk) } else { chunk };
                         if let Err(e) = writer.write_all(&chunk).and_then(|()| writer.flush()) {
                             crate::log::warn("pty", &format!("write to {id} failed: {e}"));
                             writable = false;
@@ -427,10 +452,11 @@ async fn spawn(
 /// readable and quoting is not a concern. None while the listener is off.
 fn claude_hooks_file(chat_id: &str) -> Option<std::path::PathBuf> {
     let url = crate::hub::hook_url(chat_id)?;
-    // curl.exe by name: on Windows `curl` in PowerShell is an alias for
+    // curl.exe by name on Windows: there `curl` in PowerShell is an alias for
     // Invoke-WebRequest. Its stdin — the hook's JSON — goes up as the body;
     // the 204 answer has no body, so nothing comes back to print.
-    let command = format!("curl.exe -s -m 3 -X POST --data-binary @- {url}");
+    let curl = if cfg!(windows) { "curl.exe" } else { "curl" };
+    let command = format!("{curl} -s -m 3 -X POST --data-binary @- {url}");
     let hook = |timeout: u32| {
         serde_json::json!([{ "hooks": [{ "type": "command", "command": command, "timeout": timeout }] }])
     };
@@ -451,6 +477,10 @@ fn claude_hooks_file(chat_id: &str) -> Option<std::path::PathBuf> {
     Some(path)
 }
 
+/// How long a Luna tool call may take, in ms, as both CLIs are told: `wait`
+/// holds its request for up to 30 min, `spawn` for up to two.
+const MCP_TOOL_TIMEOUT_MS: u64 = 1_900_000;
+
 /// The MCP config a tooled Claude Code session starts with: Luna's server on
 /// the hub listener, the session's own bearer token in the header. A file
 /// per chat under the data dir, like the hooks.
@@ -461,7 +491,12 @@ fn claude_mcp_file(chat_id: &str, token: &str) -> Option<std::path::PathBuf> {
             "luna": {
                 "type": "http",
                 "url": url,
-                "headers": { "Authorization": format!("Bearer {token}") }
+                "headers": { "Authorization": format!("Bearer {token}") },
+                // Claude Code drops an HTTP tool call that has sent nothing
+                // for 5 min, and the server's `timeout` is what raises that
+                // (as well as the hard limit per call). A `wait` answers
+                // with one plain JSON body at the end, nothing before it.
+                "timeout": MCP_TOOL_TIMEOUT_MS
             }
         }
     });
@@ -679,8 +714,19 @@ pub async fn ensure_claude_session(
         let settings = serde_json::json!({
             "model": model, "effort": args[3], "permissionMode": permission_mode, "worktree": worktree,
         });
-        let token = crate::agents::register(&id, Provider::Claude, &folder, &account_path, parent.as_deref(), tools, settings);
+        // A login session runs in the account folder itself (the providers'
+        // `loginSession`): not a chat, so not one agents may see or write to.
+        let token = if same_dir(&folder, &account_path) {
+            None
+        } else {
+            crate::agents::register(&id, Provider::Claude, &folder, &account_path, parent.as_deref(), tools, settings)
+        };
         if let Some(mcp) = token.as_deref().and_then(|t| claude_mcp_file(&id, t)) {
+            // Luna's tools without a permission prompt in every mode: the
+            // user ticked the box that gives them. Variadic like
+            // `--mcp-config`, so it goes where a flag follows it.
+            args.push("--allowedTools".into());
+            args.push("mcp__luna".into());
             args.push("--mcp-config".into());
             args.push(mcp.to_string_lossy().into_owned());
         }
@@ -772,10 +818,14 @@ pub async fn ensure_codex_session(
                 args.push(format!("mcp_servers.luna.url=\"{url}\""));
                 args.push("-c".into());
                 args.push("mcp_servers.luna.bearer_token_env_var=\"LUNA_MCP_TOKEN\"".into());
-                // Codex gives an MCP call 60 s by default; `wait` holds its
-                // request for up to 30 min and `spawn` for up to two.
+                // Codex gives an MCP call 60 s by default.
                 args.push("-c".into());
-                args.push("mcp_servers.luna.tool_timeout_sec=1900".into());
+                args.push(format!("mcp_servers.luna.tool_timeout_sec={}", MCP_TOOL_TIMEOUT_MS / 1000));
+                // And outside the full bypass it may stop to ask before a
+                // server's tool runs; `approve` lets Luna's through, as
+                // `--allowedTools` does for Claude Code.
+                args.push("-c".into());
+                args.push("mcp_servers.luna.default_tools_approval_mode=\"approve\"".into());
                 envs.push(("LUNA_MCP_TOKEN", token));
             }
             if let Some(p) = prompt.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
@@ -839,16 +889,36 @@ pub fn resize_session(state: PtyState, id: String, cols: u16, rows: u16) -> Resu
 // is a grandchild and survives a plain kill. Sweep the tree first, then kill
 // the child directly as a backstop.
 fn kill_tree(pid: Option<u32>) {
+    let Some(pid) = pid else { return };
     #[cfg(windows)]
-    if let Some(pid) = pid {
+    {
         use std::os::windows::process::CommandExt;
         let _ = Command::new("taskkill")
             .args(["/PID", &pid.to_string(), "/T", "/F"])
             .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
             .output();
     }
-    #[cfg(not(windows))]
+    // The pty made the CLI a session and process-group leader, so its
+    // children are in the group whose id is its pid unless they left it;
+    // those that did are still its children by parent pid.
+    #[cfg(unix)]
+    for by in ["-g", "-P"] {
+        let _ = Command::new("pkill").args(["-KILL", by, &pid.to_string()]).output();
+    }
+    #[cfg(not(any(windows, unix)))]
     let _ = pid;
+}
+
+/// Whether two paths name the same folder, slashes and a trailing separator
+/// aside — and case, where the file system ignores it.
+fn same_dir(a: &str, b: &str) -> bool {
+    let norm = |p: &str| p.replace('\\', "/").trim_end_matches('/').to_string();
+    let (a, b) = (norm(a), norm(b));
+    if cfg!(windows) {
+        a.eq_ignore_ascii_case(&b)
+    } else {
+        a == b
+    }
 }
 
 /// How long a session gets to leave on its own before it is taken down.
@@ -1322,6 +1392,32 @@ pub fn tail(path: &std::path::Path, max: u64) -> Option<String> {
     Some(String::from_utf8_lossy(&bytes).into_owned())
 }
 
+/// Calls `each` with every complete line of a file from byte `from` on and
+/// returns the offset just past the last of them. A last line without its
+/// newline is still being written: it is left, cursor and all, for the read
+/// after.
+pub fn complete_lines(path: &std::path::Path, from: u64, mut each: impl FnMut(&str)) -> u64 {
+    use std::io::{BufRead, BufReader, Seek, SeekFrom};
+    let Ok(mut f) = std::fs::File::open(path) else { return from };
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    let from = from.min(len);
+    if f.seek(SeekFrom::Start(from)).is_err() {
+        return from;
+    }
+    let mut reader = BufReader::new(f);
+    let mut line = Vec::new();
+    let mut read = from;
+    loop {
+        line.clear();
+        match reader.read_until(b'\n', &mut line) {
+            Ok(n) if line.ends_with(b"\n") => read += n as u64,
+            _ => break,
+        }
+        each(String::from_utf8_lossy(&line).trim_end_matches(['\r', '\n']));
+    }
+    read
+}
+
 /// What a session-meta read needs, copied out from under the map.
 struct Probe {
     id: String,
@@ -1439,15 +1535,6 @@ pub fn session_modes(state: PtyState, id: String) -> String {
     replay
 }
 
-#[tauri::command]
-pub fn session_alive(state: PtyState, id: String) -> bool {
-    let sessions = state.sessions.lock().unwrap();
-    sessions
-        .get(&id)
-        .map(|s| s.alive.load(Ordering::SeqCst))
-        .unwrap_or(false)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1507,6 +1594,12 @@ mod tests {
         let s = draft_after(draft_after(0, "ab\\"), "\r");
         assert_eq!(s & !DRAFT_BACKSLASH, 4);
         assert_eq!(draft_after(draft_after(s, "c"), "\r"), 0);
+    }
+
+    #[test]
+    fn a_login_session_is_told_by_its_folder() {
+        assert!(same_dir("C:\\acc\\anthropic\\one\\", "C:/acc/anthropic/one"));
+        assert!(!same_dir("C:\\p", "C:\\acc\\anthropic\\one"));
     }
 
     #[test]

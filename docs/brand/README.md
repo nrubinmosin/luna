@@ -40,7 +40,6 @@ Wordmark: Outfit Medium (SIL OFL), outlined to paths — no font needed.
 | ------------- | --------------------------------------------------- |
 | `icon.ico`    | `windows/app.ico`                                   |
 | `icon.png`    | `web/icon-512.png`                                  |
-| `128x128.png` | `macos/AppIcon.iconset/icon_128x128.png`            |
 | `32x32.png`   | `windows/Assets/Square44x44Logo.targetsize-32.png` — the simplified mark; also drawn at 16 px in the title bar (`src/app/AppFrame.tsx`) |
 
-To change the logo, replace the files here and copy the four above again.
+To change the logo, replace the files here and copy the three above again.

@@ -290,13 +290,12 @@ function AccountsFolder() {
 }
 
 /**
- * The app's settings, behind the sidebar's gear. Everything that used to
- * squat in the status bar as furniture — the two version readouts and their
- * update clicks — reads better here, where there is room to say what state
- * it is in; the bar keeps only news (see StatusBar).
+ * The app's settings, behind the status bar's gear. The version readouts and
+ * their update clicks read better here, where there is room to say what state
+ * each is in; the bar keeps only news (see StatusBar). Raised from the status
+ * bar or the Accounts window. `?demo=settings` opens it for its screenshot;
+ * the check compiles away in a release build.
  */
-/** Raised from the status bar or the Accounts window. `?demo=settings` opens it
- *  for its screenshot; the check compiles away in a release build. */
 export const useSettings = create<{ open: boolean; setOpen: (v: boolean) => void }>(set => ({
   open: import.meta.env.DEV && new URLSearchParams(location.search).get('demo') === 'settings',
   setOpen: v => set({ open: v })
