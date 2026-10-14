@@ -132,8 +132,15 @@ fn titles_of(session_id: &str, path: &Path, tail: Option<&str>) -> Titles {
     remembered_titles(session_id, seen.unwrap_or_default())
 }
 
+/// How many conversations the per-conversation caches hold before starting
+/// over: each `/clear` and resume is a new one, and the app runs for weeks.
+const CACHE_CAP: usize = 512;
+
 fn remembered_titles(session_id: &str, seen: Titles) -> Titles {
     let mut map = title_cache().lock().unwrap();
+    if map.len() >= CACHE_CAP && !map.contains_key(session_id) {
+        map.clear();
+    }
     let t = map.entry(session_id.to_string()).or_default();
     if seen.custom.is_some() {
         t.custom = seen.custom;
@@ -205,6 +212,9 @@ fn cached_first_prompt(account_path: &str, cwd: &str, session_id: &str) -> Optio
     // the first turn there is genuinely nothing to read yet.
     if found.is_some() {
         if let Ok(mut map) = cache.lock() {
+            if map.len() >= CACHE_CAP {
+                map.clear();
+            }
             map.insert(session_id.to_string(), found.clone());
         }
     }

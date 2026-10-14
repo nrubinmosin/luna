@@ -107,14 +107,11 @@ export function ChatRow({
             useChats.getState().setChildrenOpen(chat.id, !chat.childrenOpen);
           }}
           title={`${childCount} session${childCount > 1 ? 's' : ''} spawned by this chat — click to ${chat.childrenOpen ? 'fold' : 'unfold'}`}
-          className="hover-bg"
-          style={{
-            flex: 'none', display: 'flex', alignItems: 'center', gap: 2, padding: '0 3px', borderRadius: 2,
-            fontSize: 'var(--fs-1)', color: 'var(--dim)', fontVariantNumeric: 'tabular-nums', cursor: 'default'
-          }}
+          className="kids"
+          data-open={chat.childrenOpen ? 'yes' : 'no'}
         >
-          <svg width="8" height="8" viewBox="0 0 8 8" aria-hidden style={{ transition: 'transform .2s', transform: chat.childrenOpen ? 'rotate(90deg)' : 'none' }}>
-            <path d="M2 1l4 3-4 3z" fill="currentColor" />
+          <svg width="9" height="9" viewBox="0 0 9 9" aria-hidden>
+            <path d="M3 1.5 6 4.5 3 7.5" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
           {childCount}
         </span>

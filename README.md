@@ -172,6 +172,11 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   desktop notifications, analytics or feedback prompts, live web search (Codex). Matters
   of taste (attribution, default effort, Bypass by default) are offered unticked. Only
   the ticked keys are written; the rest of the file, comments included, stays.
+- An account can be renamed in place (the pencil beside its name): the folder is renamed
+  and every chat on it, the agents' list and the settings parent follow — not while a
+  chat on it is running. Its settings file opens in an editor too (`settings.json` for
+  Claude Code, `config.toml` for Codex): what is typed is what is written, comments and
+  all, and only once it parses; Ctrl+S saves.
 - **Shared settings**: pick a parent account per CLI and its settings file is copied onto
   the others — now, with Sync now, or at every launch with the box ticked. The parent's
   keys overwrite and keys only the child has stay; logins and Codex's trusted folders are

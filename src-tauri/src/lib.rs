@@ -82,6 +82,7 @@ pub fn run() {
 
             // Housekeeping off the startup path, and again every few hours.
             media::prune_periodically();
+            pty::prune_session_files_periodically(app.handle().clone());
 
             // The hook listener before any session can be spawned with hooks
             // pointing at it; the activity sampler feeds power.rs from then on.
@@ -134,9 +135,12 @@ pub fn run() {
             account_settings::set_settings_parent,
             account_settings::set_settings_sync_on_start,
             account_settings::sync_settings_now,
+            account_settings::read_account_config,
+            account_settings::write_account_config,
             accounts::list_accounts,
             accounts::create_account,
             accounts::delete_account,
+            accounts::rename_account,
             agents::agent_spawned,
             agents::agent_blocked_accounts,
             agents::set_agent_account,

@@ -37,7 +37,11 @@ pub fn write(path: &Path, doc: &DocumentMut) -> Result<(), String> {
     }
     let tmp = path.with_extension("toml.tmp");
     std::fs::write(&tmp, doc.to_string()).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, path).map_err(|e| e.to_string())
+    // A rename refused (Codex holding the file) leaves no temp file behind.
+    std::fs::rename(&tmp, path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        e.to_string()
+    })
 }
 
 /// What a fresh account starts with. Luna updates the CLI itself, so the CLI's

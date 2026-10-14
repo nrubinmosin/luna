@@ -10,6 +10,7 @@ import { useChats } from '../chats/chats.store';
 import { useSettings } from '../settings/SettingsDialog';
 import { LimitBars, worstLimit } from './limits';
 import { RecommendedDialog } from './RecommendedDialog';
+import { ConfigEditor } from './ConfigEditor';
 import { SettingsSync } from './SettingsSync';
 import { useAgentAccounts } from '../agents/agentAccounts.store';
 
@@ -88,6 +89,22 @@ function AccountsPanel() {
   // "cancelled" and an account in use simply could not be deleted.
   const [deleting, setDeleting] = useState<Account | null>(null);
   const [recommending, setRecommending] = useState<Account | null>(null);
+  const [editing, setEditing] = useState<Account | null>(null);
+  // The account whose name is being typed, by key, and what it says so far.
+  const [renaming, setRenaming] = useState<{ key: string; to: string; error: string | null } | null>(null);
+  const commitRename = async (acc: Account) => {
+    const to = renaming?.to.trim() ?? '';
+    if (!renaming || !to || to === acc.name) {
+      setRenaming(null);
+      return;
+    }
+    try {
+      await useAccounts.getState().rename(acc.provider, acc.name, to);
+      setRenaming(null);
+    } catch (e) {
+      setRenaming(r => (r ? { ...r, error: String(e) } : r));
+    }
+  };
   const folders = useChats(s => s.folders);
   const blocked = useAgentAccounts(s => s.blocked);
   const agentsMay = (p: Provider, n: string) => !blocked.includes(`${p}/${n}`);
@@ -197,12 +214,37 @@ function AccountsPanel() {
               <span title={`${PROVIDER_LABEL[acc.provider]} — a ${PROVIDER_VENDOR[acc.provider]} subscription`} style={{ flex: 'none', display: 'flex' }}>
                 <Icon name={acc.provider} />
               </span>
-              <span
-                style={{ fontSize: 'var(--fs-5)', fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
-                title={[acc.email, acc.path].filter(Boolean).join('\n')}
-              >
-                {acc.name}
-              </span>
+              {renaming?.key === accountKey(acc.provider, acc.name) ? (
+                <input
+                  autoFocus
+                  type="text"
+                  value={renaming.to}
+                  onChange={e => setRenaming({ ...renaming, to: e.target.value, error: null })}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') void commitRename(acc);
+                    if (e.key === 'Escape') {
+                      e.stopPropagation();
+                      setRenaming(null);
+                    }
+                  }}
+                  onBlur={() => void commitRename(acc)}
+                  style={{ width: 180, height: 'calc(var(--ui) * 1.7)', fontWeight: 700 }}
+                />
+              ) : (
+                <span
+                  onDoubleClick={() => setRenaming({ key: accountKey(acc.provider, acc.name), to: acc.name, error: null })}
+                  style={{ fontSize: 'var(--fs-5)', fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+                  title={[acc.email, acc.path].filter(Boolean).join('\n')}
+                >
+                  {acc.name}
+                </span>
+              )}
+              <ToolButton
+                icon="pencil"
+                size={22}
+                title="Rename the account — its folder, and every chat on it follows"
+                onClick={() => setRenaming({ key: accountKey(acc.provider, acc.name), to: acc.name, error: null })}
+              />
               <span style={{ flex: 1 }} />
               <span
                 title={acc.signedIn ? 'Signed in' : acc.refreshError ?? 'No usable credentials — sign in'}
@@ -221,6 +263,12 @@ function AccountsPanel() {
                 size={24}
                 title="Recommended settings for this account"
                 onClick={() => setRecommending(acc)}
+              />
+              <ToolButton
+                icon="file"
+                size={24}
+                title={`Edit ${acc.provider === 'claude' ? 'settings.json' : 'config.toml'} by hand`}
+                onClick={() => setEditing(acc)}
               />
               <ToolButton
                 icon="agents"
@@ -250,6 +298,9 @@ function AccountsPanel() {
               />
               <ToolButton icon="trash" size={24} danger title="Delete account folder — asks first" onClick={() => setDeleting(acc)} />
             </div>
+            {renaming?.key === accountKey(acc.provider, acc.name) && renaming.error && (
+              <div style={{ fontSize: 'var(--fs-2)', color: 'oklch(.58 .2 25)', marginBottom: 6 }}>{renaming.error}</div>
+            )}
             <LimitBars account={acc} />
             {usageNote && (
               <div title={acc.refreshError ?? undefined} style={{ fontSize: 'var(--fs-1)', color: 'var(--faint)', marginTop: 4, textAlign: 'right' }}>
@@ -261,6 +312,7 @@ function AccountsPanel() {
       })}
 
       {recommending && <RecommendedDialog account={recommending} onClose={() => setRecommending(null)} />}
+      {editing && <ConfigEditor account={editing} onClose={() => setEditing(null)} />}
 
       {deleting && (
         <ConfirmDialog

@@ -941,6 +941,33 @@ body { margin: 0; overflow: hidden; }
   color: var(--wait);
 }
 [data-app] .chat-row[data-active="yes"] .row-tag { color: #ffc27a; }
+/* The helpers a chat spawned: a count to unfold, shaped like the folders'
+   own fold button. */
+[data-app] .chat-row .kids {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 18px;
+  padding: 0 6px 0 4px;
+  border-radius: 9px;
+  border: 1px solid var(--line);
+  background: var(--card);
+  color: var(--fg);
+  font: 700 var(--fs-1) var(--sans-serif);
+  font-variant-numeric: tabular-nums;
+  cursor: default;
+  transition: background .12s, border-color .12s;
+}
+[data-app] .chat-row .kids:hover { background: var(--hover); border-color: var(--faint); }
+[data-app] .chat-row .kids svg { transition: transform .12s ease-out; }
+[data-app] .chat-row .kids[data-open="yes"] svg { transform: rotate(90deg); }
+[data-app] .chat-row[data-active="yes"] .kids {
+  background: rgba(255, 255, 255, .2);
+  border-color: rgba(255, 255, 255, .45);
+  color: #fff;
+}
+
 /* Rename and delete stay put but quiet until the row is under the pointer. */
 [data-app] .chat-row .row-tools { display: flex; gap: 1px; opacity: .45; transition: opacity .15s; }
 [data-app] .chat-row:hover .row-tools,
@@ -1054,6 +1081,20 @@ body { margin: 0; overflow: hidden; }
 }
 [data-app] .sb-mini.meter { padding: 1px; border-radius: 3px; }
 [data-app] .sb-mini.meter > i { --block: 4px; }
+
+/* The account's settings file, edited by hand. */
+[data-app] textarea.config-text {
+  flex: 1;
+  min-height: 0;
+  height: auto;
+  resize: none;
+  padding: 10px 12px;
+  font: 13px/1.55 "JetBrains Mono", ui-monospace, monospace;
+  tab-size: 2;
+  white-space: pre;
+  overflow: auto;
+  background: var(--term);
+}
 
 /* The account box: a select drawn by hand, so its rows can carry icons. */
 [data-app] .picker { position: relative; }

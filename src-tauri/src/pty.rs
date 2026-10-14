@@ -37,6 +37,9 @@ const INHERITED_SESSION_VARS: &[&str] = &[
     "CODEX_SANDBOX",
     "CODEX_SANDBOX_NETWORK_DISABLED",
 ];
+/// What a session that has exited keeps of its scrollback: enough for its
+/// last screen.
+const EXITED_TAIL: usize = 32 * 1024;
 const INITIAL_ROWS: u16 = 30;
 const INITIAL_COLS: u16 = 100;
 /// The cursor-position query (DSR 6). ConPTY sends one before anything else
@@ -246,10 +249,18 @@ async fn spawn(
     // Into a job before it has had time to spawn anything, so every child it
     // ever starts is listed with it.
     let job = pid.and_then(crate::procs::adopt).map(Arc::new);
-    let killer = child.clone_killer();
+    let mut killer = child.clone_killer();
+    // Without both ends there is no session to run, and a CLI already started
+    // would run on with nothing tracking it: end it before giving up.
+    let ends = pair.master.take_writer().and_then(|w| pair.master.try_clone_reader().map(|r| (w, r)));
+    let (mut writer, mut reader) = match ends {
+        Ok(ends) => ends,
+        Err(e) => {
+            let _ = killer.kill();
+            return Err(e.to_string());
+        }
+    };
     let child = Arc::new(Mutex::new(child));
-    let mut writer = pair.master.take_writer().map_err(|e| e.to_string())?;
-    let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
 
     // A respawn is a new process and, for Codex, a new rollout file.
     if provider == Provider::Codex {
@@ -299,7 +310,9 @@ async fn spawn(
         });
     }
 
-    let scrollback = Arc::new(Mutex::new(VecDeque::new()));
+    // Sized once for the cap: grown by doubling, a deque settles at twice
+    // what it holds, and drain never gives the slack back.
+    let scrollback = Arc::new(Mutex::new(VecDeque::with_capacity(SCROLLBACK_CAP + SCROLLBACK_SLACK + 8192)));
     let modes = Arc::new(Mutex::new(Modes::default()));
     let alive = Arc::new(AtomicBool::new(true));
     let last_output_ms = Arc::new(AtomicU64::new(now_ms()));
@@ -370,15 +383,17 @@ async fn spawn(
                         for (i, piece) in pieces.into_iter().enumerate() {
                             if !piece.is_empty() {
                                 let mut sb = scrollback.lock().unwrap();
-                                sb.extend(piece.iter().copied());
                                 // Trimming to the cap on every read used to move the
                                 // whole two megabytes each time; a deque drops from
                                 // the front without touching the rest, and trimming
                                 // in one go per overshoot keeps it off the hot path.
-                                if sb.len() > SCROLLBACK_CAP + SCROLLBACK_SLACK {
-                                    let excess = sb.len() - SCROLLBACK_CAP;
+                                // Before the append, so it never outgrows the
+                                // capacity it was made with.
+                                if sb.len() + piece.len() > SCROLLBACK_CAP + SCROLLBACK_SLACK {
+                                    let excess = (sb.len() + piece.len() - SCROLLBACK_CAP).min(sb.len());
                                     sb.drain(..excess);
                                 }
+                                sb.extend(piece.iter().copied());
                                 drop(sb);
                                 if tx.send(piece).is_err() {
                                     break 'read;
@@ -411,6 +426,22 @@ async fn spawn(
                 .map(|st| st.exit_code());
             crate::log::info("pty", &format!("session {id} exited, code {code:?}"));
             crate::emit::to_ui(&app, "pty://exit", PtyExit { id: &id, code });
+            // The entry stays, for as long as the chat does: its transcript, its
+            // folder and its last screen are still asked for (luna_read, the
+            // exit notice, deleting it). What only a running session needs
+            // goes now — the writer thread and the pty with it, and all but the
+            // tail of the scrollback — or a CLI that quit on its own held
+            // megabytes and a console host until Luna restarted.
+            use tauri::Manager;
+            let pm = app.state::<PtyManager>();
+            let mut sessions = pm.sessions.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(s) = sessions.get_mut(&id).filter(|s| Arc::ptr_eq(&s.alive, &alive)) {
+                s.input_tx = Arc::new(std::sync::mpsc::channel().0);
+                let mut sb = s.scrollback.lock().unwrap_or_else(|e| e.into_inner());
+                let excess = sb.len().saturating_sub(EXITED_TAIL);
+                sb.drain(..excess);
+                sb.shrink_to_fit();
+            }
         });
     }
 
@@ -418,6 +449,35 @@ async fn spawn(
         "pty",
         &format!("spawned {id} ({}) pid {pid:?} {describe} in {cwd}", provider.as_str()),
     );
+
+    // A CLI that quits on its own (`/exit`, a crash) ends its process, but
+    // on Windows the pty's output stays open for as long as the pseudoconsole
+    // does — so the reader never saw an end, the chat stayed "alive" and the
+    // exit event never came. Watch the process instead, and when it is gone
+    // let go of the input end: the writer thread ends, takes the master and
+    // with it the pseudoconsole, and the reader sees its end as it should.
+    {
+        let id = id.clone();
+        let child = Arc::clone(&child);
+        let alive = Arc::clone(&alive);
+        let app = app.clone();
+        std::thread::spawn(move || {
+            while alive.load(Ordering::SeqCst) {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                let gone = child.lock().unwrap_or_else(|e| e.into_inner()).try_wait().map(|s| s.is_some()).unwrap_or(true);
+                if !gone {
+                    continue;
+                }
+                use tauri::Manager;
+                let pm = app.state::<PtyManager>();
+                let mut sessions = pm.sessions.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(s) = sessions.get_mut(&id).filter(|s| Arc::ptr_eq(&s.alive, &alive)) {
+                    s.input_tx = Arc::new(std::sync::mpsc::channel().0);
+                }
+                break;
+            }
+        });
+    }
 
     state.sessions.lock().unwrap().insert(
         id,
@@ -507,6 +567,55 @@ fn claude_mcp_file(chat_id: &str, token: &str) -> Option<std::path::PathBuf> {
     Some(path)
 }
 
+/// Removes the hook and MCP files of sessions that are not running. Each is
+/// written afresh when its session starts or resumes, so one belonging to a
+/// chat that is gone — deleted some way other than through Luna, lost to a
+/// crash — is only clutter, and one belonging to a chat that is not running
+/// comes back when it does. Ten minutes' grace, so a file is never pulled
+/// from under a session that is being spawned right now.
+fn prune_session_files(live: &std::collections::HashSet<String>) -> usize {
+    let mut removed = 0;
+    for sub in ["hooks", "mcp"] {
+        let Ok(entries) = std::fs::read_dir(crate::paths::data_dir().join(sub)) else { continue };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(id) = path.file_stem().and_then(|s| s.to_str()) else { continue };
+            if path.extension().and_then(|e| e.to_str()) != Some("json") || live.contains(id) {
+                continue;
+            }
+            let fresh = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .is_none_or(|age| age < std::time::Duration::from_secs(600));
+            if !fresh && std::fs::remove_file(&path).is_ok() {
+                removed += 1;
+            }
+        }
+    }
+    removed
+}
+
+/// At startup and every few hours after, like the media sweep: the app can
+/// run for weeks without a restart.
+pub fn prune_session_files_periodically(app: tauri::AppHandle) {
+    use tauri::Manager;
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_secs(15 * 60));
+        let live: std::collections::HashSet<String> = {
+            let state = app.state::<PtyManager>();
+            let sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
+            sessions.keys().cloned().collect()
+        };
+        let removed = prune_session_files(&live);
+        if removed > 0 {
+            crate::log::info("pty", &format!("removed {removed} hook/mcp file(s) of sessions no longer running"));
+        }
+        std::thread::sleep(std::time::Duration::from_secs(6 * 3600 - 15 * 60));
+    });
+}
+
 /// What the activity sampler needs of a live session (activity.rs).
 pub struct ActivityProbe {
     pub id: String,
@@ -570,6 +679,12 @@ impl PtyManager {
         sessions.get(id).is_some_and(|s| s.draft.load(Ordering::Relaxed) & !DRAFT_BACKSLASH > 0)
     }
 
+    /// Whether a running session uses this account folder.
+    pub fn account_in_use(&self, account_path: &str) -> bool {
+        let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        sessions.values().any(|s| s.alive.load(Ordering::SeqCst) && same_dir(&s.account_path, account_path))
+    }
+
     pub fn alive(&self, id: &str) -> bool {
         let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
         sessions.get(id).map(|s| s.alive.load(Ordering::SeqCst)).unwrap_or(false)
@@ -606,6 +721,30 @@ impl PtyManager {
         take_and_shut_down(self, id).await;
     }
 
+    /// Whether a running session other than `id` is in this worktree: one
+    /// started in it, or (Claude Code) one that moved into it itself.
+    fn worktree_in_use_by_others(&self, id: &str, wt: &str) -> bool {
+        let norm = |p: &str| p.replace('/', "\\").trim_end_matches('\\').to_lowercase();
+        let wt = norm(wt);
+        let inside = |p: &str| {
+            let p = norm(p);
+            p == wt || p.starts_with(&format!("{wt}\\"))
+        };
+        let others: Vec<(Provider, Option<u32>, String, u128, String)> = {
+            let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+            sessions
+                .iter()
+                .filter(|(other, s)| other.as_str() != id && s.alive.load(Ordering::SeqCst))
+                .map(|(_, s)| (s.provider, s.pid, s.cwd.clone(), s.spawned_at_ms, s.account_path.clone()))
+                .collect()
+        };
+        others.iter().any(|(provider, pid, cwd, at, account)| {
+            inside(cwd)
+                || (*provider == Provider::Claude
+                    && crate::claude::session::session_cwd(*pid, cwd, *at, account).is_some_and(|real| inside(&real)))
+        })
+    }
+
     /// Tears a chat's session down: resolve its worktree, quit the process,
     /// drop attachments and the hooks file, and the worktree only if asked.
     /// Returns the worktree path either way.
@@ -633,8 +772,18 @@ impl PtyManager {
             };
             crate::worktree::is_worktree_of(folder, &scwd).then_some(scwd)
         });
+        // A helper spawned from a chat in a worktree runs in that same
+        // worktree. Dropping "its" worktree would take the other chat's work
+        // with it, so a worktree another running session is in stays.
+        let shared = resolved.as_deref().is_some_and(|wt| self.worktree_in_use_by_others(id, wt));
 
         take_and_shut_down(self, id).await;
+        // Everything else that kept count of it, so nothing keeps the chat on
+        // after it is gone: the agent registry (luna_sessions, the helper
+        // limit, its token), the turn counters, the Codex rollout it held.
+        crate::agents::forget(id);
+        crate::activity::forget(id);
+        crate::codex::session::release(id);
 
         let _ = crate::media::clear_media(id.to_string());
         for sub in ["hooks", "mcp"] {
@@ -643,6 +792,10 @@ impl PtyManager {
         crate::log::info("delete", &format!("chat {id}, worktree {resolved:?}, dropping {drop_worktree}"));
 
         match &resolved {
+            Some(wt) if drop_worktree && shared => {
+                crate::log::warn("delete", &format!("kept worktree {wt}: another running session is in it"));
+                Ok(None)
+            }
             Some(wt) if drop_worktree => {
                 crate::worktree::remove_worktree_now(folder.to_string(), wt.clone()).map(|_| resolved.clone())
             }

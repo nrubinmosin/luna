@@ -94,6 +94,86 @@ pub fn create_account(provider: Provider, name: String) -> Result<AccountInfo, S
     Ok(AccountInfo { provider, name, path })
 }
 
+/// Renames the account's folder, which is all an account's name is. Not while
+/// a session runs on it: the CLI holds files in the folder (Windows refuses the
+/// rename), and a running session would lose its config under it. The names
+/// Luna keeps elsewhere — agents' blocked list, the settings parent — follow.
+#[tauri::command]
+pub fn rename_account(
+    state: crate::pty::PtyState<'_>,
+    provider: Provider,
+    name: String,
+    to: String,
+) -> Result<AccountInfo, String> {
+    let to = to.trim().to_string();
+    let root = provider_root(provider)?;
+    let path = root.join(&name).to_string_lossy().into_owned();
+    if state.account_in_use(&path) {
+        return Err("Chats are running on this account — stop them first".into());
+    }
+    let dest = rename_in(&root, &name, &to)?;
+
+    let (old_key, new_key) = (format!("{}/{name}", provider.as_str()), format!("{}/{to}", provider.as_str()));
+    crate::settings::update(|s| {
+        for k in s.agent_blocked_accounts.iter_mut().filter(|k| **k == old_key) {
+            *k = new_key.clone();
+        }
+        let parent = match provider {
+            Provider::Claude => &mut s.settings_parents.claude,
+            Provider::Codex => &mut s.settings_parents.codex,
+        };
+        if parent.as_deref() == Some(name.as_str()) {
+            *parent = Some(to.clone());
+        }
+    })?;
+    crate::log::info("accounts", &format!("renamed {old_key} to {new_key}"));
+    Ok(AccountInfo { provider, name: to, path: dest.to_string_lossy().into_owned() })
+}
+
+/// The folder part of a rename, under one provider's root.
+fn rename_in(root: &std::path::Path, name: &str, to: &str) -> Result<PathBuf, String> {
+    validate_name(name)?;
+    validate_name(to)?;
+    let from = root.join(name);
+    let dest = root.join(to);
+    if !from.is_dir() {
+        return Err(format!("Account \"{name}\" is not there any more"));
+    }
+    // A change of case only is a rename too, and on Windows the "existing"
+    // folder is the same one.
+    if dest.exists() && !name.eq_ignore_ascii_case(to) {
+        return Err(format!("Account \"{to}\" already exists"));
+    }
+    fs::rename(&from, &dest).map_err(|e| format!("Could not rename the folder: {e}"))?;
+    Ok(dest)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_rename_moves_the_folder_and_refuses_what_it_should() {
+        let root = std::env::temp_dir().join(format!("luna-rename-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("work")).unwrap();
+        fs::create_dir_all(root.join("home")).unwrap();
+        fs::write(root.join("work").join("settings.json"), "{}").unwrap();
+
+        assert!(rename_in(&root, "work", "home").unwrap_err().contains("already exists"));
+        assert!(rename_in(&root, "work", "a/b").is_err());
+        assert!(rename_in(&root, "gone", "x").unwrap_err().contains("not there"));
+
+        let dest = rename_in(&root, "work", "office").unwrap();
+        assert!(dest.join("settings.json").is_file());
+        assert!(!root.join("work").exists());
+        // Only the case changes: still a rename.
+        rename_in(&root, "office", "Office").unwrap();
+        assert!(root.join("Office").join("settings.json").is_file());
+        let _ = fs::remove_dir_all(&root);
+    }
+}
+
 #[tauri::command]
 pub fn delete_account(provider: Provider, name: String) -> Result<(), String> {
     validate_name(&name)?;

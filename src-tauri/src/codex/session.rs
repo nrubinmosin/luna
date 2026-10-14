@@ -291,6 +291,10 @@ fn cached_first_prompt(path: &Path) -> Option<String> {
     let found = read_first_prompt(path);
     if found.is_some() {
         if let Ok(mut map) = cache.lock() {
+            // Each rollout is a conversation; the app runs for weeks.
+            if map.len() >= 512 {
+                map.clear();
+            }
             map.insert(path.to_path_buf(), found.clone());
         }
     }

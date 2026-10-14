@@ -1,6 +1,10 @@
 import { create } from 'zustand';
 import type { Account, Chat, Provider } from '../../shared/types';
 import * as ipc from '../../ipc/commands';
+// Used only inside actions (rename), never while the modules load.
+import { useChats } from '../chats/chats.store';
+import { useNewChat } from '../new-chat/newchat.store';
+import { useAgentAccounts } from '../agents/agentAccounts.store';
 
 // Folders on disk are the source of truth for the account list; limits come
 // from each provider's usage endpoint per account (zero token cost) and
@@ -25,6 +29,8 @@ interface AccountsState {
   stopPolling: () => void;
   add: (provider: Provider, name: string) => Promise<void>;
   remove: (provider: Provider, name: string) => Promise<void>;
+  /** Renames the folder, and everything that knows the account by name follows. */
+  rename: (provider: Provider, name: string, to: string) => Promise<void>;
   setAdding: (v: boolean) => void;
   setError: (e: string | null) => void;
   setLoginFor: (a: Account | null) => void;
@@ -333,6 +339,17 @@ export const useAccounts = create<AccountsState>()((set, get) => ({
     } catch (e) {
       set({ error: String(e) });
     }
+  },
+
+  rename: async (provider, name, to) => {
+    await ipc.renameAccount(provider, name, to);
+    useChats.getState().renameAccount(provider, name, to.trim());
+    const last = useNewChat.getState().lastAccount;
+    if (last?.provider === provider && last.name === name) {
+      useNewChat.setState({ lastAccount: { provider, name: to.trim() } });
+    }
+    void useAgentAccounts.getState().init();
+    await get().refresh();
   },
 
   setAdding: v => set({ adding: v, error: null }),

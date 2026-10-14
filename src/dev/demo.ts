@@ -340,6 +340,13 @@ let seeded = false;
  * and a screenshot of it is a picture of blanks. Everything else keeps the
  * caller's own fallback, and outside `?demo` this does nothing at all.
  */
+const RECOMMENDED = [
+  { key: 'tui', current: '"fullscreen"', recommended: '"fullscreen"', why: 'Draws on the alternate screen with its own scrollback.', defaultOn: true, applied: true },
+  { key: 'spinnerTipsEnabled', current: null, recommended: 'false', why: 'No tips under the spinner.', defaultOn: true, applied: false },
+  { key: 'awaySummaryEnabled', current: 'true', recommended: 'false', why: 'No recap when you come back to a pane.', defaultOn: true, applied: false },
+  { key: 'attribution', current: null, recommended: '{"commit":"","pr":"","sessionUrl":false}', why: 'No Co-Authored-By or session links in commits and PRs.', defaultOn: false, applied: false }
+];
+
 export function answer<T>(cmd: string, args: Record<string, unknown>, fallback: T): T {
   if (!seeded) return fallback;
   if (cmd === 'cli_status') return (CLI[args.provider as Provider] ?? CLI.claude) as unknown as T;
@@ -347,6 +354,19 @@ export function answer<T>(cmd: string, args: Record<string, unknown>, fallback: 
   if (cmd === 'claude_defaults') return DEFAULTS as unknown as T;
   if (cmd === 'codex_defaults') return CODEX_DEFAULTS as unknown as T;
   if (cmd === 'power_state') return POWER as unknown as T;
+  // The Accounts window's own dialogs, so they can be looked at too.
+  if (cmd === 'read_account_config') {
+    const claudeSide = args.provider === 'claude';
+    return {
+      path: `${args.accountPath}\\${claudeSide ? 'settings.json' : 'config.toml'}`,
+      text: claudeSide
+        ? '{\n  "tui": "fullscreen",\n  "spinnerTipsEnabled": false,\n  "env": {\n    "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY": "1"\n  }\n}\n'
+        : '# Luna updates Codex itself\ncheck_for_update_on_startup = false\n\n[tui]\nshow_tooltips = false\n',
+      exists: true
+    } as unknown as T;
+  }
+  if (cmd === 'recommended_settings') return RECOMMENDED as unknown as T;
+  if (cmd === 'settings_sync_state') return { claude: 'personal', codex: null, onStart: true } as unknown as T;
   return fallback;
 }
 

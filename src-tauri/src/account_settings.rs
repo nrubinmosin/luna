@@ -118,7 +118,11 @@ fn write_claude(path: &Path, v: &Value) -> Result<(), String> {
     let text = serde_json::to_string_pretty(v).map_err(|e| e.to_string())? + "\n";
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, text).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, path).map_err(|e| e.to_string())
+    // A rename refused (the CLI holding the file) leaves no temp file behind.
+    std::fs::rename(&tmp, path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        e.to_string()
+    })
 }
 
 fn json_at<'a>(v: &'a Value, path: &[&str]) -> Option<&'a Value> {
@@ -253,6 +257,72 @@ pub fn recommended_settings(provider: Provider, account_path: String) -> Result<
 pub fn apply_recommended(provider: Provider, account_path: String, keys: Vec<String>) -> Result<(), String> {
     apply(provider, &account_path, &keys)?;
     crate::log::info("settings", &format!("applied {} recommended setting(s) to {account_path}", keys.len()));
+    Ok(())
+}
+
+// ----------------------------------------------------------------- editor --
+
+/// The account's settings file as text, for editing it by hand.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigFile {
+    pub path: String,
+    pub text: String,
+    /// False when the account has no such file yet; `text` is a starting point.
+    pub exists: bool,
+}
+
+fn config_file(provider: Provider, account_path: &str) -> Result<PathBuf, String> {
+    match provider {
+        Provider::Claude => claude_file(account_path),
+        Provider::Codex => crate::codex::config::account_file(account_path),
+    }
+}
+
+/// Whether `text` is a settings file this provider can read: a JSON object
+/// for Claude Code, TOML for Codex. The message says where it breaks.
+fn check_config(provider: Provider, text: &str) -> Result<(), String> {
+    match provider {
+        Provider::Claude => match serde_json::from_str::<Value>(text) {
+            Ok(v) if v.is_object() => Ok(()),
+            Ok(_) => Err("settings.json has to be one JSON object: { … }".into()),
+            Err(e) => Err(format!("Not valid JSON: {e}")),
+        },
+        Provider::Codex => text.parse::<DocumentMut>().map(|_| ()).map_err(|e| format!("Not valid TOML: {e}")),
+    }
+}
+
+#[tauri::command]
+pub fn read_account_config(provider: Provider, account_path: String) -> Result<ConfigFile, String> {
+    let path = config_file(provider, &account_path)?;
+    let (text, exists) = match std::fs::read_to_string(&path) {
+        Ok(t) => (t, true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            (if provider == Provider::Claude { "{
+}
+".to_string() } else { String::new() }, false)
+        }
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+    };
+    Ok(ConfigFile { path: path.to_string_lossy().into_owned(), text, exists })
+}
+
+/// Writes the text as typed — comments, order and spacing are the user's —
+/// once it parses; a file that would not is never written.
+#[tauri::command]
+pub fn write_account_config(provider: Provider, account_path: String, text: String) -> Result<(), String> {
+    check_config(provider, &text)?;
+    let path = config_file(provider, &account_path)?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    let tmp = path.with_extension("edit.tmp");
+    std::fs::write(&tmp, &text).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, &path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        e.to_string()
+    })?;
+    crate::log::info("settings", &format!("{} edited by hand", path.display()));
     Ok(())
 }
 
@@ -454,6 +524,75 @@ mod tests {
         assert_eq!(doc["tui"]["show_tooltips"].as_bool(), Some(false));
         assert_eq!(doc["analytics"]["enabled"].as_bool(), Some(false));
         assert_eq!(doc["web_search"].as_str(), Some("live"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn syncing_an_account_copies_settings_and_nothing_private() {
+        let parent = dir("sync-parent");
+        let child = dir("sync-child");
+        // Claude: settings travel, the child's login and state do not.
+        std::fs::write(parent.join("settings.json"), r#"{"tui":"fullscreen","env":{"A":"1"}}"#).unwrap();
+        std::fs::write(parent.join(".credentials.json"), "parent-secret").unwrap();
+        std::fs::write(child.join("settings.json"), r#"{"model":"opus","env":{"B":"2"}}"#).unwrap();
+        std::fs::write(child.join(".credentials.json"), "child-secret").unwrap();
+        let (p, c) = (parent.to_string_lossy().into_owned(), child.to_string_lossy().into_owned());
+        sync_one(Provider::Claude, &p, &c).unwrap();
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(child.join("settings.json")).unwrap()).unwrap();
+        assert_eq!(v, json!({ "model": "opus", "env": { "B": "2", "A": "1" }, "tui": "fullscreen" }));
+        assert_eq!(std::fs::read_to_string(child.join(".credentials.json")).unwrap(), "child-secret");
+
+        // Codex: config travels with its comments, trusted folders and auth stay.
+        std::fs::write(parent.join("config.toml"), "# parent\nmodel_reasoning_effort = \"high\"\n[tui]\nshow_tooltips = false\n[projects.'C:\\\\p']\ntrust_level = \"trusted\"\n").unwrap();
+        std::fs::write(child.join("config.toml"), "# mine\n[projects.'C:\\\\c']\ntrust_level = \"trusted\"\n").unwrap();
+        std::fs::write(child.join("auth.json"), "child-auth").unwrap();
+        sync_one(Provider::Codex, &p, &c).unwrap();
+        let text = std::fs::read_to_string(child.join("config.toml")).unwrap();
+        assert!(text.contains("# mine"));
+        assert!(text.contains("C:\\\\c") && !text.contains("C:\\\\p"));
+        let doc: DocumentMut = text.parse().unwrap();
+        assert_eq!(doc["model_reasoning_effort"].as_str(), Some("high"));
+        assert_eq!(doc["tui"]["show_tooltips"].as_bool(), Some(false));
+        assert_eq!(std::fs::read_to_string(child.join("auth.json")).unwrap(), "child-auth");
+
+        // A second sync with nothing new writes nothing.
+        let before = std::fs::metadata(child.join("config.toml")).unwrap().modified().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        sync_one(Provider::Codex, &p, &c).unwrap();
+        assert_eq!(std::fs::metadata(child.join("config.toml")).unwrap().modified().unwrap(), before);
+        let _ = std::fs::remove_dir_all(&parent);
+        let _ = std::fs::remove_dir_all(&child);
+    }
+
+    #[test]
+    fn the_editor_writes_only_what_parses_and_keeps_it_as_typed() {
+        let d = dir("editor");
+        let p = d.to_string_lossy().into_owned();
+        assert!(!read_account_config(Provider::Claude, p.clone()).unwrap().exists);
+        assert!(write_account_config(Provider::Claude, p.clone(), "{ \"tui\": ".into()).is_err());
+        assert!(write_account_config(Provider::Claude, p.clone(), "[1]".into()).is_err());
+        let typed = "{
+  \"tui\":   \"fullscreen\"
+}
+";
+        write_account_config(Provider::Claude, p.clone(), typed.into()).unwrap();
+        assert_eq!(read_account_config(Provider::Claude, p.clone()).unwrap().text, typed);
+        assert!(write_account_config(Provider::Codex, p.clone(), "model = [unterminated".into()).is_err());
+        let toml = "# mine
+model = \"gpt-6\"   # keep
+";
+        write_account_config(Provider::Codex, p.clone(), toml.into()).unwrap();
+        assert_eq!(std::fs::read_to_string(d.join("config.toml")).unwrap(), toml);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_broken_settings_file_is_left_alone() {
+        let d = dir("broken");
+        std::fs::write(d.join("settings.json"), "{ not json").unwrap();
+        let p = d.to_string_lossy().into_owned();
+        assert!(apply(Provider::Claude, &p, &["tui".into()]).is_err());
+        assert_eq!(std::fs::read_to_string(d.join("settings.json")).unwrap(), "{ not json");
         let _ = std::fs::remove_dir_all(&d);
     }
 

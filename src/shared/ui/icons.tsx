@@ -14,7 +14,7 @@ export type IconName =
   | 'plus' | 'pencil' | 'trash' | 'reset' | 'sun' | 'moon' | 'auto' | 'hide' | 'show'
   | 'even' | 'gear' | 'refresh' | 'accounts' | 'key' | 'power' | 'help' | 'folder'
   | 'agents' | 'sweep' | 'download' | 'warn' | 'update' | 'close' | 'check' | 'child' | 'claude' | 'codex'
-  | 'recommend' | 'sync';
+  | 'recommend' | 'sync' | 'file';
 
 const grad = (id: string, top: string, bottom: string) => (
   <linearGradient id={id} x1="0" y1="0" x2="0" y2="1">
@@ -251,6 +251,16 @@ function draw(name: IconName, p: string): ReactNode {
           <defs>{grad(`${p}g`, '#8ec0ff', '#1f63c9')}</defs>
           <path d="M2.6 7.2A5.4 5.4 0 0 1 12.2 4.3L13.4 3v4H9.4l1.4-1.4A3.5 3.5 0 0 0 4.6 7.2z" fill={`url(#${p}g)`} stroke="#123f86" strokeLinejoin="round" />
           <path d="M13.4 8.8A5.4 5.4 0 0 1 3.8 11.7L2.6 13V9h4l-1.4 1.4a3.5 3.5 0 0 0 6.2-1.6z" fill={`url(#${p}g)`} stroke="#123f86" strokeLinejoin="round" />
+        </>
+      );
+    case 'file':
+      // A page with its corner turned: a file to edit.
+      return (
+        <>
+          <defs>{grad(`${p}g`, '#ffffff', '#dfe3ea')}</defs>
+          <path d="M3.5 1.5h6l3 3v10h-9z" fill={`url(#${p}g)`} stroke="#5b6472" strokeLinejoin="round" />
+          <path d="M9.5 1.5v3h3" fill="#c9cfd9" stroke="#5b6472" strokeLinejoin="round" />
+          <path d="M5.5 7.5h5M5.5 9.5h5M5.5 11.5h3" stroke="#2a62c9" strokeWidth=".9" strokeLinecap="round" />
         </>
       );
     case 'download':
