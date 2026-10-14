@@ -52,6 +52,25 @@ export function useKeymap(opts: { openNewChat: () => void; closeModal: () => voi
         s.setOpen(!s.open);
         return;
       }
+      // Alt+1…4 holds that pane up on the sheet, and again puts it back. Plain
+      // Alt only: AltGr arrives as Ctrl+Alt and types characters on some
+      // layouts. The CLIs bind no Alt+digit.
+      if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+        const digit = digitOf(e);
+        const panes = usePanes.getState();
+        if (digit == null || digit < 1 || digit > currentLayout(panes) || currentLayout(panes) < 2) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const i = digit - 1;
+        if (panes.peek === i) panes.closePeek();
+        else {
+          panes.setActivePane(i);
+          panes.setPeek(i);
+        }
+        focusPane(i);
+        return;
+      }
+
       const mod = e.metaKey || e.ctrlKey;
       if (!mod || e.altKey) return;
 
@@ -114,19 +133,14 @@ export function useKeymap(opts: { openNewChat: () => void; closeModal: () => voi
       }
 
       // With panes to choose between, a digit walks the keyboard into that
-      // pane; the same digit again holds it up on the sheet, and once more puts
-      // it back. With only one pane the digits count through the list instead
-      // — the same numbers the rows are wearing.
+      // pane (Alt+digit, above, holds it up instead). With only one pane the
+      // digits count through the list — the same numbers the rows are wearing.
       if (layout > 1) {
         if (digit > layout) return;
         take();
         const i = digit - 1;
-        if (panes.peek === i) panes.closePeek();
-        else if (panes.peek == null && panes.activePane === i) panes.setPeek(i);
-        else {
-          panes.closePeek();
-          panes.setActivePane(i);
-        }
+        panes.closePeek();
+        panes.setActivePane(i);
         focusPane(i);
         return;
       }

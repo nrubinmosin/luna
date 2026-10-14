@@ -44,7 +44,7 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   a new chat with nowhere to go comes up on the sheet and the board is left as arranged.
 - **Peek** is the temporary view, and looks like one: the pane is held up on a sheet with
   the board still there behind it, dimmed. Ctrl+1..4 moves the keyboard into that pane,
-  the same key again holds it up on the sheet and once more puts it back; Ctrl+Shift+W
+  Alt+1..4 holds it up on the sheet and again puts it back; Ctrl+Shift+W
   goes to the next chat waiting for you, Ctrl+Shift+B pins or hides the sidebar;
   the numbered chips in the sheet's own bar move between panes, and a click anywhere
   outside the sheet, a second click on the same chat's row or

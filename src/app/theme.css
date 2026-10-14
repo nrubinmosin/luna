@@ -803,8 +803,9 @@ body { margin: 0; overflow: hidden; }
 }
 [data-app] .dock[data-shown="no"] > .taskpane { transform: translateX(-100%); pointer-events: none; }
 [data-app] .dock[data-mode="hidden"][data-shown="yes"] > .taskpane { box-shadow: 8px 0 28px rgba(0, 0, 0, .35); }
-/* Hidden, the sidebar takes no width at all: an invisible band at the left
-   edge, over the board's own margin, is what the hover finds. */
+/* Hidden, the sidebar takes no width at all: an invisible band over the
+   board's margin is what the hover finds at the very edge, and App's Dock
+   answers a little further in as well (see EDGE). */
 [data-app] .dock-strip {
   position: absolute;
   top: 0;
