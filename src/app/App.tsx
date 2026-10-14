@@ -23,6 +23,8 @@ import { useUpdates } from '../features/updates/updates.store';
 import { useCli } from '../features/updates/cli.store';
 import { UpdateConfirm } from '../features/updates/UpdateConfirm';
 import { useKeymap } from './keymap';
+import { useAltPeek } from '../features/panes/altPeek';
+import { ShortcutsDialog } from '../features/shortcuts/ShortcutsDialog';
 import { healScaleDrift } from './dpi';
 import './theme.css';
 
@@ -115,6 +117,7 @@ export function App() {
   const openNewChat = useCallback(() => useNewChat.getState().openDialog(), []);
   const closeModal = useCallback(() => useNewChat.getState().close(), []);
   useKeymap({ openNewChat, closeModal });
+  useAltPeek();
   useSessionWatch();
   useAgentBridge();
   useEffect(() => {
@@ -289,6 +292,7 @@ export function App() {
       {loginFor && <LoginModal account={loginFor} />}
       {/* Raised by the settings dialog or the status-bar chip alike. */}
       <UpdateConfirm />
+      <ShortcutsDialog />
     </div>
   );
 }

@@ -96,6 +96,10 @@ interface PanesState {
   autoPlace: (chatId: string) => void;
   /** One click in the sidebar — see the comment on the implementation. */
   showChat: (chatId: string) => void;
+  /** Brings a chat up the way showChat does, minus the toggle and the swap. */
+  previewChat: (chatId: string) => void;
+  /** Moves the sheet to the next (1) or previous (-1) pane that holds a chat. */
+  cyclePeek: (dir: 1 | -1) => void;
   setOver: (i: number) => void;
   setDrag: (id: string | null) => void;
   setDragPane: (i: number | null) => void;
@@ -241,7 +245,8 @@ export const usePanes = create<PanesState>()(
        * chat full size, the same as in the one-pane layout: a chat already on
        * the board is held up on the sheet from its own pane, and a chat that
        * is not on it comes up as a sheet of its own. Either way the board is
-       * left exactly as it was.
+       * left exactly as it was. Clicking the row of the chat that is already
+       * up puts it back, the same toggle Ctrl+<digit> is.
        */
       showChat: chatId =>
         set(s => {
@@ -251,8 +256,39 @@ export const usePanes = create<PanesState>()(
             return { ...withBoard(s, slots), activePane: 0, ...NO_PEEK };
           }
           const i = currentSlots(s).indexOf(chatId);
+          if (i < 0 || i >= currentLayout(s)) {
+            return s.peekChat === chatId ? NO_PEEK : { peekChat: chatId, peek: null };
+          }
+          return s.peek === i ? NO_PEEK : { activePane: i, peek: i, peekChat: null };
+        }),
+
+      /**
+       * Holding Alt over a row in the list. The same sheet a click would raise,
+       * except it never puts a sheet back and never rewrites the one-pane
+       * board: a glance must leave everything as it found it once Alt is let
+       * go. A chat already in the single pane is on screen as it is.
+       */
+      previewChat: chatId =>
+        set(s => {
+          const i = currentSlots(s).indexOf(chatId);
           if (i < 0 || i >= currentLayout(s)) return { peekChat: chatId, peek: null };
-          return { activePane: i, peek: i, peekChat: null };
+          return currentLayout(s) === 1 ? NO_PEEK : { peek: i, peekChat: null };
+        }),
+
+      // Empty panes are skipped: an empty sheet has no title bar to leave by.
+      // From a chat with no seat on the board the walk starts at either end;
+      // with one pane the board itself is the only other place to go.
+      cyclePeek: dir =>
+        set(s => {
+          const n = currentLayout(s);
+          if (n === 1) return NO_PEEK;
+          const slots = currentSlots(s);
+          const from = s.peek ?? (dir > 0 ? -1 : n);
+          for (let step = 1; step <= n; step++) {
+            const i = (((from + dir * step) % n) + n) % n;
+            if (slots[i] && i !== s.peek) return { peek: i, peekChat: null, activePane: i };
+          }
+          return s;
         }),
 
       setOver: i => set({ over: i }),

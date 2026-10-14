@@ -30,9 +30,14 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   in a particular pane, and panes swap by dragging one title bar onto another.
 - **Peek** is the temporary view, and looks like one: the pane is held up on a sheet with
   the board still there behind it, dimmed. Ctrl+1..4 holds up that pane and puts it back,
-  the numbered chips in the sheet's own bar move between panes in a click, and the dimmed
-  board, the Return button or Ctrl+0 all go back. Double-clicking a pane's title bar does
-  the same. Escape is deliberately left alone — it is how the CLI is interrupted.
+  the numbered chips in the sheet's own bar and Ctrl+Tab / Ctrl+Shift+Tab move between
+  panes, and a click anywhere outside the sheet, a second click on the same chat's row or
+  on the chip of the pane that is up, the mouse's Back button, the Return button or Ctrl+0
+  all go back. Holding Alt over a chat in the list is a glance: the chat comes up on the
+  sheet and letting go of Alt puts back what was there (a click keeps it). Escape is
+  deliberately left alone — it is how the CLI is interrupted.
+- F1, or the **?** in the status bar, lists every shortcut and mouse gesture. The chrome
+  does not select as text, so a drag across the sidebar paints nothing blue.
 - Luna claims its shortcuts in the capture phase, so they work while a terminal has focus;
   everything it does not claim travels on to the CLI untouched.
 - Terminals outlive the pane that showed them: the last three put down wait off-screen with

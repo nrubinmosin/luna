@@ -129,6 +129,14 @@ a:hover { text-decoration: underline; }
 .hover-bg:hover { background: var(--hover) !important; }
 .hover-danger:hover { background: oklch(.63 .19 25 / .16) !important; color: oklch(.58 .2 25) !important; }
 
+/* An app, not a page: a drag across the sidebar or a stray double-click on a
+   label painted the chrome in selection blue. Fields stay selectable, and the
+   terminals keep theirs — xterm draws its own selection and copies it itself. */
+[data-app] { -webkit-user-select: none; user-select: none; }
+[data-app] input,
+[data-app] textarea,
+[data-app] [contenteditable] { -webkit-user-select: text; user-select: text; }
+
 .xterm .xterm-viewport { background: transparent !important; }
 /* xterm gives its viewport overflow-y: scroll unconditionally, so every chat
    carried a scrollbar down the side of the pane — 16px of terminal spent on

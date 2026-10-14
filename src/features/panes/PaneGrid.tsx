@@ -126,11 +126,12 @@ function PaneChip({ index }: { index: number }) {
 
   return (
     <span
-      onClick={() => usePanes.getState().setPeek(index)}
+      // The chip of the pane already up puts it back, as its Ctrl+<digit> does.
+      onClick={() => usePanes.getState().setPeek(on ? null : index)}
       title={
-        chat
-          ? `${chat.name}\nCtrl+${index + 1}`
-          : `Pane ${index + 1} is empty\nCtrl+${index + 1}`
+        (chat ? chat.name : `Pane ${index + 1} is empty`) +
+        `\nCtrl+${index + 1}` +
+        (on ? ' — click again to go back to the grid' : '')
       }
       className={on ? undefined : 'hover-bg'}
       style={{
@@ -180,7 +181,7 @@ function PeekBar({ name }: { name: string | null }) {
       </span>
       <button
         onClick={() => usePanes.getState().closePeek()}
-        title="Back to the grid — Ctrl+0"
+        title={"Back to the grid — Ctrl+0\nor a click anywhere outside the sheet, or on this chat's row in the list"}
         className="slim"
         style={{ flex: 'none', height: 19, padding: '0 8px' }}
       >
@@ -203,7 +204,7 @@ function Sheet({ index, children }: { index: number; children: ReactNode }) {
   const name = useChats(s => s.findChat(chatId)?.name ?? null);
 
   return (
-    <div style={peeked ? sheetStyle : inFlowStyle}>
+    <div style={peeked ? sheetStyle : inFlowStyle} data-peek-sheet={peeked || undefined}>
       {peeked && <PeekBar name={name} />}
       {children}
     </div>
@@ -214,7 +215,7 @@ function Sheet({ index, children }: { index: number; children: ReactNode }) {
 function ChatSheet({ chatId }: { chatId: string }) {
   const name = useChats(s => s.findChat(chatId)?.name ?? null);
   return (
-    <div style={sheetStyle}>
+    <div style={sheetStyle} data-peek-sheet>
       <PeekBar name={name} />
       <Pane soloChat={chatId} />
     </div>
@@ -226,6 +227,42 @@ export function PaneGrid() {
   const { col, rowL, rowR } = usePanes(currentSplits);
   const peekChat = usePanes(s => s.peekChat);
   const up = usePanes(peeking);
+
+  // A press anywhere in the app outside the sheet puts it back — the sidebar,
+  // the toolbar, the dimmed board around it. Exceptions: a chat row, whose own
+  // click switches the sheet or, on the chat already up, closes it; the
+  // window's title bar, which drags the window; and dialogs, which all sit
+  // outside .app-body — a delete confirmation raised from the sheet's
+  // own title bar must not drop the sheet under it. Capture phase, so nothing
+  // that stops a mousedown on its way down can keep the sheet up by accident.
+  // The mouse's Back button goes back from anywhere, the sheet included.
+  useEffect(() => {
+    if (!up) return;
+    const onDown = (e: MouseEvent) => {
+      if (e.button === 3) {
+        e.preventDefault();
+        usePanes.getState().closePeek();
+        return;
+      }
+      if (e.button !== 0) return;
+      const t = e.target instanceof Element ? e.target : null;
+      if (!t?.closest('.app-body') || t.closest('[data-peek-sheet], .chat-row')) return;
+      usePanes.getState().closePeek();
+    };
+    document.addEventListener('mousedown', onDown, true);
+    return () => document.removeEventListener('mousedown', onDown, true);
+  }, [up]);
+
+  // The webview acts on the mouse's Back and Forward buttons as a browser
+  // does, on their release: a page with any history behind it would navigate
+  // away from the app. Luna's only use for Back is the one above.
+  useEffect(() => {
+    const onUp = (e: MouseEvent) => {
+      if (e.button === 3 || e.button === 4) e.preventDefault();
+    };
+    document.addEventListener('mouseup', onUp, true);
+    return () => document.removeEventListener('mouseup', onUp, true);
+  }, []);
 
   const pane = (i: number) => (
     <Sheet index={i}>
@@ -270,11 +307,10 @@ export function PaneGrid() {
       )}
 
       {/* Dimming the board rather than replacing it is what says "for a
-          moment" without a word of explanation, and clicking it is the way
-          out that needs no keyboard. */}
+          moment" without a word of explanation. Clicking it goes back, like
+          any press outside the sheet — see the effect above. */}
       {up && (
         <div
-          onClick={() => usePanes.getState().closePeek()}
           title="Back to the grid"
           style={{ position: 'absolute', inset: 0, zIndex: 40, background: 'rgba(0,0,0,.5)', cursor: 'default' }}
         />
