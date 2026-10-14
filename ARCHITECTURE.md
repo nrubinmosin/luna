@@ -24,7 +24,7 @@ src/                          фронт (feature-sliced)
   app/        App (док сайдбара: закреплён или выезжает по наведению), AppFrame + BoardTools
               (раскладки, группы, Even out, Clear, тема — в титлбаре окна), shell.store
               (тема, закреп и ширина сайдбара), theme.css (токены light/dark и все контролы),
-              keymap: Ctrl+N / Ctrl+Shift+N, Ctrl+1..4 (фокус панели, повторно — peek),
+              keymap: Ctrl+N / Ctrl+Shift+N, Ctrl+1..4 (фокус панели), Alt+1..4 (peek),
               Ctrl+Shift+W (следующий ждущий), Ctrl+Shift+B (сайдбар), Ctrl+Tab (следующая группа),
               Ctrl+0 (выход), Ctrl+Shift+1..4 (раскладка), F1 (шорткаты) — слушается в
               capture-фазе, иначе xterm гасит их до window

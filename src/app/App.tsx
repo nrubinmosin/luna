@@ -24,6 +24,11 @@ import { STRIP, useShell } from './shell.store';
 import { uiHeartbeat } from '../ipc/commands';
 import './theme.css';
 
+/** How far in from the window's left edge the pointer brings a hidden
+ *  sidebar out: the board's margin and the terminal's own padding, so it
+ *  reaches in without covering a character of text. */
+const EDGE = 24;
+
 /**
  * The sidebar. Pinned, it holds its width in the row. Unpinned, it takes none:
  * resting the pointer at the window's left edge slides it out over the board
@@ -38,22 +43,50 @@ function Dock() {
   const setHover = useShell.getState().setOverlay;
   const [resizing, setResizing] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  /** Which way the pending timer goes, so a pointer still moving does not
+   *  keep putting the slide-out off. */
+  const pending = useRef<'show' | 'hide' | null>(null);
   useEffect(() => () => clearTimeout(timer.current), []);
 
   const shown = pinned || hover;
   // Out at once — a beat is enough to let a pointer that only crosses the
   // edge pass — and away a little later, so overshooting the sidebar by a few
   // pixels does not lose it.
-  const enter = () => {
-    if (pinned) return;
+  const schedule = (to: 'show' | 'hide', ms: number) => {
     clearTimeout(timer.current);
-    timer.current = setTimeout(() => setHover(true), 40);
+    pending.current = to;
+    timer.current = setTimeout(() => {
+      pending.current = null;
+      setHover(to === 'show');
+    }, ms);
+  };
+  const enter = () => {
+    if (!pinned && pending.current !== 'show') schedule('show', 40);
   };
   const leave = () => {
-    if (pinned) return;
-    clearTimeout(timer.current);
-    timer.current = setTimeout(() => setHover(false), 280);
+    if (!pinned) schedule('hide', 280);
   };
+  const cancel = () => {
+    if (pending.current !== 'show') return;
+    clearTimeout(timer.current);
+    pending.current = null;
+  };
+
+  // The edge band reaches over the panes' left padding too, where the band
+  // element cannot go without covering the panes. Not over a title bar: its
+  // first button sits right there and must stay clickable.
+  useEffect(() => {
+    if (pinned) return;
+    const onMove = (e: MouseEvent) => {
+      if (useShell.getState().overlay) return;
+      const t = e.target instanceof Element ? e.target : null;
+      if (e.clientX <= EDGE && !t?.closest('.title-bar, .dock')) enter();
+      else if (e.clientX > EDGE && !t?.closest('.dock')) cancel();
+    };
+    window.addEventListener('mousemove', onMove);
+    return () => window.removeEventListener('mousemove', onMove);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pinned]);
 
   const startResize = (e: React.MouseEvent) => {
     e.preventDefault();
