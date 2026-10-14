@@ -22,13 +22,15 @@ Desktop-обёртка над Claude Code CLI и Codex CLI. Принцип: **в
 ```
 src/                          фронт (feature-sliced)
   app/        App, theme.css (токены light/dark), keymap: Ctrl+N / Ctrl+Shift+N,
-              Ctrl+1..4 (peek), Ctrl+0 (выход), Ctrl+Shift+1..4 (раскладка) —
-              слушается в capture-фазе, иначе xterm гасит их до window
+              Ctrl+1..4 (peek), Ctrl+Tab (по листу), Ctrl+0 (выход), Ctrl+Shift+1..4
+              (раскладка), F1 (шорткаты) — слушается в capture-фазе, иначе xterm
+              гасит их до window
   shared/     types, format, status
   features/
     chats/    сайдбар: папки + чаты (drag source, клик = показать), chats.store
     panes/    сетка 1/2/3/4, Pane (drop target), Terminal (xterm), panes.store;
               peek — лист поверх притемнённой доски, той же панелью без перемонтирования;
+              altPeek.ts — взгляд на чат, пока над его строкой зажат Alt;
               terminals.ts — реестр живых xterm'ов, переживающих свои панели
     new-chat/ диалог создания: папка, аккаунт (он же выбирает провайдера), чекбокс
               "Git worktree" (по умолчанию вкл), дальше поля провайдера (Fields из
@@ -43,6 +45,7 @@ src/                          фронт (feature-sliced)
     status-bar/ часы, сводка, лимиты аккаунтов; чип обновления — только когда есть новость
     power/    чип ⏻ и меню: keep-awake, взвод «выключить/усыпить, когда всё закончится»;
               power.store слушает power://state, сам ничего не считает
+    shortcuts/ окно F1 / «?» в статус-баре: все шорткаты и жесты мышью одним списком
     agents/   bridge.ts — фронтовая половина агентов: agent://spawn → createChat с parentId
               и ensure_* с промптом → agent_spawned; agent://deleted → deleteChat;
               agentAccounts.store — какие аккаунты агентам нельзя (settings.json ядра)

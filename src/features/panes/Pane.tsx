@@ -161,13 +161,6 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
               setDragPane(null);
               setOver(-1);
             }}
-            // The bar itself holds the pane up as its own sheet, same as its
-            // Peek control; children with a double-click of their own stop the
-            // bubble.
-            onDoubleClick={() => {
-              if (soloChat) setPeekChat(null);
-              else if (layout > 1) setPeek(peeked ? null : index);
-            }}
             className="title-bar"
             // Inline wins over xp.css's Luna-blue gradient and frame colours,
             // so an unset chat colour leaves the stock look untouched.
@@ -182,9 +175,6 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
             }}
           >
             <StatusDot status={chat.status} />
-            {/* Status chips sit before the name, so the left end of the bar is
-                free of the name span's rename double-click and a double-click
-                near the corner reaches the bar’s peek toggle. */}
             <span title={`${t!.parent} / ${t!.leaf}`} style={{ ...softChip, maxWidth: 90 }}>
               {t!.leaf}
             </span>
@@ -219,8 +209,6 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
                   if (e.key === 'Escape') setEditing(false);
                 }}
                 onClick={e => e.stopPropagation()}
-                // Double-clicking a word to select it is not a peek toggle.
-                onDoubleClick={e => e.stopPropagation()}
                 type="text"
                 style={{ flex: '1 1 auto', minWidth: 40, height: 'calc(var(--ui) * 1.4)' }}
               />
@@ -255,7 +243,6 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
                     })
                     .catch(() => {});
                 }}
-                onDoubleClick={e => e.stopPropagation()}
                 title={`Session ${chat.sessionId}\nClick to copy ${shortSessionId(chat.sessionId)}`}
                 style={{ ...chip, fontFamily: '"JetBrains Mono", monospace', cursor: 'default', minWidth: '8ch', textAlign: 'center' }}
               >
@@ -263,10 +250,7 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
               </span>
             )}
 
-            <span
-              onDoubleClick={e => e.stopPropagation()}
-              style={{ position: 'relative', flex: 'none', display: 'flex', alignItems: 'center' }}
-            >
+            <span style={{ position: 'relative', flex: 'none', display: 'flex', alignItems: 'center' }}>
               <span
                 onClick={e => {
                   e.stopPropagation();
@@ -322,7 +306,7 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
               )}
             </span>
 
-            <span className="title-bar-controls" onDoubleClick={e => e.stopPropagation()} style={{ flex: 'none' }}>
+            <span className="title-bar-controls" style={{ flex: 'none' }}>
               <button
                 aria-label="Delete"
                 title="Delete chat — same confirmation as the list"

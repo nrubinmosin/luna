@@ -74,10 +74,12 @@ export function ChatRow({
       // swaps to this chat — dragging a row across an empty board to the one
       // place it can go was the ceremony this replaces. With more panes the
       // board is an arrangement, so the chat comes up on the peek sheet
-      // instead of pushing something out. See showChat.
-      onClick={() => {
+      // instead of pushing something out, and a second click on the same row
+      // puts it back. See showChat. With Alt down the row is already up from
+      // the hover (useAltPeek), and the click only keeps it there.
+      onClick={e => {
         setActive(chat.id);
-        showChat(chat.id);
+        if (!e.altKey) showChat(chat.id);
       }}
       onMouseEnter={() => setSpot(chat.id)}
       onMouseLeave={() => setSpot(null)}
