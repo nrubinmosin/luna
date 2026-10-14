@@ -803,36 +803,15 @@ body { margin: 0; overflow: hidden; }
 }
 [data-app] .dock[data-shown="no"] > .taskpane { transform: translateX(-100%); pointer-events: none; }
 [data-app] .dock[data-mode="hidden"][data-shown="yes"] > .taskpane { box-shadow: 8px 0 28px rgba(0, 0, 0, .35); }
+/* Hidden, the sidebar takes no width at all: an invisible band at the left
+   edge, over the board's own margin, is what the hover finds. */
 [data-app] .dock-strip {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  justify-content: center;
-  padding-top: 12px;
-  background: var(--taskpane);
-  border-right: 1px solid var(--line);
-  transition: background .15s;
-}
-/* The board's own 8px margin beside the strip answers the hover too, so
-   the pointer need not find the strip itself. */
-[data-app] .dock-strip::after {
-  content: "";
   position: absolute;
   top: 0;
   bottom: 0;
-  left: 100%;
+  left: 0;
   width: 10px;
 }
-[data-app] .dock-strip::before {
-  content: "";
-  width: 3px;
-  height: 36px;
-  border-radius: 2px;
-  background: var(--faint);
-  opacity: .55;
-  transition: opacity .12s, height .12s;
-}
-[data-app] .dock-strip:hover::before { opacity: 1; height: 52px; }
 [data-app] .dock-grip {
   position: absolute;
   top: 0;

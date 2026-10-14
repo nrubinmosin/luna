@@ -26,9 +26,9 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   themed. The whole interface scales from one variable, `--ui` in `src/app/theme.css`,
   and follows Windows' own text-size setting on top of that.
 - The window's title bar carries the board's controls: the sidebar button, the four
-  layouts, the four window groups, Even out, Clear and the theme. Hiding the sidebar
-  leaves a strip at the left edge; resting the pointer on it slides the sidebar out over
-  the board until the pointer leaves, and the title bar's button pins it back.
+  layouts, the four window groups, Even out, Clear and the theme. A hidden sidebar takes
+  no room at all: resting the pointer at the window's left edge slides it out over the
+  board until the pointer leaves, and the title bar's button pins it back.
 - Only the pane you are working in wears its full colour; the others go pale, the way XP
   drew inactive windows. A chat waiting for you flashes its title bar orange like an XP
   taskbar button, and over a pane you are not in a balloon says so.

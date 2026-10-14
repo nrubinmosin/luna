@@ -25,10 +25,10 @@ import { uiHeartbeat } from '../ipc/commands';
 import './theme.css';
 
 /**
- * The sidebar. Pinned, it holds its width in the row. Unpinned, it leaves a
- * strip; resting the pointer on the strip slides the sidebar out over the
- * board (which keeps its size), and leaving it slides it away again — never
- * pinned by the hover itself. The title bar's button pins and unpins.
+ * The sidebar. Pinned, it holds its width in the row. Unpinned, it takes none:
+ * resting the pointer at the window's left edge slides it out over the board
+ * (which keeps its size), and leaving it slides it away again — never pinned
+ * by the hover itself. The title bar's button pins and unpins.
  */
 function Dock() {
   const pinned = useShell(s => s.pinned);
@@ -82,7 +82,7 @@ function Dock() {
       onMouseLeave={leave}
       style={{ width: pinned ? width : STRIP, transition: resizing ? 'none' : undefined }}
     >
-      {!pinned && <div className="dock-strip" title="Hover to bring the sidebar out" />}
+      {!pinned && <div className="dock-strip" />}
       {/* Hidden rather than unmounted: the list keeps its scroll, and coming
           back costs a repaint. */}
       <div className="taskpane" style={{ width }} aria-hidden={!shown}>
