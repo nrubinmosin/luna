@@ -21,6 +21,9 @@ export type ChatSpec = {
    *  not seated in a pane — the parent is what the user is watching. */
   parentId?: string;
   name?: string;
+  /** An existing worktree of `folder` to run in — a helper's caller's. The
+   *  chat is filed under the project and does not own the worktree. */
+  inWorktree?: string;
 } & ({ provider: 'claude'; settings: ClaudeSettings } | { provider: 'codex'; settings: CodexSettings });
 
 /**
@@ -41,7 +44,7 @@ export async function createChat(spec: ChatSpec): Promise<string> {
 
   // Claude Code makes its own worktree from `--worktree`; Codex gets one made
   // for it here, before the row exists, so the path is known from the start.
-  let worktreePath: string | null = null;
+  let worktreePath: string | null = spec.inWorktree ?? null;
   if (spec.provider === 'codex' && spec.worktree) {
     worktreePath = await createWorktree(spec.folder);
   }

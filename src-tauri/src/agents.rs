@@ -132,6 +132,9 @@ pub struct SpawnParams {
 struct SpawnRequest {
     request_id: u64,
     parent_id: String,
+    /// A worktree the helper is to run in without owning it: its caller's.
+    /// The chat is filed under `folder`, the worktree's project.
+    in_worktree: Option<String>,
     #[serde(flatten)]
     params: SpawnParams,
 }
@@ -153,8 +156,11 @@ struct Registry {
     pending: HashMap<u64, std::sync::Arc<(Mutex<Pending>, Condvar)>>,
     /// Spawns whose caller stopped waiting (SPAWN_TIMEOUT), by request id:
     /// the caller to hand the chat to should the frontend still make it.
-    abandoned: HashMap<u64, String>,
+    abandoned: HashMap<u64, (String, bool)>,
     next_request: u64,
+    /// Helpers that run in a worktree they were handed rather than made:
+    /// deleting one never drops that worktree, whose work is its caller's.
+    borrowed: std::collections::HashSet<String>,
     /// The `turnsEnded` each caller was last shown for each session, by
     /// (caller, session). `wait(turn_done)` without `afterTurn` waits for a
     /// turn past that — the one the caller has not seen — rather than past
@@ -195,6 +201,7 @@ fn reg() -> &'static Mutex<Registry> {
             known: HashMap::new(),
             pending: HashMap::new(),
             abandoned: HashMap::new(),
+            borrowed: Default::default(),
             next_request: 1,
             seen: HashMap::new(),
             names: HashMap::new(),
@@ -692,7 +699,7 @@ pub fn spawn(caller: &str, mut params: SpawnParams) -> Result<Spawned, String> {
     // Off the registry lock: this reads the CLI's registry from disk. A
     // helper works where its caller does, worktree and all.
     let worktree = if params.folder.is_none() { caller_worktree(caller) } else { None };
-    let (request_id, slot) = {
+    let (request_id, slot, in_worktree) = {
         let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
         let me = r.known.get(caller).cloned().ok_or("caller is not a registered session")?;
         if descendants(&r, caller).len() >= MAX_DESCENDANTS {
@@ -703,6 +710,16 @@ pub fn spawn(caller: &str, mut params: SpawnParams) -> Result<Spawned, String> {
         }
         if params.folder.is_none() {
             params.folder = Some(worktree.unwrap_or_else(|| me.folder.clone()));
+        }
+        // A folder inside a Luna-made worktree files the chat under the
+        // worktree's project, like the chat it came from; it runs in that
+        // worktree unless it asked for one of its own.
+        let mut in_worktree = None;
+        if let Some(project) = params.folder.as_deref().and_then(crate::worktree::project_of) {
+            let wt = params.folder.replace(project);
+            if !params.worktree.unwrap_or(false) {
+                in_worktree = wt;
+            }
         }
         let provider = match params.provider.as_deref() {
             None => me.provider,
@@ -738,11 +755,12 @@ pub fn spawn(caller: &str, mut params: SpawnParams) -> Result<Spawned, String> {
         r.next_request += 1;
         let slot = std::sync::Arc::new((Mutex::new(Pending::default()), Condvar::new()));
         r.pending.insert(id, slot.clone());
-        (id, slot)
+        (id, slot, in_worktree)
     };
 
     let Some(app) = app() else { return Err("app not ready".into()) };
-    crate::emit::to_ui(app, "agent://spawn", SpawnRequest { request_id, parent_id: caller.to_string(), params });
+    let borrowed = in_worktree.is_some();
+    crate::emit::to_ui(app, "agent://spawn", SpawnRequest { request_id, parent_id: caller.to_string(), in_worktree, params });
 
     let (lock, cv) = &*slot;
     let mut p = lock.lock().unwrap_or_else(|e| e.into_inner());
@@ -763,7 +781,7 @@ pub fn spawn(caller: &str, mut params: SpawnParams) -> Result<Spawned, String> {
         if outcome.is_none() {
             // The frontend may still make the chat (a slow trust write, a
             // worktree): `agent_spawned` then hands it to the caller.
-            r.abandoned.insert(request_id, caller.to_string());
+            r.abandoned.insert(request_id, (caller.to_string(), borrowed));
         }
     }
     if outcome.is_none() {
@@ -774,7 +792,12 @@ pub fn spawn(caller: &str, mut params: SpawnParams) -> Result<Spawned, String> {
         }
     }
     let id = match outcome {
-        Some(Ok(id)) => id,
+        Some(Ok(id)) => {
+            if borrowed {
+                reg().lock().unwrap_or_else(|e| e.into_inner()).borrowed.insert(id.clone());
+            }
+            id
+        }
         Some(Err(e)) => return Err(e),
         None => {
             return Err(format!(
@@ -820,11 +843,14 @@ pub fn agent_spawned(request_id: u64, chat_id: Option<String>, name: Option<Stri
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
     let Some(slot) = r.pending.get(&request_id).cloned() else {
         let caller = r.abandoned.remove(&request_id);
+        if let (Some((_, true)), Some(id)) = (&caller, &chat_id) {
+            r.borrowed.insert(id.clone());
+        }
         drop(r);
         // Too late for the caller's spawn, not for the caller: the session
         // registered as its child, so `luna_list` shows it, and the answer
         // to its prompt is owed like any other.
-        if let (Some(caller), Some(id)) = (caller, chat_id) {
+        if let (Some((caller, _)), Some(id)) = (caller, chat_id) {
             crate::log::warn("agents", &format!("session {id} for {caller} came up after its spawn timed out"));
             shown(&caller, &id, 0);
             owe(&caller, &id, 0);
@@ -1128,18 +1154,21 @@ pub fn kill(caller: &str, id: &str) -> Result<(), String> {
 }
 
 /// Stops the session, removes its attachments and — when asked — the
-/// worktree it ran in, then tells the frontend to drop the row. A session's
-/// own children are left where they are, orphaned.
+/// worktree it made (never one it was handed), then tells the frontend to
+/// drop the row. Returns the worktree removed, if any. A session's own
+/// children are left where they are, orphaned.
 pub fn delete(caller: &str, id: &str, drop_worktree: bool) -> Result<Option<String>, String> {
     let known = authorize(caller, id)?;
     let app = app().ok_or("app not ready")?;
     let pty = app.state::<crate::pty::PtyManager>();
     // A Codex helper in a worktree knows the worktree as its folder.
     let folder = crate::worktree::project_of(&known.folder).unwrap_or(known.folder);
+    let drop_worktree = drop_worktree && !reg().lock().unwrap_or_else(|e| e.into_inner()).borrowed.contains(id);
     // PtyManager::delete forgets the session here too (see `forget`).
     let worktree = tauri::async_runtime::block_on(pty.delete(id, &folder, &known.account_path, None, drop_worktree))?;
     crate::emit::to_ui(app, "agent://deleted", Deleted { id: id.to_string() });
-    Ok(worktree)
+    // Without the drop, `delete` names the worktree that stays.
+    Ok(worktree.filter(|_| drop_worktree))
 }
 
 /// A chat is gone, however it was deleted: nothing here may keep it — not in
@@ -1152,7 +1181,8 @@ pub fn forget(id: &str) {
     r.seen.retain(|(_, chat), _| chat != id);
     r.owed.retain(|(who, chat), _| who != id && chat != id);
     r.answered.retain(|(who, chat), _| who != id && chat != id);
-    r.abandoned.retain(|_, caller| caller != id);
+    r.abandoned.retain(|_, (caller, _)| caller != id);
+    r.borrowed.remove(id);
     drop(r);
     transcripts().lock().unwrap_or_else(|e| e.into_inner()).remove(id);
 }

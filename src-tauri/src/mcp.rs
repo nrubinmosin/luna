@@ -133,7 +133,7 @@ fn tools() -> Value {
         },
         {
             "name": "luna_delete",
-            "description": "Stop a session and remove its row; dropWorktree also deletes the worktree and branch it ran in.",
+            "description": "Stop a session and remove its row; dropWorktree also deletes the worktree and branch it made; one shared with you stays.",
             "inputSchema": s(json!({ "id": { "type": "string" }, "dropWorktree": { "type": "boolean" } }), &["id"]),
             "annotations": ends
         }

@@ -105,7 +105,8 @@ async function spawn(req: AgentSpawnRequest): Promise<void> {
           provider: 'codex' as const,
           settings: await codexSettings(req, (await codex.settingsDefaults(account.path, folder)).values, account)
         };
-  const id = await createChat({ ...spec, folder, account, worktree, tools, parentId: parent?.id, name });
+  const inWorktree = req.inWorktree ?? undefined;
+  const id = await createChat({ ...spec, folder, account, worktree, tools, parentId: parent?.id, name, inWorktree });
   const chat = useChats.getState().findChat(id);
   const common = {
     chatId: id,
@@ -123,8 +124,9 @@ async function spawn(req: AgentSpawnRequest): Promise<void> {
     }
   } catch (e) {
     // No session to go with the row: a row that sits there failing to start
-    // is one nobody asked for. A worktree made for it goes too, unused.
-    void deleteSession(id, folder, account.path, chat?.worktreePath ?? null, true).catch(() => {});
+    // is one nobody asked for. A worktree made for it goes too, unused; one
+    // it was handed is its caller's.
+    void deleteSession(id, folder, account.path, chat?.worktreePath ?? null, !inWorktree).catch(() => {});
     useChats.getState().deleteChat(id);
     throw e;
   }
