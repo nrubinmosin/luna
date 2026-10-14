@@ -55,6 +55,28 @@ const reviveGroup = (g: Partial<Group> | undefined): Group => ({
 const reviveGroups = (list: unknown): Group[] =>
   GROUPS.map(i => reviveGroup(Array.isArray(list) ? (list[i] as Partial<Group> | undefined) : undefined));
 
+/**
+ * Each layout's panes in the order auto-tile fills them. Growing a board by one
+ * keeps every chat where it was and puts the newcomer in the one new place:
+ * 1 → 2 opens the right half, 2 → 3 splits the right column, and 3 → 4 splits
+ * the left one — layout 3's right column is slots 1 and 2, layout 4's is 1 and
+ * 3, so the old bottom-right chat moves to slot 3 and the new one takes slot 2,
+ * bottom-left. Shrinking walks the same order back.
+ */
+const TILE_ORDER: Record<Layout, number[]> = { 1: [0], 2: [0, 1], 3: [0, 1, 2], 4: [0, 1, 3, 2] };
+
+/** The chats on a group's live board, in tile order. */
+const seatedChats = (g: Group): string[] =>
+  TILE_ORDER[g.layout].map(i => g.boards[g.layout][i]).filter((x): x is string => !!x);
+
+/** The group re-laid as exactly as many panes as it has chats (one at least). */
+const tiled = (g: Group, chats: string[]): Group => {
+  const n = Math.min(4, Math.max(1, chats.length)) as Layout;
+  const slots = emptySlots();
+  chats.slice(0, 4).forEach((id, i) => (slots[TILE_ORDER[n][i]] = id));
+  return { ...g, layout: n, boards: { ...g.boards, [n]: slots } };
+};
+
 interface PanesState {
   group: GroupId;
   /**
@@ -84,7 +106,16 @@ interface PanesState {
   peekChat: string | null;
   /** The pane last worked in — a new chat takes its folder and account after it. */
   activePane: number;
+  /**
+   * Auto-tile: a new chat with no free pane to land in grows the board by one
+   * pane instead of coming up on the sheet, and a pane emptied by closing or
+   * deleting its chat shrinks it by one. Switched in Settings; persisted.
+   */
+  autoTile: boolean;
+  setAutoTile: (on: boolean) => void;
   setGroup: (g: GroupId) => void;
+  /** The next group round the four, for Ctrl+Tab. */
+  nextGroup: () => void;
   /** Empties one group's boards and evens out its splits. Chats are untouched. */
   resetGroup: (g: GroupId) => void;
   setLayout: (n: Layout) => void;
@@ -98,8 +129,6 @@ interface PanesState {
   showChat: (chatId: string) => void;
   /** Brings a chat up the way showChat does, minus the toggle and the swap. */
   previewChat: (chatId: string) => void;
-  /** Moves the sheet to the next (1) or previous (-1) pane that holds a chat. */
-  cyclePeek: (dir: 1 | -1) => void;
   setOver: (i: number) => void;
   setDrag: (id: string | null) => void;
   setDragPane: (i: number | null) => void;
@@ -143,6 +172,23 @@ const mapAllBoards = (s: PanesState, fn: (slots: Slots, layout: Layout) => Slots
 
 const NO_PEEK = { peek: null, peekChat: null } as const;
 
+/** Where the pane being worked in went after the board was re-tiled. */
+const keepActive = (s: PanesState, next: Group): number => {
+  const was = currentSlots(s)[s.activePane];
+  return Math.max(0, was ? next.boards[next.layout].indexOf(was) : 0);
+};
+
+/** The rest of evicting a chat, once its boards have been dealt with. */
+const evictTail = (s: PanesState, boards: { groups: Group[] }, chatId: string) => ({
+  ...boards,
+  // Same as closePane: a sheet over the pane it just emptied would trap the
+  // view with no Return button to leave by.
+  ...(s.peek != null && currentSlots(s)[s.peek] === chatId ? { peek: null } : {}),
+  // And a sheet showing a chat that has just been deleted has nothing left
+  // to show.
+  ...(s.peekChat === chatId ? { peekChat: null } : {})
+});
+
 export const usePanes = create<PanesState>()(
   persist(
     set => ({
@@ -155,11 +201,17 @@ export const usePanes = create<PanesState>()(
       peek: null,
       peekChat: null,
       activePane: 0,
+      autoTile: true,
+
+      setAutoTile: on => set({ autoTile: on }),
 
       // Switching group or layout lands on a different board, where the old
       // pane index would point at an unrelated pane — so both drop the peek and
       // the active pane with it.
       setGroup: g => set({ group: g, over: -1, dragPane: null, activePane: 0, ...NO_PEEK }),
+
+      nextGroup: () =>
+        set(s => ({ group: ((s.group + 1) % GROUPS.length) as GroupId, over: -1, dragPane: null, activePane: 0, ...NO_PEEK })),
 
       resetGroup: g =>
         set(s => ({
@@ -183,6 +235,18 @@ export const usePanes = create<PanesState>()(
         set(s => {
           const slots = currentSlots(s).slice();
           slots[paneIndex] = null;
+          if (s.autoTile) {
+            const g = { ...currentGroup(s), boards: { ...currentGroup(s).boards, [currentLayout(s)]: slots } };
+            const rest = seatedChats(g);
+            if (rest.length < g.layout) {
+              const next = tiled(g, rest);
+              return {
+                groups: s.groups.map((x, i) => (i === s.group ? next : x)),
+                activePane: keepActive(s, next),
+                ...NO_PEEK
+              };
+            }
+          }
           // An emptied pane has no title bar, so a sheet held up over it would
           // have no Return button left to press — back to the grid instead.
           return { ...withBoard(s, slots), ...(s.peek === paneIndex ? { peek: null } : {}) };
@@ -191,15 +255,22 @@ export const usePanes = create<PanesState>()(
       // A deleted chat has to disappear from every board of every group, not
       // just the visible one.
       evictChat: chatId =>
-        set(s => ({
-          ...mapAllBoards(s, slots => slots.map(p => (p === chatId ? null : p))),
-          // Same as closePane: a sheet over the pane it just emptied would trap
-          // the view with no Return button to leave by.
-          ...(s.peek != null && currentSlots(s)[s.peek] === chatId ? { peek: null } : {}),
-          // And a sheet showing a chat that has just been deleted has nothing
-          // left to show.
-          ...(s.peekChat === chatId ? { peekChat: null } : {})
-        })),
+        set(s => {
+          const cleared = mapAllBoards(s, slots => slots.map(p => (p === chatId ? null : p)));
+          if (!s.autoTile) return evictTail(s, cleared, chatId);
+          // Auto-tile closes the gap on every group whose live board had the
+          // chat, parked ones included — coming back to a group should not
+          // mean coming back to a hole.
+          const groups = cleared.groups.map((g, i) => {
+            if (!s.groups[i].boards[s.groups[i].layout].includes(chatId)) return g;
+            const rest = seatedChats(g);
+            return rest.length < g.layout ? tiled(g, rest) : g;
+          });
+          const reshaped = groups[s.group].layout !== s.groups[s.group].layout;
+          return reshaped
+            ? { groups, activePane: keepActive(s, groups[s.group]), ...NO_PEEK }
+            : evictTail(s, { groups }, chatId);
+        }),
 
       // Seat a new chat wherever it will be seen: a free pane of the board on
       // screen if there is one. When there is none — every pane taken, the
@@ -212,6 +283,19 @@ export const usePanes = create<PanesState>()(
         set(s => {
           const g = currentGroup(s);
           const live = currentLayout(s);
+
+          // Auto-tile: a full board with room to grow takes one more pane and
+          // seats the chat there, where it would otherwise go up on the sheet.
+          const onBoard = g.boards[live].slice(0, live).includes(chatId);
+          if (s.autoTile && !onBoard && live < 4 && seatedChats(g).length >= live) {
+            const grown = tiled(g, [...seatedChats(g), chatId]);
+            return {
+              groups: s.groups.map((x, i) => (i === s.group ? grown : x)),
+              activePane: grown.boards[grown.layout].indexOf(chatId),
+              ...NO_PEEK
+            };
+          }
+
           const boards = LAYOUTS.reduce((acc, n) => {
             const slots = g.boards[n];
             const free = slots.findIndex((x, i) => i < n && !x);
@@ -275,22 +359,6 @@ export const usePanes = create<PanesState>()(
           return currentLayout(s) === 1 ? NO_PEEK : { peek: i, peekChat: null };
         }),
 
-      // Empty panes are skipped: an empty sheet has no title bar to leave by.
-      // From a chat with no seat on the board the walk starts at either end;
-      // with one pane the board itself is the only other place to go.
-      cyclePeek: dir =>
-        set(s => {
-          const n = currentLayout(s);
-          if (n === 1) return NO_PEEK;
-          const slots = currentSlots(s);
-          const from = s.peek ?? (dir > 0 ? -1 : n);
-          for (let step = 1; step <= n; step++) {
-            const i = (((from + dir * step) % n) + n) % n;
-            if (slots[i] && i !== s.peek) return { peek: i, peekChat: null, activePane: i };
-          }
-          return s;
-        }),
-
       setOver: i => set({ over: i }),
       setDrag: id => set({ drag: id }),
       setDragPane: i => set({ dragPane: i }),
@@ -333,10 +401,10 @@ export const usePanes = create<PanesState>()(
     {
       name: 'luna.panes',
       version: 1,
-      partialize: s => ({ group: s.group, groups: s.groups }),
+      partialize: s => ({ group: s.group, groups: s.groups, autoTile: s.autoTile }),
       merge: (persisted, current) => {
         const p = (persisted ?? {}) as Partial<PanesState>;
-        return { ...current, ...p, group: p.group ?? 0, groups: reviveGroups(p.groups) };
+        return { ...current, ...p, group: p.group ?? 0, groups: reviveGroups(p.groups), autoTile: p.autoTile ?? true };
       }
     }
   )

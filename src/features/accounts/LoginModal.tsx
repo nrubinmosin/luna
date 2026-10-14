@@ -144,7 +144,7 @@ export function LoginModal({ account }: { account: Account }) {
   };
 
   return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.32)', backdropFilter: 'blur(1px)', display: 'grid', placeItems: 'center', zIndex: 70 }}>
+    <div className="scrim" style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.32)', backdropFilter: 'blur(1px)', display: 'grid', placeItems: 'center', zIndex: 70 }}>
       <div
         className="window"
         style={{ width: 720, height: 500, boxShadow: 'var(--shadow), var(--border-window-outer), var(--border-window-inner)', display: 'flex', flexDirection: 'column' }}

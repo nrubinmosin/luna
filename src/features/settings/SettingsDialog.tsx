@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { create } from 'zustand';
 import type { ReactNode } from 'react';
 import { agoLabel } from '../../shared/lib/format';
 import { getAccountsRoot, pickFolder, setAccountsRoot, cliUpdateNow, type AccountsRootInfo } from '../../ipc/commands';
@@ -10,6 +11,8 @@ import { PROVIDER_LABEL, type Provider } from '../../shared/types';
 import { Segmented } from '../../shared/ui/Segmented';
 import { useNewChat, type Start } from '../new-chat/newchat.store';
 import { useDeletePrefs } from '../chats/deletePrefs.store';
+import { usePanes } from '../panes/panes.store';
+import { useDialogHost } from '../../shared/ui/dialogHost';
 
 const pct = (got: number, total: number | null) =>
   total ? Math.min(100, Math.round((got / total) * 100)) : null;
@@ -210,6 +213,24 @@ function DropWorktreeRow() {
   );
 }
 
+/** Whether the board grows and shrinks with the chats on it. */
+function AutoTileRow() {
+  const on = usePanes(s => s.autoTile);
+  return (
+    <div className="field-row" style={{ padding: '3px 0' }}>
+      <input
+        type="checkbox"
+        id="auto-tile-toggle"
+        checked={on}
+        onChange={e => usePanes.getState().setAutoTile(e.target.checked)}
+      />
+      <label htmlFor="auto-tile-toggle" style={{ cursor: 'default', fontSize: 'var(--fs-4)' }}>
+        Auto-tile the board
+      </label>
+    </div>
+  );
+}
+
 /** The accounts-folder mover, formerly its own fold-out card in the sidebar. */
 function AccountsFolder() {
   const [info, setInfo] = useState<AccountsRootInfo | null>(null);
@@ -274,7 +295,19 @@ function AccountsFolder() {
  * update clicks — reads better here, where there is room to say what state
  * it is in; the bar keeps only news (see StatusBar).
  */
-export function SettingsDialog({ onClose }: { onClose: () => void }) {
+/** Raised from the status bar or the Accounts window. `?demo=settings` opens it
+ *  for its screenshot; the check compiles away in a release build. */
+export const useSettings = create<{ open: boolean; setOpen: (v: boolean) => void }>(set => ({
+  open: import.meta.env.DEV && new URLSearchParams(location.search).get('demo') === 'settings',
+  setOpen: v => set({ open: v })
+}));
+
+export function SettingsDialog() {
+  const open = useSettings(s => s.open);
+  return open ? <SettingsWindow onClose={() => useSettings.getState().setOpen(false)} /> : null;
+}
+
+function SettingsWindow({ onClose }: { onClose: () => void }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       // The update-confirm dialog can stack on top; its own Escape handler
@@ -285,9 +318,9 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
 
-  // Same host as ConfirmDialog, for the same reasons: out of any draggable
-  // subtree, inside the [data-app] theme scope.
-  const host = document.querySelector('[data-app]') ?? document.body;
+  // Out of any draggable subtree, inside the [data-app] theme scope.
+  const host = useDialogHost();
+  if (!host) return null;
 
   return createPortal(
     <div
@@ -295,6 +328,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
         e.stopPropagation();
         onClose();
       }}
+      className="scrim"
       style={{
         position: 'fixed', inset: 0, background: 'rgba(0,0,0,.35)', backdropFilter: 'blur(1px)',
         display: 'grid', placeItems: 'center', zIndex: 70
@@ -325,6 +359,14 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
               Remembered per folder, a folder you have made chats in starts the way the last one there
               did, and the switches above only cover folders new to Luna; forgetting a folder in the
               new-chat dialog forgets this too.
+            </div>
+          </Section>
+          <Section label="Board">
+            <AutoTileRow />
+            <div style={{ fontSize: 'var(--fs-1)', color: 'var(--faint)', marginTop: 4 }}>
+              A new chat with no free pane grows the board by one pane, up to four, and lands in it;
+              taking a chat off the board or deleting it shrinks the board by one. Off, a new chat with
+              nowhere to go comes up on the sheet and the board stays as you arranged it.
             </div>
           </Section>
           <Section label="Deleting chats">

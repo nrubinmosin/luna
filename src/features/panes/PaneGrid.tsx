@@ -70,14 +70,13 @@ function Splitter({ axis, split }: { axis: 'x' | 'y'; split: SplitKey }) {
     <div
       ref={ref}
       onMouseDown={start}
-      onDoubleClick={() => usePanes.getState().setSplit(split, 0.5)}
       onMouseEnter={e => {
-        if (!dragging.current) e.currentTarget.style.background = 'var(--line)';
+        if (!dragging.current) e.currentTarget.style.background = 'rgba(255,255,255,.55)';
       }}
       onMouseLeave={e => {
         if (!dragging.current) e.currentTarget.style.background = 'transparent';
       }}
-      title="Drag to resize · double-click to even out"
+      title="Drag to resize — the Even out button in the sidebar resets every split"
       style={style}
     />
   );
@@ -204,7 +203,7 @@ function Sheet({ index, children }: { index: number; children: ReactNode }) {
   const name = useChats(s => s.findChat(chatId)?.name ?? null);
 
   return (
-    <div style={peeked ? sheetStyle : inFlowStyle} data-peek-sheet={peeked || undefined}>
+    <div style={peeked ? sheetStyle : inFlowStyle} className={peeked ? 'peek-sheet' : undefined} data-peek-sheet={peeked || undefined}>
       {peeked && <PeekBar name={name} />}
       {children}
     </div>
@@ -215,7 +214,7 @@ function Sheet({ index, children }: { index: number; children: ReactNode }) {
 function ChatSheet({ chatId }: { chatId: string }) {
   const name = useChats(s => s.findChat(chatId)?.name ?? null);
   return (
-    <div style={sheetStyle} data-peek-sheet>
+    <div style={sheetStyle} className="peek-sheet" data-peek-sheet>
       <PeekBar name={name} />
       <Pane soloChat={chatId} />
     </div>
@@ -279,7 +278,7 @@ export function PaneGrid() {
   );
 
   return (
-    <div style={{ flex: 1, minHeight: 0, padding: GAP, background: 'var(--panel)', display: 'flex', position: 'relative' }}>
+    <div style={{ flex: 1, minHeight: 0, padding: GAP, background: 'var(--board)', display: 'flex', position: 'relative' }}>
       {layout === 1 && <div style={box('row')}>{pane(0)}</div>}
 
       {layout === 2 && (
@@ -312,6 +311,7 @@ export function PaneGrid() {
       {up && (
         <div
           title="Back to the grid"
+          className="peek-dim"
           style={{ position: 'absolute', inset: 0, zIndex: 40, background: 'rgba(0,0,0,.5)', cursor: 'default' }}
         />
       )}

@@ -12,12 +12,12 @@ export function ChatList() {
   const folders = useMemo(() => foldersOfGroup(all, group), [all, group]);
 
   return (
-    <div style={{ flex: 1, overflowY: 'auto', padding: '2px 10px 14px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+    <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '0 0 4px', display: 'flex', flexDirection: 'column', gap: 10 }}>
       {folders.map(f => (
         <FolderSection key={f.id} folder={f} />
       ))}
       {folders.length === 0 && (
-        <div style={{ padding: '24px 8px', textAlign: 'center', color: 'var(--faint)', fontSize: 'var(--fs-4)' }}>
+        <div style={{ padding: '24px 8px', textAlign: 'center', color: '#fff', fontSize: 'var(--fs-4)', textShadow: '0 1px 1px rgba(0,0,0,.3)' }}>
           No chats yet.
           <br />
           Press <span style={{ fontWeight: 600 }}>New chat</span> to start.

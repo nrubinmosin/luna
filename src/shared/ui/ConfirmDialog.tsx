@@ -49,6 +49,7 @@ export function ConfirmDialog({
         e.stopPropagation();
         onCancel();
       }}
+      className="scrim"
       style={{
         position: 'fixed', inset: 0, background: 'rgba(0,0,0,.35)', backdropFilter: 'blur(1px)',
         display: 'grid', placeItems: 'center', zIndex: 80

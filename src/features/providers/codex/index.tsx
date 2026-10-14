@@ -274,24 +274,23 @@ export function Fields({ draft, origin, accountPath }: {
 
 // ------------------------------------------------------------------ pane --
 
-export function Chips({ chat, chip, softChip }: { chat: CodexChat; chip: CSSProperties; softChip: CSSProperties }) {
+export function Meta({ chat }: { chat: CodexChat }) {
   const model = chat.model ?? chat.modelSeen ?? null;
   const bypass = chat.approval === 'never' && chat.sandbox === 'danger-full-access';
   return (
     <>
-      <span
-        title={chat.model ? 'Model' : `Model: ${DEFAULT_MODEL_LABEL}${chat.modelSeen ? ` (running ${chat.modelSeen})` : ''}`}
-        style={{ ...softChip, maxWidth: 120, ...(chat.model ? {} : { opacity: 0.8 }) }}
-      >
+      <b title={chat.model ? 'Model' : `Model: ${DEFAULT_MODEL_LABEL}${chat.modelSeen ? ` (running ${chat.modelSeen})` : ''}`}>
         {model ?? 'default'}
-      </span>
-      <span title={`Reasoning effort: ${chat.effort}`} style={softChip}>{chat.effort}</span>
+      </b>{' '}
+      <span title="Reasoning effort">{chat.effort}</span>
+      {' · '}
       {bypass ? (
-        <span title="Approval: never · Sandbox: danger-full-access (--dangerously-bypass-approvals-and-sandbox)" style={chip}>bypass</span>
+        <span title="Approval: never · Sandbox: danger-full-access (--dangerously-bypass-approvals-and-sandbox)">bypass</span>
       ) : (
         <>
-          <span title={`Approval: ${chat.approval} — ${CODEX_APPROVAL_HINTS[chat.approval]}`} style={softChip}>{chat.approval}</span>
-          <span title={`Sandbox: ${chat.sandbox} — ${CODEX_SANDBOX_HINTS[chat.sandbox]}`} style={softChip}>{chat.sandbox}</span>
+          <span title={`Approval: ${chat.approval} — ${CODEX_APPROVAL_HINTS[chat.approval]}`}>{chat.approval}</span>
+          {' · '}
+          <span title={`Sandbox: ${chat.sandbox} — ${CODEX_SANDBOX_HINTS[chat.sandbox]}`}>{chat.sandbox}</span>
         </>
       )}
     </>

@@ -24,6 +24,10 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
   const { setOver, dropChat, closePane, setDragPane, swapPanes, setPeek, setPeekChat, setActivePane } =
     usePanes.getState();
   const peeked = usePanes(s => (soloChat ? true : s.peek === index));
+  // The pane you are working in wears its colour; the rest go pale, the way
+  // XP drew every window but the active one. One pane, or a sheet, is always
+  // the one you are in.
+  const focused = usePanes(s => !!soloChat || peeked || currentLayout(s) === 1 || s.activePane === index);
   const beingDragged = usePanes(s => !soloChat && s.dragPane === index);
   const chat = useChats(s => s.findChat(chatId));
   const folder = useChats(s => (chatId ? s.folderOf(chatId) : null));
@@ -84,18 +88,11 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
             'transcript recorded, not from the chat setting.')
       : 'Context window usage — waiting for the first turn';
 
-  const chip: CSSProperties = {
-    fontSize: 'var(--fs-1)', color: '#0a1f5c', background: 'rgba(255,255,255,.82)',
-    padding: '1px 5px', borderRadius: 2, whiteSpace: 'nowrap', flex: 'none'
-  };
-  // Text-bearing chips give way on a narrow pane instead of pushing the name
-  // and the window controls out of the bar; minWidth keeps a legible stub.
-  const softChip: CSSProperties = {
-    ...chip, flex: '0 1 auto', minWidth: 26, overflow: 'hidden', textOverflow: 'ellipsis'
-  };
-
   return (
     <div
+      className="pane"
+      data-focus={focused ? 'yes' : 'no'}
+      data-waiting={chat?.status === 'waiting' ? 'yes' : 'no'}
       // Where a new chat lands when the board has no room: the pane you were
       // last working in, which is the one you just clicked into.
       onMouseDown={() => {
@@ -161,43 +158,10 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
               setDragPane(null);
               setOver(-1);
             }}
-            className="title-bar"
-            // Inline wins over xp.css's Luna-blue gradient and frame colours,
-            // so an unset chat colour leaves the stock look untouched.
-            style={{
-              flex: 'none', gap: 5, cursor: 'grab',
-              ...(colorTheme && {
-                background: colorTheme.grad,
-                borderTopColor: colorTheme.top,
-                borderLeftColor: colorTheme.top,
-                borderRightColor: colorTheme.right
-              })
-            }}
+            className="title-bar pane-bar"
+            style={{ ['--c' as string]: colorTheme?.swatch ?? 'var(--luna-blue)' } as CSSProperties}
           >
             <StatusDot status={chat.status} />
-            <span title={`${t!.parent} / ${t!.leaf}`} style={{ ...softChip, maxWidth: 90 }}>
-              {t!.leaf}
-            </span>
-            <span title={`Running on ${PROVIDER_LABEL[chat.provider]} account "${chat.account}"`} style={{ ...softChip, maxWidth: 80 }}>
-              {chat.account}
-            </span>
-            {chat.provider === 'codex' ? (
-              <codex.Chips chat={chat} chip={chip} softChip={softChip} />
-            ) : (
-              <claude.Chips chat={chat} chip={chip} softChip={softChip} />
-            )}
-            {chat.worktree && <span title="Isolated git worktree" style={chip}>wt</span>}
-            <span
-              title={ctxTitle}
-              style={{ ...chip, display: 'flex', alignItems: 'center', gap: 4 }}
-            >
-              <span style={{ width: 20, height: 4, borderRadius: 2, background: 'var(--track)', overflow: 'hidden', flex: 'none' }}>
-                <span style={{ display: 'block', height: '100%', width: `${ctx}%`, background: limitColor(chat.context ?? 0) }} />
-              </span>
-              <span style={{ fontVariantNumeric: 'tabular-nums' }}>
-                {window != null ? `${ctx}%` : '—'}
-              </span>
-            </span>
             {editing ? (
               <input
                 autoFocus
@@ -209,25 +173,36 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
                   if (e.key === 'Escape') setEditing(false);
                 }}
                 onClick={e => e.stopPropagation()}
+                onMouseDown={e => e.stopPropagation()}
                 type="text"
-                style={{ flex: '1 1 auto', minWidth: 40, height: 'calc(var(--ui) * 1.4)' }}
+                style={{ flex: '1 1 auto', minWidth: 60, height: 'calc(var(--ui) * 1.55)' }}
               />
             ) : (
-              <span
-                onDoubleClick={e => {
-                  e.stopPropagation();
-                  setDraft(chat.name);
-                  setEditing(true);
-                }}
-                title={`${chat.name}\nDouble-click to rename`}
-                className="title-bar-text"
-                // theme.css bakes a navy text shadow into .title-bar-text; on a
-                // recoloured bar it reads as a blue smudge.
-                style={{ flex: '1 1 auto', minWidth: 40, ...(colorTheme && { textShadow: `1px 1px ${colorTheme.shadow}` }) }}
-              >
+              <span title={chat.name} className="title-bar-text">
                 {chat.name}
               </span>
             )}
+
+            {!editing && (
+              <span className="pane-meta">
+                <span title={`${t!.parent} / ${t!.leaf}`}>{t!.leaf}</span>
+                {' · '}
+                <span title={`Running on ${PROVIDER_LABEL[chat.provider]} account "${chat.account}"`}>{chat.account}</span>
+                {' · '}
+                {chat.provider === 'codex' ? <codex.Meta chat={chat} /> : <claude.Meta chat={chat} />}
+                {chat.worktree && <span title="Isolated git worktree"> · worktree</span>}
+              </span>
+            )}
+
+            <span title={ctxTitle} className="ctx-meter">
+              <span className="track">
+                <span
+                  className="fill"
+                  style={{ width: `${ctx}%`, ['--m' as string]: limitColor(chat.context ?? 0) } as CSSProperties}
+                />
+              </span>
+              {window != null || (chat.context ?? 0) > 0 ? `${ctx}%` : '—'}
+            </span>
 
             {/* How issue claims and logs name this session: the uuid's first
                 8 characters. A click copies exactly that. */}
@@ -244,31 +219,30 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
                     .catch(() => {});
                 }}
                 title={`Session ${chat.sessionId}\nClick to copy ${shortSessionId(chat.sessionId)}`}
-                style={{ ...chip, fontFamily: '"JetBrains Mono", monospace', cursor: 'default', minWidth: '8ch', textAlign: 'center' }}
+                className="pane-sid"
               >
                 {copied ? 'copied' : shortSessionId(chat.sessionId)}
               </span>
             )}
 
-            <span style={{ position: 'relative', flex: 'none', display: 'flex', alignItems: 'center' }}>
-              <span
+            <span className="title-bar-controls" style={{ flex: 'none', position: 'relative' }}>
+              <button
+                data-glyph="swatch"
+                aria-label="Chat colour"
+                title="Chat colour — tints this title bar and the chat's row in the list"
                 onClick={e => {
                   e.stopPropagation();
                   setPicking(p => !p);
                 }}
-                title="Chat colour — tints this title bar and the chat's row in the list"
-                style={{
-                  width: 13, height: 13, borderRadius: 2, cursor: 'default',
-                  border: '1px solid rgba(255,255,255,.85)',
-                  background: colorTheme?.swatch ?? 'rgba(255,255,255,.35)'
-                }}
+                style={{ ['--swatch' as string]: colorTheme?.swatch } as CSSProperties}
               />
               {picking && (
                 <span
                   onClick={e => e.stopPropagation()}
                   style={{
-                    position: 'absolute', top: 'calc(100% + 6px)', right: -2, zIndex: 60,
-                    display: 'flex', gap: 4, padding: 5, borderRadius: 3, background: 'var(--surface)',
+                    position: 'absolute', top: 'calc(100% + 8px)', left: -4, zIndex: 60,
+                    display: 'grid', gridTemplateColumns: 'repeat(6, 22px)', gap: 5, padding: 7, borderRadius: 4,
+                    background: 'var(--surface)', animation: 'pop-in .16s ease-out',
                     boxShadow: 'var(--border-window-outer), var(--border-window-inner), var(--shadow)'
                   }}
                 >
@@ -279,8 +253,8 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
                     }}
                     title="No colour — stock Luna blue"
                     style={{
-                      width: 15, height: 15, borderRadius: 2, cursor: 'default', flex: 'none',
-                      display: 'grid', placeItems: 'center', fontSize: 10, color: 'var(--faint)',
+                      width: 22, height: 22, borderRadius: 3, cursor: 'default',
+                      display: 'grid', placeItems: 'center', fontSize: 'var(--fs-2)', color: 'var(--faint)',
                       outline: !chat.color ? '2px solid var(--fg)' : '1px solid var(--line)',
                       background: 'var(--chip)'
                     }}
@@ -296,7 +270,7 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
                       }}
                       title={c.label}
                       style={{
-                        width: 15, height: 15, borderRadius: 2, cursor: 'default', flex: 'none',
+                        width: 22, height: 22, borderRadius: 3, cursor: 'default',
                         background: chatColorTheme(c.key)!.swatch,
                         outline: chat.color === c.key ? '2px solid var(--fg)' : '1px solid rgba(0,0,0,.25)'
                       }}
@@ -304,17 +278,26 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
                   ))}
                 </span>
               )}
-            </span>
-
-            <span className="title-bar-controls" style={{ flex: 'none' }}>
               <button
-                aria-label="Delete"
-                title="Delete chat — same confirmation as the list"
+                data-glyph="pencil"
+                aria-label="Rename"
+                title="Rename chat"
+                onClick={e => {
+                  e.stopPropagation();
+                  setDraft(chat.name);
+                  setEditing(true);
+                }}
+              />
+              <button
+                data-glyph="trash"
+                aria-label="Delete chat"
+                title="Delete chat — asks first"
                 onClick={() => setConfirming(true)}
               />
               {(soloChat || layout > 1) && (
                 <button
-                  aria-label={peeked ? 'Restore' : 'Maximize'}
+                  data-glyph={peeked ? 'restore' : 'max'}
+                  aria-label={peeked ? 'Back to the grid' : 'Peek'}
                   title={
                     peeked
                       ? 'Back to the grid — Ctrl+0'
@@ -323,19 +306,30 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
                   onClick={() => (soloChat ? setPeekChat(null) : setPeek(peeked ? null : index))}
                 />
               )}
-              {/* A chat on the sheet holds no pane to close — leaving is all
-                  Close could mean, and Return already says it better. */}
+              {/* A chat on the sheet holds no pane to leave — the restore
+                  button already says "back". */}
               {!soloChat && (
                 <button
-                  aria-label="Close"
-                  title="Close this pane — the chat keeps running"
+                  data-glyph="min"
+                  aria-label="Take off the board"
+                  title="Take this chat off the board — it keeps running and stays in the list"
                   onClick={() => closePane(index)}
                 />
               )}
             </span>
           </div>
           {confirming && <DeleteChatDialog chat={chat} onClose={() => setConfirming(false)} />}
-          <Terminal chat={chat} folderPath={folder.path} />
+          <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', position: 'relative' }}>
+            <Terminal chat={chat} folderPath={folder.path} />
+            {/* Keyed on the chat: a pane handed a new chat fades it in. */}
+            <div key={chat.id} className="pane-cover" />
+            {chat.status === 'waiting' && !focused && (
+              <div className="balloon">
+                <b>Waiting for you</b>
+                Click into the pane to answer.
+              </div>
+            )}
+          </div>
         </>
       ) : (
         <div style={{ flex: 1, display: 'grid', placeItems: 'center', gap: 6, alignContent: 'center', color: 'var(--faint)' }}>

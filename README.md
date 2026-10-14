@@ -19,34 +19,49 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
 ## The window
 
 - A Windows XP shell (xp.css, Luna Blue): the native window frame is replaced by our own
-  title bar with minimize / maximize / close, and the UI runs on Segoe UI. The whole
-  interface scales from one variable, `--ui` in `src/app/theme.css`, and follows
-  Windows' own text-size setting on top of that.
+  title bar with minimize / maximize / close, and the UI runs on Segoe UI. The board sits
+  on XP's Control Panel blue, the sidebar is Explorer's task pane, and every control in
+  every title bar is drawn from one set of glyphs; the sidebar's own buttons share one
+  family of XP-style icons. The whole interface scales from one variable, `--ui` in
+  `src/app/theme.css`, and follows Windows' own text-size setting on top of that.
+- Only the pane you are working in wears its full colour; the others go pale, the way XP
+  drew inactive windows. A chat waiting for you flashes its title bar orange like an XP
+  taskbar button, and over a pane you are not in a balloon says so.
 - A grid of 1/2/3/4 panes with draggable splits (Ctrl+Shift+1..4 picks the layout).
   **One click** on a sidebar row shows that chat: with a single pane it simply becomes
   what that pane shows — dragging a row across an empty board to the one place it can go
   was ceremony — and with more panes a chat that is not on the board comes up on the peek
   sheet instead, so a click never rewrites an arrangement. Dragging is what seats a chat
   in a particular pane, and panes swap by dragging one title bar onto another.
+- **Auto-tile** (on by default, Settings → Board): a new chat with no free pane grows the
+  board by one pane, up to four, and lands in it — everything already on the board stays
+  where it was. Taking a chat off the board or deleting it shrinks the board by one. Off,
+  a new chat with nowhere to go comes up on the sheet and the board is left as arranged.
 - **Peek** is the temporary view, and looks like one: the pane is held up on a sheet with
   the board still there behind it, dimmed. Ctrl+1..4 holds up that pane and puts it back,
-  the numbered chips in the sheet's own bar and Ctrl+Tab / Ctrl+Shift+Tab move between
-  panes, and a click anywhere outside the sheet, a second click on the same chat's row or
+  the numbered chips in the sheet's own bar move between panes, and a click anywhere
+  outside the sheet, a second click on the same chat's row or
   on the chip of the pane that is up, the mouse's Back button, the Return button or Ctrl+0
   all go back. Holding Alt over a chat in the list is a glance: the chat comes up on the
   sheet and letting go of Alt puts back what was there (a click keeps it). Escape is
   deliberately left alone — it is how the CLI is interrupted.
-- F1, or the **?** in the status bar, lists every shortcut and mouse gesture. The chrome
+- F1, or the **?** in the status bar, lists every shortcut and mouse gesture. Nothing hides
+  behind a double-click: rename, delete, even out the splits are all buttons. The chrome
   does not select as text, so a drag across the sidebar paints nothing blue.
 - Luna claims its shortcuts in the capture phase, so they work while a terminal has focus;
   everything it does not claim travels on to the CLI untouched.
 - Terminals outlive the pane that showed them: the last three put down wait off-screen with
   their listeners still on, so switching back is a refit rather than a fresh session
   handshake and a 2MB replay of the scrollback.
-- Window groups I/II/III/IV — tabs under the layout selector. Each group remembers its own
-  four boards (one per layout) and their splits, and has its own reset button (↺) that
-  clears only the arrangement and leaves every chat alone.
-- Light / dark / system themes.
+- Window groups I/II/III/IV — beside the layout selector in the sidebar's Board box, and
+  Ctrl+Tab goes round them (Ctrl+Shift+Tab is left to the CLI). Each group remembers its
+  own four boards (one per layout) and their splits; **Clear** empties the group's panes
+  and leaves every chat alone, **Even out** puts the splits back to half.
+- The status bar runs the width of the window: how many chats are working, how many are
+  waiting (a click goes to the next one), every account with its two limit meters, and the
+  Accounts window, power, settings and help. There is no clock — the taskbar has one.
+- Light / dark / system themes; dark is XP's Royale Noir, graphite instead of blue. The
+  terminals sit on warm paper in the light theme and warm charcoal in the dark one.
 
 ![The dark theme, two panes](docs/screenshots/dark.png)
 
@@ -79,8 +94,9 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   one, or the pane you were last working in when the board is full.
 - A chat's pane title bar carries its folder, account, model, effort, the permission mode
   (Claude Code) or approval and sandbox (Codex), the worktree flag and how much of the
-  context window is gone — and the buttons to rename or delete it. The same chips shrink
-  to fit a narrow pane.
+  context window is gone, as a meter and as a number — and the buttons to recolour,
+  rename, delete, peek it or take it off the board. A narrow pane drops the details
+  before the name and the buttons.
 - Colours: every new chat is dealt one of ten presets, worn by its pane's title bar and as
   a stripe on its sidebar row, so a glance links the two without reading either name.
 - Status per chat — working / waiting for you / resting — read from the CLI's own session
@@ -92,7 +108,8 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   same title it puts on a terminal tab — and writes it into the transcript, where Luna
   reads it for free; a `/rename` wins over it. Codex threads use their name from
   `session_index.jsonl`. The opening prompt only stands in until that title exists.
-  Rename by double-clicking the name; a name you set by hand is never overwritten.
+  Rename with the pencil on the row or the title bar; a name you set by hand is never
+  overwritten.
 - The session id's first 8 characters — the form issue claims and logs quote — sit on the
   pane's title bar (a click copies them), and the full id is in the row's tooltip.
 - The number on a row is what Ctrl+&lt;digit&gt; reaches: the pane it is showing in, or its
@@ -107,9 +124,10 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
 ## Accounts
 
 - An account is a folder under one root, by default `Documents/luna-accounts`, split by
-  vendor: `anthropic/<name>` for Claude Code, `openai/<name>` for Codex. The ⚙ in the
-  panel moves that root anywhere. "Add" asks which CLI and creates the folder, "✕" deletes
-  it after a confirmation. A Claude Code session starts with
+  vendor: `anthropic/<name>` for Claude Code, `openai/<name>` for Codex. Everything about
+  accounts lives in the **Accounts** window, opened from the status bar: "Add account" asks
+  which CLI and creates the folder, the bin deletes it after a confirmation, and Settings
+  moves the root anywhere. A Claude Code session starts with
   `CLAUDE_CONFIG_DIR=<account folder>`, a Codex session with `CODEX_HOME=<account folder>`,
   so logins, settings and history are per account either way. A fresh Codex account gets a
   `config.toml` with `check_for_update_on_startup = false` — Luna updates that CLI itself.
@@ -119,8 +137,8 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   week, plus any per-model limits), from the same endpoint Codex's `/status` reads, with
   the token in the account's `auth.json`; when that is unreachable, the last
   `token_count` line of a rollout has the same numbers as of the last turn. Either way a
-  429 backs off for longer each time rather than hammering through it, and ↻ on the row
-  asks right now.
+  429 backs off for longer each time rather than hammering through it, and the refresh
+  button on the account's row asks right now.
 - A Claude Code access token lasts about eight hours; an account nobody has opened since
   gets its token renewed by Luna the way the CLI does it — under the CLI's own lock, so
   a session running beside it picks up the new token instead of fighting over it.
@@ -170,8 +188,8 @@ without the box ticked knows nothing of Luna at all.
   `luna_send`, and read or wait on the answer, so you can tell one chat to pass word to
   another. At most eight helpers under
   one chat, and a helper's helpers get no tools of their own.
-- Every account is available to agents unless you switch it off with the ◎ mark in its
-  row. `luna_list` names the ones that are, so you can tell a chat which one to use.
+- Every account is available to agents unless you switch it off with the robot button on
+  its row in the Accounts window. `luna_list` names the ones that are, so you can tell a chat which one to use.
 - Deleting a parent by hand leaves its helpers as orphans, marked ↳ at the top level,
   unless you tick the box to take them along. Helpers deleted by their agent are gone for
   good, transcript aside.
@@ -185,7 +203,7 @@ without the box ticked knows nothing of Luna at all.
 
 ## Power
 
-The ⏻ chip at the bottom of the sidebar opens the two rules the machine follows.
+The power field in the status bar opens the two rules the machine follows.
 
 - **Keep the PC awake while sessions work** (on by default). Luna holds a Windows power
   request — `powercfg /requests` lists it as Luna's — while any session is busy, and lets it
@@ -284,7 +302,7 @@ the portable exe, the setup, its `.sig` and the manifest to a `v<version>` relea
   needs next to `bin/codex.exe`. Claude sessions run with `DISABLE_AUTOUPDATER=1` and Codex
   accounts are created with `check_for_update_on_startup = false`, so Luna is the only
   thing that moves either binary.
-- All three versions live in Settings (the ⚙ by the account list), each with its "checked …
+- All three versions live in Settings (the gear in the status bar), each with its "checked …
   ago" and a check-now button; the status bar itself only speaks up while there is news —
   an update on offer, a download running, or a failure worth a retry.
 - The update signing key is `C:\Users\Nikita\.ssh\luna-updater.key` — private and
