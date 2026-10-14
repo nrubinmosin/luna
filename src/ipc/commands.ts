@@ -531,3 +531,17 @@ export const setSettingsParent = (provider: Provider, parent: string | null) =>
   call<SyncStateDto>('set_settings_parent', { provider, parent }, NO_SYNC);
 export const setSettingsSyncOnStart = (on: boolean) => call<SyncStateDto>('set_settings_sync_on_start', { on }, NO_SYNC);
 export const syncSettingsNow = (provider: Provider) => call<SyncReportDto>('sync_settings_now', { provider });
+
+export const renameAccount = (provider: Provider, name: string, to: string) =>
+  call<AccountInfo>('rename_account', { provider, name, to });
+
+export interface ConfigFileDto {
+  path: string;
+  text: string;
+  /** False when the account has no such file yet; `text` is a starting point. */
+  exists: boolean;
+}
+export const readAccountConfig = (provider: Provider, accountPath: string) =>
+  call<ConfigFileDto>('read_account_config', { provider, accountPath });
+export const writeAccountConfig = (provider: Provider, accountPath: string, text: string) =>
+  call<void>('write_account_config', { provider, accountPath, text });

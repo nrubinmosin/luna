@@ -289,6 +289,13 @@ fn count_on(t: &mut Track, spawned_at_ms: u128, disk: Option<u32>) {
     }
 }
 
+/// A chat was deleted: its track and the count kept for its return go.
+pub fn forget(chat_id: &str) {
+    let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
+    st.tracks.remove(chat_id);
+    st.ended.remove(chat_id);
+}
+
 /// A hook arrived for a session (hub.rs). Takes effect at the next sample;
 /// the timestamp is the truth for "when did the turn start".
 pub fn on_hook(chat_id: &str, ev: HookEvent) {

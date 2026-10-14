@@ -80,7 +80,11 @@ pub fn claude_trust_folder(account_path: String, folder: String) -> Result<(), S
     let tmp = path.with_extension("json.tmp");
     fs::write(&tmp, serde_json::to_vec_pretty(&cfg).map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())?;
-    fs::rename(&tmp, &path).map_err(|e| e.to_string())
+    // A rename refused (the CLI holding the file) leaves no temp file behind.
+    fs::rename(&tmp, &path).map_err(|e| {
+        let _ = fs::remove_file(&tmp);
+        e.to_string()
+    })
 }
 
 #[cfg(test)]

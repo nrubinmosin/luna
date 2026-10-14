@@ -878,8 +878,11 @@ fn type_in(
         true
     } else if await_start(pty, id, baseline, ENTER_RETRY) {
         true
+    } else if pty.write(id, b"\r").is_err() {
+        // The text went in and the session is gone since — `/exit` does
+        // exactly that. It was taken; there is just no turn to wait for.
+        true
     } else {
-        pty.write(id, b"\r")?;
         await_start(pty, id, baseline, SEND_TIMEOUT.saturating_sub(ENTER_RETRY))
     })
 }
@@ -943,7 +946,27 @@ pub struct Reading {
     pub starting: bool,
 }
 
+/// The last transcript found for each session: Claude Code drops the
+/// registry entry it is found through when it exits, and an exited helper's
+/// last reply is still asked for.
+fn transcripts() -> &'static Mutex<HashMap<String, std::path::PathBuf>> {
+    static T: OnceLock<Mutex<HashMap<String, std::path::PathBuf>>> = OnceLock::new();
+    T.get_or_init(Default::default)
+}
+
 fn transcript_path(pty: &crate::pty::PtyManager, id: &str) -> Option<std::path::PathBuf> {
+    let found = find_transcript(pty, id);
+    let mut known = transcripts().lock().unwrap_or_else(|e| e.into_inner());
+    match found {
+        Some(path) => {
+            known.insert(id.to_string(), path.clone());
+            Some(path)
+        }
+        None => known.get(id).cloned(),
+    }
+}
+
+fn find_transcript(pty: &crate::pty::PtyManager, id: &str) -> Option<std::path::PathBuf> {
     let p = pty.probe(id)?;
     match p.provider {
         Provider::Claude => crate::claude::session::transcript_of(p.pid, &p.cwd, p.spawned_at_ms, &p.account_path),
@@ -1113,17 +1136,25 @@ pub fn delete(caller: &str, id: &str, drop_worktree: bool) -> Result<Option<Stri
     let pty = app.state::<crate::pty::PtyManager>();
     // A Codex helper in a worktree knows the worktree as its folder.
     let folder = crate::worktree::project_of(&known.folder).unwrap_or(known.folder);
+    // PtyManager::delete forgets the session here too (see `forget`).
     let worktree = tauri::async_runtime::block_on(pty.delete(id, &folder, &known.account_path, None, drop_worktree))?;
-    {
-        let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-        r.known.remove(id);
-        r.tokens.retain(|_, chat| chat != id);
-        r.seen.retain(|(_, chat), _| chat != id);
-        r.owed.retain(|(who, chat), _| who != id && chat != id);
-        r.answered.retain(|(who, chat), _| who != id && chat != id);
-    }
     crate::emit::to_ui(app, "agent://deleted", Deleted { id: id.to_string() });
     Ok(worktree)
+}
+
+/// A chat is gone, however it was deleted: nothing here may keep it — not in
+/// `luna_sessions`, not against a caller's helper limit, not as a live token,
+/// and not as an answer owed to or by it.
+pub fn forget(id: &str) {
+    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    r.known.remove(id);
+    r.tokens.retain(|_, chat| chat != id);
+    r.seen.retain(|(_, chat), _| chat != id);
+    r.owed.retain(|(who, chat), _| who != id && chat != id);
+    r.answered.retain(|(who, chat), _| who != id && chat != id);
+    r.abandoned.retain(|_, caller| caller != id);
+    drop(r);
+    transcripts().lock().unwrap_or_else(|e| e.into_inner()).remove(id);
 }
 
 // --------------------------------------------------------------- notifier --

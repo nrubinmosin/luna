@@ -83,8 +83,10 @@ function Dock() {
       if (e.clientX <= EDGE && !t?.closest('.title-bar, .dock')) enter();
       else if (e.clientX > EDGE && !t?.closest('.dock')) cancel();
     };
-    window.addEventListener('mousemove', onMove);
-    return () => window.removeEventListener('mousemove', onMove);
+    // Capture: over a terminal whose CLI tracks the mouse, xterm takes the
+    // move for itself and it never bubbles up here.
+    window.addEventListener('mousemove', onMove, true);
+    return () => window.removeEventListener('mousemove', onMove, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pinned]);
 

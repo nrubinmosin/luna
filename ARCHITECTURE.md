@@ -112,7 +112,9 @@ src-tauri/src/
     session.rs  rollout-файлы sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl: какой наш,
                 статус, модель, контекст, первый промпт; имя треда из session_index.jsonl
   account_settings.rs  рекомендуемые настройки (settings.json / config.toml, ключ за
-                ключом, с учётом платформы) и синхронизация от родительского аккаунта
+                ключом, с учётом платформы), синхронизация от родительского аккаунта и
+                ручная правка файла (запись только того, что разбирается)
+  watchdog.rs   окно, чья страница перестала отвечать (умер WebView2), пересобирается
   paths.rs      data_dir(): рядом с exe (portable) либо LOCALAPPDATA\luna; тестовая
                 сборка (LUNA_FLAVOR=test) держит всё рядом со своим exe в test-build/
   lib.rs        Builder + generate_handler

@@ -36,6 +36,8 @@ interface ChatsState {
   setContext: (chatId: string, context: number, tokens: number | null, window: number | null) => void;
   setColor: (chatId: string, color: string | null) => void;
   renameChat: (chatId: string, name: string) => void;
+  /** An account was renamed: its chats follow it. */
+  renameAccount: (provider: Chat['provider'], from: string, to: string) => void;
   findChat: (chatId: string | null) => Chat | null;
   folderOf: (chatId: string) => Folder | null;
 }
@@ -240,6 +242,14 @@ export const useChats = create<ChatsState>()(
             chats: f.chats.map(c =>
               c.id === chatId ? { ...c, context, contextTokens: tokens, contextWindow: window } : c
             )
+          }))
+        })),
+
+      renameAccount: (provider, from, to) =>
+        set(s => ({
+          folders: s.folders.map(f => ({
+            ...f,
+            chats: f.chats.map(c => (c.provider === provider && c.account === from ? { ...c, account: to } : c))
           }))
         })),
 
