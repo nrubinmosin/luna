@@ -2,8 +2,9 @@ import { create } from 'zustand';
 
 export type ThemePref = 'system' | 'light' | 'dark';
 
-/** What an unpinned sidebar leaves behind: a strip to hover. */
-export const STRIP = 10;
+/** The width an unpinned sidebar keeps in the row: none — the hover band
+ *  lies over the board's margin. */
+export const STRIP = 0;
 
 const read = (key: string) => {
   try {

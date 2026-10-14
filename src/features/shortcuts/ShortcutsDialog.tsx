@@ -29,7 +29,7 @@ const KEYBOARD: Row[] = [
 const MOUSE: Row[] = [
   ['Click a chat', 'Shows it: one pane swaps to it, several put it on the sheet — the same chat again goes back'],
   ['Click outside the sheet', 'Back to the grid — so do the mouse’s Back button and, in the sheet’s bar, the chip of the pane that is up'],
-  ['Hover the left edge', 'With the sidebar hidden: slides it out over the board until the pointer leaves'],
+  ['Pointer at the left edge', 'With the sidebar hidden: slides it out over the board until the pointer leaves'],
   ['Drag a chat onto a pane', 'Seats it in that pane'],
   ['Drag a title bar onto a pane', 'Swaps the two panes'],
   ['“Waiting” in the status bar', 'Goes to the next chat that is waiting for you']
