@@ -17,16 +17,16 @@ export interface ChatColor {
 }
 
 export const CHAT_COLORS: ChatColor[] = [
-  { key: 'sky', label: 'Slate blue', h: 207, s: 28, l: 40 },
-  { key: 'teal', label: 'Deep teal', h: 178, s: 26, l: 33 },
-  { key: 'green', label: 'Sage', h: 135, s: 18, l: 36 },
-  { key: 'olive', label: 'Moss', h: 72, s: 26, l: 33 },
-  { key: 'amber', label: 'Ochre', h: 40, s: 36, l: 35 },
-  { key: 'orange', label: 'Clay', h: 20, s: 32, l: 39 },
-  { key: 'red', label: 'Brick', h: 6, s: 30, l: 39 },
-  { key: 'magenta', label: 'Plum', h: 320, s: 16, l: 37 },
-  { key: 'purple', label: 'Dusk', h: 258, s: 16, l: 41 },
-  { key: 'graphite', label: 'Graphite', h: 30, s: 5, l: 37 }
+  { key: 'sky', label: 'Slate blue', h: 212, s: 36, l: 43 },
+  { key: 'teal', label: 'Deep teal', h: 184, s: 42, l: 29 },
+  { key: 'green', label: 'Sage', h: 118, s: 22, l: 39 },
+  { key: 'olive', label: 'Moss', h: 76, s: 38, l: 29 },
+  { key: 'amber', label: 'Ochre', h: 42, s: 55, l: 37 },
+  { key: 'orange', label: 'Clay', h: 22, s: 46, l: 43 },
+  { key: 'red', label: 'Brick', h: 356, s: 38, l: 37 },
+  { key: 'magenta', label: 'Plum', h: 318, s: 26, l: 35 },
+  { key: 'purple', label: 'Dusk', h: 266, s: 26, l: 46 },
+  { key: 'graphite', label: 'Graphite', h: 30, s: 4, l: 33 }
 ];
 
 /**

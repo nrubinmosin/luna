@@ -302,12 +302,12 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
 
               {!editing && (
                 <span className="pane-chips">
-                  <span className="pchip opt-3" title={folder.path}>{t!.leaf}</span>
                   <span className="pchip opt-1" title={`Running on ${PROVIDER_LABEL[chat.provider]} account "${chat.account}"`}>
                     <Icon name={chat.provider} size={12} />
                     {chat.account}
                   </span>
                   {chat.provider === 'codex' ? <codex.Meta chat={chat} /> : <claude.Meta chat={chat} />}
+                  <span className="pchip opt-3" title={folder.path}>{t!.leaf}</span>
                   {chat.worktree && <span className="pchip opt-3" title="Isolated git worktree">worktree</span>}
                 </span>
               )}
