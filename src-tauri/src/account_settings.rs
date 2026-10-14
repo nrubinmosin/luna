@@ -166,6 +166,17 @@ fn plain(v: &toml_edit::Value) -> String {
     v.to_string()
 }
 
+/// Sets a key, replacing its value in place when it is there: `insert` would
+/// replace the key too, and with it the comment written above it.
+fn toml_put(table: &mut toml_edit::Table, key: &str, item: Item) {
+    match table.get_mut(key) {
+        Some(slot) => *slot = item,
+        None => {
+            table.insert(key, item);
+        }
+    }
+}
+
 fn toml_set(doc: &mut DocumentMut, path: &[&str], value: toml_edit::Value) {
     let (last, parents) = path.split_last().expect("non-empty path");
     let mut table = doc.as_table_mut();
@@ -180,7 +191,7 @@ fn toml_set(doc: &mut DocumentMut, path: &[&str], value: toml_edit::Value) {
             None => return, // an inline table: left as the user wrote it
         };
     }
-    table.insert(last, toml_edit::value(value));
+    toml_put(table, last, toml_edit::value(value));
 }
 
 // -------------------------------------------------------- recommendations --
@@ -360,7 +371,7 @@ fn merge_toml(child: &mut toml_edit::Table, parent: &toml_edit::Table, top: bool
             merge_toml(ct, pt, false);
             continue;
         }
-        child.insert(k, pv.clone());
+        toml_put(child, k, pv.clone());
     }
 }
 
@@ -513,13 +524,14 @@ mod tests {
     #[test]
     fn codex_apply_keeps_comments_and_writes_tables() {
         let d = dir("codex");
-        std::fs::write(d.join("config.toml"), "# mine\nmodel = \"gpt-6\" # keep\n\n[tui]\ntheme = \"dark\"\n").unwrap();
+        std::fs::write(d.join("config.toml"), "# mine\nmodel = \"gpt-6\" # keep\n# searching\nweb_search = \"off\"\n\n[tui]\ntheme = \"dark\"\n").unwrap();
         let p = d.to_string_lossy().into_owned();
         apply(Provider::Codex, &p, &["tui.show_tooltips".into(), "analytics.enabled".into(), "web_search".into()]).unwrap();
         let text = std::fs::read_to_string(d.join("config.toml")).unwrap();
         assert!(text.contains("# mine"));
         assert!(text.contains("model = \"gpt-6\" # keep"));
         assert!(text.contains("theme = \"dark\""));
+        assert!(text.contains("# searching\nweb_search = \"live\""), "{text}");
         let doc: DocumentMut = text.parse().unwrap();
         assert_eq!(doc["tui"]["show_tooltips"].as_bool(), Some(false));
         assert_eq!(doc["analytics"]["enabled"].as_bool(), Some(false));
@@ -544,7 +556,7 @@ mod tests {
 
         // Codex: config travels with its comments, trusted folders and auth stay.
         std::fs::write(parent.join("config.toml"), "# parent\nmodel_reasoning_effort = \"high\"\n[tui]\nshow_tooltips = false\n[projects.'C:\\\\p']\ntrust_level = \"trusted\"\n").unwrap();
-        std::fs::write(child.join("config.toml"), "# mine\n[projects.'C:\\\\c']\ntrust_level = \"trusted\"\n").unwrap();
+        std::fs::write(child.join("config.toml"), "# mine\nmodel_reasoning_effort = \"low\"\n[projects.'C:\\\\c']\ntrust_level = \"trusted\"\n").unwrap();
         std::fs::write(child.join("auth.json"), "child-auth").unwrap();
         sync_one(Provider::Codex, &p, &c).unwrap();
         let text = std::fs::read_to_string(child.join("config.toml")).unwrap();

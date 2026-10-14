@@ -477,6 +477,9 @@ export interface AgentSpawnRequest {
   approval?: string | null;
   sandbox?: string | null;
   folder: string;
+  /** The caller's worktree, to run in without owning it; `folder` is its
+   *  project. */
+  inWorktree?: string | null;
   worktree?: boolean | null;
   prompt: string;
   name?: string | null;
