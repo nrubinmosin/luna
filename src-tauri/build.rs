@@ -1,8 +1,8 @@
 use std::process::Command;
 
 /// Stamps the binary with the commit it was built from. The version in
-/// Cargo.toml has never moved off 0.1.0, so without this every build logs the
-/// same startup line and a log spanning a week of builds cannot be told apart.
+/// Cargo.toml only moves on a release, so without this every test build in
+/// between logs the same startup line and cannot be told apart.
 ///
 /// Release builds run in Docker, where the repo's `.git` is a worktree pointer
 /// at a host path that does not exist inside the container — build-windows.ps1

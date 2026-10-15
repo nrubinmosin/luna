@@ -206,7 +206,9 @@ pub fn remove_worktree_now(folder: String, worktree_path: String) -> Result<(), 
         }
         if let Err(e) = gone {
             crate::log::warn("worktree", &format!("could not remove {worktree_path}: git said {why:?}; {e}"));
-            return Err(e.to_string());
+            // Names the worktree, so the UI and the caller's own log line say
+            // which folder something still holds.
+            return Err(format!("could not remove worktree {worktree_path}: {e}"));
         }
         // prune skips a locked entry, and the branch it keeps checked out
         // would then refuse `branch -D` below.

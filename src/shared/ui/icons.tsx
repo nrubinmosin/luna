@@ -12,7 +12,7 @@ import type { CSSProperties, ReactNode } from 'react';
  */
 export type IconName =
   | 'plus' | 'pencil' | 'trash' | 'reset' | 'sun' | 'moon' | 'auto' | 'hide' | 'show'
-  | 'even' | 'gear' | 'refresh' | 'accounts' | 'key' | 'power' | 'help' | 'folder'
+  | 'even' | 'gear' | 'refresh' | 'accounts' | 'key' | 'power' | 'help'
   | 'agents' | 'sweep' | 'download' | 'warn' | 'update' | 'close' | 'check' | 'child' | 'claude' | 'codex'
   | 'recommend' | 'sync' | 'file';
 
@@ -160,14 +160,6 @@ function draw(name: IconName, p: string): ReactNode {
           <circle cx="8" cy="8" r="7" fill={`url(#${p}g)`} stroke="#123f86" />
           <path d="M5.9 6.1a2.1 2.1 0 1 1 3 1.9c-.6.3-.9.7-.9 1.4v.4" fill="none" stroke="#fff" strokeWidth="1.6" strokeLinecap="round" />
           <circle cx="8" cy="12" r="1" fill="#fff" />
-        </>
-      );
-    case 'folder':
-      return (
-        <>
-          <defs>{grad(`${p}g`, '#ffe9a0', '#f0c040')}</defs>
-          <path d="M1.5 3.5h4.6l1.4 1.5h7v8.5h-13z" fill="#e8b830" stroke="#8a6400" strokeLinejoin="round" />
-          <path d="M1.5 6.5h13v7h-13z" fill={`url(#${p}g)`} stroke="#8a6400" strokeLinejoin="round" />
         </>
       );
     case 'agents':

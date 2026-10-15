@@ -38,9 +38,12 @@ fn stamp() -> String {
 }
 
 /// Appends one line. Never returns an error: logging must not be able to break
-/// the thing it is logging. Only warnings and errors reach the file — with no
-/// log button in the UI any more, the file exists for post-mortems, and info
-/// chatter would just push the lines that matter over the rotation edge.
+/// the thing it is logging. Only warnings, errors and the startup line reach
+/// the file — with no log button in the UI any more, the file exists for
+/// post-mortems, and info chatter would just push the lines that matter over
+/// the rotation edge. Every line carries the version that wrote it: the file
+/// outlives updates, and a warning means little without knowing which build
+/// it came from.
 pub fn write(level: &str, source: &str, message: &str) {
     if level == "INFO" {
         return;
@@ -55,8 +58,14 @@ pub fn write(level: &str, source: &str, message: &str) {
 
     if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(p) {
         let one_line = message.replace('\n', " ⏎ ");
-        let _ = writeln!(f, "{} {:<5} [{}] {}", stamp(), level, source, one_line);
+        let _ = writeln!(f, "{} {} {:<5} [{}] {}", stamp(), env!("CARGO_PKG_VERSION"), level, source, one_line);
     }
+}
+
+/// The line that opens every run, so a restart — and an update with it — is
+/// plain in the file. Written whatever the level filter says.
+pub fn start(message: &str) {
+    write("START", "app", message);
 }
 
 pub fn info(source: &str, message: &str) {
