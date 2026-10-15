@@ -62,7 +62,8 @@ const CHATS: Chat[] = [
     model: 'Opus',
     effort: 'max',
     context: 0.34,
-    color: 'sky'
+    color: 'sky',
+    tools: true
   }),
   chat({
     id: 'demo-2',

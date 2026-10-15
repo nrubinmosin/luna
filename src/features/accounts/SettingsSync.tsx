@@ -22,6 +22,9 @@ export function SettingsSync({ accounts }: { accounts: Account[] }) {
   if (!state) return null;
   const providers = PROVIDERS.filter(p => accounts.filter(a => a.provider === p).length > 1);
   if (!providers.length) return null;
+  // A provider with one account has nothing to copy onto; said here, or its
+  // missing row reads as the feature being another provider's alone.
+  const alone = PROVIDERS.filter(p => accounts.filter(a => a.provider === p).length === 1);
 
   const syncNow = async (p: Provider) => {
     setBusy(p);
@@ -74,6 +77,12 @@ export function SettingsSync({ accounts }: { accounts: Account[] }) {
           </div>
         );
       })}
+      {alone.map(p => (
+        <div key={p} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-2)', color: 'var(--faint)' }}>
+          <Icon name={p} />
+          {PROVIDER_LABEL[p]}: only one account, nothing to share its settings with yet.
+        </div>
+      ))}
       {Object.entries(note).map(([p, text]) => (
         <div key={p} style={{ fontSize: 'var(--fs-2)', color: 'var(--faint)' }}>{PROVIDER_LABEL[p as Provider]}: {text}</div>
       ))}

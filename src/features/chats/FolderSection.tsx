@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { Chat, Folder } from '../../shared/types';
 import { tail2 } from '../../shared/lib/format';
-import { Chevron, Icon, ToolButton } from '../../shared/ui/icons';
+import { Chevron, ToolButton } from '../../shared/ui/icons';
 import { allChats, useChats } from './chats.store';
 import { useNewChat } from '../new-chat/newchat.store';
 import { useAccounts } from '../accounts/accounts.store';
@@ -83,10 +83,9 @@ export function FolderSection({ folder }: { folder: Folder }) {
   return (
     <div className="tp-group">
       <div onClick={() => toggleFolder(folder.id)} title={folder.path} className="tp-head">
-        <Icon name="folder" />
-        <span style={{ flex: '1 1 auto', minWidth: 40, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          <span style={{ fontWeight: 400, opacity: 0.7 }}>{t.parent} / </span>
-          {t.leaf}
+        <span className="tp-name">
+          <span className="tp-where">{t.parent}</span>
+          <span>{t.leaf}</span>
         </span>
         {orphans.length > 0 && (
           <ToolButton

@@ -198,7 +198,8 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   starts is set in Settings.
 - Warnings and errors from both halves of the app land in `luna.log`, next to the exe for
   the portable build and under `%LOCALAPPDATA%\luna` otherwise. Info-level chatter never
-  reaches it, so what is in there is worth reading.
+  reaches it, so what is in there is worth reading. Every line names the version that
+  wrote it, and each launch opens with a `START` line naming the version and build.
 
 ## Agents: sessions that run sessions
 

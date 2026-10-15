@@ -156,7 +156,10 @@ body { margin: 0; overflow: hidden; }
 /* Thin rounded scrollbars in the theme's own greys, in place of XP's blue
    bitmaps — which, in the dark theme, were the brightest thing on screen. */
 [data-app] ::-webkit-scrollbar { width: 10px; height: 10px; }
-[data-app] ::-webkit-scrollbar-button { display: none; }
+/* !important: xp.css brings its arrow buttons back with
+   `:vertical:start:decrement` and the like, which outrank a bare selector —
+   a tall enough list showed two arrows at each end. */
+[data-app] ::-webkit-scrollbar-button { display: none !important; }
 [data-app] ::-webkit-scrollbar-track,
 [data-app] ::-webkit-scrollbar-corner { background: transparent; }
 [data-app] ::-webkit-scrollbar-thumb {
@@ -431,13 +434,25 @@ body { margin: 0; overflow: hidden; }
   flex: none;
   height: 34px;
   gap: 6px;
-  padding-right: 5px;
+  padding-right: 0;
   border-radius: 0;
   border-left: none;
   border-right: none;
   border-top: none;
 }
 .app-frame > .app-body { flex: 1; min-height: 0; display: flex; }
+/* The window's buttons answer up to the bar's top edge, and Close to its
+   right edge too: thrown into the corner of a maximised window, the pointer
+   lands on Close, as on Windows' own title bar. The reach is generous so the
+   press shrinking the button does not pull it out from under the pointer. */
+.app-frame > .title-bar > .title-bar-controls { padding-right: 5px; }
+.app-frame > .title-bar > .title-bar-controls button { position: relative; }
+.app-frame > .title-bar > .title-bar-controls button::before {
+  content: "";
+  position: absolute;
+  inset: -12px -2px -6px;
+}
+.app-frame > .title-bar > .title-bar-controls button:last-child::before { right: -10px; }
 .app-frame .title-bar-text { flex: none; display: flex; align-items: center; gap: 6px; }
 
 /* The board's controls, on the title bar: glass pills on the gloss, so they
@@ -597,13 +612,18 @@ body { margin: 0; overflow: hidden; }
   transition: background .15s, box-shadow .15s;
 }
 [data-app] .pane-bar .title-bar-controls { flex: none; position: relative; }
+/* The bar's full height and a margin on the left: the clip is for what does
+   not fit, not for the status dot's ring and halo, which it used to cut off
+   against the window buttons. */
 [data-app] .pane-head {
   flex: 1 1 auto;
+  align-self: stretch;
   min-width: 0;
   display: flex;
   align-items: center;
   justify-content: flex-end;
   gap: 6px;
+  padding-left: 8px;
   overflow: hidden;
 }
 [data-app] .pane-bar .title-bar-text {
@@ -836,7 +856,7 @@ body { margin: 0; overflow: hidden; }
 [data-app] .tp-head {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   height: calc(var(--ui) * 2);
   padding: 0 4px 0 8px;
   background: var(--group-head);
@@ -847,6 +867,18 @@ body { margin: 0; overflow: hidden; }
   transition: color .14s;
 }
 [data-app] .tp-head:hover { color: var(--group-ink-hover); }
+/* The folder's name on two floors: where it sits, small, over the folder
+   itself, so the name keeps the width the buttons leave. */
+[data-app] .tp-name {
+  flex: 1 1 auto;
+  min-width: 40px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  line-height: 1.15;
+}
+[data-app] .tp-name > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+[data-app] .tp-name > .tp-where { font-size: var(--fs-1); font-weight: 400; opacity: .7; }
 [data-app] .tp-chev {
   flex: none;
   width: 18px;
@@ -968,10 +1000,26 @@ body { margin: 0; overflow: hidden; }
   color: #fff;
 }
 
-/* Rename and delete stay put but quiet until the row is under the pointer. */
-[data-app] .chat-row .row-tools { display: flex; gap: 1px; opacity: .45; transition: opacity .15s; }
-[data-app] .chat-row:hover .row-tools,
-[data-app] .chat-row[data-active="yes"] .row-tools { opacity: 1; }
+/* Rename and delete take no room of their own: they come up over the end of
+   the row under the pointer, so the name gets the whole width the rest of
+   the time. The fade in front of them is the row's own ground. */
+[data-app] .chat-row .row-tools {
+  --row-ground: var(--row-hover);
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 2px;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding-left: 16px;
+  background: linear-gradient(90deg, transparent, var(--row-ground) 14px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .15s;
+}
+[data-app] .chat-row[data-active="yes"] .row-tools { --row-ground: var(--row-sel); }
+[data-app] .chat-row:hover .row-tools { opacity: 1; pointer-events: auto; }
 
 /* XP's flat toolbar button: nothing until hovered, then a raised bevel. */
 [data-app] button.tool-btn {
@@ -1210,10 +1258,23 @@ body { margin: 0; overflow: hidden; }
   62%, 88% { background: rgba(255, 138, 0, .22); }
 }
 [data-app] .sb-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; transition: background .15s; }
-[data-app] .sb-acc { display: flex; align-items: center; gap: 5px; }
-[data-app] .sb-acc + .sb-acc { margin-left: 6px; padding-left: 10px; border-left: 1px solid var(--line); }
-[data-app] .sb-acc b { color: var(--fg); font-weight: 600; }
+/* Each account a card of its own on the bar: in one run of text the windows
+   of one account ran into the next one's name. */
+[data-app] .sb-acc {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 2px 0;
+  padding: 0 8px 0 6px;
+  border-radius: 4px;
+  background: var(--card);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--line) 80%, var(--fg));
+}
+[data-app] .sb-acc + .sb-acc { margin-left: 4px; }
+[data-app] .sb-acc b { color: var(--fg); font-weight: 700; margin-right: 3px; }
 [data-app] .sb-win { display: flex; align-items: center; gap: 4px; }
+[data-app] .sb-win + .sb-win { margin-left: 4px; }
 [data-app] .sb-win small { color: var(--faint); font-size: var(--fs-1); }
 [data-app] .sb-key {
   min-width: 14px;

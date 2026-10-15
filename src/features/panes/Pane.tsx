@@ -306,9 +306,23 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
                     <Icon name={chat.provider} size={12} />
                     {chat.account}
                   </span>
+                  {/* Right after the account: chips that do not fit drop off
+                      the end, and these two change what the session may do
+                      and where it writes. */}
+                  {chat.tools && (
+                    <span className="pchip opt-2" title="Luna tools on: this session can spawn and drive other sessions">
+                      <Icon name="agents" size={12} />
+                      tools
+                    </span>
+                  )}
+                  {(chat.worktree || chat.worktreePath) && (
+                    <span className="pchip opt-2" title={`Isolated git worktree${chat.worktreePath ? `
+${chat.worktreePath}` : ''}`}>
+                      worktree
+                    </span>
+                  )}
                   {chat.provider === 'codex' ? <codex.Meta chat={chat} /> : <claude.Meta chat={chat} />}
                   <span className="pchip opt-3" title={folder.path}>{t!.leaf}</span>
-                  {chat.worktree && <span className="pchip opt-3" title="Isolated git worktree">worktree</span>}
                 </span>
               )}
 
