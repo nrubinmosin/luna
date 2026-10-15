@@ -78,10 +78,7 @@ export async function createChat(spec: ChatSpec): Promise<string> {
   useChats.getState().addChat(spec.folder, chat);
   if (!spec.parentId) {
     usePanes.getState().autoPlace(id);
-    useNewChat.getState().remember(
-      spec.folder, { provider: spec.provider, name: spec.account.name }, spec.worktree, spec.tools ?? false
-    );
-    useChats.getState().rememberStart(spec.folder, { worktree: spec.worktree, tools: spec.tools ?? false });
+    useNewChat.getState().remember(spec.folder, { provider: spec.provider, name: spec.account.name });
   }
   return id;
 }
@@ -123,12 +120,9 @@ export async function quickChat(): Promise<void> {
     return;
   }
 
-  // The folder's own last chat, when kept per folder; else a fixed start from
-  // Settings; else "as last time", which here means the chat on screen.
-  const { worktree, tools } = startFor(chats.folders.find(f => f.path === folder), {
-    worktree: near?.worktree ?? ui.lastWorktree,
-    tools: near?.tools ?? ui.lastTools
-  });
+  // The folder's own start, else the defaults from Settings — not the chat on
+  // screen, which may have been a one-off.
+  const { worktree, tools } = startFor(chats.folders.find(f => f.path === folder));
   try {
     if (account.provider === 'claude') {
       const { values } = await claude.settingsDefaults(account.path, folder);

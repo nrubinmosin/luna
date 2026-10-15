@@ -79,7 +79,12 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Chats
 
-- New chat (Ctrl+N): folder, account, and a **Git worktree** checkbox (on by default).
+- New chat (Ctrl+N): folder, account, and the **Git worktree** and **Luna tools**
+  checkboxes. They start as Settings has them (worktree on, tools off), or as kept for the
+  folder: flipping one is just for that chat, and "keep for this folder" under them makes
+  it the folder's own start. Before a worktree is made Luna fetches origin's default
+  branch (10 s at most, never asking for a password; off in Settings): both CLIs branch
+  the worktree off it, and Claude Code itself refetches it only once a day.
   The account decides which CLI the chat runs, and the rest of the dialog follows:
   - **Claude Code**: model, effort (`low/medium/high/xhigh/max/ultracode`) and permission
     mode. Isolation runs the session as `claude --worktree` in
@@ -92,7 +97,8 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
     mode (`read-only/workspace-write/danger-full-access`), with the three usual pairs as
     one-click presets; `never` + `danger-full-access` is passed as
     `--dangerously-bypass-approvals-and-sandbox`, as Codex spells it. Isolation makes a
-    worktree on a fresh `codex-…` branch under `<folder>/.codex/worktrees/` and runs
+    worktree on a fresh `codex-…` branch off origin's default branch (as Claude Code
+    does; HEAD where there is no origin) under `<folder>/.codex/worktrees/` and runs
     `codex -C` inside it — Codex's own worktree feature is left alone (it is experimental,
     puts the checkout under the account folder and never cleans up).
 - Those controls open on whatever the CLI's own settings say for that account in that
@@ -103,7 +109,7 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   the file it came from, and changing one says so and offers the way back — an override
   belongs to that chat and is never remembered as the new default.
 - Ctrl+Shift+N skips the dialog: same folder and account as the chat on screen, the rest
-  as the settings have it. Either way the new chat lands in a pane you can see — a free
+  as the settings have it, the two checkboxes as the folder starts them. Either way the new chat lands in a pane you can see — a free
   one, or the pane you were last working in when the board is full.
 - A chat's pane title bar starts with the buttons to recolour, rename, delete, peek it or
   take it off the board — on the left, where the hand gets first — and then its name and,

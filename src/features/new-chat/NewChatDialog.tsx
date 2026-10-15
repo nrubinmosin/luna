@@ -13,6 +13,7 @@ import { Icon } from '../../shared/ui/icons';
 import { AccountPicker } from './AccountPicker';
 
 const noteStyle: CSSProperties = { fontSize: 'var(--fs-2)', color: 'var(--faint)', marginTop: 3 };
+const linkStyle: CSSProperties = { cursor: 'default', color: 'var(--dim)', textDecoration: 'underline', borderRadius: 2 };
 
 /**
  * Where the value on screen came from, or the way back if it was changed.
@@ -29,11 +30,7 @@ function originOf<S extends object>(
       return (
         <div style={noteStyle}>
           just for this chat —{' '}
-          <span
-            onClick={() => draft.revert(field)}
-            className="hover-bg"
-            style={{ cursor: 'default', color: 'var(--dim)', textDecoration: 'underline', borderRadius: 2 }}
-          >
+          <span onClick={() => draft.revert(field)} className="hover-bg" style={linkStyle}>
             back to {describe(field, draft.resolved[field])}
           </span>
         </div>
@@ -62,23 +59,29 @@ export function NewChatDialog() {
     const a = (last && findAccount(accounts, last.provider, last.name)) ?? accounts[0];
     return a ? accountKey(a.provider, a.name) : '';
   });
-  const startIn = (path: string) => {
-    const ui = useNewChat.getState();
-    const known = useChats.getState().folders.find(f => f.path === path);
-    return startFor(known, { worktree: ui.lastWorktree, tools: ui.lastTools });
-  };
+  const startIn = (path: string) => startFor(useChats.getState().folders.find(f => f.path === path));
   const [worktree, setWorktree] = useState(() => startIn(folder).worktree);
   const [tools, setTools] = useState(() => startIn(folder).tools);
-  // Kept per folder, the boxes belong to the folder picked, so picking
-  // another one resets them to its start — a flip made for the first folder
-  // was not made for this one.
+  // The boxes start the way the folder picked does, so picking another one
+  // resets them — a flip made for the first folder was not made for this one.
   const chooseFolder = (path: string) => {
     setFolder(path);
-    if (!useNewChat.getState().perFolder) return;
     const start = startIn(path);
     setWorktree(start.worktree);
     setTools(start.tools);
   };
+  // Read on every render rather than kept: keeping the start below changes it.
+  const ownStart = folders.find(f => f.path === folder)?.start;
+  const defaultWorktree = useNewChat(s => s.worktree);
+  const defaultTools = useNewChat(s => s.tools);
+  const start = ownStart ?? { worktree: defaultWorktree, tools: defaultTools };
+  const flipped = worktree !== start.worktree || tools !== start.tools;
+  // A start that is the defaults anyway is no start of the folder's own.
+  const keepForFolder = () =>
+    useChats.getState().setStart(
+      folder,
+      worktree === defaultWorktree && tools === defaultTools ? undefined : { worktree, tools }
+    );
 
   const account = accounts.find(a => accountKey(a.provider, a.name) === accountId) ?? null;
   const provider = account?.provider ?? 'claude';
@@ -298,6 +301,33 @@ export function NewChatDialog() {
               </div>
             </div>
           </div>
+          {folder && (
+            <div style={{ ...noteStyle, marginTop: -8, textAlign: 'right' }}>
+              {flipped ? (
+                <>
+                  just for this chat —{' '}
+                  <span
+                    onClick={() => {
+                      setWorktree(start.worktree);
+                      setTools(start.tools);
+                    }}
+                    className="hover-bg"
+                    style={linkStyle}
+                  >
+                    back to {ownStart ? 'this folder’s start' : 'the default'}
+                  </span>
+                  {' · '}
+                  <span onClick={keepForFolder} className="hover-bg" style={linkStyle}>
+                    keep for this folder
+                  </span>
+                </>
+              ) : ownStart ? (
+                'both as kept for this folder'
+              ) : (
+                'both as set in Settings'
+              )}
+            </div>
+          )}
 
           {provider === 'codex' ? (
             <codex.Fields draft={codexDraft} origin={originOf(codexDraft, codex.describe)} accountPath={accountPath} />

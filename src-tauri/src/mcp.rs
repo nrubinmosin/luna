@@ -127,13 +127,13 @@ fn tools() -> Value {
         },
         {
             "name": "luna_kill",
-            "description": "Stop a session's process; its row stays in Luna.",
+            "description": "Stop a session's process; its row stays.",
             "inputSchema": s(json!({ "id": { "type": "string" } }), &["id"]),
             "annotations": ends
         },
         {
             "name": "luna_delete",
-            "description": "Stop a session and remove its row; dropWorktree also deletes the worktree and branch it made; one shared with you stays.",
+            "description": "Stop a session, remove its row; dropWorktree: also its worktree and Luna's branch for it, not others; one shared with you stays.",
             "inputSchema": s(json!({ "id": { "type": "string" }, "dropWorktree": { "type": "boolean" } }), &["id"]),
             "annotations": ends
         }

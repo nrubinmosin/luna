@@ -37,8 +37,9 @@ src/                          фронт (feature-sliced)
               peek — лист поверх притемнённой доски, той же панелью без перемонтирования;
               altPeek.ts — взгляд на чат, пока над его строкой зажат Alt;
               terminals.ts — реестр живых xterm'ов, переживающих свои панели
-    new-chat/ диалог создания: папка, аккаунт (он же выбирает провайдера), чекбокс
-              "Git worktree" (по умолчанию вкл), дальше поля провайдера (Fields из
+    new-chat/ диалог создания: папка, аккаунт (он же выбирает провайдера), чекбоксы
+              "Git worktree" и "Luna tools" (старт — из Settings или сохранённый для
+              папки, Folder.start), дальше поля провайдера (Fields из
               providers/*) — они открываются на том, что скажут *_defaults; draft.ts —
               черновик настроек с пометкой «тронуто рукой»; create.ts — общий путь
               создания для диалога и для Ctrl+Shift+N (для Codex здесь же делается worktree)
@@ -71,7 +72,8 @@ src-tauri/src/
                 и pty://exit, write/resize/kill; ensure_claude_session / ensure_codex_session
                 собирают командную строку; session_meta диспетчит по провайдеру
   worktree.rs   уборка worktree обоих провайдеров (.claude/worktrees, .codex/worktrees),
-                create_worktree для Codex, поиск сирот
+                create_worktree для Codex, fetch origin перед новым worktree обоих
+                провайдеров (настройка fetchBeforeWorktree), поиск сирот
   throttle.rs   cool-off после 429 usage-эндпоинтов, общий на оба
   procs.rs      что у CLI запущено под ним: Job Object на сессию, список pid,
                 CPU/IO/время старта каждого, правило «занят» (judge)
@@ -142,8 +144,8 @@ src-tauri/src/
   `[resume <uuid>] -C <cwd> [--model <m>] -c model_reasoning_effort="<e>" -a <on-request|never>
   -s <read-only|workspace-write|danger-full-access>` (пара `never` + `danger-full-access`
   заменяется на `--dangerously-bypass-approvals-and-sandbox`), `CODEX_HOME` = папка аккаунта.
-  Worktree для Codex делает Luna сама (`git worktree add -b codex-<hex> <папка>/.codex/worktrees/codex-<hex>`,
-  плюс запись в `.git/info/exclude`) и запускает сессию уже внутри — нативный `--worktree` Codex
+  Worktree для Codex делает Luna сама (`git worktree add --no-track -b codex-<hex> <папка>/.codex/worktrees/codex-<hex> origin/<default>`
+  — та же база, что у `claude --worktree`, HEAD без origin; плюс запись в `.git/info/exclude`) и запускает сессию уже внутри — нативный `--worktree` Codex
   экспериментальный, кладёт checkout под `CODEX_HOME` и не чистит за собой. Логин — та же команда
   с `login: true`, т.е. `codex login` в папке аккаунта.
 - Флаги ставятся всегда, поэтому собственные настройки CLI были бы перекрыты на каждой
@@ -291,10 +293,13 @@ src-tauri/src/
   взгляда подряд между ходами (`Idle`, не стартует, человек не печатал в него 20 с и не оставил
   неотправленного черновика), печатает
   ему одну строку `[Luna notice, not typed by the user] …` с Enter — так же, как `send`: помощник
-  закончил ход (с первыми 400 знаками ответа), встал на промпт (один раз за остановку) или вышел.
+  закончил ход (с ответом до 3000 знаков, дальше — пометка «cut»), встал на промпт (один раз за
+  остановку) или вышел.
   Ход, после которого у помощника ещё работают процессы, ждёт до 20 с: затихли — «закончил»,
   нет — «оставил работу в фоне», и долг переносится на следующий ход (Claude Code сам вернётся,
-  когда фоновая задача кончится). Ход без ответа в транскрипте ждёт его до 5 с (Stop-hook Claude
+  когда фоновая задача кончится). Свои постоянные помощники CLI (`codex-code-mode-host` и его
+  `conhost`) фоновой работой не считаются, пока не двигаются (procs.rs, `without_furniture`):
+  иначе каждый Codex-помощник после хода объявлялся «NOT done yet». Ход без ответа в транскрипте ждёт его до 5 с (Stop-hook Claude
   Code приходит раньше, чем последний ответ ложится в транскрипт; `wait` ждёт так же), а потом
   уведомление говорит «без ответа» и отсылает к экрану. Черновик Luna считает по клавишам
   человека из `write_session` (`pty::draft_after`: символы прибавляют, Backspace убавляет, Enter,

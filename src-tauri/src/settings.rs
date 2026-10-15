@@ -26,6 +26,8 @@ pub struct Settings {
     pub settings_parents: SettingsParents,
     /// Copy them once at every launch.
     pub settings_sync_on_start: bool,
+    /// `git fetch` origin before a new worktree branches off it (worktree.rs).
+    pub fetch_before_worktree: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -45,6 +47,7 @@ impl Default for Settings {
             agent_blocked_accounts: Vec::new(),
             settings_parents: SettingsParents::default(),
             settings_sync_on_start: false,
+            fetch_before_worktree: true,
         }
     }
 }

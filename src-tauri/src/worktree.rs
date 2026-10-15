@@ -115,13 +115,89 @@ fn exclude(folder: &str, pattern: &str) {
     let _ = std::fs::write(&file, text);
 }
 
-/// Makes a worktree for a Codex chat on a fresh branch off HEAD and returns
-/// its path. Off the main thread: `worktree add` checks out a whole tree.
+/// origin's default branch as this clone last heard of it (`origin/main`),
+/// if it has an origin that says.
+fn origin_default(folder: &str) -> Option<String> {
+    let out = git(folder).args(["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"]).output().ok()?;
+    let r = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (out.status.success() && r.starts_with("origin/")).then_some(r)
+}
+
+/// The longest a fetch before a worktree may hold up the chat it is for.
+const FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Brings origin's default branch up to date before a worktree branches off
+/// it. Claude Code bases its worktree on that branch but fetches it only when
+/// the last fetch is a day old, so a repo fetched in the morning gave every
+/// worktree that day the morning's tree. Only remote-tracking refs move.
+/// Never interactive and bounded: a fetch that wants a password, or a network
+/// that is not there, is given up on and the chat starts on what there is.
+pub fn fetch_origin(folder: &str) {
+    if !crate::settings::get().fetch_before_worktree
+        || !git(folder).args(["remote", "get-url", "origin"]).output().is_ok_and(|o| o.status.success())
+    {
+        return;
+    }
+    // One at a time: a new chat's pane and its spawn can both get here, and
+    // two fetches into one repo fail on each other's ref lock. The second
+    // finds nothing left to fetch.
+    static FETCHING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _one = FETCHING.lock().unwrap_or_else(|e| e.into_inner());
+    let mut cmd = git(folder);
+    cmd.args(["fetch", "--quiet", "origin"]);
+    if let Some(branch) = origin_default(folder) {
+        cmd.arg(&branch["origin/".len()..]);
+    }
+    cmd.env("GIT_TERMINAL_PROMPT", "0")
+        .env("GCM_INTERACTIVE", "never")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped());
+    let Ok(mut child) = cmd.spawn() else { return };
+    let deadline = std::time::Instant::now() + FETCH_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if !status.success() {
+                    let mut why = String::new();
+                    if let Some(mut err) = child.stderr.take() {
+                        let _ = std::io::Read::read_to_string(&mut err, &mut why);
+                    }
+                    crate::log::warn(
+                        "worktree",
+                        &format!("fetch before a worktree in {folder} failed ({status}): {}; using origin as it was", why.trim()),
+                    );
+                }
+                return;
+            }
+            Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(100)),
+            _ => {
+                let _ = child.kill();
+                crate::log::warn("worktree", &format!("fetch before a worktree in {folder} took over {FETCH_TIMEOUT:?}; using origin as it was"));
+                return;
+            }
+        }
+    }
+}
+
+/// Makes a worktree for a Codex chat on a fresh branch and returns its path.
+/// Off the main thread: the fetch and `worktree add` both take a while.
 #[tauri::command]
 pub async fn create_worktree(folder: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || create_worktree_now(&folder))
         .await
         .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub fn fetch_before_worktree() -> bool {
+    crate::settings::get().fetch_before_worktree
+}
+
+#[tauri::command]
+pub fn set_fetch_before_worktree(on: bool) -> Result<bool, String> {
+    crate::settings::update(|s| s.fetch_before_worktree = on)?;
+    Ok(on)
 }
 
 fn create_worktree_now(folder: &str) -> Result<String, String> {
@@ -137,8 +213,14 @@ fn create_worktree_now(folder: &str) -> Result<String, String> {
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let path = dir.join(&name);
     let path_str = path.to_string_lossy().into_owned();
+    // Off origin's default branch, as Claude Code branches its own, so a
+    // Codex chat starts on the same tree a Claude one would; off HEAD where
+    // there is no origin to go by. Not tracking it: the branch is the
+    // chat's, and a push should not head for the default branch.
+    fetch_origin(folder);
+    let base = origin_default(folder).unwrap_or_else(|| "HEAD".into());
     let out = git(folder)
-        .args(["worktree", "add", "-b", &name, &path_str])
+        .args(["worktree", "add", "--no-track", "-b", &name, &path_str, &base])
         .output()
         .map_err(|e| format!("git: {e}"))?;
     if !out.status.success() {
@@ -148,7 +230,7 @@ fn create_worktree_now(folder: &str) -> Result<String, String> {
         ));
     }
     exclude(folder, ".codex/worktrees/");
-    crate::log::info("worktree", &format!("created {path_str} on branch {name}"));
+    crate::log::info("worktree", &format!("created {path_str} on branch {name} off {base}"));
     Ok(path_str)
 }
 
@@ -166,7 +248,7 @@ pub fn remove_worktree_now(folder: String, worktree_path: String) -> Result<(), 
         let branch = branch_of(&folder, &worktree_path);
         let _ = git(&folder).args(["worktree", "unlock", &worktree_path]).output();
         let _ = git(&folder).args(["worktree", "prune"]).output();
-        drop_branch(&folder, branch);
+        drop_branches(&folder, &worktree_path, branch);
         return Ok(());
     }
 
@@ -217,20 +299,33 @@ pub fn remove_worktree_now(folder: String, worktree_path: String) -> Result<(), 
     }
 
     crate::log::info("worktree", &format!("removed {worktree_path} (branch {branch:?})"));
-    drop_branch(&folder, branch);
+    drop_branches(&folder, &worktree_path, branch);
     Ok(())
 }
 
-/// Deletes the throwaway branch made alongside the directory. Restricted to
-/// the two throwaway namings — Claude Code's `worktree-*` and Luna's
-/// `codex-*`: anything else is a branch the user checked out themselves, and
+/// The branch the worktree was made on, by the name it was made under:
+/// Claude Code's `worktree-<dir>`, Luna's `codex-…` as the directory itself.
+/// What is checked out there at the end may be another branch — a session is
+/// free to switch — and the one it was made on would then be left behind.
+fn made_branch(worktree_path: &str) -> Option<String> {
+    let dir = Path::new(worktree_path).file_name()?.to_str()?;
+    let codex = norm(worktree_path).contains(r"\.codex\worktrees\");
+    Some(if codex { dir.to_string() } else { format!("worktree-{dir}") })
+}
+
+/// Deletes the throwaway branches of a removed worktree: the one it was made
+/// on, and the one checked out at the end if that is throwaway too.
+/// Restricted to the two throwaway namings — Claude Code's `worktree-*` and
+/// Luna's `codex-*`: anything else is a branch someone made on purpose, and
 /// `-D` would discard real commits.
-fn drop_branch(folder: &str, branch: Option<String>) {
-    let Some(branch) = branch else { return };
-    if !branch.starts_with("worktree-") && !branch.starts_with("codex-") {
-        return;
+fn drop_branches(folder: &str, worktree_path: &str, checked_out: Option<String>) {
+    let mut branches: Vec<String> = made_branch(worktree_path).into_iter().chain(checked_out).collect();
+    branches.dedup();
+    for branch in branches {
+        if branch.starts_with("worktree-") || branch.starts_with("codex-") {
+            let _ = git(folder).args(["branch", "-D", &branch]).output();
+        }
     }
-    let _ = git(folder).args(["branch", "-D", &branch]).output();
 }
 
 /// A worktree younger than this is assumed to belong to a session that has not
@@ -476,6 +571,12 @@ mod tests {
         assert!(claims(&norm(r"E:\p\.claude\worktrees\a\src"), &wt));
         assert!(!claims(&norm(r"E:\p\.claude\worktrees\ab"), &wt));
         assert!(!claims(&norm(r"E:\p"), &wt));
+    }
+
+    #[test]
+    fn a_worktree_names_the_branch_it_was_made_on() {
+        assert_eq!(made_branch(r"E:\p\.claude\worktrees\merry-coalescing-cosmos").as_deref(), Some("worktree-merry-coalescing-cosmos"));
+        assert_eq!(made_branch("E:/p/.codex/worktrees/codex-1a2b3c").as_deref(), Some("codex-1a2b3c"));
     }
 
     #[test]
