@@ -21,6 +21,7 @@ import {
 import { findAccount, useAccounts } from '../accounts/accounts.store';
 import { allChats, useChats } from '../chats/chats.store';
 import { createChat } from '../new-chat/create';
+import { usePanes } from '../panes/panes.store';
 import { claude, codex } from '../providers';
 
 /**
@@ -106,7 +107,7 @@ async function spawn(req: AgentSpawnRequest): Promise<void> {
           settings: await codexSettings(req, (await codex.settingsDefaults(account.path, folder)).values, account)
         };
   const inWorktree = req.inWorktree ?? undefined;
-  const id = await createChat({ ...spec, folder, account, worktree, tools, parentId: parent?.id, name, inWorktree });
+  const id = await createChat({ ...spec, folder, account, worktree, tools, parentId: parent?.id, name, inWorktree, byAgent: true });
   const chat = useChats.getState().findChat(id);
   const common = {
     chatId: id,
@@ -130,6 +131,9 @@ async function spawn(req: AgentSpawnRequest): Promise<void> {
     useChats.getState().deleteChat(id);
     throw e;
   }
+  // A top-level row comes into view only now that its session runs (see
+  // `byAgent`).
+  if (!parent) usePanes.getState().autoPlace(id);
   const made = useChats.getState().findChat(id);
   await agentSpawned(req.requestId, id, made?.name ?? null, null);
 }

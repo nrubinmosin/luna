@@ -845,14 +845,15 @@ pub async fn ensure_claude_session(
     // An opening prompt, for a chat an agent starts.
     prompt: Option<String>,
 ) -> Result<String, String> {
-    // A new worktree is about to branch off origin; a resumed session already
-    // has its worktree, and a running one is not spawned again.
-    if worktree && resume.is_none() && !state.alive(&id) {
-        let folder = folder.clone();
-        let _ = tauri::async_runtime::spawn_blocking(move || crate::worktree::fetch_origin(&folder)).await;
-    }
     // Built only if no process is running (see `spawn`).
     spawn(app, state, id.clone(), move || {
+        // A new worktree is about to branch off origin; a resumed session
+        // already has its worktree. Here, under the spawn gate, so a pane
+        // asking for the session meanwhile waits for this spawn — the one
+        // with the opening prompt — instead of starting its own without it.
+        if worktree && resume.is_none() {
+            crate::worktree::fetch_origin(&folder);
+        }
         let mut args = vec![
             "--model".to_string(),
             model.clone(),

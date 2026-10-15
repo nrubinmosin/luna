@@ -24,6 +24,11 @@ export type ChatSpec = {
   /** An existing worktree of `folder` to run in — a helper's caller's. The
    *  chat is filed under the project and does not own the worktree. */
   inWorktree?: string;
+  /** Made for an agent: never remembered as the user's last choice, and a
+   *  row with no parent to sit under is seated by the caller once its
+   *  session is up — seated now, its pane would start the session first,
+   *  without the opening prompt or the agent it belongs to. */
+  byAgent?: boolean;
 } & ({ provider: 'claude'; settings: ClaudeSettings } | { provider: 'codex'; settings: CodexSettings });
 
 /**
@@ -76,7 +81,7 @@ export async function createChat(spec: ChatSpec): Promise<string> {
       : { ...base, provider: 'codex', ...spec.settings };
 
   useChats.getState().addChat(spec.folder, chat);
-  if (!spec.parentId) {
+  if (!spec.parentId && !spec.byAgent) {
     usePanes.getState().autoPlace(id);
     useNewChat.getState().remember(spec.folder, { provider: spec.provider, name: spec.account.name });
   }
