@@ -73,8 +73,9 @@ const SEND_TYPING_MS: u64 = 5_000;
 /// A notice held this long by an unsent draft in the caller is announced on
 /// the desktop instead, once: the draft may be forgotten, the notice is not.
 const DRAFT_ALERT_MS: u64 = 60_000;
-/// How much of a reply a notice quotes; the rest is a `luna_read` away.
-const NOTICE_QUOTE: usize = 400;
+/// How much of a reply a notice quotes: enough for most reports whole, so
+/// the caller need not read each one back; the rest is a `luna_read` away.
+const NOTICE_QUOTE: usize = 3000;
 /// A turn has ended with the session's processes still at work: give them
 /// this long to settle before calling it a job left in the background. Right
 /// after a turn they often move for a sample or two anyway.
@@ -1217,14 +1218,14 @@ fn last_reply(pty: &crate::pty::PtyManager, id: &str, provider: Provider) -> Opt
 
 /// One line for a notice: whitespace folded (a newline would submit the
 /// notice early, or turn it into a paste the CLI shows as a placeholder) and
-/// the length capped.
+/// the length capped, saying so where it is.
 fn quote(text: &str) -> String {
     let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if flat.chars().count() <= NOTICE_QUOTE {
         return flat;
     }
     let cut: String = flat.chars().take(NOTICE_QUOTE).collect();
-    format!("{cut}…")
+    format!("{cut}… [cut; luna_read gives the full text]")
 }
 
 /// The notice for one session, or None while nothing has happened to it.
@@ -1378,7 +1379,7 @@ fn notifier() {
             if lines.is_empty() {
                 continue;
             }
-            let text = format!("[Luna notice, not typed by the user] {} (luna_read gives the full text)", lines.join(" "));
+            let text = format!("[Luna notice, not typed by the user] {}", lines.join(" "));
             let before = crate::activity::turn_state(&caller);
             let baseline = before.map(|t| t.turns_ended).unwrap_or(0);
             match type_in(&pty, &caller, &text, before.map(|t| t.turn), baseline) {
@@ -1483,7 +1484,8 @@ mod tests {
         owe(DEV_CALLER, "o-child", 0);
         assert!(reg().lock().unwrap().owed.get(&(DEV_CALLER.to_string(), "o-child".to_string())).is_none());
         assert_eq!(quote("a\n\nb   c"), "a b c");
-        assert!(quote(&"x".repeat(1000)).chars().count() == NOTICE_QUOTE + 1);
+        assert_eq!(quote(&"x".repeat(NOTICE_QUOTE)), "x".repeat(NOTICE_QUOTE));
+        assert!(quote(&"x".repeat(NOTICE_QUOTE + 1)).ends_with("… [cut; luna_read gives the full text]"));
     }
 
     #[test]

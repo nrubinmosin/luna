@@ -252,6 +252,10 @@ export const orphanSessions = (known: string[]) =>
 
 // ------------------------------------------------------------- worktrees --
 
+/** Whether origin is fetched before a worktree is made (Settings). */
+export const fetchBeforeWorktree = () => call<boolean>('fetch_before_worktree', {}, true);
+export const setFetchBeforeWorktree = (on: boolean) => call<boolean>('set_fetch_before_worktree', { on }, on);
+
 /** Makes `<folder>/.codex/worktrees/codex-xxxxxx` on a fresh branch; returns the path. */
 export const createWorktree = (folder: string) => call<string>('create_worktree', { folder });
 

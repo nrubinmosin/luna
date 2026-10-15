@@ -19,8 +19,9 @@ interface ChatsState {
   removeFolder: (folderId: string) => void;
   /** Records a folder without creating anything in it, e.g. after Browse. */
   rememberFolder: (folderPath: string) => void;
-  /** What a chat the user just made in a folder started with. */
-  rememberStart: (folderPath: string, start: FolderStart) => void;
+  /** Keeps how the new-chat checkboxes start in this folder; undefined
+   *  hands it back to the defaults in Settings. */
+  setStart: (folderPath: string, start: FolderStart | undefined) => void;
   toggleFolder: (folderId: string) => void;
   setActive: (chatId: string | null) => void;
   setStatus: (chatId: string, status: Chat['status']) => void;
@@ -102,13 +103,6 @@ const named = (c: Chat & { nameCustom?: boolean }): Chat => {
   return { ...rest, nameSource: nameCustom ? 'user' : rest.sessionId ? 'prompt' : undefined };
 };
 
-/** The newest chat the user made in a folder, for folders that had chats
- *  before the folder kept its own record of them. */
-const lastMade = (chats: Chat[]): FolderStart | undefined => {
-  const c = chats.filter(c => !c.parentId).at(-1);
-  return c && { worktree: c.worktree, tools: c.tools ?? false };
-};
-
 let seq = 0;
 export const newId = (prefix: string) => `${prefix}${Date.now().toString(36)}${(seq++).toString(36)}`;
 
@@ -159,8 +153,8 @@ export const useChats = create<ChatsState>()(
       removeFolder: folderId =>
         set(s => ({ folders: s.folders.filter(f => f.id !== folderId || f.chats.length > 0) })),
 
-      rememberStart: (folderPath, start) =>
-        set(s => ({ folders: s.folders.map(f => (f.path === folderPath ? { ...f, last: start } : f)) })),
+      setStart: (folderPath, start) =>
+        set(s => ({ folders: s.folders.map(f => (f.path === folderPath ? { ...f, start } : f)) })),
 
       rememberFolder: folderPath =>
         set(s =>
@@ -287,10 +281,11 @@ export const useChats = create<ChatsState>()(
           ...p,
           // Group is what decides whether a chat is listed at all, so a stored
           // chat without one would be invisible in every group.
-          folders: (p.folders ?? []).map(f => ({
+          // `last` was what the folder's newest chat started with, learned
+          // rather than chosen; a folder now keeps only a start it was given.
+          folders: (p.folders ?? []).map(({ last: _learned, ...f }: Folder & { last?: unknown }) => ({
             ...f,
-            chats: (f.chats ?? []).map(c => named({ ...c, group: c.group ?? 0 })),
-            last: f.last ?? lastMade(f.chats ?? [])
+            chats: (f.chats ?? []).map(c => named({ ...c, group: c.group ?? 0 }))
           }))
         };
       }

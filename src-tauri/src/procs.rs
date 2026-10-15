@@ -290,6 +290,31 @@ pub fn judge(
     (!active.is_empty() || !young.is_empty()).then_some(Busy { active, young })
 }
 
+/// Helpers a CLI starts by itself the first time a turn needs one and keeps
+/// for the rest of the session. Born of a turn, they read as a job the model
+/// left running, and a Codex helper whose turn was over was announced as
+/// "NOT done yet" with nothing to come. They are furniture: busy only while
+/// they move. A console host is never the job itself: a job that runs on
+/// in one has its own process alongside to count, and the code-mode host
+/// comes with one of its own.
+const CLI_FURNITURE: &[&str] = &["codex-code-mode-host", "conhost"];
+
+fn is_furniture(exe: &str) -> bool {
+    let exe = exe.to_ascii_lowercase();
+    let stem = exe.strip_suffix(".exe").unwrap_or(&exe);
+    CLI_FURNITURE.contains(&stem)
+}
+
+/// `judge`'s verdict with the CLIs' own helpers no longer counted as young.
+pub fn without_furniture(busy: Option<Busy>) -> Option<Busy> {
+    let mut b = busy?;
+    if !b.young.is_empty() {
+        let furniture: Vec<u32> = names(&b.young).into_iter().filter(|(_, n)| is_furniture(n)).map(|(p, _)| p).collect();
+        b.young.retain(|p| !furniture.contains(p));
+    }
+    (!b.active.is_empty() || !b.young.is_empty()).then_some(b)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -342,6 +367,16 @@ mod tests {
         let prev = [p(10, 0, 0, 9_000)];
         let now = [p(10, 0, 0, 9_000)];
         assert_eq!(judge(&prev, &now, 8_000, 10_000, 50), None);
+    }
+
+    #[test]
+    fn a_clis_own_helper_is_furniture_by_name() {
+        assert!(is_furniture("codex-code-mode-host.exe"));
+        assert!(is_furniture("Codex-Code-Mode-Host.EXE"));
+        assert!(is_furniture("codex-code-mode-host"));
+        assert!(is_furniture("conhost.exe"));
+        assert!(!is_furniture("codex.exe"));
+        assert!(!is_furniture("node.exe"));
     }
 
     #[test]

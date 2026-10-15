@@ -485,7 +485,13 @@ pub fn sample(probes: Vec<crate::pty::ActivityProbe>) -> Summary {
         t.turn = turn;
 
         let children = procs::children(p.job.as_deref(), p.pid);
-        t.procs = procs::judge(&t.prev, &children, t.first_turn_ms, now.saturating_sub(STALE_CHILD_MS), MIN_CPU_MS);
+        t.procs = procs::without_furniture(procs::judge(
+            &t.prev,
+            &children,
+            t.first_turn_ms,
+            now.saturating_sub(STALE_CHILD_MS),
+            MIN_CPU_MS,
+        ));
         t.prev = children;
         t.output_fresh = now.saturating_sub(p.last_output_ms) < OUTPUT_FRESH_MS;
 

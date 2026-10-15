@@ -3,13 +3,15 @@ import { createPortal } from 'react-dom';
 import { create } from 'zustand';
 import type { ReactNode } from 'react';
 import { agoLabel } from '../../shared/lib/format';
-import { getAccountsRoot, pickFolder, setAccountsRoot, cliUpdateNow, type AccountsRootInfo } from '../../ipc/commands';
+import {
+  getAccountsRoot, pickFolder, setAccountsRoot, cliUpdateNow, fetchBeforeWorktree, setFetchBeforeWorktree,
+  type AccountsRootInfo
+} from '../../ipc/commands';
 import { useAccounts } from '../accounts/accounts.store';
 import { useUpdates } from '../updates/updates.store';
 import { useCli } from '../updates/cli.store';
 import { PROVIDER_LABEL, type Provider } from '../../shared/types';
-import { Segmented } from '../../shared/ui/Segmented';
-import { useNewChat, type Start } from '../new-chat/newchat.store';
+import { useNewChat } from '../new-chat/newchat.store';
 import { useDeletePrefs } from '../chats/deletePrefs.store';
 import { usePanes } from '../panes/panes.store';
 import { useDialogHost } from '../../shared/ui/dialogHost';
@@ -155,41 +157,42 @@ function CliRow({ provider }: { provider: Provider }) {
   );
 }
 
-const STARTS = ['last', 'on', 'off'] as const;
-const START_LABELS: Record<Start, string> = { last: 'as last time', on: 'on', off: 'off' };
-
-/** Where one of the new-chat dialog's checkboxes starts out. */
-function StartRow({ label, which }: { label: string; which: 'worktreeStart' | 'toolsStart' }) {
-  const start = useNewChat(s => s[which]);
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '3px 0' }}>
-      <span style={{ flex: 1, fontSize: 'var(--fs-4)' }}>{label}</span>
-      <div style={{ width: 220, flex: 'none' }}>
-        <Segmented
-          items={STARTS}
-          labels={START_LABELS}
-          value={start}
-          onPick={v => useNewChat.getState().setStart(which, v)}
-          height={20}
-        />
-      </div>
-    </div>
-  );
-}
-
-/** Whether a folder chats were made in starts the way its last one did. */
-function PerFolderRow() {
-  const on = useNewChat(s => s.perFolder);
+/** One of the new-chat dialog's checkboxes, as it starts out. */
+function StartRow({ label, which }: { label: string; which: 'worktree' | 'tools' }) {
+  const on = useNewChat(s => s[which]);
   return (
     <div className="field-row" style={{ padding: '3px 0' }}>
       <input
         type="checkbox"
-        id="per-folder-toggle"
+        id={`start-${which}`}
         checked={on}
-        onChange={e => useNewChat.getState().setPerFolder(e.target.checked)}
+        onChange={e => useNewChat.getState().setDefault(which, e.target.checked)}
       />
-      <label htmlFor="per-folder-toggle" style={{ cursor: 'default', fontSize: 'var(--fs-4)' }}>
-        Remember per folder
+      <label htmlFor={`start-${which}`} style={{ cursor: 'default', fontSize: 'var(--fs-4)' }}>
+        {label}
+      </label>
+    </div>
+  );
+}
+
+/** Whether origin is fetched before a worktree is branched off it. Kept by
+ *  the Rust side, which does the fetch for chats agents start as well. */
+function FetchRow() {
+  const [on, setOn] = useState<boolean | null>(null);
+  useEffect(() => {
+    void fetchBeforeWorktree().then(setOn);
+  }, []);
+  return (
+    <div className="field-row" style={{ padding: '3px 0' }}>
+      <input
+        type="checkbox"
+        id="fetch-toggle"
+        checked={on ?? true}
+        disabled={on === null}
+        onChange={e => void setFetchBeforeWorktree(e.target.checked).then(setOn)}
+      />
+      <label htmlFor="fetch-toggle" style={{ cursor: 'default', fontSize: 'var(--fs-4)' }}>
+        Fetch origin before making a worktree
       </label>
     </div>
   );
@@ -349,15 +352,19 @@ function SettingsWindow({ onClose }: { onClose: () => void }) {
             <AccountsFolder />
           </Section>
           <Section label="New chats">
-            <StartRow label="Git worktree" which="worktreeStart" />
-            <StartRow label="Luna tools" which="toolsStart" />
-            <PerFolderRow />
+            <StartRow label="Git worktree" which="worktree" />
+            <StartRow label="Luna tools" which="tools" />
             <div style={{ fontSize: 'var(--fs-1)', color: 'var(--faint)', marginTop: 4 }}>
-              Where the two checkboxes start in a new chat — “as last time” follows the chat you made
-              before (or the one on screen, for a quick chat). Either can still be flipped per chat.
-              Remembered per folder, a folder you have made chats in starts the way the last one there
-              did, and the switches above only cover folders new to Luna; forgetting a folder in the
-              new-chat dialog forgets this too.
+              How the two checkboxes start in a new chat, quick chats included. Flipping one is just for
+              that chat; a folder that should start otherwise keeps its own — “keep for this folder” in
+              the new-chat dialog.
+            </div>
+            <FetchRow />
+            <div style={{ fontSize: 'var(--fs-1)', color: 'var(--faint)', marginTop: 4 }}>
+              A worktree branches off origin’s default branch as last fetched, and Claude Code fetches it
+              only once a day. With this on, Luna runs <code>git fetch</code> first — for Claude Code and
+              Codex alike, ten seconds at most, never asking for a password. Only origin’s branches move;
+              nothing you have checked out is touched.
             </div>
           </Section>
           <Section label="Board">

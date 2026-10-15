@@ -556,7 +556,11 @@ fn claude_mcp_file(chat_id: &str, token: &str) -> Option<std::path::PathBuf> {
                 // for 5 min, and the server's `timeout` is what raises that
                 // (as well as the hard limit per call). A `wait` answers
                 // with one plain JSON body at the end, nothing before it.
-                "timeout": MCP_TOOL_TIMEOUT_MS
+                "timeout": MCP_TOOL_TIMEOUT_MS,
+                // Not behind tool search: a model that has spawned a helper
+                // found the tools to talk to it deferred, and had to look each
+                // one up first. All eight are what the box was ticked for.
+                "alwaysLoad": true
             }
         }
     });
@@ -841,6 +845,12 @@ pub async fn ensure_claude_session(
     // An opening prompt, for a chat an agent starts.
     prompt: Option<String>,
 ) -> Result<String, String> {
+    // A new worktree is about to branch off origin; a resumed session already
+    // has its worktree, and a running one is not spawned again.
+    if worktree && resume.is_none() && !state.alive(&id) {
+        let folder = folder.clone();
+        let _ = tauri::async_runtime::spawn_blocking(move || crate::worktree::fetch_origin(&folder)).await;
+    }
     // Built only if no process is running (see `spawn`).
     spawn(app, state, id.clone(), move || {
         let mut args = vec![
