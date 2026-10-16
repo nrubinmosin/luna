@@ -260,28 +260,39 @@ pub fn note_exit(reason: Option<String>) {
 /// A tray Quit the window has been asked about and not yet answered.
 static QUIT_ASKED: AtomicBool = AtomicBool::new(false);
 
-/// Quit from the tray. With nothing running Luna leaves at once; with
-/// sessions running the window asks first, since they go down with it, and
-/// answers with `quit_app` or `quit_declined`. A second Quit while that
-/// question is open leaves without waiting: a page that cannot answer must
-/// not make Luna impossible to quit.
+/// Quit from the tray. The sessions live in the core (coreproc.rs) and do
+/// not have to go with the window: with some running the window asks whether
+/// to leave them running or stop them, and answers with `quit_app` or
+/// `quit_declined`. With none it just goes. A second Quit while the question
+/// is open goes without waiting for it, leaving the sessions be: a page that
+/// cannot answer must not make Luna impossible to quit, nor cost anyone work.
 pub fn quit_from_tray(app: &AppHandle) {
-    let live = crate::pty::manager().live_count();
-    if live == 0 || QUIT_ASKED.swap(true, Ordering::SeqCst) {
-        quit(app.clone());
-        return;
-    }
-    crate::show_main(app);
-    crate::emit::to_ui("app://quit-asked", live);
+    let app = app.clone();
+    // Off the event loop: the count is the core's, asked over the wire.
+    std::thread::spawn(move || {
+        if QUIT_ASKED.swap(true, Ordering::SeqCst) {
+            quit(app, false);
+            return;
+        }
+        let live = crate::corelink::live_sessions();
+        if live == 0 {
+            quit(app, false);
+            return;
+        }
+        crate::show_main(&app);
+        crate::emit::to_ui("app://quit-asked", live);
+    });
 }
 
-/// Every session is asked to quit, as a delete would, so each leaves a whole
-/// transcript behind; then Luna goes. Off the event loop: the asking takes
-/// seconds.
-fn quit(app: AppHandle) {
-    exiting("Quit from the tray menu");
+/// The window goes; with `stop_sessions` the core is asked to stop first,
+/// which has every session quit as a delete would, each leaving a whole
+/// transcript behind. Off the event loop: that takes seconds.
+fn quit(app: AppHandle, stop_sessions: bool) {
+    exiting(if stop_sessions { "Quit from the tray menu, sessions stopped" } else { "Quit from the tray menu" });
     std::thread::spawn(move || {
-        crate::pty::manager().shut_down_all(crate::pty::GRACE);
+        if stop_sessions {
+            crate::corelink::shut_down();
+        }
         app.exit(0);
     });
 }
@@ -296,8 +307,8 @@ pub fn end_process() -> ! {
 }
 
 #[tauri::command]
-pub fn quit_app(app: AppHandle) {
-    quit(app);
+pub fn quit_app(app: AppHandle, stop_sessions: bool) {
+    quit(app, stop_sessions);
 }
 
 #[tauri::command]

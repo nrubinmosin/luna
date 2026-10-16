@@ -3,6 +3,7 @@ import { attachClipboardImage, attachFiles, filesFrom } from '../../shared/lib/a
 import { ACCENT, tint } from '../../shared/lib/format';
 import type { Chat } from '../../shared/types';
 import { accountOfChat, useAccounts } from '../accounts/accounts.store';
+import { useCore } from '../core/core.store';
 import { acquire, release, TERM_FONT_FAMILY, TERM_FONT_SIZE } from './terminals';
 
 /** A drag carrying real files, as opposed to a chat row being dropped into a pane. */
@@ -21,6 +22,9 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
   // greets every pane with first-run onboarding.
   const accountsLoaded = useAccounts(s => s.loaded);
   const accountPath = useAccounts(s => accountOfChat(s.accounts, chat)?.path ?? null);
+  // Bumped when a new core has replaced one that stopped: the terminal is
+  // made afresh and its session resumes there.
+  const epoch = useCore(s => s.epoch);
   const [dropping, setDropping] = useState(false);
   const [attaching, setAttaching] = useState(0);
 
@@ -50,7 +54,7 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
     return () => release(chat.id, box);
     // Session identity is the chat id; the rest is captured at spawn time.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chat.id, accountsLoaded, accountPath]);
+  }, [chat.id, accountsLoaded, accountPath, epoch]);
 
   return (
     <div

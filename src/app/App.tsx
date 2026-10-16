@@ -15,6 +15,8 @@ import { useUpdates } from '../features/updates/updates.store';
 import { useCli } from '../features/updates/cli.store';
 import { UpdateConfirm } from '../features/updates/UpdateConfirm';
 import { QuitConfirm } from './QuitConfirm';
+import { CoreBanner } from '../features/core/CoreBanner';
+import { useCore } from '../features/core/core.store';
 import { useKeymap } from './keymap';
 import { useAltPeek } from '../features/panes/altPeek';
 import { ShortcutsDialog } from '../features/shortcuts/ShortcutsDialog';
@@ -153,6 +155,8 @@ export function App() {
 
   useEffect(() => healScaleDrift(), []);
 
+  useEffect(() => void useCore.getState().init(), []);
+
   useEffect(() => {
     const off = onNotify(n => void notify(n.title, n.body));
     return () => void off.then(f => f());
@@ -216,6 +220,7 @@ export function App() {
           <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
             <Dock />
             <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+              <CoreBanner />
               <PaneGrid />
             </div>
           </div>
