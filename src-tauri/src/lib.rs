@@ -5,8 +5,11 @@ mod agents;
 mod claude;
 mod cli;
 mod codex;
+mod corelink;
+mod coreproc;
 mod emit;
 mod hub;
+mod ipc;
 mod lifecycle;
 mod log;
 mod mcp;
@@ -38,8 +41,9 @@ pub(crate) fn show_main(app: &tauri::AppHandle) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // The exit watcher is this same exe; it must not become a second Luna.
-    if lifecycle::watch_from_args() {
+    // The exit watcher and the core are this same exe; neither may become a
+    // second Luna window.
+    if lifecycle::watch_from_args() || coreproc::from_args() {
         return;
     }
     log::install_panic_hook();
@@ -87,6 +91,7 @@ pub fn run() {
             ));
             // The previous run's end is reported before anything new is logged.
             lifecycle::start(app.handle().clone());
+            corelink::start();
             claude::models::refresh_soon();
             // Installs the CLIs on a fresh machine and keeps them current after.
             cli::refresh_periodically();
@@ -178,6 +183,8 @@ pub fn run() {
             pty::ensure_claude_session,
             pty::ensure_codex_session,
             pty::write_session,
+            corelink::core_state,
+            corelink::core_restart,
             lifecycle::note_exit,
             lifecycle::quit_app,
             lifecycle::quit_declined,

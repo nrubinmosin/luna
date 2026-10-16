@@ -50,6 +50,13 @@ struct Run {
 
 static RUN: Mutex<Option<Run>> = Mutex::new(None);
 static NOTED: AtomicBool = AtomicBool::new(false);
+/// This process is the core (coreproc.rs), not the window: its record, its
+/// watcher's line and its report of the previous run are its own.
+static CORE: AtomicBool = AtomicBool::new(false);
+
+fn is_core() -> bool {
+    CORE.load(Ordering::Relaxed)
+}
 static ANSWERED: AtomicU64 = AtomicU64::new(0);
 static PINGING: AtomicBool = AtomicBool::new(false);
 
@@ -67,7 +74,7 @@ fn clock(ms: u64) -> String {
 }
 
 fn marker() -> PathBuf {
-    crate::log::path().with_extension("run")
+    crate::log::path().with_extension(if is_core() { "core.run" } else { "run" })
 }
 
 fn read() -> Option<Run> {
@@ -79,7 +86,7 @@ fn read() -> Option<Run> {
 fn save(run: &Run) {
     let Ok(json) = serde_json::to_string(run) else { return };
     let p = marker();
-    let tmp = p.with_extension("run.tmp");
+    let tmp = p.with_extension(if is_core() { "core.run.tmp" } else { "run.tmp" });
     if std::fs::write(&tmp, json).is_ok() {
         let _ = std::fs::rename(&tmp, &p);
     }
@@ -115,6 +122,18 @@ pub fn start(app: AppHandle) {
     if std::env::var_os("LUNA_DEV_TOKEN").is_some() {
         return;
     }
+    begin(Some(app));
+}
+
+/// The same for the core, which has no event loop to ping: its heartbeat is
+/// all there is to its liveness. Only one core runs per data dir (coreproc.rs), so
+/// its record is never another's.
+pub fn start_core() {
+    CORE.store(true, Ordering::Relaxed);
+    begin(None);
+}
+
+fn begin(app: Option<AppHandle>) {
     if let Some(prev) = read() {
         if prev.exit.is_none() && prev.pid != std::process::id() {
             crate::log::warn("app", &describe_unannounced(&prev, booted_ms()));
@@ -126,13 +145,20 @@ pub fn start(app: AppHandle) {
     save(&run);
     *RUN.lock().unwrap_or_else(|e| e.into_inner()) = Some(run);
 
-    watcher::spawn();
+    // Off the caller's thread, which for the window is the event loop: std
+    // starts one process at a time, and one starting slowly — the core's
+    // fresh copy of the exe, held up by the virus scanner — would hold the
+    // window still behind it.
+    std::thread::spawn(|| {
+        watcher::spawn();
+    });
     std::thread::spawn(move || heartbeat(app));
 }
 
 fn describe_unannounced(prev: &Run, booted: Option<u64>) -> String {
     let mut s = format!(
-        "the previous run (pid {}, started {}) ended without closing itself; last alive {}",
+        "the previous {}run (pid {}, started {}) ended without closing itself; last alive {}",
+        if is_core() { "core " } else { "" },
         prev.pid,
         clock(prev.started),
         clock(prev.alive)
@@ -149,7 +175,7 @@ fn describe_unannounced(prev: &Run, booted: Option<u64>) -> String {
     s
 }
 
-fn heartbeat(app: AppHandle) {
+fn heartbeat(app: Option<AppHandle>) {
     let mut last_tick = now_ms();
     let mut hung_logged = false;
     loop {
@@ -175,11 +201,16 @@ fn heartbeat(app: AppHandle) {
             hung_logged = false;
         }
         // One ping in flight at a time: a stuck loop must not pile them up.
-        if !PINGING.swap(true, Ordering::Relaxed) {
-            let _ = app.run_on_main_thread(|| {
-                ANSWERED.store(now_ms(), Ordering::Relaxed);
-                PINGING.store(false, Ordering::Relaxed);
-            });
+        // Without an event loop there is nothing to ping, and nothing to hang.
+        match &app {
+            Some(app) if !PINGING.swap(true, Ordering::Relaxed) => {
+                let _ = app.run_on_main_thread(|| {
+                    ANSWERED.store(now_ms(), Ordering::Relaxed);
+                    PINGING.store(false, Ordering::Relaxed);
+                });
+            }
+            Some(_) => {}
+            None => ANSWERED.store(now, Ordering::Relaxed),
         }
 
         let mut guard = RUN.lock().unwrap_or_else(|e| e.into_inner());
@@ -274,17 +305,32 @@ pub fn quit_declined() {
     QUIT_ASKED.store(false, Ordering::SeqCst);
 }
 
-/// `luna --watch-exit <pid>`: runs as the watcher and returns true, or false
-/// for an ordinary launch.
+/// `luna --watch-exit <pid> --log <path> [--core]`: runs as the watcher and
+/// returns true, or false for an ordinary launch. The log is named outright:
+/// the core's watcher runs from the core's copy of the exe, beside which no
+/// log is kept.
 pub fn watch_from_args() -> bool {
-    let mut args = std::env::args().skip(1);
-    if args.next().as_deref() != Some(watcher::FLAG) {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) != Some(watcher::FLAG) {
         return false;
     }
-    if let Some(pid) = args.next().and_then(|a| a.parse().ok()) {
+    if let Some(i) = args.iter().position(|a| a == "--log") {
+        if let Some(p) = args.get(i + 1) {
+            crate::log::set_path(PathBuf::from(p));
+        }
+    }
+    if args.iter().any(|a| a == "--core") {
+        CORE.store(true, Ordering::Relaxed);
+    }
+    if let Some(pid) = args.get(1).and_then(|a| a.parse().ok()) {
         watcher::watch(pid);
     }
     true
+}
+
+/// What the watcher calls the process it watched.
+fn who() -> &'static str {
+    if is_core() { "luna core" } else { "luna" }
 }
 
 #[cfg(windows)]
@@ -310,9 +356,11 @@ mod watcher {
     pub fn spawn() {
         let Ok(exe) = std::env::current_exe() else { return };
         let pid = std::process::id().to_string();
+        let log = crate::log::path().to_string_lossy().into_owned();
         let start = |flags: u32| {
             std::process::Command::new(&exe)
-                .args([FLAG, &pid])
+                .args([FLAG, &pid, "--log", &log])
+                .args(super::is_core().then_some("--core"))
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
@@ -347,7 +395,7 @@ mod watcher {
         if said && code == 0 {
             return;
         }
-        let mut line = format!("luna (pid {pid}) ended with exit code {code:#x}: {}", meaning(code));
+        let mut line = format!("{} (pid {pid}) ended with exit code {code:#x}: {}", super::who(), meaning(code));
         // SAFETY: a plain metric query.
         if unsafe { GetSystemMetrics(SM_SHUTTINGDOWN) } != 0 {
             line.push_str("; Windows was shutting down");

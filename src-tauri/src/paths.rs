@@ -22,14 +22,22 @@ pub fn local_dir() -> Option<PathBuf> {
     Some(base.join(APP_DIR))
 }
 
+static DATA_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// The window's data dir, handed to the core, which runs from a copy of the
+/// exe and would otherwise decide on a folder of its own. Before the first
+/// `data_dir`, or it has no effect.
+pub fn set_data_dir(dir: PathBuf) {
+    let _ = DATA_DIR.set(dir);
+}
+
 /// Where Luna keeps what it downloads for itself (the Claude CLI). Beside the
 /// exe when that directory is writable — the portable build is meant to carry
 /// everything on its own drive — and under LOCALAPPDATA otherwise, since an
 /// installed app cannot write into Program Files. Decided once: a directory
 /// that flips between the two mid-run would lose track of its own files.
 pub fn data_dir() -> PathBuf {
-    static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
-    DIR.get_or_init(|| {
+    DATA_DIR.get_or_init(|| {
         if let Some(dir) = exe_dir() {
             if is_test() || writable(&dir) {
                 return dir;

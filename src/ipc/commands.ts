@@ -467,6 +467,25 @@ export const armPowerOff = (action: PowerAction, quietS: number) =>
   call<PowerStateDto>('arm_power_off', { action, quietS }, IDLE_POWER);
 export const disarmPowerOff = () => call<PowerStateDto>('disarm_power_off', {}, IDLE_POWER);
 
+// ------------------------------------------------------------------ core --
+
+export interface CoreDto {
+  pid: number;
+  version: string;
+  build: string;
+  fingerprint: string;
+  started: number;
+}
+
+export interface CoreStateDto {
+  state: 'starting' | 'up' | 'down';
+  core: CoreDto | null;
+  error: string | null;
+}
+
+export const coreState = () => call<CoreStateDto>('core_state', {}, { state: 'down', core: null, error: null });
+export const coreRestart = () => call<void>('core_restart');
+
 /** Why Luna is about to quit, for the log (lifecycle.rs); null takes it back. */
 export const noteExit = (reason: string | null) => call<void>('note_exit', { reason });
 /** Asks every session to quit as a delete would; resolves with how many. */

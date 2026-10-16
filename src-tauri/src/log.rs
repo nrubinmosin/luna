@@ -23,9 +23,24 @@ fn resolve_path() -> PathBuf {
     dir.join("luna.log")
 }
 
+static PATH: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+static ROLE: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+
 pub fn path() -> &'static PathBuf {
-    static PATH: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     PATH.get_or_init(resolve_path)
+}
+
+/// For a process that runs from somewhere other than the app's own folder —
+/// the core from its copy, the exit watcher — and writes to the app's log all
+/// the same. Before the first line, or it has no effect.
+pub fn set_path(p: PathBuf) {
+    let _ = PATH.set(p);
+}
+
+/// Tags every line this process writes, so two processes sharing the file
+/// can be told apart: `[core/pty]` against the window's `[pty]`.
+pub fn set_role(role: &'static str) {
+    let _ = ROLE.set(role);
 }
 
 fn lock() -> &'static Mutex<()> {
@@ -65,6 +80,10 @@ pub fn write(level: &str, source: &str, message: &str) {
         let one_line = message.replace('\n', " ⏎ ");
         // One write for the whole line: appends from two processes interleave
         // between writes, never inside one.
+        let source = match ROLE.get() {
+            Some(role) => format!("{role}/{source}"),
+            None => source.to_string(),
+        };
         let line = format!("{} {} {:<5} [{}] {}\n", stamp(), env!("CARGO_PKG_VERSION"), level, source, one_line);
         let _ = f.write_all(line.as_bytes());
     }

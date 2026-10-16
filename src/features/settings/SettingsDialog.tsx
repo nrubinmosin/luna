@@ -5,8 +5,9 @@ import type { ReactNode } from 'react';
 import { agoLabel } from '../../shared/lib/format';
 import {
   getAccountsRoot, pickFolder, setAccountsRoot, cliUpdateNow, fetchBeforeWorktree, setFetchBeforeWorktree,
-  type AccountsRootInfo
+  coreRestart, coreState, type AccountsRootInfo, type CoreStateDto
 } from '../../ipc/commands';
+import { onCoreState } from '../../ipc/events';
 import { useAccounts } from '../accounts/accounts.store';
 import { useUpdates } from '../updates/updates.store';
 import { useCli } from '../updates/cli.store';
@@ -112,6 +113,35 @@ function LunaRow() {
         if (phase === 'available') s.setAsking(true);
         else void s.check(true);
       }}
+    />
+  );
+}
+
+/** The core the window is attached to (corelink.rs): its build, how long it
+ *  has run, and a way to start it afresh. */
+function CoreRow() {
+  const [s, setS] = useState<CoreStateDto | null>(null);
+  useEffect(() => {
+    void coreState().then(setS);
+    const off = onCoreState(setS);
+    return () => void off.then(f => f());
+  }, []);
+  const core = s?.core;
+  const status =
+    s?.state === 'up' && core
+      ? `running, started ${agoLabel(core.started)} · pid ${core.pid}`
+      : s?.state === 'starting'
+        ? 'starting…'
+        : `not running${s?.error ? ` — ${s.error}` : ''}`;
+  return (
+    <VersionRow
+      name="Core"
+      version={core ? `${core.version} · ${core.fingerprint.slice(0, 8)}` : '—'}
+      status={status}
+      error={s?.state === 'down'}
+      disabled={s?.state === 'starting'}
+      actionLabel={s?.state === 'up' ? 'Restart' : 'Start'}
+      action={() => void coreRestart()}
     />
   );
 }
@@ -386,6 +416,7 @@ function SettingsWindow({ onClose }: { onClose: () => void }) {
           </Section>
           <Section label="Versions & updates">
             <LunaRow />
+            <CoreRow />
             <CliRow provider="claude" />
             <CliRow provider="codex" />
             <div style={{ fontSize: 'var(--fs-1)', color: 'var(--faint)', marginTop: 4 }}>
