@@ -50,7 +50,9 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   outside the sheet, a second click on the same chat's row or
   on the chip of the pane that is up, the mouse's Back button, the Return button or Ctrl+0
   all go back. Holding Alt over a chat in the list is a glance: the chat comes up on the
-  sheet and letting go of Alt puts back what was there (a click keeps it). Escape is
+  sheet and letting go of Alt puts back what was there (a click keeps it). The glance
+  starts a beat after Alt goes down, so a chord with Alt (Alt+digit, Alt+V, Alt+Shift)
+  never touches the sheet. Escape is
   deliberately left alone — it is how the CLI is interrupted.
 - F1, or the **?** in the status bar, lists every shortcut and mouse gesture; the buttons
   themselves carry none. Nothing hides behind a double-click: rename, delete, even out

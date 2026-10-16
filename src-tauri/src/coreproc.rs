@@ -40,6 +40,11 @@ struct Window {
 }
 
 static WINDOWS: Mutex<Vec<Window>> = Mutex::new(Vec::new());
+/// Events no window was there to take that the next one must still get: a
+/// chat an agent deleted would otherwise come back with the next window and
+/// resume, and a helper asked for would never be made.
+static HELD: Mutex<Vec<Vec<u8>>> = Mutex::new(Vec::new());
+const KEPT_FOR_A_WINDOW: [&str; 2] = ["agent://deleted", "agent://spawn"];
 /// Since when nothing has kept the core: no window, no session. Epoch ms.
 static ALONE_SINCE: AtomicU64 = AtomicU64::new(0);
 
@@ -82,6 +87,17 @@ pub fn fingerprint_from_args() -> bool {
     if let Some(file) = args.get(1) {
         let _ = std::fs::write(file, env!("LUNA_CORE_FP"));
     }
+    true
+}
+
+/// `luna --stop-core`: has the running core stop — its sessions quit first —
+/// and returns true once it is gone. For the uninstaller, which cannot remove
+/// the copy of the exe a running core holds.
+pub fn stop_from_args() -> bool {
+    if std::env::args().nth(1).as_deref() != Some("--stop-core") {
+        return false;
+    }
+    crate::corelink::shut_down();
     true
 }
 
@@ -241,6 +257,10 @@ fn keep_full_speed() {}
 fn broadcast(event: &str, payload: serde_json::Value) {
     let Ok(frame) = ipc::encode(ipc::EVENT, &Event { event: event.to_string(), payload }) else { return };
     let mut windows = WINDOWS.lock().unwrap_or_else(|e| e.into_inner());
+    if windows.is_empty() && KEPT_FOR_A_WINDOW.contains(&event) {
+        HELD.lock().unwrap_or_else(|e| e.into_inner()).push(frame);
+        return;
+    }
     windows.retain(|w| match w.tx.try_send(frame.clone()) {
         Ok(()) => true,
         Err(TrySendError::Full(_)) => {
@@ -284,7 +304,12 @@ fn serve(mut stream: TcpStream, token: &str, started: u64) -> io::Result<()> {
     static NEXT: AtomicU64 = AtomicU64::new(1);
     let id = NEXT.fetch_add(1, Ordering::Relaxed);
     if hello.role == "ui" {
-        WINDOWS.lock().unwrap_or_else(|e| e.into_inner()).push(Window { id, tx: tx.clone(), stream: stream.try_clone()? });
+        let mut windows = WINDOWS.lock().unwrap_or_else(|e| e.into_inner());
+        // Under the windows' lock, so nothing held can slip past in between.
+        for frame in HELD.lock().unwrap_or_else(|e| e.into_inner()).drain(..) {
+            let _ = tx.try_send(frame);
+        }
+        windows.push(Window { id, tx: tx.clone(), stream: stream.try_clone()? });
     }
     let result = requests(&mut stream, &tx, started);
     WINDOWS.lock().unwrap_or_else(|e| e.into_inner()).retain(|w| w.id != id);

@@ -1092,6 +1092,8 @@ fn same_dir(a: &str, b: &str) -> bool {
 /// deleted chat ended in the hard kill this is meant to avoid. The same for
 /// every session at once: an update, Quit and shut-down-when-done.
 pub const GRACE: std::time::Duration = std::time::Duration::from_secs(10);
+/// Longer than any CLI waits to see whether an Esc starts an escape sequence.
+const ESC_GAP: std::time::Duration = std::time::Duration::from_millis(300);
 /// Ctrl+C is one keystroke to the CLI and two in a row mean quit; one write
 /// carrying both lands in a single input tick, where the second cannot see
 /// the state the first set. Space them the way a hand would.
@@ -1123,6 +1125,13 @@ fn shut_down(mut s: Session, grace: std::time::Duration) {
             .unwrap_or(true)
     };
     let deadline = std::time::Instant::now() + grace;
+    // A modal question — Claude Code's "wait for the limit to reset?", a
+    // picker — ignores Ctrl+C and answers Esc, and sat out the whole grace
+    // into the hard kill. Esc first, then a pause long enough that the CLI
+    // does not read it and the Ctrl+C after as one Alt+Ctrl+C.
+    if s.input_tx.send(Input::Bytes(vec![0x1b])).is_ok() {
+        std::thread::sleep(ESC_GAP);
+    }
     // A turn in flight takes one Ctrl+C to interrupt before the next two ask
     // for and confirm the exit.
     for _ in 0..3 {

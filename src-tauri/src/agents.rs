@@ -850,7 +850,8 @@ pub fn spawn(caller: &str, mut params: SpawnParams) -> Result<Spawned, String> {
         None => {
             return Err(format!(
                 "the app did not start the session within {}s. It may still come up: luna_list will show it as yours \
-                 and Luna will tell you when it answers, so check luna_list before spawning again",
+                 and Luna will tell you when it answers, so check luna_list before spawning again. Helpers are made by \
+                 Luna's window: if it is closed, they start once the user opens it",
                 SPAWN_TIMEOUT.as_secs()
             ))
         }

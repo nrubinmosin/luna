@@ -56,9 +56,9 @@ function Dock() {
   useEffect(() => () => clearTimeout(timer.current), []);
 
   const shown = pinned || hover;
-  // Out at once — a beat is enough to let a pointer that only crosses the
-  // edge pass — and away a little later, so overshooting the sidebar by a few
-  // pixels does not lose it.
+  // Out after a beat, enough to let a pointer that only crosses the edge
+  // pass; away the moment the pointer leaves it — there is nothing to wait
+  // for once it has gone.
   const schedule = (to: 'show' | 'hide', ms: number) => {
     clearTimeout(timer.current);
     pending.current = to;
@@ -71,7 +71,10 @@ function Dock() {
     if (!pinned && pending.current !== 'show') schedule('show', 40);
   };
   const leave = () => {
-    if (!pinned) schedule('hide', 280);
+    if (pinned) return;
+    clearTimeout(timer.current);
+    pending.current = null;
+    setHover(false);
   };
   const cancel = () => {
     if (pending.current !== 'show') return;
