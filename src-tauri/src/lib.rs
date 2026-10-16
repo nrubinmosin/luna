@@ -44,7 +44,11 @@ pub(crate) fn show_main(app: &tauri::AppHandle) {
 pub fn run() {
     // The exit watcher and the core are this same exe; neither may become a
     // second Luna window.
-    if lifecycle::watch_from_args() || coreproc::from_args() || coreproc::fingerprint_from_args() {
+    if lifecycle::watch_from_args()
+        || coreproc::from_args()
+        || coreproc::fingerprint_from_args()
+        || coreproc::stop_from_args()
+    {
         return;
     }
     log::install_panic_hook();
