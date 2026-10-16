@@ -1,5 +1,5 @@
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import type { AgentSpawnRequest, CliStatusDto, PowerStateDto } from './commands';
+import type { AgentSpawnRequest, CliStatusDto, CoreStateDto, PowerStateDto } from './commands';
 
 const tauriAvailable = '__TAURI_INTERNALS__' in window;
 
@@ -27,6 +27,10 @@ export const onPowerState = (cb: (s: PowerStateDto) => void): Promise<UnlistenFn
 
 export const onAgentSpawn = (cb: (r: AgentSpawnRequest) => void): Promise<UnlistenFn> =>
   tauriAvailable ? listen<AgentSpawnRequest>('agent://spawn', e => cb(e.payload)) : Promise.resolve(() => {});
+
+/** The window's line to the core changed (corelink.rs). */
+export const onCoreState = (cb: (s: CoreStateDto) => void): Promise<UnlistenFn> =>
+  tauriAvailable ? listen<CoreStateDto>('core://state', e => cb(e.payload)) : Promise.resolve(() => {});
 
 /** A desktop notification the Rust side wants shown (power.rs, agents.rs). */
 export const onNotify = (cb: (n: { title: string; body: string }) => void): Promise<UnlistenFn> =>

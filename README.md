@@ -208,6 +208,11 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   the portable build and under `%LOCALAPPDATA%\luna` otherwise. Info-level chatter never
   reaches it, so what is in there is worth reading. Every line names the version that
   wrote it, and each launch opens with a `START` line naming the version and build.
+- Beside the window Luna runs its core, a second process from the same exe (`luna-core.exe`,
+  started from a copy under the data folder on Windows so that an update can replace the
+  exe). Settings → Versions shows it and can restart it; it leaves by itself ten minutes
+  after the last window has gone. The core is where the sessions are moving, so that a
+  window that crashes, hangs or is killed no longer takes them along.
 - The log also says how each run ended. Luna names its own reasons for leaving (tray
   Quit, an update, Windows signing out or shutting down). A small watcher process logs
   the exit code when something else ends it, which tells a kill from outside (Task
