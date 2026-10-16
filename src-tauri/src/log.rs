@@ -23,7 +23,7 @@ fn resolve_path() -> PathBuf {
     dir.join("luna.log")
 }
 
-fn path() -> &'static PathBuf {
+pub fn path() -> &'static PathBuf {
     static PATH: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     PATH.get_or_init(resolve_path)
 }

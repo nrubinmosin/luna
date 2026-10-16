@@ -75,7 +75,9 @@ pub fn exit_with_session() {
     use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
     use windows::Win32::System::Threading::GetCurrentThreadId;
     use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
-    use windows::Win32::UI::WindowsAndMessaging::{EnumThreadWindows, WM_ENDSESSION};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        EnumThreadWindows, ENDSESSION_CLOSEAPP, ENDSESSION_CRITICAL, ENDSESSION_LOGOFF, WM_ENDSESSION,
+    };
 
     /// Distinct from the menu hook's id: both may sit on the main window.
     const ID: usize = 2;
@@ -95,7 +97,17 @@ pub fn exit_with_session() {
             // Restart Manager it waits for the process to end itself. Exiting
             // covers both. The CLI sessions are console processes and get
             // Windows' own shutdown notice; nothing here needs to kill them.
-            crate::log::warn("app", "Windows is ending the session; exiting");
+            let flags = lparam.0 as u32;
+            let why = if flags & ENDSESSION_CLOSEAPP != 0 {
+                "Windows' Restart Manager closed it (an installer or an update wanted its files)"
+            } else if flags & ENDSESSION_LOGOFF != 0 {
+                "Windows is signing the user out"
+            } else if flags & ENDSESSION_CRITICAL != 0 {
+                "Windows is shutting down by force"
+            } else {
+                "Windows is shutting down or restarting"
+            };
+            crate::lifecycle::exiting(why);
             std::process::exit(0);
         }
         DefSubclassProc(hwnd, msg, wparam, lparam)

@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import type { Update } from '@tauri-apps/plugin-updater';
+import { noteExit } from '../../ipc/commands';
 import { logInfo, logWarn } from '../../shared/lib/log';
 
 const tauriAvailable = '__TAURI_INTERNALS__' in window;
@@ -90,10 +91,14 @@ export const useUpdates = create<UpdatesState>(set => ({
     if (!pending) return;
     set({ phase: 'downloading', asking: false, got: 0, total: null, error: null });
     try {
-      await pending.downloadAndInstall(ev => {
+      await pending.download(ev => {
         if (ev.event === 'Started') set({ total: ev.data.contentLength ?? null });
         else if (ev.event === 'Progress') set(s => ({ got: s.got + ev.data.chunkLength }));
       });
+      // Said before, because the install never returns on Windows; taken back
+      // below if it fails.
+      await noteExit(`installing the update to ${pending.version}`);
+      await pending.install();
       // Unreachable on Windows: the plugin hands the installer to the shell and
       // ends the process itself with exit(0), because NSIS cannot replace the
       // exe of a running app. It passes /UPDATE and this process's own
@@ -103,6 +108,7 @@ export const useUpdates = create<UpdatesState>(set => ({
       logInfo('updater', `${pending.version} installed`);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
+      await noteExit(null).catch(() => {});
       logWarn('updater', `install failed: ${msg}`);
       set({ phase: 'error', error: msg });
     }

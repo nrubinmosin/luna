@@ -206,6 +206,12 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   the portable build and under `%LOCALAPPDATA%\luna` otherwise. Info-level chatter never
   reaches it, so what is in there is worth reading. Every line names the version that
   wrote it, and each launch opens with a `START` line naming the version and build.
+- The log also says how each run ended. Luna names its own reasons for leaving (tray
+  Quit, an update, Windows signing out or shutting down). A small watcher process logs
+  the exit code when something else ends it, which tells a kill from outside (Task
+  Manager, `taskkill`, `Stop-Process`) from a crash, and notes whether Task Manager was
+  open. If even the watcher is gone, the next launch reports when the previous run was
+  last alive, whether its window had frozen first, and whether the PC restarted in between.
 
 ## Agents: sessions that run sessions
 

@@ -7,6 +7,7 @@ mod cli;
 mod codex;
 mod emit;
 mod hub;
+mod lifecycle;
 mod log;
 mod mcp;
 mod media;
@@ -37,6 +38,10 @@ fn show_main(app: &tauri::AppHandle) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // The exit watcher is this same exe; it must not become a second Luna.
+    if lifecycle::watch_from_args() {
+        return;
+    }
     log::install_panic_hook();
     // The build stamp as well as the version: test builds between two
     // releases share a version, and only the commit tells them apart.
@@ -66,6 +71,8 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(pty::PtyManager::default())
         .setup(|app| {
+            // First: the previous run's end is reported before anything new is logged.
+            lifecycle::start(app.handle().clone());
             claude::models::refresh_soon();
             // Installs the CLIs on a fresh machine and keeps them current after.
             cli::refresh_periodically(app.handle().clone());
@@ -101,7 +108,10 @@ pub fn run() {
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "open" => show_main(app),
-                    "quit" => app.exit(0),
+                    "quit" => {
+                        lifecycle::exiting("Quit from the tray menu");
+                        app.exit(0)
+                    }
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
@@ -157,6 +167,7 @@ pub fn run() {
             pty::ensure_claude_session,
             pty::ensure_codex_session,
             pty::write_session,
+            lifecycle::note_exit,
             pty::resize_session,
             pty::kill_session,
             pty::session_modes,
@@ -192,6 +203,10 @@ pub fn run() {
                     api.prevent_exit();
                     return;
                 }
+            }
+            if let tauri::RunEvent::Exit = &event {
+                // Every way out that names itself has done so by now.
+                lifecycle::exiting("the event loop ended");
             }
             if matches!(
                 event,
