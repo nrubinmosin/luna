@@ -46,12 +46,14 @@ pub fn set_data_dir(dir: PathBuf) {
 /// Where Luna keeps what it downloads for itself (the Claude CLI). Beside the
 /// exe when that directory is writable — the portable build is meant to carry
 /// everything on its own drive — and under LOCALAPPDATA otherwise, since an
-/// installed app cannot write into Program Files. Decided once: a directory
-/// that flips between the two mid-run would lose track of its own files.
+/// installed app cannot write into Program Files. Never beside the exe on
+/// macOS: it sits inside the signed app bundle, which an update replaces
+/// whole. Decided once: a directory that flips between the two mid-run would
+/// lose track of its own files.
 pub fn data_dir() -> PathBuf {
     DATA_DIR.get_or_init(|| {
         if let Some(dir) = exe_dir() {
-            if is_test() || writable(&dir) {
+            if is_test() || (!cfg!(target_os = "macos") && writable(&dir)) {
                 return dir;
             }
         }
