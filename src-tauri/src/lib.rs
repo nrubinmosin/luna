@@ -66,19 +66,30 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .manage(pty::PtyManager::default())
         .setup(|app| {
+            // Events reach the page through the window; installed before
+            // anything that could send one starts.
+            let handle = app.handle().clone();
+            emit::install(move |event, payload| {
+                use tauri::Emitter;
+                let _ = handle.emit(event, payload);
+            });
             // Here rather than at the top of run(): a second launch that only
             // focuses the running Luna has exited by now, and must not read as
             // a restart. The build stamp as well as the version: test builds
             // between two releases share a version, and only the commit tells
             // them apart.
-            log::start(&format!("starting luna {} build {}", env!("CARGO_PKG_VERSION"), env!("LUNA_BUILD")));
+            log::start(&format!(
+                "starting luna {} build {} core {}",
+                env!("CARGO_PKG_VERSION"),
+                env!("LUNA_BUILD"),
+                env!("LUNA_CORE_FP")
+            ));
             // The previous run's end is reported before anything new is logged.
             lifecycle::start(app.handle().clone());
             claude::models::refresh_soon();
             // Installs the CLIs on a fresh machine and keeps them current after.
-            cli::refresh_periodically(app.handle().clone());
+            cli::refresh_periodically();
 
             if let Some(w) = app.get_webview_window("main") {
                 sysmenu::silence(&w);
@@ -88,14 +99,14 @@ pub fn run() {
 
             // Housekeeping off the startup path, and again every few hours.
             media::prune_periodically();
-            pty::prune_session_files_periodically(app.handle().clone());
+            pty::prune_session_files_periodically();
 
             // The hook listener before any session can be spawned with hooks
             // pointing at it; the activity sampler feeds power.rs from then on.
             hub::start();
-            agents::init(app.handle().clone());
+            agents::init();
             agents::register_dev_caller();
-            activity::start(app.handle().clone());
+            activity::start();
             // A parent account's settings onto the others, when that is asked for.
             account_settings::sync_on_start();
             // A window whose page has died is rebuilt rather than left black.

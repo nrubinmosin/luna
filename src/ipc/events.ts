@@ -28,6 +28,10 @@ export const onPowerState = (cb: (s: PowerStateDto) => void): Promise<UnlistenFn
 export const onAgentSpawn = (cb: (r: AgentSpawnRequest) => void): Promise<UnlistenFn> =>
   tauriAvailable ? listen<AgentSpawnRequest>('agent://spawn', e => cb(e.payload)) : Promise.resolve(() => {});
 
+/** A desktop notification the Rust side wants shown (power.rs, agents.rs). */
+export const onNotify = (cb: (n: { title: string; body: string }) => void): Promise<UnlistenFn> =>
+  tauriAvailable ? listen<{ title: string; body: string }>('ui://notify', e => cb(e.payload)) : Promise.resolve(() => {});
+
 /** A tray Quit with this many sessions running, for the window to confirm. */
 export const onQuitAsked = (cb: (live: number) => void): Promise<UnlistenFn> =>
   tauriAvailable ? listen<number>('app://quit-asked', e => cb(e.payload)) : Promise.resolve(() => {});

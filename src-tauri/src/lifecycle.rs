@@ -235,14 +235,13 @@ static QUIT_ASKED: AtomicBool = AtomicBool::new(false);
 /// question is open leaves without waiting: a page that cannot answer must
 /// not make Luna impossible to quit.
 pub fn quit_from_tray(app: &AppHandle) {
-    use tauri::Manager;
-    let live = app.state::<crate::pty::PtyManager>().live_count();
+    let live = crate::pty::manager().live_count();
     if live == 0 || QUIT_ASKED.swap(true, Ordering::SeqCst) {
         quit(app.clone());
         return;
     }
     crate::show_main(app);
-    crate::emit::to_ui(app, "app://quit-asked", live);
+    crate::emit::to_ui("app://quit-asked", live);
 }
 
 /// Every session is asked to quit, as a delete would, so each leaves a whole
@@ -251,10 +250,18 @@ pub fn quit_from_tray(app: &AppHandle) {
 fn quit(app: AppHandle) {
     exiting("Quit from the tray menu");
     std::thread::spawn(move || {
-        use tauri::Manager;
-        app.state::<crate::pty::PtyManager>().shut_down_all(crate::pty::GRACE);
+        crate::pty::manager().shut_down_all(crate::pty::GRACE);
         app.exit(0);
     });
+}
+
+/// Leaves at once, for a way out that does not come from the window — the
+/// PC being shut down under Luna. Does what the app's own exit would: no new
+/// events, the power request let go.
+pub fn end_process() -> ! {
+    crate::emit::stop();
+    crate::power::clear();
+    std::process::exit(0)
 }
 
 #[tauri::command]

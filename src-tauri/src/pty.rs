@@ -9,7 +9,6 @@ use std::io::{Read, Write};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, State};
 
 const SCROLLBACK_CAP: usize = 2 * 1024 * 1024;
 /// Let the buffer run this far past the cap before trimming, so the trim costs
@@ -135,7 +134,13 @@ pub struct PtyManager {
     spawning: Mutex<HashMap<String, Arc<Mutex<()>>>>,
 }
 
-pub type PtyState<'a> = State<'a, PtyManager>;
+/// The one session manager this process has, whatever asks for it: a
+/// command, the agents, the activity sampler, power, the threads a session
+/// runs on.
+pub fn manager() -> &'static PtyManager {
+    static M: std::sync::OnceLock<PtyManager> = std::sync::OnceLock::new();
+    M.get_or_init(PtyManager::default)
+}
 
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
@@ -170,12 +175,8 @@ struct Launch {
 // and rewrites the files the process reads at start. A pane attaching to a
 // running chat ensures it too, and doing all that then left the running
 // process holding a token Luna no longer knew.
-async fn spawn(
-    app: AppHandle,
-    state: PtyState<'_>,
-    id: String,
-    launch: impl FnOnce() -> Launch,
-) -> Result<String, String> {
+async fn spawn(id: String, launch: impl FnOnce() -> Launch) -> Result<String, String> {
+    let state = manager();
     let gate = {
         let mut gates = state.spawning.lock().unwrap();
         // Nobody holds a gate whose only reference is the map's own, so this
@@ -318,7 +319,6 @@ async fn spawn(
     let last_output_ms = Arc::new(AtomicU64::new(now_ms()));
 
     {
-        let app = app.clone();
         let id = id.clone();
         let scrollback = Arc::clone(&scrollback);
         let modes = Arc::clone(&modes);
@@ -358,14 +358,14 @@ async fn spawn(
                 };
                 if valid_to > 0 {
                     let text = unsafe { std::str::from_utf8_unchecked(&carry[..valid_to]) };
-                    crate::emit::to_ui(&app, "pty://output", PtyOutput { id: &id, data: text });
+                    crate::emit::to_ui("pty://output", PtyOutput { id: &id, data: text });
                 }
                 carry.drain(..valid_to);
                 if carry.len() > 4 {
                     carry.clear(); // not a split sequence, just invalid bytes
                 }
             }
-            (app, id)
+            id
         });
 
         std::thread::spawn(move || {
@@ -417,7 +417,7 @@ async fn spawn(
             // Closing the channel ends the emitter; join it so the last output
             // of the session is on its way before the exit event goes out.
             drop(tx);
-            let Ok((app, id)) = emitter.join() else { return };
+            let Ok(id) = emitter.join() else { return };
             let code = child
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -425,15 +425,14 @@ async fn spawn(
                 .ok()
                 .map(|st| st.exit_code());
             crate::log::info("pty", &format!("session {id} exited, code {code:?}"));
-            crate::emit::to_ui(&app, "pty://exit", PtyExit { id: &id, code });
+            crate::emit::to_ui("pty://exit", PtyExit { id: &id, code });
             // The entry stays, for as long as the chat does: its transcript, its
             // folder and its last screen are still asked for (luna_read, the
             // exit notice, deleting it). What only a running session needs
             // goes now — the writer thread and the pty with it, and all but the
             // tail of the scrollback — or a CLI that quit on its own held
             // megabytes and a console host until Luna restarted.
-            use tauri::Manager;
-            let pm = app.state::<PtyManager>();
+            let pm = manager();
             let mut sessions = pm.sessions.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(s) = sessions.get_mut(&id).filter(|s| Arc::ptr_eq(&s.alive, &alive)) {
                 s.input_tx = Arc::new(std::sync::mpsc::channel().0);
@@ -460,7 +459,6 @@ async fn spawn(
         let id = id.clone();
         let child = Arc::clone(&child);
         let alive = Arc::clone(&alive);
-        let app = app.clone();
         std::thread::spawn(move || {
             while alive.load(Ordering::SeqCst) {
                 std::thread::sleep(std::time::Duration::from_secs(1));
@@ -468,8 +466,7 @@ async fn spawn(
                 if !gone {
                     continue;
                 }
-                use tauri::Manager;
-                let pm = app.state::<PtyManager>();
+                let pm = manager();
                 let mut sessions = pm.sessions.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(s) = sessions.get_mut(&id).filter(|s| Arc::ptr_eq(&s.alive, &alive)) {
                     s.input_tx = Arc::new(std::sync::mpsc::channel().0);
@@ -603,12 +600,11 @@ fn prune_session_files(live: &std::collections::HashSet<String>) -> usize {
 
 /// At startup and every few hours after, like the media sweep: the app can
 /// run for weeks without a restart.
-pub fn prune_session_files_periodically(app: tauri::AppHandle) {
-    use tauri::Manager;
+pub fn prune_session_files_periodically() {
     std::thread::spawn(move || loop {
         std::thread::sleep(std::time::Duration::from_secs(15 * 60));
         let live: std::collections::HashSet<String> = {
-            let state = app.state::<PtyManager>();
+            let state = manager();
             let sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
             sessions.keys().cloned().collect()
         };
@@ -834,8 +830,6 @@ impl PtyManager {
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn ensure_claude_session(
-    app: AppHandle,
-    state: PtyState<'_>,
     id: String,
     folder: String,
     account_path: String,
@@ -852,7 +846,7 @@ pub async fn ensure_claude_session(
     prompt: Option<String>,
 ) -> Result<String, String> {
     // Built only if no process is running (see `spawn`).
-    spawn(app, state, id.clone(), move || {
+    spawn(id.clone(), move || {
         // A new worktree is about to branch off origin; a resumed session
         // already has its worktree. Here, under the spawn gate, so a pane
         // asking for the session meanwhile waits for this spawn — the one
@@ -930,8 +924,6 @@ pub async fn ensure_claude_session(
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn ensure_codex_session(
-    app: AppHandle,
-    state: PtyState<'_>,
     id: String,
     folder: String,
     account_path: String,
@@ -946,7 +938,7 @@ pub async fn ensure_codex_session(
     prompt: Option<String>,
 ) -> Result<String, String> {
     // Built only if no process is running (see `spawn`).
-    spawn(app, state, id.clone(), move || {
+    spawn(id.clone(), move || {
         let mut args: Vec<String> = vec![];
         let mut envs = vec![("CODEX_HOME", account_path.clone())];
         let describe;
@@ -1022,7 +1014,8 @@ pub async fn ensure_codex_session(
 }
 
 #[tauri::command]
-pub fn write_session(state: PtyState, id: String, data: String) -> Result<(), String> {
+pub fn write_session(id: String, data: String) -> Result<(), String> {
+    let state = manager();
     let sessions = state.sessions.lock().unwrap();
     let s = sessions.get(&id).ok_or("no such session")?;
     // Keys, not what the terminal reports by itself (focus, mouse), which
@@ -1042,7 +1035,8 @@ pub fn write_session(state: PtyState, id: String, data: String) -> Result<(), St
 /// thread. A failure there is logged rather than returned: by the time it
 /// happens the caller has moved on, and it never looked at the result anyway.
 #[tauri::command]
-pub fn resize_session(state: PtyState, id: String, cols: u16, rows: u16) -> Result<(), String> {
+pub fn resize_session(id: String, cols: u16, rows: u16) -> Result<(), String> {
+    let state = manager();
     let sessions = state.sessions.lock().unwrap();
     let s = sessions.get(&id).ok_or("no such session")?;
     s.input_tx
@@ -1178,16 +1172,15 @@ async fn take_and_shut_down(state: &PtyManager, id: &str) {
 /// transcript where one killed mid-write would not. Returns how many it
 /// stopped.
 #[tauri::command]
-pub async fn stop_all_sessions(app: AppHandle) -> Result<usize, String> {
-    use tauri::Manager;
-    tauri::async_runtime::spawn_blocking(move || app.state::<PtyManager>().shut_down_all(GRACE))
+pub async fn stop_all_sessions() -> Result<usize, String> {
+    tauri::async_runtime::spawn_blocking(|| manager().shut_down_all(GRACE))
         .await
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub async fn kill_session(state: PtyState<'_>, id: String) -> Result<(), String> {
-    take_and_shut_down(&state, &id).await;
+pub async fn kill_session(id: String) -> Result<(), String> {
+    take_and_shut_down(manager(), &id).await;
     Ok(())
 }
 
@@ -1200,7 +1193,6 @@ pub async fn kill_session(state: PtyState<'_>, id: String) -> Result<(), String>
 // take seconds, and on the main thread every keystroke in every other chat
 // waits behind it.
 pub async fn delete_session(
-    state: PtyState<'_>,
     id: String,
     folder: String,
     account_path: String,
@@ -1211,12 +1203,13 @@ pub async fn delete_session(
     // kept worktree is.
     drop_worktree: bool,
 ) -> Result<Option<String>, String> {
-    state.delete(&id, &folder, &account_path, worktree_path, drop_worktree).await
+    manager().delete(&id, &folder, &account_path, worktree_path, drop_worktree).await
 }
 
 /// The cwd of every live session this app runs. A running session must never
 /// have its worktree swept, even if the UI has not yet learned where it lives.
-pub fn live_cwds(state: &PtyState<'_>) -> Vec<String> {
+pub fn live_cwds() -> Vec<String> {
+    let state = manager();
     let sessions = state.sessions.lock().unwrap();
     sessions
         .values()
@@ -1251,10 +1244,8 @@ pub struct OrphanSession {
 /// subagents and shells in the same account registry, so walking that instead
 /// would report every busy chat's children as orphans.
 #[tauri::command]
-pub async fn orphan_sessions(
-    state: PtyState<'_>,
-    known: Vec<String>,
-) -> Result<Vec<OrphanSession>, String> {
+pub async fn orphan_sessions(known: Vec<String>) -> Result<Vec<OrphanSession>, String> {
+    let state = manager();
     let candidates: Vec<Probe> = {
         let sessions = state.sessions.lock().unwrap();
         sessions
@@ -1652,11 +1643,8 @@ fn meta_from_disk(p: &Probe) -> Option<SessionMeta> {
 // polls every chat every few seconds, resting ones included, so treating an
 // absent session as an error meant thousands of warnings a day in the log —
 // enough to push everything worth reading out of it.
-pub async fn session_meta(
-    state: PtyState<'_>,
-    id: String,
-    account_path: String,
-) -> Result<Option<SessionMeta>, String> {
+pub async fn session_meta(id: String, account_path: String) -> Result<Option<SessionMeta>, String> {
+    let state = manager();
     let probe = {
         let sessions = state.sessions.lock().unwrap();
         let Some(s) = sessions.get(&id) else {
@@ -1706,7 +1694,8 @@ pub async fn saved_title(provider: Provider, account_path: String, session_id: S
 /// switched — written after a reattaching pane resets (see `Modes`). Empty for
 /// a session that is not there.
 #[tauri::command]
-pub fn session_modes(state: PtyState, id: String) -> String {
+pub fn session_modes(id: String) -> String {
+    let state = manager();
     let modes = {
         let sessions = state.sessions.lock().unwrap();
         match sessions.get(&id) {

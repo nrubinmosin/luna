@@ -549,11 +549,10 @@ pub fn sample(probes: Vec<crate::pty::ActivityProbe>) -> Summary {
 }
 
 /// The sampler thread: probes, samples, hands the board to power.rs.
-pub fn start(app: tauri::AppHandle) {
+pub fn start() {
     std::thread::Builder::new()
         .name("luna-activity".into())
         .spawn(move || {
-            use tauri::Manager;
             let mut last = std::time::Instant::now();
             loop {
                 std::thread::sleep(SAMPLE_EVERY);
@@ -564,15 +563,15 @@ pub fn start(app: tauri::AppHandle) {
                 if gap > SAMPLE_EVERY * 6 {
                     crate::log::warn("activity", &format!("clock jumped {gap:?}; idle stretch reset"));
                     reset_idle();
-                    crate::power::woke(&app);
+                    crate::power::woke();
                 }
-                let pty = app.state::<crate::pty::PtyManager>();
+                let pty = crate::pty::manager();
                 let mut probes = pty.activity_probes();
                 for p in probes.iter_mut().filter(|p| p.provider == Provider::Codex) {
                     p.asking = pty.screen(&p.id).is_some_and(|s| crate::codex::session::asks(&s));
                 }
                 let summary = sample(probes);
-                crate::power::tick(&app, &summary);
+                crate::power::tick(&summary);
             }
         })
         .expect("spawn activity thread");

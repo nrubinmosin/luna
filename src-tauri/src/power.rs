@@ -138,10 +138,10 @@ pub fn current() -> PowerState {
     snapshot(&st, &crate::activity::summary())
 }
 
-fn publish(app: &tauri::AppHandle, st: &mut State, summary: &Summary) {
+fn publish(st: &mut State, summary: &Summary) {
     let now = snapshot(st, summary);
     if st.last_sent.as_ref() != Some(&now) {
-        crate::emit::to_ui(app, "power://state", now.clone());
+        crate::emit::to_ui("power://state", now.clone());
         st.last_sent = Some(now);
     }
 }
@@ -204,7 +204,7 @@ fn advance(st: &mut State, keep_awake: bool, summary: &Summary, now: u64) -> Vec
 }
 
 /// The sampler's call, once per sample.
-pub fn tick(app: &tauri::AppHandle, summary: &Summary) {
+pub fn tick(summary: &Summary) {
     let now = now_ms();
     let settings = crate::settings::get();
     let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
@@ -223,12 +223,11 @@ pub fn tick(app: &tauri::AppHandle, summary: &Summary) {
                     0 => "Every session is done. Click the power chip in Luna to cancel.".to_string(),
                     n => format!("Every session is done ({n} stopped on a usage limit or another API error). Click the power chip in Luna to cancel."),
                 };
-                notify(app, &format!("Luna will {} the PC in a minute", verb(a)), &body);
+                notify(&format!("Luna will {} the PC in a minute", verb(a)), &body);
             }
             Effect::Fire(a) => {
-                let app = app.clone();
                 std::thread::spawn(move || {
-                    fire(&app, a);
+                    fire(a);
                     state().lock().unwrap_or_else(|e| e.into_inner()).firing = false;
                 });
             }
@@ -262,16 +261,16 @@ pub fn tick(app: &tauri::AppHandle, summary: &Summary) {
         }
     }
 
-    publish(app, &mut st, summary);
+    publish(&mut st, summary);
 }
 
 /// The sampler noticed the clock jump: a sleep just ended.
-pub fn woke(app: &tauri::AppHandle) {
+pub fn woke() {
     let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
     if st.countdown_ends_at_ms.take().is_some() {
         crate::log::info("power", "countdown dropped across a sleep");
     }
-    publish(app, &mut st, &crate::activity::summary());
+    publish(&mut st, &crate::activity::summary());
 }
 
 /// The sessions that wait for a person, and those stalled on an API error,
@@ -302,19 +301,22 @@ fn verb(a: Action) -> &'static str {
     }
 }
 
-pub fn notify(app: &tauri::AppHandle, title: &str, body: &str) {
-    use tauri_plugin_notification::NotificationExt;
-    if let Err(e) = app.notification().builder().title(title).body(body).show() {
-        crate::log::warn("power", &format!("notification failed: {e}"));
+/// A desktop notification, shown by the window: the app may well be hidden
+/// in the tray when it matters.
+pub fn notify(title: &str, body: &str) {
+    #[derive(Serialize)]
+    struct Notice<'a> {
+        title: &'a str,
+        body: &'a str,
     }
+    crate::emit::to_ui("ui://notify", Notice { title, body });
 }
 
 /// Off the sampler thread: quitting the CLIs takes seconds.
-fn fire(app: &tauri::AppHandle, action: Action) {
-    use tauri::Manager;
+fn fire(action: Action) {
     crate::log::warn("power", &format!("firing: {}", action.as_str()));
     match action {
-        Action::Log => notify(app, "Luna: log-only action fired", "All sessions were done; nothing was shut down."),
+        Action::Log => notify("Luna: log-only action fired", "All sessions were done; nothing was shut down."),
         Action::Sleep | Action::Hibernate => {
             crate::activity::reset_idle();
             if !os::suspend(action == Action::Hibernate) {
@@ -322,17 +324,17 @@ fn fire(app: &tauri::AppHandle, action: Action) {
             }
         }
         Action::Shutdown => {
-            let quit = app.state::<crate::pty::PtyManager>().shut_down_all(crate::pty::GRACE);
+            let quit = crate::pty::manager().shut_down_all(crate::pty::GRACE);
             crate::log::warn("power", &format!("{quit} sessions closed; shutting down"));
             if os::shutdown() {
                 crate::lifecycle::exiting("shut-down-when-done turned the PC off");
                 // Windows ends the process from WM_ENDSESSION (sysmenu.rs);
                 // leaving now just makes it tidy.
                 std::thread::sleep(std::time::Duration::from_secs(2));
-                app.exit(0);
+                crate::lifecycle::end_process();
             } else {
                 crate::log::error("power", "shutdown command failed; sessions are closed but the PC is up");
-                notify(app, "Luna could not shut down the PC", "The sessions were closed. See luna.log.");
+                notify("Luna could not shut down the PC", "The sessions were closed. See luna.log.");
             }
         }
     }
@@ -346,7 +348,7 @@ pub fn power_state() -> PowerState {
 }
 
 #[tauri::command]
-pub fn set_keep_awake(app: tauri::AppHandle, on: bool) -> Result<PowerState, String> {
+pub fn set_keep_awake(on: bool) -> Result<PowerState, String> {
     crate::settings::update(|s| s.keep_awake = on)?;
     let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
     if !on && st.holding && st.armed.is_none() {
@@ -354,12 +356,12 @@ pub fn set_keep_awake(app: tauri::AppHandle, on: bool) -> Result<PowerState, Str
         st.holding = false;
         st.release_at_ms = None;
     }
-    publish(&app, &mut st, &crate::activity::summary());
+    publish(&mut st, &crate::activity::summary());
     Ok(snapshot(&st, &crate::activity::summary()))
 }
 
 #[tauri::command]
-pub fn arm_power_off(app: tauri::AppHandle, action: String, quiet_s: u64) -> Result<PowerState, String> {
+pub fn arm_power_off(action: String, quiet_s: u64) -> Result<PowerState, String> {
     let action = Action::parse(&action).ok_or_else(|| format!("unknown action {action}"))?;
     let quiet_s = quiet_s.clamp(30, 6 * 3600);
     crate::settings::update(|s| {
@@ -385,23 +387,22 @@ pub fn arm_power_off(app: tauri::AppHandle, action: String, quiet_s: u64) -> Res
     // and nothing else would tell that the rule cannot fire as things stand.
     if !waiting.is_empty() {
         notify(
-            &app,
             &format!("{} waiting for you — Luna will not {} until answered", plural(waiting.len()), verb(action)),
             &waiting.join(", "),
         );
     }
-    publish(&app, &mut st, &summary);
+    publish(&mut st, &summary);
     Ok(snapshot(&st, &crate::activity::summary()))
 }
 
 #[tauri::command]
-pub fn disarm_power_off(app: tauri::AppHandle) -> PowerState {
+pub fn disarm_power_off() -> PowerState {
     let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
     if st.armed.take().is_some() {
         crate::log::warn("power", "disarmed");
     }
     st.countdown_ends_at_ms = None;
-    publish(&app, &mut st, &crate::activity::summary());
+    publish(&mut st, &crate::activity::summary());
     snapshot(&st, &crate::activity::summary())
 }
 

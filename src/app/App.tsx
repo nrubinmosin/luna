@@ -23,6 +23,8 @@ import { healScaleDrift } from './dpi';
 import { Icon } from '../shared/ui/icons';
 import { STRIP, useShell } from './shell.store';
 import { uiHeartbeat } from '../ipc/commands';
+import { onNotify } from '../ipc/events';
+import { notify } from '../shared/lib/notify';
 import { allChats, useChats } from '../features/chats/chats.store';
 import { usePanes } from '../features/panes/panes.store';
 import './theme.css';
@@ -150,6 +152,11 @@ export function App() {
   }, []);
 
   useEffect(() => healScaleDrift(), []);
+
+  useEffect(() => {
+    const off = onNotify(n => void notify(n.title, n.body));
+    return () => void off.then(f => f());
+  }, []);
 
   // A chat listed in a group the title bar does not offer could never be
   // reached; whatever put it there, the group is made rather than the chat

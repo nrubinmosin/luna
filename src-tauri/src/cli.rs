@@ -37,7 +37,6 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
-use tauri::AppHandle;
 
 const CHECK_EVERY: Duration = Duration::from_secs(6 * 3600);
 const EVENT: &str = "cli://status";
@@ -152,16 +151,14 @@ pub fn binary(provider: Provider) -> PathBuf {
 
 // ---------------------------------------------------------------- status --
 
-fn publish(app: Option<&AppHandle>, provider: Provider, f: impl FnOnce(&mut CliStatus)) {
+fn publish(provider: Provider, f: impl FnOnce(&mut CliStatus)) {
     let snapshot = {
         let Ok(mut map) = state().lock() else { return };
         let Some(s) = map.get_mut(&provider) else { return };
         f(s);
         s.clone()
     };
-    if let Some(app) = app {
-        crate::emit::to_ui(app, EVENT, snapshot);
-    }
+    crate::emit::to_ui(EVENT, snapshot);
 }
 
 #[tauri::command]
@@ -175,17 +172,16 @@ pub fn cli_status(provider: Provider) -> CliStatus {
 
 /// A click on the status-bar field: check now, install if newer.
 #[tauri::command]
-pub fn cli_update_now(app: AppHandle, provider: Provider) {
-    std::thread::spawn(move || update(&app, provider));
+pub fn cli_update_now(provider: Provider) {
+    std::thread::spawn(move || update(provider));
 }
 
 /// Startup: one update pass right away, then one every few hours. The first
 /// pass is what installs the CLIs on a fresh machine, so it is not delayed.
-pub fn refresh_periodically(app: AppHandle) {
+pub fn refresh_periodically() {
     for provider in Provider::ALL {
-        let app = app.clone();
         std::thread::spawn(move || loop {
-            update(&app, provider);
+            update(provider);
             std::thread::sleep(CHECK_EVERY);
         });
     }
@@ -250,14 +246,14 @@ pub fn download_to(
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-fn update(app: &AppHandle, provider: Provider) {
+fn update(provider: Provider) {
     let busy = &BUSY[provider.index()];
     if busy.swap(true, Ordering::SeqCst) {
         return;
     }
-    let result = update_inner(app, provider);
+    let result = update_inner(provider);
     busy.store(false, Ordering::SeqCst);
-    publish(Some(app), provider, |s| {
+    publish(provider, |s| {
         s.checked_at_ms = Some(now_ms());
         s.got = 0;
         s.total = None;
@@ -279,15 +275,15 @@ fn update(app: &AppHandle, provider: Provider) {
     }
 }
 
-fn update_inner(app: &AppHandle, provider: Provider) -> Result<(), String> {
-    publish(Some(app), provider, |s| {
+fn update_inner(provider: Provider) -> Result<(), String> {
+    publish(provider, |s| {
         s.phase = "checking".into();
         s.error = None;
     });
     let src = source(provider);
     let agent = http();
     let latest = (src.latest)(&agent)?;
-    publish(Some(app), provider, |s| s.latest = Some(latest.clone()));
+    publish(provider, |s| s.latest = Some(latest.clone()));
 
     if current_version(provider).as_deref() == Some(latest.as_str()) {
         prune(provider);
@@ -303,13 +299,13 @@ fn update_inner(app: &AppHandle, provider: Provider) -> Result<(), String> {
             let _ = fs::remove_dir_all(&dir);
         }
         fs::create_dir_all(&dir).map_err(|e| format!("mkdir {}: {e}", dir.display()))?;
-        publish(Some(app), provider, |s| {
+        publish(provider, |s| {
             s.phase = "downloading".into();
             s.got = 0;
             s.total = None;
         });
         let mut progress = |got: u64, total: Option<u64>| {
-            publish(Some(app), provider, |s| {
+            publish(provider, |s| {
                 s.got = got;
                 s.total = total;
             });

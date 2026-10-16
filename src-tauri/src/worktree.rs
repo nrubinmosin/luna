@@ -347,12 +347,11 @@ fn younger_than(path: &Path, secs: u64) -> bool {
 /// `inspect_worktrees`' job, asked for when someone means to delete.
 #[tauri::command]
 pub async fn orphan_worktrees(
-    state: crate::pty::PtyState<'_>,
     folder: String,
     in_use: Vec<String>,
     account_paths: Vec<String>,
 ) -> Result<Vec<String>, String> {
-    let live = crate::pty::live_cwds(&state);
+    let live = crate::pty::live_cwds();
     tauri::async_runtime::spawn_blocking(move || orphan_worktrees_now(folder, in_use, account_paths, live))
         .await
         .map_err(|e| e.to_string())?
@@ -513,13 +512,12 @@ pub struct SweepResult {
 /// which may be minutes stale by the time the dialog is confirmed.
 #[tauri::command]
 pub async fn remove_orphan_worktrees(
-    state: crate::pty::PtyState<'_>,
     folder: String,
     in_use: Vec<String>,
     account_paths: Vec<String>,
     paths: Vec<String>,
 ) -> Result<SweepResult, String> {
-    let live = crate::pty::live_cwds(&state);
+    let live = crate::pty::live_cwds();
     tauri::async_runtime::spawn_blocking(move || {
         let orphans: Vec<String> =
             orphan_worktrees_now(folder.clone(), in_use, account_paths, live)?.iter().map(|p| norm(p)).collect();

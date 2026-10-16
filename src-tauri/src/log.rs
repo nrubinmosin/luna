@@ -50,6 +50,11 @@ pub fn write(level: &str, source: &str, message: &str) {
     }
     let p = path();
     let Ok(_guard) = lock().lock() else { return };
+    // Other processes of this Luna (its exit watcher) write here too: the
+    // rotation and the append happen under a lock file, so no line is lost to
+    // a rename in the middle of it.
+    let file_lock = OpenOptions::new().create(true).truncate(false).write(true).open(p.with_extension("log.lock"));
+    let _file_guard = file_lock.as_ref().ok().filter(|f| f.lock().is_ok());
 
     // Keep one generation around so a long session cannot fill the disk.
     if std::fs::metadata(p).map(|m| m.len() > MAX_BYTES).unwrap_or(false) {
@@ -58,7 +63,10 @@ pub fn write(level: &str, source: &str, message: &str) {
 
     if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(p) {
         let one_line = message.replace('\n', " ⏎ ");
-        let _ = writeln!(f, "{} {} {:<5} [{}] {}", stamp(), env!("CARGO_PKG_VERSION"), level, source, one_line);
+        // One write for the whole line: appends from two processes interleave
+        // between writes, never inside one.
+        let line = format!("{} {} {:<5} [{}] {}\n", stamp(), env!("CARGO_PKG_VERSION"), level, source, one_line);
+        let _ = f.write_all(line.as_bytes());
     }
 }
 
