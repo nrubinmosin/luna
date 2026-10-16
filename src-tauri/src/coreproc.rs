@@ -1,27 +1,46 @@
-//! The core: this same exe started as `--core`, with no window, for the
-//! sessions to live in so that the window can come and go without them.
+//! The core: this same exe started as `--core`, with no window, where the
+//! sessions live so that the window can come and go without them.
 //!
 //! The window starts it (corelink.rs) and stays connected; the core outlives
 //! a window that crashes, hangs or is killed, and a window started after
 //! finds it again through `<data>/core/core.json`. One core per data dir —
 //! a lock file held for the core's life sees to that, and the OS lets go of
-//! it however the core ends. With no window for a while and nothing to keep,
-//! the core leaves by itself.
+//! it however the core ends. With no window and no session for a while, the
+//! core leaves by itself.
+//!
+//! Everything that runs the sessions runs here: the ptys (pty.rs), the hooks'
+//! listener and the agents' MCP server (hub.rs, agents.rs), the activity
+//! sampler and power (activity.rs, power.rs). What they send the page goes to
+//! every connected window; what the page asks of them comes in by name
+//! (corecmd.rs).
 
-use crate::ipc::{self, Discovery, Hello, Req, Res, Welcome};
-use std::io;
-use std::net::{TcpListener, TcpStream};
+use crate::ipc::{self, Discovery, Event, Hello, Req, Res, Welcome};
+use std::io::{self, Write};
+use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{sync_channel, SyncSender, TrySendError};
+use std::sync::Mutex;
 use std::time::Duration;
 
 pub const FLAG: &str = "--core";
-/// How long the core waits with no window before it goes.
+/// How long the core waits with no window and no session before it goes.
 const IDLE_EXIT: Duration = Duration::from_secs(10 * 60);
+/// Frames queued for one window before it counts as gone: a page that stopped
+/// reading must not make a session's output wait. It reconnects and each of
+/// its terminals reattaches from the scrollback.
+const QUEUE: usize = 8192;
 
-/// Windows connected right now.
-static WINDOWS: AtomicUsize = AtomicUsize::new(0);
-/// When the last one left, epoch ms; the core's start until one comes.
+/// A connected window's outgoing queue, and its socket to close if it falls
+/// behind.
+struct Window {
+    id: u64,
+    tx: SyncSender<Vec<u8>>,
+    stream: TcpStream,
+}
+
+static WINDOWS: Mutex<Vec<Window>> = Mutex::new(Vec::new());
+/// Since when nothing has kept the core: no window, no session. Epoch ms.
 static ALONE_SINCE: AtomicU64 = AtomicU64::new(0);
 
 fn now_ms() -> u64 {
@@ -31,16 +50,19 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// `luna --core --data-dir <dir> --log <path>`: runs as the core and returns
-/// true, or false for an ordinary launch.
+/// `luna --core --data-dir <dir> --local-dir <dir> --log <path>`: runs as the
+/// core and returns true, or false for an ordinary launch.
 pub fn from_args() -> bool {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) != Some(FLAG) {
         return false;
     }
     let value = |flag: &str| args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).map(PathBuf::from);
-    let (Some(data), Some(log)) = (value("--data-dir"), value("--log")) else { return true };
+    let (Some(data), Some(local), Some(log)) = (value("--data-dir"), value("--local-dir"), value("--log")) else {
+        return true;
+    };
     crate::paths::set_data_dir(data);
+    crate::paths::set_local_dir(local);
     crate::log::set_path(log);
     crate::log::set_role("core");
     crate::log::install_panic_hook();
@@ -74,6 +96,7 @@ fn run() {
     ));
     crate::lifecycle::start_core();
     sweep_old_copies();
+    keep_full_speed();
 
     let listener = match TcpListener::bind(("127.0.0.1", 0)) {
         Ok(l) => l,
@@ -82,6 +105,18 @@ fn run() {
             return;
         }
     };
+
+    // What the sessions send the page goes to every window there is.
+    crate::emit::install(broadcast);
+    // The hook listener before any session can be spawned with hooks
+    // pointing at it; the activity sampler feeds power.rs from then on.
+    crate::hub::start();
+    crate::agents::init();
+    crate::agents::register_dev_caller();
+    crate::activity::start();
+    crate::pty::prune_session_files_periodically();
+    crate::media::prune_periodically();
+
     let token = ipc::mint_token();
     let found = Discovery {
         pid: std::process::id(),
@@ -114,19 +149,26 @@ fn write_discovery(d: &Discovery) -> io::Result<()> {
     std::fs::rename(&tmp, &path)
 }
 
-/// Leaves, taking `core.json` along so no window tries the dead port.
+/// Leaves, taking `core.json` along so no window tries the dead port. Every
+/// session is asked to quit first, as a chat delete would, so each leaves its
+/// transcript whole.
 fn leave(reason: &str) -> ! {
     crate::lifecycle::exiting(reason);
     let _ = std::fs::remove_file(ipc::discovery_file());
-    std::process::exit(0)
+    crate::pty::manager().shut_down_all(crate::pty::GRACE);
+    crate::lifecycle::end_process()
 }
 
 fn leave_when_alone() {
     loop {
         std::thread::sleep(Duration::from_secs(30));
-        let alone = now_ms().saturating_sub(ALONE_SINCE.load(Ordering::SeqCst));
-        if WINDOWS.load(Ordering::SeqCst) == 0 && alone >= IDLE_EXIT.as_millis() as u64 {
-            leave("no window for ten minutes");
+        let kept = !WINDOWS.lock().unwrap_or_else(|e| e.into_inner()).is_empty() || crate::pty::manager().live_count() > 0;
+        if kept {
+            ALONE_SINCE.store(now_ms(), Ordering::SeqCst);
+            continue;
+        }
+        if now_ms().saturating_sub(ALONE_SINCE.load(Ordering::SeqCst)) >= IDLE_EXIT.as_millis() as u64 {
+            leave("no window and no session for ten minutes");
         }
     }
 }
@@ -145,6 +187,56 @@ fn sweep_old_copies() {
     }
 }
 
+/// Windows puts a process with no window of its own on efficiency mode when
+/// it decides to — slower timers, lower clocks — and the sessions' output
+/// would crawl with it. Opted out for the core's life.
+#[cfg(windows)]
+fn keep_full_speed() {
+    use windows::Win32::System::Threading::{
+        GetCurrentProcess, ProcessPowerThrottling, SetProcessInformation, PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+        PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION,
+        PROCESS_POWER_THROTTLING_STATE,
+    };
+    let state = PROCESS_POWER_THROTTLING_STATE {
+        Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+        ControlMask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED | PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION,
+        StateMask: 0,
+    };
+    // SAFETY: the current process's pseudo-handle and a struct of the size
+    // passed.
+    let set = unsafe {
+        SetProcessInformation(
+            GetCurrentProcess(),
+            ProcessPowerThrottling,
+            &state as *const _ as *const std::ffi::c_void,
+            std::mem::size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32,
+        )
+    };
+    if let Err(e) = set {
+        crate::log::warn("core", &format!("could not opt out of efficiency mode: {e}"));
+    }
+}
+
+#[cfg(not(windows))]
+fn keep_full_speed() {}
+
+/// The core's `emit::to_ui`: the event goes into every window's queue. A
+/// window whose queue is full has stopped reading; it is let go rather than
+/// waited for.
+fn broadcast(event: &str, payload: serde_json::Value) {
+    let Ok(frame) = ipc::encode(ipc::EVENT, &Event { event: event.to_string(), payload }) else { return };
+    let mut windows = WINDOWS.lock().unwrap_or_else(|e| e.into_inner());
+    windows.retain(|w| match w.tx.try_send(frame.clone()) {
+        Ok(()) => true,
+        Err(TrySendError::Full(_)) => {
+            crate::log::warn("core", "a window fell behind on the sessions' output; letting it go");
+            let _ = w.stream.shutdown(Shutdown::Both);
+            false
+        }
+        Err(TrySendError::Disconnected(_)) => false,
+    });
+}
+
 /// One connection: the hello, then requests until the other end goes.
 fn serve(mut stream: TcpStream, token: &str, started: u64) -> io::Result<()> {
     let first: Req = ipc::recv(&mut stream, ipc::REQ)?;
@@ -161,28 +253,60 @@ fn serve(mut stream: TcpStream, token: &str, started: u64) -> io::Result<()> {
     let welcome = serde_json::to_value(Welcome::of_this_process(started)).ok();
     ipc::send(&mut stream, ipc::RES, &Res { id: first.id, ok: welcome, err: None })?;
 
-    let window = hello.role == "ui";
-    if window {
-        WINDOWS.fetch_add(1, Ordering::SeqCst);
+    // Everything this connection is sent from here on goes through its queue
+    // and one writer thread, so answers and events never interleave mid-frame.
+    let (tx, rx) = sync_channel::<Vec<u8>>(QUEUE);
+    let mut out = stream.try_clone()?;
+    std::thread::spawn(move || {
+        for frame in rx {
+            if out.write_all(&frame).and_then(|()| out.flush()).is_err() {
+                break;
+            }
+        }
+        let _ = out.shutdown(Shutdown::Both);
+    });
+
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    let id = NEXT.fetch_add(1, Ordering::Relaxed);
+    if hello.role == "ui" {
+        WINDOWS.lock().unwrap_or_else(|e| e.into_inner()).push(Window { id, tx: tx.clone(), stream: stream.try_clone()? });
     }
-    let result = requests(&mut stream, started);
-    if window && WINDOWS.fetch_sub(1, Ordering::SeqCst) == 1 {
-        ALONE_SINCE.store(now_ms(), Ordering::SeqCst);
-    }
+    let result = requests(&mut stream, &tx, started);
+    WINDOWS.lock().unwrap_or_else(|e| e.into_inner()).retain(|w| w.id != id);
     result
 }
 
-fn requests(stream: &mut TcpStream, started: u64) -> io::Result<()> {
+fn requests(stream: &mut TcpStream, tx: &SyncSender<Vec<u8>>, started: u64) -> io::Result<()> {
     loop {
-        let req: Req = ipc::recv(stream, ipc::REQ)?;
-        let res = match req.cmd.as_str() {
-            "info" => Res { id: req.id, ok: serde_json::to_value(Welcome::of_this_process(started)).ok(), err: None },
+        let (kind, payload) = ipc::read_frame(stream)?;
+        let req: Req = serde_json::from_slice(&payload).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        match req.cmd.as_str() {
+            "info" => answer(tx, req.id, serde_json::to_value(Welcome::of_this_process(started)).map_err(|e| e.to_string())),
             "shutdown" => {
-                let _ = ipc::send(stream, ipc::RES, &Res { id: req.id, ok: Some(serde_json::Value::Null), err: None });
+                answer(tx, req.id, Ok(serde_json::Value::Null));
                 leave("the window asked it to stop");
             }
-            other => Res { id: req.id, ok: None, err: Some(format!("unknown command {other}")) },
-        };
-        ipc::send(stream, ipc::RES, &res)?;
+            cmd if kind == ipc::SEND => {
+                // Nobody waits for the answer to a keystroke.
+                let _ = crate::corecmd::dispatch(cmd, req.args);
+            }
+            cmd if crate::corecmd::in_order(cmd) => answer(tx, req.id, crate::corecmd::dispatch(cmd, req.args)),
+            _ => {
+                let tx = tx.clone();
+                std::thread::spawn(move || answer(&tx, req.id, crate::corecmd::dispatch(&req.cmd, req.args)));
+            }
+        }
+    }
+}
+
+fn answer(tx: &SyncSender<Vec<u8>>, id: u64, result: Result<serde_json::Value, String>) {
+    let res = match result {
+        Ok(ok) => Res { id, ok: Some(ok), err: None },
+        Err(err) => Res { id, ok: None, err: Some(err) },
+    };
+    if let Ok(frame) = ipc::encode(ipc::RES, &res) {
+        // A full queue is a window that stopped reading: the broadcast lets it
+        // go, and the answer is lost with it.
+        let _ = tx.try_send(frame);
     }
 }

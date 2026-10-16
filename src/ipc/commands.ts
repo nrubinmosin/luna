@@ -25,6 +25,25 @@ const SLOW_BUDGET_MS: Record<string, number> = {
   remove_orphan_worktrees: 30_000
 };
 
+// What the core answers (corecmd.rs): everything that touches the running
+// sessions, which live in the core process rather than the window's. The
+// window passes them on; keystrokes and resizes go without waiting for an
+// answer, in the order they are made.
+const CORE_CALL: ReadonlySet<string> = new Set([
+  'ensure_claude_session', 'ensure_codex_session', 'kill_session', 'delete_session', 'stop_all_sessions',
+  'orphan_sessions', 'session_meta', 'session_modes', 'agent_spawned', 'chat_names', 'power_state',
+  'set_keep_awake', 'arm_power_off', 'disarm_power_off', 'rename_account', 'orphan_worktrees',
+  'remove_orphan_worktrees'
+]);
+const CORE_SEND: ReadonlySet<string> = new Set(['write_session', 'resize_session']);
+
+const invokeAnywhere = <T>(cmd: string, args?: Record<string, unknown>): Promise<T> =>
+  CORE_SEND.has(cmd)
+    ? invoke<T>('core_send', { cmd, args: args ?? {} })
+    : CORE_CALL.has(cmd)
+      ? invoke<T>('core_call', { cmd, args: args ?? {} })
+      : invoke<T>(cmd, args);
+
 // The Rust side already logs why these failed, with more to say than this
 // layer has; logging them here as well wrote every failure twice.
 const LOGGED_BEHIND: ReadonlySet<string> = new Set(['account_limits', 'codex_limits']);
@@ -43,9 +62,12 @@ async function call<T>(cmd: string, args?: Record<string, unknown>, fallback?: T
   // indistinguishable from the app hanging, and this names which one it was.
   const started = performance.now();
   try {
-    return await invoke<T>(cmd, args);
+    return await invokeAnywhere<T>(cmd, args);
   } catch (e) {
-    if (!LOGGED_BEHIND.has(cmd)) logWarn('ipc', `${cmd} failed: ${String(e)}`);
+    // A core that is not there fails every call until it is back, and the
+    // banner already says so; one line per poll would bury the log.
+    const noCore = String(e).includes('the core is not running');
+    if (!LOGGED_BEHIND.has(cmd) && !noCore) logWarn('ipc', `${cmd} failed: ${String(e)}`);
     throw e;
   } finally {
     const ms = performance.now() - started;
@@ -475,10 +497,11 @@ export interface CoreDto {
   build: string;
   fingerprint: string;
   started: number;
+  sessions: number;
 }
 
 export interface CoreStateDto {
-  state: 'starting' | 'up' | 'down';
+  state: 'starting' | 'up' | 'down' | 'mismatch';
   core: CoreDto | null;
   error: string | null;
 }
@@ -491,7 +514,7 @@ export const noteExit = (reason: string | null) => call<void>('note_exit', { rea
 /** Asks every session to quit as a delete would; resolves with how many. */
 export const stopAllSessions = () => call<number>('stop_all_sessions', {}, 0);
 /** The answers to a tray Quit the window was asked about (`app://quit-asked`). */
-export const quitApp = () => call<void>('quit_app');
+export const quitApp = (stopSessions: boolean) => call<void>('quit_app', { stopSessions });
 export const quitDeclined = () => call<void>('quit_declined');
 
 // ---------------------------------------------------------------- agents --

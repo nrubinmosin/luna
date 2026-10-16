@@ -556,6 +556,13 @@ export function focusTerminal(chatId: string) {
   if (entry?.attached) entry.host.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea')?.focus();
 }
 
+/** Every terminal at once, for when every session behind them has gone —
+ *  the core stopped — and each pane has to start its session over. */
+export function forgetAll() {
+  for (const entry of live.values()) entry.dispose();
+  live.clear();
+}
+
 /** Nothing to come back to: the chat is gone, so its terminal goes with it. */
 export function forget(chatId: string) {
   const entry = live.get(chatId);

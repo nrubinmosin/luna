@@ -195,8 +195,10 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
 ## Sessions and cleanup
 
 - Closing the window hides the app to the tray and leaves the sessions running. Quit from
-  the tray menu; with sessions running it first lists them and asks, then has each one quit
-  as deleting a chat would. A second Quit while that question is up quits without it.
+  the tray menu closes the window and, by default, leaves the sessions running in Luna's
+  core for the next window to pick up; with sessions running it lists them and asks, and
+  ticking "Stop the sessions too" has each one quit as deleting a chat would, then the core
+  goes. A second Quit while that question is up closes the window without it.
 - Sessions with no chat row left to reach them — lost to a half-written state restore, say
   — are listed at the top of the sidebar, with what they are
   working on, and can be adopted back or killed.
@@ -208,11 +210,16 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   the portable build and under `%LOCALAPPDATA%\luna` otherwise. Info-level chatter never
   reaches it, so what is in there is worth reading. Every line names the version that
   wrote it, and each launch opens with a `START` line naming the version and build.
-- Beside the window Luna runs its core, a second process from the same exe (`luna-core.exe`,
+- The sessions run in Luna's core, a second process from the same exe (`luna-core.exe`,
   started from a copy under the data folder on Windows so that an update can replace the
-  exe). Settings → Versions shows it and can restart it; it leaves by itself ten minutes
-  after the last window has gone. The core is where the sessions are moving, so that a
-  window that crashes, hangs or is killed no longer takes them along.
+  exe), not in the window. A window that crashes, hangs or is killed takes nothing with it:
+  the CLIs carry on, background work and all, and the next window reattaches to them. The
+  hooks' listener, the agents' MCP server, activity and power run there too, so an agent's
+  `luna_wait` keeps working with no window open. Settings → Versions shows the core and can
+  restart it; it leaves by itself once it has had no window and no session for ten minutes.
+  If the core itself stops, the sessions in it end: a banner over the board says so, and
+  Restart the core brings the chats back from their transcripts. It is never restarted
+  behind your back.
 - The log also says how each run ended. Luna names its own reasons for leaving (tray
   Quit, an update, Windows signing out or shutting down). A small watcher process logs
   the exit code when something else ends it, which tells a kill from outside (Task

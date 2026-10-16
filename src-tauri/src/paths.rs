@@ -13,8 +13,20 @@ fn exe_dir() -> Option<PathBuf> {
     std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf()))
 }
 
+static LOCAL_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// The window's local dir, handed to the core for the same reason as
+/// `set_data_dir`: the test build keeps it beside its exe, and the core's exe
+/// is a copy elsewhere.
+pub fn set_local_dir(dir: PathBuf) {
+    let _ = LOCAL_DIR.set(dir);
+}
+
 /// `LOCALAPPDATA\luna` — where the log and pasted attachments live.
 pub fn local_dir() -> Option<PathBuf> {
+    if let Some(dir) = LOCAL_DIR.get() {
+        return Some(dir.clone());
+    }
     if is_test() {
         return exe_dir();
     }

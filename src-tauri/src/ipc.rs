@@ -20,8 +20,14 @@ pub const PROTO: u32 = 1;
 /// Room for a session's whole scrollback in one frame, and no more.
 const MAX_FRAME: usize = 8 << 20;
 
+/// Window → core, answered by a RES with the same id.
 pub const REQ: u8 = 1;
 pub const RES: u8 = 2;
+/// Core → window: what the core's `emit::to_ui` sends, passed on to the page.
+pub const EVENT: u8 = 3;
+/// Window → core, never answered: keystrokes and resizes, which must reach
+/// the session in the order they were made and are worth nothing late.
+pub const SEND: u8 = 5;
 
 #[derive(Serialize, Deserialize)]
 pub struct Req {
@@ -38,6 +44,12 @@ pub struct Res {
     pub ok: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub err: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct Event {
+    pub event: String,
+    pub payload: serde_json::Value,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -59,6 +71,11 @@ pub struct Welcome {
     pub fingerprint: String,
     /// Epoch ms.
     pub started: u64,
+    /// Sessions running in it: a core of another build with none is replaced
+    /// without a word, one with some only when the user says so. Absent from
+    /// a core older than sessions in the core, which has none.
+    #[serde(default)]
+    pub sessions: usize,
 }
 
 impl Welcome {
@@ -69,6 +86,7 @@ impl Welcome {
             build: env!("LUNA_BUILD").into(),
             fingerprint: env!("LUNA_CORE_FP").into(),
             started,
+            sessions: crate::pty::manager().live_count(),
         }
     }
 }
@@ -92,19 +110,6 @@ pub fn discovery_file() -> PathBuf {
     core_dir().join("core.json")
 }
 
-pub fn write_frame(w: &mut impl Write, kind: u8, payload: &[u8]) -> io::Result<()> {
-    if payload.len() > MAX_FRAME {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "frame too large"));
-    }
-    // One write for the frame: a reader on the other end never sees half.
-    let mut buf = Vec::with_capacity(5 + payload.len());
-    buf.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-    buf.push(kind);
-    buf.extend_from_slice(payload);
-    w.write_all(&buf)?;
-    w.flush()
-}
-
 pub fn read_frame(r: &mut impl Read) -> io::Result<(u8, Vec<u8>)> {
     let mut head = [0u8; 5];
     r.read_exact(&mut head)?;
@@ -118,8 +123,22 @@ pub fn read_frame(r: &mut impl Read) -> io::Result<(u8, Vec<u8>)> {
 }
 
 pub fn send<T: Serialize>(w: &mut impl Write, kind: u8, msg: &T) -> io::Result<()> {
+    w.write_all(&encode(kind, msg)?)?;
+    w.flush()
+}
+
+/// A whole frame as bytes, for a writer that queues frames rather than
+/// writing them where they are made.
+pub fn encode<T: Serialize>(kind: u8, msg: &T) -> io::Result<Vec<u8>> {
     let payload = serde_json::to_vec(msg).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
-    write_frame(w, kind, &payload)
+    if payload.len() > MAX_FRAME {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "frame too large"));
+    }
+    let mut buf = Vec::with_capacity(5 + payload.len());
+    buf.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    buf.push(kind);
+    buf.extend_from_slice(&payload);
+    Ok(buf)
 }
 
 pub fn recv<T: DeserializeOwned>(r: &mut impl Read, want: u8) -> io::Result<T> {
@@ -158,7 +177,7 @@ mod tests {
     fn frames_round_trip_and_refuse_the_oversized() {
         let mut buf = Vec::new();
         send(&mut buf, REQ, &Req { id: 7, cmd: "info".into(), args: serde_json::json!({ "a": 1 }) }).unwrap();
-        write_frame(&mut buf, RES, b"{}").unwrap();
+        send(&mut buf, RES, &serde_json::json!({})).unwrap();
         let mut r = io::Cursor::new(buf);
         let req: Req = recv(&mut r, REQ).unwrap();
         assert_eq!((req.id, req.cmd.as_str(), req.args["a"].as_i64()), (7, "info", Some(1)));

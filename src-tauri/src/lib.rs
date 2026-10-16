@@ -5,6 +5,7 @@ mod agents;
 mod claude;
 mod cli;
 mod codex;
+mod corecmd;
 mod corelink;
 mod coreproc;
 mod emit;
@@ -91,6 +92,8 @@ pub fn run() {
             ));
             // The previous run's end is reported before anything new is logged.
             lifecycle::start(app.handle().clone());
+            // The sessions, the hooks' listener, the agents, activity and power
+            // all run in the core (coreproc.rs); the window finds or starts it.
             corelink::start();
             claude::models::refresh_soon();
             // Installs the CLIs on a fresh machine and keeps them current after.
@@ -102,16 +105,6 @@ pub fn run() {
             // Once the window and tao's own hidden one both exist.
             sysmenu::exit_with_session();
 
-            // Housekeeping off the startup path, and again every few hours.
-            media::prune_periodically();
-            pty::prune_session_files_periodically();
-
-            // The hook listener before any session can be spawned with hooks
-            // pointing at it; the activity sampler feeds power.rs from then on.
-            hub::start();
-            agents::init();
-            agents::register_dev_caller();
-            activity::start();
             // A parent account's settings onto the others, when that is asked for.
             account_settings::sync_on_start();
             // A window whose page has died is rebuilt rather than left black.
@@ -162,11 +155,8 @@ pub fn run() {
             accounts::list_accounts,
             accounts::create_account,
             accounts::delete_account,
-            accounts::rename_account,
-            agents::agent_spawned,
             agents::agent_blocked_accounts,
             agents::set_agent_account,
-            agents::chat_names,
             cli::cli_status,
             cli::cli_update_now,
             claude::defaults::claude_defaults,
@@ -180,34 +170,20 @@ pub fn run() {
             codex::trust::codex_trust_folder,
             log::append_log,
             media::save_media,
-            pty::ensure_claude_session,
-            pty::ensure_codex_session,
-            pty::write_session,
+            corelink::core_call,
+            corelink::core_send,
             corelink::core_state,
             corelink::core_restart,
             lifecycle::note_exit,
             lifecycle::quit_app,
             lifecycle::quit_declined,
-            pty::stop_all_sessions,
-            pty::resize_session,
-            pty::kill_session,
-            pty::session_modes,
-            pty::session_meta,
             pty::saved_title,
-            pty::orphan_sessions,
-            pty::delete_session,
-            power::power_state,
-            power::set_keep_awake,
-            power::arm_power_off,
-            power::disarm_power_off,
             settings::get_accounts_root,
             settings::set_accounts_root,
             watchdog::ui_heartbeat,
             worktree::create_worktree,
             worktree::fetch_before_worktree,
             worktree::set_fetch_before_worktree,
-            worktree::orphan_worktrees,
-            worktree::remove_orphan_worktrees,
             worktree::inspect_worktrees,
         ])
         .build(tauri::generate_context!())
