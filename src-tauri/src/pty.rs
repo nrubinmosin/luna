@@ -689,6 +689,12 @@ impl PtyManager {
         sessions.values().any(|s| s.alive.load(Ordering::SeqCst) && same_dir(&s.account_path, account_path))
     }
 
+    /// How many sessions are running.
+    pub fn live_count(&self) -> usize {
+        let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        sessions.values().filter(|s| s.alive.load(Ordering::SeqCst)).count()
+    }
+
     pub fn alive(&self, id: &str) -> bool {
         let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
         sessions.get(id).map(|s| s.alive.load(Ordering::SeqCst)).unwrap_or(false)
@@ -1089,8 +1095,9 @@ fn same_dir(a: &str, b: &str) -> bool {
 /// Neither CLI is out within two seconds of its second Ctrl+C: Claude Code
 /// runs its exit hooks first — among them Luna's own SessionEnd hook, a curl
 /// with a 3 s timeout — and Codex shuts its MCP servers down. At 1.5 s every
-/// deleted chat ended in the hard kill this is meant to avoid.
-const GRACE: std::time::Duration = std::time::Duration::from_secs(10);
+/// deleted chat ended in the hard kill this is meant to avoid. The same for
+/// every session at once: an update, Quit and shut-down-when-done.
+pub const GRACE: std::time::Duration = std::time::Duration::from_secs(10);
 /// Ctrl+C is one keystroke to the CLI and two in a row mean quit; one write
 /// carrying both lands in a single input tick, where the second cannot see
 /// the state the first set. Space them the way a hand would.
@@ -1164,6 +1171,18 @@ async fn take_and_shut_down(state: &PtyManager, id: &str) {
     if let Some(s) = session {
         let _ = tauri::async_runtime::spawn_blocking(move || shut_down(s, GRACE)).await;
     }
+}
+
+/// Asks every session to quit the way a delete does, before an update: the
+/// installer ends the process, and a CLI given its exit hooks leaves a whole
+/// transcript where one killed mid-write would not. Returns how many it
+/// stopped.
+#[tauri::command]
+pub async fn stop_all_sessions(app: AppHandle) -> Result<usize, String> {
+    use tauri::Manager;
+    tauri::async_runtime::spawn_blocking(move || app.state::<PtyManager>().shut_down_all(GRACE))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

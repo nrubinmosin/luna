@@ -26,7 +26,7 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   themed. The whole interface scales from one variable, `--ui` in `src/app/theme.css`,
   and follows Windows' own text-size setting on top of that.
 - The window's title bar carries the board's controls: the sidebar button, the four
-  layouts, the four window groups, Even out, Clear and the theme. A hidden sidebar takes
+  layouts, the window groups, Even out, Clear and the theme. A hidden sidebar takes
   no room at all: resting the pointer at the window's left edge slides it out over the
   board until the pointer leaves, and the title bar's button pins it back.
 - Only the pane you are working in wears its full colour; the others go pale, the way XP
@@ -61,8 +61,9 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
 - Terminals outlive the pane that showed them: the last three put down wait off-screen with
   their listeners still on, so switching back is a refit rather than a fresh session
   handshake and a 2MB replay of the scrollback.
-- Window groups I/II/III/IV — beside the layout selector on the title bar, and
-  Ctrl+Tab goes round them (Ctrl+Shift+Tab is left to the CLI). Each group remembers its
+- Window groups — beside the layout selector on the title bar, one to start with and up
+  to ten (I–X): **+** adds one, the **×** on the group on screen removes it once no chat
+  is left in it. Ctrl+Tab goes round them (Ctrl+Shift+Tab is left to the CLI). Each group remembers its
   own four boards (one per layout) and their splits; **Clear** empties the group's panes
   and leaves every chat alone, **Even out** puts the splits back to half.
 - The status bar runs the width of the window: how many chats are working, how many are
@@ -194,7 +195,8 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
 ## Sessions and cleanup
 
 - Closing the window hides the app to the tray and leaves the sessions running. Quit from
-  the tray menu.
+  the tray menu; with sessions running it first lists them and asks, then has each one quit
+  as deleting a chat would. A second Quit while that question is up quits without it.
 - Sessions with no chat row left to reach them — lost to a half-written state restore, say
   — are listed at the top of the sidebar, with what they are
   working on, and can be adopted back or killed.
@@ -227,10 +229,12 @@ without the box ticked knows nothing of Luna at all.
   default; the count on the parent row unfolds it. It is not seated in a pane unless you
   open it. Its own status, context and title work as for any chat.
 - An agent kills and deletes only sessions it spawned (and theirs). It can see every other
-  one, yours included, with `luna_sessions` — name, account and its folder, project folder,
-  cwd, the CLI's session id and transcript path — type a message into any of them with
-  `luna_send`, and read or wait on the answer, so you can tell one chat to pass word to
-  another. `luna_send` will not type into a chat you are typing in or have left an unsent
+  one, yours included, with `luna_sessions` — name, window group, account and its folder,
+  project folder, cwd, the CLI's session id and transcript path — type a message into any
+  of them with `luna_send`, and read or wait on the answer, so you can tell one chat to pass
+  word to another. `luna_sessions` narrows to one group (`group: "mine"` is the caller's
+  own) and to rows with some text in them (`q`), so the chats you put in one group can be
+  told to settle something between themselves — who gets the machine next, say. `luna_send` will not type into a chat you are typing in or have left an unsent
   draft in; the agent is told to try later. At most eight helpers under
   one chat, and a helper's helpers get no tools of their own.
 - Every account is available to agents unless you switch it off with the robot button on
@@ -337,7 +341,9 @@ the portable exe, the setup, its `.sig` and the manifest to a `v<version>` relea
 - On startup the app checks `latest.json` from GitHub Releases (the endpoint lives in
   `src-tauri/tauri.conf.json` → `plugins.updater.endpoints`). A release found there lights
   up a chip in the status bar and waits to be clicked, rather than throwing up a modal
-  over whatever was mid-turn.
+  over whatever was mid-turn. Nothing installs without that click. The dialog lists the
+  running sessions; once the installer is downloaded every one of them is asked to quit,
+  each with its exit hooks, and the chats resume from their transcripts afterwards.
 - The CLIs update on the same principle and separately: `cli.rs` checks each one's release
   channel every six hours and installs into `<data>/claude-cli/versions/<ver>/` or
   `<data>/codex-cli/versions/<ver>/`. Claude Code comes as a bare exe from the official

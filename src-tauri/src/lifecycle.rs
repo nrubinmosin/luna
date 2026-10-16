@@ -226,6 +226,47 @@ pub fn note_exit(reason: Option<String>) {
     }
 }
 
+/// A tray Quit the window has been asked about and not yet answered.
+static QUIT_ASKED: AtomicBool = AtomicBool::new(false);
+
+/// Quit from the tray. With nothing running Luna leaves at once; with
+/// sessions running the window asks first, since they go down with it, and
+/// answers with `quit_app` or `quit_declined`. A second Quit while that
+/// question is open leaves without waiting: a page that cannot answer must
+/// not make Luna impossible to quit.
+pub fn quit_from_tray(app: &AppHandle) {
+    use tauri::Manager;
+    let live = app.state::<crate::pty::PtyManager>().live_count();
+    if live == 0 || QUIT_ASKED.swap(true, Ordering::SeqCst) {
+        quit(app.clone());
+        return;
+    }
+    crate::show_main(app);
+    crate::emit::to_ui(app, "app://quit-asked", live);
+}
+
+/// Every session is asked to quit, as a delete would, so each leaves a whole
+/// transcript behind; then Luna goes. Off the event loop: the asking takes
+/// seconds.
+fn quit(app: AppHandle) {
+    exiting("Quit from the tray menu");
+    std::thread::spawn(move || {
+        use tauri::Manager;
+        app.state::<crate::pty::PtyManager>().shut_down_all(crate::pty::GRACE);
+        app.exit(0);
+    });
+}
+
+#[tauri::command]
+pub fn quit_app(app: AppHandle) {
+    quit(app);
+}
+
+#[tauri::command]
+pub fn quit_declined() {
+    QUIT_ASKED.store(false, Ordering::SeqCst);
+}
+
 /// `luna --watch-exit <pid>`: runs as the watcher and returns true, or false
 /// for an ordinary launch.
 pub fn watch_from_args() -> bool {

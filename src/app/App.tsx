@@ -14,6 +14,7 @@ import { LoginModal } from '../features/accounts/LoginModal';
 import { useUpdates } from '../features/updates/updates.store';
 import { useCli } from '../features/updates/cli.store';
 import { UpdateConfirm } from '../features/updates/UpdateConfirm';
+import { QuitConfirm } from './QuitConfirm';
 import { useKeymap } from './keymap';
 import { useAltPeek } from '../features/panes/altPeek';
 import { ShortcutsDialog } from '../features/shortcuts/ShortcutsDialog';
@@ -22,6 +23,8 @@ import { healScaleDrift } from './dpi';
 import { Icon } from '../shared/ui/icons';
 import { STRIP, useShell } from './shell.store';
 import { uiHeartbeat } from '../ipc/commands';
+import { allChats, useChats } from '../features/chats/chats.store';
+import { usePanes } from '../features/panes/panes.store';
 import './theme.css';
 
 /** How far in from the window's left edge the pointer brings a hidden
@@ -148,6 +151,16 @@ export function App() {
 
   useEffect(() => healScaleDrift(), []);
 
+  // A chat listed in a group the title bar does not offer could never be
+  // reached; whatever put it there, the group is made rather than the chat
+  // lost.
+  useEffect(() => {
+    const cover = () =>
+      usePanes.getState().coverGroup(Math.max(0, ...allChats(useChats.getState().folders).map(c => c.group)));
+    cover();
+    return useChats.subscribe(cover);
+  }, []);
+
   // Tells the Rust side the page is alive; a window that goes quiet while on
   // screen is rebuilt there (watchdog.rs).
   useEffect(() => {
@@ -207,6 +220,7 @@ export function App() {
       {loginFor && <LoginModal account={loginFor} />}
       {/* Raised by the settings dialog or the status-bar chip alike. */}
       <UpdateConfirm />
+      <QuitConfirm />
       <ShortcutsDialog />
       <SettingsDialog />
     </div>

@@ -1,4 +1,5 @@
-import { GROUP_LABELS, GROUPS, currentLayout, usePanes, type Layout } from '../features/panes/panes.store';
+import { MAX_GROUPS, currentLayout, groupLabel, usePanes, type Layout } from '../features/panes/panes.store';
+import { allChats, useChats } from '../features/chats/chats.store';
 import { Icon, LayoutGlyph, SidebarGlyph, type IconName } from '../shared/ui/icons';
 import { useShell, type ThemePref } from './shell.store';
 
@@ -10,16 +11,20 @@ const THEMES: Record<ThemePref, { icon: IconName; title: string }> = {
 
 /**
  * The board's controls, on the window's title bar: the sidebar, the four
- * layouts, the four groups, Even out and Clear, and the theme. They sat in a
+ * layouts, the groups, Even out and Clear, and the theme. They sat in a
  * card at the top of the sidebar, which cost its height and went away with
  * it; up here they are always within reach, whatever the sidebar is doing.
  */
 export function BoardTools() {
   const layout = usePanes(currentLayout);
   const group = usePanes(s => s.group);
+  const count = usePanes(s => s.groups.length);
+  // Only a group nobody has a chat in can go; moving chats out is left to
+  // the user rather than done behind their back.
+  const occupied = useChats(s => allChats(s.folders).some(c => c.group === group));
   const pinned = useShell(s => s.pinned);
   const theme = useShell(s => s.theme);
-  const { setLayout, setGroup, resetGroup, resetSplits } = usePanes.getState();
+  const { setLayout, setGroup, addGroup, resetGroup, resetSplits } = usePanes.getState();
 
   return (
     <div className="tb-tools">
@@ -47,11 +52,40 @@ export function BoardTools() {
       {/* One level above the layouts: each group remembers its own boards, so
           a set of chats can be parked and brought back whole. */}
       <div className="tb-seg" role="group" aria-label="Group">
-        {GROUPS.map(g => (
-          <button key={g} aria-pressed={group === g} onClick={() => setGroup(g)} title={`Group ${GROUP_LABELS[g]}`}>
-            {GROUP_LABELS[g]}
+        {Array.from({ length: count }, (_, g) => (
+          <button
+            key={g}
+            className={group === g && count > 1 ? 'tb-group-live' : undefined}
+            aria-pressed={group === g}
+            onClick={() => setGroup(g)}
+            title={`Group ${groupLabel(g)}`}
+          >
+            {groupLabel(g)}
+            {group === g && count > 1 && (
+              <span
+                role="button"
+                className="tb-group-x"
+                aria-disabled={occupied}
+                title={
+                  occupied
+                    ? `Group ${groupLabel(g)} still has chats — move or delete them to remove it`
+                    : `Remove group ${groupLabel(g)}`
+                }
+                onClick={e => {
+                  e.stopPropagation();
+                  useChats.getState().removeGroup(g);
+                }}
+              >
+                ×
+              </span>
+            )}
           </button>
         ))}
+        {count < MAX_GROUPS && (
+          <button onClick={addGroup} title={`New group ${groupLabel(count)}`}>
+            +
+          </button>
+        )}
       </div>
       <span className="tb-sep" />
       <button className="tb-btn" onClick={() => resetSplits()} title="Even out the splits of this board">
@@ -61,7 +95,7 @@ export function BoardTools() {
       <button
         className="tb-btn"
         onClick={() => resetGroup(group)}
-        title={`Clear group ${GROUP_LABELS[group]} — empties its panes, keeps every chat`}
+        title={`Clear group ${groupLabel(group)} — empties its panes, keeps every chat`}
       >
         <Icon name="reset" />
         Clear

@@ -162,15 +162,18 @@ export function useAgentBridge() {
   }, []);
 
   // The core knows sessions by id only; `luna_sessions` names them with the
-  // rows' names, sent now and again whenever one changes.
+  // rows' names and places them in their window groups, sent now and again
+  // whenever one changes.
   useEffect(() => {
     let last = '';
     const push = () => {
-      const names = Object.fromEntries(allChats(useChats.getState().folders).map(c => [c.id, c.name]));
-      const key = JSON.stringify(names);
+      const chats = allChats(useChats.getState().folders);
+      const names = Object.fromEntries(chats.map(c => [c.id, c.name]));
+      const groups = Object.fromEntries(chats.map(c => [c.id, c.group]));
+      const key = JSON.stringify([names, groups]);
       if (key === last) return;
       last = key;
-      void chatNames(names);
+      void chatNames(names, groups);
     };
     push();
     return useChats.subscribe(push);

@@ -67,14 +67,14 @@ fn tools() -> Value {
     json!([
         {
             "name": "luna_list",
-            "description": "Sessions you spawned (id, name, provider, account, settings, turn, busy, turnsEnded) and the accounts you may use.",
+            "description": "Sessions you spawned (id, name, group, provider, account, settings, turn, busy, turnsEnded) and the accounts you may use.",
             "inputSchema": s(json!({}), &[]),
             "annotations": reads
         },
         {
             "name": "luna_sessions",
-            "description": "Every session in Luna, the user's own chats included: id, name, provider, account, folders, sessionId, transcript path, parent, you/yours, turn, settings.",
-            "inputSchema": s(json!({}), &[]),
+            "description": "Every session in Luna, the user's own chats included: id, name, group (the user's window group, I=1), provider, account, folders, sessionId, transcript path, parent, you/yours, turn, settings. Filters: group (a number or \"mine\"), q (text in name/folder/account/id).",
+            "inputSchema": s(json!({ "group": { "type": "string" }, "q": { "type": "string" } }), &[]),
             "annotations": reads
         },
         {
@@ -146,7 +146,10 @@ fn call(caller: &str, params: &Value) -> Value {
     let id = a["id"].as_str().unwrap_or("").to_string();
     let out: Result<Value, String> = match name {
         "luna_list" => Ok(json!(agents::list(caller))),
-        "luna_sessions" => Ok(json!({ "sessions": agents::sessions(caller) })),
+        "luna_sessions" => serde_json::from_value::<agents::SessionFilter>(a.clone())
+            .map_err(|e| format!("bad arguments: {e}"))
+            .and_then(|f| agents::sessions(caller, &f))
+            .map(|s| json!({ "sessions": s })),
         "luna_spawn" => serde_json::from_value::<agents::SpawnParams>(a.clone())
             .map_err(|e| format!("bad arguments: {e}"))
             .and_then(|p| agents::spawn(caller, p))
@@ -221,7 +224,7 @@ mod tests {
             t.as_object_mut().unwrap().remove("annotations");
         }
         let text = list.to_string();
-        assert!(text.len() < 4000, "tools/list is {} chars", text.len());
+        assert!(text.len() < 4300, "tools/list is {} chars", text.len());
         assert!(INSTRUCTIONS.len() < 1000);
     }
 

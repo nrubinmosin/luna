@@ -517,6 +517,25 @@ body { margin: 0; overflow: hidden; }
 [data-app] button.tb-btn:not(:disabled):hover { border-color: rgba(255, 255, 255, .35); }
 [data-app] .tb-seg > button:not(:disabled):active,
 [data-app] button.tb-btn:not(:disabled):active { transform: scale(.94); background: rgba(0, 0, 40, .15); }
+/* The group on screen offers to remove itself, on hover only: the cross is a
+   rare act and must not sit in the way of the numeral it belongs to. */
+[data-app] .tb-seg > button.tb-group-live { position: relative; }
+[data-app] .tb-group-x {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  display: none;
+  place-items: center;
+  font: 700 10px/1 var(--sans-serif);
+  color: #fff;
+  background: rgba(0, 0, 40, .45);
+}
+[data-app] .tb-seg > button.tb-group-live:hover .tb-group-x { display: grid; }
+[data-app] .tb-group-x:not([aria-disabled="true"]):hover { background: #c8352b; }
+[data-app] .tb-group-x[aria-disabled="true"] { opacity: .45; cursor: not-allowed; }
 [data-app] .tb-sep { width: 1px; height: 18px; background: rgba(255, 255, 255, .28); flex: none; }
 
 /* ------------------------------------------------------------------------

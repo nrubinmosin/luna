@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import type { Update } from '@tauri-apps/plugin-updater';
-import { noteExit } from '../../ipc/commands';
+import { noteExit, stopAllSessions } from '../../ipc/commands';
 import { logInfo, logWarn } from '../../shared/lib/log';
 
 const tauriAvailable = '__TAURI_INTERNALS__' in window;
@@ -9,7 +9,7 @@ const tauriAvailable = '__TAURI_INTERNALS__' in window;
  * Where the app is in the update cycle. 'idle' covers both "nothing on offer"
  * and "haven't looked yet"; `checkedAt` is what separates them for the label.
  */
-export type Phase = 'idle' | 'checking' | 'available' | 'downloading' | 'error';
+export type Phase = 'idle' | 'checking' | 'available' | 'downloading' | 'stopping' | 'error';
 
 // The handle the plugin hands back is a live object with a download method on
 // it, not data — it stays out of the store, which is for what the UI draws.
@@ -54,7 +54,7 @@ export const useUpdates = create<UpdatesState>(set => ({
     // A second check while one is in flight, or on top of a download, would
     // drop the update handle the download is running on.
     const { phase } = useUpdates.getState();
-    if (phase === 'checking' || phase === 'downloading') return;
+    if (phase === 'checking' || phase === 'downloading' || phase === 'stopping') return;
 
     set({ phase: 'checking', error: null });
     try {
@@ -95,6 +95,11 @@ export const useUpdates = create<UpdatesState>(set => ({
         if (ev.event === 'Started') set({ total: ev.data.contentLength ?? null });
         else if (ev.event === 'Progress') set(s => ({ got: s.got + ev.data.chunkLength }));
       });
+      // Only once the installer is on disk: a download that fails must not
+      // have cost a single session. Then every CLI is asked to quit, each with
+      // its exit hooks, rather than going down mid-write with the process.
+      set({ phase: 'stopping' });
+      await stopAllSessions();
       // Said before, because the install never returns on Windows; taken back
       // below if it fails.
       await noteExit(`installing the update to ${pending.version}`);

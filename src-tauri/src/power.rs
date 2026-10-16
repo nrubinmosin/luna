@@ -24,9 +24,6 @@ use std::sync::{Mutex, OnceLock};
 const HOLD_LINGER_MS: u64 = 60_000;
 /// The warning before the action fires.
 const COUNTDOWN_MS: u64 = 60_000;
-/// How long a CLI gets to quit on its own before the shutdown proceeds — the
-/// same as a chat delete gives it: its exit hooks are what we are waiting for.
-const QUIT_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
 /// While armed and held up, the log says by whom: at once when the reason
 /// changes (but not more often than this), and at least this often regardless,
 /// so a night that ends with the PC still on can be read back.
@@ -325,7 +322,7 @@ fn fire(app: &tauri::AppHandle, action: Action) {
             }
         }
         Action::Shutdown => {
-            let quit = app.state::<crate::pty::PtyManager>().shut_down_all(QUIT_GRACE);
+            let quit = app.state::<crate::pty::PtyManager>().shut_down_all(crate::pty::GRACE);
             crate::log::warn("power", &format!("{quit} sessions closed; shutting down"));
             if os::shutdown() {
                 crate::lifecycle::exiting("shut-down-when-done turned the PC off");
