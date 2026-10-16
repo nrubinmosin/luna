@@ -350,3 +350,17 @@ fn answer(tx: &SyncSender<Vec<u8>>, id: u64, result: Result<serde_json::Value, S
         let _ = tx.try_send(frame);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn with_no_window_only_what_must_not_be_missed_is_held() {
+        broadcast("pty://output", serde_json::json!({ "id": "x", "data": "hi" }));
+        broadcast("agent://deleted", serde_json::json!({ "id": "x" }));
+        let held = HELD.lock().unwrap().len();
+        assert_eq!(held, 1, "a deleted chat waits for the next window; output does not");
+        HELD.lock().unwrap().clear();
+    }
+}
