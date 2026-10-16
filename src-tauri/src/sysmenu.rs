@@ -13,13 +13,11 @@
 //!
 //! The other is the end of the Windows session. On sign-out, shutdown and
 //! reboot, Windows sends every top-level window WM_ENDSESSION and then ends the
-//! process itself. tao 0.35 answers that message by marking its event loop
-//! destroyed and carrying on, and the next redraw to reach the loop is the
-//! "cannot move state from Destroyed" panic that sat in luna.log at the exact
-//! second of every reboot and sleep. tao 0.37 fixed it by exiting the process
-//! right there; tauri 2.11 still pins 0.35, so this does the same — on every
-//! top-level window of the thread, because Windows hands the message to them
-//! one at a time and tao's own hidden window has to be beaten to it.
+//! process itself. tao exits right there too, so the hook is not what ends
+//! the process; it is what gets the reason Windows gives into the log first
+//! (lifecycle.rs) — on every top-level window of the thread, because Windows
+//! hands the message to them one at a time and tao's own hidden window has to
+//! be beaten to it.
 
 /// Swallow the messages that open the window menu, for the life of the window.
 #[cfg(windows)]

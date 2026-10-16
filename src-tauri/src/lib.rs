@@ -43,9 +43,6 @@ pub fn run() {
         return;
     }
     log::install_panic_hook();
-    // The build stamp as well as the version: test builds between two
-    // releases share a version, and only the commit tells them apart.
-    log::start(&format!("starting luna {} build {}", env!("CARGO_PKG_VERSION"), env!("LUNA_BUILD")));
 
     // A dev build driven by a script runs beside the Luna a person is using,
     // possibly under the same identifier, and the second launch would only
@@ -71,7 +68,13 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(pty::PtyManager::default())
         .setup(|app| {
-            // First: the previous run's end is reported before anything new is logged.
+            // Here rather than at the top of run(): a second launch that only
+            // focuses the running Luna has exited by now, and must not read as
+            // a restart. The build stamp as well as the version: test builds
+            // between two releases share a version, and only the commit tells
+            // them apart.
+            log::start(&format!("starting luna {} build {}", env!("CARGO_PKG_VERSION"), env!("LUNA_BUILD")));
+            // The previous run's end is reported before anything new is logged.
             lifecycle::start(app.handle().clone());
             claude::models::refresh_soon();
             // Installs the CLIs on a fresh machine and keeps them current after.
