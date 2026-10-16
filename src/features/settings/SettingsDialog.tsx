@@ -91,7 +91,9 @@ function LunaRow() {
         ? `version ${next} is out`
         : phase === 'downloading'
           ? `downloading ${next}… ${done == null ? '' : `${done}%`}`
-          : phase === 'error'
+          : phase === 'stopping'
+            ? 'stopping the sessions to install…'
+            : phase === 'error'
             ? `update check failed — ${error ?? 'unknown error'}`
             : `checked ${agoLabel(checkedAt)}`;
 
@@ -103,7 +105,7 @@ function LunaRow() {
       statusTitle={phase === 'error' ? (error ?? undefined) : undefined}
       error={phase === 'error'}
       primary={phase === 'available'}
-      disabled={phase === 'checking' || phase === 'downloading'}
+      disabled={phase === 'checking' || phase === 'downloading' || phase === 'stopping'}
       actionLabel={phase === 'available' ? 'Update…' : 'Check'}
       action={() => {
         const s = useUpdates.getState();

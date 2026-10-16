@@ -28,7 +28,7 @@ use tauri::{
     Manager,
 };
 
-fn show_main(app: &tauri::AppHandle) {
+pub(crate) fn show_main(app: &tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
         let _ = w.unminimize();
@@ -111,10 +111,7 @@ pub fn run() {
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "open" => show_main(app),
-                    "quit" => {
-                        lifecycle::exiting("Quit from the tray menu");
-                        app.exit(0)
-                    }
+                    "quit" => lifecycle::quit_from_tray(app),
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
@@ -171,6 +168,9 @@ pub fn run() {
             pty::ensure_codex_session,
             pty::write_session,
             lifecycle::note_exit,
+            lifecycle::quit_app,
+            lifecycle::quit_declined,
+            pty::stop_all_sessions,
             pty::resize_session,
             pty::kill_session,
             pty::session_modes,

@@ -102,7 +102,7 @@ export function useKeymap(opts: { openNewChat: () => void; closeModal: () => voi
         return;
       }
 
-      // Ctrl+Tab walks the four groups round. Ctrl+Shift+Tab is Claude Code's
+      // Ctrl+Tab walks the groups round. Ctrl+Shift+Tab is Claude Code's
       // own and travels on to the terminal untouched.
       if (e.key === 'Tab') {
         if (e.shiftKey) return;

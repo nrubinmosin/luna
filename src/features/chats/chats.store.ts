@@ -40,6 +40,12 @@ interface ChatsState {
   /** An account was renamed: its chats follow it. */
   renameAccount: (provider: Chat['provider'], from: string, to: string) => void;
   findChat: (chatId: string | null) => Chat | null;
+  /**
+   * Removes group `g` when no chat lives in it, renumbering the chats of the
+   * groups after it, and says whether it did. Moving chats out of a group is
+   * the user's job, not a side effect of removing it.
+   */
+  removeGroup: (g: GroupId) => boolean;
   folderOf: (chatId: string) => Folder | null;
 }
 
@@ -264,7 +270,20 @@ export const useChats = create<ChatsState>()(
         return null;
       },
 
-      folderOf: chatId => get().folders.find(f => f.chats.some(c => c.id === chatId)) ?? null
+      folderOf: chatId => get().folders.find(f => f.chats.some(c => c.id === chatId)) ?? null,
+
+      removeGroup: g => {
+        const panes = usePanes.getState();
+        if (panes.groups.length <= 1 || allChats(get().folders).some(c => c.group === g)) return false;
+        set(s => ({
+          folders: s.folders.map(f => ({
+            ...f,
+            chats: f.chats.map(c => (c.group > g ? { ...c, group: c.group - 1 } : c))
+          }))
+        }));
+        panes.dropGroup(g);
+        return true;
+      }
     }),
     {
       name: 'luna.chats',

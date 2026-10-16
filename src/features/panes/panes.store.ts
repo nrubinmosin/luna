@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { GROUPS, type GroupId } from '../../shared/types';
+import { MAX_GROUPS, type GroupId } from '../../shared/types';
 
 export type Layout = 1 | 2 | 3 | 4;
 export const LAYOUTS: Layout[] = [1, 2, 3, 4];
@@ -16,7 +16,7 @@ export type SplitKey = keyof Splits;
 export type Slots = (string | null)[];
 type PerLayout<T> = Record<Layout, T>;
 
-export { GROUPS, GROUP_LABELS } from '../../shared/types';
+export { MAX_GROUPS, groupLabel } from '../../shared/types';
 export type { GroupId } from '../../shared/types';
 
 /**
@@ -44,7 +44,6 @@ const blankSplits = (): PerLayout<Splits> => ({
   4: { ...DEFAULT_SPLITS }
 });
 const blankGroup = (): Group => ({ layout: 1, boards: blankBoards(), splitsByLayout: blankSplits() });
-const blankGroups = (): Group[] => GROUPS.map(blankGroup);
 
 /** Fills in whatever a persisted group is missing, without dropping what it has. */
 const reviveGroup = (g: Partial<Group> | undefined): Group => ({
@@ -52,8 +51,38 @@ const reviveGroup = (g: Partial<Group> | undefined): Group => ({
   boards: { ...blankBoards(), ...(g?.boards ?? {}) },
   splitsByLayout: { ...blankSplits(), ...(g?.splitsByLayout ?? {}) }
 });
-const reviveGroups = (list: unknown): Group[] =>
-  GROUPS.map(i => reviveGroup(Array.isArray(list) ? (list[i] as Partial<Group> | undefined) : undefined));
+const reviveGroups = (list: unknown): Group[] => {
+  const kept = Array.isArray(list) ? (list as Array<Partial<Group> | undefined>).slice(0, MAX_GROUPS) : [];
+  return kept.length ? kept.map(reviveGroup) : [blankGroup()];
+};
+
+const boardsEmpty = (g: Partial<Group> | undefined): boolean =>
+  Object.values(g?.boards ?? {}).every(slots => (slots ?? []).every(x => !x));
+
+/**
+ * A version-1 store always holds four groups, made or not. Of those, every
+ * group up to the last one with a chat or a seated pane stays and the empty
+ * tail goes: nothing anyone put somewhere is lost, and nobody is left with
+ * groups they never asked for. Reads the chats straight from storage, which
+ * is already there when this runs.
+ */
+const trimUnusedTail = (groups: Array<Partial<Group> | undefined>): Array<Partial<Group> | undefined> => {
+  const withChats = new Set<number>();
+  try {
+    const raw = JSON.parse(localStorage.getItem('luna.chats') ?? 'null') as {
+      state?: { folders?: Array<{ chats?: Array<{ group?: number }> }> };
+    } | null;
+    for (const f of raw?.state?.folders ?? []) for (const c of f.chats ?? []) withChats.add(c.group ?? 0);
+  } catch {
+    // Unreadable chats: keep every group rather than guess.
+    return groups;
+  }
+  let last = 0;
+  groups.forEach((g, i) => {
+    if (withChats.has(i) || !boardsEmpty(g)) last = i;
+  });
+  return groups.slice(0, last + 1);
+};
 
 /**
  * Each layout's panes in the order auto-tile fills them. Growing a board by one
@@ -114,8 +143,19 @@ interface PanesState {
   autoTile: boolean;
   setAutoTile: (on: boolean) => void;
   setGroup: (g: GroupId) => void;
-  /** The next group round the four, for Ctrl+Tab. */
+  /** The next group round, for Ctrl+Tab. */
   nextGroup: () => void;
+  /** A new empty group at the end, switched to. No-op at MAX_GROUPS. */
+  addGroup: () => void;
+  /**
+   * Takes group `g` off the boards. Whether it may go — no chat in it — is
+   * the chats store's call (`removeGroup` there), which renumbers its chats
+   * and then calls this.
+   */
+  dropGroup: (g: GroupId) => void;
+  /** Makes sure groups up to index `g` exist, so no chat is ever listed in
+   *  a group the title bar does not offer. */
+  coverGroup: (g: GroupId) => void;
   /** Empties one group's boards and evens out its splits. Chats are untouched. */
   resetGroup: (g: GroupId) => void;
   setLayout: (n: Layout) => void;
@@ -150,7 +190,7 @@ export const currentSplits = (s: PanesState): Splits => currentGroup(s).splitsBy
 /** Whether a sheet is up over the board, of either kind. */
 export const peeking = (s: PanesState): boolean => s.peek != null || s.peekChat != null;
 
-/** Replaces the active group, leaving the other three untouched. */
+/** Replaces the active group, leaving the others untouched. */
 const withGroup = (s: PanesState, patch: Partial<Group>) => ({
   groups: s.groups.map((g, i) => (i === s.group ? { ...g, ...patch } : g))
 });
@@ -193,7 +233,7 @@ export const usePanes = create<PanesState>()(
   persist(
     set => ({
       group: 0,
-      groups: blankGroups(),
+      groups: [blankGroup()],
       over: -1,
       drag: null,
       dragPane: null,
@@ -211,7 +251,31 @@ export const usePanes = create<PanesState>()(
       setGroup: g => set({ group: g, over: -1, dragPane: null, activePane: 0, ...NO_PEEK }),
 
       nextGroup: () =>
-        set(s => ({ group: ((s.group + 1) % GROUPS.length) as GroupId, over: -1, dragPane: null, activePane: 0, ...NO_PEEK })),
+        set(s => ({ group: (s.group + 1) % s.groups.length, over: -1, dragPane: null, activePane: 0, ...NO_PEEK })),
+
+      addGroup: () =>
+        set(s =>
+          s.groups.length >= MAX_GROUPS
+            ? {}
+            : { groups: [...s.groups, blankGroup()], group: s.groups.length, over: -1, dragPane: null, activePane: 0, ...NO_PEEK }
+        ),
+
+      dropGroup: g =>
+        set(s => {
+          if (s.groups.length <= 1 || g < 0 || g >= s.groups.length) return {};
+          const groups = s.groups.filter((_, i) => i !== g);
+          // The groups after it shift down by one; the one on screen stays on
+          // screen unless it is the one going, which hands over to its left.
+          const group = s.group > g ? s.group - 1 : s.group === g ? Math.max(0, g - 1) : s.group;
+          return { groups, group, over: -1, dragPane: null, ...(s.group === g ? { activePane: 0, ...NO_PEEK } : {}) };
+        }),
+
+      coverGroup: g =>
+        set(s => {
+          const want = Math.min(MAX_GROUPS, g + 1);
+          if (s.groups.length >= want) return {};
+          return { groups: [...s.groups, ...Array.from({ length: want - s.groups.length }, blankGroup)] };
+        }),
 
       resetGroup: g =>
         set(s => ({
@@ -400,11 +464,19 @@ export const usePanes = create<PanesState>()(
     }),
     {
       name: 'luna.panes',
-      version: 1,
+      // 2: groups are as many as the user made, not a fixed four.
+      version: 2,
       partialize: s => ({ group: s.group, groups: s.groups, autoTile: s.autoTile }),
+      // What is stored may be short of fields; `merge` fills them in.
+      migrate: (persisted, version) => {
+        const p = (persisted ?? {}) as Pick<PanesState, 'group' | 'groups' | 'autoTile'>;
+        return version < 2 && Array.isArray(p.groups) ? { ...p, groups: trimUnusedTail(p.groups) as Group[] } : p;
+      },
       merge: (persisted, current) => {
         const p = (persisted ?? {}) as Partial<PanesState>;
-        return { ...current, ...p, group: p.group ?? 0, groups: reviveGroups(p.groups), autoTile: p.autoTile ?? true };
+        const groups = reviveGroups(p.groups);
+        const group = typeof p.group === 'number' && p.group < groups.length ? p.group : groups.length - 1;
+        return { ...current, ...p, group, groups, autoTile: p.autoTile ?? true };
       }
     }
   )

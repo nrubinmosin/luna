@@ -52,17 +52,21 @@ function UpdateChips() {
         {next}
       </div>
     );
-  } else if (phase === 'downloading') {
+  } else if (phase === 'downloading' || phase === 'stopping') {
     const done = pct(got, total);
     chips.push(
       <div
         key="app"
-        title={`Downloading ${next}… Luna closes on its own to install it.`}
+        title={
+          phase === 'stopping'
+            ? `Stopping every session to install ${next}…`
+            : `Downloading ${next}… Then the sessions are stopped and Luna closes to install it.`
+        }
         className="sb-field"
         style={chipStyle(true)}
       >
         <Icon name="download" />
-        {done == null ? '…' : `${done}%`}
+        {phase === 'stopping' ? 'stopping…' : done == null ? '…' : `${done}%`}
       </div>
     );
   } else if (phase === 'error') {

@@ -469,6 +469,11 @@ export const disarmPowerOff = () => call<PowerStateDto>('disarm_power_off', {}, 
 
 /** Why Luna is about to quit, for the log (lifecycle.rs); null takes it back. */
 export const noteExit = (reason: string | null) => call<void>('note_exit', { reason });
+/** Asks every session to quit as a delete would; resolves with how many. */
+export const stopAllSessions = () => call<number>('stop_all_sessions', {}, 0);
+/** The answers to a tray Quit the window was asked about (`app://quit-asked`). */
+export const quitApp = () => call<void>('quit_app');
+export const quitDeclined = () => call<void>('quit_declined');
 
 // ---------------------------------------------------------------- agents --
 
@@ -498,7 +503,8 @@ export const agentSpawned = (requestId: number, chatId: string | null, name: str
   call<void>('agent_spawned', { requestId, chatId, name, error });
 
 /** Every chat's name by id, for `luna_sessions` (agents.rs). */
-export const chatNames = (names: Record<string, string>) => call<void>('chat_names', { names });
+export const chatNames = (names: Record<string, string>, groups: Record<string, number>) =>
+  call<void>('chat_names', { names, groups });
 
 /** `provider/name` keys of accounts agents may not use. */
 export const agentBlockedAccounts = () => call<string[]>('agent_blocked_accounts', {}, []);

@@ -172,6 +172,10 @@ struct Registry {
     /// chat's, not only the known ones: a name may arrive before its session
     /// registers.
     names: HashMap<String, String>,
+    /// The window group each chat row sits in, 0-based, sent with the names:
+    /// sessions the user put side by side in one group are the ones meant to
+    /// work things out between them.
+    groups: HashMap<String, u32>,
     /// When each caller last typed into a session that was stopped on a
     /// prompt, by (caller, session): the answer to the prompt. For a few
     /// seconds after it the prompt may still look open, and `wait` must not
@@ -206,6 +210,7 @@ fn reg() -> &'static Mutex<Registry> {
             next_request: 1,
             seen: HashMap::new(),
             names: HashMap::new(),
+            groups: HashMap::new(),
             answered: HashMap::new(),
             owed: HashMap::new(),
         })
@@ -415,6 +420,8 @@ fn authorize_send(caller: &str, target: &str) -> Result<Known, String> {
 pub struct SessionRow {
     pub id: String,
     pub name: String,
+    /// The window group, 1-based as the title bar counts (I = 1).
+    pub group: Option<u32>,
     pub provider: Provider,
     pub account: String,
     pub parent: Option<String>,
@@ -475,20 +482,21 @@ fn signed_in(provider: Provider, account_path: &str) -> bool {
 }
 
 pub fn list(caller: &str) -> Listing {
-    let rows: Vec<(String, Known, String)> = {
+    let rows: Vec<(String, Known, String, Option<u32>)> = {
         let r = reg().lock().unwrap_or_else(|e| e.into_inner());
         descendants(&r, caller)
             .into_iter()
             .filter_map(|id| {
                 let name = r.names.get(&id).cloned().unwrap_or_default();
-                r.known.get(&id).cloned().map(|k| (id, k, name))
+                let group = r.groups.get(&id).map(|g| g + 1);
+                r.known.get(&id).cloned().map(|k| (id, k, name, group))
             })
             .collect()
     };
     let pty = app().map(|a| a.state::<crate::pty::PtyManager>());
     let sessions = rows
         .into_iter()
-        .map(|(id, k, name)| {
+        .map(|(id, k, name, group)| {
             let ts = crate::activity::turn_state(&id);
             // A listing is not a reading: it does not move what the caller
             // is taken to have seen of a session's turns.
@@ -500,6 +508,7 @@ pub fn list(caller: &str) -> Listing {
                 turns_ended,
                 id,
                 name,
+                group,
                 provider: k.provider,
                 account: k.account,
                 parent: k.parent,
@@ -517,6 +526,8 @@ pub fn list(caller: &str) -> Listing {
 pub struct AnySession {
     pub id: String,
     pub name: String,
+    /// The window group, 1-based as the title bar counts (I = 1).
+    pub group: Option<u32>,
     pub provider: Provider,
     pub account: String,
     /// The account directory — `CLAUDE_CONFIG_DIR` / `CODEX_HOME` of the
@@ -547,24 +558,64 @@ pub struct AnySession {
     pub settings: serde_json::Value,
 }
 
+/// Which sessions `sessions` returns: a window group, `mine` for the
+/// caller's own, and text to look for in the name, folder, account or id.
+#[derive(Deserialize, Default)]
+pub struct SessionFilter {
+    #[serde(default)]
+    pub group: Option<serde_json::Value>,
+    #[serde(default)]
+    pub q: Option<String>,
+}
+
+impl SessionFilter {
+    /// The 1-based group asked for, `mine` resolved against the caller's.
+    fn group(&self, mine: Option<u32>) -> Result<Option<u32>, String> {
+        let Some(v) = &self.group else { return Ok(None) };
+        if v.as_str().is_some_and(|s| s.trim().eq_ignore_ascii_case("mine")) {
+            return mine.map(Some).ok_or_else(|| "your session is in no window group, so \"mine\" matches nothing".to_string());
+        }
+        v.as_u64()
+            .or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
+            .filter(|g| *g >= 1)
+            .map(|g| Some(g as u32))
+            .ok_or_else(|| format!("group {v} is neither a number from 1 nor \"mine\""))
+    }
+}
+
+/// Whether a row passes a filter whose group is already resolved.
+fn keeps(row: &AnySession, group: Option<u32>, q: Option<&str>) -> bool {
+    if group.is_some_and(|g| row.group != Some(g)) {
+        return false;
+    }
+    let Some(q) = q.map(str::trim).filter(|q| !q.is_empty()) else { return true };
+    let q = q.to_lowercase();
+    [&row.name, &row.folder, &row.account, &row.id].iter().any(|f| f.to_lowercase().contains(&q))
+}
+
 /// Every session Luna runs, for a caller that has to find another one — to
 /// write to it, or to read its transcript off the disk.
-pub fn sessions(caller: &str) -> Vec<AnySession> {
-    let rows: Vec<(String, Known, String, bool)> = {
+pub fn sessions(caller: &str, filter: &SessionFilter) -> Result<Vec<AnySession>, String> {
+    type Row = (String, Known, String, Option<u32>, bool);
+    let (rows, mine): (Vec<Row>, Option<u32>) = {
         let r = reg().lock().unwrap_or_else(|e| e.into_inner());
-        r.known
+        let rows = r
+            .known
             .iter()
             .filter(|(id, _)| id.as_str() != DEV_CALLER || caller == DEV_CALLER)
             .map(|(id, k)| {
                 let name = r.names.get(id).cloned().unwrap_or_default();
-                (id.clone(), k.clone(), name, is_descendant(&r, caller, id))
+                let group = r.groups.get(id).map(|g| g + 1);
+                (id.clone(), k.clone(), name, group, is_descendant(&r, caller, id))
             })
-            .collect()
+            .collect();
+        (rows, r.groups.get(caller).map(|g| g + 1))
     };
+    let group = filter.group(mine)?;
     let pty = app().map(|a| a.state::<crate::pty::PtyManager>());
     let mut out: Vec<AnySession> = rows
         .into_iter()
-        .map(|(id, k, name, yours)| {
+        .map(|(id, k, name, group, yours)| {
             let probe = pty.as_ref().and_then(|p| p.probe(&id));
             let meta = probe.as_ref().and_then(disk_meta);
             let transcript = pty.as_ref().and_then(|p| transcript_path(p, &id)).map(|p| p.to_string_lossy().into_owned());
@@ -586,6 +637,7 @@ pub fn sessions(caller: &str) -> Vec<AnySession> {
                 transcript,
                 id,
                 name,
+                group,
                 provider: k.provider,
                 account: k.account,
                 account_path: k.account_path,
@@ -595,8 +647,9 @@ pub fn sessions(caller: &str) -> Vec<AnySession> {
             }
         })
         .collect();
+    out.retain(|row| keeps(row, group, filter.q.as_deref()));
     out.sort_by(|a, b| b.alive.cmp(&a.alive).then_with(|| (&a.account, &a.name).cmp(&(&b.account, &b.name))));
-    out
+    Ok(out)
 }
 
 /// What the CLI has on disk about a live session: its cwd, ids and title.
@@ -1415,11 +1468,16 @@ fn notifier() {
 
 // --------------------------------------------------------------- commands --
 
-/// Every chat's name, sent whenever one changes: what `luna_sessions` calls
-/// the user's own chats, which the core otherwise knows only by id.
+/// Every chat's name and window group, sent whenever one changes: what
+/// `luna_sessions` calls the user's own chats and where it puts them, which
+/// the core otherwise knows only by id.
 #[tauri::command]
-pub fn chat_names(names: HashMap<String, String>) {
-    reg().lock().unwrap_or_else(|e| e.into_inner()).names = names;
+pub fn chat_names(names: HashMap<String, String>, groups: Option<HashMap<String, u32>>) {
+    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    r.names = names;
+    if let Some(groups) = groups {
+        r.groups = groups;
+    }
 }
 
 /// Account names the user has switched off for agents, as `provider/name`.
@@ -1443,6 +1501,39 @@ pub fn set_agent_account(provider: Provider, name: String, allowed: bool) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sessions_filter_by_group_and_text() {
+        let none = serde_json::json!({});
+        register("grp-me", Provider::Claude, "C:\\work\\luna", "C:\\acc\\anthropic\\one", None, true, none.clone());
+        register("grp-peer", Provider::Codex, "C:\\work\\asuri", "C:\\acc\\openai\\two", None, false, none.clone());
+        register("grp-far", Provider::Claude, "C:\\work\\luna", "C:\\acc\\anthropic\\one", None, false, none.clone());
+        register("grp-loose", Provider::Claude, "C:\\work\\luna", "C:\\acc\\anthropic\\one", None, false, none);
+        let names = [("grp-me", "builder"), ("grp-peer", "Tester"), ("grp-far", "docs")]
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let groups = [("grp-me", 1), ("grp-peer", 1), ("grp-far", 0)].into_iter().map(|(k, v)| (k.to_string(), v)).collect();
+        chat_names(names, Some(groups));
+
+        let ids = |caller: &str, f: SessionFilter| -> Vec<String> {
+            let mut v: Vec<String> =
+                sessions(caller, &f).unwrap().into_iter().map(|s| s.id).filter(|id| id.starts_with("grp-")).collect();
+            v.sort();
+            v
+        };
+        let by = |g: serde_json::Value| SessionFilter { group: Some(g), q: None };
+        // Groups go out 1-based, as the title bar counts them.
+        assert_eq!(ids("grp-me", by(serde_json::json!("mine"))), ["grp-me", "grp-peer"]);
+        assert_eq!(ids("grp-me", by(serde_json::json!(1))), ["grp-far"]);
+        assert_eq!(ids("grp-me", by(serde_json::json!("2"))), ["grp-me", "grp-peer"]);
+        assert!(sessions("grp-loose", &by(serde_json::json!("mine"))).is_err(), "a session in no group has no mine");
+        assert!(sessions("grp-me", &by(serde_json::json!(0))).is_err());
+        let q = |text: &str| SessionFilter { group: None, q: Some(text.into()) };
+        assert_eq!(ids("grp-me", q("tester")), ["grp-peer"], "name, any case");
+        assert_eq!(ids("grp-me", q("asuri")), ["grp-peer"], "folder");
+        assert_eq!(ids("grp-me", SessionFilter { group: Some(serde_json::json!("mine")), q: Some("build".into()) }), ["grp-me"]);
+    }
 
     #[test]
     fn lineage_and_reach() {

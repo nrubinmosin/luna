@@ -1,10 +1,14 @@
 export type ChatStatus = 'working' | 'waiting' | 'resting';
 
-/** Which window group a chat belongs to. Lives here rather than in the panes
- *  store so chats can carry it without the two stores importing each other. */
-export type GroupId = 0 | 1 | 2 | 3;
-export const GROUPS: GroupId[] = [0, 1, 2, 3];
-export const GROUP_LABELS = ['I', 'II', 'III', 'IV'] as const;
+/** Which window group a chat belongs to: an index into the panes store's
+ *  groups. Lives here rather than in the panes store so chats can carry it
+ *  without the two stores importing each other. */
+export type GroupId = number;
+/** As many groups as the title bar has room for, and as Roman numerals stay
+ *  short enough to read at a glance. */
+export const MAX_GROUPS = 10;
+const ROMAN = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X'] as const;
+export const groupLabel = (g: GroupId): string => ROMAN[g] ?? String(g + 1);
 
 /** Where a chat's name came from — see `Chat.nameSource`. */
 export type NameSource = 'user' | 'rename' | 'cli' | 'prompt';
