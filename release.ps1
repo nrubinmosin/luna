@@ -52,10 +52,20 @@ foreach ($f in @($portable, $setup.FullName, $sig)) {
     if (-not (Test-Path $f)) { throw "missing build artifact: $f" }
 }
 
+# The fingerprint of the Rust side (build.rs). A window whose core has the same
+# one can install this update by restarting only itself: the core, and every
+# session in it, carries on (updates.store.ts).
+$fpFile = Join-Path $release 'core-fingerprint.txt'
+Remove-Item $fpFile -ErrorAction SilentlyContinue
+Start-Process -FilePath $portable -ArgumentList '--core-fingerprint', "`"$fpFile`"" -Wait
+if (-not (Test-Path $fpFile)) { throw 'the exe did not report its core fingerprint' }
+$coreFingerprint = (Get-Content $fpFile -Raw).Trim()
+
 # What the updater plugin fetches on startup; the signature is verified against
 # the public key baked into tauri.conf.json.
 $manifest = [ordered]@{
     version   = $version
+    core_fingerprint = $coreFingerprint
     notes     = if ($Notes) { $Notes } else { "Luna $version" }
     pub_date  = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
     platforms = [ordered]@{

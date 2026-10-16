@@ -353,9 +353,12 @@ the portable exe, the setup, its `.sig` and the manifest to a `v<version>` relea
 - On startup the app checks `latest.json` from GitHub Releases (the endpoint lives in
   `src-tauri/tauri.conf.json` → `plugins.updater.endpoints`). A release found there lights
   up a chip in the status bar and waits to be clicked, rather than throwing up a modal
-  over whatever was mid-turn. Nothing installs without that click. The dialog lists the
-  running sessions; once the installer is downloaded every one of them is asked to quit,
-  each with its exit hooks, and the chats resume from their transcripts afterwards.
+  over whatever was mid-turn. Nothing installs without that click. A release whose Rust
+  side is the same as the running core's (`core_fingerprint` in `latest.json`, a hash of
+  `src-tauri` written by `build.rs`) restarts only the window: the sessions keep running in
+  the core and the new window picks them up. Any other release stops them: the dialog lists
+  them, and once the installer is downloaded every one is asked to quit, each with its exit
+  hooks, and the chats resume from their transcripts afterwards.
 - The CLIs update on the same principle and separately: `cli.rs` checks each one's release
   channel every six hours and installs into `<data>/claude-cli/versions/<ver>/` or
   `<data>/codex-cli/versions/<ver>/`. Claude Code comes as a bare exe from the official

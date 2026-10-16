@@ -70,6 +70,21 @@ pub fn from_args() -> bool {
     true
 }
 
+/// `luna --core-fingerprint <file>`: writes this build's core fingerprint to
+/// the file and returns true. For release.ps1, which publishes it with the
+/// update so a window can tell an update that leaves the core as it is; an
+/// exe built for the windows subsystem has no console to print to.
+pub fn fingerprint_from_args() -> bool {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) != Some("--core-fingerprint") {
+        return false;
+    }
+    if let Some(file) = args.get(1) {
+        let _ = std::fs::write(file, env!("LUNA_CORE_FP"));
+    }
+    true
+}
+
 fn run() {
     let dir = ipc::core_dir();
     if let Err(e) = std::fs::create_dir_all(&dir) {
