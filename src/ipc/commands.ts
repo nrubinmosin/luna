@@ -467,6 +467,9 @@ export const armPowerOff = (action: PowerAction, quietS: number) =>
   call<PowerStateDto>('arm_power_off', { action, quietS }, IDLE_POWER);
 export const disarmPowerOff = () => call<PowerStateDto>('disarm_power_off', {}, IDLE_POWER);
 
+/** Why Luna is about to quit, for the log (lifecycle.rs); null takes it back. */
+export const noteExit = (reason: string | null) => call<void>('note_exit', { reason });
+
 // ---------------------------------------------------------------- agents --
 
 /** What an agent asked for (agents.rs SpawnParams), as `agent://spawn` carries it. */

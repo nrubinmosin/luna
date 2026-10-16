@@ -328,6 +328,7 @@ fn fire(app: &tauri::AppHandle, action: Action) {
             let quit = app.state::<crate::pty::PtyManager>().shut_down_all(QUIT_GRACE);
             crate::log::warn("power", &format!("{quit} sessions closed; shutting down"));
             if os::shutdown() {
+                crate::lifecycle::exiting("shut-down-when-done turned the PC off");
                 // Windows ends the process from WM_ENDSESSION (sysmenu.rs);
                 // leaving now just makes it tidy.
                 std::thread::sleep(std::time::Duration::from_secs(2));

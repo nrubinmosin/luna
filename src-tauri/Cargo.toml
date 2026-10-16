@@ -42,7 +42,8 @@ vt100 = "0.15"
 # Subclassing the windows — the Alt menu and WM_ENDSESSION (src/sysmenu.rs);
 # Job Objects and process counters for what a session has running under it
 # (src/procs.rs); power requests and suspend for keep-awake and
-# shutdown-when-done (src/power.rs). Pinned to the version tauri already
+# shutdown-when-done (src/power.rs); the exit watcher's wait, exit code and
+# boot time (src/lifecycle.rs). Pinned to the version tauri already
 # resolves, so this adds features to a crate in the tree rather than a second
 # copy of it.
 [target.'cfg(windows)'.dependencies]
@@ -52,6 +53,7 @@ windows = { version = "0.61", features = [
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_JobObjects",
     "Win32_System_Power",
+    "Win32_System_SystemInformation",
     "Win32_System_Threading",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
