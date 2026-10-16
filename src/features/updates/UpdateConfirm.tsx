@@ -1,7 +1,8 @@
 import { ConfirmDialog } from '../../shared/ui/ConfirmDialog';
 import { LiveSessions } from '../power/LiveSessions';
 import { usePower } from '../power/power.store';
-import { useUpdates } from './updates.store';
+import { useCore } from '../core/core.store';
+import { keepsSessions, useUpdates } from './updates.store';
 
 /**
  * The release-notes gate in front of an app update. Rendered once at the app
@@ -13,6 +14,10 @@ export function UpdateConfirm() {
   const next = useUpdates(s => s.next);
   const notes = useUpdates(s => s.notes);
   const live = usePower(s => s.state.summary.sessions.length);
+  const nextCore = useUpdates(s => s.nextCore);
+  // Read so the dialog follows the core; the answer itself is keepsSessions'.
+  useCore(s => s.link);
+  const keep = keepsSessions(nextCore);
 
   if (!asking || !next) return null;
 
@@ -26,7 +31,13 @@ export function UpdateConfirm() {
           The installer is downloaded and checked against this build's signing key, and then
           Luna <b>closes itself</b> — an installer cannot replace the exe of a running app.
           It starts Luna again when it is done.
-          {live > 0 ? (
+          {live > 0 && keep ? (
+            <div style={{ marginTop: 8 }}>
+              This update leaves Luna&apos;s core as it is, so only the window restarts:{' '}
+              <b>{live === 1 ? 'the running session keeps' : `the ${live} running sessions keep`}</b> running,
+              background work and all, and the new window picks {live === 1 ? 'it' : 'them'} up.
+            </div>
+          ) : live > 0 ? (
             <div style={{ marginTop: 8 }}>
               Once the download is through, <b>all {live} running session{live === 1 ? '' : 's'}</b>{' '}
               {live === 1 ? 'is' : 'are'} asked to quit, the way deleting a chat does — whatever is

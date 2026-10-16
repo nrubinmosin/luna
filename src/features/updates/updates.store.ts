@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type { Update } from '@tauri-apps/plugin-updater';
 import { noteExit, stopAllSessions } from '../../ipc/commands';
+import { useCore } from '../core/core.store';
 import { logInfo, logWarn } from '../../shared/lib/log';
 
 const tauriAvailable = '__TAURI_INTERNALS__' in window;
@@ -22,6 +23,9 @@ interface UpdatesState {
   /** The release on offer, once there is one. */
   next: string | null;
   notes: string | null;
+  /** The core fingerprint the release on offer was built with (release.ps1),
+   *  if it says. */
+  nextCore: string | null;
   /** Bytes in, and the total — only when the server declared a length. */
   got: number;
   total: number | null;
@@ -38,11 +42,19 @@ interface UpdatesState {
   setAsking: (v: boolean) => void;
 }
 
+/** Whether installing a release built with this core fingerprint leaves the
+ *  running core, and the sessions in it, alone. */
+export const keepsSessions = (nextCore: string | null): boolean => {
+  const link = useCore.getState().link;
+  return !!nextCore && link.state === 'up' && link.core?.fingerprint === nextCore;
+};
+
 export const useUpdates = create<UpdatesState>(set => ({
   phase: 'idle',
   current: '',
   next: null,
   notes: null,
+  nextCore: null,
   got: 0,
   total: null,
   error: null,
@@ -67,7 +79,7 @@ export const useUpdates = create<UpdatesState>(set => ({
       const update = import.meta.env.VITE_LUNA_FLAVOR === 'test' ? null : await check();
       if (!update) {
         pending = null;
-        set({ phase: 'idle', next: null, notes: null, checkedAt: Date.now() });
+        set({ phase: 'idle', next: null, notes: null, nextCore: null, checkedAt: Date.now() });
         return;
       }
       pending = update;
@@ -76,6 +88,7 @@ export const useUpdates = create<UpdatesState>(set => ({
         phase: 'available',
         next: update.version,
         notes: update.body?.trim() || null,
+        nextCore: typeof update.rawJson.core_fingerprint === 'string' ? update.rawJson.core_fingerprint : null,
         checkedAt: Date.now()
       });
     } catch (e) {
@@ -95,14 +108,19 @@ export const useUpdates = create<UpdatesState>(set => ({
         if (ev.event === 'Started') set({ total: ev.data.contentLength ?? null });
         else if (ev.event === 'Progress') set(s => ({ got: s.got + ev.data.chunkLength }));
       });
-      // Only once the installer is on disk: a download that fails must not
-      // have cost a single session. Then every CLI is asked to quit, each with
-      // its exit hooks, rather than going down mid-write with the process.
-      set({ phase: 'stopping' });
-      await stopAllSessions();
+      // An update that leaves the core as it is restarts only the window: the
+      // core and every session in it carry on, and the new window attaches.
+      // Otherwise — only once the installer is on disk, so a download that
+      // fails costs nothing — every CLI is asked to quit, each with its exit
+      // hooks, rather than going down with the old core mid-write.
+      const keep = keepsSessions(useUpdates.getState().nextCore);
+      if (!keep) {
+        set({ phase: 'stopping' });
+        await stopAllSessions();
+      }
       // Said before, because the install never returns on Windows; taken back
       // below if it fails.
-      await noteExit(`installing the update to ${pending.version}`);
+      await noteExit(`installing the update to ${pending.version}${keep ? '; the sessions keep running in the core' : ''}`);
       await pending.install();
       // Unreachable on Windows: the plugin hands the installer to the shell and
       // ends the process itself with exit(0), because NSIS cannot replace the
