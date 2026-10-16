@@ -26,7 +26,6 @@ use crate::throttle::now_ms;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Condvar, Mutex, OnceLock};
-use tauri::Manager;
 
 /// How long the frontend gets to make the chat and start its session.
 const SPAWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
@@ -244,16 +243,12 @@ fn last_shown(caller: &str, id: &str) -> Option<u32> {
     r.seen.get(&(caller.to_string(), id.to_string())).copied()
 }
 
-static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
-
-pub fn init(app: tauri::AppHandle) {
-    if APP.set(app).is_ok() {
+/// Starts the notifier, once.
+pub fn init() {
+    static STARTED: std::sync::Once = std::sync::Once::new();
+    STARTED.call_once(|| {
         std::thread::Builder::new().name("luna-notifier".into()).spawn(notifier).expect("spawn notifier thread");
-    }
-}
-
-fn app() -> Option<&'static tauri::AppHandle> {
-    APP.get()
+    });
 }
 
 /// A session is starting. Returns the bearer token for its MCP config when it
@@ -493,7 +488,7 @@ pub fn list(caller: &str) -> Listing {
             })
             .collect()
     };
-    let pty = app().map(|a| a.state::<crate::pty::PtyManager>());
+    let pty = Some(crate::pty::manager());
     let sessions = rows
         .into_iter()
         .map(|(id, k, name, group)| {
@@ -612,7 +607,7 @@ pub fn sessions(caller: &str, filter: &SessionFilter) -> Result<Vec<AnySession>,
         (rows, r.groups.get(caller).map(|g| g + 1))
     };
     let group = filter.group(mine)?;
-    let pty = app().map(|a| a.state::<crate::pty::PtyManager>());
+    let pty = Some(crate::pty::manager());
     let mut out: Vec<AnySession> = rows
         .into_iter()
         .map(|(id, k, name, group, yours)| {
@@ -738,7 +733,7 @@ fn await_start(pty: &crate::pty::PtyManager, id: &str, after_turn: u32, timeout:
 /// the worktree itself; its registry entry says where that went.
 fn caller_worktree(caller: &str) -> Option<String> {
     let folder = reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(caller)?.folder.clone();
-    let pty = app()?.state::<crate::pty::PtyManager>();
+    let pty = crate::pty::manager();
     let p = pty.probe(caller).filter(|p| p.provider == Provider::Claude)?;
     let cwd = crate::claude::session::session_cwd(p.pid, &p.cwd, p.spawned_at_ms, &p.account_path)?;
     crate::worktree::is_worktree_of(&folder, &cwd).then_some(cwd)
@@ -812,9 +807,8 @@ pub fn spawn(caller: &str, mut params: SpawnParams) -> Result<Spawned, String> {
         (id, slot, in_worktree)
     };
 
-    let Some(app) = app() else { return Err("app not ready".into()) };
     let borrowed = in_worktree.is_some();
-    crate::emit::to_ui(app, "agent://spawn", SpawnRequest { request_id, parent_id: caller.to_string(), in_worktree, params });
+    crate::emit::to_ui("agent://spawn", SpawnRequest { request_id, parent_id: caller.to_string(), in_worktree, params });
 
     let (lock, cv) = &*slot;
     let mut p = lock.lock().unwrap_or_else(|e| e.into_inner());
@@ -871,7 +865,7 @@ pub fn spawn(caller: &str, mut params: SpawnParams) -> Result<Spawned, String> {
         .get(&id)
         .map(|k| k.settings.clone())
         .unwrap_or(serde_json::Value::Null);
-    let pty = app.state::<crate::pty::PtyManager>();
+    let pty = crate::pty::manager();
     let started = await_start(&pty, &id, 0, START_TIMEOUT);
     let starting = !started && still_starting(&pty, &id);
     if starting {
@@ -971,8 +965,7 @@ fn type_in(
 /// a turn began.
 pub fn send(caller: &str, id: &str, text: &str) -> Result<Sent, String> {
     authorize_send(caller, id)?;
-    let app = app().ok_or("app not ready")?;
-    let pty = app.state::<crate::pty::PtyManager>();
+    let pty = crate::pty::manager();
     if !pty.alive(id) {
         return Err(format!("session {id} is not running"));
     }
@@ -1072,8 +1065,7 @@ pub fn read(
     with_screen: bool,
 ) -> Result<Reading, String> {
     let known = authorize_view(caller, id)?;
-    let app = app().ok_or("app not ready")?;
-    let pty = app.state::<crate::pty::PtyManager>();
+    let pty = crate::pty::manager();
     let (mut messages, cursor) = match transcript_path(&pty, id) {
         Some(path) => match known.provider {
             Provider::Claude => crate::claude::session::messages_from(&path, since.unwrap_or(0), with_tools),
@@ -1132,8 +1124,7 @@ pub fn wait(caller: &str, id: &str, until: &str, timeout_s: u64, after_turn: Opt
         return Err(format!("unknown until {until:?}; use turn_done, waiting or exit"));
     }
     authorize_view(caller, id)?;
-    let app = app().ok_or("app not ready")?;
-    let pty = app.state::<crate::pty::PtyManager>();
+    let pty = crate::pty::manager();
     let now = crate::activity::turn_state(id).map(|t| t.turns_ended);
     let baseline = match (after_turn, last_shown(caller, id), now) {
         (Some(n), _, _) => n,
@@ -1201,8 +1192,7 @@ pub fn wait(caller: &str, id: &str, until: &str, timeout_s: u64, after_turn: Opt
 /// Stops the session; the chat row stays and can be resumed by hand.
 pub fn kill(caller: &str, id: &str) -> Result<(), String> {
     authorize(caller, id)?;
-    let app = app().ok_or("app not ready")?;
-    let pty = app.state::<crate::pty::PtyManager>();
+    let pty = crate::pty::manager();
     tauri::async_runtime::block_on(pty.kill(id));
     Ok(())
 }
@@ -1213,14 +1203,13 @@ pub fn kill(caller: &str, id: &str) -> Result<(), String> {
 /// children are left where they are, orphaned.
 pub fn delete(caller: &str, id: &str, drop_worktree: bool) -> Result<Option<String>, String> {
     let known = authorize(caller, id)?;
-    let app = app().ok_or("app not ready")?;
-    let pty = app.state::<crate::pty::PtyManager>();
+    let pty = crate::pty::manager();
     // A Codex helper in a worktree knows the worktree as its folder.
     let folder = crate::worktree::project_of(&known.folder).unwrap_or(known.folder);
     let drop_worktree = drop_worktree && !reg().lock().unwrap_or_else(|e| e.into_inner()).borrowed.contains(id);
     // PtyManager::delete forgets the session here too (see `forget`).
     let worktree = tauri::async_runtime::block_on(pty.delete(id, &folder, &known.account_path, None, drop_worktree))?;
-    crate::emit::to_ui(app, "agent://deleted", Deleted { id: id.to_string() });
+    crate::emit::to_ui("agent://deleted", Deleted { id: id.to_string() });
     // Without the drop, `delete` names the worktree that stays.
     Ok(worktree.filter(|_| drop_worktree))
 }
@@ -1368,8 +1357,7 @@ fn notifier() {
     let mut drafts: HashMap<String, (u64, bool)> = HashMap::new();
     loop {
         std::thread::sleep(NOTIFY_EVERY);
-        let Some(app) = app() else { continue };
-        let pty = app.state::<crate::pty::PtyManager>();
+        let pty = crate::pty::manager();
         // Owed by caller, each session with what is known of it; anything a
         // delete has made unknown is dropped on the way.
         let mut by_caller: std::collections::BTreeMap<String, Vec<(String, Known, Owed, String)>> = Default::default();
@@ -1399,7 +1387,6 @@ fn notifier() {
                     *told = true;
                     let chat = chat_name(&caller).unwrap_or_else(|| caller.clone());
                     crate::power::notify(
-                        app,
                         "A helper has answered",
                         &format!("\"{chat}\" has an unsent draft, so Luna is holding the helper's notice until you send or clear it."),
                     );

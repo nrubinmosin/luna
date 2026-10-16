@@ -100,7 +100,6 @@ pub fn create_account(provider: Provider, name: String) -> Result<AccountInfo, S
 /// Luna keeps elsewhere — agents' blocked list, the settings parent — follow.
 #[tauri::command]
 pub fn rename_account(
-    state: crate::pty::PtyState<'_>,
     provider: Provider,
     name: String,
     to: String,
@@ -108,7 +107,7 @@ pub fn rename_account(
     let to = to.trim().to_string();
     let root = provider_root(provider)?;
     let path = root.join(&name).to_string_lossy().into_owned();
-    if state.account_in_use(&path) {
+    if crate::pty::manager().account_in_use(&path) {
         return Err("Chats are running on this account — stop them first".into());
     }
     let dest = rename_in(&root, &name, &to)?;

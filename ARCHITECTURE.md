@@ -64,7 +64,11 @@ src-tauri/src/
   accounts.rs   list/create/delete папок в <accounts root>/{anthropic,openai}/<name>;
                 Codex-аккаунт при создании получает seed config.toml
   settings.rs   <data>/settings.json: accountsRoot (по умолчанию Documents/luna-accounts),
-                меняется в Settings
+                меняется в Settings; запись под settings.json.lock с перечитыванием файла,
+                кэш сверяется с mtime — файл может писать не один процесс
+  emit.rs       единственная дверь событий в UI: приёмник ставится один раз (окно в setup),
+                шлющий код не держит AppHandle; pty::manager() — единственный PtyManager
+                процесса, тоже без Tauri State
   cli.rs        общая механика собственных копий CLI: versions/<ver>/, current, sha256,
                 прогресс, prune, автообновление раз в 6ч; откуда брать версию — Source
                 провайдера
