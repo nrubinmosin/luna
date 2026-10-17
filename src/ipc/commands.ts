@@ -513,9 +513,6 @@ export const coreRestart = () => call<void>('core_restart');
 export const noteExit = (reason: string | null) => call<void>('note_exit', { reason });
 /** Asks every session to quit as a delete would; resolves with how many. */
 export const stopAllSessions = () => call<number>('stop_all_sessions', {}, 0);
-/** The answers to a tray Quit the window was asked about (`app://quit-asked`). */
-export const quitApp = (stopSessions: boolean) => call<void>('quit_app', { stopSessions });
-export const quitDeclined = () => call<void>('quit_declined');
 
 // ---------------------------------------------------------------- agents --
 

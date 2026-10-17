@@ -14,7 +14,6 @@ import { LoginModal } from '../features/accounts/LoginModal';
 import { useUpdates } from '../features/updates/updates.store';
 import { useCli } from '../features/updates/cli.store';
 import { UpdateConfirm } from '../features/updates/UpdateConfirm';
-import { QuitConfirm } from './QuitConfirm';
 import { CoreBanner } from '../features/core/CoreBanner';
 import { useCore } from '../features/core/core.store';
 import { useKeymap } from './keymap';
@@ -235,7 +234,6 @@ export function App() {
       {loginFor && <LoginModal account={loginFor} />}
       {/* Raised by the settings dialog or the status-bar chip alike. */}
       <UpdateConfirm />
-      <QuitConfirm />
       <ShortcutsDialog />
       <SettingsDialog />
     </div>

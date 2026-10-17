@@ -63,7 +63,6 @@ pub fn dispatch(cmd: &str, args: Value) -> Result<Value, String> {
         "orphan_sessions" => call!(wait res args, pty::orphan_sessions, known: Vec<String>),
         "session_meta" => call!(wait res args, pty::session_meta, id: String, account_path: String),
         "session_modes" => call!(ok args, pty::session_modes, id: String),
-        "live_count" => Ok(Value::from(pty::manager().live_count())),
         "agent_spawned" => call!(ok args, agents::agent_spawned,
             request_id: u64, chat_id: Option<String>, name: Option<String>, error: Option<String>),
         "chat_names" => call!(ok args, agents::chat_names,
@@ -86,7 +85,7 @@ pub fn dispatch(cmd: &str, args: Value) -> Result<Value, String> {
 /// (a reattach reads the modes after the session it ensured), and each takes
 /// no time.
 pub fn in_order(cmd: &str) -> bool {
-    matches!(cmd, "write_session" | "resize_session" | "session_modes" | "chat_names" | "agent_spawned" | "power_state" | "live_count")
+    matches!(cmd, "write_session" | "resize_session" | "session_modes" | "chat_names" | "agent_spawned" | "power_state")
 }
 
 #[cfg(test)]
@@ -101,6 +100,6 @@ mod tests {
         assert!(dispatch("write_session", serde_json::json!({ "id": "nobody", "data": "x" })).unwrap_err().contains("no such session"));
         assert!(dispatch("session_modes", serde_json::json!({})).unwrap_err().contains("bad arguments"));
         assert!(dispatch("nope", Value::Null).unwrap_err().contains("no command"));
-        assert!(dispatch("live_count", Value::Null).is_ok(), "no arguments at all");
+        assert!(dispatch("power_state", Value::Null).is_ok(), "no arguments at all");
     }
 }
