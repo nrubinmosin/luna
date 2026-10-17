@@ -28,7 +28,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 
 const TICK: Duration = Duration::from_secs(10);
 /// The event loop not running a ping for this long is a hang worth a line.
@@ -257,42 +257,24 @@ pub fn note_exit(reason: Option<String>) {
     }
 }
 
-/// A tray Quit the window has been asked about and not yet answered.
-static QUIT_ASKED: AtomicBool = AtomicBool::new(false);
+/// A tray Quit already under way.
+static QUITTING: AtomicBool = AtomicBool::new(false);
 
-/// Quit from the tray. The sessions live in the core (coreproc.rs) and do
-/// not have to go with the window: with some running the window asks whether
-/// to leave them running or stop them, and answers with `quit_app` or
-/// `quit_declined`. With none it just goes. A second Quit while the question
-/// is open goes without waiting for it, leaving the sessions be: a page that
-/// cannot answer must not make Luna impossible to quit, nor cost anyone work.
-pub fn quit_from_tray(app: &AppHandle) {
-    let app = app.clone();
-    // Off the event loop: the count is the core's, asked over the wire.
-    std::thread::spawn(move || {
-        if QUIT_ASKED.swap(true, Ordering::SeqCst) {
-            quit(app, false);
-            return;
-        }
-        let live = crate::corelink::live_sessions();
-        if live == 0 {
-            quit(app, false);
-            return;
-        }
-        crate::show_main(&app);
-        crate::emit::to_ui("app://quit-asked", live);
-    });
-}
-
-/// The window goes; with `stop_sessions` the core is asked to stop first,
+/// Quit from the tray takes all of Luna along: the core is asked to stop,
 /// which has every session quit as a delete would, each leaving a whole
-/// transcript behind. Off the event loop: that takes seconds.
-fn quit(app: AppHandle, stop_sessions: bool) {
-    exiting(if stop_sessions { "Quit from the tray menu, sessions stopped" } else { "Quit from the tray menu" });
+/// transcript behind, and the window goes once it is gone. The window hides
+/// at once, as that takes seconds. Off the event loop for the same reason.
+pub fn quit_from_tray(app: &AppHandle) {
+    if QUITTING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    exiting("Quit from the tray menu");
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.hide();
+    }
+    let app = app.clone();
     std::thread::spawn(move || {
-        if stop_sessions {
-            crate::corelink::shut_down();
-        }
+        crate::corelink::shut_down();
         app.exit(0);
     });
 }
@@ -304,16 +286,6 @@ pub fn end_process() -> ! {
     crate::emit::stop();
     crate::power::clear();
     std::process::exit(0)
-}
-
-#[tauri::command]
-pub fn quit_app(app: AppHandle, stop_sessions: bool) {
-    quit(app, stop_sessions);
-}
-
-#[tauri::command]
-pub fn quit_declined() {
-    QUIT_ASKED.store(false, Ordering::SeqCst);
 }
 
 /// `luna --watch-exit <pid> --log <path> [--core]`: runs as the watcher and

@@ -197,10 +197,9 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
 ## Sessions and cleanup
 
 - Closing the window hides the app to the tray and leaves the sessions running. Quit from
-  the tray menu closes the window and, by default, leaves the sessions running in Luna's
-  core for the next window to pick up; with sessions running it lists them and asks, and
-  ticking "Stop the sessions too" has each one quit as deleting a chat would, then the core
-  goes. A second Quit while that question is up closes the window without it.
+  the tray menu ends all of Luna: every session is asked to quit as deleting a chat would,
+  then the core and the window go. A core that has not gone 30 seconds later is killed
+  along with everything it started.
 - Sessions with no chat row left to reach them — lost to a half-written state restore, say
   — are listed at the top of the sidebar, with what they are
   working on, and can be adopted back or killed.

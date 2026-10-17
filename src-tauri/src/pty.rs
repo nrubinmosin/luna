@@ -1052,7 +1052,7 @@ pub fn resize_session(id: String, cols: u16, rows: u16) -> Result<(), String> {
 // The pty child is the CLI; everything it spawned (node, MCP servers, shells)
 // is a grandchild and survives a plain kill. Sweep the tree first, then kill
 // the child directly as a backstop.
-fn kill_tree(pid: Option<u32>) {
+pub(crate) fn kill_tree(pid: Option<u32>) {
     let Some(pid) = pid else { return };
     #[cfg(windows)]
     {

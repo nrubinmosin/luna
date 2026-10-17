@@ -36,9 +36,5 @@ export const onCoreState = (cb: (s: CoreStateDto) => void): Promise<UnlistenFn> 
 export const onNotify = (cb: (n: { title: string; body: string }) => void): Promise<UnlistenFn> =>
   tauriAvailable ? listen<{ title: string; body: string }>('ui://notify', e => cb(e.payload)) : Promise.resolve(() => {});
 
-/** A tray Quit with this many sessions running, for the window to confirm. */
-export const onQuitAsked = (cb: (live: number) => void): Promise<UnlistenFn> =>
-  tauriAvailable ? listen<number>('app://quit-asked', e => cb(e.payload)) : Promise.resolve(() => {});
-
 export const onAgentDeleted = (cb: (p: { id: string }) => void): Promise<UnlistenFn> =>
   tauriAvailable ? listen<{ id: string }>('agent://deleted', e => cb(e.payload)) : Promise.resolve(() => {});

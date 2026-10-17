@@ -21,6 +21,8 @@ use std::time::Duration;
 
 /// How long a core just started gets to write its `core.json`.
 const START_WAIT: Duration = Duration::from_secs(10);
+/// How long a core asked to stop gets: its sessions' grace and then some.
+const STOP_WAIT: Duration = Duration::from_secs(30);
 
 #[derive(Serialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
@@ -137,7 +139,7 @@ fn attach() -> Result<Attached, String> {
             Ok((_, core)) if core.sessions > 0 => return Ok(Attached::Foreign(core)),
             Ok((stream, core)) => {
                 crate::log::warn("core", &format!("the running core is build {} (core {}); replacing it", core.build, core.fingerprint));
-                stop(stream);
+                stop(stream, found.pid);
             }
             // A core.json left by a core that is gone; a new one overwrites it.
             Err(_) => {}
@@ -178,11 +180,26 @@ fn hello(found: &Discovery, role: &str) -> io::Result<(TcpStream, Welcome)> {
 
 /// Asks a core to stop and waits for it to be gone, which its end of the
 /// connection closing says: the process exiting is what closes it. It asks
-/// its sessions to quit first, so this can take some seconds.
-fn stop(mut stream: TcpStream) {
+/// its sessions to quit first, so this can take some seconds. One still
+/// there well past their grace is killed with everything it started, the
+/// sessions' CLIs among them: stopping must leave nothing of Luna running.
+fn stop(mut stream: TcpStream, pid: u32) {
     let _ = ipc::send(&mut stream, ipc::REQ, &Req { id: 2, cmd: "shutdown".into(), args: Value::Null });
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
-    while ipc::read_frame(&mut stream).is_ok() {}
+    let deadline = std::time::Instant::now() + STOP_WAIT;
+    let gone = loop {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() || stream.set_read_timeout(Some(left)).is_err() {
+            break false;
+        }
+        match ipc::read_frame(&mut stream) {
+            Ok(_) => {}
+            Err(e) => break !matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut),
+        }
+    };
+    if !gone {
+        crate::log::warn("core", &format!("the core (pid {pid}) did not stop within {}s; killing it", STOP_WAIT.as_secs()));
+        crate::pty::kill_tree(Some(pid));
+    }
 }
 
 /// Asks the core a command and waits for the answer.
@@ -279,11 +296,6 @@ fn core_exe() -> Result<std::path::PathBuf, String> {
     Ok(copy)
 }
 
-/// How many sessions the core runs, 0 when there is no core to ask.
-pub fn live_sessions() -> usize {
-    request("live_count".into(), Value::Null).ok().and_then(|v| v.as_u64()).unwrap_or(0) as usize
-}
-
 /// Has the core stop: its sessions are asked to quit first, then it leaves.
 /// Returns once it is gone.
 pub fn shut_down() {
@@ -293,7 +305,7 @@ pub fn shut_down() {
     *CURRENT.lock().unwrap_or_else(|e| e.into_inner()) = None;
     if let Some(found) = discover() {
         if let Ok((stream, _)) = hello(&found, "ctl") {
-            stop(stream);
+            stop(stream, found.pid);
         }
     }
 }

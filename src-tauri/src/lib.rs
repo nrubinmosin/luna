@@ -140,7 +140,8 @@ pub fn run() {
                 .build(app)?;
             Ok(())
         })
-        // Closing the window hides to tray; sessions keep running. Quit via tray.
+        // Closing the window hides to tray; sessions keep running. Quit via tray
+        // ends them, the core and the window together.
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let _ = window.hide();
@@ -179,8 +180,6 @@ pub fn run() {
             corelink::core_state,
             corelink::core_restart,
             lifecycle::note_exit,
-            lifecycle::quit_app,
-            lifecycle::quit_declined,
             pty::saved_title,
             settings::get_accounts_root,
             settings::set_accounts_root,
