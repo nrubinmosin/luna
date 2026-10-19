@@ -1075,7 +1075,7 @@ pub(crate) fn kill_tree(pid: Option<u32>) {
 
 /// Whether two paths name the same folder, slashes and a trailing separator
 /// aside — and case, where the file system ignores it.
-fn same_dir(a: &str, b: &str) -> bool {
+pub fn same_dir(a: &str, b: &str) -> bool {
     let norm = |p: &str| p.replace('\\', "/").trim_end_matches('/').to_string();
     let (a, b) = (norm(a), norm(b));
     if cfg!(windows) {

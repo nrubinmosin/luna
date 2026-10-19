@@ -17,10 +17,11 @@ import type { Draft, From } from '../../new-chat/draft';
 
 export const label = 'Claude Code';
 
-/** Where a chat opens when no settings file says otherwise. */
+/** Where a chat opens when no settings file says otherwise: the core's stock
+ *  (claude/defaults.rs), for the moment before it answers or if it cannot. */
 export const STOCK: ClaudeSettings = { model: 'Opus', effort: 'high', perm: 'Bypass' };
 
-export const SOURCE_LABELS: Record<ClaudeDefaultSource, string> = {
+export const SOURCE_LABELS: Record<Exclude<ClaudeDefaultSource, 'stock'>, string> = {
   account: "the account's settings.json",
   project: "the project's .claude/settings.json",
   'project-local': "the project's .claude/settings.local.json",
@@ -31,10 +32,10 @@ export const settingsNote = 'Opens on this account’s Claude Code settings; any
 
 /**
  * Model, effort and permission mode as Claude Code itself would resolve them
- * for this account in this folder. A value Luna has no equivalent for — a
- * model it does not list, an effort the CLI has since renamed — is treated as
- * nothing said, which leaves the stock default rather than a chat that cannot
- * be described in the title bar.
+ * for this account in this folder, settled by the core: a value Luna has no
+ * equivalent for — a model it does not list, an effort the CLI has since
+ * renamed — comes back as the stock default rather than a chat that cannot
+ * be described in the title bar. A stock value names no file to come from.
  */
 export async function settingsDefaults(
   accountPath: string,
@@ -47,17 +48,17 @@ export async function settingsDefaults(
   const model = dto?.model ? modelFromSetting(dto.model.value) : null;
   if (model && dto?.model) {
     values.model = model;
-    from.model = SOURCE_LABELS[dto.model.source];
+    if (dto.model.source !== 'stock') from.model = SOURCE_LABELS[dto.model.source];
   }
   const effort = dto?.effort ? effortFromSetting(dto.effort.value) : null;
   if (effort && dto?.effort) {
     values.effort = effort;
-    from.effort = SOURCE_LABELS[dto.effort.source];
+    if (dto.effort.source !== 'stock') from.effort = SOURCE_LABELS[dto.effort.source];
   }
   const perm = dto?.permissionMode ? permFromSetting(dto.permissionMode.value) : null;
   if (perm && dto?.permissionMode) {
     values.perm = perm;
-    from.perm = SOURCE_LABELS[dto.permissionMode.source];
+    if (dto.permissionMode.source !== 'stock') from.perm = SOURCE_LABELS[dto.permissionMode.source];
   }
   return { values, from };
 }

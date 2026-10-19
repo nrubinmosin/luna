@@ -329,7 +329,7 @@ const DEFAULTS: ClaudeDefaultsDto = {
 const CODEX_DEFAULTS: CodexDefaultsDto = {
   model: { value: 'gpt-5.4-codex', source: 'account' },
   effort: { value: 'high', source: 'account' },
-  approval: null,
+  approval: { value: 'never', source: 'stock' },
   sandbox: { value: 'workspace-write', source: 'project' }
 };
 

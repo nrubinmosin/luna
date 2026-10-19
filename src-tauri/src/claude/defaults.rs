@@ -7,6 +7,12 @@
 //! Reading them here is what makes those flags agree with the files instead of
 //! fighting them — the new-chat dialog opens on these values, and only a
 //! deliberate change in the dialog departs from them.
+//!
+//! The values come out in the CLI's own spelling and already settled: one
+//! Luna has no equivalent for reads as nothing said, and nothing said is
+//! Luna's stock choice (`source: stock`). The dialog, a spawn and
+//! `luna_list` all take them from here, so what an agent is told it would
+//! get is what it gets.
 
 use serde::Serialize;
 use serde_json::Value;
@@ -18,16 +24,49 @@ use std::path::{Path, PathBuf};
 #[serde(rename_all = "camelCase")]
 pub struct Setting {
     pub value: String,
-    /// `account` | `project` | `project-local` | `managed`.
+    /// `account` | `project` | `project-local` | `managed` | `stock`.
     pub source: String,
 }
 
-#[derive(Serialize, Clone, Default)]
+#[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Defaults {
-    pub model: Option<Setting>,
-    pub effort: Option<Setting>,
-    pub permission_mode: Option<Setting>,
+    pub model: Setting,
+    pub effort: Setting,
+    pub permission_mode: Setting,
+}
+
+/// What a chat starts with when no file says anything Luna can use.
+const STOCK_MODEL: &str = "opus";
+const STOCK_EFFORT: &str = "high";
+const STOCK_PERMISSION_MODE: &str = "bypassPermissions";
+
+/// The models Luna lists, as the CLI's aliases.
+const MODELS: [&str; 4] = ["fable", "opus", "sonnet", "haiku"];
+const EFFORTS: [&str; 6] = ["low", "medium", "high", "xhigh", "max", "ultracode"];
+const PERMISSION_MODES: [&str; 4] = ["default", "acceptEdits", "plan", "bypassPermissions"];
+
+/// `model` can be an alias (`opus`), a compound one (`opusplan`) or a full id
+/// (`claude-sonnet-5`); all three name their model plainly enough to match on.
+fn model_alias(raw: &str) -> Option<&'static str> {
+    let v = raw.to_lowercase();
+    MODELS.iter().find(|m| v.contains(**m)).copied()
+}
+
+fn effort_level(raw: &str) -> Option<&'static str> {
+    let v = raw.to_lowercase();
+    EFFORTS.iter().find(|e| **e == v).copied()
+}
+
+fn permission_mode(raw: &str) -> Option<&'static str> {
+    PERMISSION_MODES.iter().find(|m| **m == raw).copied()
+}
+
+/// The value the files settled on, in the spelling Luna passes on, or the
+/// stock one when they said nothing usable.
+fn settle(said: Option<Setting>, usable: fn(&str) -> Option<&'static str>, stock: &str) -> Setting {
+    said.and_then(|s| usable(&s.value).map(|v| Setting { value: v.to_owned(), source: s.source }))
+        .unwrap_or_else(|| Setting { value: stock.to_owned(), source: "stock".to_owned() })
 }
 
 fn read_object(path: &Path) -> Option<Value> {
@@ -67,8 +106,7 @@ fn take(source: &str, raw: Option<&Value>) -> Option<Setting> {
 
 /// Model, effort and permission mode as the CLI would resolve them for this
 /// account in this folder. A missing file, an unreadable one and a key nobody
-/// set are all the same answer: nothing said, so the caller keeps its own
-/// default.
+/// set are all the same answer: nothing said, so the stock value stands.
 #[tauri::command]
 pub fn claude_defaults(account_path: String, folder: String) -> Defaults {
     // Lowest precedence first: every file that has something to say overwrites
@@ -86,20 +124,30 @@ pub fn claude_defaults(account_path: String, folder: String) -> Defaults {
     }
     files.push(("managed", managed_file()));
 
-    let mut out = Defaults::default();
+    let (mut model, mut effort, mut mode) = (None, None, None);
     for (source, path) in files {
         let Some(cfg) = read_object(&path) else { continue };
         if let Some(s) = take(source, cfg.get("model")) {
-            out.model = Some(s);
+            model = Some(s);
         }
         if let Some(s) = take(source, cfg.get("effortLevel")) {
-            out.effort = Some(s);
+            effort = Some(s);
         }
         if let Some(s) = take(source, cfg.pointer("/permissions/defaultMode")) {
-            out.permission_mode = Some(s);
+            mode = Some(s);
         }
     }
-    out
+    Defaults {
+        model: settle(model, model_alias, STOCK_MODEL),
+        effort: settle(effort, effort_level, STOCK_EFFORT),
+        permission_mode: settle(mode, permission_mode, STOCK_PERMISSION_MODE),
+    }
+}
+
+/// The same as the flags a helper would be spawned with, for `luna_list`.
+pub fn flags(account_path: &str, folder: &str) -> Value {
+    let d = claude_defaults(account_path.to_owned(), folder.to_owned());
+    serde_json::json!({ "model": d.model.value, "effort": d.effort.value, "permissionMode": d.permission_mode.value })
 }
 
 #[cfg(test)]
@@ -130,13 +178,36 @@ mod tests {
             account.to_string_lossy().into_owned(),
             folder.to_string_lossy().into_owned(),
         );
-        let model = d.model.unwrap();
-        assert_eq!(model.value, "sonnet");
-        assert_eq!(model.source, "project");
+        assert_eq!(d.model.value, "sonnet");
+        assert_eq!(d.model.source, "project");
         // Untouched by the project file, so the account still answers for them.
-        assert_eq!(d.effort.unwrap().value, "xhigh");
-        assert_eq!(d.permission_mode.unwrap().source, "account");
+        assert_eq!(d.effort.value, "xhigh");
+        assert_eq!(d.permission_mode.source, "account");
 
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn values_come_out_settled_or_stock() {
+        let root = std::env::temp_dir().join(format!("luna-defaults-settled-{}", std::process::id()));
+        let account = root.join("account");
+        write(
+            &account.join("settings.json"),
+            r#"{ "model": "claude-Sonnet-5-5[1m]", "effortLevel": "turbo",
+                 "permissions": { "defaultMode": "dontAsk" } }"#,
+        );
+        let d = claude_defaults(account.to_string_lossy().into_owned(), String::new());
+        // A managed file on the machine may have its own say over any of them.
+        if d.model.source != "managed" {
+            assert_eq!((d.model.value.as_str(), d.model.source.as_str()), ("sonnet", "account"), "a full id names its alias");
+        }
+        // Neither is one Luna can put in a title bar: nothing was said.
+        if d.effort.source != "managed" {
+            assert_eq!((d.effort.value.as_str(), d.effort.source.as_str()), (STOCK_EFFORT, "stock"));
+        }
+        if d.permission_mode.source != "managed" {
+            assert_eq!(d.permission_mode.value, STOCK_PERMISSION_MODE);
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -146,8 +217,8 @@ mod tests {
         // does not depend on either argument — so this asserts on the source
         // rather than on emptiness, which would fail on a managed machine.
         let d = claude_defaults(String::new(), String::new());
-        for s in [d.model, d.effort, d.permission_mode].into_iter().flatten() {
-            assert_eq!(s.source, "managed");
+        for s in [d.model, d.effort, d.permission_mode] {
+            assert!(s.source == "managed" || s.source == "stock", "{}", s.source);
         }
     }
 }

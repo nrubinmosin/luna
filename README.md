@@ -251,17 +251,35 @@ without the box ticked knows nothing of Luna at all.
   draft in; the agent is told to try later. At most eight helpers under
   one chat, and a helper's helpers get no tools of their own.
 - Every account is available to agents unless you switch it off with the robot button on
-  its row in the Accounts window. `luna_list` names the ones that are, so you can tell a chat which one to use.
+  its row in the Accounts window. `luna_list` names the ones that are, so you can tell a chat which one to use,
+  and gives each the settings a helper would get there (model, effort, permission mode —
+  read from the account's and the project's settings the way the new-chat dialog reads
+  them) and its usage as the Accounts window shows it: percent per window and when it resets.
+- `luna_spawn` says what the helper came up with that its settings cannot: warnings the CLI
+  put on screen (a model the organization does not allow, swapped for another) and the other
+  live sessions working in the same directory (`sameFolder`), whose files and git it shares —
+  `worktree: true` keeps it apart. An unknown slash command comes back at once as not
+  started, with the screen that says so.
+- `autoDelete: true` on a spawn has Luna delete the helper once its answer has reached the
+  agent and it has sat idle for 10 minutes (a follow-up starts that over). One you have typed
+  into is yours and stays; a worktree it made stays too, with its work.
+- Every spawn is written down in `agents.jsonl` in Luna's data folder — when, by whom, where,
+  account, settings, the start of the prompt — and how it ended, so `luna_sessions` with
+  `history: true` can show what ran before, deleted helpers included, and a run can be repeated as it was.
 - Deleting a parent by hand leaves its helpers as orphans, marked ↳ at the top level,
   unless you tick the box to take them along. Helpers deleted by their agent are gone for
   good, transcript aside.
 - `luna_read` reads the transcript, not the screen; `luna_wait` returns the reply itself,
-  so the usual loop is spawn → wait → send → wait → delete with nothing else in context.
+  for an agent that needs it in the same turn. Otherwise the agent spawns and ends its turn,
+  and the answer comes to it:
 - An agent that asked something and ended its turn without waiting is not left idle: once
   the answer comes — or the helper stops on a permission prompt, or exits — Luna types a
   one-line `[Luna notice, not typed by the user]` into the agent's chat, as soon as that
   chat is between turns, you have not typed into it for 20 seconds, and nothing you typed
-  sits unsent in it (a minute's hold on a draft is announced on the desktop instead).
+  sits unsent in it (a minute's hold on a draft is announced on the desktop instead). A
+  `luna_wait` still out for that answer — Claude Code moves a call past two minutes to the
+  background — hands it over instead, and the notice follows only if the wait has not done
+  so within 10 seconds.
 
 ## Power
 

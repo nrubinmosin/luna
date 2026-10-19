@@ -20,10 +20,12 @@ import type { Draft, From } from '../../new-chat/draft';
 export const label = 'Codex';
 
 /** Where a chat opens when config.toml says nothing: Codex's own default
- *  model, and the same "just do it" stance the Claude side opens on. */
+ *  model, and the same "just do it" stance the Claude side opens on. The
+ *  core's stock (codex/defaults.rs), for the moment before it answers or if
+ *  it cannot. */
 export const STOCK: CodexSettings = { model: null, effort: 'high', approval: 'never', sandbox: 'danger-full-access' };
 
-export const SOURCE_LABELS: Record<CodexDefaultSource, string> = {
+export const SOURCE_LABELS: Record<Exclude<CodexDefaultSource, 'stock'>, string> = {
   account: "the account's config.toml",
   project: "the project's .codex/config.toml"
 };
@@ -47,22 +49,22 @@ export async function settingsDefaults(
 
   if (dto?.model?.value) {
     values.model = dto.model.value;
-    from.model = SOURCE_LABELS[dto.model.source];
+    if (dto.model.source !== 'stock') from.model = SOURCE_LABELS[dto.model.source];
   }
   const effort = dto?.effort ? codexEffortFromSetting(dto.effort.value) : null;
   if (effort && dto?.effort) {
     values.effort = effort;
-    from.effort = SOURCE_LABELS[dto.effort.source];
+    if (dto.effort.source !== 'stock') from.effort = SOURCE_LABELS[dto.effort.source];
   }
   const approval = dto?.approval ? codexApprovalFromSetting(dto.approval.value) : null;
   if (approval && dto?.approval) {
     values.approval = approval;
-    from.approval = SOURCE_LABELS[dto.approval.source];
+    if (dto.approval.source !== 'stock') from.approval = SOURCE_LABELS[dto.approval.source];
   }
   const sandbox = dto?.sandbox ? codexSandboxFromSetting(dto.sandbox.value) : null;
   if (sandbox && dto?.sandbox) {
     values.sandbox = sandbox;
-    from.sandbox = SOURCE_LABELS[dto.sandbox.source];
+    if (dto.sandbox.source !== 'stock') from.sandbox = SOURCE_LABELS[dto.sandbox.source];
   }
   return { values, from };
 }
