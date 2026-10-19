@@ -15,13 +15,15 @@ pub const PROTOCOL: &str = "2025-06-18";
 
 const INSTRUCTIONS: &str = "Luna runs your session and can run helper sessions for you: another model, \
 another account, or Codex. Your CLI's own subagents cannot run the other provider (Claude/Codex), \
-another account or folder, or a chat the user sees in Luna: for those use luna_spawn. Flow: \
-luna_spawn with a prompt → luna_wait(id, \"turn_done\") returns the reply → luna_send for \
-follow-ups, luna_wait again → luna_delete when finished (dropWorktree: true if you asked for one). If you end your turn instead, Luna types a notice into your session once a session \
-you spawned or wrote to answers, stops on a prompt or exits. luna_list shows the sessions you spawned \
-and the accounts you may use; only those can be killed or deleted. luna_sessions lists every session in \
-Luna; luna_send, luna_read and luna_wait work on any of them. Prefer one helper at a time; each costs \
-its account's quota.";
+another account or folder, or a chat the user sees in Luna: for those use luna_spawn. Spawn with a \
+prompt and end your turn: once a session you spawned or wrote to answers, stops on a prompt or exits, \
+Luna types a notice into your session, opening \"[Luna notice\" (not the user). luna_wait only \
+for an answer you need in this same turn. luna_send for follow-ups; luna_delete when \
+finished (dropWorktree: true if you asked for one), or spawn with autoDelete. luna_list: the sessions \
+you spawned (only those can be killed or deleted) and the accounts you may use, with their defaults \
+and usage. luna_sessions lists every session in Luna (history: true for past spawns); luna_send, \
+luna_read and luna_wait work on any of them. Prefer one helper at a time; each costs its account's \
+quota.";
 
 /// One JSON-RPC message in, at most one out (None for notifications).
 pub fn handle(caller: &str, body: &str) -> Option<Value> {
@@ -67,19 +69,19 @@ fn tools() -> Value {
     json!([
         {
             "name": "luna_list",
-            "description": "Sessions you spawned (id, name, group, provider, account, settings, turn, busy, turnsEnded) and the accounts you may use.",
+            "description": "Sessions you spawned (id, name, group, provider, account, settings, turn, busy, turnsEnded) and the accounts you may use, with the defaults a helper in your folder gets and usage (% per window, resets) as the user sees it.",
             "inputSchema": s(json!({}), &[]),
             "annotations": reads
         },
         {
             "name": "luna_sessions",
-            "description": "Every session in Luna, the user's own chats included: id, name, group (the user's window group, I=1), provider, account, folders, sessionId, transcript path, parent, you/yours, turn, settings. Filters: group (a number or \"mine\"), q (text in name/folder/account/id).",
-            "inputSchema": s(json!({ "group": { "type": "string" }, "q": { "type": "string" } }), &[]),
+            "description": "Every session in Luna, the user's own chats included: id, name, group (the user's window group, I=1), provider, account, folders, sessionId, transcript path, parent, you/yours, turn, settings. Filters: group (a number or \"mine\"), q (text in name/folder/account/id). history: true = past spawns instead, deleted too, newest first (q also searches prompts).",
+            "inputSchema": s(json!({ "group": { "type": "string" }, "q": { "type": "string" }, "history": { "type": "boolean" } }), &[]),
             "annotations": reads
         },
         {
             "name": "luna_spawn",
-            "description": "Start a helper session with an opening prompt; it appears under yours in Luna. Omitted settings take the account's defaults. Returns its id, the resolved settings, started (false = prompt not taken up; screen shows the terminal) and starting (true = the CLI has not drawn yet, can take minutes; prompt held, do not resend).",
+            "description": "Start a helper session with an opening prompt; it appears under yours in Luna. Omitted settings take the account's defaults. Returns its id, the resolved settings, started (false = prompt not taken up, e.g. an unknown /command; screen shows the terminal), starting (true = the CLI has not drawn yet, can take minutes; prompt held, do not resend), warnings (e.g. a model swapped) and sameFolder (other live sessions in its directory).",
             "inputSchema": s(json!({
                 "prompt": { "type": "string" },
                 "provider": { "type": "string", "enum": ["claude", "codex"], "description": "default: yours" },
@@ -92,13 +94,14 @@ fn tools() -> Value {
                 "folder": { "type": "string", "description": "project folder; default: yours" },
                 "worktree": { "type": "boolean", "description": "run in its own git worktree" },
                 "name": { "type": "string", "description": "row title in Luna" },
-                "tools": { "type": "boolean", "description": "give it these tools too (one level only)" }
+                "tools": { "type": "boolean", "description": "give it these tools too (one level only)" },
+                "autoDelete": { "type": "boolean", "description": "deleted 10 min after its answer reached you with nothing more asked; kept if the user typed in it; its worktree stays" }
             }), &["prompt"]),
             "annotations": acts
         },
         {
             "name": "luna_send",
-            "description": "Type text into a session (any from luna_sessions) and press Enter; it reads as the user's, so say who you are to one you did not spawn. Returns started (a turn began; false when idle = not taken as a prompt, see screen), turnBefore (busy = queued behind the current turn) and turnsEnded to pass to luna_wait as afterTurn.",
+            "description": "Type text into a session (any from luna_sessions) and press Enter; it reads as the user's, so say who you are to one you did not spawn. Returns started (a turn began; false when idle = not taken as a prompt, e.g. an unknown /command, see screen), turnBefore (busy = queued behind the current turn) and turnsEnded to pass to luna_wait as afterTurn.",
             "inputSchema": s(json!({ "id": { "type": "string" }, "text": { "type": "string" } }), &["id", "text"]),
             "annotations": acts
         },
@@ -116,7 +119,7 @@ fn tools() -> Value {
         },
         {
             "name": "luna_wait",
-            "description": "Block until a session (not yours) ends a turn (returns its reply), stops for a permission, or exits. Timeout, waiting and a reply-less turn come with the screen. `afterTurn`: wait for a turn past this turnsEnded (default: the last one you were shown).",
+            "description": "Block until a session (not yours) ends a turn (returns its reply), stops for a permission, or exits. Timeout, waiting and a reply-less turn come with the screen. `afterTurn`: wait for a turn past this turnsEnded (default: the last one you were shown). Optional: a Luna notice brings the answer if you end your turn. A call your client moves to the background still returns, with no notice besides.",
             "inputSchema": s(json!({
                 "id": { "type": "string" },
                 "until": { "type": "string", "enum": ["turn_done", "waiting", "exit"] },
@@ -148,8 +151,10 @@ fn call(caller: &str, params: &Value) -> Value {
         "luna_list" => Ok(json!(agents::list(caller))),
         "luna_sessions" => serde_json::from_value::<agents::SessionFilter>(a.clone())
             .map_err(|e| format!("bad arguments: {e}"))
-            .and_then(|f| agents::sessions(caller, &f))
-            .map(|s| json!({ "sessions": s })),
+            .and_then(|f| match f.history {
+                Some(true) => Ok(json!({ "runs": crate::agentlog::runs(f.q.as_deref()) })),
+                _ => agents::sessions(caller, &f).map(|s| json!({ "sessions": s })),
+            }),
         "luna_spawn" => serde_json::from_value::<agents::SpawnParams>(a.clone())
             .map_err(|e| format!("bad arguments: {e}"))
             .and_then(|p| agents::spawn(caller, p))
@@ -224,8 +229,16 @@ mod tests {
             t.as_object_mut().unwrap().remove("annotations");
         }
         let text = list.to_string();
-        assert!(text.len() < 4300, "tools/list is {} chars", text.len());
-        assert!(INSTRUCTIONS.len() < 1000);
+        assert!(text.len() < 5000, "tools/list is {} chars", text.len());
+        assert!(INSTRUCTIONS.len() < 1000, "instructions are {} bytes", INSTRUCTIONS.len());
+    }
+
+    #[test]
+    fn the_instructions_name_the_notice_tag() {
+        // What a model is told to look for is what every notice opens with.
+        let shown = "[Luna notice";
+        assert!(INSTRUCTIONS.contains(shown));
+        assert!(agents::NOTICE_TAG.starts_with(shown));
     }
 
     #[test]

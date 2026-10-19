@@ -8,13 +8,13 @@
  */
 import { useEffect } from 'react';
 import {
-  agentSpawned, chatNames, codexModels, deleteSession, ensureClaudeSession, ensureCodexSession,
+  accountUsage, agentSpawned, chatNames, codexModels, deleteSession, ensureClaudeSession, ensureCodexSession,
   type AgentSpawnRequest, type CodexModelDto
 } from '../../ipc/commands';
 import { onAgentDeleted, onAgentSpawn } from '../../ipc/events';
 import { logWarn } from '../../shared/lib/log';
 import {
-  CODEX_APPROVALS, CODEX_SANDBOXES, EFFORTS, MODEL_CLI, MODELS, PERM_CLI,
+  CODEX_APPROVALS, CODEX_SANDBOXES, EFFORTS, MODEL_CLI, MODELS, PERM_CLI, accountKey,
   codexApprovalFromSetting, codexEffortFromSetting, codexSandboxFromSetting, effortFromSetting, modelFromSetting, permFromSetting,
   type Account, type ClaudeSettings, type CodexSettings
 } from '../../shared/types';
@@ -177,5 +177,32 @@ export function useAgentBridge() {
     };
     push();
     return useChats.subscribe(push);
+  }, []);
+
+  // `luna_list` gives agents each account's usage as the Accounts window
+  // shows it, so a helper goes where there is room; sent whenever it moves.
+  useEffect(() => {
+    let last = '';
+    const push = () => {
+      const usage = Object.fromEntries(
+        useAccounts.getState().accounts.map(a => [
+          accountKey(a.provider, a.name),
+          {
+            signedIn: a.signedIn,
+            plan: a.plan,
+            limits: a.haveUsage
+              ? a.limits.map(l => ({ label: l.label, usedPct: Math.round(l.used * 100), resetsAt: l.resetAt }))
+              : [],
+            takenAt: a.haveUsage && a.fetchedAt ? new Date(a.fetchedAt).toISOString() : null
+          }
+        ])
+      );
+      const key = JSON.stringify(usage);
+      if (key === last) return;
+      last = key;
+      void accountUsage(usage);
+    };
+    push();
+    return useAccounts.subscribe(push);
   }, []);
 }

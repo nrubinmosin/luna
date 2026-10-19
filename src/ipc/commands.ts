@@ -31,7 +31,7 @@ const SLOW_BUDGET_MS: Record<string, number> = {
 // answer, in the order they are made.
 const CORE_CALL: ReadonlySet<string> = new Set([
   'ensure_claude_session', 'ensure_codex_session', 'kill_session', 'delete_session', 'stop_all_sessions',
-  'orphan_sessions', 'session_meta', 'session_modes', 'agent_spawned', 'chat_names', 'power_state',
+  'orphan_sessions', 'session_meta', 'session_modes', 'agent_spawned', 'chat_names', 'account_usage', 'power_state',
   'set_keep_awake', 'arm_power_off', 'disarm_power_off', 'rename_account', 'orphan_worktrees',
   'remove_orphan_worktrees'
 ]);
@@ -336,9 +336,10 @@ export const removeOrphanWorktrees = (folder: string, inUse: string[], accountPa
 
 // -------------------------------------------------------------- defaults --
 
-/** Where a resolved default came from, for the line under the control. */
-export type ClaudeDefaultSource = 'account' | 'project' | 'project-local' | 'managed';
-export type CodexDefaultSource = 'account' | 'project';
+/** Where a resolved default came from, for the line under the control;
+ *  `stock` is Luna's own choice where no file said anything usable. */
+export type ClaudeDefaultSource = 'account' | 'project' | 'project-local' | 'managed' | 'stock';
+export type CodexDefaultSource = 'account' | 'project' | 'stock';
 
 export interface SettingDto<S extends string = string> {
   value: string;
@@ -353,8 +354,8 @@ export interface ClaudeDefaultsDto {
 
 /**
  * Model, effort and permission mode as Claude Code itself would resolve them
- * for this account in this folder. Null fields mean nobody said, so Luna's own
- * defaults stand.
+ * for this account in this folder, already settled (stock included) by the
+ * core. Null only when the core could not be asked.
  */
 export const claudeDefaults = (accountPath: string, folder: string) =>
   call<ClaudeDefaultsDto>(
@@ -544,6 +545,19 @@ export const agentSpawned = (requestId: number, chatId: string | null, name: str
 /** Every chat's name by id, for `luna_sessions` (agents.rs). */
 export const chatNames = (names: Record<string, string>, groups: Record<string, number>) =>
   call<void>('chat_names', { names, groups });
+
+/** One account's usage as `luna_list` gives it to agents. */
+export interface AccountUsageDto {
+  signedIn: boolean;
+  plan: string;
+  /** Percent used, by window, with the instant each resets. */
+  limits: Array<{ label: string; usedPct: number; resetsAt: string | null }>;
+  /** When the numbers were taken (ISO), null if none are known yet. */
+  takenAt: string | null;
+}
+
+/** Every account's usage by `provider/name`, for `luna_list` (agents.rs). */
+export const accountUsage = (usage: Record<string, AccountUsageDto>) => call<void>('account_usage', { usage });
 
 /** `provider/name` keys of accounts agents may not use. */
 export const agentBlockedAccounts = () => call<string[]>('agent_blocked_accounts', {}, []);

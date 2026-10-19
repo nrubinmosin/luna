@@ -1,6 +1,7 @@
 mod account_settings;
 mod accounts;
 mod activity;
+mod agentlog;
 mod agents;
 mod claude;
 mod cli;

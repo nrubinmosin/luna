@@ -67,6 +67,7 @@ pub fn dispatch(cmd: &str, args: Value) -> Result<Value, String> {
             request_id: u64, chat_id: Option<String>, name: Option<String>, error: Option<String>),
         "chat_names" => call!(ok args, agents::chat_names,
             names: HashMap<String, String>, groups: Option<HashMap<String, u32>>),
+        "account_usage" => call!(ok args, agents::account_usage, usage: HashMap<String, Value>),
         "power_state" => call!(ok args, power::power_state),
         "set_keep_awake" => call!(res args, power::set_keep_awake, on: bool),
         "arm_power_off" => call!(res args, power::arm_power_off, action: String, quiet_s: u64),
@@ -85,7 +86,10 @@ pub fn dispatch(cmd: &str, args: Value) -> Result<Value, String> {
 /// (a reattach reads the modes after the session it ensured), and each takes
 /// no time.
 pub fn in_order(cmd: &str) -> bool {
-    matches!(cmd, "write_session" | "resize_session" | "session_modes" | "chat_names" | "agent_spawned" | "power_state")
+    matches!(
+        cmd,
+        "write_session" | "resize_session" | "session_modes" | "chat_names" | "account_usage" | "agent_spawned" | "power_state"
+    )
 }
 
 #[cfg(test)]

@@ -85,6 +85,17 @@ const ANSWERED_MS: u64 = 8_000;
 /// Claude Code fires its Stop hook before the turn's last message reaches the
 /// transcript: a turn seen over with no reply yet gets this long for one.
 const REPLY_GRACE_MS: u64 = 5_000;
+/// A `wait` out for an answer hands it over itself, so the notifier holds its
+/// notice — this long past the answer at most, for a client that has dropped
+/// the call it moved to the background.
+const WAIT_HOLD_MS: u64 = 10_000;
+/// An `autoDelete` helper goes once nobody is owed its answer and it has sat
+/// idle this long since: room for a follow-up first.
+const AUTO_DELETE_IDLE_MS: u64 = 10 * 60 * 1000;
+/// How every notice opens, so a model tells it from what the user types.
+pub const NOTICE_TAG: &str = "[Luna notice, not typed by the user]";
+/// The most warning lines a spawn passes on from the helper's screen.
+const MAX_WARNINGS: usize = 5;
 
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
 pub struct Message {
@@ -124,6 +135,9 @@ pub struct SpawnParams {
     pub prompt: String,
     pub name: Option<String>,
     pub tools: Option<bool>,
+    /// Luna's to act on (see `reap`); the frontend never sees it.
+    #[serde(skip_serializing)]
+    pub auto_delete: Option<bool>,
 }
 
 /// The request as the frontend receives it.
@@ -184,6 +198,21 @@ struct Registry {
     /// typed into it, and has not been shown a turn past `baseline` since.
     /// The notifier tells the caller when the answer comes.
     owed: HashMap<(String, String), Owed>,
+    /// `wait` calls in flight, by (caller, session).
+    waits: HashMap<(String, String), u32>,
+    /// Helpers spawned with `autoDelete`, by id.
+    auto: HashMap<String, Auto>,
+    /// Each account's usage as the window last showed it, by `provider/name`.
+    usage: HashMap<String, serde_json::Value>,
+}
+
+/// An `autoDelete` helper's progress towards going.
+#[derive(Default)]
+struct Auto {
+    /// Since when it has been idle with nobody owed its answer.
+    idle_since: Option<u64>,
+    /// Luna is deleting it now, so its end goes down as `auto-deleted`.
+    deleting: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -195,6 +224,15 @@ struct Owed {
     /// The turn count at which the answer was seen with processes still at
     /// work, and when (see BACKGROUND_GRACE_MS).
     held: Option<(u32, u64)>,
+    /// When the notifier first found the answer in while a `wait` was out
+    /// for it (see WAIT_HOLD_MS).
+    ready_at: Option<u64>,
+}
+
+impl Owed {
+    fn from(baseline: u32) -> Owed {
+        Owed { baseline, told_waiting: false, held: None, ready_at: None }
+    }
 }
 
 fn reg() -> &'static Mutex<Registry> {
@@ -212,6 +250,9 @@ fn reg() -> &'static Mutex<Registry> {
             groups: HashMap::new(),
             answered: HashMap::new(),
             owed: HashMap::new(),
+            waits: HashMap::new(),
+            auto: HashMap::new(),
+            usage: HashMap::new(),
         })
     })
 }
@@ -234,7 +275,30 @@ fn owe(caller: &str, id: &str, baseline: u32) {
         return;
     }
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-    r.owed.insert((caller.to_string(), id.to_string()), Owed { baseline, told_waiting: false, held: None });
+    r.owed.insert((caller.to_string(), id.to_string()), Owed::from(baseline));
+}
+
+/// A `wait` by `caller` on a session, counted for as long as it runs.
+struct WaitOut((String, String));
+
+impl WaitOut {
+    fn start(caller: &str, id: &str) -> WaitOut {
+        let key = (caller.to_string(), id.to_string());
+        *reg().lock().unwrap_or_else(|e| e.into_inner()).waits.entry(key.clone()).or_default() += 1;
+        WaitOut(key)
+    }
+}
+
+impl Drop for WaitOut {
+    fn drop(&mut self) {
+        let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(n) = r.waits.get_mut(&self.0) {
+            *n -= 1;
+            if *n == 0 {
+                r.waits.remove(&self.0);
+            }
+        }
+    }
 }
 
 /// The last count `caller` was shown for `id`, if any.
@@ -441,12 +505,31 @@ pub struct Listing {
 pub struct AccountRow {
     pub provider: Provider,
     pub name: String,
+    /// The settings a helper gets here unless the spawn says otherwise, for
+    /// the caller's folder: the flags as `spawn` echoes them.
+    pub defaults: serde_json::Value,
+    /// Its usage as the window last showed it (see `account_usage`); none
+    /// before the window has said.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage: Option<serde_json::Value>,
 }
 
-/// Accounts an agent may spawn on: every account folder on disk, minus the
-/// ones the user switched off for agents.
-pub fn allowed_accounts() -> Vec<AccountRow> {
-    allowed_account_dirs().into_iter().map(|a| AccountRow { provider: a.provider, name: a.name }).collect()
+/// Accounts an agent may spawn on — every account folder on disk, minus the
+/// ones the user switched off for agents — with what a helper would get in
+/// `folder` on each.
+fn account_rows(folder: &str) -> Vec<AccountRow> {
+    let usage = reg().lock().unwrap_or_else(|e| e.into_inner()).usage.clone();
+    allowed_account_dirs()
+        .into_iter()
+        .map(|a| {
+            let defaults = match a.provider {
+                Provider::Claude => crate::claude::defaults::flags(&a.path, folder),
+                Provider::Codex => crate::codex::defaults::flags(&a.path, folder),
+            };
+            let usage = usage.get(&format!("{}/{}", a.provider.as_str(), a.name)).cloned();
+            AccountRow { provider: a.provider, name: a.name, defaults, usage }
+        })
+        .collect()
 }
 
 /// The same with each account's folder.
@@ -511,7 +594,8 @@ pub fn list(caller: &str) -> Listing {
             }
         })
         .collect();
-    Listing { me: caller.to_string(), accounts: allowed_accounts(), sessions }
+    let folder = reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(caller).map(|k| k.folder.clone()).unwrap_or_default();
+    Listing { me: caller.to_string(), accounts: account_rows(&folder), sessions }
 }
 
 /// One row of `sessions`: any chat Luna has run a session for since it
@@ -561,6 +645,9 @@ pub struct SessionFilter {
     pub group: Option<serde_json::Value>,
     #[serde(default)]
     pub q: Option<String>,
+    /// Past spawns instead (agentlog.rs), deleted helpers included.
+    #[serde(default)]
+    pub history: Option<bool>,
 }
 
 impl SessionFilter {
@@ -682,6 +769,82 @@ pub struct Spawned {
     /// See `still_starting`: not stuck, just not up yet.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub starting: bool,
+    /// What the CLI flagged on its screen as it came up — a model the
+    /// organization does not allow and the one used instead — which the
+    /// settings above, being what it was started with, cannot say.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+    /// Other live sessions working in the same directory, the caller aside:
+    /// they share its files and its git index, commits and all.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub same_folder: Vec<Neighbour>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Neighbour {
+    pub id: String,
+    pub name: String,
+    pub busy: bool,
+}
+
+/// What a CLI marks as warnings on its screen (⚠), each once, put back on one
+/// line: a helper no pane shows has a narrow terminal, and the CLI wraps the
+/// rest of a warning onto indented lines below it.
+fn warnings_of(pty: &crate::pty::PtyManager, id: &str) -> Vec<String> {
+    warnings_in(&pty.screen(id).unwrap_or_default())
+}
+
+fn warnings_in(screen: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut lines = screen.lines().peekable();
+    while let Some(line) = lines.next() {
+        let line = line.trim();
+        if !line.starts_with('⚠') {
+            continue;
+        }
+        let mut warning = line.to_string();
+        while let Some(more) = lines.peek().filter(|l| l.starts_with("  ") && !l.trim().is_empty()) {
+            warning.push(' ');
+            warning.push_str(more.trim());
+            lines.next();
+        }
+        if !out.contains(&warning) && out.len() < MAX_WARNINGS {
+            out.push(warning);
+        }
+    }
+    out
+}
+
+/// Live sessions other than `skip` that run in `dir`, by what the CLI says
+/// its cwd is: the project folder for a chat in it, the worktree for one in
+/// a worktree.
+fn neighbours_in(dir: &str, skip: &[&str]) -> Vec<Neighbour> {
+    let ids: Vec<String> = reg().lock().unwrap_or_else(|e| e.into_inner()).known.keys().cloned().collect();
+    let pty = crate::pty::manager();
+    let mut out = Vec::new();
+    for id in ids.into_iter().filter(|id| !skip.contains(&id.as_str())) {
+        let Some(probe) = pty.probe(&id) else { continue };
+        let cwd = disk_meta(&probe).and_then(|m| m.cwd).unwrap_or_else(|| probe.cwd.clone());
+        if crate::pty::same_dir(&cwd, dir) {
+            out.push(Neighbour {
+                busy: crate::activity::turn_state(&id).is_some_and(|t| t.busy),
+                name: chat_name(&id).unwrap_or_default(),
+                id,
+            });
+        }
+    }
+    out
+}
+
+/// The screen says the CLI did not know the slash command `text` opens with.
+/// Claude Code answers an unknown one on the spot and starts no turn, so
+/// there is no start to wait out.
+fn unknown_command(pty: &crate::pty::PtyManager, id: &str, text: &str) -> bool {
+    let Some(cmd) = text.trim_start().strip_prefix('/').and_then(|rest| rest.split_whitespace().next()) else {
+        return false;
+    };
+    pty.screen(id).is_some_and(|s| s.contains(&format!("Unknown command: /{cmd}")))
 }
 
 /// The last lines of a session's terminal, for a caller that has to see
@@ -713,15 +876,22 @@ fn still_starting(pty: &crate::pty::PtyManager, id: &str) -> bool {
     pty.alive(id) && !has_started(id, 0) && pty.screen(id).is_some_and(|s| s.trim().is_empty())
 }
 
-/// Polls until the session starts working (see `has_started`), it exits, or
-/// `timeout` passes. Returns whether it started.
-fn await_start(pty: &crate::pty::PtyManager, id: &str, after_turn: u32, timeout: std::time::Duration) -> bool {
+/// Polls until the session starts working on `text` (see `has_started`),
+/// turns it down as an unknown command, exits, or `timeout` passes. Returns
+/// whether it started.
+fn await_start(
+    pty: &crate::pty::PtyManager,
+    id: &str,
+    text: &str,
+    after_turn: u32,
+    timeout: std::time::Duration,
+) -> bool {
     let deadline = std::time::Instant::now() + timeout;
     loop {
         if has_started(id, after_turn) {
             return true;
         }
-        if !pty.alive(id) || std::time::Instant::now() >= deadline {
+        if !pty.alive(id) || unknown_command(pty, id, text) || std::time::Instant::now() >= deadline {
             return false;
         }
         std::thread::sleep(POLL);
@@ -808,6 +978,13 @@ pub fn spawn(caller: &str, mut params: SpawnParams) -> Result<Spawned, String> {
     };
 
     let borrowed = in_worktree.is_some();
+    let auto_delete = params.auto_delete.unwrap_or(false);
+    let own_worktree = params.worktree.unwrap_or(false);
+    let folder = params.folder.clone().unwrap_or_default();
+    // Where it will work: a worktree of its own shares nothing.
+    let run_dir = (!own_worktree).then(|| in_worktree.clone().unwrap_or_else(|| folder.clone()));
+    let (provider, account, prompt) =
+        (params.provider.clone().unwrap_or_default(), params.account.clone().unwrap_or_default(), params.prompt.clone());
     crate::emit::to_ui("agent://spawn", SpawnRequest { request_id, parent_id: caller.to_string(), in_worktree, params });
 
     let (lock, cv) = &*slot;
@@ -866,18 +1043,39 @@ pub fn spawn(caller: &str, mut params: SpawnParams) -> Result<Spawned, String> {
         .get(&id)
         .map(|k| k.settings.clone())
         .unwrap_or(serde_json::Value::Null);
+    if auto_delete {
+        reg().lock().unwrap_or_else(|e| e.into_inner()).auto.insert(id.clone(), Auto::default());
+    }
+    crate::agentlog::spawned(&crate::agentlog::Spawn {
+        id: &id,
+        parent: caller,
+        parent_name: chat_name(caller),
+        folder: &folder,
+        worktree: own_worktree,
+        provider: &provider,
+        account: &account,
+        settings: &settings,
+        name: chat_name(&id),
+        prompt: &prompt,
+        auto_delete,
+    });
     let pty = crate::pty::manager();
-    let started = await_start(&pty, &id, 0, START_TIMEOUT);
+    let started = await_start(&pty, &id, &prompt, 0, START_TIMEOUT);
     let starting = !started && still_starting(&pty, &id);
     if starting {
         crate::log::info("agents", &format!("session {id} spawned by {caller} has drawn nothing within {START_TIMEOUT:?}; still starting"));
+    } else if !started && unknown_command(&pty, &id, &prompt) {
+        crate::log::info("agents", &format!("session {id} spawned by {caller} does not know the command its prompt opens with"));
     } else if !started {
         crate::log::warn("agents", &format!("session {id} spawned by {caller} did not start on its prompt within {START_TIMEOUT:?}"));
     }
     let screen = (!started && !starting).then(|| screen_of(&pty, &id)).flatten();
+    // A screen handed over says it all already.
+    let warnings = if screen.is_none() { warnings_of(&pty, &id) } else { Vec::new() };
+    let same_folder = run_dir.map(|dir| neighbours_in(&dir, &[caller, &id])).unwrap_or_default();
     shown(caller, &id, 0);
     owe(caller, &id, 0);
-    Ok(Spawned { id, turns_ended: 0, settings, started, screen, starting })
+    Ok(Spawned { id, turns_ended: 0, settings, started, screen, starting, warnings, same_folder })
 }
 
 /// The frontend's answer to `agent://spawn`.
@@ -951,14 +1149,14 @@ fn type_in(
     // it is taken up; only an idle session is expected to start now.
     Ok(if turn_before == Some(crate::activity::Turn::Busy) {
         true
-    } else if await_start(pty, id, baseline, ENTER_RETRY) {
+    } else if await_start(pty, id, text, baseline, ENTER_RETRY) {
         true
     } else if pty.write(id, b"\r").is_err() {
         // The text went in and the session is gone since — `/exit` does
         // exactly that. It was taken; there is just no turn to wait for.
         true
     } else {
-        await_start(pty, id, baseline, SEND_TIMEOUT.saturating_sub(ENTER_RETRY))
+        await_start(pty, id, text, baseline, SEND_TIMEOUT.saturating_sub(ENTER_RETRY))
     })
 }
 
@@ -1125,6 +1323,7 @@ pub fn wait(caller: &str, id: &str, until: &str, timeout_s: u64, after_turn: Opt
         return Err(format!("unknown until {until:?}; use turn_done, waiting or exit"));
     }
     authorize_view(caller, id)?;
+    let _out = WaitOut::start(caller, id);
     let pty = crate::pty::manager();
     let now = crate::activity::turn_state(id).map(|t| t.turns_ended);
     let baseline = match (after_turn, last_shown(caller, id), now) {
@@ -1204,6 +1403,10 @@ pub fn kill(caller: &str, id: &str) -> Result<(), String> {
 /// children are left where they are, orphaned.
 pub fn delete(caller: &str, id: &str, drop_worktree: bool) -> Result<Option<String>, String> {
     let known = authorize(caller, id)?;
+    remove(id, known, drop_worktree)
+}
+
+fn remove(id: &str, known: Known, drop_worktree: bool) -> Result<Option<String>, String> {
     let pty = crate::pty::manager();
     // A Codex helper in a worktree knows the worktree as its folder.
     let folder = crate::worktree::project_of(&known.folder).unwrap_or(known.folder);
@@ -1215,11 +1418,58 @@ pub fn delete(caller: &str, id: &str, drop_worktree: bool) -> Result<Option<Stri
     Ok(worktree.filter(|_| drop_worktree))
 }
 
+/// Deletes the `autoDelete` helpers that are done with: nobody is owed their
+/// answer or waiting on them, and they have sat idle — or exited — for
+/// AUTO_DELETE_IDLE_MS since. One a person has typed into is theirs now and
+/// stays. Its worktree stays too, with whatever work is in it.
+fn reap(pty: &crate::pty::PtyManager) {
+    let ids: Vec<String> = reg().lock().unwrap_or_else(|e| e.into_inner()).auto.keys().cloned().collect();
+    for id in ids {
+        if pty.typed_ago_ms(&id).is_some() {
+            reg().lock().unwrap_or_else(|e| e.into_inner()).auto.remove(&id);
+            continue;
+        }
+        // Between turns with no job left running; what its terminal last drew
+        // and when does not matter here.
+        let idle = !pty.alive(&id)
+            || crate::activity::turn_state(&id)
+                .is_some_and(|t| t.turn == crate::activity::Turn::Idle && !t.children_busy);
+        let known = {
+            let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+            let quiet = !r.owed.keys().any(|(_, s)| *s == id) && !r.waits.keys().any(|(_, s)| *s == id);
+            let known = r.known.get(&id).cloned();
+            let Some(a) = r.auto.get_mut(&id) else { continue };
+            if !(quiet && idle) {
+                a.idle_since = None;
+                continue;
+            }
+            let since = *a.idle_since.get_or_insert(now_ms());
+            if now_ms().saturating_sub(since) < AUTO_DELETE_IDLE_MS {
+                continue;
+            }
+            a.deleting = true;
+            known
+        };
+        match known.map(|k| remove(&id, k, false)) {
+            Some(Ok(_)) => crate::log::info("agents", &format!("auto-deleted helper {id}")),
+            Some(Err(e)) => {
+                crate::log::warn("agents", &format!("could not auto-delete helper {id}: {e}"));
+                reg().lock().unwrap_or_else(|e| e.into_inner()).auto.remove(&id);
+            }
+            None => {
+                reg().lock().unwrap_or_else(|e| e.into_inner()).auto.remove(&id);
+            }
+        }
+    }
+}
+
 /// A chat is gone, however it was deleted: nothing here may keep it — not in
 /// `luna_sessions`, not against a caller's helper limit, not as a live token,
 /// and not as an answer owed to or by it.
 pub fn forget(id: &str) {
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    let spawned = r.known.get(id).is_some_and(|k| k.parent.is_some());
+    let auto = r.auto.remove(id);
     r.known.remove(id);
     r.tokens.retain(|_, chat| chat != id);
     r.seen.retain(|(_, chat), _| chat != id);
@@ -1227,8 +1477,12 @@ pub fn forget(id: &str) {
     r.answered.retain(|(who, chat), _| who != id && chat != id);
     r.abandoned.retain(|_, (caller, _)| caller != id);
     r.borrowed.remove(id);
+    r.waits.retain(|(who, chat), _| who != id && chat != id);
     drop(r);
     transcripts().lock().unwrap_or_else(|e| e.into_inner()).remove(id);
+    if spawned {
+        crate::agentlog::ended(id, if auto.is_some_and(|a| a.deleting) { "auto-deleted" } else { "deleted" });
+    }
 }
 
 // --------------------------------------------------------------- notifier --
@@ -1349,8 +1603,33 @@ fn anything_to_say(pty: &crate::pty::PtyManager, items: &[(String, Known, Owed, 
     })
 }
 
+/// Whether a `wait` the caller has out on `id` is to hand this answer over
+/// rather than a notice: while nothing has come in, and for WAIT_HOLD_MS
+/// after something did — the wait answers within a second or two, so one
+/// still out by then belongs to a client that has let the call go.
+fn held_for_wait(pty: &crate::pty::PtyManager, caller: &str, id: &str, o: &Owed) -> bool {
+    let key = (caller.to_string(), id.to_string());
+    if !reg().lock().unwrap_or_else(|e| e.into_inner()).waits.contains_key(&key) {
+        return false;
+    }
+    let ts = crate::activity::turn_state(id);
+    let turn = ts.map(|t| t.turn);
+    // A prompt it stopped on is news too: `wait(turn_done)` hands that back.
+    let news = (ts.is_some_and(|t| t.turns_ended > o.baseline) && turn != Some(crate::activity::Turn::Busy))
+        || turn == Some(crate::activity::Turn::Waiting)
+        || !pty.alive(id);
+    if !news {
+        return true;
+    }
+    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    let Some(owed) = r.owed.get_mut(&key) else { return true };
+    let at = *owed.ready_at.get_or_insert(now_ms());
+    now_ms().saturating_sub(at) < WAIT_HOLD_MS
+}
+
 /// Runs for the life of the app: every few seconds, for each caller owed an
-/// answer, checks whether one came and tells the caller once it is idle.
+/// answer, checks whether one came and tells the caller once it is idle; and
+/// deletes the `autoDelete` helpers that are done (see `reap`).
 fn notifier() {
     let mut idle_looks: HashMap<String, u32> = HashMap::new();
     // Callers whose notice a draft is holding back: since when, and whether
@@ -1359,6 +1638,7 @@ fn notifier() {
     loop {
         std::thread::sleep(NOTIFY_EVERY);
         let pty = crate::pty::manager();
+        reap(&pty);
         // Owed by caller, each session with what is known of it; anything a
         // delete has made unknown is dropped on the way.
         let mut by_caller: std::collections::BTreeMap<String, Vec<(String, Known, Owed, String)>> = Default::default();
@@ -1403,6 +1683,9 @@ fn notifier() {
             let mut lines = Vec::new();
             let mut settled = Vec::new();
             for (id, k, o, who) in &items {
+                if held_for_wait(&pty, &caller, id, o) {
+                    continue;
+                }
                 match notice_line(&pty, who, id, k, *o) {
                     Some((Some(line), how)) => {
                         lines.push(line);
@@ -1420,7 +1703,7 @@ fn notifier() {
             if lines.is_empty() {
                 continue;
             }
-            let text = format!("[Luna notice, not typed by the user] {}", lines.join(" "));
+            let text = format!("{NOTICE_TAG} {}", lines.join(" "));
             let before = crate::activity::turn_state(&caller);
             let baseline = before.map(|t| t.turns_ended).unwrap_or(0);
             match type_in(&pty, &caller, &text, before.map(|t| t.turn), baseline) {
@@ -1441,7 +1724,7 @@ fn notifier() {
                                 }
                             }
                             Settled::Pending(ended) => {
-                                r.owed.insert(key, Owed { baseline: ended, told_waiting: false, held: None });
+                                r.owed.insert(key, Owed::from(ended));
                             }
                             Settled::Hold(_) => {}
                         }
@@ -1466,6 +1749,15 @@ pub fn chat_names(names: HashMap<String, String>, groups: Option<HashMap<String,
     if let Some(groups) = groups {
         r.groups = groups;
     }
+}
+
+/// Each account's usage as the window shows it, by `provider/name`, sent
+/// whenever it changes: `luna_list` passes it on, so an agent picks an
+/// account by the numbers the user sees — and the core asks no usage
+/// endpoint of its own, which would only draw their 429s sooner.
+#[tauri::command]
+pub fn account_usage(usage: HashMap<String, serde_json::Value>) {
+    reg().lock().unwrap_or_else(|e| e.into_inner()).usage = usage;
 }
 
 /// Account names the user has switched off for agents, as `provider/name`.
@@ -1510,17 +1802,17 @@ mod tests {
             v.sort();
             v
         };
-        let by = |g: serde_json::Value| SessionFilter { group: Some(g), q: None };
+        let by = |g: serde_json::Value| SessionFilter { group: Some(g), q: None, history: None };
         // Groups go out 1-based, as the title bar counts them.
         assert_eq!(ids("grp-me", by(serde_json::json!("mine"))), ["grp-me", "grp-peer"]);
         assert_eq!(ids("grp-me", by(serde_json::json!(1))), ["grp-far"]);
         assert_eq!(ids("grp-me", by(serde_json::json!("2"))), ["grp-me", "grp-peer"]);
         assert!(sessions("grp-loose", &by(serde_json::json!("mine"))).is_err(), "a session in no group has no mine");
         assert!(sessions("grp-me", &by(serde_json::json!(0))).is_err());
-        let q = |text: &str| SessionFilter { group: None, q: Some(text.into()) };
+        let q = |text: &str| SessionFilter { group: None, q: Some(text.into()), history: None };
         assert_eq!(ids("grp-me", q("tester")), ["grp-peer"], "name, any case");
         assert_eq!(ids("grp-me", q("asuri")), ["grp-peer"], "folder");
-        assert_eq!(ids("grp-me", SessionFilter { group: Some(serde_json::json!("mine")), q: Some("build".into()) }), ["grp-me"]);
+        assert_eq!(ids("grp-me", SessionFilter { group: Some(serde_json::json!("mine")), q: Some("build".into()), history: None }), ["grp-me"]);
     }
 
     #[test]
@@ -1565,6 +1857,56 @@ mod tests {
         assert_eq!(quote("a\n\nb   c"), "a b c");
         assert_eq!(quote(&"x".repeat(NOTICE_QUOTE)), "x".repeat(NOTICE_QUOTE));
         assert!(quote(&"x".repeat(NOTICE_QUOTE + 1)).ends_with("… [cut; luna_read gives the full text]"));
+    }
+
+    #[test]
+    fn a_wrapped_warning_comes_back_whole() {
+        let screen = " ▐▛███▛█   Claude Code\n\n⚠ Model \"haiku\" is restricted by your organization's\n  settings. Using claude-sonnet-5-5 instead.\n\n● Unknown command: /x\n";
+        assert_eq!(
+            warnings_in(screen),
+            ["⚠ Model \"haiku\" is restricted by your organization's settings. Using claude-sonnet-5-5 instead."]
+        );
+        assert!(warnings_in("● all fine\n").is_empty());
+    }
+
+    #[test]
+    fn a_wait_out_holds_the_notice_for_a_while() {
+        let none = serde_json::json!({});
+        register("w-parent", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, none.clone());
+        register("w-child", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("w-parent"), false, none);
+        owe("w-parent", "w-child", 0);
+        let pty = crate::pty::manager();
+        let key = ("w-parent".to_string(), "w-child".to_string());
+        let o = || reg().lock().unwrap().owed.get(&key).copied().unwrap();
+        assert!(!held_for_wait(&pty, "w-parent", "w-child", &o()), "no wait out, nothing held");
+        {
+            let _out = WaitOut::start("w-parent", "w-child");
+            // Not running, so there is news: the wait has WAIT_HOLD_MS to say it.
+            assert!(held_for_wait(&pty, "w-parent", "w-child", &o()));
+            reg().lock().unwrap().owed.get_mut(&key).unwrap().ready_at = Some(now_ms() - WAIT_HOLD_MS - 1);
+            assert!(!held_for_wait(&pty, "w-parent", "w-child", &o()), "a wait that sat on news is let go");
+        }
+        assert!(!reg().lock().unwrap().waits.contains_key(&key), "the count goes with the call");
+    }
+
+    #[test]
+    fn an_auto_delete_helper_counts_idle_only_once_its_answer_is_out() {
+        let none = serde_json::json!({});
+        register("ad-parent", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, none.clone());
+        register("ad-child", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("ad-parent"), false, none);
+        reg().lock().unwrap().auto.insert("ad-child".into(), Auto::default());
+        let since = || reg().lock().unwrap().auto.get("ad-child").and_then(|a| a.idle_since);
+        let pty = crate::pty::manager();
+        owe("ad-parent", "ad-child", 0);
+        reap(&pty);
+        assert_eq!(since(), None, "its answer is still owed");
+        reg().lock().unwrap().owed.remove(&("ad-parent".to_string(), "ad-child".to_string()));
+        reap(&pty);
+        assert!(since().is_some(), "exited and nobody owed: the clock runs");
+        owe("ad-parent", "ad-child", 1);
+        reap(&pty);
+        assert_eq!(since(), None, "a follow-up starts it over");
+        reg().lock().unwrap().auto.remove("ad-child");
     }
 
     #[test]
