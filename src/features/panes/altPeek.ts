@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { usePanes } from './panes.store';
+import { useShell } from '../../app/shell.store';
 
 type Sheet = { peek: number | null; peekChat: string | null };
 
@@ -25,6 +26,10 @@ const HOLD_MS = 150;
  * if another key comes first. Starting it at once put the hovered chat on
  * the sheet under the chord: Alt+digit then saw that sheet and put it back
  * instead of raising its pane, and every chord flickered the sheet.
+ *
+ * The glance's sheet stands clear of the sidebar it was raised from (`aside`).
+ * One kept by a click stays clear until the sidebar slides away, rather than
+ * jumping under it the moment Alt is let go.
  */
 export function useAltPeek() {
   useEffect(() => {
@@ -41,6 +46,7 @@ export function useAltPeek() {
     const preview = (chatId: string | null) => {
       if (!chatId) return;
       usePanes.getState().previewChat(chatId);
+      usePanes.getState().setAside(true);
       shown = sheetOf();
     };
 
@@ -53,6 +59,7 @@ export function useAltPeek() {
       if (!kept && before && shown && now.peek === shown.peek && now.peekChat === shown.peekChat) {
         usePanes.setState(before);
       }
+      if (!kept || !useShell.getState().overlay) usePanes.getState().setAside(false);
       before = shown = null;
     };
 
@@ -89,6 +96,9 @@ export function useAltPeek() {
     const unsubscribe = usePanes.subscribe((s, prev) => {
       if (glancing && s.spot && s.spot !== prev.spot) preview(s.spot);
     });
+    const unsubscribeShell = useShell.subscribe((s, prev) => {
+      if (!held && prev.overlay && !s.overlay) usePanes.getState().setAside(false);
+    });
 
     window.addEventListener('keydown', onDown, true);
     window.addEventListener('keyup', onUp, true);
@@ -97,6 +107,7 @@ export function useAltPeek() {
     window.addEventListener('blur', release);
     return () => {
       unsubscribe();
+      unsubscribeShell();
       window.removeEventListener('keydown', onDown, true);
       window.removeEventListener('keyup', onUp, true);
       window.removeEventListener('mousedown', onMouse, true);

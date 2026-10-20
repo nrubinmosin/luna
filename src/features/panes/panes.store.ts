@@ -133,6 +133,13 @@ interface PanesState {
    * `peek` / `peekChat` is set at a time.
    */
   peekChat: string | null;
+  /**
+   * The sheet stands clear of a sidebar slid out over it. Set by an Alt
+   * glance, whose rows are under the pointer and whose sheet would otherwise
+   * come up half under them; a sheet held up any other way stays put, so the
+   * sidebar passing over it never resizes its terminal.
+   */
+  aside: boolean;
   /** The pane last worked in — a new chat takes its folder and account after it. */
   activePane: number;
   /**
@@ -179,6 +186,7 @@ interface PanesState {
   setPeek: (i: number | null) => void;
   setPeekChat: (id: string | null) => void;
   closePeek: () => void;
+  setAside: (on: boolean) => void;
 }
 
 /** The group currently on screen. */
@@ -240,6 +248,7 @@ export const usePanes = create<PanesState>()(
       spot: null,
       peek: null,
       peekChat: null,
+      aside: false,
       activePane: 0,
       autoTile: true,
 
@@ -441,6 +450,7 @@ export const usePanes = create<PanesState>()(
       setPeek: i => set(i == null ? { peek: null } : { peek: i, peekChat: null, activePane: i }),
       setPeekChat: id => set({ peekChat: id, peek: null }),
       closePeek: () => set(NO_PEEK),
+      setAside: on => set({ aside: on }),
 
       setSplit: (key, value) =>
         set(s =>
