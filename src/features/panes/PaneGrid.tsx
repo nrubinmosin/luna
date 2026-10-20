@@ -5,6 +5,7 @@ import { chatColorTheme } from '../../shared/ui/chatColors';
 import { useChats } from '../chats/chats.store';
 import { currentLayout, currentSlots, currentSplits, peeking, usePanes, type SplitKey } from './panes.store';
 import { Pane } from './Pane';
+import { STRIP, useShell } from '../../app/shell.store';
 
 const GAP = 8;
 /** How far the sheet sits inside the grid, so the board stays visible around it. */
@@ -101,10 +102,13 @@ const slot = (fraction: number): CSSProperties => ({
 
 /** The sheet. A sidebar slid out over the board lies over it as over the
  *  panes: moving the sheet aside would resize its terminal and reflow it on
- *  every pass of the pointer along the edge. */
-const sheetStyle: CSSProperties = {
+ *  every pass of the pointer along the edge. Only an Alt glance, raised from
+ *  the rows under the pointer, keeps clear of it (see `aside`). */
+const sheetStyle = (left: number): CSSProperties => ({
   position: 'absolute',
   inset: SHEET_INSET,
+  left,
+  transition: 'left .12s ease-out',
   zIndex: 50,
   display: 'flex',
   flexDirection: 'column',
@@ -115,6 +119,14 @@ const sheetStyle: CSSProperties = {
   background: 'var(--panel)',
   boxShadow: '0 24px 70px rgba(0,0,0,.5)',
   overflow: 'hidden'
+});
+
+/** Where the sheet's left edge goes. */
+const useSheetLeft = () => {
+  const aside = usePanes(s => s.aside);
+  const out = useShell(s => s.overlay && !s.pinned);
+  const width = useShell(s => s.width);
+  return aside && out ? Math.max(SHEET_INSET, width - STRIP + 12) : SHEET_INSET;
 };
 
 const inFlowStyle: CSSProperties = { flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column' };
@@ -201,8 +213,9 @@ function Sheet({ index, children }: { index: number; children: ReactNode }) {
   const peeked = usePanes(s => s.peek === index);
   const chatId = usePanes(s => currentSlots(s)[index] ?? null);
   const name = useChats(s => s.findChat(chatId)?.name ?? null);
+  const left = useSheetLeft();
   return (
-    <div style={peeked ? sheetStyle : inFlowStyle} className={peeked ? 'peek-sheet' : undefined} data-peek-sheet={peeked || undefined}>
+    <div style={peeked ? sheetStyle(left) : inFlowStyle} className={peeked ? 'peek-sheet' : undefined} data-peek-sheet={peeked || undefined}>
       {peeked && <PeekBar name={name} />}
       {children}
     </div>
@@ -212,8 +225,9 @@ function Sheet({ index, children }: { index: number; children: ReactNode }) {
 /** The same sheet for a chat that has no seat on the board at all. */
 function ChatSheet({ chatId }: { chatId: string }) {
   const name = useChats(s => s.findChat(chatId)?.name ?? null);
+  const left = useSheetLeft();
   return (
-    <div style={sheetStyle} className="peek-sheet" data-peek-sheet>
+    <div style={sheetStyle(left)} className="peek-sheet" data-peek-sheet>
       <PeekBar name={name} />
       <Pane soloChat={chatId} />
     </div>
