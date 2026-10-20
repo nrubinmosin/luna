@@ -185,9 +185,21 @@ fn call(caller: &str, params: &Value) -> Value {
         _ => Err(format!("unknown tool {name}")),
     };
     match out {
-        Ok(v) => json!({ "content": [{ "type": "text", "text": v.to_string() }] }),
+        Ok(v) => json!({ "content": content(v) }),
         Err(e) => json!({ "content": [{ "type": "text", "text": e }], "isError": true }),
     }
+}
+
+/// A result as text blocks: the JSON, then the terminal if it has one. A
+/// screen left inside the JSON reaches the model with its line breaks as `\n`
+/// escapes — the whole terminal on one line, a diff on it past reading.
+fn content(mut v: Value) -> Vec<Value> {
+    let screen = v.as_object_mut().and_then(|o| o.remove("screen"));
+    let mut blocks = vec![json!({ "type": "text", "text": v.to_string() })];
+    if let Some(Value::String(s)) = screen {
+        blocks.push(json!({ "type": "text", "text": format!("screen:\n{s}") }));
+    }
+    blocks
 }
 
 #[cfg(test)]
@@ -254,6 +266,15 @@ mod tests {
             assert_eq!(hint(name, "destructiveHint"), Some(true), "{name}");
         }
         assert_eq!(hint("luna_spawn", "readOnlyHint"), Some(false));
+    }
+
+    #[test]
+    fn a_screen_comes_as_its_own_block() {
+        let blocks = content(json!({ "turn": "waiting", "screen": "Allow edit?\n  1. Yes\n  2. No" }));
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0]["text"], r#"{"turn":"waiting"}"#);
+        assert_eq!(blocks[1]["text"], "screen:\nAllow edit?\n  1. Yes\n  2. No");
+        assert_eq!(content(json!({ "ok": true })).len(), 1);
     }
 
     #[test]
