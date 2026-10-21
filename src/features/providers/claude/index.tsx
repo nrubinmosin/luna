@@ -97,6 +97,17 @@ export const worktreeRe = /[\\/]\.claude[\\/]worktrees[\\/]/i;
 export const worktreeParentRe = /^(.*)[\\/]\.claude[\\/]worktrees[\\/][^\\/]+$/;
 export const branchPrefix = 'worktree-';
 
+const worktreeNameRe = /^(.*)[\\/]\.claude[\\/]worktrees[\\/]([A-Za-z0-9._-]+)[\\/]?$/;
+const samePath = (a: string, b: string) =>
+  a.replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase() === b.replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase();
+
+/** The name `claude --worktree <name>` knows this folder's worktree by, or
+ *  null when the path is not a worktree Claude Code made right in `folder`. */
+export function worktreeName(folder: string, path: string | null | undefined): string | null {
+  const m = path ? worktreeNameRe.exec(path) : null;
+  return m && samePath(m[1], folder) ? m[2] : null;
+}
+
 // ---------------------------------------------------------------- dialog --
 
 export function Fields({ draft, origin }: {

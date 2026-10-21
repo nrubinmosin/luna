@@ -48,8 +48,8 @@ pub fn dispatch(cmd: &str, args: Value) -> Result<Value, String> {
     match cmd {
         "ensure_claude_session" => call!(wait res args, pty::ensure_claude_session,
             id: String, folder: String, account_path: String, model: String, effort: String,
-            permission_mode: String, worktree: bool, resume: Option<String>, tools: Option<bool>,
-            parent: Option<String>, prompt: Option<String>),
+            permission_mode: String, worktree: bool, worktree_name: Option<String>, resume: Option<String>,
+            tools: Option<bool>, parent: Option<String>, prompt: Option<String>),
         "ensure_codex_session" => call!(wait res args, pty::ensure_codex_session,
             id: String, folder: String, account_path: String, model: Option<String>, effort: String,
             approval: String, sandbox: String, resume: Option<String>, login: bool, tools: Option<bool>,
