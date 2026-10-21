@@ -972,6 +972,11 @@ pub async fn ensure_codex_session(
             }
             args.push("-C".into());
             args.push(folder.clone());
+            // The session runs in this process, in Luna's pty, never in Codex's
+            // shared background server: Luna stops, deletes and counts it as a
+            // process of its own. The `-c` overrides below need that anyway;
+            // saying so keeps Codex from warning about it on every start.
+            args.push("--no-daemon".into());
             // A resumed thread already has its worktree; Codex refuses the
             // flag on `resume`.
             if worktree.unwrap_or(false) && resume.is_none() {

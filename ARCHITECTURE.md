@@ -189,9 +189,11 @@ src-tauri/src/
   and given the name the CLI makes it again, with the same name and branch. The core does not start a folder
   that does not exist at all: portable-pty would silently substitute the user's profile.
 - **A Codex session = running `codex`** with arguments:
-  `[resume <uuid>] -C <cwd> [--worktree] --model <m> -c model_reasoning_effort="<e>" -a <on-request|never>
+  `[resume <uuid>] -C <cwd> --no-daemon [--worktree] --model <m> -c model_reasoning_effort="<e>" -a <on-request|never>
   -s <read-only|workspace-write|danger-full-access>` (the pair `never` + `danger-full-access`
   is replaced by `--dangerously-bypass-approvals-and-sandbox`), `CODEX_HOME` = the account folder.
+  `--no-daemon` keeps the session in this process, in Luna's pty, rather than in Codex's shared background
+  server — which the `-c` overrides rule out anyway; said outright, Codex does not warn about it at startup.
   Worktrees are Codex's own: a new worktree chat starts with `--worktree` and `-C` = the project folder,
   and Codex puts the checkout at `<CODEX_HOME>/worktrees/<4 hex>/<repo>` (inside the account folder) on a
   detached HEAD, no branch. Luna learns the path from the rollout's `session_meta.cwd`
