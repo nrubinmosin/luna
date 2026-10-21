@@ -32,9 +32,20 @@ export const onAgentSpawn = (cb: (r: AgentSpawnRequest) => void): Promise<Unlist
 export const onCoreState = (cb: (s: CoreStateDto) => void): Promise<UnlistenFn> =>
   tauriAvailable ? listen<CoreStateDto>('core://state', e => cb(e.payload)) : Promise.resolve(() => {});
 
+export interface Notice {
+  title: string;
+  body: string;
+  /** The chat it is about, opened by a click on it. */
+  chatId: string | null;
+}
+
 /** A desktop notification the Rust side wants shown (power.rs, agents.rs). */
-export const onNotify = (cb: (n: { title: string; body: string }) => void): Promise<UnlistenFn> =>
-  tauriAvailable ? listen<{ title: string; body: string }>('ui://notify', e => cb(e.payload)) : Promise.resolve(() => {});
+export const onNotify = (cb: (n: Notice) => void): Promise<UnlistenFn> =>
+  tauriAvailable ? listen<Notice>('ui://notify', e => cb(e.payload)) : Promise.resolve(() => {});
+
+/** A notification about a chat was clicked (lib.rs). */
+export const onOpenChat = (cb: (p: { chatId: string }) => void): Promise<UnlistenFn> =>
+  tauriAvailable ? listen<{ chatId: string }>('ui://open-chat', e => cb(e.payload)) : Promise.resolve(() => {});
 
 export const onAgentDeleted = (cb: (p: { id: string }) => void): Promise<UnlistenFn> =>
   tauriAvailable ? listen<{ id: string }>('agent://deleted', e => cb(e.payload)) : Promise.resolve(() => {});

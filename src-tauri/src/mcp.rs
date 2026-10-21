@@ -1,6 +1,6 @@
 //! Luna as an MCP server, for the sessions that asked for it: JSON-RPC over
 //! streamable HTTP on the hub listener (`POST /mcp`, bearer token per
-//! session). Eight tools, described as briefly as a model can still use
+//! session). Nine tools, described as briefly as a model can still use
 //! them — every word here lands in the caller's context once per session —
 //! and a short `instructions` string in place of any system-prompt flag.
 //!
@@ -139,6 +139,12 @@ fn tools() -> Value {
             "description": "Stop a session, remove its row; dropWorktree: also its worktree and Luna's branch for it, not others; one shared with you stays.",
             "inputSchema": s(json!({ "id": { "type": "string" }, "dropWorktree": { "type": "boolean" } }), &["id"]),
             "annotations": ends
+        },
+        {
+            "name": "luna_notify",
+            "description": "Desktop notification to the user now, titled with your chat; a click opens it. For news mid-turn: a turn ending on a question already notifies. One per 10 s.",
+            "inputSchema": s(json!({ "text": { "type": "string" } }), &["text"]),
+            "annotations": acts
         }
     ])
 }
@@ -182,6 +188,7 @@ fn call(caller: &str, params: &Value) -> Value {
         "luna_kill" => agents::kill(caller, &id).map(|()| json!({ "ok": true })),
         "luna_delete" => agents::delete(caller, &id, a["dropWorktree"].as_bool().unwrap_or(false))
             .map(|wt| json!({ "ok": true, "worktreeRemoved": wt })),
+        "luna_notify" => agents::notify(caller, a["text"].as_str().unwrap_or("")).map(|()| json!({ "ok": true })),
         _ => Err(format!("unknown tool {name}")),
     };
     match out {
@@ -214,7 +221,7 @@ mod tests {
         assert!(handle("me", r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#).is_none());
         let list = handle("me", r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#).unwrap();
         let names: Vec<&str> = list["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names, ["luna_list", "luna_sessions", "luna_spawn", "luna_send", "luna_read", "luna_wait", "luna_kill", "luna_delete"]);
+        assert_eq!(names, ["luna_list", "luna_sessions", "luna_spawn", "luna_send", "luna_read", "luna_wait", "luna_kill", "luna_delete", "luna_notify"]);
         assert_eq!(handle("me", r#"{"jsonrpc":"2.0","id":3,"method":"ping"}"#).unwrap()["result"], json!({}));
         assert_eq!(handle("me", r#"{"jsonrpc":"2.0","id":4,"method":"nope"}"#).unwrap()["error"]["code"], -32601);
         assert_eq!(handle("me", "{").unwrap()["error"]["code"], -32700);
@@ -241,7 +248,7 @@ mod tests {
             t.as_object_mut().unwrap().remove("annotations");
         }
         let text = list.to_string();
-        assert!(text.len() < 5000, "tools/list is {} chars", text.len());
+        assert!(text.len() < 5500, "tools/list is {} chars", text.len());
         assert!(INSTRUCTIONS.len() < 1000, "instructions are {} bytes", INSTRUCTIONS.len());
     }
 
@@ -266,6 +273,21 @@ mod tests {
             assert_eq!(hint(name, "destructiveHint"), Some(true), "{name}");
         }
         assert_eq!(hint("luna_spawn", "readOnlyHint"), Some(false));
+        assert_eq!(hint("luna_notify", "destructiveHint"), Some(false));
+    }
+
+    #[test]
+    fn a_notification_is_held_to_one_per_gap() {
+        let call = |text: &str| {
+            let body = json!({ "jsonrpc": "2.0", "id": 8, "method": "tools/call",
+                "params": { "name": "luna_notify", "arguments": { "text": text } } });
+            handle("notify-test", &body.to_string()).unwrap()["result"].clone()
+        };
+        assert_eq!(call("  ")["isError"], true, "an empty one is refused, and does not count");
+        assert!(call("Build is green").get("isError").is_none());
+        let again = call("And the tests");
+        assert_eq!(again["isError"], true);
+        assert!(again["content"][0]["text"].as_str().unwrap().contains("try again in"));
     }
 
     #[test]

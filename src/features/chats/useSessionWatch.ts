@@ -76,7 +76,7 @@ export function useSessionWatch() {
 
         const next = mapStatus(meta.status);
         if (next === 'waiting' && fresh.status !== 'waiting') {
-          void notifyWaiting(fresh.name, PROVIDER_LABEL[fresh.provider]);
+          void notifyWaiting(fresh.id, fresh.name, PROVIDER_LABEL[fresh.provider]);
         }
         if (next !== fresh.status) store.setStatus(chat.id, next);
 

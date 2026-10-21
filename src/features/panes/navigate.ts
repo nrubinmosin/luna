@@ -9,6 +9,19 @@ export function focusPane(index: number) {
 }
 
 /**
+ * A click on a notification about a chat: the chat comes up on the peek
+ * sheet over whatever is on screen, in the group already open — the board
+ * stays as it was, and closing the sheet goes back to it.
+ */
+export function peekFromNotice(chatId: string) {
+  const chats = useChats.getState();
+  if (!chats.findChat(chatId)) return;
+  chats.setActive(chatId);
+  usePanes.getState().previewChat(chatId);
+  requestAnimationFrame(() => focusTerminal(chatId));
+}
+
+/**
  * The next chat that is waiting for you, round the list: its group, its pane
  * if it has one on the board, the sheet if not. The status bar's "waiting"
  * and Ctrl+Shift+W both come here.
