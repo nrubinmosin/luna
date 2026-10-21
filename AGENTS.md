@@ -29,3 +29,22 @@ Rules for anyone (person or agent) changing Luna.
   and idioms. Comments describe what is there now, not what used to be.
 - Cross-platform: Windows is home, but nothing may assume it — gate
   Windows-only behaviour and defaults (e.g. `defaultShell: powershell`).
+- Everything in the repo is in English: code, comments, docs. The one
+  exception is `README.ru.md`, the Russian twin of `README.md`; change both
+  together.
+
+## Agent setup
+The repo works the same for every coding agent; nothing in it is written for
+one CLI only.
+- This file is the only instructions file. Codex reads `AGENTS.md`, and
+  Claude Code does too when there is no `CLAUDE.md` (2.1.277 and later). Do
+  not add a `CLAUDE.md` or `CLAUDE.local.md` anywhere in the tree: either one
+  makes Claude Code read it instead of this file.
+- Skills live once, in `.agents/skills/<name>/SKILL.md`, which Codex reads.
+  Claude Code reads only `.claude/skills/`, so each skill also gets
+  `.claude/skills/<name>` as a symlink to `../../.agents/skills/<name>`,
+  committed with it. macOS and Linux check symlinks out as they are; on
+  Windows it takes Developer Mode and `git config --global core.symlinks
+  true`, or the link arrives as a text file Claude Code does not see.
+- A setting only one CLI understands goes in that CLI's project file:
+  `.claude/settings.json` or `.codex/config.toml`.

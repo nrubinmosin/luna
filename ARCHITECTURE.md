@@ -1,393 +1,452 @@
-# Архитектура
+# Architecture
 
-Desktop-обёртка над Claude Code CLI и Codex CLI. Принцип: **всё состояние сессии живёт в самом CLI**,
-приложение только мультиплексирует терминалы, папки и аккаунты. Поэтому ядро на Rust маленькое, а вся
-логика представления — на фронте.
+A desktop wrapper around the Claude Code CLI and the Codex CLI. Principle: **all session state lives in the CLI itself**;
+the app only multiplexes terminals, folders and accounts. So the Rust core is small, and all the
+presentation logic is on the frontend.
 
-Два провайдера — два независимых слоя (`claude/` и `codex/` и в Rust, и на фронте). Общее между ними —
-только pty, worktree-уборка, папка аккаунтов и механика скачивания бинарника. Всё, что касается
-настроек, лимитов, trust и чтения сессии с диска, у каждого своё и в своих терминах: Codex не
-знает слов «permission mode» и «Fable», Claude — «sandbox» и «rollout».
+Two providers, two independent layers (`claude/` and `codex/`, both in Rust and on the frontend). What they
+share is only the pty, finding and sweeping worktrees, the accounts folder and the mechanics of downloading the binary. Everything about
+settings, limits, trust and reading the session from disk is each one's own and in its own terms: Codex does not
+know the words "permission mode" and "Fable", Claude does not know "sandbox" and "rollout".
 
-## Стек
+## Stack
 
-- **Tauri 2** — Rust-ядро + системный WebView (лёгкий бинарь, нативный доступ к pty/fs).
-- **React 19 + TypeScript + Vite** — фронт.
-- **Zustand** (+ `persist` в localStorage) — состояние UI: чаты/папки, раскладка панелей.
-- **xterm.js + FitAddon** — терминалы в панелях.
-- **portable-pty** (Rust) — ConPTY на Windows / openpty на Unix, один код на все платформы.
+- **Tauri 2** — Rust core + system WebView (light binary, native access to pty/fs).
+- **React 19 + TypeScript + Vite** — frontend.
+- **Zustand** (+ `persist` in localStorage) — UI state: chats/folders, pane layout.
+- **xterm.js + FitAddon** — terminals in panes.
+- **CodeMirror 6** — the hand editor for account settings files.
+- **portable-pty** (Rust) — ConPTY on Windows / openpty on Unix, one code path for all platforms.
 
-## Слои
+## Layers
 
 ```
-src/                          фронт (feature-sliced)
-  app/        App (док сайдбара: закреплён или выезжает по наведению), AppFrame + BoardTools
-              (раскладки, группы, Even out, Clear, тема — в титлбаре окна), shell.store
-              (тема, закреп и ширина сайдбара), theme.css (токены light/dark и все контролы),
-              keymap: Ctrl+N / Ctrl+Shift+N, Ctrl+1..4 (фокус панели), Alt+1..4 (peek),
-              Ctrl+Shift+W (следующий ждущий), Ctrl+Shift+B (сайдбар), Ctrl+Tab (следующая группа),
-              Ctrl+0 (выход), Ctrl+Shift+1..4 (раскладка), F1 (шорткаты) — слушается в
-              capture-фазе, иначе xterm гасит их до window
-  shared/     types, format, status; ui/icons.tsx — XP-иконки (и значки провайдеров),
-              ToolButton, глифы титлбара; ui/dialogHost.ts
+src/                          frontend (feature-sliced)
+  app/        App (sidebar dock: pinned or slides out on hover), AppFrame + BoardTools
+              (layouts, groups, Even out, Clear, theme — in the window title bar), shell.store
+              (theme, sidebar pin and width), theme.css (light/dark tokens, code colours
+              --code-key/--code-string/--code-literal, and all controls),
+              keymap: Ctrl+N / Ctrl+Shift+N, Ctrl+1..4 (focus pane), Alt+1..4 (peek),
+              Ctrl+Shift+W (next waiting), Ctrl+Shift+B (sidebar), Ctrl+Tab (next group),
+              Ctrl+0 (exit), Ctrl+Shift+1..4 (layout), F1 (shortcuts) — listened to in the
+              capture phase, otherwise xterm swallows them before window
+  shared/     types, format, status; ui/icons.tsx — XP icons (and provider badges),
+              ToolButton, title bar glyphs; ui/ModelSelect.tsx — model drop-down (native
+              <select>); ui/dialogHost.ts
   features/
-    chats/    сайдбар: папки + чаты (drag source, клик = показать), chats.store
-    panes/    сетка 1/2/3/4, Pane (drop target), Terminal (xterm), panes.store
-              (там же автоплитка: TILE_ORDER, рост/сжатие доски на ±1 панель);
-              peek — лист поверх притемнённой доски, той же панелью без перемонтирования;
-              altPeek.ts — взгляд на чат, пока над его строкой зажат Alt;
-              terminals.ts — реестр живых xterm'ов, переживающих свои панели
-    new-chat/ диалог создания: папка, аккаунт (он же выбирает провайдера), чекбоксы
-              "Git worktree" и "Luna tools" (старт — из Settings или сохранённый для
-              папки, Folder.start), дальше поля провайдера (Fields из
-              providers/*) — они открываются на том, что скажут *_defaults; draft.ts —
-              черновик настроек с пометкой «тронуто рукой»; create.ts — общий путь
-              создания для диалога и для Ctrl+Shift+N (для Codex здесь же делается worktree)
-    providers/ claude/ и codex/ — всё, что UI знает о каждом CLI: STOCK, defaults,
-              Fields диалога, Meta титлбара, LimitBars ряда аккаунта, login, trust,
-              регэкспы worktree; index.ts — ui(provider) для того немногого, что общее
-    accounts/ окно Accounts (из статус-бара): лимиты, вход, агенты, добавление/удаление; accounts.store
-    settings/ Settings (шестерёнка в статус-баре и в Accounts): папка аккаунтов, автоплитка,
-              новые чаты, удаление, версии Luna/Claude Code/Codex и кнопки обновления
-    status-bar/ строка на всю ширину окна: working / waiting (клик — к ждущему), лимиты всех
-              аккаунтов, Accounts, питание, настройки, справка; чип обновления — только когда есть новость
-    power/    поле питания в статус-баре и меню: keep-awake, взвод «выключить/усыпить, когда всё закончится»;
-              power.store слушает power://state, сам ничего не считает
-    shortcuts/ окно F1 / «?» в статус-баре: все шорткаты и жесты мышью одним списком
-    agents/   bridge.ts — фронтовая половина агентов: agent://spawn → createChat с parentId
-              и ensure_* с промптом → agent_spawned; agent://deleted → deleteChat;
-              agentAccounts.store — какие аккаунты агентам нельзя (settings.json ядра)
-  ipc/        commands.ts (invoke), events.ts (listen) — единственная граница с Rust
+    chats/    sidebar: folders + chats (drag source, click = show), chats.store
+    panes/    1/2/3/4 grid, Pane (drop target), Terminal (xterm), panes.store
+              (auto-tiling lives there too: TILE_ORDER, board grows/shrinks by ±1 pane);
+              peek — a sheet over the dimmed board, the same pane without remounting;
+              altPeek.ts — a look at a chat while Alt is held over its row;
+              terminals.ts — registry of live xterms that outlive their panes
+    new-chat/ creation dialog: folder, account (which also picks the provider), checkboxes
+              "Git worktree" and "Luna tools" (start state — from Settings or saved for the
+              folder, Folder.start), then the provider's fields (Fields from
+              providers/*) — they open on what *_defaults say; the model is a drop-down
+              with the one the files (or the CLI) would pick marked "· default"; draft.ts —
+              settings draft with a "touched by hand" mark, and `follow` for values that
+              track another pick (effort follows the model); create.ts — the shared
+              creation path for the dialog and for Ctrl+Shift+N
+    providers/ claude/ and codex/ — everything the UI knows about each CLI: STOCK, defaults,
+              dialog Fields, title bar Meta, account row LimitBars, login, trust,
+              worktreeRe, projectOf(cwd) (Claude: from the path; Codex: null — the path
+              names the account, not the project), branchPrefix (Claude `worktree-`,
+              Codex null); index.ts — ui(provider) for the little that is shared
+    accounts/ Accounts window (from the status bar): limits, sign-in, agents, add/remove;
+              RecommendedDialog (recommended settings, per-account button), ConfigEditor
+              (hand editor for settings.json / config.toml); accounts.store
+    settings/ Settings (gear in the status bar and in Accounts): accounts folder, auto-tiling,
+              new chats, deletion, Luna/Claude Code/Codex versions and update buttons
+    status-bar/ full-width strip of the window: working / waiting (click — to the waiting one), limits of all
+              accounts, Accounts, power, settings, help; the update chip — only when there is news
+    power/    power field in the status bar and menu: keep-awake, arming "shut down/sleep when everything is done";
+              power.store listens to power://state, computes nothing itself
+    shortcuts/ the F1 / "?" window in the status bar: all shortcuts and mouse gestures in one list
+    agents/   bridge.ts — the frontend half of agents: agent://spawn → createChat with parentId
+              and ensure_* with the prompt → agent_spawned; agent://deleted → deleteChat;
+              a model asked for without an effort gets that model's default effort;
+              agentAccounts.store — which accounts agents may not use (core settings.json)
+  ipc/        commands.ts (invoke), events.ts (listen) — the only boundary with Rust
 
 src-tauri/src/
-  provider.rs   enum Provider { Claude, Codex } — тег, больше ничего
-  accounts.rs   list/create/delete папок в <accounts root>/{anthropic,openai}/<name>;
-                Codex-аккаунт при создании получает seed config.toml
-  settings.rs   <data>/settings.json: accountsRoot (по умолчанию Documents/luna-accounts),
-                меняется в Settings; запись под settings.json.lock с перечитыванием файла,
-                кэш сверяется с mtime — файл может писать не один процесс
-  emit.rs       единственная дверь событий в UI: приёмник ставится один раз (окно в setup),
-                шлющий код не держит AppHandle; pty::manager() — единственный PtyManager
-                процесса, тоже без Tauri State
-  cli.rs        общая механика собственных копий CLI: versions/<ver>/, current, sha256,
-                прогресс, prune, автообновление раз в 6ч; откуда брать версию — Source
-                провайдера
-  pty.rs        менеджер сессий: общий spawn в pty, scrollback-буфер, события pty://output
-                и pty://exit, write/resize/kill; ensure_claude_session / ensure_codex_session
-                собирают командную строку; session_meta диспетчит по провайдеру
-  worktree.rs   уборка worktree обоих провайдеров (.claude/worktrees, .codex/worktrees),
-                create_worktree для Codex (и его повторное создание на том же месте, если
-                папки чата не стало), fetch origin перед новым worktree обоих
-                провайдеров (настройка fetchBeforeWorktree), поиск сирот
-  throttle.rs   cool-off после 429 usage-эндпоинтов, общий на оба
-  procs.rs      что у CLI запущено под ним: Job Object на сессию, список pid,
-                CPU/IO/время старта каждого, правило «занят» (judge)
-  hub.rs        loopback HTTP (tiny_http) на случайном порту с секретом на запуск;
-                POST /hook/<chat>/<secret> принимает stdin hook'ов Claude Code;
-                POST /mcp с bearer-токеном сессии — MCP для агентов; поток на запрос
-  mcp.rs        JSON-RPC MCP-сервера: initialize (с instructions), tools/list, tools/call;
-                восемь инструментов luna_* с короткими описаниями (~2k токенов)
-  agents.rs     реестр сессий с инструментами и порождённых ими: токены, родство,
-                права (kill/delete — только потомки; sessions, send, read, wait — все), spawn через фронт
-                (agent://spawn ↔ agent_spawned), send в pty, read из транскрипта, wait по activity, kill, delete (+worktree);
-                уведомитель: несобранный ответ помощника печатается вызывающему, когда тот свободен;
-                autoDelete-помощники удаляются, когда отслужили
-  agentlog.rs   <data>/agents.jsonl: строка на spawn и на конец, для luna_sessions(history: true)
-  activity.rs   семплер раз в 5 с: ход (hooks + registry / rollout), потомки, вывод →
-                busy / waiting / idle на сессию и сводка
-  power.rs      keep-awake (PowerSetRequest) и «выключить, когда всё закончится»:
-                взвод, тихое окно, отсчёт, действие; команды и событие power://state
+  provider.rs   enum Provider { Claude, Codex } — a tag, nothing more
+  accounts.rs   list/create/delete folders in <accounts root>/{anthropic,openai}/<name>;
+                a Codex account gets a seed config.toml on creation
+  settings.rs   <data>/settings.json: accountsRoot (default Documents/luna-accounts),
+                changed in Settings; written under settings.json.lock re-reading the file,
+                the cache is checked against mtime — more than one process may write the file
+  emit.rs       the only door for events into the UI: the receiver is set once (the window in setup),
+                sending code does not hold an AppHandle; pty::manager() — the process's only
+                PtyManager, also without Tauri State
+  cli.rs        shared mechanics of Luna's own CLI copies: versions/<ver>/, current, sha256,
+                progress, prune, auto-update every 6h; where to get a version from — the
+                provider's Source
+  pty.rs        session manager: shared spawn in a pty, scrollback buffer, pty://output
+                and pty://exit events, write/resize/kill; ensure_claude_session / ensure_codex_session
+                build the command line; session_meta dispatches by provider;
+                ActivityProbe::working_dir() — where a session actually works (Claude
+                registry / Codex rollout)
+  worktree.rs   finds the worktrees both CLIs make: Claude's under <folder>/.claude/worktrees
+                (branch worktree-*), Codex's by shape …/worktrees/<4 hex>/<name> plus a .git
+                file pointing back at the folder; removal, orphan sweep (including each
+                account's worktrees/), fetch origin before a Claude Code worktree (setting
+                fetchBeforeWorktree)
+  throttle.rs   cool-off after a 429 from the usage endpoints, shared by both
+  procs.rs      what the CLI has running under it: a Job Object per session, pid list,
+                CPU/IO/start time of each, the "busy" rule (judge)
+  hub.rs        loopback HTTP (tiny_http) on a random port with a per-launch secret;
+                POST /hook/<chat>/<secret> takes Claude Code hooks' stdin;
+                POST /mcp with the session's bearer token — MCP for agents; a thread per request
+  mcp.rs        the MCP server's JSON-RPC: initialize (with instructions), tools/list, tools/call;
+                eight luna_* tools with short descriptions (~2k tokens)
+  agents.rs     registry of sessions with tools and those they spawned: tokens, kinship,
+                rights (kill/delete — descendants only; sessions, send, read, wait — all), spawn via the frontend
+                (agent://spawn ↔ agent_spawned), send into the pty, read from the transcript, wait on activity, kill, delete (+worktree);
+                notifier: an uncollected helper answer is typed to the caller when it is free;
+                autoDelete helpers are deleted once they have served
+  agentlog.rs   <data>/agents.jsonl: a line per spawn and per end, for luna_sessions(history: true)
+  activity.rs   sampler every 5 s: turn (hooks + registry / rollout), descendants, output →
+                busy / waiting / idle per session and a summary
+  power.rs      keep-awake (PowerSetRequest) and "shut down when everything is done":
+                arming, quiet window, countdown, action; commands and the power://state event
   claude/
-    cli.rs      Source: downloads.claude.ai, latest + manifest.json, голый exe
-    defaults.rs model/effortLevel/permissions.defaultMode из настроек Claude Code в его
-                порядке: settings.json аккаунта → .claude/settings.json проекта →
+    cli.rs      Source: downloads.claude.ai, latest + manifest.json, bare exe
+    defaults.rs model/effortLevel/permissions.defaultMode from Claude Code's settings in its
+                order: the account's settings.json → the project's .claude/settings.json →
                 .claude/settings.local.json → machine-wide managed
-    limits.rs   OAuth usage + кэш CLI (.claude.json); 5h, week и каждый weekly_scoped
-    oauth.rs    рефреш протухшего access-токена так же, как это делает CLI (его локи, CAS)
-    models.rs   окна контекста из Models API
-    trust.rs    hasTrustDialogAccepted в .claude.json
-    session.rs  registry <config>/sessions/<pid>.json + транскрипт projects/<cwd>/<sid>.jsonl:
-                контекст, тайтл CLI (custom-title / ai-title), первый промпт
+    limits.rs   OAuth usage + CLI cache (.claude.json); 5h, week and each weekly_scoped
+    oauth.rs    refreshes an expired access token the same way the CLI does (its locks, CAS)
+    models.rs   context windows from the Models API
+    trust.rs    hasTrustDialogAccepted in .claude.json
+    session.rs  registry <config>/sessions/<pid>.json + transcript projects/<cwd>/<sid>.jsonl:
+                context, CLI title (custom-title / ai-title), first prompt
   codex/
-    cli.rs      Source: GitHub Releases openai/codex, rust-v<ver>, package-тарбол + SHA256SUMS
-    config.rs   config.toml через toml_edit (комментарии и формат сохраняются), seed
-    models.rs   каталог моделей: models_cache.json аккаунта → чужого Codex-аккаунта →
-                `codex debug models` → `codex debug models --bundled`
-    defaults.rs model / model_reasoning_effort / approval_policy / sandbox_mode из
-                config.toml аккаунта, затем .codex/config.toml проекта (только trusted)
-    limits.rs   chatgpt.com/backend-api/wham/usage по auth.json; fallback — rate_limits
-                из последнего token_count в rollout
-    trust.rs    [projects.'<путь>'] trust_level = "trusted" в config.toml
-    session.rs  rollout-файлы sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl: какой наш,
-                статус, модель, контекст, первый промпт; имя треда из session_index.jsonl
-  account_settings.rs  рекомендуемые настройки (settings.json / config.toml, ключ за
-                ключом, с учётом платформы), синхронизация от родительского аккаунта и
-                ручная правка файла (запись только того, что разбирается)
-  watchdog.rs   окно, чья страница перестала отвечать (умер WebView2), пересобирается
-  coreproc.rs   ядро: тот же exe с `--core`, без окна; один на data dir (core.lock), слушает
-                127.0.0.1 с токеном из <data>/core/core.json, уходит само через 10 минут без
-                окна и сессий; на Windows запускается из копии exe <data>/core/<отпечаток>/,
-                чтобы инсталлятор мог заменить luna.exe. Здесь живут pty, hub, agents/mcp,
-                activity, power; события уходят во все окна через очередь на окно (отставшее
-                окно отключается, pty его не ждёт)
-  corecmd.rs    команды, на которые отвечает ядро: page зовёт их как раньше, окно пересылает
-                (core_call / core_send для ввода), здесь они по имени ложатся на те же функции
-  corelink.rs   сторона окна: найти ядро своей сборки или запустить, hello, держать соединение
-                (его обрыв = ядро упало → баннер, Restart); ядро другой сборки без сессий
-                заменяют сразу, с сессиями — только по кнопке; события ядра → webview
-  ipc.rs        кадры `u32 len | u8 kind | JSON` (REQ/RES/EVENT/SEND), hello/welcome,
-                discovery-файл, токен
-  lifecycle.rs  почему Luna остановилась: свои выходы с причиной, сторож `--watch-exit
-                <pid>` (код выхода: убили / упала), luna.run с последним признаком жизни
-                для следующего запуска, зависания event loop и сон машины
-  paths.rs      data_dir(): рядом с exe (portable) либо LOCALAPPDATA\luna; тестовая
-                сборка (LUNA_FLAVOR=test) держит всё рядом со своим exe в test-build/
+    cli.rs      Source: GitHub Releases openai/codex, rust-v<ver>, package tarball + SHA256SUMS
+    config.rs   config.toml via toml_edit (comments and formatting kept), seed
+    models.rs   model catalogue, sorted by priority, with per-level descriptions
+                (effort_hints): the account's models_cache.json → another Codex account's →
+                `codex debug models` → `codex debug models --bundled`; models_known — without
+                running the CLI, models_for — with the CLI fallbacks
+    defaults.rs model / model_reasoning_effort / approval_policy / sandbox_mode from
+                the account's config.toml, then the project's .codex/config.toml (trusted only);
+                no model there = first model of the catalogue (source codex), no effort =
+                that model's default_reasoning_level
+    limits.rs   chatgpt.com/backend-api/wham/usage via auth.json; fallback — rate_limits
+                from the last token_count in the rollout
+    trust.rs    [projects.'<path>'] trust_level = "trusted" in config.toml
+    session.rs  rollout files sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl: which is ours,
+                status, model, context, first prompt, cwd (rollout_cwd — where a --worktree
+                session went); thread name from session_index.jsonl
+  account_settings.rs  recommended settings (settings.json / config.toml, key by
+                key, platform-aware; apply_recommended adds and removes keys), sync from the
+                parent account, and hand editing of the file (check_account_config: problems
+                with line/column; format_account_config: JSON pretty with 2 spaces, TOML via
+                taplo, comments and key order kept; only what parses is written)
+  watchdog.rs   a window whose page stopped responding (WebView2 died) is rebuilt
+  coreproc.rs   the core: the same exe with `--core`, no window; one per data dir (core.lock), listens on
+                127.0.0.1 with a token from <data>/core/core.json, exits by itself after 10 minutes with no
+                window and no sessions; on Windows it runs from a copy of the exe <data>/core/<fingerprint>/,
+                so the installer can replace luna.exe. pty, hub, agents/mcp, activity and power
+                live here; events go to all windows through a per-window queue (a window that falls
+                behind is disconnected, the pty does not wait for it)
+  corecmd.rs    commands the core answers: the page calls them as before, the window forwards
+                (core_call / core_send for input), here they map by name onto the same functions
+  corelink.rs   the window side: find the core of its own build or start it, hello, hold the connection
+                (its loss = the core died → banner, Restart); a core of another build with no sessions
+                is replaced at once, one with sessions — only on a button; core events → webview
+  ipc.rs        frames `u32 len | u8 kind | JSON` (REQ/RES/EVENT/SEND), hello/welcome,
+                discovery file, token
+  lifecycle.rs  why Luna stopped: its own exits with a reason, the `--watch-exit
+                <pid>` watcher (exit code: killed / crashed), luna.run with the last sign of life
+                for the next launch, event loop hangs and machine sleep
+  paths.rs      data_dir(): next to the exe (portable) or LOCALAPPDATA\luna; the test
+                build (LUNA_FLAVOR=test) keeps everything next to its exe in test-build/
   lib.rs        Builder + generate_handler
 ```
 
-## Ключевые решения
+## Key decisions
 
-- **Тонкое Rust-ядро.** Rust не знает про «чаты» — только про pty-сессии по id и папки аккаунтов.
-  Список чатов, раскладка, настройки — persisted-состояние фронта. Меньше IPC-поверхность,
-  проще эволюция UI.
-- **Свои бинарники CLI.** Luna не зависит от глобальных `claude`/`codex`: `cli.rs` держит копии в
-  `<data>/claude-cli/versions/<ver>/claude.exe` и `<data>/codex-cli/versions/<ver>/bin/codex.exe`
-  (`<data>` — папка exe для портативной сборки, чтобы всё жило на одном диске), `current`
-  указывает на активную версию. Версии никогда не перезаписываются (запущенный exe на Windows не
-  заменить) — новая ложится рядом, указатель переключается, старые сметаются, когда их никто не
-  держит. Claude-сессиям ставится `DISABLE_AUTOUPDATER=1`, Codex-аккаунтам —
-  `check_for_update_on_startup = false`, так что обновляет CLI только Luna. Пока копии нет —
-  fallback на PATH. Codex приезжает package-тарболом (единственный ассет с строкой в
-  `codex-package_SHA256SUMS`, и в нём лежат `codex-command-runner.exe` и прочие хелперы
-  Windows-песочницы), распаковывается целиком в папку версии.
-- **Сессия Claude = запуск `claude`** с аргументами:
+- **Thin Rust core.** Rust does not know about "chats" — only pty sessions by id and account folders.
+  The chat list, layout, settings — persisted frontend state. Smaller IPC surface,
+  easier UI evolution.
+- **Own CLI binaries.** Luna does not depend on a global `claude`/`codex`: `cli.rs` keeps copies in
+  `<data>/claude-cli/versions/<ver>/claude.exe` and `<data>/codex-cli/versions/<ver>/bin/codex.exe`
+  (`<data>` is the exe's folder for the portable build, so everything lives on one drive), `current`
+  points at the active version. Versions are never overwritten (a running exe cannot be
+  replaced on Windows) — a new one goes next to it, the pointer switches, old ones are swept once nobody
+  holds them. Claude sessions get `DISABLE_AUTOUPDATER=1`, Codex accounts get
+  `check_for_update_on_startup = false`, so only Luna updates the CLI. Until there is a copy —
+  fallback to PATH. Codex comes as a package tarball (the only asset with a line in
+  `codex-package_SHA256SUMS`, and it carries `codex-command-runner.exe` and the other Windows
+  sandbox helpers), unpacked whole into the version folder.
+- **A Claude session = running `claude`** with arguments:
   `--model <alias> --effort <low|medium|high|xhigh|max|ultracode> --permission-mode <mode> [--resume <uuid>] [--worktree [<name>]]`,
-  `cwd` = папка чата, `CLAUDE_CONFIG_DIR` = папка аккаунта (изоляция логина/настроек на аккаунт).
-  Worktree-чат, чей worktree уже известен, продолжается из папки проекта как `--worktree <name> --resume <uuid>`
-  (так советует сам CLI при выходе), а не запуском внутри worktree: Claude Code при выходе молча удаляет
-  чистый worktree (ни изменений, ни коммитов) — а выходят все сессии на каждом Quit и обновлении Luna, —
-  и по имени CLI создаёт его заново, с тем же именем и веткой. Папки, которой нет, ядро не запускает
-  вообще: portable-pty молча подставил бы профиль пользователя.
-- **Сессия Codex = запуск `codex`** с аргументами:
-  `[resume <uuid>] -C <cwd> [--model <m>] -c model_reasoning_effort="<e>" -a <on-request|never>
-  -s <read-only|workspace-write|danger-full-access>` (пара `never` + `danger-full-access`
-  заменяется на `--dangerously-bypass-approvals-and-sandbox`), `CODEX_HOME` = папка аккаунта.
-  Worktree для Codex делает Luna сама (`git worktree add --no-track -b codex-<hex> <папка>/.codex/worktrees/codex-<hex> origin/<default>`
-  — та же база, что у `claude --worktree`, HEAD без origin; плюс запись в `.git/info/exclude`) и запускает сессию уже внутри — нативный `--worktree` Codex
-  экспериментальный, кладёт checkout под `CODEX_HOME` и не чистит за собой. Логин — та же команда
-  с `login: true`, т.е. `codex login` в папке аккаунта.
-- Флаги ставятся всегда, поэтому собственные настройки CLI были бы перекрыты на каждой
-  сессии — `claude/defaults.rs` и `codex/defaults.rs` читают их сами и подставляют в диалог, так
-  что по умолчанию флаги совпадают с файлами, а расхождение бывает только там, где его попросили
-  руками. Модель у Codex — свободная строка; пусто = флаг не ставится, Codex берёт свой дефолт, а
-  что он реально запустил, читается из `turn_context` rollout-файла (`modelSeen` в чате).
-- **Аккаунт = папка** `<accounts root>/anthropic/<name>` или `<accounts root>/openai/<name>`
-  (по умолчанию `Documents/luna-accounts`, корень выбирается в настройках и хранится в Rust — его
-  читает и фоновый поток `models.rs`). Создание — mkdir, удаление — rm -rf, список — readdir по
-  двум подпапкам. Никакой собственной БД. Чаты помнят провайдера и имя аккаунта, поэтому смена
-  корня не требует миграции — только перенести папки.
-- **Сессия Codex на диске.** У Codex нет живого registry, только rollout-файл треда
-  `<CODEX_HOME>/sessions/YYYY/MM/DD/rollout-<локальное время>-<uuid>.jsonl`, строка = JSON
-  `{timestamp,type,payload}`. Какой файл наш: для свежей сессии — самый ранний из появившихся
-  после спавна с тем же cwd в `session_meta`, для возобновлённой — по uuid в имени; ответ
-  запоминается на чат, так что два чата в одной папке не делят файл. Из хвоста (128 KiB):
-  `task_started`/`task_complete` (до 0.157 — `turn_started`/`turn_complete`/`turn_aborted`) →
-  working/resting, `token_count.info` → контекст (`last_token_usage.total_tokens −
-  reasoning_output_tokens` к `model_context_window`, как считает сам Codex),
-  `turn_context.model` → модель, `token_count.rate_limits` → fallback лимитов. Сама беседа —
-  строки `response_item` типа `message` с `role` user/assistant (developer-сообщения и
-  подмешанный контекст вроде `# AGENTS.md instructions` и `<environment_context>` — не беседа).
-  Approval-запросы в rollout не пишутся, поэтому «waiting» для Codex — это turn в полёте при
-  экране, который не менялся 3 с (спиннер Codex рисует непрерывно). Rollout появляется только
-  с первым ходом: сессия, которая стоит на стартовом попапе, файла не имеет вовсе.
-- **Scrollback в Rust.** Буфер вывода (2MB cap) живёт в ядре, чтобы перенос чата между панелями
-  или пересоздание xterm восстанавливали экран (`ensure_session` возвращает бэклог).
-- **Терминал переживает панель.** Раньше xterm принадлежал панели, и смена чата в ней стоила
-  `ensure_session` с этим самым бэклогом, reset и ожидания перерисовки от CLI — то есть ровно
-  столько, сколько стоит переключение чата в режиме одного окна. Теперь xterm'ы живут в
-  `terminals.ts`: панель берёт готовый и возвращает его на «парковку» (за экраном, но в
-  документе — иначе рендерер и fit-аддон меряют ноль). Три последних отложенных ждут там со
-  всеми подписками, дальше вытесняется самый давний. Возврат = refit плюс пинок на перерисовку.
-- **События вместо поллинга (pty).** Вывод pty стримится событием `pty://output`; завершение —
-  `pty://exit` (чат переходит в idle).
-- **Лимиты аккаунтов — ноль токенов.** `claude/limits.rs` читает OAuth-токен из
-  `<аккаунт>/.credentials.json` и дергает `api.anthropic.com/api/oauth/usage` — тот же эндпоинт,
-  что у `/usage` внутри Claude Code; кэш CLI в `.claude.json` отвечает, пока свежий.
-  `codex/limits.rs` читает `tokens.access_token`/`account_id` из `<аккаунт>/auth.json` (email и
-  план — из claims `id_token`) и дергает `chatgpt.com/backend-api/wham/usage` — то же, что
-  `/status` внутри Codex; окна `primary`/`secondary` плюс `additional_rate_limits` отдаются как
-  список с подписями (300 мин → «5 hours», 10080 → «week»). Если сети или токена нет — последний
-  `token_count.rate_limits` из rollout. Фронт поллит раз в 60с; ↻ в ряду аккаунта спрашивает сразу,
-  мимо свежего кэша CLI и cool-off. Cool-off после 429 общий (`throttle.rs`).
-- **Рефреш токена Claude.** Access-токен живёт ~8 ч, и раньше аккаунт, который давно не открывали,
-  висел на «waiting for token refresh» до первой сессии. Теперь `claude/oauth.rs` меняет refresh-токен
-  сам — тот же `POST platform.claude.com/v1/oauth/token` с client_id и scopes CLI. Refresh-токены
-  ротируются, поэтому только по правилам CLI: оба его mkdir-лока (`<config>/.oauth_refresh.lock` и
-  `<config>.lock`, stale через 60 с), перечитать файл под локом, записать только если refresh-токен
-  на диске всё ещё тот, что отправили. CLI, пришедший рефрешить после нас, видит на диске другой
-  access-токен и берёт его (его собственная ветка «race resolved»). `invalid_grant` = нужен новый
-  логин, аккаунт показывается signed out. Codex не трогаем: его токен живёт 10 дней, рефрешит он
-  сам, а уже использованный refresh-токен сервер отвергает («refresh token was already used. Please
-  log out and sign in again») — наш рефреш рядом с живым Codex, помнящим старый токен, его разлогинит.
-- **Тайтлы чатов — от CLI.** Claude Code после первого сообщения генерирует название сессии (то же,
-  что ставит на вкладку терминала) и пишет его в транскрипт строкой `ai-title`; `/rename` пишет
-  `custom-title`. Обе перезаписываются в хвост по ходу сессии, так что читаются вместе с контекстом.
-  Порядок: `custom-title` → имя registry с `nameSource: user` (оба — ручное переименование) →
-  `ai-title` → первый промпт (только пока тайтла ещё нет). Имя registry с `nameSource: auto` и
-  второй `ai-title`, который CLI пишет после принятия плана (kebab-хэндл плана, его же повторяет
-  строка `agent-name`), тайтлом не считаются. Для чатов без живой сессии `saved_title` один раз за
-  запуск находит транскрипт по session id. У Codex — строки с этим id в
-  `<CODEX_HOME>/session_index.jsonl`: первую он пишет сам, всё, что отличается от неё, — `/rename`.
-- **Чат называется один раз.** `Chat.nameSource` говорит, откуда имя, и `mayRename` решает, что
-  может его заменить: набранная первая строка (`prompt`) — только плейсхолдер; первый тайтл CLI
-  (`cli`) — только плейсхолдер или промпт, дальше он заморожен; `/rename` в CLI (`rename`) — всё,
-  кроме имени из Luna; имя из Luna (`user`) — окончательное.
-- **Trust.** Ни один CLI не может показать свой trust-промпт так, как его запускает Luna (Claude
-  Code отказывается под `--worktree`, Codex после него задаёт вопрос про Windows-песочницу),
-  поэтому бит пишется до спавна: `hasTrustDialogAccepted` в `.claude.json` либо
-  `[projects.'<native путь>'] trust_level = "trusted"` в `config.toml` (через `toml_edit`, чтобы
-  не потерять комментарии пользователя; ключ сравнивается без регистра и с любым слэшем).
-- **Занятость сессии измеряется, а не читается из одного статуса.** `activity.rs` раз в 5 с
-  сводит три сигнала: ход (у Claude — hooks через `--settings`-файл с `curl.exe` (вне Windows — `curl`) на loopback
-  `hub.rs`, сверенные с registry; у Codex — rollout плюс тишина экрана, а диалог одобрения
-  (команда, правка), которого нет в rollout и под которым экран не молчит, — по его тексту на
-  отрисованном экране; тот же вердикт отдаёт и строке чата в UI вместо `working`), потомки CLI
-  (`procs.rs`: при спавне CLI кладётся в Job Object, потомки наследуют его; «занят» = прирост
-  CPU/IO за окно либо процесс, родившийся после начала последнего хода и ещё живой — так
-  ловится `sleep` в фоне, а MCP-серверы, поднявшиеся вместе с сессией, считаются мебелью) и
-  вывод pty за последние 30 с. Hooks ничего не печатают: stdout hook'а с кодом 0 Claude Code
-  добавляет в контекст, а молчание бесплатно. Регистр Claude бьёт «idle» от hook, hook
-  «waiting» бьёт «busy» регистра (промпт разрешения — внутри хода). Ни одна метка не вечна:
-  hook «busy» против «idle» регистра стареет за 15 с (пропущенный Stop), hook «waiting» — за
-  60 с (промпт ушёл вместе с ходом по Esc, Stop не пришёл), «busy» регистра против hook «idle»
-  — за 60 с без единого hook'а (ход, который начался или что-то сделал, hook'ом отметится).
-  Без hooks (Codex, сессия, пережившая перезапуск Luna) регистр верится как есть.
-  `waiting` регистра бьёт hook «busy»: диалог открыт, модель не работает (ход, оборванный
-  ошибкой API, не шлёт Stop — шлёт `StopFailure`, на который Luna тоже подписана: конец хода
-  плюс вид ошибки). Сессия, которая ждёт на диалоге после такой ошибки (по `StopFailure` или по
-  последней строке транскрипта с `isApiErrorMessage`), — *stalled*: в `waiting` не считается.
-- **Питание следует за занятостью** (`power.rs`). Keep-awake — `PowerSetRequest(SystemRequired)`
-  с причиной, видимой в `powercfg /requests`, пока busy > 0, отпускается через 60 с тишины;
-  `waiting` машину не держит (никто не отвечает), но блокирует выключение (работа не
-  закончена). Stalled (лимит и прочие ошибки API) не блокирует: до сброса там
-  ничего не сдвинется. Взвод при `waiting` > 0 сразу шлёт уведомление с именами чатов. Взвод живёт до выхода Luna; при взводе hold держится всегда, иначе ПК уснёт в
-  тихом окне. Автомат: busy = 0 и waiting = 0 непрерывно quiet_s → отсчёт 60 с с
-  уведомлением → действие. Shutdown закрывает сессии через `shut_down` с grace 5 с (exit-hooks
-  CLI) и `shutdown /s /t 0`; sleep/hibernate — `SetSuspendState`, сессии живут, взвод остаётся,
-  а скачок часов при пробуждении сбрасывает тихое окно и отсчёт. Взведённое правило, которое
-  не срабатывает, объясняется в `luna.log`: строка `armed, not firing: <chat> <почему> [hook …,
-  registry …]` при смене причины (не чаще раза в минуту) и раз в 10 минут без перемен; в
-  `luna.log` идут только WARN/ERROR, поэтому всё, что решает судьбу ночи, пишется этим уровнем.
-- **Агенты — через MCP, а не через промпт.** Сессия с галочкой «Luna tools» получает
-  `--mcp-config <data>/mcp/<chat>.json` с `"timeout": 1900000` у сервера и `--allowedTools mcp__luna`
-  (Claude: без `timeout` он рвёт HTTP-вызов, молчащий 5 мин) или `-c mcp_servers.luna.url=… -c
+  `cwd` = the chat's folder, `CLAUDE_CONFIG_DIR` = the account folder (login/settings isolated per account).
+  A worktree chat whose worktree is already known continues from the project folder as `--worktree <name> --resume <uuid>`
+  (as the CLI itself advises on exit), not by starting inside the worktree: on exit Claude Code silently removes
+  a clean worktree (no changes, no commits) — and every session exits on each Quit and Luna update —
+  and given the name the CLI makes it again, with the same name and branch. The core does not start a folder
+  that does not exist at all: portable-pty would silently substitute the user's profile.
+- **A Codex session = running `codex`** with arguments:
+  `[resume <uuid>] -C <cwd> [--worktree] --model <m> -c model_reasoning_effort="<e>" -a <on-request|never>
+  -s <read-only|workspace-write|danger-full-access>` (the pair `never` + `danger-full-access`
+  is replaced by `--dangerously-bypass-approvals-and-sandbox`), `CODEX_HOME` = the account folder.
+  Worktrees are Codex's own: a new worktree chat starts with `--worktree` and `-C` = the project folder,
+  and Codex puts the checkout at `<CODEX_HOME>/worktrees/<4 hex>/<repo>` (inside the account folder) on a
+  detached HEAD, no branch. Luna learns the path from the rollout's `session_meta.cwd`
+  (`codex/session.rs` `rollout_cwd`), the same way it learns Claude Code's from its registry
+  (`useSessionWatch`). Codex refuses `--worktree` on resume, so a worktree chat resumes as
+  `resume <uuid> -C <worktree>`; if that worktree is gone the session fails to start — nothing
+  re-creates it. Login is the same command with `login: true`, i.e. `codex login` in the account folder.
+- Flags are always set, so the CLI's own settings would be overridden on every
+  session — `claude/defaults.rs` and `codex/defaults.rs` read them themselves and put them into the dialog, so
+  by default the flags match the files, and a divergence happens only where it was asked for
+  by hand. Codex always gets `--model`: `codex_defaults` resolves it as config.toml's `model` or else
+  the first model of Codex's catalogue (sorted by `priority`; source `codex`), and the effort as
+  config.toml's `model_reasoning_effort` or else that model's `default_reasoning_level`. Picking
+  another model in the dialog moves the effort to that model's default, unless the effort came from
+  a settings file or was picked by hand (`draft.follow`). What Codex actually ran is read from the
+  rollout's `turn_context` (`modelSeen` on the chat).
+- **An account = a folder** `<accounts root>/anthropic/<name>` or `<accounts root>/openai/<name>`
+  (default `Documents/luna-accounts`, the root is chosen in settings and kept in Rust — the
+  background thread of `models.rs` reads it too). Create — mkdir, delete — rm -rf, list — readdir over
+  the two subfolders. No database of its own. Chats remember the provider and the account name, so changing
+  the root needs no migration — just move the folders.
+- **A Codex session on disk.** Codex has no live registry, only the thread's rollout file
+  `<CODEX_HOME>/sessions/YYYY/MM/DD/rollout-<local time>-<uuid>.jsonl`, a line = JSON
+  `{timestamp,type,payload}`. Which file is ours: for a fresh session — the earliest of those that appeared
+  after the spawn whose `session_meta` cwd is the folder, or a Codex worktree pointing back at it; for a
+  resumed one — by the uuid in the name; the answer is remembered per chat, so two chats in one folder
+  do not share a file. From the tail (128 KiB):
+  `task_started`/`task_complete` (before 0.157 — `turn_started`/`turn_complete`/`turn_aborted`) →
+  working/resting, `token_count.info` → context (`last_token_usage.total_tokens −
+  reasoning_output_tokens` against `model_context_window`, as Codex itself counts it),
+  `turn_context.model` → model, `token_count.rate_limits` → limits fallback. The conversation itself —
+  `response_item` lines of type `message` with `role` user/assistant (developer messages and
+  mixed-in context like `# AGENTS.md instructions` and `<environment_context>` are not the conversation).
+  Approval requests are not written to the rollout, so "waiting" for Codex is a turn in flight with a
+  screen that has not changed for 3 s (Codex draws its spinner continuously). The rollout appears only
+  with the first turn: a session sitting on the start-up popup has no file at all.
+- **Worktrees are the CLIs'.** Each CLI makes its own from `--worktree`; Luna never makes one, it
+  only finds them again — to remove one with its chat, or sweep the ones no chat claims. Claude Code's
+  live under `<folder>/.claude/worktrees` on a `worktree-*` branch; Codex's are recognised by shape
+  `…/worktrees/<4 hex>/<name>` plus a `.git` file (`gitdir: <repo>/.git/worktrees/<id>`) pointing back at
+  the folder (`worktree::is_worktree_of`, `project_of`); every destructive path is gated on this. The
+  orphan sweep scans each account's `worktrees/` as well as the project's. Removing a Codex worktree also
+  removes its bucket dir once empty; only `worktree-*` branches are ever deleted (Codex's checkouts have
+  none). Where a session actually works is `pty::ActivityProbe::working_dir()` (Claude registry / Codex
+  rollout); delete, `worktree_in_use_by_others`, `live_cwds` and `agents::caller_worktree` go by it.
+  `fetch_origin` (Settings "Fetch origin before Claude Code makes a worktree") applies only to Claude Code: Codex checks out the commit the folder is on, which no fetch moves, and Luna never moves the user's own checkout.
+- **Scrollback in Rust.** The output buffer (2MB cap) lives in the core, so that moving a chat between panes
+  or recreating the xterm restores the screen (`ensure_session` returns the backlog).
+- **A terminal outlives its pane.** A pane takes a ready xterm from `terminals.ts` and returns it to
+  "parking" (off screen, but in the document — otherwise the renderer and the fit addon measure zero),
+  so switching the chat in a pane costs no `ensure_session` with the backlog, reset and wait for the CLI
+  to redraw — what switching chats costs in single-window mode. The three most recently put away wait
+  there with all their subscriptions; beyond that the oldest is evicted. Returning = refit plus a nudge
+  to redraw.
+- **Events instead of polling (pty).** pty output streams as the `pty://output` event; termination —
+  `pty://exit` (the chat goes idle).
+- **Account limits — zero tokens.** `claude/limits.rs` reads the OAuth token from
+  `<account>/.credentials.json` and calls `api.anthropic.com/api/oauth/usage` — the same endpoint
+  as `/usage` inside Claude Code; the CLI's cache in `.claude.json` answers while it is fresh.
+  `codex/limits.rs` reads `tokens.access_token`/`account_id` from `<account>/auth.json` (email and
+  plan — from the `id_token` claims) and calls `chatgpt.com/backend-api/wham/usage` — the same as
+  `/status` inside Codex; the `primary`/`secondary` windows plus `additional_rate_limits` are returned as a
+  labelled list (300 min → "5 hours", 10080 → "week"). If there is no network or token — the last
+  `token_count.rate_limits` from the rollout. The frontend polls every 60s; ↻ in the account row asks at once,
+  past the CLI's fresh cache and the cool-off. The cool-off after a 429 is shared (`throttle.rs`).
+- **Claude token refresh.** An access token lives ~8 h, and an account that has not been opened for a while
+  would hang on "waiting for token refresh" until its first session. `claude/oauth.rs` exchanges the refresh token
+  itself — the same `POST platform.claude.com/v1/oauth/token` with the CLI's client_id and scopes. Refresh tokens
+  rotate, so only by the CLI's rules: both its mkdir locks (`<config>/.oauth_refresh.lock` and
+  `<config>.lock`, stale after 60 s), re-read the file under the lock, write only if the refresh token
+  on disk is still the one that was sent. A CLI that comes to refresh after us sees a different
+  access token on disk and takes it (its own "race resolved" branch). `invalid_grant` = a new
+  login is needed, the account is shown signed out. Codex is left alone: its token lives 10 days, it refreshes
+  itself, and the server rejects an already used refresh token ("refresh token was already used. Please
+  log out and sign in again") — our refresh next to a live Codex that remembers the old token would sign it out.
+- **Chat titles come from the CLI.** After the first message Claude Code generates a session name (the same
+  one it sets on the terminal tab) and writes it to the transcript as an `ai-title` line; `/rename` writes
+  `custom-title`. Both are rewritten into the tail as the session goes on, so they are read together with the context.
+  Order: `custom-title` → registry name with `nameSource: user` (both are a manual rename) →
+  `ai-title` → first prompt (only while there is no title yet). A registry name with `nameSource: auto` and
+  the second `ai-title` the CLI writes after a plan is accepted (the plan's kebab handle, also repeated by
+  the `agent-name` line) do not count as a title. For chats without a live session `saved_title` finds the
+  transcript by session id once per launch. For Codex — the lines with that id in
+  `<CODEX_HOME>/session_index.jsonl`: it writes the first one itself, anything that differs from it is `/rename`.
+- **A chat is named once.** `Chat.nameSource` says where the name came from, and `mayRename` decides what
+  may replace it: a typed first line (`prompt`) — only the placeholder; the CLI's first title
+  (`cli`) — only the placeholder or the prompt, after that it is frozen; `/rename` in the CLI (`rename`) — everything
+  except a name from Luna; a name from Luna (`user`) is final.
+- **Trust.** Neither CLI can show its trust prompt the way Luna runs it (Claude
+  Code refuses under `--worktree`, Codex after it asks about the Windows sandbox),
+  so the bit is written before the spawn: `hasTrustDialogAccepted` in `.claude.json` or
+  `[projects.'<native path>'] trust_level = "trusted"` in `config.toml` (via `toml_edit`, so as
+  not to lose the user's comments; the key is compared case-insensitively and with either slash).
+- **Session busyness is measured, not read from one status.** Every 5 s `activity.rs`
+  combines three signals: the turn (for Claude — hooks via a `--settings` file with `curl.exe` (outside Windows — `curl`) to the loopback
+  `hub.rs`, checked against the registry; for Codex — the rollout plus screen silence, and an approval dialog
+  (a command, an edit), which is not in the rollout and under which the screen is not silent, — by its text on
+  the rendered screen; the same verdict also goes to the chat row in the UI instead of `working`), the CLI's descendants
+  (`procs.rs`: on spawn the CLI is put into a Job Object, descendants inherit it; "busy" = growth in
+  CPU/IO over the window, or a process born after the last turn began and still alive — that is how
+  a background `sleep` is caught, while MCP servers that came up with the session count as furniture) and
+  pty output over the last 30 s. Hooks print nothing: Claude Code adds the stdout of a hook exiting 0
+  to the context, and silence is free. Claude's registry beats an "idle" from a hook, a hook's
+  "waiting" beats the registry's "busy" (a permission prompt is inside a turn). No mark is eternal:
+  a hook's "busy" against the registry's "idle" goes stale in 15 s (a missed Stop), a hook's "waiting" — in
+  60 s (the prompt left with the turn on Esc, Stop never came), the registry's "busy" against a hook's "idle"
+  — in 60 s without a single hook (a turn that began or did something marks itself with a hook).
+  Without hooks (Codex, a session that survived a Luna restart) the registry is believed as is.
+  The registry's `waiting` beats a hook's "busy": the dialog is open, the model is not working (a turn cut off by
+  an API error sends no Stop — it sends `StopFailure`, which Luna also subscribes to: end of turn
+  plus the kind of error). A session waiting on a dialog after such an error (by `StopFailure` or by
+  the last transcript line with `isApiErrorMessage`) is *stalled*: it does not count as `waiting`.
+- **Power follows busyness** (`power.rs`). Keep-awake — `PowerSetRequest(SystemRequired)`
+  with a reason visible in `powercfg /requests`, while busy > 0, released after 60 s of quiet;
+  `waiting` does not keep the machine up (nobody is answering), but blocks shutdown (the work is not
+  done). Stalled (limit and other API errors) does not block: until the reset nothing
+  will move there. Arming with `waiting` > 0 sends a notification with the chat names at once. Arming lasts until Luna exits; while armed the hold is always kept, otherwise the PC would sleep in the
+  quiet window. The automaton: busy = 0 and waiting = 0 continuously for quiet_s → a 60 s countdown with
+  a notification → action. Shutdown closes sessions via `shut_down` with a 5 s grace (the CLIs'
+  exit hooks) and `shutdown /s /t 0`; sleep/hibernate — `SetSuspendState`, sessions live on, arming stays,
+  and the clock jump on wake resets the quiet window and the countdown. An armed rule that
+  does not fire is explained in `luna.log`: a line `armed, not firing: <chat> <why> [hook …,
+  registry …]` when the reason changes (no more than once a minute) and every 10 minutes with no change;
+  only WARN/ERROR go to `luna.log`, so everything that decides the night's fate is written at that level.
+- **Agents — via MCP, not via the prompt.** A session with the "Luna tools" checkbox gets
+  `--mcp-config <data>/mcp/<chat>.json` with `"timeout": 1900000` on the server and `--allowedTools mcp__luna`
+  (Claude: without `timeout` it drops an HTTP call that is silent for 5 min) or `-c mcp_servers.luna.url=… -c
   mcp_servers.luna.bearer_token_env_var=LUNA_MCP_TOKEN -c mcp_servers.luna.tool_timeout_sec=1900
   -c mcp_servers.luna.default_tools_approval_mode="approve"`
-  (Codex: по умолчанию он даёт MCP-вызову 60 с, а `wait` держит запрос до 30 мин; инструменты
-  Luna не спрашивают разрешения ни в одном режиме, галочка и есть разрешение) — Luna-сервер на loopback
-  `hub.rs`, токен на сессию, перевыпускается при каждом спавне. Инструкция агенту едет в
-  `instructions` ответа `initialize`, поэтому системный промпт не трогается ни флагом, ни
-  файлом; всё вместе ~2k токенов один раз. Чистые сессии не получают ни MCP, ни знания о Luna.
-  Ядро чатов не знает, поэтому spawn — round trip: `agent://spawn` во фронт, тот делает чат
-  (`parentId`, без посадки в панель) и `ensure_*` с промптом позиционным аргументом CLI после
-  `--` (у Claude Code `--mcp-config` берёт сколько угодно файлов и съедал промпт как ещё один),
-  и отвечает `agent_spawned`; ядро ждёт на Condvar до 90 с, а потом ещё до 30 с — пока
-  сессия не возьмётся за промпт (`started`); если не взялась, ответ несёт `screen`, а если экран ещё
-  пуст — `starting`: Claude Code до первой отрисовки синхронизирует skills/plugins организации и
-  делает worktree, и это бывает минутами. Промпт при этом лежит в аргументах CLI, а напечатанное в pty
-  пропало бы, поэтому `send` в такую сессию отказывает. `read` и `wait` по таймауту тоже отдают `starting`. `read` —
-  из транскрипта Claude (user/assistant, без tool_result) или rollout Codex (`response_item`
-  message user/assistant) с байтовым курсором (только по целым строкам); `wait(turn_done)` считает переходы busy→idle в
-  `activity.rs` (`turns_ended`; счёт растёт и через респавн/resume — у Codex из rollout берутся
-  только ходы после спавна процесса) и возвращает последний ответ, чтобы `read` был не нужен.
-  `send` после Enter ждёт до 12 с начала хода и тоже отвечает `started`/`screen`. `screen` —
-  это scrollback pty, прогнанный через эмулятор терминала (`vt100`) на размере pty: последние
-  40 строк того, что видит человек в панели — попап, ошибка, вопрос, которых в транскрипте
-  нет; `read(screen: true)` отдаёт его по запросу, `wait` — на `timeout` и `waiting`. `list` и
-  `spawn` отдают `settings` — флаги, с которыми сессия реально запущена. Права: только
-  потомки вызывающего — кроме `sessions` (все сессии этого запуска Luna: аккаунт и его папка,
-  папка чата, cwd, sessionId CLI, путь к транскрипту/rollout, pid; имена чатов фронт шлёт
-  `chat_names` при каждом изменении), `send`, который пишет в любую из них, кроме своей, и
-  `read`/`wait` — тоже по любой, кроме своей (транскрипт и так на диске, а написавший должен
-  уметь забрать ответ); `kill`/`delete` — только потомки;
-  глубина инструментов 1; максимум 8 потомков. Дети переживают родителя (сироты с ↳; ребёнок в другой папке тоже стоит отдельно, но с именем родителя
-  в подсказке); удаление ребёнком через `delete` убирает worktree, если попросили — `remove -f -f`,
-  потому что Claude Code свой worktree лочит, а убитый лок не снимает; Codex-помощник знает своей
-  папкой сам worktree, и проект для удаления выводится из пути (`worktree::project_of`).
-  **Помощник сам о себе не сообщает** — в отличие от субагента, его ответ лежит в его
-  транскрипте, пока кто-то не позовёт `wait`/`read`. Поэтому `spawn` и `send` записывают долг
-  (`owed`: вызывающий, сессия, `turnsEnded` на момент вопроса), а `wait`/`read`, показавшие ход
-  дальше него, долг гасят. Поток-уведомитель раз в 2 с смотрит долги и, когда вызывающий два
-  взгляда подряд между ходами (`Idle`, не стартует, человек не печатал в него 20 с и не оставил
-  неотправленного черновика), печатает
-  ему одну строку `[Luna notice, not typed by the user] …` с Enter — так же, как `send`: помощник
-  закончил ход (с ответом до 3000 знаков, дальше — пометка «cut»), встал на промпт (один раз за
-  остановку) или вышел.
-  Ход, после которого у помощника ещё работают процессы, ждёт до 20 с: затихли — «закончил»,
-  нет — «оставил работу в фоне», и долг переносится на следующий ход (Claude Code сам вернётся,
-  когда фоновая задача кончится). Свои постоянные помощники CLI (`codex-code-mode-host` и его
-  `conhost`) фоновой работой не считаются, пока не двигаются (procs.rs, `without_furniture`):
-  иначе каждый Codex-помощник после хода объявлялся «NOT done yet». Ход без ответа в транскрипте ждёт его до 5 с (Stop-hook Claude
-  Code приходит раньше, чем последний ответ ложится в транскрипт; `wait` ждёт так же), а потом
-  уведомление говорит «без ответа» и отсылает к экрану. Черновик Luna считает по клавишам
-  человека из `write_session` (`pty::draft_after`: символы прибавляют, Backspace убавляет, Enter,
-  Ctrl+C, Ctrl+U обнуляют, Enter сразу после `\` — перенос строки Claude Code, не отправка;
-  escape-последовательности клавиш ничего не печатают, текст внутри bracketed paste — печатает):
-  уведомление с Enter ушло бы вместе с черновиком. Правок, которых счётчик не видит (Ctrl+W,
-  вырезанное выделение), он не уменьшает — тогда уведомление ждёт следующего Enter, а через минуту
-  ожидания Luna один раз говорит об этом системным уведомлением. `wait(turn_done)` на помощнике,
-  вставшем на промпт, тоже возвращается (`waiting` с экраном): сам ход не кончится; 8 с после
-  `send` того же вызывающего в такую сессию промпт считается отвеченным. Уведомление — обычный ход вызывающего; дев-вызывающий без
-  терминала их не получает. Пока `wait` вызывающего на этой сессии ещё идёт (`waits`), ответ
-  отдаёт он: Claude Code уводит MCP-вызов дольше 120 с в фон, но запрос держит, и результат
-  приходит task-notification'ом. Уведомление по такой паре ждёт, а если `wait` за 10 с после
-  того, как ответ появился, так его и не отдал (клиент бросил вызов), уходит само.
-  **Что `spawn` говорит сверх флагов.** Неизвестная slash-команда: Claude Code пишет `Unknown
-  command: /x` и хода не начинает — `await_start` видит строку на экране и отвечает `started:
-  false` сразу, а не через 30 с. `warnings` — строки экрана с ⚠ (модель, запрещённая
-  организацией, и чем её заменили: `settings` этого не знают). `sameFolder` — живые сессии,
-  чей cwd (по реестру CLI) совпадает с папкой помощника, кроме самого вызывающего; помощник в
-  своём worktree их не получает.
-  **Аккаунты в `list`.** `defaults` — `claude::defaults::flags` / `codex::defaults::flags` для
-  папки вызывающего: нормализацию и стоковые значения делает ядро (`source: stock`), фронт
-  только переводит их в свои подписи, так что диалог, spawn и `list` говорят одно. `usage` —
-  то, что фронт показывает в окне Accounts, присланное `account_usage` при каждом изменении:
-  ядро само в эндпоинты лимитов не ходит.
-  **autoDelete.** `reap` на каждом проходе уведомителя: помощник без долга, без `wait` на нём и
-  без хода (или вышедший) 10 мин подряд удаляется как через `delete`, без worktree; в журнал —
-  `auto-deleted`. Если человек хоть раз печатал в него (`typed_ago_ms`), Luna его не трогает.
-  **ConPTY и курсор.** portable-pty открывает ConPTY с `INHERIT_CURSOR`: до ответа терминала на
-  `ESC[6n` ConPTY не выпускает ни байта вывода CLI. У чата в панели отвечал xterm, у помощника
-  без панели — никто, и он висел на пустом экране, пока его не откроют (`starting` минутами).
-  Теперь ядро само вырезает каждый `ESC[6n` из потока и отвечает позицией курсора по `vt100` на
-  размере pty; в scrollback запрос не попадает, так что и панель, подключившаяся позже, не
-  печатает в CLI лишний `[1;1R`.
-  **Ввод в Codex — нажатиями.** ConPTY делает из каждого символа нажатие клавиши на раскладке
-  консоли, а символ, которого на ней нет (на русской — квадратные и фигурные скобки, `< > ' ~ @
-  # $ ^ & |`, обратная кавычка, ёлочки, тире), до Codex не доходил — ни из `send`, ни с
-  клавиатуры человека. Для Codex писатель pty отдаёт печатные символы win32-input-mode
-  последовательностями (`ESC[0;0;<utf16>;1;0;1_` и отпускание; половинки суррогатной пары —
-  только нажатием), управляющие символы и escape-последовательности — как есть. Claude Code
-  читает текст и этого не требует.
-  **Песочница Codex на Windows** без настроенной Windows-песочницы Codex отклоняет (`approval
-  never`) или выносит на одобрение (`on-request`) каждую команду при `read-only` и
-  `workspace-write` — даже `Get-Content`. Описание `sandbox` в `luna_spawn` об этом говорит, а
-  инструкция говорит, что встроенные субагенты CLI не умеют ни другого провайдера, ни другого
-  аккаунта, ни видимой в Luna сессии: без этого Codex-оркестратор брал свой `spawn_agent`.
-  Для проверки сборки без второй Luna в роли родителя: `LUNA_DEV_TOKEN` (+ `LUNA_DEV_FOLDER`,
-  `LUNA_DEV_ACCOUNT`) регистрирует вызывающего `dev` с этим bearer-токеном; его спавны —
-  чаты верхнего уровня. `test-build.ps1 -Run -DevCaller` выставляет их сам.
-- **Тема** — токены в CSS custom properties (`[data-app][data-theme]`), переключение
-  system/light/dark без перерисовки терминалов (xterm получает тему через MutationObserver).
-  Формы — XP (глянцевые титлбары, фаски, task pane, Start-кнопка), тона — под долгое чтение:
-  нейтрали без синевы, слои различаются светлотой (OKLCH), терминал — самый тёмный «колодец».
-  Скомпилированный xp.css прибивает свои контролы к светлым литералам, поэтому кнопки, поля,
-  чекбоксы, радио и скроллбары перерисованы в theme.css из токенов.
+  (Codex: by default it gives an MCP call 60 s, while `wait` holds the request up to 30 min; Luna's tools
+  ask no permission in any mode, the checkbox is the permission) — the Luna server on the loopback
+  `hub.rs`, a token per session, reissued on every spawn. The agent's instruction travels in the
+  `instructions` of the `initialize` answer, so the system prompt is touched neither by a flag nor by a
+  file; all of it together is ~2k tokens once. Plain sessions get neither MCP nor any knowledge of Luna.
+  The core does not know chats, so a spawn is a round trip: `agent://spawn` to the frontend, which makes the chat
+  (`parentId`, not seated in a pane) and `ensure_*` with the prompt as the CLI's positional argument after
+  `--` (Claude Code's `--mcp-config` takes any number of files and swallowed the prompt as one more),
+  and answers `agent_spawned`; the core waits on a Condvar up to 90 s, and then up to 30 s more — until the
+  session takes up the prompt (`started`); if it did not, the answer carries `screen`, and if the screen is still
+  empty — `starting`: before its first draw Claude Code syncs the organisation's skills/plugins and
+  makes the worktree, and that can take minutes. The prompt meanwhile sits in the CLI's arguments, and anything typed into the pty
+  would be lost, so `send` to such a session refuses. `read` and `wait` on timeout also return `starting`. `read` —
+  from Claude's transcript (user/assistant, without tool_result) or Codex's rollout (`response_item`
+  message user/assistant) with a byte cursor (whole lines only); `wait(turn_done)` counts busy→idle transitions in
+  `activity.rs` (`turns_ended`; the count grows across respawn/resume too — for Codex only turns after
+  the process spawned are taken from the rollout) and returns the last answer, so `read` is not needed.
+  After Enter, `send` waits up to 12 s for a turn to begin and also answers `started`/`screen`. `screen` is
+  the pty scrollback run through a terminal emulator (`vt100`) at the pty's size: the last
+  40 lines of what a person sees in the pane — a popup, an error, a question, which the transcript does
+  not have; `read(screen: true)` returns it on request, `wait` — on `timeout` and `waiting`. `list` and
+  `spawn` return `settings` — the flags the session actually runs with; for Codex `list`'s `flags` take
+  the model catalogue from `models_known` (no CLI run). Rights: only
+  the caller's descendants — except `sessions` (all sessions of this Luna launch: account and its folder,
+  chat folder, cwd, the CLI's sessionId, path to the transcript/rollout, pid; the frontend sends chat names
+  as `chat_names` on every change), `send`, which writes into any of them except its own, and
+  `read`/`wait` — also on any except its own (the transcript is on disk anyway, and whoever wrote must
+  be able to collect the answer); `kill`/`delete` — descendants only;
+  tool depth 1; at most 8 descendants. Children outlive the parent (orphans with ↳; a child in another folder also stands apart, but with the parent's name
+  in the tooltip); a helper started without a folder works where its caller does, worktree and all
+  (`agents::caller_worktree`, both providers). Deleting a child via `delete` removes its worktree if asked — `remove -f -f`,
+  because Claude Code locks its worktree and a killed one does not release the lock; the worktree is where the
+  session actually works (`working_dir`), and the project for the removal is derived from the path
+  (`worktree::project_of`).
+  **A helper does not report on itself** — unlike a subagent, its answer sits in its
+  transcript until someone calls `wait`/`read`. So `spawn` and `send` record a debt
+  (`owed`: caller, session, `turnsEnded` at the time of the question), and a `wait`/`read` that showed a turn
+  past it clears the debt. A notifier thread looks at debts every 2 s and, when the caller is between turns
+  on two looks in a row (`Idle`, not starting, the person has not typed into it for 20 s and left no
+  unsent draft), types
+  one line to it `[Luna notice, not typed by the user] …` with Enter — just like `send`: the helper
+  finished a turn (with the answer up to 3000 characters, beyond that — a "cut" mark), stopped on a prompt (once per
+  stop) or exited.
+  A turn after which the helper still has processes running waits up to 20 s: they went quiet — "finished",
+  they did not — "left work in the background", and the debt moves to the next turn (Claude Code comes back by itself
+  when the background task ends). The CLI's own resident helpers (`codex-code-mode-host` and its
+  `conhost`) do not count as background work while they do not move (procs.rs, `without_furniture`):
+  otherwise every Codex helper was announced "NOT done yet" after a turn. A turn with no answer in the transcript waits up to 5 s for it (Claude
+  Code's Stop hook arrives before the last answer lands in the transcript; `wait` waits the same way), and then
+  the notification says "no answer" and points to the screen. Luna counts the draft from the person's keystrokes
+  in `write_session` (`pty::draft_after`: characters add, Backspace subtracts, Enter,
+  Ctrl+C, Ctrl+U reset, Enter right after `\` is a Claude Code line break, not a submit;
+  key escape sequences print nothing, text inside a bracketed paste does):
+  a notification with Enter would go out together with the draft. Edits the counter does not see (Ctrl+W,
+  a cut selection) it does not subtract — then the notification waits for the next Enter, and after a minute
+  of waiting Luna says so once with a system notification. `wait(turn_done)` on a helper
+  stopped on a prompt also returns (`waiting` with the screen): the turn itself will not end; for 8 s after
+  a `send` from the same caller into such a session the prompt counts as answered. A notification is an ordinary turn of the caller; a dev caller without
+  a terminal does not get them. While the caller's `wait` on that session is still running (`waits`), that
+  `wait` delivers the answer: Claude Code moves an MCP call longer than 120 s to the background, but keeps the request, and the result
+  arrives as a task-notification. A notification for such a pair waits, and if the `wait` has still not delivered
+  the answer 10 s after it appeared (the client dropped the call), it goes out by itself.
+  **What `spawn` says beyond the flags.** An unknown slash command: Claude Code writes `Unknown
+  command: /x` and starts no turn — `await_start` sees the line on screen and answers `started:
+  false` at once, not after 30 s. `warnings` — screen lines with ⚠ (a model forbidden by the
+  organisation, and what replaced it: `settings` do not know that). `sameFolder` — live sessions
+  whose cwd (per the CLI's registry) matches the helper's folder, except the caller itself; a helper in
+  its own worktree does not get them.
+  **Accounts in `list`.** `defaults` — `claude::defaults::flags` / `codex::defaults::flags` for
+  the caller's folder: the core does the normalisation and stock values (`source: stock`), the frontend
+  only turns them into its labels, so the dialog, spawn and `list` say the same thing. `usage` —
+  what the frontend shows in the Accounts window, sent as `account_usage` on every change:
+  the core does not go to the limits endpoints itself.
+  **autoDelete.** `reap` on every notifier pass: a helper with no debt, no `wait` on it and
+  no turn (or one that exited) for 10 min in a row is deleted as via `delete`, without its worktree; to the log —
+  `auto-deleted`. If the person ever typed into it (`typed_ago_ms`), Luna leaves it alone.
+  **ConPTY and the cursor.** portable-pty opens ConPTY with `INHERIT_CURSOR`: until the terminal answers
+  `ESC[6n` ConPTY lets out not a byte of the CLI's output. For a chat in a pane xterm answered, for a helper
+  without a pane — nobody, and it hung on an empty screen until it was opened (`starting` for minutes).
+  The core itself cuts each `ESC[6n` out of the stream and answers with the cursor position per `vt100` at
+  the pty's size; the request does not reach the scrollback, so a pane that attaches later does not
+  type a stray `[1;1R` into the CLI either.
+  **Input to Codex — as key presses.** ConPTY turns each character into a key press on the console's
+  layout, and a character that layout lacks (on Russian — square and curly brackets, `< > ' ~ @
+  # $ ^ & |`, backtick, guillemets, dashes) never reached Codex — neither from `send` nor from
+  the person's keyboard. For Codex the pty writer sends printable characters as win32-input-mode
+  sequences (`ESC[0;0;<utf16>;1;0;1_` and the release; halves of a surrogate pair —
+  press only), control characters and escape sequences as is. Claude Code
+  reads text and does not need this.
+  **The Codex sandbox on Windows** without a configured Windows sandbox makes Codex reject (`approval
+  never`) or send for approval (`on-request`) every command under `read-only` and
+  `workspace-write` — even `Get-Content`. The description of `sandbox` in `luna_spawn` says so, and
+  the instruction says that the CLIs' built-in subagents can do neither another provider, nor another
+  account, nor a session visible in Luna: without that a Codex orchestrator took its own `spawn_agent`.
+  To test a build without a second Luna as the parent: `LUNA_DEV_TOKEN` (+ `LUNA_DEV_FOLDER`,
+  `LUNA_DEV_ACCOUNT`) registers a caller `dev` with that bearer token; its spawns are
+  top-level chats. `test-build.ps1 -Run -DevCaller` sets them itself.
+- **New-chat dialog.** The model is picked from a drop-down (`ModelSelect`, a native `<select>`) for
+  both providers; the model the files (or the CLI) would pick is marked "· default". Codex's list is the
+  catalogue in `priority` order, its effort levels carry the catalogue's descriptions (`effort_hints`) as
+  tooltips. Codex's approval and sandbox are two radio columns; the pane title bar shows a `bypass`
+  chip for never + danger-full-access.
+- **Recommended settings** (Accounts → per-account button). A tick means "the file will have this
+  key": applied keys open ticked; unticking one removes the key — only if the file still says exactly the
+  recommended value, and parent objects/tables left empty go too; "Tick recommended" adds the
+  `defaultOn` set; Apply shows `+N / −M`; "Edit settings.json/config.toml…" opens the hand editor.
+  The account row's button shows "k/n" recommended keys present. Rust:
+  `apply_recommended(provider, account_path, add, remove)`.
+- **The hand editor** (`ConfigEditor.tsx`) is CodeMirror 6 — JSON via `@codemirror/lang-json`, TOML via
+  `@codemirror/legacy-modes` — with line numbers and colours from theme tokens
+  (`--code-key/--code-string/--code-literal`). The core checks problems as you type
+  (`check_account_config`, with line/column) and lays the file out on save and on the Format button
+  (`format_account_config`: JSON pretty with 2 spaces, TOML via the `taplo` crate, comments and key
+  order kept).
+- **Theme** — tokens in CSS custom properties (`[data-app][data-theme]`), switching
+  system/light/dark without redrawing the terminals (xterm gets the theme via a MutationObserver).
+  Shapes are XP (glossy title bars, bevels, task pane, Start button), tones are for long reading:
+  neutrals without blue, layers differ by lightness (OKLCH), the terminal is the darkest "well".
+  The compiled xp.css pins its controls to light literals, so buttons, fields,
+  checkboxes, radios and scrollbars are redrawn in theme.css from the tokens.
 
-## Сборка
+## Build
 
-- Локально: `pnpm install`, `pnpm build` (фронт), `pnpm tauri dev` (нужен Rust-тулчейн).
-- Прод-сборка — в Docker, см. README.
-- Тестовая сборка — `test-build.ps1` (тоже Docker): `test-build/luna-test.exe` со своим
-  identifier (`tauri.test.conf.json`), без апдейтера, всё своё рядом с exe; `-Test` собирает
-  Rust-тесты и гоняет их на хосте. Правила — в AGENTS.md.
+- Locally: `pnpm install`, `pnpm build` (frontend), `pnpm tauri dev` (needs a Rust toolchain).
+- Production build — in Docker, see README.
+- Test build — `test-build.ps1` (also Docker): `test-build/luna-test.exe` with its own
+  identifier (`tauri.test.conf.json`), no updater, everything of its own next to the exe; `-Test` builds
+  the Rust tests and runs them on the host. The rules are in AGENTS.md — the one instructions file for
+  both CLIs (Claude Code reads it when there is no CLAUDE.md).
