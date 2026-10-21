@@ -27,6 +27,7 @@ import type { Chat } from '../../shared/types';
 import { ensureClaudeSession, ensureCodexSession, resizeSession, sessionModes, writeSession } from '../../ipc/commands';
 import { onPtyExit, onPtyOutput } from '../../ipc/events';
 import { useChats } from '../chats/chats.store';
+import { claude } from '../providers';
 
 /** How many terminals stay alive with no pane showing them. */
 const WARM = 3;
@@ -393,7 +394,14 @@ function create(spec: TermSpec): Entry {
     unlisteners.push(un1, un2);
 
     // Resume a known session after an app restart; if it lived in a
-    // worktree, relaunch from that worktree instead of creating a new one.
+    // worktree, relaunch in that worktree instead of creating a new one.
+    // A worktree Claude Code made is asked for by name from the project
+    // folder — its own `--worktree <name> --resume <id>` — rather than by
+    // starting inside it: Claude Code removes a clean worktree when its
+    // session quits, which Luna's quit and every update make it do, and by
+    // name it is put back where it was.
+    const claudeWorktree =
+      chat.provider === 'claude' && chat.worktree ? claude.worktreeName(folderPath, chat.worktreePath) : null;
     let backlog: string;
     try {
       backlog =
@@ -414,23 +422,25 @@ function create(spec: TermSpec): Entry {
             })
           : await ensureClaudeSession({
               chatId,
-              folder: chat.worktreePath || folderPath,
+              folder: claudeWorktree ? folderPath : chat.worktreePath || folderPath,
               accountPath,
               model: chat.model,
               effort: chat.effort,
               perm: chat.perm,
-              worktree: chat.worktree && !chat.worktreePath,
+              worktree: chat.worktree && (!chat.worktreePath || claudeWorktree !== null),
+              worktreeName: claudeWorktree,
               resume: chat.sessionId ?? null,
               tools: chat.tools ?? false,
               parent: chat.parentId ?? null
             });
-    } catch {
+    } catch (e) {
       // The ipc layer already logged the cause. Without this catch the
       // failure escaped the async block as an unhandled rejection and the
       // pane just sat empty with no explanation.
       if (!disposed) {
         useChats.getState().setStatus(chatId, 'resting');
-        term.write('\r\n\x1b[31m[failed to start session]\x1b[0m\r\n');
+        const why = e instanceof Error ? e.message : String(e);
+        term.write(`\r\n\x1b[31m[failed to start session${why ? `: ${why}` : ''}]\x1b[0m\r\n`);
       }
       return;
     }

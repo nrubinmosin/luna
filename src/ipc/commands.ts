@@ -159,6 +159,8 @@ export interface ClaudeSessionSpec {
   effort: Effort;
   perm: PermMode;
   worktree: boolean;
+  /** With `worktree`: the one to go into by name, made again if it is gone. */
+  worktreeName?: string | null;
   resume?: string | null;
   /** Attach Luna's MCP tools (spawn/drive other sessions). */
   tools?: boolean;
@@ -178,6 +180,7 @@ export const ensureClaudeSession = (spec: ClaudeSessionSpec) =>
     effort: spec.effort,
     permissionMode: PERM_CLI[spec.perm],
     worktree: spec.worktree,
+    worktreeName: spec.worktreeName ?? null,
     resume: spec.resume ?? null,
     tools: spec.tools ?? false,
     parent: spec.parent ?? null,

@@ -76,7 +76,8 @@ src-tauri/src/
                 и pty://exit, write/resize/kill; ensure_claude_session / ensure_codex_session
                 собирают командную строку; session_meta диспетчит по провайдеру
   worktree.rs   уборка worktree обоих провайдеров (.claude/worktrees, .codex/worktrees),
-                create_worktree для Codex, fetch origin перед новым worktree обоих
+                create_worktree для Codex (и его повторное создание на том же месте, если
+                папки чата не стало), fetch origin перед новым worktree обоих
                 провайдеров (настройка fetchBeforeWorktree), поиск сирот
   throttle.rs   cool-off после 429 usage-эндпоинтов, общий на оба
   procs.rs      что у CLI запущено под ним: Job Object на сессию, список pid,
@@ -160,8 +161,13 @@ src-tauri/src/
   `codex-package_SHA256SUMS`, и в нём лежат `codex-command-runner.exe` и прочие хелперы
   Windows-песочницы), распаковывается целиком в папку версии.
 - **Сессия Claude = запуск `claude`** с аргументами:
-  `--model <alias> --effort <low|medium|high|xhigh|max|ultracode> --permission-mode <mode> [--worktree]`,
+  `--model <alias> --effort <low|medium|high|xhigh|max|ultracode> --permission-mode <mode> [--resume <uuid>] [--worktree [<name>]]`,
   `cwd` = папка чата, `CLAUDE_CONFIG_DIR` = папка аккаунта (изоляция логина/настроек на аккаунт).
+  Worktree-чат, чей worktree уже известен, продолжается из папки проекта как `--worktree <name> --resume <uuid>`
+  (так советует сам CLI при выходе), а не запуском внутри worktree: Claude Code при выходе молча удаляет
+  чистый worktree (ни изменений, ни коммитов) — а выходят все сессии на каждом Quit и обновлении Luna, —
+  и по имени CLI создаёт его заново, с тем же именем и веткой. Папки, которой нет, ядро не запускает
+  вообще: portable-pty молча подставил бы профиль пользователя.
 - **Сессия Codex = запуск `codex`** с аргументами:
   `[resume <uuid>] -C <cwd> [--model <m>] -c model_reasoning_effort="<e>" -a <on-request|never>
   -s <read-only|workspace-write|danger-full-access>` (пара `never` + `danger-full-access`

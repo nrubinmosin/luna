@@ -199,6 +199,14 @@ async fn spawn(id: String, launch: impl FnOnce() -> Launch) -> Result<String, St
     }
     let Launch { provider, cwd, account_path, args, envs, resume, describe } = launch();
 
+    // portable-pty starts a process whose cwd is not there in the user
+    // profile instead, without a word: a chat whose worktree had been removed
+    // came back as an empty session in the home folder.
+    if !std::path::Path::new(&cwd).is_dir() {
+        crate::log::warn("pty", &format!("not starting {id}: {cwd} does not exist"));
+        return Err(format!("{cwd} does not exist"));
+    }
+
     // Spawning without one would silently fall back to the CLI's default
     // config dir under the user profile: wrong account, and first-run
     // onboarding in every pane.
@@ -837,6 +845,9 @@ pub async fn ensure_claude_session(
     effort: String,
     permission_mode: String,
     worktree: bool,
+    // With `worktree`: an existing one to go into by name, which Claude Code
+    // makes again, same name and branch, if it has been removed meanwhile.
+    worktree_name: Option<String>,
     resume: Option<String>,
     // Luna's MCP tools (agents.rs): off unless the chat asked.
     tools: Option<bool>,
@@ -868,6 +879,13 @@ pub async fn ensure_claude_session(
         }
         if worktree {
             args.push("--worktree".into());
+            // The characters Claude Code takes in a name, and a guard against
+            // one being read as the flag after it.
+            if let Some(name) = worktree_name.as_deref().filter(|n| {
+                !n.is_empty() && !n.starts_with('-') && n.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
+            }) {
+                args.push(name.to_string());
+            }
         }
         // Rewritten at every spawn: the listener's port is new with every Luna run.
         if let Some(hooks) = claude_hooks_file(&id) {
@@ -939,6 +957,16 @@ pub async fn ensure_codex_session(
 ) -> Result<String, String> {
     // Built only if no process is running (see `spawn`).
     spawn(id.clone(), move || {
+        // A Codex chat's worktree is one Luna made; gone — removed by hand,
+        // say — it is made again in the same place, on its branch if that is
+        // still there, rather than the chat failing to start.
+        if !login && !std::path::Path::new(&folder).is_dir() {
+            match crate::worktree::restore_codex_worktree(&folder) {
+                Ok(true) => crate::log::warn("worktree", &format!("{folder} was gone; made it again for {id}")),
+                Ok(false) => {}
+                Err(e) => crate::log::warn("worktree", &format!("could not make {folder} again for {id}: {e}")),
+            }
+        }
         let mut args: Vec<String> = vec![];
         let mut envs = vec![("CODEX_HOME", account_path.clone())];
         let describe;

@@ -211,18 +211,30 @@ fn create_worktree_now(folder: &str) -> Result<String, String> {
     let name = format!("codex-{}", short_id());
     let dir = worktrees_dir(folder, Provider::Codex);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let path = dir.join(&name);
-    let path_str = path.to_string_lossy().into_owned();
-    // Off origin's default branch, as Claude Code branches its own, so a
-    // Codex chat starts on the same tree a Claude one would; off HEAD where
-    // there is no origin to go by. Not tracking it: the branch is the
-    // chat's, and a push should not head for the default branch.
-    fetch_origin(folder);
-    let base = origin_default(folder).unwrap_or_else(|| "HEAD".into());
-    let out = git(folder)
-        .args(["worktree", "add", "--no-track", "-b", &name, &path_str, &base])
-        .output()
-        .map_err(|e| format!("git: {e}"))?;
+    let path_str = dir.join(&name).to_string_lossy().into_owned();
+    add_codex_worktree(folder, &name, &path_str, false)?;
+    Ok(path_str)
+}
+
+/// `git worktree add` for a Codex chat: on the existing branch `name` when
+/// `on_branch`, else on a new one. A new one starts off origin's default
+/// branch, as Claude Code branches its own, so a Codex chat starts on the same
+/// tree a Claude one would; off HEAD where there is no origin to go by. Not
+/// tracking it: the branch is the chat's, and a push should not head for the
+/// default branch.
+fn add_codex_worktree(folder: &str, name: &str, path: &str, on_branch: bool) -> Result<(), String> {
+    let mut add = git(folder);
+    add.args(["worktree", "add"]);
+    let from = if on_branch {
+        add.args([path, name]);
+        format!("its branch {name}")
+    } else {
+        fetch_origin(folder);
+        let base = origin_default(folder).unwrap_or_else(|| "HEAD".into());
+        add.args(["--no-track", "-b", name, path, base.as_str()]);
+        format!("new branch {name} off {base}")
+    };
+    let out = add.output().map_err(|e| format!("git: {e}"))?;
     if !out.status.success() {
         return Err(format!(
             "git worktree add failed: {}",
@@ -230,8 +242,31 @@ fn create_worktree_now(folder: &str) -> Result<String, String> {
         ));
     }
     exclude(folder, ".codex/worktrees/");
-    crate::log::info("worktree", &format!("created {path_str} on branch {name} off {base}"));
-    Ok(path_str)
+    crate::log::info("worktree", &format!("created {path} on {from}"));
+    Ok(())
+}
+
+/// Makes a Codex chat's worktree again where it was, for a chat whose folder
+/// is gone: on its branch if that outlived the folder, on a fresh one if not.
+/// `Ok(false)` for a path that is not a Codex worktree Luna made, which is
+/// none of this function's business.
+pub fn restore_codex_worktree(path: &str) -> Result<bool, String> {
+    let Some(folder) = project_of(path) else { return Ok(false) };
+    let p = Path::new(path);
+    let (Some(parent), Some(name)) = (p.parent(), p.file_name()) else { return Ok(false) };
+    if norm(&parent.to_string_lossy()) != norm(&worktrees_dir(&folder, Provider::Codex).to_string_lossy()) {
+        return Ok(false);
+    }
+    let name = name.to_string_lossy().into_owned();
+    // The worktree that went is still registered, and git refuses to add
+    // another at a registered path.
+    let _ = git(&folder).args(["worktree", "prune"]).output();
+    let on_branch = git(&folder)
+        .args(["rev-parse", "--verify", "--quiet", &format!("refs/heads/{name}")])
+        .output()
+        .is_ok_and(|o| o.status.success());
+    add_codex_worktree(&folder, &name, path, on_branch)?;
+    Ok(true)
 }
 
 // Every git call below is slow enough to be felt — `worktree remove` on a large
