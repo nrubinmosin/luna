@@ -185,7 +185,6 @@ pub fn run() {
             settings::get_accounts_root,
             settings::set_accounts_root,
             watchdog::ui_heartbeat,
-            worktree::create_worktree,
             worktree::fetch_before_worktree,
             worktree::set_fetch_before_worktree,
             worktree::inspect_worktrees,

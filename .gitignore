@@ -5,6 +5,5 @@ src-tauri/target/
 *.local
 .DS_Store
 .claude/worktrees/
-.codex/worktrees/
 # The test flavour: exe, its own cargo target, log, settings, CLIs (test-build.ps1).
 test-build/

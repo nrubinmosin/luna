@@ -232,15 +232,6 @@ export const CODEX_SANDBOX_HINTS: Record<CodexSandbox, string> = {
   'danger-full-access': 'no sandbox at all'
 };
 
-/** Pairs Codex itself names: the `--dangerously-bypass-approvals-and-sandbox`
- *  flag, and the two everyday combinations. Buttons in the dialog, nothing
- *  a chat stores. */
-export const CODEX_PRESETS: Array<{ label: string; approval: CodexApproval; sandbox: CodexSandbox; hint: string }> = [
-  { label: 'Bypass', approval: 'never', sandbox: 'danger-full-access', hint: 'full access, no prompts' },
-  { label: 'Auto', approval: 'on-request', sandbox: 'workspace-write', hint: 'edits in place, asks to go outside' },
-  { label: 'Read only', approval: 'on-request', sandbox: 'read-only', hint: 'asks before any write' }
-];
-
 export const codexEffortFromSetting = (raw: string): CodexEffort | null => {
   const v = raw.trim().toLowerCase();
   return /^[a-z]+$/.test(v) ? v : null;

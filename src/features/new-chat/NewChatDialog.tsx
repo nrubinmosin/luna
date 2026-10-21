@@ -270,7 +270,7 @@ export function NewChatDialog() {
                 className="field-row"
                 title={
                   provider === 'codex'
-                    ? 'Luna makes a git worktree under .codex/worktrees and runs Codex inside it'
+                    ? 'Codex makes a git worktree of its own (detached HEAD, under the account folder) and runs inside it'
                     : 'Run the session in an isolated git worktree'
                 }
                 style={{ height: 'calc(var(--ui) * 1.6)' }}

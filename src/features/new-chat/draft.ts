@@ -14,6 +14,9 @@ export interface Draft<S extends object> {
   resolved: S;
   from: From<S>;
   pick: <K extends keyof S>(key: K, value: S[K]) => void;
+  /** Sets a value that follows from another pick — unless the user has set
+   *  this one by hand. Leaves it untouched, so it keeps following. */
+  follow: <K extends keyof S>(key: K, value: S[K]) => void;
   revert: (key: keyof S) => void;
 }
 
@@ -58,6 +61,9 @@ export function useSettingsDraft<S extends object>(
     pick: (key, value) => {
       touched.current[key] = true;
       setSettings(s => ({ ...s, [key]: value }));
+    },
+    follow: (key, value) => {
+      if (!touched.current[key]) setSettings(s => ({ ...s, [key]: value }));
     },
     revert: key => {
       delete touched.current[key];

@@ -18,8 +18,10 @@ export interface ProviderUi {
   trustNote: string;
   loginSession: (id: string, account: Account) => Promise<string>;
   worktreeRe: RegExp;
-  worktreeParentRe: RegExp;
-  branchPrefix: string;
+  /** The project a session's worktree cwd belongs to, where the path says. */
+  projectOf: (cwd: string) => string | null;
+  /** The throwaway branch a worktree is made on; null for a detached one. */
+  branchPrefix: string | null;
 }
 
 const UI: Record<Provider, ProviderUi> = { claude, codex };

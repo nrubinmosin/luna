@@ -9,10 +9,14 @@
 //!
 //! As for Claude (claude/defaults.rs), the values come out settled: one Luna
 //! cannot pass on reads as nothing said, and nothing said is Luna's stock
-//! choice (`source: stock`) — except the model, where nothing said leaves it
-//! to Codex.
+//! choice (`source: stock`) — except the model and its effort, where nothing
+//! said is what Codex itself would pick (`source: codex`): the first model of
+//! its catalogue (codex/models.rs) at that model's default level. Naming it
+//! is what lets the dialog show the model a chat really runs on, and the flag
+//! carry it, instead of a "default" nobody can see.
 
 use super::config;
+use super::models::CodexModel;
 use serde::Serialize;
 use std::path::Path;
 
@@ -22,14 +26,14 @@ use std::path::Path;
 #[serde(rename_all = "camelCase")]
 pub struct Setting {
     pub value: String,
-    /// `account` | `project` | `stock`.
+    /// `account` | `project` | `codex` | `stock`.
     pub source: String,
 }
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct CodexDefaults {
-    /// None: whatever Codex itself defaults to.
+    /// None only when no model list could be had: Codex picks.
     pub model: Option<Setting>,
     pub effort: Setting,
     pub approval: Setting,
@@ -92,12 +96,34 @@ fn apply(out: &mut Said, source: &str, doc: &toml_edit::DocumentMut) {
     }
 }
 
+/// Async and off to a blocking thread: with no catalogue on disk the model
+/// list comes from the CLI, which takes seconds.
 #[tauri::command]
-pub fn codex_defaults(account_path: String, folder: String) -> CodexDefaults {
-    let said = read(&account_path, &folder);
+pub async fn codex_defaults(account_path: String, folder: String) -> CodexDefaults {
+    tauri::async_runtime::spawn_blocking(move || {
+        let models = if account_path.is_empty() { vec![] } else { super::models::models_for(&account_path) };
+        resolve(&account_path, &folder, &models)
+    })
+    .await
+    .unwrap_or_else(|_| resolve("", "", &[]))
+}
+
+fn resolve(account_path: &str, folder: &str, models: &[CodexModel]) -> CodexDefaults {
+    let said = read(account_path, folder);
+    let model = said.model.filter(|s| !s.value.trim().is_empty()).or_else(|| {
+        models.first().map(|m| Setting { value: m.slug.clone(), source: "codex".to_owned() })
+    });
+    let own_level = model
+        .as_ref()
+        .and_then(|m| models.iter().find(|l| l.slug == m.value))
+        .and_then(|m| m.default_effort.as_deref())
+        .and_then(effort_level);
+    let effort = said.effort.and_then(|s| effort_level(&s.value).map(|value| Setting { value, source: s.source }));
     CodexDefaults {
-        model: said.model.filter(|s| !s.value.trim().is_empty()),
-        effort: settle(said.effort, effort_level, STOCK_EFFORT),
+        effort: effort
+            .or_else(|| own_level.map(|value| Setting { value, source: "codex".to_owned() }))
+            .unwrap_or_else(|| Setting { value: STOCK_EFFORT.to_owned(), source: "stock".to_owned() }),
+        model,
         approval: settle(said.approval, |v| one_of(&APPROVALS, v), STOCK_APPROVAL),
         sandbox: settle(said.sandbox, |v| one_of(&SANDBOXES, v), STOCK_SANDBOX),
     }
@@ -122,9 +148,10 @@ fn read(account_path: &str, folder: &str) -> Said {
     out
 }
 
-/// The same as the flags a helper would be spawned with, for `luna_list`.
+/// The same as the flags a helper would be spawned with, for `luna_list` —
+/// off the model list as far as it is known without asking the CLI.
 pub fn flags(account_path: &str, folder: &str) -> serde_json::Value {
-    let d = codex_defaults(account_path.to_owned(), folder.to_owned());
+    let d = resolve(account_path, folder, &super::models::models_known(account_path));
     serde_json::json!({
         "model": d.model.map(|m| m.value),
         "effort": d.effort.value,
@@ -156,12 +183,12 @@ mod tests {
         let acc = account.to_string_lossy().into_owned();
         let dir = folder.to_string_lossy().into_owned();
 
-        let d = codex_defaults(acc.clone(), dir.clone());
+        let d = resolve(&acc, &dir, &[]);
         assert_eq!(d.model.as_ref().unwrap().value, "gpt-5-codex");
         assert_eq!(d.model.as_ref().unwrap().source, "account");
 
         super::super::trust::codex_trust_folder(acc.clone(), dir.clone()).unwrap();
-        let d = codex_defaults(acc, dir);
+        let d = resolve(&acc, &dir, &[]);
         let model = d.model.unwrap();
         assert_eq!(model.value, "gpt-5-mini");
         assert_eq!(model.source, "project");
@@ -178,13 +205,40 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         let account = root.join("account");
         write(&account.join("config.toml"), "model_reasoning_effort = \"High\"\napproval_policy = \"untrusted\"\n");
-        let d = codex_defaults(account.to_string_lossy().into_owned(), String::new());
-        assert!(d.model.is_none(), "no model is Codex's own");
+        let d = resolve(&account.to_string_lossy(), "", &[]);
+        assert!(d.model.is_none(), "no model list, no model");
         assert_eq!((d.effort.value.as_str(), d.effort.source.as_str()), ("high", "account"));
         assert_eq!((d.approval.value.as_str(), d.approval.source.as_str()), (STOCK_APPROVAL, "stock"));
         assert_eq!(d.sandbox.value, STOCK_SANDBOX);
-        let none = codex_defaults(String::new(), String::new());
+        let none = resolve("", "", &[]);
         assert_eq!(none.effort.source, "stock");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn model(slug: &str, level: &str) -> CodexModel {
+        CodexModel {
+            slug: slug.into(),
+            display_name: slug.into(),
+            default_effort: Some(level.into()),
+            efforts: vec![],
+            effort_hints: Default::default(),
+        }
+    }
+
+    #[test]
+    fn nothing_said_is_codexs_first_model_at_its_own_level() {
+        let list = [model("gpt-6-sol", "low"), model("gpt-6-astra", "medium")];
+        let d = resolve("", "", &list);
+        let m = d.model.unwrap();
+        assert_eq!((m.value.as_str(), m.source.as_str()), ("gpt-6-sol", "codex"));
+        assert_eq!((d.effort.value.as_str(), d.effort.source.as_str()), ("low", "codex"));
+
+        let root = std::env::temp_dir().join(format!("luna-codex-own-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        write(&root.join("config.toml"), "model = \"gpt-6-astra\"\n");
+        let d = resolve(&root.to_string_lossy(), "", &list);
+        assert_eq!(d.model.unwrap().source, "account");
+        assert_eq!(d.effort.value, "medium", "the named model's own level");
         let _ = std::fs::remove_dir_all(&root);
     }
 }

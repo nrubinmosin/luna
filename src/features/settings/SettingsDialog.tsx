@@ -207,8 +207,9 @@ function StartRow({ label, which }: { label: string; which: 'worktree' | 'tools'
   );
 }
 
-/** Whether origin is fetched before a worktree is branched off it. Kept by
- *  the Rust side, which does the fetch for chats agents start as well. */
+/** Whether origin is fetched before Claude Code branches a worktree off it
+ *  (Codex checks out the current commit instead). Kept by the Rust side,
+ *  which does the fetch for chats agents start as well. */
 function FetchRow() {
   const [on, setOn] = useState<boolean | null>(null);
   useEffect(() => {
@@ -224,7 +225,7 @@ function FetchRow() {
         onChange={e => void setFetchBeforeWorktree(e.target.checked).then(setOn)}
       />
       <label htmlFor="fetch-toggle" style={{ cursor: 'default', fontSize: 'var(--fs-4)' }}>
-        Fetch origin before making a worktree
+        Fetch origin before Claude Code makes a worktree
       </label>
     </div>
   );

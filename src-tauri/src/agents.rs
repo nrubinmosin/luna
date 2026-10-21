@@ -898,14 +898,12 @@ fn await_start(
     }
 }
 
-/// The worktree a Claude Code caller started with `--worktree` runs in. It
-/// registers with the project folder, the only one known at spawn, and makes
-/// the worktree itself; its registry entry says where that went.
+/// The worktree a caller started with `--worktree` runs in. It registers
+/// with the project folder, the only one known at spawn, and the CLI makes
+/// the worktree itself; what it leaves on disk says where that went.
 fn caller_worktree(caller: &str) -> Option<String> {
     let folder = reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(caller)?.folder.clone();
-    let pty = crate::pty::manager();
-    let p = pty.probe(caller).filter(|p| p.provider == Provider::Claude)?;
-    let cwd = crate::claude::session::session_cwd(p.pid, &p.cwd, p.spawned_at_ms, &p.account_path)?;
+    let cwd = crate::pty::manager().probe(caller)?.working_dir()?;
     crate::worktree::is_worktree_of(&folder, &cwd).then_some(cwd)
 }
 
@@ -930,7 +928,7 @@ pub fn spawn(caller: &str, mut params: SpawnParams) -> Result<Spawned, String> {
         if params.folder.is_none() {
             params.folder = Some(worktree.unwrap_or_else(|| me.folder.clone()));
         }
-        // A folder inside a Luna-made worktree files the chat under the
+        // A folder inside a CLI-made worktree files the chat under the
         // worktree's project, like the chat it came from; it runs in that
         // worktree unless it asked for one of its own.
         let mut in_worktree = None;
@@ -1408,11 +1406,11 @@ pub fn delete(caller: &str, id: &str, drop_worktree: bool) -> Result<Option<Stri
 
 fn remove(id: &str, known: Known, drop_worktree: bool) -> Result<Option<String>, String> {
     let pty = crate::pty::manager();
-    // A Codex helper in a worktree knows the worktree as its folder.
+    // A helper resumed in a worktree knows the worktree as its folder.
     let folder = crate::worktree::project_of(&known.folder).unwrap_or(known.folder);
     let drop_worktree = drop_worktree && !reg().lock().unwrap_or_else(|e| e.into_inner()).borrowed.contains(id);
     // PtyManager::delete forgets the session here too (see `forget`).
-    let worktree = tauri::async_runtime::block_on(pty.delete(id, &folder, &known.account_path, None, drop_worktree))?;
+    let worktree = tauri::async_runtime::block_on(pty.delete(id, &folder, None, drop_worktree))?;
     crate::emit::to_ui("agent://deleted", Deleted { id: id.to_string() });
     // Without the drop, `delete` names the worktree that stays.
     Ok(worktree.filter(|_| drop_worktree))
