@@ -13,6 +13,7 @@ import { RecommendedDialog } from './RecommendedDialog';
 import { ConfigEditor } from './ConfigEditor';
 import { SettingsSync } from './SettingsSync';
 import { useAgentAccounts } from '../agents/agentAccounts.store';
+import { recommendedSettings } from '../../ipc/commands';
 
 /** Raised from the status bar: its account summary, or its Accounts button. */
 export const useAccountsWindow = create<{ open: boolean; setOpen: (v: boolean) => void }>(set => ({
@@ -90,6 +91,26 @@ function AccountsPanel() {
   const [deleting, setDeleting] = useState<Account | null>(null);
   const [recommending, setRecommending] = useState<Account | null>(null);
   const [editing, setEditing] = useState<Account | null>(null);
+  // How many of the recommended settings each account's file has, by key:
+  // what the button promises before it is opened. Read again whenever a
+  // dialog that can change the file closes.
+  const [recCounts, setRecCounts] = useState<Record<string, string>>({});
+  const accountPaths = accounts.map(a => `${a.provider}|${a.path}`).join('\n');
+  useEffect(() => {
+    if (recommending || editing) return;
+    let stale = false;
+    void Promise.all(
+      accounts.map(a =>
+        recommendedSettings(a.provider, a.path)
+          .then(list => [accountKey(a.provider, a.name), list.length ? `${list.filter(r => r.applied).length}/${list.length}` : ''] as const)
+          .catch(() => [accountKey(a.provider, a.name), ''] as const)
+      )
+    ).then(pairs => !stale && setRecCounts(Object.fromEntries(pairs)));
+    return () => {
+      stale = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accountPaths, recommending, editing]);
   // The account whose name is being typed, by key, and what it says so far.
   const [renaming, setRenaming] = useState<{ key: string; to: string; error: string | null } | null>(null);
   const commitRename = async (acc: Account) => {
@@ -261,7 +282,12 @@ function AccountsPanel() {
               <ToolButton
                 icon="recommend"
                 size={24}
-                title="Recommended settings for this account"
+                label={recCounts[accountKey(acc.provider, acc.name)] || undefined}
+                title={
+                  recCounts[accountKey(acc.provider, acc.name)]
+                    ? `Recommended settings for this account — ${recCounts[accountKey(acc.provider, acc.name)]} in its file`
+                    : 'Recommended settings for this account'
+                }
                 onClick={() => setRecommending(acc)}
               />
               <ToolButton
@@ -311,7 +337,16 @@ function AccountsPanel() {
         );
       })}
 
-      {recommending && <RecommendedDialog account={recommending} onClose={() => setRecommending(null)} />}
+      {recommending && (
+        <RecommendedDialog
+          account={recommending}
+          onClose={() => setRecommending(null)}
+          onEdit={() => {
+            setEditing(recommending);
+            setRecommending(null);
+          }}
+        />
+      )}
       {editing && <ConfigEditor account={editing} onClose={() => setEditing(null)} />}
 
       {deleting && (

@@ -157,6 +157,8 @@ pub fn run() {
             account_settings::set_settings_sync_on_start,
             account_settings::sync_settings_now,
             account_settings::read_account_config,
+            account_settings::check_account_config,
+            account_settings::format_account_config,
             account_settings::write_account_config,
             accounts::list_accounts,
             accounts::create_account,
