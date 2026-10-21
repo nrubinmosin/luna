@@ -99,7 +99,7 @@ src-tauri/src/
                 POST /hook/<chat>/<secret> takes Claude Code hooks' stdin;
                 POST /mcp with the session's bearer token — MCP for agents; a thread per request
   mcp.rs        the MCP server's JSON-RPC: initialize (with instructions), tools/list, tools/call;
-                eight luna_* tools with short descriptions (~2k tokens)
+                nine luna_* tools with short descriptions (~2k tokens)
   agents.rs     registry of sessions with tools and those they spawned: tokens, kinship,
                 rights (kill/delete — descendants only; sessions, send, read, wait — all), spawn via the frontend
                 (agent://spawn ↔ agent_spawned), send into the pty, read from the transcript, wait on activity, kill, delete (+worktree);

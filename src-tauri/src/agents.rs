@@ -204,6 +204,8 @@ struct Registry {
     auto: HashMap<String, Auto>,
     /// Each account's usage as the window last showed it, by `provider/name`.
     usage: HashMap<String, serde_json::Value>,
+    /// When each caller last raised a desktop notification (`notify`).
+    notified: HashMap<String, u64>,
 }
 
 /// An `autoDelete` helper's progress towards going.
@@ -253,6 +255,7 @@ fn reg() -> &'static Mutex<Registry> {
             waits: HashMap::new(),
             auto: HashMap::new(),
             usage: HashMap::new(),
+            notified: HashMap::new(),
         })
     })
 }
@@ -1416,6 +1419,40 @@ fn remove(id: &str, known: Known, drop_worktree: bool) -> Result<Option<String>,
     Ok(worktree.filter(|_| drop_worktree))
 }
 
+/// The shortest gap between two notifications from one session: a model in
+/// a loop must not bury the desktop in them.
+const NOTIFY_GAP_MS: u64 = 10_000;
+
+/// A desktop notification from `caller`, under its own chat's name so it
+/// cannot pass for another; a click on it opens that chat.
+pub fn notify(caller: &str, text: &str) -> Result<(), String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err("text is empty".into());
+    }
+    let provider = {
+        let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+        let now = now_ms();
+        if let Some(last) = r.notified.get(caller) {
+            let left = NOTIFY_GAP_MS.saturating_sub(now.saturating_sub(*last));
+            if left > 0 {
+                return Err(format!("not shown: one notification per {} s, try again in {} s", NOTIFY_GAP_MS / 1000, left.div_ceil(1000)));
+            }
+        }
+        r.notified.insert(caller.to_string(), now);
+        r.known.get(caller).map(|k| k.provider)
+    };
+    let who = match provider {
+        Some(Provider::Codex) => "Codex",
+        _ => "Claude",
+    };
+    let chat = chat_name(caller).unwrap_or_else(|| caller.to_string());
+    // A toast shows a few lines at most; the rest would only be cut.
+    let body: String = text.chars().take(300).collect();
+    crate::power::notify_chat(caller, &format!("“{chat}” · {who}"), &body);
+    Ok(())
+}
+
 /// Deletes the `autoDelete` helpers that are done with: nobody is owed their
 /// answer or waiting on them, and they have sat idle — or exited — for
 /// AUTO_DELETE_IDLE_MS since. One a person has typed into is theirs now and
@@ -1476,6 +1513,7 @@ pub fn forget(id: &str) {
     r.abandoned.retain(|_, (caller, _)| caller != id);
     r.borrowed.remove(id);
     r.waits.retain(|(who, chat), _| who != id && chat != id);
+    r.notified.remove(id);
     drop(r);
     transcripts().lock().unwrap_or_else(|e| e.into_inner()).remove(id);
     if spawned {
@@ -1665,7 +1703,8 @@ fn notifier() {
                 if !*told && now_ms().saturating_sub(*since) >= DRAFT_ALERT_MS {
                     *told = true;
                     let chat = chat_name(&caller).unwrap_or_else(|| caller.clone());
-                    crate::power::notify(
+                    crate::power::notify_chat(
+                        &caller,
                         "A helper has answered",
                         &format!("\"{chat}\" has an unsent draft, so Luna is holding the helper's notice until you send or clear it."),
                     );

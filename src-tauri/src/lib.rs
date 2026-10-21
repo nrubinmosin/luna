@@ -84,6 +84,19 @@ pub fn run() {
                 use tauri::Emitter;
                 let _ = handle.emit(event, payload);
             });
+            // A click on a notification brings the window up, from the tray
+            // if need be, and one about a chat opens that chat in it.
+            let handle = app.handle().clone();
+            tauri_plugin_notification::NotificationExt::notification(app.handle()).on_action(move |done| {
+                if done.action_id() != "tap" {
+                    return;
+                }
+                show_main(&handle);
+                let chat = done.notification().and_then(|n| n.extra().get("chatId")).and_then(|v| v.as_str());
+                if let Some(chat_id) = chat {
+                    emit::to_ui("ui://open-chat", serde_json::json!({ "chatId": chat_id }));
+                }
+            })?;
             // Here rather than at the top of run(): a second launch that only
             // focuses the running Luna has exited by now, and must not read as
             // a restart. The build stamp as well as the version: test builds

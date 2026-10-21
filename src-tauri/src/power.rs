@@ -304,12 +304,23 @@ fn verb(a: Action) -> &'static str {
 /// A desktop notification, shown by the window: the app may well be hidden
 /// in the tray when it matters.
 pub fn notify(title: &str, body: &str) {
+    send(None, title, body);
+}
+
+/// One about a chat, which a click on it opens.
+pub fn notify_chat(chat_id: &str, title: &str, body: &str) {
+    send(Some(chat_id), title, body);
+}
+
+fn send(chat_id: Option<&str>, title: &str, body: &str) {
     #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
     struct Notice<'a> {
         title: &'a str,
         body: &'a str,
+        chat_id: Option<&'a str>,
     }
-    crate::emit::to_ui("ui://notify", Notice { title, body });
+    crate::emit::to_ui("ui://notify", Notice { title, body, chat_id });
 }
 
 /// Off the sampler thread: quitting the CLIs takes seconds.

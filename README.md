@@ -128,7 +128,9 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   a stripe on its sidebar row, so a glance links the two without reading either name.
 - Status per chat — working / waiting for you / resting — read from the CLI's own session
   registry, so it is right whether or not the chat has a pane. A chat turning to waiting
-  raises a desktop notification, since the window may well be in the tray.
+  raises a desktop notification, since the window may well be in the tray. It plays the
+  system's notification sound unless Settings → Notifications says not to, and a click on
+  it brings the window up with that chat on the peek sheet, the board left as it was.
 - Context use is read straight out of the session transcript against the model's real
   window (fetched from the Models API), so it costs nothing and cannot drift.
 - Titles are the CLI's own: Claude Code names a session from its opening exchange — the
@@ -243,10 +245,12 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
 ## Agents: sessions that run sessions
 
 A chat created with **Luna tools** ticked (off by default) gets Luna as an MCP server, and
-with it eight tools: `luna_list`, `luna_sessions`, `luna_spawn`, `luna_send`, `luna_read`,
-`luna_wait`, `luna_kill`, `luna_delete`. The model can start a helper session — another model, another
+with it nine tools: `luna_list`, `luna_sessions`, `luna_spawn`, `luna_send`, `luna_read`,
+`luna_wait`, `luna_kill`, `luna_delete`, `luna_notify`. The model can start a helper session — another model, another
 account, Codex instead of Claude — with an opening prompt, wait for its reply, send
-follow-ups, and delete it when done, worktree and branch included if it asked for one. The
+follow-ups, and delete it when done, worktree and branch included if it asked for one.
+`luna_notify` lets it raise a desktop notification mid-turn, titled with its chat's name and
+opening that chat when clicked, at most one every 10 seconds. The
 tools and a five-line instruction cost about 2k tokens of context once per session; a chat
 without the box ticked knows nothing of Luna at all.
 

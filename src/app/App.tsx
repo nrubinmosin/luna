@@ -24,7 +24,8 @@ import { healScaleDrift } from './dpi';
 import { Icon } from '../shared/ui/icons';
 import { STRIP, useShell } from './shell.store';
 import { uiHeartbeat } from '../ipc/commands';
-import { onNotify } from '../ipc/events';
+import { onNotify, onOpenChat } from '../ipc/events';
+import { peekFromNotice } from '../features/panes/navigate';
 import { notify } from '../shared/lib/notify';
 import { allChats, useChats } from '../features/chats/chats.store';
 import { usePanes } from '../features/panes/panes.store';
@@ -160,8 +161,12 @@ export function App() {
   useEffect(() => void useCore.getState().init(), []);
 
   useEffect(() => {
-    const off = onNotify(n => void notify(n.title, n.body));
-    return () => void off.then(f => f());
+    const off = onNotify(n => void notify(n.title, n.body, n.chatId));
+    const offOpen = onOpenChat(p => peekFromNotice(p.chatId));
+    return () => {
+      void off.then(f => f());
+      void offOpen.then(f => f());
+    };
   }, []);
 
   // A chat listed in a group the title bar does not offer could never be
