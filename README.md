@@ -85,25 +85,29 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
 - New chat (Ctrl+N): folder, account, and the **Git worktree** and **Luna tools**
   checkboxes. They start as Settings has them (worktree on, tools off), or as kept for the
   folder: flipping one is just for that chat, and "keep for this folder" under them makes
-  it the folder's own start. Before a worktree is made Luna fetches origin's default
-  branch (10 s at most, never asking for a password; off in Settings): both CLIs branch
-  the worktree off it, and Claude Code itself refetches it only once a day.
+  it the folder's own start. Isolation is each CLI's own `--worktree`. Before Claude Code
+  makes one Luna fetches origin's default branch (10 s at most, never asking for a
+  password; off in Settings): Claude Code branches the worktree off it and refetches it
+  itself only once a day.
   The account decides which CLI the chat runs, and the rest of the dialog follows:
-  - **Claude Code**: model, effort (`low/medium/high/xhigh/max/ultracode`) and permission
-    mode. Isolation runs the session as `claude --worktree` in
-    `<folder>/.claude/worktrees/<name>`.
-  - **Codex**: model — buttons off Codex's own catalogue: the list it caches for the
-    account (`models_cache.json`), another account's when this one has never run, or
-    `codex debug models` asked directly — never a box to type a slug into — plus
-    "default" for whatever Codex would pick; reasoning effort as that model takes it
-    (`low … ultra`, from the same list), approval policy (`on-request/never`) and sandbox
-    mode (`read-only/workspace-write/danger-full-access`), with the three usual pairs as
-    one-click presets; `never` + `danger-full-access` is passed as
-    `--dangerously-bypass-approvals-and-sandbox`, as Codex spells it. Isolation makes a
-    worktree on a fresh `codex-…` branch off origin's default branch (as Claude Code
-    does; HEAD where there is no origin) under `<folder>/.codex/worktrees/` and runs
-    `codex -C` inside it — Codex's own worktree feature is left alone (it is experimental,
-    puts the checkout under the account folder and never cleans up).
+  - **Claude Code**: model (a drop-down), effort (`low/medium/high/xhigh/max/ultracode`)
+    and permission mode. Isolation runs the session as `claude --worktree` in
+    `<folder>/.claude/worktrees/<name>`, on a `worktree-<name>` branch.
+  - **Codex**: model — a drop-down off Codex's own catalogue, in Codex's order: the list
+    it caches for the account (`models_cache.json`), another account's when this one has
+    never run, or `codex debug models` asked directly — never a box to type a slug into.
+    The model a chat gets when nothing is changed is named and marked "· default": the
+    account's `config.toml` model, or else the first one Codex lists, which is the one it
+    would pick; it is always passed as `--model`. Reasoning effort as that model takes it
+    (`low … ultra`, from the same list, each level's description as its tooltip), opening
+    on the model's own default level and following the model when another is picked —
+    unless a settings file names a level or one was picked by hand. Approval policy
+    (`on-request/never`) and sandbox mode (`read-only/workspace-write/danger-full-access`)
+    are picked separately; `never` + `danger-full-access` is passed as
+    `--dangerously-bypass-approvals-and-sandbox`, as Codex spells it. Isolation runs
+    `codex --worktree`: Codex checks the current commit out into
+    `<account>/worktrees/<4 hex>/<repo>` on a detached HEAD, and Luna reads where from the
+    session's rollout. A resumed chat goes back into that checkout.
 - Those controls open on whatever the CLI's own settings say for that account in that
   folder. Claude Code: the account's `settings.json`, then the project's
   `.claude/settings.json` and `.claude/settings.local.json`, then the machine-wide managed
@@ -174,18 +178,25 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   setup question. Luna writes `hasTrustDialogAccepted` into `.claude.json`, or a
   `[projects.'<path>'] trust_level = "trusted"` entry into `config.toml`, before the
   session starts.
-- **Recommended settings**, per account in the Accounts window: what works well for the
-  CLI inside Luna, each with a tick, what the file says now and why — `tui: fullscreen`,
-  no spinner tips or feedback prompts, no away recap, no second Bypass confirmation,
+- **Recommended settings**, per account in the Accounts window — its button says how
+  many of them the account's file has (`5/12`): what works well for the CLI inside Luna,
+  each with what the file says now, what it would say and why — `tui: fullscreen`, no
+  spinner tips or feedback prompts, no away recap, no second Bypass confirmation,
   PowerShell for `!` commands on Windows only (Claude Code); no update check, tooltips,
-  desktop notifications, analytics or feedback prompts, live web search (Codex). Matters
-  of taste (attribution, default effort, Bypass by default) are offered unticked. Only
-  the ticked keys are written; the rest of the file, comments included, stays.
+  desktop notifications, analytics or feedback prompts, live web search (Codex); and as
+  matters of taste attribution, default effort, Bypass by default. Nothing is written
+  until asked. A tick is what the file will have: the keys already there open ticked,
+  and unticking one takes it back out (only while it still says what was recommended);
+  "Tick recommended" ticks the everyday set, and Apply says how many keys go in and out.
+  The rest of the file, comments included, stays.
 - An account can be renamed in place (the pencil beside its name): the folder is renamed
   and every chat on it, the agents' list and the settings parent follow — not while a
   chat on it is running. Its settings file opens in an editor too (`settings.json` for
-  Claude Code, `config.toml` for Codex): what is typed is what is written, comments and
-  all, and only once it parses; Ctrl+S saves.
+  Claude Code, `config.toml` for Codex; also from the recommended settings), with syntax
+  colours and line numbers. It is checked as it is typed — the line that breaks it is
+  marked — written only once it parses, and laid out on save the way the CLI writes it
+  (JSON indented by two, TOML by taplo's rules), comments and key order kept; Ctrl+S
+  saves.
 - **Shared settings**: pick a parent account per CLI and its settings file is copied onto
   the others — now, with Sync now, or at every launch with the box ticked. The parent's
   keys overwrite and keys only the child has stay; logins and Codex's trusted folders are
@@ -204,8 +215,9 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   — are listed at the top of the sidebar, with what they are
   working on, and can be adopted back or killed.
 - A folder with worktrees left behind by deleted chats offers to sweep them; nothing a
-  live session sits in is ever swept. Deleting a chat takes its worktree and the branch
-  the CLI made for it along by default; the checkbox can be unticked per chat, and where it
+  live session sits in is ever swept — Claude Code's under the folder, Codex's under the
+  accounts. Deleting a chat takes its worktree, and the branch Claude Code made for it,
+  along by default; the checkbox can be unticked per chat, and where it
   starts is set in Settings.
 - Warnings and errors from both halves of the app land in `luna.log`, next to the exe for
   the portable build and under `%LOCALAPPDATA%\luna` otherwise. Info-level chatter never
