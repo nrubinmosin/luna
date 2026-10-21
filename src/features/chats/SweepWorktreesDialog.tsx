@@ -14,6 +14,12 @@ function atStake(w: WorktreeInfoDto): string | null {
 }
 
 const leaf = (p: string) => p.split(/[\\/]/).filter(Boolean).pop() ?? p;
+/** Codex's checkouts are all named after the repo; the bucket tells them apart. */
+const codexWorktree = /[\\/]worktrees[\\/]([0-9a-f]{4})[\\/]([^\\/]+)[\\/]?$/i;
+const nameOf = (p: string) => {
+  const m = codexWorktree.exec(p);
+  return m ? `${m[2]} · Codex ${m[1]}` : leaf(p);
+};
 
 /**
  * The gate in front of the folder's "⌫ n" chip. A worktree nobody claims is
@@ -92,8 +98,8 @@ export function SweepWorktreesDialog({
       </>
     ) : (
       <>
-        No chat or running session uses these. Deleting one removes its directory and its throwaway{' '}
-        <code>worktree-…</code> / <code>codex-…</code> branch; work that exists nowhere else is gone for good.
+        No chat or running session uses these. Deleting one removes its directory, and for Claude Code's
+        its throwaway <code>worktree-…</code> branch; work that exists nowhere else is gone for good.
         <div
           className="xp-field"
           style={{ marginTop: 8, maxHeight: 240, overflowY: 'auto', padding: 2 }}
@@ -112,7 +118,7 @@ export function SweepWorktreesDialog({
                 <input type="checkbox" id={id} checked={picked.has(w.path)} onChange={() => toggle(w.path)} />
                 <label htmlFor={id} style={{ display: 'block', cursor: 'default', minWidth: 0, color: 'var(--fg)' }}>
                   <div style={{ fontSize: 'var(--fs-4)', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {leaf(w.path)}
+                    {nameOf(w.path)}
                     {w.branch && w.branch !== leaf(w.path) && (
                       <span style={{ fontWeight: 400, color: 'var(--faint)' }}> · {w.branch}</span>
                     )}

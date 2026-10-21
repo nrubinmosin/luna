@@ -243,7 +243,7 @@ function DropWorktreeRow() {
         onChange={e => useDeletePrefs.getState().setDropWorktree(e.target.checked)}
       />
       <label htmlFor="drop-worktree-toggle" style={{ cursor: 'default', fontSize: 'var(--fs-4)' }}>
-        Delete the worktree and its branch too
+        Delete the worktree too
       </label>
     </div>
   );
@@ -394,10 +394,11 @@ function SettingsWindow({ onClose }: { onClose: () => void }) {
             </div>
             <FetchRow />
             <div style={{ fontSize: 'var(--fs-1)', color: 'var(--faint)', marginTop: 4 }}>
-              A worktree branches off origin’s default branch as last fetched, and Claude Code fetches it
-              only once a day. With this on, Luna runs <code>git fetch</code> first — for Claude Code and
-              Codex alike, ten seconds at most, never asking for a password. Only origin’s branches move;
-              nothing you have checked out is touched.
+              Claude Code branches its worktree off origin’s default branch as last fetched, and fetches
+              it itself only once a day. With this on, Luna runs <code>git fetch</code> first — ten seconds
+              at most, never asking for a password. Only origin’s branches move; nothing you have checked
+              out is touched. Codex starts its worktree from the commit you have checked out, which no
+              fetch changes.
             </div>
           </Section>
           <Section label="Board">
@@ -411,8 +412,10 @@ function SettingsWindow({ onClose }: { onClose: () => void }) {
           <Section label="Deleting chats">
             <DropWorktreeRow />
             <div style={{ fontSize: 'var(--fs-1)', color: 'var(--faint)', marginTop: 4 }}>
-              Where the worktree checkbox starts when you delete a chat that has one. It can still
-              be flipped per chat; uncommitted work in a deleted worktree is lost.
+              Where the worktree checkbox starts when you delete a chat that has one: Claude Code’s, in
+              the project’s <code>.claude/worktrees</code>, goes with its <code>worktree-…</code> branch;
+              Codex’s, in the account folder, has no branch of its own. It can still be flipped per
+              chat; uncommitted work in a deleted worktree is lost.
             </div>
           </Section>
           <Section label="Versions & updates">
