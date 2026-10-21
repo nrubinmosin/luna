@@ -83,9 +83,9 @@ export function useSessionWatch() {
         if (meta.context != null && meta.context !== fresh.context) {
           store.setContext(chat.id, meta.context, meta.contextTokens ?? null, meta.contextWindow ?? null);
         }
-        // Remember where the worktree actually is, for cleanup on delete.
-        // Codex chats know theirs from birth; Claude Code's `--worktree` only
-        // tells us through the registry.
+        // Remember where the worktree actually is, for cleanup on delete and
+        // to resume in: each CLI's `--worktree` only tells through the
+        // session — Claude Code's registry, Codex's rollout.
         if (meta.cwd && ui(fresh.provider).worktreeRe.test(meta.cwd) && meta.cwd !== fresh.worktreePath) {
           store.setWorktreePath(chat.id, meta.cwd);
         }

@@ -7,31 +7,35 @@
 import { useEffect, useState, type CSSProperties, type ReactNode } from 'react';
 import type { Account, CodexApproval, CodexChat, CodexEffort, CodexSandbox, CodexSettings } from '../../../shared/types';
 import {
-  CODEX_APPROVAL_HINTS, CODEX_APPROVALS, CODEX_EFFORTS, CODEX_PRESETS, CODEX_SANDBOX_HINTS, CODEX_SANDBOXES,
+  CODEX_APPROVAL_HINTS, CODEX_APPROVALS, CODEX_EFFORTS, CODEX_SANDBOX_HINTS, CODEX_SANDBOXES,
   codexApprovalFromSetting, codexEffortFromSetting, codexSandboxFromSetting
 } from '../../../shared/types';
 import {
   codexDefaults, codexFolderTrusted, codexModels, codexTrustFolder, ensureCodexSession,
   type CodexDefaultSource, type CodexModelDto
 } from '../../../ipc/commands';
+import { ModelSelect } from '../../../shared/ui/ModelSelect';
 import { Segmented } from '../../../shared/ui/Segmented';
 import type { Draft, From } from '../../new-chat/draft';
 
 export const label = 'Codex';
 
 /** Where a chat opens when config.toml says nothing: Codex's own default
- *  model, and the same "just do it" stance the Claude side opens on. The
- *  core's stock (codex/defaults.rs), for the moment before it answers or if
- *  it cannot. */
+ *  model (named by the core once it has the model list), and the same "just
+ *  do it" stance the Claude side opens on. The core's stock
+ *  (codex/defaults.rs), for the moment before it answers or if it cannot. */
 export const STOCK: CodexSettings = { model: null, effort: 'high', approval: 'never', sandbox: 'danger-full-access' };
 
 export const SOURCE_LABELS: Record<Exclude<CodexDefaultSource, 'stock'>, string> = {
   account: "the account's config.toml",
-  project: "the project's .codex/config.toml"
+  project: "the project's .codex/config.toml",
+  codex: "Codex's own default"
 };
 
 export const settingsNote = 'Opens on this account’s Codex config.toml; anything changed here applies to this chat only';
 
+/** A chat that runs without `--model`: older chats, and any whose account
+ *  had no model list to name one from. */
 export const DEFAULT_MODEL_LABEL = 'Codex default';
 
 /**
@@ -98,16 +102,14 @@ export const loginSession = (id: string, account: Account) =>
 
 // -------------------------------------------------------------- worktree --
 
-/** `<repo>/.codex/worktrees/codex-xxxxxx` — the checkout Luna made for the chat. */
-export const worktreeRe = /[\\/]\.codex[\\/]worktrees[\\/]/i;
-export const worktreeParentRe = /^(.*)[\\/]\.codex[\\/]worktrees[\\/][^\\/]+$/;
-export const branchPrefix = 'codex-';
+/** `<CODEX_HOME>/worktrees/<4 hex>/<repo>` — the checkout `codex --worktree`
+ *  made, on a detached HEAD. */
+export const worktreeRe = /[\\/]worktrees[\\/][0-9a-f]{4}[\\/][^\\/]+[\\/]?$/i;
+/** The path names the account, not the project: only git knows that. */
+export const projectOf = (): string | null => null;
+export const branchPrefix = null;
 
 // ---------------------------------------------------------------- dialog --
-
-/** The label Codex's list gives a slug, or the slug itself. */
-const displayOf = (models: CodexModelDto[], slug: string) =>
-  models.find(m => m.slug === slug)?.displayName ?? slug;
 
 export function Fields({ draft, origin, accountPath }: {
   draft: Draft<CodexSettings>;
@@ -130,67 +132,58 @@ export function Fields({ draft, origin, accountPath }: {
   }, [accountPath]);
   const list = models ?? [];
 
-  const preset = CODEX_PRESETS.find(p => p.approval === settings.approval && p.sandbox === settings.sandbox);
-
-  // The levels the chosen model takes; Codex's default model is the first
-  // listed, so "default" borrows its ladder. A model from a settings file
-  // that the list does not know keeps the stock ladder.
-  const listed = settings.model ? list.find(m => m.slug === settings.model) : list[0];
+  // The levels the chosen model takes. A model from a settings file that the
+  // list does not know keeps the stock ladder.
+  const listed = list.find(m => m.slug === settings.model);
   const efforts = listed?.efforts.length ? listed.efforts : CODEX_EFFORTS;
   const effortItems = efforts.includes(settings.effort) ? efforts : [...efforts, settings.effort];
 
-  // A model a settings file names that the list does not know still gets a
-  // button of its own, pressed, rather than reading as "default".
-  const unknown = settings.model && !list.some(m => m.slug === settings.model) ? settings.model : null;
-  const modelItems = ['default', ...list.map(m => m.displayName), ...(unknown ? [unknown] : [])];
-  const modelValue = settings.model ? displayOf(list, settings.model) : 'default';
+  // The effort follows the model to its own default level, unless a settings
+  // file named a level or it was picked by hand.
+  const effortFromFile = !!draft.from.effort && draft.from.effort !== SOURCE_LABELS.codex;
+  useEffect(() => {
+    if (listed?.defaultEffort && !effortFromFile) draft.follow('effort', listed.defaultEffort);
+    // `draft.follow` is a new function every render; the model is what matters.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [listed?.slug, effortFromFile]);
+
+  // A model a settings file names that the list does not know still gets an
+  // entry of its own, chosen.
+  const modelItems = list.map(m => ({ value: m.slug, label: m.displayName }));
+  if (settings.model && !listed) modelItems.push({ value: settings.model, label: settings.model });
 
   return (
     <>
       <div>
         <div style={labelStyle}>Model</div>
-        <Segmented
-          items={modelItems}
-          value={modelValue}
-          onPick={label =>
-            pick('model', label === 'default' ? null : list.find(m => m.displayName === label)?.slug ?? label)
-          }
-        />
-        {models === null && <div style={hintStyle}>Asking Codex for its models…</div>}
-        {models !== null && list.length === 0 && (
-          <div style={hintStyle}>Codex gave no model list — the chat runs on its default model.</div>
+        {modelItems.length > 0 ? (
+          <ModelSelect
+            items={modelItems}
+            value={settings.model ?? modelItems[0].value}
+            defaultValue={draft.resolved.model}
+            onPick={slug => pick('model', slug)}
+          />
+        ) : (
+          <div style={hintStyle}>
+            {models === null ? 'Asking Codex for its models…' : 'Codex gave no model list — the chat runs on its default model.'}
+          </div>
         )}
         {origin('model')}
       </div>
 
       <div>
         <div style={labelStyle}>Reasoning effort</div>
-        <Segmented items={effortItems} value={settings.effort} onPick={(v: CodexEffort) => pick('effort', v)} />
+        <Segmented
+          items={effortItems}
+          value={settings.effort}
+          onPick={(v: CodexEffort) => pick('effort', v)}
+          hints={listed?.effortHints}
+        />
         {origin('effort')}
       </div>
 
       <div>
-        <div style={{ ...labelStyle, display: 'flex', alignItems: 'baseline', gap: 8 }}>
-          <span>Approval &amp; sandbox</span>
-          <span style={{ flex: 1 }} />
-          {CODEX_PRESETS.map(p => (
-            <span
-              key={p.label}
-              onClick={() => {
-                pick('approval', p.approval);
-                pick('sandbox', p.sandbox);
-              }}
-              title={p.hint}
-              className="hover-bg"
-              style={{
-                fontWeight: preset?.label === p.label ? 700 : 400, cursor: 'default', borderRadius: 2,
-                padding: '0 3px', color: preset?.label === p.label ? 'var(--fg)' : 'var(--dim)'
-              }}
-            >
-              {p.label}
-            </span>
-          ))}
-        </div>
+        <div style={labelStyle}>Approval &amp; sandbox</div>
         <div style={{ display: 'flex', gap: 12 }}>
           <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 5 }}>
             {CODEX_APPROVALS.map(a => {

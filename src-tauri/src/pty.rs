@@ -152,8 +152,8 @@ fn now_ms() -> u64 {
 /// Everything a spawn needs that is not the provider's business to work out.
 struct Launch {
     provider: Provider,
-    /// Where the process starts. For a Codex worktree chat this is the
-    /// worktree itself; Claude Code gets the project folder and `--worktree`.
+    /// Where the process starts: the project folder, `--worktree` and all, or
+    /// a worktree the CLI made earlier that a resumed session goes back to.
     cwd: String,
     account_path: String,
     args: Vec<String>,
@@ -641,6 +641,25 @@ pub struct ActivityProbe {
     pub asking: bool,
 }
 
+impl ActivityProbe {
+    /// Where the CLI works now, when it has moved from where it started: both
+    /// make their `--worktree` checkout after the spawn, and only what they
+    /// leave on disk says where — Claude Code's registry, Codex's rollout.
+    pub fn working_dir(&self) -> Option<String> {
+        match self.provider {
+            Provider::Claude => crate::claude::session::session_cwd(self.pid, &self.cwd, self.spawned_at_ms, &self.account_path),
+            Provider::Codex => crate::codex::session::rollout_cwd(&crate::codex::session::Live {
+                chat_id: &self.id,
+                cwd: &self.cwd,
+                spawned_at_ms: self.spawned_at_ms,
+                resume: self.resume.as_deref(),
+                account_path: &self.account_path,
+                last_output_ms: self.last_output_ms,
+            }),
+        }
+    }
+}
+
 fn activity_probe(id: &str, s: &Session) -> ActivityProbe {
     ActivityProbe {
         id: id.to_string(),
@@ -736,7 +755,7 @@ impl PtyManager {
     }
 
     /// Whether a running session other than `id` is in this worktree: one
-    /// started in it, or (Claude Code) one that moved into it itself.
+    /// started in it, or one that moved into it itself.
     fn worktree_in_use_by_others(&self, id: &str, wt: &str) -> bool {
         let norm = |p: &str| p.replace('/', "\\").trim_end_matches('\\').to_lowercase();
         let wt = norm(wt);
@@ -744,19 +763,11 @@ impl PtyManager {
             let p = norm(p);
             p == wt || p.starts_with(&format!("{wt}\\"))
         };
-        let others: Vec<(Provider, Option<u32>, String, u128, String)> = {
-            let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
-            sessions
-                .iter()
-                .filter(|(other, s)| other.as_str() != id && s.alive.load(Ordering::SeqCst))
-                .map(|(_, s)| (s.provider, s.pid, s.cwd.clone(), s.spawned_at_ms, s.account_path.clone()))
-                .collect()
-        };
-        others.iter().any(|(provider, pid, cwd, at, account)| {
-            inside(cwd)
-                || (*provider == Provider::Claude
-                    && crate::claude::session::session_cwd(*pid, cwd, *at, account).is_some_and(|real| inside(&real)))
-        })
+        // Probed off the session map: the disk reads below must not hold it.
+        self.activity_probes()
+            .iter()
+            .filter(|p| p.id != id)
+            .any(|p| inside(&p.cwd) || p.working_dir().is_some_and(|real| inside(&real)))
     }
 
     /// Tears a chat's session down: resolve its worktree, quit the process,
@@ -766,24 +777,13 @@ impl PtyManager {
         &self,
         id: &str,
         folder: &str,
-        account_path: &str,
         worktree_path: Option<String>,
         drop_worktree: bool,
     ) -> Result<Option<String>, String> {
         // Resolve before killing: once the process is gone its registry entry goes too.
         let resolved = worktree_path.filter(|p| !p.is_empty()).or_else(|| {
-            let (provider, pid, cwd, spawned_at_ms) = {
-                let sessions = self.sessions.lock().unwrap();
-                let s = sessions.get(id)?;
-                (s.provider, s.pid, s.cwd.clone(), s.spawned_at_ms)
-            };
-            let scwd = match provider {
-                // Claude Code moves into the worktree itself; only the registry
-                // knows where.
-                Provider::Claude => crate::claude::session::session_cwd(pid, &cwd, spawned_at_ms, account_path)?,
-                // A Codex session runs where Luna started it.
-                Provider::Codex => cwd,
-            };
+            let probe = self.probe(id)?;
+            let scwd = probe.working_dir().unwrap_or(probe.cwd);
             crate::worktree::is_worktree_of(folder, &scwd).then_some(scwd)
         });
         // A helper spawned from a chat in a worktree runs in that same
@@ -937,8 +937,9 @@ pub async fn ensure_claude_session(
     .await
 }
 
-/// A Codex session. `folder` is where it runs — for a worktree chat, the
-/// worktree Luna made. `login` runs `codex login` instead of a chat.
+/// A Codex session. `folder` is where it runs: the project, which `worktree`
+/// has Codex leave for a checkout of its own (`--worktree`), or a worktree it
+/// made earlier, to resume in. `login` runs `codex login` instead of a chat.
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn ensure_codex_session(
@@ -949,6 +950,7 @@ pub async fn ensure_codex_session(
     effort: String,
     approval: String,
     sandbox: String,
+    worktree: Option<bool>,
     resume: Option<String>,
     login: bool,
     tools: Option<bool>,
@@ -957,16 +959,6 @@ pub async fn ensure_codex_session(
 ) -> Result<String, String> {
     // Built only if no process is running (see `spawn`).
     spawn(id.clone(), move || {
-        // A Codex chat's worktree is one Luna made; gone — removed by hand,
-        // say — it is made again in the same place, on its branch if that is
-        // still there, rather than the chat failing to start.
-        if !login && !std::path::Path::new(&folder).is_dir() {
-            match crate::worktree::restore_codex_worktree(&folder) {
-                Ok(true) => crate::log::warn("worktree", &format!("{folder} was gone; made it again for {id}")),
-                Ok(false) => {}
-                Err(e) => crate::log::warn("worktree", &format!("could not make {folder} again for {id}: {e}")),
-            }
-        }
         let mut args: Vec<String> = vec![];
         let mut envs = vec![("CODEX_HOME", account_path.clone())];
         let describe;
@@ -980,6 +972,11 @@ pub async fn ensure_codex_session(
             }
             args.push("-C".into());
             args.push(folder.clone());
+            // A resumed thread already has its worktree; Codex refuses the
+            // flag on `resume`.
+            if worktree.unwrap_or(false) && resume.is_none() {
+                args.push("--worktree".into());
+            }
             if let Some(m) = model.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
                 args.push("--model".into());
                 args.push(m.to_string());
@@ -1232,7 +1229,6 @@ pub async fn kill_session(id: String) -> Result<(), String> {
 pub async fn delete_session(
     id: String,
     folder: String,
-    account_path: String,
     worktree_path: Option<String>,
     // Off by default at the call site: the worktree may hold work that exists
     // nowhere else, and a deleted chat is a cheaper mistake than a deleted
@@ -1240,18 +1236,19 @@ pub async fn delete_session(
     // kept worktree is.
     drop_worktree: bool,
 ) -> Result<Option<String>, String> {
-    manager().delete(&id, &folder, &account_path, worktree_path, drop_worktree).await
+    manager().delete(&id, &folder, worktree_path, drop_worktree).await
 }
 
 /// The cwd of every live session this app runs. A running session must never
 /// have its worktree swept, even if the UI has not yet learned where it lives.
 pub fn live_cwds() -> Vec<String> {
-    let state = manager();
-    let sessions = state.sessions.lock().unwrap();
-    sessions
-        .values()
-        .filter(|s| s.alive.load(Ordering::SeqCst))
-        .map(|s| s.cwd.clone())
+    manager()
+        .activity_probes()
+        .into_iter()
+        .flat_map(|p| {
+            let moved = p.working_dir();
+            [Some(p.cwd), moved].into_iter().flatten()
+        })
         .collect()
 }
 

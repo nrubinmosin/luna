@@ -2,6 +2,9 @@
 //! what `/model` inside Codex shows, so the new-chat dialog can offer the same
 //! buttons instead of a box to type a slug into.
 //!
+//! The list comes in Codex's own order, by `priority`: the first model is the
+//! one Codex runs when nothing names another.
+//!
 //! The list is always Codex's own, from wherever it can be had soonest:
 //! 1. `<CODEX_HOME>/models_cache.json`, which the CLI keeps up to date
 //!    whenever it runs on the account;
@@ -13,7 +16,7 @@
 //!    for when there is no network.
 
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
@@ -28,6 +31,8 @@ pub struct CodexModel {
     pub display_name: String,
     pub default_effort: Option<String>,
     pub efforts: Vec<String>,
+    /// What Codex says each level is for, by level.
+    pub effort_hints: BTreeMap<String, String>,
 }
 
 /// The catalogue JSON as both the cache file and `debug models` write it.
@@ -36,22 +41,33 @@ fn parse(text: &str) -> Vec<CodexModel> {
     let Some(start) = text.find('{') else { return vec![] };
     let Ok(v) = serde_json::from_str::<serde_json::Value>(&text[start..]) else { return vec![] };
     let Some(models) = v["models"].as_array() else { return vec![] };
-    models
+    let mut listed: Vec<_> = models
         .iter()
         .filter(|m| m["visibility"].as_str().unwrap_or("list") == "list")
         .filter_map(|m| {
             let slug = m["slug"].as_str()?.to_string();
-            Some(CodexModel {
+            let levels = m["supported_reasoning_levels"].as_array();
+            let model = CodexModel {
                 display_name: m["display_name"].as_str().unwrap_or(&slug).to_string(),
                 default_effort: m["default_reasoning_level"].as_str().map(str::to_owned),
-                efforts: m["supported_reasoning_levels"]
-                    .as_array()
+                efforts: levels
                     .map(|a| a.iter().filter_map(|l| l["effort"].as_str().map(str::to_owned)).collect())
                     .unwrap_or_default(),
+                effort_hints: levels
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|l| Some((l["effort"].as_str()?.to_owned(), l["description"].as_str()?.to_owned())))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
                 slug,
-            })
+            };
+            Some((m["priority"].as_i64().unwrap_or(i64::MAX), model))
         })
-        .collect()
+        .collect();
+    // Stable, so models of equal priority keep the catalogue's order.
+    listed.sort_by_key(|(priority, _)| *priority);
+    listed.into_iter().map(|(_, m)| m).collect()
 }
 
 pub fn read_models(account_path: &str) -> Vec<CodexModel> {
@@ -121,7 +137,9 @@ fn asked() -> &'static Mutex<HashMap<String, (Instant, Vec<CodexModel>)>> {
     A.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn models_for(account_path: &str) -> Vec<CodexModel> {
+/// The list as far as it can be had without running the CLI: the account's
+/// cache file, what the CLI said lately, another account's cache file.
+pub fn models_known(account_path: &str) -> Vec<CodexModel> {
     let own = read_models(account_path);
     if !own.is_empty() {
         return own;
@@ -131,10 +149,15 @@ fn models_for(account_path: &str) -> Vec<CodexModel> {
             return m;
         }
     }
-    let mut found = from_other_accounts(account_path);
-    if found.is_empty() {
-        found = from_cli(account_path, false);
+    from_other_accounts(account_path)
+}
+
+pub fn models_for(account_path: &str) -> Vec<CodexModel> {
+    let mut found = models_known(account_path);
+    if !found.is_empty() {
+        return found;
     }
+    found = from_cli(account_path, false);
     if found.is_empty() {
         found = from_cli(account_path, true);
     }
@@ -168,18 +191,22 @@ mod tests {
         std::fs::write(
             root.join("models_cache.json"),
             r#"{"models":[
-              {"slug":"gpt-6-astra","display_name":"GPT-6-Astra","default_reasoning_level":"medium",
-               "supported_reasoning_levels":[{"effort":"low"},{"effort":"high"},{"effort":"ultra"}],"visibility":"list"},
-              {"slug":"gpt-reserve","display_name":"GPT-Reserve","supported_reasoning_levels":[],"visibility":"hide"}
+              {"slug":"gpt-6-sol","display_name":"GPT-6-Sol","priority":4,"visibility":"list"},
+              {"slug":"gpt-6-astra","display_name":"GPT-6-Astra","default_reasoning_level":"medium","priority":2,
+               "supported_reasoning_levels":[{"effort":"low","description":"Fast"},{"effort":"high"},{"effort":"ultra"}],"visibility":"list"},
+              {"slug":"gpt-reserve","display_name":"GPT-Reserve","supported_reasoning_levels":[],"visibility":"hide","priority":1}
             ]}"#,
         )
         .unwrap();
         let m = read_models(&root.to_string_lossy());
-        assert_eq!(m.len(), 1);
-        assert_eq!(m[0].slug, "gpt-6-astra");
+        assert_eq!(m.len(), 2, "hidden models stay out");
+        assert_eq!(m[0].slug, "gpt-6-astra", "lowest priority first");
+        assert_eq!(m[1].slug, "gpt-6-sol");
         assert_eq!(m[0].display_name, "GPT-6-Astra");
         assert_eq!(m[0].default_effort.as_deref(), Some("medium"));
         assert_eq!(m[0].efforts, vec!["low", "high", "ultra"]);
+        assert_eq!(m[0].effort_hints.get("low").map(String::as_str), Some("Fast"));
+        assert!(m[0].effort_hints.get("high").is_none());
         let _ = std::fs::remove_dir_all(&root);
     }
 

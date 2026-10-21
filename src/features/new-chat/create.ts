@@ -3,7 +3,6 @@
  * through here, so they cannot drift on trust, naming, colour or placement.
  */
 import type { Account, Chat, ClaudeSettings, CodexSettings } from '../../shared/types';
-import { createWorktree } from '../../ipc/commands';
 import { pickChatColor } from '../../shared/ui/chatColors';
 import { newId, useChats, wornColors } from '../chats/chats.store';
 import { findAccount, useAccounts } from '../accounts/accounts.store';
@@ -36,9 +35,7 @@ export type ChatSpec = {
  * to be marked trusted and that write fails — neither CLI can show its own
  * trust prompt the way Luna runs it (Claude Code refuses under `--worktree`,
  * Codex would follow it with a sandbox setup question), so the bit has to
- * land before the session spawns. Also throws when a Codex worktree cannot
- * be made, which is the same kind of chat: one that would sit there
- * refusing to run.
+ * land before the session spawns.
  */
 export async function createChat(spec: ChatSpec): Promise<string> {
   const p = ui(spec.provider);
@@ -47,12 +44,9 @@ export async function createChat(spec: ChatSpec): Promise<string> {
     await p.trustFolder(accountPath, spec.folder);
   }
 
-  // Claude Code makes its own worktree from `--worktree`; Codex gets one made
-  // for it here, before the row exists, so the path is known from the start.
-  let worktreePath: string | null = spec.inWorktree ?? null;
-  if (spec.provider === 'codex' && spec.worktree) {
-    worktreePath = await createWorktree(spec.folder);
-  }
+  // Both CLIs make their own worktree from `--worktree`; its path is learnt
+  // from the session once it runs (useSessionWatch).
+  const worktreePath: string | null = spec.inWorktree ?? null;
 
   const { folders } = useChats.getState();
   const group = usePanes.getState().group;
@@ -137,8 +131,8 @@ export async function quickChat(): Promise<void> {
       await createChat({ provider: 'codex', folder, account, settings: values, worktree, tools });
     }
   } catch {
-    // The trust write or worktree failed; the dialog is where that has a
-    // place to be said.
+    // The trust write failed; the dialog is where that has a place to be
+    // said.
     ui.openDialog(folder);
   }
 }

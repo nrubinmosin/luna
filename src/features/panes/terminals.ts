@@ -394,7 +394,8 @@ function create(spec: TermSpec): Entry {
     unlisteners.push(un1, un2);
 
     // Resume a known session after an app restart; if it lived in a
-    // worktree, relaunch in that worktree instead of creating a new one.
+    // worktree, relaunch in that worktree instead of creating a new one. A
+    // worktree Codex made is started in; it stays until Luna removes it.
     // A worktree Claude Code made is asked for by name from the project
     // folder — its own `--worktree <name> --resume <id>` — rather than by
     // starting inside it: Claude Code removes a clean worktree when its
@@ -408,9 +409,8 @@ function create(spec: TermSpec): Entry {
         chat.provider === 'codex'
           ? await ensureCodexSession({
               chatId,
-              // Luna made the worktree before the row existed, so the path is
-              // always known; a chat without one runs in the folder itself.
               folder: chat.worktreePath || folderPath,
+              worktree: chat.worktree && !chat.worktreePath,
               accountPath,
               model: chat.model,
               effort: chat.effort,

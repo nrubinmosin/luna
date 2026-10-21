@@ -12,7 +12,7 @@
  */
 import type { Terminal as XTerm } from '@xterm/xterm';
 import type { Account, Chat, ClaudeChat, CodexChat, Folder, Provider } from '../shared/types';
-import type { AccountsRootInfo, ClaudeDefaultsDto, CliStatusDto, CodexDefaultsDto, PowerStateDto } from '../ipc/commands';
+import type { AccountsRootInfo, ClaudeDefaultsDto, CliStatusDto, CodexDefaultsDto, CodexModelDto, PowerStateDto } from '../ipc/commands';
 import { useAccounts } from '../features/accounts/accounts.store';
 import { useAccountsWindow } from '../features/accounts/AccountsPanel';
 import { useChats } from '../features/chats/chats.store';
@@ -326,9 +326,27 @@ const DEFAULTS: ClaudeDefaultsDto = {
   permissionMode: { value: 'bypassPermissions', source: 'project' }
 };
 
+const LEVELS: Record<string, string> = {
+  low: 'Fast responses with lighter reasoning',
+  medium: 'Balances speed and reasoning depth for everyday tasks',
+  high: 'Greater reasoning depth for complex problems',
+  xhigh: 'Extra high reasoning depth for complex problems',
+  max: 'Maximum reasoning depth for the hardest problems'
+};
+const codexModel = (slug: string, displayName: string, defaultEffort: string): CodexModelDto => ({
+  slug, displayName, defaultEffort, efforts: Object.keys(LEVELS), effortHints: LEVELS
+});
+const CODEX_MODELS: CodexModelDto[] = [
+  codexModel('gpt-6.1-sol', 'GPT-6.1-Sol', 'low'),
+  codexModel('gpt-6-astra', 'GPT-6-Astra', 'medium'),
+  codexModel('gpt-6-sol', 'GPT-6-Sol', 'medium'),
+  codexModel('gpt-6-luna', 'GPT-6-Luna', 'medium'),
+  codexModel('gpt-5.6-terra', 'GPT-5.6-Terra', 'medium')
+];
+
 const CODEX_DEFAULTS: CodexDefaultsDto = {
-  model: { value: 'gpt-5.4-codex', source: 'account' },
-  effort: { value: 'high', source: 'account' },
+  model: { value: 'gpt-6.1-sol', source: 'codex' },
+  effort: { value: 'low', source: 'codex' },
   approval: { value: 'never', source: 'stock' },
   sandbox: { value: 'workspace-write', source: 'project' }
 };
@@ -354,6 +372,7 @@ export function answer<T>(cmd: string, args: Record<string, unknown>, fallback: 
   if (cmd === 'get_accounts_root') return ROOT as unknown as T;
   if (cmd === 'claude_defaults') return DEFAULTS as unknown as T;
   if (cmd === 'codex_defaults') return CODEX_DEFAULTS as unknown as T;
+  if (cmd === 'codex_models') return CODEX_MODELS as unknown as T;
   if (cmd === 'power_state') return POWER as unknown as T;
   // The Accounts window's own dialogs, so they can be looked at too.
   if (cmd === 'read_account_config') {

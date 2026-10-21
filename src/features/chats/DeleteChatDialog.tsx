@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import type { Chat } from '../../shared/types';
 import { allChats, useChats } from './chats.store';
-import { accountOfChat, useAccounts } from '../accounts/accounts.store';
 import { ui } from '../providers';
 import { deleteSession } from '../../ipc/commands';
 import { ConfirmDialog } from '../../shared/ui/ConfirmDialog';
@@ -30,7 +29,6 @@ function descendantsOf(chat: Chat): Chat[] {
 
 function deleteOne(chat: Chat, dropWorktree: boolean) {
   const folder = useChats.getState().folderOf(chat.id);
-  const accountPath = accountOfChat(useAccounts.getState().accounts, chat)?.path ?? '';
   if (folder) {
     // One command kills the process tree and clears the attachments — and the
     // worktree and its branch only if that was asked for. It resolves the
@@ -39,7 +37,6 @@ function deleteOne(chat: Chat, dropWorktree: boolean) {
     void deleteSession(
       chat.id,
       folder.path,
-      accountPath,
       chat.worktreePath ?? null,
       dropWorktree
     ).catch(err => console.warn('[luna] delete failed', err));
@@ -110,7 +107,11 @@ export function DeleteChatDialog({ chat, onClose }: { chat: Chat; onClose: () =>
                     label into unwrappable flex columns around the <code> child;
                     block restores normal text flow. */}
                 <label htmlFor={`drop-worktree-${chat.id}`} style={{ display: 'block', cursor: 'default', lineHeight: 1.5 }}>
-                  Delete the worktree and its throwaway <code>{ui(chat.provider).branchPrefix}…</code> branch too,
+                  {ui(chat.provider).branchPrefix ? (
+                    <>Delete the worktree and its throwaway <code>{ui(chat.provider).branchPrefix}…</code> branch too,</>
+                  ) : (
+                    <>Delete the worktree too,</>
+                  )}{' '}
                   including any uncommitted work.
                 </label>
               </div>

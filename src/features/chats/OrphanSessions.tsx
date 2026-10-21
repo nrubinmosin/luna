@@ -50,8 +50,8 @@ export function OrphanSessions() {
   }, [found.length]);
 
   const adopt = (o: OrphanSessionDto) => {
-    const m = ui(o.provider).worktreeParentRe.exec(o.cwd);
-    const folder = m ? m[1] : o.cwd;
+    const project = ui(o.provider).projectOf(o.cwd);
+    const folder = project ?? o.cwd;
     const account = o.accountPath.split(/[\\/]/).filter(Boolean).pop() ?? '';
     // The row is built with the session's own id, which is what reattaches the
     // running pty — backlog included — the moment a pane mounts it. Model,
@@ -68,8 +68,8 @@ export function OrphanSessions() {
       // adopting is looking, and a chat dropped into a parked group would just
       // go missing a second time.
       group: usePanes.getState().group,
-      worktree: !!m,
-      worktreePath: m ? o.cwd : null,
+      worktree: !!project,
+      worktreePath: project ? o.cwd : null,
       color: pickChatColor(wornColors(folders, usePanes.getState().group))
     };
     const chat: Chat =

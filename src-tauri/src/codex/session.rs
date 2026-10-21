@@ -246,15 +246,19 @@ pub fn rollout_for(live: &Live) -> Option<PathBuf> {
         .map(|m| m.iter().filter(|(k, _)| *k != live.chat_id).map(|(_, v)| v.clone()).collect())
         .unwrap_or_default();
     let want = norm_path(live.cwd);
+    // Under `--worktree` the rollout names the checkout Codex made, which
+    // points back at the folder the session was started in.
+    let ours = |cwd: &str| {
+        norm_path(cwd) == want
+            || (crate::worktree::codex_shaped(cwd)
+                && crate::worktree::project_of(cwd).is_some_and(|p| norm_path(&p) == want))
+    };
     let today = Local::now().date_naive();
     let mut candidates: Vec<(NaiveDateTime, PathBuf)> = rollouts_on(live.account_path, days_back(today, 2))
         .into_iter()
         .filter(|(ts, _, p)| *ts >= not_before && !taken.contains(p))
         .filter(|(_, _, p)| {
-            first_line(p)
-                .and_then(|v| v["payload"]["cwd"].as_str().map(norm_path))
-                .map(|c| c == want)
-                .unwrap_or(false)
+            first_line(p).and_then(|v| v["payload"]["cwd"].as_str().map(ours)).unwrap_or(false)
         })
         .map(|(ts, _, p)| (ts, p))
         .collect();
@@ -477,6 +481,12 @@ pub fn status(live: &Live) -> Option<String> {
     Some(fold_status(read_tail(&path).status, live.last_output_ms).to_string())
 }
 
+/// Where the session works, per its rollout: the folder it was started in,
+/// or the worktree `--worktree` made for it.
+pub fn rollout_cwd(live: &Live) -> Option<String> {
+    first_line(&rollout_for(live)?)?["payload"]["cwd"].as_str().map(str::to_owned)
+}
+
 /// Status, thread id, model, context, name and opening prompt of a live session.
 /// None until the rollout file exists, which is a normal early answer.
 pub fn meta(live: &Live) -> Option<SessionMeta> {
@@ -490,7 +500,9 @@ pub fn meta(live: &Live) -> Option<SessionMeta> {
 
     let mut m = SessionMeta {
         status: status.map(str::to_owned),
-        cwd: Some(live.cwd.to_string()),
+        cwd: first_line(&path)
+            .and_then(|v| v["payload"]["cwd"].as_str().map(str::to_owned))
+            .or_else(|| Some(live.cwd.to_string())),
         title_renamed: named.as_ref().is_some_and(|n| n.renamed),
         title: named.map(|n| n.title),
         session_id: Some(id),

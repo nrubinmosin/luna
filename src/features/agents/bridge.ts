@@ -21,6 +21,7 @@ import {
 import { findAccount, useAccounts } from '../accounts/accounts.store';
 import { allChats, useChats } from '../chats/chats.store';
 import { createChat } from '../new-chat/create';
+import type { From } from '../new-chat/draft';
 import { usePanes } from '../panes/panes.store';
 import { claude, codex } from '../providers';
 
@@ -57,11 +58,12 @@ function claudeSettings(req: AgentSpawnRequest, values: ClaudeSettings): ClaudeS
 /** The Codex settings asked for, over the account's defaults. The model and
  *  its effort are checked against the models Codex lists for the account,
  *  when it has listed any yet. */
-async function codexSettings(req: AgentSpawnRequest, values: CodexSettings, account: Account): Promise<CodexSettings> {
+async function codexSettings(
+  req: AgentSpawnRequest,
+  { values, from }: { values: CodexSettings; from: From<CodexSettings> },
+  account: Account
+): Promise<CodexSettings> {
   if (asked(req.permissionMode)) refuse('permissionMode is a Claude setting; Codex takes approval and sandbox');
-  const effort = asked(req.effort)
-    ? codexEffortFromSetting(req.effort) ?? refuse(`"${req.effort}" is not a Codex effort level`)
-    : values.effort;
   const approval = asked(req.approval)
     ? codexApprovalFromSetting(req.approval.trim()) ??
       refuse(`unknown approval "${req.approval}"; use ${CODEX_APPROVALS.join(', ')}`)
@@ -77,6 +79,14 @@ async function codexSettings(req: AgentSpawnRequest, values: CodexSettings, acco
   if (asked(req.model) && models.length > 0 && !listed) {
     refuse(`Codex on ${account.name} does not list model "${model}"; it has ${models.map(m => m.slug).join(', ')}`);
   }
+  // As in the dialog: a model asked for brings its own default level, unless
+  // a settings file names one.
+  const fromFile = !!from.effort && from.effort !== codex.SOURCE_LABELS.codex;
+  const effort = asked(req.effort)
+    ? codexEffortFromSetting(req.effort) ?? refuse(`"${req.effort}" is not a Codex effort level`)
+    : asked(req.model) && !fromFile && listed?.defaultEffort
+      ? listed.defaultEffort
+      : values.effort;
   if (asked(req.effort) && listed && listed.efforts.length > 0 && !listed.efforts.includes(effort)) {
     refuse(`${listed.slug} takes effort ${listed.efforts.join(', ')}, not "${effort}"`);
   }
@@ -104,7 +114,7 @@ async function spawn(req: AgentSpawnRequest): Promise<void> {
       ? { provider: 'claude' as const, settings: claudeSettings(req, (await claude.settingsDefaults(account.path, folder)).values) }
       : {
           provider: 'codex' as const,
-          settings: await codexSettings(req, (await codex.settingsDefaults(account.path, folder)).values, account)
+          settings: await codexSettings(req, await codex.settingsDefaults(account.path, folder), account)
         };
   const inWorktree = req.inWorktree ?? undefined;
   const id = await createChat({ ...spec, folder, account, worktree, tools, parentId: parent?.id, name, inWorktree, byAgent: true });
@@ -121,13 +131,13 @@ async function spawn(req: AgentSpawnRequest): Promise<void> {
     if (spec.provider === 'claude') {
       await ensureClaudeSession({ ...common, ...spec.settings, worktree });
     } else {
-      await ensureCodexSession({ ...common, ...spec.settings });
+      await ensureCodexSession({ ...common, ...spec.settings, worktree: worktree && !inWorktree });
     }
   } catch (e) {
     // No session to go with the row: a row that sits there failing to start
     // is one nobody asked for. A worktree made for it goes too, unused; one
     // it was handed is its caller's.
-    void deleteSession(id, folder, account.path, chat?.worktreePath ?? null, !inWorktree).catch(() => {});
+    void deleteSession(id, folder, chat?.worktreePath ?? null, !inWorktree).catch(() => {});
     useChats.getState().deleteChat(id);
     throw e;
   }

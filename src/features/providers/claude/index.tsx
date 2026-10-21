@@ -12,6 +12,7 @@ import {
 import {
   claudeDefaults, claudeFolderTrusted, claudeTrustFolder, ensureClaudeSession, type ClaudeDefaultSource
 } from '../../../ipc/commands';
+import { ModelSelect } from '../../../shared/ui/ModelSelect';
 import { Segmented } from '../../../shared/ui/Segmented';
 import type { Draft, From } from '../../new-chat/draft';
 
@@ -94,7 +95,8 @@ export const loginSession = (id: string, account: Account) =>
 
 /** `<repo>/.claude/worktrees/<name>` is a session's worktree, not its project. */
 export const worktreeRe = /[\\/]\.claude[\\/]worktrees[\\/]/i;
-export const worktreeParentRe = /^(.*)[\\/]\.claude[\\/]worktrees[\\/][^\\/]+$/;
+const worktreeParentRe = /^(.*)[\\/]\.claude[\\/]worktrees[\\/][^\\/]+$/;
+export const projectOf = (cwd: string) => worktreeParentRe.exec(cwd)?.[1] ?? null;
 export const branchPrefix = 'worktree-';
 
 const worktreeNameRe = /^(.*)[\\/]\.claude[\\/]worktrees[\\/]([A-Za-z0-9._-]+)[\\/]?$/;
@@ -120,7 +122,12 @@ export function Fields({ draft, origin }: {
     <>
       <div>
         <div style={labelStyle}>Model</div>
-        <Segmented items={MODELS} value={settings.model} onPick={(v: ModelLabel) => pick('model', v)} />
+        <ModelSelect
+          items={MODELS.map(m => ({ value: m, label: m }))}
+          value={settings.model}
+          defaultValue={draft.resolved.model}
+          onPick={(v: ModelLabel) => pick('model', v)}
+        />
         {origin('model')}
       </div>
 

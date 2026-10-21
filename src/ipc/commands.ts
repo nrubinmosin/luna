@@ -16,7 +16,6 @@ const SLOW_BUDGET_MS: Record<string, number> = {
   saved_title: 5000,
   ensure_claude_session: 30_000,
   ensure_codex_session: 30_000,
-  create_worktree: 30_000,
   // Both give the CLI a moment to quit on its own before killing it; deleting
   // then waits for the worktree to come free.
   kill_session: 5000,
@@ -189,8 +188,10 @@ export const ensureClaudeSession = (spec: ClaudeSessionSpec) =>
 
 export interface CodexSessionSpec {
   chatId: string;
-  /** Where Codex runs — the worktree itself for an isolated chat. */
+  /** Where Codex runs — the project, or a worktree it made earlier. */
   folder: string;
+  /** A new session in a worktree of its own: Codex's `--worktree`. */
+  worktree?: boolean;
   accountPath: string;
   model: string | null;
   effort: CodexEffort;
@@ -213,6 +214,7 @@ export const ensureCodexSession = (spec: CodexSessionSpec) =>
     effort: spec.effort,
     approval: spec.approval,
     sandbox: spec.sandbox,
+    worktree: spec.worktree ?? false,
     resume: spec.resume ?? null,
     login: spec.login ?? false,
     tools: spec.tools ?? false,
@@ -281,8 +283,6 @@ export const orphanSessions = (known: string[]) =>
 export const fetchBeforeWorktree = () => call<boolean>('fetch_before_worktree', {}, true);
 export const setFetchBeforeWorktree = (on: boolean) => call<boolean>('set_fetch_before_worktree', { on }, on);
 
-/** Makes `<folder>/.codex/worktrees/codex-xxxxxx` on a fresh branch; returns the path. */
-export const createWorktree = (folder: string) => call<string>('create_worktree', { folder });
 
 
 /**
@@ -294,13 +294,12 @@ export const createWorktree = (folder: string) => call<string>('create_worktree'
 export const deleteSession = (
   chatId: string,
   folder: string,
-  accountPath: string,
   worktreePath: string | null,
   dropWorktree: boolean
 ) =>
   call<string | null>(
     'delete_session',
-    { id: chatId, folder, accountPath, worktreePath, dropWorktree },
+    { id: chatId, folder, worktreePath, dropWorktree },
     null
   );
 
@@ -342,7 +341,9 @@ export const removeOrphanWorktrees = (folder: string, inUse: string[], accountPa
 /** Where a resolved default came from, for the line under the control;
  *  `stock` is Luna's own choice where no file said anything usable. */
 export type ClaudeDefaultSource = 'account' | 'project' | 'project-local' | 'managed' | 'stock';
-export type CodexDefaultSource = 'account' | 'project' | 'stock';
+/** `codex`: what Codex itself would pick — the first model of its catalogue,
+ *  at that model's own reasoning level. */
+export type CodexDefaultSource = 'account' | 'project' | 'codex' | 'stock';
 
 export interface SettingDto<S extends string = string> {
   value: string;
@@ -388,10 +389,13 @@ export interface CodexModelDto {
   displayName: string;
   defaultEffort: string | null;
   efforts: string[];
+  /** What Codex says each level is for. */
+  effortHints: Record<string, string>;
 }
 
-/** The models Codex lists for this account, off its own cache — with the
- *  reasoning levels each one takes. Empty until the CLI has run once. */
+/** The models Codex lists for this account, off its own cache, in Codex's
+ *  order (the first is its default) — with the reasoning levels each one
+ *  takes. Empty until the CLI has run once. */
 export const codexModels = (accountPath: string) =>
   call<CodexModelDto[]>('codex_models', { accountPath }, []);
 

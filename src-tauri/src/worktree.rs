@@ -1,10 +1,9 @@
-//! Git worktrees for isolated chats. Claude Code makes its own under
-//! `<folder>/.claude/worktrees` (`--worktree`, branch `worktree-*`); Codex has
-//! no equivalent Luna wants to lean on, so Luna makes one for it under
-//! `<folder>/.codex/worktrees` (branch `codex-*`) and starts the session
-//! inside. Removal, orphan detection and the branch cleanup are shared.
+//! Git worktrees for isolated chats. Each CLI makes its own from
+//! `--worktree`: Claude Code under `<folder>/.claude/worktrees/<name>` on a
+//! branch `worktree-<name>`, Codex under `<CODEX_HOME>/worktrees/<4 hex>/<repo>`
+//! on a detached HEAD. Luna only finds them again — to remove one with its
+//! chat, or sweep the ones no chat claims — and never makes one itself.
 
-use crate::provider::Provider;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -23,36 +22,58 @@ fn git(folder: &str) -> Command {
     c
 }
 
-fn worktrees_dir(folder: &str, provider: Provider) -> PathBuf {
-    let dot = match provider {
-        Provider::Claude => ".claude",
-        Provider::Codex => ".codex",
-    };
-    Path::new(folder).join(dot).join("worktrees")
+fn claude_worktrees(folder: &str) -> PathBuf {
+    Path::new(folder).join(".claude").join("worktrees")
 }
 
-/// True when `candidate` sits under this folder's `.claude/worktrees` or
-/// `.codex/worktrees`. Every destructive path below is gated on this.
+fn under_claude_worktrees(folder: &str, candidate: &str) -> bool {
+    let (c, base) = (norm(candidate), norm(&claude_worktrees(folder).to_string_lossy()));
+    c.len() > base.len() && c.starts_with(&base)
+}
+
+/// Shaped like a worktree Codex made: `…\worktrees\<4 hex>\<repo>`.
+pub fn codex_shaped(path: &str) -> bool {
+    let p = Path::new(path.trim_end_matches(['\\', '/']));
+    let bucket = p.parent();
+    let root = bucket.and_then(Path::parent);
+    let name = |q: Option<&Path>| q.and_then(Path::file_name).map(|n| n.to_string_lossy().into_owned());
+    p.file_name().is_some()
+        && name(bucket).is_some_and(|b| b.len() == 4 && b.chars().all(|c| c.is_ascii_hexdigit()))
+        && name(root).is_some_and(|r| r.eq_ignore_ascii_case("worktrees"))
+}
+
+/// The repository a linked worktree belongs to, off its `.git` file
+/// (`gitdir: <repo>/.git/worktrees/<id>`). None when the worktree is gone or
+/// is not a linked one.
+fn repo_of_linked(worktree: &str) -> Option<String> {
+    let text = std::fs::read_to_string(Path::new(worktree).join(".git")).ok()?;
+    let gitdir = PathBuf::from(text.trim().strip_prefix("gitdir:")?.trim());
+    let gitdir = if gitdir.is_absolute() { gitdir } else { Path::new(worktree).join(gitdir) };
+    // <repo>/.git/worktrees/<id> → <repo>
+    let dot_git = gitdir.parent()?.parent()?;
+    if dot_git.file_name()? != ".git" {
+        return None;
+    }
+    dot_git.parent().map(|r| r.to_string_lossy().into_owned())
+}
+
+/// True when `candidate` is a worktree a CLI made for this folder: under its
+/// `.claude/worktrees`, or one Codex made whose checkout points back at it.
+/// Every destructive path below is gated on this.
 pub fn is_worktree_of(folder: &str, candidate: &str) -> bool {
-    let c = norm(candidate);
-    Provider::ALL.iter().any(|&p| {
-        let base = norm(&worktrees_dir(folder, p).to_string_lossy());
-        c.len() > base.len() && c.starts_with(&base)
-    })
+    under_claude_worktrees(folder, candidate)
+        || (codex_shaped(candidate) && repo_of_linked(candidate).is_some_and(|r| norm(&r) == norm(folder)))
 }
 
-/// The project folder a Luna-made worktree belongs to: the part of the path
-/// before `.claude\worktrees` or `.codex\worktrees`. A Codex chat in a
-/// worktree is started in the worktree itself, so that is the folder it knows.
+/// The project folder a CLI-made worktree belongs to: for Claude Code the part
+/// of the path before `.claude\worktrees`, for Codex the repository its
+/// checkout points back at.
 pub fn project_of(path: &str) -> Option<String> {
     let p = path.replace('/', "\\");
-    let lower = p.to_ascii_lowercase();
-    ["\\.claude\\worktrees\\", "\\.codex\\worktrees\\"]
-        .iter()
-        .filter_map(|m| lower.find(m))
-        .min()
-        .filter(|&at| at > 0)
-        .map(|at| p[..at].to_string())
+    if let Some(at) = p.to_ascii_lowercase().find("\\.claude\\worktrees\\").filter(|&at| at > 0) {
+        return Some(p[..at].to_string());
+    }
+    codex_shaped(path).then(|| repo_of_linked(path)).flatten()
 }
 
 /// Branch checked out in the given worktree, per `git worktree list`.
@@ -76,45 +97,6 @@ fn branch_of(folder: &str, worktree_path: &str) -> Option<String> {
     None
 }
 
-/// Six hex characters nobody will type twice: time and pid through the
-/// standard hasher.
-fn short_id() -> String {
-    use std::hash::{BuildHasher, Hasher};
-    let mut h = std::collections::hash_map::RandomState::new().build_hasher();
-    h.write_u128(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0),
-    );
-    h.write_u32(std::process::id());
-    format!("{:06x}", h.finish() & 0xff_ffff)
-}
-
-/// Keeps the worktree directory out of `git status` without touching the
-/// repo's own `.gitignore` — the same trick Claude Code uses for its folder.
-fn exclude(folder: &str, pattern: &str) {
-    let Ok(out) = git(folder).args(["rev-parse", "--git-common-dir"]).output() else { return };
-    if !out.status.success() {
-        return;
-    }
-    let dir = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    let dir = if Path::new(&dir).is_absolute() { PathBuf::from(dir) } else { Path::new(folder).join(dir) };
-    let file = dir.join("info").join("exclude");
-    let existing = std::fs::read_to_string(&file).unwrap_or_default();
-    if existing.lines().any(|l| l.trim() == pattern) {
-        return;
-    }
-    let _ = std::fs::create_dir_all(file.parent().unwrap());
-    let mut text = existing;
-    if !text.is_empty() && !text.ends_with('\n') {
-        text.push('\n');
-    }
-    text.push_str(pattern);
-    text.push('\n');
-    let _ = std::fs::write(&file, text);
-}
-
 /// origin's default branch as this clone last heard of it (`origin/main`),
 /// if it has an origin that says.
 fn origin_default(folder: &str) -> Option<String> {
@@ -126,8 +108,8 @@ fn origin_default(folder: &str) -> Option<String> {
 /// The longest a fetch before a worktree may hold up the chat it is for.
 const FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// Brings origin's default branch up to date before a worktree branches off
-/// it. Claude Code bases its worktree on that branch but fetches it only when
+/// Brings origin's default branch up to date before Claude Code makes a
+/// worktree off it. Claude Code bases its worktree on that branch but fetches it only when
 /// the last fetch is a day old, so a repo fetched in the morning gave every
 /// worktree that day the morning's tree. Only remote-tracking refs move.
 /// Never interactive and bounded: a fetch that wants a password, or a network
@@ -180,15 +162,6 @@ pub fn fetch_origin(folder: &str) {
     }
 }
 
-/// Makes a worktree for a Codex chat on a fresh branch and returns its path.
-/// Off the main thread: the fetch and `worktree add` both take a while.
-#[tauri::command]
-pub async fn create_worktree(folder: String) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || create_worktree_now(&folder))
-        .await
-        .map_err(|e| e.to_string())?
-}
-
 #[tauri::command]
 pub fn fetch_before_worktree() -> bool {
     crate::settings::get().fetch_before_worktree
@@ -200,91 +173,27 @@ pub fn set_fetch_before_worktree(on: bool) -> Result<bool, String> {
     Ok(on)
 }
 
-fn create_worktree_now(folder: &str) -> Result<String, String> {
-    let inside = git(folder)
-        .args(["rev-parse", "--is-inside-work-tree"])
-        .output()
-        .map_err(|e| format!("git: {e}"))?;
-    if !inside.status.success() {
-        return Err("not a git repository — turn off the worktree option for this folder".into());
-    }
-    let name = format!("codex-{}", short_id());
-    let dir = worktrees_dir(folder, Provider::Codex);
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let path_str = dir.join(&name).to_string_lossy().into_owned();
-    add_codex_worktree(folder, &name, &path_str, false)?;
-    Ok(path_str)
-}
-
-/// `git worktree add` for a Codex chat: on the existing branch `name` when
-/// `on_branch`, else on a new one. A new one starts off origin's default
-/// branch, as Claude Code branches its own, so a Codex chat starts on the same
-/// tree a Claude one would; off HEAD where there is no origin to go by. Not
-/// tracking it: the branch is the chat's, and a push should not head for the
-/// default branch.
-fn add_codex_worktree(folder: &str, name: &str, path: &str, on_branch: bool) -> Result<(), String> {
-    let mut add = git(folder);
-    add.args(["worktree", "add"]);
-    let from = if on_branch {
-        add.args([path, name]);
-        format!("its branch {name}")
-    } else {
-        fetch_origin(folder);
-        let base = origin_default(folder).unwrap_or_else(|| "HEAD".into());
-        add.args(["--no-track", "-b", name, path, base.as_str()]);
-        format!("new branch {name} off {base}")
-    };
-    let out = add.output().map_err(|e| format!("git: {e}"))?;
-    if !out.status.success() {
-        return Err(format!(
-            "git worktree add failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        ));
-    }
-    exclude(folder, ".codex/worktrees/");
-    crate::log::info("worktree", &format!("created {path} on {from}"));
-    Ok(())
-}
-
-/// Makes a Codex chat's worktree again where it was, for a chat whose folder
-/// is gone: on its branch if that outlived the folder, on a fresh one if not.
-/// `Ok(false)` for a path that is not a Codex worktree Luna made, which is
-/// none of this function's business.
-pub fn restore_codex_worktree(path: &str) -> Result<bool, String> {
-    let Some(folder) = project_of(path) else { return Ok(false) };
-    let p = Path::new(path);
-    let (Some(parent), Some(name)) = (p.parent(), p.file_name()) else { return Ok(false) };
-    if norm(&parent.to_string_lossy()) != norm(&worktrees_dir(&folder, Provider::Codex).to_string_lossy()) {
-        return Ok(false);
-    }
-    let name = name.to_string_lossy().into_owned();
-    // The worktree that went is still registered, and git refuses to add
-    // another at a registered path.
-    let _ = git(&folder).args(["worktree", "prune"]).output();
-    let on_branch = git(&folder)
-        .args(["rev-parse", "--verify", "--quiet", &format!("refs/heads/{name}")])
-        .output()
-        .is_ok_and(|o| o.status.success());
-    add_codex_worktree(&folder, &name, path, on_branch)?;
-    Ok(true)
-}
-
 // Every git call below is slow enough to be felt — `worktree remove` on a large
 // checkout has taken ten seconds here. Tauri runs a synchronous command on the
 // main thread, where that time is charged to every other pending IPC call, so
 // the commands that reach these are `async` wrappers, which Tauri runs off the
 // main thread, over the blocking helpers the rest of the crate keeps calling.
 pub fn remove_worktree_now(folder: String, worktree_path: String) -> Result<(), String> {
-    if !is_worktree_of(&folder, &worktree_path) {
-        return Err("refusing: path is not a worktree of this folder".into());
-    }
     if !Path::new(&worktree_path).exists() {
-        // Still worth pruning a stale admin entry and its branch.
+        // Still worth pruning a stale admin entry and its branch. A Codex
+        // worktree that is gone cannot show whose it was; git's prune only
+        // drops entries whose folder is missing, so nothing else is at risk.
+        if !under_claude_worktrees(&folder, &worktree_path) && !codex_shaped(&worktree_path) {
+            return Err("refusing: path is not a worktree of this folder".into());
+        }
         let branch = branch_of(&folder, &worktree_path);
         let _ = git(&folder).args(["worktree", "unlock", &worktree_path]).output();
         let _ = git(&folder).args(["worktree", "prune"]).output();
         drop_branches(&folder, &worktree_path, branch);
         return Ok(());
+    }
+    if !is_worktree_of(&folder, &worktree_path) {
+        return Err("refusing: path is not a worktree of this folder".into());
     }
 
     // Resolve the branch before the worktree disappears from git's records.
@@ -335,29 +244,37 @@ pub fn remove_worktree_now(folder: String, worktree_path: String) -> Result<(), 
 
     crate::log::info("worktree", &format!("removed {worktree_path} (branch {branch:?})"));
     drop_branches(&folder, &worktree_path, branch);
+    // Codex keeps each checkout in a bucket of its own, which git leaves
+    // behind empty.
+    if codex_shaped(&worktree_path) {
+        if let Some(bucket) = Path::new(&worktree_path).parent() {
+            let _ = std::fs::remove_dir(bucket);
+        }
+    }
     Ok(())
 }
 
-/// The branch the worktree was made on, by the name it was made under:
-/// Claude Code's `worktree-<dir>`, Luna's `codex-…` as the directory itself.
-/// What is checked out there at the end may be another branch — a session is
-/// free to switch — and the one it was made on would then be left behind.
+/// The branch Claude Code made the worktree on, `worktree-<dir>`. What is
+/// checked out there at the end may be another branch — a session is free to
+/// switch — and the one it was made on would then be left behind. Codex makes
+/// no branch: its worktrees start on a detached HEAD.
 fn made_branch(worktree_path: &str) -> Option<String> {
+    if codex_shaped(worktree_path) {
+        return None;
+    }
     let dir = Path::new(worktree_path).file_name()?.to_str()?;
-    let codex = norm(worktree_path).contains(r"\.codex\worktrees\");
-    Some(if codex { dir.to_string() } else { format!("worktree-{dir}") })
+    Some(format!("worktree-{dir}"))
 }
 
 /// Deletes the throwaway branches of a removed worktree: the one it was made
 /// on, and the one checked out at the end if that is throwaway too.
-/// Restricted to the two throwaway namings — Claude Code's `worktree-*` and
-/// Luna's `codex-*`: anything else is a branch someone made on purpose, and
-/// `-D` would discard real commits.
+/// Restricted to Claude Code's `worktree-*` naming: anything else is a branch
+/// someone made on purpose, and `-D` would discard real commits.
 fn drop_branches(folder: &str, worktree_path: &str, checked_out: Option<String>) {
     let mut branches: Vec<String> = made_branch(worktree_path).into_iter().chain(checked_out).collect();
     branches.dedup();
     for branch in branches {
-        if branch.starts_with("worktree-") || branch.starts_with("codex-") {
+        if branch.starts_with("worktree-") {
             let _ = git(folder).args(["branch", "-D", &branch]).output();
         }
     }
@@ -415,36 +332,45 @@ fn orphan_worktrees_now(
 ) -> Result<Vec<String>, String> {
     let mut claimed: Vec<String> = in_use.iter().map(|p| norm(p)).collect();
     // Claude Code moves into its worktree on its own; only its registry says
-    // where. Codex sessions run where Luna put them.
+    // where. Where a Codex session moved, its rollout says (`pty::live_cwds`).
     for account in account_paths.iter().cloned().chain(own_claude_dir()) {
         claimed.extend(crate::claude::session::live_cwds(&account).iter().map(|p| norm(p)));
     }
     claimed.extend(live_pty_cwds.iter().map(|p| norm(p)));
 
     let mut out = vec![];
-    for provider in Provider::ALL {
-        let dir = worktrees_dir(&folder, provider);
-        if !dir.exists() {
+    for path in candidates(&folder, &account_paths) {
+        if younger_than(&path, GRACE_SECS) {
             continue;
         }
-        for entry in std::fs::read_dir(&dir).map_err(|e| e.to_string())?.flatten() {
-            if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                continue;
-            }
-            let path = entry.path();
-            if younger_than(&path, GRACE_SECS) {
-                continue;
-            }
-            let path = path.to_string_lossy().into_owned();
-            let key = norm(&path);
-            // A session sitting in a subfolder of the worktree is still using it.
-            if !claimed.iter().any(|c| claims(c, &key)) {
-                out.push(path);
-            }
+        let path = path.to_string_lossy().into_owned();
+        let key = norm(&path);
+        // A session sitting in a subfolder of the worktree is still using it.
+        if !claimed.iter().any(|c| claims(c, &key)) {
+            out.push(path);
         }
     }
     out.sort();
     Ok(out)
+}
+
+fn subdirs(dir: &Path) -> Vec<PathBuf> {
+    std::fs::read_dir(dir)
+        .map(|r| r.flatten().filter(|e| e.file_type().is_ok_and(|t| t.is_dir())).map(|e| e.path()).collect())
+        .unwrap_or_default()
+}
+
+/// Every worktree a CLI made for this folder: Claude Code's under the folder
+/// itself, Codex's under each account that has any, kept when their checkout
+/// points back at the folder.
+fn candidates(folder: &str, account_paths: &[String]) -> Vec<PathBuf> {
+    let mut out = subdirs(&claude_worktrees(folder));
+    for account in account_paths {
+        for bucket in subdirs(&Path::new(account).join("worktrees")) {
+            out.extend(subdirs(&bucket).into_iter().filter(|wt| is_worktree_of(folder, &wt.to_string_lossy())));
+        }
+    }
+    out
 }
 
 /// What deleting a worktree would throw away.
@@ -578,23 +504,59 @@ pub async fn remove_orphan_worktrees(
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn a_worktree_path_names_its_project() {
-        assert_eq!(project_of(r"E:\p\x\.codex\worktrees\codex-1a2b3c").as_deref(), Some(r"E:\p\x"));
-        assert_eq!(project_of("E:/p/x/.claude/worktrees/a-b-c").as_deref(), Some(r"E:\p\x"));
-        assert_eq!(project_of(r"E:\p\x"), None);
-        let wt = r"E:\P\X\.Codex\Worktrees\codex-1";
-        assert!(is_worktree_of(&project_of(wt).unwrap(), wt));
-    }
-
     use super::*;
 
+    /// A repository with one linked worktree where Codex puts them, under a
+    /// fake account: (root, repo, worktree). None where there is no git.
+    fn codex_layout(tag: &str) -> Option<(PathBuf, String, String)> {
+        let root = std::env::temp_dir().join(format!("luna-wt-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let repo = root.join("repo");
+        std::fs::create_dir_all(&repo).ok()?;
+        let repo_s = repo.to_string_lossy().into_owned();
+        let ok = |c: &mut Command| c.output().is_ok_and(|o| o.status.success());
+        if !ok(git(&repo_s).args(["init", "-q"]))
+            || !ok(git(&repo_s).args(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "i"]))
+        {
+            return None;
+        }
+        let wt = root.join("account").join("worktrees").join("0a1b").join("repo");
+        std::fs::create_dir_all(wt.parent()?).ok()?;
+        let wt_s = wt.to_string_lossy().into_owned();
+        ok(git(&repo_s).args(["worktree", "add", "-q", "--detach", &wt_s])).then_some((root, repo_s, wt_s))
+    }
+
     #[test]
-    fn worktree_membership_covers_both_providers() {
+    fn a_worktree_path_names_its_project() {
+        assert_eq!(project_of("E:/p/x/.claude/worktrees/a-b-c").as_deref(), Some(r"E:\p\x"));
+        assert_eq!(project_of(r"E:\p\x"), None);
+        let Some((root, repo, wt)) = codex_layout("project") else { return };
+        assert_eq!(project_of(&wt).map(|p| norm(&p)), Some(norm(&repo)));
+        assert!(is_worktree_of(&repo, &wt));
+        assert!(!is_worktree_of(&root.to_string_lossy(), &wt), "another folder's");
+        let account = root.join("account").to_string_lossy().into_owned();
+        assert_eq!(candidates(&repo, &[account]).len(), 1);
+        remove_worktree_now(repo.clone(), wt.clone()).unwrap();
+        assert!(!root.join("account").join("worktrees").join("0a1b").exists(), "the bucket goes too");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn codex_worktrees_have_a_shape() {
+        assert!(codex_shaped(r"E:\acc\worktrees\d6ff\repo"));
+        assert!(codex_shaped("/home/u/.codex/worktrees/0a1B/app/"));
+        assert!(!codex_shaped(r"E:\acc\worktrees\d6ff"));
+        assert!(!codex_shaped(r"E:\acc\worktrees\codex-1\repo"));
+        assert!(!codex_shaped(r"E:\p\.codex\worktrees\codex-1a2b3c"));
+    }
+
+    #[test]
+    fn claude_worktree_membership() {
         assert!(is_worktree_of(r"E:\p", r"E:\p\.claude\worktrees\x"));
-        assert!(is_worktree_of(r"E:\p", r"e:/p/.codex/worktrees/codex-abc"));
-        assert!(!is_worktree_of(r"E:\p", r"E:\p\.codex\worktrees"));
-        assert!(!is_worktree_of(r"E:\p", r"E:\q\.codex\worktrees\x"));
+        assert!(is_worktree_of(r"E:\p", "e:/p/.claude/worktrees/x"));
+        assert!(!is_worktree_of(r"E:\p", r"E:\p\.claude\worktrees"));
+        assert!(!is_worktree_of(r"E:\p", r"E:\q\.claude\worktrees\x"));
+        assert!(!is_worktree_of(r"E:\p", r"E:\p\.codex\worktrees\codex-abc"));
     }
 
     #[test]
@@ -609,13 +571,6 @@ mod tests {
     #[test]
     fn a_worktree_names_the_branch_it_was_made_on() {
         assert_eq!(made_branch(r"E:\p\.claude\worktrees\merry-coalescing-cosmos").as_deref(), Some("worktree-merry-coalescing-cosmos"));
-        assert_eq!(made_branch("E:/p/.codex/worktrees/codex-1a2b3c").as_deref(), Some("codex-1a2b3c"));
-    }
-
-    #[test]
-    fn short_ids_are_six_hex() {
-        let id = short_id();
-        assert_eq!(id.len(), 6);
-        assert!(id.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_eq!(made_branch(r"E:\acc\worktrees\d6ff\repo"), None);
     }
 }
