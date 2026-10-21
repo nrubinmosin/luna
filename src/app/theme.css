@@ -100,6 +100,10 @@ body { margin: 0; overflow: hidden; }
   --balloon-ink: #26211a;
   --scroll-thumb: #c9c1b4;
   --scroll-thumb-hover: #aaa192;
+  /* The settings editor's syntax colours. */
+  --code-key: #2a62c9;
+  --code-string: #2f7a3a;
+  --code-literal: #a3501c;
 }
 [data-app][data-theme="dark"] {
   /* Dark: neutral graphite (A), the terminal a shade deeper still. */
@@ -147,6 +151,9 @@ body { margin: 0; overflow: hidden; }
   --balloon-ink: #efe6cf;
   --scroll-thumb: #3d3d3d;
   --scroll-thumb-hover: #555555;
+  --code-key: #7a9cc6;
+  --code-string: #9cc68a;
+  --code-literal: #e0a36a;
 }
 [data-app] { --bg: var(--surface); --panel: var(--card); }
 
@@ -1150,17 +1157,15 @@ body { margin: 0; overflow: hidden; }
 [data-app] .sb-mini.meter > i { --block: 4px; }
 
 /* The account's settings file, edited by hand. */
-[data-app] textarea.config-text {
+/* The settings editor (CodeMirror), sunk into the dialog like a field. */
+[data-app] .config-text {
   flex: 1;
   min-height: 0;
-  height: auto;
-  resize: none;
-  padding: 10px 12px;
-  font: 13px/1.55 "JetBrains Mono", ui-monospace, monospace;
-  tab-size: 2;
-  white-space: pre;
-  overflow: auto;
+  display: flex;
+  overflow: hidden;
   background: var(--term);
+  box-shadow: var(--border-sunken-outer), var(--border-sunken-inner);
+  padding: 2px;
 }
 
 /* The account box: a select drawn by hand, so its rows can carry icons. */

@@ -31,6 +31,8 @@ portable-pty = "0.9"
 ureq = { version = "2", features = ["json"] }
 sha2 = "0.10"
 toml_edit = "0.22"
+# Lays out a config.toml edited by hand, comments kept (account_settings.rs).
+taplo = { version = "0.14", default-features = false }
 flate2 = "1"
 tar = "0.4"
 # The loopback listener the sessions' hooks post to (src/hub.rs): a few

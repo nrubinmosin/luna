@@ -588,8 +588,9 @@ export interface RecommendationDto {
 
 export const recommendedSettings = (provider: Provider, accountPath: string) =>
   call<RecommendationDto[]>('recommended_settings', { provider, accountPath }, []);
-export const applyRecommended = (provider: Provider, accountPath: string, keys: string[]) =>
-  call<void>('apply_recommended', { provider, accountPath, keys });
+/** Sets the `add` keys and takes the `remove` ones out of the file. */
+export const applyRecommended = (provider: Provider, accountPath: string, add: string[], remove: string[]) =>
+  call<void>('apply_recommended', { provider, accountPath, add, remove });
 
 export interface SyncStateDto {
   claude: string | null;
@@ -621,3 +622,16 @@ export const readAccountConfig = (provider: Provider, accountPath: string) =>
   call<ConfigFileDto>('read_account_config', { provider, accountPath });
 export const writeAccountConfig = (provider: Provider, accountPath: string, text: string) =>
   call<void>('write_account_config', { provider, accountPath, text });
+
+export interface ConfigProblemDto {
+  message: string;
+  /** 1-based, when the parser says where. */
+  line: number | null;
+  column: number | null;
+}
+/** Where the text stops being a file the CLI can read; null when it reads. */
+export const checkAccountConfig = (provider: Provider, text: string) =>
+  call<ConfigProblemDto | null>('check_account_config', { provider, text }, null);
+/** The text laid out the way the CLI writes it, comments and order kept. */
+export const formatAccountConfig = (provider: Provider, text: string) =>
+  call<string>('format_account_config', { provider, text });

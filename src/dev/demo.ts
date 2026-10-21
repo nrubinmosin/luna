@@ -21,8 +21,10 @@ import { usePanes, type Group, type Layout, type Slots } from '../features/panes
 import { useUpdates } from '../features/updates/updates.store';
 import { useShell } from '../app/shell.store';
 
-/** `?demo`, `?demo=dark`, `?demo=peek`, `?demo=newchat`, `?demo=settings`, `?demo=accounts`. */
-export type Scene = 'main' | 'dark' | 'peek' | 'newchat' | 'settings' | 'accounts';
+/** `?demo`, `?demo=dark`, `?demo=peek`, `?demo=newchat`, `?demo=codex` (the same on a Codex
+ *  account), `?demo=settings`, `?demo=accounts`, `?demo=recommended`, `?demo=editor`. */
+export type Scene = 'main' | 'dark' | 'peek' | 'newchat' | 'codex' | 'settings' | 'accounts' | 'recommended' | 'editor';
+const SCENES: Scene[] = ['dark', 'peek', 'newchat', 'codex', 'settings', 'accounts', 'recommended', 'editor'];
 
 const hoursFromNow = (h: number) => new Date(Date.now() + h * 3600_000).toISOString();
 
@@ -386,6 +388,7 @@ export function answer<T>(cmd: string, args: Record<string, unknown>, fallback: 
     } as unknown as T;
   }
   if (cmd === 'recommended_settings') return RECOMMENDED as unknown as T;
+  if (cmd === 'check_account_config') return null as unknown as T;
   if (cmd === 'settings_sync_state') return { claude: 'personal', codex: null, onStart: true } as unknown as T;
   return fallback;
 }
@@ -427,15 +430,19 @@ export function seedDemo(scene: Scene) {
     peek: scene === 'peek' ? 1 : null
   });
 
-  if (scene === 'newchat') useNewChat.getState().openDialog('C:\\src\\luna');
-  if (scene === 'accounts') useAccountsWindow.getState().setOpen(true);
+  if (scene === 'codex') useNewChat.setState({ lastAccount: { provider: 'codex', name: 'personal' } });
+  if (scene === 'newchat' || scene === 'codex') useNewChat.getState().openDialog('C:\\src\\luna');
+  if (scene === 'accounts' || scene === 'recommended' || scene === 'editor') useAccountsWindow.getState().setOpen(true);
+  // The two dialogs belong to an account row; open them the way a click would.
+  const button = scene === 'recommended' ? 'Recommended settings' : scene === 'editor' ? 'Edit settings.json' : null;
+  if (button) {
+    setTimeout(() => document.querySelector<HTMLElement>(`button[aria-label^="${button}"]`)?.click(), 300);
+  }
 }
 
 /** `?demo` / `?demo=dark` — which fixture the URL is asking for, if any. */
 export function sceneFromUrl(search: string): Scene | null {
   const value = new URLSearchParams(search).get('demo');
   if (value === null) return null;
-  return value === 'dark' || value === 'peek' || value === 'newchat' || value === 'settings' || value === 'accounts'
-    ? value
-    : 'main';
+  return SCENES.find(s => s === value) ?? 'main';
 }

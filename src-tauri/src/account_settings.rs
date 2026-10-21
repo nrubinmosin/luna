@@ -1,7 +1,8 @@
 //! An account's own settings file — Claude Code's `settings.json`, Codex's
 //! `config.toml` — as Luna can help with it: settings recommended for anyone
-//! running the CLI inside Luna, applied key by key, and a "parent" account per
-//! provider whose file is copied onto the others.
+//! running the CLI inside Luna, added or taken out key by key, the file
+//! itself checked and formatted for editing by hand, and a "parent" account
+//! per provider whose file is copied onto the others.
 //!
 //! Every write keeps what it does not touch: other keys, their order, and in
 //! the TOML file the user's comments. Credentials, logins and Codex's trusted
@@ -23,7 +24,8 @@ pub struct Rec {
     pub current: Option<String>,
     pub recommended: String,
     pub why: String,
-    /// Ticked when the dialog opens. Off for what is a matter of taste.
+    /// Part of the set "Tick recommended" picks. Off for what is a matter of
+    /// taste.
     pub default_on: bool,
     /// The file already says exactly this.
     pub applied: bool,
@@ -66,7 +68,7 @@ fn claude_specs() -> Vec<Spec> {
     ]
 }
 
-/// Codex 0.162, the same comforts in Codex's words; every key checked against
+/// Codex 0.163, the same comforts in Codex's words; every key checked against
 /// the CLI's config structs.
 fn codex_specs() -> Vec<Spec> {
     vec![
@@ -141,6 +143,22 @@ fn json_set(v: &mut Value, path: &[&str], value: Value) {
     cur[*last] = value;
 }
 
+/// Takes the key out, and with it any parent object it leaves empty.
+fn json_remove(v: &mut Value, path: &[&str]) {
+    let Some((first, rest)) = path.split_first() else { return };
+    let Some(obj) = v.as_object_mut() else { return };
+    if rest.is_empty() {
+        obj.shift_remove(*first);
+        return;
+    }
+    if let Some(child) = obj.get_mut(*first) {
+        json_remove(child, rest);
+        if child.as_object().is_some_and(|o| o.is_empty()) {
+            obj.shift_remove(*first);
+        }
+    }
+}
+
 fn toml_at<'a>(doc: &'a DocumentMut, path: &[&str]) -> Option<&'a Item> {
     let mut cur = doc.as_item();
     for k in path {
@@ -194,6 +212,26 @@ fn toml_set(doc: &mut DocumentMut, path: &[&str], value: toml_edit::Value) {
     toml_put(table, last, toml_edit::value(value));
 }
 
+/// Takes the key out, and with it any table it leaves empty — which in a
+/// TOML file is a `[header]` with nothing under it.
+fn toml_remove(table: &mut toml_edit::Table, path: &[&str]) {
+    let Some((first, rest)) = path.split_first() else { return };
+    if rest.is_empty() {
+        table.remove(first);
+        return;
+    }
+    let emptied = match table.get_mut(first).and_then(Item::as_table_mut) {
+        Some(child) => {
+            toml_remove(child, rest);
+            child.is_empty()
+        }
+        None => false, // an inline table: left as the user wrote it
+    };
+    if emptied {
+        table.remove(first);
+    }
+}
+
 // -------------------------------------------------------- recommendations --
 
 fn recommend(provider: Provider, account_path: &str) -> Result<Vec<Rec>, String> {
@@ -232,26 +270,43 @@ fn recommend(provider: Provider, account_path: &str) -> Result<Vec<Rec>, String>
     Ok(out)
 }
 
-fn apply(provider: Provider, account_path: &str, keys: &[String]) -> Result<(), String> {
-    let picked: Vec<Spec> = specs(provider).into_iter().filter(|s| keys.contains(&s.path.join("."))).collect();
-    if picked.is_empty() {
+/// Sets the `add` keys to their recommended values and takes the `remove`
+/// ones out — only where the file still says exactly what was recommended:
+/// a value the user wrote themselves is theirs, not a recommendation to undo.
+fn apply(provider: Provider, account_path: &str, add: &[String], remove: &[String]) -> Result<(), String> {
+    let named = |keys: &[String]| -> Vec<Spec> {
+        specs(provider).into_iter().filter(|s| keys.contains(&s.path.join("."))).collect()
+    };
+    let (add, remove) = (named(add), named(remove));
+    if add.is_empty() && remove.is_empty() {
         return Ok(());
     }
     match provider {
         Provider::Claude => {
             let path = claude_file(account_path)?;
             let mut doc = read_claude(&path)?;
-            for s in picked {
+            for s in add {
                 json_set(&mut doc, s.path, s.value);
+            }
+            for s in remove {
+                if json_at(&doc, s.path) == Some(&s.value) {
+                    json_remove(&mut doc, s.path);
+                }
             }
             write_claude(&path, &doc)
         }
         Provider::Codex => {
             let path = crate::codex::config::account_file(account_path)?;
             let mut doc = crate::codex::config::read(&path)?;
-            for s in picked {
+            for s in add {
                 if let Some(v) = toml_value(&s.value) {
                     toml_set(&mut doc, s.path, v);
+                }
+            }
+            for s in remove {
+                let said = toml_at(&doc, s.path).and_then(Item::as_value).map(plain);
+                if said.is_some() && said == toml_value(&s.value).as_ref().map(plain) {
+                    toml_remove(doc.as_table_mut(), s.path);
                 }
             }
             crate::codex::config::write(&path, &doc)
@@ -265,9 +320,12 @@ pub fn recommended_settings(provider: Provider, account_path: String) -> Result<
 }
 
 #[tauri::command]
-pub fn apply_recommended(provider: Provider, account_path: String, keys: Vec<String>) -> Result<(), String> {
-    apply(provider, &account_path, &keys)?;
-    crate::log::info("settings", &format!("applied {} recommended setting(s) to {account_path}", keys.len()));
+pub fn apply_recommended(provider: Provider, account_path: String, add: Vec<String>, remove: Vec<String>) -> Result<(), String> {
+    apply(provider, &account_path, &add, &remove)?;
+    crate::log::info(
+        "settings",
+        &format!("recommended settings on {account_path}: {} added, {} taken out", add.len(), remove.len()),
+    );
     Ok(())
 }
 
@@ -300,6 +358,63 @@ fn check_config(provider: Provider, text: &str) -> Result<(), String> {
             Err(e) => Err(format!("Not valid JSON: {e}")),
         },
         Provider::Codex => text.parse::<DocumentMut>().map(|_| ()).map_err(|e| format!("Not valid TOML: {e}")),
+    }
+}
+
+/// Where `text` stops being a file this provider can read, for the editor to
+/// mark as it is typed; None when it reads.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigProblem {
+    pub message: String,
+    /// 1-based, when the parser says where.
+    pub line: Option<usize>,
+    pub column: Option<usize>,
+}
+
+#[tauri::command]
+pub fn check_account_config(provider: Provider, text: String) -> Option<ConfigProblem> {
+    match provider {
+        Provider::Claude => match serde_json::from_str::<Value>(&text) {
+            Ok(v) if v.is_object() => None,
+            Ok(_) => Some(ConfigProblem { message: "settings.json has to be one JSON object: { … }".into(), line: None, column: None }),
+            Err(e) => Some(ConfigProblem { message: e.to_string(), line: Some(e.line()), column: Some(e.column()) }),
+        },
+        Provider::Codex => text.parse::<DocumentMut>().err().map(|e| {
+            let at = e.span().map(|s| line_col(&text, s.start));
+            ConfigProblem {
+                // The parser's own message repeats the whole line with a caret
+                // under it; the first line is the reason.
+                message: e.message().lines().next().unwrap_or("not valid TOML").to_string(),
+                line: at.map(|(l, _)| l),
+                column: at.map(|(_, c)| c),
+            }
+        }),
+    }
+}
+
+/// 1-based line and column of a byte offset.
+fn line_col(text: &str, offset: usize) -> (usize, usize) {
+    let end = (0..=offset.min(text.len())).rev().find(|&i| text.is_char_boundary(i)).unwrap_or(0);
+    let before = &text[..end];
+    let line = before.matches('\n').count() + 1;
+    let column = before.rsplit('\n').next().map_or(0, |l| l.chars().count()) + 1;
+    (line, column)
+}
+
+/// The text laid out the way each CLI writes its own file: JSON indented by
+/// two, TOML by taplo's rules — comments and key order stay where they are.
+#[tauri::command]
+pub fn format_account_config(provider: Provider, text: String) -> Result<String, String> {
+    check_config(provider, &text)?;
+    match provider {
+        Provider::Claude => {
+            let v: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+            Ok(serde_json::to_string_pretty(&v).map_err(|e| e.to_string())? + "\n")
+        }
+        Provider::Codex => {
+            Ok(taplo::formatter::format(&text, Default::default()))
+        }
     }
 }
 
@@ -502,7 +617,7 @@ mod tests {
         let d = dir("claude");
         std::fs::write(d.join("settings.json"), r#"{"model":"opus","env":{"FOO":"1"},"zeta":true}"#).unwrap();
         let p = d.to_string_lossy().into_owned();
-        apply(Provider::Claude, &p, &["tui".into(), "env.CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY".into()]).unwrap();
+        apply(Provider::Claude, &p, &["tui".into(), "env.CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY".into()], &[]).unwrap();
         let v: Value = serde_json::from_str(&std::fs::read_to_string(d.join("settings.json")).unwrap()).unwrap();
         assert_eq!(v["model"], "opus");
         assert_eq!(v["env"]["FOO"], "1");
@@ -516,6 +631,64 @@ mod tests {
     }
 
     #[test]
+    fn taking_a_recommendation_out_leaves_no_empty_parents_and_spares_the_users_own() {
+        let d = dir("remove");
+        std::fs::write(d.join("settings.json"), r#"{"model":"opus","env":{"CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY":"1"},"tui":"fullscreen","effortLevel":"low"}"#).unwrap();
+        let p = d.to_string_lossy().into_owned();
+        let out = ["env.CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY".to_string(), "tui".into(), "effortLevel".into()];
+        apply(Provider::Claude, &p, &[], &out).unwrap();
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(d.join("settings.json")).unwrap()).unwrap();
+        assert_eq!(v, json!({ "model": "opus", "effortLevel": "low" }), "low is the user's, not the recommendation");
+
+        std::fs::write(d.join("config.toml"), "# mine
+web_search = \"live\"
+
+[tui]
+show_tooltips = false
+
+[feedback]
+enabled = false
+other = 1
+").unwrap();
+        let out = ["web_search".to_string(), "tui.show_tooltips".into(), "feedback.enabled".into()];
+        apply(Provider::Codex, &p, &[], &out).unwrap();
+        let text = std::fs::read_to_string(d.join("config.toml")).unwrap();
+        let doc: DocumentMut = text.parse().unwrap();
+        assert!(doc.get("web_search").is_none() && doc.get("tui").is_none(), "{text}");
+        assert_eq!(doc["feedback"]["other"].as_integer(), Some(1));
+        assert!(doc["feedback"].get("enabled").is_none());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn the_editor_checks_and_lays_out_both_files() {
+        let bad = check_account_config(Provider::Codex, "a = 1
+b = [
+".into()).unwrap();
+        assert!(bad.line.is_some(), "{}", bad.message);
+        assert!(check_account_config(Provider::Codex, "a = 1
+".into()).is_none());
+        let bad = check_account_config(Provider::Claude, "{
+  \"a\": ,
+}".into()).unwrap();
+        assert_eq!(bad.line, Some(2));
+        let laid = format_account_config(Provider::Claude, r#"{"b":1,"a":{"c":true}}"#.into()).unwrap();
+        assert_eq!(laid, "{
+  \"b\": 1,
+  \"a\": {
+    \"c\": true
+  }
+}
+");
+        let laid = format_account_config(Provider::Codex, "# keep
+z   =  1
+a=\"x\"
+".into()).unwrap();
+        assert!(laid.contains("# keep") && laid.find("z = 1") < laid.find("a = \"x\""), "{laid}");
+        assert!(format_account_config(Provider::Codex, "a = [".into()).is_err());
+    }
+
+    #[test]
     fn a_powershell_default_is_only_offered_on_windows() {
         let offered = specs(Provider::Claude).iter().any(|s| s.path == ["defaultShell"]);
         assert_eq!(offered, cfg!(windows));
@@ -526,7 +699,7 @@ mod tests {
         let d = dir("codex");
         std::fs::write(d.join("config.toml"), "# mine\nmodel = \"gpt-6\" # keep\n# searching\nweb_search = \"off\"\n\n[tui]\ntheme = \"dark\"\n").unwrap();
         let p = d.to_string_lossy().into_owned();
-        apply(Provider::Codex, &p, &["tui.show_tooltips".into(), "analytics.enabled".into(), "web_search".into()]).unwrap();
+        apply(Provider::Codex, &p, &["tui.show_tooltips".into(), "analytics.enabled".into(), "web_search".into()], &[]).unwrap();
         let text = std::fs::read_to_string(d.join("config.toml")).unwrap();
         assert!(text.contains("# mine"));
         assert!(text.contains("model = \"gpt-6\" # keep"));
@@ -603,7 +776,7 @@ model = \"gpt-6\"   # keep
         let d = dir("broken");
         std::fs::write(d.join("settings.json"), "{ not json").unwrap();
         let p = d.to_string_lossy().into_owned();
-        assert!(apply(Provider::Claude, &p, &["tui".into()]).is_err());
+        assert!(apply(Provider::Claude, &p, &["tui".into()], &[]).is_err());
         assert_eq!(std::fs::read_to_string(d.join("settings.json")).unwrap(), "{ not json");
         let _ = std::fs::remove_dir_all(&d);
     }
