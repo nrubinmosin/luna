@@ -245,18 +245,37 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
 ## Agents: sessions that run sessions
 
 A chat created with **Luna tools** ticked (off by default) gets Luna as an MCP server, and
-with it nine tools: `luna_list`, `luna_sessions`, `luna_spawn`, `luna_send`, `luna_read`,
-`luna_wait`, `luna_kill`, `luna_delete`, `luna_notify`. The model can start a helper session — another model, another
+with it ten tools: `luna_list`, `luna_sessions`, `luna_spawn`, `luna_send`, `luna_answer`,
+`luna_read`, `luna_wait`, `luna_kill`, `luna_delete`, `luna_notify`. The model can start a helper session — another model, another
 account, Codex instead of Claude — with an opening prompt, wait for its reply, send
-follow-ups, and delete it when done, worktree and branch included if it asked for one.
+follow-ups, answer what it asks, and delete it when done, worktree and branch included if it asked for one.
 `luna_notify` lets it raise a desktop notification mid-turn, titled with its chat's name and
 opening that chat when clicked, at most one every 10 seconds. The
-tools and a five-line instruction cost about 2k tokens of context once per session; a chat
+tools and a short instruction cost about 2k tokens of context once per session; a chat
 without the box ticked knows nothing of Luna at all.
 
-- A spawned session is a normal chat row, nested under the one that made it and folded by
+- A helper runs **in the background** unless the agent asks for `visible: true`: no row,
+  no pane, no terminal — each turn is one run of the CLI's headless mode (`claude -p`,
+  `codex exec`), and the next one resumes the conversation. It needs no open window, and it
+  goes by itself 10 minutes after its last answer reached the agent. Its parent's row
+  shows how many there are; a click lists them with what each is doing, and opens one as a
+  chat of its own (between its turns), stops it or deletes it.
+- A visible helper is a normal chat row, nested under the one that made it and folded by
   default; the count on the parent row unfolds it. It is not seated in a pane unless you
   open it. Its own status, context and title work as for any chat.
+- What a session waits on comes with it: `state` says `working`, `waiting` (a permission),
+  `question`, `idle` and so on, and `ask` carries the question with its options or the
+  command up for permission — Claude Code's `AskUserQuestion` and permission prompts,
+  Codex's questions and approvals. `luna_answer` answers it: an option's number or label or
+  words of its own, `allow` true or false, or raw keys for any other dialog. A background
+  Claude Code helper puts its questions and permission prompts to Luna instead of a screen
+  (`--permission-prompt-tool`), so its agent answers them all the same; a background Codex
+  helper has nobody to ask and says what it would have asked in its reply.
+- A prompt or message longer than 8,000 characters reaches a visible session as a file it
+  is told to read; a background one gets any length on its stdin.
+- Codex under `read-only` or `workspace-write` runs its commands in its Windows sandbox
+  (the unelevated kind: no administrator, no extra accounts), without the Store's app
+  aliases on its PATH, which the sandbox cannot start.
 - An agent kills and deletes only sessions it spawned (and theirs). It can see every other
   one, yours included, with `luna_sessions` — name, window group, account and its folder,
   project folder, cwd, the CLI's session id and transcript path — type a message into any
@@ -268,7 +287,7 @@ without the box ticked knows nothing of Luna at all.
   one chat, and a helper's helpers get no tools of their own.
 - Every account is available to agents unless you switch it off with the robot button on
   its row in the Accounts window. `luna_list` names the ones that are, so you can tell a chat which one to use,
-  and gives each the settings a helper would get there (model, effort, permission mode —
+  and gives each its models, the settings a helper would get there (model, effort, permission mode —
   read from the account's and the project's settings the way the new-chat dialog reads
   them) and its usage as the Accounts window shows it: percent per window and when it resets.
 - `luna_spawn` says what the helper came up with that its settings cannot: warnings the CLI
@@ -276,7 +295,7 @@ without the box ticked knows nothing of Luna at all.
   live sessions working in the same directory (`sameFolder`), whose files and git it shares —
   `worktree: true` keeps it apart. An unknown slash command comes back at once as not
   started, with the screen that says so.
-- `autoDelete: true` on a spawn has Luna delete the helper once its answer has reached the
+- `autoDelete: true` on a visible spawn has Luna delete the helper once its answer has reached the
   agent and it has sat idle for 10 minutes (a follow-up starts that over). One you have typed
   into is yours and stays; a worktree it made stays too, with its work.
 - Every spawn is written down in `agents.jsonl` in Luna's data folder — when, by whom, where,
@@ -289,7 +308,7 @@ without the box ticked knows nothing of Luna at all.
   for an agent that needs it in the same turn. Otherwise the agent spawns and ends its turn,
   and the answer comes to it:
 - An agent that asked something and ended its turn without waiting is not left idle: once
-  the answer comes — or the helper stops on a permission prompt, or exits — Luna types a
+  the answer comes — or the helper asks something, stops on a permission prompt, or exits — Luna types a
   one-line `[Luna notice, not typed by the user]` into the agent's chat, as soon as that
   chat is between turns, you have not typed into it for 20 seconds, and nothing you typed
   sits unsent in it (a minute's hold on a draft is announced on the desktop instead). A

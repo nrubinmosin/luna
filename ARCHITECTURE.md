@@ -99,12 +99,17 @@ src-tauri/src/
                 POST /hook/<chat>/<secret> takes Claude Code hooks' stdin;
                 POST /mcp with the session's bearer token — MCP for agents; a thread per request
   mcp.rs        the MCP server's JSON-RPC: initialize (with instructions), tools/list, tools/call;
-                nine luna_* tools with short descriptions (~2k tokens)
+                ten luna_* tools with short descriptions (~2k tokens), offered to sessions given
+                them; luna_permission only to a background Claude Code helper's CLI
   agents.rs     registry of sessions with tools and those they spawned: tokens, kinship,
                 rights (kill/delete — descendants only; sessions, send, read, wait — all), spawn via the frontend
                 (agent://spawn ↔ agent_spawned), send into the pty, read from the transcript, wait on activity, kill, delete (+worktree);
                 notifier: an uncollected helper answer is typed to the caller when it is free;
                 autoDelete helpers are deleted once they have served
+  background.rs helpers with no row (luna_spawn without visible): a turn is one run of
+                `claude -p --output-format stream-json` or `codex exec --json`, prompt on stdin,
+                events on stdout, the next turn a resume; a held permission / question
+                (`--permission-prompt-tool`) waits for luna_answer; agent://background to the window
   agentlog.rs   <data>/agents.jsonl: a line per spawn and per end, for luna_sessions(history: true)
   activity.rs   sampler every 5 s: turn (hooks + registry / rollout), descendants, output →
                 busy / waiting / idle per session and a summary
@@ -220,9 +225,12 @@ src-tauri/src/
   `{timestamp,type,payload}`. Which file is ours: for a fresh session — the earliest of those that appeared
   after the spawn whose `session_meta` cwd is the folder, or a Codex worktree pointing back at it; for a
   resumed one — by the uuid in the name; the answer is remembered per chat, so two chats in one folder
-  do not share a file. From the tail (128 KiB):
+  do not share a file. Read on incrementally from where the last look stopped (a turn outgrows
+  any tail: a megabyte of tool output after `task_started` read as resting):
   `task_started`/`task_complete` (before 0.157 — `turn_started`/`turn_complete`/`turn_aborted`) →
-  working/resting, `token_count.info` → context (`last_token_usage.total_tokens −
+  working/resting and the turn count, `request_user_input` (holds the turn) and
+  `request_user_input_async` (open until the next `UserMessage`) → the question asked. From the
+  tail (128 KiB): `token_count.info` → context (`last_token_usage.total_tokens −
   reasoning_output_tokens` against `model_context_window`, as Codex itself counts it),
   `turn_context.model` → model, `token_count.rate_limits` → limits fallback. The conversation itself —
   `response_item` lines of type `message` with `role` user/assistant (developer messages and
@@ -298,8 +306,10 @@ src-tauri/src/
   pty output over the last 30 s. Hooks print nothing: Claude Code adds the stdout of a hook exiting 0
   to the context, and silence is free. Claude's registry beats an "idle" from a hook, a hook's
   "waiting" beats the registry's "busy" (a permission prompt is inside a turn). No mark is eternal:
-  a hook's "busy" against the registry's "idle" goes stale in 15 s (a missed Stop), a hook's "waiting" — in
-  60 s (the prompt left with the turn on Esc, Stop never came), the registry's "busy" against a hook's "idle"
+  a hook's "busy" against the registry's "idle" goes stale in 15 s (a missed Stop), a hook's "waiting" — at
+  once when the registry's idle is newer than the hook (its `statusUpdatedAt`: a prompt answered "No"
+  ends the turn with no Stop), else in 60 s (the prompt left with the turn on Esc, Stop never came),
+  the registry's "busy" against a hook's "idle"
   — in 60 s without a single hook (a turn that began or did something marks itself with a hook).
   Without hooks (Codex, a session that survived a Luna restart) the registry is believed as is.
   The registry's `waiting` beats a hook's "busy": the dialog is open, the model is not working (a turn cut off by
@@ -412,11 +422,44 @@ src-tauri/src/
   sequences (`ESC[0;0;<utf16>;1;0;1_` and the release; halves of a surrogate pair —
   press only), control characters and escape sequences as is. Claude Code
   reads text and does not need this.
-  **The Codex sandbox on Windows** without a configured Windows sandbox makes Codex reject (`approval
-  never`) or send for approval (`on-request`) every command under `read-only` and
-  `workspace-write` — even `Get-Content`. The description of `sandbox` in `luna_spawn` says so, and
-  the instruction says that the CLIs' built-in subagents can do neither another provider, nor another
-  account, nor a session visible in Luna: without that a Codex orchestrator took its own `spawn_agent`.
+  **The Codex sandbox on Windows.** Without `windows.sandbox` Codex rejects (`approval never`) or
+  sends for approval (`on-request`) every command under `read-only` and `workspace-write` — even
+  `Get-Content`. So those two modes get `-c windows.sandbox="unelevated"` (a restricted token per
+  command: no administrator, no sandbox accounts; under `workspace-write` Codex adds one ACL entry
+  for its sandbox to the folder) and a PATH without `…\Microsoft\WindowsApps`: Codex takes the first
+  `pwsh.exe` on PATH, and the Store PowerShell's app alias there fails under the restricted token
+  with `CreateProcessAsUserW failed: 5` on every command (openai/codex has a row of issues on it);
+  without it Codex falls back to an ordinarily installed PowerShell or Windows PowerShell. The
+  instruction says that the CLIs' built-in subagents can do neither another provider nor another
+  account: without that a Codex orchestrator took its own `spawn_agent`.
+  **Background helpers** (background.rs) are what `luna_spawn` makes unless asked for `visible:
+  true`: no chat row and no pty, all in the core, so no window is needed. Each turn is one process —
+  `claude -p --output-format stream-json --verbose` / `codex exec --json`, resumed by the session /
+  thread id the first turn printed — with the prompt on stdin (no command-line limit) and stdout
+  parsed into a log of what it did (`luna_read(screen)` shows that in place of a screen); the
+  conversation lands in the CLI's own transcript / rollout as with any session. Busy is the process
+  running; `send` during a turn queues the text for the next. A Claude Code helper always gets Luna's
+  MCP server, if only for `--permission-prompt-tool mcp__luna__luna_permission` (hidden from its
+  model by `--disallowedTools`): its permission prompts and `AskUserQuestion` arrive as that call,
+  held on a Condvar until `luna_answer` (allow / deny with the input back, or `answers` by question
+  text) or the turn's end. Codex's `exec` asks nobody (approval never) and puts a question in its
+  reply. Helpers are always auto-deleted; the window gets their list as `agent://background` (the
+  count on the parent row) and can hand one to a chat row between turns (`background_promote` →
+  `agent://promote`: same id, the session id to resume).
+  **One state, and what is asked.** Tool answers carry `state` (`state_of`: working, waiting,
+  question, background, idle, starting, exited) instead of a turn word and a busy flag that could
+  disagree, and `ask` (`ask_of`): a background helper's held call; for Claude Code the tool its
+  hooks name (`PreToolUse` for `AskUserQuestion`, `PermissionRequest` — the transcript gets a
+  question's call only once it is answered), else a held tool call in the transcript; for Codex the
+  rollout's open question, or an approval its screen shows. Notices quote it, and an async Codex
+  question gets a notice of its own while the helper works on. `luna_answer` in a terminal is
+  keys: an option is arrows down from the first and Enter, words of its own go in the free-text row
+  after the options, several Claude Code questions end on a review that Enter submits; a permission
+  is Enter (Codex: `y`) or Esc, a note typed after it; an async Codex question is answered by a
+  message. `keys` takes `{enter}`, `{down}`… for any other dialog. `send` into a session on a
+  blocking dialog refuses and points to `luna_answer`. A prompt or message past 8,000 characters
+  goes to a visible session as a file under `<data>/agents/` (a Claude Code helper gets it as an
+  `--add-dir`), swept after a week.
   To test a build without a second Luna as the parent: `LUNA_DEV_TOKEN` (+ `LUNA_DEV_FOLDER`,
   `LUNA_DEV_ACCOUNT`) registers a caller `dev` with that bearer token; its spawns are
   top-level chats. `test-build.ps1 -Run -DevCaller` sets them itself.

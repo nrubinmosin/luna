@@ -292,11 +292,12 @@ pub fn meta(pid: Option<u32>, cwd: &str, spawned_at_ms: u128, account_path: &str
 }
 
 /// Just the registry's status word for a live session — one small file, no
-/// transcript — for the activity sampler, which asks every few seconds.
-pub fn status(pid: Option<u32>, cwd: &str, spawned_at_ms: u128, account_path: &str) -> Option<String> {
+/// transcript — for the activity sampler, which asks every few seconds; with
+/// when the CLI last set it (`statusUpdatedAt`, ms), where it says.
+pub fn status(pid: Option<u32>, cwd: &str, spawned_at_ms: u128, account_path: &str) -> Option<(String, Option<u64>)> {
     let dir = Path::new(account_path).join("sessions");
     let v = registry_entry(&dir, pid, cwd, spawned_at_ms)?;
-    v["status"].as_str().map(str::to_owned)
+    Some((v["status"].as_str()?.to_owned(), v["statusUpdatedAt"].as_u64()))
 }
 
 /// The cwd the CLI reports for a live pty session — under `--worktree` that
@@ -472,6 +473,60 @@ fn api_error_in(text: &str) -> Option<&'static str> {
     None
 }
 
+/// The transcript of a session Luna knows by its id and cwd rather than
+/// through the registry — a background helper's, which `claude -p` names in
+/// its first event.
+pub fn transcript_file(account_path: &str, cwd: &str, session_id: &str) -> PathBuf {
+    transcript_path(account_path, cwd, session_id)
+}
+
+/// The tool call the conversation stands on:the last one the model made that
+/// no result has come back for, as (name, input). `AskUserQuestion` waits on
+/// a person by its nature; any other tool waits on one only while a
+/// permission prompt is up — otherwise it is simply running.
+pub fn pending_tool(path: &Path) -> Option<(String, serde_json::Value)> {
+    pending_tool_in(&crate::pty::tail(path, 256 * 1024)?)
+}
+
+fn pending_tool_in(text: &str) -> Option<(String, serde_json::Value)> {
+    let mut open: Vec<(String, String, serde_json::Value)> = Vec::new();
+    for line in text.lines() {
+        if !line.contains("\"assistant\"") && !line.contains("\"user\"") {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        if v["isSidechain"].as_bool() == Some(true) || v["isMeta"].as_bool() == Some(true) {
+            continue;
+        }
+        let content = &v["message"]["content"];
+        match v["type"].as_str() {
+            Some("assistant") => {
+                for b in content.as_array().into_iter().flatten().filter(|b| b["type"] == "tool_use") {
+                    let id = b["id"].as_str().unwrap_or("").to_string();
+                    open.push((id, b["name"].as_str().unwrap_or("").to_string(), b["input"].clone()));
+                }
+            }
+            Some("user") => {
+                let results: Vec<&str> = content
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|b| b["type"] == "tool_result")
+                    .filter_map(|b| b["tool_use_id"].as_str())
+                    .collect();
+                if results.is_empty() {
+                    // A new prompt: whatever was left open went with the turn.
+                    open.clear();
+                } else {
+                    open.retain(|(id, _, _)| !results.contains(&id.as_str()));
+                }
+            }
+            _ => {}
+        }
+    }
+    open.pop().map(|(_, name, input)| (name, input))
+}
+
 /// The transcript file of a live session, once the registry knows it.
 pub fn transcript_of(pid: Option<u32>, cwd: &str, spawned_at_ms: u128, account_path: &str) -> Option<PathBuf> {
     let dir = Path::new(account_path).join("sessions");
@@ -545,6 +600,24 @@ fn message_of(line: &str, with_tools: bool) -> Option<crate::agents::Message> {
 #[cfg(test)]
 mod reading_tests {
     use super::*;
+
+    #[test]
+    fn the_pending_tool_is_the_last_one_without_a_result() {
+        let ask = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":"AskUserQuestion","input":{"questions":[{"question":"Which colour?","options":[{"label":"Red"},{"label":"Blue"}],"multiSelect":false}]}}]}}"#;
+        let ran = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}}]}}"#;
+        let ran_done = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"a"}]}}"#;
+        let text = [ran, ran_done, ask].join("\n");
+        let (name, input) = pending_tool_in(&text).unwrap();
+        assert_eq!(name, "AskUserQuestion");
+        let a = crate::agents::Ask::from_claude_questions(&input).unwrap();
+        assert_eq!((a.questions[0].text.as_str(), a.questions[0].options.len()), ("Which colour?", 2));
+        let answered = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t2","content":"Blue"}]}}"#;
+        assert_eq!(pending_tool_in(&[text.as_str(), answered].join("\n")), None);
+        // A prompt typed after it: the turn it stood in is over.
+        let prompt = r#"{"type":"user","message":{"role":"user","content":"never mind"}}"#;
+        assert_eq!(pending_tool_in(&[ran, prompt].join("\n")), None);
+        assert_eq!(pending_tool_in(ran).map(|(n, _)| n).as_deref(), Some("Bash"));
+    }
 
     #[test]
     fn the_cursor_stops_before_a_line_still_being_written() {

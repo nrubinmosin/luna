@@ -103,6 +103,96 @@ pub struct Message {
     pub text: String,
 }
 
+/// What a session waits on a person for: a question its model put (Claude
+/// Code's `AskUserQuestion`, Codex's `request_user_input`), or leave to run a
+/// tool. `luna_answer` answers either.
+#[derive(Clone, Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Ask {
+    /// `question` or `permission`.
+    pub kind: &'static str,
+    /// The turn holds until it is answered. Codex's async question does not
+    /// hold it: the model works on beside it.
+    pub blocking: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub questions: Vec<AskQuestion>,
+    /// A permission's tool, and what it would do with it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+#[derive(Clone, Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AskQuestion {
+    pub text: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<String>,
+    /// More than one option may be picked.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub multi: bool,
+}
+
+impl Ask {
+    pub fn question(questions: Vec<AskQuestion>, blocking: bool) -> Ask {
+        Ask { kind: "question", blocking, questions, tool: None, detail: None }
+    }
+
+    pub fn permission(tool: Option<String>, detail: Option<String>) -> Ask {
+        Ask { kind: "permission", blocking: true, questions: Vec::new(), tool, detail }
+    }
+
+    /// Claude Code's `AskUserQuestion` input: `questions[]` with `question`,
+    /// `options[].label` and `multiSelect`.
+    pub fn from_claude_questions(input: &serde_json::Value) -> Option<Ask> {
+        let questions: Vec<AskQuestion> = input["questions"]
+            .as_array()?
+            .iter()
+            .filter_map(|q| {
+                let text = q["question"].as_str()?.trim().to_string();
+                let options =
+                    q["options"].as_array().map(|o| o.iter().filter_map(|o| o["label"].as_str().map(str::to_owned)).collect()).unwrap_or_default();
+                Some(AskQuestion { text, options, multi: q["multiSelect"].as_bool().unwrap_or(false) })
+            })
+            .collect();
+        (!questions.is_empty()).then(|| Ask::question(questions, true))
+    }
+
+    /// A Claude Code tool call held for permission: the tool, and the one
+    /// field of its input that says what it would do.
+    pub fn from_claude_tool(name: &str, input: &serde_json::Value) -> Ask {
+        let detail = ["command", "file_path", "path", "url", "pattern", "description"]
+            .iter()
+            .find_map(|k| input[*k].as_str())
+            .map(str::to_owned)
+            .or_else(|| input.is_object().then(|| input.to_string()))
+            .map(|d| d.chars().take(400).collect());
+        Ask::permission(Some(name.to_string()), detail)
+    }
+
+    /// One line for a notice: the questions with their options numbered.
+    pub fn line(&self) -> String {
+        if self.kind == "permission" {
+            let what = [self.tool.as_deref(), self.detail.as_deref()].into_iter().flatten().collect::<Vec<_>>().join(": ");
+            return if what.is_empty() { "asks for permission".into() } else { format!("asks for permission to run {what}") };
+        }
+        let qs: Vec<String> = self
+            .questions
+            .iter()
+            .map(|q| {
+                let opts: Vec<String> = q.options.iter().enumerate().map(|(i, o)| format!("{}. {o}", i + 1)).collect();
+                if opts.is_empty() {
+                    format!("\"{}\"", q.text)
+                } else {
+                    format!("\"{}\" ({})", q.text, opts.join(", "))
+                }
+            })
+            .collect();
+        format!("asks: {}", qs.join(" "))
+    }
+}
+
 /// A session the agent layer knows: every one started with tools, and every
 /// one an agent spawned.
 #[derive(Clone)]
@@ -116,6 +206,8 @@ struct Known {
     /// model, effort and permission mode (Claude) or approval and sandbox
     /// (Codex). Echoed by `list` and `spawn`.
     settings: serde_json::Value,
+    /// Luna's tools were given to it: `tools/list` offers them.
+    tools: bool,
 }
 
 /// What an agent asks for. Everything but the prompt may be left to the
@@ -138,6 +230,10 @@ pub struct SpawnParams {
     /// Luna's to act on (see `reap`); the frontend never sees it.
     #[serde(skip_serializing)]
     pub auto_delete: Option<bool>,
+    /// A chat the user sees, run by the window. Without it the helper runs
+    /// in the background (background.rs) and the frontend never hears of it.
+    #[serde(skip_serializing)]
+    pub visible: Option<bool>,
 }
 
 /// The request as the frontend receives it.
@@ -206,6 +302,9 @@ struct Registry {
     usage: HashMap<String, serde_json::Value>,
     /// When each caller last raised a desktop notification (`notify`).
     notified: HashMap<String, u64>,
+    /// The tool a Claude Code session's hooks last said is up for an answer
+    /// (`AskUserQuestion`, or one held for permission), with its input.
+    hook_asks: HashMap<String, (String, serde_json::Value)>,
 }
 
 /// An `autoDelete` helper's progress towards going.
@@ -223,6 +322,9 @@ struct Owed {
     baseline: u32,
     /// The caller has been told the session is stopped on a prompt.
     told_waiting: bool,
+    /// The question the caller was last told the session asks beside its
+    /// work, by hash (0: none).
+    told_ask: u64,
     /// The turn count at which the answer was seen with processes still at
     /// work, and when (see BACKGROUND_GRACE_MS).
     held: Option<(u32, u64)>,
@@ -233,7 +335,7 @@ struct Owed {
 
 impl Owed {
     fn from(baseline: u32) -> Owed {
-        Owed { baseline, told_waiting: false, held: None, ready_at: None }
+        Owed { baseline, told_waiting: false, told_ask: 0, held: None, ready_at: None }
     }
 }
 
@@ -256,6 +358,7 @@ fn reg() -> &'static Mutex<Registry> {
             auto: HashMap::new(),
             usage: HashMap::new(),
             notified: HashMap::new(),
+            hook_asks: HashMap::new(),
         })
     })
 }
@@ -345,6 +448,7 @@ pub fn register(
             account,
             parent: parent.map(str::to_owned).or_else(|| previous.as_ref().and_then(|k| k.parent.clone())),
             settings,
+            tools,
         },
     );
     // One token per session: a respawn invalidates the last one.
@@ -412,6 +516,167 @@ fn mint(id: &str) -> String {
 /// The session behind a bearer token.
 pub fn caller_of(token: &str) -> Option<String> {
     reg().lock().unwrap_or_else(|e| e.into_inner()).tokens.get(token).cloned()
+}
+
+/// A token for a session registered without tools: a background Claude Code
+/// helper takes its permission prompts through Luna's MCP server all the
+/// same, and `tools/list` offers it that one tool only.
+fn issue_token(id: &str) -> String {
+    let token = mint(id);
+    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    r.tokens.retain(|_, chat| chat != id);
+    r.tokens.insert(token.clone(), id.to_string());
+    token
+}
+
+/// Whether a session was given Luna's tools (the dev caller always has them).
+pub fn has_tools(id: &str) -> bool {
+    id == DEV_CALLER || reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(id).is_some_and(|k| k.tools)
+}
+
+pub fn parent_of(id: &str) -> Option<String> {
+    reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(id)?.parent.clone()
+}
+
+pub fn settings_of(id: &str) -> serde_json::Value {
+    reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(id).map(|k| k.settings.clone()).unwrap_or_default()
+}
+
+/// A background helper has become a chat the window runs: no longer one
+/// Luna deletes on its own, and the window registers it again when its
+/// session starts.
+pub fn promoted(id: &str) {
+    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    r.auto.remove(id);
+    if let Some(k) = r.known.get_mut(id) {
+        if let Some(o) = k.settings.as_object_mut() {
+            o.remove("background");
+        }
+    }
+}
+
+/// The window's Delete on a background helper: as its agent would, the
+/// worktree it made going too unless it was handed one.
+pub fn delete_by_user(id: &str) -> Result<(), String> {
+    let known = reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(id).cloned().ok_or("no such helper")?;
+    remove(id, known, true).map(|_| ())
+}
+
+/// A Claude Code hook (hub.rs): what it puts up for an answer, kept until
+/// the tool runs or the turn is over.
+pub fn on_hook(chat: &str, body: &str) {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(body) else { return };
+    let tool = v["tool_name"].as_str().unwrap_or("");
+    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    match v["hook_event_name"].as_str() {
+        Some("PermissionRequest") => {
+            r.hook_asks.insert(chat.to_string(), (tool.to_string(), v["tool_input"].clone()));
+        }
+        Some("PreToolUse") if tool == "AskUserQuestion" => {
+            r.hook_asks.insert(chat.to_string(), (tool.to_string(), v["tool_input"].clone()));
+        }
+        Some("PostToolUse" | "PostToolUseFailure" | "Stop" | "StopFailure" | "UserPromptSubmit" | "SessionEnd") => {
+            r.hook_asks.remove(chat);
+        }
+        _ => {}
+    }
+}
+
+/// Whether the session is there to talk to:a pty session that runs, or a
+/// background helper, which is there between its turns too.
+fn live(pty: &crate::pty::PtyManager, id: &str) -> bool {
+    crate::background::has(id) || pty.alive(id)
+}
+
+/// What a session waits on a person for, if anything: a background helper's
+/// held call; a Claude Code `AskUserQuestion` with no answer yet, or the tool
+/// a permission prompt is up for; a Codex question tool not yet answered, or
+/// the approval its screen shows.
+pub fn ask_of(id: &str) -> Option<Ask> {
+    if crate::background::has(id) {
+        return crate::background::ask(id);
+    }
+    let pty = crate::pty::manager();
+    let p = pty.probe(id)?;
+    let turn = crate::activity::turn_state(id).map(|t| t.turn);
+    let waiting = turn == Some(crate::activity::Turn::Waiting);
+    match p.provider {
+        Provider::Claude => {
+            // The hooks say it whole; the transcript has a tool call held for
+            // permission only sometimes, and a question not before its answer.
+            let hooked = reg().lock().unwrap_or_else(|e| e.into_inner()).hook_asks.get(id).cloned();
+            let (name, input) = hooked
+                .filter(|_| turn.is_some_and(|t| t != crate::activity::Turn::Idle))
+                .or_else(|| waiting.then(|| crate::claude::session::pending_tool(&transcript_path(&pty, id)?)).flatten())?;
+            if name == "AskUserQuestion" {
+                Ask::from_claude_questions(&input)
+            } else {
+                waiting.then(|| Ask::from_claude_tool(&name, &input))
+            }
+        }
+        Provider::Codex => crate::codex::session::pending_ask(&crate::codex::session::Live {
+            chat_id: &p.id,
+            cwd: &p.cwd,
+            spawned_at_ms: p.spawned_at_ms,
+            resume: p.resume.as_deref(),
+            account_path: &p.account_path,
+            last_output_ms: p.last_output_ms,
+        })
+        .or_else(|| waiting.then(|| Ask::permission(None, pty.screen(id).as_deref().and_then(codex_command_on)))),
+    }
+}
+
+/// The command a Codex approval dialog shows, on its `$ ` line.
+fn codex_command_on(screen: &str) -> Option<String> {
+    screen.lines().map(str::trim).find_map(|l| l.strip_prefix("$ ")).map(|c| c.trim().to_string()).filter(|c| !c.is_empty())
+}
+
+/// One word for where a session stands, and what it asks if it asks:
+/// `working`, `waiting` (a permission), `question` (a question that holds its
+/// turn), `background` (its turn is over, a job it started still runs),
+/// `idle`, `starting` (its CLI has not drawn yet), `exited`.
+pub fn state_of(id: &str) -> (&'static str, Option<Ask>) {
+    use crate::activity::Turn;
+    let pty = crate::pty::manager();
+    if !live(&pty, id) {
+        return ("exited", None);
+    }
+    if still_starting(&pty, id) {
+        return ("starting", None);
+    }
+    let ask = ask_of(id);
+    let ts = crate::activity::turn_state(id);
+    let state = match (ts.map(|t| t.turn), &ask) {
+        (_, Some(a)) if a.blocking && a.kind == "question" => "question",
+        (Some(Turn::Waiting), _) => "waiting",
+        (Some(Turn::Busy), _) => "working",
+        _ if ts.is_some_and(|t| t.children_busy) => "background",
+        _ => "idle",
+    };
+    (state, ask)
+}
+
+/// An answer to one question as the CLI is to get it: an option's number
+/// (several, apart by commas, where more than one may be picked) or label
+/// becomes that option's label; anything else is the answer in its own words.
+pub fn resolve_option(q: &AskQuestion, answer: &str) -> String {
+    let pick = |part: &str| -> Option<String> {
+        let part = part.trim();
+        if let Ok(n) = part.parse::<usize>() {
+            return q.options.get(n.checked_sub(1)?).cloned();
+        }
+        q.options.iter().find(|o| o.eq_ignore_ascii_case(part)).cloned()
+    };
+    if let Some(o) = pick(answer) {
+        return o;
+    }
+    if q.multi {
+        let parts: Option<Vec<String>> = answer.split(',').map(pick).collect();
+        if let Some(p) = parts.filter(|p| !p.is_empty()) {
+            return p.join(", ");
+        }
+    }
+    answer.trim().to_string()
 }
 
 fn depth_of(r: &Registry, id: &str) -> usize {
@@ -487,9 +752,10 @@ pub struct SessionRow {
     pub provider: Provider,
     pub account: String,
     pub parent: Option<String>,
-    pub alive: bool,
-    pub turn: Option<crate::activity::Turn>,
-    pub busy: bool,
+    /// See `state_of`.
+    pub state: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ask: Option<Ask>,
     pub turns_ended: u32,
     /// The flags it runs with (see `Known::settings`).
     pub settings: serde_json::Value,
@@ -511,6 +777,9 @@ pub struct AccountRow {
     /// The settings a helper gets here unless the spawn says otherwise, for
     /// the caller's folder: the flags as `spawn` echoes them.
     pub defaults: serde_json::Value,
+    /// The models a helper may ask for here: Claude Code's aliases (a full
+    /// id works too), Codex's catalogue with each model's name and levels.
+    pub models: Vec<serde_json::Value>,
     /// Its usage as the window last showed it (see `account_usage`); none
     /// before the window has said.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -530,7 +799,16 @@ fn account_rows(folder: &str) -> Vec<AccountRow> {
                 Provider::Codex => crate::codex::defaults::flags(&a.path, folder),
             };
             let usage = usage.get(&format!("{}/{}", a.provider.as_str(), a.name)).cloned();
-            AccountRow { provider: a.provider, name: a.name, defaults, usage }
+            let models = match a.provider {
+                Provider::Claude => CLAUDE_MODELS.iter().map(|m| serde_json::json!({ "id": m })).collect(),
+                Provider::Codex => crate::codex::models::models_known(&a.path)
+                    .into_iter()
+                    .map(|m| {
+                        serde_json::json!({ "id": m.slug, "name": m.display_name, "efforts": m.efforts, "defaultEffort": m.default_effort })
+                    })
+                    .collect(),
+            };
+            AccountRow { provider: a.provider, name: a.name, defaults, models, usage }
         })
         .collect()
 }
@@ -574,7 +852,6 @@ pub fn list(caller: &str) -> Listing {
             })
             .collect()
     };
-    let pty = Some(crate::pty::manager());
     let sessions = rows
         .into_iter()
         .map(|(id, k, name, group)| {
@@ -582,10 +859,10 @@ pub fn list(caller: &str) -> Listing {
             // A listing is not a reading: it does not move what the caller
             // is taken to have seen of a session's turns.
             let turns_ended = ts.map(|t| t.turns_ended).unwrap_or(0);
+            let (state, ask) = state_of(&id);
             SessionRow {
-                alive: pty.as_ref().map(|p| p.alive(&id)).unwrap_or(false),
-                turn: ts.map(|t| t.turn),
-                busy: ts.map(|t| t.busy).unwrap_or(false),
+                state,
+                ask,
                 turns_ended,
                 id,
                 name,
@@ -635,8 +912,13 @@ pub struct AnySession {
     /// reaches it, not only `luna_send`.
     pub yours: bool,
     pub alive: bool,
-    pub turn: Option<crate::activity::Turn>,
-    pub busy: bool,
+    /// See `state_of`.
+    pub state: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ask: Option<Ask>,
+    /// Runs with no terminal and no row (background.rs).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub background: bool,
     pub settings: serde_json::Value,
 }
 
@@ -709,16 +991,22 @@ pub fn sessions(caller: &str, filter: &SessionFilter) -> Result<Vec<AnySession>,
                 .filter(|n| !n.trim().is_empty())
                 .or_else(|| meta.as_ref().and_then(|m| m.title.clone().or_else(|| m.first_prompt.clone())))
                 .unwrap_or_default();
-            let ts = crate::activity::turn_state(&id);
+            let background = crate::background::has(&id);
+            let (state, ask) = state_of(&id);
             AnySession {
                 you: id == caller,
                 yours,
-                alive: probe.is_some(),
-                turn: ts.map(|t| t.turn),
-                busy: ts.map(|t| t.busy).unwrap_or(false),
+                alive: probe.is_some() || background,
+                state,
+                ask,
+                background,
                 pid: probe.as_ref().and_then(|p| p.pid),
-                cwd: meta.as_ref().and_then(|m| m.cwd.clone()).or_else(|| probe.as_ref().map(|p| p.cwd.clone())),
-                session_id: meta.and_then(|m| m.session_id),
+                cwd: meta
+                    .as_ref()
+                    .and_then(|m| m.cwd.clone())
+                    .or_else(|| probe.as_ref().map(|p| p.cwd.clone()))
+                    .or_else(|| crate::background::working_dir(&id)),
+                session_id: meta.and_then(|m| m.session_id).or_else(|| crate::background::session_id(&id)),
                 transcript,
                 id,
                 name,
@@ -827,8 +1115,11 @@ fn neighbours_in(dir: &str, skip: &[&str]) -> Vec<Neighbour> {
     let pty = crate::pty::manager();
     let mut out = Vec::new();
     for id in ids.into_iter().filter(|id| !skip.contains(&id.as_str())) {
-        let Some(probe) = pty.probe(&id) else { continue };
-        let cwd = disk_meta(&probe).and_then(|m| m.cwd).unwrap_or_else(|| probe.cwd.clone());
+        let cwd = match (crate::background::working_dir(&id), pty.probe(&id)) {
+            (Some(dir), _) => dir,
+            (None, Some(probe)) => disk_meta(&probe).and_then(|m| m.cwd).unwrap_or_else(|| probe.cwd.clone()),
+            (None, None) => continue,
+        };
         if crate::pty::same_dir(&cwd, dir) {
             out.push(Neighbour {
                 busy: crate::activity::turn_state(&id).is_some_and(|t| t.busy),
@@ -853,6 +1144,10 @@ fn unknown_command(pty: &crate::pty::PtyManager, id: &str, text: &str) -> bool {
 /// The last lines of a session's terminal, for a caller that has to see
 /// what a helper is stuck on.
 fn screen_of(pty: &crate::pty::PtyManager, id: &str) -> Option<String> {
+    // A helper with no terminal has what it did instead.
+    if crate::background::has(id) {
+        return crate::background::screen(id, SCREEN_LINES);
+    }
     let full = pty.screen(id)?;
     let lines: Vec<&str> = full.lines().collect();
     let from = lines.len().saturating_sub(SCREEN_LINES);
@@ -876,7 +1171,7 @@ fn has_started(id: &str, after_turn: u32) -> bool {
 /// with the session looking dead all along. The opening prompt is a CLI
 /// argument and waits for it intact; text typed now would be lost.
 fn still_starting(pty: &crate::pty::PtyManager, id: &str) -> bool {
-    pty.alive(id) && !has_started(id, 0) && pty.screen(id).is_some_and(|s| s.trim().is_empty())
+    !crate::background::has(id) && pty.alive(id) && !has_started(id, 0) && pty.screen(id).is_some_and(|s| s.trim().is_empty())
 }
 
 /// Polls until the session starts working on `text` (see `has_started`),
@@ -906,7 +1201,10 @@ fn await_start(
 /// the worktree itself; what it leaves on disk says where that went.
 fn caller_worktree(caller: &str) -> Option<String> {
     let folder = reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(caller)?.folder.clone();
-    let cwd = crate::pty::manager().probe(caller)?.working_dir()?;
+    let cwd = match crate::background::working_dir(caller) {
+        Some(dir) => dir,
+        None => crate::pty::manager().probe(caller)?.working_dir()?,
+    };
     crate::worktree::is_worktree_of(&folder, &cwd).then_some(cwd)
 }
 
@@ -961,7 +1259,7 @@ pub fn spawn(caller: &str, mut params: SpawnParams) -> Result<Spawned, String> {
                 .or_else(|| allowed.iter().find(|a| a.provider == provider && signed_in(provider, &a.path)))
                 .or_else(|| ours.next()),
         };
-        let Some(account) = pick.map(|a| a.name.clone()) else {
+        let Some(account) = pick.cloned() else {
             return Err(match params.account.as_deref() {
                 Some(name) => format!(
                     "no {} account named {name:?} is available to agents; luna_list shows the ones that are",
@@ -970,7 +1268,11 @@ pub fn spawn(caller: &str, mut params: SpawnParams) -> Result<Spawned, String> {
                 None => format!("no {} account is available to agents", provider.as_str()),
             });
         };
-        params.account = Some(account);
+        params.account = Some(account.name.clone());
+        if !params.visible.unwrap_or(false) {
+            drop(r);
+            return spawn_background(caller, params, account.path, in_worktree);
+        }
         let id = r.next_request;
         r.next_request += 1;
         let slot = std::sync::Arc::new((Mutex::new(Pending::default()), Condvar::new()));
@@ -986,6 +1288,8 @@ pub fn spawn(caller: &str, mut params: SpawnParams) -> Result<Spawned, String> {
     let run_dir = (!own_worktree).then(|| in_worktree.clone().unwrap_or_else(|| folder.clone()));
     let (provider, account, prompt) =
         (params.provider.clone().unwrap_or_default(), params.account.clone().unwrap_or_default(), params.prompt.clone());
+    // A command line holds some 32 thousand characters on Windows.
+    params.prompt = spill(&params.prompt);
     crate::emit::to_ui("agent://spawn", SpawnRequest { request_id, parent_id: caller.to_string(), in_worktree, params });
 
     let (lock, cv) = &*slot;
@@ -1059,6 +1363,7 @@ pub fn spawn(caller: &str, mut params: SpawnParams) -> Result<Spawned, String> {
         name: chat_name(&id),
         prompt: &prompt,
         auto_delete,
+        background: false,
     });
     let pty = crate::pty::manager();
     let started = await_start(&pty, &id, &prompt, 0, START_TIMEOUT);
@@ -1077,6 +1382,198 @@ pub fn spawn(caller: &str, mut params: SpawnParams) -> Result<Spawned, String> {
     shown(caller, &id, 0);
     owe(caller, &id, 0);
     Ok(Spawned { id, turns_ended: 0, settings, started, screen, starting, warnings, same_folder })
+}
+
+/// Claude Code's model aliases, as the new-chat dialog lists them.
+pub const CLAUDE_MODELS: [&str; 4] = ["fable", "opus", "sonnet", "haiku"];
+const CLAUDE_EFFORTS: [&str; 6] = ["low", "medium", "high", "xhigh", "max", "ultracode"];
+const CLAUDE_MODES: [&str; 4] = ["default", "acceptEdits", "plan", "bypassPermissions"];
+
+/// Given and not blank.
+fn asked(v: &Option<String>) -> Option<&str> {
+    v.as_deref().map(str::trim).filter(|v| !v.is_empty())
+}
+
+/// The settings a background helper runs with: what the request asks for
+/// over the account's defaults, refused in the same words the window uses
+/// for a visible one (agents/bridge.ts).
+fn background_spec(params: &SpawnParams, provider: Provider, account_path: &str, folder: &str) -> Result<crate::background::Spec, String> {
+    let worktree = params.worktree.unwrap_or(false);
+    let tools = params.tools.unwrap_or(false);
+    match provider {
+        Provider::Claude => {
+            if asked(&params.approval).is_some() || asked(&params.sandbox).is_some() {
+                return Err("approval and sandbox are Codex settings; Claude takes permissionMode".into());
+            }
+            let d = crate::claude::defaults::flags(account_path, folder);
+            let model = match asked(&params.model) {
+                Some(m) if CLAUDE_MODELS.iter().any(|a| m.to_lowercase().contains(a)) => Some(m.to_string()),
+                Some(m) => {
+                    return Err(format!(
+                        "unknown Claude model \"{m}\"; use {} or a full id such as claude-opus-5",
+                        CLAUDE_MODELS.join(", ")
+                    ))
+                }
+                None => d["model"].as_str().map(str::to_owned),
+            };
+            let effort = match asked(&params.effort) {
+                Some(e) if CLAUDE_EFFORTS.contains(&e) => e.to_string(),
+                Some(e) => return Err(format!("unknown Claude effort \"{e}\"; use {}", CLAUDE_EFFORTS.join(", "))),
+                None => d["effort"].as_str().unwrap_or("high").to_string(),
+            };
+            let mode = match asked(&params.permission_mode) {
+                Some(p) if CLAUDE_MODES.contains(&p) => p.to_string(),
+                Some(p) => return Err(format!("unknown permission mode \"{p}\"; use {}", CLAUDE_MODES.join(", "))),
+                None => d["permissionMode"].as_str().unwrap_or("default").to_string(),
+            };
+            Ok(crate::background::Spec {
+                provider,
+                account_path: account_path.to_string(),
+                folder: folder.to_string(),
+                worktree,
+                model,
+                effort,
+                mode,
+                tools,
+                token: None,
+            })
+        }
+        Provider::Codex => {
+            if asked(&params.permission_mode).is_some() {
+                return Err("permissionMode is a Claude setting; Codex takes approval and sandbox".into());
+            }
+            if asked(&params.approval).is_some_and(|a| a != "never") {
+                return Err("a background Codex helper has nobody to ask for approval; leave approval out, \
+                            or spawn it with visible: true"
+                    .into());
+            }
+            let d = crate::codex::defaults::flags(account_path, folder);
+            let sandbox = match asked(&params.sandbox) {
+                Some(s) if ["read-only", "workspace-write", "danger-full-access"].contains(&s) => s.to_string(),
+                Some(s) => return Err(format!("unknown sandbox \"{s}\"; use read-only, workspace-write, danger-full-access")),
+                None => d["sandbox"].as_str().unwrap_or("read-only").to_string(),
+            };
+            let models = crate::codex::models::models_known(account_path);
+            let model = asked(&params.model).map(str::to_owned).or_else(|| d["model"].as_str().map(str::to_owned));
+            let listed = model.as_deref().and_then(|m| models.iter().find(|x| x.slug == m));
+            if let (Some(m), None, false) = (asked(&params.model), listed, models.is_empty()) {
+                let all: Vec<&str> = models.iter().map(|x| x.slug.as_str()).collect();
+                return Err(format!("this Codex account does not list model \"{m}\"; it has {}", all.join(", ")));
+            }
+            // As in the dialog: a model asked for brings its own default level.
+            let effort = match (asked(&params.effort), listed) {
+                (Some(e), Some(l)) if !l.efforts.is_empty() && !l.efforts.iter().any(|x| x == e) => {
+                    return Err(format!("{} takes effort {}, not \"{e}\"", l.slug, l.efforts.join(", ")))
+                }
+                (Some(e), _) => e.to_string(),
+                (None, Some(l)) if asked(&params.model).is_some() && l.default_effort.is_some() => l.default_effort.clone().unwrap_or_default(),
+                (None, _) => d["effort"].as_str().unwrap_or("medium").to_string(),
+            };
+            Ok(crate::background::Spec {
+                provider,
+                account_path: account_path.to_string(),
+                folder: folder.to_string(),
+                worktree,
+                model,
+                effort,
+                mode: sandbox,
+                tools,
+                token: None,
+            })
+        }
+    }
+}
+
+/// `spawn` for a helper with no row: started here, in the core, on the
+/// settings `background_spec` works out.
+fn spawn_background(caller: &str, params: SpawnParams, account_path: String, in_worktree: Option<String>) -> Result<Spawned, String> {
+    let provider = if params.provider.as_deref() == Some("codex") { Provider::Codex } else { Provider::Claude };
+    let project = params.folder.clone().unwrap_or_default();
+    let own_worktree = params.worktree.unwrap_or(false);
+    // A helper handed its caller's worktree works in it and never owns it.
+    let run_in = in_worktree.clone().unwrap_or_else(|| project.clone());
+    let mut spec = background_spec(&params, provider, &account_path, &run_in)?;
+    let id = crate::background::mint_id();
+    let settings = match provider {
+        Provider::Claude => serde_json::json!({
+            "model": spec.model, "effort": spec.effort, "permissionMode": spec.mode, "worktree": own_worktree, "background": true,
+        }),
+        Provider::Codex => serde_json::json!({
+            "model": spec.model, "effort": spec.effort, "approval": "never", "sandbox": spec.mode, "background": true,
+        }),
+    };
+    let tools = spec.tools;
+    let token = register(&id, provider, &run_in, &account_path, Some(caller), tools, settings.clone());
+    // Claude Code asks its permissions of Luna, tools or not.
+    spec.token = token.or_else(|| (provider == Provider::Claude).then(|| issue_token(&id)));
+    let name = params
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+        .map(str::to_owned)
+        .or_else(|| crate::pty::title_from_prompt(&params.prompt))
+        .unwrap_or_else(|| "helper".into());
+    set_name(&id, &name);
+    {
+        let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+        if in_worktree.is_some() {
+            r.borrowed.insert(id.clone());
+        }
+        // Nobody sees it to delete it: it goes once its answer is out.
+        r.auto.insert(id.clone(), Auto::default());
+    }
+    if let Err(e) = crate::background::start(&id, spec, &params.prompt) {
+        forget(&id);
+        return Err(e);
+    }
+    crate::agentlog::spawned(&crate::agentlog::Spawn {
+        id: &id,
+        parent: caller,
+        parent_name: chat_name(caller),
+        folder: &project,
+        worktree: own_worktree,
+        provider: provider.as_str(),
+        account: params.account.as_deref().unwrap_or(""),
+        settings: &settings,
+        name: Some(name),
+        prompt: &params.prompt,
+        auto_delete: true,
+        background: true,
+    });
+    let same_folder = if own_worktree { Vec::new() } else { neighbours_in(&run_in, &[caller, &id]) };
+    shown(caller, &id, 0);
+    owe(caller, &id, 0);
+    Ok(Spawned { id, turns_ended: 0, settings, started: true, screen: None, starting: false, warnings: Vec::new(), same_folder })
+}
+
+/// Past this many characters a prompt or message goes to a visible session
+/// as a file it is told to read: a command line holds some 32 thousand on
+/// Windows, and a Codex composer takes typed text one key event at a time.
+const LONG_TEXT: usize = 8000;
+
+/// Where long prompts and messages are put for the sessions they are for.
+/// A Claude Code session an agent spawned gets it as an `--add-dir`.
+pub fn notes_dir() -> std::path::PathBuf {
+    crate::paths::data_dir().join("agents")
+}
+
+/// `text` as it is to be typed or passed: itself, or past LONG_TEXT a line
+/// that points at a file holding it.
+fn spill(text: &str) -> String {
+    let n = text.chars().count();
+    if n <= LONG_TEXT {
+        return text.to_string();
+    }
+    let dir = notes_dir();
+    let path = dir.join(format!("{}.md", crate::background::mint_id()));
+    if std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&path, text)).is_err() {
+        return text.to_string();
+    }
+    format!(
+        "This message is {n} characters long, so Luna put it in a file: {}. Read the whole file first and take it as this message.",
+        path.display()
+    )
 }
 
 /// The frontend's answer to `agent://spawn`.
@@ -1121,11 +1618,15 @@ pub fn agent_spawned(request_id: u64, chat_id: Option<String>, name: Option<Stri
 #[serde(rename_all = "camelCase")]
 pub struct Sent {
     pub ok: bool,
-    /// The turn state when the text went in. `busy` means the CLI has queued
-    /// the text behind the turn in flight, and `started` says nothing new.
-    pub turn_before: Option<crate::activity::Turn>,
-    /// A turn began within SEND_TIMEOUT of Enter. False on an idle session
-    /// means the text did not become a prompt: `screen` shows where it went.
+    /// Where the session stood when the text went in (see `state_of`).
+    pub state_before: &'static str,
+    /// It was working: the text waits for the turn in flight to end and is
+    /// taken up after it, and `started` says nothing yet.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub queued: bool,
+    /// A turn began on the text within SEND_TIMEOUT. False on a session that
+    /// was not working means the text did not become a prompt: `screen`
+    /// shows where it went.
     pub started: bool,
     /// Turns over before this text went in — the `afterTurn` for the `wait`
     /// that collects the reply.
@@ -1166,8 +1667,23 @@ fn type_in(
 pub fn send(caller: &str, id: &str, text: &str) -> Result<Sent, String> {
     authorize_send(caller, id)?;
     let pty = crate::pty::manager();
-    if !pty.alive(id) {
+    if !live(&pty, id) {
         return Err(format!("session {id} is not running"));
+    }
+    let (state_before, ask) = state_of(id);
+    if let Some(a) = ask.as_ref().filter(|a| a.blocking) {
+        return Err(format!(
+            "session {id} is on a {}: typed text would land in its dialog. Answer it with luna_answer",
+            a.kind
+        ));
+    }
+    let before = crate::activity::turn_state(id);
+    let baseline = before.map(|t| t.turns_ended).unwrap_or(0);
+    if crate::background::has(id) {
+        let queued = crate::background::send(id, text)?;
+        shown(caller, id, baseline);
+        owe(caller, id, baseline);
+        return Ok(Sent { ok: true, state_before, queued, started: !queued, turns_ended: baseline, screen: None });
     }
     if still_starting(&pty, id) {
         return Err(format!(
@@ -1186,19 +1702,200 @@ pub fn send(caller: &str, id: &str, text: &str) -> Result<Sent, String> {
     if pty.typed_ago_ms(id).is_some_and(|ms| ms < SEND_TYPING_MS) {
         return Err(format!("the user is typing in session {id}; try again in a little while"));
     }
-    let before = crate::activity::turn_state(id);
     let turn_before = before.map(|t| t.turn);
-    let baseline = before.map(|t| t.turns_ended).unwrap_or(0);
-    let started = type_in(&pty, id, text, turn_before, baseline)?;
+    let queued = turn_before == Some(crate::activity::Turn::Busy);
+    let started = type_in(&pty, id, &spill(text), turn_before, baseline)? && !queued;
     if turn_before == Some(crate::activity::Turn::Waiting) {
         reg().lock().unwrap_or_else(|e| e.into_inner()).answered.insert((caller.to_string(), id.to_string()), now_ms());
     }
-    let screen = (!started).then(|| screen_of(&pty, id)).flatten();
+    let screen = (!started && !queued).then(|| screen_of(&pty, id)).flatten();
     // The count before the text went in: the reply to it ends the next
     // turn, which the caller has not seen even if it is already over.
     shown(caller, id, baseline);
     owe(caller, id, baseline);
-    Ok(Sent { ok: true, turn_before, started, turns_ended: baseline, screen })
+    Ok(Sent { ok: true, state_before, queued, started, turns_ended: baseline, screen })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Answered {
+    pub ok: bool,
+    /// Where it stands now (see `state_of`): a dialog that is still up, or
+    /// the next question of several, shows here and in `screen`.
+    pub state: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ask: Option<Ask>,
+    /// The `afterTurn` for the `wait` that collects the reply.
+    pub turns_ended: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub screen: Option<String>,
+}
+
+/// One press for a terminal: text as typed, or a key's escape sequence.
+#[derive(Debug, PartialEq)]
+enum Key {
+    Text(String),
+    Seq(&'static str),
+}
+
+/// `{enter}`, `{esc}`, `{down}` … between literal text, as `luna_answer`'s
+/// `keys` take them.
+fn parse_keys(spec: &str) -> Result<Vec<Key>, String> {
+    let mut out = Vec::new();
+    let mut rest = spec;
+    while !rest.is_empty() {
+        let Some(open) = rest.find('{') else {
+            out.push(Key::Text(rest.to_string()));
+            break;
+        };
+        if open > 0 {
+            out.push(Key::Text(rest[..open].to_string()));
+        }
+        let close = rest[open..].find('}').ok_or("a { without its }")? + open;
+        let seq = match rest[open + 1..close].trim().to_lowercase().as_str() {
+            "enter" => "\r",
+            "esc" => "\x1b",
+            "tab" => "\t",
+            "shift+tab" => "\x1b[Z",
+            "up" => "\x1b[A",
+            "down" => "\x1b[B",
+            "right" => "\x1b[C",
+            "left" => "\x1b[D",
+            "shift+left" => "\x1b[1;2D",
+            "shift+right" => "\x1b[1;2C",
+            "space" => " ",
+            "backspace" => "\x7f",
+            "ctrl+c" => "\x03",
+            other => return Err(format!("unknown key {{{other}}}")),
+        };
+        out.push(Key::Seq(seq));
+        rest = &rest[close + 1..];
+    }
+    Ok(out)
+}
+
+/// The presses that answer `ask` in a CLI's terminal: an option is reached
+/// with the arrows from the first one and taken with Enter; words of its own
+/// go in the free-text row that follows the options; a permission is
+/// Enter on its first choice (yes) or Esc (no, with the note typed after as
+/// what to do instead).
+fn presses_for(provider: Provider, ask: &Ask, answers: &[String], allow: Option<bool>, note: Option<&str>) -> Result<Vec<Key>, String> {
+    let mut keys = Vec::new();
+    if ask.kind == "permission" {
+        match allow {
+            Some(true) => keys.push(match provider {
+                Provider::Claude => Key::Seq("\r"),
+                Provider::Codex => Key::Text("y".into()),
+            }),
+            Some(false) => {
+                keys.push(Key::Seq("\x1b"));
+                if let Some(n) = note.map(str::trim).filter(|n| !n.is_empty()) {
+                    keys.push(Key::Text(n.to_string()));
+                    keys.push(Key::Seq("\r"));
+                }
+            }
+            None => return Err("this is a permission: answer with allow true or false".into()),
+        }
+        return Ok(keys);
+    }
+    if answers.len() != ask.questions.len() {
+        return Err(format!("{} question(s), {} answer(s): give one answer per question", ask.questions.len(), answers.len()));
+    }
+    for (q, a) in ask.questions.iter().zip(answers) {
+        let picked = resolve_option(q, a);
+        match q.options.iter().position(|o| *o == picked) {
+            Some(i) => keys.extend(std::iter::repeat_with(|| Key::Seq("\x1b[B")).take(i)),
+            None => {
+                keys.extend(std::iter::repeat_with(|| Key::Seq("\x1b[B")).take(q.options.len()));
+                keys.push(Key::Text(picked));
+            }
+        }
+        keys.push(Key::Seq("\r"));
+    }
+    // Several questions end on a review of the answers, to submit.
+    if ask.questions.len() > 1 && provider == Provider::Claude {
+        keys.push(Key::Seq("\r"));
+    }
+    Ok(keys)
+}
+
+/// Writes presses one at a time, far enough apart that the CLI takes each
+/// as a key and not a burst of paste (see ENTER_GAP).
+fn press(pty: &crate::pty::PtyManager, id: &str, keys: &[Key]) -> Result<(), String> {
+    for k in keys {
+        match k {
+            Key::Text(t) => {
+                pty.write(id, t.as_bytes())?;
+                std::thread::sleep(ENTER_GAP);
+            }
+            Key::Seq(s) => {
+                pty.write(id, s.as_bytes())?;
+                std::thread::sleep(KEY_GAP);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Between two keys pressed for an answer.
+const KEY_GAP: std::time::Duration = std::time::Duration::from_millis(150);
+/// How long after an answer its effect is looked at.
+const ANSWER_SETTLE: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// `luna_answer`: answers what the session waits on — a question or a
+/// permission (`ask_of`), or with `keys`, any dialog on its screen.
+pub fn answer(
+    caller: &str,
+    id: &str,
+    answers: &[String],
+    allow: Option<bool>,
+    note: Option<&str>,
+    keys: Option<&str>,
+) -> Result<Answered, String> {
+    let known = authorize_send(caller, id)?;
+    let pty = crate::pty::manager();
+    if !live(&pty, id) {
+        return Err(format!("session {id} is not running"));
+    }
+    let baseline = crate::activity::turn_state(id).map(|t| t.turns_ended).unwrap_or(0);
+    let ask = ask_of(id);
+    if crate::background::has(id) {
+        if keys.is_some() {
+            return Err("a background helper has no terminal: answer with answers or allow".into());
+        }
+        crate::background::answer(id, answers, allow, note)?;
+    } else {
+        if pty.has_draft(id) || pty.typed_ago_ms(id).is_some_and(|ms| ms < SEND_TYPING_MS) {
+            return Err(format!("the user is typing in session {id}; try again in a little while"));
+        }
+        match (keys, &ask) {
+            (Some(k), _) => press(&pty, id, &parse_keys(k)?)?,
+            // An async question holds no dialog: the answer is a message.
+            (None, Some(a)) if !a.blocking => {
+                let text: Vec<String> =
+                    a.questions.iter().zip(answers).map(|(q, ans)| format!("\"{}\": {}", q.text, resolve_option(q, ans))).collect();
+                if text.is_empty() {
+                    return Err("give one answer per question".into());
+                }
+                let before = crate::activity::turn_state(id);
+                type_in(&pty, id, &format!("Answers to your question: {}", text.join("; ")), before.map(|t| t.turn), baseline)?;
+            }
+            (None, Some(a)) => press(&pty, id, &presses_for(known.provider, a, answers, allow, note)?)?,
+            (None, None) => {
+                return Err(format!(
+                    "session {id} is not on a question or permission Luna can read; luna_read with screen: true shows its \
+                     terminal, and keys answers any dialog"
+                ))
+            }
+        }
+        reg().lock().unwrap_or_else(|e| e.into_inner()).answered.insert((caller.to_string(), id.to_string()), now_ms());
+    }
+    std::thread::sleep(ANSWER_SETTLE);
+    shown(caller, id, baseline);
+    owe(caller, id, baseline);
+    let (state, ask) = state_of(id);
+    let screen = (!crate::background::has(id)).then(|| screen_of(&pty, id)).flatten();
+    Ok(Answered { ok: true, state, ask, turns_ended: baseline, screen })
 }
 
 #[derive(Serialize)]
@@ -1207,16 +1904,14 @@ pub struct Reading {
     pub messages: Vec<Message>,
     /// Pass back as `since` to read only what came after.
     pub cursor: u64,
-    pub turn: Option<crate::activity::Turn>,
-    pub busy: bool,
+    /// See `state_of`.
+    pub state: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ask: Option<Ask>,
     pub turns_ended: u32,
-    pub alive: bool,
     /// The terminal's last lines, when asked for (`screen: true`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub screen: Option<String>,
-    /// See `still_starting`.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub starting: bool,
 }
 
 /// The last transcript found for each session: Claude Code drops the
@@ -1240,6 +1935,9 @@ fn transcript_path(pty: &crate::pty::PtyManager, id: &str) -> Option<std::path::
 }
 
 fn find_transcript(pty: &crate::pty::PtyManager, id: &str) -> Option<std::path::PathBuf> {
+    if crate::background::has(id) {
+        return crate::background::transcript(id);
+    }
     let p = pty.probe(id)?;
     match p.provider {
         Provider::Claude => crate::claude::session::transcript_of(p.pid, &p.cwd, p.spawned_at_ms, &p.account_path),
@@ -1281,16 +1979,15 @@ pub fn read(
     }
     let ts = crate::activity::turn_state(id);
     let turns_ended = ts.map(|t| t.turns_ended).unwrap_or(0);
+    let (state, ask) = state_of(id);
     shown(caller, id, turns_ended);
     Ok(Reading {
         messages,
         cursor,
-        turn: ts.map(|t| t.turn),
-        busy: ts.map(|t| t.busy).unwrap_or(false),
+        state,
+        ask,
         turns_ended,
-        alive: pty.alive(id),
         screen: with_screen.then(|| screen_of(&pty, id)).flatten(),
-        starting: still_starting(&pty, id),
     })
 }
 
@@ -1298,9 +1995,11 @@ pub fn read(
 #[serde(rename_all = "camelCase")]
 pub struct Waited {
     pub outcome: &'static str,
-    pub turn: Option<crate::activity::Turn>,
+    /// See `state_of`.
+    pub state: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ask: Option<Ask>,
     pub turns_ended: u32,
-    pub alive: bool,
     /// On `turn_done`: what the session said last, so no `read` is needed.
     pub reply: Option<String>,
     /// On `timeout`, `waiting` and a turn that ended without a reply: the
@@ -1308,9 +2007,6 @@ pub struct Waited {
     /// permission prompt, a question, an error, a notice nobody dismissed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub screen: Option<String>,
-    /// On `timeout`: see `still_starting`.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub starting: bool,
 }
 
 /// Blocks until the session reaches `until`, or `timeout_s` passes:
@@ -1337,20 +2033,25 @@ pub fn wait(caller: &str, id: &str, until: &str, timeout_s: u64, after_turn: Opt
     };
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_s.clamp(1, 1800));
     let answered_at = reg().lock().unwrap_or_else(|e| e.into_inner()).answered.get(&(caller.to_string(), id.to_string())).copied();
+    let mut looks = 0u32;
     loop {
-        let alive = pty.alive(id);
+        let alive = live(&pty, id);
         let ts = crate::activity::turn_state(id);
         let turns_ended = ts.map(|t| t.turns_ended).unwrap_or(0);
         let turn = ts.map(|t| t.turn);
         let ended = turns_ended > baseline && turn != Some(crate::activity::Turn::Busy);
+        // A question in the transcript holds the turn whatever the turn
+        // word says; read for it every few looks, not every one.
+        looks += 1;
+        let question = looks % 4 == 1 && ask_of(id).is_some_and(|a| a.blocking && a.kind == "question");
         // A turn stopped on a prompt will not end by itself: `turn_done`
         // hands it back too, unless it is the prompt the caller has just
         // answered and the sampler has not caught up with yet.
-        let asking = turn == Some(crate::activity::Turn::Waiting)
+        let asking = (turn == Some(crate::activity::Turn::Waiting) || question)
             && answered_at.map_or(true, |at| now_ms().saturating_sub(at) >= ANSWERED_MS);
         let done = match until {
             "exit" => !alive,
-            "waiting" => turn == Some(crate::activity::Turn::Waiting) || !alive,
+            "waiting" => turn == Some(crate::activity::Turn::Waiting) || question || !alive,
             _ => ended || asking || !alive,
         };
         if done {
@@ -1378,13 +2079,14 @@ pub fn wait(caller: &str, id: &str, until: &str, timeout_s: u64, after_turn: Opt
             let bare = outcome == "turn_done" && reply.is_none();
             let screen = (outcome == "waiting" || bare).then(|| screen_of(&pty, id)).flatten();
             shown(caller, id, turns_ended);
-            return Ok(Waited { outcome, turn, turns_ended, alive, reply, screen, starting: false });
+            let (state, ask) = state_of(id);
+            return Ok(Waited { outcome, state, ask, turns_ended, reply, screen });
         }
         if std::time::Instant::now() >= deadline {
             let screen = screen_of(&pty, id);
-            let starting = still_starting(&pty, id);
             shown(caller, id, turns_ended);
-            return Ok(Waited { outcome: "timeout", turn, turns_ended, alive, reply: None, screen, starting });
+            let (state, ask) = state_of(id);
+            return Ok(Waited { outcome: "timeout", state, ask, turns_ended, reply: None, screen });
         }
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
@@ -1393,6 +2095,10 @@ pub fn wait(caller: &str, id: &str, until: &str, timeout_s: u64, after_turn: Opt
 /// Stops the session; the chat row stays and can be resumed by hand.
 pub fn kill(caller: &str, id: &str) -> Result<(), String> {
     authorize(caller, id)?;
+    if crate::background::has(id) {
+        crate::background::kill(id);
+        return Ok(());
+    }
     let pty = crate::pty::manager();
     tauri::async_runtime::block_on(pty.kill(id));
     Ok(())
@@ -1412,6 +2118,16 @@ fn remove(id: &str, known: Known, drop_worktree: bool) -> Result<Option<String>,
     // A helper resumed in a worktree knows the worktree as its folder.
     let folder = crate::worktree::project_of(&known.folder).unwrap_or(known.folder);
     let drop_worktree = drop_worktree && !reg().lock().unwrap_or_else(|e| e.into_inner()).borrowed.contains(id);
+    if crate::background::has(id) {
+        let made = crate::background::remove(id);
+        forget(id);
+        crate::activity::forget(id);
+        crate::log::info("delete", &format!("background helper {id}, worktree {made:?}, dropping {drop_worktree}"));
+        return match made {
+            Some(wt) if drop_worktree => crate::worktree::remove_worktree_now(folder, wt.clone()).map(|_| Some(wt)),
+            _ => Ok(None),
+        };
+    }
     // PtyManager::delete forgets the session here too (see `forget`).
     let worktree = tauri::async_runtime::block_on(pty.delete(id, &folder, None, drop_worktree))?;
     crate::emit::to_ui("agent://deleted", Deleted { id: id.to_string() });
@@ -1466,7 +2182,7 @@ fn reap(pty: &crate::pty::PtyManager) {
         }
         // Between turns with no job left running; what its terminal last drew
         // and when does not matter here.
-        let idle = !pty.alive(&id)
+        let idle = !live(pty, &id)
             || crate::activity::turn_state(&id)
                 .is_some_and(|t| t.turn == crate::activity::Turn::Idle && !t.children_busy);
         let known = {
@@ -1514,6 +2230,7 @@ pub fn forget(id: &str) {
     r.borrowed.remove(id);
     r.waits.retain(|(who, chat), _| who != id && chat != id);
     r.notified.remove(id);
+    r.hook_asks.remove(id);
     drop(r);
     transcripts().lock().unwrap_or_else(|e| e.into_inner()).remove(id);
     if spawned {
@@ -1534,6 +2251,8 @@ enum Settled {
     /// reply in the transcript yet: nothing to say, start the grace from now.
     Hold(u32),
     Waiting,
+    /// It asks a question it does not wait on; told once per question.
+    Asked(u64),
     Exited,
 }
 
@@ -1607,14 +2326,34 @@ fn notice_line(
         }
         return Some((Some(format!("{who} finished its turn{reply}.")), Settled::Answered));
     }
-    if !pty.alive(id) {
+    if !live(pty, id) {
         return Some((Some(format!("{who} has exited.")), Settled::Exited));
     }
-    if turn == Some(crate::activity::Turn::Waiting) && !o.told_waiting {
-        return Some((
-            Some(format!("{who} is stopped on a prompt in its terminal; luna_read with screen: true shows it.")),
-            Settled::Waiting,
-        ));
+    let ask = ask_of(id);
+    let held = turn == Some(crate::activity::Turn::Waiting) || ask.as_ref().is_some_and(|a| a.blocking && a.kind == "question");
+    if held && !o.told_waiting {
+        let line = match &ask {
+            Some(a) => format!("{who} {}. Answer with luna_answer.", a.line()),
+            None => format!(
+                "{who} is stopped on a prompt in its terminal; luna_read with screen: true shows it, luna_answer with keys answers it."
+            ),
+        };
+        return Some((Some(line), Settled::Waiting));
+    }
+    // Codex's async question: the helper works on, the question waits.
+    if let Some(a) = ask.filter(|a| !a.blocking) {
+        let key = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            a.line().hash(&mut h);
+            h.finish()
+        };
+        if o.told_ask != key {
+            return Some((
+                Some(format!("{who} {} It works on meanwhile; luna_answer answers it.", a.line())),
+                Settled::Asked(key),
+            ));
+        }
     }
     None
 }
@@ -1623,6 +2362,10 @@ fn notice_line(
 /// nobody is typing into it, and nothing typed waits unsent in its composer
 /// (a notice and its Enter would send the draft along with it).
 fn ready_for_notice(pty: &crate::pty::PtyManager, caller: &str) -> bool {
+    // A background caller takes it as its next turn, between turns.
+    if crate::background::has(caller) {
+        return crate::activity::turn_state(caller).is_some_and(|t| t.turn == crate::activity::Turn::Idle);
+    }
     pty.alive(caller)
         && crate::activity::turn_state(caller).is_some_and(|t| t.turn == crate::activity::Turn::Idle)
         && !still_starting(pty, caller)
@@ -1635,7 +2378,7 @@ fn anything_to_say(pty: &crate::pty::PtyManager, items: &[(String, Known, Owed, 
     items.iter().any(|(id, _, o, _)| {
         let ts = crate::activity::turn_state(id);
         let ended = ts.map(|t| t.turns_ended).unwrap_or(0);
-        (ended > o.baseline && ts.map(|t| t.turn) != Some(crate::activity::Turn::Busy)) || !pty.alive(id)
+        (ended > o.baseline && ts.map(|t| t.turn) != Some(crate::activity::Turn::Busy)) || !live(pty, id)
     })
 }
 
@@ -1653,7 +2396,7 @@ fn held_for_wait(pty: &crate::pty::PtyManager, caller: &str, id: &str, o: &Owed)
     // A prompt it stopped on is news too: `wait(turn_done)` hands that back.
     let news = (ts.is_some_and(|t| t.turns_ended > o.baseline) && turn != Some(crate::activity::Turn::Busy))
         || turn == Some(crate::activity::Turn::Waiting)
-        || !pty.alive(id);
+        || !live(pty, id);
     if !news {
         return true;
     }
@@ -1743,7 +2486,12 @@ fn notifier() {
             let text = format!("{NOTICE_TAG} {}", lines.join(" "));
             let before = crate::activity::turn_state(&caller);
             let baseline = before.map(|t| t.turns_ended).unwrap_or(0);
-            match type_in(&pty, &caller, &text, before.map(|t| t.turn), baseline) {
+            let typed = if crate::background::has(&caller) {
+                crate::background::send(&caller, &text).map(|_| true)
+            } else {
+                type_in(&pty, &caller, &text, before.map(|t| t.turn), baseline)
+            };
+            match typed {
                 Ok(started) => {
                     if !started {
                         crate::log::warn("agents", &format!("notice to {caller} did not start a turn"));
@@ -1762,6 +2510,11 @@ fn notifier() {
                             }
                             Settled::Pending(ended) => {
                                 r.owed.insert(key, Owed::from(ended));
+                            }
+                            Settled::Asked(ask) => {
+                                if let Some(o) = r.owed.get_mut(&key) {
+                                    o.told_ask = ask;
+                                }
                             }
                             Settled::Hold(_) => {}
                         }
@@ -1944,6 +2697,44 @@ mod tests {
         reap(&pty);
         assert_eq!(since(), None, "a follow-up starts it over");
         reg().lock().unwrap().auto.remove("ad-child");
+    }
+
+    #[test]
+    fn keys_read_as_presses() {
+        assert_eq!(
+            parse_keys("2{enter}").unwrap(),
+            [Key::Text("2".into()), Key::Seq("\r")]
+        );
+        assert_eq!(parse_keys("{Down}{down}{ENTER}").unwrap(), [Key::Seq("\x1b[B"), Key::Seq("\x1b[B"), Key::Seq("\r")]);
+        assert!(parse_keys("{f13}").is_err());
+        assert!(parse_keys("{enter").is_err());
+    }
+
+    #[test]
+    fn an_answer_picks_by_number_label_or_words() {
+        let q = AskQuestion { text: "Which?".into(), options: vec!["Red".into(), "Blue".into()], multi: false };
+        assert_eq!(resolve_option(&q, "2"), "Blue");
+        assert_eq!(resolve_option(&q, "red"), "Red");
+        assert_eq!(resolve_option(&q, "9"), "9", "out of range is words");
+        assert_eq!(resolve_option(&q, " green "), "green");
+        let multi = AskQuestion { multi: true, ..q.clone() };
+        assert_eq!(resolve_option(&multi, "1, 2"), "Red, Blue");
+
+        let ask = Ask::question(vec![q], true);
+        let keys = presses_for(Provider::Claude, &ask, &["2".into()], None, None).unwrap();
+        assert_eq!(keys, [Key::Seq("\x1b[B"), Key::Seq("\r")]);
+        let own = presses_for(Provider::Claude, &ask, &["green".into()], None, None).unwrap();
+        assert_eq!(own, [Key::Seq("\x1b[B"), Key::Seq("\x1b[B"), Key::Text("green".into()), Key::Seq("\r")]);
+        assert!(presses_for(Provider::Claude, &ask, &[], None, None).is_err());
+        let perm = Ask::permission(Some("Bash".into()), Some("ls".into()));
+        assert_eq!(presses_for(Provider::Codex, &perm, &[], Some(true), None).unwrap(), [Key::Text("y".into())]);
+        assert_eq!(
+            presses_for(Provider::Claude, &perm, &[], Some(false), Some("use dir")).unwrap(),
+            [Key::Seq("\x1b"), Key::Text("use dir".into()), Key::Seq("\r")]
+        );
+        assert_eq!(perm.line(), "asks for permission to run Bash: ls");
+        let codex = "  Would you like to run the following command?\n\n  $ Set-Content -LiteralPath made.txt -Value hi\n\n› 1. Yes, proceed (y)";
+        assert_eq!(codex_command_on(codex).as_deref(), Some("Set-Content -LiteralPath made.txt -Value hi"));
     }
 
     #[test]

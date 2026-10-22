@@ -1,5 +1,5 @@
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import type { AgentSpawnRequest, CliStatusDto, CoreStateDto, PowerStateDto } from './commands';
+import type { AgentSpawnRequest, BackgroundHelperDto, CliStatusDto, CoreStateDto, PowerStateDto, PromotedDto } from './commands';
 
 const tauriAvailable = '__TAURI_INTERNALS__' in window;
 
@@ -47,5 +47,13 @@ export const onNotify = (cb: (n: Notice) => void): Promise<UnlistenFn> =>
 export const onOpenChat = (cb: (p: { chatId: string }) => void): Promise<UnlistenFn> =>
   tauriAvailable ? listen<{ chatId: string }>('ui://open-chat', e => cb(e.payload)) : Promise.resolve(() => {});
 
-export const onAgentDeleted = (cb: (p: { id: string }) => void): Promise<UnlistenFn> =>
+/** The background helpers, whenever one starts, moves on or goes (background.rs). */
+export const onBackgroundHelpers = (cb: (rows: BackgroundHelperDto[]) => void): Promise<UnlistenFn> =>
+  tauriAvailable ? listen<BackgroundHelperDto[]>('agent://background', e => cb(e.payload)) : Promise.resolve(() => {});
+
+/** A background helper is to become a chat row. */
+export const onAgentPromote = (cb: (p: PromotedDto) => void): Promise<UnlistenFn> =>
+  tauriAvailable ? listen<PromotedDto>('agent://promote', e => cb(e.payload)) : Promise.resolve(() => {});
+
+export const onAgentDeleted =(cb: (p: { id: string }) => void): Promise<UnlistenFn> =>
   tauriAvailable ? listen<{ id: string }>('agent://deleted', e => cb(e.payload)) : Promise.resolve(() => {});

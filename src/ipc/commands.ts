@@ -31,6 +31,7 @@ const SLOW_BUDGET_MS: Record<string, number> = {
 const CORE_CALL: ReadonlySet<string> = new Set([
   'ensure_claude_session', 'ensure_codex_session', 'kill_session', 'delete_session', 'stop_all_sessions',
   'orphan_sessions', 'session_meta', 'session_modes', 'agent_spawned', 'chat_names', 'account_usage', 'power_state',
+  'background_helpers', 'background_promote', 'background_kill', 'background_delete',
   'set_keep_awake', 'arm_power_off', 'disarm_power_off', 'rename_account', 'orphan_worktrees',
   'remove_orphan_worktrees'
 ]);
@@ -544,6 +545,48 @@ export interface AgentSpawnRequest {
   name?: string | null;
   tools?: boolean | null;
 }
+
+/** What a session waits on a person for (agents.rs `Ask`). */
+export interface AskDto {
+  kind: 'question' | 'permission';
+  blocking: boolean;
+  questions?: Array<{ text: string; options?: string[]; multi?: boolean }>;
+  tool?: string;
+  detail?: string;
+}
+
+/** A helper that runs with no row (background.rs `Row`), listed under its parent. */
+export interface BackgroundHelperDto {
+  id: string;
+  parent: string | null;
+  name: string;
+  provider: Provider;
+  /** agents.rs `state_of`: working, waiting, question, idle… */
+  state: string;
+  ask?: AskDto | null;
+}
+
+/** A background helper handed over to a chat row (`agent://promote`). */
+export interface PromotedDto {
+  id: string;
+  provider: Provider;
+  accountPath: string;
+  folder: string;
+  worktreePath: string | null;
+  sessionId: string | null;
+  parent: string | null;
+  name: string | null;
+  /** The flags it ran with, in the CLI's own words. */
+  settings: Record<string, unknown>;
+  tools: boolean;
+}
+
+export const backgroundHelpers = () => call<BackgroundHelperDto[]>('background_helpers', {}, []);
+/** Makes the helper a chat of its own; refused while a turn runs. */
+export const backgroundPromote = (id: string) => call<void>('background_promote', { id });
+/** Stops the turn it is on; the conversation stays. */
+export const backgroundKill = (id: string) => call<void>('background_kill', { id });
+export const backgroundDelete = (id: string) => call<void>('background_delete', { id });
 
 /** Answers `agent://spawn`: the chat made for it, or why not. */
 export const agentSpawned = (requestId: number, chatId: string | null, name: string | null, error: string | null) =>

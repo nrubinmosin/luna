@@ -533,6 +533,11 @@ fn claude_hooks_file(chat_id: &str) -> Option<std::path::PathBuf> {
             "StopFailure": hook(5),
             "Notification": hook(5),
             "SessionEnd": hook(5),
+            // What a prompt asks, which neither the screen nor the transcript
+            // gives whole: the question and its options (the transcript gets
+            // the call only once it is answered), the command up for leave.
+            "PreToolUse": [{ "matcher": "AskUserQuestion", "hooks": [{ "type": "command", "command": command, "timeout": 5 }] }],
+            "PermissionRequest": hook(5),
         }
     });
     let dir = crate::paths::data_dir().join("hooks");
@@ -542,6 +547,64 @@ fn claude_hooks_file(chat_id: &str) -> Option<std::path::PathBuf> {
     Some(path)
 }
 
+/// The same clean-up for a process started without a pty (background.rs).
+pub(crate) fn clean_env(cmd: &mut std::process::Command) {
+    for k in INHERITED_SESSION_VARS {
+        cmd.env_remove(k);
+    }
+    if INHERITED_SESSION_VARS.iter().any(|k| std::env::var_os(k).is_some()) {
+        cmd.env_remove("NO_COLOR");
+    }
+}
+
+/// The override that gives Codex its Windows sandbox, for the modes that
+/// need one. Without it Codex refuses every command under `read-only` and
+/// `workspace-write`, a `Get-Content` included. The unelevated kind runs each
+/// command with a restricted token: no administrator, no extra users; under
+/// `workspace-write` Codex grants its sandbox write access to the folder
+/// once, in the folder's ACL.
+pub(crate) fn codex_windows_sandbox(sandbox: &str) -> Option<String> {
+    (cfg!(windows) && matches!(sandbox, "read-only" | "workspace-write")).then(|| "windows.sandbox=\"unelevated\"".to_string())
+}
+
+/// PATH for a Codex session in that sandbox: without `…\Microsoft\WindowsApps`.
+/// Codex takes the first `pwsh.exe` on PATH for its shell, and the Store
+/// PowerShell's there is an app alias the restricted token cannot start —
+/// `CreateProcessAsUserW failed: 5` on every command, whatever it was. Without
+/// it Codex falls back to a PowerShell installed the ordinary way, or to
+/// Windows PowerShell; Store apps' aliases are out of the sandbox's reach
+/// either way.
+pub(crate) fn codex_sandbox_path(sandbox: &str) -> Option<String> {
+    codex_windows_sandbox(sandbox)?;
+    let path = std::env::var("PATH").ok()?;
+    Some(without_windows_apps(&path))
+}
+
+fn without_windows_apps(path: &str) -> String {
+    path.split(';').filter(|p| !p.to_lowercase().replace('/', "\\").contains("\\microsoft\\windowsapps")).collect::<Vec<_>>().join(";")
+}
+
+/// Luna's MCP server as `-c` overrides for Codex, the token through
+/// `LUNA_MCP_TOKEN`: neither touches the account's config.toml.
+pub(crate) fn codex_mcp_args() -> Vec<String> {
+    let Some(url) = crate::hub::mcp_url() else { return Vec::new() };
+    let mut args = Vec::new();
+    for value in [
+        format!("mcp_servers.luna.url=\"{url}\""),
+        "mcp_servers.luna.bearer_token_env_var=\"LUNA_MCP_TOKEN\"".into(),
+        // Codex gives an MCP call 60 s by default.
+        format!("mcp_servers.luna.tool_timeout_sec={}", MCP_TOOL_TIMEOUT_MS / 1000),
+        // And outside the full bypass it may stop to ask before a server's
+        // tool runs; `approve` lets Luna's through, as `--allowedTools` does
+        // for Claude Code.
+        "mcp_servers.luna.default_tools_approval_mode=\"approve\"".into(),
+    ] {
+        args.push("-c".into());
+        args.push(value);
+    }
+    args
+}
+
 /// How long a Luna tool call may take, in ms, as both CLIs are told: `wait`
 /// holds its request for up to 30 min, `spawn` for up to two.
 const MCP_TOOL_TIMEOUT_MS: u64 = 1_900_000;
@@ -549,7 +612,7 @@ const MCP_TOOL_TIMEOUT_MS: u64 = 1_900_000;
 /// The MCP config a tooled Claude Code session starts with: Luna's server on
 /// the hub listener, the session's own bearer token in the header. A file
 /// per chat under the data dir, like the hooks.
-fn claude_mcp_file(chat_id: &str, token: &str) -> Option<std::path::PathBuf> {
+pub(crate) fn claude_mcp_file(chat_id: &str, token: &str) -> Option<std::path::PathBuf> {
     let url = crate::hub::mcp_url()?;
     let config = serde_json::json!({
         "mcpServers": {
@@ -603,6 +666,21 @@ fn prune_session_files(live: &std::collections::HashSet<String>) -> usize {
             }
         }
     }
+    // Long messages handed over as files (agents.rs `spill`): read at once,
+    // kept a week for whoever wants to see what was sent.
+    if let Ok(entries) = std::fs::read_dir(crate::agents::notes_dir()) {
+        for entry in entries.flatten() {
+            let old = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .is_some_and(|age| age > std::time::Duration::from_secs(7 * 24 * 3600));
+            if old && std::fs::remove_file(entry.path()).is_ok() {
+                removed += 1;
+            }
+        }
+    }
     removed
 }
 
@@ -618,7 +696,7 @@ pub fn prune_session_files_periodically() {
         };
         let removed = prune_session_files(&live);
         if removed > 0 {
-            crate::log::info("pty", &format!("removed {removed} hook/mcp file(s) of sessions no longer running"));
+            crate::log::info("pty", &format!("removed {removed} hook, mcp and note file(s) no longer needed"));
         }
         std::thread::sleep(std::time::Duration::from_secs(6 * 3600 - 15 * 60));
     });
@@ -912,6 +990,15 @@ pub async fn ensure_claude_session(
             args.push("--mcp-config".into());
             args.push(mcp.to_string_lossy().into_owned());
         }
+        // A long prompt or message from its agent comes as a file there
+        // (agents.rs `spill`), to read without asking.
+        if parent.is_some() {
+            let notes = crate::agents::notes_dir();
+            if std::fs::create_dir_all(&notes).is_ok() {
+                args.push("--add-dir".into());
+                args.push(notes.to_string_lossy().into_owned());
+            }
+        }
         if let Some(p) = prompt.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
             // `--mcp-config` takes any number of files, and took the prompt
             // after it for one more: "MCP config file not found: <prompt>".
@@ -996,28 +1083,22 @@ pub async fn ensure_codex_session(
                 args.push(approval.clone());
                 args.push("--sandbox".into());
                 args.push(sandbox.clone());
+                if let Some(sb) = codex_windows_sandbox(&sandbox) {
+                    args.push("-c".into());
+                    args.push(sb);
+                }
+                if let Some(path) = codex_sandbox_path(&sandbox) {
+                    envs.push(("PATH", path));
+                }
             }
-            // Luna's MCP server as a config override, the token through the
-            // environment: neither touches the account's config.toml.
             let tools = tools.unwrap_or(false);
             let settings = serde_json::json!({
                 "model": model.as_deref().map(str::trim).filter(|m| !m.is_empty()),
                 "effort": effort, "approval": approval, "sandbox": sandbox,
             });
             let token = crate::agents::register(&id, Provider::Codex, &folder, &account_path, parent.as_deref(), tools, settings);
-            if let (Some(token), Some(url)) = (token, crate::hub::mcp_url()) {
-                args.push("-c".into());
-                args.push(format!("mcp_servers.luna.url=\"{url}\""));
-                args.push("-c".into());
-                args.push("mcp_servers.luna.bearer_token_env_var=\"LUNA_MCP_TOKEN\"".into());
-                // Codex gives an MCP call 60 s by default.
-                args.push("-c".into());
-                args.push(format!("mcp_servers.luna.tool_timeout_sec={}", MCP_TOOL_TIMEOUT_MS / 1000));
-                // And outside the full bypass it may stop to ask before a
-                // server's tool runs; `approve` lets Luna's through, as
-                // `--allowedTools` does for Claude Code.
-                args.push("-c".into());
-                args.push("mcp_servers.luna.default_tools_approval_mode=\"approve\"".into());
+            if let Some(token) = token.filter(|_| crate::hub::mcp_url().is_some()) {
+                args.extend(codex_mcp_args());
                 envs.push(("LUNA_MCP_TOKEN", token));
             }
             if let Some(p) = prompt.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
@@ -1805,6 +1886,13 @@ mod tests {
         let s = draft_after(draft_after(0, "ab\\"), "\r");
         assert_eq!(s & !DRAFT_BACKSLASH, 4);
         assert_eq!(draft_after(draft_after(s, "c"), "\r"), 0);
+    }
+
+    #[test]
+    fn the_sandbox_path_has_no_store_aliases() {
+        let path = r"C:\Users\n\AppData\Local\Microsoft\WindowsApps\Microsoft.PowerShell_8wekyb3d8bbwe;C:\WINDOWS\system32;C:\Users\n\AppData\Local\Microsoft\WindowsApps;C:\Program Files\PowerShell\7";
+        assert_eq!(without_windows_apps(path), r"C:\WINDOWS\system32;C:\Program Files\PowerShell\7");
+        assert_eq!(codex_sandbox_path("danger-full-access"), None, "full access keeps the PATH it had");
     }
 
     #[test]

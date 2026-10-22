@@ -1025,6 +1025,8 @@ body { margin: 0; overflow: hidden; }
   border-color: rgba(255, 255, 255, .45);
   color: #fff;
 }
+/* A background helper waits on an answer: its agent is told, the chip shows it. */
+[data-app] .chat-row:not([data-active="yes"]) .kids[data-asking="yes"] { border-color: var(--wait); color: var(--wait); }
 
 /* Rename and delete take no room of their own: they come up over the end of
    the row under the pointer, so the name gets the whole width the rest of

@@ -7,6 +7,7 @@ import { Icon, ToolButton } from '../../shared/ui/icons';
 import { numberedChats, useChats } from './chats.store';
 import { currentLayout, currentSlots, usePanes } from '../panes/panes.store';
 import { DeleteChatDialog } from './DeleteChatDialog';
+import { BackgroundChip } from '../agents/BackgroundChip';
 
 export function ChatRow({
   chat,
@@ -116,6 +117,8 @@ export function ChatRow({
           {childCount}
         </span>
       )}
+      {/* Helpers its agent runs in the background: no rows, a count here. */}
+      <BackgroundChip parentId={chat.id} />
       {(depth > 0 || orphan) && (
         <span
           title={
