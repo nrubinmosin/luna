@@ -201,9 +201,9 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   (JSON indented by two, TOML by taplo's rules), comments and key order kept; Ctrl+S
   saves.
 - **Shared settings**: pick a parent account per CLI and its settings file is copied onto
-  the others — now, with Sync now, or at every launch with the box ticked. The parent's
-  keys overwrite and keys only the child has stay; logins and Codex's trusted folders are
-  never copied.
+  the others — now, with Sync now, or at every launch with the box ticked. The others get
+  an exact copy, so a key taken out of the parent goes from them too and whatever was set
+  on a child alone is replaced; logins and Codex's trusted folders stay each account's own.
 - Codex on Windows: without the Windows sandbox set up (`[windows] sandbox` in
   `config.toml`, Codex's own affair), `workspace-write` behaves as `read-only` and Codex
   asks before every write. Luna does not touch that setting.
