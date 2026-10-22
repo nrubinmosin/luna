@@ -2,11 +2,11 @@
 //! `config.toml` — as Luna can help with it: settings recommended for anyone
 //! running the CLI inside Luna, added or taken out key by key, the file
 //! itself checked and formatted for editing by hand, and a "parent" account
-//! per provider whose file is copied onto the others.
+//! per provider whose file the others get an exact copy of.
 //!
-//! Every write keeps what it does not touch: other keys, their order, and in
-//! the TOML file the user's comments. Credentials, logins and Codex's trusted
-//! projects never travel.
+//! Recommendations keep what they do not touch: other keys, their order, and
+//! in the TOML file the user's comments. Credentials, logins and Codex's
+//! trusted projects never travel.
 
 use crate::provider::Provider;
 use serde::Serialize;
@@ -117,8 +117,15 @@ fn read_claude(path: &Path) -> Result<Value, String> {
 }
 
 fn write_claude(path: &Path, v: &Value) -> Result<(), String> {
-    let text = serde_json::to_string_pretty(v).map_err(|e| e.to_string())? + "\n";
-    let tmp = path.with_extension("json.tmp");
+    write_text(path, &(serde_json::to_string_pretty(v).map_err(|e| e.to_string())? + "\n"))
+}
+
+/// Writes via a sibling temp file so a crash mid-write cannot truncate the file.
+fn write_text(path: &Path, text: &str) -> Result<(), String> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    let tmp = path.with_extension("tmp");
     std::fs::write(&tmp, text).map_err(|e| e.to_string())?;
     // A rename refused (the CLI holding the file) leaves no temp file behind.
     std::fs::rename(&tmp, path).map_err(|e| {
@@ -439,76 +446,65 @@ pub fn read_account_config(provider: Provider, account_path: String) -> Result<C
 pub fn write_account_config(provider: Provider, account_path: String, text: String) -> Result<(), String> {
     check_config(provider, &text)?;
     let path = config_file(provider, &account_path)?;
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    }
-    let tmp = path.with_extension("edit.tmp");
-    std::fs::write(&tmp, &text).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, &path).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
-        e.to_string()
-    })?;
+    write_text(&path, &text)?;
     crate::log::info("settings", &format!("{} edited by hand", path.display()));
     Ok(())
 }
 
 // ------------------------------------------------------------------- sync --
 
-/// Objects merge key by key, the parent winning; anything else is replaced.
-/// A key only the child has stays.
-fn merge_json(child: &mut Value, parent: &Value) {
-    match (child, parent) {
-        (Value::Object(c), Value::Object(p)) => {
-            for (k, pv) in p {
-                match c.get_mut(k) {
-                    Some(cv) if cv.is_object() && pv.is_object() => merge_json(cv, pv),
-                    Some(cv) => *cv = pv.clone(),
-                    None => {
-                        c.insert(k.clone(), pv.clone());
-                    }
-                }
-            }
-        }
-        (c, p) => *c = p.clone(),
-    }
+/// The parent's file as text, checked to parse: a broken file is not spread
+/// onto every account. A parent without one has nothing to copy.
+fn parent_text(provider: Provider, parent: &str) -> Result<String, String> {
+    let path = config_file(provider, parent)?;
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(format!("{} does not exist", path.display())),
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+    };
+    check_config(provider, &text).map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(text)
 }
 
-/// Top-level keys of a Codex config that belong to the account, not to taste:
-/// the folders it trusts.
+/// Top-level tables of a Codex config that hold the account's own state, not
+/// taste: the folders it trusts, which Codex and Luna write per account.
 const CODEX_KEEP: &[&str] = &["projects"];
 
-fn merge_toml(child: &mut toml_edit::Table, parent: &toml_edit::Table, top: bool) {
-    for (k, pv) in parent.iter() {
-        if top && CODEX_KEEP.contains(&k) {
-            continue;
+/// The parent's config with its own `CODEX_KEEP` tables taken out and the
+/// child's put at the end. Rendered apart and joined as text: tables moved
+/// between documents keep their old positions and would land among the
+/// parent's.
+fn codex_copy(parent: &str, child: &DocumentMut) -> Result<String, String> {
+    let mut doc: DocumentMut = parent.parse().map_err(|e| format!("Not valid TOML: {e}"))?;
+    let mut kept = DocumentMut::new();
+    for k in CODEX_KEEP {
+        doc.remove(k);
+        if let Some(item) = child.get(k) {
+            kept.insert(k, item.clone());
         }
-        if let (Some(Item::Table(ct)), Item::Table(pt)) = (child.get_mut(k), pv) {
-            merge_toml(ct, pt, false);
-            continue;
-        }
-        toml_put(child, k, pv.clone());
     }
+    let (text, kept) = (doc.to_string(), kept.to_string());
+    Ok(match (text.trim_end(), kept.trim()) {
+        (_, "") => text,
+        ("", _) => kept,
+        (text, _) => format!("{text}\n\n{}", kept.trim_start()),
+    })
 }
 
+/// Makes the child's file the parent's. Claude Code's `settings.json` holds no
+/// login or state and is copied as is; Codex's `config.toml` keeps the child's
+/// trusted folders. A file already the same is not written.
 fn sync_one(provider: Provider, parent: &str, child: &str) -> Result<(), String> {
-    match provider {
-        Provider::Claude => {
-            let from = read_claude(&claude_file(parent)?)?;
-            let path = claude_file(child)?;
-            let mut doc = read_claude(&path)?;
-            let before = doc.clone();
-            merge_json(&mut doc, &from);
-            if doc != before { write_claude(&path, &doc) } else { Ok(()) }
-        }
-        Provider::Codex => {
-            let from = crate::codex::config::read(&crate::codex::config::account_file(parent)?)?;
-            let path = crate::codex::config::account_file(child)?;
-            let mut doc = crate::codex::config::read(&path)?;
-            let before = doc.to_string();
-            merge_toml(doc.as_table_mut(), from.as_table(), true);
-            if doc.to_string() != before { crate::codex::config::write(&path, &doc) } else { Ok(()) }
-        }
+    let from = parent_text(provider, parent)?;
+    let path = config_file(provider, child)?;
+    let text = match provider {
+        Provider::Claude => from,
+        Provider::Codex => codex_copy(&from, &crate::codex::config::read(&path)?)?,
+    };
+    if std::fs::read_to_string(&path).ok().as_deref() == Some(text.as_str()) {
+        return Ok(());
     }
+    write_text(&path, &text)
 }
 
 #[derive(Serialize, Default)]
@@ -713,31 +709,34 @@ a=\"x\"
     }
 
     #[test]
-    fn syncing_an_account_copies_settings_and_nothing_private() {
+    fn syncing_an_account_makes_its_file_the_parents_and_copies_nothing_private() {
         let parent = dir("sync-parent");
         let child = dir("sync-child");
-        // Claude: settings travel, the child's login and state do not.
-        std::fs::write(parent.join("settings.json"), r#"{"tui":"fullscreen","env":{"A":"1"}}"#).unwrap();
+        // Claude: the file arrives byte for byte, the child's own keys go, its
+        // login stays.
+        let settings = "{\n  \"tui\": \"fullscreen\",\n  \"env\": { \"A\": \"1\" }\n}\n";
+        std::fs::write(parent.join("settings.json"), settings).unwrap();
         std::fs::write(parent.join(".credentials.json"), "parent-secret").unwrap();
         std::fs::write(child.join("settings.json"), r#"{"model":"opus","env":{"B":"2"}}"#).unwrap();
         std::fs::write(child.join(".credentials.json"), "child-secret").unwrap();
         let (p, c) = (parent.to_string_lossy().into_owned(), child.to_string_lossy().into_owned());
         sync_one(Provider::Claude, &p, &c).unwrap();
-        let v: Value = serde_json::from_str(&std::fs::read_to_string(child.join("settings.json")).unwrap()).unwrap();
-        assert_eq!(v, json!({ "model": "opus", "env": { "B": "2", "A": "1" }, "tui": "fullscreen" }));
+        assert_eq!(std::fs::read_to_string(child.join("settings.json")).unwrap(), settings);
         assert_eq!(std::fs::read_to_string(child.join(".credentials.json")).unwrap(), "child-secret");
 
-        // Codex: config travels with its comments, trusted folders and auth stay.
-        std::fs::write(parent.join("config.toml"), "# parent\nmodel_reasoning_effort = \"high\"\n[tui]\nshow_tooltips = false\n[projects.'C:\\\\p']\ntrust_level = \"trusted\"\n").unwrap();
-        std::fs::write(child.join("config.toml"), "# mine\nmodel_reasoning_effort = \"low\"\n[projects.'C:\\\\c']\ntrust_level = \"trusted\"\n").unwrap();
+        // A key taken out of the parent goes from the child at the next sync.
+        std::fs::write(parent.join("settings.json"), "{}\n").unwrap();
+        sync_one(Provider::Claude, &p, &c).unwrap();
+        assert_eq!(std::fs::read_to_string(child.join("settings.json")).unwrap(), "{}\n");
+
+        // Codex: the parent's config with its comments, the child's trusted
+        // folders in place of the parent's, auth untouched.
+        std::fs::write(parent.join("config.toml"), "# parent\nmodel_reasoning_effort = \"high\"\n[projects.'C:\\\\p']\ntrust_level = \"trusted\"\n[tui]\nshow_tooltips = false\n").unwrap();
+        std::fs::write(child.join("config.toml"), "# mine\nmodel_reasoning_effort = \"low\"\nmine = 1\n[projects.'C:\\\\c']\ntrust_level = \"trusted\"\n").unwrap();
         std::fs::write(child.join("auth.json"), "child-auth").unwrap();
         sync_one(Provider::Codex, &p, &c).unwrap();
         let text = std::fs::read_to_string(child.join("config.toml")).unwrap();
-        assert!(text.contains("# mine"));
-        assert!(text.contains("C:\\\\c") && !text.contains("C:\\\\p"));
-        let doc: DocumentMut = text.parse().unwrap();
-        assert_eq!(doc["model_reasoning_effort"].as_str(), Some("high"));
-        assert_eq!(doc["tui"]["show_tooltips"].as_bool(), Some(false));
+        assert_eq!(text, "# parent\nmodel_reasoning_effort = \"high\"\n[tui]\nshow_tooltips = false\n\n[projects.'C:\\\\c']\ntrust_level = \"trusted\"\n");
         assert_eq!(std::fs::read_to_string(child.join("auth.json")).unwrap(), "child-auth");
 
         // A second sync with nothing new writes nothing.
@@ -745,6 +744,25 @@ a=\"x\"
         std::thread::sleep(std::time::Duration::from_millis(20));
         sync_one(Provider::Codex, &p, &c).unwrap();
         assert_eq!(std::fs::metadata(child.join("config.toml")).unwrap().modified().unwrap(), before);
+
+        // A child with no trusted folders gets the parent's file minus its own.
+        std::fs::write(child.join("config.toml"), "").unwrap();
+        sync_one(Provider::Codex, &p, &c).unwrap();
+        assert_eq!(std::fs::read_to_string(child.join("config.toml")).unwrap(), "# parent\nmodel_reasoning_effort = \"high\"\n[tui]\nshow_tooltips = false\n");
+        let _ = std::fs::remove_dir_all(&parent);
+        let _ = std::fs::remove_dir_all(&child);
+    }
+
+    #[test]
+    fn a_broken_or_missing_parent_is_not_copied() {
+        let parent = dir("sync-bad-parent");
+        let child = dir("sync-bad-child");
+        let (p, c) = (parent.to_string_lossy().into_owned(), child.to_string_lossy().into_owned());
+        std::fs::write(child.join("settings.json"), "{\"model\":\"opus\"}").unwrap();
+        assert!(sync_one(Provider::Claude, &p, &c).is_err());
+        std::fs::write(parent.join("settings.json"), "{ not json").unwrap();
+        assert!(sync_one(Provider::Claude, &p, &c).is_err());
+        assert_eq!(std::fs::read_to_string(child.join("settings.json")).unwrap(), "{\"model\":\"opus\"}");
         let _ = std::fs::remove_dir_all(&parent);
         let _ = std::fs::remove_dir_all(&child);
     }
@@ -781,23 +799,4 @@ model = \"gpt-6\"   # keep
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    #[test]
-    fn json_sync_merges_and_keeps_the_childs_own_keys() {
-        let mut child = json!({ "env": { "MINE": "1", "SHARED": "old" }, "only": true, "tui": "default" });
-        merge_json(&mut child, &json!({ "env": { "SHARED": "new" }, "tui": "fullscreen", "model": "opus" }));
-        assert_eq!(child, json!({ "env": { "MINE": "1", "SHARED": "new" }, "only": true, "tui": "fullscreen", "model": "opus" }));
-    }
-
-    #[test]
-    fn toml_sync_never_carries_trusted_projects() {
-        let mut child: DocumentMut = "[projects.'C:\\\\a']\ntrust_level = \"trusted\"\n[tui]\ntheme = \"x\"\n".parse().unwrap();
-        let parent: DocumentMut = "model = \"m\"\n[projects.'C:\\\\b']\ntrust_level = \"trusted\"\n[tui]\nshow_tooltips = false\n".parse().unwrap();
-        merge_toml(child.as_table_mut(), parent.as_table(), true);
-        let text = child.to_string();
-        assert!(text.contains("C:\\\\a"));
-        assert!(!text.contains("C:\\\\b"));
-        assert_eq!(child["model"].as_str(), Some("m"));
-        assert_eq!(child["tui"]["theme"].as_str(), Some("x"));
-        assert_eq!(child["tui"]["show_tooltips"].as_bool(), Some(false));
-    }
 }

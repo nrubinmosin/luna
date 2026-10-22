@@ -98,8 +98,8 @@ export function SettingsSync({ accounts }: { accounts: Account[] }) {
         </label>
       </div>
       <div style={{ fontSize: 'var(--fs-1)', color: 'var(--faint)', lineHeight: 1.4 }}>
-        The parent's keys overwrite, keys only an account has stay. Logins and Codex's trusted
-        folders are never copied.
+        The other accounts get an exact copy of the parent's file: whatever was set on them
+        alone is replaced. Logins and Codex's trusted folders stay each account's own.
       </div>
     </div>
   );
