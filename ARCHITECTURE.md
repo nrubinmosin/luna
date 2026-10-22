@@ -28,6 +28,7 @@ src/                          frontend (feature-sliced)
               --code-key/--code-string/--code-literal, and all controls),
               keymap: Ctrl+N / Ctrl+Shift+N, Ctrl+1..4 (focus pane), Alt+1..4 (peek),
               Ctrl+Shift+W (next waiting), Ctrl+Shift+B (sidebar), Ctrl+Tab (next group),
+              Ctrl+Shift+T (new group),
               Ctrl+0 (exit), Ctrl+Shift+1..4 (layout), F1 (shortcuts) — listened to in the
               capture phase, otherwise xterm swallows them before window
   shared/     types, format, status; ui/icons.tsx — XP icons (and provider badges),
@@ -164,7 +165,8 @@ src-tauri/src/
                 discovery file, token
   lifecycle.rs  why Luna stopped: its own exits with a reason, the `--watch-exit
                 <pid>` watcher (exit code: killed / crashed), luna.run with the last sign of life
-                for the next launch, event loop hangs and machine sleep
+                for the next launch, event loop hangs and machine sleep; the tray's Restart
+                window (a new window started as `--after <pid>`, the core left running)
   paths.rs      data_dir(): next to the exe (portable) or LOCALAPPDATA\luna; the test
                 build (LUNA_FLAVOR=test) keeps everything next to its exe in test-build/
   lib.rs        Builder + generate_handler

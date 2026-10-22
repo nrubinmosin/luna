@@ -64,8 +64,9 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   their listeners still on, so switching back is a refit rather than a fresh session
   handshake and a 2MB replay of the scrollback.
 - Window groups — beside the layout selector on the title bar, one to start with and up
-  to ten (I–X): **+** adds one, the **×** on the group on screen removes it once no chat
-  is left in it. Ctrl+Tab goes round them (Ctrl+Shift+Tab is left to the CLI). Each group remembers its
+  to ten (I–X): **+** or Ctrl+Shift+T adds one (Ctrl+T is left to the CLI), **Remove**
+  takes the group on screen away once no chat is left in it. Ctrl+Tab goes round them
+  (Ctrl+Shift+Tab is left to the CLI). Each group remembers its
   own four boards (one per layout) and their splits; **Clear** empties the group's panes
   and leaves every chat alone, **Even out** puts the splits back to half.
 - The status bar runs the width of the window: how many chats are working, how many are
@@ -213,6 +214,9 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   the tray menu ends all of Luna: every session is asked to quit as deleting a chat would,
   then the core and the window go. A core that has not gone 30 seconds later is killed
   along with everything it started.
+- **Restart window** in the tray menu starts only the window over, for when the page
+  goes wrong (terminals drawing garbage, say): the core and its sessions keep running,
+  turns in progress included, and the new window picks them up.
 - Sessions with no chat row left to reach them — lost to a half-written state restore, say
   — are listed at the top of the sidebar, with what they are
   working on, and can be adopted back or killed.
