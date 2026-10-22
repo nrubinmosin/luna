@@ -12,7 +12,10 @@
  */
 import type { Terminal as XTerm } from '@xterm/xterm';
 import type { Account, Chat, ClaudeChat, CodexChat, Folder, Provider } from '../shared/types';
-import type { AccountsRootInfo, ClaudeDefaultsDto, CliStatusDto, CodexDefaultsDto, CodexModelDto, PowerStateDto } from '../ipc/commands';
+import type {
+  AccountsRootInfo, BackgroundHelperDto, ClaudeDefaultsDto, CliStatusDto, CodexDefaultsDto, CodexModelDto, PowerStateDto
+} from '../ipc/commands';
+import { useBackground } from '../features/agents/background.store';
 import { useAccounts } from '../features/accounts/accounts.store';
 import { useAccountsWindow } from '../features/accounts/AccountsPanel';
 import { useChats } from '../features/chats/chats.store';
@@ -376,6 +379,7 @@ export function answer<T>(cmd: string, args: Record<string, unknown>, fallback: 
   if (cmd === 'codex_defaults') return CODEX_DEFAULTS as unknown as T;
   if (cmd === 'codex_models') return CODEX_MODELS as unknown as T;
   if (cmd === 'power_state') return POWER as unknown as T;
+  if (cmd === 'background_helpers') return BACKGROUND as unknown as T;
   // The Accounts window's own dialogs, so they can be looked at too.
   if (cmd === 'read_account_config') {
     const claudeSide = args.provider === 'claude';
@@ -395,8 +399,19 @@ export function answer<T>(cmd: string, args: Record<string, unknown>, fallback: 
 
 // ------------------------------------------------------------------ seed --
 
+// Two helpers the first chat's agent runs in the background, one of them
+// waiting on an answer: the chip on its row.
+const BACKGROUND: BackgroundHelperDto[] = [
+  { id: 'demo-bg-1', parent: 'demo-1', name: 'Review the release plan', provider: 'codex', state: 'working' },
+  {
+    id: 'demo-bg-2', parent: 'demo-1', name: 'Check the changelog', provider: 'claude', state: 'question',
+    ask: { kind: 'question', blocking: true, questions: [{ text: 'Ship tonight or tomorrow?', options: ['Tonight', 'Tomorrow'] }] }
+  }
+];
+
 export function seedDemo(scene: Scene) {
   seeded = true;
+  useBackground.setState({ helpers: BACKGROUND });
   // The shell store has read the theme by now; tell it, not localStorage.
   useShell.setState({ theme: scene === 'dark' ? 'dark' : 'light', pinned: true });
   // The version readout, which in a browser has no app to ask.

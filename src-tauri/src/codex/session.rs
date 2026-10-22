@@ -125,6 +125,26 @@ fn rollout_by_id(account_path: &str, id: &str) -> Option<PathBuf> {
     None
 }
 
+/// The rollout of a thread no live pty session claims — a background
+/// helper's, whose `codex exec` names the thread on stdout. Remembered once
+/// found, as a thread's file never moves.
+pub fn rollout_of_thread(account_path: &str, id: &str) -> Option<PathBuf> {
+    static FOUND: OnceLock<Mutex<HashMap<String, PathBuf>>> = OnceLock::new();
+    let found = FOUND.get_or_init(Default::default);
+    if let Some(p) = found.lock().ok()?.get(id).filter(|p| p.is_file()) {
+        return Some(p.clone());
+    }
+    let path = rollout_by_id(account_path, id)?;
+    found.lock().ok()?.insert(id.to_string(), path.clone());
+    Some(path)
+}
+
+/// Where a thread works, per its rollout: a `--worktree` one names the
+/// checkout Codex made.
+pub fn thread_cwd(account_path: &str, id: &str) -> Option<String> {
+    first_line(&rollout_of_thread(account_path, id)?)?["payload"]["cwd"].as_str().map(str::to_owned)
+}
+
 fn claims() -> &'static Mutex<HashMap<String, PathBuf>> {
     static C: OnceLock<Mutex<HashMap<String, PathBuf>>> = OnceLock::new();
     C.get_or_init(Default::default)
@@ -140,13 +160,26 @@ pub fn release(chat_id: &str) {
     }
 }
 
-/// Where the turn counter of each chat has read its rollout up to, and what
-/// it has counted so far.
+/// What the turn tracker of each chat has read of its rollout, and where it
+/// stopped.
 struct TurnCount {
     path: PathBuf,
     /// Bytes consumed: the end of the last complete line.
     offset: u64,
+    scan: Scan,
+}
+
+/// The rollout read so far, as the tracker keeps it.
+#[derive(Default, Clone)]
+struct Scan {
+    /// Turns ended since the process was spawned.
     completed: u32,
+    /// Whether the last turn event read started a turn that has not ended;
+    /// None before any.
+    working: Option<bool>,
+    /// The question the model last put to the user that nothing has answered
+    /// yet, with the call id it came in.
+    ask: Option<(String, crate::agents::Ask)>,
 }
 
 fn turn_counts() -> &'static Mutex<HashMap<String, TurnCount>> {
@@ -154,65 +187,112 @@ fn turn_counts() -> &'static Mutex<HashMap<String, TurnCount>> {
     C.get_or_init(Default::default)
 }
 
+/// The rollout read on from where the last look stopped. Counted off the
+/// file rather than off sampled state, so a turn that starts and ends between
+/// two samples of the activity tracker still counts — a one-word answer takes
+/// two seconds, the sampler looks every five — and read whole rather than by
+/// its tail, which a long turn outgrows: a megabyte of tool output after
+/// `task_started` and the tail read the session as resting. None until the
+/// rollout exists, i.e. before the first turn.
+fn tracked(live: &Live) -> Option<Scan> {
+    let path = rollout_for(live)?;
+    let mut counts = turn_counts().lock().ok()?;
+    let entry = counts
+        .entry(live.chat_id.to_string())
+        .or_insert_with(|| TurnCount { path: path.clone(), offset: 0, scan: Scan::default() });
+    if entry.path != path {
+        *entry = TurnCount { path: path.clone(), offset: 0, scan: Scan::default() };
+    }
+    entry.offset = scan_rollout(&path, entry.offset, live.spawned_at_ms as i64, &mut entry.scan);
+    Some(entry.scan.clone())
+}
+
 /// How many turns this process of the session has finished, per its rollout:
 /// one per `task_complete` (`turn_complete` / `turn_aborted` before 0.157)
 /// written since it was spawned — a resumed thread's rollout holds the turns
-/// of every earlier run too. Counted off the file rather than off sampled
-/// state, so a turn that starts and ends between two samples of the activity
-/// tracker still counts — a one-word answer takes two seconds, the sampler
-/// looks every five. Reads incrementally from where it stopped last time.
-/// None until the rollout exists, i.e. before the first turn.
+/// of every earlier run too.
 pub fn turns_completed(live: &Live) -> Option<u32> {
-    let path = rollout_for(live)?;
-    let mut counts = turn_counts().lock().ok()?;
-    let entry = counts.entry(live.chat_id.to_string()).or_insert_with(|| TurnCount { path: path.clone(), offset: 0, completed: 0 });
-    if entry.path != path {
-        *entry = TurnCount { path: path.clone(), offset: 0, completed: 0 };
-    }
-    let (n, consumed) = count_turn_ends(&path, entry.offset, live.spawned_at_ms as i64);
-    entry.completed += n;
-    entry.offset = consumed;
-    Some(entry.completed)
+    tracked(live).map(|s| s.completed)
 }
 
-/// Turn-ending events written at or after `since_ms` in the complete lines
-/// from byte `from` on, and the offset just past the last complete line. A
-/// line whose timestamp does not read is taken as new.
-fn count_turn_ends(path: &Path, from: u64, since_ms: i64) -> (u32, u64) {
-    use std::io::{BufRead, BufReader, Seek, SeekFrom};
-    let Ok(mut f) = std::fs::File::open(path) else { return (0, from) };
-    if f.seek(SeekFrom::Start(from)).is_err() {
-        return (0, from);
-    }
-    let mut reader = BufReader::new(f);
-    let mut line = String::new();
-    let mut consumed = from;
-    let mut n = 0;
-    loop {
-        line.clear();
-        let Ok(read) = reader.read_line(&mut line) else { break };
-        if read == 0 || !line.ends_with('\n') {
-            break;
+/// The question the session has put to the user and nobody has answered:
+/// `request_user_input`, which holds the turn until it is answered, or
+/// `request_user_input_async`, which lets the model work on and is open until
+/// the user next says something.
+pub fn pending_ask(live: &Live) -> Option<crate::agents::Ask> {
+    tracked(live)?.ask.map(|(_, a)| a)
+}
+
+/// Reads the complete lines from byte `from` on into `scan` and returns the
+/// offset just past the last of them. Turn ends count only when written at or
+/// after `since_ms`; a line whose timestamp does not read is taken as new.
+fn scan_rollout(path: &Path, from: u64, since_ms: i64, scan: &mut Scan) -> u64 {
+    crate::pty::complete_lines(path, from, |line| {
+        let event = line.contains("\"event_msg\"");
+        if !event && !line.contains("request_user_input") && !line.contains("\"function_call_output\"") {
+            return;
         }
-        consumed += read as u64;
-        if !line.contains("\"event_msg\"") {
-            continue;
+        let Ok(v) = serde_json::from_str::<Value>(line) else { return };
+        let payload = &v["payload"];
+        match (v["type"].as_str(), payload["type"].as_str()) {
+            (Some("event_msg"), Some("task_started" | "turn_started")) => scan.working = Some(true),
+            (Some("event_msg"), Some("task_complete" | "turn_complete" | "turn_aborted" | "task_aborted")) => {
+                scan.working = Some(false);
+                // A blocking question goes with the turn that asked it.
+                if scan.ask.as_ref().is_some_and(|(_, a)| a.blocking) {
+                    scan.ask = None;
+                }
+                let new = v["timestamp"]
+                    .as_str()
+                    .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+                    .map_or(true, |t| t.timestamp_millis() >= since_ms);
+                if new {
+                    scan.completed += 1;
+                }
+            }
+            // Whatever the user says next is the answer, typed or picked:
+            // `user_message` before 0.163, a completed `UserMessage` item since.
+            (Some("event_msg"), Some("user_message")) => scan.ask = None,
+            (Some("event_msg"), Some("item_completed")) if payload["item"]["type"] == "UserMessage" => scan.ask = None,
+            (Some("response_item"), Some("function_call")) => {
+                let blocking = match payload["name"].as_str() {
+                    Some("request_user_input") => true,
+                    Some("request_user_input_async") => false,
+                    _ => return,
+                };
+                let args = payload["arguments"].as_str().and_then(|a| serde_json::from_str::<Value>(a).ok());
+                if let Some(ask) = args.as_ref().and_then(|a| ask_of(a, blocking)) {
+                    scan.ask = Some((payload["call_id"].as_str().unwrap_or("").to_string(), ask));
+                }
+            }
+            (Some("response_item"), Some("function_call_output")) => {
+                let answered = scan.ask.as_ref().is_some_and(|(id, a)| a.blocking && payload["call_id"].as_str() == Some(id));
+                if answered {
+                    scan.ask = None;
+                }
+            }
+            _ => {}
         }
-        let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
-        if v["type"] == "event_msg"
-            && matches!(
-                v["payload"]["type"].as_str(),
-                Some("task_complete") | Some("turn_complete") | Some("turn_aborted") | Some("task_aborted")
-            )
-            && v["timestamp"]
-                .as_str()
-                .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
-                .map_or(true, |t| t.timestamp_millis() >= since_ms)
-        {
-            n += 1;
-        }
-    }
-    (n, consumed)
+    })
+}
+
+/// `{"questions":[…]}` as Codex's question tools take it: each with its text
+/// under `question` (`title` in the async one) and the suggested answers
+/// under `options`.
+fn ask_of(args: &Value, blocking: bool) -> Option<crate::agents::Ask> {
+    let questions: Vec<crate::agents::AskQuestion> = args["questions"]
+        .as_array()?
+        .iter()
+        .filter_map(|q| {
+            let text = q["question"].as_str().or(q["title"].as_str())?.trim().to_string();
+            let options = q["options"]
+                .as_array()
+                .map(|o| o.iter().filter_map(|o| o["label"].as_str().or(o.as_str()).map(str::to_owned)).collect())
+                .unwrap_or_default();
+            (!text.is_empty()).then_some(crate::agents::AskQuestion { text, options, multi: false })
+        })
+        .collect();
+    (!questions.is_empty()).then(|| crate::agents::Ask::question(questions, blocking))
 }
 
 /// The rollout file this live session writes to, once it exists.
@@ -376,10 +456,6 @@ pub fn thread_title(account_path: &str, thread_id: &str) -> Option<CliTitle> {
 /// What the tail of a rollout says right now.
 #[derive(Default)]
 pub struct Tail {
-    /// `working` after `task_started` (`turn_started` before 0.157),
-    /// `resting` after `task_complete` / `turn_complete` / `turn_aborted`;
-    /// None before the first turn.
-    pub status: Option<&'static str>,
     pub model: Option<String>,
     pub context_tokens: Option<f64>,
     pub context_window: Option<f64>,
@@ -406,14 +482,6 @@ pub fn read_tail(path: &Path) -> Tail {
                 }
             }
             Some("event_msg") => match payload["type"].as_str() {
-                Some("task_started") | Some("turn_started") if out.status.is_none() => {
-                    out.status = Some("working")
-                }
-                Some("task_complete") | Some("turn_complete") | Some("turn_aborted") | Some("task_aborted")
-                    if out.status.is_none() =>
-                {
-                    out.status = Some("resting")
-                }
                 Some("token_count") => {
                     if out.context_tokens.is_none() {
                         let info = &payload["info"];
@@ -439,7 +507,7 @@ pub fn read_tail(path: &Path) -> Tail {
             },
             _ => {}
         }
-        if out.status.is_some() && out.model.is_some() && out.context_tokens.is_some() && out.rate_limits.is_some() {
+        if out.model.is_some() && out.context_tokens.is_some() && out.rate_limits.is_some() {
             break;
         }
     }
@@ -459,10 +527,11 @@ pub fn asks(screen: &str) -> bool {
     MARKS.iter().any(|m| screen.contains(m))
 }
 
-/// `working` | `waiting` | `resting` off the rollout's tail and the screen.
-fn fold_status(tail_status: Option<&'static str>, last_output_ms: u64) -> &'static str {
-    match tail_status {
-        Some("working") => {
+/// `working` | `waiting` | `resting` off the rollout's turn events and the
+/// screen.
+fn fold_status(working: Option<bool>, last_output_ms: u64) -> &'static str {
+    match working {
+        Some(true) => {
             let still = crate::throttle::now_ms().saturating_sub(last_output_ms) > STILL_MS;
             if still {
                 "waiting"
@@ -470,15 +539,13 @@ fn fold_status(tail_status: Option<&'static str>, last_output_ms: u64) -> &'stat
                 "working"
             }
         }
-        Some(s) => s,
-        None => "resting",
+        _ => "resting",
     }
 }
 
 /// Just the status of a live session, for the activity sampler.
 pub fn status(live: &Live) -> Option<String> {
-    let path = rollout_for(live)?;
-    Some(fold_status(read_tail(&path).status, live.last_output_ms).to_string())
+    Some(fold_status(tracked(live)?.working, live.last_output_ms).to_string())
 }
 
 /// Where the session works, per its rollout: the folder it was started in,
@@ -495,7 +562,7 @@ pub fn meta(live: &Live) -> Option<SessionMeta> {
     let (_, id) = parse_name(&name)?;
     let t = read_tail(&path);
 
-    let status = Some(fold_status(t.status, live.last_output_ms));
+    let status = Some(fold_status(tracked(live).and_then(|s| s.working), live.last_output_ms));
     let named = thread_title(live.account_path, &id);
 
     let mut m = SessionMeta {
@@ -568,7 +635,6 @@ mod tests {
         .unwrap();
 
         let t = read_tail(&path);
-        assert_eq!(t.status, Some("resting"));
         assert_eq!(t.model.as_deref(), Some("gpt-5-codex"));
         assert_eq!(t.context_tokens, Some(4100.0));
         assert_eq!(t.context_window, Some(258400.0));
@@ -679,7 +745,6 @@ mod format_tests {
         std::fs::write(&path, lines.join("\n") + "\n").unwrap();
 
         let t = read_tail(&path);
-        assert_eq!(t.status, Some("resting"));
         assert_eq!(t.model.as_deref(), Some("gpt-6-astra"));
         assert_eq!(read_first_prompt(&path).as_deref(), Some("Reply with the single word READY."));
 
@@ -700,16 +765,19 @@ mod format_tests {
         std::fs::write(&path, &whole).unwrap();
 
         // Turn ends are counted off complete lines only, and incrementally.
-        let (n, consumed) = count_turn_ends(&path, 0, 0);
-        assert_eq!(n, 1);
+        let mut s = Scan::default();
+        let consumed = scan_rollout(&path, 0, 0, &mut s);
+        assert_eq!((s.completed, s.working), (1, Some(false)));
         assert_eq!(consumed, std::fs::metadata(&path).unwrap().len());
         let mut grown = std::fs::read_to_string(&path).unwrap();
         grown.push_str(r#"{"timestamp":"t","type":"event_msg","payload":{"type":"task_complete","turn_id":"t2"}}"#);
         std::fs::write(&path, &grown).unwrap();
-        assert_eq!(count_turn_ends(&path, consumed, 0), (0, consumed), "a line without its newline is not there yet");
+        assert_eq!(scan_rollout(&path, consumed, 0, &mut s), consumed, "a line without its newline is not there yet");
+        assert_eq!(s.completed, 1);
         grown.push('\n');
         std::fs::write(&path, &grown).unwrap();
-        assert_eq!(count_turn_ends(&path, consumed, 0).0, 1);
+        scan_rollout(&path, consumed, 0, &mut s);
+        assert_eq!(s.completed, 2);
 
         // A resumed thread: the turns of an earlier run are not this one's.
         let resumed = [
@@ -718,12 +786,66 @@ mod format_tests {
         ];
         std::fs::write(&path, resumed.join("\n") + "\n").unwrap();
         let spawned = chrono::DateTime::parse_from_rfc3339("2026-09-26T16:00:00Z").unwrap().timestamp_millis();
-        assert_eq!(count_turn_ends(&path, 0, spawned).0, 1);
-        assert_eq!(count_turn_ends(&path, 0, 0).0, 2);
+        let count = |since: i64| {
+            let mut s = Scan::default();
+            scan_rollout(&path, 0, since, &mut s);
+            s.completed
+        };
+        assert_eq!(count(spawned), 1);
+        assert_eq!(count(0), 2);
 
-        // Mid-turn: the tail says working.
-        std::fs::write(&path, lines[..2].join("\n") + "\n").unwrap();
-        assert_eq!(read_tail(&path).status, Some("working"));
+        // Mid-turn, however much the turn has written since it started: a
+        // megabyte of tool output still reads as working.
+        let filler = format!(
+            r#"{{"timestamp":"t","type":"response_item","payload":{{"type":"function_call_output","call_id":"c","output":"{}"}}}}"#,
+            "x".repeat(4096)
+        );
+        let long: Vec<String> = lines[..2].iter().map(|l| l.to_string()).chain(std::iter::repeat(filler).take(300)).collect();
+        std::fs::write(&path, long.join("\n") + "\n").unwrap();
+        let mut s = Scan::default();
+        scan_rollout(&path, 0, 0, &mut s);
+        assert_eq!(s.working, Some(true));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Codex 0.163 asks through `request_user_input_async` (the turn goes on)
+    /// and `request_user_input` (the turn waits for the answer).
+    #[test]
+    fn a_question_is_open_until_it_is_answered() {
+        let root = std::env::temp_dir().join(format!("luna-codex-ask-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("rollout-2026-10-22T04-51-02-abc.jsonl");
+        let write = |lines: &[&str]| std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let ask = |lines: &[&str]| {
+            write(lines);
+            let mut s = Scan::default();
+            scan_rollout(&path, 0, 0, &mut s);
+            s.ask.map(|(_, a)| a)
+        };
+        let started = r#"{"timestamp":"t","type":"event_msg","payload":{"type":"task_started"}}"#;
+        let async_q = r#"{"timestamp":"t","type":"response_item","payload":{"type":"function_call","name":"request_user_input_async","arguments":"{\"questions\":[{\"title\":\"Can you paste CLAUDE.md here?\"}]}","call_id":"call_a"}}"#;
+        let accepted = r#"{"timestamp":"t","type":"response_item","payload":{"type":"function_call_output","call_id":"call_a","output":"{\"accepted\":true}"}}"#;
+        let done = r#"{"timestamp":"t","type":"event_msg","payload":{"type":"task_complete"}}"#;
+        let user = r#"{"timestamp":"t","type":"event_msg","payload":{"type":"user_message","message":"here it is"}}"#;
+
+        let a = ask(&[started, async_q, accepted, done]).expect("an async question outlives its turn");
+        assert!(!a.blocking);
+        assert_eq!(a.questions[0].text, "Can you paste CLAUDE.md here?");
+        assert!(ask(&[started, async_q, accepted, done, user]).is_none(), "the user's next word answers it");
+        let item = r#"{"timestamp":"t","type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","id":"u"}}}"#;
+        assert!(ask(&[started, async_q, accepted, item]).is_none(), "as 0.163 writes it");
+        let plain = r#"{"timestamp":"t","type":"response_item","payload":{"type":"function_call","name":"request_user_input_async","arguments":"{\"questions\":[{\"title\":\"Size?\",\"options\":[\"Small\",\"Large\"]}]}","call_id":"c"}}"#;
+        assert_eq!(ask(&[started, plain]).unwrap().questions[0].options, ["Small", "Large"], "options as bare strings");
+
+        let blocking = r#"{"timestamp":"t","type":"response_item","payload":{"type":"function_call","name":"request_user_input","arguments":"{\"questions\":[{\"id\":\"colour\",\"header\":\"Colour\",\"question\":\"Which colour?\",\"options\":[{\"label\":\"Red (Recommended)\",\"description\":\"\"},{\"label\":\"Blue\",\"description\":\"\"}]}]}","call_id":"call_b"}}"#;
+        let answered = r#"{"timestamp":"t","type":"response_item","payload":{"type":"function_call_output","call_id":"call_b","output":"{\"answers\":{}}"}}"#;
+        let a = ask(&[started, blocking]).expect("a blocking question");
+        assert!(a.blocking);
+        assert_eq!(a.questions[0].options, ["Red (Recommended)", "Blue"]);
+        assert!(ask(&[started, blocking, answered]).is_none(), "its output is the answer");
+        assert!(ask(&[started, blocking, done]).is_none(), "it goes with the turn");
 
         let _ = std::fs::remove_dir_all(&root);
     }

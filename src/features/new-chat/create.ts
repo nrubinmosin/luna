@@ -28,6 +28,9 @@ export type ChatSpec = {
    *  session is up — seated now, its pane would start the session first,
    *  without the opening prompt or the agent it belongs to. */
   byAgent?: boolean;
+  /** The id to take: a background helper's, opened as a chat, keeps its own
+   *  so its agent still knows it by it. */
+  id?: string;
 } & ({ provider: 'claude'; settings: ClaudeSettings } | { provider: 'codex'; settings: CodexSettings });
 
 /**
@@ -51,7 +54,7 @@ export async function createChat(spec: ChatSpec): Promise<string> {
   const { folders } = useChats.getState();
   const group = usePanes.getState().group;
   const n = folders.reduce((a, f) => a + f.chats.filter(c => c.group === group).length, 0) + 1;
-  const id = newId('c');
+  const id = spec.id ?? newId('c');
 
   // A child lives in its parent's group, wherever the user is looking now.
   const parent = spec.parentId ? useChats.getState().findChat(spec.parentId) : null;

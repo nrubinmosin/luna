@@ -115,6 +115,7 @@ fn handle(req: &mut tiny_http::Request) -> u16 {
     // The hook's stdin, forwarded as the body: a small JSON object.
     let mut body = String::new();
     let _ = req.as_reader().take(64 * 1024).read_to_string(&mut body);
+    crate::agents::on_hook(chat_id, &body);
     match crate::activity::HookEvent::parse(&body) {
         Some(ev) => {
             crate::activity::on_hook(chat_id, ev);
@@ -178,6 +179,10 @@ mod live {
         assert_eq!(post(r#"{"hook_event_name":"UserPromptSubmit","session_id":"s"}"#).unwrap(), 204);
         assert_eq!(crate::activity::hook_turn("chat-hub-test"), Some(crate::activity::Turn::Busy));
         assert_eq!(post(r#"{"hook_event_name":"Notification","notification_type":"permission_prompt"}"#).unwrap(), 204);
+        assert_eq!(crate::activity::hook_turn("chat-hub-test"), Some(crate::activity::Turn::Waiting));
+        // What a permission prompt is for reaches the agent layer too.
+        let ask = r#"{"hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"ls"}}"#;
+        assert_eq!(post(ask).unwrap(), 204);
         assert_eq!(crate::activity::hook_turn("chat-hub-test"), Some(crate::activity::Turn::Waiting));
         assert_eq!(post(r#"{"hook_event_name":"Stop"}"#).unwrap(), 204);
         assert_eq!(crate::activity::hook_turn("chat-hub-test"), Some(crate::activity::Turn::Idle));

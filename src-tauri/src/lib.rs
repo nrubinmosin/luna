@@ -3,6 +3,7 @@ mod accounts;
 mod activity;
 mod agentlog;
 mod agents;
+mod background;
 mod claude;
 mod cli;
 mod codex;

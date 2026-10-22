@@ -8,10 +8,10 @@
  */
 import { useEffect } from 'react';
 import {
-  accountUsage, agentSpawned, chatNames, codexModels, deleteSession, ensureClaudeSession, ensureCodexSession,
-  type AgentSpawnRequest, type CodexModelDto
+  accountUsage, agentSpawned, backgroundHelpers, chatNames, codexModels, deleteSession, ensureClaudeSession, ensureCodexSession,
+  type AgentSpawnRequest, type CodexModelDto, type PromotedDto
 } from '../../ipc/commands';
-import { onAgentDeleted, onAgentSpawn } from '../../ipc/events';
+import { onAgentDeleted, onAgentPromote, onAgentSpawn, onBackgroundHelpers } from '../../ipc/events';
 import { logWarn } from '../../shared/lib/log';
 import {
   CODEX_APPROVALS, CODEX_SANDBOXES, EFFORTS, MODEL_CLI, MODELS, PERM_CLI, accountKey,
@@ -24,6 +24,7 @@ import { createChat } from '../new-chat/create';
 import type { From } from '../new-chat/draft';
 import { usePanes } from '../panes/panes.store';
 import { claude, codex } from '../providers';
+import { useBackground } from './background.store';
 
 /**
  * A setting the agent asked for and Luna cannot give: said back to it as the
@@ -148,11 +149,68 @@ async function spawn(req: AgentSpawnRequest): Promise<void> {
   await agentSpawned(req.requestId, id, made?.name ?? null, null);
 }
 
+const samePath = (a: string, b: string) =>
+  a.replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase() === b.replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase();
+
+/**
+ * A background helper the user opened as a chat: a row under its parent,
+ * keeping the helper's id, and its conversation resumed when a pane first
+ * shows it — the core has already let go of it.
+ */
+async function promote(p: PromotedDto): Promise<void> {
+  const account = useAccounts.getState().accounts.find(a => a.provider === p.provider && samePath(a.path, p.accountPath));
+  if (!account) throw new Error(`no ${p.provider} account at ${p.accountPath}`);
+  const s = p.settings as Record<string, string | null | undefined>;
+  const word = (k: string) => (typeof s[k] === 'string' ? (s[k] as string) : '');
+  const defaults = (await (p.provider === 'claude' ? claude : codex).settingsDefaults(account.path, p.folder)).values;
+  const spec =
+    p.provider === 'claude'
+      ? {
+          provider: 'claude' as const,
+          settings: {
+            model: modelFromSetting(word('model')) ?? (defaults as ClaudeSettings).model,
+            effort: effortFromSetting(word('effort')) ?? (defaults as ClaudeSettings).effort,
+            perm: permFromSetting(word('permissionMode')) ?? (defaults as ClaudeSettings).perm
+          }
+        }
+      : {
+          provider: 'codex' as const,
+          settings: {
+            model: word('model') || (defaults as CodexSettings).model,
+            effort: codexEffortFromSetting(word('effort')) ?? (defaults as CodexSettings).effort,
+            approval: codexApprovalFromSetting(word('approval')) ?? (defaults as CodexSettings).approval,
+            sandbox: codexSandboxFromSetting(word('sandbox')) ?? (defaults as CodexSettings).sandbox
+          }
+        };
+  const parent = p.parent ? useChats.getState().findChat(p.parent) : null;
+  const id = await createChat({
+    ...spec,
+    id: p.id,
+    folder: p.folder,
+    account,
+    worktree: !!p.worktreePath,
+    tools: p.tools,
+    parentId: parent?.id,
+    name: p.name ?? undefined,
+    inWorktree: p.worktreePath ?? undefined,
+    byAgent: true
+  });
+  if (p.sessionId) useChats.getState().setSessionId(id, p.sessionId);
+  if (parent) useChats.getState().setChildrenOpen(parent.id, true);
+  else usePanes.getState().autoPlace(id);
+}
+
 /** Mounted once in App: listens for the core's agent requests. */
 export function useAgentBridge() {
   useEffect(() => {
     let dead = false;
     const offs: Array<() => void> = [];
+    const { setHelpers } = useBackground.getState();
+    void backgroundHelpers().then(rows => !dead && setHelpers(rows)).catch(() => {});
+    void onBackgroundHelpers(setHelpers).then(off => (dead ? off() : offs.push(off)));
+    void onAgentPromote(p => {
+      promote(p).catch(e => logWarn('agents', `opening helper ${p.id} as a chat failed: ${String(e)}`));
+    }).then(off => (dead ? off() : offs.push(off)));
     void onAgentSpawn(req => {
       spawn(req).catch(e => {
         logWarn('agents', `spawn for ${req.parentId} failed: ${String(e)}`);

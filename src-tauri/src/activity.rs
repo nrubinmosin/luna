@@ -88,6 +88,9 @@ impl HookEvent {
         match v["hook_event_name"].as_str()? {
             "UserPromptSubmit" | "PostToolUse" | "PostToolUseFailure" | "SubagentStop" => Some(HookEvent::Busy),
             "Stop" => Some(HookEvent::Idle),
+            // A permission prompt is up, or a question the model put.
+            "PermissionRequest" => Some(HookEvent::Waiting),
+            "PreToolUse" if v["tool_name"] == "AskUserQuestion" => Some(HookEvent::Waiting),
             "StopFailure" => Some(HookEvent::Failed(api_error_kind(v["error"].as_str().unwrap_or("")))),
             "SessionEnd" => Some(HookEvent::Gone),
             "Notification" => match v["notification_type"].as_str().unwrap_or("") {
@@ -158,6 +161,10 @@ pub struct TurnState {
 }
 
 pub fn turn_state(chat_id: &str) -> Option<TurnState> {
+    // A helper with no terminal keeps its own count (background.rs).
+    if let Some(t) = crate::background::turn_state(chat_id) {
+        return Some(t);
+    }
     let st = state().lock().unwrap_or_else(|e| e.into_inner());
     let t = st.tracks.get(chat_id)?;
     let busy = st.summary.sessions.iter().find(|s| s.id == chat_id).map(|s| s.busy).unwrap_or(false);
@@ -196,6 +203,22 @@ pub struct SessionActivity {
 }
 
 impl SessionActivity {
+    /// A session known only by its turn: a background helper, whose turn is
+    /// its process (background.rs).
+    pub fn of_turn(id: &str, turn: Turn, busy: bool) -> SessionActivity {
+        SessionActivity {
+            id: id.to_string(),
+            turn,
+            procs: Vec::new(),
+            output_fresh: false,
+            busy,
+            stalled: None,
+            hook: None,
+            disk: None,
+            output_age_ms: 0,
+        }
+    }
+
     /// Why this session holds the machine, or "" when it does not.
     pub fn why(&self) -> String {
         let word = |t: Option<Turn>| match t {
@@ -348,24 +371,28 @@ pub fn reset_idle() {
     st.summary.idle_since_ms = None;
 }
 
-/// What the disk says about a session's turn right now.
-fn disk_turn(p: &crate::pty::ActivityProbe) -> Option<Turn> {
-    let raw = match p.provider {
+/// What the disk says about a session's turn right now, and when it last
+/// changed, where the CLI says (Claude Code's registry).
+fn disk_turn(p: &crate::pty::ActivityProbe) -> Option<(Turn, Option<u64>)> {
+    let (raw, at) = match p.provider {
         Provider::Claude => crate::claude::session::status(p.pid, &p.cwd, p.spawned_at_ms, &p.account_path)?,
-        Provider::Codex => crate::codex::session::status(&crate::codex::session::Live {
-            chat_id: &p.id,
-            cwd: &p.cwd,
-            spawned_at_ms: p.spawned_at_ms,
-            resume: p.resume.as_deref(),
-            account_path: &p.account_path,
-            last_output_ms: p.last_output_ms,
-        })?,
+        Provider::Codex => (
+            crate::codex::session::status(&crate::codex::session::Live {
+                chat_id: &p.id,
+                cwd: &p.cwd,
+                spawned_at_ms: p.spawned_at_ms,
+                resume: p.resume.as_deref(),
+                account_path: &p.account_path,
+                last_output_ms: p.last_output_ms,
+            })?,
+            None,
+        ),
     };
     // Codex keeps no record of a pending approval; its screen says so.
     if p.asking && turn_of(&raw) == Turn::Busy {
-        return Some(Turn::Waiting);
+        return Some((Turn::Waiting, at));
     }
-    Some(turn_of(&raw))
+    Some((turn_of(&raw), at))
 }
 
 /// The API error a session's last turn ended on, per its transcript. Codex
@@ -461,9 +488,10 @@ fn combine(t: &mut Track, disk: Option<Turn>, now: u64) -> Turn {
     }
 }
 
-/// One pass over every live session. Called by the sampler thread; public so
-/// a test can drive it with probes of its own.
-pub fn sample(probes: Vec<crate::pty::ActivityProbe>) -> Summary {
+/// One pass over every live session, plus the background helpers as they
+/// stand (`helpers`), which keep no track here. Called by the sampler thread;
+/// public so a test can drive it with probes of its own.
+pub fn sample(probes: Vec<crate::pty::ActivityProbe>, helpers: Vec<SessionActivity>) -> Summary {
     let now = now_ms();
     let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
     let st = &mut *st;
@@ -475,7 +503,13 @@ pub fn sample(probes: Vec<crate::pty::ActivityProbe>) -> Summary {
     for p in &probes {
         let t = track(&mut st.tracks, &mut st.ended, &p.id);
 
-        let disk = disk_turn(p);
+        let (disk, disk_at) = disk_turn(p).map_or((None, None), |(d, at)| (Some(d), at));
+        // A registry that changed after the hook spoke is the later word: a
+        // prompt answered "No" ends the turn with no Stop, and the waiting
+        // the hook said would otherwise stand for STALE_WAIT_MS.
+        if disk == Some(Turn::Idle) && t.hook == Some(Turn::Waiting) && disk_at.is_some_and(|at| at > t.hook_at_ms) {
+            t.hook = Some(Turn::Idle);
+        }
         let turn = combine(t, disk, now);
         // Without a hook the start of a turn is seen at the sample after it
         // happened; a child born in between is still the turn's.
@@ -535,6 +569,7 @@ pub fn sample(probes: Vec<crate::pty::ActivityProbe>) -> Summary {
         });
     }
 
+    sessions.extend(helpers);
     let busy = sessions.iter().filter(|s| s.busy).count();
     let parked = |s: &&SessionActivity| !s.busy && s.turn == Turn::Waiting;
     let waiting = sessions.iter().filter(parked).filter(|s| s.stalled.is_none()).count();
@@ -570,7 +605,7 @@ pub fn start() {
                 for p in probes.iter_mut().filter(|p| p.provider == Provider::Codex) {
                     p.asking = pty.screen(&p.id).is_some_and(|s| crate::codex::session::asks(&s));
                 }
-                let summary = sample(probes);
+                let summary = sample(probes, crate::background::activity());
                 crate::power::tick(&summary);
             }
         })
@@ -593,6 +628,8 @@ mod tests {
         assert_eq!(ev("Notification", r#","notification_type":"permission_prompt""#), Some(HookEvent::Waiting));
         assert_eq!(ev("Notification", r#","notification_type":"idle_prompt""#), None);
         assert_eq!(ev("PreToolUse", ""), None);
+        assert_eq!(ev("PreToolUse", r#","tool_name":"AskUserQuestion""#), Some(HookEvent::Waiting));
+        assert_eq!(ev("PermissionRequest", r#","tool_name":"Bash""#), Some(HookEvent::Waiting));
         assert_eq!(HookEvent::parse("not json"), None);
         assert_eq!(ev("StopFailure", r#","error":"rate_limit""#), Some(HookEvent::Failed("rate_limit")));
         assert_eq!(ev("StopFailure", r#","error":"something_new""#), Some(HookEvent::Failed("unknown")));

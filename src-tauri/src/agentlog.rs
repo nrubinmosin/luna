@@ -40,6 +40,8 @@ pub struct Spawn<'a> {
     pub name: Option<String>,
     pub prompt: &'a str,
     pub auto_delete: bool,
+    /// Runs with no terminal and no row (background.rs).
+    pub background: bool,
 }
 
 pub fn spawned(s: &Spawn) {
@@ -60,6 +62,7 @@ pub fn spawned(s: &Spawn) {
             "name": s.name,
             "prompt": prompt,
             "autoDelete": s.auto_delete,
+            "background": s.background,
         }),
     );
 }
