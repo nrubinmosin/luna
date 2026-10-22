@@ -29,8 +29,8 @@ function digitOf(e: KeyboardEvent): number | null {
  *
  * Ctrl+<digit> is safe to take: a terminal has no encoding for it, so nothing
  * downstream could have used it anyway. Nor has it one for Ctrl+Shift+<letter>
- * apart from Ctrl+<letter>, so Ctrl+Shift+B and Ctrl+Shift+W take nothing from
- * the CLIs — Ctrl+B and Ctrl+W themselves travel on. Ctrl+Tab (without Shift, which Claude
+ * apart from Ctrl+<letter>, so Ctrl+Shift+B, Ctrl+Shift+T and Ctrl+Shift+W take
+ * nothing from the CLIs — Ctrl+B, Ctrl+T and Ctrl+W themselves travel on. Ctrl+Tab (without Shift, which Claude
  * Code binds) and F1 are taken always: the CLIs bind neither. Ctrl+arrows were the obvious
  * pick for moving between panes and are left alone — they move by word in the
  * CLI's prompt. Escape is deliberately left alone —
@@ -87,13 +87,19 @@ export function useKeymap(opts: { openNewChat: () => void; closeModal: () => voi
         return;
       }
 
-      // Ctrl+Shift+B pins the sidebar or lets it slide away; Ctrl+Shift+W
-      // goes to the next chat that is waiting for you. By physical key, so a
-      // Cyrillic layout gets them too.
+      // Ctrl+Shift+B pins the sidebar or lets it slide away; Ctrl+Shift+T
+      // opens a new group, as Ctrl+T a tab in a browser; Ctrl+Shift+W goes to
+      // the next chat that is waiting for you. By physical key, so a Cyrillic
+      // layout gets them too.
       if (e.shiftKey && e.code === 'KeyB') {
         take();
         const shell = useShell.getState();
         shell.setPinned(!shell.pinned);
+        return;
+      }
+      if (e.shiftKey && e.code === 'KeyT') {
+        take();
+        usePanes.getState().addGroup();
         return;
       }
       if (e.shiftKey && e.code === 'KeyW') {

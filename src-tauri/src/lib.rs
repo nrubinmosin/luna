@@ -53,6 +53,7 @@ pub fn run() {
     {
         return;
     }
+    lifecycle::wait_for_previous();
     log::install_panic_hook();
 
     // A dev build driven by a script runs beside the Luna a person is using,
@@ -130,8 +131,10 @@ pub fn run() {
             watchdog::start(app.handle().clone());
 
             let open = MenuItem::with_id(app, "open", "Open", true, None::<&str>)?;
+            // The window only: the sessions run on in the core.
+            let restart = MenuItem::with_id(app, "restart", "Restart window", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&open, &quit])?;
+            let menu = Menu::with_items(app, &[&open, &restart, &quit])?;
             TrayIconBuilder::with_id("main")
                 .icon(app.default_window_icon().unwrap().clone())
                 .tooltip("Luna")
@@ -139,6 +142,7 @@ pub fn run() {
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "open" => show_main(app),
+                    "restart" => lifecycle::restart_from_tray(app),
                     "quit" => lifecycle::quit_from_tray(app),
                     _ => {}
                 })

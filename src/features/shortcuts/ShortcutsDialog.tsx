@@ -19,6 +19,7 @@ const KEYBOARD: Row[] = [
   ['Alt+1…4', 'Several panes: hold that pane up on the sheet, again to put it back'],
   ['Ctrl+1…9', 'One pane: show the chat with that number in the list'],
   ['Ctrl+Tab', 'Next window group, I → II → … and round (Ctrl+Shift+Tab stays with the CLI)'],
+  ['Ctrl+Shift+T', 'New window group, switched to (Ctrl+T stays with the CLI)'],
   ['Ctrl+0', 'Back to the grid'],
   ['Ctrl+Shift+W', 'The next chat that is waiting for you'],
   ['Ctrl+Shift+B', 'Keep the sidebar open, or let it slide away to the edge'],

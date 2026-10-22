@@ -279,6 +279,53 @@ pub fn quit_from_tray(app: &AppHandle) {
     });
 }
 
+/// Restart from the tray starts the window over and leaves the core alone:
+/// the sessions keep running, and the new window finds them as it would after
+/// a close to the tray. For when the page goes wrong in a way the watchdog
+/// cannot see — terminals drawing garbage while the page still answers.
+pub fn restart_from_tray(app: &AppHandle) {
+    if QUITTING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let exe = match tauri::process::current_binary(&app.env()) {
+        Ok(exe) => exe,
+        Err(e) => {
+            crate::log::warn("app", &format!("cannot restart: {e}"));
+            QUITTING.store(false, Ordering::SeqCst);
+            return;
+        }
+    };
+    let started = std::process::Command::new(&exe)
+        .arg(AFTER_FLAG)
+        .arg(std::process::id().to_string())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    if let Err(e) = started {
+        crate::log::warn("app", &format!("cannot restart: {} did not start: {e}", exe.display()));
+        QUITTING.store(false, Ordering::SeqCst);
+        return;
+    }
+    exiting("Restart from the tray menu; the core and its sessions stay");
+    app.exit(0);
+}
+
+const AFTER_FLAG: &str = "--after";
+
+/// `luna --after <pid>`: the window a tray Restart started. It waits for the
+/// one it replaces to be gone first, or the single-instance check would find
+/// that one still there and hand it this launch instead.
+pub fn wait_for_previous() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) != Some(AFTER_FLAG) {
+        return;
+    }
+    if let Some(pid) = args.get(1).and_then(|a| a.parse().ok()) {
+        watcher::wait_gone(pid, Duration::from_secs(30));
+    }
+}
+
 /// Leaves at once, for a way out that does not come from the window — the
 /// PC being shut down under Luna. Does what the app's own exit would: no new
 /// events, the power request let go.
@@ -355,6 +402,16 @@ mod watcher {
             .is_err()
         {
             crate::log::warn("app", "could not start the exit watcher");
+        }
+    }
+
+    /// Returns once `pid` has exited, or after `limit` at most.
+    pub fn wait_gone(pid: u32, limit: std::time::Duration) {
+        // SAFETY: a handle this function opens, waits on and closes.
+        unsafe {
+            let Ok(h) = OpenProcess(PROCESS_SYNCHRONIZE, false, pid) else { return };
+            let _ = WaitForSingleObject(h, limit.as_millis() as u32);
+            let _ = CloseHandle(h);
         }
     }
 
@@ -440,6 +497,22 @@ mod watcher {
     pub const FLAG: &str = "--watch-exit";
     pub fn spawn() {}
     pub fn watch(_pid: u32) {}
+
+    /// No handle to wait on here: `kill -0` answers while the process lives.
+    pub fn wait_gone(pid: u32, limit: std::time::Duration) {
+        let deadline = std::time::Instant::now() + limit;
+        while std::time::Instant::now() < deadline {
+            let alive = std::process::Command::new("kill")
+                .args(["-0", &pid.to_string()])
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_ok_and(|s| s.success());
+            if !alive {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    }
 }
 
 #[cfg(test)]

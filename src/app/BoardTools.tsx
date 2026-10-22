@@ -53,36 +53,12 @@ export function BoardTools() {
           a set of chats can be parked and brought back whole. */}
       <div className="tb-seg" role="group" aria-label="Group">
         {Array.from({ length: count }, (_, g) => (
-          <button
-            key={g}
-            className={group === g && count > 1 ? 'tb-group-live' : undefined}
-            aria-pressed={group === g}
-            onClick={() => setGroup(g)}
-            title={`Group ${groupLabel(g)}`}
-          >
+          <button key={g} aria-pressed={group === g} onClick={() => setGroup(g)} title={`Group ${groupLabel(g)}`}>
             {groupLabel(g)}
-            {group === g && count > 1 && (
-              <span
-                role="button"
-                className="tb-group-x"
-                aria-disabled={occupied}
-                title={
-                  occupied
-                    ? `Group ${groupLabel(g)} still has chats — move or delete them to remove it`
-                    : `Remove group ${groupLabel(g)}`
-                }
-                onClick={e => {
-                  e.stopPropagation();
-                  useChats.getState().removeGroup(g);
-                }}
-              >
-                ×
-              </span>
-            )}
           </button>
         ))}
         {count < MAX_GROUPS && (
-          <button onClick={addGroup} title={`New group ${groupLabel(count)}`}>
+          <button onClick={addGroup} title={`New group ${groupLabel(count)} (Ctrl+Shift+T)`}>
             +
           </button>
         )}
@@ -100,6 +76,23 @@ export function BoardTools() {
         <Icon name="reset" />
         Clear
       </button>
+      {/* Removing a group is its own button, away from the numerals: on one of
+          them it was a click away from switching groups. */}
+      {count > 1 && (
+        <button
+          className="tb-btn"
+          disabled={occupied}
+          onClick={() => useChats.getState().removeGroup(group)}
+          title={
+            occupied
+              ? `Group ${groupLabel(group)} still has chats — move or delete them to remove it`
+              : `Remove group ${groupLabel(group)}`
+          }
+        >
+          <Icon name="trash" />
+          Remove
+        </button>
+      )}
       <span data-tauri-drag-region style={{ flex: 1, alignSelf: 'stretch' }} />
       <button
         className="tb-btn"
