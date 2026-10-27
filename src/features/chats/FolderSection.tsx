@@ -1,13 +1,9 @@
-import { useCallback, useEffect, useState } from 'react';
 import type { Chat, Folder } from '../../shared/types';
 import { tail2 } from '../../shared/lib/format';
 import { Chevron, ToolButton } from '../../shared/ui/icons';
-import { allChats, useChats } from './chats.store';
+import { useChats } from './chats.store';
 import { useNewChat } from '../new-chat/newchat.store';
-import { useAccounts } from '../accounts/accounts.store';
 import { ChatRow } from './ChatRow';
-import { orphanWorktrees } from '../../ipc/commands';
-import { SweepWorktreesDialog } from './SweepWorktreesDialog';
 
 /**
  * The folder's rows in sidebar order: a chat with no parent, then the chats
@@ -50,36 +46,6 @@ export function FolderSection({ folder }: { folder: Folder }) {
   const toggleFolder = useChats(s => s.toggleFolder);
   const t = tail2(folder.path);
 
-  // Worktrees left behind by crashes, by chats deleted before their path was
-  // known, or by chats deleted with the worktree kept. Recheck whenever the
-  // folder's chats change — that is when one is most likely to have just been
-  // created or dropped.
-  const [orphans, setOrphans] = useState<string[]>([]);
-  // Every group's chats, not just the ones listed here: the sidebar shows one
-  // group, and sweeping on that view would delete the worktrees belonging to
-  // chats parked in the other three.
-  const inUseKey = useChats(s =>
-    allChats(s.folders)
-      .map(c => c.worktreePath)
-      .filter((p): p is string => !!p)
-      .join('|')
-  );
-
-  const rescan = useCallback(() => {
-    const accountPaths = useAccounts.getState().accounts.map(a => a.path);
-    void orphanWorktrees(folder.path, inUseKey ? inUseKey.split('|') : [], accountPaths)
-      .then(setOrphans)
-      .catch(() => setOrphans([]));
-  }, [folder.path, inUseKey]);
-
-  useEffect(() => {
-    rescan();
-    const t = setInterval(rescan, 60_000);
-    return () => clearInterval(t);
-  }, [rescan]);
-
-  const [sweeping, setSweeping] = useState(false);
-
   return (
     <div className="tp-group">
       <div onClick={() => toggleFolder(folder.id)} title={folder.path} className="tp-head">
@@ -87,19 +53,6 @@ export function FolderSection({ folder }: { folder: Folder }) {
           <span className="tp-where">{t.parent}</span>
           <span>{t.leaf}</span>
         </span>
-        {orphans.length > 0 && (
-          <ToolButton
-            icon="sweep"
-            size={22}
-            label={orphans.length}
-            title={
-              `${orphans.length} stale worktree${orphans.length > 1 ? 's' : ''} no chat is using — ` +
-              `click to review and delete:\n` +
-              orphans.join('\n')
-            }
-            onClick={() => setSweeping(true)}
-          />
-        )}
         <ToolButton
           icon="plus"
           size={22}
@@ -108,18 +61,6 @@ export function FolderSection({ folder }: { folder: Folder }) {
         />
         <Chevron open={folder.open} />
       </div>
-      {sweeping && (
-        <SweepWorktreesDialog
-          folder={folder.path}
-          orphans={orphans}
-          inUse={inUseKey ? inUseKey.split('|') : []}
-          accountPaths={useAccounts.getState().accounts.map(a => a.path)}
-          onClose={() => {
-            setSweeping(false);
-            rescan();
-          }}
-        />
-      )}
       {/* Always mounted, folded by its row height: the fold animates both ways. */}
       <div className="tp-fold" data-open={folder.open ? 'yes' : 'no'}>
         <div>

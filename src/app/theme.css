@@ -524,6 +524,21 @@ body { margin: 0; overflow: hidden; }
 [data-app] button.tb-btn:not(:disabled):hover { border-color: rgba(255, 255, 255, .35); }
 [data-app] .tb-seg > button:not(:disabled):active,
 [data-app] button.tb-btn:not(:disabled):active { transform: scale(.94); background: rgba(0, 0, 40, .15); }
+/* How many stale worktrees there are, on the Worktrees button: the orange of
+   a taskbar button that wants attention. */
+[data-app] .tb-count {
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(180deg, #ffb347, #e07b00);
+  box-shadow: inset 0 0 0 1px rgba(120, 50, 0, .45);
+  color: #fff;
+  font: 700 var(--fs-1) var(--sans-serif);
+  text-shadow: 0 1px 1px rgba(80, 30, 0, .5);
+}
 [data-app] .tb-sep { width: 1px; height: 18px; background: rgba(255, 255, 255, .28); flex: none; }
 
 /* ------------------------------------------------------------------------
@@ -673,6 +688,18 @@ body { margin: 0; overflow: hidden; }
   text-shadow: none;
 }
 [data-app] .pchip b { font-weight: 700; }
+/* The folder the session runs in: by the name, in the title's own white,
+   not one more chip among the settings. Whole: the name gives way first. */
+[data-app] .pane-folder {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #fff;
+  font: 600 var(--fs-3) var(--sans-serif);
+  white-space: nowrap;
+  text-shadow: 1px 1px color-mix(in oklab, var(--c) 45%, black);
+}
 [data-app] .pane-sid {
   flex: none;
   font: 400 var(--fs-1) "JetBrains Mono", monospace;
@@ -706,6 +733,7 @@ body { margin: 0; overflow: hidden; }
   background: linear-gradient(180deg, color-mix(in oklab, var(--c) 52%, #d9d0c2), color-mix(in oklab, var(--c) 64%, #b3a794));
 }
 [data-app] .pane[data-focus="no"] .pane-bar .title-bar-text,
+[data-app] .pane[data-focus="no"] .pane-folder,
 [data-app] .pane[data-focus="no"] .ctx-meter {
   color: #fff;
   text-shadow: 1px 1px color-mix(in oklab, var(--c) 55%, #5c5446);
@@ -720,7 +748,8 @@ body { margin: 0; overflow: hidden; }
   background: linear-gradient(180deg, #525252 0%, #333333 10%, #2a2a2a 45%, #212121 55%, #282828 100%);
   box-shadow: inset 0 -3px 0 var(--c);
 }
-[data-app][data-theme="dark"] .pane-bar .title-bar-text { text-shadow: 1px 1px #000; }
+[data-app][data-theme="dark"] .pane-bar .title-bar-text,
+[data-app][data-theme="dark"] .pane-folder { text-shadow: 1px 1px #000; }
 [data-app][data-theme="dark"] .pchip {
   background: rgba(255, 255, 255, .07);
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .08);
@@ -733,6 +762,7 @@ body { margin: 0; overflow: hidden; }
   box-shadow: inset 0 -3px 0 color-mix(in oklab, var(--c) 40%, #232323);
 }
 [data-app][data-theme="dark"] .pane[data-focus="no"] .pane-bar .title-bar-text,
+[data-app][data-theme="dark"] .pane[data-focus="no"] .pane-folder,
 [data-app][data-theme="dark"] .pane[data-focus="no"] .ctx-meter { color: #a3a3a3; text-shadow: none; }
 [data-app][data-theme="dark"] .pane[data-focus="no"] .pchip,
 [data-app][data-theme="dark"] .pane[data-focus="no"] .pchip b,
@@ -740,10 +770,10 @@ body { margin: 0; overflow: hidden; }
 
 /* A narrow pane gives up its details chip by chip before the name and the
    controls. */
-@container (max-width: 720px) { [data-app] .pchip.opt-3 { display: none; } }
 @container (max-width: 600px) { [data-app] .pchip.opt-2, [data-app] .pane-sid { display: none; } }
 @container (max-width: 500px) { [data-app] .pchip.opt-1, [data-app] .ctx-meter .track { display: none; } }
 @container (max-width: 380px) { [data-app] .pane-chips { display: none; } }
+@container (max-width: 300px) { [data-app] .pane-folder { display: none; } }
 
 /* Waiting for you: the bar flashes orange the way an XP taskbar button did,
    and a balloon says so over a pane you are not looking at. */

@@ -300,6 +300,18 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
                 </span>
               )}
 
+              {/* Where the session runs is not one of its settings: it sits by
+                  the name, outside the chips, and is the last detail to go. */}
+              {!editing && t && (
+                <span
+                  className="pane-folder"
+                  title={`Folder: ${folder.path}${chat.worktreePath ? `\nWorktree: ${chat.worktreePath}` : ''}`}
+                >
+                  <Icon name="folder" size={12} />
+                  {t.leaf}
+                </span>
+              )}
+
               {!editing && (
                 <span className="pane-chips">
                   <span className="pchip opt-1" title={`Running on ${PROVIDER_LABEL[chat.provider]} account "${chat.account}"`}>
@@ -322,7 +334,6 @@ ${chat.worktreePath}` : ''}`}>
                     </span>
                   )}
                   {chat.provider === 'codex' ? <codex.Meta chat={chat} /> : <claude.Meta chat={chat} />}
-                  <span className="pchip opt-3" title={folder.path}>{t!.leaf}</span>
                 </span>
               )}
 
