@@ -1,5 +1,6 @@
 import { MAX_GROUPS, currentLayout, groupLabel, usePanes, type Layout } from '../features/panes/panes.store';
 import { allChats, useChats } from '../features/chats/chats.store';
+import { useWorktrees } from '../features/chats/worktrees.store';
 import { Icon, LayoutGlyph, SidebarGlyph, type IconName } from '../shared/ui/icons';
 import { useShell, type ThemePref } from './shell.store';
 
@@ -11,7 +12,7 @@ const THEMES: Record<ThemePref, { icon: IconName; title: string }> = {
 
 /**
  * The board's controls, on the window's title bar: the sidebar, the four
- * layouts, the groups, Even out and Clear, and the theme. They sat in a
+ * layouts, the groups, Even out and Clear, stale worktrees, and the theme. They sat in a
  * card at the top of the sidebar, which cost its height and went away with
  * it; up here they are always within reach, whatever the sidebar is doing.
  */
@@ -24,6 +25,7 @@ export function BoardTools() {
   const occupied = useChats(s => allChats(s.folders).some(c => c.group === group));
   const pinned = useShell(s => s.pinned);
   const theme = useShell(s => s.theme);
+  const stale = useWorktrees(s => s.stale.length);
   const { setLayout, setGroup, addGroup, resetGroup, resetSplits } = usePanes.getState();
 
   return (
@@ -94,6 +96,20 @@ export function BoardTools() {
         </button>
       )}
       <span data-tauri-drag-region style={{ flex: 1, alignSelf: 'stretch' }} />
+      {/* Not the board's: worktrees belong to folders, whatever group is up. */}
+      <button
+        className="tb-btn"
+        onClick={() => useWorktrees.getState().setOpen(true)}
+        title={
+          stale
+            ? `${stale} worktree${stale > 1 ? 's' : ''} Claude Code or Codex left behind with no chat in ${stale > 1 ? 'them' : 'it'} — review and delete`
+            : 'Worktrees left behind with no chat in them — none right now'
+        }
+      >
+        <Icon name="sweep" />
+        Worktrees
+        {stale > 0 && <span className="tb-count">{stale}</span>}
+      </button>
       <button
         className="tb-btn"
         onClick={() => useShell.getState().cycleTheme()}

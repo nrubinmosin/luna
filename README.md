@@ -223,9 +223,12 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
 - Sessions with no chat row left to reach them — lost to a half-written state restore, say
   — are listed at the top of the sidebar, with what they are
   working on, and can be adopted back or killed.
-- A folder with worktrees left behind by deleted chats offers to sweep them; nothing a
-  live session sits in is ever swept — Claude Code's under the folder, Codex's under the
-  accounts. Deleting a chat takes its worktree, and the branch Claude Code made for it,
+- **Worktrees** on the title bar lists the worktrees Claude Code and Codex left behind with
+  no chat in them, by folder and by CLI, with a count on the button when there are any.
+  Each is looked inside first: the clean ones start ticked, the ones holding uncommitted
+  files or commits on no other branch say so. Delete them one by one or all ticked at
+  once; nothing a live session sits in is ever deleted.
+- Deleting a chat takes its worktree, and the branch Claude Code made for it,
   along by default; the checkbox can be unticked per chat, and where it
   starts is set in Settings.
 - Warnings and errors from both halves of the app land in `luna.log`, next to the exe for

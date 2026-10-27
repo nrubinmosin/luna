@@ -10,6 +10,8 @@ import { AppFrame } from './AppFrame';
 import { useAccounts } from '../features/accounts/accounts.store';
 import { useNewChat } from '../features/new-chat/newchat.store';
 import { useSessionWatch } from '../features/chats/useSessionWatch';
+import { useWorktreeScan } from '../features/chats/worktrees.store';
+import { WorktreesDialog } from '../features/chats/WorktreesDialog';
 import { LoginModal } from '../features/accounts/LoginModal';
 import { useUpdates } from '../features/updates/updates.store';
 import { useCli } from '../features/updates/cli.store';
@@ -205,6 +207,7 @@ export function App() {
   useKeymap({ openNewChat, closeModal });
   useAltPeek();
   useSessionWatch();
+  useWorktreeScan();
   useAgentBridge();
   useEffect(() => {
     void useAgentAccounts.getState().init();
@@ -241,6 +244,7 @@ export function App() {
       <UpdateConfirm />
       <ShortcutsDialog />
       <SettingsDialog />
+      <WorktreesDialog />
     </div>
   );
 }

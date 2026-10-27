@@ -13,21 +13,22 @@
 import type { Terminal as XTerm } from '@xterm/xterm';
 import type { Account, Chat, ClaudeChat, CodexChat, Folder, Provider } from '../shared/types';
 import type {
-  AccountsRootInfo, BackgroundHelperDto, ClaudeDefaultsDto, CliStatusDto, CodexDefaultsDto, CodexModelDto, PowerStateDto
+  AccountsRootInfo, BackgroundHelperDto, WorktreeInfoDto, ClaudeDefaultsDto, CliStatusDto, CodexDefaultsDto, CodexModelDto, PowerStateDto
 } from '../ipc/commands';
 import { useBackground } from '../features/agents/background.store';
 import { useAccounts } from '../features/accounts/accounts.store';
 import { useAccountsWindow } from '../features/accounts/AccountsPanel';
 import { useChats } from '../features/chats/chats.store';
+import { useWorktrees } from '../features/chats/worktrees.store';
 import { useNewChat } from '../features/new-chat/newchat.store';
 import { usePanes, type Group, type Layout, type Slots } from '../features/panes/panes.store';
 import { useUpdates } from '../features/updates/updates.store';
 import { useShell } from '../app/shell.store';
 
 /** `?demo`, `?demo=dark`, `?demo=peek`, `?demo=newchat`, `?demo=codex` (the same on a Codex
- *  account), `?demo=settings`, `?demo=accounts`, `?demo=recommended`, `?demo=editor`. */
-export type Scene = 'main' | 'dark' | 'peek' | 'newchat' | 'codex' | 'settings' | 'accounts' | 'recommended' | 'editor';
-const SCENES: Scene[] = ['dark', 'peek', 'newchat', 'codex', 'settings', 'accounts', 'recommended', 'editor'];
+ *  account), `?demo=settings`, `?demo=accounts`, `?demo=recommended`, `?demo=editor`, `?demo=worktrees`. */
+export type Scene = 'main' | 'dark' | 'peek' | 'newchat' | 'codex' | 'settings' | 'accounts' | 'recommended' | 'editor' | 'worktrees';
+const SCENES: Scene[] = ['dark', 'peek', 'newchat', 'codex', 'settings', 'accounts', 'recommended', 'editor', 'worktrees'];
 
 const hoursFromNow = (h: number) => new Date(Date.now() + h * 3600_000).toISOString();
 
@@ -371,8 +372,23 @@ const RECOMMENDED = [
   { key: 'attribution', current: null, recommended: '{"commit":"","pr":"","sessionUrl":false}', why: 'No Co-Authored-By or session links in commits and PRs.', defaultOn: false, applied: false }
 ];
 
+// Worktrees left behind with no chat in them, for the Worktrees window: one
+// clean and one holding work under each CLI, and one more in the second folder.
+const STALE: Record<string, WorktreeInfoDto[]> = {
+  'C:\\src\\luna': [
+    { path: 'C:\\src\\luna\\.claude\\worktrees\\merry-coalescing-cosmos', branch: 'worktree-merry-coalescing-cosmos', uncommitted: 0, uniqueCommits: 0, touchedMs: Date.now() - 3 * 86_400_000, broken: false },
+    { path: 'C:\\src\\luna\\.claude\\worktrees\\piped-squishing-blum', branch: 'fix-updater', uncommitted: 3, uniqueCommits: 2, touchedMs: Date.now() - 5 * 3_600_000, broken: false },
+    { path: 'C:\\src\\luna-accounts\\openai\\personal\\worktrees\\d6ff\\luna', branch: null, uncommitted: 0, uniqueCommits: 0, touchedMs: Date.now() - 9 * 86_400_000, broken: false }
+  ],
+  'C:\\src\\notes': [
+    { path: 'C:\\src\\luna-accounts\\openai\\personal\\worktrees\\0a1b\\notes', branch: null, uncommitted: 1, uniqueCommits: 0, touchedMs: Date.now() - 40 * 60_000, broken: false }
+  ]
+};
+
 export function answer<T>(cmd: string, args: Record<string, unknown>, fallback: T): T {
   if (!seeded) return fallback;
+  if (cmd === 'orphan_worktrees') return (STALE[args.folder as string] ?? []).map(w => w.path) as unknown as T;
+  if (cmd === 'inspect_worktrees') return (STALE[args.folder as string] ?? []) as unknown as T;
   if (cmd === 'cli_status') return (CLI[args.provider as Provider] ?? CLI.claude) as unknown as T;
   if (cmd === 'get_accounts_root') return ROOT as unknown as T;
   if (cmd === 'claude_defaults') return DEFAULTS as unknown as T;
@@ -454,6 +470,7 @@ export function seedDemo(scene: Scene) {
   if (scene === 'codex') useNewChat.setState({ lastAccount: { provider: 'codex', name: 'personal' } });
   if (scene === 'newchat' || scene === 'codex') useNewChat.getState().openDialog('C:\\src\\luna');
   if (scene === 'accounts' || scene === 'recommended' || scene === 'editor') useAccountsWindow.getState().setOpen(true);
+  if (scene === 'worktrees') useWorktrees.getState().setOpen(true);
   // The two dialogs belong to an account row; open them the way a click would.
   const button = scene === 'recommended' ? 'Recommended settings' : scene === 'editor' ? 'Edit settings.json' : null;
   if (button) {

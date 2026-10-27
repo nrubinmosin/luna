@@ -35,7 +35,8 @@ src/                          frontend (feature-sliced)
               ToolButton, title bar glyphs; ui/ModelSelect.tsx — model drop-down (native
               <select>); ui/dialogHost.ts
   features/
-    chats/    sidebar: folders + chats (drag source, click = show), chats.store
+    chats/    sidebar: folders + chats (drag source, click = show), chats.store;
+              worktrees.store + WorktreesDialog (stale worktrees, the title bar's Worktrees)
     panes/    1/2/3/4 grid, Pane (drop target), Terminal (xterm), panes.store
               (auto-tiling lives there too: TILE_ORDER, board grows/shrinks by ±1 pane);
               peek — a sheet over the dimmed board, the same pane without remounting;
@@ -245,7 +246,7 @@ src-tauri/src/
   live under `<folder>/.claude/worktrees` on a `worktree-*` branch; Codex's are recognised by shape
   `…/worktrees/<4 hex>/<name>` plus a `.git` file (`gitdir: <repo>/.git/worktrees/<id>`) pointing back at
   the folder (`worktree::is_worktree_of`, `project_of`); every destructive path is gated on this. The
-  orphan sweep scans each account's `worktrees/` as well as the project's. Removing a Codex worktree also
+  orphan sweep (the title bar's Worktrees window, every folder at once) scans each account's `worktrees/` as well as the project's. Removing a Codex worktree also
   removes its bucket dir once empty; only `worktree-*` branches are ever deleted (Codex's checkouts have
   none). Where a session actually works is `pty::ActivityProbe::working_dir()` (Claude registry / Codex
   rollout); delete, `worktree_in_use_by_others`, `live_cwds` and `agents::caller_worktree` go by it.

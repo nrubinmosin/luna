@@ -162,7 +162,7 @@ struct Launch {
     describe: String,
 }
 
-// Creating a session means `git worktree add` plus a process spawn — seconds of
+// Creating a session means a `git fetch` before a worktree plus a process spawn — seconds of
 // blocking work that must not run on the main thread, where it would stall
 // every other chat's IPC. It used to hold the session map for that whole
 // stretch to keep two calls from double-spawning one chat, which put every
