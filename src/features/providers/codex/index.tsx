@@ -108,6 +108,8 @@ export const worktreeRe = /[\\/]worktrees[\\/][0-9a-f]{4}[\\/][^\\/]+[\\/]?$/i;
 /** The path names the account, not the project: only git knows that. */
 export const projectOf = (): string | null => null;
 export const branchPrefix = null;
+/** Ctrl+V: Codex reads the image off the clipboard itself. */
+export const pasteImageKey = '\x16';
 
 // ---------------------------------------------------------------- dialog --
 

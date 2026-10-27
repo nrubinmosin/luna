@@ -1006,6 +1006,12 @@ body { margin: 0; overflow: hidden; }
   border-color: rgba(255, 255, 255, .45);
   color: #fff;
 }
+/* A helper just spawned: the chip glows a few times, so a start is seen. */
+[data-app] .chat-row .kids[data-new="yes"] { animation: kids-new 1.2s ease-in-out 4; }
+@keyframes kids-new {
+  0%, 100% { box-shadow: 0 0 0 0 transparent; }
+  50% { box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 45%, transparent); }
+}
 /* A background helper waits on an answer: its agent is told, the chip shows it. */
 [data-app] .chat-row:not([data-active="yes"]) .kids[data-asking="yes"] { border-color: var(--wait); color: var(--wait); }
 

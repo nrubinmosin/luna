@@ -145,9 +145,12 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
 - The number on a row is what Ctrl+&lt;digit&gt; reaches: the pane it is showing in, or its
   place in the list when there is only one pane. It is filled in while the chat is on the
   board.
-- Paste or drop images and files into a pane: they are copied into the app's own media
-  store and their absolute paths are typed into the prompt, which is the only thing a
-  webview's clipboard leaves usable.
+- Ctrl+V with a screenshot on the clipboard presses the CLI's own image-paste key (Alt+V
+  for Claude Code, Ctrl+V for Codex), so the CLI attaches it as it does in any terminal.
+  Files pasted or dropped into a pane are copied into the app's own media store and their
+  absolute paths are typed into the prompt, which is the only thing a webview leaves usable.
+- Ctrl+C over a selection in a pane copies it; with nothing selected it interrupts the CLI
+  as ever. Selecting alone copies nothing.
 
 ![The new-chat dialog](docs/screenshots/new-chat.png)
 
@@ -249,22 +252,25 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
 ## Agents: sessions that run sessions
 
 A chat created with **Luna tools** ticked (off by default) gets Luna as an MCP server, and
-with it ten tools: `luna_list`, `luna_sessions`, `luna_spawn`, `luna_send`, `luna_answer`,
-`luna_read`, `luna_wait`, `luna_kill`, `luna_delete`, `luna_notify`. The model can start a helper session — another model, another
+with it eleven tools: `luna_list`, `luna_sessions`, `luna_spawn`, `luna_send`, `luna_answer`,
+`luna_read`, `luna_wait`, `luna_kill`, `luna_delete`, `luna_guide`, `luna_notify`. The model can start a helper session — another model, another
 account, Codex instead of Claude — with an opening prompt, wait for its reply, send
 follow-ups, answer what it asks, and delete it when done, worktree and branch included if it asked for one.
 `luna_notify` lets it raise a desktop notification mid-turn, titled with its chat's name and
 opening that chat when clicked, at most one every 10 seconds. The
-tools and a short instruction cost about 2k tokens of context once per session; a chat
-without the box ticked knows nothing of Luna at all.
+tools and a short instruction cost about 2k tokens of context once per session; the full
+account of sessions, accounts, models and tools is `luna_guide`'s, read only when the model
+asks for it. A chat without the box ticked knows nothing of Luna at all, and neither does a
+background helper spawned without tools.
 
 - A helper runs **in the background** unless the agent asks for `visible: true`: no row,
   no pane, no terminal — each turn is one run of the CLI's headless mode (`claude -p`,
   `codex exec`), and the next one resumes the conversation. It needs no open window, and it
   goes by itself once its answer has reached the agent and it has sat idle for 30 minutes
   with nobody reading it or writing to it (see `autoDelete` below). Its parent's row
-  shows how many there are; a click lists them with what each is doing, and opens one as a
-  chat of its own (between its turns), stops it or deletes it.
+  shows how many there are, and the count glows for a few seconds when one is spawned; a
+  click lists them with what each is doing and for how long, its model, effort, account and
+  worktree, and opens one as a chat of its own (between its turns), stops it or deletes it.
 - A visible helper is a normal chat row, nested under the one that made it and folded by
   default; the count on the parent row unfolds it. It is not seated in a pane unless you
   open it. Its own status, context and title work as for any chat.

@@ -1,5 +1,5 @@
 import { saveMedia, writeSession } from '../../ipc/commands';
-import { logInfo, logWarn } from './log';
+import { logWarn } from './log';
 
 const EXT_BY_TYPE: Record<string, string> = {
   'image/png': 'png',
@@ -64,46 +64,3 @@ export const filesFrom = (dt: DataTransfer | null): File[] => {
     .map(it => it.getAsFile())
     .filter((f): f is File => !!f);
 };
-
-/**
- * Pulls a screenshot straight out of the OS clipboard.
- *
- * The DOM route is not reliable here: the CLI reads the system clipboard
- * natively when it sees Ctrl+V, but xterm swallows that keystroke, turns it
- * into a browser paste event and forwards only the *text* to the pty — so an
- * image never reaches the CLI at all. Asking the OS directly sidesteps both
- * the missing keystroke and whatever WebView2 chooses to expose to web
- * content. Returns the saved path, or null when the clipboard holds no image.
- */
-export async function attachClipboardImage(chatId: string): Promise<string | null> {
-  if (!('__TAURI_INTERNALS__' in window)) return null;
-  try {
-    const { readImage } = await import('@tauri-apps/plugin-clipboard-manager');
-    const img = await readImage();
-    const [rgba, size] = await Promise.all([img.rgba(), img.size()]);
-    if (!rgba.length || !size.width || !size.height) return null;
-
-    // rgba() hands back raw pixels, not an encoded file; paint them into a
-    // canvas so the CLI receives an actual PNG.
-    const canvas = document.createElement('canvas');
-    canvas.width = size.width;
-    canvas.height = size.height;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return null;
-    ctx.putImageData(new ImageData(new Uint8ClampedArray(rgba), size.width, size.height), 0, 0);
-
-    const blob = await new Promise<Blob | null>(res => canvas.toBlob(res, 'image/png'));
-    if (!blob) return null;
-
-    const bytes = new Uint8Array(await blob.arrayBuffer());
-    const path = await saveMedia(chatId, `pasted-image.png`, toBase64(bytes));
-    logInfo('clipboard', `pasted ${size.width}x${size.height} image -> ${path}`);
-    if (path) await writeSession(chatId, quote(path));
-    return path;
-  } catch (e) {
-    // No image on the clipboard is the common case, not an error — but log it,
-    // because a real failure here is otherwise completely silent.
-    logInfo('clipboard', `no image read from clipboard: ${String(e)}`);
-    return null;
-  }
-}

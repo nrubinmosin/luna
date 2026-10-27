@@ -22,6 +22,8 @@ export interface ProviderUi {
   projectOf: (cwd: string) => string | null;
   /** The throwaway branch a worktree is made on; null for a detached one. */
   branchPrefix: string | null;
+  /** The key the CLI takes an image from the clipboard on, as it reaches a pty. */
+  pasteImageKey: string;
 }
 
 const UI: Record<Provider, ProviderUi> = { claude, codex };

@@ -54,6 +54,8 @@ pub struct Spec {
 
 struct Run {
     pid: Option<u32>,
+    /// When the turn started, for the window's "working 4 min".
+    started_ms: u64,
     /// Holds the job the turn's process tree lives in, for as long as it runs.
     _job: Option<crate::procs::Job>,
 }
@@ -69,6 +71,8 @@ struct Held {
 
 struct Entry {
     spec: Spec,
+    /// When it was spawned.
+    started_ms: u64,
     /// Claude Code's session id / Codex's thread id, once the first turn has
     /// said it.
     session: Option<String>,
@@ -129,6 +133,7 @@ pub fn start(id: &str, spec: Spec, prompt: &str) -> Result<(), String> {
         id.to_string(),
         Entry {
             spec,
+            started_ms: crate::throttle::now_ms(),
             session: None,
             cwd: None,
             run: None,
@@ -269,7 +274,7 @@ fn run_turn(id: &str, prompt: &str) -> Result<(), String> {
             crate::pty::kill_tree(pid);
             return Err("the helper was deleted".into());
         };
-        e.run = Some(Run { pid, _job: job });
+        e.run = Some(Run { pid, started_ms: crate::throttle::now_ms(), _job: job });
         e.error = None;
         note(e, &format!("› {}", one_line(prompt)));
     }
@@ -697,19 +702,37 @@ pub struct Row {
     pub state: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ask: Option<Ask>,
+    /// The account folder's name.
+    pub account: String,
+    pub model: Option<String>,
+    pub effort: String,
+    pub worktree: bool,
+    pub started_ms: u64,
+    /// While a turn runs, when it started.
+    pub turn_started_ms: Option<u64>,
 }
 
 /// Every helper, for the window.
 #[tauri::command]
 pub fn background_helpers() -> Vec<Row> {
-    let ids: Vec<(String, Provider)> = lock().entries.iter().map(|(id, e)| (id.clone(), e.spec.provider)).collect();
+    let ids: Vec<(String, Spec, u64, Option<u64>)> = lock()
+        .entries
+        .iter()
+        .map(|(id, e)| (id.clone(), e.spec.clone(), e.started_ms, e.run.as_ref().map(|r| r.started_ms)))
+        .collect();
     ids.into_iter()
-        .map(|(id, provider)| Row {
+        .map(|(id, spec, started_ms, turn_started_ms)| Row {
             parent: crate::agents::parent_of(&id),
             name: crate::agents::chat_name(&id).unwrap_or_default(),
             state: crate::agents::state_of(&id).0,
             ask: ask(&id),
-            provider,
+            provider: spec.provider,
+            account: std::path::Path::new(&spec.account_path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+            model: spec.model,
+            effort: spec.effort,
+            worktree: spec.worktree,
+            started_ms,
+            turn_started_ms,
             id,
         })
         .collect()
@@ -795,6 +818,7 @@ mod tests {
                 tools: false,
                 token: None,
             },
+            started_ms: 0,
             session: None,
             cwd: None,
             run: None,

@@ -159,6 +159,20 @@ function create(spec: TermSpec): Entry {
   term.loadAddon(fit);
   term.open(host);
 
+  // Ctrl+C over a selection copies it, as in any Windows terminal, instead
+  // of interrupting the CLI; with nothing selected it is ^C as ever. By
+  // physical key, so a Cyrillic layout gets it too. Nothing is copied on
+  // selecting alone.
+  term.attachCustomKeyEventHandler(e => {
+    if (e.type !== 'keydown' || e.code !== 'KeyC' || !e.ctrlKey || e.shiftKey || e.altKey || e.metaKey) return true;
+    if (!term.hasSelection()) return true;
+    const text = term.getSelection();
+    term.clearSelection();
+    navigator.clipboard.writeText(text).catch(err => logWarn('terminal', `copy failed: ${String(err)}`));
+    e.preventDefault();
+    return false;
+  });
+
   // Both screens have to be pinned to the bottom the moment they are switched
   // to. The alternate screen is a single painted frame that reads as a broken
   // one when parked above the prompt — and the normal screen is worse: opening

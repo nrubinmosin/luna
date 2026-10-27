@@ -74,7 +74,6 @@ pub fn run() {
     builder
         // Restores size, position and maximised state from last run.
         .plugin(tauri_plugin_window_state::Builder::default().build())
-        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())

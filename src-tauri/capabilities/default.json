@@ -12,7 +12,6 @@
     "core:window:allow-toggle-maximize",
     "core:window:allow-is-maximized",
     "core:window:allow-close",
-    "clipboard-manager:allow-read-image",
     "dialog:allow-open",
     "notification:default",
     "updater:default"

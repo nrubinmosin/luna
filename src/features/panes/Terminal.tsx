@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
-import { attachClipboardImage, attachFiles, filesFrom } from '../../shared/lib/attach';
+import { writeSession } from '../../ipc/commands';
+import { attachFiles, filesFrom } from '../../shared/lib/attach';
 import { ACCENT, tint } from '../../shared/lib/format';
 import type { Chat } from '../../shared/types';
 import { accountOfChat, useAccounts } from '../accounts/accounts.store';
 import { useCore } from '../core/core.store';
+import { ui } from '../providers';
 import { acquire, release, TERM_FONT_FAMILY, TERM_FONT_SIZE } from './terminals';
 
 /** A drag carrying real files, as opposed to a chat row being dropped into a pane. */
@@ -37,12 +39,6 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
     void attachFiles(chat.id, files).finally(() => setAttaching(n => Math.max(0, n - files.length)));
   };
 
-  /** Ctrl+V with an image on the clipboard; falls through to normal paste otherwise. */
-  const takeClipboardImage = () => {
-    setAttaching(n => n + 1);
-    void attachClipboardImage(chat.id).finally(() => setAttaching(n => Math.max(0, n - 1)));
-  };
-
   useEffect(() => {
     const box = boxRef.current;
     if (!box || !accountsLoaded) return;
@@ -60,19 +56,22 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
     <div
       onPasteCapture={e => {
         const files = filesFrom(e.clipboardData);
+        // A screenshot: no text, and at most the nameless `image.png` WebView2
+        // makes of a bitmap (or nothing at all — it does not always expose
+        // one). xterm would forward an empty paste, so press the CLI's own
+        // image-paste key instead: it reads the clipboard itself and attaches
+        // the image the way it does in any terminal.
+        const bitmap = files.length === 0 || (files.length === 1 && files[0].name === 'image.png');
+        if (!e.clipboardData?.getData('text') && bitmap) {
+          e.preventDefault();
+          e.stopPropagation();
+          void writeSession(chat.id, ui(chat.provider).pasteImageKey);
+          return;
+        }
         if (files.length) {
           e.preventDefault();
           e.stopPropagation();
           take(files);
-          return;
-        }
-        // WebView2 does not always expose a clipboard image to web content, and
-        // xterm would forward an empty paste. When there is no text either, go
-        // ask the OS whether it is holding an image.
-        if (!e.clipboardData?.getData('text')) {
-          e.preventDefault();
-          e.stopPropagation();
-          takeClipboardImage();
         }
       }}
       onDragOver={e => {

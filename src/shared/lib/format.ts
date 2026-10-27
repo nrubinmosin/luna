@@ -38,6 +38,16 @@ export const agoLabel = (at: number | null) => {
   return h < 48 ? `${h}h ago` : `${Math.round(h / 24)}d ago`;
 };
 
+// 1755463200000 -> "40s" / "4m" / "1h 12m": how long since then.
+export const sinceLabel = (at: number, now = Date.now()) => {
+  const s = Math.max(0, Math.round((now - at) / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  return m % 60 ? `${h}h ${m % 60}m` : `${h}h`;
+};
+
 // "28c18d5b-64d5-…" -> "28c18d5b": a session uuid the way issue claims and
 // people quote it — the first 8 characters, lowercase.
 export const shortSessionId = (id: string) => id.slice(0, 8).toLowerCase();
