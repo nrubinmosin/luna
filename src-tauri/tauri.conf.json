@@ -2,8 +2,8 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Luna",
   "mainBinaryName": "luna",
-  "version": "0.6.30",
-  "identifier": "ai.sprouter.luna",
+  "version": "0.6.31",
+  "identifier": "rm.luna",
   "build": {
     "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:1420",
