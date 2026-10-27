@@ -827,6 +827,27 @@ impl PtyManager {
         s.input_tx.send(Input::Bytes(data.to_vec())).map_err(|_| "session writer is gone".to_string())
     }
 
+    /// Types text the way a terminal pastes it: between bracketed-paste
+    /// markers once the CLI has asked for them. Thrown in bare, a few
+    /// thousand characters reached Claude Code as only their last couple of
+    /// hundred — a notice lost its head, the tag that says what it is with
+    /// it. Codex on Windows takes its text as key events (see `as_key_events`),
+    /// which carry every character already and would take the markers for
+    /// typing.
+    pub fn paste(&self, id: &str, text: &str) -> Result<(), String> {
+        let bracketed = {
+            let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+            let s = sessions.get(id).ok_or("no such session")?;
+            let keys = cfg!(windows) && s.provider == Provider::Codex;
+            !keys && s.modes.lock().unwrap_or_else(|e| e.into_inner()).on.get(&2004) == Some(&true)
+        };
+        if bracketed {
+            self.write(id, format!("\x1b[200~{text}\x1b[201~").as_bytes())
+        } else {
+            self.write(id, text.as_bytes())
+        }
+    }
+
     /// Asks the session to quit and kills it if it does not.
     pub async fn kill(&self, id: &str) {
         take_and_shut_down(self, id).await;

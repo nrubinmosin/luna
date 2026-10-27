@@ -1736,7 +1736,7 @@ fn type_in(
     turn_before: Option<crate::activity::Turn>,
     baseline: u32,
 ) -> Result<bool, String> {
-    pty.write(id, text.as_bytes())?;
+    pty.paste(id, text)?;
     std::thread::sleep(ENTER_GAP);
     pty.write(id, b"\r")?;
     // Mid-turn the text is queued by the CLI and nothing here can tell when
