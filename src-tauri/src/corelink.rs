@@ -238,14 +238,11 @@ fn write(conn: &Conn, frame: &[u8]) -> io::Result<()> {
 fn launch() -> Result<(), String> {
     let exe = core_exe()?;
     let data = crate::paths::data_dir();
-    let local = crate::paths::local_dir().unwrap_or_else(|| data.clone());
     let log = crate::log::path().clone();
     let mut cmd = std::process::Command::new(&exe);
     cmd.arg(crate::coreproc::FLAG)
         .arg("--data-dir")
         .arg(&data)
-        .arg("--local-dir")
-        .arg(&local)
         .arg("--log")
         .arg(&log)
         // Not in any project folder, so it never holds one open.

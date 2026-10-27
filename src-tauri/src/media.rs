@@ -8,8 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Pasted / dropped attachments are copied here so the CLI has a stable
 /// absolute path to read, independent of wherever the original lived.
 fn media_root(chat_id: &str) -> Result<PathBuf, String> {
-    let base = crate::paths::local_dir().ok_or("No local data directory")?;
-    Ok(base.join("media").join(sanitize(chat_id)))
+    Ok(crate::paths::data_dir().join("media").join(sanitize(chat_id)))
 }
 
 fn sanitize(raw: &str) -> String {
@@ -77,9 +76,7 @@ struct Attachment {
 }
 
 fn sweep() -> Result<usize, String> {
-    let base = crate::paths::local_dir()
-        .ok_or("No local data directory")?
-        .join("media");
+    let base = crate::paths::data_dir().join("media");
     if !base.exists() {
         return Ok(0);
     }
@@ -145,10 +142,27 @@ fn sweep() -> Result<usize, String> {
 /// hides the app, so a session can run for weeks — a startup-only sweep would
 /// never fire again on exactly the installs that accumulate the most.
 pub fn prune_periodically() {
+    drop_old_root();
     std::thread::spawn(|| loop {
         let _ = sweep();
         std::thread::sleep(std::time::Duration::from_secs(6 * 3600));
     });
+}
+
+/// Attachments used to go under `LOCALAPPDATA\luna` whatever the data dir.
+/// The CLI read each one when its prompt went, and none lives past a
+/// fortnight, so the ones still there are removed rather than moved — along
+/// with the folder, if nothing else is in it. Not when that folder is the
+/// data dir itself, as it is for an installed Luna.
+fn drop_old_root() {
+    let Some(old) = crate::paths::local_dir() else { return };
+    if !old.join("media").exists() || crate::paths::same_dir(&old, &crate::paths::data_dir()) {
+        return;
+    }
+    if fs::remove_dir_all(old.join("media")).is_ok() {
+        crate::log::info("media", &format!("removed the attachments left in {}", old.display()));
+    }
+    let _ = fs::remove_dir(&old);
 }
 
 /// Drops everything a chat accumulated; called when the chat is deleted.

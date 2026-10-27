@@ -168,7 +168,8 @@ src-tauri/src/
                 <pid>` watcher (exit code: killed / crashed), luna.run with the last sign of life
                 for the next launch, event loop hangs and machine sleep; the tray's Restart
                 window (a new window started as `--after <pid>`, the core left running)
-  paths.rs      data_dir(): next to the exe (portable) or LOCALAPPDATA\luna; the test
+  paths.rs      data_dir(): next to the exe when writable, else LOCALAPPDATA\luna — settings,
+                log, attachments, CLIs and (Windows) the WebView profile; the test
                 build (LUNA_FLAVOR=test) keeps everything next to its exe in test-build/
   lib.rs        Builder + generate_handler
 ```

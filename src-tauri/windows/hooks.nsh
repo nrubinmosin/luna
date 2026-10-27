@@ -13,3 +13,14 @@
   RMDir /r "$INSTDIR\core"
   RMDir /r "$LOCALAPPDATA\luna\core"
 !macroend
+
+!macro NSIS_HOOK_POSTUNINSTALL
+  ; "Delete the application data" clears what Tauri keeps under the app's
+  ; identifier; the WebView's profile — chats, layout — is in the data folder
+  ; instead, so it goes here. Not on an update, which uninstalls first.
+  ${If} $DeleteAppDataCheckboxState = 1
+  ${AndIf} $UpdateMode <> 1
+    RMDir /r "$INSTDIR\webview"
+    RMDir /r "$LOCALAPPDATA\luna\webview"
+  ${EndIf}
+!macroend

@@ -231,8 +231,8 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
 - Deleting a chat takes its worktree, and the branch Claude Code made for it,
   along by default; the checkbox can be unticked per chat, and where it
   starts is set in Settings.
-- Warnings and errors from both halves of the app land in `luna.log`, next to the exe for
-  the portable build and under `%LOCALAPPDATA%\luna` otherwise. Info-level chatter never
+- Warnings and errors from both halves of the app land in `luna.log`, next to the exe, or
+  under `%LOCALAPPDATA%\luna` when that folder is not writable. Info-level chatter never
   reaches it, so what is in there is worth reading. Every line names the version that
   wrote it, and each launch opens with a `START` line naming the version and build.
 - The sessions run in Luna's core, a second process from the same exe (`luna-core.exe`,

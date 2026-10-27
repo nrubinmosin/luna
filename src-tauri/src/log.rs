@@ -5,20 +5,9 @@ use std::sync::Mutex;
 
 const MAX_BYTES: u64 = 4 * 1024 * 1024;
 
-/// Next to the exe when that directory is writable — which is the case for the
-/// portable build people actually run — and under LOCALAPPDATA otherwise, since
-/// an installed app cannot write into Program Files.
+/// In the data dir, with everything else of Luna's.
 fn resolve_path() -> PathBuf {
-    let beside_exe = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.join("luna.log")));
-
-    if let Some(p) = beside_exe {
-        if OpenOptions::new().create(true).append(true).open(&p).is_ok() {
-            return p;
-        }
-    }
-    let dir = crate::paths::local_dir().unwrap_or_else(|| std::env::temp_dir().join("luna"));
+    let dir = crate::paths::data_dir();
     let _ = std::fs::create_dir_all(&dir);
     dir.join("luna.log")
 }
