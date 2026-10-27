@@ -77,7 +77,7 @@ pub fn project_of(path: &str) -> Option<String> {
 }
 
 /// Branch checked out in the given worktree, per `git worktree list`.
-fn branch_of(folder: &str, worktree_path: &str) -> Option<String> {
+pub fn branch_of(folder: &str, worktree_path: &str) -> Option<String> {
     let out = git(folder)
         .args(["worktree", "list", "--porcelain"])
         .output()

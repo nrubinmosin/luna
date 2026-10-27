@@ -15,6 +15,8 @@ const MAX_LINES: usize = 2000;
 /// How much of an opening prompt is kept: enough to tell runs apart and to
 /// see what a slash command was given.
 const PROMPT_CHARS: usize = 300;
+/// How much of a gone session's last message is kept.
+const LAST_CHARS: usize = 3000;
 /// The most one lookup returns, newest first.
 const MAX_RUNS: usize = 30;
 
@@ -64,6 +66,17 @@ pub fn spawned(s: &Spawn) {
             "autoDelete": s.auto_delete,
             "background": s.background,
         }),
+    );
+}
+
+/// What a spawned session leaves behind as it goes: its transcript, which
+/// holds the whole opening prompt, the worktree it worked in, and its last
+/// word, cut to LAST_CHARS.
+pub fn left(id: &str, transcript: Option<&str>, worktree: Option<&str>, last: Option<&str>) {
+    let last: Option<String> = last.map(|t| t.chars().take(LAST_CHARS).collect());
+    append(
+        &file(),
+        json!({ "at": now(), "event": "left", "id": id, "transcript": transcript, "worktree": worktree, "last": last }),
     );
 }
 
@@ -121,6 +134,13 @@ pub struct Run {
     pub prompt: String,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub auto_delete: bool,
+    /// From `left`: see there.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transcript: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worktree_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last: Option<String>,
 }
 
 /// Past runs, newest first, those with `q` in their name, folder, account,
@@ -152,7 +172,18 @@ fn runs_in(path: &Path, q: Option<&str>) -> Vec<Run> {
                 name: opt("name"),
                 prompt: s("prompt"),
                 auto_delete: v["autoDelete"].as_bool().unwrap_or(false),
+                transcript: None,
+                worktree_path: None,
+                last: None,
             }),
+            Some("left") => {
+                let id = s("id");
+                if let Some(run) = runs.iter_mut().rev().find(|r| r.id == id && r.ended.is_none()) {
+                    run.transcript = opt("transcript");
+                    run.worktree_path = opt("worktree");
+                    run.last = opt("last");
+                }
+            }
             Some("end") => {
                 let id = s("id");
                 if let Some(run) = runs.iter_mut().rev().find(|r| r.id == id && r.ended.is_none()) {
@@ -191,12 +222,14 @@ mod tests {
             append(&path, json!({ "at": "t", "event": "spawn", "id": id, "parent": "p", "folder": folder,
                 "provider": "claude", "account": "team", "settings": settings, "prompt": prompt }));
         }
+        append(&path, json!({ "at": "t2", "event": "left", "id": "a1", "transcript": "t.jsonl", "last": "done" }));
         append(&path, json!({ "at": "t2", "event": "end", "id": "a1", "how": "deleted" }));
         std::fs::OpenOptions::new().append(true).open(&path).unwrap().write_all(b"not json\n").unwrap();
 
         let all = runs_in(&path, None);
         assert_eq!(all.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["a2", "a1"]);
         assert_eq!(all[1].how.as_deref(), Some("deleted"));
+        assert_eq!((all[1].transcript.as_deref(), all[1].last.as_deref()), (Some("t.jsonl"), Some("done")));
         assert_eq!(all[0].ended, None);
         let hh = runs_in(&path, Some("HH-"));
         assert_eq!(hh.len(), 1, "the prompt and the folder are searched, any case");

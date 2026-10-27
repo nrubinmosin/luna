@@ -261,7 +261,8 @@ without the box ticked knows nothing of Luna at all.
 - A helper runs **in the background** unless the agent asks for `visible: true`: no row,
   no pane, no terminal — each turn is one run of the CLI's headless mode (`claude -p`,
   `codex exec`), and the next one resumes the conversation. It needs no open window, and it
-  goes by itself 10 minutes after its last answer reached the agent. Its parent's row
+  goes by itself once its answer has reached the agent and it has sat idle for 30 minutes
+  with nobody reading it or writing to it (see `autoDelete` below). Its parent's row
   shows how many there are; a click lists them with what each is doing, and opens one as a
   chat of its own (between its turns), stops it or deletes it.
 - A visible helper is a normal chat row, nested under the one that made it and folded by
@@ -297,14 +298,23 @@ without the box ticked knows nothing of Luna at all.
 - `luna_spawn` says what the helper came up with that its settings cannot: warnings the CLI
   put on screen (a model the organization does not allow, swapped for another) and the other
   live sessions working in the same directory (`sameFolder`), whose files and git it shares —
-  `worktree: true` keeps it apart. An unknown slash command comes back at once as not
-  started, with the screen that says so.
-- `autoDelete: true` on a visible spawn has Luna delete the helper once its answer has reached the
-  agent and it has sat idle for 10 minutes (a follow-up starts that over). One you have typed
-  into is yours and stays; a worktree it made stays too, with its work.
+  `worktree: true` keeps it apart, and the spawn then names the worktree the CLI made and its
+  branch (`luna_list` shows them for every helper). An unknown slash command comes back at once
+  as not started, with the screen that says so.
+- `autoDelete` has Luna delete the helper once its answer has reached the agent and it has sat
+  idle for 30 minutes; the agent reading it or writing to it starts that over, and `luna_list`
+  shows the minutes left (`deletesInMin`). It is on for background helpers unless the spawn says
+  `autoDelete: false`, off for visible ones unless it says `true`. A helper stopped with
+  `luna_kill` is never auto-deleted: its conversation stays for `luna_send` to go on with. One
+  you have typed into is yours and stays; a worktree it made stays too, with its work.
+- `luna_send` with `interrupt: true` cuts short the turn the session is on, and any prompt it
+  is stopped at — Esc in a terminal, the process stopped for a background helper — and the text
+  becomes its next turn instead of waiting behind the current one.
 - Every spawn is written down in `agents.jsonl` in Luna's data folder — when, by whom, where,
   account, settings, the start of the prompt — and how it ended, so `luna_sessions` with
   `history: true` can show what ran before, deleted helpers included, and a run can be repeated as it was.
+  A deleted helper leaves its transcript path (the whole prompt is there), its worktree and its
+  last message.
 - Deleting a parent by hand leaves its helpers as orphans, marked ↳ at the top level,
   unless you tick the box to take them along. Helpers deleted by their agent are gone for
   good, transcript aside.
@@ -319,6 +329,11 @@ without the box ticked knows nothing of Luna at all.
   `luna_wait` still out for that answer — Claude Code moves a call past two minutes to the
   background — hands it over instead, and the notice follows only if the wait has not done
   so within 10 seconds.
+- The notice quotes everything the helper has said since it was asked, not just its last
+  message, so a closing "that was a stale wakeup, nothing changed" does not hide the report
+  before it. Past 3,000 characters it keeps the report (the longest message) and the closing
+  word, and names a file with the whole answer. A `luna_read` while the helper is still at work
+  does not count as having collected the answer: the notice still comes when it is done.
 
 ## Power
 
@@ -327,7 +342,8 @@ The power field in the status bar opens the two rules the machine follows.
 - **Keep the PC awake while sessions work** (on by default). Luna holds a Windows power
   request — `powercfg /requests` lists it as Luna's — while any session is busy, and lets it
   go a minute after the last one goes quiet. A session waiting for your answer does not hold
-  the machine.
+  the machine, nor does one whose turn has been over for two hours, whatever it left running
+  under it (a monitor's `tail -f` on a log that keeps growing).
 - **When every session is done: shut down, hibernate or sleep.** Armed for the run, not
   saved. The chip shows what the rule is waiting on; once everything has been quiet for the
   chosen window it counts down a minute with a notification, and a click on the chip cancels.
