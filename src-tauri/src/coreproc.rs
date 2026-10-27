@@ -55,7 +55,7 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// `luna --core --data-dir <dir> --local-dir <dir> --log <path>`: runs as the
+/// `luna --core --data-dir <dir> --log <path>`: runs as the
 /// core and returns true, or false for an ordinary launch.
 pub fn from_args() -> bool {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -63,11 +63,10 @@ pub fn from_args() -> bool {
         return false;
     }
     let value = |flag: &str| args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).map(PathBuf::from);
-    let (Some(data), Some(local), Some(log)) = (value("--data-dir"), value("--local-dir"), value("--log")) else {
+    let (Some(data), Some(log)) = (value("--data-dir"), value("--log")) else {
         return true;
     };
     crate::paths::set_data_dir(data);
-    crate::paths::set_local_dir(local);
     crate::log::set_path(log);
     crate::log::set_role("core");
     crate::log::install_panic_hook();

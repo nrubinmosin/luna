@@ -42,6 +42,17 @@ pub(crate) fn show_main(app: &tauri::AppHandle) {
     }
 }
 
+/// The window as tauri.conf.json describes it. Made here rather than by Tauri
+/// (`create: false`) so that on Windows its WebView keeps its profile in the
+/// data dir, not under `LOCALAPPDATA\<identifier>`.
+pub(crate) fn build_main(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
+    let config = app.config().app.windows.iter().find(|w| w.label == "main").ok_or("no main window in the config")?;
+    let builder = tauri::WebviewWindowBuilder::from_config(app, config).map_err(|e| e.to_string())?;
+    #[cfg(windows)]
+    let builder = builder.data_directory(paths::webview_dir());
+    builder.build().map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // The exit watcher and the core are this same exe; neither may become a
@@ -78,6 +89,11 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
+            // Here, past the single-instance check: a second launch must not
+            // pull the profile from under the running Luna.
+            #[cfg(windows)]
+            paths::adopt_webview_profile(&app.path().app_local_data_dir()?);
+            build_main(app.handle())?;
             // Events reach the page through the window; installed before
             // anything that could send one starts.
             let handle = app.handle().clone();

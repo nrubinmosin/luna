@@ -86,11 +86,7 @@ fn rebuild(app: &AppHandle) {
         std::thread::sleep(Duration::from_millis(600));
         let handle = app.clone();
         let _ = app.run_on_main_thread(move || {
-            let Some(config) = handle.config().app.windows.iter().find(|w| w.label == "main").cloned() else {
-                REBUILDING.store(false, Ordering::SeqCst);
-                return;
-            };
-            match tauri::WebviewWindowBuilder::from_config(&handle, &config).and_then(|b| b.build()) {
+            match crate::build_main(&handle) {
                 Ok(w) => {
                     crate::sysmenu::silence(&w);
                     crate::sysmenu::exit_with_session();
