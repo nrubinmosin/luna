@@ -487,6 +487,60 @@ pub fn kill(id: &str) {
     crate::pty::kill_tree(pid);
 }
 
+/// Stops the turn in progress and starts the next on `text`, with whatever
+/// was queued for after it going first: the conversation goes on, the work
+/// the turn was doing does not. Returns whether a turn was stopped.
+pub fn interrupt(id: &str, text: &str) -> Result<bool, String> {
+    let (pid, queued) = {
+        let mut r = lock();
+        let e = r.entries.get_mut(id).ok_or("no such helper")?;
+        let queued = std::mem::take(&mut e.queue);
+        e.held = None;
+        (e.run.as_ref().and_then(|run| run.pid), queued)
+    };
+    let stopped = pid.is_some();
+    if stopped {
+        reg().1.notify_all();
+        crate::pty::kill_tree(pid);
+        // The turn is over once its reader has seen the process go.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        let (m, cv) = reg();
+        let mut r = m.lock().unwrap_or_else(|e| e.into_inner());
+        while r.entries.get(id).is_some_and(|e| e.run.is_some()) {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                return Err(format!("helper {id} did not stop within 15 s"));
+            }
+            r = cv.wait_timeout(r, left).unwrap_or_else(|e| e.into_inner()).0;
+        }
+    }
+    let text = queued.into_iter().chain([text.to_string()]).collect::<Vec<_>>().join("\n\n");
+    if let Some(e) = lock().entries.get_mut(id) {
+        note(e, "interrupted");
+    }
+    run_turn(id, &text)?;
+    changed();
+    Ok(stopped)
+}
+
+/// The worktree it made, once the CLI has said where: Claude Code as its
+/// first turn starts, Codex in its rollout.
+pub fn made_worktree(id: &str) -> Option<String> {
+    let (cwd, folder, provider, account, session) = {
+        let r = lock();
+        let e = r.entries.get(id)?;
+        if !e.spec.worktree {
+            return None;
+        }
+        (e.cwd.clone(), e.spec.folder.clone(), e.spec.provider, e.spec.account_path.clone(), e.session.clone())
+    };
+    let cwd = cwd.or_else(|| match provider {
+        Provider::Codex => crate::codex::session::thread_cwd(&account, session.as_deref()?),
+        Provider::Claude => None,
+    })?;
+    (!crate::pty::same_dir(&cwd, &folder)).then_some(cwd)
+}
+
 /// Stops it and forgets it. Returns the worktree it made, if any.
 pub fn remove(id: &str) -> Option<String> {
     kill(id);

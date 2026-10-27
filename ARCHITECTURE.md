@@ -330,6 +330,8 @@ src-tauri/src/
   does not fire is explained in `luna.log`: a line `armed, not firing: <chat> <why> [hook …,
   registry …]` when the reason changes (no more than once a minute) and every 10 minutes with no change;
   only WARN/ERROR go to `luna.log`, so everything that decides the night's fate is written at that level.
+  A session whose turn has been `Idle` for 2 h (`LEFTOVER_MS`) no longer counts its children at all:
+  a `tail -f` a monitor left on a growing log moves forever, and one such session held a whole night.
 - **Agents — via MCP, not via the prompt.** A session with the "Luna tools" checkbox gets
   `--mcp-config <data>/mcp/<chat>.json` with `"timeout": 1900000` on the server and `--allowedTools mcp__luna`
   (Claude: without `timeout` it drops an HTTP call that is silent for 5 min) or `-c mcp_servers.luna.url=… -c
@@ -371,13 +373,20 @@ src-tauri/src/
   (`worktree::project_of`).
   **A helper does not report on itself** — unlike a subagent, its answer sits in its
   transcript until someone calls `wait`/`read`. So `spawn` and `send` record a debt
-  (`owed`: caller, session, `turnsEnded` at the time of the question), and a `wait`/`read` that showed a turn
-  past it clears the debt. A notifier thread looks at debts every 2 s and, when the caller is between turns
+  (`owed`: caller, session, `turnsEnded` at the time of the question, and where the transcript ended then),
+  and a `wait` that handed over a turn past it clears the debt; a `read` clears it only if the session is idle
+  with nothing of its own still running — a read mid-work had seen a turn on the way (a background helper's
+  turn that ended on a job, the turn before a queued `send`), and once it cleared the debt the real answer
+  went unannounced and the helper was auto-deleted unread. A `send` to a background helper mid-turn owes the
+  turn after the running one: the queue starts it the moment that one ends. A notifier thread looks at debts every 2 s and, when the caller is between turns
   on two looks in a row (`Idle`, not starting, the person has not typed into it for 20 s and left no
   unsent draft), types
   one line to it `[Luna notice, not typed by the user] …` with Enter — just like `send`: the helper
-  finished a turn (with the answer up to 3000 characters, beyond that — a "cut" mark), stopped on a prompt (once per
-  stop) or exited.
+  finished a turn, stopped on a prompt (once per stop) or exited. The answer is everything the helper said
+  past the debt's transcript offset (`replies_since`), not the transcript's last message: a helper's own
+  stale wakeup ("nothing changed") ending a later turn used to stand in for the report. Up to 3000
+  characters it is quoted whole; beyond, the longest message and the last (up to 400) are, with the whole
+  answer written to `<data>/agents/<id>-<ms>.md` and the path in the notice.
   A turn after which the helper still has processes running waits up to 20 s: they went quiet — "finished",
   they did not — "left work in the background", and the debt moves to the next turn (Claude Code comes back by itself
   when the background task ends). The CLI's own resident helpers (`codex-code-mode-host` and its
@@ -409,8 +418,11 @@ src-tauri/src/
   what the frontend shows in the Accounts window, sent as `account_usage` on every change:
   the core does not go to the limits endpoints itself.
   **autoDelete.** `reap` on every notifier pass: a helper with no debt, no `wait` on it and
-  no turn (or one that exited) for 10 min in a row is deleted as via `delete`, without its worktree; to the log —
-  `auto-deleted`. If the person ever typed into it (`typed_ago_ms`), Luna leaves it alone.
+  no turn (or one that exited) for 30 min in a row is deleted as via `delete`, without its worktree; to the log —
+  `auto-deleted`. Any `read`/`wait`/`send` on it (`shown`) starts the 30 min over, and `list` shows what is left
+  (`deletesInMin`). If the person ever typed into it (`typed_ago_ms`), or an agent `kill`ed it, Luna leaves it
+  alone. Before any delete of a spawned session `remove` writes a `left` line to `agents.jsonl` — transcript
+  path, worktree, last message — which `history` folds into the run.
   **ConPTY and the cursor.** portable-pty opens ConPTY with `INHERIT_CURSOR`: until the terminal answers
   `ESC[6n` ConPTY lets out not a byte of the CLI's output. For a chat in a pane xterm answered, for a helper
   without a pane — nobody, and it hung on an empty screen until it was opened (`starting` for minutes).
@@ -445,7 +457,12 @@ src-tauri/src/
   model by `--disallowedTools`): its permission prompts and `AskUserQuestion` arrive as that call,
   held on a Condvar until `luna_answer` (allow / deny with the input back, or `answers` by question
   text) or the turn's end. Codex's `exec` asks nobody (approval never) and puts a question in its
-  reply. Helpers are always auto-deleted; the window gets their list as `agent://background` (the
+  reply. Helpers are auto-deleted unless spawned with `autoDelete: false`. `send` with `interrupt` takes the
+  queue, kills the turn's process tree, waits for its reader to count the turn over, and starts the next
+  turn on queue + text (`background::interrupt`); in a terminal it is Esc, up to 3 s for the turn to read as
+  over, and the text typed as a prompt of its own. A spawn with `worktree: true` waits up to 20 s for the
+  CLI to say where it made it (Claude Code's `init` event, Codex's rollout) and returns `worktree` and
+  `branch`, which `list` carries for every helper too. The window gets their list as `agent://background` (the
   count on the parent row) and can hand one to a chat row between turns (`background_promote` →
   `agent://promote`: same id, the session id to resume).
   **One state, and what is asked.** Tool answers carry `state` (`state_of`: working, waiting,

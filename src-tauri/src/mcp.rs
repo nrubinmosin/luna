@@ -68,19 +68,19 @@ fn tools() -> Value {
     json!([
         {
             "name": "luna_list",
-            "description": "Sessions you spawned (id, name, group, provider, account, settings, state, ask, turnsEnded) and the accounts you may use, with their models, the defaults a helper in your folder gets, and usage (% per window, resets) as the user sees it.",
+            "description": "Sessions you spawned (id, name, group, provider, account, settings, state, ask, turnsEnded, worktree, branch, deletesInMin) and the accounts you may use, with their models, the defaults a helper in your folder gets, and usage (% per window, resets) as the user sees it.",
             "inputSchema": s(json!({}), &[]),
             "annotations": reads
         },
         {
             "name": "luna_sessions",
-            "description": "Every session in Luna, the user's own chats included: id, name, group (the user's window group, I=1), provider, account, folders, sessionId, transcript path, parent, you/yours, state, settings. Filters: group (a number or \"mine\"), q (text in name/folder/account/id). history: true = past spawns instead, deleted too, newest first (q also searches prompts).",
+            "description": "Every session in Luna, the user's own chats included: id, name, group (the user's window group, I=1), provider, account, folders, sessionId, transcript path, parent, you/yours, state, settings. Filters: group (a number or \"mine\"), q (text in name/folder/account/id). history: true = past spawns instead, deleted too (with transcript, last message), newest first (q also searches prompts).",
             "inputSchema": s(json!({ "group": { "type": "string" }, "q": { "type": "string" }, "history": { "type": "boolean" } }), &[]),
             "annotations": reads
         },
         {
             "name": "luna_spawn",
-            "description": "Start a helper with an opening prompt, in the background (no row in Luna; deleted once idle 10 min after its answer reached you) unless visible: true. Omitted settings take the account's defaults. A background Codex helper cannot ask; its questions come in its reply. Returns id, resolved settings, started (false = prompt not taken up; see screen), starting (not drawn yet; prompt held, do not resend), warnings, sameFolder (other live sessions in its directory).",
+            "description": "Start a helper with an opening prompt, in the background (no row in Luna) unless visible: true. Omitted settings take the account's defaults. A background Codex helper cannot ask; its questions come in its reply. Returns id, resolved settings, started (false = prompt not taken up; see screen), starting (not drawn yet; prompt held, do not resend), warnings, sameFolder (other live sessions in its directory), worktree, branch.",
             "inputSchema": s(json!({
                 "prompt": { "type": "string" },
                 "provider": { "type": "string", "enum": ["claude", "codex"], "description": "default: yours" },
@@ -95,14 +95,18 @@ fn tools() -> Value {
                 "name": { "type": "string", "description": "its name in Luna" },
                 "tools": { "type": "boolean", "description": "give it these tools too (one level only)" },
                 "visible": { "type": "boolean", "description": "a chat the user sees and can type in" },
-                "autoDelete": { "type": "boolean", "description": "visible only: deleted 10 min after its answer reached you, nothing more asked; kept if the user typed in it" }
+                "autoDelete": { "type": "boolean", "description": "deleted 30 min after its answer reached you unless read or sent to; default: background true" }
             }), &["prompt"]),
             "annotations": acts
         },
         {
             "name": "luna_send",
             "description": "Send text to a session (any from luna_sessions) as a prompt; it reads as the user's, so say who you are to one you did not spawn. Returns stateBefore, queued (it was working: the text is taken up after its turn), started (false when not queued = not taken as a prompt, see screen) and turnsEnded to pass to luna_wait as afterTurn.",
-            "inputSchema": s(json!({ "id": { "type": "string" }, "text": { "type": "string" } }), &["id", "text"]),
+            "inputSchema": s(json!({
+                "id": { "type": "string" },
+                "text": { "type": "string" },
+                "interrupt": { "type": "boolean", "description": "stop its current turn first" }
+            }), &["id", "text"]),
             "annotations": acts
         },
         {
@@ -142,7 +146,7 @@ fn tools() -> Value {
         },
         {
             "name": "luna_kill",
-            "description": "Stop a session's process (a background helper: its turn); its conversation stays.",
+            "description": "Stop a session's process (a background helper: its turn); its conversation stays, not auto-deleted.",
             "inputSchema": s(json!({ "id": { "type": "string" } }), &["id"]),
             "annotations": ends
         },
@@ -226,7 +230,8 @@ fn call(caller: &str, params: &Value) -> Value {
             .map_err(|e| format!("bad arguments: {e}"))
             .and_then(|p| agents::spawn(caller, p))
             .map(|s| json!(s)),
-        "luna_send" => agents::send(caller, &id, a["text"].as_str().unwrap_or("")).map(|s| json!(s)),
+        "luna_send" => agents::send(caller, &id, a["text"].as_str().unwrap_or(""), a["interrupt"].as_bool().unwrap_or(false))
+            .map(|s| json!(s)),
         "luna_read" => agents::read(
             caller,
             &id,

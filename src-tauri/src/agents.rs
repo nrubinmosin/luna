@@ -55,6 +55,9 @@ const SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(12);
 /// The activity sampler runs every 5 s; the probes here look between samples
 /// so the answer comes as soon as the verdict is in.
 const POLL: std::time::Duration = std::time::Duration::from_millis(500);
+/// How long a background spawn in a worktree of its own waits for the CLI
+/// to say where it made it.
+const WORKTREE_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
 /// The rendered screen as an agent gets it: the last lines of the terminal,
 /// enough to read a dialog, not a transcript.
 const SCREEN_LINES: usize = 40;
@@ -73,8 +76,11 @@ const SEND_TYPING_MS: u64 = 5_000;
 /// the desktop instead, once: the draft may be forgotten, the notice is not.
 const DRAFT_ALERT_MS: u64 = 60_000;
 /// How much of a reply a notice quotes: enough for most reports whole, so
-/// the caller need not read each one back; the rest is a `luna_read` away.
+/// the caller need not read each one back; the rest goes in a file the
+/// notice names.
 const NOTICE_QUOTE: usize = 3000;
+/// Of that, the most a closing message after the report takes.
+const LAST_WORD_QUOTE: usize = 400;
 /// A turn has ended with the session's processes still at work: give them
 /// this long to settle before calling it a job left in the background. Right
 /// after a turn they often move for a sample or two anyway.
@@ -90,8 +96,9 @@ const REPLY_GRACE_MS: u64 = 5_000;
 /// the call it moved to the background.
 const WAIT_HOLD_MS: u64 = 10_000;
 /// An `autoDelete` helper goes once nobody is owed its answer and it has sat
-/// idle this long since: room for a follow-up first.
-const AUTO_DELETE_IDLE_MS: u64 = 10 * 60 * 1000;
+/// idle this long since, nobody reading it either: room for a review of its
+/// work and a follow-up first.
+const AUTO_DELETE_IDLE_MS: u64 = 30 * 60 * 1000;
 /// How every notice opens, so a model tells it from what the user types.
 pub const NOTICE_TAG: &str = "[Luna notice, not typed by the user]";
 /// The most warning lines a spawn passes on from the helper's screen.
@@ -331,11 +338,14 @@ struct Owed {
     /// When the notifier first found the answer in while a `wait` was out
     /// for it (see WAIT_HOLD_MS).
     ready_at: Option<u64>,
+    /// Where the session's transcript ended when the caller asked: what it
+    /// said from there on is the answer, however many turns it took.
+    cursor: u64,
 }
 
 impl Owed {
-    fn from(baseline: u32) -> Owed {
-        Owed { baseline, told_waiting: false, told_ask: 0, held: None, ready_at: None }
+    fn from(baseline: u32, cursor: u64) -> Owed {
+        Owed { baseline, told_waiting: false, told_ask: 0, held: None, ready_at: None, cursor }
     }
 }
 
@@ -364,14 +374,24 @@ fn reg() -> &'static Mutex<Registry> {
 }
 
 /// Records what a tool answer told `caller` about `id`'s turn count. A turn
-/// past what the caller asked for settles the answer it was owed.
-fn shown(caller: &str, id: &str, turns_ended: u32) {
+/// past what the caller asked for settles the answer it was owed — when the
+/// caller was handed that answer (`whole`), or the session is done: a read
+/// while it works on has seen a turn on the way, and the answer is still to
+/// come. Either way the caller has looked at it, so an `autoDelete` helper
+/// counts its idle time from now.
+fn shown(caller: &str, id: &str, turns_ended: u32, whole: bool) {
+    let done = whole
+        || crate::activity::turn_state(id)
+            .map_or(true, |t| t.turn == crate::activity::Turn::Idle && !t.children_busy);
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
     let key = (caller.to_string(), id.to_string());
-    if r.owed.get(&key).is_some_and(|o| turns_ended > o.baseline) {
+    if done && r.owed.get(&key).is_some_and(|o| turns_ended > o.baseline) {
         r.owed.remove(&key);
     }
     r.seen.insert(key, turns_ended);
+    if let Some(a) = r.auto.get_mut(id) {
+        a.idle_since = None;
+    }
 }
 
 /// `caller` has asked `id` something; the answer ends a turn past `baseline`.
@@ -380,8 +400,14 @@ fn owe(caller: &str, id: &str, baseline: u32) {
     if caller == DEV_CALLER {
         return;
     }
+    let cursor = transcript_end(id);
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-    r.owed.insert((caller.to_string(), id.to_string()), Owed::from(baseline));
+    r.owed.insert((caller.to_string(), id.to_string()), Owed::from(baseline, cursor));
+}
+
+/// How far the session's transcript goes now, 0 before it has one.
+fn transcript_end(id: &str) -> u64 {
+    transcript_path(&crate::pty::manager(), id).and_then(|p| std::fs::metadata(p).ok()).map_or(0, |m| m.len())
 }
 
 /// A `wait` by `caller` on a session, counted for as long as it runs.
@@ -759,6 +785,12 @@ pub struct SessionRow {
     pub turns_ended: u32,
     /// The flags it runs with (see `Known::settings`).
     pub settings: serde_json::Value,
+    #[serde(flatten)]
+    pub worktree: Worktree,
+    /// An `autoDelete` helper idle with nobody owed its answer: the minutes
+    /// left before it goes, unless it is read or written to first.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deletes_in_min: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -852,14 +884,23 @@ pub fn list(caller: &str) -> Listing {
             })
             .collect()
     };
+    let pty = crate::pty::manager();
     let sessions = rows
         .into_iter()
         .map(|(id, k, name, group)| {
+            let deletes_in_min = reg()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .auto
+                .get(&id)
+                .and_then(|a| a.idle_since)
+                .map(|since| AUTO_DELETE_IDLE_MS.saturating_sub(now_ms().saturating_sub(since)).div_ceil(60_000));
             let ts = crate::activity::turn_state(&id);
             // A listing is not a reading: it does not move what the caller
             // is taken to have seen of a session's turns.
             let turns_ended = ts.map(|t| t.turns_ended).unwrap_or(0);
             let (state, ask) = state_of(&id);
+            let worktree = worktree_of(&pty, &id);
             SessionRow {
                 state,
                 ask,
@@ -871,6 +912,8 @@ pub fn list(caller: &str) -> Listing {
                 account: k.account,
                 parent: k.parent,
                 settings: k.settings,
+                worktree,
+                deletes_in_min,
             }
         })
         .collect();
@@ -1069,6 +1112,33 @@ pub struct Spawned {
     /// they share its files and its git index, commits and all.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub same_folder: Vec<Neighbour>,
+    /// The worktree it works in and its branch, once the CLI has made it.
+    #[serde(flatten)]
+    pub worktree: Worktree,
+}
+
+/// Where a session in a worktree works: the path, and the branch there.
+#[derive(Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Worktree {
+    #[serde(rename = "worktree", skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+}
+
+/// The worktree a session works in — the one it made or the one it was
+/// handed — with its branch; nothing for one in a plain folder.
+fn worktree_of(pty: &crate::pty::PtyManager, id: &str) -> Worktree {
+    let dir = if crate::background::has(id) {
+        crate::background::made_worktree(id).or_else(|| crate::background::working_dir(id))
+    } else {
+        pty.probe(id).and_then(|p| p.working_dir())
+    };
+    let Some((dir, project)) = dir.and_then(|d| crate::worktree::project_of(&d).map(|p| (d, p))) else {
+        return Worktree::default();
+    };
+    Worktree { branch: crate::worktree::branch_of(&project, &dir), path: Some(dir) }
 }
 
 #[derive(Serialize)]
@@ -1379,9 +1449,10 @@ pub fn spawn(caller: &str, mut params: SpawnParams) -> Result<Spawned, String> {
     // A screen handed over says it all already.
     let warnings = if screen.is_none() { warnings_of(&pty, &id) } else { Vec::new() };
     let same_folder = run_dir.map(|dir| neighbours_in(&dir, &[caller, &id])).unwrap_or_default();
-    shown(caller, &id, 0);
+    shown(caller, &id, 0, true);
     owe(caller, &id, 0);
-    Ok(Spawned { id, turns_ended: 0, settings, started, screen, starting, warnings, same_folder })
+    let worktree = worktree_of(&pty, &id);
+    Ok(Spawned { id, turns_ended: 0, settings, started, screen, starting, warnings, same_folder, worktree })
 }
 
 /// Claude Code's model aliases, as the new-chat dialog lists them.
@@ -1503,6 +1574,7 @@ fn spawn_background(caller: &str, params: SpawnParams, account_path: String, in_
         }),
     };
     let tools = spec.tools;
+    let auto_delete = params.auto_delete.unwrap_or(true);
     let token = register(&id, provider, &run_in, &account_path, Some(caller), tools, settings.clone());
     // Claude Code asks its permissions of Luna, tools or not.
     spec.token = token.or_else(|| (provider == Provider::Claude).then(|| issue_token(&id)));
@@ -1520,8 +1592,11 @@ fn spawn_background(caller: &str, params: SpawnParams, account_path: String, in_
         if in_worktree.is_some() {
             r.borrowed.insert(id.clone());
         }
-        // Nobody sees it to delete it: it goes once its answer is out.
-        r.auto.insert(id.clone(), Auto::default());
+        // Nobody sees it to delete it: it goes once its answer is out,
+        // unless its caller means to delete it itself.
+        if auto_delete {
+            r.auto.insert(id.clone(), Auto::default());
+        }
     }
     if let Err(e) = crate::background::start(&id, spec, &params.prompt) {
         forget(&id);
@@ -1538,13 +1613,27 @@ fn spawn_background(caller: &str, params: SpawnParams, account_path: String, in_
         settings: &settings,
         name: Some(name),
         prompt: &params.prompt,
-        auto_delete: true,
+        auto_delete,
         background: true,
     });
     let same_folder = if own_worktree { Vec::new() } else { neighbours_in(&run_in, &[caller, &id]) };
-    shown(caller, &id, 0);
+    shown(caller, &id, 0, true);
     owe(caller, &id, 0);
-    Ok(Spawned { id, turns_ended: 0, settings, started: true, screen: None, starting: false, warnings: Vec::new(), same_folder })
+    // The CLI makes its worktree as the first turn starts: worth a few
+    // seconds, so the caller need not go looking for it.
+    let pty = crate::pty::manager();
+    let mut worktree = Worktree::default();
+    if own_worktree {
+        let deadline = std::time::Instant::now() + WORKTREE_WAIT;
+        loop {
+            worktree = worktree_of(&pty, &id);
+            if worktree.path.is_some() || std::time::Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(POLL);
+        }
+    }
+    Ok(Spawned { id, turns_ended: 0, settings, started: true, screen: None, starting: false, warnings: Vec::new(), same_folder, worktree })
 }
 
 /// Past this many characters a prompt or message goes to a visible session
@@ -1597,7 +1686,7 @@ pub fn agent_spawned(request_id: u64, chat_id: Option<String>, name: Option<Stri
         // to its prompt is owed like any other.
         if let (Some((caller, _)), Some(id)) = (caller, chat_id) {
             crate::log::warn("agents", &format!("session {id} for {caller} came up after its spawn timed out"));
-            shown(&caller, &id, 0);
+            shown(&caller, &id, 0, true);
             owe(&caller, &id, 0);
         }
         return;
@@ -1624,6 +1713,9 @@ pub struct Sent {
     /// taken up after it, and `started` says nothing yet.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub queued: bool,
+    /// The turn it was working on was stopped for this text (`interrupt`).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub interrupted: bool,
     /// A turn began on the text within SEND_TIMEOUT. False on a session that
     /// was not working means the text did not become a prompt: `screen`
     /// shows where it went.
@@ -1663,27 +1755,51 @@ fn type_in(
 }
 
 /// Types text into the session, presses Enter after it, and reports whether
-/// a turn began.
-pub fn send(caller: &str, id: &str, text: &str) -> Result<Sent, String> {
+/// a turn began. With `interrupt` the turn in flight, and any prompt it is
+/// stopped on, is cut short first (Esc; a background helper's process
+/// stopped), and the text is the next turn rather than one queued after it.
+pub fn send(caller: &str, id: &str, text: &str, interrupt: bool) -> Result<Sent, String> {
     authorize_send(caller, id)?;
     let pty = crate::pty::manager();
     if !live(&pty, id) {
         return Err(format!("session {id} is not running"));
     }
     let (state_before, ask) = state_of(id);
-    if let Some(a) = ask.as_ref().filter(|a| a.blocking) {
+    if let Some(a) = ask.as_ref().filter(|a| a.blocking && !interrupt) {
         return Err(format!(
-            "session {id} is on a {}: typed text would land in its dialog. Answer it with luna_answer",
+            "session {id} is on a {}: typed text would land in its dialog. Answer it with luna_answer, or send with interrupt: true to dismiss it",
             a.kind
         ));
     }
-    let before = crate::activity::turn_state(id);
-    let baseline = before.map(|t| t.turns_ended).unwrap_or(0);
+    let mut before = crate::activity::turn_state(id);
+    let mut baseline = before.map(|t| t.turns_ended).unwrap_or(0);
     if crate::background::has(id) {
-        let queued = crate::background::send(id, text)?;
-        shown(caller, id, baseline);
+        let (queued, interrupted) = if interrupt {
+            (false, crate::background::interrupt(id, text)?)
+        } else {
+            (crate::background::send(id, text)?, false)
+        };
+        // The turn it was on ends before the one this text starts, and is
+        // counted: the answer ends the turn after that.
+        if queued || interrupted {
+            baseline += 1;
+        }
+        shown(caller, id, baseline, true);
         owe(caller, id, baseline);
-        return Ok(Sent { ok: true, state_before, queued, started: !queued, turns_ended: baseline, screen: None });
+        return Ok(Sent { ok: true, state_before, queued, interrupted, started: !queued, turns_ended: baseline, screen: None });
+    }
+    let busy = |t: Option<crate::activity::TurnState>| {
+        t.is_some_and(|t| matches!(t.turn, crate::activity::Turn::Busy | crate::activity::Turn::Waiting))
+    };
+    let interrupted = interrupt && busy(before);
+    if interrupted {
+        press(&pty, id, &[Key::Seq("\x1b")])?;
+        let deadline = std::time::Instant::now() + INTERRUPT_SETTLE;
+        while busy(crate::activity::turn_state(id)) && std::time::Instant::now() < deadline {
+            std::thread::sleep(POLL);
+        }
+        before = crate::activity::turn_state(id);
+        baseline = before.map(|t| t.turns_ended).unwrap_or(0);
     }
     if still_starting(&pty, id) {
         return Err(format!(
@@ -1702,7 +1818,9 @@ pub fn send(caller: &str, id: &str, text: &str) -> Result<Sent, String> {
     if pty.typed_ago_ms(id).is_some_and(|ms| ms < SEND_TYPING_MS) {
         return Err(format!("the user is typing in session {id}; try again in a little while"));
     }
-    let turn_before = before.map(|t| t.turn);
+    // After an Esc the TUI is between turns whatever the sampler has caught
+    // up with: the text is a prompt of its own, not one queued.
+    let turn_before = if interrupted { None } else { before.map(|t| t.turn) };
     let queued = turn_before == Some(crate::activity::Turn::Busy);
     let started = type_in(&pty, id, &spill(text), turn_before, baseline)? && !queued;
     if turn_before == Some(crate::activity::Turn::Waiting) {
@@ -1711,9 +1829,9 @@ pub fn send(caller: &str, id: &str, text: &str) -> Result<Sent, String> {
     let screen = (!started && !queued).then(|| screen_of(&pty, id)).flatten();
     // The count before the text went in: the reply to it ends the next
     // turn, which the caller has not seen even if it is already over.
-    shown(caller, id, baseline);
+    shown(caller, id, baseline, true);
     owe(caller, id, baseline);
-    Ok(Sent { ok: true, state_before, queued, started, turns_ended: baseline, screen })
+    Ok(Sent { ok: true, state_before, queued, interrupted, started, turns_ended: baseline, screen })
 }
 
 #[derive(Serialize)]
@@ -1837,6 +1955,8 @@ fn press(pty: &crate::pty::PtyManager, id: &str, keys: &[Key]) -> Result<(), Str
     Ok(())
 }
 
+/// How long an interrupted turn gets to read as over before the text goes in.
+const INTERRUPT_SETTLE: std::time::Duration = std::time::Duration::from_secs(3);
 /// Between two keys pressed for an answer.
 const KEY_GAP: std::time::Duration = std::time::Duration::from_millis(150);
 /// How long after an answer its effect is looked at.
@@ -1861,7 +1981,9 @@ pub fn answer(
     let ask = ask_of(id);
     if crate::background::has(id) {
         if keys.is_some() {
-            return Err("a background helper has no terminal: answer with answers or allow".into());
+            return Err(
+                "a background helper has no terminal: answer with answers or allow, or stop its turn with luna_send interrupt: true".into(),
+            );
         }
         crate::background::answer(id, answers, allow, note)?;
     } else {
@@ -1891,7 +2013,7 @@ pub fn answer(
         reg().lock().unwrap_or_else(|e| e.into_inner()).answered.insert((caller.to_string(), id.to_string()), now_ms());
     }
     std::thread::sleep(ANSWER_SETTLE);
-    shown(caller, id, baseline);
+    shown(caller, id, baseline, true);
     owe(caller, id, baseline);
     let (state, ask) = state_of(id);
     let screen = (!crate::background::has(id)).then(|| screen_of(&pty, id)).flatten();
@@ -1980,7 +2102,7 @@ pub fn read(
     let ts = crate::activity::turn_state(id);
     let turns_ended = ts.map(|t| t.turns_ended).unwrap_or(0);
     let (state, ask) = state_of(id);
-    shown(caller, id, turns_ended);
+    shown(caller, id, turns_ended, false);
     Ok(Reading {
         messages,
         cursor,
@@ -2078,13 +2200,13 @@ pub fn wait(caller: &str, id: &str, until: &str, timeout_s: u64, after_turn: Opt
             }
             let bare = outcome == "turn_done" && reply.is_none();
             let screen = (outcome == "waiting" || bare).then(|| screen_of(&pty, id)).flatten();
-            shown(caller, id, turns_ended);
+            shown(caller, id, turns_ended, true);
             let (state, ask) = state_of(id);
             return Ok(Waited { outcome, state, ask, turns_ended, reply, screen });
         }
         if std::time::Instant::now() >= deadline {
             let screen = screen_of(&pty, id);
-            shown(caller, id, turns_ended);
+            shown(caller, id, turns_ended, false);
             let (state, ask) = state_of(id);
             return Ok(Waited { outcome: "timeout", state, ask, turns_ended, reply: None, screen });
         }
@@ -2095,6 +2217,9 @@ pub fn wait(caller: &str, id: &str, until: &str, timeout_s: u64, after_turn: Opt
 /// Stops the session; the chat row stays and can be resumed by hand.
 pub fn kill(caller: &str, id: &str) -> Result<(), String> {
     authorize(caller, id)?;
+    // Stopped is not done with: what it was in the middle of is still there
+    // to go on from, so it stays until it is deleted.
+    reg().lock().unwrap_or_else(|e| e.into_inner()).auto.remove(id);
     if crate::background::has(id) {
         crate::background::kill(id);
         return Ok(());
@@ -2115,6 +2240,17 @@ pub fn delete(caller: &str, id: &str, drop_worktree: bool) -> Result<Option<Stri
 
 fn remove(id: &str, known: Known, drop_worktree: bool) -> Result<Option<String>, String> {
     let pty = crate::pty::manager();
+    // What `luna_sessions` history has left to go on once it is gone.
+    if known.parent.is_some() {
+        let transcript = transcript_path(&pty, id);
+        let last = transcript.as_ref().and_then(|_| replies_since(&pty, id, known.provider, 0).pop());
+        crate::agentlog::left(
+            id,
+            transcript.map(|p| p.to_string_lossy().into_owned()).as_deref(),
+            worktree_of(&pty, id).path.as_deref(),
+            last.as_deref(),
+        );
+    }
     // A helper resumed in a worktree knows the worktree as its folder.
     let folder = crate::worktree::project_of(&known.folder).unwrap_or(known.folder);
     let drop_worktree = drop_worktree && !reg().lock().unwrap_or_else(|e| e.into_inner()).borrowed.contains(id);
@@ -2245,8 +2381,9 @@ enum Settled {
     /// A turn past the one asked about ended.
     Answered,
     /// A turn ended, but the session left a job running in the background;
-    /// owed again from this turn count, for the turn that job will end in.
-    Pending(u32),
+    /// owed again from this turn count and transcript end, for the turn
+    /// that job will end in.
+    Pending(u32, u64),
     /// A turn ended but is not settled — processes still at work, or no
     /// reply in the transcript yet: nothing to say, start the grace from now.
     Hold(u32),
@@ -2256,28 +2393,67 @@ enum Settled {
     Exited,
 }
 
-/// What the session said after the last prompt, read straight off its
-/// transcript; None when the prompt is the last word (the turn ended on an
-/// error, an interruption).
-fn last_reply(pty: &crate::pty::PtyManager, id: &str, provider: Provider) -> Option<String> {
-    let path = transcript_path(pty, id)?;
-    let (messages, _) = match provider {
-        Provider::Claude => crate::claude::session::messages_from(&path, 0, false),
-        Provider::Codex => crate::codex::session::messages_from(&path, 0),
+/// What the session has said since `cursor` (see `Owed::cursor`), read
+/// straight off its transcript, its own messages in order; empty when the
+/// prompt is the last word (the turn ended on an error, an interruption).
+/// A transcript with nothing past the cursor has started over in a file of
+/// its own (a resume): the last message there is the answer.
+fn replies_since(pty: &crate::pty::PtyManager, id: &str, provider: Provider, cursor: u64) -> Vec<String> {
+    let Some(path) = transcript_path(pty, id) else { return Vec::new() };
+    let read = |from: u64| match provider {
+        Provider::Claude => crate::claude::session::messages_from(&path, from, false).0,
+        Provider::Codex => crate::codex::session::messages_from(&path, from).0,
     };
-    messages.into_iter().last().filter(|m| m.role == "assistant").map(|m| m.text)
+    let mut messages = read(cursor);
+    if messages.is_empty() && cursor > 0 {
+        messages = read(0).into_iter().last().into_iter().collect();
+    }
+    if messages.last().map_or(true, |m| m.role != "assistant") {
+        return Vec::new();
+    }
+    messages.into_iter().filter(|m| m.role == "assistant").map(|m| m.text).collect()
 }
 
-/// One line for a notice: whitespace folded (a newline would submit the
-/// notice early, or turn it into a paste the CLI shows as a placeholder) and
-/// the length capped, saying so where it is.
-fn quote(text: &str) -> String {
-    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if flat.chars().count() <= NOTICE_QUOTE {
-        return flat;
+/// Whitespace folded: a newline would submit a notice early, or turn it into
+/// a paste the CLI shows as a placeholder.
+fn flat(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The answer as a notice quotes it, on one line. All of it when it fits;
+/// else its report — the longest message, which a closing word ("that was a
+/// stale wakeup, nothing changed") must not push out — and that closing word,
+/// cut to NOTICE_QUOTE between them, with the whole answer in a file the
+/// notice names.
+fn quote(id: &str, replies: &[String]) -> String {
+    let all = flat(&replies.join(" "));
+    if all.chars().count() <= NOTICE_QUOTE {
+        return all;
     }
-    let cut: String = flat.chars().take(NOTICE_QUOTE).collect();
-    format!("{cut}… [cut; luna_read gives the full text]")
+    let cut = |text: &str, n: usize| {
+        let text = flat(text);
+        if text.chars().count() <= n {
+            text
+        } else {
+            format!("{}…", text.chars().take(n).collect::<String>())
+        }
+    };
+    let longest = (0..replies.len()).max_by_key(|&i| replies[i].chars().count()).unwrap_or(0);
+    let last = replies.len().saturating_sub(1);
+    let text = if longest == last {
+        cut(&replies[last], NOTICE_QUOTE)
+    } else {
+        let tail = cut(&replies[last], LAST_WORD_QUOTE);
+        let head = cut(&replies[longest], NOTICE_QUOTE.saturating_sub(tail.chars().count() + 3));
+        format!("{head} … {tail}")
+    };
+    let dir = notes_dir();
+    let path = dir.join(format!("{id}-{}.md", now_ms()));
+    let whole = replies.join("\n\n---\n\n");
+    match std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&path, whole)) {
+        Ok(()) => format!("{text} [cut; all {} messages of the answer are in {}]", replies.len(), path.display()),
+        Err(_) => format!("{text} [cut; luna_read gives the full text]"),
+    }
 }
 
 /// The notice for one session, or None while nothing has happened to it.
@@ -2295,10 +2471,10 @@ fn notice_line(
         // Claude Code ends a turn on a job it put in the background and
         // takes it up again in a turn of its own when the job is done.
         let background = ts.is_some_and(|t| t.children_busy) && pty.alive(id);
-        let reply = last_reply(pty, id, k.provider);
+        let replies = replies_since(pty, id, k.provider, o.cursor);
         let settle_ms = if background {
             BACKGROUND_GRACE_MS
-        } else if reply.is_none() {
+        } else if replies.is_empty() {
             REPLY_GRACE_MS
         } else {
             0
@@ -2313,15 +2489,17 @@ fn notice_line(
                 _ => return Some((None, Settled::Hold(ended))),
             }
         }
-        let reply = reply
-            .map(|r| format!(" and said: \"{}\"", quote(&r)))
-            .unwrap_or_else(|| " without a reply (an error or an interruption; luna_read with screen: true shows it)".into());
+        let reply = match replies.len() {
+            0 => " without a reply (an error or an interruption; luna_read with screen: true shows it)".to_string(),
+            1 => format!(" and said: \"{}\"", quote(id, &replies)),
+            n => format!(" and said, in {n} messages since you asked: \"{}\"", quote(id, &replies)),
+        };
         if background {
             return Some((
                 // Said first and plainly: a weak model read "ended a turn" as
                 // done and deleted the helper mid-job.
                 Some(format!("{who} is NOT done yet: a job it started still runs in the background. It ended a turn{reply}. Wait for the next notice, which comes when it finishes.")),
-                Settled::Pending(ended),
+                Settled::Pending(ended, transcript_end(id)),
             ));
         }
         return Some((Some(format!("{who} finished its turn{reply}.")), Settled::Answered));
@@ -2508,8 +2686,8 @@ fn notifier() {
                                     o.told_waiting = true;
                                 }
                             }
-                            Settled::Pending(ended) => {
-                                r.owed.insert(key, Owed::from(ended));
+                            Settled::Pending(ended, cursor) => {
+                                r.owed.insert(key, Owed::from(ended, cursor));
                             }
                             Settled::Asked(ask) => {
                                 if let Some(o) = r.owed.get_mut(&key) {
@@ -2638,15 +2816,27 @@ mod tests {
         register("o-child", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("o-parent"), false, none);
         let owed = || reg().lock().unwrap().owed.get(&("o-parent".to_string(), "o-child".to_string())).map(|o| o.baseline);
         owe("o-parent", "o-child", 1);
-        shown("o-parent", "o-child", 1);
+        shown("o-parent", "o-child", 1, true);
         assert_eq!(owed(), Some(1), "the send itself shows the count it went in at");
-        shown("o-parent", "o-child", 2);
+        shown("o-parent", "o-child", 2, true);
         assert_eq!(owed(), None, "a wait or read past it settles the answer");
         owe(DEV_CALLER, "o-child", 0);
         assert!(reg().lock().unwrap().owed.get(&(DEV_CALLER.to_string(), "o-child".to_string())).is_none());
-        assert_eq!(quote("a\n\nb   c"), "a b c");
-        assert_eq!(quote(&"x".repeat(NOTICE_QUOTE)), "x".repeat(NOTICE_QUOTE));
-        assert!(quote(&"x".repeat(NOTICE_QUOTE + 1)).ends_with("… [cut; luna_read gives the full text]"));
+    }
+
+    #[test]
+    fn a_notice_quotes_the_report_and_the_last_word() {
+        assert_eq!(quote("q", &["a\n\nb   c".into(), "done".into()]), "a b c done");
+        assert_eq!(quote("q", &["x".repeat(NOTICE_QUOTE)]), "x".repeat(NOTICE_QUOTE));
+        let report = format!("REPORT {}", "r".repeat(NOTICE_QUOTE));
+        let replies = vec!["Let me look.".to_string(), report, "That was a stale wakeup; nothing changed.".to_string()];
+        let q = quote("q", &replies);
+        assert!(q.starts_with("REPORT r"), "the report leads");
+        assert!(q.contains("… That was a stale wakeup; nothing changed. [cut; all 3 messages"), "the last word stays: {q}");
+        let file = q.rsplit(" are in ").next().unwrap().trim_end_matches(']');
+        let whole = std::fs::read_to_string(file).unwrap();
+        assert!(whole.starts_with("Let me look.") && whole.contains("REPORT") && whole.ends_with("nothing changed."));
+        let _ = std::fs::remove_file(file);
     }
 
     #[test]
