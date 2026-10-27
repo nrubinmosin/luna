@@ -114,7 +114,6 @@ pub fn run() {
             // The sessions, the hooks' listener, the agents, activity and power
             // all run in the core (coreproc.rs); the window finds or starts it.
             corelink::start();
-            claude::models::refresh_soon();
             // Installs the CLIs on a fresh machine and keeps them current after.
             cli::refresh_periodically();
 
