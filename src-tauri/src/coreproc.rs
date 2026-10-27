@@ -126,6 +126,9 @@ fn run() {
         env!("LUNA_CORE_FP")
     ));
     crate::lifecycle::start_core();
+    // Here and not in the window: session_meta, which turns a Claude
+    // transcript's tokens into a share of the window, runs in this process.
+    crate::claude::models::refresh_soon();
     sweep_old_copies();
     keep_full_speed();
 

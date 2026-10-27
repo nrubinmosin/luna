@@ -32,33 +32,37 @@ pub fn context_window(model: &str) -> f64 {
         if let Some(w) = map.get(model) {
             return *w;
         }
-        // Transcript ids and API ids can differ by a date suffix in either
-        // direction (`claude-haiku-4-5` vs `claude-haiku-4-5-20251001`).
-        if let Some((_, w)) = map
-            .iter()
-            .find(|(id, _)| id.starts_with(model) || model.starts_with(id.as_str()))
-        {
+        if let Some((_, w)) = map.iter().find(|(id, _)| same_model(id, model)) {
             return *w;
         }
     }
     fallback(model)
 }
 
+/// Transcript ids and API ids of one model can differ by a date suffix in
+/// either direction (`claude-haiku-4-5` vs `claude-haiku-4-5-20251001`). Any
+/// other tail is another model: `claude-opus-5` is not `claude-opus-5-5`.
+fn same_model(a: &str, b: &str) -> bool {
+    let (short, long) = if a.len() <= b.len() { (a, b) } else { (b, a) };
+    long.strip_prefix(short).is_some_and(|rest| {
+        rest.is_empty() || (rest.len() == 9 && rest.starts_with('-') && rest[1..].bytes().all(|c| c.is_ascii_digit()))
+    })
+}
+
 /// Used until the first fetch lands, and if the endpoint is unreachable.
-/// Values as published on 2026-08-13: everything current is a megatoken except
-/// Haiku, and Opus was 200k before the 4.6 generation.
+/// Values as the endpoint gave them on 2026-10-28: every family is a
+/// megatoken from the 4.6 generation on, Haiku 5.5 included, and 200k before.
 fn fallback(model: &str) -> f64 {
     let m = model.to_ascii_lowercase();
     if m.contains("[1m]") {
         return 1_000_000.0;
     }
-    if m.contains("haiku") {
-        return 200_000.0;
+    for family in ["opus", "sonnet", "haiku", "fable", "mythos"] {
+        if let Some(version) = version_after(&m, family) {
+            return if version >= (4, 6) { 1_000_000.0 } else { 200_000.0 };
+        }
     }
-    if let Some((major, minor)) = version_after(&m, "opus") {
-        return if (major, minor) >= (4, 6) { 1_000_000.0 } else { 200_000.0 };
-    }
-    if m.contains("sonnet") || m.contains("fable") || m.contains("mythos") {
+    if m.contains("fable") || m.contains("mythos") {
         return 1_000_000.0;
     }
     200_000.0
@@ -147,8 +151,21 @@ mod tests {
         assert_eq!(fallback("claude-opus-4-5-20251101"), 200_000.0);
         assert_eq!(fallback("claude-sonnet-5"), 1_000_000.0);
         assert_eq!(fallback("claude-sonnet-4-6"), 1_000_000.0);
+        assert_eq!(fallback("claude-sonnet-4-5-20250929"), 200_000.0);
         assert_eq!(fallback("claude-fable-5"), 1_000_000.0);
+        assert_eq!(fallback("claude-fable-5-1"), 1_000_000.0);
+        assert_eq!(fallback("claude-haiku-5-5"), 1_000_000.0);
         assert_eq!(fallback("claude-haiku-4-5-20251001"), 200_000.0);
+        assert_eq!(fallback("claude-3-5-sonnet-20241022"), 200_000.0);
+    }
+
+    #[test]
+    fn only_a_date_tells_two_ids_of_one_model_apart() {
+        assert!(same_model("claude-haiku-4-5", "claude-haiku-4-5-20251001"));
+        assert!(same_model("claude-opus-4-5-20251101", "claude-opus-4-5"));
+        assert!(same_model("claude-opus-5-5", "claude-opus-5-5"));
+        assert!(!same_model("claude-opus-5", "claude-opus-5-5"));
+        assert!(!same_model("claude-sonnet-5", "claude-sonnet-5-5"));
     }
 
     #[test]
