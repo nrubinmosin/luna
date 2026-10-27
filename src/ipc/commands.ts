@@ -564,6 +564,14 @@ export interface BackgroundHelperDto {
   /** agents.rs `state_of`: working, waiting, question, idle… */
   state: string;
   ask?: AskDto | null;
+  /** The account folder's name. */
+  account: string;
+  model: string | null;
+  effort: string;
+  worktree: boolean;
+  startedMs: number;
+  /** While a turn runs, when it started. */
+  turnStartedMs: number | null;
 }
 
 /** A background helper handed over to a chat row (`agent://promote`). */

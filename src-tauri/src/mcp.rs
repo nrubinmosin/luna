@@ -1,8 +1,10 @@
 //! Luna as an MCP server, for the sessions that asked for it: JSON-RPC over
 //! streamable HTTP on the hub listener (`POST /mcp`, bearer token per
-//! session). Nine tools, described as briefly as a model can still use
+//! session). Eleven tools, described as briefly as a model can still use
 //! them — every word here lands in the caller's context once per session —
-//! and a short `instructions` string in place of any system-prompt flag.
+//! a short `instructions` string in place of any system-prompt flag, and
+//! the rest in `luna_guide`, read only by a model that asks for it. A
+//! session without the tools is told nothing.
 //!
 //! Each request is answered with a plain JSON body (the transport allows it;
 //! no SSE stream is ever opened), so `wait` simply holds its HTTP request
@@ -13,16 +15,15 @@ use serde_json::{json, Value};
 
 pub const PROTOCOL: &str = "2025-06-18";
 
-const INSTRUCTIONS: &str = "Luna runs your session and can run helper sessions for you: another model, \
-another account, or Codex. Your CLI's own subagents cannot run the other provider (Claude/Codex), \
-another account or folder: for those use luna_spawn. A helper runs in the background unless you \
-spawn it visible: true (a chat the user sees). Spawn with a prompt and end your turn: once a session \
-you spawned or wrote to answers, asks something, stops on a prompt or exits, Luna types a notice into \
-your session, opening \"[Luna notice\" (not the user). luna_wait only for an answer you need in this \
-same turn. luna_send for follow-ups, luna_answer for its questions and permissions; luna_delete when \
-finished. luna_list: the sessions you spawned and the accounts you may use, with their models, \
-defaults and usage. luna_sessions lists every session in Luna; luna_send, luna_read and luna_wait \
-work on any of them. Prefer one helper at a time; each costs its account's quota.";
+const INSTRUCTIONS: &str = "Luna runs this session. Its luna_* tools start and drive other sessions: \
+another model, another account, Codex or Claude Code, another folder or a worktree, in the background \
+or as a chat the user sees; and they reach every other session in Luna. luna_guide explains them, \
+accounts and models included: read it before the first spawn. Once a session you spawned or wrote \
+to answers, asks something, stops on a prompt or exits, Luna types a notice into your session, \
+opening \"[Luna notice\" (not the user).";
+
+/// What `luna_guide` returns: everything the instructions leave out.
+const GUIDE: &str = include_str!("luna_guide.md");
 
 /// One JSON-RPC message in, at most one out (None for notifications).
 pub fn handle(caller: &str, body: &str) -> Option<Value> {
@@ -37,12 +38,19 @@ pub fn handle(caller: &str, body: &str) -> Option<Value> {
         return None;
     }
     let result = match method {
-        "initialize" => Ok(json!({
-            "protocolVersion": params["protocolVersion"].as_str().unwrap_or(PROTOCOL),
-            "capabilities": { "tools": {} },
-            "serverInfo": { "name": "luna", "version": env!("CARGO_PKG_VERSION") },
-            "instructions": INSTRUCTIONS,
-        })),
+        "initialize" => {
+            let mut r = json!({
+                "protocolVersion": params["protocolVersion"].as_str().unwrap_or(PROTOCOL),
+                "capabilities": { "tools": {} },
+                "serverInfo": { "name": "luna", "version": env!("CARGO_PKG_VERSION") },
+            });
+            // A helper given only the permission handler gets no word of
+            // tools it does not have.
+            if agents::has_tools(caller) {
+                r["instructions"] = json!(INSTRUCTIONS);
+            }
+            Ok(r)
+        }
         "ping" => Ok(json!({})),
         "tools/list" => Ok(json!({ "tools": tools_for(caller) })),
         "tools/call" => Ok(call(caller, &params)),
@@ -80,7 +88,7 @@ fn tools() -> Value {
         },
         {
             "name": "luna_spawn",
-            "description": "Start a helper with an opening prompt, in the background (no row in Luna) unless visible: true. Omitted settings take the account's defaults. A background Codex helper cannot ask; its questions come in its reply. Returns id, resolved settings, started (false = prompt not taken up; see screen), starting (not drawn yet; prompt held, do not resend), warnings, sameFolder (other live sessions in its directory), worktree, branch.",
+            "description": "Start a helper with an opening prompt, in the background (no row in Luna) unless visible: true. Omitted settings take the account's defaults. Returns id, resolved settings, started (false = prompt not taken up; see screen), starting (not drawn yet; prompt held, do not resend), warnings, sameFolder (other live sessions in its directory), worktree, branch.",
             "inputSchema": s(json!({
                 "prompt": { "type": "string" },
                 "provider": { "type": "string", "enum": ["claude", "codex"], "description": "default: yours" },
@@ -135,7 +143,7 @@ fn tools() -> Value {
         },
         {
             "name": "luna_wait",
-            "description": "Block until a session (not yours) ends a turn (returns its reply), stops on a question or permission, or exits. Timeout, waiting and a reply-less turn come with the screen. `afterTurn`: wait for a turn past this turnsEnded (default: the last one you were shown). Optional: a Luna notice brings the answer if you end your turn. A call your client moves to the background still returns, with no notice besides.",
+            "description": "Block until a session (not yours) ends a turn (returns its reply), stops on a question or permission, or exits. Timeout, waiting and a reply-less turn come with the screen. `afterTurn`: wait for a turn past this turnsEnded (default: the last one you were shown). Optional: a Luna notice brings the answer if you end your turn.",
             "inputSchema": s(json!({
                 "id": { "type": "string" },
                 "until": { "type": "string", "enum": ["turn_done", "waiting", "exit"] },
@@ -155,6 +163,12 @@ fn tools() -> Value {
             "description": "Stop a session and remove it; dropWorktree: also its worktree and Luna's branch for it, not others; one shared with you stays.",
             "inputSchema": s(json!({ "id": { "type": "string" }, "dropWorktree": { "type": "boolean" } }), &["id"]),
             "annotations": ends
+        },
+        {
+            "name": "luna_guide",
+            "description": "How Luna's sessions, accounts, models and these tools work.",
+            "inputSchema": s(json!({}), &[]),
+            "annotations": reads
         },
         {
             "name": "luna_notify",
@@ -211,6 +225,7 @@ fn call(caller: &str, params: &Value) -> Value {
     };
     let out: Result<Value, String> = match name {
         "luna_list" => Ok(json!(agents::list(caller))),
+        "luna_guide" => return json!({ "content": [{ "type": "text", "text": GUIDE }] }),
         "luna_answer" => agents::answer(
             caller,
             &id,
@@ -289,14 +304,16 @@ mod tests {
         tooled("me");
         let init = handle("me", r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}"#).unwrap();
         assert_eq!(init["result"]["protocolVersion"], "2025-03-26");
-        assert!(init["result"]["instructions"].as_str().unwrap().contains("luna_spawn"));
+        assert!(init["result"]["instructions"].as_str().unwrap().contains("luna_guide"));
         assert!(handle("me", r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#).is_none());
         let list = handle("me", r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#).unwrap();
         let names: Vec<&str> = list["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names, ["luna_list", "luna_sessions", "luna_spawn", "luna_send", "luna_answer", "luna_read", "luna_wait", "luna_kill", "luna_delete", "luna_notify"]);
+        assert_eq!(names, ["luna_list", "luna_sessions", "luna_spawn", "luna_send", "luna_answer", "luna_read", "luna_wait", "luna_kill", "luna_delete", "luna_guide", "luna_notify"]);
         // One without them is offered none, and may call none.
         agents::register("plain", crate::provider::Provider::Claude, "C:/p", "C:/acc/anthropic/one", None, false, json!({}));
         assert_eq!(handle("plain", r#"{"jsonrpc":"2.0","id":9,"method":"tools/list"}"#).unwrap()["result"]["tools"], json!([]));
+        let init = handle("plain", r#"{"jsonrpc":"2.0","id":11,"method":"initialize","params":{}}"#).unwrap();
+        assert!(init["result"].get("instructions").is_none(), "no word of tools it does not have");
         let r = handle("plain", r#"{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"luna_list","arguments":{}}}"#).unwrap();
         assert_eq!(r["result"]["isError"], true);
         assert_eq!(handle("me", r#"{"jsonrpc":"2.0","id":3,"method":"ping"}"#).unwrap()["result"], json!({}));
@@ -328,6 +345,8 @@ mod tests {
         let text = list.to_string();
         assert!(text.len() < 6000, "tools/list is {} chars", text.len());
         assert!(INSTRUCTIONS.len() < 1000, "instructions are {} bytes", INSTRUCTIONS.len());
+        // Read only on request, but whole: keep it to a few thousand tokens.
+        assert!(GUIDE.len() < 12_000, "the guide is {} bytes", GUIDE.len());
     }
 
     #[test]
@@ -339,12 +358,20 @@ mod tests {
     }
 
     #[test]
+    fn the_guide_is_a_tool_result() {
+        tooled("guide-test");
+        let r = handle("guide-test", r#"{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"luna_guide","arguments":{}}}"#).unwrap();
+        assert!(r["result"].get("isError").is_none());
+        assert!(r["result"]["content"][0]["text"].as_str().unwrap().contains("luna_spawn"));
+    }
+
+    #[test]
     fn reading_tools_say_so() {
         let list = tools();
         let hint = |name: &str, key: &str| {
             list.as_array().unwrap().iter().find(|t| t["name"] == name).unwrap()["annotations"][key].as_bool()
         };
-        for name in ["luna_list", "luna_sessions", "luna_read", "luna_wait"] {
+        for name in ["luna_list", "luna_sessions", "luna_read", "luna_wait", "luna_guide"] {
             assert_eq!(hint(name, "readOnlyHint"), Some(true), "{name}");
         }
         for name in ["luna_kill", "luna_delete"] {

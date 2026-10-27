@@ -98,6 +98,8 @@ export const worktreeRe = /[\\/]\.claude[\\/]worktrees[\\/]/i;
 const worktreeParentRe = /^(.*)[\\/]\.claude[\\/]worktrees[\\/][^\\/]+$/;
 export const projectOf = (cwd: string) => worktreeParentRe.exec(cwd)?.[1] ?? null;
 export const branchPrefix = 'worktree-';
+/** Alt+V: Claude Code's image paste on Windows, and taken elsewhere too. */
+export const pasteImageKey = '\x1bv';
 
 const worktreeNameRe = /^(.*)[\\/]\.claude[\\/]worktrees[\\/]([A-Za-z0-9._-]+)[\\/]?$/;
 const samePath = (a: string, b: string) =>

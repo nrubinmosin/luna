@@ -4,6 +4,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { backgroundDelete, backgroundKill, backgroundPromote, type BackgroundHelperDto } from '../../ipc/commands';
 import { Icon } from '../../shared/ui/icons';
 import { useDialogHost } from '../../shared/ui/dialogHost';
+import { sinceLabel } from '../../shared/lib/format';
 import { logWarn } from '../../shared/lib/log';
 import { useBackground } from './background.store';
 
@@ -16,6 +17,31 @@ const STATE_LABEL: Record<string, string> = {
   background: 'a job still runs',
   exited: 'gone'
 };
+
+/** How long a chip glows after a helper of its chat was spawned. */
+const NEW_MS = 5000;
+
+/** What it runs on: "sonnet · medium · team · worktree". */
+function setupLine(h: BackgroundHelperDto): string {
+  return [h.model ?? 'default model', h.effort, h.account, h.worktree ? 'worktree' : null].filter(Boolean).join(' · ');
+}
+
+/** "working 4m" on its turn, "done · 12m" after it: since the turn or the spawn. */
+function stateLine(h: BackgroundHelperDto, now: number): string {
+  const label = STATE_LABEL[h.state] ?? h.state;
+  if (h.turnStartedMs) return `${label} ${sinceLabel(h.turnStartedMs, now)}`;
+  return `${label} · up ${sinceLabel(h.startedMs, now)}`;
+}
+
+/** The time now, again every `ms` while mounted. */
+function useNow(ms: number): number {
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    const t = window.setInterval(() => setNow(Date.now()), ms);
+    return () => window.clearInterval(t);
+  }, [ms]);
+  return now;
+}
 
 /** What a helper asks, on one line. */
 function askLine(h: BackgroundHelperDto): string | null {
@@ -34,18 +60,29 @@ function askLine(h: BackgroundHelperDto): string | null {
 export function BackgroundChip({ parentId }: { parentId: string }) {
   const helpers = useBackground(useShallow(s => s.helpers.filter(h => h.parent === parentId)));
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
+  const newest = Math.max(0, ...helpers.map(h => h.startedMs));
+  const [fresh, setFresh] = useState(false);
+  // A spawn is the one moment nothing else on screen marks: glow for a while.
+  useEffect(() => {
+    const left = newest + NEW_MS - Date.now();
+    if (left <= 0) return;
+    setFresh(true);
+    const t = window.setTimeout(() => setFresh(false), left);
+    return () => window.clearTimeout(t);
+  }, [newest]);
   if (helpers.length === 0) return null;
   const asking = helpers.some(h => h.state === 'question' || h.state === 'waiting');
   const working = helpers.filter(h => h.state === 'working').length;
   const title = [
     `${helpers.length} background helper${helpers.length > 1 ? 's' : ''} of this chat — click to see`,
-    ...helpers.map(h => `• ${h.name || h.id}: ${STATE_LABEL[h.state] ?? h.state}`)
+    ...helpers.map(h => `• ${h.name || h.id}: ${stateLine(h, Date.now())} (${setupLine(h)})`)
   ].join('\n');
   return (
     <span
       className="kids"
       data-asking={asking ? 'yes' : 'no'}
       data-working={working > 0 ? 'yes' : 'no'}
+      data-new={fresh ? 'yes' : 'no'}
       title={title}
       onClick={e => {
         e.stopPropagation();
@@ -64,6 +101,7 @@ function HelperList({ helpers, anchor, onClose }: { helpers: BackgroundHelperDto
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const now = useNow(15_000);
 
   useLayoutEffect(() => {
     const r = anchor.getBoundingClientRect();
@@ -114,7 +152,10 @@ function HelperList({ helpers, anchor, onClose }: { helpers: BackgroundHelperDto
               <span style={{ flex: '1 1 auto', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {h.name || h.id}
               </span>
-              <span style={{ flex: 'none', color: 'var(--dim)', fontSize: 'var(--fs-1)' }}>{STATE_LABEL[h.state] ?? h.state}</span>
+              <span style={{ flex: 'none', color: 'var(--dim)', fontSize: 'var(--fs-1)' }}>{stateLine(h, now)}</span>
+            </div>
+            <div style={{ fontSize: 'var(--fs-1)', color: 'var(--dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {setupLine(h)}
             </div>
             {line && (
               <div style={{ fontSize: 'var(--fs-1)', color: 'var(--dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={line}>

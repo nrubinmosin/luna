@@ -402,9 +402,15 @@ export function answer<T>(cmd: string, args: Record<string, unknown>, fallback: 
 // Two helpers the first chat's agent runs in the background, one of them
 // waiting on an answer: the chip on its row.
 const BACKGROUND: BackgroundHelperDto[] = [
-  { id: 'demo-bg-1', parent: 'demo-1', name: 'Review the release plan', provider: 'codex', state: 'working' },
+  {
+    id: 'demo-bg-1', parent: 'demo-1', name: 'Review the release plan', provider: 'codex', state: 'working',
+    account: 'work', model: 'gpt-5.5', effort: 'high', worktree: true,
+    startedMs: Date.now() - 14 * 60_000, turnStartedMs: Date.now() - 4 * 60_000
+  },
   {
     id: 'demo-bg-2', parent: 'demo-1', name: 'Check the changelog', provider: 'claude', state: 'question',
+    account: 'team', model: 'sonnet', effort: 'medium', worktree: false,
+    startedMs: Date.now() - 6 * 60_000, turnStartedMs: Date.now() - 60_000,
     ask: { kind: 'question', blocking: true, questions: [{ text: 'Ship tonight or tomorrow?', options: ['Tonight', 'Tomorrow'] }] }
   }
 ];
