@@ -5,6 +5,7 @@ import type { ReactNode } from 'react';
 import { agoLabel } from '../../shared/lib/format';
 import {
   getAccountsRoot, pickFolder, setAccountsRoot, cliUpdateNow, fetchBeforeWorktree, setFetchBeforeWorktree,
+  codexHooksStart, setCodexHooksDefault,
   coreRestart, coreState, type AccountsRootInfo, type CoreStateDto
 } from '../../ipc/commands';
 import { onCoreState } from '../../ipc/events';
@@ -232,6 +233,29 @@ function FetchRow() {
   );
 }
 
+/** Where the new-chat dialog's Codex hooks checkbox starts. Kept by the Rust
+ *  side, which starts background helpers the same way (codex/hooks.rs). */
+function HooksRow() {
+  const [on, setOn] = useState<boolean | null>(null);
+  useEffect(() => {
+    void codexHooksStart('').then(s => setOn(s.default));
+  }, []);
+  return (
+    <div className="field-row" style={{ padding: '3px 0' }}>
+      <input
+        type="checkbox"
+        id="start-hooks"
+        checked={on ?? false}
+        disabled={on === null}
+        onChange={e => void setCodexHooksDefault(e.target.checked).then(setOn)}
+      />
+      <label htmlFor="start-hooks" style={{ cursor: 'default', fontSize: 'var(--fs-4)' }}>
+        Codex hooks without asking
+      </label>
+    </div>
+  );
+}
+
 /** Where the delete dialog's worktree checkbox starts. */
 function DropWorktreeRow() {
   const on = useDeletePrefs(s => s.dropWorktree);
@@ -406,10 +430,14 @@ function SettingsWindow({ onClose }: { onClose: () => void }) {
           <Section label="New chats">
             <StartRow label="Git worktree" which="worktree" />
             <StartRow label="Luna tools" which="tools" />
+            <HooksRow />
             <div style={{ fontSize: 'var(--fs-1)', color: 'var(--faint)', marginTop: 4 }}>
-              How the two checkboxes start in a new chat, quick chats included. Flipping one is just for
+              How the checkboxes start in a new chat, quick chats included. Flipping one is just for
               that chat; a folder that should start otherwise keeps its own — “keep for this folder” in
-              the new-chat dialog.
+              the new-chat dialog. Codex runs a project’s hooks only once they are trusted, and asks
+              again for every new worktree, account or edited hook; a helper in the background cannot
+              ask and goes without them. Without asking, it runs them as they are. Helpers take what
+              their folder would start with.
             </div>
             <FetchRow />
             <div style={{ fontSize: 'var(--fs-1)', color: 'var(--faint)', marginTop: 4 }}>

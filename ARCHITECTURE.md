@@ -44,7 +44,8 @@ src/                          frontend (feature-sliced)
               terminals.ts — registry of live xterms that outlive their panes
     new-chat/ creation dialog: folder, account (which also picks the provider), checkboxes
               "Git worktree" and "Luna tools" (start state — from Settings or saved for the
-              folder, Folder.start), then the provider's fields (Fields from
+              folder, Folder.start), for Codex "Hooks unasked" (the same, kept by the Rust
+              side: codex/hooks.rs), then the provider's fields (Fields from
               providers/*) — they open on what *_defaults say; the model is a drop-down
               with the one the files (or the CLI) would pick marked "· default"; draft.ts —
               settings draft with a "touched by hand" mark, and `follow` for values that
@@ -142,6 +143,11 @@ src-tauri/src/
     limits.rs   chatgpt.com/backend-api/wham/usage via auth.json; fallback — rate_limits
                 from the last token_count in the rollout
     trust.rs    [projects.'<path>'] trust_level = "trusted" in config.toml
+    hooks.rs    whether a session runs the project's hooks unasked (`--dangerously-bypass-hook-trust`):
+                the default and per-folder choices in Luna's settings.json, where the core reads them
+                for helpers — background ones (`codex exec` leaves untrusted hooks out silently) and
+                visible ones (the spawn request carries it) alike. A visible Codex stopped on a list
+                of its own ("Hooks need review") is an `ask` (agents.rs `codex_list_on`)
     session.rs  rollout files sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl: which is ours,
                 status, model, context, first prompt, cwd (rollout_cwd — where a --worktree
                 session went); thread name from session_index.jsonl

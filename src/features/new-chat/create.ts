@@ -2,6 +2,7 @@
  * Making a chat, in one place: the dialog and the no-dialog shortcut both come
  * through here, so they cannot drift on trust, naming, colour or placement.
  */
+import { codexHooksStart } from '../../ipc/commands';
 import type { Account, Chat, ClaudeSettings, CodexSettings } from '../../shared/types';
 import { pickChatColor } from '../../shared/ui/chatColors';
 import { newId, useChats, wornColors } from '../chats/chats.store';
@@ -16,6 +17,8 @@ export type ChatSpec = {
   worktree: boolean;
   /** Attach Luna's MCP tools so the session can spawn and drive others. */
   tools?: boolean;
+  /** Codex: run the project's hooks without their trust prompt. */
+  hooksUnasked?: boolean;
   /** Set when an agent spawns it: the row nests under this chat, and it is
    *  not seated in a pane — the parent is what the user is watching. */
   parentId?: string;
@@ -75,7 +78,7 @@ export async function createChat(spec: ChatSpec): Promise<string> {
   const chat: Chat =
     spec.provider === 'claude'
       ? { ...base, provider: 'claude', ...spec.settings }
-      : { ...base, provider: 'codex', ...spec.settings };
+      : { ...base, provider: 'codex', ...spec.settings, hooksUnasked: spec.hooksUnasked ?? false };
 
   useChats.getState().addChat(spec.folder, chat, !spec.parentId && !spec.byAgent);
   if (!spec.parentId && !spec.byAgent) {
@@ -108,8 +111,8 @@ export async function quickChat(): Promise<void> {
   const folder =
     (near ? chats.folderOf(near.id)?.path : null) ??
     ui.lastFolder ??
-    chats.folders.find(f => f.chats.length > 0)?.path ??
-    chats.folders[0]?.path ??
+    chats.folders.find(f => f.picked && f.chats.length > 0)?.path ??
+    chats.folders.find(f => f.picked)?.path ??
     '';
   const account =
     (near ? findAccount(accounts, near.provider, near.account) : null) ??
@@ -131,7 +134,10 @@ export async function quickChat(): Promise<void> {
       await createChat({ provider: 'claude', folder, account, settings: values, worktree, tools });
     } else {
       const { values } = await codex.settingsDefaults(account.path, folder);
-      await createChat({ provider: 'codex', folder, account, settings: values, worktree, tools });
+      const hooks = await codexHooksStart(folder);
+      await createChat({
+        provider: 'codex', folder, account, settings: values, worktree, tools, hooksUnasked: hooks.kept ?? hooks.default
+      });
     }
   } catch {
     // The trust write failed; the dialog is where that has a place to be

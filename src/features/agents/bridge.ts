@@ -121,7 +121,10 @@ async function spawn(req: AgentSpawnRequest): Promise<void> {
           settings: await codexSettings(req, await codex.settingsDefaults(account.path, folder), account)
         };
   const inWorktree = req.inWorktree ?? undefined;
-  const id = await createChat({ ...spec, folder, account, worktree, tools, parentId: parent?.id, name, inWorktree, byAgent: true });
+  const hooksUnasked = req.hooksUnasked;
+  const id = await createChat({
+    ...spec, folder, account, worktree, tools, hooksUnasked, parentId: parent?.id, name, inWorktree, byAgent: true
+  });
   const chat = useChats.getState().findChat(id);
   const common = {
     chatId: id,
@@ -135,7 +138,7 @@ async function spawn(req: AgentSpawnRequest): Promise<void> {
     if (spec.provider === 'claude') {
       await ensureClaudeSession({ ...common, ...spec.settings, worktree });
     } else {
-      await ensureCodexSession({ ...common, ...spec.settings, worktree: worktree && !inWorktree });
+      await ensureCodexSession({ ...common, ...spec.settings, hooksUnasked, worktree: worktree && !inWorktree });
     }
   } catch (e) {
     // No session to go with the row: a row that sits there failing to start
@@ -193,6 +196,8 @@ async function promote(p: PromotedDto): Promise<void> {
     account,
     worktree: !!p.worktreePath,
     tools: p.tools,
+    // As it ran in the background, which its folder decided.
+    hooksUnasked: p.settings.hooksUnasked === true,
     parentId: parent?.id,
     name: p.name ?? undefined,
     inWorktree: p.worktreePath ?? undefined,

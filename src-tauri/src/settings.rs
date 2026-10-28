@@ -28,6 +28,10 @@ pub struct Settings {
     pub settings_sync_on_start: bool,
     /// `git fetch` origin before a new worktree branches off it (worktree.rs).
     pub fetch_before_worktree: bool,
+    /// Codex sessions run a project's hooks without asking for trust first
+    /// (codex/hooks.rs): the default, and the folders kept otherwise.
+    pub codex_hooks_unasked: bool,
+    pub codex_hooks_unasked_in: std::collections::BTreeMap<String, bool>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -48,6 +52,8 @@ impl Default for Settings {
             settings_parents: SettingsParents::default(),
             settings_sync_on_start: false,
             fetch_before_worktree: true,
+            codex_hooks_unasked: false,
+            codex_hooks_unasked_in: Default::default(),
         }
     }
 }

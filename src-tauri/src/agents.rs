@@ -133,6 +133,10 @@ pub struct AskQuestion {
     /// More than one option may be picked.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub multi: bool,
+    /// A list on a Codex screen (`codex_list_on`): the option its cursor is
+    /// on. Such a list takes only its own options, no words of one's own.
+    #[serde(skip)]
+    pub list_at: Option<usize>,
 }
 
 impl Ask {
@@ -154,7 +158,7 @@ impl Ask {
                 let text = q["question"].as_str()?.trim().to_string();
                 let options =
                     q["options"].as_array().map(|o| o.iter().filter_map(|o| o["label"].as_str().map(str::to_owned)).collect()).unwrap_or_default();
-                Some(AskQuestion { text, options, multi: q["multiSelect"].as_bool().unwrap_or(false) })
+                Some(AskQuestion { text, options, multi: q["multiSelect"].as_bool().unwrap_or(false), list_at: None })
             })
             .collect();
         (!questions.is_empty()).then(|| Ask::question(questions, true))
@@ -246,6 +250,9 @@ struct SpawnRequest {
     /// A worktree the helper is to run in without owning it: its caller's.
     /// The chat is filed under `folder`, the worktree's project.
     in_worktree: Option<String>,
+    /// Codex: run the project's hooks unasked, as the folder would start a
+    /// chat of the user's (codex/hooks.rs). Not the helper's to choose.
+    hooks_unasked: bool,
     #[serde(flatten)]
     params: SpawnParams,
 }
@@ -642,13 +649,70 @@ pub fn ask_of(id: &str) -> Option<Ask> {
             account_path: &p.account_path,
             last_output_ms: p.last_output_ms,
         })
-        .or_else(|| waiting.then(|| Ask::permission(None, pty.screen(id).as_deref().and_then(codex_command_on)))),
+        .or_else(|| waiting.then(|| Ask::permission(None, pty.screen(id).as_deref().and_then(codex_command_on))))
+        .or_else(|| (turn != Some(crate::activity::Turn::Busy)).then(|| pty.screen(id).as_deref().and_then(codex_list_on)).flatten()),
     }
 }
 
 /// The command a Codex approval dialog shows, on its `$ ` line.
 fn codex_command_on(screen: &str) -> Option<String> {
     screen.lines().map(str::trim).find_map(|l| l.strip_prefix("$ ")).map(|c| c.trim().to_string()).filter(|c| !c.is_empty())
+}
+
+/// A list Codex holds its screen on until an option is picked — "Hooks need
+/// review" at startup and the like — as a question: the lines above the
+/// options for its text, the options as numbered, and the one the cursor is
+/// on. Only at the bottom of the screen, above a footer naming Enter and Esc,
+/// so that a numbered list in the conversation is not taken for one.
+fn codex_list_on(screen: &str) -> Option<Ask> {
+    let lines: Vec<&str> = screen.lines().map(str::trim).collect();
+    let foot = lines.iter().rposition(|l| !l.is_empty())?;
+    let f = lines[foot].to_lowercase();
+    if !(f.contains("enter") && f.contains("esc")) {
+        return None;
+    }
+    let numbered = |l: &str| -> Option<(usize, bool, String)> {
+        let (on, rest) = match l.strip_prefix('›') {
+            Some(r) => (true, r.trim_start()),
+            None => (false, l),
+        };
+        let digits = rest.find(|c: char| !c.is_ascii_digit()).filter(|&d| d > 0)?;
+        let n = rest[..digits].parse().ok()?;
+        // A description may follow the label after a run of spaces.
+        let label = rest[digits..].strip_prefix(". ")?.split("  ").next()?.trim();
+        (!label.is_empty()).then(|| (n, on, label.to_string()))
+    };
+    // Up from the footer to option 1; lines between options are descriptions.
+    let mut found: Vec<(usize, bool, String)> = Vec::new();
+    let mut first = None;
+    for i in (foot.saturating_sub(30)..foot).rev() {
+        // The composer's `›` below a numbered list: the conversation, with a
+        // footer of its own (a selection's "enter copy · esc clear").
+        if lines[i].starts_with('›') && numbered(lines[i]).is_none() {
+            return None;
+        }
+        if let Some(o) = numbered(lines[i]) {
+            if found.last().is_some_and(|last| last.0 != o.0 + 1) {
+                return None;
+            }
+            let one = o.0 == 1;
+            found.push(o);
+            if one {
+                first = Some(i);
+                break;
+            }
+        }
+    }
+    let first = first.filter(|_| found.len() >= 2)?;
+    found.reverse();
+    let at = found.iter().position(|o| o.1).unwrap_or(0);
+    let options = found.into_iter().map(|o| o.2).collect();
+    // The paragraph right above the options.
+    let mut text: Vec<&str> =
+        lines[..first].iter().rev().skip_while(|l| l.is_empty()).take_while(|l| !l.is_empty()).copied().collect();
+    text.reverse();
+    let text = if text.is_empty() { "Codex asks".to_string() } else { text.join(" ") };
+    Some(Ask::question(vec![AskQuestion { text, options, multi: false, list_at: Some(at) }], true))
 }
 
 /// One word for where a session stands, and what it asks if it asks:
@@ -1094,6 +1158,10 @@ pub struct Spawned {
     /// has drawn something.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub screen: Option<String>,
+    /// What it stopped on instead, when Luna can read it: a dialog of the
+    /// CLI's own, which `luna_answer` answers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ask: Option<Ask>,
     /// See `still_starting`: not stuck, just not up yet.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub starting: bool,
@@ -1354,7 +1422,8 @@ pub fn spawn(caller: &str, mut params: SpawnParams) -> Result<Spawned, String> {
         (params.provider.clone().unwrap_or_default(), params.account.clone().unwrap_or_default(), params.prompt.clone());
     // A command line holds some 32 thousand characters on Windows.
     params.prompt = spill(&params.prompt);
-    crate::emit::to_ui("agent://spawn", SpawnRequest { request_id, parent_id: caller.to_string(), in_worktree, params });
+    let hooks_unasked = provider == Provider::Codex.as_str() && crate::codex::hooks::unasked_in(&folder);
+    crate::emit::to_ui("agent://spawn", SpawnRequest { request_id, parent_id: caller.to_string(), in_worktree, hooks_unasked, params });
 
     let (lock, cv) = &*slot;
     let mut p = lock.lock().unwrap_or_else(|e| e.into_inner());
@@ -1440,13 +1509,14 @@ pub fn spawn(caller: &str, mut params: SpawnParams) -> Result<Spawned, String> {
         crate::log::warn("agents", &format!("session {id} spawned by {caller} did not start on its prompt within {START_TIMEOUT:?}"));
     }
     let screen = (!started && !starting).then(|| screen_of(&pty, &id)).flatten();
+    let ask = screen.is_some().then(|| ask_of(&id)).flatten();
     // A screen handed over says it all already.
     let warnings = if screen.is_none() { warnings_of(&pty, &id) } else { Vec::new() };
     let same_folder = run_dir.map(|dir| neighbours_in(&dir, &[caller, &id])).unwrap_or_default();
     shown(caller, &id, 0, true);
     owe(caller, &id, 0);
     let worktree = worktree_of(&pty, &id);
-    Ok(Spawned { id, turns_ended: 0, settings, started, screen, starting, warnings, same_folder, worktree })
+    Ok(Spawned { id, turns_ended: 0, settings, started, screen, ask, starting, warnings, same_folder, worktree })
 }
 
 /// Claude Code's model aliases, as the new-chat dialog lists them.
@@ -1501,6 +1571,7 @@ fn background_spec(params: &SpawnParams, provider: Provider, account_path: &str,
                 mode,
                 auto_review: false,
                 tools,
+                hooks_unasked: false,
                 token: None,
             })
         }
@@ -1556,6 +1627,7 @@ fn background_spec(params: &SpawnParams, provider: Provider, account_path: &str,
                 mode: sandbox,
                 auto_review,
                 tools,
+                hooks_unasked: false,
                 token: None,
             })
         }
@@ -1571,6 +1643,9 @@ fn spawn_background(caller: &str, params: SpawnParams, account_path: String, in_
     // A helper handed its caller's worktree works in it and never owns it.
     let run_in = in_worktree.clone().unwrap_or_else(|| project.clone());
     let mut spec = background_spec(&params, provider, &account_path, &run_in)?;
+    // As its project folder would start a chat of the user's: a helper does
+    // not choose this for itself.
+    spec.hooks_unasked = provider == Provider::Codex && crate::codex::hooks::unasked_in(&project);
     let id = crate::background::mint_id();
     let settings = match provider {
         Provider::Claude => serde_json::json!({
@@ -1578,7 +1653,8 @@ fn spawn_background(caller: &str, params: SpawnParams, account_path: String, in_
         }),
         Provider::Codex => serde_json::json!({
             "model": spec.model, "effort": spec.effort,
-            "approval": if spec.auto_review { crate::pty::AUTO_REVIEW } else { "never" }, "sandbox": spec.mode, "background": true,
+            "approval": if spec.auto_review { crate::pty::AUTO_REVIEW } else { "never" }, "sandbox": spec.mode,
+            "hooksUnasked": spec.hooks_unasked, "background": true,
         }),
     };
     let tools = spec.tools;
@@ -1641,7 +1717,7 @@ fn spawn_background(caller: &str, params: SpawnParams, account_path: String, in_
             std::thread::sleep(POLL);
         }
     }
-    Ok(Spawned { id, turns_ended: 0, settings, started: true, screen: None, starting: false, warnings: Vec::new(), same_folder, worktree })
+    Ok(Spawned { id, turns_ended: 0, settings, started: true, screen: None, ask: None, starting: false, warnings: Vec::new(), same_folder, worktree })
 }
 
 /// Past this many characters a prompt or message goes to a visible session
@@ -1929,6 +2005,15 @@ fn presses_for(provider: Provider, ask: &Ask, answers: &[String], allow: Option<
     }
     for (q, a) in ask.questions.iter().zip(answers) {
         let picked = resolve_option(q, a);
+        if let Some(at) = q.list_at {
+            let i = q.options.iter().position(|o| *o == picked).ok_or_else(|| {
+                format!("pick one of the options of \"{}\", by number or label; it takes no words of one's own", q.text)
+            })?;
+            let (key, n) = if i >= at { ("\x1b[B", i - at) } else { ("\x1b[A", at - i) };
+            keys.extend(std::iter::repeat_with(|| Key::Seq(key)).take(n));
+            keys.push(Key::Seq("\r"));
+            continue;
+        }
         match q.options.iter().position(|o| *o == picked) {
             Some(i) => keys.extend(std::iter::repeat_with(|| Key::Seq("\x1b[B")).take(i)),
             None => {
@@ -2900,7 +2985,7 @@ mod tests {
 
     #[test]
     fn an_answer_picks_by_number_label_or_words() {
-        let q = AskQuestion { text: "Which?".into(), options: vec!["Red".into(), "Blue".into()], multi: false };
+        let q = AskQuestion { text: "Which?".into(), options: vec!["Red".into(), "Blue".into()], multi: false, list_at: None };
         assert_eq!(resolve_option(&q, "2"), "Blue");
         assert_eq!(resolve_option(&q, "red"), "Red");
         assert_eq!(resolve_option(&q, "9"), "9", "out of range is words");
@@ -2923,6 +3008,32 @@ mod tests {
         assert_eq!(perm.line(), "asks for permission to run Bash: ls");
         let codex = "  Would you like to run the following command?\n\n  $ Set-Content -LiteralPath made.txt -Value hi\n\n› 1. Yes, proceed (y)";
         assert_eq!(codex_command_on(codex).as_deref(), Some("Set-Content -LiteralPath made.txt -Value hi"));
+    }
+
+    #[test]
+    fn a_codex_list_on_screen_is_a_question_answered_by_its_own_options() {
+        let screen = "\n  Hooks need review\n  5 hooks are new or changed.\n  Hooks can run outside the sandbox after you trust them.\n\n\n\
+                      › 1. Review hooks\n  2. Trust all and continue\n  3. Continue without trusting (hooks won't run)\n\n  enter confirm · esc skip\n";
+        let ask = codex_list_on(screen).unwrap();
+        let q = &ask.questions[0];
+        assert_eq!(q.text, "Hooks need review 5 hooks are new or changed. Hooks can run outside the sandbox after you trust them.");
+        assert_eq!(q.options, ["Review hooks", "Trust all and continue", "Continue without trusting (hooks won't run)"]);
+        assert!(ask.blocking && ask.kind == "question");
+        let keys = presses_for(Provider::Codex, &ask, &["3".into()], None, None).unwrap();
+        assert_eq!(keys, [Key::Seq("\x1b[B"), Key::Seq("\x1b[B"), Key::Seq("\r")]);
+        assert!(presses_for(Provider::Codex, &ask, &["trust them all".into()], None, None).is_err(), "no words of one's own");
+
+        // From where the cursor is, not from the top.
+        let moved = screen.replace("› 1.", "  1.").replace("  2. Trust", "› 2. Trust");
+        let ask = codex_list_on(&moved).unwrap();
+        let keys = presses_for(Provider::Codex, &ask, &["Review hooks".into()], None, None).unwrap();
+        assert_eq!(keys, [Key::Seq("\x1b[A"), Key::Seq("\r")]);
+
+        // A numbered list in the conversation, with the composer below it, is none.
+        let chat = "• Steps:\n  1. Build\n  2. Test\n\n› Ask Codex to do anything\n\n  ? for shortcuts";
+        assert!(codex_list_on(chat).is_none());
+        let selecting = chat.replace("? for shortcuts", "ctrl+c copy · enter copy & follow · esc clear");
+        assert!(codex_list_on(&selecting).is_none());
     }
 
     #[test]

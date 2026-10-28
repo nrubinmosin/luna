@@ -48,7 +48,10 @@ can start other sessions and work with them.
   `effort` = low | medium | high | xhigh | max (ultracode too).
 - Codex: `sandbox` = read-only | workspace-write | danger-full-access; `approval` =
   on-request | never (visible only: a background Codex runs with nobody to approve, the
-  sandbox is what holds it); `effort` per model as `luna_list` gives it.
+  sandbox is what holds it); `effort` per model as `luna_list` gives it. Whether it runs the
+  project's hooks without Codex's trust prompt is the user's setting for that folder, not a
+  spawn option; without it a background Codex runs untrusted hooks not at all, and a
+  visible one stops on the prompt.
 - `folder` runs it in another project. `worktree: true` gives it its own git worktree and
   branch, so it does not share files and git with the sessions in that folder; the result
   names the worktree and branch. `sameFolder` in the result lists live sessions working in
@@ -84,6 +87,9 @@ can start other sessions and work with them.
   an option's number or label, or your own words), `allow: true/false` with an optional
   `note` for a permission, or `keys` (`{down}{enter}`, `{esc}`, `{tab}`, `{shift+tab}`,
   `{up}`, `{left}`, `{right}`, `{space}`, `{backspace}`) for any other dialog.
+- A visible Codex that stops on a list of its own — "Hooks need review" at startup, say —
+  has it as a question too; its options are the only answers it takes. A spawn that did not
+  start because of one returns it as `ask`.
 - A background Claude Code helper's questions and permission prompts come to you this way.
   A background Codex helper cannot ask; what it would have asked is in its reply.
 - `luna_send` types text into a session as its next prompt. Sent while it works, the text
