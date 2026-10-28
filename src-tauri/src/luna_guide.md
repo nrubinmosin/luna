@@ -11,7 +11,9 @@ can start other sessions and work with them.
   `idle`, `starting` (its CLI has not drawn yet), `background` (a job of its still runs),
   `exited`.
 - A helper is **background** by default: no row, no terminal; each turn is one run of the
-  CLI's headless mode and the next one resumes its conversation. The user sees it as a count
+  CLI's headless mode (`claude -p --output-format stream-json`, `codex exec --json`) on the
+  helper's account, with the CLI Luna keeps for it, and the next turn resumes its
+  conversation. The user sees it as a count
   on your chat's row and can open it as a chat between its turns. `visible: true` makes it a
   normal chat row instead, nested under yours, that the user can type into.
 - `luna_list` covers what you spawned (and what they spawned); `luna_sessions` covers every
