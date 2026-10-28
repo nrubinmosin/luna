@@ -53,7 +53,7 @@ pub fn dispatch(cmd: &str, args: Value) -> Result<Value, String> {
         "ensure_codex_session" => call!(wait res args, pty::ensure_codex_session,
             id: String, folder: String, account_path: String, model: Option<String>, effort: String,
             approval: String, sandbox: String, worktree: Option<bool>, resume: Option<String>, login: bool,
-            tools: Option<bool>, parent: Option<String>, prompt: Option<String>),
+            tools: Option<bool>, hooks_unasked: Option<bool>, parent: Option<String>, prompt: Option<String>),
         "write_session" => call!(res args, pty::write_session, id: String, data: String),
         "resize_session" => call!(res args, pty::resize_session, id: String, cols: u16, rows: u16),
         "kill_session" => call!(wait res args, pty::kill_session, id: String),

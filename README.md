@@ -90,6 +90,11 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   makes one Luna fetches origin's default branch (10 s at most, never asking for a
   password; off in Settings): Claude Code branches the worktree off it and refetches it
   itself only once a day.
+  A Codex account adds **Hooks unasked**, which starts and is kept the same way (off in
+  Settings): the project's hooks run without Codex's "Hooks need review" prompt
+  (`--dangerously-bypass-hook-trust`). Codex asks again for every new worktree, account or
+  edited hook, and a background helper, which cannot ask, goes without them. A helper an
+  agent starts takes the box as its folder would start it; the agent cannot choose it.
   The account decides which CLI the chat runs, and the rest of the dialog follows:
   - **Claude Code**: model (a drop-down), effort (`low/medium/high/xhigh/max/ultracode`)
     and permission mode. Isolation runs the session as `claude --worktree` in

@@ -562,6 +562,8 @@ pub(crate) fn clean_env(cmd: &mut std::process::Command) {
 /// in `workspace-write`.
 pub(crate) const AUTO_REVIEW: &str = "auto-review";
 pub(crate) const AUTO_REVIEW_SANDBOX: &str = "workspace-write";
+/// Codex runs the project's hooks without asking for trust (codex/hooks.rs).
+pub(crate) const HOOKS_UNASKED: &str = "--dangerously-bypass-hook-trust";
 
 /// The override that gives Codex its Windows sandbox, for the modes that
 /// need one. Without it Codex refuses every command under `read-only` and
@@ -1054,6 +1056,8 @@ pub async fn ensure_claude_session(
 /// A Codex session. `folder` is where it runs: the project, which `worktree`
 /// has Codex leave for a checkout of its own (`--worktree`), or a worktree it
 /// made earlier, to resume in. `login` runs `codex login` instead of a chat.
+/// `hooks_unasked` runs the project's hooks without their trust prompt
+/// (codex/hooks.rs).
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn ensure_codex_session(
@@ -1068,6 +1072,7 @@ pub async fn ensure_codex_session(
     resume: Option<String>,
     login: bool,
     tools: Option<bool>,
+    hooks_unasked: Option<bool>,
     parent: Option<String>,
     prompt: Option<String>,
 ) -> Result<String, String> {
@@ -1123,10 +1128,14 @@ pub async fn ensure_codex_session(
                     envs.push(("PATH", path));
                 }
             }
+            let hooks_unasked = hooks_unasked.unwrap_or(false);
+            if hooks_unasked {
+                args.push(HOOKS_UNASKED.into());
+            }
             let tools = tools.unwrap_or(false);
             let settings = serde_json::json!({
                 "model": model.as_deref().map(str::trim).filter(|m| !m.is_empty()),
-                "effort": effort, "approval": approval, "sandbox": sandbox,
+                "effort": effort, "approval": approval, "sandbox": sandbox, "hooksUnasked": hooks_unasked,
             });
             let token = crate::agents::register(&id, Provider::Codex, &folder, &account_path, parent.as_deref(), tools, settings);
             if let Some(token) = token.filter(|_| crate::hub::mcp_url().is_some()) {

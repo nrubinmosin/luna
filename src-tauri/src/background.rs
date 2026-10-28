@@ -49,6 +49,9 @@ pub struct Spec {
     /// Codex: `--approve-for-me`, a reviewer model answering what it would ask.
     pub auto_review: bool,
     pub tools: bool,
+    /// Codex: run the project's hooks without their trust, which `exec` has
+    /// no way to ask for (codex/hooks.rs).
+    pub hooks_unasked: bool,
     /// The bearer token of its MCP config: Luna's tools when `tools`, and
     /// `luna_permission` for every Claude Code helper.
     pub token: Option<String>,
@@ -217,6 +220,9 @@ fn command_for(e: &Entry, id: &str) -> (Vec<String>, String, Vec<(&'static str, 
                 args.extend(["--model".into(), m.clone()]);
             }
             args.extend(["-c".into(), format!("model_reasoning_effort=\"{}\"", s.effort)]);
+            if s.hooks_unasked {
+                args.push(crate::pty::HOOKS_UNASKED.into());
+            }
             if s.auto_review {
                 args.push("--approve-for-me".into());
             } else {
@@ -823,6 +829,7 @@ mod tests {
                 mode: "read-only".into(),
                 auto_review: false,
                 tools: false,
+                hooks_unasked: false,
                 token: None,
             },
             started_ms: 0,
@@ -866,6 +873,18 @@ mod tests {
         let (args, _, _) = command_for(&e, "x");
         assert!(args.contains(&"--approve-for-me".to_string()));
         assert!(!args.iter().any(|a| a.starts_with("approval_policy=") || a.starts_with("sandbox_mode=")), "Codex refuses them beside it");
+    }
+
+    #[test]
+    fn hooks_run_unasked_only_when_the_folder_says_so() {
+        let mut e = entry(Provider::Codex);
+        let (args, _, _) = command_for(&e, "x");
+        assert!(!args.contains(&crate::pty::HOOKS_UNASKED.to_string()));
+        e.spec.hooks_unasked = true;
+        on_codex_event(&mut e, &json!({ "type": "thread.started", "thread_id": "t-1" }));
+        let (args, _, _) = command_for(&e, "x");
+        assert_eq!(args[..3], ["exec", "resume", "t-1"]);
+        assert!(args.contains(&crate::pty::HOOKS_UNASKED.to_string()), "every turn, resumes too");
     }
 
     #[test]

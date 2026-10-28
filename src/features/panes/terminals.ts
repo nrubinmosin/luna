@@ -438,6 +438,7 @@ function create(spec: TermSpec): Entry {
               sandbox: chat.sandbox,
               resume: chat.sessionId ?? null,
               tools: chat.tools ?? false,
+              hooksUnasked: chat.hooksUnasked ?? false,
               parent: chat.parentId ?? null
             })
           : await ensureClaudeSession({

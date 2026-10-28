@@ -103,6 +103,8 @@ export interface CodexChat extends ChatBase, CodexSettings {
   /** The model Codex actually reports running, off its rollout — what the
    *  title bar shows when the chat setting is "Codex default". */
   modelSeen?: string | null;
+  /** Runs the project's hooks without Codex's trust prompt for them. */
+  hooksUnasked?: boolean;
 }
 
 export type Chat = ClaudeChat | CodexChat;

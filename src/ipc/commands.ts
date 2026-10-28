@@ -202,6 +202,8 @@ export interface CodexSessionSpec {
   /** `codex login` instead of a chat. */
   login?: boolean;
   tools?: boolean;
+  /** Run the project's hooks without their trust prompt (codex/hooks.rs). */
+  hooksUnasked?: boolean;
   parent?: string | null;
   prompt?: string | null;
 }
@@ -219,6 +221,7 @@ export const ensureCodexSession = (spec: CodexSessionSpec) =>
     resume: spec.resume ?? null,
     login: spec.login ?? false,
     tools: spec.tools ?? false,
+    hooksUnasked: spec.hooksUnasked ?? false,
     parent: spec.parent ?? null,
     prompt: spec.prompt ?? null
   }, '');
@@ -283,6 +286,19 @@ export const orphanSessions = (known: string[]) =>
 /** Whether origin is fetched before a worktree is made (Settings). */
 export const fetchBeforeWorktree = () => call<boolean>('fetch_before_worktree', {}, true);
 export const setFetchBeforeWorktree = (on: boolean) => call<boolean>('set_fetch_before_worktree', { on }, on);
+
+/** Whether Codex runs a folder's hooks without asking: the default in
+ *  Settings and what was kept for the folder (codex/hooks.rs). */
+export interface CodexHooksStart {
+  default: boolean;
+  kept: boolean | null;
+}
+export const codexHooksStart = (folder: string) =>
+  call<CodexHooksStart>('codex_hooks_start', { folder }, { default: false, kept: null });
+export const setCodexHooksDefault = (on: boolean) => call<boolean>('set_codex_hooks_default', { on }, on);
+/** null hands the folder back to the default. */
+export const keepCodexHooks = (folder: string, on: boolean | null) =>
+  call<void>('keep_codex_hooks', { folder, on }, undefined);
 
 
 
@@ -544,6 +560,9 @@ export interface AgentSpawnRequest {
   prompt: string;
   name?: string | null;
   tools?: boolean | null;
+  /** Codex: run the project's hooks unasked, as the folder starts a chat of
+   *  the user's — the core decides, not the agent. */
+  hooksUnasked: boolean;
 }
 
 /** What a session waits on a person for (agents.rs `Ask`). */

@@ -8,7 +8,7 @@ import { claude, codex, ui } from '../providers';
 import { startFor, useNewChat } from './newchat.store';
 import { createChat } from './create';
 import { useSettingsDraft, type Draft } from './draft';
-import { pickFolder } from '../../ipc/commands';
+import { codexHooksStart, keepCodexHooks, pickFolder, type CodexHooksStart } from '../../ipc/commands';
 import { Icon } from '../../shared/ui/icons';
 import { AccountPicker } from './AccountPicker';
 
@@ -73,23 +73,47 @@ export function NewChatDialog() {
     setWorktree(start.worktree);
     setTools(start.tools);
   };
-  // Read on every render rather than kept: keeping the start below changes it.
-  const ownStart = folders.find(f => f.path === folder)?.start;
-  const defaultWorktree = useNewChat(s => s.worktree);
-  const defaultTools = useNewChat(s => s.tools);
-  const start = ownStart ?? { worktree: defaultWorktree, tools: defaultTools };
-  const flipped = worktree !== start.worktree || tools !== start.tools;
-  // A start that is the defaults anyway is no start of the folder's own.
-  const keepForFolder = () =>
-    useChats.getState().setStart(
-      folder,
-      worktree === defaultWorktree && tools === defaultTools ? undefined : { worktree, tools }
-    );
+  // Codex's hooks box starts from the Rust side, which keeps it for the
+  // background helpers it starts on its own (codex/hooks.rs); asked again for
+  // each folder picked, and the box reset to it like the other two.
+  const [hooksStart, setHooksStart] = useState<CodexHooksStart>({ default: false, kept: null });
+  const [hooks, setHooks] = useState(false);
+  useEffect(() => {
+    let stale = false;
+    void codexHooksStart(folder).then(s => {
+      if (stale) return;
+      setHooksStart(s);
+      setHooks(s.kept ?? s.default);
+    });
+    return () => {
+      stale = true;
+    };
+  }, [folder]);
 
   const account = accounts.find(a => accountKey(a.provider, a.name) === accountId) ?? null;
   const provider = account?.provider ?? 'claude';
   const accountPath = account?.path ?? '';
   const canCreate = !!folder && !!account;
+
+  // Read on every render rather than kept: keeping the start below changes it.
+  const ownStart = folders.find(f => f.path === folder)?.start;
+  const defaultWorktree = useNewChat(s => s.worktree);
+  const defaultTools = useNewChat(s => s.tools);
+  const start = ownStart ?? { worktree: defaultWorktree, tools: defaultTools };
+  const startHooks = hooksStart.kept ?? hooksStart.default;
+  const flipped =
+    worktree !== start.worktree || tools !== start.tools || (provider === 'codex' && hooks !== startHooks);
+  const keptHere = !!ownStart || (provider === 'codex' && hooksStart.kept !== null);
+  // A start that is the defaults anyway is no start of the folder's own.
+  const keepForFolder = () => {
+    useChats.getState().setStart(
+      folder,
+      worktree === defaultWorktree && tools === defaultTools ? undefined : { worktree, tools }
+    );
+    if (provider !== 'codex') return;
+    const kept = hooks === hooksStart.default ? null : hooks;
+    void keepCodexHooks(folder, kept).then(() => setHooksStart(s => ({ ...s, kept })));
+  };
 
   // One draft per provider, both kept: switching the account between
   // providers and back must not lose what was set on either side.
@@ -131,7 +155,9 @@ export function NewChatDialog() {
       if (account.provider === 'claude') {
         await createChat({ provider: 'claude', folder, account, settings: claudeDraft.settings, worktree, tools });
       } else {
-        await createChat({ provider: 'codex', folder, account, settings: codexDraft.settings, worktree, tools });
+        await createChat({
+          provider: 'codex', folder, account, settings: codexDraft.settings, worktree, tools, hooksUnasked: hooks
+        });
       }
     } catch (e) {
       setCreating(false);
@@ -221,6 +247,8 @@ export function NewChatDialog() {
                       onClick={e => {
                         e.stopPropagation();
                         useChats.getState().removeFolder(f.id);
+                        // Forgetting the folder forgets what was kept for it.
+                        if (!held) void keepCodexHooks(f.path, null);
                         if (on) setFolder('');
                       }}
                       title={
@@ -302,6 +330,23 @@ export function NewChatDialog() {
                   Luna tools
                 </label>
               </div>
+              {provider === 'codex' && (
+                <div
+                  className="field-row"
+                  title={
+                    'Run the project’s hooks without Codex asking to trust them first ' +
+                    '(--dangerously-bypass-hook-trust). Codex asks again for every new worktree, account ' +
+                    'or edited hook, and a background helper cannot ask at all; its helpers take this ' +
+                    'folder’s start.'
+                  }
+                  style={{ height: 'calc(var(--ui) * 1.6)' }}
+                >
+                  <input type="checkbox" id="hooks-toggle" checked={hooks} onChange={() => setHooks(h => !h)} />
+                  <label htmlFor="hooks-toggle" style={{ whiteSpace: 'nowrap', cursor: 'default' }}>
+                    Hooks unasked
+                  </label>
+                </div>
+              )}
             </div>
           </div>
           {folder && (
@@ -313,21 +358,22 @@ export function NewChatDialog() {
                     onClick={() => {
                       setWorktree(start.worktree);
                       setTools(start.tools);
+                      setHooks(startHooks);
                     }}
                     className="hover-bg"
                     style={linkStyle}
                   >
-                    back to {ownStart ? 'this folder’s start' : 'the default'}
+                    back to {keptHere ? 'this folder’s start' : 'the default'}
                   </span>
                   {' · '}
                   <span onClick={keepForFolder} className="hover-bg" style={linkStyle}>
                     keep for this folder
                   </span>
                 </>
-              ) : ownStart ? (
-                'both as kept for this folder'
+              ) : keptHere ? (
+                'as kept for this folder'
               ) : (
-                'both as set in Settings'
+                'as set in Settings'
               )}
             </div>
           )}
