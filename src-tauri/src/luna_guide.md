@@ -62,8 +62,9 @@ can start other sessions and work with them.
 ## Getting the answer
 - After a spawn or a `luna_send` you can end your turn. Once that session answers, asks
   something, stops on a prompt or exits, Luna types one line into your chat starting with
-  `[Luna notice, not typed by the user]`. It quotes everything the session said since it was
-  asked; past 3,000 characters it keeps the main report and names a file with the rest.
+  `[Luna notice, not typed by the user]`. It says what happened and how many messages the
+  session wrote since it was asked, and names a file holding them: the report (the longest
+  message) first, then the last message, then the rest in order. The notice quotes none of it.
   The notice is delivered when your chat is between turns and the user is not typing in it.
 - `luna_wait` blocks until a session ends a turn (and returns its reply), stops on a
   question or permission (`until: "waiting"`), or exits (`until: "exit"`); up to 30 min
@@ -87,7 +88,9 @@ can start other sessions and work with them.
   A background Codex helper cannot ask; what it would have asked is in its reply.
 - `luna_send` types text into a session as its next prompt. Sent while it works, the text
   is queued for after its turn (`queued`); `interrupt: true` stops the current turn first
-  and makes the text the next one. It reads as the user's words, so name yourself to a
+  and makes the text the next one. The result already says how it went — `started` (a
+  turn began on it), `queued`, or why not — so there is no need to `luna_read` the
+  session to check that the text arrived. It reads as the user's words, so name yourself to a
   session you did not spawn. It will not type into a chat where the user is typing or has
   left an unsent draft; it says so, and you try later.
 - `luna_kill` stops a session's process (a background helper: its turn); the conversation
