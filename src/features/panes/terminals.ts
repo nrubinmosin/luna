@@ -163,9 +163,15 @@ function create(spec: TermSpec): Entry {
   // of interrupting the CLI; with nothing selected it is ^C as ever. By
   // physical key, so a Cyrillic layout gets it too. Nothing is copied on
   // selecting alone.
+  //
+  // Ctrl+V is the browser's: xterm would send it to the CLI as ^V and cancel
+  // the key, so no paste would ever reach the pane — neither xterm's own,
+  // which types the text, nor Terminal.tsx's, which attaches files and
+  // screenshots.
   term.attachCustomKeyEventHandler(e => {
-    if (e.type !== 'keydown' || e.code !== 'KeyC' || !e.ctrlKey || e.shiftKey || e.altKey || e.metaKey) return true;
-    if (!term.hasSelection()) return true;
+    if (!e.ctrlKey || e.shiftKey || e.altKey || e.metaKey) return true;
+    if (e.code === 'KeyV') return false;
+    if (e.type !== 'keydown' || e.code !== 'KeyC' || !term.hasSelection()) return true;
     const text = term.getSelection();
     term.clearSelection();
     navigator.clipboard.writeText(text).catch(err => logWarn('terminal', `copy failed: ${String(err)}`));
