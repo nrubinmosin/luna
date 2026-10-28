@@ -107,8 +107,8 @@ const CHATS: Chat[] = [
 ];
 
 const FOLDERS: Folder[] = [
-  { id: 'f-1', path: 'C:\\src\\luna', open: true, chats: CHATS.slice(0, 3) },
-  { id: 'f-2', path: 'C:\\src\\notes', open: true, chats: CHATS.slice(3) }
+  { id: 'f-1', path: 'C:\\src\\luna', open: true, picked: true, chats: CHATS.slice(0, 3) },
+  { id: 'f-2', path: 'C:\\src\\notes', open: true, picked: true, chats: CHATS.slice(3) }
 ];
 
 const claudeLimits = (h5: number, week: number, fable: number, h5In: number, weekIn: number): Account['limits'] => [

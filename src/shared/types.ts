@@ -112,6 +112,10 @@ export interface Folder {
   path: string;
   open: boolean;
   chats: Chat[];
+  /** A person launched a chat here or browsed to it, which is what puts it
+   *  in the new-chat dialog. A folder only an agent ran a session in holds
+   *  that session's row and nothing more. */
+  picked?: boolean;
   /** How the new-chat checkboxes start here, when kept for this folder from
    *  the dialog; none means the defaults in Settings. Lives on the folder so
    *  that forgetting the folder forgets this too. */

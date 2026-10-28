@@ -46,10 +46,13 @@ function originOf<S extends object>(
 }
 
 export function NewChatDialog() {
-  const folders = useChats(s => s.folders);
+  const allFolders = useChats(s => s.folders);
   const accounts = useAccounts(s => s.accounts);
   const initialFolder = useNewChat(s => s.initialFolder);
   const onClose = useNewChat(s => s.close);
+  // The folders a person launched in, and the one the dialog was opened on
+  // even if only an agent has been there.
+  const folders = allFolders.filter(f => f.picked || f.path === initialFolder);
 
   const [folder, setFolder] = useState(
     () => initialFolder ?? useNewChat.getState().lastFolder ?? folders[0]?.path ?? ''

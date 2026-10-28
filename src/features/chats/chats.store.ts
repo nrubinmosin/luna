@@ -1,19 +1,23 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { Chat, Folder, FolderStart, GroupId, NameSource } from '../../shared/types';
+import { useNewChat } from '../new-chat/newchat.store';
 import { usePanes } from '../panes/panes.store';
 import { forget } from '../panes/terminals';
 
 interface ChatsState {
   /**
    * The folders a chat has ever been launched from, kept whether or not
-   * anything is in them: this is the list the new-chat dialog offers, and it
-   * would be useless if a folder vanished the moment its last chat was
-   * deleted. Their `chats` span every group; the sidebar shows one group's.
+   * anything is in them: the `picked` ones are the list the new-chat dialog
+   * offers, and it would be useless if a folder vanished the moment its last
+   * chat was deleted. Their `chats` span every group; the sidebar shows one
+   * group's.
    */
   folders: Folder[];
   active: string | null;
-  addChat: (folderPath: string, chat: Chat) => void;
+  /** `byPerson`: launched by the user rather than by an agent, which makes
+   *  the folder one the new-chat dialog offers. */
+  addChat: (folderPath: string, chat: Chat, byPerson: boolean) => void;
   deleteChat: (chatId: string) => void;
   /** Forgets a launch folder. Only offered while nothing is left in it. */
   removeFolder: (folderId: string) => void;
@@ -118,14 +122,16 @@ export const useChats = create<ChatsState>()(
       folders: [],
       active: null,
 
-      addChat: (folderPath, chat) =>
+      addChat: (folderPath, chat, byPerson) =>
         set(s => {
           const existing = s.folders.find(f => f.path === folderPath);
           const folders = existing
             ? s.folders.map(f =>
-                f.path === folderPath ? { ...f, open: true, chats: [...f.chats, chat] } : f
+                f.path === folderPath
+                  ? { ...f, open: true, chats: [...f.chats, chat], picked: f.picked || byPerson }
+                  : f
               )
-            : [...s.folders, { id: newId('f'), path: folderPath, open: true, chats: [chat] }];
+            : [...s.folders, { id: newId('f'), path: folderPath, open: true, chats: [chat], picked: byPerson }];
           // A child an agent spawned does not take the selection: the parent
           // is what the user is looking at.
           return { folders, active: chat.parentId ? s.active : chat.id };
@@ -165,8 +171,8 @@ export const useChats = create<ChatsState>()(
       rememberFolder: folderPath =>
         set(s =>
           s.folders.some(f => f.path === folderPath)
-            ? s
-            : { folders: [...s.folders, { id: newId('f'), path: folderPath, open: true, chats: [] }] }
+            ? { folders: s.folders.map(f => (f.path === folderPath ? { ...f, picked: true } : f)) }
+            : { folders: [...s.folders, { id: newId('f'), path: folderPath, open: true, chats: [], picked: true }] }
         ),
 
       toggleFolder: folderId =>
@@ -304,7 +310,14 @@ export const useChats = create<ChatsState>()(
           // rather than chosen; a folder now keeps only a start it was given.
           folders: (p.folders ?? []).map(({ last: _learned, ...f }: Folder & { last?: unknown }) => ({
             ...f,
-            chats: (f.chats ?? []).map(c => named({ ...c, group: c.group ?? 0 }))
+            chats: (f.chats ?? []).map(c => named({ ...c, group: c.group ?? 0 })),
+            // Stored before folders said who launched there. A top-level chat,
+            // a start kept from the dialog or the dialog's last folder is a
+            // person's doing; an empty folder cannot say, and is let go as an
+            // agent's — Browse brings it back.
+            picked:
+              f.picked ??
+              ((f.chats ?? []).some(c => !c.parentId) || !!f.start || f.path === useNewChat.getState().lastFolder)
           }))
         };
       }

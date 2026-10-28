@@ -493,7 +493,10 @@ src-tauri/src/
   catalogue in `priority` order, its effort levels carry the catalogue's descriptions (`effort_hints`) as
   tooltips. Codex's approval and sandbox are two radio columns; `auto-review` holds the sandbox at
   workspace-write. The pane title bar shows a `bypass` chip for never + danger-full-access and an
-  `auto-review` one for that.
+  `auto-review` one for that. Its folder list is the `picked` folders: where a person launched a chat,
+  adopted an orphan or browsed to. A folder only an agent ran a helper in holds its row in the sidebar
+  and is not offered; folders stored before the flag count as picked if they hold a top-level chat,
+  keep a start of their own or are the dialog's last folder.
 - **Recommended settings** (Accounts → per-account button). A tick means "the file will have this
   key": applied keys open ticked; unticking one removes the key — only if the file still says exactly the
   recommended value, and parent objects/tables left empty go too; "Tick recommended" adds the

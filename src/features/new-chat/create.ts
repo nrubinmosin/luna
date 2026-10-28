@@ -77,7 +77,7 @@ export async function createChat(spec: ChatSpec): Promise<string> {
       ? { ...base, provider: 'claude', ...spec.settings }
       : { ...base, provider: 'codex', ...spec.settings };
 
-  useChats.getState().addChat(spec.folder, chat);
+  useChats.getState().addChat(spec.folder, chat, !spec.parentId && !spec.byAgent);
   if (!spec.parentId && !spec.byAgent) {
     usePanes.getState().autoPlace(id);
     useNewChat.getState().remember(spec.folder, { provider: spec.provider, name: spec.account.name });
