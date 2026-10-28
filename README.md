@@ -191,7 +191,12 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   without isolation first; Codex would follow its trust screen with a Windows sandbox
   setup question. Luna writes `hasTrustDialogAccepted` into `.claude.json`, or a
   `[projects.'<path>'] trust_level = "trusted"` entry into `config.toml`, before the
-  session starts.
+  session starts. Codex can also be told for one run (`-c projects=…`), which writes
+  nothing: a background Codex helper, which cannot ask and would otherwise go without the
+  project's `.codex/` config and hooks, is trusted that way wherever it is sent, and so is
+  any Codex session in a project under a folder listed in Settings → "Codex trusts on
+  this computer". Codex itself matches trust by a project's exact path, so a parent folder
+  in its config would not do.
 - **Recommended settings**, per account in the Accounts window — its button says how
   many of them the account's file has (`5/12`): what works well for the CLI inside Luna,
   each with what the file says now, what it would say and why — `tui: fullscreen`, no

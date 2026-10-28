@@ -32,6 +32,9 @@ pub struct Settings {
     /// (codex/hooks.rs): the default, and the folders kept otherwise.
     pub codex_hooks_unasked: bool,
     pub codex_hooks_unasked_in: std::collections::BTreeMap<String, bool>,
+    /// Folders whose projects Codex sessions start trusted on this machine,
+    /// without an entry in any account's config.toml (codex/trust.rs).
+    pub codex_trusted_roots: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -54,6 +57,7 @@ impl Default for Settings {
             fetch_before_worktree: true,
             codex_hooks_unasked: false,
             codex_hooks_unasked_in: Default::default(),
+            codex_trusted_roots: Vec::new(),
         }
     }
 }

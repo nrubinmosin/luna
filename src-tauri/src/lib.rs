@@ -211,6 +211,8 @@ pub fn run() {
             codex::models::codex_models,
             codex::trust::codex_folder_trusted,
             codex::trust::codex_trust_folder,
+            codex::trust::codex_trusted_roots,
+            codex::trust::set_codex_trusted_roots,
             log::append_log,
             media::save_media,
             corelink::core_call,

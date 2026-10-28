@@ -142,7 +142,11 @@ src-tauri/src/
                 that model's default_reasoning_level
     limits.rs   chatgpt.com/backend-api/wham/usage via auth.json; fallback — rate_limits
                 from the last token_count in the rollout
-    trust.rs    [projects.'<path>'] trust_level = "trusted" in config.toml
+    trust.rs    [projects.'<path>'] trust_level = "trusted" in config.toml; or for one run,
+                `-c projects={"<checkout>"={trust_level="trusted"}}` (trust_override), which writes
+                nothing: every background helper's turn, and any session in a project under a folder
+                of settings.json `codexTrustedRoots` (Settings → "Codex trusts on this computer").
+                Codex matches trust by the checkout's exact path, never a parent folder's
     hooks.rs    whether a session runs the project's hooks unasked (`--dangerously-bypass-hook-trust`):
                 the default and per-folder choices in Luna's settings.json, where the core reads them
                 for helpers — background ones (`codex exec` leaves untrusted hooks out silently) and

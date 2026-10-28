@@ -296,6 +296,10 @@ export interface CodexHooksStart {
 export const codexHooksStart = (folder: string) =>
   call<CodexHooksStart>('codex_hooks_start', { folder }, { default: false, kept: null });
 export const setCodexHooksDefault = (on: boolean) => call<boolean>('set_codex_hooks_default', { on }, on);
+/** Folders whose projects Codex sessions start trusted on this machine
+ *  (codex/trust.rs). */
+export const codexTrustedRoots = () => call<string[]>('codex_trusted_roots', {}, []);
+export const setCodexTrustedRoots = (roots: string[]) => call<string[]>('set_codex_trusted_roots', { roots }, roots);
 /** null hands the folder back to the default. */
 export const keepCodexHooks = (folder: string, on: boolean | null) =>
   call<void>('keep_codex_hooks', { folder, on }, undefined);
