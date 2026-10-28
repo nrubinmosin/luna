@@ -1,7 +1,7 @@
 {
   "name": "luna",
   "private": true,
-  "version": "0.6.33",
+  "version": "0.6.34",
   "type": "module",
   "packageManager": "pnpm@10.34.7",
   "scripts": {
