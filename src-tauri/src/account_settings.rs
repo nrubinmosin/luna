@@ -84,7 +84,7 @@ fn codex_specs() -> Vec<Spec> {
         spec(&["tui", "show_tooltips"], json!(false), "No tips in the composer.", true),
         spec(&["tui", "notifications"], json!(false),
             "No desktop notifications from Codex: Luna says when a chat is waiting for you.", true),
-        spec(&["tui", "copy_on_select"], json!(false), COPY_ON_SELECT_WHY, true),
+        spec(&["tui", "copy_on_select"], json!("never"), COPY_ON_SELECT_WHY, true),
         spec(&["analytics", "enabled"], json!(false), "No usage analytics.", true),
         spec(&["feedback", "enabled"], json!(false), "No feedback prompts.", true),
         spec(&["web_search"], json!("live"), "Web search, as Claude Code has it.", true),
