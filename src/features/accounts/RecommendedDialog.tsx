@@ -99,7 +99,7 @@ export function RecommendedDialog({ account, onClose, onEdit }: {
         <div className="window-body" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           <div style={{ fontSize: 'var(--fs-3)', color: 'var(--dim)', lineHeight: 1.45 }}>
             What works well for {PROVIDER_LABEL[account.provider]} inside Luna, kept in this
-            account's <code>{file}</code>. A ticked key is one the file will have; untick one it has to
+            account's <code>{file}</code> unless a key says otherwise. A ticked key is one the file will have; untick one it has to
             take it back out, and {PROVIDER_LABEL[account.provider]} goes back to its own default. The rest
             of the file stays as it is. Sessions already running pick it up when they next start.
           </div>
@@ -143,7 +143,10 @@ export function RecommendedDialog({ account, onClose, onEdit }: {
                         </>
                       )}
                     </div>
-                    <div style={{ fontSize: 'var(--fs-2)', color: 'var(--dim)' }}>{r.why}</div>
+                    <div style={{ fontSize: 'var(--fs-2)', color: 'var(--dim)' }}>
+                      {r.why}
+                      {r.file && <> Kept in <code>{r.file}</code>, where {PROVIDER_LABEL[account.provider]} reads it.</>}
+                    </div>
                   </div>
                 </div>
               );

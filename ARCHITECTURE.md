@@ -145,7 +145,7 @@ src-tauri/src/
     session.rs  rollout files sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl: which is ours,
                 status, model, context, first prompt, cwd (rollout_cwd — where a --worktree
                 session went); thread name from session_index.jsonl
-  account_settings.rs  recommended settings (settings.json / config.toml, key by
+  account_settings.rs  recommended settings (settings.json + .claude.json / config.toml, key by
                 key, platform-aware; apply_recommended adds and removes keys), sync from the
                 parent account, and hand editing of the file (check_account_config: problems
                 with line/column; format_account_config: JSON pretty with 2 spaces, TOML via
@@ -493,7 +493,9 @@ src-tauri/src/
   key": applied keys open ticked; unticking one removes the key — only if the file still says exactly the
   recommended value, and parent objects/tables left empty go too; "Tick recommended" adds the
   `defaultOn` set; Apply shows `+N / −M`; "Edit settings.json/config.toml…" opens the hand editor.
-  The account row's button shows "k/n" recommended keys present. Rust:
+  The account row's button shows "k/n" recommended keys present. Claude Code reads a few settings
+  (`copyOnSelect`) from `.claude.json` only: such a spec is `global`, its Rec names the file, and apply
+  rewrites `.claude.json` only for a key of its own. Rust:
   `apply_recommended(provider, account_path, add, remove)`.
 - **The hand editor** (`ConfigEditor.tsx`) is CodeMirror 6 — JSON via `@codemirror/lang-json`, TOML via
   `@codemirror/legacy-modes` — with line numbers and colours from theme tokens

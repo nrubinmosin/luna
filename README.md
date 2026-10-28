@@ -145,8 +145,9 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
 - The number on a row is what Ctrl+&lt;digit&gt; reaches: the pane it is showing in, or its
   place in the list when there is only one pane. It is filled in while the chat is on the
   board.
-- Ctrl+V with a screenshot on the clipboard presses the CLI's own image-paste key (Alt+V
-  for Claude Code, Ctrl+V for Codex), so the CLI attaches it as it does in any terminal.
+- Ctrl+V pastes as in any terminal. With a screenshot on the clipboard it presses the
+  CLI's own image-paste key (Alt+V for Claude Code, Ctrl+V for Codex), so the CLI
+  attaches it the way it does anywhere.
   Files pasted or dropped into a pane are copied into the app's own media store and their
   absolute paths are typed into the prompt, which is the only thing a webview leaves usable.
 - Ctrl+C over a selection in a pane copies it; with nothing selected it interrupts the CLI
@@ -188,9 +189,10 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   many of them the account's file has (`5/12`): what works well for the CLI inside Luna,
   each with what the file says now, what it would say and why — `tui: fullscreen`, no
   spinner tips or feedback prompts, no away recap, no second Bypass confirmation,
-  PowerShell for `!` commands on Windows only (Claude Code); no update check, tooltips,
-  desktop notifications, analytics or feedback prompts, live web search (Codex); and as
-  matters of taste attribution, default effort, Bypass by default. Nothing is written
+  PowerShell for `!` commands on Windows only, no copy on select (Claude Code, which
+  keeps that one in `.claude.json`); no update check, tooltips, desktop notifications,
+  copy on select, analytics or feedback prompts, live web search (Codex); and as matters
+  of taste attribution, Bypass by default. Nothing is written
   until asked. A tick is what the file will have: the keys already there open ticked,
   and unticking one takes it back out (only while it still says what was recommended);
   "Tick recommended" ticks the everyday set, and Apply says how many keys go in and out.

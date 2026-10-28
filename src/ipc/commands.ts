@@ -635,6 +635,8 @@ export interface RecommendationDto {
   why: string;
   defaultOn: boolean;
   applied: boolean;
+  /** The file it is kept in when that is not the account's settings file. */
+  file: string | null;
 }
 
 export const recommendedSettings = (provider: Provider, accountPath: string) =>

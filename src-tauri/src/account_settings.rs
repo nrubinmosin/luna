@@ -29,6 +29,8 @@ pub struct Rec {
     pub default_on: bool,
     /// The file already says exactly this.
     pub applied: bool,
+    /// The file it is kept in, when that is not the account's settings file.
+    pub file: Option<String>,
 }
 
 /// A recommendation in the making: the path, the value, and who it is for.
@@ -39,11 +41,17 @@ struct Spec {
     default_on: bool,
     /// Windows only, e.g. a PowerShell default.
     windows_only: bool,
+    /// In Claude Code's `.claude.json` rather than its `settings.json`: a few
+    /// of its settings are read from there only.
+    global: bool,
 }
 
 fn spec(path: &'static [&'static str], value: Value, why: &'static str, default_on: bool) -> Spec {
-    Spec { path, value, why, default_on, windows_only: false }
+    Spec { path, value, why, default_on, windows_only: false, global: false }
 }
+
+const COPY_ON_SELECT_WHY: &str =
+    "Selecting in a pane copies nothing until Ctrl+C, so the clipboard keeps what you put there.";
 
 /// Claude Code 2.1, every key checked against the CLI's own settings schema.
 fn claude_specs() -> Vec<Spec> {
@@ -59,16 +67,16 @@ fn claude_specs() -> Vec<Spec> {
             "Bypass is a choice made in Luna's new-chat dialog; the CLI need not ask again.", true),
         Spec { windows_only: true, ..spec(&["defaultShell"], json!("powershell"),
             "`!` commands in the input box run in PowerShell instead of bash.", true) },
+        Spec { global: true, ..spec(&["copyOnSelect"], json!(false), COPY_ON_SELECT_WHY, true) },
         spec(&["cleanupPeriodDays"], json!(14), "Transcripts older than two weeks are cleaned up (default 30).", false),
         spec(&["attribution"], json!({ "commit": "", "pr": "", "sessionUrl": false }),
             "No Co-Authored-By or session links in commits and PRs.", false),
         spec(&["disableRemoteControl"], json!(true), "No Remote Control for sessions on this account.", false),
-        spec(&["effortLevel"], json!("high"), "New sessions start at high effort.", false),
         spec(&["permissions", "defaultMode"], json!("bypassPermissions"), "New sessions start in Bypass.", false),
     ]
 }
 
-/// Codex 0.163, the same comforts in Codex's words; every key checked against
+/// Codex 0.165, the same comforts in Codex's words; every key checked against
 /// the CLI's config structs.
 fn codex_specs() -> Vec<Spec> {
     vec![
@@ -76,10 +84,10 @@ fn codex_specs() -> Vec<Spec> {
         spec(&["tui", "show_tooltips"], json!(false), "No tips in the composer.", true),
         spec(&["tui", "notifications"], json!(false),
             "No desktop notifications from Codex: Luna says when a chat is waiting for you.", true),
+        spec(&["tui", "copy_on_select"], json!(false), COPY_ON_SELECT_WHY, true),
         spec(&["analytics", "enabled"], json!(false), "No usage analytics.", true),
         spec(&["feedback", "enabled"], json!(false), "No feedback prompts.", true),
         spec(&["web_search"], json!("live"), "Web search, as Claude Code has it.", true),
-        spec(&["model_reasoning_effort"], json!("high"), "New sessions start at high effort.", false),
         spec(&["approval_policy"], json!("never"), "With the next one: new sessions start in Bypass.", false),
         spec(&["sandbox_mode"], json!("danger-full-access"), "With the one above: no sandbox.", false),
     ]
@@ -100,6 +108,16 @@ fn claude_file(account_path: &str) -> Result<PathBuf, String> {
         return Err("No account selected".into());
     }
     Ok(Path::new(account_path).join("settings.json"))
+}
+
+/// Claude Code's global config, which `CLAUDE_CONFIG_DIR` puts in the account
+/// folder. The CLI saves it by re-reading the file under a lock, so a key set
+/// here while sessions run is kept, not written over.
+const CLAUDE_GLOBAL: &str = ".claude.json";
+
+fn claude_spec_file(account_path: &str, global: bool) -> Result<PathBuf, String> {
+    let file = claude_file(account_path)?;
+    Ok(if global { file.with_file_name(CLAUDE_GLOBAL) } else { file })
 }
 
 /// The file as an object, or an empty one when it is missing. A file that
@@ -245,9 +263,12 @@ fn recommend(provider: Provider, account_path: &str) -> Result<Vec<Rec>, String>
     let mut out = vec![];
     match provider {
         Provider::Claude => {
-            let doc = read_claude(&claude_file(account_path)?)?;
+            let docs = [
+                read_claude(&claude_spec_file(account_path, false)?)?,
+                read_claude(&claude_spec_file(account_path, true)?)?,
+            ];
             for s in specs(provider) {
-                let current = json_at(&doc, s.path);
+                let current = json_at(&docs[s.global as usize], s.path);
                 out.push(Rec {
                     key: s.path.join("."),
                     current: current.map(Value::to_string),
@@ -255,6 +276,7 @@ fn recommend(provider: Provider, account_path: &str) -> Result<Vec<Rec>, String>
                     why: s.why.into(),
                     default_on: s.default_on,
                     applied: current == Some(&s.value),
+                    file: s.global.then(|| CLAUDE_GLOBAL.into()),
                 });
             }
         }
@@ -270,6 +292,7 @@ fn recommend(provider: Provider, account_path: &str) -> Result<Vec<Rec>, String>
                     recommended,
                     why: s.why.into(),
                     default_on: s.default_on,
+                    file: None,
                 });
             }
         }
@@ -290,17 +313,26 @@ fn apply(provider: Provider, account_path: &str, add: &[String], remove: &[Strin
     }
     match provider {
         Provider::Claude => {
-            let path = claude_file(account_path)?;
-            let mut doc = read_claude(&path)?;
-            for s in add {
-                json_set(&mut doc, s.path, s.value);
-            }
-            for s in remove {
-                if json_at(&doc, s.path) == Some(&s.value) {
-                    json_remove(&mut doc, s.path);
+            // `.claude.json` is the CLI's own: touched only for a key of its.
+            for global in [false, true] {
+                let add: Vec<&Spec> = add.iter().filter(|s| s.global == global).collect();
+                let remove: Vec<&Spec> = remove.iter().filter(|s| s.global == global).collect();
+                if add.is_empty() && remove.is_empty() {
+                    continue;
                 }
+                let path = claude_spec_file(account_path, global)?;
+                let mut doc = read_claude(&path)?;
+                for s in add {
+                    json_set(&mut doc, s.path, s.value.clone());
+                }
+                for s in remove {
+                    if json_at(&doc, s.path) == Some(&s.value) {
+                        json_remove(&mut doc, s.path);
+                    }
+                }
+                write_claude(&path, &doc)?;
             }
-            write_claude(&path, &doc)
+            Ok(())
         }
         Provider::Codex => {
             let path = crate::codex::config::account_file(account_path)?;
@@ -623,18 +655,39 @@ mod tests {
         assert_eq!(&keys[..3], &["model", "env", "zeta"]);
         let recs = recommend(Provider::Claude, &p).unwrap();
         assert!(recs.iter().find(|r| r.key == "tui").unwrap().applied);
+        assert!(!d.join(".claude.json").exists(), "no key of .claude.json was asked for");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn copy_on_select_goes_in_claude_json_and_leaves_the_rest_of_it() {
+        let d = dir("global");
+        std::fs::write(d.join(".claude.json"), r#"{"numStartups":3,"oauthAccount":{"emailAddress":"a@b"}}"#).unwrap();
+        let p = d.to_string_lossy().into_owned();
+        apply(Provider::Claude, &p, &["copyOnSelect".into(), "tui".into()], &[]).unwrap();
+        let global: Value = serde_json::from_str(&std::fs::read_to_string(d.join(".claude.json")).unwrap()).unwrap();
+        assert_eq!(global, json!({ "numStartups": 3, "oauthAccount": { "emailAddress": "a@b" }, "copyOnSelect": false }));
+        let settings: Value = serde_json::from_str(&std::fs::read_to_string(d.join("settings.json")).unwrap()).unwrap();
+        assert_eq!(settings, json!({ "tui": "fullscreen" }));
+        let rec = recommend(Provider::Claude, &p).unwrap().into_iter().find(|r| r.key == "copyOnSelect").unwrap();
+        assert!(rec.applied);
+        assert_eq!(rec.file.as_deref(), Some(".claude.json"));
+
+        apply(Provider::Claude, &p, &[], &["copyOnSelect".into()]).unwrap();
+        let global: Value = serde_json::from_str(&std::fs::read_to_string(d.join(".claude.json")).unwrap()).unwrap();
+        assert!(global.get("copyOnSelect").is_none() && global["numStartups"] == 3);
         let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
     fn taking_a_recommendation_out_leaves_no_empty_parents_and_spares_the_users_own() {
         let d = dir("remove");
-        std::fs::write(d.join("settings.json"), r#"{"model":"opus","env":{"CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY":"1"},"tui":"fullscreen","effortLevel":"low"}"#).unwrap();
+        std::fs::write(d.join("settings.json"), r#"{"model":"opus","env":{"CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY":"1"},"tui":"fullscreen","cleanupPeriodDays":60}"#).unwrap();
         let p = d.to_string_lossy().into_owned();
-        let out = ["env.CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY".to_string(), "tui".into(), "effortLevel".into()];
+        let out = ["env.CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY".to_string(), "tui".into(), "cleanupPeriodDays".into()];
         apply(Provider::Claude, &p, &[], &out).unwrap();
         let v: Value = serde_json::from_str(&std::fs::read_to_string(d.join("settings.json")).unwrap()).unwrap();
-        assert_eq!(v, json!({ "model": "opus", "effortLevel": "low" }), "low is the user's, not the recommendation");
+        assert_eq!(v, json!({ "model": "opus", "cleanupPeriodDays": 60 }), "60 is the user's, not the recommendation");
 
         std::fs::write(d.join("config.toml"), "# mine
 web_search = \"live\"
