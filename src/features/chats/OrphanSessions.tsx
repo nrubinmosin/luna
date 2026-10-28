@@ -76,7 +76,7 @@ export function OrphanSessions() {
       o.provider === 'codex'
         ? { ...base, provider: 'codex', ...codex.STOCK }
         : { ...base, provider: 'claude', ...claude.STOCK };
-    useChats.getState().addChat(folder, chat);
+    useChats.getState().addChat(folder, chat, true);
     usePanes.getState().autoPlace(o.id);
     rescan();
   };
