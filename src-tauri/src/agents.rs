@@ -1505,23 +1505,35 @@ fn background_spec(params: &SpawnParams, provider: Provider, account_path: &str,
                 model,
                 effort,
                 mode,
+                auto_review: false,
                 tools,
                 token: None,
             })
         }
         Provider::Codex => {
+            use crate::pty::{AUTO_REVIEW, AUTO_REVIEW_SANDBOX};
             if asked(&params.permission_mode).is_some() {
                 return Err("permissionMode is a Claude setting; Codex takes approval and sandbox".into());
             }
-            if asked(&params.approval).is_some_and(|a| a != "never") {
-                return Err("a background Codex helper has nobody to ask for approval; leave approval out, \
-                            or spawn it with visible: true"
-                    .into());
-            }
+            // Nobody is there to ask, but a reviewer model can answer.
+            let auto_review = match asked(&params.approval) {
+                None | Some("never") => false,
+                Some(AUTO_REVIEW) => true,
+                Some(_) => {
+                    return Err(format!(
+                        "a background Codex helper has nobody to ask for approval; leave approval out, \
+                         use {AUTO_REVIEW}, or spawn it with visible: true"
+                    ))
+                }
+            };
             let d = crate::codex::defaults::flags(account_path, folder);
             let sandbox = match asked(&params.sandbox) {
+                Some(s) if auto_review && s != AUTO_REVIEW_SANDBOX => {
+                    return Err(format!("{AUTO_REVIEW} runs in {AUTO_REVIEW_SANDBOX} only; leave sandbox out"))
+                }
                 Some(s) if ["read-only", "workspace-write", "danger-full-access"].contains(&s) => s.to_string(),
                 Some(s) => return Err(format!("unknown sandbox \"{s}\"; use read-only, workspace-write, danger-full-access")),
+                None if auto_review => AUTO_REVIEW_SANDBOX.to_string(),
                 None => d["sandbox"].as_str().unwrap_or("read-only").to_string(),
             };
             let models = crate::codex::models::models_known(account_path);
@@ -1548,6 +1560,7 @@ fn background_spec(params: &SpawnParams, provider: Provider, account_path: &str,
                 model,
                 effort,
                 mode: sandbox,
+                auto_review,
                 tools,
                 token: None,
             })
@@ -1570,7 +1583,8 @@ fn spawn_background(caller: &str, params: SpawnParams, account_path: String, in_
             "model": spec.model, "effort": spec.effort, "permissionMode": spec.mode, "worktree": own_worktree, "background": true,
         }),
         Provider::Codex => serde_json::json!({
-            "model": spec.model, "effort": spec.effort, "approval": "never", "sandbox": spec.mode, "background": true,
+            "model": spec.model, "effort": spec.effort,
+            "approval": if spec.auto_review { crate::pty::AUTO_REVIEW } else { "never" }, "sandbox": spec.mode, "background": true,
         }),
     };
     let tools = spec.tools;

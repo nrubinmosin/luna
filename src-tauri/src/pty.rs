@@ -557,6 +557,12 @@ pub(crate) fn clean_env(cmd: &mut std::process::Command) {
     }
 }
 
+/// Luna's name for Codex's `--approve-for-me`: what Codex would ask goes to a
+/// reviewer model. It takes no `--ask-for-approval` or `--sandbox` and runs
+/// in `workspace-write`.
+pub(crate) const AUTO_REVIEW: &str = "auto-review";
+pub(crate) const AUTO_REVIEW_SANDBOX: &str = "workspace-write";
+
 /// The override that gives Codex its Windows sandbox, for the modes that
 /// need one. Without it Codex refuses every command under `read-only` and
 /// `workspace-write`, a `Get-Content` included. The unelevated kind runs each
@@ -1096,19 +1102,24 @@ pub async fn ensure_codex_session(
             }
             args.push("-c".into());
             args.push(format!("model_reasoning_effort=\"{effort}\""));
+            let sandbox: &str = if approval == AUTO_REVIEW { AUTO_REVIEW_SANDBOX } else { &sandbox };
             // The pair Codex itself spells as one flag.
             if approval == "never" && sandbox == "danger-full-access" {
                 args.push("--dangerously-bypass-approvals-and-sandbox".into());
             } else {
-                args.push("--ask-for-approval".into());
-                args.push(approval.clone());
-                args.push("--sandbox".into());
-                args.push(sandbox.clone());
-                if let Some(sb) = codex_windows_sandbox(&sandbox) {
+                if approval == AUTO_REVIEW {
+                    args.push("--approve-for-me".into());
+                } else {
+                    args.push("--ask-for-approval".into());
+                    args.push(approval.clone());
+                    args.push("--sandbox".into());
+                    args.push(sandbox.to_string());
+                }
+                if let Some(sb) = codex_windows_sandbox(sandbox) {
                     args.push("-c".into());
                     args.push(sb);
                 }
-                if let Some(path) = codex_sandbox_path(&sandbox) {
+                if let Some(path) = codex_sandbox_path(sandbox) {
                     envs.push(("PATH", path));
                 }
             }

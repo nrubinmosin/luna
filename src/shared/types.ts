@@ -43,7 +43,9 @@ export interface ClaudeSettings {
 /** A reasoning level as Codex names it. The set is per model and comes off
  *  the CLI's own model list (`low … ultra` today), so it is not closed here. */
 export type CodexEffort = string;
-export type CodexApproval = 'on-request' | 'never';
+/** `auto-review` is Codex's `--approve-for-me`: what it would ask goes to a
+ *  reviewer model instead, always in `workspace-write`. */
+export type CodexApproval = 'on-request' | 'never' | 'auto-review';
 export type CodexSandbox = 'read-only' | 'workspace-write' | 'danger-full-access';
 
 /** What Codex's `config.toml` can say and Luna passes as flags. The model is
@@ -218,19 +220,33 @@ export const permFromSetting = (raw: string): PermMode | null => PERM_OF_CLI[raw
 
 /** The levels shown when the account has no model list cached yet. */
 export const CODEX_EFFORTS: CodexEffort[] = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
-export const CODEX_APPROVALS: CodexApproval[] = ['on-request', 'never'];
+export const CODEX_APPROVALS: CodexApproval[] = ['on-request', 'never', 'auto-review'];
 export const CODEX_SANDBOXES: CodexSandbox[] = ['read-only', 'workspace-write', 'danger-full-access'];
+/** The one sandbox `auto-review` runs in. */
+export const AUTO_REVIEW_SANDBOX: CodexSandbox = 'workspace-write';
 
 export const CODEX_APPROVAL_HINTS: Record<CodexApproval, string> = {
-  'on-request': 'Codex asks before anything the sandbox would block',
-  never: 'never asks — blocked actions just fail'
+  'on-request': 'Codex asks you before anything the sandbox would block',
+  never: 'never asks — blocked actions just fail',
+  'auto-review': 'a reviewer model answers what Codex would ask you, and the turn goes on'
 };
 
 export const CODEX_SANDBOX_HINTS: Record<CodexSandbox, string> = {
   'read-only': 'commands can only read the disk',
-  'workspace-write': 'writes inside the folder; needs the Windows sandbox set up, else acts as read-only',
+  'workspace-write': 'writes inside the folder and temp, nowhere else',
   'danger-full-access': 'no sandbox at all'
 };
+
+/** What an approval and a sandbox come to together, as one line. */
+export function codexModeHint(approval: CodexApproval, sandbox: CodexSandbox): string {
+  if (approval === 'auto-review') return `Runs with --approve-for-me: ${CODEX_APPROVAL_HINTS[approval]}; ${CODEX_SANDBOX_HINTS[AUTO_REVIEW_SANDBOX]}.`;
+  if (sandbox === 'danger-full-access') {
+    return approval === 'never'
+      ? 'Runs with --dangerously-bypass-approvals-and-sandbox.'
+      : 'No sandbox; Codex still asks you before commands it finds dangerous.';
+  }
+  return `${CODEX_APPROVAL_HINTS[approval]}; ${CODEX_SANDBOX_HINTS[sandbox]}.`;
+}
 
 export const codexEffortFromSetting = (raw: string): CodexEffort | null => {
   const v = raw.trim().toLowerCase();

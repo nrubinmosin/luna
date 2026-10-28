@@ -103,9 +103,11 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
     (`low … ultra`, from the same list, each level's description as its tooltip), opening
     on the model's own default level and following the model when another is picked —
     unless a settings file names a level or one was picked by hand. Approval policy
-    (`on-request/never`) and sandbox mode (`read-only/workspace-write/danger-full-access`)
+    (`on-request/never/auto-review`) and sandbox mode (`read-only/workspace-write/danger-full-access`)
     are picked separately; `never` + `danger-full-access` is passed as
-    `--dangerously-bypass-approvals-and-sandbox`, as Codex spells it. Isolation runs
+    `--dangerously-bypass-approvals-and-sandbox`, as Codex spells it. `auto-review` is
+    Codex's `--approve-for-me`: what Codex would ask you goes to a reviewer model, which
+    approves or declines so the turn goes on, always in `workspace-write`. Isolation runs
     `codex --worktree`: Codex checks the current commit out into
     `<account>/worktrees/<4 hex>/<repo>` on a detached HEAD, and Luna reads where from the
     session's rollout. A resumed chat goes back into that checkout.
@@ -209,9 +211,6 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   the others — now, with Sync now, or at every launch with the box ticked. The others get
   an exact copy, so a key taken out of the parent goes from them too and whatever was set
   on a child alone is replaced; logins and Codex's trusted folders stay each account's own.
-- Codex on Windows: without the Windows sandbox set up (`[windows] sandbox` in
-  `config.toml`, Codex's own affair), `workspace-write` behaves as `read-only` and Codex
-  asks before every write. Luna does not touch that setting.
 
 ## Sessions and cleanup
 
@@ -286,10 +285,11 @@ background helper spawned without tools.
   words of its own, `allow` true or false, or raw keys for any other dialog. A background
   Claude Code helper puts its questions and permission prompts to Luna instead of a screen
   (`--permission-prompt-tool`), so its agent answers them all the same; a background Codex
-  helper has nobody to ask and says what it would have asked in its reply.
+  helper has nobody to ask and says what it would have asked in its reply, unless it runs
+  with `approval: auto-review`, where a reviewer model answers.
 - A prompt or message longer than 8,000 characters reaches a visible session as a file it
   is told to read; a background one gets any length on its stdin.
-- Codex under `read-only` or `workspace-write` runs its commands in its Windows sandbox
+- Codex under `read-only` or `workspace-write` (and so `auto-review`) runs its commands in its Windows sandbox
   (the unelevated kind: no administrator, no extra accounts), without the Store's app
   aliases on its PATH, which the sandbox cannot start.
 - An agent kills and deletes only sessions it spawned (and theirs). It can see every other
