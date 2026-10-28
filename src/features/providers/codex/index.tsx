@@ -7,8 +7,8 @@
 import { useEffect, useState, type CSSProperties, type ReactNode } from 'react';
 import type { Account, CodexApproval, CodexChat, CodexEffort, CodexSandbox, CodexSettings } from '../../../shared/types';
 import {
-  CODEX_APPROVAL_HINTS, CODEX_APPROVALS, CODEX_EFFORTS, CODEX_SANDBOX_HINTS, CODEX_SANDBOXES,
-  codexApprovalFromSetting, codexEffortFromSetting, codexSandboxFromSetting
+  AUTO_REVIEW_SANDBOX, CODEX_APPROVAL_HINTS, CODEX_APPROVALS, CODEX_EFFORTS, CODEX_SANDBOX_HINTS, CODEX_SANDBOXES,
+  codexApprovalFromSetting, codexEffortFromSetting, codexModeHint, codexSandboxFromSetting
 } from '../../../shared/types';
 import {
   codexDefaults, codexFolderTrusted, codexModels, codexTrustFolder, ensureCodexSession,
@@ -154,6 +154,14 @@ export function Fields({ draft, origin, accountPath }: {
   const modelItems = list.map(m => ({ value: m.slug, label: m.displayName }));
   if (settings.model && !listed) modelItems.push({ value: settings.model, label: settings.model });
 
+  // `--approve-for-me` brings its own sandbox: Codex takes no `--sandbox`
+  // with it.
+  const autoReview = settings.approval === 'auto-review';
+  const pickApproval = (a: CodexApproval) => {
+    pick('approval', a);
+    if (a === 'auto-review') pick('sandbox', AUTO_REVIEW_SANDBOX);
+  };
+
   return (
     <>
       <div>
@@ -192,7 +200,7 @@ export function Fields({ draft, origin, accountPath }: {
               const id = `codex-approval-${a}`;
               return (
                 <div key={a} className="field-row" title={CODEX_APPROVAL_HINTS[a]}>
-                  <input type="radio" id={id} name="codex-approval" checked={settings.approval === a} onChange={() => pick('approval', a as CodexApproval)} />
+                  <input type="radio" id={id} name="codex-approval" checked={settings.approval === a} onChange={() => pickApproval(a)} />
                   <label htmlFor={id} style={{ fontWeight: 600, whiteSpace: 'nowrap', cursor: 'default' }}>{a}</label>
                 </div>
               );
@@ -203,19 +211,17 @@ export function Fields({ draft, origin, accountPath }: {
             {CODEX_SANDBOXES.map(s => {
               const id = `codex-sandbox-${s}`;
               return (
-                <div key={s} className="field-row" title={CODEX_SANDBOX_HINTS[s]}>
-                  <input type="radio" id={id} name="codex-sandbox" checked={settings.sandbox === s} onChange={() => pick('sandbox', s as CodexSandbox)} />
+                <div key={s} className="field-row" title={CODEX_SANDBOX_HINTS[s]} style={autoReview && s !== AUTO_REVIEW_SANDBOX ? { opacity: 0.45 } : undefined}>
+                  <input type="radio" id={id} name="codex-sandbox" checked={settings.sandbox === s} disabled={autoReview} onChange={() => pick('sandbox', s as CodexSandbox)} />
                   <label htmlFor={id} style={{ fontWeight: 600, whiteSpace: 'nowrap', cursor: 'default' }}>{s}</label>
                 </div>
               );
             })}
-            {origin('sandbox')}
+            {!autoReview && origin('sandbox')}
           </div>
         </div>
         <div style={{ ...hintStyle, marginTop: 4, whiteSpace: 'normal' }}>
-          {settings.approval === 'never' && settings.sandbox === 'danger-full-access'
-            ? 'Runs with --dangerously-bypass-approvals-and-sandbox.'
-            : `${CODEX_APPROVAL_HINTS[settings.approval]}; ${CODEX_SANDBOX_HINTS[settings.sandbox]}.`}
+          {codexModeHint(settings.approval, settings.sandbox)}
         </div>
       </div>
     </>
@@ -237,6 +243,13 @@ export function Meta({ chat }: { chat: CodexChat }) {
       </span>
       {bypass ? (
         <span className="pchip opt-2" title="Approval: never · Sandbox: danger-full-access (--dangerously-bypass-approvals-and-sandbox)">bypass</span>
+      ) : chat.approval === 'auto-review' ? (
+        <span
+          className="pchip opt-2"
+          title={`Approval: auto-review (--approve-for-me) — ${CODEX_APPROVAL_HINTS['auto-review']}\nSandbox: ${AUTO_REVIEW_SANDBOX} — ${CODEX_SANDBOX_HINTS[AUTO_REVIEW_SANDBOX]}`}
+        >
+          auto-review
+        </span>
       ) : (
         <span
           className="pchip opt-2"

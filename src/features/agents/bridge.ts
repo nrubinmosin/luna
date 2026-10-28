@@ -14,7 +14,7 @@ import {
 import { onAgentDeleted, onAgentPromote, onAgentSpawn, onBackgroundHelpers } from '../../ipc/events';
 import { logWarn } from '../../shared/lib/log';
 import {
-  CODEX_APPROVALS, CODEX_SANDBOXES, EFFORTS, MODEL_CLI, MODELS, PERM_CLI, accountKey,
+  AUTO_REVIEW_SANDBOX, CODEX_APPROVALS, CODEX_SANDBOXES, EFFORTS, MODEL_CLI, MODELS, PERM_CLI, accountKey,
   codexApprovalFromSetting, codexEffortFromSetting, codexSandboxFromSetting, effortFromSetting, modelFromSetting, permFromSetting,
   type Account, type ClaudeSettings, type CodexSettings
 } from '../../shared/types';
@@ -72,7 +72,10 @@ async function codexSettings(
   const sandbox = asked(req.sandbox)
     ? codexSandboxFromSetting(req.sandbox.trim()) ??
       refuse(`unknown sandbox "${req.sandbox}"; use ${CODEX_SANDBOXES.join(', ')}`)
-    : values.sandbox;
+    : approval === 'auto-review' ? AUTO_REVIEW_SANDBOX : values.sandbox;
+  if (approval === 'auto-review' && sandbox !== AUTO_REVIEW_SANDBOX) {
+    refuse(`auto-review runs in ${AUTO_REVIEW_SANDBOX} only; leave sandbox out`);
+  }
   const model = asked(req.model) ? req.model.trim() : values.model;
 
   const models = await codexModels(account.path).catch((): CodexModelDto[] => []);

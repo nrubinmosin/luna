@@ -96,7 +96,7 @@ fn tools() -> Value {
                 "model": { "type": "string", "description": "one luna_list names for the account; claude also a full id" },
                 "effort": { "type": "string", "description": "low|medium|high|xhigh|max; claude also ultracode; codex per model" },
                 "permissionMode": { "type": "string", "description": "claude: default|acceptEdits|plan|bypassPermissions" },
-                "approval": { "type": "string", "description": "codex, visible only: on-request|never" },
+                "approval": { "type": "string", "description": "codex: never|on-request|auto-review" },
                 "sandbox": { "type": "string", "description": "codex: read-only|workspace-write|danger-full-access" },
                 "folder": { "type": "string", "description": "project folder; default: yours" },
                 "worktree": { "type": "boolean", "description": "run in its own git worktree" },

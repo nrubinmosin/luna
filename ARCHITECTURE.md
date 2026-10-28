@@ -200,7 +200,8 @@ src-tauri/src/
 - **A Codex session = running `codex`** with arguments:
   `[resume <uuid>] -C <cwd> --no-daemon [--worktree] --model <m> -c model_reasoning_effort="<e>" -a <on-request|never>
   -s <read-only|workspace-write|danger-full-access>` (the pair `never` + `danger-full-access`
-  is replaced by `--dangerously-bypass-approvals-and-sandbox`), `CODEX_HOME` = the account folder.
+  is replaced by `--dangerously-bypass-approvals-and-sandbox`; Luna's `auto-review` is `--approve-for-me`
+  in place of `-a`/`-s`, which Codex refuses beside it, in `workspace-write`), `CODEX_HOME` = the account folder.
   `--no-daemon` keeps the session in this process, in Luna's pty, rather than in Codex's shared background
   server — which the `-c` overrides rule out anyway; said outright, Codex does not warn about it at startup.
   Worktrees are Codex's own: a new worktree chat starts with `--worktree` and `-C` = the project folder,
@@ -459,7 +460,7 @@ src-tauri/src/
   model by `--disallowedTools`): its permission prompts and `AskUserQuestion` arrive as that call,
   held on a Condvar until `luna_answer` (allow / deny with the input back, or `answers` by question
   text) or the turn's end. Codex's `exec` asks nobody (approval never) and puts a question in its
-  reply. Helpers are auto-deleted unless spawned with `autoDelete: false`. `send` with `interrupt` takes the
+  reply — or, with `approval: auto-review`, runs `--approve-for-me`, and a reviewer model answers. Helpers are auto-deleted unless spawned with `autoDelete: false`. `send` with `interrupt` takes the
   queue, kills the turn's process tree, waits for its reader to count the turn over, and starts the next
   turn on queue + text (`background::interrupt`); in a terminal it is Esc, up to 3 s for the turn to read as
   over, and the text typed as a prompt of its own. A spawn with `worktree: true` waits up to 20 s for the
@@ -487,8 +488,9 @@ src-tauri/src/
 - **New-chat dialog.** The model is picked from a drop-down (`ModelSelect`, a native `<select>`) for
   both providers; the model the files (or the CLI) would pick is marked "· default". Codex's list is the
   catalogue in `priority` order, its effort levels carry the catalogue's descriptions (`effort_hints`) as
-  tooltips. Codex's approval and sandbox are two radio columns; the pane title bar shows a `bypass`
-  chip for never + danger-full-access.
+  tooltips. Codex's approval and sandbox are two radio columns; `auto-review` holds the sandbox at
+  workspace-write. The pane title bar shows a `bypass` chip for never + danger-full-access and an
+  `auto-review` one for that.
 - **Recommended settings** (Accounts → per-account button). A tick means "the file will have this
   key": applied keys open ticked; unticking one removes the key — only if the file still says exactly the
   recommended value, and parent objects/tables left empty go too; "Tick recommended" adds the

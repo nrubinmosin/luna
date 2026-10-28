@@ -46,6 +46,8 @@ pub struct Spec {
     pub effort: String,
     /// Claude: the permission mode. Codex: the sandbox.
     pub mode: String,
+    /// Codex: `--approve-for-me`, a reviewer model answering what it would ask.
+    pub auto_review: bool,
     pub tools: bool,
     /// The bearer token of its MCP config: Luna's tools when `tools`, and
     /// `luna_permission` for every Claude Code helper.
@@ -215,9 +217,13 @@ fn command_for(e: &Entry, id: &str) -> (Vec<String>, String, Vec<(&'static str, 
                 args.extend(["--model".into(), m.clone()]);
             }
             args.extend(["-c".into(), format!("model_reasoning_effort=\"{}\"", s.effort)]);
-            // `exec` asks nobody: the sandbox is what holds it.
-            args.extend(["-c".into(), "approval_policy=\"never\"".into()]);
-            args.extend(["-c".into(), format!("sandbox_mode=\"{}\"", s.mode)]);
+            if s.auto_review {
+                args.push("--approve-for-me".into());
+            } else {
+                // `exec` asks nobody: the sandbox is what holds it.
+                args.extend(["-c".into(), "approval_policy=\"never\"".into()]);
+                args.extend(["-c".into(), format!("sandbox_mode=\"{}\"", s.mode)]);
+            }
             if let Some(sb) = crate::pty::codex_windows_sandbox(&s.mode) {
                 args.extend(["-c".into(), sb]);
             }
@@ -815,6 +821,7 @@ mod tests {
                 model: Some("haiku".into()),
                 effort: "low".into(),
                 mode: "read-only".into(),
+                auto_review: false,
                 tools: false,
                 token: None,
             },
@@ -849,6 +856,16 @@ mod tests {
         let at = args.iter().position(|a| a == "--resume").unwrap();
         assert_eq!(args[at + 1], "s-1");
         assert!(envs.iter().any(|(k, v)| *k == "CLAUDE_CONFIG_DIR" && v == "C:\\acc"));
+    }
+
+    #[test]
+    fn auto_review_is_codex_own_flag_without_a_policy_or_sandbox() {
+        let mut e = entry(Provider::Codex);
+        e.spec.mode = "workspace-write".into();
+        e.spec.auto_review = true;
+        let (args, _, _) = command_for(&e, "x");
+        assert!(args.contains(&"--approve-for-me".to_string()));
+        assert!(!args.iter().any(|a| a.starts_with("approval_policy=") || a.starts_with("sandbox_mode=")), "Codex refuses them beside it");
     }
 
     #[test]
