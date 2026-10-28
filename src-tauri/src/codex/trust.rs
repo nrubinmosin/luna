@@ -9,6 +9,15 @@
 //! right after that decision, on Windows, its sandbox setup prompt. Writing
 //! the bit ahead of time is what lets a session start straight into the
 //! prompt. Trust on the repository root also covers its worktrees.
+//!
+//! Without trust Codex also leaves the project's own `.codex/` out — its
+//! config, hooks and exec policies — and `codex exec`, which background
+//! helpers are, does so without asking. Trust can instead come for one run
+//! from a `-c` override (`trust_override`), which writes nothing: background
+//! helpers always get one, and so does any session in a project under one of
+//! the folders Settings lists as trusted on this machine. A trusted parent
+//! folder in `config.toml` would not do: Codex looks trust up by the
+//! checkout's exact path.
 
 use super::config;
 use toml_edit::{Item, Table};
@@ -47,8 +56,60 @@ fn trusted_in(doc: &toml_edit::DocumentMut, folder: &str) -> bool {
 
 #[tauri::command]
 pub fn codex_folder_trusted(account_path: String, folder: String) -> Result<bool, String> {
+    if under_root(&folder, &crate::settings::get().codex_trusted_roots) {
+        return Ok(true);
+    }
     let doc = config::read_or_empty(&config::account_file(&account_path)?);
     Ok(trusted_in(&doc, &folder))
+}
+
+/// The checkout `folder` is in, where Codex looks its trust up — a CLI-made
+/// worktree's project first — or the folder itself outside git.
+fn checkout_of(folder: &str) -> String {
+    let project = crate::worktree::project_of(folder).unwrap_or_else(|| folder.to_string());
+    let mut dir = std::path::Path::new(&project);
+    loop {
+        if dir.join(".git").exists() {
+            return dir.to_string_lossy().into_owned();
+        }
+        match dir.parent() {
+            Some(up) => dir = up,
+            None => return project,
+        }
+    }
+}
+
+/// `-c` trusting the project `folder` is in for this one run.
+pub fn trust_override(folder: &str) -> [String; 2] {
+    let key = native(&checkout_of(folder)).replace('\\', "\\\\").replace('"', "\\\"");
+    ["-c".into(), format!("projects={{\"{key}\"={{trust_level=\"trusted\"}}}}")]
+}
+
+/// `trust_override` when `folder` is under a folder trusted on this machine.
+pub fn root_override(folder: &str) -> Option<[String; 2]> {
+    let project = crate::worktree::project_of(folder).unwrap_or_else(|| folder.to_string());
+    under_root(&project, &crate::settings::get().codex_trusted_roots).then(|| trust_override(folder))
+}
+
+fn under_root(folder: &str, roots: &[String]) -> bool {
+    let n = |s: &str| {
+        let s = s.replace('\\', "/").trim_end_matches('/').to_string();
+        if cfg!(windows) { s.to_lowercase() } else { s }
+    };
+    let folder = n(folder);
+    roots.iter().map(|r| n(r)).filter(|r| !r.is_empty()).any(|r| folder == r || folder.starts_with(&format!("{r}/")))
+}
+
+#[tauri::command]
+pub fn codex_trusted_roots() -> Vec<String> {
+    crate::settings::get().codex_trusted_roots
+}
+
+#[tauri::command]
+pub fn set_codex_trusted_roots(roots: Vec<String>) -> Result<Vec<String>, String> {
+    let roots: Vec<String> = roots.into_iter().map(|r| r.trim().to_string()).filter(|r| !r.is_empty()).collect();
+    crate::settings::update(|s| s.codex_trusted_roots = roots.clone())?;
+    Ok(roots)
 }
 
 /// Marks the folder trusted for this account — the same entry Codex's own
@@ -96,6 +157,30 @@ pub fn codex_trust_folder(account_path: String, folder: String) -> Result<(), St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_root_covers_the_folders_under_it_and_nothing_beside_it() {
+        let roots = vec!["E:\\Projects\\".to_string()];
+        assert!(under_root("E:\\Projects", &roots));
+        assert!(under_root("E:/Projects/Sprouter/app", &roots), "either separator");
+        assert!(!under_root("E:\\Projects2\\app", &roots), "a sibling that shares the prefix");
+        assert!(!under_root("E:\\Projects\\app", &[String::new()]));
+    }
+
+    #[test]
+    fn the_override_names_the_checkout_as_toml() {
+        let root = temp("ov");
+        std::fs::create_dir_all(root.join("repo").join(".git")).unwrap();
+        std::fs::create_dir_all(root.join("repo").join("sub")).unwrap();
+        let sub = root.join("repo").join("sub").to_string_lossy().into_owned();
+        let [flag, value] = trust_override(&sub);
+        assert_eq!(flag, "-c");
+        let parsed: toml_edit::DocumentMut = value.parse().unwrap();
+        let (key, entry) = parsed["projects"].as_inline_table().unwrap().iter().next().unwrap();
+        assert!(same_project(key, &root.join("repo").to_string_lossy()), "the checkout, not the subfolder: {key}");
+        assert_eq!(entry.as_inline_table().unwrap().get("trust_level").and_then(|v| v.as_str()), Some("trusted"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     fn temp(name: &str) -> std::path::PathBuf {
         let root = std::env::temp_dir().join(format!("luna-codex-trust-{name}-{}", std::process::id()));

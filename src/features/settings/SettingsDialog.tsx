@@ -5,7 +5,7 @@ import type { ReactNode } from 'react';
 import { agoLabel } from '../../shared/lib/format';
 import {
   getAccountsRoot, pickFolder, setAccountsRoot, cliUpdateNow, fetchBeforeWorktree, setFetchBeforeWorktree,
-  codexHooksStart, setCodexHooksDefault,
+  codexHooksStart, setCodexHooksDefault, codexTrustedRoots, setCodexTrustedRoots,
   coreRestart, coreState, type AccountsRootInfo, type CoreStateDto
 } from '../../ipc/commands';
 import { onCoreState } from '../../ipc/events';
@@ -311,6 +311,49 @@ function SoundRow() {
 }
 
 /** The accounts-folder mover, formerly its own fold-out card in the sidebar. */
+/** The folders whose projects Codex sessions start trusted on this machine:
+ *  Codex looks trust up by a checkout's exact path, so a parent folder in its
+ *  own config covers nothing below it (codex/trust.rs). */
+function TrustedRoots() {
+  const [roots, setRoots] = useState<string[] | null>(null);
+  useEffect(() => {
+    void codexTrustedRoots().then(setRoots);
+  }, []);
+  const save = (next: string[]) => void setCodexTrustedRoots(next).then(setRoots);
+  return (
+    <>
+      {(roots ?? []).map(r => (
+        <div key={r} className="field-row" style={{ padding: '2px 0', gap: 6 }}>
+          <span title={r} style={{ flex: 1, minWidth: 0, fontSize: 'var(--fs-3)', color: 'var(--dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {r}
+          </span>
+          <button className="slim" onClick={() => save((roots ?? []).filter(x => x !== r))}>
+            Remove
+          </button>
+        </div>
+      ))}
+      <button
+        className="slim"
+        disabled={roots === null}
+        onClick={() =>
+          void pickFolder().then(p => {
+            if (p && roots && !roots.includes(p)) save([...roots, p]);
+          })
+        }
+        style={{ marginTop: 4 }}
+      >
+        Add folder…
+      </button>
+      <div style={{ fontSize: 'var(--fs-1)', color: 'var(--faint)', marginTop: 4 }}>
+        A Codex session in a project anywhere under these starts trusted — its own{' '}
+        <code>.codex/</code> config, hooks and rules load — with nothing written to the account’s{' '}
+        <code>config.toml</code>. Codex itself trusts each project by its exact path only. Helpers in
+        the background are trusted wherever they are sent.
+      </div>
+    </>
+  );
+}
+
 function AccountsFolder() {
   const [info, setInfo] = useState<AccountsRootInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -447,6 +490,9 @@ function SettingsWindow({ onClose }: { onClose: () => void }) {
               out is touched. Codex starts its worktree from the commit you have checked out, which no
               fetch changes.
             </div>
+          </Section>
+          <Section label="Codex trusts on this computer">
+            <TrustedRoots />
           </Section>
           <Section label="Board">
             <AutoTileRow />

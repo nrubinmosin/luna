@@ -216,6 +216,10 @@ fn command_for(e: &Entry, id: &str) -> (Vec<String>, String, Vec<(&'static str, 
                 }
             }
             args.extend(["--json".into(), "--skip-git-repo-check".into()]);
+            // `exec` cannot ask for the folder's trust and goes without the
+            // project's config and hooks if it lacks it; a helper is where it
+            // was sent, trusted for the run (codex/trust.rs).
+            args.extend(crate::codex::trust::trust_override(&s.folder));
             if let Some(m) = &s.model {
                 args.extend(["--model".into(), m.clone()]);
             }
@@ -885,6 +889,7 @@ mod tests {
         let (args, _, _) = command_for(&e, "x");
         assert_eq!(args[..3], ["exec", "resume", "t-1"]);
         assert!(args.contains(&crate::pty::HOOKS_UNASKED.to_string()), "every turn, resumes too");
+        assert!(args.iter().any(|a| a.starts_with("projects={") && a.contains("trust_level")), "trusted for the run");
     }
 
     #[test]

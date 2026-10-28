@@ -51,7 +51,9 @@ can start other sessions and work with them.
   sandbox is what holds it); `effort` per model as `luna_list` gives it. Whether it runs the
   project's hooks without Codex's trust prompt is the user's setting for that folder, not a
   spawn option; without it a background Codex runs untrusted hooks not at all, and a
-  visible one stops on the prompt.
+  visible one stops on the prompt. A background Codex trusts the folder it is sent to for its
+  run, so the project's own `.codex/` config loads; a visible one in a folder Codex does not
+  trust yet has Luna trust it for that account.
 - `folder` runs it in another project. `worktree: true` gives it its own git worktree and
   branch, so it does not share files and git with the sessions in that folder; the result
   names the worktree and branch. `sameFolder` in the result lists live sessions working in

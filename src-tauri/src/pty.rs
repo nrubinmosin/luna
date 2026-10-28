@@ -1096,6 +1096,11 @@ pub async fn ensure_codex_session(
             // process of its own. The `-c` overrides below need that anyway;
             // saying so keeps Codex from warning about it on every start.
             args.push("--no-daemon".into());
+            // A project under a folder trusted on this machine starts trusted
+            // without an entry in the account's config (codex/trust.rs).
+            if let Some(trust) = crate::codex::trust::root_override(&folder) {
+                args.extend(trust);
+            }
             // A resumed thread already has its worktree; Codex refuses the
             // flag on `resume`.
             if worktree.unwrap_or(false) && resume.is_none() {
