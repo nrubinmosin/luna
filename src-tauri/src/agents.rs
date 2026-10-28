@@ -75,12 +75,6 @@ const SEND_TYPING_MS: u64 = 5_000;
 /// A notice held this long by an unsent draft in the caller is announced on
 /// the desktop instead, once: the draft may be forgotten, the notice is not.
 const DRAFT_ALERT_MS: u64 = 60_000;
-/// How much of a reply a notice quotes: enough for most reports whole, so
-/// the caller need not read each one back; the rest goes in a file the
-/// notice names.
-const NOTICE_QUOTE: usize = 3000;
-/// Of that, the most a closing message after the report takes.
-const LAST_WORD_QUOTE: usize = 400;
 /// A turn has ended with the session's processes still at work: give them
 /// this long to settle before calling it a job left in the background. Right
 /// after a turn they often move for a sample or two anyway.
@@ -2428,45 +2422,28 @@ fn replies_since(pty: &crate::pty::PtyManager, id: &str, provider: Provider, cur
     messages.into_iter().filter(|m| m.role == "assistant").map(|m| m.text).collect()
 }
 
-/// Whitespace folded: a newline would submit a notice early, or turn it into
-/// a paste the CLI shows as a placeholder.
-fn flat(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-/// The answer as a notice quotes it, on one line. All of it when it fits;
-/// else its report — the longest message, which a closing word ("that was a
-/// stale wakeup, nothing changed") must not push out — and that closing word,
-/// cut to NOTICE_QUOTE between them, with the whole answer in a file the
-/// notice names.
-fn quote(id: &str, replies: &[String]) -> String {
-    let all = flat(&replies.join(" "));
-    if all.chars().count() <= NOTICE_QUOTE {
-        return all;
-    }
-    let cut = |text: &str, n: usize| {
-        let text = flat(text);
-        if text.chars().count() <= n {
-            text
-        } else {
-            format!("{}…", text.chars().take(n).collect::<String>())
-        }
-    };
+/// Where a notice says the answer is: a file holding it, report first. The
+/// notice itself quotes none of it — a caller that had a long answer cut read
+/// the whole of it back anyway, and a long notice reaches the CLI as a paste.
+/// The report is the longest message, ahead of the progress lines that came
+/// before it; then the last one, a closing word ("that was a stale wakeup,
+/// nothing changed") the report must not bury; then the rest, in order.
+fn answer_file(id: &str, replies: &[String]) -> String {
     let longest = (0..replies.len()).max_by_key(|&i| replies[i].chars().count()).unwrap_or(0);
     let last = replies.len().saturating_sub(1);
-    let text = if longest == last {
-        cut(&replies[last], NOTICE_QUOTE)
-    } else {
-        let tail = cut(&replies[last], LAST_WORD_QUOTE);
-        let head = cut(&replies[longest], NOTICE_QUOTE.saturating_sub(tail.chars().count() + 3));
-        format!("{head} … {tail}")
-    };
+    let mut whole = replies[longest].clone();
+    if last != longest {
+        whole.push_str(&format!("\n\n---\n\nIts last message:\n\n{}", replies[last]));
+    }
+    let rest: Vec<&str> = (0..replies.len()).filter(|&i| i != longest && i != last).map(|i| replies[i].as_str()).collect();
+    if !rest.is_empty() {
+        whole.push_str(&format!("\n\n---\n\nEverything else it said, in order:\n\n{}", rest.join("\n\n---\n\n")));
+    }
     let dir = notes_dir();
     let path = dir.join(format!("{id}-{}.md", now_ms()));
-    let whole = replies.join("\n\n---\n\n");
     match std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&path, whole)) {
-        Ok(()) => format!("{text} [cut; all {} messages of the answer are in {}]", replies.len(), path.display()),
-        Err(_) => format!("{text} [cut; luna_read gives the full text]"),
+        Ok(()) => format!("the answer is in {}, its report first", path.display()),
+        Err(_) => "luna_read gives the answer".into(),
     }
 }
 
@@ -2505,8 +2482,8 @@ fn notice_line(
         }
         let reply = match replies.len() {
             0 => " without a reply (an error or an interruption; luna_read with screen: true shows it)".to_string(),
-            1 => format!(" and said: \"{}\"", quote(id, &replies)),
-            n => format!(" and said, in {n} messages since you asked: \"{}\"", quote(id, &replies)),
+            1 => format!(" with 1 message since you asked; {}", answer_file(id, &replies)),
+            n => format!(" with {n} messages since you asked; {}", answer_file(id, &replies)),
         };
         if background {
             return Some((
@@ -2839,18 +2816,25 @@ mod tests {
     }
 
     #[test]
-    fn a_notice_quotes_the_report_and_the_last_word() {
-        assert_eq!(quote("q", &["a\n\nb   c".into(), "done".into()]), "a b c done");
-        assert_eq!(quote("q", &["x".repeat(NOTICE_QUOTE)]), "x".repeat(NOTICE_QUOTE));
-        let report = format!("REPORT {}", "r".repeat(NOTICE_QUOTE));
-        let replies = vec!["Let me look.".to_string(), report, "That was a stale wakeup; nothing changed.".to_string()];
-        let q = quote("q", &replies);
-        assert!(q.starts_with("REPORT r"), "the report leads");
-        assert!(q.contains("… That was a stale wakeup; nothing changed. [cut; all 3 messages"), "the last word stays: {q}");
-        let file = q.rsplit(" are in ").next().unwrap().trim_end_matches(']');
-        let whole = std::fs::read_to_string(file).unwrap();
-        assert!(whole.starts_with("Let me look.") && whole.contains("REPORT") && whole.ends_with("nothing changed."));
-        let _ = std::fs::remove_file(file);
+    fn an_answer_file_puts_the_report_first_and_the_last_word_next() {
+        let read = |line: String| {
+            let file = line.trim_start_matches("the answer is in ").trim_end_matches(", its report first").to_string();
+            let whole = std::fs::read_to_string(&file).unwrap();
+            let _ = std::fs::remove_file(&file);
+            whole
+        };
+        assert_eq!(read(answer_file("q", &["Done.".into()])), "Done.");
+        let replies = vec![
+            "Let me look.".to_string(),
+            "REPORT: the long one, with what was done.".to_string(),
+            "Now the tests.".to_string(),
+            "Nothing else changed.".to_string(),
+        ];
+        let whole = read(answer_file("q", &replies));
+        assert!(whole.starts_with("REPORT: the long one"), "the report leads: {whole}");
+        let last = whole.find("Nothing else changed.").unwrap();
+        assert!(last < whole.find("Let me look.").unwrap(), "the last word before the progress lines");
+        assert!(whole.find("Let me look.").unwrap() < whole.find("Now the tests.").unwrap(), "the rest in order");
     }
 
     #[test]

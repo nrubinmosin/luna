@@ -340,10 +340,10 @@ background helper spawned without tools.
   `luna_wait` still out for that answer — Claude Code moves a call past two minutes to the
   background — hands it over instead, and the notice follows only if the wait has not done
   so within 10 seconds.
-- The notice quotes everything the helper has said since it was asked, not just its last
-  message, so a closing "that was a stale wakeup, nothing changed" does not hide the report
-  before it. Past 3,000 characters it keeps the report (the longest message) and the closing
-  word, and names a file with the whole answer. A `luna_read` while the helper is still at work
+- The notice is one short line: what happened, how many messages the helper wrote since it
+  was asked, and a file with all of them — the report (the longest message) first, then the
+  last one, then the rest — so a closing "that was a stale wakeup, nothing changed" does not
+  hide the report before it. A `luna_read` while the helper is still at work
   does not count as having collected the answer: the notice still comes when it is done.
 
 ## Power

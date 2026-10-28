@@ -387,9 +387,11 @@ src-tauri/src/
   one line to it `[Luna notice, not typed by the user] …` with Enter — just like `send`: the helper
   finished a turn, stopped on a prompt (once per stop) or exited. The answer is everything the helper said
   past the debt's transcript offset (`replies_since`), not the transcript's last message: a helper's own
-  stale wakeup ("nothing changed") ending a later turn used to stand in for the report. Up to 3000
-  characters it is quoted whole; beyond, the longest message and the last (up to 400) are, with the whole
-  answer written to `<data>/agents/<id>-<ms>.md` and the path in the notice.
+  stale wakeup ("nothing changed") ending a later turn used to stand in for the report. The notice quotes
+  none of it: the answer goes to `<data>/agents/<id>-<ms>.md` — the longest message (the report) first,
+  then the last, then the rest in order — and the notice gives the count of messages and the path. A
+  caller handed a cut quote read the whole answer back anyway, and a long notice reached Claude Code as a
+  paste.
   A turn after which the helper still has processes running waits up to 20 s: they went quiet — "finished",
   they did not — "left work in the background", and the debt moves to the next turn (Claude Code comes back by itself
   when the background task ends). The CLI's own resident helpers (`codex-code-mode-host` and its
