@@ -176,7 +176,7 @@ function AccountGlance({ account, fit, now }: { account: Account; fit: Fit; now:
               </span>
             )}
             <span style={fit >= 2 ? { color: limitColor(w.used) } : undefined}>{Math.round(w.used * 100)}%</span>
-            {fit === 0 && w.resetAt && <small>↻{fmtReset(w.resetAt, now)}</small>}
+            {fit === 0 && w.resetAt && <small>{fmtReset(w.resetAt, now)}</small>}
           </span>
         ))
       ) : (
