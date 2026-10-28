@@ -2240,7 +2240,7 @@ dependencies = [
 
 [[package]]
 name = "luna"
-version = "0.6.37"
+version = "0.6.38"
 dependencies = [
  "base64 0.22.1",
  "chrono",
