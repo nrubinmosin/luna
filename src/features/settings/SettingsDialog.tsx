@@ -466,7 +466,7 @@ function SettingsWindow({ onClose }: { onClose: () => void }) {
             <button aria-label="Close" onClick={onClose} />
           </div>
         </div>
-        <div className="window-body">
+        <div className="window-body" style={{ maxHeight: 'calc(100vh - 120px)', overflowY: 'auto' }}>
           <Section label="Accounts folder">
             <AccountsFolder />
           </Section>
