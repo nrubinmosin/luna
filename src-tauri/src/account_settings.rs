@@ -61,8 +61,6 @@ fn claude_specs() -> Vec<Spec> {
         spec(&["spinnerTipsEnabled"], json!(false), "No tips under the spinner.", true),
         spec(&["feedbackDrafts"], json!("off"), "No feedback drafts queued by the model.", true),
         spec(&["env", "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY"], json!("1"), "No feedback survey mid-session.", true),
-        spec(&["awaySummaryEnabled"], json!(false),
-            "No recap when you come back to a pane: Luna's list already says what each chat did.", true),
         spec(&["skipDangerousModePermissionPrompt"], json!(true),
             "Bypass is a choice made in Luna's new-chat dialog; the CLI need not ask again.", true),
         Spec { windows_only: true, ..spec(&["defaultShell"], json!("powershell"),

@@ -368,7 +368,6 @@ let seeded = false;
 const RECOMMENDED = [
   { key: 'tui', current: '"fullscreen"', recommended: '"fullscreen"', why: 'Draws on the alternate screen with its own scrollback.', defaultOn: true, applied: true },
   { key: 'spinnerTipsEnabled', current: null, recommended: 'false', why: 'No tips under the spinner.', defaultOn: true, applied: false },
-  { key: 'awaySummaryEnabled', current: 'true', recommended: 'false', why: 'No recap when you come back to a pane.', defaultOn: true, applied: false },
   { key: 'copyOnSelect', current: null, recommended: 'false', why: 'Selecting in a pane copies nothing until Ctrl+C, so the clipboard keeps what you put there.', defaultOn: true, applied: false, file: '.claude.json' },
   { key: 'attribution', current: null, recommended: '{"commit":"","pr":"","sessionUrl":false}', why: 'No Co-Authored-By or session links in commits and PRs.', defaultOn: false, applied: false }
 ];
