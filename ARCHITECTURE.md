@@ -437,8 +437,11 @@ src-tauri/src/
   # $ ^ & |`, backtick, guillemets, dashes) never reached Codex — neither from `send` nor from
   the person's keyboard. For Codex the pty writer sends printable characters as win32-input-mode
   sequences (`ESC[0;0;<utf16>;1;0;1_` and the release; halves of a surrogate pair —
-  press only), control characters and escape sequences as is. Claude Code
-  reads text and does not need this.
+  press only). Ctrl with a letter goes the same way, as the Latin letter with Ctrl held
+  (`ESC[67;0;99;1;8;1_` for Ctrl+C): from the bare control byte Codex asks the layout which
+  letter the key is, and on Russian Ctrl+C was Ctrl+С, which neither copied Codex's own
+  selection nor interrupted. Backspace, Tab, Ctrl+J, Enter and escape sequences go as is.
+  Claude Code reads text and does not need this.
   **The Codex sandbox on Windows.** Without `windows.sandbox` Codex rejects (`approval never`) or
   sends for approval (`on-request`) every command under `read-only` and `workspace-write` — even
   `Get-Content`. So those two modes get `-c windows.sandbox="unelevated"` (a restricted token per

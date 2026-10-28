@@ -1520,9 +1520,13 @@ pub fn render_screen(bytes: &[u8], rows: u16, cols: u16) -> String {
 /// `[ ] { } < > ' ` ~ @ # $ ^ & |` and typographic quotes and dashes all
 /// vanished, from a person's typing and from `luna_send` alike. Given as
 /// win32-input-mode key events (ConPTY is opened with WIN32_INPUT_MODE), every
-/// character arrives as itself whatever the layout. Control characters and
-/// escape sequences — Enter, arrows, focus and mouse reports, a cursor
-/// report — go through as they are.
+/// character arrives as itself whatever the layout. Ctrl+<letter> is the same
+/// story: ConPTY hands Codex the control byte and Codex asks the layout which
+/// letter that key is, so on a Russian one Ctrl+C came in as Ctrl+С — no
+/// shortcut of its: a selection was dropped instead of copied. Sent as the
+/// Latin letter with Ctrl held, it is Ctrl+C on any layout. The control bytes
+/// of keys of their own (Backspace, Tab, Enter) and escape sequences — arrows,
+/// focus and mouse reports, a cursor report — go through as they are.
 fn as_key_events(bytes: &[u8]) -> Vec<u8> {
     use std::fmt::Write as _;
     let text = String::from_utf8_lossy(bytes);
@@ -1553,6 +1557,12 @@ fn as_key_events(bytes: &[u8]) -> Vec<u8> {
                 Some(n) => out.push(n),
                 None => {}
             }
+        } else if let Some(letter) = ctrl_letter(c) {
+            // Vk;Sc;Uc;Kd;Cs;Rc with LEFT_CTRL_PRESSED. The real virtual key,
+            // so a console still in processed input mode takes Ctrl+C as one.
+            let vk = letter.to_ascii_uppercase() as u32;
+            let uc = letter as u32;
+            let _ = write!(out, "\x1b[{vk};0;{uc};1;8;1_\x1b[{vk};0;{uc};0;8;1_");
         } else if c < ' ' || c == '\x7f' {
             out.push(c);
         } else {
@@ -1571,6 +1581,16 @@ fn as_key_events(bytes: &[u8]) -> Vec<u8> {
         }
     }
     out.into_bytes()
+}
+
+/// The letter a terminal's Ctrl+<letter> byte stands for, except the bytes that
+/// are keys of their own: Backspace, Tab, Ctrl+J and Enter.
+fn ctrl_letter(c: char) -> Option<char> {
+    match c {
+        '\x08' | '\t' | '\n' | '\r' => None,
+        '\x01'..='\x1a' => Some((b'a' + c as u8 - 1) as char),
+        _ => None,
+    }
 }
 
 /// Set in the draft state when the last character typed was a backslash.
@@ -1901,6 +1921,11 @@ mod tests {
         let down = |u: u32| format!("\x1b[0;0;{u};1;0;1_");
         assert_eq!(String::from_utf8(as_key_events("😀".as_bytes())).unwrap(), format!("{}{}", down(0xD83D), down(0xDE00)));
         assert_eq!(String::from_utf8(as_key_events("a\rя".as_bytes())).unwrap(), format!("{}\r{}", k(97), k(0x44F)));
+        // Ctrl+C and Ctrl+T by their Latin letters, whatever the layout.
+        let ctrl = |vk: u32, u: u32| format!("\x1b[{vk};0;{u};1;8;1_\x1b[{vk};0;{u};0;8;1_");
+        assert_eq!(String::from_utf8(as_key_events(b"\x03\x14")).unwrap(), format!("{}{}", ctrl(67, 99), ctrl(84, 116)));
+        // Backspace, Tab, Ctrl+J and Enter stay keys of their own.
+        assert_eq!(String::from_utf8(as_key_events(b"\x08\t\n\r")).unwrap(), "\x08\t\n\r");
     }
 
     #[test]
