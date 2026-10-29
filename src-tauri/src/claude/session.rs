@@ -156,15 +156,7 @@ fn remembered_titles(session_id: &str, seen: Titles) -> Titles {
 /// name: the folder it sits in comes from a cwd that, for a worktree session,
 /// is long gone.
 pub fn saved_title(account_path: &str, session_id: &str) -> Option<CliTitle> {
-    if session_id.is_empty() || !session_id.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
-        return None;
-    }
-    let file = format!("{session_id}.jsonl");
-    let path = std::fs::read_dir(Path::new(account_path).join("projects"))
-        .ok()?
-        .flatten()
-        .map(|e| e.path().join(&file))
-        .find(|p| p.is_file())?;
+    let path = find_transcript(account_path, session_id)?;
     let mut t = crate::pty::tail(&path, 256 * 1024).map(|s| titles_in(&s)).unwrap_or_default();
     if t.custom.is_none() && t.ai.is_none() {
         // Asked once per chat per run, so the whole file is affordable when
@@ -176,6 +168,22 @@ pub fn saved_title(account_path: &str, session_id: &str) -> Option<CliTitle> {
         (None, Some(title)) => Some(CliTitle { title, renamed: false }),
         (None, None) => None,
     }
+}
+
+/// A session's transcript by its id alone, in whichever project folder it is.
+/// None for a session that never got one: Claude Code writes it with the
+/// first message, so a chat closed before anything was typed has an id in
+/// the registry and nothing on disk to resume.
+pub fn find_transcript(account_path: &str, session_id: &str) -> Option<PathBuf> {
+    if session_id.is_empty() || !session_id.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
+        return None;
+    }
+    let file = format!("{session_id}.jsonl");
+    std::fs::read_dir(Path::new(account_path).join("projects"))
+        .ok()?
+        .flatten()
+        .map(|e| e.path().join(&file))
+        .find(|p| p.is_file())
 }
 
 /// Text of a transcript content field, which is either a bare string or an
