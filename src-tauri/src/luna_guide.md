@@ -79,23 +79,31 @@ can start other sessions and work with them.
 - `luna_wait` blocks until a session ends a turn, stops on a question or permission
   (`until: "waiting"`), or exits (`until: "exit"`); up to 30 min (`timeoutS`, default 600).
   Use it when you need the answer within the same turn. `outcome` says which: `turn_done`,
-  `waiting`, `exit` or `timeout`. On `turn_done`, `reply` holds all the session said since
-  you asked, the report first, as the notice's file has it; it is null when the turn ended
-  on an error, and `screen` shows it. A background helper does not exit between turns:
+  `waiting`, `exit` or `timeout`. On `turn_done` (and an `exit` after such a turn), `reply`
+  holds all the session said since you asked, the report first, as the notice's file has
+  it; it is null when the turn ended on an error, and `screen` shows it. A background
+  helper does not exit between turns:
   `until: "exit"` returns once it is deleted.
 - A `luna_wait` still running when the answer comes hands it over instead of the notice;
   one your CLI moves to the background still returns, with no notice besides. One you
   cancel or interrupt hands nothing over, and the notice comes as usual.
 - Turns are counted: results carry `turnsEnded`; pass it to `luna_wait` as `afterTurn` to
-  wait for a turn after that one.
+  wait for a turn after that one. Without it, a wait is for the answer you are still owed,
+  else for a turn past the last count you were shown.
 - `luna_read` reads the transcript: `last: N` messages (default 1), or `since: <cursor>`
   for everything after an earlier read; both together give the last N after the cursor,
   and the cursor goes past all of them. `tools: true` adds one-line tool calls (Claude
   Code), `screen: true` adds what the terminal shows (dialogs, errors) or, for a background
   helper, its last log lines. Past 60,000 characters a read is cut: `leftOut` counts the
-  messages left out, and a read on from `since` goes on from the cursor it returns.
-- A read that returns everything a session said since you asked, whole, collects the
-  answer: no notice follows. One with only the last message of several does not.
+  messages left out. A read from `since` without `last` keeps the oldest, and the rest
+  follow from the cursor it returns; one with `last` keeps the newest, and its cursor is
+  past the older ones too (read those from an earlier `since`). A single message longer
+  than that is cut short; the transcript `luna_sessions` names has it whole.
+- A read that returns everything a session said since you asked, whole, after it finished,
+  collects the answer: no notice follows. One with only the last message of several, or
+  from a cursor taken after you asked, does not.
+- Asked again before an answer reached you, you are owed both: the next reply, read or
+  notice covers everything said since the first question.
 
 ## Answering and steering
 - A session in state `question` or `waiting` has an `ask`: the questions with their

@@ -416,28 +416,37 @@ src-tauri/src/
   (`worktree::project_of`); a worktree another session or background helper works in stays
   (`worktree_shared`), whether the one deleted is a chat or a background helper.
   **A helper does not report on itself** — unlike a subagent, its answer sits in its
-  transcript until someone calls `wait`/`read`. So `spawn` and `send` record a debt
-  (`owed`: caller, session, `turnsEnded` at the time of the question, and where the transcript ended then —
-  0 for a spawn, whose whole transcript answers the opening prompt),
-  and a `wait` that handed over a turn past it clears the debt (a timeout hands nothing over); a `read`
-  clears it only if it returned everything past that offset, uncut (not a `last` that left some out, not
-  a result `MAX_TEXT` cut), and the session is idle with nothing of its own still running — a read mid-work had seen a turn on the way (a background helper's
-  turn that ended on a job, the turn before a queued `send`), and once it cleared the debt the real answer
-  went unannounced and the helper was auto-deleted unread. A `send` to a background helper mid-turn owes the
+  transcript until someone calls `wait`/`read`. So `spawn`, `send` and `answer` record a debt
+  (`owed`: caller, session, `turnsEnded` at the time of the question, and where the transcript ended
+  before the text went in — taken before delivery, as a short turn is over and written by the time the
+  call returns; 0 for a spawn, whose whole transcript answers the opening prompt). Asked again while a
+  debt is open, the caller is owed both: the new baseline, the earlier offset (`min`), so the next reply
+  covers both. Only an outcome that carries the answer settles it: a `wait` ending `turn_done` (or `exit`
+  after such a turn) past the baseline; a timeout or another outcome hands nothing over and only
+  restarts the autoDelete clock (`looked`). A `read` settles it only if it began at or before the
+  debt's offset, returned everything from there uncut (not a `last` that left some out, not a result
+  `MAX_TEXT` cut), ends on an assistant message, and the session was idle with nothing of its own
+  running before the read began — a read mid-work has seen a turn on the way (a background helper's
+  turn that ended on a job, the turn before a queued `send`), and settling on it would leave the real
+  answer unannounced and the helper auto-deleted unread. The default `afterTurn` of a `wait` is the
+  open debt's baseline, else the count last shown (`seen`): a count shown since the question (part of
+  the answer read, a timeout) does not make the answer seen. A `send` to a background helper mid-turn owes the
   turn after the running one: the queue starts it the moment that one ends. Text typed into a visible
   session mid-turn is the CLI's to place — into the running turn or a turn right after it — so for such
   a debt (`queued`) a turn end counts as the answer only once no turn has begun 8 s later
-  (`QUEUED_GRACE_MS`), for `wait` and the notice alike. A notifier thread looks at debts every 2 s and, when the caller is between turns
+  (`QUEUED_GRACE_MS`), for `wait`, `read` and the notice alike: a read settles such a debt once a
+  turn past the running one has ended or the turn end has stood 8 s (`queue_settled`). A notifier thread looks at debts every 2 s and, when the caller is between turns
   on two looks in a row (`Idle`, not starting, the person has not typed into it for 20 s and left no
   unsent draft), types
   one line to it `[Luna notice, not typed by the user] …` with Enter — just like `send`: the helper
   finished a turn, stopped on a prompt (once per stop) or exited. The answer is everything the helper said
   past the debt's transcript offset (`replies_since`), not the transcript's last message: a helper's own
-  stale wakeup ("nothing changed") ending a later turn used to stand in for the report. The notice quotes
+  stale wakeup ("nothing changed") ending a later turn must not stand in for the report. The notice quotes
   none of it: the answer goes to `<data>/agents/<id>-<ms>.md` — the longest message (the report) first,
   then the last, then the rest in order — and the notice gives the count of messages and the path. A
   caller handed a cut quote read the whole answer back anyway, and a long notice reached Claude Code as a
-  paste.
+  paste. Typing a notice takes seconds, and the turn it starts may ask again meanwhile: the notifier
+  then changes the debt only if it is still the one it announced (same baseline and offset).
   A turn after which the helper still has processes running waits up to 20 s: they went quiet — "finished",
   they did not — "left work in the background", and the debt moves to the next turn (Claude Code comes back by itself
   when the background task ends). The CLI's own resident helpers (`codex-code-mode-host` and its
@@ -458,9 +467,15 @@ src-tauri/src/
   arrives as a task-notification. A notification for such a pair waits, and if the `wait` has still not delivered
   the answer 10 s after it appeared (the client dropped the call), it goes out by itself. A `wait` its
   caller lets go hands nothing over and leaves the debt for the notice: a `notifications/cancelled` for its
-  request (`mcp.rs` keeps a flag per call in flight; a cancelled request gets no response), the caller's
-  session gone, or — a Codex caller, held in the call for as long as it lasts — the turn that made the call
-  over (an interrupt) with no other begun (`let_go`).
+  request (a cancelled request gets no response), the caller's session gone, or — a Codex caller, held
+  in the call for as long as it lasts — the turn that made the call over (an interrupt) with no other
+  begun, for 8 s on end (`let_go`, `LET_GO_MS`: a sample published late shows the turn before over);
+  while that is unsure nothing is handed over. Each tool call in flight has an `mcp::Call` whose fate
+  is decided once by `compare_exchange`: Running→Committed when a `wait` or `read` hands the answer
+  over (`hand_over` settles the debt and returns an undo), Running→Cancelled on the cancel. A cancel
+  that crosses the response finds the call committed — an answered one stays findable for 10 s
+  (`LATE_CANCEL`) — and runs the undo: the debt (merged with any question since) and the count seen
+  come back. A cancel never loses the answer; at worst it arrives twice.
   **What `spawn` says beyond the flags.** An unknown slash command: Claude Code writes `Unknown
   command: /x` and starts no turn — `await_start` sees the line on screen and answers `started:
   false` at once, not after 30 s. `warnings` — screen lines with ⚠ (a model forbidden by the
@@ -513,7 +528,10 @@ src-tauri/src/
   conversation lands in the CLI's own transcript / rollout as with any session. Busy is the process
   running; `send` during a turn queues the text for the next, and a turn about to start takes the
   helper's run under the same lock that found it free (`claim`), so text arriving before the process
-  is up queues rather than starting a second one. On Unix each turn's process leads a process group
+  is up queues rather than starting a second one. A stop (`kill`, `stop_turns`) that finds a turn
+  claimed but with no process yet marks the run `stopped`: `spawn_turn` does not start it, or kills
+  what it just started. A turn that cannot start counts as one ended turn with its error, since whoever
+  queued it waits on that end; text queued behind it fails with it, as the turn after. On Unix each turn's process leads a process group
   of its own, as a pty's CLI does, so `kill_tree` takes the turn whole. The core stops every turn
   as it leaves (`stop_all`, and no turn starts after), and `stop_all_sessions` before an update stops
   them too (`stop_turns`): a turn still running would keep the old core from being replaced. A Claude Code helper always gets Luna's

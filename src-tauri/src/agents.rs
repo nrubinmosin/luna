@@ -94,6 +94,9 @@ const WAIT_HOLD_MS: u64 = 10_000;
 /// counts as the answer to it once no turn has started this long after —
 /// more than one activity sample.
 const QUEUED_GRACE_MS: u64 = 8_000;
+/// How long a Codex caller's turn has to look over before a `wait` it made
+/// counts as let go (see `let_go`): more than one activity sample.
+const LET_GO_MS: u64 = 8_000;
 /// The most of a session's words one tool result carries: Claude Code cuts
 /// an MCP result past 25,000 tokens.
 const MAX_TEXT: usize = 60_000;
@@ -341,14 +344,16 @@ struct Owed {
     /// The question the caller was last told the session asks beside its
     /// work, by hash (0: none).
     told_ask: u64,
-    /// The turn count at which the answer was seen with processes still at
-    /// work, and when (see BACKGROUND_GRACE_MS).
+    /// The turn count at which the answer was first seen in but held back,
+    /// and when: processes still at work (BACKGROUND_GRACE_MS), no reply yet
+    /// (REPLY_GRACE_MS), a turn yet to start on queued text (QUEUED_GRACE_MS).
     held: Option<(u32, u64)>,
     /// When the notifier first found the answer in while a `wait` was out
     /// for it (see WAIT_HOLD_MS).
     ready_at: Option<u64>,
-    /// Where the session's transcript ended when the caller asked: what it
-    /// said from there on is the answer, however many turns it took.
+    /// Where the session's transcript ended when the caller asked (the first
+    /// of its questions still unanswered): what it said from there on is the
+    /// answer, however many turns it took.
     cursor: u64,
     /// Asked by text typed into a visible session mid-turn (see
     /// QUEUED_GRACE_MS).
@@ -385,51 +390,72 @@ fn reg() -> &'static Mutex<Registry> {
     })
 }
 
-/// Records what a tool answer told `caller` about `id`'s turn count. A turn
-/// past what the caller asked for settles the answer it was owed — when the
-/// caller was handed that answer (`whole`), or the session is done: a read
-/// while it works on has seen a turn on the way, and the answer is still to
-/// come. Either way the caller has looked at it (see `seen`).
-fn shown(caller: &str, id: &str, turns_ended: u32, whole: bool) {
-    let done = whole
-        || crate::activity::turn_state(id)
-            .map_or(true, |t| t.turn == crate::activity::Turn::Idle && !t.children_busy);
-    if done {
-        let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-        let key = (caller.to_string(), id.to_string());
-        if r.owed.get(&key).is_some_and(|o| turns_ended > o.baseline) {
-            r.owed.remove(&key);
-        }
+/// `caller` has been handed the answer `id` gave by `turns_ended`: a turn past
+/// what it asked about settles what it was owed. It has seen that count too
+/// (see `seen`).
+fn shown(caller: &str, id: &str, turns_ended: u32) {
+    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    let key = (caller.to_string(), id.to_string());
+    if r.owed.get(&key).is_some_and(|o| turns_ended > o.baseline) {
+        r.owed.remove(&key);
     }
+    drop(r);
     seen(caller, id, turns_ended);
 }
 
+/// `shown`, for a tool response the client may yet drop unread (a cancel
+/// that crosses it): returns what puts the debt and the count seen back as
+/// they were. Whatever a later call has recorded meanwhile stands.
+fn hand_over(caller: &str, id: &str, turns_ended: u32) -> impl FnOnce() + Send + 'static {
+    let key = (caller.to_string(), id.to_string());
+    let (owed, seen_before) = {
+        let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+        (r.owed.get(&key).copied(), r.seen.get(&key).copied())
+    };
+    shown(caller, id, turns_ended);
+    move || {
+        let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(o) = owed {
+            r.owed.entry(key.clone()).and_modify(|now| now.cursor = now.cursor.min(o.cursor)).or_insert(o);
+        }
+        if r.seen.get(&key) == Some(&turns_ended) {
+            match seen_before {
+                Some(n) => r.seen.insert(key, n),
+                None => r.seen.remove(&key),
+            };
+        }
+    }
+}
+
 /// Records the turn count a tool answer showed `caller` of `id`, settling
-/// nothing. The caller has looked at it, so an `autoDelete` helper counts
-/// its idle time from now.
+/// nothing: the default `afterTurn` of its next `wait` once nothing is owed.
 fn seen(caller: &str, id: &str, turns_ended: u32) {
-    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-    r.seen.insert((caller.to_string(), id.to_string()), turns_ended);
-    if let Some(a) = r.auto.get_mut(id) {
+    reg().lock().unwrap_or_else(|e| e.into_inner()).seen.insert((caller.to_string(), id.to_string()), turns_ended);
+    looked(id);
+}
+
+/// Somebody has looked at `id`, so an `autoDelete` helper counts its idle
+/// time from now.
+fn looked(id: &str) {
+    if let Some(a) = reg().lock().unwrap_or_else(|e| e.into_inner()).auto.get_mut(id) {
         a.idle_since = None;
     }
 }
 
-/// `caller` has asked `id` something; the answer ends a turn past `baseline`.
-/// The dev caller has no terminal to be told in.
-fn owe(caller: &str, id: &str, baseline: u32) {
-    owe_from(caller, id, baseline, transcript_end(id));
-}
-
-/// The same with the answer read from `cursor` on: 0 for a session just
-/// spawned, whose whole transcript answers its opening prompt — however much
-/// of it the first turn has written by the time the spawn returns.
+/// `caller` has asked `id` something; the answer ends a turn past `baseline`
+/// and is what the session says from `cursor` on, where its transcript ended
+/// before the question went in (0 for a session just spawned, whose whole
+/// transcript answers its opening prompt). Asked again before an earlier
+/// answer reached it, the caller is owed that one too: the cursor stays the
+/// earlier one. The dev caller has no terminal to be told in.
 fn owe_from(caller: &str, id: &str, baseline: u32, cursor: u64) {
     if caller == DEV_CALLER {
         return;
     }
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-    r.owed.insert((caller.to_string(), id.to_string()), Owed::from(baseline, cursor));
+    let key = (caller.to_string(), id.to_string());
+    let cursor = r.owed.get(&key).map_or(cursor, |o| o.cursor.min(cursor));
+    r.owed.insert(key, Owed::from(baseline, cursor));
 }
 
 /// How far the session's transcript goes now, 0 before it has one.
@@ -1546,7 +1572,7 @@ pub fn spawn(caller: &str, mut params: SpawnParams) -> Result<Spawned, String> {
     // A screen handed over says it all already.
     let warnings = if screen.is_none() { warnings_of(&pty, &id) } else { Vec::new() };
     let same_folder = run_dir.map(|dir| neighbours_in(&dir, &[caller, &id])).unwrap_or_default();
-    shown(caller, &id, 0, true);
+    shown(caller, &id, 0);
     owe_from(caller, &id, 0, 0);
     let worktree = worktree_of(&pty, &id);
     Ok(Spawned { id, turns_ended: 0, settings, started, screen, ask, starting, warnings, same_folder, worktree })
@@ -1734,7 +1760,7 @@ fn spawn_background(caller: &str, params: SpawnParams, account_path: String, in_
         background: true,
     });
     let same_folder = if own_worktree { Vec::new() } else { neighbours_in(&run_in, &[caller, &id]) };
-    shown(caller, &id, 0, true);
+    shown(caller, &id, 0);
     owe_from(caller, &id, 0, 0);
     // The CLI makes its worktree as the first turn starts: worth a few
     // seconds, so the caller need not go looking for it.
@@ -1803,7 +1829,7 @@ pub fn agent_spawned(request_id: u64, chat_id: Option<String>, name: Option<Stri
         // to its prompt is owed like any other.
         if let (Some((caller, _)), Some(id)) = (caller, chat_id) {
             crate::log::warn("agents", &format!("session {id} for {caller} came up after its spawn timed out"));
-            shown(&caller, &id, 0, true);
+            shown(&caller, &id, 0);
             owe_from(&caller, &id, 0, 0);
         }
         return;
@@ -1893,6 +1919,9 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool) -> Result<Sent,
     let mut before = crate::activity::turn_state(id);
     let mut baseline = before.map(|t| t.turns_ended).unwrap_or(0);
     if crate::background::has(id) {
+        // Taken before the text goes in: a turn it starts may be over, and
+        // written, by the time the call returns.
+        let cursor = transcript_end(id);
         let (queued, interrupted) = if interrupt {
             (false, crate::background::interrupt(id, text)?)
         } else {
@@ -1903,8 +1932,8 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool) -> Result<Sent,
         if queued || interrupted {
             baseline += 1;
         }
-        shown(caller, id, baseline, true);
-        owe(caller, id, baseline);
+        seen(caller, id, baseline);
+        owe_from(caller, id, baseline, cursor);
         return Ok(Sent { ok: true, state_before, queued, interrupted, started: !queued, turns_ended: baseline, screen: None });
     }
     let busy = |t: Option<crate::activity::TurnState>| {
@@ -1941,6 +1970,9 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool) -> Result<Sent,
     // up with: the text is a prompt of its own, not one queued.
     let turn_before = if interrupted { None } else { before.map(|t| t.turn) };
     let queued = turn_before == Some(crate::activity::Turn::Busy);
+    // Before the text goes in: `type_in` waits for the turn to start, and a
+    // short one is over, and written, by then.
+    let cursor = transcript_end(id);
     let started = type_in(&pty, id, &spill(text), turn_before, baseline)? && !queued;
     if turn_before == Some(crate::activity::Turn::Waiting) {
         reg().lock().unwrap_or_else(|e| e.into_inner()).answered.insert((caller.to_string(), id.to_string()), now_ms());
@@ -1950,8 +1982,8 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool) -> Result<Sent,
     // turn, which the caller has not seen even if it is already over. Typed
     // mid-turn, that is the turn running now or the one the CLI starts on
     // the text after it, whichever the CLI makes of it (QUEUED_GRACE_MS).
-    shown(caller, id, baseline, true);
-    owe(caller, id, baseline);
+    seen(caller, id, baseline);
+    owe_from(caller, id, baseline, cursor);
     if queued {
         if let Some(o) = reg().lock().unwrap_or_else(|e| e.into_inner()).owed.get_mut(&(caller.to_string(), id.to_string())) {
             o.queued = true;
@@ -2114,6 +2146,9 @@ pub fn answer(
     }
     let baseline = crate::activity::turn_state(id).map(|t| t.turns_ended).unwrap_or(0);
     let ask = ask_of(id);
+    // What the session says on the answer starts right away, long before
+    // the call returns.
+    let cursor = transcript_end(id);
     if crate::background::has(id) {
         if keys.is_some() {
             return Err(
@@ -2148,8 +2183,8 @@ pub fn answer(
         reg().lock().unwrap_or_else(|e| e.into_inner()).answered.insert((caller.to_string(), id.to_string()), now_ms());
     }
     std::thread::sleep(ANSWER_SETTLE);
-    shown(caller, id, baseline, true);
-    owe(caller, id, baseline);
+    seen(caller, id, baseline);
+    owe_from(caller, id, baseline, cursor);
     let (state, ask) = state_of(id);
     let screen = (!crate::background::has(id)).then(|| screen_of(&pty, id)).flatten();
     Ok(Answered { ok: true, state, ask, turns_ended: baseline, screen })
@@ -2233,11 +2268,19 @@ pub fn read(
     last: Option<usize>,
     with_tools: bool,
     with_screen: bool,
+    call: &crate::mcp::Call,
 ) -> Result<Reading, String> {
     let known = authorize_view(caller, id)?;
     let pty = crate::pty::manager();
     let path = transcript_path(&pty, id);
-    let from = since.unwrap_or(0);
+    // Taken before the transcript is read: a turn over by now has its words
+    // in what is read.
+    let ts = crate::activity::turn_state(id);
+    // A cursor past the end points into a file since cut short or written
+    // anew, which the transcript is then read from the top of: the start of
+    // this read, for the cursor it hands back too.
+    let past_end = |at: u64| path.as_ref().is_some_and(|p| std::fs::metadata(p).is_ok_and(|m| at > m.len()));
+    let from = since.filter(|&at| !past_end(at)).unwrap_or(0);
     let messages_at = |at: u64| -> Messages {
         match &path {
             Some(p) => match known.provider {
@@ -2300,18 +2343,30 @@ pub fn read(
             text_cut = true;
         }
     }
-    let ts = crate::activity::turn_state(id);
     let turns_ended = ts.map(|t| t.turns_ended).unwrap_or(0);
     let (state, ask) = state_of(id);
+    let key = (caller.to_string(), id.to_string());
+    let owed = reg().lock().unwrap_or_else(|e| e.into_inner()).owed.get(&key).copied();
     // All of the answer: every message past where the question found the
-    // transcript is in this result, whole. A `last` that left some of them
-    // out, a read cut short, is not the answer, and the notice still comes.
-    let asked_at = reg().lock().unwrap_or_else(|e| e.into_inner()).owed.get(&(caller.to_string(), id.to_string())).map(|o| o.cursor);
-    let whole = !text_cut
-        && back == 0
-        && (front == 0 || asked_at.is_some_and(|at| from <= at && messages.len() >= messages_at(at).0.len()));
-    if whole {
-        shown(caller, id, turns_ended, false);
+    // transcript is in this result, whole, the session's own word last. A
+    // read begun past that point, a `last` that left some of them out, a
+    // read cut short, is not the answer, and the notice still comes.
+    let whole = owed.is_some_and(|o| {
+        !text_cut
+            && back == 0
+            && from <= o.cursor
+            && messages.last().is_some_and(|m| m.role == "assistant")
+            && (front == 0 || messages.len() >= messages_at(o.cursor).0.len())
+    });
+    // And the session was done with it before the read: a read while it
+    // works on has seen a turn on the way, and the answer is still to come.
+    let done = ts.map_or(true, |t| t.turn == crate::activity::Turn::Idle && !t.children_busy);
+    let settles = whole
+        && done
+        && owed.is_some_and(|o| turns_ended > o.baseline && (!o.queued || queue_settled(&key, o, turns_ended)));
+    if settles {
+        // Cancelled first, it is put back; the response goes nowhere anyway.
+        call.commit(hand_over(caller, id, turns_ended));
     } else {
         seen(caller, id, turns_ended);
     }
@@ -2324,6 +2379,25 @@ pub fn read(
         turns_ended,
         screen: with_screen.then(|| screen_of(&pty, id)).flatten(),
     })
+}
+
+/// Whether a turn end at `turns_ended` answers a question typed in mid-turn
+/// (`Owed::queued`) by now: a turn past the one it was typed into has ended,
+/// or this end has stood QUEUED_GRACE_MS with no turn begun on the text.
+/// Notes when the end was first seen, for the next look.
+fn queue_settled(key: &(String, String), o: Owed, turns_ended: u32) -> bool {
+    if turns_ended >= o.baseline.saturating_add(2) {
+        return true;
+    }
+    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    let Some(owed) = r.owed.get_mut(key) else { return false };
+    match owed.held {
+        Some((n, at)) if n == turns_ended => now_ms().saturating_sub(at) >= QUEUED_GRACE_MS,
+        _ => {
+            owed.held = Some((turns_ended, now_ms()));
+            false
+        }
+    }
 }
 
 /// Where a read from `from`, which found `found` messages up to `end` and
@@ -2339,8 +2413,10 @@ fn cursor_after(path: &std::path::Path, from: u64, end: u64, found: usize, keep:
         f.seek(SeekFrom::Start(from))?;
         f.take(end.saturating_sub(from)).read_to_end(&mut bytes)
     });
+    // Not knowing where the kept ones end, start this page over: they come
+    // twice rather than the rest not at all.
     if read.is_err() {
-        return end;
+        return from;
     }
     let starts: Vec<u64> = bytes.iter().enumerate().filter(|(_, b)| **b == b'\n').map(|(i, _)| from + i as u64 + 1).collect();
     let past_kept = |at: u64| {
@@ -2361,8 +2437,9 @@ pub struct Waited {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ask: Option<Ask>,
     pub turns_ended: u32,
-    /// On `turn_done`: all the session said since the caller asked it
-    /// something, as `reply_of` puts it, so no `read` is needed.
+    /// On `turn_done`, and on `exit` after such a turn: all the session said
+    /// since the caller asked it something, as `reply_of` puts it, so no
+    /// `read` is needed.
     pub reply: Option<String>,
     /// On `timeout`, `waiting` and a turn that ended without a reply: the
     /// terminal's last lines, so the caller sees what the session is on — a
@@ -2373,11 +2450,12 @@ pub struct Waited {
 
 /// Blocks until the session reaches `until`, or `timeout_s` passes:
 /// `turn_done` — a turn ended after `after_turn` (default: the count the
-/// caller was last shown, so the reply to a prompt it just sent counts even
-/// if it landed before this call, and a turn it has already read does not —
-/// or the turn stopped on a prompt, which nothing but an answer moves on);
+/// caller's question still unanswered went in at, else the count it was
+/// last shown, so the reply to a prompt it just sent counts even if it
+/// landed before this call, and a turn it has already read does not — or
+/// the turn stopped on a prompt, which nothing but an answer moves on);
 /// `waiting` — it stopped for a permission; `exit` — the process ended.
-/// A wait its caller let go (`cancelled`, or see `let_go`) returns an
+/// A wait its caller let go (`call` cancelled, or see `let_go`) returns an
 /// error and hands nothing over: the answer stays owed, for the notice.
 pub fn wait(
     caller: &str,
@@ -2385,7 +2463,7 @@ pub fn wait(
     until: &str,
     timeout_s: u64,
     after_turn: Option<u32>,
-    cancelled: &std::sync::atomic::AtomicBool,
+    call: &crate::mcp::Call,
 ) -> Result<Waited, String> {
     if !matches!(until, "turn_done" | "waiting" | "exit") {
         return Err(format!("unknown until {until:?}; use turn_done, waiting or exit"));
@@ -2393,14 +2471,21 @@ pub fn wait(
     let known = authorize_view(caller, id)?;
     let _out = WaitOut::start(caller, id);
     let key = (caller.to_string(), id.to_string());
-    let dropped = let_go(caller);
-    let gone = || cancelled.load(std::sync::atomic::Ordering::SeqCst) || dropped();
+    let holding = let_go(caller);
+    let gone = || call.cancelled() || holding() == Holding::No;
     let gone_err = || -> Result<Waited, String> {
         Err("this wait was let go before it ended; the answer stays owed and comes as a notice".into())
     };
     let pty = crate::pty::manager();
     let now = crate::activity::turn_state(id).map(|t| t.turns_ended);
-    let baseline = match (after_turn, last_shown(caller, id), now) {
+    let (owed_since, answered_at, queued) = {
+        let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+        let owed = r.owed.get(&key);
+        (owed.map(|o| o.baseline), r.answered.get(&key).copied(), owed.is_some_and(|o| o.queued))
+    };
+    // A count shown since the question (a read of part of the answer, a
+    // timeout) does not make the answer seen.
+    let baseline = match (after_turn, owed_since.or_else(|| last_shown(caller, id)), now) {
         (Some(n), _, _) => n,
         // A count the session is behind has been left over from before it
         // was respawned; waiting past it would sit out the whole timeout.
@@ -2409,10 +2494,6 @@ pub fn wait(
         (None, None, now) => now.unwrap_or(0),
     };
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_s.clamp(1, 1800));
-    let (answered_at, queued) = {
-        let r = reg().lock().unwrap_or_else(|e| e.into_inner());
-        (r.answered.get(&key).copied(), r.owed.get(&key).is_some_and(|o| o.queued))
-    };
     let mut looks = 0u32;
     // The turn count a turn end was first seen at, and when (QUEUED_GRACE_MS).
     let mut quiet: Option<(u32, u64)> = None;
@@ -2452,7 +2533,7 @@ pub fn wait(
             "waiting" => turn == Some(crate::activity::Turn::Waiting) || question || !alive,
             _ => ended || asking || !alive,
         };
-        if done {
+        if done && holding() != Holding::Unsure {
             let outcome = if !alive {
                 "exit"
             } else if until == "waiting" || (asking && !ended) {
@@ -2460,28 +2541,38 @@ pub fn wait(
             } else {
                 "turn_done"
             };
+            // A turn it answered in before it exited is handed over too.
+            let answers = outcome == "turn_done" || (outcome == "exit" && turns_ended > baseline);
             // Read from where the caller's question found the transcript.
             let asked_at = reg().lock().unwrap_or_else(|e| e.into_inner()).owed.get(&key).map(|o| o.cursor);
             let reply_now = || reply_of(&pty, id, known.provider, asked_at);
-            let mut reply = (outcome == "turn_done").then(reply_now).flatten();
+            let mut reply = answers.then(reply_now).flatten();
             let late = std::time::Instant::now() + std::time::Duration::from_millis(REPLY_GRACE_MS);
-            while outcome == "turn_done" && reply.is_none() && std::time::Instant::now() < late && !gone() {
+            while answers && reply.is_none() && std::time::Instant::now() < late && !gone() {
                 std::thread::sleep(POLL);
                 reply = reply_now();
             }
-            if gone() {
+            // In doubt again after the grace, it is the notice's to bring.
+            if gone() || (answers && holding() == Holding::Unsure) {
                 return gone_err();
             }
             let bare = outcome == "turn_done" && reply.is_none();
             let screen = (outcome == "waiting" || bare).then(|| screen_of(&pty, id)).flatten();
-            shown(caller, id, turns_ended, true);
+            if !answers {
+                // Nothing was handed over: whatever is owed stays owed.
+                looked(id);
+            } else if !call.commit(hand_over(caller, id, turns_ended)) {
+                // A cancel since the last look: it stays owed after all.
+                return gone_err();
+            }
             let (state, ask) = state_of(id);
             return Ok(Waited { outcome, state, ask, turns_ended, reply, screen });
         }
         if std::time::Instant::now() >= deadline {
             let screen = screen_of(&pty, id);
-            // Nothing was handed over: whatever is owed stays owed.
-            seen(caller, id, turns_ended);
+            // Nothing was handed over: whatever is owed stays owed, and the
+            // next wait still waits for it.
+            looked(id);
             let (state, ask) = state_of(id);
             return Ok(Waited { outcome: "timeout", state, ask, turns_ended, reply: None, screen });
         }
@@ -2492,23 +2583,50 @@ pub fn wait(
 /// Whether the call a `wait` by `caller` answers has been let go without a
 /// cancel saying so: the caller is gone, or — a Codex caller, held in the
 /// tool call for as long as it lasts — the turn that made the call is over
-/// (an interrupt) and no other has begun. A count that catches up late on
-/// the turn before finds the caller busy in this one. Claude Code moves a
-/// long call to the background and may end its turn while the call runs on,
-/// and sends a cancel when it drops one.
-fn let_go(caller: &str) -> impl Fn() -> bool {
+/// (an interrupt) and no other has begun, for LET_GO_MS on end: a sample
+/// read just before the call's turn began, and published after it, shows
+/// the turn before over at a count past the one the call found; the next
+/// sample finds the caller busy in this one. Until then it is `Unsure`.
+/// Claude Code moves a long call to the background and may end its turn
+/// while the call runs on, and sends a cancel when it drops one.
+fn let_go(caller: &str) -> impl Fn() -> Holding {
     let caller = caller.to_string();
     let codex = reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(&caller).is_some_and(|k| k.provider == Provider::Codex);
     let turns = crate::activity::turn_state(&caller).map(|t| t.turns_ended);
+    // Since when the caller's turn has looked over.
+    let over_since = std::cell::Cell::new(None::<u64>);
     move || {
         if caller == DEV_CALLER {
-            return false;
+            return Holding::Yes;
         }
-        let over = |n: u32| {
-            crate::activity::turn_state(&caller).is_some_and(|t| t.turns_ended > n && t.turn == crate::activity::Turn::Idle)
-        };
-        !live(&crate::pty::manager(), &caller) || (codex && turns.is_some_and(over))
+        if !live(&crate::pty::manager(), &caller) {
+            return Holding::No;
+        }
+        let over = codex
+            && turns.is_some_and(|n| {
+                crate::activity::turn_state(&caller).is_some_and(|t| t.turns_ended > n && t.turn == crate::activity::Turn::Idle)
+            });
+        if !over {
+            over_since.set(None);
+            return Holding::Yes;
+        }
+        let since = over_since.get().unwrap_or_else(now_ms);
+        over_since.set(Some(since));
+        if now_ms().saturating_sub(since) >= LET_GO_MS {
+            Holding::No
+        } else {
+            Holding::Unsure
+        }
     }
+}
+
+/// Whether a caller still holds the `wait` it made (see `let_go`).
+#[derive(Clone, Copy, PartialEq)]
+enum Holding {
+    Yes,
+    /// It may have let it go: nothing is handed over until that is known.
+    Unsure,
+    No,
 }
 
 /// What a `wait` hands back: all the session said past `asked_at`, where
@@ -2966,7 +3084,7 @@ fn notifier() {
                 match notice_line(&pty, who, id, k, *o) {
                     Some((Some(line), how)) => {
                         lines.push(line);
-                        settled.push((id.clone(), how));
+                        settled.push((id.clone(), how, *o));
                     }
                     Some((None, Settled::Hold(ended))) => {
                         let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
@@ -2994,9 +3112,14 @@ fn notifier() {
                         crate::log::warn("agents", &format!("notice to {caller} did not start a turn"));
                     }
                     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-                    for (id, how) in settled {
+                    for (id, how, told) in settled {
                         let key = (caller.clone(), id);
+                        // Typing the notice takes seconds, and the turn it
+                        // starts may ask again before they are over: that
+                        // question is owed on.
+                        let asked_since = r.owed.get(&key).is_some_and(|o| o.baseline != told.baseline || o.cursor != told.cursor);
                         match how {
+                            _ if asked_since => {}
                             Settled::Answered | Settled::Exited => {
                                 r.owed.remove(&key);
                             }
@@ -3141,13 +3264,75 @@ mod tests {
         register("o-parent", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, none.clone());
         register("o-child", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("o-parent"), false, none);
         let owed = || reg().lock().unwrap().owed.get(&("o-parent".to_string(), "o-child".to_string())).map(|o| o.baseline);
-        owe("o-parent", "o-child", 1);
-        shown("o-parent", "o-child", 1, true);
+        owe_from("o-parent", "o-child", 1, 0);
+        shown("o-parent", "o-child", 1);
         assert_eq!(owed(), Some(1), "the send itself shows the count it went in at");
-        shown("o-parent", "o-child", 2, true);
+        shown("o-parent", "o-child", 2);
         assert_eq!(owed(), None, "a wait or read past it settles the answer");
-        owe(DEV_CALLER, "o-child", 0);
+        owe_from(DEV_CALLER, "o-child", 0, 0);
         assert!(reg().lock().unwrap().owed.get(&(DEV_CALLER.to_string(), "o-child".to_string())).is_none());
+    }
+
+    #[test]
+    fn asked_again_the_earlier_answer_is_still_owed() {
+        let key = ("m-parent".to_string(), "m-child".to_string());
+        let owed = || reg().lock().unwrap().owed.get(&key).map(|o| (o.baseline, o.cursor));
+        owe_from("m-parent", "m-child", 1, 100);
+        owe_from("m-parent", "m-child", 2, 300);
+        assert_eq!(owed(), Some((2, 100)), "the second answer ends a later turn; both are read from the first question on");
+        reg().lock().unwrap().owed.remove(&key);
+        owe_from("m-parent", "m-child", 3, 500);
+        assert_eq!(owed(), Some((3, 500)), "once collected, a new question starts where it went in");
+    }
+
+    #[test]
+    fn a_hand_over_undone_puts_back_what_it_took() {
+        let key = ("h-parent".to_string(), "h-child".to_string());
+        owe_from("h-parent", "h-child", 1, 40);
+        seen("h-parent", "h-child", 1);
+        let undo = hand_over("h-parent", "h-child", 2);
+        assert!(reg().lock().unwrap().owed.get(&key).is_none(), "handed over");
+        assert_eq!(last_shown("h-parent", "h-child"), Some(2));
+        undo();
+        assert_eq!(reg().lock().unwrap().owed.get(&key).map(|o| (o.baseline, o.cursor)), Some((1, 40)));
+        assert_eq!(last_shown("h-parent", "h-child"), Some(1));
+        // A question asked in between stands, owing the dropped answer too.
+        let undo = hand_over("h-parent", "h-child", 2);
+        owe_from("h-parent", "h-child", 2, 90);
+        seen("h-parent", "h-child", 2);
+        undo();
+        assert_eq!(reg().lock().unwrap().owed.get(&key).map(|o| (o.baseline, o.cursor)), Some((2, 40)));
+        reg().lock().unwrap().owed.remove(&key);
+    }
+
+    #[test]
+    fn a_cut_read_goes_on_where_the_kept_messages_end() {
+        let path = std::env::temp_dir().join(format!("luna-cursor-after-{}.jsonl", std::process::id()));
+        std::fs::write(&path, "a\nb\nc\n").unwrap();
+        // One message a line, as the transcript readers count them.
+        let messages_at = |at: u64| -> Messages {
+            let text = std::fs::read_to_string(&path).unwrap();
+            let rest = &text[(at as usize).min(text.len())..];
+            (rest.lines().map(|l| Message { role: "assistant".into(), text: l.into() }).collect(), text.len() as u64)
+        };
+        assert_eq!(cursor_after(&path, 0, 6, 3, 1, &messages_at), 2);
+        assert_eq!(cursor_after(&path, 2, 6, 2, 1, &messages_at), 4);
+        let _ = std::fs::remove_file(&path);
+        let nothing = |at: u64| -> Messages { (Vec::new(), at) };
+        assert_eq!(cursor_after(&path, 2, 6, 2, 1, &nothing), 2, "unreadable: this page over, not past the rest");
+    }
+
+    #[test]
+    fn a_queued_question_settles_after_a_later_turn_or_the_grace() {
+        let key = ("q-parent".to_string(), "q-child".to_string());
+        owe_from("q-parent", "q-child", 4, 0);
+        let o = || reg().lock().unwrap().owed.get(&key).copied().unwrap();
+        assert!(!queue_settled(&key, o(), 5), "the turn it was typed into may be followed by its own");
+        assert!(!queue_settled(&key, o(), 5), "not yet");
+        reg().lock().unwrap().owed.get_mut(&key).unwrap().held = Some((5, now_ms() - QUEUED_GRACE_MS));
+        assert!(queue_settled(&key, o(), 5), "no turn began on it in the grace");
+        assert!(queue_settled(&key, o(), 6), "a turn past the running one ended");
+        reg().lock().unwrap().owed.remove(&key);
     }
 
     #[test]
@@ -3187,7 +3372,7 @@ mod tests {
         let none = serde_json::json!({});
         register("w-parent", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, none.clone());
         register("w-child", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("w-parent"), false, none);
-        owe("w-parent", "w-child", 0);
+        owe_from("w-parent", "w-child", 0, 0);
         let pty = crate::pty::manager();
         let key = ("w-parent".to_string(), "w-child".to_string());
         let o = || reg().lock().unwrap().owed.get(&key).copied().unwrap();
@@ -3210,13 +3395,13 @@ mod tests {
         reg().lock().unwrap().auto.insert("ad-child".into(), Auto::default());
         let since = || reg().lock().unwrap().auto.get("ad-child").and_then(|a| a.idle_since);
         let pty = crate::pty::manager();
-        owe("ad-parent", "ad-child", 0);
+        owe_from("ad-parent", "ad-child", 0, 0);
         reap(&pty);
         assert_eq!(since(), None, "its answer is still owed");
         reg().lock().unwrap().owed.remove(&("ad-parent".to_string(), "ad-child".to_string()));
         reap(&pty);
         assert!(since().is_some(), "exited and nobody owed: the clock runs");
-        owe("ad-parent", "ad-child", 1);
+        owe_from("ad-parent", "ad-child", 1, 0);
         reap(&pty);
         assert_eq!(since(), None, "a follow-up starts it over");
         reg().lock().unwrap().auto.remove("ad-child");

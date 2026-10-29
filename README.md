@@ -383,7 +383,8 @@ background helper spawned without tools.
 - `luna_read` reads the transcript, not the screen; `luna_wait` returns the reply itself —
   everything the helper said since it was asked, the report first — for an agent that needs
   it in the same turn (past 60,000 characters either is cut: `luna_read` says how many
-  messages it left out, `leftOut`, and goes on from its cursor; `luna_wait` names a file with
+  messages it left out, `leftOut`; with `since` alone the next read goes on from its cursor,
+  with `last` the newest messages are kept; `luna_wait` names a file with
   the whole answer). Otherwise the agent spawns and ends its turn,
   and the answer comes to it:
 - An agent that asked something and ended its turn without waiting is not left idle: once

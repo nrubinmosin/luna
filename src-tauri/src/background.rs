@@ -63,6 +63,10 @@ struct Run {
     started_ms: u64,
     /// Holds the job the turn's process tree lives in, for as long as it runs.
     _job: Option<crate::procs::Job>,
+    /// A stop came while the turn was claimed but had no process yet: it
+    /// has no pid to kill, so `spawn_turn` does not start it, or kills what
+    /// it just started.
+    stopped: bool,
 }
 
 /// A permission or question held for an answer.
@@ -175,27 +179,47 @@ pub fn stop_all() {
 }
 
 /// Stops every turn in progress with its process tree and drops what was
-/// queued; `close` also keeps any from starting after. Returns how many it
+/// queued; `close` also keeps any from starting after. A turn claimed but not
+/// yet started is stopped too: it does not start. Returns how many it
 /// stopped.
 pub fn stop_turns(close: bool) -> usize {
-    let pids: Vec<u32> = {
+    let (pids, claimed): (Vec<u32>, usize) = {
         let mut r = lock();
         r.closed |= close;
-        r.entries
-            .values_mut()
-            .filter_map(|e| {
-                e.queue.clear();
-                e.held = None;
-                e.run.as_ref().and_then(|run| run.pid)
-            })
-            .collect()
+        let mut pids = Vec::new();
+        let mut claimed = 0;
+        for e in r.entries.values_mut() {
+            match stop(e) {
+                Some(pid) => pids.push(pid),
+                None if e.run.is_some() => claimed += 1,
+                None => {}
+            }
+        }
+        (pids, claimed)
     };
     reg().1.notify_all();
-    let stopped = pids.len();
+    let stopped = pids.len() + claimed;
     for pid in pids {
         crate::pty::kill_tree(Some(pid));
     }
     stopped
+}
+
+/// Takes a helper's turn off, under the lock: drops what was queued, counted
+/// as a turn that ended (whoever queued it waits on its end, which will not
+/// come now), lets a held question go, and marks a claimed turn with no
+/// process yet stopped. Returns the pid left to kill.
+fn stop(e: &mut Entry) -> Option<u32> {
+    if !e.queue.is_empty() {
+        e.queue.clear();
+        e.turns_ended += 1;
+    }
+    e.held = None;
+    let run = e.run.as_mut()?;
+    if run.pid.is_none() {
+        run.stopped = true;
+    }
+    run.pid
 }
 
 /// Starts a helper on its opening prompt.
@@ -322,25 +346,28 @@ fn command_for(e: &Entry, id: &str) -> (Vec<String>, String, Vec<(&'static str, 
 /// found it free: text that arrives before the process is up queues behind
 /// it rather than starting a second process on the same conversation.
 fn claim(e: &mut Entry) {
-    e.run = Some(Run { pid: None, started_ms: crate::throttle::now_ms(), _job: None });
+    e.run = Some(Run { pid: None, started_ms: crate::throttle::now_ms(), _job: None, stopped: false });
 }
 
 /// Starts the next turn's process with `prompt` on its stdin, on a run
-/// `claim` has taken; a turn that could not start gives the claim back.
-/// Text queued behind it meanwhile would wait for a `turn_over` that never
-/// comes: it fails with it, counted as a turn that ended on the error, so
-/// whoever waits on it hears — rather than starting what would most likely
-/// fail the same way.
+/// `claim` has taken; a turn that could not start gives the claim back,
+/// counted as a turn that ended on the error: whoever queued it, or queued
+/// behind it, counts on its end, and `turn_over` never comes for it. Text
+/// queued behind it fails with it, counted as the turn after, so whoever
+/// waits on it hears — rather than starting what would most likely fail the
+/// same way.
 fn run_turn(id: &str, prompt: &str) -> Result<(), String> {
     let started = spawn_turn(id, prompt);
     if let Err(err) = &started {
         if let Some(e) = lock().entries.get_mut(id) {
             if e.run.as_ref().is_some_and(|r| r.pid.is_none()) {
                 e.run = None;
+                note(e, &format!("could not start the turn: {err}"));
+                e.error = Some(err.clone());
+                e.turns_ended += 1;
                 if !e.queue.is_empty() {
                     e.queue.clear();
-                    note(e, &format!("could not start the queued turn: {err}"));
-                    e.error = Some(err.clone());
+                    note(e, "dropped what was queued behind it");
                     e.turns_ended += 1;
                 }
             }
@@ -351,6 +378,9 @@ fn run_turn(id: &str, prompt: &str) -> Result<(), String> {
     started
 }
 
+/// Why a turn claimed before a stop does not run.
+const STOPPED: &str = "it was stopped before it started";
+
 fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
     let (args, dir, envs, provider) = {
         let r = lock();
@@ -358,6 +388,9 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
             return Err("Luna is stopping".into());
         }
         let e = r.entries.get(id).ok_or("no such helper")?;
+        if e.run.as_ref().is_some_and(|run| run.stopped) {
+            return Err(STOPPED.into());
+        }
         let (args, dir, envs) = command_for(e, id);
         (args, dir, envs, e.spec.provider)
     };
@@ -383,6 +416,35 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
         use std::os::unix::process::CommandExt;
         cmd.process_group(0);
     }
+    let thread_err = |e: std::io::Error| format!("could not start {}: {e}", provider.as_str());
+    // The thread that sees the turn out is there before the process: one
+    // that could not be made after it would leave the process running with
+    // nobody to reap it or end its turn. It is handed the process once the
+    // turn is recorded, and nothing if the turn does not start.
+    let (hand, take) = std::sync::mpsc::channel::<(std::process::Child, Option<std::process::ChildStdout>)>();
+    {
+        let id = id.to_string();
+        std::thread::Builder::new()
+            .name(format!("luna-bg-{id}"))
+            .spawn(move || {
+                let Ok((mut child, stdout)) = take.recv() else { return };
+                // Read to its end as bytes, as stderr below is.
+                if let Some(out) = stdout {
+                    for line in BufReader::new(out).split(b'\n').map_while(Result::ok) {
+                        let Ok(v) = serde_json::from_slice::<Value>(&line) else { continue };
+                        let mut r = lock();
+                        let Some(e) = r.entries.get_mut(&id) else { break };
+                        match provider {
+                            Provider::Claude => on_claude_event(e, &v),
+                            Provider::Codex => on_codex_event(e, &v),
+                        }
+                    }
+                }
+                let code = child.wait().ok().and_then(|s| s.code());
+                turn_over(&id, code);
+            })
+            .map_err(thread_err)?;
+    }
     let mut child = cmd.spawn().map_err(|e| {
         crate::log::error("background", &format!("could not start {id}: {e}"));
         format!("could not start {}: {e}", provider.as_str())
@@ -392,34 +454,22 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
     let stdin = child.stdin.take();
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
-    {
-        let mut r = lock();
-        let closed = r.closed;
-        let Some(e) = r.entries.get_mut(id).filter(|_| !closed) else {
-            drop(r);
-            crate::pty::kill_tree(pid);
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(if closed { "Luna is stopping" } else { "the helper was deleted" }.into());
-        };
-        e.run = Some(Run { pid, started_ms: crate::throttle::now_ms(), _job: job });
-        e.error = None;
-        note(e, &format!("› {}", one_line(prompt)));
-    }
-    crate::log::info("background", &format!("{id} turn started, pid {pid:?}: {} {}", provider.as_str(), args.join(" ")));
     // Written whole and closed: the CLI reads its prompt to the end of input.
     if let Some(mut stdin) = stdin {
         let prompt = prompt.to_string();
-        std::thread::spawn(move || {
+        if let Err(e) = std::thread::Builder::new().spawn(move || {
             let _ = stdin.write_all(prompt.as_bytes());
-        });
+        }) {
+            abandon(child, pid);
+            return Err(thread_err(e));
+        }
     }
     // Both pipes are read to their end as bytes: `lines()` stops at the first
     // line that is not UTF-8 — a hook's output in the console's code page —
     // and a pipe nobody drains any more blocks the CLI once it fills.
     if let Some(err) = stderr {
         let id = id.to_string();
-        std::thread::spawn(move || {
+        let drained = std::thread::Builder::new().spawn(move || {
             for line in BufReader::new(err).split(b'\n').map_while(Result::ok) {
                 let line = String::from_utf8_lossy(&line);
                 let line = line.trim();
@@ -431,27 +481,48 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
                 }
             }
         });
+        if let Err(e) = drained {
+            abandon(child, pid);
+            return Err(thread_err(e));
+        }
     }
-    let id = id.to_string();
-    std::thread::Builder::new()
-        .name(format!("luna-bg-{id}"))
-        .spawn(move || {
-            if let Some(out) = stdout {
-                for line in BufReader::new(out).split(b'\n').map_while(Result::ok) {
-                    let Ok(v) = serde_json::from_slice::<Value>(&line) else { continue };
-                    let mut r = lock();
-                    let Some(e) = r.entries.get_mut(&id) else { break };
-                    match provider {
-                        Provider::Claude => on_claude_event(e, &v),
-                        Provider::Codex => on_codex_event(e, &v),
-                    }
-                }
+    {
+        let mut r = lock();
+        let closed = r.closed;
+        // A stop that came while the process was starting found no pid to
+        // kill: the process goes here instead.
+        let refused = match r.entries.get_mut(id) {
+            _ if closed => Some("Luna is stopping"),
+            None => Some("the helper was deleted"),
+            Some(e) if e.run.as_ref().is_some_and(|run| run.stopped) => Some(STOPPED),
+            Some(e) => {
+                e.run = Some(Run { pid, started_ms: crate::throttle::now_ms(), _job: job, stopped: false });
+                e.error = None;
+                note(e, &format!("› {}", one_line(prompt)));
+                None
             }
-            let code = child.wait().ok().and_then(|s| s.code());
-            turn_over(&id, code);
-        })
-        .map_err(|e| e.to_string())?;
+        };
+        if let Some(why) = refused {
+            drop(r);
+            abandon(child, pid);
+            return Err(why.into());
+        }
+    }
+    crate::log::info("background", &format!("{id} turn started, pid {pid:?}: {} {}", provider.as_str(), args.join(" ")));
+    // The reader waits on the other end; should it be gone, the turn still
+    // ends here rather than with nobody to say so.
+    if let Err(std::sync::mpsc::SendError((child, _))) = hand.send((child, stdout)) {
+        abandon(child, pid);
+        turn_over(id, None);
+    }
     Ok(())
+}
+
+/// Kills a turn's process that is not to run, its tree with it, and reaps it.
+fn abandon(mut child: std::process::Child, pid: Option<u32>) {
+    crate::pty::kill_tree(pid);
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 fn on_claude_event(e: &mut Entry, v: &Value) {
@@ -540,13 +611,9 @@ fn turn_over(id: &str, code: Option<i32>) {
     };
     reg().1.notify_all();
     crate::log::info("background", &format!("{id} turn over, code {code:?}"));
+    // One that cannot start is recorded as ended by `run_turn`.
     if let Some(text) = next {
-        if let Err(err) = run_turn(id, &text) {
-            if let Some(e) = lock().entries.get_mut(id) {
-                note(e, &format!("could not start the queued turn: {err}"));
-                e.error = Some(err);
-            }
-        }
+        let _ = run_turn(id, &text);
     }
     changed();
 }
@@ -621,9 +688,7 @@ pub fn kill(id: &str) {
     let pid = {
         let mut r = lock();
         let Some(e) = r.entries.get_mut(id) else { return };
-        e.queue.clear();
-        e.held = None;
-        e.run.as_ref().and_then(|run| run.pid)
+        stop(e)
     };
     reg().1.notify_all();
     crate::pty::kill_tree(pid);
