@@ -212,7 +212,11 @@ fn tracked(live: &Live) -> Option<Scan> {
         // sit under the count `activity` already gave out (which only grows)
         // until it caught up, and a wait for the next turn would not wake;
         // added on top, turns the new file holds that were counted already
-        // would count twice and wake one early.
+        // would count twice and wake one early. Old turn ends written back
+        // after this still count as new ones; a floor under the file's own
+        // count would not, but would hold back a real new turn the same way
+        // starting over lower does. The CLIs only append, so a rollout cut
+        // short is rare, and one that later gets its old turns back rarer.
         let mut scan = Scan::default();
         let offset = scan_rollout(&path, 0, since, &mut scan);
         scan.completed = scan.completed.max(entry.scan.completed);

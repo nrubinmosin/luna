@@ -13,8 +13,9 @@
 use crate::agents;
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 pub const PROTOCOL: &str = "2025-06-18";
 /// The versions a client may ask for that these answers fit; any other is
@@ -38,25 +39,81 @@ const GUIDE: &str = include_str!("luna_guide.md");
 /// run's transcript has it whole.
 const HISTORY_LAST: usize = 400;
 
-/// Tool calls in flight, by caller and JSON-RPC id, each with the flag a
-/// `notifications/cancelled` for it raises.
-fn in_flight() -> &'static Mutex<HashMap<(String, String), Arc<AtomicBool>>> {
-    static M: OnceLock<Mutex<HashMap<(String, String), Arc<AtomicBool>>>> = OnceLock::new();
+const RUNNING: u8 = 0;
+const COMMITTED: u8 = 1;
+const CANCELLED: u8 = 2;
+
+/// How long a call that has been answered stays where a cancel finds it: a
+/// client that cancels as the response crosses its cancel drops it unread.
+const LATE_CANCEL: Duration = Duration::from_secs(10);
+
+/// One tool call's fate, decided once: committed to its response (a `wait`
+/// or `read` has handed an owed answer over in it) or cancelled (no
+/// response). A cancel that comes after the commit undoes the hand-over
+/// instead, so the answer is owed again and the notice brings it.
+pub struct Call {
+    state: AtomicU8,
+    undo: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+}
+
+impl Call {
+    fn new() -> Call {
+        Call { state: AtomicU8::new(RUNNING), undo: Mutex::new(None) }
+    }
+
+    pub fn cancelled(&self) -> bool {
+        self.state.load(Ordering::SeqCst) == CANCELLED
+    }
+
+    /// Commits the call to its response, once the hand-over `undo` reverses
+    /// is done. False when a cancel came first: `undo` has run, and nothing
+    /// is to be handed over.
+    pub fn commit(&self, undo: impl FnOnce() + Send + 'static) -> bool {
+        let undo: Box<dyn FnOnce() + Send> = Box::new(undo);
+        *self.undo.lock().unwrap_or_else(|e| e.into_inner()) = Some(undo);
+        if self.state.compare_exchange(RUNNING, COMMITTED, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
+            return true;
+        }
+        let undo = self.undo.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if let Some(undo) = undo {
+            undo();
+        }
+        false
+    }
+
+    fn cancel(&self) {
+        if self.state.compare_exchange(RUNNING, CANCELLED, Ordering::SeqCst, Ordering::SeqCst).is_err()
+            && self.state.load(Ordering::SeqCst) == COMMITTED
+        {
+            let undo = self.undo.lock().unwrap_or_else(|e| e.into_inner()).take();
+            if let Some(undo) = undo {
+                undo();
+            }
+        }
+    }
+}
+
+/// Tool calls by caller and JSON-RPC id, for a `notifications/cancelled` to
+/// find: those in flight, and those answered within LATE_CANCEL (when).
+fn in_flight() -> &'static Mutex<HashMap<(String, String), (Arc<Call>, Option<Instant>)>> {
+    static M: OnceLock<Mutex<HashMap<(String, String), (Arc<Call>, Option<Instant>)>>> = OnceLock::new();
     M.get_or_init(Default::default)
 }
 
 /// A call counted in `in_flight` for as long as it runs.
 struct InFlight {
     key: (String, String),
-    cancelled: Arc<AtomicBool>,
+    call: Arc<Call>,
 }
 
 impl InFlight {
     fn start(caller: &str, id: &Value) -> InFlight {
         let key = (caller.to_string(), id.to_string());
-        let cancelled = Arc::new(AtomicBool::new(false));
-        in_flight().lock().unwrap_or_else(|e| e.into_inner()).insert(key.clone(), cancelled.clone());
-        InFlight { key, cancelled }
+        let call = Arc::new(Call::new());
+        let mut m = in_flight().lock().unwrap_or_else(|e| e.into_inner());
+        m.retain(|_, entry| entry.1.map_or(true, |at| at.elapsed() < LATE_CANCEL));
+        m.insert(key.clone(), (call.clone(), None));
+        InFlight { key, call }
     }
 }
 
@@ -64,7 +121,16 @@ impl Drop for InFlight {
     fn drop(&mut self) {
         let mut m = in_flight().lock().unwrap_or_else(|e| e.into_inner());
         // Only its own: a client reusing the id has a call of its own there.
-        if m.get(&self.key).is_some_and(|c| Arc::ptr_eq(c, &self.cancelled)) {
+        let committed = match m.get(&self.key) {
+            Some((c, _)) if Arc::ptr_eq(c, &self.call) => c.state.load(Ordering::SeqCst) == COMMITTED,
+            _ => return,
+        };
+        // One that handed nothing over has nothing a late cancel could undo.
+        if committed {
+            if let Some(entry) = m.get_mut(&self.key) {
+                entry.1 = Some(Instant::now());
+            }
+        } else {
             m.remove(&self.key);
         }
     }
@@ -83,12 +149,13 @@ pub fn handle(caller: &str, body: &str) -> Option<Value> {
     }
     let method = req["method"].as_str().unwrap_or("");
     let params = req.get("params").cloned().unwrap_or(json!({}));
-    // A `luna_wait` held open is the one call this matters for: let go,
-    // it must not take the answer it was waiting for with it.
+    // A `luna_wait` held open is the call this matters for: let go, it must
+    // not take the answer it was waiting for with it.
     if method == "notifications/cancelled" {
         let key = (caller.to_string(), params["requestId"].to_string());
-        if let Some(c) = in_flight().lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
-            c.store(true, Ordering::SeqCst);
+        let call = in_flight().lock().unwrap_or_else(|e| e.into_inner()).get(&key).map(|(c, _)| c.clone());
+        if let Some(c) = call {
+            c.cancel();
         }
     }
     // Without an id it is a notification; without a method, a response to
@@ -115,9 +182,9 @@ pub fn handle(caller: &str, body: &str) -> Option<Value> {
         "tools/list" => Ok(json!({ "tools": tools_for(caller) })),
         "tools/call" => {
             let call_out = InFlight::start(caller, &id);
-            let r = call(caller, &params, &call_out.cancelled);
+            let r = call(caller, &params, &call_out.call);
             // A cancelled request gets no response.
-            if call_out.cancelled.load(Ordering::SeqCst) {
+            if call_out.call.cancelled() {
                 return None;
             }
             Ok(r)
@@ -199,7 +266,7 @@ fn tools() -> Value {
         },
         {
             "name": "luna_read",
-            "description": "Messages of any session from its transcript. `since` = cursor from an earlier read; `last` = only the last N messages (default 1; all after `since`). Cut past 60k characters (leftOut): go on from cursor. Also returns state and ask.",
+            "description": "Messages of any session from its transcript. `since` = cursor from an earlier read; `last` = only the last N messages (default 1; all after `since`). Cut past 60k chars (leftOut): `since` alone goes on from cursor, `last` keeps the newest. Also returns state and ask.",
             "inputSchema": s(json!({
                 "id": { "type": "string" },
                 "since": { "type": "integer" },
@@ -273,7 +340,7 @@ fn tools_for(caller: &str) -> Value {
     Value::Array(list)
 }
 
-fn call(caller: &str, params: &Value, cancelled: &AtomicBool) -> Value {
+fn call(caller: &str, params: &Value, this: &Call) -> Value {
     let name = params["name"].as_str().unwrap_or("");
     let a = &params["arguments"];
     let id = a["id"].as_str().unwrap_or("").to_string();
@@ -332,6 +399,7 @@ fn call(caller: &str, params: &Value, cancelled: &AtomicBool) -> Value {
             a["last"].as_u64().map(|n| n as usize).or(a["since"].as_u64().is_none().then_some(1)),
             a["tools"].as_bool().unwrap_or(false),
             a["screen"].as_bool().unwrap_or(false),
+            this,
         )
         .map(|r| json!(r)),
         "luna_wait" => agents::wait(
@@ -340,7 +408,7 @@ fn call(caller: &str, params: &Value, cancelled: &AtomicBool) -> Value {
             a["until"].as_str().unwrap_or("turn_done"),
             a["timeoutS"].as_u64().unwrap_or(600),
             a["afterTurn"].as_u64().map(|n| n as u32),
-            cancelled,
+            this,
         )
         .map(|w| json!(w)),
         "luna_kill" => agents::kill(caller, &id).map(|()| json!({ "ok": true })),
@@ -413,10 +481,36 @@ mod tests {
         let call = InFlight::start("cancel-test", &json!(7));
         let other = InFlight::start("cancel-test", &json!("7"));
         assert!(handle("cancel-test", r#"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":7}}"#).is_none());
-        assert!(call.cancelled.load(Ordering::SeqCst));
-        assert!(!other.cancelled.load(Ordering::SeqCst), "a string id is another call");
+        assert!(call.call.cancelled());
+        assert!(!other.call.cancelled(), "a string id is another call");
         drop(call);
         assert!(!in_flight().lock().unwrap().contains_key(&("cancel-test".to_string(), "7".to_string())));
+    }
+
+    #[test]
+    fn a_hand_over_is_undone_by_a_cancel_either_side_of_it() {
+        let undone = Arc::new(AtomicU8::new(0));
+        let undo = || {
+            let u = undone.clone();
+            move || {
+                u.fetch_add(1, Ordering::SeqCst);
+            }
+        };
+        // Cancelled first: the commit fails and undoes it itself.
+        let first = Call::new();
+        first.cancel();
+        assert!(!first.commit(undo()));
+        assert_eq!(undone.load(Ordering::SeqCst), 1);
+        // Committed first: the response goes out, and a cancel after it,
+        // even once the call has ended, puts the answer back, once.
+        let late = InFlight::start("late-cancel", &json!(3));
+        assert!(late.call.commit(undo()));
+        assert!(!late.call.cancelled());
+        drop(late);
+        let cancel = r#"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":3}}"#;
+        assert!(handle("late-cancel", cancel).is_none());
+        assert!(handle("late-cancel", cancel).is_none());
+        assert_eq!(undone.load(Ordering::SeqCst), 2);
     }
 
     #[test]
