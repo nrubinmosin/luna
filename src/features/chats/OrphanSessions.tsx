@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useDialogHost } from '../../shared/ui/dialogHost';
 import { Icon } from '../../shared/ui/icons';
@@ -30,11 +30,17 @@ export function OrphanSessions() {
 
   const knownKey = folders.flatMap(f => f.chats.map(c => c.id)).sort().join('|');
 
+  // Only the latest scan may answer. One asked before a chat was adopted
+  // still counts that session as nobody's, and coming back after the scan
+  // that knows better it put the session back on offer — a second Adopt
+  // then made a second row for it.
+  const scans = useRef(0);
   const rescan = useCallback(() => {
     const known = knownKey ? knownKey.split('|') : [];
+    const seq = ++scans.current;
     void orphanSessions(known)
-      .then(setFound)
-      .catch(() => setFound([]));
+      .then(rows => seq === scans.current && setFound(rows))
+      .catch(() => seq === scans.current && setFound([]));
   }, [knownKey]);
 
   useEffect(() => {
@@ -78,7 +84,8 @@ export function OrphanSessions() {
         : { ...base, provider: 'claude', ...claude.STOCK };
     useChats.getState().addChat(folder, chat, true);
     usePanes.getState().autoPlace(o.id);
-    rescan();
+    // Off the list now: the scan the new row sets off is still on its way.
+    setFound(f => f.filter(x => x.id !== o.id));
   };
 
   const kill = (o: OrphanSessionDto) => {

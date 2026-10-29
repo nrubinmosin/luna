@@ -148,10 +148,13 @@ fn apply_limits(out: &mut AccountLimits, limits: &Value) {
 }
 
 fn get_json(url: &str, token: &str) -> Result<Value, String> {
-    // Without these a stalled connection hangs the refresh indefinitely.
+    // Without these a stalled connection hangs the refresh indefinitely. The
+    // read timeout is per read and the connect one per address, so only the
+    // overall one bounds the request as a whole.
     let resp = ureq::builder()
         .timeout_connect(std::time::Duration::from_secs(5))
         .timeout_read(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(15))
         .build()
         .get(url)
         .set("Authorization", &format!("Bearer {token}"))

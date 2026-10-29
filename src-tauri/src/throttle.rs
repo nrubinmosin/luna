@@ -50,8 +50,8 @@ pub fn hit(tag: &str, key: &str, retry_after_secs: u64) -> u64 {
     let mut m = map().lock().unwrap();
     let previous = m.get(key).map(|t| t.cool_ms);
     let cool_ms =
-        (retry_after_secs * 1000).max(previous.map_or(COOLOFF_MS, |c| (c * 2).min(MAX_MS)));
-    m.insert(key.to_string(), Throttle { until_ms: now_ms() + cool_ms, cool_ms });
+        retry_after_secs.saturating_mul(1000).max(previous.map_or(COOLOFF_MS, |c| c.saturating_mul(2).min(MAX_MS)));
+    m.insert(key.to_string(), Throttle { until_ms: now_ms().saturating_add(cool_ms), cool_ms });
     drop(m);
     // A single 429 is routine — the UI shows the hold and keeps the last
     // numbers — and logging each one was most of the log file. Only a second

@@ -145,8 +145,15 @@ fn stamp(path: &std::path::Path) -> Stamp {
     std::fs::metadata(path).ok().and_then(|m| Some((m.modified().ok()?, m.len())))
 }
 
-fn read(path: &std::path::Path) -> Settings {
-    std::fs::read_to_string(path).ok().and_then(|raw| serde_json::from_str(&raw).ok()).unwrap_or_default()
+/// The file's settings; the defaults only when there is no file. One that
+/// will not read or parse is an error: taken for the defaults, it would have
+/// the library take every copy out and the next write throw it all away.
+fn read(path: &std::path::Path) -> Result<Settings, String> {
+    match std::fs::read_to_string(path) {
+        Ok(raw) => serde_json::from_str(&raw).map_err(|e| format!("{}: {e}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Settings::default()),
+        Err(e) => Err(format!("{}: {e}", path.display())),
+    }
 }
 
 fn cache() -> &'static Mutex<(Settings, Stamp)> {
@@ -160,9 +167,13 @@ fn cache() -> &'static Mutex<(Settings, Stamp)> {
 pub fn get() -> Settings {
     let path = file();
     let now = stamp(&path);
-    let Ok(mut c) = cache().lock() else { return read(&path) };
+    let Ok(mut c) = cache().lock() else { return read(&path).unwrap_or_default() };
     if c.1 != now || now.is_none() {
-        *c = (read(&path), now);
+        // A file that will not read keeps what was read last, its stamp
+        // unchanged so the next call reads again.
+        if let Ok(s) = read(&path) {
+            *c = (s, now);
+        }
     }
     c.0.clone()
 }
@@ -183,7 +194,7 @@ pub fn update(f: impl FnOnce(&mut Settings)) -> Result<(), String> {
         .map_err(|e| format!("settings lock: {e}"))?;
     lock.lock().map_err(|e| format!("settings lock: {e}"))?;
 
-    let mut s = read(&path);
+    let mut s = read(&path)?;
     f(&mut s);
     let raw = serde_json::to_string_pretty(&s).map_err(|e| e.to_string())?;
     let tmp = path.with_extension("json.tmp");
@@ -248,8 +259,8 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("settings.json");
         std::fs::write(&path, r#"{"quietWindowS": 300}"#).unwrap();
-        assert_eq!(read(&path).quiet_window_s, 300);
-        assert!(read(&path).keep_awake, "missing fields take their defaults");
+        assert_eq!(read(&path).unwrap().quiet_window_s, 300);
+        assert!(read(&path).unwrap().keep_awake, "missing fields take their defaults");
 
         // Another process rewrites the file: the stamp moves, so a cached
         // copy is not trusted past it.
@@ -257,7 +268,7 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(20));
         std::fs::write(&path, r#"{"quietWindowS": 60, "keepAwake": false}"#).unwrap();
         assert_ne!(stamp(&path), before);
-        assert_eq!(read(&path).quiet_window_s, 60);
+        assert_eq!(read(&path).unwrap().quiet_window_s, 60);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

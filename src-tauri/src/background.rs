@@ -134,21 +134,20 @@ pub fn has(id: &str) -> bool {
 
 /// Starts a helper on its opening prompt.
 pub fn start(id: &str, spec: Spec, prompt: &str) -> Result<(), String> {
-    lock().entries.insert(
-        id.to_string(),
-        Entry {
-            spec,
-            started_ms: crate::throttle::now_ms(),
-            session: None,
-            cwd: None,
-            run: None,
-            turns_ended: 0,
-            queue: Vec::new(),
-            log: VecDeque::new(),
-            held: None,
-            error: None,
-        },
-    );
+    let mut e = Entry {
+        spec,
+        started_ms: crate::throttle::now_ms(),
+        session: None,
+        cwd: None,
+        run: None,
+        turns_ended: 0,
+        queue: Vec::new(),
+        log: VecDeque::new(),
+        held: None,
+        error: None,
+    };
+    claim(&mut e);
+    lock().entries.insert(id.to_string(), e);
     if let Err(e) = run_turn(id, prompt) {
         lock().entries.remove(id);
         return Err(e);
@@ -252,8 +251,28 @@ fn command_for(e: &Entry, id: &str) -> (Vec<String>, String, Vec<(&'static str, 
     (args, dir, envs)
 }
 
-/// Starts the next turn's process with `prompt` on its stdin.
+/// Takes the helper's run for a turn about to start, under the same lock that
+/// found it free: text that arrives before the process is up queues behind
+/// it rather than starting a second process on the same conversation.
+fn claim(e: &mut Entry) {
+    e.run = Some(Run { pid: None, started_ms: crate::throttle::now_ms(), _job: None });
+}
+
+/// Starts the next turn's process with `prompt` on its stdin, on a run
+/// `claim` has taken; a turn that could not start gives the claim back.
 fn run_turn(id: &str, prompt: &str) -> Result<(), String> {
+    let started = spawn_turn(id, prompt);
+    if started.is_err() {
+        if let Some(e) = lock().entries.get_mut(id) {
+            if e.run.as_ref().is_some_and(|r| r.pid.is_none()) {
+                e.run = None;
+            }
+        }
+    }
+    started
+}
+
+fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
     let (args, dir, envs, provider) = {
         let r = lock();
         let e = r.entries.get(id).ok_or("no such helper")?;
@@ -302,10 +321,14 @@ fn run_turn(id: &str, prompt: &str) -> Result<(), String> {
             let _ = stdin.write_all(prompt.as_bytes());
         });
     }
+    // Both pipes are read to their end as bytes: `lines()` stops at the first
+    // line that is not UTF-8 — a hook's output in the console's code page —
+    // and a pipe nobody drains any more blocks the CLI once it fills.
     if let Some(err) = stderr {
         let id = id.to_string();
         std::thread::spawn(move || {
-            for line in BufReader::new(err).lines().map_while(Result::ok) {
+            for line in BufReader::new(err).split(b'\n').map_while(Result::ok) {
+                let line = String::from_utf8_lossy(&line);
                 let line = line.trim();
                 if line.is_empty() || line.starts_with("Reading additional input") {
                     continue;
@@ -321,8 +344,8 @@ fn run_turn(id: &str, prompt: &str) -> Result<(), String> {
         .name(format!("luna-bg-{id}"))
         .spawn(move || {
             if let Some(out) = stdout {
-                for line in BufReader::new(out).lines().map_while(Result::ok) {
-                    let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
+                for line in BufReader::new(out).split(b'\n').map_while(Result::ok) {
+                    let Ok(v) = serde_json::from_slice::<Value>(&line) else { continue };
                     let mut r = lock();
                     let Some(e) = r.entries.get_mut(&id) else { break };
                     match provider {
@@ -416,7 +439,11 @@ fn turn_over(id: &str, code: Option<i32>) {
                 e.cwd = crate::codex::session::thread_cwd(&e.spec.account_path, thread);
             }
         }
-        (!e.queue.is_empty()).then(|| std::mem::take(&mut e.queue).join("\n\n"))
+        let next = (!e.queue.is_empty()).then(|| std::mem::take(&mut e.queue).join("\n\n"));
+        if next.is_some() {
+            claim(e);
+        }
+        next
     };
     reg().1.notify_all();
     crate::log::info("background", &format!("{id} turn over, code {code:?}"));
@@ -485,6 +512,7 @@ pub fn send(id: &str, text: &str) -> Result<bool, String> {
             note(e, &format!("queued: {}", one_line(text)));
             true
         } else {
+            claim(e);
             false
         }
     };
@@ -523,21 +551,31 @@ pub fn interrupt(id: &str, text: &str) -> Result<bool, String> {
     if stopped {
         reg().1.notify_all();
         crate::pty::kill_tree(pid);
-        // The turn is over once its reader has seen the process go.
+    }
+    let text = queued.into_iter().chain([text.to_string()]).collect::<Vec<_>>().join("\n\n");
+    {
+        // The turn is over once its reader has seen the process go, and the
+        // run is then free or taken by a turn queued before the kill.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
         let (m, cv) = reg();
         let mut r = m.lock().unwrap_or_else(|e| e.into_inner());
-        while r.entries.get(id).is_some_and(|e| e.run.is_some()) {
+        while stopped && r.entries.get(id).and_then(|e| e.run.as_ref()).is_some_and(|run| run.pid == pid) {
             let left = deadline.saturating_duration_since(std::time::Instant::now());
             if left.is_zero() {
                 return Err(format!("helper {id} did not stop within 15 s"));
             }
             r = cv.wait_timeout(r, left).unwrap_or_else(|e| e.into_inner()).0;
         }
-    }
-    let text = queued.into_iter().chain([text.to_string()]).collect::<Vec<_>>().join("\n\n");
-    if let Some(e) = lock().entries.get_mut(id) {
+        let e = r.entries.get_mut(id).ok_or("no such helper")?;
         note(e, "interrupted");
+        // A turn something else started meanwhile: the text goes after it.
+        if e.run.is_some() {
+            e.queue.push(text);
+            drop(r);
+            changed();
+            return Ok(stopped);
+        }
+        claim(e);
     }
     run_turn(id, &text)?;
     changed();

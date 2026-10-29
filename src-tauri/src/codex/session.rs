@@ -50,8 +50,9 @@ fn norm_path(p: &str) -> String {
 /// with a `_<rollout id>` suffix (after a `/revert`) still names the thread.
 pub fn parse_name(file_name: &str) -> Option<(NaiveDateTime, String)> {
     let rest = file_name.strip_prefix("rollout-")?.strip_suffix(".jsonl")?;
-    // "YYYY-MM-DDTHH-MM-SS" is 19 chars, then '-' then the uuid.
-    if rest.len() < 21 {
+    // "YYYY-MM-DDTHH-MM-SS" is 19 chars, then '-' then the uuid. Any file
+    // in the folder is looked at, so the cut must land on a char boundary.
+    if rest.len() < 21 || !rest.is_char_boundary(19) {
         return None;
     }
     let (ts, id) = rest.split_at(19);
@@ -588,10 +589,18 @@ pub fn meta(live: &Live) -> Option<SessionMeta> {
 }
 
 /// The newest rate-limit snapshot any rollout of this account recorded in the
-/// last couple of days, with the line's timestamp.
+/// last couple of days, with the line's timestamp. Looked for in the files
+/// written to last first: a name carries when the thread started, and a chat
+/// started yesterday that is still running has newer numbers than a helper
+/// that started and ended an hour ago.
 pub fn latest_rate_limits(account_path: &str) -> Option<(Value, String)> {
     let today = Local::now().date_naive();
-    for (_, _, path) in rollouts_on(account_path, days_back(today, 2)) {
+    let mut files: Vec<(std::time::SystemTime, PathBuf)> = rollouts_on(account_path, days_back(today, 2))
+        .into_iter()
+        .map(|(_, _, p)| (std::fs::metadata(&p).and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH), p))
+        .collect();
+    files.sort_by(|a, b| b.0.cmp(&a.0));
+    for (_, path) in files {
         if let Some(hit) = read_tail(&path).rate_limits {
             return Some(hit);
         }

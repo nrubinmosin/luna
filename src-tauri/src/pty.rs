@@ -18,8 +18,6 @@ const SCROLLBACK_SLACK: usize = 256 * 1024;
 /// frame at 60Hz, short enough to feel immediate and long enough that a
 /// repainting TUI does not turn into hundreds of events per second.
 const FRAME: std::time::Duration = std::time::Duration::from_millis(16);
-/// A session's pty before any pane has sized it — and for good, when no pane
-/// ever does (a chat an agent spawned and nobody opened).
 /// What a Claude Code or Codex session puts in the environment of everything
 /// it runs: its identity, its IPC, its sandbox flags. None of it belongs to a
 /// session Luna starts (see spawn).
@@ -39,6 +37,8 @@ const INHERITED_SESSION_VARS: &[&str] = &[
 /// What a session that has exited keeps of its scrollback: enough for its
 /// last screen.
 const EXITED_TAIL: usize = 32 * 1024;
+/// A session's pty before any pane has sized it — and for good, when no pane
+/// ever does (a chat an agent spawned and nobody opened).
 const INITIAL_ROWS: u16 = 30;
 const INITIAL_COLS: u16 = 100;
 /// The cursor-position query (DSR 6). ConPTY sends one before anything else
@@ -177,14 +177,8 @@ struct Launch {
 // process holding a token Luna no longer knew.
 async fn spawn(id: String, launch: impl FnOnce() -> Launch) -> Result<String, String> {
     let state = manager();
-    let gate = {
-        let mut gates = state.spawning.lock().unwrap();
-        // Nobody holds a gate whose only reference is the map's own, so this
-        // keeps the table to the chats actually starting right now.
-        gates.retain(|_, g| Arc::strong_count(g) > 1);
-        Arc::clone(gates.entry(id.clone()).or_default())
-    };
-    let _spawning = gate.lock().unwrap();
+    let gate = state.gate(&id);
+    let _spawning = gate.lock().unwrap_or_else(|e| e.into_inner());
 
     // Under the gate: whoever waited here may find the session already spawned.
     {
@@ -360,18 +354,38 @@ async fn spawn(id: String, launch: impl FnOnce() -> Launch) -> Result<String, St
                     }
                 }
 
-                let valid_to = match std::str::from_utf8(&carry) {
-                    Ok(_) => carry.len(),
-                    Err(e) => e.valid_up_to(),
-                };
-                if valid_to > 0 {
-                    let text = unsafe { std::str::from_utf8_unchecked(&carry[..valid_to]) };
-                    crate::emit::to_ui("pty://output", PtyOutput { id: &id, data: text });
+                // A byte that is not UTF-8 goes out as U+FFFD, the way the
+                // scrollback replays it to a pane that attaches: stopping at
+                // it held back, and then dropped, everything after it in the
+                // frame. Only a sequence cut off at the very end waits for
+                // the next read.
+                let mut text = String::new();
+                let mut rest: &[u8] = &carry;
+                while !rest.is_empty() {
+                    match std::str::from_utf8(rest) {
+                        Ok(s) => {
+                            text.push_str(s);
+                            rest = &[];
+                        }
+                        Err(e) => {
+                            let (valid, after) = rest.split_at(e.valid_up_to());
+                            text.push_str(unsafe { std::str::from_utf8_unchecked(valid) });
+                            rest = after;
+                            match e.error_len() {
+                                Some(n) => {
+                                    text.push(char::REPLACEMENT_CHARACTER);
+                                    rest = &rest[n..];
+                                }
+                                None => break,
+                            }
+                        }
+                    }
                 }
-                carry.drain(..valid_to);
-                if carry.len() > 4 {
-                    carry.clear(); // not a split sequence, just invalid bytes
+                let used = carry.len() - rest.len();
+                if !text.is_empty() {
+                    crate::emit::to_ui("pty://output", PtyOutput { id: &id, data: &text });
                 }
+                carry.drain(..used);
             }
             id
         });
@@ -433,14 +447,26 @@ async fn spawn(id: String, launch: impl FnOnce() -> Launch) -> Result<String, St
                 .ok()
                 .map(|st| st.exit_code());
             crate::log::info("pty", &format!("session {id} exited, code {code:?}"));
-            crate::emit::to_ui("pty://exit", PtyExit { id: &id, code });
+            let pm = manager();
+            // The exit names only the chat. A session already spawned under
+            // the same id since — a kill and a respawn quicker than this
+            // teardown — is the one its pane is listening to, and this exit
+            // would mark that running session dead.
+            let replaced = pm
+                .sessions
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(&id)
+                .is_some_and(|s| !Arc::ptr_eq(&s.alive, &alive));
+            if !replaced {
+                crate::emit::to_ui("pty://exit", PtyExit { id: &id, code });
+            }
             // The entry stays, for as long as the chat does: its transcript, its
             // folder and its last screen are still asked for (luna_read, the
             // exit notice, deleting it). What only a running session needs
             // goes now — the writer thread and the pty with it, and all but the
             // tail of the scrollback — or a CLI that quit on its own held
             // megabytes and a console host until Luna restarted.
-            let pm = manager();
             let mut sessions = pm.sessions.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(s) = sessions.get_mut(&id).filter(|s| Arc::ptr_eq(&s.alive, &alive)) {
                 s.input_tx = Arc::new(std::sync::mpsc::channel().0);
@@ -762,6 +788,15 @@ fn activity_probe(id: &str, s: &Session) -> ActivityProbe {
 }
 
 impl PtyManager {
+    /// The lock a spawn of this chat holds for as long as it runs.
+    fn gate(&self, id: &str) -> Arc<Mutex<()>> {
+        let mut gates = self.spawning.lock().unwrap_or_else(|e| e.into_inner());
+        // Nobody holds a gate whose only reference is the map's own, so this
+        // keeps the table to the chats actually starting right now.
+        gates.retain(|_, g| Arc::strong_count(g) > 1);
+        Arc::clone(gates.entry(id.to_string()).or_default())
+    }
+
     /// Every live session, copied out from under the map.
     pub fn activity_probes(&self) -> Vec<ActivityProbe> {
         let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
@@ -1330,8 +1365,17 @@ fn shut_down(mut s: Session, grace: std::time::Duration) {
 /// Takes the session out of the map first and shuts it down after: the
 /// shutdown waits on the process, and waiting under the map would put every
 /// other chat's keystrokes behind it.
+///
+/// A spawn of the chat still in flight — a worktree being fetched, a helper
+/// deleted the moment it was made — is waited out under its gate: removed
+/// before that spawn put its process in the map, the session would have run
+/// on with no chat to reach it from.
 async fn take_and_shut_down(state: &PtyManager, id: &str) {
-    let session = state.sessions.lock().unwrap().remove(id);
+    let session = {
+        let gate = state.gate(id);
+        let _spawning = gate.lock().unwrap_or_else(|e| e.into_inner());
+        state.sessions.lock().unwrap_or_else(|e| e.into_inner()).remove(id)
+    };
     if let Some(s) = session {
         let _ = tauri::async_runtime::spawn_blocking(move || shut_down(s, GRACE)).await;
     }

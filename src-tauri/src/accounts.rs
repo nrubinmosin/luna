@@ -139,9 +139,10 @@ fn rename_in(root: &std::path::Path, name: &str, to: &str) -> Result<PathBuf, St
     if !from.is_dir() {
         return Err(format!("Account \"{name}\" is not there any more"));
     }
-    // A change of case only is a rename too, and on Windows the "existing"
-    // folder is the same one.
-    if dest.exists() && !name.eq_ignore_ascii_case(to) {
+    // A change of case only is a rename too, and where the file system ignores
+    // case the "existing" folder is the same one; where it does not, it is
+    // another account, which a rename onto would replace if it were empty.
+    if dest.exists() && !crate::paths::same_dir(&from, &dest) {
         return Err(format!("Account \"{to}\" already exists"));
     }
     fs::rename(&from, &dest).map_err(|e| format!("Could not rename the folder: {e}"))?;

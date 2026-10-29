@@ -36,6 +36,29 @@ fn read_config(path: &Path) -> Value {
         .unwrap_or_else(|| Value::Object(Map::new()))
 }
 
+/// The config to write the trust bit into. Only a missing file starts empty:
+/// one that will not read or parse — the CLI rewrites it in place, so a read
+/// can catch it half-written, and on Windows it may hold the file open — is an
+/// error, as writing back over it would throw the account's whole config away.
+fn read_config_for_write(path: &Path) -> Result<Value, String> {
+    let mut last = String::new();
+    for attempt in 0..3 {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        match fs::read_to_string(path) {
+            Ok(text) => match serde_json::from_str::<Value>(&text) {
+                Ok(v) if v.is_object() => return Ok(v),
+                Ok(_) => return Err(format!("{}: not a JSON object", path.display())),
+                Err(e) => last = format!("{}: {e}", path.display()),
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Value::Object(Map::new())),
+            Err(e) => last = format!("{}: {e}", path.display()),
+        }
+    }
+    Err(last)
+}
+
 #[tauri::command]
 pub fn claude_folder_trusted(account_path: String, folder: String) -> Result<bool, String> {
     let cfg = read_config(&config_file(&account_path)?);
@@ -49,7 +72,7 @@ pub fn claude_folder_trusted(account_path: String, folder: String) -> Result<boo
 #[tauri::command]
 pub fn claude_trust_folder(account_path: String, folder: String) -> Result<(), String> {
     let path = config_file(&account_path)?;
-    let mut cfg = read_config(&path);
+    let mut cfg = read_config_for_write(&path)?;
 
     let projects = cfg
         .as_object_mut()

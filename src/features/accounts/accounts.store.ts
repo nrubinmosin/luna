@@ -221,7 +221,17 @@ export const useAccounts = create<AccountsState>()((set, get) => ({
   refreshing: [],
 
   refresh: async () => {
-    const list = await ipc.listAccounts();
+    let list: ipc.AccountInfo[];
+    try {
+      list = await ipc.listAccounts();
+    } catch (e) {
+      // The round is the only thing that schedules the next one: a list that
+      // failed once (the core restarting) must not end the polling for good.
+      if (polling) {
+        scheduleRetry(BACKOFF_S[Math.min(backoffStep++, BACKOFF_S.length - 1)], () => void get().refresh().catch(() => {}));
+      }
+      throw e;
+    }
     // Rebuilding the array every poll gave it a new identity and re-rendered
     // the whole footer on a timer, which is what the flicker was.
     const cur = get();
@@ -289,7 +299,7 @@ export const useAccounts = create<AccountsState>()((set, get) => ({
       unhappy.length === 0
         ? Math.max(HEALTHY_S, serverWait, throttled ? THROTTLED_S : 0)
         : Math.max(BACKOFF_S[Math.min(backoffStep++, BACKOFF_S.length - 1)], serverWait, throttled ? THROTTLED_S : 0);
-    scheduleRetry(wait, () => void get().refresh());
+    scheduleRetry(wait, () => void get().refresh().catch(() => {}));
   },
 
   refreshAccount: async account => {
@@ -310,7 +320,7 @@ export const useAccounts = create<AccountsState>()((set, get) => ({
   startPolling: () => {
     if (polling) return;
     polling = true;
-    void get().refresh();
+    void get().refresh().catch(() => {});
   },
 
   stopPolling: () => {

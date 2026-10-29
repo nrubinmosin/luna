@@ -20,6 +20,7 @@ import {
 } from '../../shared/types';
 import { findAccount, useAccounts } from '../accounts/accounts.store';
 import { allChats, useChats } from '../chats/chats.store';
+import { useCore } from '../core/core.store';
 import { createChat } from '../new-chat/create';
 import type { From } from '../new-chat/draft';
 import { usePanes } from '../panes/panes.store';
@@ -155,6 +156,18 @@ async function spawn(req: AgentSpawnRequest): Promise<void> {
   await agentSpawned(req.requestId, id, made?.name ?? null, null);
 }
 
+/**
+ * Runs `again` whenever a core comes up: the registry the window keeps it
+ * told of lives in the core, so one just started, or one that took over from
+ * another, has none of it.
+ */
+const onCoreUp = (again: () => void) =>
+  useCore.subscribe((s, prev) => {
+    const pid = s.link.state === 'up' ? s.link.core?.pid : null;
+    const was = prev.link.state === 'up' ? prev.link.core?.pid : null;
+    if (pid != null && pid !== was) again();
+  });
+
 const samePath = (a: string, b: string) =>
   a.replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase() === b.replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase();
 
@@ -223,7 +236,7 @@ export function useAgentBridge() {
       spawn(req).catch(e => {
         logWarn('agents', `spawn for ${req.parentId} failed: ${String(e)}`);
         // The agent reads this as the tool's error: the message, not "Error: …".
-        void agentSpawned(req.requestId, null, null, e instanceof Error ? e.message : String(e));
+        agentSpawned(req.requestId, null, null, e instanceof Error ? e.message : String(e)).catch(() => {});
       });
     }).then(off => (dead ? off() : offs.push(off)));
     void onAgentDeleted(({ id }) => {
@@ -249,10 +262,22 @@ export function useAgentBridge() {
       const key = JSON.stringify([names, groups]);
       if (key === last) return;
       last = key;
-      void chatNames(names, groups);
+      // Not sent (the core not up yet, or gone): not known there either, so
+      // the next push must not take it for done.
+      chatNames(names, groups).catch(() => {
+        if (last === key) last = '';
+      });
     };
     push();
-    return useChats.subscribe(push);
+    const offChats = useChats.subscribe(push);
+    const offCore = onCoreUp(() => {
+      last = '';
+      push();
+    });
+    return () => {
+      offChats();
+      offCore();
+    };
   }, []);
 
   // `luna_list` gives agents each account's usage as the Accounts window
@@ -276,9 +301,19 @@ export function useAgentBridge() {
       const key = JSON.stringify(usage);
       if (key === last) return;
       last = key;
-      void accountUsage(usage);
+      accountUsage(usage).catch(() => {
+        if (last === key) last = '';
+      });
     };
     push();
-    return useAccounts.subscribe(push);
+    const offAccounts = useAccounts.subscribe(push);
+    const offCore = onCoreUp(() => {
+      last = '';
+      push();
+    });
+    return () => {
+      offAccounts();
+      offCore();
+    };
   }, []);
 }

@@ -398,10 +398,16 @@ fn shown(caller: &str, id: &str, turns_ended: u32, whole: bool) {
 /// `caller` has asked `id` something; the answer ends a turn past `baseline`.
 /// The dev caller has no terminal to be told in.
 fn owe(caller: &str, id: &str, baseline: u32) {
+    owe_from(caller, id, baseline, transcript_end(id));
+}
+
+/// The same with the answer read from `cursor` on: 0 for a session just
+/// spawned, whose whole transcript answers its opening prompt — however much
+/// of it the first turn has written by the time the spawn returns.
+fn owe_from(caller: &str, id: &str, baseline: u32, cursor: u64) {
     if caller == DEV_CALLER {
         return;
     }
-    let cursor = transcript_end(id);
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
     r.owed.insert((caller.to_string(), id.to_string()), Owed::from(baseline, cursor));
 }
@@ -1514,7 +1520,7 @@ pub fn spawn(caller: &str, mut params: SpawnParams) -> Result<Spawned, String> {
     let warnings = if screen.is_none() { warnings_of(&pty, &id) } else { Vec::new() };
     let same_folder = run_dir.map(|dir| neighbours_in(&dir, &[caller, &id])).unwrap_or_default();
     shown(caller, &id, 0, true);
-    owe(caller, &id, 0);
+    owe_from(caller, &id, 0, 0);
     let worktree = worktree_of(&pty, &id);
     Ok(Spawned { id, turns_ended: 0, settings, started, screen, ask, starting, warnings, same_folder, worktree })
 }
@@ -1702,7 +1708,7 @@ fn spawn_background(caller: &str, params: SpawnParams, account_path: String, in_
     });
     let same_folder = if own_worktree { Vec::new() } else { neighbours_in(&run_in, &[caller, &id]) };
     shown(caller, &id, 0, true);
-    owe(caller, &id, 0);
+    owe_from(caller, &id, 0, 0);
     // The CLI makes its worktree as the first turn starts: worth a few
     // seconds, so the caller need not go looking for it.
     let pty = crate::pty::manager();
@@ -1771,7 +1777,7 @@ pub fn agent_spawned(request_id: u64, chat_id: Option<String>, name: Option<Stri
         if let (Some((caller, _)), Some(id)) = (caller, chat_id) {
             crate::log::warn("agents", &format!("session {id} for {caller} came up after its spawn timed out"));
             shown(&caller, &id, 0, true);
-            owe(&caller, &id, 0);
+            owe_from(&caller, &id, 0, 0);
         }
         return;
     };
@@ -2787,8 +2793,15 @@ fn notifier() {
 /// `luna_sessions` calls the user's own chats and where it puts them, which
 /// the core otherwise knows only by id.
 #[tauri::command]
-pub fn chat_names(names: HashMap<String, String>, groups: Option<HashMap<String, u32>>) {
+pub fn chat_names(mut names: HashMap<String, String>, groups: Option<HashMap<String, u32>>) {
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    // A background helper has no row to be named by: it keeps the name it
+    // was spawned with (`set_name`) until the window runs it as a chat.
+    for (id, name) in &r.names {
+        if !names.contains_key(id) && r.known.get(id).is_some_and(|k| k.settings["background"] == true) {
+            names.insert(id.clone(), name.clone());
+        }
+    }
     r.names = names;
     if let Some(groups) = groups {
         r.groups = groups;

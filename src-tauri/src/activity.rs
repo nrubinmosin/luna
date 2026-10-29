@@ -498,89 +498,112 @@ fn combine(t: &mut Track, disk: Option<Turn>, now: u64) -> Turn {
 /// One pass over every live session, plus the background helpers as they
 /// stand (`helpers`), which keep no track here. Called by the sampler thread;
 /// public so a test can drive it with probes of its own.
+///
+/// The registry, rollouts, transcripts and process table are read outside
+/// the state lock: a hook is answered only once `on_hook` has had it, and
+/// Claude Code holds its turn until the hook's curl returns, so reads under
+/// the lock held up every busy session's next step for as long as they took.
 pub fn sample(probes: Vec<crate::pty::ActivityProbe>, helpers: Vec<SessionActivity>) -> Summary {
+    let reads: Vec<_> = probes
+        .iter()
+        .map(|p| (disk_turn(p), disk_turns_ended(p), procs::children(p.job.as_deref(), p.pid)))
+        .collect();
     let now = now_ms();
-    let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
-    let st = &mut *st;
-
-    let live: Vec<&str> = probes.iter().map(|p| p.id.as_str()).collect();
-    drop_gone(&mut st.tracks, &mut st.ended, &live);
 
     let mut sessions = Vec::with_capacity(probes.len());
-    for p in &probes {
-        let t = track(&mut st.tracks, &mut st.ended, &p.id);
+    // Per session, the children to name and whether to look behind its wait
+    // for an API error: both read once the lock is let go.
+    let mut later: Vec<(Vec<u32>, bool)> = Vec::with_capacity(probes.len());
+    {
+        let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
+        let st = &mut *st;
 
-        let (disk, disk_at) = disk_turn(p).map_or((None, None), |(d, at)| (Some(d), at));
-        // A registry that changed after the hook spoke is the later word: a
-        // prompt answered "No" ends the turn with no Stop, and the waiting
-        // the hook said would otherwise stand for STALE_WAIT_MS.
-        if disk == Some(Turn::Idle) && t.hook == Some(Turn::Waiting) && disk_at.is_some_and(|at| at > t.hook_at_ms) {
-            t.hook = Some(Turn::Idle);
-        }
-        let turn = combine(t, disk, now);
-        // Without a hook the start of a turn is seen at the sample after it
-        // happened; a child born in between is still the turn's.
-        if turn == Turn::Busy && t.first_turn_ms == 0 {
-            t.first_turn_ms = now.saturating_sub(TURN_SLACK_MS);
-        }
-        t.turn = turn;
+        let live: Vec<&str> = probes.iter().map(|p| p.id.as_str()).collect();
+        drop_gone(&mut st.tracks, &mut st.ended, &live);
 
-        let children = procs::children(p.job.as_deref(), p.pid);
-        t.procs = procs::without_furniture(procs::judge(
-            &t.prev,
-            &children,
-            t.first_turn_ms,
-            now.saturating_sub(STALE_CHILD_MS),
-            MIN_CPU_MS,
-        ));
-        t.prev = children;
-        if t.turn == Turn::Idle {
-            if now.saturating_sub(*t.idle_since_ms.get_or_insert(now)) >= LEFTOVER_MS {
-                t.procs = None;
+        for (p, (disk_read, disk_turns, children)) in probes.iter().zip(reads) {
+            let t = track(&mut st.tracks, &mut st.ended, &p.id);
+
+            let (disk, disk_at) = disk_read.map_or((None, None), |(d, at)| (Some(d), at));
+            // A registry that changed after the hook spoke is the later word: a
+            // prompt answered "No" ends the turn with no Stop, and the waiting
+            // the hook said would otherwise stand for STALE_WAIT_MS.
+            if disk == Some(Turn::Idle) && t.hook == Some(Turn::Waiting) && disk_at.is_some_and(|at| at > t.hook_at_ms) {
+                t.hook = Some(Turn::Idle);
             }
-        } else {
-            t.idle_since_ms = None;
+            let turn = combine(t, disk, now);
+            // Without a hook the start of a turn is seen at the sample after it
+            // happened; a child born in between is still the turn's.
+            if turn == Turn::Busy && t.first_turn_ms == 0 {
+                t.first_turn_ms = now.saturating_sub(TURN_SLACK_MS);
+            }
+            t.turn = turn;
+
+            t.procs = procs::without_furniture(procs::judge(
+                &t.prev,
+                &children,
+                t.first_turn_ms,
+                now.saturating_sub(STALE_CHILD_MS),
+                MIN_CPU_MS,
+            ));
+            t.prev = children;
+            if t.turn == Turn::Idle {
+                if now.saturating_sub(*t.idle_since_ms.get_or_insert(now)) >= LEFTOVER_MS {
+                    t.procs = None;
+                }
+            } else {
+                t.idle_since_ms = None;
+            }
+            t.output_fresh = now.saturating_sub(p.last_output_ms) < OUTPUT_FRESH_MS;
+
+            let pids: Vec<u32> = t
+                .procs
+                .as_ref()
+                .map(|b| b.active.iter().chain(b.young.iter()).copied().collect())
+                .unwrap_or_default();
+
+            // A turn "ends" for an agent when the model stops, not when its
+            // background jobs do: `wait` wants the reply, and the children are
+            // the machine's concern (power.rs), not the caller's.
+            let model_busy = t.turn == Turn::Busy;
+            // Codex: the rollout's count is the truth.
+            count_on(t, p.spawned_at_ms, disk_turns);
+            // Claude Code with hooks: `Stop` counts (on_hook). Without any hook
+            // heard, the transitions are all there is.
+            if disk_turns.is_none() && t.hook.is_none() && t.was_busy && !model_busy {
+                t.turns_ended += 1;
+            }
+            t.was_busy = model_busy;
+
+            let busy = model_busy || t.procs.is_some() || t.output_fresh;
+            // Only a waiting session is asked: the hook's word if one came, else
+            // the transcript's last line.
+            let waiting = t.turn == Turn::Waiting;
+            later.push((pids, waiting && t.failed.is_none()));
+            sessions.push(SessionActivity {
+                id: p.id.clone(),
+                turn: t.turn,
+                procs: Vec::new(),
+                output_fresh: t.output_fresh,
+                busy,
+                stalled: t.failed.filter(|_| waiting),
+                hook: t.hook,
+                disk: t.disk,
+                output_age_ms: now.saturating_sub(p.last_output_ms),
+            });
         }
-        t.output_fresh = now.saturating_sub(p.last_output_ms) < OUTPUT_FRESH_MS;
+    }
 
-        let pids: Vec<u32> = t
-            .procs
-            .as_ref()
-            .map(|b| b.active.iter().chain(b.young.iter()).copied().collect())
-            .unwrap_or_default();
-        let mut names: Vec<String> = procs::names(&pids).into_iter().map(|(_, n)| n).collect();
-        names.sort();
-        names.dedup();
-
-        // A turn "ends" for an agent when the model stops, not when its
-        // background jobs do: `wait` wants the reply, and the children are
-        // the machine's concern (power.rs), not the caller's.
-        let model_busy = t.turn == Turn::Busy;
-        let disk = disk_turns_ended(p);
-        // Codex: the rollout's count is the truth.
-        count_on(t, p.spawned_at_ms, disk);
-        // Claude Code with hooks: `Stop` counts (on_hook). Without any hook
-        // heard, the transitions are all there is.
-        if disk.is_none() && t.hook.is_none() && t.was_busy && !model_busy {
-            t.turns_ended += 1;
+    for ((s, p), (pids, ask)) in sessions.iter_mut().zip(&probes).zip(later) {
+        if !pids.is_empty() {
+            let mut names: Vec<String> = procs::names(&pids).into_iter().map(|(_, n)| n).collect();
+            names.sort();
+            names.dedup();
+            s.procs = names;
         }
-        t.was_busy = model_busy;
-
-        let busy = model_busy || t.procs.is_some() || t.output_fresh;
-        // Only a waiting session is asked: the hook's word if one came, else
-        // the transcript's last line.
-        let stalled = (t.turn == Turn::Waiting).then(|| t.failed.or_else(|| disk_api_error(p))).flatten();
-        sessions.push(SessionActivity {
-            id: p.id.clone(),
-            turn: t.turn,
-            procs: names,
-            output_fresh: t.output_fresh,
-            busy,
-            stalled,
-            hook: t.hook,
-            disk: t.disk,
-            output_age_ms: now.saturating_sub(p.last_output_ms),
-        });
+        if ask {
+            s.stalled = disk_api_error(p);
+        }
     }
 
     sessions.extend(helpers);
@@ -588,6 +611,8 @@ pub fn sample(probes: Vec<crate::pty::ActivityProbe>, helpers: Vec<SessionActivi
     let parked = |s: &&SessionActivity| !s.busy && s.turn == Turn::Waiting;
     let waiting = sessions.iter().filter(parked).filter(|s| s.stalled.is_none()).count();
     let stalled = sessions.iter().filter(parked).filter(|s| s.stalled.is_some()).count();
+    let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
+    let st = &mut *st;
     if busy == 0 && waiting == 0 {
         st.idle_since_ms.get_or_insert(now);
     } else {

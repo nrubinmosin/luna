@@ -117,10 +117,16 @@ function LookRow({ place, count, act }: { place: PlaceDto; count: number; act: (
 }
 
 /** A checkbox with no words beside it: the theme draws the box on a label. */
-function Tick({ id, checked, title, onChange }: { id: string; checked: boolean; title: string; onChange: (on: boolean) => void }) {
+function Tick({ id, checked, disabled, title, onChange }: {
+  id: string;
+  checked: boolean;
+  disabled: boolean;
+  title: string;
+  onChange: (on: boolean) => void;
+}) {
   return (
     <>
-      <input type="checkbox" id={id} checked={checked} onChange={e => onChange(e.target.checked)} />
+      <input type="checkbox" id={id} checked={checked} disabled={disabled} onChange={e => onChange(e.target.checked)} />
       <label htmlFor={id} title={title} style={{ display: 'inline-block', width: 0, height: 16, marginLeft: 18, verticalAlign: 'middle' }} />
     </>
   );
@@ -157,7 +163,9 @@ function LibraryDialog({ onClose }: { onClose: () => void }) {
   const me = useRef<HTMLDivElement>(null);
   const overview = useLibrary(s => s.overview);
   const error = useLibrary(s => s.error);
-  const [busy, setBusy] = useState(false);
+  // Commands still out: several can be, and the first back must not read as all done.
+  const [pending, setPending] = useState(0);
+  const busy = pending > 0;
   const [editing, setEditing] = useState<{ skill: string | null } | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [newName, setNewName] = useState('');
@@ -174,8 +182,8 @@ function LibraryDialog({ onClose }: { onClose: () => void }) {
   }, [onClose]);
 
   const act = (p: Promise<LibraryOverviewDto | null>) => {
-    setBusy(true);
-    void useLibrary.getState().run(p).finally(() => setBusy(false));
+    setPending(n => n + 1);
+    void useLibrary.getState().run(p).finally(() => setPending(n => n - 1));
   };
 
   if (!host) return null;
@@ -186,7 +194,7 @@ function LibraryDialog({ onClose }: { onClose: () => void }) {
   const createSkill = () => {
     const name = newName.trim();
     if (!name) return;
-    setBusy(true);
+    setPending(n => n + 1);
     void useLibrary
       .getState()
       .run(libraryNewSkill(name))
@@ -195,7 +203,7 @@ function LibraryDialog({ onClose }: { onClose: () => void }) {
         setNewName('');
         setEditing({ skill: name });
       })
-      .finally(() => setBusy(false));
+      .finally(() => setPending(n => n - 1));
   };
 
   const dialog = (
@@ -386,6 +394,9 @@ function LibraryDialog({ onClose }: { onClose: () => void }) {
                                   id={`lib-${s.name}-folder-${i}`}
                                   title={`${s.name} into ${f.path}`}
                                   checked={f.skills.includes(s.name)}
+                                  // A tick sends the folder's whole list: one made before the last
+                                  // answer is in would build on the list without the last tick.
+                                  disabled={busy}
                                   onChange={on => act(librarySetFolder(f.path, on ? [...f.skills, s.name] : f.skills.filter(n => n !== s.name)))}
                                 />
                                 <CellDot places={mine.filter(p => p.target.kind === 'folder' && p.target.path === f.path)} />

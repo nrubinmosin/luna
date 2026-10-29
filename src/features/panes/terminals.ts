@@ -110,6 +110,9 @@ interface Entry extends TermHandle {
   /** It had the keyboard when it was put down: moving a node out of the
    *  document blurs it, so the pane it lands in next hands it back. */
   refocus: boolean;
+  /** Its session ended, or never started: kept on screen to say so, but
+   *  showing it again has to start one rather than reattach to nothing. */
+  dead: boolean;
   dispose: () => void;
 }
 
@@ -156,7 +159,25 @@ function create(spec: TermSpec): Entry {
     scrollback: 1000,
     // Nudge unreadable theme-vs-content combinations without flattening colours.
     minimumContrastRatio: 3,
-    theme: themeFor(dark())
+    theme: themeFor(dark()),
+    // The CLIs print OSC 8 links. xterm's stock handler asks `confirm()`
+    // first, which the dialog plugin's init script turns into a
+    // `plugin:dialog|message` call this window has no permission for: it
+    // failed as an unhandled rejection, and the promise it handed back read
+    // as a yes regardless. Open the link the way the stock handler does,
+    // without the question.
+    linkHandler: {
+      activate: (_e, uri) => {
+        const opened = window.open();
+        if (!opened) return;
+        try {
+          opened.opener = null;
+        } catch {
+          // Cross-origin by now; there is nothing left to cut.
+        }
+        opened.location.href = uri;
+      }
+    }
   });
   const fit = new FitAddon();
   term.loadAddon(fit);
@@ -221,6 +242,7 @@ function create(spec: TermSpec): Entry {
     attached: false,
     idleAt: 0,
     refocus: false,
+    dead: false,
     wake: () => {},
     dispose: () => {}
   };
@@ -410,6 +432,7 @@ function create(spec: TermSpec): Entry {
     const un2 = await onPtyExit(p => {
       if (p.id === chatId) {
         sessionLive = false;
+        entry.dead = true;
         useChats.getState().setStatus(chatId, 'resting');
         term.write('\r\n\x1b[2m[session exited]\x1b[0m\r\n');
       }
@@ -467,6 +490,7 @@ function create(spec: TermSpec): Entry {
       // The ipc layer already logged the cause. Without this catch the
       // failure escaped the async block as an unhandled rejection and the
       // pane just sat empty with no explanation.
+      entry.dead = true;
       if (!disposed) {
         useChats.getState().setStatus(chatId, 'resting');
         const why = e instanceof Error ? e.message : String(e);
@@ -557,8 +581,9 @@ function sweepSoon() {
 export function acquire(spec: TermSpec): TermHandle {
   const found = live.get(spec.chat.id);
   // An account that arrived late — or changed — means the session was spawned
-  // against the wrong config, or not at all. That terminal is not reusable.
-  if (found && found.accountPath === spec.accountPath) {
+  // against the wrong config, or not at all. That terminal is not reusable,
+  // and nor is one whose session has gone.
+  if (found && found.accountPath === spec.accountPath && !found.dead) {
     found.idleAt = null;
     found.attached = true;
     return found;

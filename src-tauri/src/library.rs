@@ -303,7 +303,10 @@ fn write_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(".luna-tmp");
     let tmp = PathBuf::from(tmp);
-    std::fs::write(&tmp, bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+    std::fs::write(&tmp, bytes).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("{}: {e}", path.display())
+    })?;
     std::fs::rename(&tmp, path).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
         format!("{}: {e}", path.display())
@@ -520,8 +523,16 @@ fn pass(dirs: &Dirs, units: &[Unit], skipped: &[String], ledger: &mut Ledger, ac
         };
         let want = hashes(source);
         let write = |ledger: &mut Ledger| -> Result<(), String> {
-            write_at(&u.dest, u.file, source)?;
             keep_blobs(dirs, source);
+            if let Err(e) = write_at(&u.dest, u.file, source) {
+                // Stopped partway (a file there held open, say): what is there
+                // is still all Luna's, and noted as such it stays Luna's to
+                // finish next time instead of reading as changed by someone.
+                if let Ok(Some(now)) = read_at(&u.dest, u.file) {
+                    ledger.written.insert(key.clone(), hashes(&now));
+                }
+                return Err(e);
+            }
             ledger.written.insert(key.clone(), want.clone());
             Ok(())
         };
@@ -563,6 +574,9 @@ fn pass(dirs: &Dirs, units: &[Unit], skipped: &[String], ledger: &mut Ledger, ac
         for key in gone {
             let h = ledger.written.remove(&key).unwrap_or_default();
             let dest = PathBuf::from(&key);
+            if in_library(dirs, &dest) {
+                continue;
+            }
             match read_at(&dest, is_file(&h)) {
                 Ok(None) => {}
                 Ok(Some(have)) if hashes(&have) == h => {
@@ -584,17 +598,24 @@ fn units(dirs: &Dirs, lib: &crate::settings::LibrarySettings, accounts: &[Accoun
     let mut out = Vec::new();
     let account = |a: &AccountInfo| Target::Account { provider: a.provider, name: a.name.clone() };
     if !lib.instructions.is_empty() {
-        if let Ok(text) = std::fs::read(dirs.instructions()) {
-            if !String::from_utf8_lossy(&text).trim().is_empty() {
-                for a in accounts.iter().filter(|a| reaches(&lib.instructions, a)) {
-                    out.push(Unit {
-                        dest: Path::new(&a.path).join(instructions_name(a.provider)),
-                        file: true,
-                        skill: None,
-                        target: account(a),
-                        source: Ok(Files::from([(String::new(), text.clone())])),
-                    });
-                }
+        // No file is no instructions; one that will not read (held open
+        // mid-save, say) is a failure like a broken skill's, and takes none of
+        // its copies out.
+        let source = match std::fs::read(dirs.instructions()) {
+            Ok(text) if String::from_utf8_lossy(&text).trim().is_empty() => None,
+            Ok(text) => Some(Ok(Files::from([(String::new(), text)]))),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => Some(Err(format!("{}: {e}", dirs.instructions().display()))),
+        };
+        if let Some(source) = source {
+            for a in accounts.iter().filter(|a| reaches(&lib.instructions, a)) {
+                out.push(Unit {
+                    dest: Path::new(&a.path).join(instructions_name(a.provider)),
+                    file: true,
+                    skill: None,
+                    target: account(a),
+                    source: source.clone(),
+                });
             }
         }
     }
@@ -623,7 +644,36 @@ fn units(dirs: &Dirs, lib: &crate::settings::LibrarySettings, accounts: &[Accoun
             });
         }
     }
+    for u in &mut out {
+        if in_library(dirs, &u.dest) {
+            u.source = Err(format!("{} is in the library itself", u.dest.display()));
+        }
+    }
     out
+}
+
+/// Whether `a` is `b` or inside it, slashes and a trailing separator aside,
+/// and case where the file system ignores it.
+fn within(a: &Path, b: &Path) -> bool {
+    let key = |p: &Path| {
+        let s = p.to_string_lossy().replace('\\', "/").trim_end_matches('/').to_string();
+        if cfg!(windows) {
+            s.to_lowercase()
+        } else {
+            s
+        }
+    };
+    let (a, b) = (key(a), key(b));
+    a == b || a.strip_prefix(&b).is_some_and(|rest| rest.starts_with('/'))
+}
+
+/// A destination in the library's skills (a library pointed at an account
+/// folder, which has its `skills/` where the library does; a folder named
+/// inside the library), or one holding the library: its copy would be the
+/// source itself, adopted as Luna's and taken out — the library's only one —
+/// the day it is no longer wanted there.
+fn in_library(dirs: &Dirs, dest: &Path) -> bool {
+    within(dest, &dirs.skills()) || within(&dirs.root, dest)
 }
 
 // --------------------------------------------------------------- overview --
@@ -845,6 +895,9 @@ pub fn library_resolve(dest: String, take: bool) -> Result<Overview, String> {
     let dirs = Dirs::current();
     let (from, file, skill) = locate(&dirs, &dest)?;
     let to = PathBuf::from(&dest);
+    if in_library(&dirs, &to) {
+        return Err(format!("{dest} is in the library itself"));
+    }
     let mut ledger = Ledger::load(&dirs);
     let there = read_at(&to, file)?;
     let library = read_at(&from, file)?;

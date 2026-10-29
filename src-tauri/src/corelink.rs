@@ -14,7 +14,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::io::{self, Write};
 use std::net::TcpStream;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -34,9 +34,11 @@ pub struct LinkState {
 }
 
 /// The connection in use: its writing end and the requests waiting on it.
+/// `pending` is None once the connection has ended: a request let in after
+/// the last of them heard so would wait for an answer nothing can bring.
 struct Conn {
     writer: Mutex<TcpStream>,
-    pending: Mutex<HashMap<u64, Sender<Result<Value, String>>>>,
+    pending: Mutex<Option<HashMap<u64, Sender<Result<Value, String>>>>>,
 }
 
 static CURRENT: Mutex<Option<Arc<Conn>>> = Mutex::new(None);
@@ -69,7 +71,7 @@ fn connect() {
                 set(LinkState { state: "down", core: None, error: Some("cannot use the connection".into()) });
                 return;
             };
-            let conn = Arc::new(Conn { writer: Mutex::new(writer), pending: Mutex::new(HashMap::new()) });
+            let conn = Arc::new(Conn { writer: Mutex::new(writer), pending: Mutex::new(Some(HashMap::new())) });
             *CURRENT.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::clone(&conn));
             set(LinkState { state: "up", core: Some(core), error: None });
             hold(stream, conn, generation);
@@ -103,7 +105,9 @@ fn hold(mut stream: TcpStream, conn: Arc<Conn>, generation: u64) {
             }
             ipc::RES => {
                 let Ok(res) = serde_json::from_slice::<Res>(&payload) else { continue };
-                let waiting = conn.pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&res.id);
+                let mut pending = conn.pending.lock().unwrap_or_else(|e| e.into_inner());
+                let waiting = pending.as_mut().and_then(|p| p.remove(&res.id));
+                drop(pending);
                 if let Some(tx) = waiting {
                     let _ = tx.send(match res.err {
                         Some(err) => Err(err),
@@ -115,7 +119,8 @@ fn hold(mut stream: TcpStream, conn: Arc<Conn>, generation: u64) {
         }
     }
     // Whoever is still waiting hears it now rather than never.
-    for (_, tx) in conn.pending.lock().unwrap_or_else(|e| e.into_inner()).drain() {
+    let waiting = conn.pending.lock().unwrap_or_else(|e| e.into_inner()).take();
+    for (_, tx) in waiting.into_iter().flatten() {
         let _ = tx.send(Err("the core stopped".into()));
     }
     if GENERATION.load(Ordering::SeqCst) == generation {
@@ -133,7 +138,9 @@ enum Attached {
 
 /// The running core of this build, started if need be.
 fn attach() -> Result<Attached, String> {
-    if let Some(found) = discover() {
+    // A core.json whose core is gone — the PC went down under it — is not
+    // tried: a connect to its closed port takes Windows seconds to refuse.
+    if let Some(found) = discover().filter(|d| crate::procs::alive(d.pid)) {
         match hello(&found, "ui") {
             Ok((stream, core)) if core.fingerprint == env!("LUNA_CORE_FP") => return Ok(Attached::Ours(stream, core)),
             Ok((_, core)) if core.sessions > 0 => return Ok(Attached::Foreign(core)),
@@ -141,7 +148,7 @@ fn attach() -> Result<Attached, String> {
                 crate::log::warn("core", &format!("the running core is build {} (core {}); replacing it", core.build, core.fingerprint));
                 stop(stream, found.pid);
             }
-            // A core.json left by a core that is gone; a new one overwrites it.
+            // A core that does not answer; a new one overwrites its core.json.
             Err(_) => {}
         }
     }
@@ -218,11 +225,16 @@ fn request(cmd: String, args: Value) -> Result<Value, String> {
         std::thread::sleep(Duration::from_millis(50));
     };
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-    let (tx, rx) = channel();
-    conn.pending.lock().unwrap_or_else(|e| e.into_inner()).insert(id, tx);
     let frame = ipc::encode(ipc::REQ, &Req { id, cmd, args }).map_err(|e| e.to_string())?;
+    let (tx, rx) = channel();
+    match conn.pending.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+        Some(pending) => pending.insert(id, tx),
+        None => return Err("the core stopped".into()),
+    };
     if let Err(e) = write(&conn, &frame) {
-        conn.pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+        if let Some(pending) = conn.pending.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+            pending.remove(&id);
+        }
         return Err(format!("the core is not reachable: {e}"));
     }
     rx.recv().unwrap_or_else(|_| Err("the core stopped".into()))
@@ -300,7 +312,7 @@ pub fn shut_down() {
     // or the page.
     GENERATION.fetch_add(1, Ordering::SeqCst);
     *CURRENT.lock().unwrap_or_else(|e| e.into_inner()) = None;
-    if let Some(found) = discover() {
+    if let Some(found) = discover().filter(|d| crate::procs::alive(d.pid)) {
         if let Ok((stream, _)) = hello(&found, "ctl") {
             stop(stream, found.pid);
         }
@@ -316,11 +328,18 @@ pub fn core_state() -> LinkState {
 /// in the new one — and starts one of this build.
 #[tauri::command]
 pub fn core_restart() {
+    // One at a time: two restarts racing would both say hello to the new core
+    // as `ui`, and every event would reach the page twice.
+    static RESTARTING: AtomicBool = AtomicBool::new(false);
+    if RESTARTING.swap(true, Ordering::SeqCst) {
+        return;
+    }
     std::thread::spawn(|| {
         // The page's calls wait for the new core rather than fail meanwhile.
         set(LinkState { state: "starting", ..Default::default() });
         shut_down();
         connect();
+        RESTARTING.store(false, Ordering::SeqCst);
     });
 }
 
