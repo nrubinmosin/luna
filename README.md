@@ -211,7 +211,7 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   The rest of the file, comments included, stays.
 - An account can be renamed in place (the pencil beside its name): the folder is renamed
   and every chat on it, the agents' list and the settings parent follow — not while a
-  chat on it is running. Its settings file opens in an editor too (`settings.json` for
+  chat or a background helper on it is running. Its settings file opens in an editor too (`settings.json` for
   Claude Code, `config.toml` for Codex; also from the recommended settings), with syntax
   colours and line numbers. It is checked as it is typed — the line that breaks it is
   marked — written only once it parses, and laid out on save the way the CLI writes it
@@ -255,14 +255,16 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   now, and looked at again whenever the window comes back to the front, so a copy edited in
   another program is noticed then. A skill whose `SKILL.md` does not do (no front matter, a
   name other than its folder's) is laid out nowhere until it does, and its copies stay as they
-  were. A Codex account with an `AGENTS.override.md` reads that instead of `AGENTS.md`; the
+  were; so do those of a library that will not read for a moment (a file held open mid-save).
+  Paths are compared as the system compares them — on Windows regardless of case — so an
+  account renamed in case only keeps its copies. A Codex account with an `AGENTS.override.md` reads that instead of `AGENTS.md`; the
   window says so.
 
 ## Sessions and cleanup
 
 - Closing the window hides the app to the tray and leaves the sessions running. Quit from
   the tray menu ends all of Luna: every session is asked to quit as deleting a chat would,
-  then the core and the window go. A core that has not gone 30 seconds later is killed
+  a background helper's turn is stopped, then the core and the window go. A core that has not gone 30 seconds later is killed
   along with everything it started.
 - **Restart window** in the tray menu starts only the window over, for when the page
   goes wrong (terminals drawing garbage, say): the core and its sessions keep running,
@@ -274,9 +276,9 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   no chat in them, by folder and by CLI, with a count on the button when there are any.
   Each is looked inside first: the clean ones start ticked, the ones holding uncommitted
   files or commits on no other branch say so. Delete them one by one or all ticked at
-  once; nothing a live session sits in is ever deleted.
+  once; nothing a live session or a background helper sits in is ever deleted.
 - Deleting a chat takes its worktree, and the branch Claude Code made for it,
-  along by default; the checkbox can be unticked per chat, and where it
+  along by default, unless another chat or helper still works in it; the checkbox can be unticked per chat, and where it
   starts is set in Settings.
 - Warnings and errors from both halves of the app land in `luna.log`, next to the exe, or
   under `%LOCALAPPDATA%\luna` when that folder is not writable. Info-level chatter never
@@ -288,7 +290,8 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   the CLIs carry on, background work and all, and the next window reattaches to them. The
   hooks' listener, the agents' MCP server, activity and power run there too, so an agent's
   `luna_wait` keeps working with no window open. Settings → Versions shows the core and can
-  restart it; it leaves by itself once it has had no window and no session for ten minutes.
+  restart it; it leaves by itself once it has had no window and no session (a background
+  helper in a turn counts as one) for ten minutes.
   If the core itself stops, the sessions in it end: a banner over the board says so, and
   Restart the core brings the chats back from their transcripts. It is never restarted
   behind your back.
@@ -348,7 +351,8 @@ background helper spawned without tools.
   draft in; the agent is told to try later. At most eight helpers under
   one chat, and a helper's helpers get no tools of their own.
 - Every account is available to agents unless you switch it off with the robot button on
-  its row in the Accounts window. `luna_list` names the ones that are, so you can tell a chat which one to use,
+  its row in the Accounts window. `luna_list` names the ones that are, so you can tell a chat which one to use
+  (the account alone is enough: it brings its own CLI),
   and gives each its models, the settings a helper would get there (model, effort, permission mode —
   read from the account's and the project's settings the way the new-chat dialog reads
   them) and its usage as the Accounts window shows it: percent per window and when it resets.
@@ -362,7 +366,8 @@ background helper spawned without tools.
   idle for 30 minutes; the agent reading it or writing to it starts that over, and `luna_list`
   shows the minutes left (`deletesInMin`). It is on for background helpers unless the spawn says
   `autoDelete: false`, off for visible ones unless it says `true`. A helper stopped with
-  `luna_kill` is never auto-deleted: its conversation stays for `luna_send` to go on with. One
+  `luna_kill` is never auto-deleted: a background one's conversation stays for `luna_send` to
+  go on with, a visible one is not running until you resume it. One
   you have typed into is yours and stays; a worktree it made stays too, with its work.
 - `luna_send` with `interrupt: true` cuts short the turn the session is on, and any prompt it
   is stopped at — Esc in a terminal, the process stopped for a background helper — and the text
@@ -371,12 +376,15 @@ background helper spawned without tools.
   account, settings, the start of the prompt — and how it ended, so `luna_sessions` with
   `history: true` can show what ran before, deleted helpers included, and a run can be repeated as it was.
   A deleted helper leaves its transcript path (the whole prompt is there), its worktree and its
-  last message.
+  last message, of which `history` gives the first 400 characters.
 - Deleting a parent by hand leaves its helpers as orphans, marked ↳ at the top level,
   unless you tick the box to take them along. Helpers deleted by their agent are gone for
   good, transcript aside.
-- `luna_read` reads the transcript, not the screen; `luna_wait` returns the reply itself,
-  for an agent that needs it in the same turn. Otherwise the agent spawns and ends its turn,
+- `luna_read` reads the transcript, not the screen; `luna_wait` returns the reply itself —
+  everything the helper said since it was asked, the report first — for an agent that needs
+  it in the same turn (past 60,000 characters either is cut: `luna_read` says how many
+  messages it left out, `leftOut`, and goes on from its cursor; `luna_wait` names a file with
+  the whole answer). Otherwise the agent spawns and ends its turn,
   and the answer comes to it:
 - An agent that asked something and ended its turn without waiting is not left idle: once
   the answer comes — or the helper asks something, stops on a permission prompt, or exits — Luna types a
@@ -385,12 +393,16 @@ background helper spawned without tools.
   sits unsent in it (a minute's hold on a draft is announced on the desktop instead). A
   `luna_wait` still out for that answer — Claude Code moves a call past two minutes to the
   background — hands it over instead, and the notice follows only if the wait has not done
-  so within 10 seconds.
+  so within 10 seconds. A wait the agent's CLI cancels or interrupts hands nothing over,
+  and the notice comes as usual. Text sent to a visible session mid-turn may join that turn
+  or start the next one, so Luna gives the CLI 8 seconds after a turn ends to start another
+  before it takes that turn as the answer.
 - The notice is one short line: what happened, how many messages the helper wrote since it
   was asked, and a file with all of them — the report (the longest message) first, then the
   last one, then the rest — so a closing "that was a stale wakeup, nothing changed" does not
-  hide the report before it. A `luna_read` while the helper is still at work
-  does not count as having collected the answer: the notice still comes when it is done.
+  hide the report before it. A `luna_read` collects the answer only when it returns all of
+  it, uncut, and the helper is done: one while it is still at work, or one with only the
+  last message of several, does not count, and the notice still comes.
 
 ## Power
 

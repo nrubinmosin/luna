@@ -83,7 +83,9 @@ src-tauri/src/
                 a Codex account gets a seed config.toml on creation
   settings.rs   <data>/settings.json: accountsRoot (default Documents/luna-accounts),
                 changed in Settings; written under settings.json.lock re-reading the file,
-                the cache is checked against mtime — more than one process may write the file
+                the cache is checked against mtime — more than one process may write the file;
+                a file that will not read or parse is an error, never the defaults: the cache
+                keeps what it read last and a write refuses
   emit.rs       the only door for events into the UI: the receiver is set once (the window in setup),
                 sending code does not hold an AppHandle; pty::manager() — the process's only
                 PtyManager, also without Tauri State
@@ -131,12 +133,15 @@ src-tauri/src/
     limits.rs   OAuth usage + CLI cache (.claude.json); 5h, week and each weekly_scoped
     oauth.rs    refreshes an expired access token the same way the CLI does (its locks, CAS)
     models.rs   context windows from the Models API
-    trust.rs    hasTrustDialogAccepted in .claude.json
+    trust.rs    hasTrustDialogAccepted in .claude.json; a file that will not read or parse is
+                read again and then an error, never taken as empty and written back
     session.rs  registry <config>/sessions/<pid>.json + transcript projects/<cwd>/<sid>.jsonl:
                 context, CLI title (custom-title / ai-title), first prompt
   codex/
     cli.rs      Source: GitHub Releases openai/codex, rust-v<ver>, package tarball + SHA256SUMS
-    config.rs   config.toml via toml_edit (comments and formatting kept), seed
+    config.rs   config.toml via toml_edit (comments and formatting kept), seed; a read for a
+                write looks again at a file caught blank, cut short or held open, and one that
+                will not parse is an error, never an empty document written back
     models.rs   model catalogue, sorted by priority, with per-level descriptions
                 (effort_hints): the account's models_cache.json → another Codex account's →
                 `codex debug models` → `codex debug models --bundled`; models_known — without
@@ -164,7 +169,10 @@ src-tauri/src/
                 key, platform-aware; apply_recommended adds and removes keys), sync from the
                 parent account, and hand editing of the file (check_account_config: problems
                 with line/column; format_account_config: JSON pretty with 2 spaces, TOML via
-                taplo, comments and key order kept; only what parses is written)
+                taplo, comments and key order kept; only what parses is written). settings.json
+                and .claude.json, which the CLI rewrites in place, are read again when caught
+                half-written or held open; one that still will not parse is an error, not an
+                empty object written back
   library.rs    the user's skills and instructions: a library folder (`<data>/library` or one of
                 the user's) with `instructions.md` and `skills/<name>/SKILL.md`, laid out into the
                 accounts each is meant for — a reach of `all`, `claude`/`codex` or `provider/name`
@@ -174,7 +182,8 @@ src-tauri/src/
   watchdog.rs   a window whose page stopped responding (WebView2 died) is rebuilt
   coreproc.rs   the core: the same exe with `--core`, no window; one per data dir (core.lock), listens on
                 127.0.0.1 with a token from <data>/core/core.json, exits by itself after 10 minutes with no
-                window and no sessions; on Windows it runs from a copy of the exe <data>/core/<fingerprint>/,
+                window and no sessions (a background helper in a turn is one, in the welcome's count too);
+                leaving, it stops every helper's turn with its process tree (`background::stop_all`); on Windows it runs from a copy of the exe <data>/core/<fingerprint>/,
                 so the installer can replace luna.exe. pty, hub, agents/mcp, activity and power
                 live here; events go to all windows through a per-window queue (a window that falls
                 behind is disconnected, the pty does not wait for it)
@@ -182,7 +191,8 @@ src-tauri/src/
                 (core_call / core_send for input), here they map by name onto the same functions
   corelink.rs   the window side: find the core of its own build or start it, hello, hold the connection
                 (its loss = the core died → banner, Restart); a core of another build with no sessions
-                is replaced at once, one with sessions — only on a button; core events → webview
+                is replaced at once, one with sessions — only on a button; a core.json whose pid is
+                dead is skipped without connecting; restarts run one at a time; core events → webview
   ipc.rs        frames `u32 len | u8 kind | JSON` (REQ/RES/EVENT/SEND), hello/welcome,
                 discovery file, token
   lifecycle.rs  why Luna stopped: its own exits with a reason, the `--watch-exit
@@ -272,7 +282,10 @@ src-tauri/src/
   orphan sweep (the title bar's Worktrees window, every folder at once) scans each account's `worktrees/` as well as the project's. Removing a Codex worktree also
   removes its bucket dir once empty; only `worktree-*` branches are ever deleted (Codex's checkouts have
   none). Where a session actually works is `pty::ActivityProbe::working_dir()` (Claude registry / Codex
-  rollout); delete, `worktree_in_use_by_others`, `live_cwds` and `agents::caller_worktree` go by it.
+  rollout); delete, `worktree_shared`, `live_cwds` and `agents::caller_worktree` go by it. A background
+  helper has no pty to probe: `background::working_dirs` gives the folder it was sent to and the worktree
+  it made, between turns too, and `worktree_shared`, `live_cwds` (the orphan sweep) and `account_in_use`
+  (account rename) count it as they count a running session.
   `fetch_origin` (Settings "Fetch origin before Claude Code makes a worktree") applies only to Claude Code: Codex checks out the commit the folder is on, which no fetch moves, and Luna never moves the user's own checkout.
 - **Scrollback in Rust.** The output buffer (2MB cap) lives in the core, so that moving a chat between panes
   or recreating the xterm restores the screen (`ensure_session` returns the backlog).
@@ -375,9 +388,15 @@ src-tauri/src/
   makes the worktree, and that can take minutes. The prompt meanwhile sits in the CLI's arguments, and anything typed into the pty
   would be lost, so `send` to such a session refuses. `read` and `wait` on timeout also return `starting`. `read` —
   from Claude's transcript (user/assistant, without tool_result) or Codex's rollout (`response_item`
-  message user/assistant) with a byte cursor (whole lines only); `wait(turn_done)` counts busy→idle transitions in
+  message user/assistant) with a byte cursor (whole lines only); a result is held to 60,000 characters
+  (`MAX_TEXT`; Claude Code cuts an MCP result past 25,000 tokens): read on from `since`, it keeps the
+  oldest messages that fit and puts the cursor back where they end, with `last` the newest; `leftOut`
+  counts the rest, and one message past the cap is cut with a pointer to the transcript.
+  `wait(turn_done)` counts busy→idle transitions in
   `activity.rs` (`turns_ended`; the count grows across respawn/resume too — for Codex only turns after
-  the process spawned are taken from the rollout) and returns the last answer, so `read` is not needed.
+  the process spawned are taken from the rollout) and returns everything the session said past the
+  debt's transcript offset (below), report first as in the notice's file (`reply_of`) — past `MAX_TEXT`
+  cut, with that file named — so `read` is not needed.
   After Enter, `send` waits up to 12 s for a turn to begin and also answers `started`/`screen`. `screen` is
   the pty scrollback run through a terminal emulator (`vt100`) at the pty's size: the last
   40 lines of what a person sees in the pane — a popup, an error, a question, which the transcript does
@@ -394,15 +413,21 @@ src-tauri/src/
   (`agents::caller_worktree`, both providers). Deleting a child via `delete` removes its worktree if asked — `remove -f -f`,
   because Claude Code locks its worktree and a killed one does not release the lock; the worktree is where the
   session actually works (`working_dir`), and the project for the removal is derived from the path
-  (`worktree::project_of`).
+  (`worktree::project_of`); a worktree another session or background helper works in stays
+  (`worktree_shared`), whether the one deleted is a chat or a background helper.
   **A helper does not report on itself** — unlike a subagent, its answer sits in its
   transcript until someone calls `wait`/`read`. So `spawn` and `send` record a debt
-  (`owed`: caller, session, `turnsEnded` at the time of the question, and where the transcript ended then),
-  and a `wait` that handed over a turn past it clears the debt; a `read` clears it only if the session is idle
-  with nothing of its own still running — a read mid-work had seen a turn on the way (a background helper's
+  (`owed`: caller, session, `turnsEnded` at the time of the question, and where the transcript ended then —
+  0 for a spawn, whose whole transcript answers the opening prompt),
+  and a `wait` that handed over a turn past it clears the debt (a timeout hands nothing over); a `read`
+  clears it only if it returned everything past that offset, uncut (not a `last` that left some out, not
+  a result `MAX_TEXT` cut), and the session is idle with nothing of its own still running — a read mid-work had seen a turn on the way (a background helper's
   turn that ended on a job, the turn before a queued `send`), and once it cleared the debt the real answer
   went unannounced and the helper was auto-deleted unread. A `send` to a background helper mid-turn owes the
-  turn after the running one: the queue starts it the moment that one ends. A notifier thread looks at debts every 2 s and, when the caller is between turns
+  turn after the running one: the queue starts it the moment that one ends. Text typed into a visible
+  session mid-turn is the CLI's to place — into the running turn or a turn right after it — so for such
+  a debt (`queued`) a turn end counts as the answer only once no turn has begun 8 s later
+  (`QUEUED_GRACE_MS`), for `wait` and the notice alike. A notifier thread looks at debts every 2 s and, when the caller is between turns
   on two looks in a row (`Idle`, not starting, the person has not typed into it for 20 s and left no
   unsent draft), types
   one line to it `[Luna notice, not typed by the user] …` with Enter — just like `send`: the helper
@@ -431,7 +456,11 @@ src-tauri/src/
   a terminal does not get them. While the caller's `wait` on that session is still running (`waits`), that
   `wait` delivers the answer: Claude Code moves an MCP call longer than 120 s to the background, but keeps the request, and the result
   arrives as a task-notification. A notification for such a pair waits, and if the `wait` has still not delivered
-  the answer 10 s after it appeared (the client dropped the call), it goes out by itself.
+  the answer 10 s after it appeared (the client dropped the call), it goes out by itself. A `wait` its
+  caller lets go hands nothing over and leaves the debt for the notice: a `notifications/cancelled` for its
+  request (`mcp.rs` keeps a flag per call in flight; a cancelled request gets no response), the caller's
+  session gone, or — a Codex caller, held in the call for as long as it lasts — the turn that made the call
+  over (an interrupt) with no other begun (`let_go`).
   **What `spawn` says beyond the flags.** An unknown slash command: Claude Code writes `Unknown
   command: /x` and starts no turn — `await_start` sees the line on screen and answers `started:
   false` at once, not after 30 s. `warnings` — screen lines with ⚠ (a model forbidden by the
@@ -448,7 +477,8 @@ src-tauri/src/
   `auto-deleted`. Any `read`/`wait`/`send` on it (`shown`) starts the 30 min over, and `list` shows what is left
   (`deletesInMin`). If the person ever typed into it (`typed_ago_ms`), or an agent `kill`ed it, Luna leaves it
   alone. Before any delete of a spawned session `remove` writes a `left` line to `agents.jsonl` — transcript
-  path, worktree, last message — which `history` folds into the run.
+  path, worktree, last message — which `history` folds into the run, the last message cut to 400
+  characters (`HISTORY_LAST` in mcp.rs: thirty runs at length overrun one result).
   **ConPTY and the cursor.** portable-pty opens ConPTY with `INHERIT_CURSOR`: until the terminal answers
   `ESC[6n` ConPTY lets out not a byte of the CLI's output. For a chat in a pane xterm answered, for a helper
   without a pane — nobody, and it hung on an empty screen until it was opened (`starting` for minutes).
@@ -481,7 +511,12 @@ src-tauri/src/
   thread id the first turn printed — with the prompt on stdin (no command-line limit) and stdout
   parsed into a log of what it did (`luna_read(screen)` shows that in place of a screen); the
   conversation lands in the CLI's own transcript / rollout as with any session. Busy is the process
-  running; `send` during a turn queues the text for the next. A Claude Code helper always gets Luna's
+  running; `send` during a turn queues the text for the next, and a turn about to start takes the
+  helper's run under the same lock that found it free (`claim`), so text arriving before the process
+  is up queues rather than starting a second one. On Unix each turn's process leads a process group
+  of its own, as a pty's CLI does, so `kill_tree` takes the turn whole. The core stops every turn
+  as it leaves (`stop_all`, and no turn starts after), and `stop_all_sessions` before an update stops
+  them too (`stop_turns`): a turn still running would keep the old core from being replaced. A Claude Code helper always gets Luna's
   MCP server, if only for `--permission-prompt-tool mcp__luna__luna_permission` (hidden from its
   model by `--disallowedTools`): its permission prompts and `AskUserQuestion` arrive as that call,
   held on a Condvar until `luna_answer` (allow / deny with the input back, or `answers` by question
@@ -546,8 +581,15 @@ src-tauri/src/
   entry no longer wanted is deleted only while what is there still hashes to it; otherwise it
   is left and reported as kept. A skill whose SKILL.md does not do (front matter with this
   `name` and a `description`, the checks both CLIs make) is `failed` — its copies stay, so a
-  draft mid-edit takes nothing out — and a library folder that is not there wants nothing and
-  touches nothing. A link at a destination, or inside it, is never followed or written over.
+  draft mid-edit takes nothing out — and so is every unit fed by a `skills/` that will not list
+  or an `instructions.md` that will not read (held open mid-save): read as empty, they would
+  take their copies out. A library folder that is not there wants nothing and touches nothing.
+  Paths are compared as the file system tells them apart (`ident`: on Windows either slash and
+  any case), so an account renamed in case only keeps its copies and ledger entries. A
+  destination inside the library's `skills/` (a library pointed at an account folder, a folder
+  named inside it) or one holding the library is `failed`: it is the source itself, never
+  written, adopted or removed. Luna writes through temp files `<file>.<pid>-<n>.luna-tmp`,
+  which are no part of a skill or a copy. A link at a destination, or inside it, is never followed or written over.
   Passes run when the window starts, after every change made in the window and on Sync now,
   one at a time under a lock; the window reads the overview (no writes) on every focus. The
   instructions are one file for both CLIs; a Codex account's `AGENTS.override.md`, which

@@ -183,7 +183,7 @@ function LibraryDialog({ onClose }: { onClose: () => void }) {
 
   const act = (p: Promise<LibraryOverviewDto | null>) => {
     setPending(n => n + 1);
-    void useLibrary.getState().run(p).finally(() => setPending(n => n - 1));
+    return useLibrary.getState().run(p).finally(() => setPending(n => n - 1));
   };
 
   if (!host) return null;
@@ -252,7 +252,7 @@ function LibraryDialog({ onClose }: { onClose: () => void }) {
                   <button className="slim" onClick={() => void libraryOpen(null)} title="Open the library's folder — for files beside a skill's SKILL.md">
                     Open
                   </button>
-                  <button className="slim" onClick={() => void pickFolder().then(p => p && act(librarySetSource(p)))}>
+                  <button className="slim" onClick={() => void pickFolder().then(p => { if (p) void act(librarySetSource(p)); })}>
                     Change…
                   </button>
                   <button className="slim" disabled={o.isDefault} title="Back to the library in Luna's own folder" onClick={() => act(librarySetSource(''))}>

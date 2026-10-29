@@ -113,7 +113,7 @@ pub fn rename_account(
     let dest = rename_in(&root, &name, &to)?;
 
     let (old_key, new_key) = (format!("{}/{name}", provider.as_str()), format!("{}/{to}", provider.as_str()));
-    crate::settings::update(|s| {
+    let moved = crate::settings::update(|s| {
         for k in s.agent_blocked_accounts.iter_mut().filter(|k| **k == old_key) {
             *k = new_key.clone();
         }
@@ -125,7 +125,15 @@ pub fn rename_account(
             *parent = Some(to.clone());
         }
         crate::library::rename_account(&mut s.library, &old_key, Some(&new_key));
-    })?;
+    });
+    // Settings that cannot be written leave the chats on the old name: the
+    // folder goes back under it rather than leave them pointing at nothing.
+    if let Err(e) = moved {
+        if let Err(back) = std::fs::rename(&dest, root.join(&name)) {
+            crate::log::warn("accounts", &format!("could not move {} back to {name}: {back}", dest.display()));
+        }
+        return Err(e);
+    }
     crate::log::info("accounts", &format!("renamed {old_key} to {new_key}"));
     Ok(AccountInfo { provider, name: to, path: dest.to_string_lossy().into_owned() })
 }

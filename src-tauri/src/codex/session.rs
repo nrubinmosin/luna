@@ -204,8 +204,29 @@ fn tracked(live: &Live) -> Option<Scan> {
     if entry.path != path {
         *entry = TurnCount { path: path.clone(), offset: 0, scan: Scan::default() };
     }
-    entry.offset = scan_rollout(&path, entry.offset, live.spawned_at_ms as i64, &mut entry.scan);
+    let since = live.spawned_at_ms as i64;
+    if past_end(&path, entry.offset) {
+        // Cut short or written anew under the same name: what was read of it
+        // no longer lines up, so it is read again from the top. The count
+        // goes on from the higher of the two. Started over lower, it would
+        // sit under the count `activity` already gave out (which only grows)
+        // until it caught up, and a wait for the next turn would not wake;
+        // added on top, turns the new file holds that were counted already
+        // would count twice and wake one early.
+        let mut scan = Scan::default();
+        let offset = scan_rollout(&path, 0, since, &mut scan);
+        scan.completed = scan.completed.max(entry.scan.completed);
+        *entry = TurnCount { path: path.clone(), offset, scan };
+    } else {
+        entry.offset = scan_rollout(&path, entry.offset, since, &mut entry.scan);
+    }
     Some(entry.scan.clone())
+}
+
+/// Whether `offset` lies past the end of the file: a cursor into one since
+/// cut short or written anew.
+fn past_end(path: &Path, offset: u64) -> bool {
+    std::fs::metadata(path).is_ok_and(|m| offset > m.len())
 }
 
 /// How many turns this process of the session has finished, per its rollout:
@@ -589,23 +610,31 @@ pub fn meta(live: &Live) -> Option<SessionMeta> {
 }
 
 /// The newest rate-limit snapshot any rollout of this account recorded in the
-/// last couple of days, with the line's timestamp. Looked for in the files
-/// written to last first: a name carries when the thread started, and a chat
-/// started yesterday that is still running has newer numbers than a helper
-/// that started and ended an hour ago.
+/// last couple of days, with the line's timestamp. Newest by that timestamp:
+/// a name carries when the thread started, and the file written to last may
+/// be an older conversation resumed that has not said its limits since.
+/// The files are read written-to-last first, and only until one was last
+/// written before the newest snapshot found, which holds none newer.
 pub fn latest_rate_limits(account_path: &str) -> Option<(Value, String)> {
     let today = Local::now().date_naive();
-    let mut files: Vec<(std::time::SystemTime, PathBuf)> = rollouts_on(account_path, days_back(today, 2))
+    let ms = |t: std::time::SystemTime| t.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
+    let mut files: Vec<(i64, PathBuf)> = rollouts_on(account_path, days_back(today, 2))
         .into_iter()
-        .map(|(_, _, p)| (std::fs::metadata(&p).and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH), p))
+        .map(|(_, _, p)| (std::fs::metadata(&p).and_then(|m| m.modified()).map_or(0, ms), p))
         .collect();
     files.sort_by(|a, b| b.0.cmp(&a.0));
-    for (_, path) in files {
-        if let Some(hit) = read_tail(&path).rate_limits {
-            return Some(hit);
+    let mut best: Option<(i64, (Value, String))> = None;
+    for (modified, path) in files {
+        if best.as_ref().is_some_and(|(at, _)| *at >= modified) {
+            break;
+        }
+        let Some(hit) = read_tail(&path).rate_limits else { continue };
+        let at = chrono::DateTime::parse_from_rfc3339(&hit.1).map_or(i64::MIN, |t| t.timestamp_millis());
+        if best.as_ref().map_or(true, |(b, _)| at > *b) {
+            best = Some((at, hit));
         }
     }
-    None
+    best.map(|(_, hit)| hit)
 }
 
 #[cfg(test)]
@@ -713,8 +742,11 @@ mod tests {
 /// The conversation as another agent reads it: user and assistant messages
 /// from byte offset `from` on. Returns the messages and the offset to
 /// continue from: the end of the last complete line, so a line Codex is
-/// still writing is read whole next time rather than skipped.
+/// still writing is read whole next time rather than skipped. A cursor past
+/// the end is one into a file since cut short or written anew, where it would
+/// land mid-line: the file is read from the top.
 pub fn messages_from(path: &Path, from: u64) -> (Vec<crate::agents::Message>, u64) {
+    let from = if past_end(path, from) { 0 } else { from };
     let mut out = Vec::new();
     let read = crate::pty::complete_lines(path, from, |line| {
         if !line.contains("\"response_item\"") {

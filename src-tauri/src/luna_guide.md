@@ -27,8 +27,9 @@ can start other sessions and work with them.
 ## Accounts and models
 - An account is a signed-in login of one provider: an Anthropic account runs Claude Code
   only, an OpenAI account runs Codex only. `provider` and `account` in `luna_spawn` must
-  match; take both from `luna_list`, which lists every account the user lets agents use
-  (the user can switch accounts off for agents) under its exact name.
+  match; an `account` alone brings its own provider. Take them from `luna_list`, which lists
+  every account the user lets agents use (the user can switch accounts off for agents)
+  under its exact name.
 - Accounts of one provider differ: personal or team plans, different organizations, their
   own allowed models and their own quota. Each row in `luna_list` gives the provider, the
   name, the models it offers (for Codex with their efforts and default effort), the
@@ -47,21 +48,25 @@ can start other sessions and work with them.
 - Claude Code: `permissionMode` = default | acceptEdits | plan | bypassPermissions;
   `effort` = low | medium | high | xhigh | max (ultracode too).
 - Codex: `sandbox` = read-only | workspace-write | danger-full-access; `approval` =
-  on-request | never (visible only: a background Codex runs with nobody to approve, the
-  sandbox is what holds it); `effort` per model as `luna_list` gives it. Whether it runs the
-  project's hooks without Codex's trust prompt is the user's setting for that folder, not a
-  spawn option; without it a background Codex runs untrusted hooks not at all, and a
-  visible one stops on the prompt. A background Codex trusts the folder it is sent to for its
-  run, so the project's own `.codex/` config loads; a visible one in a folder Codex does not
-  trust yet has Luna trust it for that account.
+  never | auto-review (a reviewer model answers what Codex would ask; workspace-write only)
+  | on-request (visible only: a background Codex has nobody to ask, and runs with never
+  unless told auto-review; the sandbox is what holds it); `effort` per model as `luna_list`
+  gives it. Whether it runs the project's hooks without Codex's trust prompt is the user's
+  setting for that folder, not a spawn option; without it a background Codex runs untrusted
+  hooks not at all, and a visible one stops on the prompt. A background Codex trusts the
+  folder it is sent to for its run, so the project's own `.codex/` config loads; a visible
+  one in a folder Codex does not trust yet has Luna trust it for that account.
 - `folder` runs it in another project. `worktree: true` gives it its own git worktree and
   branch, so it does not share files and git with the sessions in that folder; the result
   names the worktree and branch. `sameFolder` in the result lists live sessions working in
   the same directory.
 - `name` is its name in Luna.
-- The result: `id`, the resolved `settings`, `started` (false: the prompt was not taken
-  up, `screen` shows why — an unknown slash command, a login screen), `starting` (the CLI
-  has not drawn yet; the prompt is held, do not resend), `warnings`, `turnsEnded`.
+- The result: `id`, the resolved `settings`, `started`, `starting` (the CLI has not drawn
+  yet; the prompt is held, do not resend), `warnings`, `turnsEnded`. For a background
+  helper `started` means its process is up. For a visible one, false means it was not seen
+  on the prompt within 30 s, and `screen` shows why: an unknown slash command, a login
+  screen, a dialog (then `ask` too). A visible Codex can still be loading its MCP servers
+  and start a little later: `luna_wait` before you send the prompt again.
 - A prompt over 8,000 characters reaches a visible session as a file it is told to read.
 
 ## Getting the answer
@@ -71,46 +76,65 @@ can start other sessions and work with them.
   session wrote since it was asked, and names a file holding them: the report (the longest
   message) first, then the last message, then the rest in order. The notice quotes none of it.
   The notice is delivered when your chat is between turns and the user is not typing in it.
-- `luna_wait` blocks until a session ends a turn (and returns its reply), stops on a
-  question or permission (`until: "waiting"`), or exits (`until: "exit"`); up to 30 min
-  (`timeoutS`, default 600). Use it when you need the answer within the same turn. A
-  `luna_wait` still running when the answer comes hands it over instead of the notice; one
-  your CLI moves to the background still returns, with no notice besides.
+- `luna_wait` blocks until a session ends a turn, stops on a question or permission
+  (`until: "waiting"`), or exits (`until: "exit"`); up to 30 min (`timeoutS`, default 600).
+  Use it when you need the answer within the same turn. `outcome` says which: `turn_done`,
+  `waiting`, `exit` or `timeout`. On `turn_done`, `reply` holds all the session said since
+  you asked, the report first, as the notice's file has it; it is null when the turn ended
+  on an error, and `screen` shows it. A background helper does not exit between turns:
+  `until: "exit"` returns once it is deleted.
+- A `luna_wait` still running when the answer comes hands it over instead of the notice;
+  one your CLI moves to the background still returns, with no notice besides. One you
+  cancel or interrupt hands nothing over, and the notice comes as usual.
 - Turns are counted: results carry `turnsEnded`; pass it to `luna_wait` as `afterTurn` to
   wait for a turn after that one.
 - `luna_read` reads the transcript: `last: N` messages (default 1), or `since: <cursor>`
-  for everything after an earlier read; `tools: true` adds one-line tool calls, `screen:
-  true` adds what the terminal shows (dialogs, errors) or, for a background helper, its
-  last log lines.
+  for everything after an earlier read; both together give the last N after the cursor,
+  and the cursor goes past all of them. `tools: true` adds one-line tool calls (Claude
+  Code), `screen: true` adds what the terminal shows (dialogs, errors) or, for a background
+  helper, its last log lines. Past 60,000 characters a read is cut: `leftOut` counts the
+  messages left out, and a read on from `since` goes on from the cursor it returns.
+- A read that returns everything a session said since you asked, whole, collects the
+  answer: no notice follows. One with only the last message of several does not.
 
 ## Answering and steering
 - A session in state `question` or `waiting` has an `ask`: the questions with their
   options, or the tool up for permission. `luna_answer` takes `answers` (one per question:
-  an option's number or label, or your own words), `allow: true/false` with an optional
-  `note` for a permission, or `keys` (`{down}{enter}`, `{esc}`, `{tab}`, `{shift+tab}`,
-  `{up}`, `{left}`, `{right}`, `{space}`, `{backspace}`) for any other dialog.
+  an option's number, counted from 1, or its label, or your own words), `allow:
+  true/false` with an optional `note` for a permission, or `keys` (`{down}{enter}`,
+  `{esc}`, `{tab}`, `{shift+tab}`, `{up}`, `{left}`, `{right}`, `{space}`, `{backspace}`)
+  for any other dialog. It returns `state`, `ask` and the `screen` after it.
 - A visible Codex that stops on a list of its own — "Hooks need review" at startup, say —
   has it as a question too; its options are the only answers it takes. A spawn that did not
   start because of one returns it as `ask`.
 - A background Claude Code helper's questions and permission prompts come to you this way.
   A background Codex helper cannot ask; what it would have asked is in its reply.
 - `luna_send` types text into a session as its next prompt. Sent while it works, the text
-  is queued for after its turn (`queued`); `interrupt: true` stops the current turn first
-  and makes the text the next one. The result already says how it went — `started` (a
-  turn began on it), `queued`, or why not — so there is no need to `luna_read` the
-  session to check that the text arrived. It reads as the user's words, so name yourself to a
-  session you did not spawn. It will not type into a chat where the user is typing or has
-  left an unsent draft; it says so, and you try later.
-- `luna_kill` stops a session's process (a background helper: its turn); the conversation
-  stays for `luna_send` to continue. `luna_delete` removes it; `dropWorktree: true` also
-  removes the worktree and branch Luna made for it.
-- `autoDelete`: Luna deletes the helper 30 minutes after its answer reached you, unless you
-  read or write to it in between (`deletesInMin` in `luna_list` counts down). On for
-  background helpers unless `autoDelete: false`, off for visible ones unless `true`. A
-  helper the user typed into, or one you killed, is never auto-deleted.
+  is `queued`: a visible session's CLI takes it into the running turn or the next, a
+  background helper always the next; `luna_wait` with the `turnsEnded` returned waits for
+  whichever answers it. `interrupt: true` stops the current turn first and makes the text
+  the next one. The result already says how it went — `started` (a turn began on it),
+  `queued`, or why not — so there is no need to `luna_read` the session to check that the
+  text arrived. It reads as the user's words, so name yourself to a session you did not
+  spawn. It will not type into a chat where the user is typing or has left an unsent
+  draft; it says so, and you try later.
+- `luna_kill` stops a session's process (a background helper: its turn). A background
+  helper's conversation stays for `luna_send` to continue; a killed visible session is not
+  running, and text cannot reach it until the user resumes it. `luna_delete` removes it;
+  `dropWorktree: true` also removes the worktree and branch Luna made for it, unless
+  another session works in it.
+- `autoDelete`: Luna deletes the helper 30 minutes after its answer reached you; a read or
+  a send in between starts the 30 minutes over (`deletesInMin` in `luna_list` counts
+  down). The worktree stays. On for background helpers unless `autoDelete: false`, off for
+  visible ones unless `true`. A helper the user typed into, or one you killed, is never
+  auto-deleted.
 - `luna_notify` shows the user a desktop notification titled with your chat; a click opens
-  it. One per 10 s. A turn that ends on a question already notifies.
+  it. Keep it for what the user must see now — a result, a blocker — not progress. One per
+  10 s. A turn that ends on a question already notifies.
 - `luna_sessions` with `history: true` lists past spawns, deleted ones included: when, by
   whom, where, account, settings, the start of the prompt, how it ended, its transcript path
-  and last message (`q` also searches prompts).
+  and the start of its last message (`q` also searches prompts).
+- Ids in these tools are Luna's session ids, from `luna_spawn`, `luna_list` or
+  `luna_sessions`. Your CLI's own task, shell and subagent ids are not; a subagent of yours
+  that calls these tools acts as you. `luna_wait` is no timer.
 - Every helper costs its account's quota; several at once cost it in parallel.

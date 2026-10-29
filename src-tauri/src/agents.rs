@@ -89,6 +89,14 @@ const REPLY_GRACE_MS: u64 = 5_000;
 /// notice — this long past the answer at most, for a client that has dropped
 /// the call it moved to the background.
 const WAIT_HOLD_MS: u64 = 10_000;
+/// Text typed into a visible session mid-turn is the CLI's to place: into
+/// the turn that runs, or a turn of its own right after it. A turn end
+/// counts as the answer to it once no turn has started this long after —
+/// more than one activity sample.
+const QUEUED_GRACE_MS: u64 = 8_000;
+/// The most of a session's words one tool result carries: Claude Code cuts
+/// an MCP result past 25,000 tokens.
+const MAX_TEXT: usize = 60_000;
 /// An `autoDelete` helper goes once nobody is owed its answer and it has sat
 /// idle this long since, nobody reading it either: room for a review of its
 /// work and a follow-up first.
@@ -342,11 +350,14 @@ struct Owed {
     /// Where the session's transcript ended when the caller asked: what it
     /// said from there on is the answer, however many turns it took.
     cursor: u64,
+    /// Asked by text typed into a visible session mid-turn (see
+    /// QUEUED_GRACE_MS).
+    queued: bool,
 }
 
 impl Owed {
     fn from(baseline: u32, cursor: u64) -> Owed {
-        Owed { baseline, told_waiting: false, told_ask: 0, held: None, ready_at: None, cursor }
+        Owed { baseline, told_waiting: false, told_ask: 0, held: None, ready_at: None, cursor, queued: false }
     }
 }
 
@@ -378,18 +389,27 @@ fn reg() -> &'static Mutex<Registry> {
 /// past what the caller asked for settles the answer it was owed — when the
 /// caller was handed that answer (`whole`), or the session is done: a read
 /// while it works on has seen a turn on the way, and the answer is still to
-/// come. Either way the caller has looked at it, so an `autoDelete` helper
-/// counts its idle time from now.
+/// come. Either way the caller has looked at it (see `seen`).
 fn shown(caller: &str, id: &str, turns_ended: u32, whole: bool) {
     let done = whole
         || crate::activity::turn_state(id)
             .map_or(true, |t| t.turn == crate::activity::Turn::Idle && !t.children_busy);
-    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-    let key = (caller.to_string(), id.to_string());
-    if done && r.owed.get(&key).is_some_and(|o| turns_ended > o.baseline) {
-        r.owed.remove(&key);
+    if done {
+        let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+        let key = (caller.to_string(), id.to_string());
+        if r.owed.get(&key).is_some_and(|o| turns_ended > o.baseline) {
+            r.owed.remove(&key);
+        }
     }
-    r.seen.insert(key, turns_ended);
+    seen(caller, id, turns_ended);
+}
+
+/// Records the turn count a tool answer showed `caller` of `id`, settling
+/// nothing. The caller has looked at it, so an `autoDelete` helper counts
+/// its idle time from now.
+fn seen(caller: &str, id: &str, turns_ended: u32) {
+    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    r.seen.insert((caller.to_string(), id.to_string()), turns_ended);
     if let Some(a) = r.auto.get_mut(id) {
         a.idle_since = None;
     }
@@ -1377,14 +1397,21 @@ pub fn spawn(caller: &str, mut params: SpawnParams) -> Result<Spawned, String> {
                 in_worktree = wt;
             }
         }
+        let allowed = allowed_account_dirs();
         let provider = match params.provider.as_deref() {
-            None => me.provider,
+            // An account runs one provider only: one named that the
+            // caller's provider has no account of brings its own.
+            None => match params.account.as_deref() {
+                Some(name) if !allowed.iter().any(|a| a.provider == me.provider && a.name == name) => {
+                    allowed.iter().find(|a| a.name == name).map_or(me.provider, |a| a.provider)
+                }
+                _ => me.provider,
+            },
             Some("claude") => Provider::Claude,
             Some("codex") => Provider::Codex,
             Some(other) => return Err(format!("unknown provider {other}; use claude or codex")),
         };
         params.provider = Some(provider.as_str().to_string());
-        let allowed = allowed_account_dirs();
         let mut ours = allowed.iter().filter(|a| a.provider == provider);
         let pick = match params.account.as_deref() {
             Some(name) => ours.find(|a| a.name == name),
@@ -1799,8 +1826,9 @@ pub struct Sent {
     pub ok: bool,
     /// Where the session stood when the text went in (see `state_of`).
     pub state_before: &'static str,
-    /// It was working: the text waits for the turn in flight to end and is
-    /// taken up after it, and `started` says nothing yet.
+    /// It was working: the text joins the turn in flight or is taken up
+    /// after it (a background helper: always after), and `started` says
+    /// nothing yet.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub queued: bool,
     /// The turn it was working on was stopped for this text (`interrupt`).
@@ -1810,8 +1838,9 @@ pub struct Sent {
     /// was not working means the text did not become a prompt: `screen`
     /// shows where it went.
     pub started: bool,
-    /// Turns over before this text went in — the `afterTurn` for the `wait`
-    /// that collects the reply.
+    /// The `afterTurn` for the `wait` that collects the reply: turns over
+    /// before the text went in, the one it is queued behind counted for a
+    /// background helper, whose queue holds the text until that turn ends.
     pub turns_ended: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub screen: Option<String>,
@@ -1918,9 +1947,16 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool) -> Result<Sent,
     }
     let screen = (!started && !queued).then(|| screen_of(&pty, id)).flatten();
     // The count before the text went in: the reply to it ends the next
-    // turn, which the caller has not seen even if it is already over.
+    // turn, which the caller has not seen even if it is already over. Typed
+    // mid-turn, that is the turn running now or the one the CLI starts on
+    // the text after it, whichever the CLI makes of it (QUEUED_GRACE_MS).
     shown(caller, id, baseline, true);
     owe(caller, id, baseline);
+    if queued {
+        if let Some(o) = reg().lock().unwrap_or_else(|e| e.into_inner()).owed.get_mut(&(caller.to_string(), id.to_string())) {
+            o.queued = true;
+        }
+    }
     Ok(Sent { ok: true, state_before, queued, interrupted, started, turns_ended: baseline, screen })
 }
 
@@ -2125,6 +2161,10 @@ pub struct Reading {
     pub messages: Vec<Message>,
     /// Pass back as `since` to read only what came after.
     pub cursor: u64,
+    /// Messages MAX_TEXT left out of this result: read from `since` on,
+    /// the ones after `cursor`, still to read; with `last`, older ones.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub left_out: usize,
     /// See `state_of`.
     pub state: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2173,8 +2213,19 @@ fn find_transcript(pty: &crate::pty::PtyManager, id: &str) -> Option<std::path::
     }
 }
 
+fn is_zero(n: &usize) -> bool {
+    *n == 0
+}
+
+/// Messages read off a transcript, with the offset the read stopped at.
+type Messages = (Vec<Message>, u64);
+
 /// The conversation of a session from `since` (a cursor from an earlier read;
-/// None = from the start), trimmed to the last `last` messages when asked.
+/// None = from the start), trimmed to the last `last` messages when asked,
+/// and to MAX_TEXT: read on from `since`, to the oldest that fit, the cursor
+/// put back to where they end; with `last`, to the newest. A read that hands
+/// over all the session said since the caller asked it something collects
+/// that answer, as a `wait` would.
 pub fn read(
     caller: &str,
     id: &str,
@@ -2185,31 +2236,120 @@ pub fn read(
 ) -> Result<Reading, String> {
     let known = authorize_view(caller, id)?;
     let pty = crate::pty::manager();
-    let (mut messages, cursor) = match transcript_path(&pty, id) {
-        Some(path) => match known.provider {
-            Provider::Claude => crate::claude::session::messages_from(&path, since.unwrap_or(0), with_tools),
-            Provider::Codex => crate::codex::session::messages_from(&path, since.unwrap_or(0)),
-        },
-        None => (Vec::new(), since.unwrap_or(0)),
+    let path = transcript_path(&pty, id);
+    let from = since.unwrap_or(0);
+    let messages_at = |at: u64| -> Messages {
+        match &path {
+            Some(p) => match known.provider {
+                Provider::Claude => crate::claude::session::messages_from(p, at, with_tools),
+                Provider::Codex => crate::codex::session::messages_from(p, at),
+            },
+            None => (Vec::new(), at),
+        }
     };
+    let (mut messages, mut cursor) = messages_at(from);
+    let found = messages.len();
+    // Left out at the front (`last`, or MAX_TEXT keeping the newest) and at
+    // the back (MAX_TEXT keeping the oldest).
+    let (mut front, mut back) = (0, 0);
     if let Some(n) = last {
         let n = n.max(1);
         if messages.len() > n {
-            messages.drain(..messages.len() - n);
+            front = messages.len() - n;
+            messages.drain(..front);
+        }
+    }
+    let size = |m: &Message| m.text.chars().count();
+    let mut left_out = 0;
+    let mut text_cut = false;
+    if messages.iter().map(size).sum::<usize>() > MAX_TEXT {
+        // As many as fit, and the first one taken whatever its size.
+        let fit = |sizes: &mut dyn Iterator<Item = usize>| {
+            let (mut room, mut keep) = (MAX_TEXT, 0);
+            for n in sizes {
+                if n > room && keep > 0 {
+                    break;
+                }
+                room = room.saturating_sub(n);
+                keep += 1;
+            }
+            keep
+        };
+        if last.is_some() {
+            let keep = fit(&mut messages.iter().rev().map(size));
+            left_out = messages.len() - keep;
+            front += left_out;
+            messages.drain(..left_out);
+        } else {
+            let keep = fit(&mut messages.iter().map(size));
+            left_out = messages.len() - keep;
+            back = left_out;
+            if left_out > 0 {
+                messages.truncate(keep);
+                if let Some(p) = &path {
+                    cursor = cursor_after(p, from, cursor, found, keep, &messages_at);
+                }
+            }
+        }
+        for m in messages.iter_mut().filter(|m| m.text.chars().count() > MAX_TEXT) {
+            let more = m.text.chars().count() - MAX_TEXT;
+            m.text = format!(
+                "{}\n\n[cut: {more} more characters; the transcript luna_sessions names has it whole]",
+                m.text.chars().take(MAX_TEXT).collect::<String>()
+            );
+            text_cut = true;
         }
     }
     let ts = crate::activity::turn_state(id);
     let turns_ended = ts.map(|t| t.turns_ended).unwrap_or(0);
     let (state, ask) = state_of(id);
-    shown(caller, id, turns_ended, false);
+    // All of the answer: every message past where the question found the
+    // transcript is in this result, whole. A `last` that left some of them
+    // out, a read cut short, is not the answer, and the notice still comes.
+    let asked_at = reg().lock().unwrap_or_else(|e| e.into_inner()).owed.get(&(caller.to_string(), id.to_string())).map(|o| o.cursor);
+    let whole = !text_cut
+        && back == 0
+        && (front == 0 || asked_at.is_some_and(|at| from <= at && messages.len() >= messages_at(at).0.len()));
+    if whole {
+        shown(caller, id, turns_ended, false);
+    } else {
+        seen(caller, id, turns_ended);
+    }
     Ok(Reading {
         messages,
         cursor,
+        left_out,
         state,
         ask,
         turns_ended,
         screen: with_screen.then(|| screen_of(&pty, id)).flatten(),
     })
+}
+
+/// Where a read from `from`, which found `found` messages up to `end` and
+/// hands over the first `keep` of them, is to pick up again: the first line
+/// start past which only the rest are left. What the transcript gains
+/// meanwhile is not counted as the rest; should it grow in the middle of a
+/// look, the cursor lands early, and a message comes twice rather than not
+/// at all.
+fn cursor_after(path: &std::path::Path, from: u64, end: u64, found: usize, keep: usize, messages_at: &dyn Fn(u64) -> Messages) -> u64 {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut bytes = Vec::new();
+    let read = std::fs::File::open(path).and_then(|mut f| {
+        f.seek(SeekFrom::Start(from))?;
+        f.take(end.saturating_sub(from)).read_to_end(&mut bytes)
+    });
+    if read.is_err() {
+        return end;
+    }
+    let starts: Vec<u64> = bytes.iter().enumerate().filter(|(_, b)| **b == b'\n').map(|(i, _)| from + i as u64 + 1).collect();
+    let past_kept = |at: u64| {
+        let (after, reached) = messages_at(at);
+        let grown = if reached > end { messages_at(end).0.len() } else { 0 };
+        found.saturating_sub(after.len().saturating_sub(grown)) >= keep
+    };
+    // The last start is `end` itself, past every one of them.
+    starts.get(starts.partition_point(|&at| !past_kept(at))).copied().unwrap_or(end)
 }
 
 #[derive(Serialize)]
@@ -2221,7 +2361,8 @@ pub struct Waited {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ask: Option<Ask>,
     pub turns_ended: u32,
-    /// On `turn_done`: what the session said last, so no `read` is needed.
+    /// On `turn_done`: all the session said since the caller asked it
+    /// something, as `reply_of` puts it, so no `read` is needed.
     pub reply: Option<String>,
     /// On `timeout`, `waiting` and a turn that ended without a reply: the
     /// terminal's last lines, so the caller sees what the session is on — a
@@ -2236,12 +2377,27 @@ pub struct Waited {
 /// if it landed before this call, and a turn it has already read does not —
 /// or the turn stopped on a prompt, which nothing but an answer moves on);
 /// `waiting` — it stopped for a permission; `exit` — the process ended.
-pub fn wait(caller: &str, id: &str, until: &str, timeout_s: u64, after_turn: Option<u32>) -> Result<Waited, String> {
+/// A wait its caller let go (`cancelled`, or see `let_go`) returns an
+/// error and hands nothing over: the answer stays owed, for the notice.
+pub fn wait(
+    caller: &str,
+    id: &str,
+    until: &str,
+    timeout_s: u64,
+    after_turn: Option<u32>,
+    cancelled: &std::sync::atomic::AtomicBool,
+) -> Result<Waited, String> {
     if !matches!(until, "turn_done" | "waiting" | "exit") {
         return Err(format!("unknown until {until:?}; use turn_done, waiting or exit"));
     }
-    authorize_view(caller, id)?;
+    let known = authorize_view(caller, id)?;
     let _out = WaitOut::start(caller, id);
+    let key = (caller.to_string(), id.to_string());
+    let dropped = let_go(caller);
+    let gone = || cancelled.load(std::sync::atomic::Ordering::SeqCst) || dropped();
+    let gone_err = || -> Result<Waited, String> {
+        Err("this wait was let go before it ended; the answer stays owed and comes as a notice".into())
+    };
     let pty = crate::pty::manager();
     let now = crate::activity::turn_state(id).map(|t| t.turns_ended);
     let baseline = match (after_turn, last_shown(caller, id), now) {
@@ -2253,14 +2409,35 @@ pub fn wait(caller: &str, id: &str, until: &str, timeout_s: u64, after_turn: Opt
         (None, None, now) => now.unwrap_or(0),
     };
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_s.clamp(1, 1800));
-    let answered_at = reg().lock().unwrap_or_else(|e| e.into_inner()).answered.get(&(caller.to_string(), id.to_string())).copied();
+    let (answered_at, queued) = {
+        let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+        (r.answered.get(&key).copied(), r.owed.get(&key).is_some_and(|o| o.queued))
+    };
     let mut looks = 0u32;
+    // The turn count a turn end was first seen at, and when (QUEUED_GRACE_MS).
+    let mut quiet: Option<(u32, u64)> = None;
     loop {
+        if gone() {
+            return gone_err();
+        }
         let alive = live(&pty, id);
         let ts = crate::activity::turn_state(id);
         let turns_ended = ts.map(|t| t.turns_ended).unwrap_or(0);
         let turn = ts.map(|t| t.turn);
-        let ended = turns_ended > baseline && turn != Some(crate::activity::Turn::Busy);
+        let mut ended = turns_ended > baseline && turn != Some(crate::activity::Turn::Busy);
+        if !ended {
+            quiet = None;
+        } else if queued {
+            let since = match quiet {
+                Some((n, at)) if n == turns_ended => at,
+                _ => {
+                    let at = now_ms();
+                    quiet = Some((turns_ended, at));
+                    at
+                }
+            };
+            ended = now_ms().saturating_sub(since) >= QUEUED_GRACE_MS;
+        }
         // A question in the transcript holds the turn whatever the turn
         // word says; read for it every few looks, not every one.
         looks += 1;
@@ -2283,19 +2460,17 @@ pub fn wait(caller: &str, id: &str, until: &str, timeout_s: u64, after_turn: Opt
             } else {
                 "turn_done"
             };
-            // The last message, if it is the session's: one that is still
-            // the prompt means the turn ended on an error, which the screen
-            // shows and the transcript does not.
-            let reply_now = || {
-                read(caller, id, None, Some(1), false, false)
-                    .ok()
-                    .and_then(|r| r.messages.into_iter().last().filter(|m| m.role == "assistant").map(|m| m.text))
-            };
+            // Read from where the caller's question found the transcript.
+            let asked_at = reg().lock().unwrap_or_else(|e| e.into_inner()).owed.get(&key).map(|o| o.cursor);
+            let reply_now = || reply_of(&pty, id, known.provider, asked_at);
             let mut reply = (outcome == "turn_done").then(reply_now).flatten();
             let late = std::time::Instant::now() + std::time::Duration::from_millis(REPLY_GRACE_MS);
-            while outcome == "turn_done" && reply.is_none() && std::time::Instant::now() < late {
+            while outcome == "turn_done" && reply.is_none() && std::time::Instant::now() < late && !gone() {
                 std::thread::sleep(POLL);
                 reply = reply_now();
+            }
+            if gone() {
+                return gone_err();
             }
             let bare = outcome == "turn_done" && reply.is_none();
             let screen = (outcome == "waiting" || bare).then(|| screen_of(&pty, id)).flatten();
@@ -2305,12 +2480,56 @@ pub fn wait(caller: &str, id: &str, until: &str, timeout_s: u64, after_turn: Opt
         }
         if std::time::Instant::now() >= deadline {
             let screen = screen_of(&pty, id);
-            shown(caller, id, turns_ended, false);
+            // Nothing was handed over: whatever is owed stays owed.
+            seen(caller, id, turns_ended);
             let (state, ask) = state_of(id);
             return Ok(Waited { outcome: "timeout", state, ask, turns_ended, reply: None, screen });
         }
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
+}
+
+/// Whether the call a `wait` by `caller` answers has been let go without a
+/// cancel saying so: the caller is gone, or — a Codex caller, held in the
+/// tool call for as long as it lasts — the turn that made the call is over
+/// (an interrupt) and no other has begun. A count that catches up late on
+/// the turn before finds the caller busy in this one. Claude Code moves a
+/// long call to the background and may end its turn while the call runs on,
+/// and sends a cancel when it drops one.
+fn let_go(caller: &str) -> impl Fn() -> bool {
+    let caller = caller.to_string();
+    let codex = reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(&caller).is_some_and(|k| k.provider == Provider::Codex);
+    let turns = crate::activity::turn_state(&caller).map(|t| t.turns_ended);
+    move || {
+        if caller == DEV_CALLER {
+            return false;
+        }
+        let over = |n: u32| {
+            crate::activity::turn_state(&caller).is_some_and(|t| t.turns_ended > n && t.turn == crate::activity::Turn::Idle)
+        };
+        !live(&crate::pty::manager(), &caller) || (codex && turns.is_some_and(over))
+    }
+}
+
+/// What a `wait` hands back: all the session said past `asked_at`, where
+/// the caller's question found its transcript, report first (`answer_text`);
+/// with no question out, its last message. None when the prompt is the last
+/// word: the turn ended on an error, which the screen shows and the
+/// transcript does not.
+fn reply_of(pty: &crate::pty::PtyManager, id: &str, provider: Provider, asked_at: Option<u64>) -> Option<String> {
+    let replies = match asked_at {
+        Some(at) => replies_since(pty, id, provider, at),
+        None => replies_since(pty, id, provider, 0).pop().into_iter().collect(),
+    };
+    if replies.is_empty() {
+        return None;
+    }
+    let text = answer_text(&replies);
+    if text.chars().count() <= MAX_TEXT {
+        return Some(text);
+    }
+    let head: String = text.chars().take(MAX_TEXT).collect();
+    Some(format!("{head}\n\n[cut at {MAX_TEXT} characters; {}]", answer_file(id, &replies)))
 }
 
 /// Stops the session; the chat row stays and can be resumed by hand.
@@ -2359,6 +2578,12 @@ fn remove(id: &str, known: Known, drop_worktree: bool) -> Result<Option<String>,
         crate::activity::forget(id);
         crate::log::info("delete", &format!("background helper {id}, worktree {made:?}, dropping {drop_worktree}"));
         return match made {
+            // As for a chat (`PtyManager::delete`): a worktree another
+            // session or helper is in stays, its work with it.
+            Some(wt) if drop_worktree && pty.worktree_shared(id, &wt) => {
+                crate::log::warn("delete", &format!("kept worktree {wt}: another session is in it"));
+                Ok(None)
+            }
             Some(wt) if drop_worktree => crate::worktree::remove_worktree_now(folder, wt.clone()).map(|_| Some(wt)),
             _ => Ok(None),
         };
@@ -2513,13 +2738,25 @@ fn replies_since(pty: &crate::pty::PtyManager, id: &str, provider: Provider, cur
     messages.into_iter().filter(|m| m.role == "assistant").map(|m| m.text).collect()
 }
 
-/// Where a notice says the answer is: a file holding it, report first. The
-/// notice itself quotes none of it — a caller that had a long answer cut read
-/// the whole of it back anyway, and a long notice reaches the CLI as a paste.
-/// The report is the longest message, ahead of the progress lines that came
-/// before it; then the last one, a closing word ("that was a stale wakeup,
-/// nothing changed") the report must not bury; then the rest, in order.
+/// Where a notice says the answer is: a file holding it, report first
+/// (`answer_text`). The notice itself quotes none of it — a caller that had
+/// a long answer cut read the whole of it back anyway, and a long notice
+/// reaches the CLI as a paste.
 fn answer_file(id: &str, replies: &[String]) -> String {
+    let whole = answer_text(replies);
+    let dir = notes_dir();
+    let path = dir.join(format!("{id}-{}.md", now_ms()));
+    match std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&path, whole)) {
+        Ok(()) => format!("the answer is in {}, its report first", path.display()),
+        Err(_) => "luna_read gives the answer".into(),
+    }
+}
+
+/// A helper's messages as one answer. The report is the longest message,
+/// ahead of the progress lines that came before it; then the last one, a
+/// closing word ("that was a stale wakeup, nothing changed") the report must
+/// not bury; then the rest, in order.
+fn answer_text(replies: &[String]) -> String {
     let longest = (0..replies.len()).max_by_key(|&i| replies[i].chars().count()).unwrap_or(0);
     let last = replies.len().saturating_sub(1);
     let mut whole = replies[longest].clone();
@@ -2530,12 +2767,7 @@ fn answer_file(id: &str, replies: &[String]) -> String {
     if !rest.is_empty() {
         whole.push_str(&format!("\n\n---\n\nEverything else it said, in order:\n\n{}", rest.join("\n\n---\n\n")));
     }
-    let dir = notes_dir();
-    let path = dir.join(format!("{id}-{}.md", now_ms()));
-    match std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&path, whole)) {
-        Ok(()) => format!("the answer is in {}, its report first", path.display()),
-        Err(_) => "luna_read gives the answer".into(),
-    }
+    whole
 }
 
 /// The notice for one session, or None while nothing has happened to it.
@@ -2561,6 +2793,8 @@ fn notice_line(
         } else {
             0
         };
+        // Asked mid-turn: the CLI may start a turn on the text right after.
+        let settle_ms = if o.queued { settle_ms.max(QUEUED_GRACE_MS) } else { settle_ms };
         if settle_ms > 0 {
             match o.held {
                 Some((n, at)) if n == ended => {
@@ -2657,11 +2891,14 @@ fn held_for_wait(pty: &crate::pty::PtyManager, caller: &str, id: &str, o: &Owed)
     let news = (ts.is_some_and(|t| t.turns_ended > o.baseline) && turn != Some(crate::activity::Turn::Busy))
         || turn == Some(crate::activity::Turn::Waiting)
         || !live(pty, id);
-    if !news {
-        return true;
-    }
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
     let Some(owed) = r.owed.get_mut(&key) else { return true };
+    if !news {
+        // Taken back by a turn begun since (a queued send): the wait gets
+        // its whole hold again for the news that turn brings.
+        owed.ready_at = None;
+        return true;
+    }
     let at = *owed.ready_at.get_or_insert(now_ms());
     now_ms().saturating_sub(at) < WAIT_HOLD_MS
 }

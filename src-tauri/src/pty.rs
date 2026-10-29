@@ -19,9 +19,11 @@ const SCROLLBACK_SLACK: usize = 256 * 1024;
 /// repainting TUI does not turn into hundreds of events per second.
 const FRAME: std::time::Duration = std::time::Duration::from_millis(16);
 /// What a Claude Code or Codex session puts in the environment of everything
-/// it runs: its identity, its IPC, its sandbox flags. None of it belongs to a
-/// session Luna starts (see spawn).
+/// it runs: its identity, its IPC, its sandbox flags, and the bearer token of
+/// another Luna's tools. None of it belongs to a session Luna starts (see
+/// spawn); a session given Luna's tools gets a token of this Luna's after.
 const INHERITED_SESSION_VARS: &[&str] = &[
+    "LUNA_MCP_TOKEN",
     "CLAUDECODE",
     "CLAUDE_CODE_CHILD_SESSION",
     "CLAUDE_CODE_ENTRYPOINT",
@@ -827,10 +829,15 @@ impl PtyManager {
         sessions.get(id).is_some_and(|s| s.draft.load(Ordering::Relaxed) & !DRAFT_BACKSLASH > 0)
     }
 
-    /// Whether a running session uses this account folder.
+    /// Whether a running session or a background helper uses this account
+    /// folder.
     pub fn account_in_use(&self, account_path: &str) -> bool {
-        let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
-        sessions.values().any(|s| s.alive.load(Ordering::SeqCst) && same_dir(&s.account_path, account_path))
+        let running = {
+            let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+            sessions.values().any(|s| s.alive.load(Ordering::SeqCst) && same_dir(&s.account_path, account_path))
+        };
+        // Asked with the session map let go: no path holds both locks.
+        running || crate::background::uses_account(account_path)
     }
 
     /// How many sessions are running.
@@ -896,9 +903,10 @@ impl PtyManager {
         take_and_shut_down(self, id).await;
     }
 
-    /// Whether a running session other than `id` is in this worktree: one
-    /// started in it, or one that moved into it itself.
-    fn worktree_in_use_by_others(&self, id: &str, wt: &str) -> bool {
+    /// Whether a session other than `id` is in this worktree: a running one
+    /// started in it or moved into it itself, or a background helper sent to
+    /// it or working in it, between its turns too.
+    pub fn worktree_shared(&self, id: &str, wt: &str) -> bool {
         let norm = |p: &str| p.replace('/', "\\").trim_end_matches('\\').to_lowercase();
         let wt = norm(wt);
         let inside = |p: &str| {
@@ -910,6 +918,7 @@ impl PtyManager {
             .iter()
             .filter(|p| p.id != id)
             .any(|p| inside(&p.cwd) || p.working_dir().is_some_and(|real| inside(&real)))
+            || crate::background::working_dirs(Some(id)).iter().any(|d| inside(d))
     }
 
     /// Tears a chat's session down: resolve its worktree, quit the process,
@@ -930,8 +939,8 @@ impl PtyManager {
         });
         // A helper spawned from a chat in a worktree runs in that same
         // worktree. Dropping "its" worktree would take the other chat's work
-        // with it, so a worktree another running session is in stays.
-        let shared = resolved.as_deref().is_some_and(|wt| self.worktree_in_use_by_others(id, wt));
+        // with it, so a worktree another session or a helper is in stays.
+        let shared = resolved.as_deref().is_some_and(|wt| self.worktree_shared(id, wt));
 
         take_and_shut_down(self, id).await;
         // Everything else that kept count of it, so nothing keeps the chat on
@@ -949,7 +958,7 @@ impl PtyManager {
 
         match &resolved {
             Some(wt) if drop_worktree && shared => {
-                crate::log::warn("delete", &format!("kept worktree {wt}: another running session is in it"));
+                crate::log::warn("delete", &format!("kept worktree {wt}: another session is in it"));
                 Ok(None)
             }
             Some(wt) if drop_worktree => {
@@ -1258,12 +1267,16 @@ pub(crate) fn kill_tree(pid: Option<u32>) {
             .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
             .output();
     }
-    // The pty made the CLI a session and process-group leader, so its
-    // children are in the group whose id is its pid unless they left it;
-    // those that did are still its children by parent pid.
+    // The pty made the CLI a session and process-group leader (a background
+    // turn its group's leader), so its children are in the group whose id is
+    // its pid unless they left it; those that did are still its children by
+    // parent pid. And the process itself, should it lead no group after all.
     #[cfg(unix)]
-    for by in ["-g", "-P"] {
-        let _ = Command::new("pkill").args(["-KILL", by, &pid.to_string()]).output();
+    {
+        for by in ["-g", "-P"] {
+            let _ = Command::new("pkill").args(["-KILL", by, &pid.to_string()]).output();
+        }
+        let _ = Command::new("kill").args(["-KILL", &pid.to_string()]).output();
     }
     #[cfg(not(any(windows, unix)))]
     let _ = pid;
@@ -1383,11 +1396,13 @@ async fn take_and_shut_down(state: &PtyManager, id: &str) {
 
 /// Asks every session to quit the way a delete does, before an update: the
 /// installer ends the process, and a CLI given its exit hooks leaves a whole
-/// transcript where one killed mid-write would not. Returns how many it
+/// transcript where one killed mid-write would not. A background helper's
+/// turn is stopped too: one still running would keep the old core from being
+/// replaced, and its parent chat has just been stopped. Returns how many it
 /// stopped.
 #[tauri::command]
 pub async fn stop_all_sessions() -> Result<usize, String> {
-    tauri::async_runtime::spawn_blocking(|| manager().shut_down_all(GRACE))
+    tauri::async_runtime::spawn_blocking(|| manager().shut_down_all(GRACE) + crate::background::stop_turns(false))
         .await
         .map_err(|e| e.to_string())
 }
@@ -1419,17 +1434,21 @@ pub async fn delete_session(
     manager().delete(&id, &folder, worktree_path, drop_worktree).await
 }
 
-/// The cwd of every live session this app runs. A running session must never
-/// have its worktree swept, even if the UI has not yet learned where it lives.
+/// The cwd of every live session this app runs, and where every background
+/// helper works. A running session must never have its worktree swept, even
+/// if the UI has not yet learned where it lives, and a helper has no row to
+/// claim its own.
 pub fn live_cwds() -> Vec<String> {
-    manager()
+    let mut cwds: Vec<String> = manager()
         .activity_probes()
         .into_iter()
         .flat_map(|p| {
             let moved = p.working_dir();
             [Some(p.cwd), moved].into_iter().flatten()
         })
-        .collect()
+        .collect();
+    cwds.extend(crate::background::working_dirs(None));
+    cwds
 }
 
 #[derive(Serialize)]
