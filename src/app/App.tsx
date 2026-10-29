@@ -27,7 +27,7 @@ import { Icon } from '../shared/ui/icons';
 import { STRIP, useShell } from './shell.store';
 import { uiHeartbeat } from '../ipc/commands';
 import { onNotify, onOpenChat } from '../ipc/events';
-import { peekFromNotice } from '../features/panes/navigate';
+import { keepKeyboardHome, peekFromNotice } from '../features/panes/navigate';
 import { notify } from '../shared/lib/notify';
 import { allChats, useChats } from '../features/chats/chats.store';
 import { usePanes } from '../features/panes/panes.store';
@@ -161,6 +161,8 @@ export function App() {
   useEffect(() => healScaleDrift(), []);
 
   useEffect(() => void useCore.getState().init(), []);
+
+  useEffect(() => keepKeyboardHome(), []);
 
   useEffect(() => {
     const off = onNotify(n => void notify(n.title, n.body, n.chatId));
