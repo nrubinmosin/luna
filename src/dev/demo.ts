@@ -388,8 +388,9 @@ const STALE: Record<string, WorktreeInfoDto[]> = {
   ]
 };
 
-// The library: two skills laid out, one a draft that does not do yet; one
-// account's instructions edited by hand since Luna wrote them.
+// The library: two skills laid out — one into every account, one into a
+// single account — and a draft that does not do yet; one account's
+// instructions edited by hand since Luna wrote them.
 const SHARED = 'C:\\src\\luna\\.shared-skills';
 const accountsDir = (vendor: string, name: string) => `C:\\Users\\me\\Documents\\luna-accounts\\${vendor}\\${name}`;
 const place = (p: Partial<PlaceDto> & Pick<PlaceDto, 'dest' | 'target'>): PlaceDto => ({
@@ -399,14 +400,18 @@ const LIBRARY: LibraryOverviewDto = {
   root: 'C:\\Users\\me\\AppData\\Local\\luna\\library',
   isDefault: true,
   found: true,
-  instructions: true,
+  instructions: ['all'],
   hasInstructions: true,
   skills: [
-    { name: 'luna-review', description: 'Hand a finished change to a model of the other CLI through Luna and fold its findings back in.', problem: null },
-    { name: 'migrations', description: '', problem: 'The front matter has no description' },
-    { name: 'release-notes', description: 'Write the release notes from the commits since the last tag, in the house style.', problem: null }
+    { name: 'luna-review', description: 'Hand a finished change to a model of the other CLI through Luna and fold its findings back in.', problem: null, accounts: ['all'] },
+    { name: 'migrations', description: '', problem: 'The front matter has no description', accounts: ['claude'] },
+    { name: 'release-notes', description: 'Write the release notes from the commits since the last tag, in the house style.', problem: null, accounts: ['claude/work'] }
   ],
-  everywhere: ['luna-review'],
+  accounts: [
+    { provider: 'claude', name: 'personal' },
+    { provider: 'claude', name: 'work' },
+    { provider: 'codex', name: 'personal' }
+  ],
   folders: [{ path: SHARED, skills: ['luna-review', 'release-notes'], found: true }],
   places: [
     place({ dest: `${accountsDir('anthropic', 'personal')}\\CLAUDE.md`, target: { kind: 'account', provider: 'claude', name: 'personal' } }),
@@ -414,6 +419,13 @@ const LIBRARY: LibraryOverviewDto = {
     place({ dest: `${accountsDir('openai', 'personal')}\\AGENTS.md`, target: { kind: 'account', provider: 'codex', name: 'personal' } }),
     ...[['anthropic', 'claude', 'personal'], ['anthropic', 'claude', 'work'], ['openai', 'codex', 'personal']].map(([v, p, n]) =>
       place({ dest: `${accountsDir(v, n)}\\skills\\luna-review`, target: { kind: 'account', provider: p as Provider, name: n }, skill: 'luna-review' })
+    ),
+    place({ dest: `${accountsDir('anthropic', 'work')}\\skills\\release-notes`, target: { kind: 'account', provider: 'claude', name: 'work' }, skill: 'release-notes' }),
+    ...['personal', 'work'].map(n =>
+      place({
+        dest: `${accountsDir('anthropic', n)}\\skills\\migrations`, target: { kind: 'account', provider: 'claude', name: n },
+        skill: 'migrations', status: 'failed', problem: 'The front matter has no description'
+      })
     ),
     place({ dest: `${SHARED}\\luna-review`, target: { kind: 'folder', path: SHARED }, skill: 'luna-review' }),
     place({ dest: `${SHARED}\\release-notes`, target: { kind: 'folder', path: SHARED }, skill: 'release-notes', status: 'taken' })

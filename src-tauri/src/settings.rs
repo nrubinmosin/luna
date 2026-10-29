@@ -40,19 +40,64 @@ pub struct Settings {
     pub library: LibrarySettings,
 }
 
+/// Which accounts something goes into: `all`, a provider's every account
+/// (`claude`, `codex`) or one account (`provider/name`) per entry.
+pub type Reach = Vec<String>;
+
 #[derive(Serialize, Deserialize, Clone, Default)]
-#[serde(rename_all = "camelCase", default)]
+#[serde(rename_all = "camelCase", from = "LibrarySettingsFile")]
 pub struct LibrarySettings {
     /// Absolute path of the library's folder; None means `<data>/library`.
     pub source: Option<String>,
-    /// The library's instructions go into every account.
-    pub instructions: bool,
-    /// Skills that go into every account, by name.
-    pub everywhere: Vec<String>,
+    /// The accounts the library's instructions go into.
+    pub instructions: Reach,
+    /// The accounts each skill goes into, by the skill's name.
+    pub skills: std::collections::BTreeMap<String, Reach>,
     /// Folders the user named, each with the skills that go into it.
     pub folders: Vec<LibraryFolder>,
     /// Destinations left out on purpose, by path.
     pub skipped: Vec<String>,
+}
+
+/// The library's settings as the file may hold them: before a reach, the
+/// instructions were on or off for every account and `everywhere` named the
+/// skills that went into every account.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+struct LibrarySettingsFile {
+    source: Option<String>,
+    instructions: Option<InstructionsField>,
+    skills: std::collections::BTreeMap<String, Reach>,
+    everywhere: Vec<String>,
+    folders: Vec<LibraryFolder>,
+    skipped: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum InstructionsField {
+    On(bool),
+    Reach(Reach),
+}
+
+impl From<LibrarySettingsFile> for LibrarySettings {
+    fn from(f: LibrarySettingsFile) -> Self {
+        let mut skills = f.skills;
+        for name in f.everywhere {
+            skills.entry(name).or_insert_with(|| vec!["all".into()]);
+        }
+        LibrarySettings {
+            source: f.source,
+            instructions: match f.instructions {
+                Some(InstructionsField::On(true)) => vec!["all".into()],
+                Some(InstructionsField::On(false)) | None => Vec::new(),
+                Some(InstructionsField::Reach(r)) => r,
+            },
+            skills,
+            folders: f.folders,
+            skipped: f.skipped,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -214,5 +259,23 @@ mod tests {
         assert_ne!(stamp(&path), before);
         assert_eq!(read(&path).quiet_window_s, 60);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_library_before_a_reach_reads_as_every_account() {
+        let old: Settings = serde_json::from_str(r#"{"library": {"instructions": true, "everywhere": ["review"], "skipped": ["x"]}}"#).unwrap();
+        assert_eq!(old.library.instructions, vec!["all".to_string()]);
+        assert_eq!(old.library.skills["review"], vec!["all".to_string()]);
+        assert_eq!(old.library.skipped, vec!["x".to_string()]);
+        let off: Settings = serde_json::from_str(r#"{"library": {"instructions": false}}"#).unwrap();
+        assert!(off.library.instructions.is_empty());
+
+        // Written back, it reads the same.
+        let mut s = Settings::default();
+        s.library.instructions = vec!["claude".into(), "codex/home".into()];
+        s.library.skills.insert("review".into(), vec!["claude/work".into()]);
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back.library.instructions, s.library.instructions);
+        assert_eq!(back.library.skills, s.library.skills);
     }
 }

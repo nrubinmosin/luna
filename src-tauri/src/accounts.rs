@@ -124,6 +124,7 @@ pub fn rename_account(
         if parent.as_deref() == Some(name.as_str()) {
             *parent = Some(to.clone());
         }
+        crate::library::rename_account(&mut s.library, &old_key, Some(&new_key));
     })?;
     crate::log::info("accounts", &format!("renamed {old_key} to {new_key}"));
     Ok(AccountInfo { provider, name: to, path: dest.to_string_lossy().into_owned() })
@@ -180,5 +181,6 @@ pub fn delete_account(provider: Provider, name: String) -> Result<(), String> {
     if !dir.exists() {
         return Ok(());
     }
-    fs::remove_dir_all(&dir).map_err(|e| e.to_string())
+    fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
+    crate::settings::update(|s| crate::library::rename_account(&mut s.library, &format!("{}/{name}", provider.as_str()), None))
 }

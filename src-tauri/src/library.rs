@@ -1,5 +1,6 @@
 //! The user's own skills and one instructions file, kept in Luna's library
-//! and laid out where the CLIs read them: into every account — a skill as
+//! and laid out where the CLIs read them: into the accounts each is meant for
+//! — all of them, a provider's, or ones picked by name; a skill as
 //! `skills/<name>`, the instructions as `CLAUDE.md` (Claude Code) or
 //! `AGENTS.md` (Codex) in its root — and into folders the user names, a
 //! skill as `<folder>/<name>`. How a CLI gets to a folder's skills (a link
@@ -16,6 +17,7 @@
 
 use crate::accounts::AccountInfo;
 use crate::provider::Provider;
+use crate::settings::Reach;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -43,6 +45,52 @@ fn instructions_name(provider: Provider) -> &'static str {
         Provider::Claude => "CLAUDE.md",
         Provider::Codex => "AGENTS.md",
     }
+}
+
+// ------------------------------------------------------------------ reach --
+
+const ALL: &str = "all";
+
+/// Whether a reach takes in this account.
+fn reaches(reach: &[String], a: &AccountInfo) -> bool {
+    let provider = a.provider.as_str();
+    reach.iter().any(|r| r == ALL || r == provider || r.split_once('/') == Some((provider, a.name.as_str())))
+}
+
+/// A reach as the user ticked it, checked and made the shortest that takes in
+/// the same accounts: `all` alone, a provider without its own accounts,
+/// nothing twice.
+fn tidy_reach(reach: Vec<String>) -> Result<Reach, String> {
+    let provider = |p: &str| Provider::ALL.iter().any(|x| x.as_str() == p);
+    for r in &reach {
+        let fits = r == ALL || provider(r) || r.split_once('/').is_some_and(|(p, n)| provider(p) && !n.is_empty() && !n.contains('/'));
+        if !fits {
+            return Err(format!("{r} is not all, a provider or provider/account"));
+        }
+    }
+    if reach.iter().any(|r| r == ALL) {
+        return Ok(vec![ALL.into()]);
+    }
+    let mut out: Reach = Vec::new();
+    for r in &reach {
+        let covered = r.split_once('/').is_some_and(|(p, _)| reach.iter().any(|x| x == p));
+        if !covered && !out.contains(r) {
+            out.push(r.clone());
+        }
+    }
+    Ok(out)
+}
+
+/// An account renamed (`to`) or deleted (None), as `provider/name`: every
+/// reach that named it follows.
+pub fn rename_account(lib: &mut crate::settings::LibrarySettings, from: &str, to: Option<&str>) {
+    for reach in std::iter::once(&mut lib.instructions).chain(lib.skills.values_mut()) {
+        match to {
+            Some(to) => reach.iter_mut().filter(|r| *r == from).for_each(|r| *r = to.to_string()),
+            None => reach.retain(|r| r != from),
+        }
+    }
+    lib.skills.retain(|_, reach| !reach.is_empty());
 }
 
 // ----------------------------------------------------------------- places --
@@ -102,6 +150,8 @@ pub struct SkillInfo {
     pub description: String,
     /// Why it is laid out nowhere, while it is not fit to be.
     pub problem: Option<String>,
+    /// The accounts it goes into.
+    pub accounts: Reach,
 }
 
 /// A name both CLIs take for a skill, and the only kind Luna makes a folder of.
@@ -201,7 +251,7 @@ fn read_skills(dirs: &Dirs) -> BTreeMap<String, (SkillInfo, Result<Files, String
             Err(e) => (String::new(), Some(e.clone())),
         };
         let files = checked.and(files);
-        out.insert(name.clone(), (SkillInfo { name, description, problem }, files));
+        out.insert(name.clone(), (SkillInfo { name, description, problem, accounts: Vec::new() }, files));
     }
     out
 }
@@ -533,10 +583,10 @@ fn pass(dirs: &Dirs, units: &[Unit], skipped: &[String], ledger: &mut Ledger, ac
 fn units(dirs: &Dirs, lib: &crate::settings::LibrarySettings, accounts: &[AccountInfo], skills: &BTreeMap<String, (SkillInfo, Result<Files, String>)>) -> Vec<Unit> {
     let mut out = Vec::new();
     let account = |a: &AccountInfo| Target::Account { provider: a.provider, name: a.name.clone() };
-    if lib.instructions {
+    if !lib.instructions.is_empty() {
         if let Ok(text) = std::fs::read(dirs.instructions()) {
             if !String::from_utf8_lossy(&text).trim().is_empty() {
-                for a in accounts {
+                for a in accounts.iter().filter(|a| reaches(&lib.instructions, a)) {
                     out.push(Unit {
                         dest: Path::new(&a.path).join(instructions_name(a.provider)),
                         file: true,
@@ -548,9 +598,9 @@ fn units(dirs: &Dirs, lib: &crate::settings::LibrarySettings, accounts: &[Accoun
             }
         }
     }
-    for name in &lib.everywhere {
+    for (name, reach) in &lib.skills {
         let Some((_, files)) = skills.get(name) else { continue };
-        for a in accounts {
+        for a in accounts.iter().filter(|a| reaches(reach, a)) {
             out.push(Unit {
                 dest: Path::new(&a.path).join("skills").join(name),
                 file: false,
@@ -603,11 +653,13 @@ pub struct Overview {
     /// False while the library's folder is not there: nothing is laid out,
     /// and nothing taken out, until it is.
     pub found: bool,
-    pub instructions: bool,
+    /// The accounts the instructions go into.
+    pub instructions: Reach,
     /// The library has instructions to lay out: its file is there and not blank.
     pub has_instructions: bool,
     pub skills: Vec<SkillInfo>,
-    pub everywhere: Vec<String>,
+    /// Every account, to pick a reach from.
+    pub accounts: Vec<AccountInfo>,
     pub folders: Vec<FolderInfo>,
     pub places: Vec<Place>,
     pub found_instructions: Vec<FoundFile>,
@@ -656,10 +708,13 @@ fn overview_locked(act: bool) -> Result<Overview, String> {
         root: dirs.root.to_string_lossy().into_owned(),
         is_default: lib.source.is_none(),
         found,
-        instructions: lib.instructions,
         has_instructions: std::fs::read_to_string(dirs.instructions()).is_ok_and(|t| !t.trim().is_empty()),
-        skills: skills.into_values().map(|(info, _)| info).collect(),
-        everywhere: lib.everywhere,
+        skills: skills
+            .into_values()
+            .map(|(info, _)| SkillInfo { accounts: lib.skills.get(&info.name).cloned().unwrap_or_default(), ..info })
+            .collect(),
+        instructions: lib.instructions,
+        accounts,
         folders: lib.folders.into_iter().map(|f| FolderInfo { found: Path::new(&f.path).is_dir(), path: f.path, skills: f.skills }).collect(),
         places: p.places,
         found_instructions,
@@ -700,19 +755,23 @@ pub fn library_set_source(path: String) -> Result<Overview, String> {
     change(|l| l.source = (!path.is_empty()).then_some(path))
 }
 
+/// The accounts the instructions go into; empty = none.
 #[tauri::command]
-pub fn library_set_instructions(on: bool) -> Result<Overview, String> {
-    change(|l| l.instructions = on)
+pub fn library_set_instructions(accounts: Vec<String>) -> Result<Overview, String> {
+    let reach = tidy_reach(accounts)?;
+    change(|l| l.instructions = reach)
 }
 
-/// Whether a skill goes into every account.
+/// The accounts a skill goes into; empty = none.
 #[tauri::command]
-pub fn library_set_everywhere(skill: String, on: bool) -> Result<Overview, String> {
+pub fn library_set_accounts(skill: String, accounts: Vec<String>) -> Result<Overview, String> {
     check_name(&skill)?;
+    let reach = tidy_reach(accounts)?;
     change(|l| {
-        l.everywhere.retain(|s| *s != skill);
-        if on {
-            l.everywhere.push(skill);
+        if reach.is_empty() {
+            l.skills.remove(&skill);
+        } else {
+            l.skills.insert(skill, reach);
         }
     })
 }
@@ -817,9 +876,10 @@ pub fn library_resolve(dest: String, take: bool) -> Result<Overview, String> {
         crate::log::info("library", &format!("put the library's copy back at {dest}"));
     }
     ledger.save(&dirs)?;
-    // Taking an account's instructions file means laying it out.
-    if take && skill.is_none() && !crate::settings::get().library.instructions {
-        crate::settings::update(|s| s.library.instructions = true)?;
+    // Taking an account's instructions file while they go nowhere means
+    // laying them out into every account.
+    if take && skill.is_none() && crate::settings::get().library.instructions.is_empty() {
+        crate::settings::update(|s| s.library.instructions = vec![ALL.into()])?;
     }
     overview_locked(true)
 }
@@ -941,7 +1001,7 @@ pub fn library_delete_skill(name: String) -> Result<Overview, String> {
         std::fs::remove_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     }
     crate::settings::update(|s| {
-        s.library.everywhere.retain(|n| *n != name);
+        s.library.skills.remove(&name);
         for f in &mut s.library.folders {
             f.skills.retain(|n| *n != name);
         }
@@ -1024,6 +1084,61 @@ mod tests {
         }
     }
 
+    fn all() -> Reach {
+        vec![ALL.into()]
+    }
+
+    /// These skills, each into every account.
+    fn skills(names: &[&str]) -> BTreeMap<String, Reach> {
+        names.iter().map(|n| (n.to_string(), all())).collect()
+    }
+
+    #[test]
+    fn a_reach_takes_in_all_a_provider_or_one_account() {
+        let f = Fixture::new("reach");
+        f.skill("review", "v1");
+        std::fs::write(f.dirs.instructions(), "Be brief.\n").unwrap();
+        let reach = |r: &[&str]| r.iter().map(|s| s.to_string()).collect::<Reach>();
+        let lib = LibrarySettings {
+            instructions: reach(&["codex"]),
+            skills: BTreeMap::from([("review".into(), reach(&["claude/work"]))]),
+            ..Default::default()
+        };
+        let mut ledger = Ledger::default();
+        f.run(&lib, &mut ledger, true);
+        assert!(!f.account(0).join("CLAUDE.md").exists());
+        assert!(f.account(1).join("AGENTS.md").is_file());
+        assert!(f.account(0).join("skills/review/SKILL.md").is_file());
+        assert!(!f.account(1).join("skills/review").exists());
+
+        // Narrowed: the account no longer meant goes, as for a skill unticked.
+        let lib = LibrarySettings { skills: BTreeMap::from([("review".into(), reach(&["codex/home"]))]), ..lib };
+        f.run(&lib, &mut ledger, true);
+        assert!(!f.account(0).join("skills/review").exists());
+        assert!(f.account(1).join("skills/review/SKILL.md").is_file());
+
+        assert_eq!(tidy_reach(reach(&["claude/work", "all"])).unwrap(), all());
+        assert_eq!(tidy_reach(reach(&["claude/work", "codex/home", "claude", "codex/home"])).unwrap(), reach(&["codex/home", "claude"]));
+        assert!(tidy_reach(reach(&["gemini"])).is_err());
+        assert!(tidy_reach(reach(&["claude/"])).is_err());
+    }
+
+    #[test]
+    fn a_renamed_account_keeps_its_reach_and_a_deleted_one_leaves_it() {
+        let mut lib = LibrarySettings {
+            instructions: vec!["claude/work".into(), "codex".into()],
+            skills: BTreeMap::from([("review".into(), vec!["claude/work".into()]), ("notes".into(), all())]),
+            ..Default::default()
+        };
+        rename_account(&mut lib, "claude/work", Some("claude/office"));
+        assert_eq!(lib.instructions, vec!["claude/office".to_string(), "codex".into()]);
+        assert_eq!(lib.skills["review"], vec!["claude/office".to_string()]);
+        rename_account(&mut lib, "claude/office", None);
+        assert_eq!(lib.instructions, vec!["codex".to_string()]);
+        assert!(!lib.skills.contains_key("review"), "a skill that goes nowhere any more is dropped");
+        assert_eq!(lib.skills["notes"], all());
+    }
+
     #[test]
     fn front_matter_reads_the_ways_yaml_writes_a_line() {
         let ok = |t: &str| check_skill("review", t);
@@ -1043,7 +1158,7 @@ mod tests {
         let f = Fixture::new("lay");
         f.skill("review", "v1");
         std::fs::write(f.dirs.instructions(), "Be brief.\n").unwrap();
-        let lib = LibrarySettings { instructions: true, everywhere: vec!["review".into()], ..Default::default() };
+        let lib = LibrarySettings { instructions: all(), skills: skills(&["review"]), ..Default::default() };
         let mut ledger = Ledger::default();
 
         let p = f.run(&lib, &mut ledger, false);
@@ -1080,7 +1195,7 @@ mod tests {
     fn a_copy_changed_there_is_asked_about_never_replaced() {
         let f = Fixture::new("changed");
         std::fs::write(f.dirs.instructions(), "Be brief.\n").unwrap();
-        let lib = LibrarySettings { instructions: true, ..Default::default() };
+        let lib = LibrarySettings { instructions: all(), ..Default::default() };
         let mut ledger = Ledger::default();
         f.run(&lib, &mut ledger, true);
         let claude_md = f.account(0).join("CLAUDE.md");
@@ -1111,7 +1226,7 @@ mod tests {
     fn what_luna_did_not_write_is_left_alone() {
         let f = Fixture::new("foreign");
         f.skill("review", "mine");
-        let lib = LibrarySettings { everywhere: vec!["review".into()], ..Default::default() };
+        let lib = LibrarySettings { skills: skills(&["review"]), ..Default::default() };
         // The account already has a skill of that name, and another one.
         write_file(&f.account(0).join("skills/review/SKILL.md"), b"someone else's").unwrap();
         write_file(&f.account(0).join("skills/other/SKILL.md"), b"other").unwrap();
@@ -1173,7 +1288,7 @@ mod tests {
     fn a_broken_skill_is_laid_out_nowhere_and_its_copies_stay() {
         let f = Fixture::new("broken");
         f.skill("review", "v1");
-        let lib = LibrarySettings { everywhere: vec!["review".into()], ..Default::default() };
+        let lib = LibrarySettings { skills: skills(&["review"]), ..Default::default() };
         let mut ledger = Ledger::default();
         f.run(&lib, &mut ledger, true);
         std::fs::write(f.dirs.skills().join("review/SKILL.md"), "no front matter").unwrap();
@@ -1188,7 +1303,7 @@ mod tests {
         let f = Fixture::new("skip");
         std::fs::write(f.dirs.instructions(), "Be brief.\n").unwrap();
         let claude_md = f.account(0).join("CLAUDE.md").to_string_lossy().into_owned();
-        let lib = LibrarySettings { instructions: true, skipped: vec![claude_md.clone()], ..Default::default() };
+        let lib = LibrarySettings { instructions: all(), skipped: vec![claude_md.clone()], ..Default::default() };
         let p = f.run(&lib, &mut Ledger::default(), true);
         assert_eq!(Fixture::status(&p, Path::new(&claude_md)), Status::Skipped);
         assert!(!Path::new(&claude_md).exists());
@@ -1199,7 +1314,7 @@ mod tests {
     fn blank_instructions_lay_nothing_out() {
         let f = Fixture::new("blank");
         std::fs::write(f.dirs.instructions(), " \n").unwrap();
-        let lib = LibrarySettings { instructions: true, ..Default::default() };
+        let lib = LibrarySettings { instructions: all(), ..Default::default() };
         let p = f.run(&lib, &mut Ledger::default(), true);
         assert!(p.places.is_empty());
         assert!(!f.account(0).join("CLAUDE.md").exists());
@@ -1209,7 +1324,7 @@ mod tests {
     fn backups_and_blobs_keep_what_a_diff_and_an_undo_need() {
         let f = Fixture::new("blobs");
         std::fs::write(f.dirs.instructions(), "Be brief.\n").unwrap();
-        let lib = LibrarySettings { instructions: true, ..Default::default() };
+        let lib = LibrarySettings { instructions: all(), ..Default::default() };
         let mut ledger = Ledger::default();
         f.run(&lib, &mut ledger, true);
         let dest = f.account(0).join("CLAUDE.md").to_string_lossy().into_owned();

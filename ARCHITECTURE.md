@@ -60,8 +60,8 @@ src/                          frontend (feature-sliced)
               RecommendedDialog (recommended settings, per-account button), ConfigEditor
               (hand editor for settings.json / config.toml); accounts.store
     library/  Skills & instructions (from Accounts, or the status bar's chip while a copy needs a
-              look): the library's folder, the instructions, a grid of skills against "every
-              account" and each folder, "Needs a look" with differences (diff.ts — a line LCS);
+              look): the library's folder, the instructions, a grid of skills against the
+              accounts each goes into (ReachPicker: all, a CLI's, by name) and each folder, "Needs a look" with differences (diff.ts — a line LCS);
               LibraryEditor — instructions.md / SKILL.md in CodeMirror, saved and laid out at once;
               library.store — the overview, a pass at startup, a look on every window focus
     settings/ Settings (gear in the status bar and in Accounts): accounts folder, auto-tiling,
@@ -166,8 +166,9 @@ src-tauri/src/
                 with line/column; format_account_config: JSON pretty with 2 spaces, TOML via
                 taplo, comments and key order kept; only what parses is written)
   library.rs    the user's skills and instructions: a library folder (`<data>/library` or one of
-                the user's) with `instructions.md` and `skills/<name>/SKILL.md`, laid out into every
-                account (`CLAUDE.md` / `AGENTS.md`, `skills/<name>`) and into folders the user names
+                the user's) with `instructions.md` and `skills/<name>/SKILL.md`, laid out into the
+                accounts each is meant for — a reach of `all`, `claude`/`codex` or `provider/name`
+                entries (`CLAUDE.md` / `AGENTS.md`, `skills/<name>`) — and into folders the user names
                 (`<folder>/<name>`); a ledger of what Luna wrote where (`<data>/library-state.json`,
                 bytes in `library-blobs/` by hash) so only its own copies are touched — see Key decisions
   watchdog.rs   a window whose page stopped responding (WebView2 died) is rebuilt
@@ -529,7 +530,10 @@ src-tauri/src/
   `apply_recommended(provider, account_path, add, remove)`.
 - **The library** (`library.rs`). The user's own instructions and skills, which belong to
   them rather than to any repository (a repository's skills reach everyone who clones it, and
-  Luna's MCP instructions every model that connects). The library is the source; a
+  Luna's MCP instructions every model that connects). Each skill, and the instructions, has a
+  reach in settings.json — `all`, a provider's every account, or `provider/name`, the key
+  agents.rs uses too — that account renames and deletions carry along; an account a reach
+  stops taking in loses Luna's copy like a skill unticked. The library is the source; a
   destination — an account's instructions file or `skills/<name>`, a named folder's `<name>`
   — holds a copy. A pass compares three things per destination: the library's files, what is
   there now, and the ledger's hashes of what Luna wrote there last. Missing → written; there

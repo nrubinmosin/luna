@@ -218,7 +218,7 @@ pub fn run() {
             library::library_sync,
             library::library_set_source,
             library::library_set_instructions,
-            library::library_set_everywhere,
+            library::library_set_accounts,
             library::library_set_folder,
             library::library_skip,
             library::library_resolve,
