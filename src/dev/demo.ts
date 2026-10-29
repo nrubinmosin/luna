@@ -13,8 +13,10 @@
 import type { Terminal as XTerm } from '@xterm/xterm';
 import type { Account, Chat, ClaudeChat, CodexChat, Folder, Provider } from '../shared/types';
 import type {
-  AccountsRootInfo, BackgroundHelperDto, WorktreeInfoDto, ClaudeDefaultsDto, CliStatusDto, CodexDefaultsDto, CodexModelDto, PowerStateDto
+  AccountsRootInfo, BackgroundHelperDto, WorktreeInfoDto, ClaudeDefaultsDto, CliStatusDto, CodexDefaultsDto, CodexModelDto, PowerStateDto,
+  FileDiffDto, LibraryOverviewDto, PlaceDto
 } from '../ipc/commands';
+import { useLibrary } from '../features/library/library.store';
 import { useBackground } from '../features/agents/background.store';
 import { useAccounts } from '../features/accounts/accounts.store';
 import { useAccountsWindow } from '../features/accounts/AccountsPanel';
@@ -26,9 +28,10 @@ import { useUpdates } from '../features/updates/updates.store';
 import { useShell } from '../app/shell.store';
 
 /** `?demo`, `?demo=dark`, `?demo=peek`, `?demo=newchat`, `?demo=codex` (the same on a Codex
- *  account), `?demo=settings`, `?demo=accounts`, `?demo=recommended`, `?demo=editor`, `?demo=worktrees`. */
-export type Scene = 'main' | 'dark' | 'peek' | 'newchat' | 'codex' | 'settings' | 'accounts' | 'recommended' | 'editor' | 'worktrees';
-const SCENES: Scene[] = ['dark', 'peek', 'newchat', 'codex', 'settings', 'accounts', 'recommended', 'editor', 'worktrees'];
+ *  account), `?demo=settings`, `?demo=accounts`, `?demo=recommended`, `?demo=editor`, `?demo=worktrees`,
+ *  `?demo=library`. */
+export type Scene = 'main' | 'dark' | 'peek' | 'newchat' | 'codex' | 'settings' | 'accounts' | 'recommended' | 'editor' | 'worktrees' | 'library';
+const SCENES: Scene[] = ['dark', 'peek', 'newchat', 'codex', 'settings', 'accounts', 'recommended', 'editor', 'worktrees', 'library'];
 
 const hoursFromNow = (h: number) => new Date(Date.now() + h * 3600_000).toISOString();
 
@@ -385,8 +388,54 @@ const STALE: Record<string, WorktreeInfoDto[]> = {
   ]
 };
 
+// The library: two skills laid out, one a draft that does not do yet; one
+// account's instructions edited by hand since Luna wrote them.
+const SHARED = 'C:\\src\\luna\\.shared-skills';
+const accountsDir = (vendor: string, name: string) => `C:\\Users\\me\\Documents\\luna-accounts\\${vendor}\\${name}`;
+const place = (p: Partial<PlaceDto> & Pick<PlaceDto, 'dest' | 'target'>): PlaceDto => ({
+  skill: null, status: 'current', both: false, problem: null, ...p
+});
+const LIBRARY: LibraryOverviewDto = {
+  root: 'C:\\Users\\me\\AppData\\Local\\luna\\library',
+  isDefault: true,
+  found: true,
+  instructions: true,
+  hasInstructions: true,
+  skills: [
+    { name: 'luna-review', description: 'Hand a finished change to a model of the other CLI through Luna and fold its findings back in.', problem: null },
+    { name: 'migrations', description: '', problem: 'The front matter has no description' },
+    { name: 'release-notes', description: 'Write the release notes from the commits since the last tag, in the house style.', problem: null }
+  ],
+  everywhere: ['luna-review'],
+  folders: [{ path: SHARED, skills: ['luna-review', 'release-notes'], found: true }],
+  places: [
+    place({ dest: `${accountsDir('anthropic', 'personal')}\\CLAUDE.md`, target: { kind: 'account', provider: 'claude', name: 'personal' } }),
+    place({ dest: `${accountsDir('anthropic', 'work')}\\CLAUDE.md`, target: { kind: 'account', provider: 'claude', name: 'work' }, status: 'changed' }),
+    place({ dest: `${accountsDir('openai', 'personal')}\\AGENTS.md`, target: { kind: 'account', provider: 'codex', name: 'personal' } }),
+    ...[['anthropic', 'claude', 'personal'], ['anthropic', 'claude', 'work'], ['openai', 'codex', 'personal']].map(([v, p, n]) =>
+      place({ dest: `${accountsDir(v, n)}\\skills\\luna-review`, target: { kind: 'account', provider: p as Provider, name: n }, skill: 'luna-review' })
+    ),
+    place({ dest: `${SHARED}\\luna-review`, target: { kind: 'folder', path: SHARED }, skill: 'luna-review' }),
+    place({ dest: `${SHARED}\\release-notes`, target: { kind: 'folder', path: SHARED }, skill: 'release-notes', status: 'taken' })
+  ],
+  foundInstructions: [],
+  overridden: [],
+  kept: []
+};
+const LIBRARY_DIFF: FileDiffDto[] = [
+  {
+    path: 'CLAUDE.md',
+    base: '# Working with me\n\n- Answer in the language I write in.\n- Run the tests before saying done.\n- Commit only when asked.\n',
+    library: '# Working with me\n\n- Answer in the language I write in.\n- Run the tests before saying done.\n- Commit only when asked.\n',
+    there: '# Working with me\n\n- Answer in the language I write in.\n- Run the tests before saying done, and say which.\n- Commit only when asked.\n- Never push to master.\n',
+    binary: false
+  }
+];
+
 export function answer<T>(cmd: string, args: Record<string, unknown>, fallback: T): T {
   if (!seeded) return fallback;
+  if (cmd === 'library_overview' || cmd === 'library_sync') return LIBRARY as unknown as T;
+  if (cmd === 'library_diff') return LIBRARY_DIFF as unknown as T;
   if (cmd === 'orphan_worktrees') return (STALE[args.folder as string] ?? []).map(w => w.path) as unknown as T;
   if (cmd === 'inspect_worktrees') return (STALE[args.folder as string] ?? []) as unknown as T;
   if (cmd === 'cli_status') return (CLI[args.provider as Provider] ?? CLI.claude) as unknown as T;
@@ -471,6 +520,11 @@ export function seedDemo(scene: Scene) {
   if (scene === 'newchat' || scene === 'codex') useNewChat.getState().openDialog('C:\\src\\luna');
   if (scene === 'accounts' || scene === 'recommended' || scene === 'editor') useAccountsWindow.getState().setOpen(true);
   if (scene === 'worktrees') useWorktrees.getState().setOpen(true);
+  if (scene === 'library') {
+    useLibrary.getState().setOpen(true);
+    // The changed copy's differences, opened the way a click would.
+    setTimeout(() => [...document.querySelectorAll<HTMLButtonElement>('button')].find(b => b.textContent === 'Differences')?.click(), 600);
+  }
   // The two dialogs belong to an account row; open them the way a click would.
   const button = scene === 'recommended' ? 'Recommended settings' : scene === 'editor' ? 'Edit settings.json' : null;
   if (button) {

@@ -35,6 +35,31 @@ pub struct Settings {
     /// Folders whose projects Codex sessions start trusted on this machine,
     /// without an entry in any account's config.toml (codex/trust.rs).
     pub codex_trusted_roots: Vec<String>,
+    /// The user's skills and instructions, and where they are laid out
+    /// (library.rs).
+    pub library: LibrarySettings,
+}
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct LibrarySettings {
+    /// Absolute path of the library's folder; None means `<data>/library`.
+    pub source: Option<String>,
+    /// The library's instructions go into every account.
+    pub instructions: bool,
+    /// Skills that go into every account, by name.
+    pub everywhere: Vec<String>,
+    /// Folders the user named, each with the skills that go into it.
+    pub folders: Vec<LibraryFolder>,
+    /// Destinations left out on purpose, by path.
+    pub skipped: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct LibraryFolder {
+    pub path: String,
+    pub skills: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -58,6 +83,7 @@ impl Default for Settings {
             codex_hooks_unasked: false,
             codex_hooks_unasked_in: Default::default(),
             codex_trusted_roots: Vec::new(),
+            library: LibrarySettings::default(),
         }
     }
 }

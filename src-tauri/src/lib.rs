@@ -13,6 +13,7 @@ mod coreproc;
 mod emit;
 mod hub;
 mod ipc;
+mod library;
 mod lifecycle;
 mod log;
 mod mcp;
@@ -213,6 +214,21 @@ pub fn run() {
             codex::trust::codex_trust_folder,
             codex::trust::codex_trusted_roots,
             codex::trust::set_codex_trusted_roots,
+            library::library_overview,
+            library::library_sync,
+            library::library_set_source,
+            library::library_set_instructions,
+            library::library_set_everywhere,
+            library::library_set_folder,
+            library::library_skip,
+            library::library_resolve,
+            library::library_diff,
+            library::library_read,
+            library::library_write,
+            library::library_check_skill,
+            library::library_new_skill,
+            library::library_delete_skill,
+            library::library_open,
             log::append_log,
             media::save_media,
             corelink::core_call,

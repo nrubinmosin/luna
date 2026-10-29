@@ -22,6 +22,8 @@ import { useKeymap } from './keymap';
 import { useAltPeek } from '../features/panes/altPeek';
 import { ShortcutsDialog } from '../features/shortcuts/ShortcutsDialog';
 import { SettingsDialog } from '../features/settings/SettingsDialog';
+import { LibraryWindow } from '../features/library/LibraryWindow';
+import { useLibrary } from '../features/library/library.store';
 import { healScaleDrift } from './dpi';
 import { Icon } from '../shared/ui/icons';
 import { STRIP, useShell } from './shell.store';
@@ -201,6 +203,8 @@ export function App() {
     void useUpdates.getState().check(false);
     // The CLI readout feeds the settings dialog and the bar's download chip.
     useCli.getState().init();
+    // The library laid out as it stands, and a chip if a copy needs a look.
+    useLibrary.getState().init();
     return () => useAccounts.getState().stopPolling();
   }, []);
 
@@ -247,6 +251,7 @@ export function App() {
       <ShortcutsDialog />
       <SettingsDialog />
       <WorktreesDialog />
+      <LibraryWindow />
     </div>
   );
 }

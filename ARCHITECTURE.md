@@ -59,6 +59,11 @@ src/                          frontend (feature-sliced)
     accounts/ Accounts window (from the status bar): limits, sign-in, agents, add/remove;
               RecommendedDialog (recommended settings, per-account button), ConfigEditor
               (hand editor for settings.json / config.toml); accounts.store
+    library/  Skills & instructions (from Accounts, or the status bar's chip while a copy needs a
+              look): the library's folder, the instructions, a grid of skills against "every
+              account" and each folder, "Needs a look" with differences (diff.ts — a line LCS);
+              LibraryEditor — instructions.md / SKILL.md in CodeMirror, saved and laid out at once;
+              library.store — the overview, a pass at startup, a look on every window focus
     settings/ Settings (gear in the status bar and in Accounts): accounts folder, auto-tiling,
               new chats, deletion, Luna/Claude Code/Codex versions and update buttons
     status-bar/ full-width strip of the window: working / waiting (click — to the waiting one), limits of all
@@ -160,6 +165,11 @@ src-tauri/src/
                 parent account, and hand editing of the file (check_account_config: problems
                 with line/column; format_account_config: JSON pretty with 2 spaces, TOML via
                 taplo, comments and key order kept; only what parses is written)
+  library.rs    the user's skills and instructions: a library folder (`<data>/library` or one of
+                the user's) with `instructions.md` and `skills/<name>/SKILL.md`, laid out into every
+                account (`CLAUDE.md` / `AGENTS.md`, `skills/<name>`) and into folders the user names
+                (`<folder>/<name>`); a ledger of what Luna wrote where (`<data>/library-state.json`,
+                bytes in `library-blobs/` by hash) so only its own copies are touched — see Key decisions
   watchdog.rs   a window whose page stopped responding (WebView2 died) is rebuilt
   coreproc.rs   the core: the same exe with `--core`, no window; one per data dir (core.lock), listens on
                 127.0.0.1 with a token from <data>/core/core.json, exits by itself after 10 minutes with no
@@ -517,6 +527,27 @@ src-tauri/src/
   (`copyOnSelect`) from `.claude.json` only: such a spec is `global`, its Rec names the file, and apply
   rewrites `.claude.json` only for a key of its own. Rust:
   `apply_recommended(provider, account_path, add, remove)`.
+- **The library** (`library.rs`). The user's own instructions and skills, which belong to
+  them rather than to any repository (a repository's skills reach everyone who clones it, and
+  Luna's MCP instructions every model that connects). The library is the source; a
+  destination — an account's instructions file or `skills/<name>`, a named folder's `<name>`
+  — holds a copy. A pass compares three things per destination: the library's files, what is
+  there now, and the ledger's hashes of what Luna wrote there last. Missing → written; there
+  and equal to the ledger but behind the library → rewritten; equal to the library with no
+  ledger entry → adopted; different from the ledger → `changed` (or `gone`), with no ledger
+  entry and different → `taken`: these three are never written, only reported, and the window
+  resolves each — take it into the library (which then spreads it), put the library's back,
+  or skip that destination (`library.skipped` in settings.json, its ledger entry dropped). The
+  side that loses goes to `<data>/library-backups/` first (swept after 30 days). A ledger
+  entry no longer wanted is deleted only while what is there still hashes to it; otherwise it
+  is left and reported as kept. A skill whose SKILL.md does not do (front matter with this
+  `name` and a `description`, the checks both CLIs make) is `failed` — its copies stay, so a
+  draft mid-edit takes nothing out — and a library folder that is not there wants nothing and
+  touches nothing. A link at a destination, or inside it, is never followed or written over.
+  Passes run when the window starts, after every change made in the window and on Sync now,
+  one at a time under a lock; the window reads the overview (no writes) on every focus. The
+  instructions are one file for both CLIs; a Codex account's `AGENTS.override.md`, which
+  Codex reads instead of `AGENTS.md`, is reported.
 - **The hand editor** (`ConfigEditor.tsx`) is CodeMirror 6 — JSON via `@codemirror/lang-json`, TOML via
   `@codemirror/legacy-modes` — with line numbers and colours from theme tokens
   (`--code-key/--code-string/--code-literal`). The core checks problems as you type

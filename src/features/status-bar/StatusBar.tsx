@@ -14,6 +14,7 @@ import { PROVIDER_LABEL, PROVIDERS, accountKey, type Account } from '../../share
 import { PowerChip } from '../power/PowerChip';
 import { useShortcuts } from '../shortcuts/ShortcutsDialog';
 import { useSettings } from '../settings/SettingsDialog';
+import { useLibrary, waiting } from '../library/library.store';
 
 const chipStyle = (loud: boolean) => ({
   cursor: 'default',
@@ -119,6 +120,28 @@ function UpdateChips() {
   }
 
   return <>{chips}</>;
+}
+
+/**
+ * The library's word on the bar, only while a copy of a skill or of the
+ * instructions waits on the user: changed or deleted where it lies, something
+ * else in its place, or one that cannot be laid out.
+ */
+function LibraryChip() {
+  const places = useLibrary(s => s.overview?.places);
+  const lines = waiting(places ?? []).length;
+  if (!lines) return null;
+  return (
+    <div
+      onClick={() => useLibrary.getState().setOpen(true)}
+      title={`Skills & instructions — ${lines} thing${lines === 1 ? '' : 's'} to look at; click to see`}
+      className="sb-field click"
+      style={chipStyle(true)}
+    >
+      <Icon name="library" />
+      {lines}
+    </div>
+  );
 }
 
 /**
@@ -257,6 +280,7 @@ export function StatusBar() {
       </div>
 
       <UpdateChips />
+      <LibraryChip />
       <PowerChip />
       <div
         onClick={() => useSettings.getState().setOpen(true)}

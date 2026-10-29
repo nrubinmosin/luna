@@ -13,6 +13,7 @@ import { RecommendedDialog } from './RecommendedDialog';
 import { ConfigEditor } from './ConfigEditor';
 import { SettingsSync } from './SettingsSync';
 import { useAgentAccounts } from '../agents/agentAccounts.store';
+import { useLibrary } from '../library/library.store';
 import { recommendedSettings } from '../../ipc/commands';
 
 /** Raised from the status bar: its account summary, or its Accounts button. */
@@ -151,6 +152,12 @@ function AccountsPanel() {
           onClick={() => setAdding(!adding)}
         />
         <span style={{ flex: 1 }} />
+        <ToolButton
+          icon="library"
+          label="Skills & instructions"
+          title="Your own skills and instructions — into every account, and into folders you name"
+          onClick={() => useLibrary.getState().setOpen(true)}
+        />
         <ToolButton
           icon="gear"
           label="Settings"

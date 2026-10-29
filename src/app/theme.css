@@ -1187,6 +1187,35 @@ body { margin: 0; overflow: hidden; }
   padding: 2px;
 }
 
+/* A library copy's differences: lines on the terminal's well, sunk like a field. */
+[data-app] .library-diff {
+  background: var(--term);
+  box-shadow: var(--border-sunken-outer), var(--border-sunken-inner);
+  padding: 4px 0;
+  max-height: 260px;
+  overflow: auto;
+  font: 12px/1.5 "JetBrains Mono", ui-monospace, monospace;
+  white-space: pre;
+}
+
+/* The library's skills against where each goes. */
+[data-app] .library-grid {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-3);
+}
+[data-app] .library-grid th {
+  font-size: var(--fs-1);
+  font-weight: 700;
+  color: var(--faint);
+  text-align: center;
+  padding: 2px 6px 4px;
+  white-space: nowrap;
+}
+[data-app] .library-grid th:first-child { text-align: left; }
+[data-app] .library-grid td { border-top: 1px solid var(--line); padding: 5px 6px; vertical-align: middle; }
+[data-app] .library-grid td.cell { text-align: center; width: 1%; white-space: nowrap; }
+
 /* The account box: a select drawn by hand, so its rows can carry icons. */
 [data-app] .picker { position: relative; }
 [data-app] button.picker-face {

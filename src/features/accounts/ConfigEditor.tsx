@@ -16,7 +16,7 @@ import { Icon } from '../../shared/ui/icons';
 import { PROVIDER_LABEL, type Account, type Provider } from '../../shared/types';
 
 /** Colours from the theme's tokens, so light and dark need nothing of their own. */
-const highlight = HighlightStyle.define([
+export const highlight = HighlightStyle.define([
   { tag: [tags.propertyName, tags.definition(tags.propertyName), tags.variableName], color: 'var(--code-key)' },
   { tag: [tags.string, tags.special(tags.string)], color: 'var(--code-string)' },
   { tag: [tags.number, tags.bool, tags.null, tags.atom], color: 'var(--code-literal)' },
@@ -24,7 +24,7 @@ const highlight = HighlightStyle.define([
   { tag: [tags.heading, tags.meta, tags.bracket, tags.squareBracket], color: 'var(--code-key)', fontWeight: '700' }
 ]);
 
-const look = EditorView.theme({
+export const look = EditorView.theme({
   '&': { flex: '1', minHeight: '0', background: 'var(--term)', color: 'var(--fg)', font: '13px/1.55 "JetBrains Mono", ui-monospace, monospace' },
   '&.cm-focused': { outline: 'none' },
   '.cm-scroller': { fontFamily: 'inherit', lineHeight: 'inherit' },
