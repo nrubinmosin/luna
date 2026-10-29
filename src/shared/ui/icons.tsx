@@ -14,7 +14,7 @@ export type IconName =
   | 'plus' | 'pencil' | 'trash' | 'reset' | 'sun' | 'moon' | 'auto' | 'hide' | 'show'
   | 'even' | 'gear' | 'refresh' | 'accounts' | 'key' | 'power' | 'help'
   | 'agents' | 'sweep' | 'download' | 'warn' | 'update' | 'close' | 'check' | 'child' | 'claude' | 'codex'
-  | 'recommend' | 'sync' | 'file' | 'folder';
+  | 'recommend' | 'sync' | 'file' | 'folder' | 'library';
 
 const grad = (id: string, top: string, bottom: string) => (
   <linearGradient id={id} x1="0" y1="0" x2="0" y2="1">
@@ -262,6 +262,16 @@ function draw(name: IconName, p: string): ReactNode {
           <defs>{grad(`${p}g`, '#ffe9a6', '#e8b840')}</defs>
           <path d="M1.5 3.5h4.6l1.4 1.5h7v8.5h-13z" fill="#d9a22e" stroke="#8a6000" strokeLinejoin="round" />
           <path d="M1.5 6.5h13v7h-13z" fill={`url(#${p}g)`} stroke="#8a6000" strokeLinejoin="round" />
+        </>
+      );
+    case 'library':
+      // A bound book, its pages showing at the foot: what Luna keeps of yours.
+      return (
+        <>
+          <defs>{grad(`${p}g`, '#8ec0ff', '#1f63c9')}</defs>
+          <path d="M3.5 1.5h9v10.5h-9a1.5 1.5 0 0 0-1.5 1.5V3a1.5 1.5 0 0 1 1.5-1.5z" fill={`url(#${p}g)`} stroke="#123f86" strokeLinejoin="round" />
+          <path d="M3.5 12h9v2.5h-9a1.25 1.25 0 0 1 0-2.5z" fill="#fff" stroke="#123f86" strokeLinejoin="round" />
+          <path d="M5.5 4.5h5M5.5 6.5h3.5" stroke="#fff" strokeWidth=".9" strokeLinecap="round" />
         </>
       );
     case 'download':

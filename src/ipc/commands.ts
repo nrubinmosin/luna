@@ -688,6 +688,83 @@ export const syncSettingsNow = (provider: Provider) => call<SyncReportDto>('sync
 export const renameAccount = (provider: Provider, name: string, to: string) =>
   call<AccountInfo>('rename_account', { provider, name, to });
 
+// --------------------------------------------------------------- library --
+
+export type LibraryTarget = { kind: 'account'; provider: Provider; name: string } | { kind: 'folder'; path: string };
+export type PlaceStatus = 'current' | 'behind' | 'missing' | 'changed' | 'gone' | 'taken' | 'skipped' | 'failed';
+
+/** One copy the library wants somewhere, and where it stands. */
+export interface PlaceDto {
+  dest: string;
+  target: LibraryTarget;
+  /** Null for the instructions file. */
+  skill: string | null;
+  status: PlaceStatus;
+  /** Changed there, and in the library too, since Luna wrote it. */
+  both: boolean;
+  problem: string | null;
+}
+export interface LibrarySkillDto {
+  name: string;
+  description: string;
+  /** Why it is laid out nowhere, while it is not fit to be. */
+  problem: string | null;
+}
+export interface LibraryOverviewDto {
+  root: string;
+  isDefault: boolean;
+  /** False while the library's folder is not there. */
+  found: boolean;
+  instructions: boolean;
+  hasInstructions: boolean;
+  skills: LibrarySkillDto[];
+  everywhere: string[];
+  folders: { path: string; skills: string[]; found: boolean }[];
+  places: PlaceDto[];
+  /** Accounts' instruction files Luna did not write, to start the library's from. */
+  foundInstructions: { dest: string; target: LibraryTarget }[];
+  /** Codex accounts whose AGENTS.override.md hides the AGENTS.md Luna writes. */
+  overridden: string[];
+  /** Copies no longer wanted, left in place because they had changed. */
+  kept: string[];
+}
+export interface LibraryFileDto {
+  path: string;
+  text: string;
+  exists: boolean;
+}
+/** One file of a copy as Luna wrote it last, as the library has it and as it is there. */
+export interface FileDiffDto {
+  path: string;
+  base: string | null;
+  library: string | null;
+  there: string | null;
+  binary: boolean;
+}
+
+export const libraryOverview = () => call<LibraryOverviewDto | null>('library_overview', {}, null);
+/** Lays the library out — everything that needs no asking. */
+export const librarySync = () => call<LibraryOverviewDto | null>('library_sync', {}, null);
+export const librarySetSource = (path: string) => call<LibraryOverviewDto>('library_set_source', { path });
+export const librarySetInstructions = (on: boolean) => call<LibraryOverviewDto>('library_set_instructions', { on });
+export const librarySetEverywhere = (skill: string, on: boolean) => call<LibraryOverviewDto>('library_set_everywhere', { skill, on });
+/** A folder's skills; null stops laying anything out into it. */
+export const librarySetFolder = (path: string, skills: string[] | null) =>
+  call<LibraryOverviewDto>('library_set_folder', { path, skills });
+export const librarySkip = (dest: string, on: boolean) => call<LibraryOverviewDto>('library_skip', { dest, on });
+/** `take`: the copy there becomes the library's; otherwise the library's goes back there. */
+export const libraryResolve = (dest: string, take: boolean) => call<LibraryOverviewDto>('library_resolve', { dest, take });
+export const libraryDiff = (dest: string) => call<FileDiffDto[]>('library_diff', { dest }, []);
+/** The instructions (skill null) or a skill's SKILL.md. */
+export const libraryRead = (skill: string | null) => call<LibraryFileDto>('library_read', { skill });
+export const libraryWrite = (skill: string | null, text: string) => call<LibraryOverviewDto>('library_write', { skill, text });
+export const libraryCheckSkill = (skill: string, text: string) =>
+  call<string | null>('library_check_skill', { skill, text }, null);
+export const libraryNewSkill = (name: string) => call<LibraryOverviewDto>('library_new_skill', { name });
+export const libraryDeleteSkill = (name: string) => call<LibraryOverviewDto>('library_delete_skill', { name });
+/** The library's folder, or a skill's, in the file manager. */
+export const libraryOpen = (skill: string | null) => call<void>('library_open', { skill });
+
 export interface ConfigFileDto {
   path: string;
   text: string;

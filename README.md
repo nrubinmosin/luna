@@ -222,6 +222,39 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   an exact copy, so a key taken out of the parent goes from them too and whatever was set
   on a child alone is replaced; logins and Codex's trusted folders stay each account's own.
 
+## Skills and instructions
+
+- Luna keeps a library of your own: one instructions file and any number of skills, in a
+  folder of its own (`library` in Luna's data folder) or one you choose — a repository of
+  your dotfiles, say. The **Skills & instructions** window, from the Accounts window, edits
+  them and says where each one goes.
+- The instructions go into every account: `CLAUDE.md` in a Claude Code account's folder,
+  `AGENTS.md` in a Codex one — the files each CLI reads at the start of every session, in
+  every project. One file serves both CLIs. An account that already has its own keeps it
+  until you take it into the library or replace it; a library with no instructions yet can
+  start from an account's.
+- A skill is a folder with a `SKILL.md` (front matter with its `name` and a `description`,
+  then the instructions) and whatever files it needs beside it. Ticked for every account, it
+  goes into each account's `skills/`; ticked for a folder you added, into that folder as
+  `<folder>/<name>`. A folder is for what belongs to one project but not to everyone who
+  works on it: a folder of the repository that git ignores, with `.claude/skills/<name>` and
+  `.agents/skills/<name>` linked to it. The ignore and the links are yours to set up; Luna
+  only fills the folder.
+- The library is the original and every place holds a copy. Luna remembers what it wrote
+  where, so it touches only its own copies: anything else in an account or a folder stays,
+  and a copy no longer wanted goes only while it is still exactly what Luna wrote. A copy
+  changed or deleted where it lies — by hand, or by a model improving a skill in place — is
+  never silently replaced: it shows up under "Needs a look", and as a chip on the status bar,
+  with its differences from what Luna wrote. Take it into the library and it becomes every
+  copy's; put the library's back; or leave that place out. Whichever side is replaced is kept
+  in Luna's backups for 30 days.
+- The library is laid out when Luna starts, on every change made in the window and on Sync
+  now, and looked at again whenever the window comes back to the front, so a copy edited in
+  another program is noticed then. A skill whose `SKILL.md` does not do (no front matter, a
+  name other than its folder's) is laid out nowhere until it does, and its copies stay as they
+  were. A Codex account with an `AGENTS.override.md` reads that instead of `AGENTS.md`; the
+  window says so.
+
 ## Sessions and cleanup
 
 - Closing the window hides the app to the tray and leaves the sessions running. Quit from
