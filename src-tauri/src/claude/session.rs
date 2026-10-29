@@ -342,13 +342,16 @@ fn registry_entry(
         }
     }
 
+    // The folder itself or one under it (a `--worktree` session reports its
+    // worktree), not a sibling that shares the prefix: `luna` is not `luna-site`.
     let want = norm_path(cwd);
+    let under = format!("{want}\\");
     let mut best: Option<(u64, serde_json::Value)> = None;
     for entry in std::fs::read_dir(dir).ok()?.flatten() {
         if let Some(v) = parse_session_file(&entry.path()) {
             let scwd = norm_path(v["cwd"].as_str().unwrap_or(""));
             let started = v["startedAt"].as_u64().unwrap_or(0);
-            if scwd.starts_with(&want) && (started as u128) + 5000 >= spawned_at_ms {
+            if (scwd == want || scwd.starts_with(&under)) && (started as u128) + 5000 >= spawned_at_ms {
                 let updated = v["updatedAt"].as_u64().unwrap_or(started);
                 if best.as_ref().map(|(u, _)| updated > *u).unwrap_or(true) {
                     best = Some((updated, v));

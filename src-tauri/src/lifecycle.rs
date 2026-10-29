@@ -498,16 +498,11 @@ mod watcher {
     pub fn spawn() {}
     pub fn watch(_pid: u32) {}
 
-    /// No handle to wait on here: `kill -0` answers while the process lives.
+    /// No handle to wait on here: the process is asked after until it is gone.
     pub fn wait_gone(pid: u32, limit: std::time::Duration) {
         let deadline = std::time::Instant::now() + limit;
         while std::time::Instant::now() < deadline {
-            let alive = std::process::Command::new("kill")
-                .args(["-0", &pid.to_string()])
-                .stderr(std::process::Stdio::null())
-                .status()
-                .is_ok_and(|s| s.success());
-            if !alive {
+            if !crate::procs::alive(pid) {
                 return;
             }
             std::thread::sleep(std::time::Duration::from_millis(100));

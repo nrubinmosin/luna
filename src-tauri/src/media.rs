@@ -4,12 +4,14 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-
 /// Pasted / dropped attachments are copied here so the CLI has a stable
 /// absolute path to read, independent of wherever the original lived.
-fn media_root(chat_id: &str) -> Result<PathBuf, String> {
-    Ok(crate::paths::data_dir().join("media").join(sanitize(chat_id)))
+fn media_root(chat_id: &str) -> PathBuf {
+    crate::paths::data_dir().join("media").join(sanitize(chat_id))
 }
+
+/// Windows caps a path component at 255; this leaves room for the stamp prefix.
+const MAX_NAME: usize = 120;
 
 fn sanitize(raw: &str) -> String {
     let cleaned: String = raw
@@ -25,9 +27,17 @@ fn sanitize(raw: &str) -> String {
     let trimmed = cleaned.trim().trim_matches('.').to_string();
     if trimmed.is_empty() {
         "file".into()
+    } else if trimmed.chars().count() <= MAX_NAME {
+        trimmed
     } else {
-        // Windows caps a path component at 255; leave room for the stamp prefix.
-        trimmed.chars().take(120).collect()
+        // Cut from the stem: the extension is how the CLI tells a pasted
+        // screenshot from a text file.
+        let ext = match trimmed.rfind('.') {
+            Some(i) if trimmed.len() - i <= 16 => &trimmed[i..],
+            _ => "",
+        };
+        let stem: String = trimmed[..trimmed.len() - ext.len()].chars().take(MAX_NAME - ext.chars().count()).collect();
+        format!("{stem}{ext}")
     }
 }
 
@@ -39,7 +49,7 @@ pub fn save_media(chat_id: String, name: String, data: String) -> Result<String,
     if bytes.is_empty() {
         return Err("Empty file".into());
     }
-    let dir = media_root(&chat_id)?;
+    let dir = media_root(&chat_id);
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
     let stamp = SystemTime::now()
@@ -167,7 +177,7 @@ fn drop_old_root() {
 
 /// Drops everything a chat accumulated; called when the chat is deleted.
 pub fn clear_media(chat_id: String) -> Result<(), String> {
-    let dir = media_root(&chat_id)?;
+    let dir = media_root(&chat_id);
     if dir.exists() {
         fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
     }

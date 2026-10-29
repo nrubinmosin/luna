@@ -112,15 +112,18 @@ export function ConfigEditor({ account, onClose }: { account: Account; onClose: 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [file === null]);
 
-  /** Puts text into the editor as one undoable change. */
-  const replace = (next: string) => {
+  /** Puts `next`, laid out from `from`, into the editor as one undoable
+   *  change — unless typing has moved the text on while it was laid out,
+   *  which it must not take back. */
+  const replace = (from: string, next: string) => {
     const v = view.current;
-    if (v && next !== v.state.doc.toString()) v.dispatch({ changes: { from: 0, to: v.state.doc.length, insert: next } });
+    const now = v?.state.doc.toString();
+    if (v && now === from && next !== now) v.dispatch({ changes: { from: 0, to: v.state.doc.length, insert: next } });
   };
 
   const format = async () => {
     try {
-      replace(await formatAccountConfig(account.provider, text));
+      replace(text, await formatAccountConfig(account.provider, text));
     } catch {
       // the problem line already says why
     }
@@ -132,7 +135,7 @@ export function ConfigEditor({ account, onClose }: { account: Account; onClose: 
     setError(null);
     try {
       const laidOut = await formatAccountConfig(account.provider, text);
-      replace(laidOut);
+      replace(text, laidOut);
       await writeAccountConfig(account.provider, account.path, laidOut);
       setFile(f => (f ? { ...f, text: laidOut, exists: true } : f));
       setSaved(true);
@@ -237,8 +240,11 @@ export function ConfigEditor({ account, onClose }: { account: Account; onClose: 
 /** The linter: asks the core, and keeps the problem for the line under the editor. */
 function lint(provider: Provider, report: (p: ConfigProblemDto | null) => void) {
   return async (view: EditorView): Promise<Diagnostic[]> => {
-    const p = await checkAccountConfig(provider, view.state.doc.toString()).catch(() => null);
-    report(p);
+    const doc = view.state.doc;
+    const p = await checkAccountConfig(provider, doc.toString()).catch(() => null);
+    // Typed over while it was asked: the lint that change set off says what
+    // holds now, and a slow answer about the older text must not outlive it.
+    if (view.state.doc === doc) report(p);
     return p ? diagnose(view, p) : [];
   };
 }

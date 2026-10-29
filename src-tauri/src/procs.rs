@@ -13,7 +13,7 @@
 
 #[cfg(windows)]
 mod imp {
-    use windows::Win32::Foundation::{CloseHandle, FILETIME, HANDLE};
+    use windows::Win32::Foundation::{CloseHandle, ERROR_ACCESS_DENIED, FILETIME, HANDLE};
     use windows::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
     };
@@ -22,8 +22,8 @@ mod imp {
         JOBOBJECT_BASIC_PROCESS_ID_LIST,
     };
     use windows::Win32::System::Threading::{
-        GetProcessIoCounters, GetProcessTimes, OpenProcess, IO_COUNTERS, PROCESS_QUERY_LIMITED_INFORMATION,
-        PROCESS_SET_QUOTA, PROCESS_TERMINATE,
+        GetExitCodeProcess, GetProcessIoCounters, GetProcessTimes, OpenProcess, IO_COUNTERS,
+        PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
     };
 
     pub struct Job(HANDLE);
@@ -176,6 +176,25 @@ mod imp {
         }
     }
 
+    /// Whether a process of this pid is running now.
+    pub fn alive(pid: u32) -> bool {
+        // The exit code a process reads as while it runs.
+        const STILL_ACTIVE: u32 = 259;
+        // SAFETY: a process handle opened and closed here.
+        unsafe {
+            match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
+                Ok(h) => {
+                    let mut code = 0u32;
+                    let got = GetExitCodeProcess(h, &mut code);
+                    let _ = CloseHandle(h);
+                    got.is_err() || code == STILL_ACTIVE
+                }
+                // One that may not be opened is still there.
+                Err(e) => e.code() == windows::core::HRESULT::from_win32(ERROR_ACCESS_DENIED.0),
+            }
+        }
+    }
+
     /// Executable names by pid, for saying what is holding the machine up.
     pub fn names(pids: &[u32]) -> Vec<(u32, String)> {
         let mut out = Vec::new();
@@ -216,12 +235,20 @@ mod imp {
     pub fn read(_pid: u32) -> Option<super::ProcRead> {
         None
     }
+    /// `kill -0` answers while the process lives.
+    pub fn alive(pid: u32) -> bool {
+        std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    }
     pub fn names(_pids: &[u32]) -> Vec<(u32, String)> {
         Vec::new()
     }
 }
 
-pub use imp::{adopt, Job};
+pub use imp::{adopt, alive, Job};
 
 /// One process, as counted at one sample.
 #[derive(Clone, Copy, Debug, PartialEq)]

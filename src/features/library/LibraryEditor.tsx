@@ -39,11 +39,16 @@ export function LibraryEditor({ skill, onClose }: { skill: string | null; onClos
       .catch(e => setError(String(e)));
   }, [skill]);
 
-  // Checked as typed, a moment after the last key.
+  // Checked as typed, a moment after the last key; an answer about text
+  // typed over since is dropped, or a slow one would outlive a quick one.
   useEffect(() => {
     if (!skill || !file) return;
-    const t = setTimeout(() => void libraryCheckSkill(skill, text).then(setProblem), 250);
-    return () => clearTimeout(t);
+    let stale = false;
+    const t = setTimeout(() => void libraryCheckSkill(skill, text).then(p => !stale && setProblem(p)), 250);
+    return () => {
+      stale = true;
+      clearTimeout(t);
+    };
   }, [skill, file, text]);
 
   useEffect(() => {

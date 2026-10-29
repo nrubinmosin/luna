@@ -48,6 +48,10 @@ interface LibraryState {
 }
 
 let started = false;
+// Commands answer out of order — a focus refresh asked before a click can land
+// after it — so an answer older than the one on screen is dropped.
+let asked = 0;
+let shown = 0;
 
 export const useLibrary = create<LibraryState>((set, get) => ({
   open: false,
@@ -70,9 +74,13 @@ export const useLibrary = create<LibraryState>((set, get) => ({
     await get().run(libraryOverview());
   },
   run: async p => {
+    const mine = ++asked;
     try {
       const overview = await p;
-      set({ overview, error: null, at: Date.now() });
+      if (mine > shown) {
+        shown = mine;
+        set({ overview, error: null, at: Date.now() });
+      }
       return true;
     } catch (e) {
       set({ error: String(e), at: Date.now() });

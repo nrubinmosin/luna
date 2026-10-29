@@ -124,8 +124,13 @@ function LunaRow() {
 function CoreRow() {
   const [s, setS] = useState<CoreStateDto | null>(null);
   useEffect(() => {
-    void coreState().then(setS);
-    const off = onCoreState(setS);
+    // A push that lands before the first answer is the newer of the two.
+    let heard = false;
+    const off = onCoreState(st => {
+      heard = true;
+      setS(st);
+    });
+    void coreState().then(st => !heard && setS(st));
     return () => void off.then(f => f());
   }, []);
   const core = s?.core;
@@ -310,7 +315,6 @@ function SoundRow() {
   );
 }
 
-/** The accounts-folder mover, formerly its own fold-out card in the sidebar. */
 /** The folders whose projects Codex sessions start trusted on this machine:
  *  Codex looks trust up by a checkout's exact path, so a parent folder in its
  *  own config covers nothing below it (codex/trust.rs). */
@@ -354,6 +358,7 @@ function TrustedRoots() {
   );
 }
 
+/** The accounts-folder mover. */
 function AccountsFolder() {
   const [info, setInfo] = useState<AccountsRootInfo | null>(null);
   const [error, setError] = useState<string | null>(null);

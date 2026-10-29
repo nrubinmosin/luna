@@ -47,7 +47,7 @@ const describe = (reach: Reach) =>
  * account of one CLI, or accounts picked by name: a face that says which and,
  * under it, a popover of ticks that stays open while they are changed.
  */
-export function ReachPicker({ id, reach, accounts, onChange }: {
+export function ReachPicker({ id, reach: saved, accounts, onChange }: {
   id: string;
   reach: Reach;
   accounts: AccountRef[];
@@ -58,6 +58,15 @@ export function ReachPicker({ id, reach, accounts, onChange }: {
   const list = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
+  // The ticks made while the list is open: each is sent as the whole reach,
+  // and one made before the last one's answer is in must build on it, not on
+  // the reach that answer has yet to bring.
+  const [picked, setPicked] = useState<Reach | null>(null);
+  const reach = open && picked ? picked : saved;
+  const change = (next: Reach) => {
+    setPicked(next);
+    onChange(next);
+  };
 
   useLayoutEffect(() => {
     if (!open || !face.current) return;
@@ -110,7 +119,10 @@ export function ReachPicker({ id, reach, accounts, onChange }: {
         type="button"
         className="picker-face"
         title={describe(reach)}
-        onClick={() => setOpen(o => !o)}
+        onClick={() => {
+          setPicked(null);
+          setOpen(o => !o);
+        }}
       >
         <Summary reach={reach} />
       </button>
@@ -118,7 +130,7 @@ export function ReachPicker({ id, reach, accounts, onChange }: {
         host &&
         createPortal(
           <div ref={list} className="popover" style={{ left: pos?.left ?? -9999, top: pos?.top ?? 0, minWidth: 200, padding: '6px 10px' }}>
-            {tick(ALL, 'All accounts', all, false, on => onChange(on ? [ALL] : []))}
+            {tick(ALL, 'All accounts', all, false, on => change(on ? [ALL] : []))}
             {providers.map(p => {
               const wide = all || reach.includes(p);
               return (
@@ -131,13 +143,13 @@ export function ReachPicker({ id, reach, accounts, onChange }: {
                     </>,
                     wide,
                     all,
-                    on => onChange(on ? [...without(p), p] : without(p))
+                    on => change(on ? [...without(p), p] : without(p))
                   )}
                   {accounts
                     .filter(a => a.provider === p)
                     .map(a => {
                       const key = `${p}/${a.name}`;
-                      return tick(key, a.name, wide || reach.includes(key), wide, on => onChange(on ? [...without(key), key] : without(key)), 22);
+                      return tick(key, a.name, wide || reach.includes(key), wide, on => change(on ? [...without(key), key] : without(key)), 22);
                     })}
                 </div>
               );

@@ -28,7 +28,8 @@ fn claude_worktrees(folder: &str) -> PathBuf {
 
 fn under_claude_worktrees(folder: &str, candidate: &str) -> bool {
     let (c, base) = (norm(candidate), norm(&claude_worktrees(folder).to_string_lossy()));
-    c.len() > base.len() && c.starts_with(&base)
+    // Past a separator: `.claude\worktrees-old\x` is no worktree of the folder.
+    c.strip_prefix(&base).is_some_and(|rest| rest.len() > 1 && rest.starts_with('\\'))
 }
 
 /// Shaped like a worktree Codex made: `…\worktrees\<4 hex>\<repo>`.
@@ -69,8 +70,11 @@ pub fn is_worktree_of(folder: &str, candidate: &str) -> bool {
 /// of the path before `.claude\worktrees`, for Codex the repository its
 /// checkout points back at.
 pub fn project_of(path: &str) -> Option<String> {
-    let p = path.replace('/', "\\");
-    if let Some(at) = p.to_ascii_lowercase().find("\\.claude\\worktrees\\").filter(|&at| at > 0) {
+    // Found in a backslashed copy, cut from one that keeps the platform's own
+    // separators: `/home/u/p` must not come back as `\home\u\p`. Both have the
+    // same byte offsets.
+    let p = if cfg!(windows) { path.replace('/', "\\") } else { path.to_string() };
+    if let Some(at) = p.replace('/', "\\").to_ascii_lowercase().find("\\.claude\\worktrees\\").filter(|&at| at > 0) {
         return Some(p[..at].to_string());
     }
     codex_shaped(path).then(|| repo_of_linked(path)).flatten()
@@ -125,40 +129,54 @@ pub fn fetch_origin(folder: &str) {
     // finds nothing left to fetch.
     static FETCHING: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _one = FETCHING.lock().unwrap_or_else(|e| e.into_inner());
-    let mut cmd = git(folder);
-    cmd.args(["fetch", "--quiet", "origin"]);
-    if let Some(branch) = origin_default(folder) {
-        cmd.arg(&branch["origin/".len()..]);
-    }
-    cmd.env("GIT_TERMINAL_PROMPT", "0")
-        .env("GCM_INTERACTIVE", "never")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped());
-    let Ok(mut child) = cmd.spawn() else { return };
+    let branch = origin_default(folder);
     let deadline = std::time::Instant::now() + FETCH_TIMEOUT;
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                if !status.success() {
+    for attempt in 1..=2 {
+        let mut cmd = git(folder);
+        cmd.args(["fetch", "--quiet", "origin"]);
+        if let Some(branch) = &branch {
+            cmd.arg(&branch["origin/".len()..]);
+        }
+        cmd.env("GIT_TERMINAL_PROMPT", "0")
+            .env("GCM_INTERACTIVE", "never")
+            // Its message is read below.
+            .env("LC_ALL", "C")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped());
+        let Ok(mut child) = cmd.spawn() else { return };
+        let (status, why) = loop {
+            match child.try_wait() {
+                Ok(Some(status)) if status.success() => return,
+                Ok(Some(status)) => {
                     let mut why = String::new();
                     if let Some(mut err) = child.stderr.take() {
                         let _ = std::io::Read::read_to_string(&mut err, &mut why);
                     }
-                    crate::log::warn(
-                        "worktree",
-                        &format!("fetch before a worktree in {folder} failed ({status}): {}; using origin as it was", why.trim()),
-                    );
+                    break (status, why);
                 }
-                return;
+                Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(100)),
+                _ => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    crate::log::warn("worktree", &format!("fetch before a worktree in {folder} took over {FETCH_TIMEOUT:?}; using origin as it was"));
+                    return;
+                }
             }
-            Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(100)),
-            _ => {
-                let _ = child.kill();
-                crate::log::warn("worktree", &format!("fetch before a worktree in {folder} took over {FETCH_TIMEOUT:?}; using origin as it was"));
-                return;
-            }
+        };
+        // Another git updating the same ref at that moment — an editor's own
+        // fetch, Claude Code's — is done with it in moments, and a fetch
+        // after it is all this needs.
+        let retry = std::time::Duration::from_millis(500);
+        if attempt == 1 && why.contains("cannot lock ref") && std::time::Instant::now() + retry < deadline {
+            std::thread::sleep(retry);
+            continue;
         }
+        crate::log::warn(
+            "worktree",
+            &format!("fetch before a worktree in {folder} failed ({status}): {}; using origin as it was", why.trim()),
+        );
+        return;
     }
 }
 
@@ -206,10 +224,13 @@ pub fn remove_worktree_now(folder: String, worktree_path: String) -> Result<(), 
     // worktree it makes and leaves the lock behind when killed; one --force
     // refuses a locked worktree, the second overrides the lock.
     let mut removed = false;
+    let mut unknown = false;
     let mut why = String::new();
     for attempt in 1..=6u64 {
         match git(&folder)
             .args(["worktree", "remove", "--force", "--force", &worktree_path])
+            // Its message is read below.
+            .env("LC_ALL", "C")
             .output()
         {
             Ok(o) if o.status.success() => {
@@ -219,11 +240,19 @@ pub fn remove_worktree_now(folder: String, worktree_path: String) -> Result<(), 
             Ok(o) => why = String::from_utf8_lossy(&o.stderr).trim().to_string(),
             Err(e) => why = e.to_string(),
         }
+        // A directory git keeps no record of (its entry pruned, or its `.git`
+        // file gone with a removal that stopped halfway) is never going to be
+        // git's to remove: the waiting goes to removing it by hand instead.
+        if why.contains("is not a working tree") {
+            unknown = true;
+            break;
+        }
         std::thread::sleep(std::time::Duration::from_millis(300 * attempt));
     }
     if !removed {
         let mut gone = std::fs::remove_dir_all(&worktree_path);
-        for _ in 0..3 {
+        let retries = if unknown { 8 } else { 3 };
+        for _ in 0..retries {
             if gone.is_ok() || !Path::new(&worktree_path).exists() {
                 break;
             }
@@ -321,7 +350,7 @@ fn own_claude_dir() -> Option<String> {
     std::env::var("CLAUDE_CONFIG_DIR")
         .ok()
         .filter(|d| !d.is_empty())
-        .or_else(|| std::env::var("USERPROFILE").ok().map(|h| format!("{h}\\.claude")))
+        .or_else(|| dirs::home_dir().map(|h| h.join(".claude").to_string_lossy().into_owned()))
 }
 
 fn orphan_worktrees_now(

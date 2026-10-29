@@ -65,7 +65,12 @@ export function BackgroundChip({ parentId }: { parentId: string }) {
   // A spawn is the one moment nothing else on screen marks: glow for a while.
   useEffect(() => {
     const left = newest + NEW_MS - Date.now();
-    if (left <= 0) return;
+    // Also when the newest helper went inside its glow: the cleanup took the
+    // timer that would have put the glow out.
+    if (left <= 0) {
+      setFresh(false);
+      return;
+    }
     setFresh(true);
     const t = window.setTimeout(() => setFresh(false), left);
     return () => window.clearTimeout(t);

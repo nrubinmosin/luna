@@ -152,8 +152,22 @@ pub fn models_known(account_path: &str) -> Vec<CodexModel> {
     from_other_accounts(account_path)
 }
 
+/// One CLI ask at a time: the new-chat dialog wants the list for its model
+/// buttons and for its defaults at the same moment, and two `codex debug
+/// models` would fetch the same catalogue twice. The one that waited finds
+/// the answer the first left behind.
+fn asking() -> &'static Mutex<()> {
+    static A: OnceLock<Mutex<()>> = OnceLock::new();
+    A.get_or_init(|| Mutex::new(()))
+}
+
 pub fn models_for(account_path: &str) -> Vec<CodexModel> {
     let mut found = models_known(account_path);
+    if !found.is_empty() {
+        return found;
+    }
+    let _one = asking().lock().unwrap_or_else(|e| e.into_inner());
+    found = models_known(account_path);
     if !found.is_empty() {
         return found;
     }

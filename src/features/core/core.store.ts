@@ -16,7 +16,9 @@ interface CoreState {
   restart: () => void;
 }
 
-let unlisten: (() => void) | null = null;
+/** The one subscription to the link, shared by every `init`: two calls
+ *  close together (StrictMode mounts App twice) both found none yet. */
+let listening: Promise<unknown> | null = null;
 /** The panes have something to start over from: they could not reach a core
  *  (it was down, or another build's). */
 let troubled = false;
@@ -43,9 +45,11 @@ export const useCore = create<CoreState>((set, get) => ({
         set({ link });
       }
     };
-    if (!unlisten) unlisten = await onCoreState(take);
+    listening ??= onCoreState(take);
+    await listening;
     take(await coreState());
   },
 
-  restart: () => void coreRestart()
+  // The ipc layer has logged a failure; the banner stays up to say the rest.
+  restart: () => void coreRestart().catch(() => {})
 }));

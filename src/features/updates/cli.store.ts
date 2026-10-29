@@ -24,7 +24,10 @@ export const useCli = create<CliState>(set => ({
     if (started) return;
     started = true;
     for (const p of PROVIDERS) {
-      void cliStatus(p).then(s => s && set(st => ({ status: { ...st.status, [p]: s } })));
+      // A failure is logged by the ipc layer; cli://status fills it in later.
+      cliStatus(p)
+        .then(s => s && set(st => ({ status: { ...st.status, [p]: s } })))
+        .catch(() => {});
     }
     // Never unlistened: the store outlives every component that reads it.
     void onCliStatus(s => set(st => ({ status: { ...st.status, [s.provider]: s } })));

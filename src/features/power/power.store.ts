@@ -23,15 +23,31 @@ interface PowerState {
   disarm: () => Promise<void>;
 }
 
-let unlisten: (() => void) | null = null;
+// Set before the listener is awaited, so a second init (StrictMode mounts
+// twice) does not stack a second one.
+let listening = false;
+// A push that lands while the first answer is out is the newer of the two.
+let heard = false;
 
 export const usePower = create<PowerState>(set => ({
   state: IDLE_POWER,
   open: false,
 
   init: async () => {
-    if (!unlisten) unlisten = await onPowerState(state => set({ state }));
-    set({ state: await powerState() });
+    if (!listening) {
+      listening = true;
+      try {
+        await onPowerState(state => {
+          heard = true;
+          set({ state });
+        });
+      } catch (e) {
+        listening = false;
+        throw e;
+      }
+    }
+    const state = await powerState();
+    if (!heard) set({ state });
   },
 
   setOpen: v => set({ open: v }),

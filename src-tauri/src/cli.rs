@@ -322,8 +322,13 @@ fn update_inner(provider: Provider) -> Result<(), String> {
 
     // The flip is the last step, so a crash anywhere above leaves `current`
     // pointing at a binary that is known to be complete.
+    // Through a temp file: the core reads `current` for every spawn, and a
+    // read between a plain write's truncate and its bytes would find no
+    // version and spawn whatever is on PATH.
     fs::create_dir_all(root(provider)).map_err(|e| e.to_string())?;
-    fs::write(current_file(provider), &latest).map_err(|e| format!("write current: {e}"))?;
+    let tmp = root(provider).join("current.tmp");
+    fs::write(&tmp, &latest).map_err(|e| format!("write current: {e}"))?;
+    fs::rename(&tmp, current_file(provider)).map_err(|e| format!("write current: {e}"))?;
     crate::log::info("cli", &format!("{} {latest} is now current", provider.as_str()));
     prune(provider);
     Ok(())
@@ -341,6 +346,17 @@ fn prune(provider: Provider) {
             continue;
         }
         let path = entry.path();
+        // The exe first: Windows refuses it while a session runs it, and the
+        // directory then stays whole. Removed from the top, it would lose the
+        // files beside the exe (Codex's codex-path/, codex-resources/) under
+        // the running session before failing on the exe itself.
+        match fs::remove_file(path.join(source(provider).bin_rel)) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                crate::log::info("cli", &format!("keeping {}: {e}", path.display()));
+                continue;
+            }
+            _ => {}
+        }
         if let Err(e) = fs::remove_dir_all(&path) {
             crate::log::info("cli", &format!("keeping {}: {e}", path.display()));
         }

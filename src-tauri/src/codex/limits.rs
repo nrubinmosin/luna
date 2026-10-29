@@ -204,9 +204,12 @@ pub fn windows_from_rollout(snapshot: &Value) -> (Vec<LimitWindow>, Option<Strin
 }
 
 fn get_usage(auth: &Auth) -> Result<Value, String> {
+    // The read timeout is per read and the connect one per address, so only
+    // the overall one bounds the request as a whole.
     let mut req = ureq::builder()
         .timeout_connect(std::time::Duration::from_secs(5))
         .timeout_read(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(15))
         .build()
         .get(USAGE_URL)
         .set("Authorization", &format!("Bearer {}", auth.access))
