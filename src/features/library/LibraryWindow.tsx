@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  libraryDeleteSkill, libraryNewSkill, libraryOpen, libraryResolve, librarySetEverywhere, librarySetFolder,
+  libraryDeleteSkill, libraryNewSkill, libraryOpen, libraryResolve, librarySetAccounts, librarySetFolder,
   librarySetInstructions, librarySetSource, librarySkip, librarySync, pickFolder,
   type LibraryOverviewDto, type LibraryTarget, type PlaceDto
 } from '../../ipc/commands';
@@ -12,6 +12,7 @@ import { PROVIDER_LABEL } from '../../shared/types';
 import { DiffView } from './DiffView';
 import { LibraryEditor } from './LibraryEditor';
 import { needsLook, useLibrary, waiting } from './library.store';
+import { ReachPicker } from './ReachPicker';
 
 const RED = 'oklch(.58 .2 25)';
 const GREEN = 'oklch(.64 .18 145)';
@@ -143,7 +144,7 @@ function CellDot({ places }: { places: PlaceDto[] }) {
 
 /**
  * The user's own skills and instructions, kept in Luna's library and laid out
- * into every account and into folders named here. Raised from the Accounts
+ * into the accounts each is meant for and into folders named here. Raised from the Accounts
  * window, or from the status bar while a copy needs a look.
  */
 export function LibraryWindow() {
@@ -278,15 +279,13 @@ function LibraryDialog({ onClose }: { onClose: () => void }) {
                   <ToolButton icon="pencil" label="Edit" title="Edit the library's instructions" onClick={() => setEditing({ skill: null })} />
                 }
               >
-                <div className="field-row">
-                  <input type="checkbox" id="lib-instructions" checked={o.instructions} onChange={e => act(librarySetInstructions(e.target.checked))} />
-                  <label htmlFor="lib-instructions" style={{ cursor: 'default', fontSize: 'var(--fs-3)' }}>
-                    {/* In a span: the label lays its children out as flex items, which drops the spaces. */}
-                    <span>
-                      Into every account — <code>CLAUDE.md</code> for Claude Code, <code>AGENTS.md</code> for Codex
-                    </span>
-                  </label>
-                  {o.instructions && instructionPlaces.length > 0 && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', fontSize: 'var(--fs-3)' }}>
+                  Into
+                  <ReachPicker id="lib-instructions" reach={o.instructions} accounts={o.accounts} onChange={r => act(librarySetInstructions(r))} />
+                  <span>
+                    — <code>CLAUDE.md</code> for Claude Code, <code>AGENTS.md</code> for Codex
+                  </span>
+                  {o.instructions.length > 0 && instructionPlaces.length > 0 && (
                     <span style={{ fontSize: 'var(--fs-2)', color: 'var(--faint)' }}>
                       {instructionPlaces.filter(p => p.status === 'current').length} of {instructionPlaces.length} accounts up to date
                     </span>
@@ -315,8 +314,9 @@ function LibraryDialog({ onClose }: { onClose: () => void }) {
                   </div>
                 )}
                 <Note>
-                  One file for both CLIs, read at the start of every session on every account — the place for rules that
-                  always hold. An account’s own file is replaced only once you take it or replace it below.
+                  One file for both CLIs, read at the start of every session on the accounts it goes into — every
+                  account, every one of a CLI, or those you pick — the place for rules that always hold. An account’s
+                  own file is replaced only once you take it or replace it below.
                 </Note>
               </Section>
 
@@ -340,7 +340,7 @@ function LibraryDialog({ onClose }: { onClose: () => void }) {
                     <thead>
                       <tr>
                         <th>Skill</th>
-                        <th title="Every Claude Code and Codex account">Every account</th>
+                        <th title="The Claude Code and Codex accounts it goes into">Accounts</th>
                         {o.folders.map(f => (
                           <th key={f.path} title={f.path}>
                             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
@@ -372,11 +372,11 @@ function LibraryDialog({ onClose }: { onClose: () => void }) {
                               </div>
                             </td>
                             <td className="cell">
-                              <Tick
+                              <ReachPicker
                                 id={`lib-${s.name}-accounts`}
-                                title={`${s.name} into every account`}
-                                checked={o.everywhere.includes(s.name)}
-                                onChange={on => act(librarySetEverywhere(s.name, on))}
+                                reach={s.accounts}
+                                accounts={o.accounts}
+                                onChange={r => act(librarySetAccounts(s.name, r))}
                               />
                               <CellDot places={mine.filter(p => p.target.kind === 'account')} />
                             </td>
@@ -421,8 +421,8 @@ function LibraryDialog({ onClose }: { onClose: () => void }) {
                 </div>
                 <Note>
                   A skill is a folder with a <code>SKILL.md</code>: its description is all the model sees until it decides
-                  to open it — the place for procedures and recipes. Ticked for every account it goes into each one’s{' '}
-                  <code>skills/</code>; ticked for a folder it goes into that folder as <code>&lt;folder&gt;/&lt;name&gt;</code>, and how a
+                  to open it — the place for procedures and recipes. Into the accounts picked for it — every account,
+                  every one of a CLI, or those you name — it goes into each one’s <code>skills/</code>; ticked for a folder it goes into that folder as <code>&lt;folder&gt;/&lt;name&gt;</code>, and how a
                   CLI gets to it from there — a link into <code>.claude/skills</code> or <code>.agents/skills</code>, a git
                   ignore — is yours to set up. Nothing else in an account or a folder is touched.
                 </Note>

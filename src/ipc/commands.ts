@@ -704,21 +704,26 @@ export interface PlaceDto {
   both: boolean;
   problem: string | null;
 }
+/** Which accounts something goes into: `all`, a provider's every account
+ *  (`claude`, `codex`) or one account (`provider/name`) per entry. */
+export type Reach = string[];
 export interface LibrarySkillDto {
   name: string;
   description: string;
   /** Why it is laid out nowhere, while it is not fit to be. */
   problem: string | null;
+  accounts: Reach;
 }
 export interface LibraryOverviewDto {
   root: string;
   isDefault: boolean;
   /** False while the library's folder is not there. */
   found: boolean;
-  instructions: boolean;
+  instructions: Reach;
   hasInstructions: boolean;
   skills: LibrarySkillDto[];
-  everywhere: string[];
+  /** Every account, to pick a reach from. */
+  accounts: { provider: Provider; name: string }[];
   folders: { path: string; skills: string[]; found: boolean }[];
   places: PlaceDto[];
   /** Accounts' instruction files Luna did not write, to start the library's from. */
@@ -746,8 +751,8 @@ export const libraryOverview = () => call<LibraryOverviewDto | null>('library_ov
 /** Lays the library out — everything that needs no asking. */
 export const librarySync = () => call<LibraryOverviewDto | null>('library_sync', {}, null);
 export const librarySetSource = (path: string) => call<LibraryOverviewDto>('library_set_source', { path });
-export const librarySetInstructions = (on: boolean) => call<LibraryOverviewDto>('library_set_instructions', { on });
-export const librarySetEverywhere = (skill: string, on: boolean) => call<LibraryOverviewDto>('library_set_everywhere', { skill, on });
+export const librarySetInstructions = (accounts: Reach) => call<LibraryOverviewDto>('library_set_instructions', { accounts });
+export const librarySetAccounts = (skill: string, accounts: Reach) => call<LibraryOverviewDto>('library_set_accounts', { skill, accounts });
 /** A folder's skills; null stops laying anything out into it. */
 export const librarySetFolder = (path: string, skills: string[] | null) =>
   call<LibraryOverviewDto>('library_set_folder', { path, skills });
