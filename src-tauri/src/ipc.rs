@@ -71,9 +71,10 @@ pub struct Welcome {
     pub fingerprint: String,
     /// Epoch ms.
     pub started: u64,
-    /// Sessions running in it: a core of another build with none is replaced
-    /// without a word, one with some only when the user says so. Absent from
-    /// a core older than sessions in the core, which has none.
+    /// Sessions running in it, background helpers in a turn among them: a
+    /// core of another build with none is replaced without a word, one with
+    /// some only when the user says so. Absent from a core older than
+    /// sessions in the core, which has none.
     #[serde(default)]
     pub sessions: usize,
 }
@@ -86,7 +87,7 @@ impl Welcome {
             build: env!("LUNA_BUILD").into(),
             fingerprint: env!("LUNA_CORE_FP").into(),
             started,
-            sessions: crate::pty::manager().live_count(),
+            sessions: crate::pty::manager().live_count() + crate::background::running(),
         }
     }
 }

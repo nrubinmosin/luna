@@ -26,10 +26,23 @@ fn claude_worktrees(folder: &str) -> PathBuf {
     Path::new(folder).join(".claude").join("worktrees")
 }
 
+/// Whether the path has a `.` or `..` in it: the text it reads as is not
+/// where it leads, and nothing is deleted by such a path.
+fn has_dot_parts(path: &str) -> bool {
+    path.split(['\\', '/']).any(|c| c == "." || c == "..")
+}
+
 fn under_claude_worktrees(folder: &str, candidate: &str) -> bool {
+    if has_dot_parts(candidate) {
+        return false;
+    }
     let (c, base) = (norm(candidate), norm(&claude_worktrees(folder).to_string_lossy()));
-    // Past a separator: `.claude\worktrees-old\x` is no worktree of the folder.
-    c.strip_prefix(&base).is_some_and(|rest| rest.len() > 1 && rest.starts_with('\\'))
+    // One folder past a separator, as Claude Code names them:
+    // `.claude\worktrees-old\x` is no worktree of the folder, and
+    // `.claude\worktrees\x\src` only a part of one.
+    c.strip_prefix(&base)
+        .and_then(|rest| rest.strip_prefix('\\'))
+        .is_some_and(|name| !name.is_empty() && !name.contains('\\'))
 }
 
 /// Shaped like a worktree Codex made: `…\worktrees\<4 hex>\<repo>`.
@@ -63,7 +76,9 @@ fn repo_of_linked(worktree: &str) -> Option<String> {
 /// Every destructive path below is gated on this.
 pub fn is_worktree_of(folder: &str, candidate: &str) -> bool {
     under_claude_worktrees(folder, candidate)
-        || (codex_shaped(candidate) && repo_of_linked(candidate).is_some_and(|r| norm(&r) == norm(folder)))
+        || (!has_dot_parts(candidate)
+            && codex_shaped(candidate)
+            && repo_of_linked(candidate).is_some_and(|r| norm(&r) == norm(folder)))
 }
 
 /// The project folder a CLI-made worktree belongs to: for Claude Code the part
@@ -586,6 +601,11 @@ mod tests {
         assert!(!is_worktree_of(r"E:\p", r"E:\p\.claude\worktrees"));
         assert!(!is_worktree_of(r"E:\p", r"E:\q\.claude\worktrees\x"));
         assert!(!is_worktree_of(r"E:\p", r"E:\p\.codex\worktrees\codex-abc"));
+        assert!(!is_worktree_of(r"E:\p", r"E:\p\.claude\worktrees\..\.."), "leads back to the folder");
+        assert!(!is_worktree_of(r"E:\p", r"E:\p\.claude\worktrees\x\..\..\.."));
+        assert!(!is_worktree_of(r"E:\p", r"E:\p\.claude\worktrees\.\x"));
+        assert!(!is_worktree_of(r"E:\p", r"E:\p\.claude\worktrees-old\x"));
+        assert!(!is_worktree_of(r"E:\p", r"E:\p\.claude\worktrees\x\src"), "a part of one");
     }
 
     #[test]

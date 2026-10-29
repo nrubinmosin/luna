@@ -8,39 +8,99 @@
 //!
 //! Each request is answered with a plain JSON body (the transport allows it;
 //! no SSE stream is ever opened), so `wait` simply holds its HTTP request
-//! until the session it watches gets there.
+//! until the session it watches gets there — or the client cancels it.
 
 use crate::agents;
 use serde_json::{json, Value};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
 pub const PROTOCOL: &str = "2025-06-18";
+/// The versions a client may ask for that these answers fit; any other is
+/// answered with PROTOCOL, for the client to take or leave.
+const PROTOCOLS: [&str; 3] = [PROTOCOL, "2025-03-26", "2024-11-05"];
 
 const INSTRUCTIONS: &str = "Luna runs this session. Its luna_* tools start and drive other sessions: \
 another model, another account, Codex or Claude Code, another folder or a worktree, in the background \
 or as a chat the user sees; and they reach every other session in Luna. luna_guide explains them, \
 accounts and models included: read it before the first spawn. Once a session you spawned or wrote \
 to answers, asks something, stops on a prompt or exits, Luna types a notice into your session, \
-opening \"[Luna notice\" (not the user).";
+opening \"[Luna notice\" (Luna's, not the user's words): end your turn to get it, no need to poll. \
+Session ids are Luna's; your CLI's task and subagent ids are not, and a subagent of yours using these \
+tools acts as you.";
 
 /// What `luna_guide` returns: everything the instructions leave out.
 const GUIDE: &str = include_str!("luna_guide.md");
 
-/// One JSON-RPC message in, at most one out (None for notifications).
+/// The most of a past run's last message `luna_sessions` history passes on:
+/// thirty runs at length overrun what a client takes in one result, and the
+/// run's transcript has it whole.
+const HISTORY_LAST: usize = 400;
+
+/// Tool calls in flight, by caller and JSON-RPC id, each with the flag a
+/// `notifications/cancelled` for it raises.
+fn in_flight() -> &'static Mutex<HashMap<(String, String), Arc<AtomicBool>>> {
+    static M: OnceLock<Mutex<HashMap<(String, String), Arc<AtomicBool>>>> = OnceLock::new();
+    M.get_or_init(Default::default)
+}
+
+/// A call counted in `in_flight` for as long as it runs.
+struct InFlight {
+    key: (String, String),
+    cancelled: Arc<AtomicBool>,
+}
+
+impl InFlight {
+    fn start(caller: &str, id: &Value) -> InFlight {
+        let key = (caller.to_string(), id.to_string());
+        let cancelled = Arc::new(AtomicBool::new(false));
+        in_flight().lock().unwrap_or_else(|e| e.into_inner()).insert(key.clone(), cancelled.clone());
+        InFlight { key, cancelled }
+    }
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        let mut m = in_flight().lock().unwrap_or_else(|e| e.into_inner());
+        // Only its own: a client reusing the id has a call of its own there.
+        if m.get(&self.key).is_some_and(|c| Arc::ptr_eq(c, &self.cancelled)) {
+            m.remove(&self.key);
+        }
+    }
+}
+
+/// One JSON-RPC message in, at most one out: None for a notification, a
+/// response from the client, or a request it cancelled.
 pub fn handle(caller: &str, body: &str) -> Option<Value> {
     let req: Value = match serde_json::from_str(body) {
         Ok(v) => v,
         Err(e) => return Some(error(Value::Null, -32700, &format!("parse error: {e}"))),
     };
-    let id = req.get("id").cloned().unwrap_or(Value::Null);
+    // Batches left the protocol in 2025-06-18.
+    if !req.is_object() {
+        return Some(error(Value::Null, -32600, "invalid request: one JSON-RPC message per POST"));
+    }
     let method = req["method"].as_str().unwrap_or("");
     let params = req.get("params").cloned().unwrap_or(json!({}));
-    if method.starts_with("notifications/") {
-        return None;
+    // A `luna_wait` held open is the one call this matters for: let go,
+    // it must not take the answer it was waiting for with it.
+    if method == "notifications/cancelled" {
+        let key = (caller.to_string(), params["requestId"].to_string());
+        if let Some(c) = in_flight().lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+            c.store(true, Ordering::SeqCst);
+        }
     }
+    // Without an id it is a notification; without a method, a response to
+    // nothing this server asks. Neither is answered.
+    let Some(id) = req.get("id").cloned().filter(|_| !method.is_empty() && !method.starts_with("notifications/")) else {
+        return None;
+    };
     let result = match method {
         "initialize" => {
+            let asked = params["protocolVersion"].as_str().filter(|v| PROTOCOLS.contains(v));
             let mut r = json!({
-                "protocolVersion": params["protocolVersion"].as_str().unwrap_or(PROTOCOL),
+                "protocolVersion": asked.unwrap_or(PROTOCOL),
                 "capabilities": { "tools": {} },
                 "serverInfo": { "name": "luna", "version": env!("CARGO_PKG_VERSION") },
             });
@@ -53,7 +113,15 @@ pub fn handle(caller: &str, body: &str) -> Option<Value> {
         }
         "ping" => Ok(json!({})),
         "tools/list" => Ok(json!({ "tools": tools_for(caller) })),
-        "tools/call" => Ok(call(caller, &params)),
+        "tools/call" => {
+            let call_out = InFlight::start(caller, &id);
+            let r = call(caller, &params, &call_out.cancelled);
+            // A cancelled request gets no response.
+            if call_out.cancelled.load(Ordering::SeqCst) {
+                return None;
+            }
+            Ok(r)
+        }
         _ => Err((-32601, format!("method not found: {method}"))),
     };
     Some(match result {
@@ -76,19 +144,19 @@ fn tools() -> Value {
     json!([
         {
             "name": "luna_list",
-            "description": "Sessions you spawned (id, name, group, provider, account, settings, state, ask, turnsEnded, worktree, branch, deletesInMin) and the accounts you may use, with their models, the defaults a helper in your folder gets, and usage (% per window, resets) as the user sees it.",
+            "description": "Your id (me), the sessions you spawned (state, ask, turnsEnded, worktree, deletesInMin) and the accounts you may use: models, a helper's defaults in your folder, usage (% per window, resets).",
             "inputSchema": s(json!({}), &[]),
             "annotations": reads
         },
         {
             "name": "luna_sessions",
-            "description": "Every session in Luna, the user's own chats included: id, name, group (the user's window group, I=1), provider, account, folders, sessionId, transcript path, parent, you/yours, state, settings. Filters: group (a number or \"mine\"), q (text in name/folder/account/id). history: true = past spawns instead, deleted too (with transcript, last message), newest first (q also searches prompts).",
+            "description": "Every session in Luna, the user's own chats included: group (the user's window group, I=1), folders, transcript path, parent, you/yours, state. Filters: group (a number or \"mine\"), q (text in name/folder/account/id). history: true = past spawns instead, deleted too (with transcript, last message), newest first (q also searches prompts).",
             "inputSchema": s(json!({ "group": { "type": "string" }, "q": { "type": "string" }, "history": { "type": "boolean" } }), &[]),
             "annotations": reads
         },
         {
             "name": "luna_spawn",
-            "description": "Start a helper with an opening prompt, in the background (no row in Luna) unless visible: true. Omitted settings take the account's defaults. Returns id, resolved settings, started (false = prompt not taken up; see screen), starting (not drawn yet; prompt held, do not resend), warnings, sameFolder (other live sessions in its directory), worktree, branch.",
+            "description": "Start a helper with an opening prompt, in the background (no row in Luna) unless visible: true. Omitted settings take the account's defaults. Returns id, resolved settings, started (false = not seen on the prompt in 30 s, see screen; a visible Codex may still start: luna_wait first), starting (not drawn yet; prompt held, do not resend), warnings, sameFolder, worktree.",
             "inputSchema": s(json!({
                 "prompt": { "type": "string" },
                 "provider": { "type": "string", "enum": ["claude", "codex"], "description": "default: yours" },
@@ -96,7 +164,7 @@ fn tools() -> Value {
                 "model": { "type": "string", "description": "one luna_list names for the account; claude also a full id" },
                 "effort": { "type": "string", "description": "low|medium|high|xhigh|max; claude also ultracode; codex per model" },
                 "permissionMode": { "type": "string", "description": "claude: default|acceptEdits|plan|bypassPermissions" },
-                "approval": { "type": "string", "description": "codex: never|on-request|auto-review" },
+                "approval": { "type": "string", "description": "codex: never|auto-review|on-request (visible only)" },
                 "sandbox": { "type": "string", "description": "codex: read-only|workspace-write|danger-full-access" },
                 "folder": { "type": "string", "description": "project folder; default: yours" },
                 "worktree": { "type": "boolean", "description": "run in its own git worktree" },
@@ -109,7 +177,7 @@ fn tools() -> Value {
         },
         {
             "name": "luna_send",
-            "description": "Send text to a session (any from luna_sessions) as a prompt; it reads as the user's, so say who you are to one you did not spawn. Returns stateBefore, queued (it was working: the text is taken up after its turn), started (false when not queued = not taken as a prompt, see screen) and turnsEnded to pass to luna_wait as afterTurn.",
+            "description": "Send text to a session (any from luna_sessions) as a prompt; it reads as the user's, so say who you are to one you did not spawn. Returns stateBefore, queued (it was working: the text joins that turn or the next), started (false when not queued = not taken as a prompt, see screen) and turnsEnded to pass to luna_wait as afterTurn.",
             "inputSchema": s(json!({
                 "id": { "type": "string" },
                 "text": { "type": "string" },
@@ -119,7 +187,7 @@ fn tools() -> Value {
         },
         {
             "name": "luna_answer",
-            "description": "Answer what a session waits on (state question or waiting; ask says what): answers, one per question: an option's number or label, or your own words; allow: true/false for a permission, note: why not. keys: raw keystrokes for any other dialog, e.g. \"{down}{enter}\" (also {esc} {tab} {shift+tab} {up} {left} {right} {space} {backspace}). Returns state, ask, screen.",
+            "description": "Answer what a session waits on (state question or waiting; ask says what): answers, one per question: an option's number or label, or your own words; allow: true/false for a permission, note: why not. keys: raw keystrokes for any other dialog, e.g. \"{down}{enter}\" (also {esc} {tab} {shift+tab} {up} {left} {right} {space} {backspace}).",
             "inputSchema": s(json!({
                 "id": { "type": "string" },
                 "answers": { "type": "array", "items": { "type": "string" } },
@@ -131,7 +199,7 @@ fn tools() -> Value {
         },
         {
             "name": "luna_read",
-            "description": "Messages of any session from its transcript. `since` = cursor from an earlier read; `last` = only the last N messages (default 1; all after `since`). Also returns state and ask, and the terminal's last lines (a background helper: what it did) with screen: true.",
+            "description": "Messages of any session from its transcript. `since` = cursor from an earlier read; `last` = only the last N messages (default 1; all after `since`). Cut past 60k characters (leftOut): go on from cursor. Also returns state and ask.",
             "inputSchema": s(json!({
                 "id": { "type": "string" },
                 "since": { "type": "integer" },
@@ -143,7 +211,7 @@ fn tools() -> Value {
         },
         {
             "name": "luna_wait",
-            "description": "Block until a session (not yours) ends a turn (returns its reply), stops on a question or permission, or exits. Timeout, waiting and a reply-less turn come with the screen. `afterTurn`: wait for a turn past this turnsEnded (default: the last one you were shown). Optional: a Luna notice brings the answer if you end your turn.",
+            "description": "Block until a Luna session (not yours; no task id, not a timer) ends a turn (reply: all it said since you asked), stops on a question or permission, or exits. Timeout, waiting and a reply-less turn come with the screen. `afterTurn`: wait for a turn past this turnsEnded (default: the last one you were shown). Optional: end your turn and a notice brings the answer.",
             "inputSchema": s(json!({
                 "id": { "type": "string" },
                 "until": { "type": "string", "enum": ["turn_done", "waiting", "exit"] },
@@ -154,13 +222,13 @@ fn tools() -> Value {
         },
         {
             "name": "luna_kill",
-            "description": "Stop a session's process (a background helper: its turn); its conversation stays, not auto-deleted.",
+            "description": "Stop a session's process (a background helper: its turn), not auto-deleted. A background helper goes on with luna_send, a visible one once the user resumes it.",
             "inputSchema": s(json!({ "id": { "type": "string" } }), &["id"]),
             "annotations": ends
         },
         {
             "name": "luna_delete",
-            "description": "Stop a session and remove it; dropWorktree: also its worktree and Luna's branch for it, not others; one shared with you stays.",
+            "description": "Stop a session and remove it; dropWorktree: also the worktree and branch Luna made for it, unless another session is in it.",
             "inputSchema": s(json!({ "id": { "type": "string" }, "dropWorktree": { "type": "boolean" } }), &["id"]),
             "annotations": ends
         },
@@ -172,7 +240,7 @@ fn tools() -> Value {
         },
         {
             "name": "luna_notify",
-            "description": "Desktop notification to the user now, titled with your chat; a click opens it. For news mid-turn: a turn ending on a question already notifies. One per 10 s.",
+            "description": "Desktop notification to the user, titled with your chat. For a result or blocker they must see now, not progress; a turn ending on a question already notifies. One per 10 s.",
             "inputSchema": s(json!({ "text": { "type": "string" } }), &["text"]),
             "annotations": acts
         }
@@ -205,7 +273,7 @@ fn tools_for(caller: &str) -> Value {
     Value::Array(list)
 }
 
-fn call(caller: &str, params: &Value) -> Value {
+fn call(caller: &str, params: &Value, cancelled: &AtomicBool) -> Value {
     let name = params["name"].as_str().unwrap_or("");
     let a = &params["arguments"];
     let id = a["id"].as_str().unwrap_or("").to_string();
@@ -238,7 +306,15 @@ fn call(caller: &str, params: &Value) -> Value {
         "luna_sessions" => serde_json::from_value::<agents::SessionFilter>(a.clone())
             .map_err(|e| format!("bad arguments: {e}"))
             .and_then(|f| match f.history {
-                Some(true) => Ok(json!({ "runs": crate::agentlog::runs(f.q.as_deref()) })),
+                Some(true) => {
+                    let mut runs = crate::agentlog::runs(f.q.as_deref());
+                    for last in runs.iter_mut().filter_map(|r| r.last.as_mut()) {
+                        if last.chars().count() > HISTORY_LAST {
+                            *last = format!("{}…", last.chars().take(HISTORY_LAST).collect::<String>());
+                        }
+                    }
+                    Ok(json!({ "runs": runs }))
+                }
                 _ => agents::sessions(caller, &f).map(|s| json!({ "sessions": s })),
             }),
         "luna_spawn" => serde_json::from_value::<agents::SpawnParams>(a.clone())
@@ -264,6 +340,7 @@ fn call(caller: &str, params: &Value) -> Value {
             a["until"].as_str().unwrap_or("turn_done"),
             a["timeoutS"].as_u64().unwrap_or(600),
             a["afterTurn"].as_u64().map(|n| n as u32),
+            cancelled,
         )
         .map(|w| json!(w)),
         "luna_kill" => agents::kill(caller, &id).map(|()| json!({ "ok": true })),
@@ -319,6 +396,27 @@ mod tests {
         assert_eq!(handle("me", r#"{"jsonrpc":"2.0","id":3,"method":"ping"}"#).unwrap()["result"], json!({}));
         assert_eq!(handle("me", r#"{"jsonrpc":"2.0","id":4,"method":"nope"}"#).unwrap()["error"]["code"], -32601);
         assert_eq!(handle("me", "{").unwrap()["error"]["code"], -32700);
+    }
+
+    #[test]
+    fn only_requests_are_answered() {
+        tooled("me");
+        assert!(handle("me", r#"{"jsonrpc":"2.0","method":"ping"}"#).is_none(), "no id: a notification");
+        assert!(handle("me", r#"{"jsonrpc":"2.0","id":1,"result":{}}"#).is_none(), "a response");
+        assert_eq!(handle("me", r#"[{"jsonrpc":"2.0","id":1,"method":"ping"}]"#).unwrap()["error"]["code"], -32600);
+        let init = handle("me", r#"{"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion":"2099-01-01"}}"#).unwrap();
+        assert_eq!(init["result"]["protocolVersion"], PROTOCOL, "a version it does not know is answered with its own");
+    }
+
+    #[test]
+    fn a_cancel_reaches_the_call_it_names() {
+        let call = InFlight::start("cancel-test", &json!(7));
+        let other = InFlight::start("cancel-test", &json!("7"));
+        assert!(handle("cancel-test", r#"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":7}}"#).is_none());
+        assert!(call.cancelled.load(Ordering::SeqCst));
+        assert!(!other.cancelled.load(Ordering::SeqCst), "a string id is another call");
+        drop(call);
+        assert!(!in_flight().lock().unwrap().contains_key(&("cancel-test".to_string(), "7".to_string())));
     }
 
     #[test]

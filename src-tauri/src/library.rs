@@ -29,6 +29,8 @@ use std::sync::Mutex;
 type Files = BTreeMap<String, Vec<u8>>;
 /// The same as hashes.
 type Hashes = BTreeMap<String, String>;
+/// The library's skills by name, with their files when fit to be laid out.
+type Skills = BTreeMap<String, (SkillInfo, Result<Files, String>)>;
 
 /// One pass at a time: the window can fire several changes in a row, and two
 /// passes writing the same copy would each read the other's half.
@@ -232,13 +234,20 @@ fn check_skill(name: &str, text: &str) -> Result<String, String> {
 }
 
 /// Every skill in the library, by name, with its files when it is fit to be
-/// laid out.
-fn read_skills(dirs: &Dirs) -> BTreeMap<String, (SkillInfo, Result<Files, String>)> {
+/// laid out. A `skills/` that will not list is an error, not an empty one: a
+/// skill missed reads as taken out of the library, and its copies with it.
+fn read_skills(dirs: &Dirs) -> Result<Skills, String> {
     let mut out = BTreeMap::new();
-    let Ok(entries) = std::fs::read_dir(dirs.skills()) else { return out };
-    for entry in entries.flatten() {
+    let failed = |e: std::io::Error| format!("{}: {e}", dirs.skills().display());
+    let entries = match std::fs::read_dir(dirs.skills()) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(out),
+        Err(e) => return Err(failed(e)),
+    };
+    for entry in entries {
+        let entry = entry.map_err(&failed)?;
         let name = entry.file_name().to_string_lossy().into_owned();
-        if name.starts_with('.') || !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+        if name.starts_with('.') || !entry.file_type().map_err(&failed)?.is_dir() {
             continue;
         }
         let files = read_dir_files(&entry.path());
@@ -253,7 +262,7 @@ fn read_skills(dirs: &Dirs) -> BTreeMap<String, (SkillInfo, Result<Files, String
         let files = checked.and(files);
         out.insert(name.clone(), (SkillInfo { name, description, problem, accounts: Vec::new() }, files));
     }
-    out
+    Ok(out)
 }
 
 // ------------------------------------------------------------------ files --
@@ -270,8 +279,9 @@ fn join_rel(base: &Path, rel: &str) -> PathBuf {
     rel.split('/').filter(|s| !s.is_empty()).fold(base.to_path_buf(), |p, s| p.join(s))
 }
 
-/// Every file under `dir`, by relative path. A link anywhere in it is an
-/// error: Luna neither follows one nor writes over it.
+/// Every file under `dir`, by relative path, `write_file`'s temp files aside.
+/// A link anywhere in it is an error: Luna neither follows one nor writes
+/// over it.
 fn read_dir_files(dir: &Path) -> Result<Files, String> {
     fn walk(dir: &Path, prefix: &str, out: &mut Files) -> Result<(), String> {
         let entries = std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -284,6 +294,8 @@ fn read_dir_files(dir: &Path) -> Result<Files, String> {
                 return Err(format!("{} is a link", entry.path().display()));
             } else if kind.is_dir() {
                 walk(&entry.path(), &rel, out)?;
+            } else if name.ends_with(TMP_SUFFIX) {
+                continue;
             } else {
                 out.insert(rel, std::fs::read(entry.path()).map_err(|e| format!("{}: {e}", entry.path().display()))?);
             }
@@ -295,13 +307,21 @@ fn read_dir_files(dir: &Path) -> Result<Files, String> {
     Ok(out)
 }
 
-/// Through a temp file beside it, so a reader never sees half.
+/// The end of `write_file`'s temp names. No file so named is read as part of
+/// a skill or a copy: a skill's own file of the name would be written over by
+/// a write beside it, and one left by a write that died taken for the skill's.
+const TMP_SUFFIX: &str = ".luna-tmp";
+
+/// Through a temp file beside it, so a reader never sees half. The temp name
+/// is this write's own (process and count), so two writers never share one.
 fn write_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     }
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mut tmp = path.as_os_str().to_owned();
-    tmp.push(".luna-tmp");
+    tmp.push(format!(".{}-{n}{TMP_SUFFIX}", std::process::id()));
     let tmp = PathBuf::from(tmp);
     std::fs::write(&tmp, bytes).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
@@ -503,16 +523,28 @@ struct Pass {
 /// them. Changed, deleted and foreign destinations are only reported.
 fn pass(dirs: &Dirs, units: &[Unit], skipped: &[String], ledger: &mut Ledger, act: bool) -> Pass {
     let mut out = Pass::default();
-    let mut wanted = BTreeSet::new();
+    // Each copy wanted by `ident`, with its path as spelled now: two
+    // spellings of one file are one copy.
+    let mut wanted: BTreeMap<String, String> = BTreeMap::new();
     for u in units {
         let key = u.dest.to_string_lossy().into_owned();
-        if !wanted.insert(key.clone()) {
+        let id = ident(&u.dest);
+        if wanted.contains_key(&id) {
             continue;
         }
+        wanted.insert(id.clone(), key.clone());
         let place = |status, both, problem| Place { dest: key.clone(), target: u.target.clone(), skill: u.skill.clone(), status, both, problem };
-        if skipped.contains(&key) {
+        if skipped.iter().any(|s| ident(Path::new(s)) == id) {
             out.places.push(place(Status::Skipped, false, None));
             continue;
+        }
+        // Noted under another spelling of the same path (an account renamed
+        // in case only, on Windows): the same copy, noted as spelled now.
+        if !ledger.written.contains_key(&key) {
+            let alias = ledger.written.keys().find(|k| ident(Path::new(k)) == id).cloned();
+            if let Some(h) = alias.and_then(|a| ledger.written.remove(&a)) {
+                ledger.written.insert(key.clone(), h);
+            }
         }
         let source = match &u.source {
             Ok(s) => s,
@@ -570,11 +602,13 @@ fn pass(dirs: &Dirs, units: &[Unit], skipped: &[String], ledger: &mut Ledger, ac
         }
     }
     if act {
-        let gone: Vec<String> = ledger.written.keys().filter(|k| !wanted.contains(*k)).cloned().collect();
+        let gone: Vec<String> = ledger.written.keys().filter(|k| wanted.get(&ident(Path::new(k))) != Some(*k)).cloned().collect();
         for key in gone {
             let h = ledger.written.remove(&key).unwrap_or_default();
             let dest = PathBuf::from(&key);
-            if in_library(dirs, &dest) {
+            // Another spelling of a copy still wanted is that copy's file:
+            // only the note goes.
+            if wanted.contains_key(&ident(&dest)) || in_library(dirs, &dest) {
                 continue;
             }
             match read_at(&dest, is_file(&h)) {
@@ -594,9 +628,14 @@ fn pass(dirs: &Dirs, units: &[Unit], skipped: &[String], ledger: &mut Ledger, ac
 
 /// Every copy the library wants, from the settings and what the library and
 /// the accounts folder hold now.
-fn units(dirs: &Dirs, lib: &crate::settings::LibrarySettings, accounts: &[AccountInfo], skills: &BTreeMap<String, (SkillInfo, Result<Files, String>)>) -> Vec<Unit> {
+fn units(dirs: &Dirs, lib: &crate::settings::LibrarySettings, accounts: &[AccountInfo], skills: &Result<Skills, String>) -> Vec<Unit> {
     let mut out = Vec::new();
     let account = |a: &AccountInfo| Target::Account { provider: a.provider, name: a.name.clone() };
+    // A skill's files; while the skills will not list, every one a failure.
+    let files_of = |name: &str| match skills {
+        Ok(found) => found.get(name).map(|(_, files)| files.clone()),
+        Err(e) => Some(Err(e.clone())),
+    };
     if !lib.instructions.is_empty() {
         // No file is no instructions; one that will not read (held open
         // mid-save, say) is a failure like a broken skill's, and takes none of
@@ -620,7 +659,7 @@ fn units(dirs: &Dirs, lib: &crate::settings::LibrarySettings, accounts: &[Accoun
         }
     }
     for (name, reach) in &lib.skills {
-        let Some((_, files)) = skills.get(name) else { continue };
+        let Some(files) = files_of(name.as_str()) else { continue };
         for a in accounts.iter().filter(|a| reaches(reach, a)) {
             out.push(Unit {
                 dest: Path::new(&a.path).join("skills").join(name),
@@ -634,13 +673,13 @@ fn units(dirs: &Dirs, lib: &crate::settings::LibrarySettings, accounts: &[Accoun
     for f in &lib.folders {
         let there = Path::new(&f.path).is_dir();
         for name in &f.skills {
-            let Some((_, files)) = skills.get(name) else { continue };
+            let Some(files) = files_of(name.as_str()) else { continue };
             out.push(Unit {
                 dest: Path::new(&f.path).join(name),
                 file: false,
                 skill: Some(name.clone()),
                 target: Target::Folder { path: f.path.clone() },
-                source: if there { files.clone() } else { Err(format!("{} is not there", f.path)) },
+                source: if there { files } else { Err(format!("{} is not there", f.path)) },
             });
         }
     }
@@ -652,18 +691,21 @@ fn units(dirs: &Dirs, lib: &crate::settings::LibrarySettings, accounts: &[Accoun
     out
 }
 
-/// Whether `a` is `b` or inside it, slashes and a trailing separator aside,
-/// and case where the file system ignores it.
+/// A path as the file system tells paths apart: `/`-separated, without a
+/// trailing one, and on Windows — where either slash separates and case is
+/// ignored — lower-case, so two spellings of one file come out the same.
+fn ident(p: &Path) -> String {
+    let s = p.to_string_lossy();
+    if cfg!(windows) {
+        s.replace('\\', "/").trim_end_matches('/').to_lowercase()
+    } else {
+        s.trim_end_matches('/').to_string()
+    }
+}
+
+/// Whether `a` is `b` or inside it, per `ident`.
 fn within(a: &Path, b: &Path) -> bool {
-    let key = |p: &Path| {
-        let s = p.to_string_lossy().replace('\\', "/").trim_end_matches('/').to_string();
-        if cfg!(windows) {
-            s.to_lowercase()
-        } else {
-            s
-        }
-    };
-    let (a, b) = (key(a), key(b));
+    let (a, b) = (ident(a), ident(b));
     a == b || a.strip_prefix(&b).is_some_and(|rest| rest.starts_with('/'))
 }
 
@@ -673,7 +715,34 @@ fn within(a: &Path, b: &Path) -> bool {
 /// source itself, adopted as Luna's and taken out — the library's only one —
 /// the day it is no longer wanted there.
 fn in_library(dirs: &Dirs, dest: &Path) -> bool {
-    within(dest, &dirs.skills()) || within(&dirs.root, dest)
+    let skills = dirs.skills();
+    if within(dest, &skills) || within(&dirs.root, dest) {
+        return true;
+    }
+    // Reached through a link or junction (a project's `.agents/skills`
+    // pointing at the library's) the spelling differs but the files do not.
+    let (dest, skills, root) = (resolved(dest), resolved(&skills), resolved(&dirs.root));
+    within(&dest, &skills) || within(&root, &dest)
+}
+
+/// `p` with the part of it that is there canonicalized, links and junctions
+/// followed, and the rest put back on. Both sides of a comparison go through
+/// it, so they carry the same form (`\\?\` on Windows).
+fn resolved(p: &Path) -> PathBuf {
+    let mut rest = Vec::new();
+    let mut at = p;
+    loop {
+        if let Ok(real) = std::fs::canonicalize(at) {
+            return rest.iter().rev().fold(real, |acc, part| acc.join(part));
+        }
+        match (at.parent(), at.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name);
+                at = parent;
+            }
+            _ => return p.to_path_buf(),
+        }
+    }
 }
 
 // --------------------------------------------------------------- overview --
@@ -729,7 +798,7 @@ fn overview_locked(act: bool) -> Result<Overview, String> {
     let lib = crate::settings::get().library;
     let accounts = crate::accounts::list_accounts()?;
     let found = dirs.root.is_dir();
-    let skills = if found { read_skills(&dirs) } else { BTreeMap::new() };
+    let skills = if found { read_skills(&dirs) } else { Ok(BTreeMap::new()) };
     let mut ledger = Ledger::load(&dirs);
     // A library that is not there (a drive not plugged in, a folder moved)
     // wants nothing, and a pass on that would take every copy out.
@@ -760,6 +829,7 @@ fn overview_locked(act: bool) -> Result<Overview, String> {
         found,
         has_instructions: std::fs::read_to_string(dirs.instructions()).is_ok_and(|t| !t.trim().is_empty()),
         skills: skills
+            .unwrap_or_default()
             .into_values()
             .map(|(info, _)| SkillInfo { accounts: lib.skills.get(&info.name).cloned().unwrap_or_default(), ..info })
             .collect(),
@@ -855,11 +925,17 @@ pub fn library_skip(dest: String, on: bool) -> Result<Overview, String> {
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dirs = Dirs::current();
     let mut ledger = Ledger::load(&dirs);
-    if on && ledger.written.remove(&dest).is_some() {
+    // Under any spelling of the path, as a pass goes by.
+    let id = ident(Path::new(&dest));
+    let noted = ledger.written.len();
+    if on {
+        ledger.written.retain(|k, _| ident(Path::new(k)) != id);
+    }
+    if ledger.written.len() != noted {
         ledger.save(&dirs)?;
     }
     crate::settings::update(|s| {
-        s.library.skipped.retain(|d| *d != dest);
+        s.library.skipped.retain(|d| ident(Path::new(d)) != id);
         if on {
             s.library.skipped.push(dest.clone());
         }
@@ -1349,6 +1425,42 @@ mod tests {
         assert!(p.places.iter().all(|x| x.status == Status::Failed));
         assert!(f.account(0).join("skills/review/SKILL.md").is_file(), "a draft mid-edit takes nothing out");
         assert!(std::fs::read_to_string(f.account(0).join("skills/review/SKILL.md")).unwrap().contains("v1"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn another_spelling_of_a_copy_is_the_same_copy() {
+        let mut f = Fixture::new("case");
+        std::fs::write(f.dirs.instructions(), "Be brief.\n").unwrap();
+        let lib = LibrarySettings { instructions: all(), ..Default::default() };
+        let mut ledger = Ledger::default();
+        f.run(&lib, &mut ledger, true);
+        // The account renamed in case only: the same folder, spelled anew.
+        f.accounts[0].path = f.accounts[0].path.to_uppercase();
+        let claude_md = f.account(0).join("CLAUDE.md");
+        let p = f.run(&lib, &mut ledger, true);
+        assert_eq!(Fixture::status(&p, &claude_md), Status::Current);
+        assert!(claude_md.is_file(), "the old spelling's note takes nothing out");
+        let noted: Vec<String> = ledger.written.keys().filter(|k| k.ends_with("CLAUDE.md")).cloned().collect();
+        assert_eq!(noted, vec![claude_md.to_string_lossy().into_owned()]);
+    }
+
+    #[test]
+    fn a_temp_file_left_by_a_write_is_no_part_of_a_skill() {
+        let f = Fixture::new("tmp");
+        f.skill("review", "v1");
+        let lib = LibrarySettings { skills: skills(&["review"]), ..Default::default() };
+        // Left in the library by a save that died: not laid out.
+        std::fs::write(f.dirs.skills().join("review/SKILL.md.1-0.luna-tmp"), "half").unwrap();
+        let mut ledger = Ledger::default();
+        f.run(&lib, &mut ledger, true);
+        let copy = f.account(0).join("skills/review");
+        assert!(copy.join("SKILL.md").is_file());
+        assert!(!copy.join("SKILL.md.1-0.luna-tmp").exists());
+        // Left beside a copy: the copy is still as Luna wrote it.
+        std::fs::write(copy.join("SKILL.md.2-0.luna-tmp"), "half").unwrap();
+        let p = f.run(&lib, &mut ledger, false);
+        assert_eq!(Fixture::status(&p, &copy), Status::Current);
     }
 
     #[test]

@@ -42,6 +42,12 @@ const describe = (reach: Reach) =>
           })
           .join('\n');
 
+/** A reach as Rust saves it (library.rs `tidy_reach`): `all` alone, a provider without its own accounts, nothing twice. */
+const tidy = (reach: Reach): Reach =>
+  reach.includes(ALL)
+    ? [ALL]
+    : reach.filter((r, i) => reach.indexOf(r) === i && !(r.includes('/') && reach.includes(r.split('/')[0])));
+
 /**
  * Which accounts a skill or the instructions go into — every account, every
  * account of one CLI, or accounts picked by name: a face that says which and,
@@ -51,7 +57,8 @@ export function ReachPicker({ id, reach: saved, accounts, onChange }: {
   id: string;
   reach: Reach;
   accounts: AccountRef[];
-  onChange: (reach: Reach) => void;
+  /** Settles once the reach is saved or failed to, when the caller can say. */
+  onChange: (reach: Reach) => void | Promise<unknown>;
 }) {
   const host = useDialogHost();
   const face = useRef<HTMLButtonElement>(null);
@@ -60,12 +67,22 @@ export function ReachPicker({ id, reach: saved, accounts, onChange }: {
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
   // The ticks made while the list is open: each is sent as the whole reach,
   // and one made before the last one's answer is in must build on it, not on
-  // the reach that answer has yet to bring.
+  // the reach that answer has yet to bring. Once every write has settled the
+  // saved reach is the truth again, so one that failed shows as not made.
   const [picked, setPicked] = useState<Reach | null>(null);
+  const writes = useRef(0);
   const reach = open && picked ? picked : saved;
   const change = (next: Reach) => {
-    setPicked(next);
-    onChange(next);
+    const tidied = tidy(next);
+    setPicked(tidied);
+    const done = onChange(tidied);
+    if (!(done instanceof Promise)) return;
+    writes.current += 1;
+    const settle = () => {
+      writes.current -= 1;
+      if (!writes.current) setPicked(null);
+    };
+    void done.then(settle, settle);
   };
 
   useLayoutEffect(() => {

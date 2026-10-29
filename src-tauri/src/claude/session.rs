@@ -552,8 +552,11 @@ pub fn transcript_of(pid: Option<u32>, cwd: &str, spawned_at_ms: u128, account_p
 /// and left out otherwise. Returns the messages and the offset to continue
 /// from: the end of the last complete line, so a line still being written is
 /// read whole next time rather than skipped. Subagent sidechains and
-/// CLI-injected turns are skipped.
+/// CLI-injected turns are skipped. A cursor past the end is one into a file
+/// since cut short or written anew, where it would land mid-line: the file is
+/// read from the top.
 pub fn messages_from(path: &Path, from: u64, with_tools: bool) -> (Vec<crate::agents::Message>, u64) {
+    let from = if std::fs::metadata(path).is_ok_and(|m| from > m.len()) { 0 } else { from };
     let mut out = Vec::new();
     let read = crate::pty::complete_lines(path, from, |line| {
         if let Some(m) = message_of(line, with_tools) {
@@ -644,6 +647,10 @@ mod reading_tests {
         let (msgs, next) = messages_from(&path, cursor, false);
         assert_eq!(msgs, vec![crate::agents::Message { role: "assistant".into(), text: "pong".into() }]);
         assert_eq!(next, std::fs::metadata(&path).unwrap().len());
+        // Written anew, shorter: a cursor past its end reads it from the top.
+        std::fs::write(&path, format!("{first}\n")).unwrap();
+        let (msgs, _) = messages_from(&path, next, false);
+        assert_eq!(msgs, vec![crate::agents::Message { role: "user".into(), text: "ping".into() }]);
         let _ = std::fs::remove_file(&path);
     }
 }

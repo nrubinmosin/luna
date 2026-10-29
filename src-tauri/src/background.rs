@@ -96,11 +96,13 @@ struct Entry {
 struct Registry {
     entries: HashMap<String, Entry>,
     next_serial: u64,
+    /// The core is leaving (`stop_all`): no turn starts from here on.
+    closed: bool,
 }
 
 fn reg() -> &'static (Mutex<Registry>, Condvar) {
     static R: OnceLock<(Mutex<Registry>, Condvar)> = OnceLock::new();
-    R.get_or_init(|| (Mutex::new(Registry { entries: HashMap::new(), next_serial: 1 }), Condvar::new()))
+    R.get_or_init(|| (Mutex::new(Registry { entries: HashMap::new(), next_serial: 1, closed: false }), Condvar::new()))
 }
 
 fn lock() -> std::sync::MutexGuard<'static, Registry> {
@@ -132,6 +134,70 @@ pub fn has(id: &str) -> bool {
     lock().entries.contains_key(id)
 }
 
+/// How many helpers are in a turn: what keeps the core, as a running
+/// session does. Between turns a helper has no process to keep.
+pub fn running() -> usize {
+    lock().entries.values().filter(|e| e.run.is_some()).count()
+}
+
+/// Whether a helper runs on this account folder, between turns too: its next
+/// turn starts there.
+pub fn uses_account(account_path: &str) -> bool {
+    lock().entries.values().any(|e| crate::pty::same_dir(&e.spec.account_path, account_path))
+}
+
+/// Every folder the helpers other than `except` work in, between turns too:
+/// the one each was sent to, and the worktree it made once the CLI has said
+/// where — Codex says it only in its rollout, read here off the registry.
+pub fn working_dirs(except: Option<&str>) -> Vec<String> {
+    let found: Vec<(String, Option<String>, Provider, String, Option<String>)> = lock()
+        .entries
+        .iter()
+        .filter(|(id, _)| Some(id.as_str()) != except)
+        .map(|(_, e)| (e.spec.folder.clone(), e.cwd.clone(), e.spec.provider, e.spec.account_path.clone(), e.session.clone()))
+        .collect();
+    found
+        .into_iter()
+        .flat_map(|(folder, cwd, provider, account, session)| {
+            let cwd = cwd.or_else(|| match provider {
+                Provider::Codex => crate::codex::session::thread_cwd(&account, session.as_deref()?),
+                Provider::Claude => None,
+            });
+            [Some(folder), cwd].into_iter().flatten()
+        })
+        .collect()
+}
+
+/// The core is leaving: every turn in progress is stopped with its process
+/// tree, and none starts after.
+pub fn stop_all() {
+    stop_turns(true);
+}
+
+/// Stops every turn in progress with its process tree and drops what was
+/// queued; `close` also keeps any from starting after. Returns how many it
+/// stopped.
+pub fn stop_turns(close: bool) -> usize {
+    let pids: Vec<u32> = {
+        let mut r = lock();
+        r.closed |= close;
+        r.entries
+            .values_mut()
+            .filter_map(|e| {
+                e.queue.clear();
+                e.held = None;
+                e.run.as_ref().and_then(|run| run.pid)
+            })
+            .collect()
+    };
+    reg().1.notify_all();
+    let stopped = pids.len();
+    for pid in pids {
+        crate::pty::kill_tree(Some(pid));
+    }
+    stopped
+}
+
 /// Starts a helper on its opening prompt.
 pub fn start(id: &str, spec: Spec, prompt: &str) -> Result<(), String> {
     let mut e = Entry {
@@ -150,6 +216,7 @@ pub fn start(id: &str, spec: Spec, prompt: &str) -> Result<(), String> {
     lock().entries.insert(id.to_string(), e);
     if let Err(e) = run_turn(id, prompt) {
         lock().entries.remove(id);
+        changed();
         return Err(e);
     }
     changed();
@@ -260,14 +327,26 @@ fn claim(e: &mut Entry) {
 
 /// Starts the next turn's process with `prompt` on its stdin, on a run
 /// `claim` has taken; a turn that could not start gives the claim back.
+/// Text queued behind it meanwhile would wait for a `turn_over` that never
+/// comes: it fails with it, counted as a turn that ended on the error, so
+/// whoever waits on it hears — rather than starting what would most likely
+/// fail the same way.
 fn run_turn(id: &str, prompt: &str) -> Result<(), String> {
     let started = spawn_turn(id, prompt);
-    if started.is_err() {
+    if let Err(err) = &started {
         if let Some(e) = lock().entries.get_mut(id) {
             if e.run.as_ref().is_some_and(|r| r.pid.is_none()) {
                 e.run = None;
+                if !e.queue.is_empty() {
+                    e.queue.clear();
+                    note(e, &format!("could not start the queued turn: {err}"));
+                    e.error = Some(err.clone());
+                    e.turns_ended += 1;
+                }
             }
         }
+        reg().1.notify_all();
+        changed();
     }
     started
 }
@@ -275,6 +354,9 @@ fn run_turn(id: &str, prompt: &str) -> Result<(), String> {
 fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
     let (args, dir, envs, provider) = {
         let r = lock();
+        if r.closed {
+            return Err("Luna is stopping".into());
+        }
         let e = r.entries.get(id).ok_or("no such helper")?;
         let (args, dir, envs) = command_for(e, id);
         (args, dir, envs, e.spec.provider)
@@ -294,6 +376,13 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
+    // A group of its own, as a pty gives its CLI: what kills a turn
+    // (`pty::kill_tree`) takes the group whose id is the CLI's pid.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
     let mut child = cmd.spawn().map_err(|e| {
         crate::log::error("background", &format!("could not start {id}: {e}"));
         format!("could not start {}: {e}", provider.as_str())
@@ -305,9 +394,13 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
     let stderr = child.stderr.take();
     {
         let mut r = lock();
-        let Some(e) = r.entries.get_mut(id) else {
+        let closed = r.closed;
+        let Some(e) = r.entries.get_mut(id).filter(|_| !closed) else {
+            drop(r);
             crate::pty::kill_tree(pid);
-            return Err("the helper was deleted".into());
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(if closed { "Luna is stopping" } else { "the helper was deleted" }.into());
         };
         e.run = Some(Run { pid, started_ms: crate::throttle::now_ms(), _job: job });
         e.error = None;

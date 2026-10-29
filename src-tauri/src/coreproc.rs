@@ -20,7 +20,7 @@ use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{sync_channel, SyncSender, TrySendError};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 pub const FLAG: &str = "--core";
@@ -184,10 +184,12 @@ fn write_discovery(d: &Discovery) -> io::Result<()> {
 
 /// Leaves, taking `core.json` along so no window tries the dead port. Every
 /// session is asked to quit first, as a chat delete would, so each leaves its
-/// transcript whole.
+/// transcript whole; a background helper's turn has no quit to be asked and
+/// is stopped, its process tree with it, so nothing runs on unowned.
 fn leave(reason: &str) -> ! {
     crate::lifecycle::exiting(reason);
     let _ = std::fs::remove_file(ipc::discovery_file());
+    crate::background::stop_all();
     crate::pty::manager().shut_down_all(crate::pty::GRACE);
     crate::lifecycle::end_process()
 }
@@ -195,7 +197,9 @@ fn leave(reason: &str) -> ! {
 fn leave_when_alone() {
     loop {
         std::thread::sleep(Duration::from_secs(30));
-        let kept = !WINDOWS.lock().unwrap_or_else(|e| e.into_inner()).is_empty() || crate::pty::manager().live_count() > 0;
+        let kept = !WINDOWS.lock().unwrap_or_else(|e| e.into_inner()).is_empty()
+            || crate::pty::manager().live_count() > 0
+            || crate::background::running() > 0;
         if kept {
             ALONE_SINCE.store(now_ms(), Ordering::SeqCst);
             continue;
@@ -313,43 +317,62 @@ fn serve(mut stream: TcpStream, token: &str, started: u64) -> io::Result<()> {
         }
         windows.push(Window { id, tx: tx.clone(), stream: stream.try_clone()? });
     }
-    let result = requests(&mut stream, &tx, started);
+    let replies = Replies { tx, stream: Arc::new(stream.try_clone()?) };
+    let result = requests(&mut stream, &replies, started);
     WINDOWS.lock().unwrap_or_else(|e| e.into_inner()).retain(|w| w.id != id);
     result
 }
 
-fn requests(stream: &mut TcpStream, tx: &SyncSender<Vec<u8>>, started: u64) -> io::Result<()> {
+/// Where a connection's answers go: its queue, and its socket, closed when an
+/// answer cannot be queued so the requests waiting on it fail rather than
+/// wait for good.
+#[derive(Clone)]
+struct Replies {
+    tx: SyncSender<Vec<u8>>,
+    stream: Arc<TcpStream>,
+}
+
+fn requests(stream: &mut TcpStream, replies: &Replies, started: u64) -> io::Result<()> {
     loop {
         let (kind, payload) = ipc::read_frame(stream)?;
         let req: Req = serde_json::from_slice(&payload).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         match req.cmd.as_str() {
-            "info" => answer(tx, req.id, serde_json::to_value(Welcome::of_this_process(started)).map_err(|e| e.to_string())),
+            "info" => answer(replies, req.id, serde_json::to_value(Welcome::of_this_process(started)).map_err(|e| e.to_string())),
             "shutdown" => {
-                answer(tx, req.id, Ok(serde_json::Value::Null));
+                answer(replies, req.id, Ok(serde_json::Value::Null));
                 leave("the window asked it to stop");
             }
             cmd if kind == ipc::SEND => {
                 // Nobody waits for the answer to a keystroke.
                 let _ = crate::corecmd::dispatch(cmd, req.args);
             }
-            cmd if crate::corecmd::in_order(cmd) => answer(tx, req.id, crate::corecmd::dispatch(cmd, req.args)),
+            cmd if crate::corecmd::in_order(cmd) => answer(replies, req.id, crate::corecmd::dispatch(cmd, req.args)),
             _ => {
-                let tx = tx.clone();
-                std::thread::spawn(move || answer(&tx, req.id, crate::corecmd::dispatch(&req.cmd, req.args)));
+                let replies = replies.clone();
+                std::thread::spawn(move || answer(&replies, req.id, crate::corecmd::dispatch(&req.cmd, req.args)));
             }
         }
     }
 }
 
-fn answer(tx: &SyncSender<Vec<u8>>, id: u64, result: Result<serde_json::Value, String>) {
+fn answer(replies: &Replies, id: u64, result: Result<serde_json::Value, String>) {
     let res = match result {
         Ok(ok) => Res { id, ok: Some(ok), err: None },
         Err(err) => Res { id, ok: None, err: Some(err) },
     };
-    if let Ok(frame) = ipc::encode(ipc::RES, &res) {
-        // A full queue is a window that stopped reading: the broadcast lets it
-        // go, and the answer is lost with it.
-        let _ = tx.try_send(frame);
+    // An answer too large for a frame is still an answer: the error says why.
+    let frame = ipc::encode(ipc::RES, &res)
+        .or_else(|e| ipc::encode(ipc::RES, &Res { id, ok: None, err: Some(format!("the answer could not be sent: {e}")) }));
+    // A full queue is a window that stopped reading. The answer is lost, and
+    // so is the connection: the window hears it end, which fails every call
+    // still waiting on it. A queue nobody reads any more is one whose writer
+    // has closed the connection already.
+    match frame.map(|f| replies.tx.try_send(f)) {
+        Ok(Ok(())) | Ok(Err(TrySendError::Disconnected(_))) => {}
+        Ok(Err(TrySendError::Full(_))) | Err(_) => {
+            crate::log::warn("core", &format!("could not answer request {id}; closing the connection"));
+            let _ = replies.stream.shutdown(Shutdown::Both);
+        }
     }
 }
 

@@ -46,6 +46,10 @@ static CURRENT: Mutex<Option<Arc<Conn>>> = Mutex::new(None);
 /// one's end must not then read as the new core going down.
 static GENERATION: AtomicU64 = AtomicU64::new(0);
 static NEXT_ID: AtomicU64 = AtomicU64::new(10);
+/// A restart under way: one at a time, or two would both say hello to the new
+/// core as `ui` and every event would reach the page twice. `connect` lets go
+/// of it once the new link is set up.
+static RESTARTING: AtomicBool = AtomicBool::new(false);
 
 fn link() -> &'static Mutex<LinkState> {
     static L: std::sync::OnceLock<Mutex<LinkState>> = std::sync::OnceLock::new();
@@ -65,7 +69,11 @@ pub fn start() {
 fn connect() {
     let generation = GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
     set(LinkState { state: "starting", ..Default::default() });
-    match attach() {
+    let attached = attach();
+    // Set up, whichever way it went: a restart may be asked again. What
+    // follows holds the connection for the core's whole life.
+    RESTARTING.store(false, Ordering::SeqCst);
+    match attached {
         Ok(Attached::Ours(stream, core)) => {
             let Ok(writer) = stream.try_clone() else {
                 set(LinkState { state: "down", core: None, error: Some("cannot use the connection".into()) });
@@ -328,9 +336,6 @@ pub fn core_state() -> LinkState {
 /// in the new one — and starts one of this build.
 #[tauri::command]
 pub fn core_restart() {
-    // One at a time: two restarts racing would both say hello to the new core
-    // as `ui`, and every event would reach the page twice.
-    static RESTARTING: AtomicBool = AtomicBool::new(false);
     if RESTARTING.swap(true, Ordering::SeqCst) {
         return;
     }
@@ -339,7 +344,6 @@ pub fn core_restart() {
         set(LinkState { state: "starting", ..Default::default() });
         shut_down();
         connect();
-        RESTARTING.store(false, Ordering::SeqCst);
     });
 }
 
