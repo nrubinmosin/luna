@@ -107,6 +107,9 @@ interface Entry extends TermHandle {
   attached: boolean;
   /** Which release put it down; null while a pane is showing it. */
   idleAt: number | null;
+  /** It had the keyboard when it was put down: moving a node out of the
+   *  document blurs it, so the pane it lands in next hands it back. */
+  refocus: boolean;
   dispose: () => void;
 }
 
@@ -217,6 +220,7 @@ function create(spec: TermSpec): Entry {
     host,
     attached: false,
     idleAt: 0,
+    refocus: false,
     wake: () => {},
     dispose: () => {}
   };
@@ -333,6 +337,11 @@ function create(spec: TermSpec): Entry {
     if (disposed) return;
     refit();
     nudgeRepaint();
+    // Only while the keyboard is still nowhere: something the user has
+    // focused since keeps it.
+    const free = !document.activeElement || document.activeElement === document.body;
+    if (entry.refocus && free) host.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea')?.focus();
+    entry.refocus = false;
   };
 
   entry.dispose = () => {
@@ -577,6 +586,7 @@ export function release(chatId: string, from?: HTMLElement) {
   if (from && entry.host.parentElement !== from) return;
   entry.attached = false;
   entry.idleAt = ++releases;
+  entry.refocus = entry.host.contains(document.activeElement);
   parkingLot().appendChild(entry.host);
   sweepSoon();
 }

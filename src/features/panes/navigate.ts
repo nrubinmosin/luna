@@ -48,3 +48,47 @@ export function jumpToWaiting() {
     requestAnimationFrame(() => focusTerminal(chat.id));
   }
 }
+
+/** The chat whose terminal the keyboard belongs in: the one on the sheet, or
+ *  the pane last worked in. */
+function homeChat(): string | null | undefined {
+  const s = usePanes.getState();
+  if (s.peekChat) return s.peekChat;
+  return currentSlots(s)[s.peek ?? s.activePane];
+}
+
+/**
+ * Keeps typing going to a terminal when the keyboard ends up nowhere without
+ * the user sending it there: the window comes back to the front (after an
+ * update restarted it, or from another app) with nothing focused, or a
+ * focused terminal is taken out of the document under the user's hands —
+ * its pane remounted, its session started over. A click elsewhere, or an
+ * open dialog, leaves the keyboard where it went.
+ */
+export function keepKeyboardHome(): () => void {
+  let pointerAt = 0;
+  const lost = () => !document.activeElement || document.activeElement === document.body;
+  const goHome = () => {
+    if (!lost() || !document.hasFocus() || document.querySelector('.scrim')) return;
+    const id = homeChat();
+    if (id) focusTerminal(id);
+  };
+  const onPointer = () => (pointerAt = performance.now());
+  const onFocusOut = (e: FocusEvent) => {
+    if (e.relatedTarget || performance.now() - pointerAt < 500) return;
+    if (!(e.target instanceof HTMLElement) || !e.target.classList.contains('xterm-helper-textarea')) return;
+    requestAnimationFrame(goHome);
+  };
+  const onWindowFocus = () => requestAnimationFrame(goHome);
+  window.addEventListener('pointerdown', onPointer, true);
+  document.addEventListener('focusout', onFocusOut);
+  window.addEventListener('focus', onWindowFocus);
+  // A window that opens already in front gets no focus event.
+  const first = setTimeout(goHome, 1500);
+  return () => {
+    clearTimeout(first);
+    window.removeEventListener('pointerdown', onPointer, true);
+    document.removeEventListener('focusout', onFocusOut);
+    window.removeEventListener('focus', onWindowFocus);
+  };
+}
