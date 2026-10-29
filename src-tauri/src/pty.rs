@@ -965,6 +965,10 @@ pub async fn ensure_claude_session(
 ) -> Result<String, String> {
     // Built only if no process is running (see `spawn`).
     spawn(id.clone(), move || {
+        // `--resume` of a session with no transcript fails with "No
+        // conversation found" and leaves the pane at a dead CLI: a chat that
+        // was opened and never typed into starts afresh instead.
+        let resume = resume.filter(|sid| crate::claude::session::find_transcript(&account_path, sid).is_some());
         // A new worktree is about to branch off origin; a resumed session
         // already has its worktree. Here, under the spawn gate, so a pane
         // asking for the session meanwhile waits for this spawn — the one
