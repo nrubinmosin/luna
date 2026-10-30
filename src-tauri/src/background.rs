@@ -17,7 +17,7 @@
 
 use crate::agents::Ask;
 use crate::provider::Provider;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
@@ -34,7 +34,8 @@ const LOG_CHARS: usize = 300;
 const ASK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 
 /// What a helper is started with, every turn the same.
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Spec {
     pub provider: Provider,
     pub account_path: String,
@@ -53,7 +54,9 @@ pub struct Spec {
     /// no way to ask for (codex/hooks.rs).
     pub hooks_unasked: bool,
     /// The bearer token of its MCP config: Luna's tools when `tools`, and
-    /// `luna_permission` for every Claude Code helper.
+    /// `luna_permission` for every Claude Code helper. Never saved: a core
+    /// started later issues its own.
+    #[serde(skip)]
     pub token: Option<String>,
 }
 
@@ -95,6 +98,9 @@ struct Entry {
     held: Option<Held>,
     /// The CLI could not run or quit on an error before saying anything.
     error: Option<String>,
+    /// Its last turn was stopped by the core going, not ended by the CLI:
+    /// what the caller is told of it says so.
+    cut_short: bool,
 }
 
 struct Registry {
@@ -176,6 +182,7 @@ pub fn working_dirs(except: Option<&str>) -> Vec<String> {
 /// tree, and none starts after.
 pub fn stop_all() {
     stop_turns(true);
+    save();
 }
 
 /// Stops every turn in progress with its process tree and drops what was
@@ -189,6 +196,8 @@ pub fn stop_turns(close: bool) -> usize {
         let mut pids = Vec::new();
         let mut claimed = 0;
         for e in r.entries.values_mut() {
+            // Stopped for Luna's sake, not ended: its caller hears so.
+            e.cut_short |= e.run.is_some();
             match stop(e) {
                 Some(pid) => pids.push(pid),
                 None if e.run.is_some() => claimed += 1,
@@ -235,6 +244,7 @@ pub fn start(id: &str, spec: Spec, prompt: &str) -> Result<(), String> {
         log: VecDeque::new(),
         held: None,
         error: None,
+        cut_short: false,
     };
     claim(&mut e);
     lock().entries.insert(id.to_string(), e);
@@ -498,6 +508,7 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
             Some(e) => {
                 e.run = Some(Run { pid, started_ms: crate::throttle::now_ms(), _job: job, stopped: false });
                 e.error = None;
+                e.cut_short = false;
                 note(e, &format!("› {}", one_line(prompt)));
                 None
             }
@@ -1013,6 +1024,158 @@ pub fn background_delete(id: String) -> Result<(), String> {
     crate::agents::delete_by_user(&id)
 }
 
+// ------------------------------------------------------- across cores --
+
+/// How often the helpers are written out, when they have changed.
+const SAVE_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// A helper as `<data>/helpers.json` keeps it, for the core started after
+/// this one: between turns a helper is nothing but this and its
+/// conversation, which the CLI keeps on disk. What it was told and said is
+/// not here, only where to find it.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Saved {
+    id: String,
+    spec: Spec,
+    started_ms: u64,
+    session: Option<String>,
+    cwd: Option<String>,
+    turns_ended: u32,
+    /// A turn ran as this was written: should the core go before the next
+    /// write, it went mid-turn and stopped it.
+    running: bool,
+    /// Text was queued behind that turn, which goes with it.
+    queued: bool,
+    cut_short: bool,
+    ties: crate::agents::Ties,
+}
+
+fn saved_file() -> std::path::PathBuf {
+    crate::paths::data_dir().join("helpers.json")
+}
+
+/// Set once `restore` has read the file: before it, an empty registry is
+/// not to be written over what the last core left.
+static RESTORED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Writes the helpers out if they changed since the last write.
+fn save() {
+    use std::sync::atomic::Ordering;
+    static LAST: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+    if !RESTORED.load(Ordering::SeqCst) {
+        return;
+    }
+    let rows: Vec<(String, Spec, u64, Option<String>, Option<String>, u32, bool, bool, bool)> = lock()
+        .entries
+        .iter()
+        .map(|(id, e)| {
+            let queued = !e.queue.is_empty();
+            (id.clone(), e.spec.clone(), e.started_ms, e.session.clone(), e.cwd.clone(), e.turns_ended, e.run.is_some(), queued, e.cut_short)
+        })
+        .collect();
+    // The agent layer's lock after this one is let go: it is the one taken
+    // first where both are held.
+    let mut saved: Vec<Saved> = rows
+        .into_iter()
+        .map(|(id, spec, started_ms, session, cwd, turns_ended, running, queued, cut_short)| Saved {
+            ties: crate::agents::ties_of(&id).unwrap_or_default(),
+            id,
+            spec,
+            started_ms,
+            session,
+            cwd,
+            turns_ended,
+            running,
+            queued,
+            cut_short,
+        })
+        .collect();
+    saved.sort_by_key(|s| s.started_ms);
+    let Ok(bytes) = serde_json::to_vec_pretty(&saved) else { return };
+    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    if *last == bytes {
+        return;
+    }
+    let path = saved_file();
+    let tmp = path.with_extension("json.tmp");
+    match std::fs::write(&tmp, &bytes).and_then(|()| std::fs::rename(&tmp, &path)) {
+        Ok(()) => *last = bytes,
+        Err(e) => crate::log::warn("background", &format!("could not save the helpers to {}: {e}", path.display())),
+    }
+}
+
+/// Takes up the helpers the last core left, and keeps them saved from here
+/// on. A turn that core was in the middle of is over, stopped with it; the
+/// caller owed its answer is told so. One whose first turn never named its
+/// conversation has nothing to resume, and is let go.
+pub fn restore() {
+    let saved: Vec<Saved> = match std::fs::read(saved_file()) {
+        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|e| {
+            crate::log::warn("background", &format!("could not read helpers.json: {e}"));
+            Vec::new()
+        }),
+        Err(_) => Vec::new(),
+    };
+    let mut back = Vec::new();
+    for mut s in saved {
+        if s.session.is_none() {
+            crate::log::warn("background", &format!("let go of helper {}: its first turn never named its conversation", s.id));
+            continue;
+        }
+        let ties = std::mem::take(&mut s.ties);
+        let token = crate::agents::tie_back(&s.id, s.spec.provider, &s.spec.folder, &s.spec.account_path, ties);
+        let (id, running) = (s.id.clone(), s.running);
+        let mut e = taken_up(s);
+        e.spec.token = token;
+        lock().entries.insert(id.clone(), e);
+        back.push(format!("{}{}", crate::agents::label(&id), if running { " (stopped mid-turn)" } else { "" }));
+    }
+    RESTORED.store(true, std::sync::atomic::Ordering::SeqCst);
+    if !back.is_empty() {
+        crate::log::warn("background", &format!("took up {} helper(s) the last core left: {}", back.len(), back.join(", ")));
+        changed();
+    }
+    save();
+    let _ = std::thread::Builder::new().name("luna-bg-save".into()).spawn(|| loop {
+        std::thread::sleep(SAVE_EVERY);
+        save();
+    });
+}
+
+/// A saved helper as a registry entry, between turns: a turn that ran went
+/// with the old core and counts as ended, and so does the text queued
+/// behind it, which went too (as `stop` counts them).
+fn taken_up(s: Saved) -> Entry {
+    let mut e = Entry {
+        spec: s.spec,
+        started_ms: s.started_ms,
+        session: s.session,
+        cwd: s.cwd,
+        run: None,
+        turns_ended: s.turns_ended + u32::from(s.running) + u32::from(s.queued),
+        queue: Vec::new(),
+        log: VecDeque::new(),
+        held: None,
+        error: None,
+        cut_short: s.cut_short || s.running,
+    };
+    if s.running {
+        note(&mut e, "Luna's core went mid-turn and stopped the turn");
+        e.error = Some("Luna's core restarted mid-turn and stopped the turn".into());
+    }
+    if s.queued {
+        note(&mut e, "dropped what was queued behind it");
+    }
+    note(&mut e, "taken up by a new core");
+    e
+}
+
+/// Whether its last turn was stopped by the core going rather than ended.
+pub fn cut_short(id: &str) -> bool {
+    lock().entries.get(id).is_some_and(|e| e.cut_short)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1041,7 +1204,38 @@ mod tests {
             log: VecDeque::new(),
             held: None,
             error: None,
+            cut_short: false,
         }
+    }
+
+    #[test]
+    fn a_helper_saved_mid_turn_comes_back_between_turns_with_that_turn_ended() {
+        let mut spec = entry(Provider::Claude).spec;
+        spec.token = Some("secret".into());
+        let json = serde_json::to_value(&spec).unwrap();
+        assert!(json.get("token").is_none(), "a token is never saved");
+        let saved = |running, queued| Saved {
+            id: "c1".into(),
+            spec: serde_json::from_value(json.clone()).unwrap(),
+            started_ms: 5,
+            session: Some("sid".into()),
+            cwd: None,
+            turns_ended: 3,
+            running,
+            queued,
+            cut_short: false,
+            ties: Default::default(),
+        };
+
+        let e = taken_up(saved(true, true));
+        assert!(e.run.is_none() && e.spec.token.is_none());
+        assert_eq!(e.turns_ended, 5, "the turn stopped and the text queued behind it");
+        assert!(e.cut_short && e.error.is_some());
+        assert_eq!(e.session.as_deref(), Some("sid"));
+
+        let e = taken_up(saved(false, false));
+        assert_eq!(e.turns_ended, 3);
+        assert!(!e.cut_short && e.error.is_none());
     }
 
     #[test]

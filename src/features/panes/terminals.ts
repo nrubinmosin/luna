@@ -24,7 +24,7 @@ import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 import { logWarn } from '../../shared/lib/log';
 import type { Chat } from '../../shared/types';
-import { ensureClaudeSession, ensureCodexSession, resizeSession, sessionModes, writeSession } from '../../ipc/commands';
+import { ensureClaudeSession, ensureCodexSession, openLink, resizeSession, sessionModes, writeSession } from '../../ipc/commands';
 import { onPtyExit, onPtyOutput } from '../../ipc/events';
 import { useChats } from '../chats/chats.store';
 import { claude } from '../providers';
@@ -162,20 +162,13 @@ function create(spec: TermSpec): Entry {
     theme: themeFor(dark()),
     // The CLIs print OSC 8 links. xterm's stock handler asks `confirm()`
     // first, which the dialog plugin's init script turns into a
-    // `plugin:dialog|message` call this window has no permission for: it
-    // failed as an unhandled rejection, and the promise it handed back read
-    // as a yes regardless. Open the link the way the stock handler does,
-    // without the question.
+    // `plugin:dialog|message` call this window has no permission for, and
+    // then opens a window of the WebView's own. The link goes to the
+    // system's browser instead, without the question.
     linkHandler: {
       activate: (_e, uri) => {
-        const opened = window.open();
-        if (!opened) return;
-        try {
-          opened.opener = null;
-        } catch {
-          // Cross-origin by now; there is nothing left to cut.
-        }
-        opened.location.href = uri;
+        // `call` logs a failure, without the link: one may carry a sign-in code.
+        void openLink(uri).catch(() => {});
       }
     }
   });

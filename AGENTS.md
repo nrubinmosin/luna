@@ -10,6 +10,14 @@ Rules for anyone (person or agent) changing Luna.
   (no `E:\Projects\Personal\luna-test` and the like). Temporary files go in
   your scratchpad or in `test-build/`.
 
+## Where Luna keeps things
+- Luna is to live on one drive: whatever it keeps of its own — settings,
+  state, logs, downloads, caches — goes in its data folder, `paths::data_dir`,
+  which is the exe's folder wherever that is writable. Nothing goes under the
+  user's profile, `%LOCALAPPDATA%` or the system's temp unless the OS or a
+  dependency leaves no clean way around it; say why in a comment where it
+  happens. The CLIs' own account folders are theirs, not Luna's.
+
 ## Building and testing
 - There is no local Rust or Node toolchain: everything builds in Docker.
   - `./build-windows.ps1` — the release exe (`-Installer` for the setup).

@@ -40,7 +40,11 @@ if (-not $SkipBuild) {
 }
 
 $release = 'src-tauri/target/x86_64-pc-windows-msvc/release'
-$portable = Join-Path $release 'luna.exe'
+# The bare exe goes up no more: the updater installs the setup into the folder
+# Luna was installed in, so a copy run from anywhere else updated into a
+# second Luna with none of its data. It is still built, and asked for the
+# fingerprint below.
+$exe = Join-Path $release 'luna.exe'
 # By version, not by whatever comes first: the bundle directory keeps every
 # installer ever built there, and picking the first one alphabetically is how
 # v0.2.0 went out carrying the 0.1.0 setup and its signature — an update that
@@ -48,7 +52,7 @@ $portable = Join-Path $release 'luna.exe'
 $setup = Get-ChildItem (Join-Path $release 'bundle/nsis') -Filter "*_${version}_*-setup.exe" | Select-Object -First 1
 if (-not $setup) { throw "no installer for $version in $release/bundle/nsis" }
 $sig = "$($setup.FullName).sig"
-foreach ($f in @($portable, $setup.FullName, $sig)) {
+foreach ($f in @($exe, $setup.FullName, $sig)) {
     if (-not (Test-Path $f)) { throw "missing build artifact: $f" }
 }
 
@@ -57,7 +61,7 @@ foreach ($f in @($portable, $setup.FullName, $sig)) {
 # session in it, carries on (updates.store.ts).
 $fpFile = Join-Path $release 'core-fingerprint.txt'
 Remove-Item $fpFile -ErrorAction SilentlyContinue
-Start-Process -FilePath $portable -ArgumentList '--core-fingerprint', "`"$fpFile`"" -Wait
+Start-Process -FilePath $exe -ArgumentList '--core-fingerprint', "`"$fpFile`"" -Wait
 if (-not (Test-Path $fpFile)) { throw 'the exe did not report its core fingerprint' }
 $coreFingerprint = (Get-Content $fpFile -Raw).Trim()
 
@@ -84,13 +88,8 @@ if ($DryRun) {
     return
 }
 
-# The portable exe is renamed on the way up: luna.exe alone says nothing about
-# which version someone downloaded six months ago.
-$portableAsset = Join-Path $release "luna-$version-portable.exe"
-Copy-Item $portable $portableAsset -Force
-
 $notesBody = if ($Notes) { $Notes } else { "Luna $version" }
-gh release create $tag $portableAsset $setup.FullName $sig $manifestPath `
+gh release create $tag $setup.FullName $sig $manifestPath `
     --title "Luna $version" --notes $notesBody --target master
 # How v0.4.2 first went out: gh timed out on the TLS handshake, created nothing,
 # and the script still said Released.
