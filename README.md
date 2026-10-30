@@ -208,7 +208,7 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
 - **Recommended settings**, per account in the Accounts window — its button says how
   many of them the account's file has (`5/12`): what works well for the CLI inside Luna,
   each with what the file says now, what it would say and why — `tui: fullscreen`, no
-  spinner tips or feedback prompts, no second Bypass confirmation, PowerShell for
+  spinner tips or feedback prompts, no compacting while idle, no second Bypass confirmation, PowerShell for
   `!` commands on Windows only, no copy on select (Claude Code, which
   keeps that one in `.claude.json`); no update check, tooltips, desktop notifications,
   copy on select, analytics or feedback prompts, live web search (Codex); and as matters

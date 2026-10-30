@@ -2,6 +2,13 @@
 
 Rules for anyone (person or agent) changing Luna.
 
+## Plan first
+- An agent changes nothing before the plan is agreed. First it lays out what it
+  found and what it would do — which files, what changes, what it leaves alone
+  and why — and only once the operator has agreed does it make the changes. A
+  finding met along the way that calls for more than the agreed plan goes back
+  to the operator as a new plan, not straight into the code.
+
 ## Where things go
 - The repo holds only what is in use. No scratch files, experiments or one-off
   scripts get committed; delete what a change made obsolete (icons, CSS,
@@ -40,6 +47,17 @@ Rules for anyone (person or agent) changing Luna.
 - Everything in the repo is in English: code, comments, docs. The one
   exception is `README.ru.md`, the Russian twin of `README.md`; change both
   together.
+
+## Both providers
+Luna runs Claude Code and Codex side by side, and what one CLI does to a
+session the other usually has its own way of doing.
+- A problem found, or an improvement made, for one CLI is checked for the
+  other: does it have the same behaviour (an exit dialog, a prompt, a cleanup,
+  a flag it refuses), and does Luna handle it there too? Look at the other
+  CLI's actual binary or docs, not at what it is assumed to do.
+- What the check finds goes into the plan (see "Plan first"): what each CLI
+  does, what Luna does about it, what would change. Where the other CLI needs
+  nothing, the plan says why.
 
 ## Agent setup
 The repo works the same for every coding agent; nothing in it is written for
