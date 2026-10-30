@@ -130,6 +130,9 @@ struct Session {
     /// A person's keys, kept back while Luna types into the composer around
     /// their draft (see `hold_keys`); None the rest of the time.
     held_keys: Arc<Mutex<Option<Vec<String>>>>,
+    /// The person has pressed Claude Code's Ctrl+S, and a draft of theirs may
+    /// be stashed, to come back unasked (see `has_draft`).
+    stashing: Arc<AtomicBool>,
 }
 
 #[derive(Default)]
@@ -545,6 +548,7 @@ async fn spawn(id: String, launch: impl FnOnce() -> Launch) -> Result<String, St
             draft: Arc::new(AtomicU64::new(0)),
             draft_seen: Arc::new(Mutex::new((0, false))),
             held_keys: Arc::new(Mutex::new(None)),
+            stashing: Arc::new(AtomicBool::new(false)),
         },
     );
 
@@ -841,20 +845,25 @@ impl PtyManager {
     /// draft cleared in a way the keys do not tell (Esc Esc, a word deleted)
     /// or one of nothing but spaces is none, and the count starts over. Keys
     /// just typed may not be drawn yet, so the screen is asked only once
-    /// they have settled.
+    /// they have settled. A person who has stashed a draft in Claude Code
+    /// (Ctrl+S) gets it back from the CLI with the next prompt, theirs or
+    /// Luna's, with no key that says so: while one may be stashed, an empty
+    /// count is asked about too.
     pub fn has_draft(&self, id: &str) -> bool {
-        let (draft, seen, n, key) = {
+        let (draft, seen, stashing, n, key) = {
             let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
             let Some(s) = sessions.get(id) else { return false };
             let n = s.draft.load(Ordering::Relaxed);
-            if n & !DRAFT_BACKSLASH == 0 {
+            let stashing = s.stashing.load(Ordering::Relaxed);
+            let typed = n & !DRAFT_BACKSLASH > 0;
+            if !typed && !stashing {
                 return false;
             }
-            if now_ms().saturating_sub(s.typed_ms.load(Ordering::Relaxed)) < DRAFT_SETTLE_MS {
+            if typed && now_ms().saturating_sub(s.typed_ms.load(Ordering::Relaxed)) < DRAFT_SETTLE_MS {
                 return true;
             }
-            let key = n.rotate_left(32) ^ s.last_output_ms.load(Ordering::Relaxed);
-            (Arc::clone(&s.draft), Arc::clone(&s.draft_seen), n, key)
+            let key = n.rotate_left(32) ^ s.last_output_ms.load(Ordering::Relaxed) ^ stashing as u64;
+            (Arc::clone(&s.draft), Arc::clone(&s.draft_seen), Arc::clone(&s.stashing), n, key)
         };
         let cached = *seen.lock().unwrap_or_else(|e| e.into_inner());
         if cached.0 == key {
@@ -864,9 +873,17 @@ impl PtyManager {
             Some(c) if c.text.is_empty() => {
                 // Unless a key came in since.
                 let _ = draft.compare_exchange(n, 0, Ordering::Relaxed, Ordering::Relaxed);
+                if !c.stashed {
+                    stashing.store(false, Ordering::Relaxed);
+                }
                 false
             }
-            _ => true,
+            Some(c) => {
+                // A stashed draft back in place counts as typed.
+                let _ = draft.compare_exchange(n, n.max(c.text.chars().count() as u64), Ordering::Relaxed, Ordering::Relaxed);
+                true
+            }
+            None => n & !DRAFT_BACKSLASH > 0,
         };
         *seen.lock().unwrap_or_else(|e| e.into_inner()) = (key, there);
         there
@@ -1326,6 +1343,9 @@ fn take_keys(s: &Session, data: String) -> Result<(), String> {
     }
     let draft = draft_after(s.draft.load(Ordering::Relaxed), &data);
     s.draft.store(draft, Ordering::Relaxed);
+    if s.provider == Provider::Claude && data.contains('\x13') {
+        s.stashing.store(true, Ordering::Relaxed);
+    }
     // Queueing, so the command returns at once however busy the pty is.
     s.input_tx
         .send(Input::Bytes(data.into_bytes()))

@@ -485,7 +485,9 @@ src-tauri/src/
   (`pty::read_composer` — the cursor stands at the caret in both CLIs; Claude Code's `❯` between two rules,
   Codex's `›` down to the first blank row, its dim placeholder left out) and an empty one, or one of
   spaces, zeroes the counter: edits the keys do not tell (Esc Esc, Ctrl+W, a cut selection) no longer hold
-  anything until the next Enter. A real draft in Claude Code is put aside for the text (`stash_and_type`):
+  anything until the next Enter. A person's own Ctrl+S in Claude Code marks the session (`stashing`): the CLI brings
+  that draft back unasked with the next prompt, so until the screen shows no stash the composer is read
+  even with the count at zero. A real draft in Claude Code is put aside for the text (`stash_and_type`):
   the person's keys are held back (`hold_keys`, let go in order), Ctrl+S stashes the draft, the text and
   Enter go in, and the CLI brings the draft back as it takes the text ("Draft restored") — that return is
   the sign the text went, so there is no second Enter, which would send the draft. Not when the screen
