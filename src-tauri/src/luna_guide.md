@@ -124,8 +124,11 @@ can start other sessions and work with them.
   the next one. The result already says how it went — `started` (a turn began on it),
   `queued`, or why not — so there is no need to `luna_read` the session to check that the
   text arrived. It reads as the user's words, so name yourself to a session you did not
-  spawn. It will not type into a chat where the user is typing or has left an unsent
-  draft; it says so, and you try later.
+  spawn. Where the user is typing, or has left an unsent draft Luna cannot put aside
+  (Claude Code's is put aside and comes back; Codex's cannot be), the result says
+  `held: true`: Luna types the text in once they are done, and the answer comes as a
+  notice, or to a `luna_wait`, which waits for the text to go in first. Do not send it
+  again.
 - `luna_kill` stops a session's process (a background helper: its turn). A background
   helper's conversation stays for `luna_send` to continue; a killed visible session is not
   running, and text cannot reach it until the user resumes it. `luna_delete` removes it;

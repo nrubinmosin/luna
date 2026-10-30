@@ -41,7 +41,7 @@ tar = "0.4"
 tiny_http = "0.12"
 # A terminal emulator in memory, for showing an agent what its helper's
 # screen says (src/pty.rs `screen`): the scrollback replayed into a grid.
-vt100 = "0.15"
+vt100 = "0.16"
 
 # Subclassing the windows — the Alt menu and WM_ENDSESSION (src/sysmenu.rs);
 # Job Objects and process counters for what a session has running under it
