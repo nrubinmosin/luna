@@ -130,6 +130,8 @@ struct Track {
     first_turn_ms: u64,
     /// Since when the turn has been over, while it is (see LEFTOVER_MS).
     idle_since_ms: Option<u64>,
+    /// The log has said that this idle stretch's leftovers no longer count.
+    leftover_told: bool,
     prev: Vec<ProcRead>,
     procs: Option<procs::Busy>,
     output_fresh: bool,
@@ -514,6 +516,9 @@ pub fn sample(probes: Vec<crate::pty::ActivityProbe>, helpers: Vec<SessionActivi
     // Per session, the children to name and whether to look behind its wait
     // for an API error: both read once the lock is let go.
     let mut later: Vec<(Vec<u32>, bool)> = Vec::with_capacity(probes.len());
+    // Sessions whose leftovers stopped counting at this sample, for the log
+    // line, which names the chat and so is written once the lock is let go.
+    let mut cut: Vec<(String, Vec<u32>)> = Vec::new();
     {
         let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
         let st = &mut *st;
@@ -549,10 +554,16 @@ pub fn sample(probes: Vec<crate::pty::ActivityProbe>, helpers: Vec<SessionActivi
             t.prev = children;
             if t.turn == Turn::Idle {
                 if now.saturating_sub(*t.idle_since_ms.get_or_insert(now)) >= LEFTOVER_MS {
-                    t.procs = None;
+                    if let Some(b) = t.procs.take() {
+                        if !t.leftover_told {
+                            t.leftover_told = true;
+                            cut.push((p.id.clone(), b.active.iter().chain(b.young.iter()).copied().collect()));
+                        }
+                    }
                 }
             } else {
                 t.idle_since_ms = None;
+                t.leftover_told = false;
             }
             t.output_fresh = now.saturating_sub(p.last_output_ms) < OUTPUT_FRESH_MS;
 
@@ -604,6 +615,18 @@ pub fn sample(probes: Vec<crate::pty::ActivityProbe>, helpers: Vec<SessionActivi
         if ask {
             s.stalled = disk_api_error(p);
         }
+    }
+    for (id, pids) in cut {
+        let names: Vec<String> = procs::names(&pids).into_iter().map(|(_, n)| n).collect();
+        crate::log::warn(
+            "activity",
+            &format!(
+                "{}: turn over for {}h; what it left running ({}) no longer holds the machine",
+                crate::agents::label(&id),
+                LEFTOVER_MS / 3_600_000,
+                names.join(", ")
+            ),
+        );
     }
 
     sessions.extend(helpers);

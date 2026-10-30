@@ -250,6 +250,11 @@ mod imp {
 
 pub use imp::{adopt, alive, Job};
 
+/// When a process was created, epoch ms, where the platform says.
+pub fn created_ms(pid: u32) -> Option<u64> {
+    imp::read(pid).map(|r| r.started_ms)
+}
+
 /// One process, as counted at one sample.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ProcRead {

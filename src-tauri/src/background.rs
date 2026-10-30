@@ -446,7 +446,7 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
             .map_err(thread_err)?;
     }
     let mut child = cmd.spawn().map_err(|e| {
-        crate::log::error("background", &format!("could not start {id}: {e}"));
+        crate::log::error("background", &format!("could not start {}: {e}", crate::agents::label(id)));
         format!("could not start {}: {e}", provider.as_str())
     })?;
     let pid = Some(child.id());
@@ -508,7 +508,7 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
             return Err(why.into());
         }
     }
-    crate::log::info("background", &format!("{id} turn started, pid {pid:?}: {} {}", provider.as_str(), args.join(" ")));
+    crate::log::info("background", &format!("{} turn started, pid {pid:?}: {} {}", crate::agents::label(id), provider.as_str(), args.join(" ")));
     // The reader waits on the other end; should it be gone, the turn still
     // ends here rather than with nobody to say so.
     if let Err(std::sync::mpsc::SendError((child, _))) = hand.send((child, stdout)) {
@@ -610,7 +610,7 @@ fn turn_over(id: &str, code: Option<i32>) {
         next
     };
     reg().1.notify_all();
-    crate::log::info("background", &format!("{id} turn over, code {code:?}"));
+    crate::log::info("background", &format!("{} turn over, code {code:?}", crate::agents::label(id)));
     // One that cannot start is recorded as ended by `run_turn`.
     if let Some(text) = next {
         let _ = run_turn(id, &text);

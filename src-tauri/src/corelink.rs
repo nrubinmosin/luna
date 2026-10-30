@@ -146,9 +146,10 @@ enum Attached {
 
 /// The running core of this build, started if need be.
 fn attach() -> Result<Attached, String> {
-    // A core.json whose core is gone — the PC went down under it — is not
-    // tried: a connect to its closed port takes Windows seconds to refuse.
-    if let Some(found) = discover().filter(|d| crate::procs::alive(d.pid)) {
+    // A core.json whose core is gone — the PC went down under it, and its
+    // pid may be another program's by now — is not tried: a connect to its
+    // closed port takes Windows seconds to refuse.
+    if let Some(found) = discover().filter(Discovery::running) {
         match hello(&found, "ui") {
             Ok((stream, core)) if core.fingerprint == env!("LUNA_CORE_FP") => return Ok(Attached::Ours(stream, core)),
             Ok((_, core)) if core.sessions > 0 => return Ok(Attached::Foreign(core)),
@@ -320,7 +321,7 @@ pub fn shut_down() {
     // or the page.
     GENERATION.fetch_add(1, Ordering::SeqCst);
     *CURRENT.lock().unwrap_or_else(|e| e.into_inner()) = None;
-    if let Some(found) = discover().filter(|d| crate::procs::alive(d.pid)) {
+    if let Some(found) = discover().filter(Discovery::running) {
         if let Ok((stream, _)) = hello(&found, "ctl") {
             stop(stream, found.pid);
         }

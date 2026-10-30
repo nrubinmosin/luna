@@ -155,6 +155,7 @@ fn run() {
         pid: std::process::id(),
         port: listener.local_addr().map(|a| a.port()).unwrap_or(0),
         token: token.clone(),
+        created_ms: crate::procs::created_ms(std::process::id()).unwrap_or(0),
     };
     if let Err(e) = write_discovery(&found) {
         crate::log::error("core", &format!("cannot write core.json: {e}"));

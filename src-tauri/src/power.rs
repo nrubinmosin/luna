@@ -87,6 +87,10 @@ struct State {
     holding: bool,
     /// When the hold may be released, once nothing is busy.
     release_at_ms: Option<u64>,
+    /// Who held the machine at the last busy sample, for the line that says
+    /// the hold was let go: Windows sleeps at that moment when nobody has
+    /// touched the PC for longer than its sleep timeout.
+    held_by: String,
     /// The last state sent to the UI, to send only changes.
     last_sent: Option<PowerState>,
     firing: bool,
@@ -101,7 +105,7 @@ fn blockers(summary: &Summary) -> String {
         .sessions
         .iter()
         .filter(|s| s.busy || (s.turn == crate::activity::Turn::Waiting && s.stalled.is_none()))
-        .map(|s| format!("{} {}", s.id, s.why()))
+        .map(|s| format!("{} {}", crate::agents::label(&s.id), s.why()))
         .collect::<Vec<_>>()
         .join(" | ")
 }
@@ -210,9 +214,20 @@ pub fn tick(summary: &Summary) {
     let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
     let action = st.armed.as_ref().map(|a| a.action);
 
+    let busy_now = || {
+        summary.sessions.iter().filter(|s| s.busy).map(|s| format!("{} {}", crate::agents::label(&s.id), s.why())).collect::<Vec<_>>().join(" | ")
+    };
     for effect in advance(&mut st, settings.keep_awake, summary, now) {
         match effect {
-            Effect::Hold(on) => st.holding = os::hold(on),
+            Effect::Hold(on) => {
+                st.holding = os::hold(on);
+                if on && st.holding {
+                    let why = if summary.busy > 0 { busy_now() } else { "armed".to_string() };
+                    crate::log::warn("power", &format!("awake hold set: {why}"));
+                } else if !on && !st.holding {
+                    crate::log::warn("power", &format!("awake hold let go: nothing busy for a minute; last held by {}", st.held_by));
+                }
+            }
             Effect::Cancelled => {
                 crate::log::warn("power", &format!("countdown cancelled: {} busy, {} waiting", summary.busy, summary.waiting));
             }
@@ -232,6 +247,10 @@ pub fn tick(summary: &Summary) {
                 });
             }
         }
+    }
+
+    if st.holding && summary.busy > 0 {
+        st.held_by = busy_now();
     }
 
     // -- say why an armed rule is not firing --------------------------------
@@ -476,10 +495,7 @@ mod os {
             }
         };
         match res {
-            Ok(()) => {
-                crate::log::info("power", if on { "awake hold set" } else { "awake hold cleared" });
-                on
-            }
+            Ok(()) => on,
             Err(e) => {
                 crate::log::warn("power", &format!("power request: {e}"));
                 !on

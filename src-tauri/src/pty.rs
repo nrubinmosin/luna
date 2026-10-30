@@ -448,7 +448,7 @@ async fn spawn(id: String, launch: impl FnOnce() -> Launch) -> Result<String, St
                 .wait()
                 .ok()
                 .map(|st| st.exit_code());
-            crate::log::info("pty", &format!("session {id} exited, code {code:?}"));
+            crate::log::info("pty", &format!("session {} exited, code {code:?}", crate::agents::label(&id)));
             let pm = manager();
             // The exit names only the chat. A session already spawned under
             // the same id since — a kill and a respawn quicker than this
@@ -482,7 +482,7 @@ async fn spawn(id: String, launch: impl FnOnce() -> Launch) -> Result<String, St
 
     crate::log::info(
         "pty",
-        &format!("spawned {id} ({}) pid {pid:?} {describe} in {cwd}", provider.as_str()),
+        &format!("spawned {} ({}) pid {pid:?} {describe} in {cwd}", crate::agents::label(&id), provider.as_str()),
     );
 
     // A CLI that quits on its own (`/exit`, a crash) ends its process, but
@@ -954,7 +954,7 @@ impl PtyManager {
         for sub in ["hooks", "mcp"] {
             let _ = std::fs::remove_file(crate::paths::data_dir().join(sub).join(format!("{id}.json")));
         }
-        crate::log::info("delete", &format!("chat {id}, worktree {resolved:?}, dropping {drop_worktree}"));
+        crate::log::info("delete", &format!("chat {}, worktree {resolved:?}, dropping {drop_worktree}", crate::agents::label(id)));
 
         match &resolved {
             Some(wt) if drop_worktree && shared => {
