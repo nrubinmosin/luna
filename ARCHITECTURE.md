@@ -366,9 +366,15 @@ src-tauri/src/
   and the clock jump on wake resets the quiet window and the countdown. An armed rule that
   does not fire is explained in `luna.log`: a line `armed, not firing: <chat> <why> [hook …,
   registry …]` when the reason changes (no more than once a minute) and every 10 minutes with no change;
-  only WARN/ERROR go to `luna.log`, so everything that decides the night's fate is written at that level.
+  `luna.log` takes INFO too (log.rs): events only — session start/exit/delete, helper turns, one line per
+  MCP call with its steering arguments and outcome but never its text, notices — each session named by id
+  and chat name (`agents::label`), so a night can be read back after its sessions are deleted.
   A session whose turn has been `Idle` for 2 h (`LEFTOVER_MS`) no longer counts its children at all:
   a `tail -f` a monitor left on a growing log moves forever, and one such session held a whole night.
+  The hold itself is logged both ways: `awake hold set: <who>` and `awake hold let go: … last held by
+  <who>`, and the 2 h cut names the processes it stops counting. The request does not restart Windows'
+  idle timer: once nobody has touched the PC for longer than its sleep timeout, it sleeps the moment
+  the hold is let go, so that line is the time of the sleep.
 - **Agents — via MCP, not via the prompt.** A session with the "Luna tools" checkbox gets
   `--mcp-config <data>/mcp/<chat>.json` with `"timeout": 1900000` on the server and `--allowedTools mcp__luna`
   (Claude: without `timeout` it drops an HTTP call that is silent for 5 min) or `-c mcp_servers.luna.url=… -c

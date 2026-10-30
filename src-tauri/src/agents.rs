@@ -577,6 +577,15 @@ pub fn chat_name(id: &str) -> Option<String> {
     reg().lock().unwrap_or_else(|e| e.into_inner()).names.get(id).cloned().filter(|n| !n.trim().is_empty())
 }
 
+/// A session as the log names it: the id with the chat's name, which is what
+/// is left to go by once the session is deleted.
+pub fn label(id: &str) -> String {
+    match chat_name(id) {
+        Some(name) => format!("{id} \"{name}\""),
+        None => id.to_string(),
+    }
+}
+
 fn mint(id: &str) -> String {
     use sha2::{Digest, Sha256};
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -1561,11 +1570,11 @@ pub fn spawn(caller: &str, mut params: SpawnParams) -> Result<Spawned, String> {
     let started = await_start(&pty, &id, &prompt, 0, START_TIMEOUT);
     let starting = !started && still_starting(&pty, &id);
     if starting {
-        crate::log::info("agents", &format!("session {id} spawned by {caller} has drawn nothing within {START_TIMEOUT:?}; still starting"));
+        crate::log::info("agents", &format!("session {} spawned by {} has drawn nothing within {START_TIMEOUT:?}; still starting", label(&id), label(caller)));
     } else if !started && unknown_command(&pty, &id, &prompt) {
-        crate::log::info("agents", &format!("session {id} spawned by {caller} does not know the command its prompt opens with"));
+        crate::log::info("agents", &format!("session {} spawned by {} does not know the command its prompt opens with", label(&id), label(caller)));
     } else if !started {
-        crate::log::warn("agents", &format!("session {id} spawned by {caller} did not start on its prompt within {START_TIMEOUT:?}"));
+        crate::log::warn("agents", &format!("session {} spawned by {} did not start on its prompt within {START_TIMEOUT:?}", label(&id), label(caller)));
     }
     let screen = (!started && !starting).then(|| screen_of(&pty, &id)).flatten();
     let ask = screen.is_some().then(|| ask_of(&id)).flatten();
@@ -1828,7 +1837,7 @@ pub fn agent_spawned(request_id: u64, chat_id: Option<String>, name: Option<Stri
         // registered as its child, so `luna_list` shows it, and the answer
         // to its prompt is owed like any other.
         if let (Some((caller, _)), Some(id)) = (caller, chat_id) {
-            crate::log::warn("agents", &format!("session {id} for {caller} came up after its spawn timed out"));
+            crate::log::warn("agents", &format!("session {} for {} came up after its spawn timed out", label(&id), label(&caller)));
             shown(&caller, &id, 0);
             owe_from(&caller, &id, 0, 0);
         }
@@ -2691,10 +2700,11 @@ fn remove(id: &str, known: Known, drop_worktree: bool) -> Result<Option<String>,
     let folder = crate::worktree::project_of(&known.folder).unwrap_or(known.folder);
     let drop_worktree = drop_worktree && !reg().lock().unwrap_or_else(|e| e.into_inner()).borrowed.contains(id);
     if crate::background::has(id) {
+        let who = label(id);
         let made = crate::background::remove(id);
         forget(id);
         crate::activity::forget(id);
-        crate::log::info("delete", &format!("background helper {id}, worktree {made:?}, dropping {drop_worktree}"));
+        crate::log::info("delete", &format!("background helper {who}, worktree {made:?}, dropping {drop_worktree}"));
         return match made {
             // As for a chat (`PtyManager::delete`): a worktree another
             // session or helper is in stays, its work with it.
@@ -2780,9 +2790,9 @@ fn reap(pty: &crate::pty::PtyManager) {
             known
         };
         match known.map(|k| remove(&id, k, false)) {
-            Some(Ok(_)) => crate::log::info("agents", &format!("auto-deleted helper {id}")),
+            Some(Ok(_)) => crate::log::info("agents", &format!("auto-deleted helper {}", label(&id))),
             Some(Err(e)) => {
-                crate::log::warn("agents", &format!("could not auto-delete helper {id}: {e}"));
+                crate::log::warn("agents", &format!("could not auto-delete helper {}: {e}", label(&id)));
                 reg().lock().unwrap_or_else(|e| e.into_inner()).auto.remove(&id);
             }
             None => {
@@ -3106,10 +3116,13 @@ fn notifier() {
             } else {
                 type_in(&pty, &caller, &text, before.map(|t| t.turn), baseline)
             };
+            let about = settled.iter().map(|(id, _, _)| label(id)).collect::<Vec<_>>().join(", ");
             match typed {
                 Ok(started) => {
-                    if !started {
-                        crate::log::warn("agents", &format!("notice to {caller} did not start a turn"));
+                    if started {
+                        crate::log::info("agents", &format!("notice to {} about {about}", label(&caller)));
+                    } else {
+                        crate::log::warn("agents", &format!("notice to {} about {about} did not start a turn", label(&caller)));
                     }
                     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
                     for (id, how, told) in settled {
@@ -3140,7 +3153,7 @@ fn notifier() {
                         }
                     }
                 }
-                Err(e) => crate::log::warn("agents", &format!("notice to {caller} failed: {e}")),
+                Err(e) => crate::log::warn("agents", &format!("notice to {} about {about} failed: {e}", label(&caller))),
             }
             idle_looks.insert(caller, 0);
         }

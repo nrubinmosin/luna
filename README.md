@@ -280,10 +280,14 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
 - Deleting a chat takes its worktree, and the branch Claude Code made for it,
   along by default, unless another chat or helper still works in it; the checkbox can be unticked per chat, and where it
   starts is set in Settings.
-- Warnings and errors from both halves of the app land in `luna.log`, next to the exe, or
-  under `%LOCALAPPDATA%\luna` when that folder is not writable. Info-level chatter never
-  reaches it, so what is in there is worth reading. Every line names the version that
-  wrote it, and each launch opens with a `START` line naming the version and build.
+- Both halves of the app log to `luna.log`, next to the exe, or under `%LOCALAPPDATA%\luna`
+  when that folder is not writable: warnings and errors, and the events a problem is read
+  back from — each session started, exited and deleted, each helper turn, each MCP call (who
+  called which tool on which session, how it ended, how long it took), each notice, and the
+  awake hold set and let go. Sessions are named by id and chat name, so a deleted one can
+  still be told; what is said in a chat — prompts, sent text, answers — never goes in. Every
+  line names the version that wrote it, and each launch opens with a `START` line naming the
+  version and build.
 - The sessions run in Luna's core, a second process from the same exe (`luna-core.exe`,
   started from a copy under the data folder on Windows so that an update can replace the
   exe), not in the window. A window that crashes, hangs or is killed takes nothing with it:
@@ -413,7 +417,10 @@ The power field in the status bar opens the two rules the machine follows.
   request — `powercfg /requests` lists it as Luna's — while any session is busy, and lets it
   go a minute after the last one goes quiet. A session waiting for your answer does not hold
   the machine, nor does one whose turn has been over for two hours, whatever it left running
-  under it (a monitor's `tail -f` on a log that keeps growing).
+  under it (a monitor's `tail -f` on a log that keeps growing). Windows does not restart its
+  sleep timer for the request: if nobody has touched the PC for longer than that timer, it
+  sleeps the moment the hold is let go. `luna.log` says when the hold was set and let go, and
+  which session held it last.
 - **When every session is done: shut down, hibernate or sleep.** Armed for the run, not
   saved. The chip shows what the rule is waiting on; once everything has been quiet for the
   chosen window it counts down a minute with a notification, and a click on the chip cancels.

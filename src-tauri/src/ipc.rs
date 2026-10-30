@@ -99,6 +99,19 @@ pub struct Discovery {
     pub pid: u32,
     pub port: u16,
     pub token: String,
+    /// The core process's creation time, epoch ms (0 from a core that did not
+    /// write it): after a reboot the pid is often some other program's, and
+    /// only this tells the two apart without a connect that has to time out.
+    #[serde(default)]
+    pub created_ms: u64,
+}
+
+impl Discovery {
+    /// Whether the core this names is still the process running under its pid.
+    pub fn running(&self) -> bool {
+        crate::procs::alive(self.pid)
+            && (self.created_ms == 0 || crate::procs::created_ms(self.pid).is_none_or(|c| c == self.created_ms))
+    }
 }
 
 /// `<data>/core/`: the discovery file, the lock that keeps the core single,

@@ -340,7 +340,46 @@ fn tools_for(caller: &str) -> Value {
     Value::Array(list)
 }
 
+/// One line per call in luna.log: who called what on whom, how it ended and
+/// how long it took. The arguments that steer a call are named; what is said
+/// through it (prompts, sent text, answers, notifications) is not.
 fn call(caller: &str, params: &Value, this: &Call) -> Value {
+    let started = std::time::Instant::now();
+    let out = run(caller, params, this);
+    let name = params["name"].as_str().unwrap_or("?");
+    let a = &params["arguments"];
+    let mut line = format!("{} {name}", agents::label(caller));
+    if let Some(id) = a["id"].as_str() {
+        line.push_str(&format!(" on {}", agents::label(id)));
+    }
+    const STEERING: &[&str] = &[
+        "provider", "account", "model", "effort", "permissionMode", "sandbox", "approval", "folder", "worktree", "visible",
+        "tools", "autoDelete", "name", "until", "timeoutS", "afterTurn", "since", "last", "screen", "interrupt", "dropWorktree",
+        "group", "history", "allow",
+    ];
+    let set: Vec<String> = STEERING.iter().filter_map(|k| a.get(*k).filter(|v| !v.is_null()).map(|v| format!("{k}={v}"))).collect();
+    if !set.is_empty() {
+        line.push_str(&format!(" ({})", set.join(" ")));
+    }
+    let ms = started.elapsed().as_millis();
+    if this.cancelled() {
+        crate::log::info("mcp", &format!("{line} cancelled by the client after {ms}ms"));
+    } else if out["isError"] == true {
+        let e = out["content"][0]["text"].as_str().unwrap_or("");
+        let e: String = e.chars().take(300).collect();
+        crate::log::warn("mcp", &format!("{line} failed in {ms}ms: {e}"));
+    } else {
+        // The first block is the result's JSON; its few fields that say how
+        // the call went.
+        let v: Value = out["content"][0]["text"].as_str().and_then(|t| serde_json::from_str(t).ok()).unwrap_or(Value::Null);
+        const OUTCOME: &[&str] = &["id", "outcome", "started", "starting", "queued", "turnsEnded", "state", "leftOut", "worktreeRemoved"];
+        let got: Vec<String> = OUTCOME.iter().filter_map(|k| v.get(*k).filter(|v| !v.is_null()).map(|v| format!("{k}={v}"))).collect();
+        crate::log::info("mcp", &format!("{line} in {ms}ms: {}", if got.is_empty() { "ok".to_string() } else { got.join(" ") }));
+    }
+    out
+}
+
+fn run(caller: &str, params: &Value, this: &Call) -> Value {
     let name = params["name"].as_str().unwrap_or("");
     let a = &params["arguments"];
     let id = a["id"].as_str().unwrap_or("").to_string();

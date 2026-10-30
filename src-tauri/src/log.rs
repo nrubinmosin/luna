@@ -42,16 +42,14 @@ fn stamp() -> String {
 }
 
 /// Appends one line. Never returns an error: logging must not be able to break
-/// the thing it is logging. Only warnings, errors and the startup line reach
-/// the file — with no log button in the UI any more, the file exists for
-/// post-mortems, and info chatter would just push the lines that matter over
-/// the rotation edge. Every line carries the version that wrote it: the file
-/// outlives updates, and a warning means little without knowing which build
-/// it came from.
+/// the thing it is logging. The file exists for post-mortems, so INFO goes in
+/// too: a session's start, exit and deletion, each MCP call, the awake hold —
+/// what a night is read back from once the sessions involved are gone. It is
+/// events, never chatter on a timer and never what is said in a chat, so the
+/// two generations hold weeks. Every line carries the version that wrote it:
+/// the file outlives updates, and a warning means little without knowing
+/// which build it came from.
 pub fn write(level: &str, source: &str, message: &str) {
-    if level == "INFO" {
-        return;
-    }
     let p = path();
     let Ok(_guard) = lock().lock() else { return };
     // Other processes of this Luna (its exit watcher) write here too: the
