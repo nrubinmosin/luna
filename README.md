@@ -232,18 +232,25 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Skills and instructions
 
-- Luna keeps a library of your own: one instructions file and any number of skills, in a
-  folder of its own (`library` in Luna's data folder) or one you choose — a repository of
-  your dotfiles, say. The **Skills & instructions** window, from the Accounts window, edits
-  them and says where each one goes.
-- Each skill, and the instructions, go into the accounts you pick for them: every account,
-  every account of one CLI, or accounts by name — and an account that is renamed keeps what
-  was picked for it.
-- The instructions go into their accounts as `CLAUDE.md` in a Claude Code account's folder,
+- Luna keeps a library of your own: instructions files, each with a name, and any number of
+  skills, in a folder of its own (`library` in Luna's data folder) or one you choose — a
+  repository of your dotfiles, say. The **Skills & instructions** window, from the Accounts
+  window, makes, renames and edits them and says where each one goes.
+- Each skill, and each instructions file, goes into the accounts you pick for it: every
+  account, every account of one CLI, or accounts by name — and an account that is renamed
+  keeps what was picked for it.
+- Instructions go into their accounts as `CLAUDE.md` in a Claude Code account's folder,
   `AGENTS.md` in a Codex one — the files each CLI reads at the start of every session, in
-  every project. One file serves both CLIs. An account that already has its own keeps it
-  until you take it into the library or replace it; a library with no instructions yet can
-  start from an account's.
+  every project. One file serves both CLIs, and an account gets one at most: the window shows
+  instructions against accounts, a radio per account for the one it gets, or none. Where
+  several take an account in, the one that names it wins over one for every account of its
+  CLI, and that over one for every account — so `main` for everyone and `work` for the work
+  account just works. Giving one instructions file every account, a CLI's or an account by
+  name takes that from whichever had it. An account that already has its own file keeps it
+  until you take it into the library or replace it; one that gets no instructions from the
+  library can have its own taken in as new instructions, named after it and going into it.
+  The single `instructions.md` of earlier versions becomes `instructions/main.md`, for the
+  same accounts.
 - A skill is a folder with a `SKILL.md` (front matter with its `name` and a `description`,
   then the instructions) and whatever files it needs beside it. In each account picked for
   it, it goes into the account's `skills/`; ticked for a folder you added, into that folder as

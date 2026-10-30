@@ -697,8 +697,10 @@ export type PlaceStatus = 'current' | 'behind' | 'missing' | 'changed' | 'gone' 
 export interface PlaceDto {
   dest: string;
   target: LibraryTarget;
-  /** Null for the instructions file. */
+  /** Null for an instructions file. */
   skill: string | null;
+  /** Which instructions, for an instructions file. */
+  instructions: string | null;
   status: PlaceStatus;
   /** Changed there, and in the library too, since Luna wrote it. */
   both: boolean;
@@ -714,19 +716,33 @@ export interface LibrarySkillDto {
   problem: string | null;
   accounts: Reach;
 }
+export interface LibraryInstructionsDto {
+  name: string;
+  /** Its first line with words in it. */
+  description: string;
+  /** Why it is laid out nowhere: blank, or a file that will not do. */
+  problem: string | null;
+  /** The accounts its reach takes in; a closer reach of other instructions wins. */
+  accounts: Reach;
+}
 export interface LibraryOverviewDto {
   root: string;
   isDefault: boolean;
   /** False while the library's folder is not there. */
   found: boolean;
-  instructions: Reach;
-  hasInstructions: boolean;
+  instructions: LibraryInstructionsDto[];
+  /** Accounts that get no instructions however others reach them. */
+  noInstructions: Reach;
+  /** The instructions each account gets, by `provider/name`; absent: none. */
+  instructionsFor: Record<string, string>;
+  /** The instructions.md of before there could be several, left beside instructions/main.md. */
+  oldInstructions: string | null;
   skills: LibrarySkillDto[];
   /** Every account, to pick a reach from. */
   accounts: { provider: Provider; name: string }[];
   folders: { path: string; skills: string[]; found: boolean }[];
   places: PlaceDto[];
-  /** Accounts' instruction files Luna did not write, to start the library's from. */
+  /** Accounts' instruction files Luna did not write, where no instructions go, to start new ones from. */
   foundInstructions: { dest: string; target: LibraryTarget }[];
   /** Codex accounts whose AGENTS.override.md hides the AGENTS.md Luna writes. */
   overridden: string[];
@@ -751,7 +767,9 @@ export const libraryOverview = () => call<LibraryOverviewDto | null>('library_ov
 /** Lays the library out — everything that needs no asking. */
 export const librarySync = () => call<LibraryOverviewDto | null>('library_sync', {}, null);
 export const librarySetSource = (path: string) => call<LibraryOverviewDto>('library_set_source', { path });
-export const librarySetInstructions = (accounts: Reach) => call<LibraryOverviewDto>('library_set_instructions', { accounts });
+/** `name` null: the accounts that get no instructions. Each entry is taken from the instructions that had it. */
+export const librarySetInstructions = (name: string | null, accounts: Reach) =>
+  call<LibraryOverviewDto>('library_set_instructions', { name, accounts });
 export const librarySetAccounts = (skill: string, accounts: Reach) => call<LibraryOverviewDto>('library_set_accounts', { skill, accounts });
 /** A folder's skills; null stops laying anything out into it. */
 export const librarySetFolder = (path: string, skills: string[] | null) =>
@@ -760,13 +778,18 @@ export const librarySkip = (dest: string, on: boolean) => call<LibraryOverviewDt
 /** `take`: the copy there becomes the library's; otherwise the library's goes back there. */
 export const libraryResolve = (dest: string, take: boolean) => call<LibraryOverviewDto>('library_resolve', { dest, take });
 export const libraryDiff = (dest: string) => call<FileDiffDto[]>('library_diff', { dest }, []);
-/** The instructions (skill null) or a skill's SKILL.md. */
-export const libraryRead = (skill: string | null) => call<LibraryFileDto>('library_read', { skill });
-export const libraryWrite = (skill: string | null, text: string) => call<LibraryOverviewDto>('library_write', { skill, text });
+/** The file the editor has open: a skill's SKILL.md or instructions, by name. */
+export type LibraryEntry = { skill: string } | { instructions: string };
+export const libraryRead = (entry: LibraryEntry) => call<LibraryFileDto>('library_read', { entry });
+export const libraryWrite = (entry: LibraryEntry, text: string) => call<LibraryOverviewDto>('library_write', { entry, text });
 export const libraryCheckSkill = (skill: string, text: string) =>
   call<string | null>('library_check_skill', { skill, text }, null);
 export const libraryNewSkill = (name: string) => call<LibraryOverviewDto>('library_new_skill', { name });
 export const libraryDeleteSkill = (name: string) => call<LibraryOverviewDto>('library_delete_skill', { name });
+export const libraryNewInstructions = (name: string) => call<LibraryOverviewDto>('library_new_instructions', { name });
+export const libraryRenameInstructions = (from: string, to: string) =>
+  call<LibraryOverviewDto>('library_rename_instructions', { from, to });
+export const libraryDeleteInstructions = (name: string) => call<LibraryOverviewDto>('library_delete_instructions', { name });
 /** The library's folder, or a skill's, in the file manager. */
 /** The tray icon's awake dot, with who holds the PC in its tooltip; null takes it off. */
 export const trayAwake = (holders: string | null) => call<void>('tray_awake', { holders });
