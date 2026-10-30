@@ -51,8 +51,12 @@ pub type Reach = Vec<String>;
 pub struct LibrarySettings {
     /// Absolute path of the library's folder; None means `<data>/library`.
     pub source: Option<String>,
-    /// The accounts the library's instructions go into.
-    pub instructions: Reach,
+    /// The accounts each instructions file goes into, by its name. An
+    /// account gets one: the one whose reach names it most closely.
+    pub instructions: std::collections::BTreeMap<String, Reach>,
+    /// Accounts that get no instructions, even where another reach takes
+    /// them in less closely.
+    pub no_instructions: Reach,
     /// The accounts each skill goes into, by the skill's name.
     pub skills: std::collections::BTreeMap<String, Reach>,
     /// Folders the user named, each with the skills that go into it.
@@ -63,12 +67,14 @@ pub struct LibrarySettings {
 
 /// The library's settings as the file may hold them: before a reach, the
 /// instructions were on or off for every account and `everywhere` named the
-/// skills that went into every account.
+/// skills that went into every account; before there could be several
+/// instructions, the one file had a reach of its own — now `main`'s.
 #[derive(Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
 struct LibrarySettingsFile {
     source: Option<String>,
     instructions: Option<InstructionsField>,
+    no_instructions: Reach,
     skills: std::collections::BTreeMap<String, Reach>,
     everywhere: Vec<String>,
     folders: Vec<LibraryFolder>,
@@ -80,7 +86,12 @@ struct LibrarySettingsFile {
 enum InstructionsField {
     On(bool),
     Reach(Reach),
+    ByName(std::collections::BTreeMap<String, Reach>),
 }
+
+/// The name the one instructions file of old goes by in the library
+/// (library.rs moves the file to match).
+pub const FIRST_INSTRUCTIONS: &str = "main";
 
 impl From<LibrarySettingsFile> for LibrarySettings {
     fn from(f: LibrarySettingsFile) -> Self {
@@ -88,13 +99,17 @@ impl From<LibrarySettingsFile> for LibrarySettings {
         for name in f.everywhere {
             skills.entry(name).or_insert_with(|| vec!["all".into()]);
         }
+        let first = |reach: Reach| std::collections::BTreeMap::from([(FIRST_INSTRUCTIONS.to_string(), reach)]);
         LibrarySettings {
             source: f.source,
             instructions: match f.instructions {
-                Some(InstructionsField::On(true)) => vec!["all".into()],
-                Some(InstructionsField::On(false)) | None => Vec::new(),
-                Some(InstructionsField::Reach(r)) => r,
+                Some(InstructionsField::On(true)) => first(vec!["all".into()]),
+                Some(InstructionsField::On(false)) | None => Default::default(),
+                Some(InstructionsField::Reach(r)) if r.is_empty() => Default::default(),
+                Some(InstructionsField::Reach(r)) => first(r),
+                Some(InstructionsField::ByName(m)) => m,
             },
+            no_instructions: f.no_instructions,
             skills,
             folders: f.folders,
             skipped: f.skipped,
@@ -278,7 +293,7 @@ mod tests {
     #[test]
     fn the_library_before_a_reach_reads_as_every_account() {
         let old: Settings = serde_json::from_str(r#"{"library": {"instructions": true, "everywhere": ["review"], "skipped": ["x"]}}"#).unwrap();
-        assert_eq!(old.library.instructions, vec!["all".to_string()]);
+        assert_eq!(old.library.instructions[FIRST_INSTRUCTIONS], vec!["all".to_string()]);
         assert_eq!(old.library.skills["review"], vec!["all".to_string()]);
         assert_eq!(old.library.skipped, vec!["x".to_string()]);
         let off: Settings = serde_json::from_str(r#"{"library": {"instructions": false}}"#).unwrap();
@@ -286,10 +301,12 @@ mod tests {
 
         // Written back, it reads the same.
         let mut s = Settings::default();
-        s.library.instructions = vec!["claude".into(), "codex/home".into()];
+        s.library.instructions.insert("main".into(), vec!["claude".into(), "codex/home".into()]);
+        s.library.no_instructions = vec!["codex/work".into()];
         s.library.skills.insert("review".into(), vec!["claude/work".into()]);
         let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
         assert_eq!(back.library.instructions, s.library.instructions);
+        assert_eq!(back.library.no_instructions, s.library.no_instructions);
         assert_eq!(back.library.skills, s.library.skills);
     }
 }
