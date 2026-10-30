@@ -1,14 +1,15 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  libraryDeleteSkill, libraryNewSkill, libraryOpen, libraryResolve, librarySetAccounts, librarySetFolder,
-  librarySetInstructions, librarySetSource, librarySkip, librarySync, pickFolder,
-  type LibraryOverviewDto, type LibraryTarget, type PlaceDto
+  libraryDeleteInstructions, libraryDeleteSkill, libraryNewInstructions, libraryNewSkill, libraryOpen,
+  libraryRenameInstructions, libraryResolve, librarySetAccounts, librarySetFolder, librarySetInstructions,
+  librarySetSource, librarySkip, librarySync, pickFolder,
+  type LibraryEntry, type LibraryInstructionsDto, type LibraryOverviewDto, type LibraryTarget, type PlaceDto, type Reach
 } from '../../ipc/commands';
 import { useDialogHost } from '../../shared/ui/dialogHost';
 import { ConfirmDialog } from '../../shared/ui/ConfirmDialog';
 import { Icon, ToolButton } from '../../shared/ui/icons';
-import { PROVIDER_LABEL } from '../../shared/types';
+import { PROVIDER_LABEL, type Provider } from '../../shared/types';
 import { DiffView } from './DiffView';
 import { LibraryEditor } from './LibraryEditor';
 import { needsLook, useLibrary, waiting } from './library.store';
@@ -53,7 +54,18 @@ function TargetLabel({ target }: { target: LibraryTarget }) {
   );
 }
 
-const what = (p: PlaceDto) => p.skill ?? 'Instructions';
+const what = (p: PlaceDto) => p.skill ?? (p.instructions ? `${p.instructions} instructions` : 'Instructions');
+
+type AccountRef = { provider: Provider; name: string };
+const accountKey = (a: AccountRef) => `${a.provider}/${a.name}`;
+
+/** How a reach takes in an account, as library.rs `closeness` ranks it: the closest wins it. */
+function how(reach: Reach, a: AccountRef): string | null {
+  if (reach.includes(accountKey(a))) return 'named for it';
+  if (reach.includes(a.provider)) return `as every ${PROVIDER_LABEL[a.provider]} account`;
+  if (reach.includes('all')) return 'as every account';
+  return null;
+}
 
 function sayStatus(p: PlaceDto): string {
   switch (p.status) {
@@ -116,9 +128,11 @@ function LookRow({ place, count, act }: { place: PlaceDto; count: number; act: (
   );
 }
 
-/** A checkbox with no words beside it: the theme draws the box on a label. */
-function Tick({ id, checked, disabled, title, onChange }: {
+/** A checkbox, or one of a column's radios, with no words beside it: the theme draws the box on a label. */
+function Tick({ id, radio, checked, disabled, title, onChange }: {
   id: string;
+  /** The group a radio belongs to. */
+  radio?: string;
   checked: boolean;
   disabled: boolean;
   title: string;
@@ -126,7 +140,14 @@ function Tick({ id, checked, disabled, title, onChange }: {
 }) {
   return (
     <>
-      <input type="checkbox" id={id} checked={checked} disabled={disabled} onChange={e => onChange(e.target.checked)} />
+      <input
+        type={radio ? 'radio' : 'checkbox'}
+        name={radio}
+        id={id}
+        checked={checked}
+        disabled={disabled}
+        onChange={e => onChange(e.target.checked)}
+      />
       <label htmlFor={id} title={title} style={{ display: 'inline-block', width: 0, height: 16, marginLeft: 18, verticalAlign: 'middle' }} />
     </>
   );
@@ -149,6 +170,154 @@ function CellDot({ places }: { places: PlaceDto[] }) {
 }
 
 /**
+ * The library's instructions against the accounts: a row each, and a column
+ * per account whose radios say which one it gets — one at most, or none. A
+ * radio names the account in that row's reach, which takes it from whichever
+ * other row named it; the reach picker keeps the wider ways in, every account
+ * or every one of a CLI, which a closer reach of another row beats.
+ */
+function InstructionsGrid({ o, busy, act, edit, remove }: {
+  o: LibraryOverviewDto;
+  busy: boolean;
+  act: (p: Promise<LibraryOverviewDto | null>) => Promise<boolean>;
+  edit: (name: string) => void;
+  remove: (name: string) => void;
+}) {
+  const [renaming, setRenaming] = useState<{ from: string; to: string } | null>(null);
+  const commitRename = () => {
+    const to = renaming?.to.trim() ?? '';
+    setRenaming(null);
+    if (renaming && to && to !== renaming.from) void act(libraryRenameInstructions(renaming.from, to));
+  };
+  const copies = (i: string, a: AccountRef) =>
+    o.places.filter(p => p.instructions === i && p.target.kind === 'account' && p.target.provider === a.provider && p.target.name === a.name);
+
+  const row = (i: LibraryInstructionsDto) => (
+    <tr key={i.name}>
+      <td style={{ maxWidth: 0, width: '100%' }}>
+        {renaming?.from === i.name ? (
+          <input
+            autoFocus
+            type="text"
+            value={renaming.to}
+            onChange={e => setRenaming({ ...renaming, to: e.target.value })}
+            onKeyDown={e => {
+              // Through the blur, so the rename is sent once, not by both.
+              if (e.key === 'Enter') e.currentTarget.blur();
+              if (e.key === 'Escape') {
+                e.stopPropagation();
+                setRenaming(null);
+              }
+            }}
+            onBlur={commitRename}
+            style={{ width: '100%', fontWeight: 700 }}
+          />
+        ) : (
+          <div style={{ fontWeight: 700 }} title="Double-click to rename" onDoubleClick={() => setRenaming({ from: i.name, to: i.name })}>
+            {i.name}
+          </div>
+        )}
+        <div
+          title={i.problem ?? i.description}
+          style={{ fontSize: 'var(--fs-2)', color: i.problem ? 'var(--wait)' : 'var(--faint)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+        >
+          {i.problem ?? i.description}
+        </div>
+      </td>
+      <td className="cell">
+        <ReachPicker id={`lib-ins-${i.name}`} reach={i.accounts} accounts={o.accounts} onChange={r => act(librarySetInstructions(i.name, r))} />
+      </td>
+      {o.accounts.map(a => {
+        const key = accountKey(a);
+        const gets = o.instructionsFor[key] === i.name;
+        const way = how(i.accounts, a);
+        return (
+          <td key={key} className="cell">
+            <Tick
+              id={`lib-ins-${i.name}-${key}`}
+              radio={`lib-ins-${key}`}
+              checked={gets}
+              // A radio sends the row's whole reach with the account added: one
+              // made before the last answer is in would build on a stale reach.
+              disabled={busy}
+              title={
+                gets
+                  ? `${a.name} gets ${i.name}, ${way}`
+                  : way
+                    ? `${i.name} takes in ${a.name} ${way}, but another one names it more closely\nClick to give it ${i.name}`
+                    : `Give ${a.name} ${i.name}`
+              }
+              onChange={() => void act(librarySetInstructions(i.name, [...i.accounts, key]))}
+            />
+            <CellDot places={copies(i.name, a)} />
+          </td>
+        );
+      })}
+      <td className="cell">
+        <span style={{ display: 'inline-flex', gap: 2 }}>
+          <ToolButton icon="file" size={22} title={`Edit ${i.name}`} onClick={() => edit(i.name)} />
+          <ToolButton icon="pencil" size={22} title={`Rename ${i.name}`} onClick={() => setRenaming({ from: i.name, to: i.name })} />
+          <ToolButton icon="trash" size={22} danger title={`Take ${i.name} out of the library — asks first`} onClick={() => remove(i.name)} />
+        </span>
+      </td>
+    </tr>
+  );
+
+  return (
+    <table className="library-grid">
+      <thead>
+        <tr>
+          <th>Instructions</th>
+          <th title="The accounts each goes into — every account, every one of a CLI, or those you name">Accounts</th>
+          {o.accounts.map(a => (
+            <th key={accountKey(a)} title={`What ${a.name} (${PROVIDER_LABEL[a.provider]}) gets`}>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+                <Icon name={a.provider} size={14} />
+                {a.name}
+              </span>
+            </th>
+          ))}
+          <th />
+        </tr>
+      </thead>
+      <tbody>
+        {o.instructions.map(row)}
+        <tr>
+          <td style={{ maxWidth: 0, width: '100%' }}>
+            <div style={{ fontWeight: 700, color: 'var(--dim)' }}>None</div>
+            <div
+              title="Nothing from the library; the account’s own file, if any, is left alone"
+              style={{ fontSize: 'var(--fs-2)', color: 'var(--faint)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+            >
+              Nothing from the library; the account’s own file, if any, is left alone
+            </div>
+          </td>
+          <td />
+          {o.accounts.map(a => {
+            const key = accountKey(a);
+            const none = !(key in o.instructionsFor);
+            return (
+              <td key={key} className="cell">
+                <Tick
+                  id={`lib-ins-none-${key}`}
+                  radio={`lib-ins-${key}`}
+                  checked={none}
+                  disabled={busy}
+                  title={none ? `${a.name} gets no instructions from the library` : `Give ${a.name} no instructions`}
+                  onChange={() => void act(librarySetInstructions(null, [...o.noInstructions, key]))}
+                />
+                <CellDot places={[]} />
+              </td>
+            );
+          })}
+          <td />
+        </tr>
+      </tbody>
+    </table>
+  );
+}
+
+/**
  * The user's own skills and instructions, kept in Luna's library and laid out
  * into the accounts each is meant for and into folders named here. Raised from the Accounts
  * window, or from the status bar while a copy needs a look.
@@ -166,9 +335,10 @@ function LibraryDialog({ onClose }: { onClose: () => void }) {
   // Commands still out: several can be, and the first back must not read as all done.
   const [pending, setPending] = useState(0);
   const busy = pending > 0;
-  const [editing, setEditing] = useState<{ skill: string | null } | null>(null);
-  const [deleting, setDeleting] = useState<string | null>(null);
+  const [editing, setEditing] = useState<LibraryEntry | null>(null);
+  const [deleting, setDeleting] = useState<LibraryEntry | null>(null);
   const [newName, setNewName] = useState('');
+  const [newInstructions, setNewInstructions] = useState('');
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -190,20 +360,23 @@ function LibraryDialog({ onClose }: { onClose: () => void }) {
   const o = overview;
   const look = o ? waiting(o.places) : [];
   const left = o ? o.places.filter(p => p.status === 'skipped') : [];
-  const instructionPlaces = o ? o.places.filter(p => p.skill === null) : [];
   const createSkill = () => {
     const name = newName.trim();
     if (!name) return;
-    setPending(n => n + 1);
-    void useLibrary
-      .getState()
-      .run(libraryNewSkill(name))
-      .then(ok => {
-        if (!ok) return;
-        setNewName('');
-        setEditing({ skill: name });
-      })
-      .finally(() => setPending(n => n - 1));
+    void act(libraryNewSkill(name)).then(ok => {
+      if (!ok) return;
+      setNewName('');
+      setEditing({ skill: name });
+    });
+  };
+  const createInstructions = () => {
+    const name = newInstructions.trim();
+    if (!name) return;
+    void act(libraryNewInstructions(name)).then(ok => {
+      if (!ok) return;
+      setNewInstructions('');
+      setEditing({ instructions: name });
+    });
   };
 
   const dialog = (
@@ -281,37 +454,50 @@ function LibraryDialog({ onClose }: { onClose: () => void }) {
                 </Section>
               )}
 
-              <Section
-                label="Instructions"
-                aside={
-                  <ToolButton icon="pencil" label="Edit" title="Edit the library's instructions" onClick={() => setEditing({ skill: null })} />
-                }
-              >
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', fontSize: 'var(--fs-3)' }}>
-                  Into
-                  <ReachPicker id="lib-instructions" reach={o.instructions} accounts={o.accounts} onChange={r => act(librarySetInstructions(r))} />
-                  <span>
-                    — <code>CLAUDE.md</code> for Claude Code, <code>AGENTS.md</code> for Codex
-                  </span>
-                  {o.instructions.length > 0 && instructionPlaces.length > 0 && (
-                    <span style={{ fontSize: 'var(--fs-2)', color: 'var(--faint)' }}>
-                      {instructionPlaces.filter(p => p.status === 'current').length} of {instructionPlaces.length} accounts up to date
-                    </span>
-                  )}
-                </div>
-                {!o.hasInstructions && (
-                  <Note>
-                    The library has no instructions yet — write them
-                    {o.foundInstructions.length > 0 ? ', or start from an account’s own:' : '.'}
-                  </Note>
+              <Section label="Instructions">
+                {o.instructions.length > 0 ? (
+                  <InstructionsGrid
+                    o={o}
+                    busy={busy}
+                    act={act}
+                    edit={name => setEditing({ instructions: name })}
+                    remove={name => setDeleting({ instructions: name })}
+                  />
+                ) : (
+                  <Note>The library has no instructions yet — name some below{o.foundInstructions.length > 0 ? ', or start from an account’s own.' : '.'}</Note>
                 )}
-                {!o.hasInstructions && o.foundInstructions.length > 0 && (
-                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 4 }}>
+                <div style={{ display: 'flex', gap: 4, marginTop: 6 }}>
+                  <input
+                    type="text"
+                    value={newInstructions}
+                    placeholder="new-instructions-name"
+                    onChange={e => setNewInstructions(e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') createInstructions();
+                    }}
+                    style={{ flex: 1, minWidth: 0 }}
+                  />
+                  <button className="slim" disabled={!newInstructions.trim() || busy} onClick={createInstructions}>
+                    New instructions
+                  </button>
+                </div>
+                {o.foundInstructions.length > 0 && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginTop: 6, fontSize: 'var(--fs-2)', color: 'var(--dim)' }}>
+                    An account’s own file, where no instructions go — take it in as new instructions for that account:
                     {o.foundInstructions.map(f => (
-                      <button key={f.dest} className="slim" title={f.dest} onClick={() => act(libraryResolve(f.dest, true))}>
+                      <button key={f.dest} className="slim" title={`${f.dest}\nBecomes instructions named after the account, going into it alone`} onClick={() => act(libraryResolve(f.dest, true))}>
                         <TargetLabel target={f.target} />
                       </button>
                     ))}
+                  </div>
+                )}
+                {o.oldInstructions && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-2)', color: 'var(--dim)', marginTop: 6 }} title={o.oldInstructions}>
+                    <Icon name="warn" size={14} />
+                    <span>
+                      The library still has the <code>instructions.md</code> of before there could be several, beside{' '}
+                      <code>instructions/main.md</code>: nothing is laid out from it. Move what you need into instructions here and delete it.
+                    </span>
                   </div>
                 )}
                 {o.overridden.length > 0 && (
@@ -322,9 +508,10 @@ function LibraryDialog({ onClose }: { onClose: () => void }) {
                   </div>
                 )}
                 <Note>
-                  One file for both CLIs, read at the start of every session on the accounts it goes into — every
-                  account, every one of a CLI, or those you pick — the place for rules that always hold. An account’s
-                  own file is replaced only once you take it or replace it below.
+                  An instructions file serves both CLIs — <code>CLAUDE.md</code> for Claude Code, <code>AGENTS.md</code> for
+                  Codex — read at the start of every session: the place for rules that always hold. An account gets one at
+                  most: where several take it in, the one that names it wins over every one of its CLI, and that over every
+                  account. An account’s own file is replaced only once you take it or replace it under Needs a look.
                 </Note>
               </Section>
 
@@ -406,7 +593,7 @@ function LibraryDialog({ onClose }: { onClose: () => void }) {
                               <span style={{ display: 'inline-flex', gap: 2 }}>
                                 <ToolButton icon="pencil" size={22} title={`Edit ${s.name}'s SKILL.md`} onClick={() => setEditing({ skill: s.name })} />
                                 <ToolButton icon="folder" size={22} title={`Open ${s.name}'s folder — for the files beside SKILL.md`} onClick={() => void libraryOpen(s.name)} />
-                                <ToolButton icon="trash" size={22} danger title={`Take ${s.name} out of the library — asks first`} onClick={() => setDeleting(s.name)} />
+                                <ToolButton icon="trash" size={22} danger title={`Take ${s.name} out of the library — asks first`} onClick={() => setDeleting({ skill: s.name })} />
                               </span>
                             </td>
                           </tr>
@@ -466,20 +653,38 @@ function LibraryDialog({ onClose }: { onClose: () => void }) {
   return (
     <>
       {createPortal(dialog, host)}
-      {editing && <LibraryEditor skill={editing.skill} onClose={() => setEditing(null)} />}
-      {deleting && (
+      {editing && <LibraryEditor entry={editing} onClose={() => setEditing(null)} />}
+      {deleting && 'skill' in deleting && (
         <ConfirmDialog
           title="Take the skill out"
           body={
             <>
-              Moves <b>{deleting}</b> out of the library into Luna’s backups, and takes its copies out wherever they are
+              Moves <b>{deleting.skill}</b> out of the library into Luna’s backups, and takes its copies out wherever they are
               still exactly as Luna wrote them. A copy changed since stays where it is.
             </>
           }
           confirmLabel="Take out"
           onCancel={() => setDeleting(null)}
           onConfirm={() => {
-            act(libraryDeleteSkill(deleting));
+            act(libraryDeleteSkill(deleting.skill));
+            setDeleting(null);
+          }}
+        />
+      )}
+      {deleting && 'instructions' in deleting && (
+        <ConfirmDialog
+          title="Take the instructions out"
+          body={
+            <>
+              Moves <b>{deleting.instructions}</b> out of the library into Luna’s backups. The accounts it went into get
+              the next instructions that take them in, or none: its copies are replaced or taken out wherever they are
+              still exactly as Luna wrote them. A copy changed since stays where it is.
+            </>
+          }
+          confirmLabel="Take out"
+          onCancel={() => setDeleting(null)}
+          onConfirm={() => {
+            act(libraryDeleteInstructions(deleting.instructions));
             setDeleting(null);
           }}
         />

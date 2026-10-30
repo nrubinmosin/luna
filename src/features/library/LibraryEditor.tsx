@@ -3,20 +3,22 @@ import { createPortal } from 'react-dom';
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
 import { EditorState } from '@codemirror/state';
 import { EditorView, highlightActiveLine, highlightActiveLineGutter, keymap, lineNumbers } from '@codemirror/view';
-import { libraryCheckSkill, libraryRead, libraryWrite, type LibraryFileDto } from '../../ipc/commands';
+import { libraryCheckSkill, libraryRead, libraryWrite, type LibraryEntry, type LibraryFileDto } from '../../ipc/commands';
 import { useDialogHost } from '../../shared/ui/dialogHost';
 import { Icon } from '../../shared/ui/icons';
 import { look } from '../accounts/ConfigEditor';
 import { useLibrary } from './library.store';
 
 /**
- * The library's instructions file, or one skill's SKILL.md, edited in Luna.
- * Saving lays it out at once. A SKILL.md is checked as it is typed the way a
- * pass checks it — front matter with this name and a description — and saved
- * even when it does not do yet: a draft, laid out nowhere until it does.
+ * One of the library's instructions files, or one skill's SKILL.md, edited in
+ * Luna. Saving lays it out at once. A SKILL.md is checked as it is typed the
+ * way a pass checks it — front matter with this name and a description — and
+ * saved even when it does not do yet: a draft, laid out nowhere until it does.
  * Ctrl+S saves; Esc asks once before throwing edits away.
  */
-export function LibraryEditor({ skill, onClose }: { skill: string | null; onClose: () => void }) {
+export function LibraryEditor({ entry, onClose }: { entry: LibraryEntry; onClose: () => void }) {
+  const skill = 'skill' in entry ? entry.skill : null;
+  const name = 'skill' in entry ? entry.skill : entry.instructions;
   const host = useDialogHost();
   const [file, setFile] = useState<LibraryFileDto | null>(null);
   const [text, setText] = useState('');
@@ -28,16 +30,17 @@ export function LibraryEditor({ skill, onClose }: { skill: string | null; onClos
   const box = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
   const dirty = !!file && text !== file.text;
-  const title = skill ? `SKILL.md — ${skill}` : 'Instructions — every account';
+  const title = skill ? `SKILL.md — ${skill}` : `Instructions — ${name}`;
 
   useEffect(() => {
-    void libraryRead(skill)
+    void libraryRead(entry)
       .then(f => {
         setFile(f);
         setText(f.text);
       })
       .catch(e => setError(String(e)));
-  }, [skill]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [skill, name]);
 
   // Checked as typed, a moment after the last key; an answer about text
   // typed over since is dropped, or a slow one would outlive a quick one.
@@ -86,7 +89,7 @@ export function LibraryEditor({ skill, onClose }: { skill: string | null; onClos
     if (!dirty || saving) return;
     setSaving(true);
     setError(null);
-    if (await useLibrary.getState().run(libraryWrite(skill, text))) {
+    if (await useLibrary.getState().run(libraryWrite(entry, text))) {
       setFile(f => (f ? { ...f, text, exists: true } : f));
       setSaved(true);
     } else {
@@ -150,7 +153,7 @@ export function LibraryEditor({ skill, onClose }: { skill: string | null; onClos
             <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={file?.path}>
               {file ? `${file.path}${file.exists ? '' : ' — not there yet, saving creates it'}` : 'Reading…'}
             </span>
-            <span>{skill ? 'The description is what the model sees until it opens the skill' : 'CLAUDE.md and AGENTS.md in every account'}</span>
+            <span>{skill ? 'The description is what the model sees until it opens the skill' : 'CLAUDE.md and AGENTS.md in the accounts that get it'}</span>
           </div>
           <div ref={box} className="config-text" />
           <div style={{ minHeight: 18, fontSize: 'var(--fs-3)' }}>

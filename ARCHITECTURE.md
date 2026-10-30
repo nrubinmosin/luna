@@ -62,9 +62,11 @@ src/                          frontend (feature-sliced)
               RecommendedDialog (recommended settings, per-account button), ConfigEditor
               (hand editor for settings.json / config.toml); accounts.store
     library/  Skills & instructions (from Accounts, or the status bar's chip while a copy needs a
-              look): the library's folder, the instructions, a grid of skills against the
-              accounts each goes into (ReachPicker: all, a CLI's, by name) and each folder, "Needs a look" with differences (diff.ts — a line LCS);
-              LibraryEditor — instructions.md / SKILL.md in CodeMirror, saved and laid out at once;
+              look): the library's folder, a grid of instructions against the accounts (a radio
+              per account column for the one it gets, or none; ReachPicker per row: all, a CLI's,
+              by name), a grid of skills against the
+              accounts each goes into (ReachPicker) and each folder, "Needs a look" with differences (diff.ts — a line LCS);
+              LibraryEditor — instructions/<name>.md / SKILL.md in CodeMirror, saved and laid out at once;
               library.store — the overview, a pass at startup, a look on every window focus
     settings/ Settings (gear in the status bar and in Accounts): accounts folder, auto-tiling,
               new chats, deletion, Luna/Claude Code/Codex versions and update buttons
@@ -182,9 +184,10 @@ src-tauri/src/
                 half-written or held open; one that still will not parse is an error, not an
                 empty object written back
   library.rs    the user's skills and instructions: a library folder (`<data>/library` or one of
-                the user's) with `instructions.md` and `skills/<name>/SKILL.md`, laid out into the
+                the user's) with `instructions/<name>.md` and `skills/<name>/SKILL.md`, laid out into the
                 accounts each is meant for — a reach of `all`, `claude`/`codex` or `provider/name`
-                entries (`CLAUDE.md` / `AGENTS.md`, `skills/<name>`) — and into folders the user names
+                entries (`CLAUDE.md` / `AGENTS.md`, one instructions file per account, the closest
+                reach winning; `skills/<name>`) — and skills into folders the user names
                 (`<folder>/<name>`); a ledger of what Luna wrote where (`<data>/library-state.json`,
                 bytes in `library-blobs/` by hash) so only its own copies are touched — see Key decisions
   watchdog.rs   a window whose page stopped responding (WebView2 died) is rebuilt
@@ -627,10 +630,20 @@ src-tauri/src/
   `apply_recommended(provider, account_path, add, remove)`.
 - **The library** (`library.rs`). The user's own instructions and skills, which belong to
   them rather than to any repository (a repository's skills reach everyone who clones it, and
-  Luna's MCP instructions every model that connects). Each skill, and the instructions, has a
-  reach in settings.json — `all`, a provider's every account, or `provider/name`, the key
-  agents.rs uses too — that account renames and deletions carry along; an account a reach
-  stops taking in loses Luna's copy like a skill unticked. The library is the source; a
+  Luna's MCP instructions every model that connects). Each skill, and each instructions file
+  (`instructions/<name>.md`), has a reach in settings.json — `all`, a provider's every account,
+  or `provider/name`, the key agents.rs uses too — that account renames and deletions carry
+  along; an account a reach stops taking in loses Luna's copy like a skill unticked. An account
+  has one instructions file, so where instructions' reaches meet the closest decides (`chosen`):
+  named beats a provider beats `all`, and `library.noInstructions` names accounts that get none.
+  Setting a reach takes each of its entries from every other instructions
+  (`give_instructions`), so two never tie; only instructions the library has compete, and an
+  account whose winner changes has Luna's copy replaced like one behind the library — the
+  ledger knows a copy by where it lies, not by which instructions fed it. The one
+  `instructions.md` of before moves to `instructions/main.md` at the first pass (its reach is
+  read as `main`'s); with both there neither is touched and the window says so, and until it
+  has moved every instructions unit is `failed`. An account's own file where no instructions
+  go is taken in as new instructions named after the account, going into it alone. The library is the source; a
   destination — an account's instructions file or `skills/<name>`, a named folder's `<name>`
   — holds a copy. A pass compares three things per destination: the library's files, what is
   there now, and the ledger's hashes of what Luna wrote there last. Missing → written; there
@@ -644,7 +657,7 @@ src-tauri/src/
   is left and reported as kept. A skill whose SKILL.md does not do (front matter with this
   `name` and a `description`, the checks both CLIs make) is `failed` — its copies stay, so a
   draft mid-edit takes nothing out — and so is every unit fed by a `skills/` that will not list
-  or an `instructions.md` that will not read (held open mid-save): read as empty, they would
+  or an instructions file that will not read (held open mid-save): read as empty, they would
   take their copies out. A library folder that is not there wants nothing and touches nothing.
   Paths are compared as the file system tells them apart (`ident`: on Windows either slash and
   any case), so an account renamed in case only keeps its copies and ledger entries. A
@@ -653,8 +666,8 @@ src-tauri/src/
   written, adopted or removed. Luna writes through temp files `<file>.<pid>-<n>.luna-tmp`,
   which are no part of a skill or a copy. A link at a destination, or inside it, is never followed or written over.
   Passes run when the window starts, after every change made in the window and on Sync now,
-  one at a time under a lock; the window reads the overview (no writes) on every focus. The
-  instructions are one file for both CLIs; a Codex account's `AGENTS.override.md`, which
+  one at a time under a lock; the window reads the overview (no writes) on every focus. An
+  instructions file serves both CLIs; a Codex account's `AGENTS.override.md`, which
   Codex reads instead of `AGENTS.md`, is reported.
 - **The hand editor** (`ConfigEditor.tsx`) is CodeMirror 6 — JSON via `@codemirror/lang-json`, TOML via
   `@codemirror/legacy-modes` — with line numbers and colours from theme tokens

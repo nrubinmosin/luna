@@ -49,7 +49,7 @@ const tidy = (reach: Reach): Reach =>
     : reach.filter((r, i) => reach.indexOf(r) === i && !(r.includes('/') && reach.includes(r.split('/')[0])));
 
 /**
- * Which accounts a skill or the instructions go into — every account, every
+ * Which accounts a skill or instructions go into — every account, every
  * account of one CLI, or accounts picked by name: a face that says which and,
  * under it, a popover of ticks that stays open while they are changed.
  */
