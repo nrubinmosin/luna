@@ -768,6 +768,8 @@ export const libraryCheckSkill = (skill: string, text: string) =>
 export const libraryNewSkill = (name: string) => call<LibraryOverviewDto>('library_new_skill', { name });
 export const libraryDeleteSkill = (name: string) => call<LibraryOverviewDto>('library_delete_skill', { name });
 /** The library's folder, or a skill's, in the file manager. */
+/** A link from a terminal, in the system's browser (lib.rs `open_link`). */
+export const openLink = (url: string) => call<void>('open_link', { url });
 export const libraryOpen = (skill: string | null) => call<void>('library_open', { skill });
 
 export interface ConfigFileDto {

@@ -54,6 +54,20 @@ pub(crate) fn build_main(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow,
     builder.build().map_err(|e| e.to_string())
 }
 
+/// A link a terminal was clicked on, in the system's browser or mail app: a
+/// window the WebView opened would be a browser of Luna's own, with none of
+/// the user's sign-ins. Web and mail links only; a terminal prints anything.
+#[tauri::command]
+fn open_link(url: String) -> Result<(), String> {
+    let scheme = url.split_once(':').map(|(s, _)| s.to_ascii_lowercase()).unwrap_or_default();
+    if !["http", "https", "mailto"].contains(&scheme.as_str()) {
+        // Not the link itself: the log gets this, and a link may carry a
+        // sign-in code.
+        return Err(format!("not a web or mail link ({scheme}:)"));
+    }
+    tauri_plugin_opener::open_url(&url, None::<&str>).map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // The exit watcher and the core are this same exe; neither may become a
@@ -231,6 +245,7 @@ pub fn run() {
             library::library_open,
             log::append_log,
             media::save_media,
+            open_link,
             corelink::core_call,
             corelink::core_send,
             corelink::core_state,

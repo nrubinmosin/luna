@@ -643,6 +643,64 @@ pub fn promoted(id: &str) {
     }
 }
 
+/// What the agent layer holds of a background helper, saved with it
+/// (background.rs `save`) so a core started later takes it up where this one
+/// left it: whose it is, what it is called, and what its callers are owed.
+#[derive(Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Ties {
+    pub parent: Option<String>,
+    pub name: Option<String>,
+    pub settings: serde_json::Value,
+    pub tools: bool,
+    pub borrowed: bool,
+    pub auto_delete: bool,
+    /// (caller, baseline, cursor) of every answer owed by it (see `Owed`).
+    pub owed: Vec<(String, u32, u64)>,
+    /// (caller, turns ended) each caller was last shown of it (see `seen`).
+    pub seen: Vec<(String, u32)>,
+}
+
+pub fn ties_of(id: &str) -> Option<Ties> {
+    let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    let k = r.known.get(id)?;
+    Some(Ties {
+        parent: k.parent.clone(),
+        name: r.names.get(id).cloned(),
+        settings: k.settings.clone(),
+        tools: k.tools,
+        borrowed: r.borrowed.contains(id),
+        auto_delete: r.auto.contains_key(id),
+        owed: r.owed.iter().filter(|((_, s), _)| s == id).map(|((c, _), o)| (c.clone(), o.baseline, o.cursor)).collect(),
+        seen: r.seen.iter().filter(|((_, s), _)| s == id).map(|((c, _), n)| (c.clone(), *n)).collect(),
+    })
+}
+
+/// A helper a previous core saved is known again, as it was. Returns the
+/// token for its MCP config, a fresh one: the old core's went with it.
+pub fn tie_back(id: &str, provider: Provider, folder: &str, account_path: &str, ties: Ties) -> Option<String> {
+    let token = register(id, provider, folder, account_path, ties.parent.as_deref(), ties.tools, ties.settings);
+    let token = token.or_else(|| (provider == Provider::Claude).then(|| issue_token(id)));
+    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(name) = ties.name {
+        r.names.insert(id.to_string(), name);
+    }
+    if ties.borrowed {
+        r.borrowed.insert(id.to_string());
+    }
+    // Its idle time counts afresh: nobody has had the chance to look at it.
+    if ties.auto_delete {
+        r.auto.insert(id.to_string(), Auto::default());
+    }
+    for (caller, baseline, cursor) in ties.owed {
+        r.owed.insert((caller, id.to_string()), Owed::from(baseline, cursor));
+    }
+    for (caller, n) in ties.seen {
+        r.seen.insert((caller, id.to_string()), n);
+    }
+    token
+}
+
 /// The window's Delete on a background helper: as its agent would, the
 /// worktree it made going too unless it was handed one.
 pub fn delete_by_user(id: &str) -> Result<(), String> {
@@ -2944,6 +3002,12 @@ fn notice_line(
                 // done and deleted the helper mid-job.
                 Some(format!("{who} is NOT done yet: a job it started still runs in the background. It ended a turn{reply}. Wait for the next notice, which comes when it finishes.")),
                 Settled::Pending(ended, transcript_end(id)),
+            ));
+        }
+        if crate::background::cut_short(id) {
+            return Some((
+                Some(format!("{who} did NOT finish its turn: Luna's core restarted while it worked and stopped it. It ended{reply}. luna_send has it carry on.")),
+                Settled::Answered,
             ));
         }
         return Some((Some(format!("{who} finished its turn{reply}.")), Settled::Answered));

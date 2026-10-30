@@ -1,9 +1,9 @@
-# Builds the Windows portable exe + NSIS installer inside Docker (no local Rust needed).
+# Builds the Windows exe + NSIS installer inside Docker (no local Rust needed).
 # Results:
-#   src-tauri\target\x86_64-pc-windows-msvc\release\luna.exe                   (portable)
+#   src-tauri\target\x86_64-pc-windows-msvc\release\luna.exe                   (the bare exe)
 #   src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis\*-setup.exe    (installer + .sig)
 # The NSIS step downloads a helper DLL from GitHub on every run, and a blip
-# there would otherwise take the portable exes down with it. Pass -Installer
+# there would otherwise take the bare exe down with it. Pass -Installer
 # when you actually need the setup + updater artifacts.
 param([switch]$Installer)
 $ErrorActionPreference = 'Stop'

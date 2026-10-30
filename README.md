@@ -298,7 +298,11 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   helper in a turn counts as one) for ten minutes.
   If the core itself stops, the sessions in it end: a banner over the board says so, and
   Restart the core brings the chats back from their transcripts. It is never restarted
-  behind your back.
+  behind your back. Background helpers outlive the core too: each is kept in
+  `helpers.json` in the data folder (its settings, its conversation's id, whose it is —
+  not what was said), and the next core takes them up, after an update, a restart or a
+  reboot. A turn the core was in the middle of is stopped with it; the agent owed the
+  answer is told so, and `luna_send` has the helper carry on.
 - The log also says how each run ended. Luna names its own reasons for leaving (tray
   Quit, an update, Windows signing out or shutting down). A small watcher process logs
   the exit code when something else ends it, which tells a kill from outside (Task
@@ -476,9 +480,10 @@ docker run --rm -v "${PWD}:/app" -w /app/src-tauri rust:1-bookworm bash -c `
 Builds the toolchain image (rust + cargo-xwin + NSIS + node) and cross-compiles for
 `x86_64-pc-windows-msvc`:
 
-- the portable exe — `src-tauri\target\x86_64-pc-windows-msvc\release\luna.exe`
-  (self-contained; it only needs the system WebView2);
-- the NSIS installer — `...\release\bundle\nsis\Luna_*_x64-setup.exe`.
+- the exe — `src-tauri\target\x86_64-pc-windows-msvc\release\luna.exe`
+  (self-contained; it only needs the system WebView2), for trying a build in place;
+- the NSIS installer — `...\release\bundle\nsis\Luna_*_x64-setup.exe`, the one way Luna
+  is shipped. Install it into any folder, on any drive: Luna keeps its data there.
 
 The caches (node_modules, the Windows SDK, the cargo registry) live in named volumes, so
 repeat builds are fast.
@@ -497,7 +502,9 @@ the script refuses to run if they disagree, if the tree is dirty, if HEAD is ahe
 pushed commit, and the build stamp in the binary is only worth anything if it is.
 
 It builds the signed installer, writes the `latest.json` the updater reads, and uploads
-the portable exe, the setup, its `.sig` and the manifest to a `v<version>` release.
+the setup, its `.sig` and the manifest to a `v<version>` release. No bare exe goes up: the
+updater installs a release into the folder Luna was installed in, so a copy run from
+anywhere else would update into a second Luna with none of its data.
 
 ## Updates and signing
 

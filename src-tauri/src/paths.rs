@@ -35,8 +35,8 @@ pub fn set_data_dir(dir: PathBuf) {
 
 /// Where Luna keeps everything of its own: settings, the log, attachments,
 /// the WebView's profile, the CLIs it downloads. Beside the exe when that
-/// directory is writable — the portable build is meant to carry everything on
-/// its own drive, and the installer puts Luna under LOCALAPPDATA — and in
+/// directory is writable — Luna is meant to carry everything on the drive it
+/// was installed to, which the installer lets the user choose — and in
 /// `local_dir` otherwise, since an app installed into Program Files cannot
 /// write there. Never beside the exe on macOS: it sits inside the signed app
 /// bundle, which an update replaces whole. Decided once: a directory that

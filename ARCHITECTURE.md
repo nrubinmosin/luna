@@ -212,7 +212,7 @@ src-tauri/src/
   easier UI evolution.
 - **Own CLI binaries.** Luna does not depend on a global `claude`/`codex`: `cli.rs` keeps copies in
   `<data>/claude-cli/versions/<ver>/claude.exe` and `<data>/codex-cli/versions/<ver>/bin/codex.exe`
-  (`<data>` is the exe's folder for the portable build, so everything lives on one drive), `current`
+  (`<data>` is the exe's folder wherever that is writable, so everything lives on one drive), `current`
   points at the active version. Versions are never overwritten (a running exe cannot be
   replaced on Windows) — a new one goes next to it, the pointer switches, old ones are swept once nobody
   holds them. Claude sessions get `DISABLE_AUTOUPDATER=1`, Codex accounts get
@@ -552,7 +552,17 @@ src-tauri/src/
   CLI to say where it made it (Claude Code's `init` event, Codex's rollout) and returns `worktree` and
   `branch`, which `list` carries for every helper too. The window gets their list as `agent://background` (the
   count on the parent row) and can hand one to a chat row between turns (`background_promote` →
-  `agent://promote`: same id, the session id to resume).
+  `agent://promote`: same id, the session id to resume). Helpers outlive the core: every 2 s, and as
+  the core leaves (`stop_all`), the registry goes to `<data>/helpers.json` when it has changed — the
+  spec without its token, the session id, the worktree, the turn count, whether a turn ran, and the
+  agent layer's ties (`agents::Ties`: parent, name, settings, the answers owed and counts shown).
+  Nothing said in the conversation: that is in the CLI's transcript. The next core reads it before
+  the hub listens (`background::restore`, `agents::tie_back`, fresh tokens): a turn that ran then
+  went with the old core and counts as ended, the text queued behind it as the turn after. Such a
+  turn, or one `stop_turns` stopped, leaves the helper `cut_short` until its next turn, so the owed
+  caller's notice says it did not finish. One
+  whose first turn never named its conversation has nothing to resume and is let go. Nothing is
+  written before `restore` has read the file, so an empty registry never overwrites it.
   **One state, and what is asked.** Tool answers carry `state` (`state_of`: working, waiting,
   question, background, idle, starting, exited) instead of a turn word and a busy flag that could
   disagree, and `ask` (`ask_of`): a background helper's held call; for Claude Code the tool its
