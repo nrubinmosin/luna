@@ -1313,7 +1313,8 @@ const ESC_GAP: std::time::Duration = std::time::Duration::from_millis(300);
 /// the state the first set. Space them the way a hand would.
 const CTRL_C_GAP: std::time::Duration = std::time::Duration::from_millis(150);
 /// How long the CLI gets after the Ctrl+Cs to be on its way out before an
-/// exit dialog is assumed to be holding it.
+/// exit dialog is assumed to be holding it, and between the Enters that
+/// answer one.
 const EXIT_DIALOG_WAIT: std::time::Duration = std::time::Duration::from_millis(1500);
 
 /// Asks the CLI to quit, and kills it only if it does not.
@@ -1365,12 +1366,17 @@ fn shut_down(mut s: Session, grace: std::time::Duration) {
     // takes the focused default, Keep — the right answer either way, since
     // Luna removes the worktree itself afterwards when the delete asks for
     // that. The Ctrl+Cs have already cleared the prompt, so an Enter that
-    // finds no dialog submits nothing.
-    wait(std::time::Instant::now() + EXIT_DIALOG_WAIT);
-    if !exited() {
+    // finds no dialog submits nothing. Again until the CLI is gone: the dialog
+    // comes up only once Claude Code has looked the worktree over, its
+    // submodules with up to 5 s of their own, and in a large repository one
+    // Enter could come before it and leave it to the hard kill.
+    loop {
+        wait(std::time::Instant::now() + EXIT_DIALOG_WAIT);
+        if exited() || std::time::Instant::now() >= deadline {
+            break;
+        }
         let _ = s.input_tx.send(Input::Bytes(b"\r".to_vec()));
     }
-    wait(deadline);
     if !exited() {
         crate::log::warn("pty", &format!("pid {:?} did not quit on Ctrl+C within {grace:?}; killing it", s.pid));
     }
