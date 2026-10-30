@@ -4,6 +4,7 @@ import type { CSSProperties } from 'react';
 import type { PowerAction } from '../../ipc/commands';
 import { useChats, allChats } from '../chats/chats.store';
 import { usePower } from './power.store';
+import { doing } from './LiveSessions';
 
 const ACTIONS: Array<{ value: PowerAction; label: string; note: string }> = [
   { value: 'shutdown', label: 'Shut down', note: 'closes every session first, then powers off' },
@@ -45,6 +46,7 @@ export function PowerMenu({ onClose }: { onClose: () => void }) {
   const parked = state.summary.sessions.filter(s => !s.busy && s.turn === 'waiting');
   const waiting = parked.filter(s => !s.stalled).map(s => name(s.id));
   const stalled = parked.filter(s => s.stalled).map(s => `${name(s.id)} (${s.stalled})`);
+  const holders = state.summary.sessions.filter(s => s.busy).map(s => `${name(s.id)} — ${doing(s)}`);
   const worktrees = chats.filter(c => c.worktreePath);
   const armed = state.armed;
 
@@ -89,11 +91,22 @@ export function PowerMenu({ onClose }: { onClose: () => void }) {
               </label>
             </div>
             <div style={fine}>
-              Held while any session is mid-turn, has something running in its shell, or is still
-              printing; let go a minute after the last one goes quiet. A session waiting for your
-              answer does not hold it. Shows up in <code>powercfg /requests</code> as Luna's.
-              {state.holding ? ' Holding now.' : ''}
+              Held while any session is mid-turn, still has anything it started running, however
+              long after its turn, or is still printing; let go a minute after the last one goes
+              quiet. A session waiting for your answer does not hold it. Shows up in{' '}
+              <code>powercfg /requests</code> as Luna's.
             </div>
+            {state.holding && (
+              <div style={{ ...fine, color: 'var(--dim)' }}>
+                Keeping the PC awake now
+                {holders.length ? ':' : ': a session that just went quiet.'}
+                {holders.length > 0 && (
+                  <ul style={{ margin: '2px 0 0', paddingLeft: 18 }}>
+                    {holders.map(h => <li key={h}>{h}</li>)}
+                  </ul>
+                )}
+              </div>
+            )}
           </div>
 
           <div style={{ marginBottom: 14 }}>

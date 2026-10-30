@@ -25,6 +25,7 @@ import '@xterm/xterm/css/xterm.css';
 import { logWarn } from '../../shared/lib/log';
 import type { Chat } from '../../shared/types';
 import { ensureClaudeSession, ensureCodexSession, openLink, resizeSession, sessionModes, writeSession } from '../../ipc/commands';
+import { linkContext, useLinkChooser } from '../browsers/browsers.store';
 import { onPtyExit, onPtyOutput } from '../../ipc/events';
 import { useChats } from '../chats/chats.store';
 import { claude } from '../providers';
@@ -163,12 +164,17 @@ function create(spec: TermSpec): Entry {
     // The CLIs print OSC 8 links. xterm's stock handler asks `confirm()`
     // first, which the dialog plugin's init script turns into a
     // `plugin:dialog|message` call this window has no permission for, and
-    // then opens a window of the WebView's own. The link goes to the
-    // system's browser instead, without the question.
+    // then opens a window of the WebView's own. The link goes to the user's
+    // browser instead (browsers.rs), without the question; Shift+click asks
+    // which one.
     linkHandler: {
-      activate: (_e, uri) => {
+      activate: (e, uri) => {
+        if (e.shiftKey) {
+          useLinkChooser.getState().show(uri, chatId, e.clientX, e.clientY);
+          return;
+        }
         // `call` logs a failure, without the link: one may carry a sign-in code.
-        void openLink(uri).catch(() => {});
+        void openLink(uri, linkContext(chatId)).catch(() => {});
       }
     }
   });

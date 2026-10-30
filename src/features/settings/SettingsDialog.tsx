@@ -18,6 +18,7 @@ import { useDeletePrefs } from '../chats/deletePrefs.store';
 import { usePanes } from '../panes/panes.store';
 import { useNotifyPrefs } from '../../shared/lib/notifyPrefs.store';
 import { useDialogHost } from '../../shared/ui/dialogHost';
+import { BrowserSection } from '../browsers/BrowserSection';
 
 const pct = (got: number, total: number | null) =>
   total ? Math.min(100, Math.round((got / total) * 100)) : null;
@@ -495,6 +496,9 @@ function SettingsWindow({ onClose }: { onClose: () => void }) {
               out is touched. Codex starts its worktree from the commit you have checked out, which no
               fetch changes.
             </div>
+          </Section>
+          <Section label="Links">
+            <BrowserSection />
           </Section>
           <Section label="Codex trusts on this computer">
             <TrustedRoots />

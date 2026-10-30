@@ -41,16 +41,15 @@ const STALE_WAIT_MS: u64 = 60_000;
 /// busy for this long with no hook at all: a turn that starts or does anything
 /// fires a hook, so the registry has simply been left behind.
 const STALE_DISK_MS: u64 = 60_000;
+/// What a CLI starts this soon after it is spawned — its MCP servers, its
+/// shell, the helpers it brings up with itself — is furniture, however early
+/// its first turn: a chat spawned with its prompt is busy from its first
+/// sample, and those servers would otherwise read as the turn's work and
+/// hold the machine for as long as the chat is open.
+const STARTUP_MS: u64 = 30_000;
 /// A process born up to this long before the sampled turn start still belongs
 /// to the turn: without hooks the start is only seen at the next sample.
 const TURN_SLACK_MS: u64 = SAMPLE_EVERY.as_millis() as u64;
-/// A child this old that does not move is a helper the CLI keeps, not a job.
-const STALE_CHILD_MS: u64 = 2 * 3600 * 1000;
-/// A session whose turn has been over this long is done, whatever it left
-/// running under it: a job it meant to come back to would have woken it by
-/// now, and a `tail -f` a monitor left behind moves for as long as its log
-/// grows — it must not hold the machine through the night.
-const LEFTOVER_MS: u64 = 2 * 3600 * 1000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -128,10 +127,6 @@ struct Track {
     /// When the first turn began (0 = never): children born after it are the
     /// model's own, whichever turn started them.
     first_turn_ms: u64,
-    /// Since when the turn has been over, while it is (see LEFTOVER_MS).
-    idle_since_ms: Option<u64>,
-    /// The log has said that this idle stretch's leftovers no longer count.
-    leftover_told: bool,
     prev: Vec<ProcRead>,
     procs: Option<procs::Busy>,
     output_fresh: bool,
@@ -516,9 +511,6 @@ pub fn sample(probes: Vec<crate::pty::ActivityProbe>, helpers: Vec<SessionActivi
     // Per session, the children to name and whether to look behind its wait
     // for an API error: both read once the lock is let go.
     let mut later: Vec<(Vec<u32>, bool)> = Vec::with_capacity(probes.len());
-    // Sessions whose leftovers stopped counting at this sample, for the log
-    // line, which names the chat and so is written once the lock is let go.
-    let mut cut: Vec<(String, Vec<u32>)> = Vec::new();
     {
         let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
         let st = &mut *st;
@@ -528,6 +520,12 @@ pub fn sample(probes: Vec<crate::pty::ActivityProbe>, helpers: Vec<SessionActivi
 
         for (p, (disk_read, disk_turns, children)) in probes.iter().zip(reads) {
             let t = track(&mut st.tracks, &mut st.ended, &p.id);
+            // A respawn (new settings, a resume) is a new CLI with servers of
+            // its own: what counts as its turns' work starts over with it.
+            if t.spawned_at_ms != 0 && t.spawned_at_ms != p.spawned_at_ms {
+                t.first_turn_ms = 0;
+                t.prev.clear();
+            }
 
             let (disk, disk_at) = disk_read.map_or((None, None), |(d, at)| (Some(d), at));
             // A registry that changed after the hook spoke is the later word: a
@@ -544,27 +542,12 @@ pub fn sample(probes: Vec<crate::pty::ActivityProbe>, helpers: Vec<SessionActivi
             }
             t.turn = turn;
 
-            t.procs = procs::without_furniture(procs::judge(
-                &t.prev,
-                &children,
-                t.first_turn_ms,
-                now.saturating_sub(STALE_CHILD_MS),
-                MIN_CPU_MS,
-            ));
+            let born_after = match t.first_turn_ms {
+                0 => 0,
+                first => first.max(p.spawned_at_ms as u64 + STARTUP_MS),
+            };
+            t.procs = procs::without_furniture(procs::judge(&t.prev, &children, born_after, MIN_CPU_MS));
             t.prev = children;
-            if t.turn == Turn::Idle {
-                if now.saturating_sub(*t.idle_since_ms.get_or_insert(now)) >= LEFTOVER_MS {
-                    if let Some(b) = t.procs.take() {
-                        if !t.leftover_told {
-                            t.leftover_told = true;
-                            cut.push((p.id.clone(), b.active.iter().chain(b.young.iter()).copied().collect()));
-                        }
-                    }
-                }
-            } else {
-                t.idle_since_ms = None;
-                t.leftover_told = false;
-            }
             t.output_fresh = now.saturating_sub(p.last_output_ms) < OUTPUT_FRESH_MS;
 
             let pids: Vec<u32> = t
@@ -616,19 +599,6 @@ pub fn sample(probes: Vec<crate::pty::ActivityProbe>, helpers: Vec<SessionActivi
             s.stalled = disk_api_error(p);
         }
     }
-    for (id, pids) in cut {
-        let names: Vec<String> = procs::names(&pids).into_iter().map(|(_, n)| n).collect();
-        crate::log::warn(
-            "activity",
-            &format!(
-                "{}: turn over for {}h; what it left running ({}) no longer holds the machine",
-                crate::agents::label(&id),
-                LEFTOVER_MS / 3_600_000,
-                names.join(", ")
-            ),
-        );
-    }
-
     sessions.extend(helpers);
     let busy = sessions.iter().filter(|s| s.busy).count();
     let parked = |s: &&SessionActivity| !s.busy && s.turn == Turn::Waiting;

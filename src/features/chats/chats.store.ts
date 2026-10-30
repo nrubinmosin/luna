@@ -40,6 +40,8 @@ interface ChatsState {
   setModelSeen: (chatId: string, model: string) => void;
   setContext: (chatId: string, context: number, tokens: number | null, window: number | null) => void;
   setColor: (chatId: string, color: string | null) => void;
+  /** The browser the chat's links open in; null forgets it. */
+  setBrowser: (chatId: string, browser: string | null) => void;
   renameChat: (chatId: string, name: string) => void;
   /** An account was renamed: its chats follow it. */
   renameAccount: (provider: Chat['provider'], from: string, to: string) => void;
@@ -238,6 +240,14 @@ export const useChats = create<ChatsState>()(
           folders: s.folders.map(f => ({
             ...f,
             chats: f.chats.map(c => (c.id === chatId ? { ...c, color } : c))
+          }))
+        })),
+
+      setBrowser: (chatId, browser) =>
+        set(s => ({
+          folders: s.folders.map(f => ({
+            ...f,
+            chats: f.chats.map(c => (c.id === chatId ? { ...c, browser } : c))
           }))
         })),
 

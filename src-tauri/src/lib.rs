@@ -4,6 +4,7 @@ mod activity;
 mod agentlog;
 mod agents;
 mod background;
+mod browsers;
 mod claude;
 mod cli;
 mod codex;
@@ -54,18 +55,57 @@ pub(crate) fn build_main(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow,
     builder.build().map_err(|e| e.to_string())
 }
 
-/// A link a terminal was clicked on, in the system's browser or mail app: a
-/// window the WebView opened would be a browser of Luna's own, with none of
-/// the user's sign-ins. Web and mail links only; a terminal prints anything.
+/// A link a terminal was clicked on, in a browser of the user's (browsers.rs)
+/// or the mail app: a window the WebView opened would be a browser of Luna's
+/// own, with none of the user's sign-ins. Web and mail links only; a
+/// terminal prints anything.
 #[tauri::command]
-fn open_link(url: String) -> Result<(), String> {
+fn open_link(url: String, ctx: Option<browsers::Context>) -> Result<(), String> {
     let scheme = url.split_once(':').map(|(s, _)| s.to_ascii_lowercase()).unwrap_or_default();
-    if !["http", "https", "mailto"].contains(&scheme.as_str()) {
+    match scheme.as_str() {
+        "http" | "https" => browsers::open(&url, &ctx.unwrap_or_default()),
+        "mailto" => tauri_plugin_opener::open_url(&url, None::<&str>).map_err(|e| e.to_string()),
         // Not the link itself: the log gets this, and a link may carry a
         // sign-in code.
-        return Err(format!("not a web or mail link ({scheme}:)"));
+        _ => Err(format!("not a web or mail link ({scheme}:)")),
     }
-    tauri_plugin_opener::open_url(&url, None::<&str>).map_err(|e| e.to_string())
+}
+
+/// The tray while the PC is held awake: a dot on the icon, and who holds it
+/// in the tooltip, so a hidden window still says why the PC will not sleep.
+/// `None` puts the plain icon back.
+#[tauri::command]
+fn tray_awake(app: tauri::AppHandle, holders: Option<String>) -> Result<(), String> {
+    let Some(tray) = app.tray_by_id("main") else { return Ok(()) };
+    let Some(base) = app.default_window_icon() else { return Ok(()) };
+    let (icon, tip) = match holders {
+        Some(h) => (with_dot(base), format!("Luna — keeping the PC awake:\n{h}")),
+        None => (base.clone().to_owned(), "Luna".to_string()),
+    };
+    // Windows cuts a tray tooltip at 127 characters.
+    let tip: String = if tip.chars().count() > 127 { format!("{}…", tip.chars().take(126).collect::<String>()) } else { tip };
+    tray.set_icon(Some(icon)).map_err(|e| e.to_string())?;
+    tray.set_tooltip(Some(tip)).map_err(|e| e.to_string())
+}
+
+/// The icon with an amber dot, ringed in black, at its lower right.
+fn with_dot(base: &tauri::image::Image<'_>) -> tauri::image::Image<'static> {
+    let (w, h) = (base.width() as i64, base.height() as i64);
+    let mut rgba = base.rgba().to_vec();
+    let r = (w.min(h) as f64 * 0.24).max(2.0);
+    let (cx, cy) = (w as f64 - r - 1.0, h as f64 - r - 1.0);
+    for y in 0..h {
+        for x in 0..w {
+            let d = ((x as f64 + 0.5 - cx).powi(2) + (y as f64 + 0.5 - cy).powi(2)).sqrt();
+            let px = ((y * w + x) * 4) as usize;
+            if d <= r - 1.5 {
+                rgba[px..px + 4].copy_from_slice(&[0xF5, 0xA6, 0x23, 0xFF]);
+            } else if d <= r {
+                rgba[px..px + 4].copy_from_slice(&[0x10, 0x10, 0x10, 0xFF]);
+            }
+        }
+    }
+    tauri::image::Image::new_owned(rgba, w as u32, h as u32)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -246,6 +286,9 @@ pub fn run() {
             log::append_log,
             media::save_media,
             open_link,
+            browsers::browsers,
+            browsers::set_browsers,
+            tray_awake,
             corelink::core_call,
             corelink::core_send,
             corelink::core_state,
