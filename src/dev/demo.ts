@@ -390,19 +390,26 @@ const STALE: Record<string, WorktreeInfoDto[]> = {
 };
 
 // The library: two skills laid out — one into every account, one into a
-// single account — and a draft that does not do yet; one account's
-// instructions edited by hand since Luna wrote them.
+// single account — and a draft that does not do yet; instructions for
+// everyone, others for the work account alone (edited by hand there since
+// Luna wrote them), a blank draft, and a Codex account kept on its own file.
 const SHARED = 'C:\\src\\luna\\.shared-skills';
 const accountsDir = (vendor: string, name: string) => `C:\\Users\\me\\Documents\\luna-accounts\\${vendor}\\${name}`;
 const place = (p: Partial<PlaceDto> & Pick<PlaceDto, 'dest' | 'target'>): PlaceDto => ({
-  skill: null, status: 'current', both: false, problem: null, ...p
+  skill: null, instructions: null, status: 'current', both: false, problem: null, ...p
 });
 const LIBRARY: LibraryOverviewDto = {
   root: 'C:\\Users\\me\\AppData\\Local\\luna\\library',
   isDefault: true,
   found: true,
-  instructions: ['all'],
-  hasInstructions: true,
+  instructions: [
+    { name: 'main', description: 'Working with me', problem: null, accounts: ['all'] },
+    { name: 'terse', description: '', problem: 'Blank: laid out nowhere until it has something in it', accounts: [] },
+    { name: 'work', description: 'At work: the monorepo, its CI and who reviews what', problem: null, accounts: ['claude/work'] }
+  ],
+  noInstructions: ['codex/team'],
+  instructionsFor: { 'claude/personal': 'main', 'claude/work': 'work', 'codex/personal': 'main' },
+  oldInstructions: null,
   skills: [
     { name: 'luna-review', description: 'Hand a finished change to a model of the other CLI through Luna and fold its findings back in.', problem: null, accounts: ['all'] },
     { name: 'migrations', description: '', problem: 'The front matter has no description', accounts: ['claude'] },
@@ -411,14 +418,15 @@ const LIBRARY: LibraryOverviewDto = {
   accounts: [
     { provider: 'claude', name: 'personal' },
     { provider: 'claude', name: 'work' },
-    { provider: 'codex', name: 'personal' }
+    { provider: 'codex', name: 'personal' },
+    { provider: 'codex', name: 'team' }
   ],
   folders: [{ path: SHARED, skills: ['luna-review', 'release-notes'], found: true }],
   places: [
-    place({ dest: `${accountsDir('anthropic', 'personal')}\\CLAUDE.md`, target: { kind: 'account', provider: 'claude', name: 'personal' } }),
-    place({ dest: `${accountsDir('anthropic', 'work')}\\CLAUDE.md`, target: { kind: 'account', provider: 'claude', name: 'work' }, status: 'changed' }),
-    place({ dest: `${accountsDir('openai', 'personal')}\\AGENTS.md`, target: { kind: 'account', provider: 'codex', name: 'personal' } }),
-    ...[['anthropic', 'claude', 'personal'], ['anthropic', 'claude', 'work'], ['openai', 'codex', 'personal']].map(([v, p, n]) =>
+    place({ dest: `${accountsDir('anthropic', 'personal')}\\CLAUDE.md`, target: { kind: 'account', provider: 'claude', name: 'personal' }, instructions: 'main' }),
+    place({ dest: `${accountsDir('anthropic', 'work')}\\CLAUDE.md`, target: { kind: 'account', provider: 'claude', name: 'work' }, instructions: 'work', status: 'changed' }),
+    place({ dest: `${accountsDir('openai', 'personal')}\\AGENTS.md`, target: { kind: 'account', provider: 'codex', name: 'personal' }, instructions: 'main' }),
+    ...[['anthropic', 'claude', 'personal'], ['anthropic', 'claude', 'work'], ['openai', 'codex', 'personal'], ['openai', 'codex', 'team']].map(([v, p, n]) =>
       place({ dest: `${accountsDir(v, n)}\\skills\\luna-review`, target: { kind: 'account', provider: p as Provider, name: n }, skill: 'luna-review' })
     ),
     place({ dest: `${accountsDir('anthropic', 'work')}\\skills\\release-notes`, target: { kind: 'account', provider: 'claude', name: 'work' }, skill: 'release-notes' }),
@@ -431,7 +439,7 @@ const LIBRARY: LibraryOverviewDto = {
     place({ dest: `${SHARED}\\luna-review`, target: { kind: 'folder', path: SHARED }, skill: 'luna-review' }),
     place({ dest: `${SHARED}\\release-notes`, target: { kind: 'folder', path: SHARED }, skill: 'release-notes', status: 'taken' })
   ],
-  foundInstructions: [],
+  foundInstructions: [{ dest: `${accountsDir('openai', 'team')}\\AGENTS.md`, target: { kind: 'account', provider: 'codex', name: 'team' } }],
   overridden: [],
   kept: []
 };

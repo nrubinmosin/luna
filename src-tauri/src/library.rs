@@ -1,8 +1,8 @@
-//! The user's own skills and one instructions file, kept in Luna's library
-//! and laid out where the CLIs read them: into the accounts each is meant for
-//! — all of them, a provider's, or ones picked by name; a skill as
-//! `skills/<name>`, the instructions as `CLAUDE.md` (Claude Code) or
-//! `AGENTS.md` (Codex) in its root — and into folders the user names, a
+//! The user's own skills and instructions files, kept in Luna's library and
+//! laid out where the CLIs read them: into the accounts each is meant for —
+//! all of them, a provider's, or ones picked by name; a skill as
+//! `skills/<name>`, instructions as `CLAUDE.md` (Claude Code) or `AGENTS.md`
+//! (Codex) in its root, one per account — and into folders the user names, a
 //! skill as `<folder>/<name>`. How a CLI gets to a folder's skills (a link
 //! into `.claude/skills` or `.agents/skills`, a git ignore) is the user's.
 //!
@@ -17,7 +17,7 @@
 
 use crate::accounts::AccountInfo;
 use crate::provider::Provider;
-use crate::settings::Reach;
+use crate::settings::{LibrarySettings, Reach};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -31,12 +31,19 @@ type Files = BTreeMap<String, Vec<u8>>;
 type Hashes = BTreeMap<String, String>;
 /// The library's skills by name, with their files when fit to be laid out.
 type Skills = BTreeMap<String, (SkillInfo, Result<Files, String>)>;
+/// The library's instructions by name: the file's bytes, None while blank
+/// (nothing to lay out), or why it will not do.
+type Instructions = BTreeMap<String, Result<Option<Vec<u8>>, String>>;
 
 /// One pass at a time: the window can fire several changes in a row, and two
 /// passes writing the same copy would each read the other's half.
 static LOCK: Mutex<()> = Mutex::new(());
 
-const INSTRUCTIONS: &str = "instructions.md";
+/// The folder of instructions files, `<name>.md` each.
+const INSTRUCTIONS_DIR: &str = "instructions";
+/// Where the one instructions file lived while there could be only one;
+/// `migrate_instructions` moves it into the folder.
+const OLD_INSTRUCTIONS: &str = "instructions.md";
 const SKILL_FILE: &str = "SKILL.md";
 /// Backups older than this go at the next pass.
 const BACKUP_DAYS: u64 = 30;
@@ -53,23 +60,43 @@ fn instructions_name(provider: Provider) -> &'static str {
 
 const ALL: &str = "all";
 
+/// How closely a reach takes in this account: 2 by its name, 1 by its
+/// provider, 0 as one of all; None when it does not.
+fn closeness(reach: &[String], a: &AccountInfo) -> Option<u8> {
+    let provider = a.provider.as_str();
+    reach
+        .iter()
+        .filter_map(|r| match r {
+            r if r.split_once('/') == Some((provider, a.name.as_str())) => Some(2),
+            r if r == provider => Some(1),
+            r if r == ALL => Some(0),
+            _ => None,
+        })
+        .max()
+}
+
 /// Whether a reach takes in this account.
 fn reaches(reach: &[String], a: &AccountInfo) -> bool {
-    let provider = a.provider.as_str();
-    reach.iter().any(|r| r == ALL || r == provider || r.split_once('/') == Some((provider, a.name.as_str())))
+    closeness(reach, a).is_some()
+}
+
+/// Each entry `all`, a provider or `provider/account`.
+fn check_reach(reach: &[String]) -> Result<(), String> {
+    let provider = |p: &str| Provider::ALL.iter().any(|x| x.as_str() == p);
+    for r in reach {
+        let fits = r == ALL || provider(r) || r.split_once('/').is_some_and(|(p, n)| provider(p) && !n.is_empty() && !n.contains('/'));
+        if !fits {
+            return Err(format!("{r} is not all, a provider or provider/account"));
+        }
+    }
+    Ok(())
 }
 
 /// A reach as the user ticked it, checked and made the shortest that takes in
 /// the same accounts: `all` alone, a provider without its own accounts,
 /// nothing twice.
 fn tidy_reach(reach: Vec<String>) -> Result<Reach, String> {
-    let provider = |p: &str| Provider::ALL.iter().any(|x| x.as_str() == p);
-    for r in &reach {
-        let fits = r == ALL || provider(r) || r.split_once('/').is_some_and(|(p, n)| provider(p) && !n.is_empty() && !n.contains('/'));
-        if !fits {
-            return Err(format!("{r} is not all, a provider or provider/account"));
-        }
-    }
+    check_reach(&reach)?;
     if reach.iter().any(|r| r == ALL) {
         return Ok(vec![ALL.into()]);
     }
@@ -83,15 +110,58 @@ fn tidy_reach(reach: Vec<String>) -> Result<Reach, String> {
     Ok(out)
 }
 
+/// Gives one instructions (None: no instructions at all) this reach, and
+/// takes each of its entries away from every other: an account named, a
+/// provider and `all` are each one instructions' at a time, so where two
+/// reaches meet on an account the closer one decides and never a tie. An
+/// account is named beside `all` or its provider on purpose here, unlike in
+/// a skill's reach — named, it beats another's provider — so nothing but
+/// repeats is tidied away.
+fn give_instructions(lib: &mut LibrarySettings, name: Option<&str>, mut reach: Reach) {
+    let mut seen = BTreeSet::new();
+    reach.retain(|r| seen.insert(r.clone()));
+    for (n, r) in lib.instructions.iter_mut() {
+        if Some(n.as_str()) != name {
+            r.retain(|x| !reach.contains(x));
+        }
+    }
+    match name {
+        Some(n) => {
+            lib.no_instructions.retain(|x| !reach.contains(x));
+            lib.instructions.insert(n.to_string(), reach);
+        }
+        None => lib.no_instructions = reach,
+    }
+    lib.instructions.retain(|_, r| !r.is_empty());
+}
+
+/// The instructions an account gets, of those `have` says the library has:
+/// the one whose reach takes it in most closely, or none when that is
+/// `no_instructions`' (which wins a tie, as the safer side). Two at one
+/// closeness only come of settings edited by hand: the first by name wins.
+fn chosen<'a>(lib: &'a LibrarySettings, have: impl Fn(&str) -> bool, a: &AccountInfo) -> Option<&'a str> {
+    let mut best: Option<(u8, Option<&str>)> = closeness(&lib.no_instructions, a).map(|c| (c, None));
+    for (name, reach) in lib.instructions.iter().filter(|(n, _)| have(n)) {
+        if let Some(c) = closeness(reach, a) {
+            if best.is_none_or(|(b, _)| c > b) {
+                best = Some((c, Some(name.as_str())));
+            }
+        }
+    }
+    best.and_then(|(_, n)| n)
+}
+
 /// An account renamed (`to`) or deleted (None), as `provider/name`: every
 /// reach that named it follows.
-pub fn rename_account(lib: &mut crate::settings::LibrarySettings, from: &str, to: Option<&str>) {
-    for reach in std::iter::once(&mut lib.instructions).chain(lib.skills.values_mut()) {
+pub fn rename_account(lib: &mut LibrarySettings, from: &str, to: Option<&str>) {
+    let reaches = lib.instructions.values_mut().chain(lib.skills.values_mut()).chain(std::iter::once(&mut lib.no_instructions));
+    for reach in reaches {
         match to {
             Some(to) => reach.iter_mut().filter(|r| *r == from).for_each(|r| *r = to.to_string()),
             None => reach.retain(|r| r != from),
         }
     }
+    lib.instructions.retain(|_, reach| !reach.is_empty());
     lib.skills.retain(|_, reach| !reach.is_empty());
 }
 
@@ -111,7 +181,10 @@ impl Dirs {
         Dirs { root, data }
     }
     fn instructions(&self) -> PathBuf {
-        self.root.join(INSTRUCTIONS)
+        self.root.join(INSTRUCTIONS_DIR)
+    }
+    fn instructions_file(&self, name: &str) -> PathBuf {
+        self.instructions().join(format!("{name}.md"))
     }
     fn skills(&self) -> PathBuf {
         self.root.join("skills")
@@ -156,13 +229,14 @@ pub struct SkillInfo {
     pub accounts: Reach,
 }
 
-/// A name both CLIs take for a skill, and the only kind Luna makes a folder of.
+/// A name both CLIs take for a skill, and the only kind Luna makes a folder
+/// of; instructions are named the same way, for one rule in the window.
 fn check_name(name: &str) -> Result<(), String> {
     if name.is_empty() || name.len() > 64 {
-        return Err("A skill's name is 1 to 64 characters".into());
+        return Err("A name is 1 to 64 characters".into());
     }
     if !name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') || name.starts_with('-') {
-        return Err("A skill's name is lowercase letters, digits and hyphens".into());
+        return Err("A name is lowercase letters, digits and hyphens".into());
     }
     Ok(())
 }
@@ -263,6 +337,97 @@ fn read_skills(dirs: &Dirs) -> Result<Skills, String> {
         out.insert(name.clone(), (SkillInfo { name, description, problem, accounts: Vec::new() }, files));
     }
     Ok(out)
+}
+
+// ----------------------------------------------------------- instructions --
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct InstructionsInfo {
+    pub name: String,
+    /// Its first line with words in it, to tell it by.
+    pub description: String,
+    /// Why it is laid out nowhere, while it is not fit to be.
+    pub problem: Option<String>,
+    /// The accounts its reach takes in; each gets it unless a closer reach
+    /// gives it other instructions.
+    pub accounts: Reach,
+}
+
+/// Every instructions file in the library, by name. A folder that will not
+/// list is an error, as `skills/` is; so is the old `instructions.md` not
+/// moved into it yet: read as no instructions, either would take their
+/// copies out.
+fn read_instructions(dirs: &Dirs) -> Result<Instructions, String> {
+    let old = dirs.root.join(OLD_INSTRUCTIONS);
+    if old.is_file() && !dirs.instructions_file(crate::settings::FIRST_INSTRUCTIONS).exists() {
+        return Err(format!("{} is yet to move into {}", old.display(), dirs.instructions().display()));
+    }
+    let mut out = BTreeMap::new();
+    let failed = |e: std::io::Error| format!("{}: {e}", dirs.instructions().display());
+    let entries = match std::fs::read_dir(dirs.instructions()) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(out),
+        Err(e) => return Err(failed(e)),
+    };
+    for entry in entries {
+        let entry = entry.map_err(&failed)?;
+        let file = entry.file_name().to_string_lossy().into_owned();
+        let Some(name) = file.strip_suffix(".md") else { continue };
+        if name.starts_with('.') || entry.file_type().map_err(&failed)?.is_dir() {
+            continue;
+        }
+        let text = check_name(name).and_then(|()| std::fs::read(entry.path()).map_err(|e| format!("{}: {e}", entry.path().display())));
+        out.insert(name.to_string(), text.map(|t| (!String::from_utf8_lossy(&t).trim().is_empty()).then_some(t)));
+    }
+    Ok(out)
+}
+
+/// The window's line for instructions: what tells them apart, or what is
+/// wrong with them.
+fn instructions_info(name: &str, text: &Result<Option<Vec<u8>>, String>, lib: &LibrarySettings) -> InstructionsInfo {
+    let (description, problem) = match text {
+        Ok(Some(t)) => {
+            let t = String::from_utf8_lossy(t);
+            let line = t.lines().map(|l| l.trim().trim_start_matches('#').trim()).find(|l| !l.is_empty()).unwrap_or_default();
+            (line.to_string(), None)
+        }
+        Ok(None) => (String::new(), Some("Blank: laid out nowhere until it has something in it".to_string())),
+        Err(e) => (String::new(), Some(e.clone())),
+    };
+    InstructionsInfo { name: name.to_string(), description, problem, accounts: lib.instructions.get(name).cloned().unwrap_or_default() }
+}
+
+/// Moves the one instructions file of old, `instructions.md`, to
+/// `instructions/main.md`, the name settings already read its reach under.
+/// Once moved there is nothing left to move. With both there — one put back
+/// by hand, a library shared with an older Luna — neither is touched; the
+/// old one stays, and the window says so.
+fn migrate_instructions(dirs: &Dirs) {
+    let old = dirs.root.join(OLD_INSTRUCTIONS);
+    let new = dirs.instructions_file(crate::settings::FIRST_INSTRUCTIONS);
+    if !old.is_file() || std::fs::symlink_metadata(&new).is_ok() {
+        return;
+    }
+    // A rename within the library: the file is at one name or the other at
+    // every moment, never at neither.
+    match std::fs::create_dir_all(dirs.instructions()).and_then(|()| std::fs::rename(&old, &new)) {
+        Ok(()) => crate::log::info("library", &format!("moved {} to {}", old.display(), new.display())),
+        Err(e) => crate::log::warn("library", &format!("could not move {} to {}: {e}", old.display(), new.display())),
+    }
+}
+
+/// A name for instructions taken from an account: the account's, made one
+/// `check_name` takes, and none the library has yet.
+fn new_instructions_name(dirs: &Dirs, account: &str) -> String {
+    let base: String = account.to_lowercase().chars().map(|c| if c.is_ascii_lowercase() || c.is_ascii_digit() { c } else { '-' }).collect();
+    let base: String = base.trim_start_matches('-').chars().take(56).collect();
+    let base = if base.is_empty() { "instructions".to_string() } else { base };
+    let free = |n: &str| std::fs::symlink_metadata(dirs.instructions_file(n)).is_err();
+    if free(&base) {
+        return base;
+    }
+    (2..).map(|i| format!("{base}-{i}")).find(|n| free(n)).unwrap_or(base)
 }
 
 // ------------------------------------------------------------------ files --
@@ -462,8 +627,10 @@ struct Unit {
     /// The instructions file itself, or the skill's folder.
     dest: PathBuf,
     file: bool,
-    /// None for the instructions.
+    /// None for instructions.
     skill: Option<String>,
+    /// Which instructions, for instructions.
+    instructions: Option<String>,
     target: Target,
     /// What the library has for it, or why it has nothing fit to lay out.
     source: Result<Files, String>,
@@ -503,6 +670,7 @@ pub struct Place {
     pub dest: String,
     pub target: Target,
     pub skill: Option<String>,
+    pub instructions: Option<String>,
     pub status: Status,
     /// `changed`, with the library changed too since Luna wrote it.
     pub both: bool,
@@ -533,7 +701,15 @@ fn pass(dirs: &Dirs, units: &[Unit], skipped: &[String], ledger: &mut Ledger, ac
             continue;
         }
         wanted.insert(id.clone(), key.clone());
-        let place = |status, both, problem| Place { dest: key.clone(), target: u.target.clone(), skill: u.skill.clone(), status, both, problem };
+        let place = |status, both, problem| Place {
+            dest: key.clone(),
+            target: u.target.clone(),
+            skill: u.skill.clone(),
+            instructions: u.instructions.clone(),
+            status,
+            both,
+            problem,
+        };
         if skipped.iter().any(|s| ident(Path::new(s)) == id) {
             out.places.push(place(Status::Skipped, false, None));
             continue;
@@ -628,7 +804,13 @@ fn pass(dirs: &Dirs, units: &[Unit], skipped: &[String], ledger: &mut Ledger, ac
 
 /// Every copy the library wants, from the settings and what the library and
 /// the accounts folder hold now.
-fn units(dirs: &Dirs, lib: &crate::settings::LibrarySettings, accounts: &[AccountInfo], skills: &Result<Skills, String>) -> Vec<Unit> {
+fn units(
+    dirs: &Dirs,
+    lib: &LibrarySettings,
+    accounts: &[AccountInfo],
+    skills: &Result<Skills, String>,
+    instructions: &Result<Instructions, String>,
+) -> Vec<Unit> {
     let mut out = Vec::new();
     let account = |a: &AccountInfo| Target::Account { provider: a.provider, name: a.name.clone() };
     // A skill's files; while the skills will not list, every one a failure.
@@ -636,27 +818,27 @@ fn units(dirs: &Dirs, lib: &crate::settings::LibrarySettings, accounts: &[Accoun
         Ok(found) => found.get(name).map(|(_, files)| files.clone()),
         Err(e) => Some(Err(e.clone())),
     };
-    if !lib.instructions.is_empty() {
-        // No file is no instructions; one that will not read (held open
-        // mid-save, say) is a failure like a broken skill's, and takes none of
-        // its copies out.
-        let source = match std::fs::read(dirs.instructions()) {
-            Ok(text) if String::from_utf8_lossy(&text).trim().is_empty() => None,
-            Ok(text) => Some(Ok(Files::from([(String::new(), text)]))),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-            Err(e) => Some(Err(format!("{}: {e}", dirs.instructions().display()))),
+    // Only instructions the library has compete for an account; while they
+    // will not list, every one named in the settings does, and fails.
+    let have = |name: &str| instructions.as_ref().map_or(true, |found| found.contains_key(name));
+    for a in accounts {
+        let Some(name) = chosen(lib, have, a) else { continue };
+        // Blank is no instructions; a file that will not read (held open
+        // mid-save, say) is a failure like a broken skill's, and takes none
+        // of its copies out.
+        let source = match instructions.as_ref().map(|found| &found[name]) {
+            Ok(Ok(None)) => continue,
+            Ok(Ok(Some(text))) => Ok(Files::from([(String::new(), text.clone())])),
+            Ok(Err(e)) | Err(e) => Err(e.clone()),
         };
-        if let Some(source) = source {
-            for a in accounts.iter().filter(|a| reaches(&lib.instructions, a)) {
-                out.push(Unit {
-                    dest: Path::new(&a.path).join(instructions_name(a.provider)),
-                    file: true,
-                    skill: None,
-                    target: account(a),
-                    source: source.clone(),
-                });
-            }
-        }
+        out.push(Unit {
+            dest: Path::new(&a.path).join(instructions_name(a.provider)),
+            file: true,
+            skill: None,
+            instructions: Some(name.to_string()),
+            target: account(a),
+            source,
+        });
     }
     for (name, reach) in &lib.skills {
         let Some(files) = files_of(name.as_str()) else { continue };
@@ -665,6 +847,7 @@ fn units(dirs: &Dirs, lib: &crate::settings::LibrarySettings, accounts: &[Accoun
                 dest: Path::new(&a.path).join("skills").join(name),
                 file: false,
                 skill: Some(name.clone()),
+                instructions: None,
                 target: account(a),
                 source: files.clone(),
             });
@@ -678,6 +861,7 @@ fn units(dirs: &Dirs, lib: &crate::settings::LibrarySettings, accounts: &[Accoun
                 dest: Path::new(&f.path).join(name),
                 file: false,
                 skill: Some(name.clone()),
+                instructions: None,
                 target: Target::Folder { path: f.path.clone() },
                 source: if there { files } else { Err(format!("{} is not there", f.path)) },
             });
@@ -755,8 +939,8 @@ pub struct FolderInfo {
     pub found: bool,
 }
 
-/// An account's instructions file Luna did not write: something to start the
-/// library's from.
+/// An account's instructions file Luna did not write, where no instructions of
+/// the library go: something to start new instructions from.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FoundFile {
@@ -772,10 +956,15 @@ pub struct Overview {
     /// False while the library's folder is not there: nothing is laid out,
     /// and nothing taken out, until it is.
     pub found: bool,
-    /// The accounts the instructions go into.
-    pub instructions: Reach,
-    /// The library has instructions to lay out: its file is there and not blank.
-    pub has_instructions: bool,
+    pub instructions: Vec<InstructionsInfo>,
+    /// The accounts that get no instructions however others reach them.
+    pub no_instructions: Reach,
+    /// The instructions each account gets, by `provider/name`; an account
+    /// that gets none is not there.
+    pub instructions_for: BTreeMap<String, String>,
+    /// The `instructions.md` of before there could be several, still in the
+    /// library beside `instructions/main.md`: nothing is laid out from it.
+    pub old_instructions: Option<String>,
     pub skills: Vec<SkillInfo>,
     /// Every account, to pick a reach from.
     pub accounts: Vec<AccountInfo>,
@@ -798,11 +987,15 @@ fn overview_locked(act: bool) -> Result<Overview, String> {
     let lib = crate::settings::get().library;
     let accounts = crate::accounts::list_accounts()?;
     let found = dirs.root.is_dir();
+    if act && found {
+        migrate_instructions(&dirs);
+    }
     let skills = if found { read_skills(&dirs) } else { Ok(BTreeMap::new()) };
+    let instructions = if found { read_instructions(&dirs) } else { Ok(BTreeMap::new()) };
     let mut ledger = Ledger::load(&dirs);
     // A library that is not there (a drive not plugged in, a folder moved)
     // wants nothing, and a pass on that would take every copy out.
-    let units = if found { units(&dirs, &lib, &accounts, &skills) } else { Vec::new() };
+    let units = if found { units(&dirs, &lib, &accounts, &skills, &instructions) } else { Vec::new() };
     let p = pass(&dirs, &units, &lib.skipped, &mut ledger, act && found);
     if act && found {
         ledger.save(&dirs)?;
@@ -812,12 +1005,21 @@ fn overview_locked(act: bool) -> Result<Overview, String> {
             crate::log::info("library", &format!("left in place, changed since Luna wrote them: {}", p.kept.join(", ")));
         }
     }
+    // Where instructions do go, a file Luna did not write is the place's own
+    // business (`taken`), settled in place.
     let found_instructions = accounts
         .iter()
         .map(|a| (a, Path::new(&a.path).join(instructions_name(a.provider))))
         .filter(|(_, dest)| dest.is_file() && !ledger.written.contains_key(&*dest.to_string_lossy()))
+        .filter(|(_, dest)| !units.iter().any(|u| ident(&u.dest) == ident(dest)))
         .map(|(a, dest)| FoundFile { dest: dest.to_string_lossy().into_owned(), target: Target::Account { provider: a.provider, name: a.name.clone() } })
         .collect();
+    let have = |name: &str| instructions.as_ref().map_or(true, |found| found.contains_key(name));
+    let instructions_for = accounts
+        .iter()
+        .filter_map(|a| Some((format!("{}/{}", a.provider.as_str(), a.name), chosen(&lib, have, a)?.to_string())))
+        .collect();
+    let old_instructions = dirs.root.join(OLD_INSTRUCTIONS);
     let overridden = accounts
         .iter()
         .filter(|a| a.provider == Provider::Codex && Path::new(&a.path).join("AGENTS.override.md").is_file())
@@ -827,13 +1029,15 @@ fn overview_locked(act: bool) -> Result<Overview, String> {
         root: dirs.root.to_string_lossy().into_owned(),
         is_default: lib.source.is_none(),
         found,
-        has_instructions: std::fs::read_to_string(dirs.instructions()).is_ok_and(|t| !t.trim().is_empty()),
+        instructions: instructions.as_ref().map(|i| i.iter().map(|(name, text)| instructions_info(name, text, &lib)).collect()).unwrap_or_default(),
+        instructions_for,
+        old_instructions: old_instructions.is_file().then(|| old_instructions.to_string_lossy().into_owned()),
         skills: skills
             .unwrap_or_default()
             .into_values()
             .map(|(info, _)| SkillInfo { accounts: lib.skills.get(&info.name).cloned().unwrap_or_default(), ..info })
             .collect(),
-        instructions: lib.instructions,
+        no_instructions: lib.no_instructions,
         accounts,
         folders: lib.folders.into_iter().map(|f| FolderInfo { found: Path::new(&f.path).is_dir(), path: f.path, skills: f.skills }).collect(),
         places: p.places,
@@ -875,11 +1079,16 @@ pub fn library_set_source(path: String) -> Result<Overview, String> {
     change(|l| l.source = (!path.is_empty()).then_some(path))
 }
 
-/// The accounts the instructions go into; empty = none.
+/// The accounts instructions go into (`name` None: the accounts that get
+/// none), each entry taken from whichever other instructions had it; empty =
+/// none.
 #[tauri::command]
-pub fn library_set_instructions(accounts: Vec<String>) -> Result<Overview, String> {
-    let reach = tidy_reach(accounts)?;
-    change(|l| l.instructions = reach)
+pub fn library_set_instructions(name: Option<String>, accounts: Vec<String>) -> Result<Overview, String> {
+    if let Some(n) = &name {
+        check_name(n)?;
+    }
+    check_reach(&accounts)?;
+    change(|l| give_instructions(l, name.as_deref(), accounts))
 }
 
 /// The accounts a skill goes into; empty = none.
@@ -943,38 +1152,75 @@ pub fn library_skip(dest: String, on: bool) -> Result<Overview, String> {
     overview_locked(true)
 }
 
-/// Where a destination's copy comes from in the library, and whether it is one
-/// file: a copy the library wants now, or an account's instructions file.
-fn locate(dirs: &Dirs, dest: &str) -> Result<(PathBuf, bool, Option<String>), String> {
+/// What a destination is to the library.
+enum Located {
+    /// A copy the library wants now: where it comes from, whether it is one
+    /// file, and the skill's name for a skill.
+    Copy { from: PathBuf, file: bool, skill: Option<String> },
+    /// An account's instructions file where no instructions of the library go.
+    Unclaimed(AccountInfo),
+}
+
+fn locate(dirs: &Dirs, dest: &str) -> Result<Located, String> {
     let lib = crate::settings::get().library;
     let accounts = crate::accounts::list_accounts()?;
-    let skills = read_skills(dirs);
-    if let Some(u) = units(dirs, &lib, &accounts, &skills).into_iter().find(|u| u.dest.to_string_lossy() == dest) {
-        let from = match &u.skill {
-            Some(s) => dirs.skills().join(s),
-            None => dirs.instructions(),
+    let units = units(dirs, &lib, &accounts, &read_skills(dirs), &read_instructions(dirs));
+    if let Some(u) = units.into_iter().find(|u| u.dest.to_string_lossy() == dest) {
+        let from = match (&u.skill, &u.instructions) {
+            (Some(s), _) => dirs.skills().join(s),
+            (None, Some(i)) => dirs.instructions_file(i),
+            (None, None) => return Err(format!("{dest} is laid out from nothing")),
         };
-        return Ok((from, u.file, u.skill));
+        return Ok(Located::Copy { from, file: u.file, skill: u.skill });
     }
-    if accounts.iter().any(|a| Path::new(&a.path).join(instructions_name(a.provider)).to_string_lossy() == dest) {
-        return Ok((dirs.instructions(), true, None));
+    match accounts.into_iter().find(|a| Path::new(&a.path).join(instructions_name(a.provider)).to_string_lossy() == dest) {
+        Some(a) => Ok(Located::Unclaimed(a)),
+        None => Err(format!("{dest} is not a place the library is laid out to")),
     }
-    Err(format!("{dest} is not a place the library is laid out to"))
+}
+
+/// Makes an account's own instructions file new instructions in the library,
+/// named after the account and going into it alone: the account's file
+/// stays as it is, now Luna's copy, and whether the instructions go further
+/// is picked in the window after.
+fn take_unclaimed(dirs: &Dirs, ledger: &mut Ledger, dest: &str, a: &AccountInfo) -> Result<(), String> {
+    let there = read_at(Path::new(dest), true)?.ok_or("Nothing is there to take")?;
+    if there.values().all(|t| String::from_utf8_lossy(t).trim().is_empty()) {
+        return Err(format!("{dest} is blank"));
+    }
+    let name = new_instructions_name(dirs, &a.name);
+    write_at(&dirs.instructions_file(&name), true, &there)?;
+    keep_blobs(dirs, &there);
+    ledger.written.insert(dest.to_string(), hashes(&there));
+    ledger.save(dirs)?;
+    let key = format!("{}/{}", a.provider.as_str(), a.name);
+    crate::settings::update(|s| give_instructions(&mut s.library, Some(&name), vec![key]))?;
+    crate::log::info("library", &format!("took {dest} into the library as instructions {name}"));
+    Ok(())
 }
 
 /// Settles a copy that changed, went or was never Luna's: `take` makes it the
 /// library's (and so every other copy's), otherwise the library's goes back
-/// in its place. Whichever side is replaced is backed up first.
+/// in its place. Whichever side is replaced is backed up first. An account's
+/// file where no instructions go is taken as new instructions of its own.
 #[tauri::command]
 pub fn library_resolve(dest: String, take: bool) -> Result<Overview, String> {
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dirs = Dirs::current();
-    let (from, file, skill) = locate(&dirs, &dest)?;
+    let located = locate(&dirs, &dest)?;
     let to = PathBuf::from(&dest);
     if in_library(&dirs, &to) {
         return Err(format!("{dest} is in the library itself"));
     }
     let mut ledger = Ledger::load(&dirs);
+    let (from, file, skill) = match located {
+        Located::Copy { from, file, skill } => (from, file, skill),
+        Located::Unclaimed(a) if take => {
+            take_unclaimed(&dirs, &mut ledger, &dest, &a)?;
+            return overview_locked(true);
+        }
+        Located::Unclaimed(_) => return Err("No instructions of the library go there".into()),
+    };
     let there = read_at(&to, file)?;
     let library = read_at(&from, file)?;
     if take {
@@ -1005,11 +1251,6 @@ pub fn library_resolve(dest: String, take: bool) -> Result<Overview, String> {
         crate::log::info("library", &format!("put the library's copy back at {dest}"));
     }
     ledger.save(&dirs)?;
-    // Taking an account's instructions file while they go nowhere means
-    // laying them out into every account.
-    if take && skill.is_none() && crate::settings::get().library.instructions.is_empty() {
-        crate::settings::update(|s| s.library.instructions = vec![ALL.into()])?;
-    }
     overview_locked(true)
 }
 
@@ -1030,7 +1271,9 @@ pub struct FileDiff {
 pub fn library_diff(dest: String) -> Result<Vec<FileDiff>, String> {
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dirs = Dirs::current();
-    let (from, file, _) = locate(&dirs, &dest)?;
+    let Located::Copy { from, file, .. } = locate(&dirs, &dest)? else {
+        return Err("No instructions of the library go there".into());
+    };
     let ledger = Ledger::load(&dirs);
     let base: Files = ledger
         .written
@@ -1061,20 +1304,31 @@ pub struct LibraryFile {
     pub exists: bool,
 }
 
-fn library_path(dirs: &Dirs, skill: Option<&str>) -> Result<PathBuf, String> {
-    match skill {
-        Some(s) => {
+/// The file the editor has open: `{"skill": name}` or `{"instructions": name}`.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Entry {
+    Skill(String),
+    Instructions(String),
+}
+
+fn library_path(dirs: &Dirs, entry: &Entry) -> Result<PathBuf, String> {
+    match entry {
+        Entry::Skill(s) => {
             check_name(s)?;
             Ok(dirs.skills().join(s).join(SKILL_FILE))
         }
-        None => Ok(dirs.instructions()),
+        Entry::Instructions(i) => {
+            check_name(i)?;
+            Ok(dirs.instructions_file(i))
+        }
     }
 }
 
-/// The library's instructions, or a skill's SKILL.md, for the editor.
+/// Instructions, or a skill's SKILL.md, for the editor.
 #[tauri::command]
-pub fn library_read(skill: Option<String>) -> Result<LibraryFile, String> {
-    let path = library_path(&Dirs::current(), skill.as_deref())?;
+pub fn library_read(entry: Entry) -> Result<LibraryFile, String> {
+    let path = library_path(&Dirs::current(), &entry)?;
     let (text, exists) = match std::fs::read_to_string(&path) {
         Ok(t) => (t, true),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => (String::new(), false),
@@ -1087,9 +1341,9 @@ pub fn library_read(skill: Option<String>) -> Result<LibraryFile, String> {
 /// not do is still saved — it is the user's draft — and laid out nowhere until
 /// it does.
 #[tauri::command]
-pub fn library_write(skill: Option<String>, text: String) -> Result<Overview, String> {
+pub fn library_write(entry: Entry, text: String) -> Result<Overview, String> {
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let path = library_path(&Dirs::current(), skill.as_deref())?;
+    let path = library_path(&Dirs::current(), &entry)?;
     write_file(&path, text.as_bytes())?;
     overview_locked(true)
 }
@@ -1139,6 +1393,78 @@ pub fn library_delete_skill(name: String) -> Result<Overview, String> {
     overview_locked(true)
 }
 
+/// New instructions, blank and going nowhere until written and picked for an
+/// account. A reach left in the settings by a file of the name deleted by
+/// hand goes: new instructions start from none.
+#[tauri::command]
+pub fn library_new_instructions(name: String) -> Result<Overview, String> {
+    let name = name.trim().to_string();
+    check_name(&name)?;
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dirs = Dirs::current();
+    let path = dirs.instructions_file(&name);
+    if std::fs::symlink_metadata(&path).is_ok() {
+        return Err(format!("The library already has instructions named {name}"));
+    }
+    write_file(&path, b"")?;
+    crate::settings::update(|s| {
+        s.library.instructions.remove(&name);
+    })?;
+    overview_locked(false)
+}
+
+/// Renames instructions, their reach with them. Their copies stay as they
+/// are: the ledger knows a copy by where it lies, not by what it came from.
+#[tauri::command]
+pub fn library_rename_instructions(from: String, to: String) -> Result<Overview, String> {
+    let to = to.trim().to_string();
+    check_name(&from)?;
+    check_name(&to)?;
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dirs = Dirs::current();
+    let (old, new) = (dirs.instructions_file(&from), dirs.instructions_file(&to));
+    if from == to {
+        return overview_locked(false);
+    }
+    if std::fs::symlink_metadata(&new).is_ok() {
+        return Err(format!("The library already has instructions named {to}"));
+    }
+    std::fs::rename(&old, &new).map_err(|e| format!("{}: {e}", old.display()))?;
+    // The file and its reach move together or not at all: the file renamed
+    // without its reach would take every one of its copies out.
+    let moved = crate::settings::update(|s| {
+        if let Some(reach) = s.library.instructions.remove(&from) {
+            s.library.instructions.insert(to.clone(), reach);
+        }
+    });
+    if let Err(e) = moved {
+        let _ = std::fs::rename(&new, &old);
+        return Err(e);
+    }
+    crate::log::info("library", &format!("instructions {from} renamed {to}"));
+    overview_locked(true)
+}
+
+/// Takes instructions out of the library — into the backups — and out of the
+/// settings. The accounts they went to get the next closest instructions, or
+/// none; their copies are replaced or go, those still as Luna wrote them.
+#[tauri::command]
+pub fn library_delete_instructions(name: String) -> Result<Overview, String> {
+    check_name(&name)?;
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dirs = Dirs::current();
+    let path = dirs.instructions_file(&name);
+    if let Some(files) = read_at(&path, true)? {
+        back_up(&dirs, &path, &files)?;
+        std::fs::remove_file(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    }
+    crate::settings::update(|s| {
+        s.library.instructions.remove(&name);
+    })?;
+    crate::log::info("library", &format!("instructions {name} taken out of the library"));
+    overview_locked(true)
+}
+
 /// Opens the library's folder, or a skill's, in the file manager — for the
 /// files beside SKILL.md, which the editor does not cover.
 #[tauri::command]
@@ -1165,7 +1491,7 @@ pub fn library_open(skill: Option<String>) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::settings::{LibraryFolder, LibrarySettings};
+    use crate::settings::{LibraryFolder, FIRST_INSTRUCTIONS};
 
     struct Fixture {
         base: PathBuf,
@@ -1178,7 +1504,7 @@ mod tests {
             let base = std::env::temp_dir().join(format!("luna-library-{tag}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&base);
             let dirs = Dirs { root: base.join("library"), data: base.join("data") };
-            let accounts = [(Provider::Claude, "anthropic", "work"), (Provider::Codex, "openai", "home")]
+            let accounts = [(Provider::Claude, "anthropic", "work"), (Provider::Codex, "openai", "home"), (Provider::Claude, "anthropic", "home")]
                 .into_iter()
                 .map(|(provider, vendor, name)| {
                     let path = base.join("accounts").join(vendor).join(name);
@@ -1193,12 +1519,19 @@ mod tests {
             let text = format!("---\nname: {name}\ndescription: Does {name}.\n---\n{body}\n");
             write_file(&self.dirs.skills().join(name).join(SKILL_FILE), text.as_bytes()).unwrap();
         }
+        fn instructions(&self, name: &str, text: &str) {
+            write_file(&self.dirs.instructions_file(name), text.as_bytes()).unwrap();
+        }
         fn account(&self, i: usize) -> PathBuf {
             PathBuf::from(&self.accounts[i].path)
         }
+        fn read(&self, i: usize, file: &str) -> String {
+            std::fs::read_to_string(self.account(i).join(file)).unwrap_or_default()
+        }
         fn run(&self, lib: &LibrarySettings, ledger: &mut Ledger, act: bool) -> Pass {
             let skills = read_skills(&self.dirs);
-            let units = units(&self.dirs, lib, &self.accounts, &skills);
+            let instructions = read_instructions(&self.dirs);
+            let units = units(&self.dirs, lib, &self.accounts, &skills, &instructions);
             pass(&self.dirs, &units, &lib.skipped, ledger, act)
         }
         fn status(p: &Pass, dest: &Path) -> Status {
@@ -1222,14 +1555,22 @@ mod tests {
         names.iter().map(|n| (n.to_string(), all())).collect()
     }
 
+    /// The first instructions, `main`, with this reach.
+    fn first(reach: Reach) -> BTreeMap<String, Reach> {
+        BTreeMap::from([(FIRST_INSTRUCTIONS.to_string(), reach)])
+    }
+
+    fn reach(r: &[&str]) -> Reach {
+        r.iter().map(|s| s.to_string()).collect()
+    }
+
     #[test]
     fn a_reach_takes_in_all_a_provider_or_one_account() {
         let f = Fixture::new("reach");
         f.skill("review", "v1");
-        std::fs::write(f.dirs.instructions(), "Be brief.\n").unwrap();
-        let reach = |r: &[&str]| r.iter().map(|s| s.to_string()).collect::<Reach>();
+        f.instructions("main", "Be brief.\n");
         let lib = LibrarySettings {
-            instructions: reach(&["codex"]),
+            instructions: first(reach(&["codex"])),
             skills: BTreeMap::from([("review".into(), reach(&["claude/work"]))]),
             ..Default::default()
         };
@@ -1255,15 +1596,20 @@ mod tests {
     #[test]
     fn a_renamed_account_keeps_its_reach_and_a_deleted_one_leaves_it() {
         let mut lib = LibrarySettings {
-            instructions: vec!["claude/work".into(), "codex".into()],
+            instructions: BTreeMap::from([("main".into(), reach(&["claude/work", "codex"])), ("work".into(), reach(&["claude/work"]))]),
+            no_instructions: reach(&["claude/work"]),
             skills: BTreeMap::from([("review".into(), vec!["claude/work".into()]), ("notes".into(), all())]),
             ..Default::default()
         };
         rename_account(&mut lib, "claude/work", Some("claude/office"));
-        assert_eq!(lib.instructions, vec!["claude/office".to_string(), "codex".into()]);
+        assert_eq!(lib.instructions["main"], reach(&["claude/office", "codex"]));
+        assert_eq!(lib.instructions["work"], reach(&["claude/office"]));
+        assert_eq!(lib.no_instructions, reach(&["claude/office"]));
         assert_eq!(lib.skills["review"], vec!["claude/office".to_string()]);
         rename_account(&mut lib, "claude/office", None);
-        assert_eq!(lib.instructions, vec!["codex".to_string()]);
+        assert_eq!(lib.instructions["main"], reach(&["codex"]));
+        assert!(!lib.instructions.contains_key("work"), "instructions that go nowhere any more are dropped");
+        assert!(lib.no_instructions.is_empty());
         assert!(!lib.skills.contains_key("review"), "a skill that goes nowhere any more is dropped");
         assert_eq!(lib.skills["notes"], all());
     }
@@ -1286,8 +1632,8 @@ mod tests {
     fn a_pass_lays_out_once_and_keeps_up_with_the_library() {
         let f = Fixture::new("lay");
         f.skill("review", "v1");
-        std::fs::write(f.dirs.instructions(), "Be brief.\n").unwrap();
-        let lib = LibrarySettings { instructions: all(), skills: skills(&["review"]), ..Default::default() };
+        f.instructions("main", "Be brief.\n");
+        let lib = LibrarySettings { instructions: first(all()), skills: skills(&["review"]), ..Default::default() };
         let mut ledger = Ledger::default();
 
         let p = f.run(&lib, &mut ledger, false);
@@ -1323,8 +1669,8 @@ mod tests {
     #[test]
     fn a_copy_changed_there_is_asked_about_never_replaced() {
         let f = Fixture::new("changed");
-        std::fs::write(f.dirs.instructions(), "Be brief.\n").unwrap();
-        let lib = LibrarySettings { instructions: all(), ..Default::default() };
+        f.instructions("main", "Be brief.\n");
+        let lib = LibrarySettings { instructions: first(all()), ..Default::default() };
         let mut ledger = Ledger::default();
         f.run(&lib, &mut ledger, true);
         let claude_md = f.account(0).join("CLAUDE.md");
@@ -1336,7 +1682,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&claude_md).unwrap(), "Be brief. And kind.\n");
 
         // The library changes too: still asked, and said that both did.
-        std::fs::write(f.dirs.instructions(), "Be terse.\n").unwrap();
+        f.instructions("main", "Be terse.\n");
         let p = f.run(&lib, &mut ledger, true);
         let place = p.places.iter().find(|x| x.dest == claude_md.to_string_lossy()).unwrap();
         assert_eq!((place.status, place.both), (Status::Changed, true));
@@ -1431,8 +1777,8 @@ mod tests {
     #[test]
     fn another_spelling_of_a_copy_is_the_same_copy() {
         let mut f = Fixture::new("case");
-        std::fs::write(f.dirs.instructions(), "Be brief.\n").unwrap();
-        let lib = LibrarySettings { instructions: all(), ..Default::default() };
+        f.instructions("main", "Be brief.\n");
+        let lib = LibrarySettings { instructions: first(all()), ..Default::default() };
         let mut ledger = Ledger::default();
         f.run(&lib, &mut ledger, true);
         // The account renamed in case only: the same folder, spelled anew.
@@ -1441,7 +1787,7 @@ mod tests {
         let p = f.run(&lib, &mut ledger, true);
         assert_eq!(Fixture::status(&p, &claude_md), Status::Current);
         assert!(claude_md.is_file(), "the old spelling's note takes nothing out");
-        let noted: Vec<String> = ledger.written.keys().filter(|k| k.ends_with("CLAUDE.md")).cloned().collect();
+        let noted: Vec<String> = ledger.written.keys().filter(|k| ident(Path::new(k)) == ident(&claude_md)).cloned().collect();
         assert_eq!(noted, vec![claude_md.to_string_lossy().into_owned()]);
     }
 
@@ -1466,9 +1812,9 @@ mod tests {
     #[test]
     fn skipped_places_are_neither_written_nor_reported() {
         let f = Fixture::new("skip");
-        std::fs::write(f.dirs.instructions(), "Be brief.\n").unwrap();
+        f.instructions("main", "Be brief.\n");
         let claude_md = f.account(0).join("CLAUDE.md").to_string_lossy().into_owned();
-        let lib = LibrarySettings { instructions: all(), skipped: vec![claude_md.clone()], ..Default::default() };
+        let lib = LibrarySettings { instructions: first(all()), skipped: vec![claude_md.clone()], ..Default::default() };
         let p = f.run(&lib, &mut Ledger::default(), true);
         assert_eq!(Fixture::status(&p, Path::new(&claude_md)), Status::Skipped);
         assert!(!Path::new(&claude_md).exists());
@@ -1478,8 +1824,8 @@ mod tests {
     #[test]
     fn blank_instructions_lay_nothing_out() {
         let f = Fixture::new("blank");
-        std::fs::write(f.dirs.instructions(), " \n").unwrap();
-        let lib = LibrarySettings { instructions: all(), ..Default::default() };
+        f.instructions("main", " \n");
+        let lib = LibrarySettings { instructions: first(all()), ..Default::default() };
         let p = f.run(&lib, &mut Ledger::default(), true);
         assert!(p.places.is_empty());
         assert!(!f.account(0).join("CLAUDE.md").exists());
@@ -1488,8 +1834,8 @@ mod tests {
     #[test]
     fn backups_and_blobs_keep_what_a_diff_and_an_undo_need() {
         let f = Fixture::new("blobs");
-        std::fs::write(f.dirs.instructions(), "Be brief.\n").unwrap();
-        let lib = LibrarySettings { instructions: all(), ..Default::default() };
+        f.instructions("main", "Be brief.\n");
+        let lib = LibrarySettings { instructions: first(all()), ..Default::default() };
         let mut ledger = Ledger::default();
         f.run(&lib, &mut ledger, true);
         let dest = f.account(0).join("CLAUDE.md").to_string_lossy().into_owned();
@@ -1503,5 +1849,185 @@ mod tests {
         ledger.written.clear();
         sweep_blobs(&f.dirs, &ledger);
         assert!(blob(&f.dirs, &hash(b"Be brief.\n")).is_none());
+    }
+
+    #[test]
+    fn the_one_instructions_file_of_old_moves_to_main_once() {
+        let f = Fixture::new("migrate");
+        let old = f.dirs.root.join(OLD_INSTRUCTIONS);
+        let main = f.dirs.instructions_file(FIRST_INSTRUCTIONS);
+        std::fs::write(&old, "Be brief.\n").unwrap();
+        assert!(read_instructions(&f.dirs).is_err(), "not moved yet: no instructions is not what the library has");
+
+        migrate_instructions(&f.dirs);
+        assert!(!old.exists());
+        assert_eq!(std::fs::read_to_string(&main).unwrap(), "Be brief.\n");
+        let found = read_instructions(&f.dirs).unwrap();
+        assert_eq!(found[FIRST_INSTRUCTIONS], Ok(Some(b"Be brief.\n".to_vec())));
+        migrate_instructions(&f.dirs);
+        assert_eq!(std::fs::read_to_string(&main).unwrap(), "Be brief.\n", "a second run moves nothing");
+
+        // Both there: neither is touched, and the folder's is the one read.
+        std::fs::write(&old, "Older.\n").unwrap();
+        migrate_instructions(&f.dirs);
+        assert_eq!(std::fs::read_to_string(&old).unwrap(), "Older.\n");
+        assert_eq!(std::fs::read_to_string(&main).unwrap(), "Be brief.\n");
+        assert_eq!(read_instructions(&f.dirs).unwrap()[FIRST_INSTRUCTIONS], Ok(Some(b"Be brief.\n".to_vec())));
+    }
+
+    #[test]
+    fn settings_of_one_instructions_read_as_mains() {
+        let read = |json: &str| serde_json::from_str::<LibrarySettings>(json).unwrap();
+        assert_eq!(read(r#"{"instructions": ["claude", "codex/home"]}"#).instructions, first(reach(&["claude", "codex/home"])));
+        assert_eq!(read(r#"{"instructions": true}"#).instructions, first(all()));
+        assert!(read(r#"{"instructions": []}"#).instructions.is_empty());
+        assert!(read(r#"{"instructions": false}"#).instructions.is_empty());
+        let now = read(r#"{"instructions": {"main": ["all"], "work": ["claude/work"]}, "noInstructions": ["codex/home"]}"#);
+        assert_eq!(now.instructions["work"], reach(&["claude/work"]));
+        assert_eq!(now.no_instructions, reach(&["codex/home"]));
+        let back = read(&serde_json::to_string(&now).unwrap());
+        assert_eq!((back.instructions, back.no_instructions), (now.instructions, now.no_instructions));
+    }
+
+    #[test]
+    fn an_account_gets_the_instructions_that_name_it_most_closely() {
+        let f = Fixture::new("closest");
+        f.instructions("main", "For everyone.\n");
+        f.instructions("claude", "For Claude Code.\n");
+        f.instructions("work", "For work.\n");
+        let mut lib = LibrarySettings {
+            instructions: BTreeMap::from([
+                ("main".into(), all()),
+                ("claude".into(), reach(&["claude"])),
+                ("work".into(), reach(&["claude/work"])),
+            ]),
+            ..Default::default()
+        };
+        let mut ledger = Ledger::default();
+        let p = f.run(&lib, &mut ledger, true);
+        assert_eq!(f.read(0, "CLAUDE.md"), "For work.\n", "named beats a provider and all");
+        assert_eq!(f.read(2, "CLAUDE.md"), "For Claude Code.\n", "a provider beats all");
+        assert_eq!(f.read(1, "AGENTS.md"), "For everyone.\n");
+        assert_eq!(p.places.iter().filter(|x| x.instructions.is_some()).count(), 3, "one instructions file per account");
+
+        // Named as getting none: Luna's copy goes, though `all` takes it in.
+        lib.no_instructions = reach(&["claude/home"]);
+        f.run(&lib, &mut ledger, true);
+        assert!(!f.account(2).join("CLAUDE.md").exists());
+
+        // Instructions not in the library compete for nothing: the next
+        // closest has the account.
+        std::fs::remove_file(f.dirs.instructions_file("work")).unwrap();
+        f.run(&lib, &mut ledger, true);
+        assert_eq!(f.read(0, "CLAUDE.md"), "For Claude Code.\n");
+
+        // Two at one closeness (settings edited by hand): none wins over
+        // instructions, the first by name over the rest.
+        lib.instructions.insert("alpha".into(), reach(&["claude/home"]));
+        lib.instructions.insert("beta".into(), reach(&["codex/home"]));
+        lib.instructions.insert("gamma".into(), reach(&["codex/home"]));
+        let have = |_: &str| true;
+        assert_eq!(chosen(&lib, have, &f.accounts[2]), None);
+        assert_eq!(chosen(&lib, have, &f.accounts[1]), Some("beta"));
+    }
+
+    #[test]
+    fn giving_instructions_a_reach_takes_it_from_the_others() {
+        let mut lib = LibrarySettings { instructions: first(reach(&["all", "codex/home"])), ..Default::default() };
+        give_instructions(&mut lib, Some("work"), reach(&["claude/work"]));
+        assert_eq!(lib.instructions["main"], reach(&["all", "codex/home"]), "other entries stay");
+        assert_eq!(lib.instructions["work"], reach(&["claude/work"]));
+
+        // A provider and an account of it are two entries: both stand.
+        give_instructions(&mut lib, Some("cli"), reach(&["claude"]));
+        assert_eq!(lib.instructions["work"], reach(&["claude/work"]));
+
+        // Main named for the work account: work loses it, and goes nowhere.
+        give_instructions(&mut lib, Some("main"), reach(&["all", "codex/home", "claude/work", "claude/work"]));
+        assert_eq!(lib.instructions["main"], reach(&["all", "codex/home", "claude/work"]), "kept beside all, once");
+        assert!(!lib.instructions.contains_key("work"));
+
+        // None for an account takes it from instructions, and back.
+        give_instructions(&mut lib, None, reach(&["codex/home"]));
+        assert_eq!(lib.instructions["main"], reach(&["all", "claude/work"]));
+        give_instructions(&mut lib, Some("cli"), reach(&["claude", "codex/home"]));
+        assert!(lib.no_instructions.is_empty());
+
+        // `all` is one instructions' at a time.
+        give_instructions(&mut lib, Some("cli"), reach(&["all"]));
+        assert_eq!(lib.instructions["main"], reach(&["claude/work"]));
+        assert_eq!(lib.instructions["cli"], all());
+        give_instructions(&mut lib, Some("cli"), Vec::new());
+        assert!(!lib.instructions.contains_key("cli"));
+    }
+
+    #[test]
+    fn a_new_winner_replaces_lunas_copy_and_never_a_changed_one() {
+        let f = Fixture::new("winner");
+        f.instructions("main", "For everyone.\n");
+        f.instructions("work", "For work.\n");
+        let mut lib = LibrarySettings { instructions: first(all()), ..Default::default() };
+        let mut ledger = Ledger::default();
+        f.run(&lib, &mut ledger, true);
+        assert_eq!(f.read(0, "CLAUDE.md"), "For everyone.\n");
+
+        give_instructions(&mut lib, Some("work"), reach(&["claude/work"]));
+        let p = f.run(&lib, &mut ledger, false);
+        assert_eq!(Fixture::status(&p, &f.account(0).join("CLAUDE.md")), Status::Behind);
+        f.run(&lib, &mut ledger, true);
+        assert_eq!(f.read(0, "CLAUDE.md"), "For work.\n");
+
+        // Changed by hand, then given other instructions: asked, not replaced.
+        std::fs::write(f.account(2).join("CLAUDE.md"), "Mine now.\n").unwrap();
+        give_instructions(&mut lib, Some("work"), reach(&["claude/work", "claude/home"]));
+        let p = f.run(&lib, &mut ledger, true);
+        let place = p.places.iter().find(|x| Path::new(&x.dest) == f.account(2).join("CLAUDE.md")).unwrap();
+        assert_eq!((place.status, place.both, place.instructions.as_deref()), (Status::Changed, true, Some("work")));
+        assert_eq!(f.read(2, "CLAUDE.md"), "Mine now.\n");
+
+        // Back to the first: Luna's copy follows again.
+        give_instructions(&mut lib, Some("work"), Vec::new());
+        f.run(&lib, &mut ledger, true);
+        assert_eq!(f.read(0, "CLAUDE.md"), "For everyone.\n");
+    }
+
+    #[test]
+    fn copies_laid_out_before_several_instructions_stay_lunas() {
+        let f = Fixture::new("upgrade");
+        // As the Luna of one instructions file left things: the file in the
+        // library's root, a reach of its own, its copies in the ledger, one
+        // of them since changed by hand.
+        std::fs::write(f.dirs.root.join(OLD_INSTRUCTIONS), "Be brief.\n").unwrap();
+        let mut ledger = Ledger::default();
+        for (i, file) in [(0, "CLAUDE.md"), (1, "AGENTS.md"), (2, "CLAUDE.md")] {
+            let dest = f.account(i).join(file);
+            std::fs::write(&dest, "Be brief.\n").unwrap();
+            ledger.written.insert(dest.to_string_lossy().into_owned(), hashes(&Files::from([(String::new(), b"Be brief.\n".to_vec())])));
+        }
+        std::fs::write(f.account(2).join("CLAUDE.md"), "Be brief. Mine.\n").unwrap();
+        let before = ledger.written.clone();
+        let lib: LibrarySettings = serde_json::from_str(r#"{"instructions": ["all"]}"#).unwrap();
+
+        // Before the move, nothing is taken out for want of instructions.
+        let p = f.run(&lib, &mut ledger, true);
+        assert!(p.places.iter().all(|x| x.status == Status::Failed), "{:?}", p.places);
+        assert_eq!(f.read(0, "CLAUDE.md"), "Be brief.\n");
+
+        migrate_instructions(&f.dirs);
+        let p = f.run(&lib, &mut ledger, true);
+        assert_eq!(Fixture::status(&p, &f.account(0).join("CLAUDE.md")), Status::Current);
+        assert_eq!(Fixture::status(&p, &f.account(1).join("AGENTS.md")), Status::Current);
+        assert_eq!(Fixture::status(&p, &f.account(2).join("CLAUDE.md")), Status::Changed, "changed, not someone else's");
+        assert_eq!(ledger.written, before);
+    }
+
+    #[test]
+    fn instructions_taken_from_an_account_are_named_after_it() {
+        let f = Fixture::new("names");
+        assert_eq!(new_instructions_name(&f.dirs, "Work Laptop"), "work-laptop");
+        assert_eq!(new_instructions_name(&f.dirs, "--"), "instructions");
+        f.instructions("work", "x");
+        assert_eq!(new_instructions_name(&f.dirs, "work"), "work-2");
+        assert!(check_name(&new_instructions_name(&f.dirs, "Ünïcode.name")).is_ok());
     }
 }

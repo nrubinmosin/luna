@@ -123,7 +123,7 @@ function UpdateChips() {
 }
 
 /**
- * The library's word on the bar, only while a copy of a skill or of the
+ * The library's word on the bar, only while a copy of a skill or of
  * instructions waits on the user: changed or deleted where it lies, something
  * else in its place, or one that cannot be laid out.
  */

@@ -7,7 +7,7 @@ export const needsLook = (p: PlaceDto) =>
   p.status === 'changed' || p.status === 'gone' || p.status === 'taken' || p.status === 'failed';
 
 /** The copies that wait on the user, a line each — except those that fail for
- *  one reason (a skill that does not do, wherever it goes), which share one. */
+ *  one reason (a skill or instructions that do not do, wherever they go), which share one. */
 export function waiting(places: PlaceDto[]): { place: PlaceDto; count: number }[] {
   const out: { place: PlaceDto; count: number }[] = [];
   const failed = new Map<string, { place: PlaceDto; count: number }>();
@@ -16,7 +16,7 @@ export function waiting(places: PlaceDto[]): { place: PlaceDto; count: number }[
       out.push({ place, count: 1 });
       continue;
     }
-    const key = `${place.skill}|${place.problem}`;
+    const key = `${place.skill}|${place.instructions}|${place.problem}`;
     const seen = failed.get(key);
     if (seen) seen.count++;
     else {
