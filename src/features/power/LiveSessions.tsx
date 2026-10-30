@@ -3,7 +3,7 @@ import { usePower } from './power.store';
 import type { SessionActivityDto } from '../../ipc/commands';
 
 /** What a running session is doing, in the words the power chip uses. */
-const doing = (s: SessionActivityDto): string => {
+export const doing = (s: SessionActivityDto): string => {
   if (s.turn === 'waiting' && !s.busy) return s.stalled ? `stopped on ${s.stalled}` : 'waiting for you';
   const why = [
     s.turn === 'busy' ? 'mid-turn' : '',

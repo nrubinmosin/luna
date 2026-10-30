@@ -38,6 +38,8 @@ pub struct Settings {
     /// The user's skills and instructions, and where they are laid out
     /// (library.rs).
     pub library: LibrarySettings,
+    /// Which browser a terminal's links open in (browsers.rs).
+    pub browsers: crate::browsers::BrowserSettings,
 }
 
 /// Which accounts something goes into: `all`, a provider's every account
@@ -129,6 +131,7 @@ impl Default for Settings {
             codex_hooks_unasked_in: Default::default(),
             codex_trusted_roots: Vec::new(),
             library: LibrarySettings::default(),
+            browsers: Default::default(),
         }
     }
 }

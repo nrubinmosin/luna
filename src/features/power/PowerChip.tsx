@@ -3,7 +3,9 @@ import { ACCENT } from '../../shared/lib/format';
 import { Icon } from '../../shared/ui/icons';
 import { useChats, allChats } from '../chats/chats.store';
 import { usePower } from './power.store';
+import { trayAwake } from '../../ipc/commands';
 import { PowerMenu } from './PowerMenu';
+import { doing } from './LiveSessions';
 
 const chipStyle = (loud: boolean) => ({
   cursor: 'default',
@@ -56,6 +58,15 @@ export function PowerChip() {
       return `${name(s.id)} — ${why}`;
     });
 
+  // The tray says it too, for a window that is hidden: a dot on the icon
+  // while the PC is held awake, and who holds it in its tooltip.
+  const held = holding
+    ? summary.sessions.filter(s => s.busy).map(s => `${name(s.id)} — ${doing(s)}`).join('\n') || 'a session that just went quiet'
+    : '';
+  useEffect(() => {
+    void trayAwake(held || null).catch(() => {});
+  }, [held]);
+
   let text: string;
   let title: string;
   let loud = false;
@@ -74,7 +85,8 @@ export function PowerChip() {
     if (stalled.length) title += `\n\nCounted as done:\n${stalled.join('\n')}`;
     loud = true;
   } else {
-    text = holding ? 'awake' : '';
+    const busy = summary.sessions.filter(s => s.busy).length;
+    text = holding ? (busy ? `awake · ${busy}` : 'awake') : '';
     title = holding
       ? `The PC is held awake by:\n${blockers.join('\n') || 'a session that just went quiet'}\nClick for the power rules.`
       : 'Power: keep awake, shut down when done. Click to set up.';

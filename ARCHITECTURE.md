@@ -104,7 +104,13 @@ src-tauri/src/
                 fetchBeforeWorktree)
   throttle.rs   cool-off after a 429 from the usage endpoints, shared by both
   procs.rs      what the CLI has running under it: a Job Object per session, pid list,
-                CPU/IO/start time of each, the "busy" rule (judge)
+                CPU/IO/start time of each, the "busy" rule (judge), windowed programs left
+                out (shown), what is left ended with the session (end_leftovers)
+  browsers.rs   which browser a terminal's link opens in: a command line with %1 per
+                browser; found on Windows (StartMenuInternet + each Chromium browser's
+                Local State profiles, Firefox's profiles.ini, the https UserChoice handler)
+                and the user's own; chosen chat → account → folder → default, run with the
+                link as an argument of its own and no shell (open_link in lib.rs)
   hub.rs        loopback HTTP (tiny_http) on a random port with a per-launch secret;
                 POST /hook/<chat>/<secret> takes Claude Code hooks' stdin;
                 POST /mcp with the session's bearer token — MCP for agents; a thread per request
@@ -340,9 +346,15 @@ src-tauri/src/
   (a command, an edit), which is not in the rollout and under which the screen is not silent, — by its text on
   the rendered screen; the same verdict also goes to the chat row in the UI instead of `working`), the CLI's descendants
   (`procs.rs`: on spawn the CLI is put into a Job Object, descendants inherit it; "busy" = growth in
-  CPU/IO over the window, or a process born after the last turn began and still alive — that is how
-  a background `sleep` is caught, while MCP servers that came up with the session count as furniture) and
-  pty output over the last 30 s. Hooks print nothing: Claude Code adds the stdout of a hook exiting 0
+  CPU/IO over the window, or a process born after the first turn began and still alive — that is how
+  a background `sleep` is caught, while what the CLI starts in its first 30 s (`STARTUP_MS`: MCP
+  servers, its shell) counts as furniture however soon a first turn begins, and a respawn starts that
+  count over; a program with a visible window of its own, and everything under it, is the user's and
+  is left out) and pty output over the last 30 s. The job sets no limits: when a session goes
+  (delete, kill, Quit, a respawn of one that exited) `procs::end_leftovers` ends what is still in it,
+  which the CLI's tree kill misses once a parent has gone first, windowed programs spared. A
+  background helper has one job for its life, each turn's process joined to it: between turns what
+  its turns left holds the machine by the same rule, and it is ended with the helper. Hooks print nothing: Claude Code adds the stdout of a hook exiting 0
   to the context, and silence is free. Claude's registry beats an "idle" from a hook, a hook's
   "waiting" beats the registry's "busy" (a permission prompt is inside a turn). No mark is eternal:
   a hook's "busy" against the registry's "idle" goes stale in 15 s (a missed Stop), a hook's "waiting" — at
@@ -369,10 +381,11 @@ src-tauri/src/
   `luna.log` takes INFO too (log.rs): events only — session start/exit/delete, helper turns, one line per
   MCP call with its steering arguments and outcome but never its text, notices — each session named by id
   and chat name (`agents::label`), so a night can be read back after its sessions are deleted.
-  A session whose turn has been `Idle` for 2 h (`LEFTOVER_MS`) no longer counts its children at all:
-  a `tail -f` a monitor left on a growing log moves forever, and one such session held a whole night.
-  The hold itself is logged both ways: `awake hold set: <who>` and `awake hold let go: … last held by
-  <who>`, and the 2 h cut names the processes it stops counting. The request does not restart Windows'
+  A child born of a turn holds for as long as it lives, with no limit: a `tail -f` left behind and a
+  `sleep 64000` before a check due tomorrow look the same from outside, and a PC let sleep or shut
+  down on a guess stops work that only a person can start again; no clock runs from the end of a
+  turn. The hold itself is logged both ways: `awake hold set: <who>` and `awake hold
+  let go: … last held by <who>`. The request does not restart Windows'
   idle timer: once nobody has touched the PC for longer than its sleep timeout, it sleeps the moment
   the hold is let go, so that line is the time of the sleep.
 - **Agents — via MCP, not via the prompt.** A session with the "Luna tools" checkbox gets

@@ -64,8 +64,6 @@ struct Run {
     pid: Option<u32>,
     /// When the turn started, for the window's "working 4 min".
     started_ms: u64,
-    /// Holds the job the turn's process tree lives in, for as long as it runs.
-    _job: Option<crate::procs::Job>,
     /// A stop came while the turn was claimed but had no process yet: it
     /// has no pid to kill, so `spawn_turn` does not start it, or kills what
     /// it just started.
@@ -101,6 +99,10 @@ struct Entry {
     /// Its last turn was stopped by the core going, not ended by the CLI:
     /// what the caller is told of it says so.
     cut_short: bool,
+    /// The job every turn's process is put in, the first one's made for it:
+    /// what a turn leaves running is still the helper's between turns, holds
+    /// the machine as a chat's would, and is ended with the helper.
+    job: Option<std::sync::Arc<crate::procs::Job>>,
 }
 
 struct Registry {
@@ -183,6 +185,22 @@ pub fn working_dirs(except: Option<&str>) -> Vec<String> {
 pub fn stop_all() {
     stop_turns(true);
     save();
+    // A core that takes the helpers up again has no job of theirs to see
+    // what is left by: it goes with this one.
+    let jobs: Vec<(String, std::sync::Arc<crate::procs::Job>)> =
+        lock().entries.iter().filter_map(|(id, e)| Some((id.clone(), e.job.clone()?))).collect();
+    for (id, job) in jobs {
+        end_leftovers(&id, Some(&job));
+    }
+}
+
+/// Ends what a helper's turns left running, once the helper is done with.
+fn end_leftovers(id: &str, job: Option<&crate::procs::Job>) {
+    let Some(job) = job else { return };
+    let ended = crate::procs::end_leftovers(job, None);
+    if !ended.is_empty() {
+        crate::log::info("background", &format!("{}: ended what its turns left running: {}", crate::agents::label(id), ended.join(", ")));
+    }
 }
 
 /// Stops every turn in progress with its process tree and drops what was
@@ -245,6 +263,7 @@ pub fn start(id: &str, spec: Spec, prompt: &str) -> Result<(), String> {
         held: None,
         error: None,
         cut_short: false,
+        job: None,
     };
     claim(&mut e);
     lock().entries.insert(id.to_string(), e);
@@ -356,7 +375,7 @@ fn command_for(e: &Entry, id: &str) -> (Vec<String>, String, Vec<(&'static str, 
 /// found it free: text that arrives before the process is up queues behind
 /// it rather than starting a second process on the same conversation.
 fn claim(e: &mut Entry) {
-    e.run = Some(Run { pid: None, started_ms: crate::throttle::now_ms(), _job: None, stopped: false });
+    e.run = Some(Run { pid: None, started_ms: crate::throttle::now_ms(), stopped: false });
 }
 
 /// Starts the next turn's process with `prompt` on its stdin, on a run
@@ -460,7 +479,17 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
         format!("could not start {}: {e}", provider.as_str())
     })?;
     let pid = Some(child.id());
-    let job = pid.and_then(crate::procs::adopt);
+    // Into the helper's job before it has had time to start anything.
+    if let Some(pid) = pid {
+        if let Some(e) = lock().entries.get_mut(id) {
+            match &e.job {
+                Some(job) => {
+                    crate::procs::join(job, pid);
+                }
+                None => e.job = crate::procs::adopt(pid).map(std::sync::Arc::new),
+            }
+        }
+    }
     let stdin = child.stdin.take();
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
@@ -506,7 +535,7 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
             None => Some("the helper was deleted"),
             Some(e) if e.run.as_ref().is_some_and(|run| run.stopped) => Some(STOPPED),
             Some(e) => {
-                e.run = Some(Run { pid, started_ms: crate::throttle::now_ms(), _job: job, stopped: false });
+                e.run = Some(Run { pid, started_ms: crate::throttle::now_ms(), stopped: false });
                 e.error = None;
                 e.cut_short = false;
                 note(e, &format!("› {}", one_line(prompt)));
@@ -658,13 +687,27 @@ pub fn turn_state(id: &str) -> Option<crate::activity::TurnState> {
     Some(crate::activity::TurnState { turn, busy: e.run.is_some(), turns_ended: e.turns_ended, children_busy: false })
 }
 
-/// What the power rules see of every helper.
+/// What the power rules see of every helper: its turn, and between turns
+/// what its turns left running, by the same rule as a chat's (activity.rs):
+/// it holds the machine for as long as it lives.
 pub fn activity() -> Vec<crate::activity::SessionActivity> {
-    let ids: Vec<String> = lock().entries.keys().cloned().collect();
+    let ids: Vec<(String, Option<std::sync::Arc<crate::procs::Job>>)> = lock()
+        .entries
+        .iter()
+        .map(|(id, e)| (id.clone(), e.job.clone().filter(|_| e.run.is_none())))
+        .collect();
     ids.into_iter()
-        .filter_map(|id| {
+        .filter_map(|(id, job)| {
             let t = turn_state(&id)?;
-            Some(crate::activity::SessionActivity::of_turn(&id, t.turn, t.busy))
+            let mut a = crate::activity::SessionActivity::of_turn(&id, t.turn, t.busy);
+            if let Some(job) = job {
+                let left = crate::procs::left_running(&job);
+                if !left.is_empty() {
+                    a.busy = true;
+                    a.procs = left;
+                }
+            }
+            Some(a)
         })
         .collect()
 }
@@ -777,6 +820,7 @@ pub fn remove(id: &str) -> Option<String> {
     let _ = std::fs::remove_file(crate::paths::data_dir().join("mcp").join(format!("{id}.json")));
     changed();
     let e = e?;
+    end_leftovers(id, e.job.as_deref());
     e.cwd.filter(|c| !crate::pty::same_dir(c, &e.spec.folder) && crate::worktree::is_worktree_of(&e.spec.folder, c))
 }
 
@@ -1159,6 +1203,7 @@ fn taken_up(s: Saved) -> Entry {
         held: None,
         error: None,
         cut_short: s.cut_short || s.running,
+        job: None,
     };
     if s.running {
         note(&mut e, "Luna's core went mid-turn and stopped the turn");
@@ -1205,6 +1250,7 @@ mod tests {
             held: None,
             error: None,
             cut_short: false,
+            job: None,
         }
     }
 

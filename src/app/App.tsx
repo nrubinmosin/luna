@@ -22,6 +22,7 @@ import { useKeymap } from './keymap';
 import { useAltPeek } from '../features/panes/altPeek';
 import { ShortcutsDialog } from '../features/shortcuts/ShortcutsDialog';
 import { SettingsDialog } from '../features/settings/SettingsDialog';
+import { LinkChooser } from '../features/browsers/LinkChooser';
 import { LibraryWindow } from '../features/library/LibraryWindow';
 import { useLibrary } from '../features/library/library.store';
 import { healScaleDrift } from './dpi';
@@ -250,6 +251,7 @@ export function App() {
       <UpdateConfirm />
       <ShortcutsDialog />
       <SettingsDialog />
+      <LinkChooser />
       <WorktreesDialog />
       <LibraryWindow />
     </div>

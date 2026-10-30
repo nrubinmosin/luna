@@ -159,6 +159,14 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   absolute paths are typed into the prompt, which is the only thing a webview leaves usable.
 - Ctrl+C over a selection in a pane copies it; with nothing selected it interrupts the CLI
   as ever. Selecting alone copies nothing.
+- A link in a pane opens in your browser, not in a window of Luna's. Which one is set in
+  Settings → Links: a default, and one per account or per project folder. Shift+click on a
+  link lists every browser to open it in, can remember the pick for that chat, and copies the
+  link. A chat's own pick goes first, then its account's, its folder's, the default. A browser
+  is a command line with `%1` where the link goes, so a browser profile is a flag
+  (`--profile-directory="Profile 1"` for Chrome, Edge and Brave, `-P name` for Firefox). On
+  Windows the browsers installed and their profiles are listed by themselves, the system's
+  handler with its flags among them; elsewhere it is the system's handler and your own.
 
 ![The new-chat dialog](docs/screenshots/new-chat.png)
 
@@ -420,8 +428,9 @@ The power field in the status bar opens the two rules the machine follows.
 - **Keep the PC awake while sessions work** (on by default). Luna holds a Windows power
   request — `powercfg /requests` lists it as Luna's — while any session is busy, and lets it
   go a minute after the last one goes quiet. A session waiting for your answer does not hold
-  the machine, nor does one whose turn has been over for two hours, whatever it left running
-  under it (a monitor's `tail -f` on a log that keeps growing). Windows does not restart its
+  the machine. What a session started in a turn holds it for as long as it runs, however long
+  after the turn: Luna cannot tell a forgotten `tail -f` from a job that waits a day for its
+  moment, and a PC that slept or shut down on a guess leaves work nobody restarts. Windows does not restart its
   sleep timer for the request: if nobody has touched the PC for longer than that timer, it
   sleeps the moment the hold is let go. `luna.log` says when the hold was set and let go, and
   which session held it last.
@@ -436,7 +445,11 @@ The power field in the status bar opens the two rules the machine follows.
 "Busy" is measured, not guessed, from three signals per session: the turn (Claude Code's
 own hooks and registry, Codex's rollout), the processes under the CLI (put in a Job Object at
 spawn, so a build, a test run or a `sleep` it left in the background counts as long as it
-moves or was started by the turn), and recent output. "Done" means no session is busy *or*
+moves or was started by a turn; what the CLI brings up with itself — MCP servers, its shell —
+only while it moves, and a program with a window of its own, like a browser a login opened,
+not at all), and recent output. A background helper's leftovers between turns count the same
+way. Deleting a chat or a helper, or quitting Luna, ends whatever it left running, windowed
+programs aside. "Done" means no session is busy *or*
 waiting for a permission. A session whose turn ended on a usage limit (or another API error:
 a lost login, a billing problem) and sits on the dialog it left counts as done — nothing moves
 there before the reset — and the countdown notification says how many there were. Arming

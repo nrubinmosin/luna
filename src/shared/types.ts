@@ -92,6 +92,9 @@ interface ChatBase {
   parentId?: string | null;
   /** Whether the children under this row are unfolded; folded by default. */
   childrenOpen?: boolean;
+  /** The browser this chat's links open in, remembered from a Shift+click;
+   *  unset means its account's, its folder's or the default. */
+  browser?: string | null;
 }
 
 export interface ClaudeChat extends ChatBase, ClaudeSettings {

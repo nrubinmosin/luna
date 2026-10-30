@@ -183,15 +183,20 @@ async fn spawn(id: String, launch: impl FnOnce() -> Launch) -> Result<String, St
     let _spawning = gate.lock().unwrap_or_else(|e| e.into_inner());
 
     // Under the gate: whoever waited here may find the session already spawned.
-    {
+    let exited = {
         let mut sessions = state.sessions.lock().unwrap();
         if let Some(s) = sessions.get(&id) {
             if s.alive.load(Ordering::SeqCst) {
                 let mut buf = s.scrollback.lock().unwrap();
                 return Ok(String::from_utf8_lossy(buf.make_contiguous()).into_owned());
             }
-            sessions.remove(&id);
         }
+        sessions.remove(&id)
+    };
+    // A CLI that exited by itself: what it left running goes with the old
+    // session, before a new one takes the chat.
+    if let Some(old) = exited {
+        end_leftovers(&old);
     }
     let Launch { provider, cwd, account_path, args, envs, resume, describe } = launch();
 
@@ -1373,6 +1378,18 @@ fn shut_down(mut s: Session, grace: std::time::Duration) {
     // out, and a taskkill on a pid that has just exited is a no-op.
     kill_tree(s.pid);
     let _ = s.killer.kill();
+    end_leftovers(&s);
+}
+
+/// What the tree kill cannot reach goes too: a process whose parent left
+/// first is in the session's job but under nobody.
+fn end_leftovers(s: &Session) {
+    if let Some(job) = &s.job {
+        let ended = crate::procs::end_leftovers(job, s.pid);
+        if !ended.is_empty() {
+            crate::log::info("pty", &format!("pid {:?}: ended what it left running: {}", s.pid, ended.join(", ")));
+        }
+    }
 }
 
 /// Takes the session out of the map first and shuts it down after: the
