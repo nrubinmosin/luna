@@ -253,6 +253,10 @@ export interface SessionMetaDto {
   /** `title` is the user's rename, not one the CLI made up. */
   titleRenamed: boolean;
   firstPrompt: string | null;
+  /** A person left something typed and not sent in its composer. */
+  draft: boolean;
+  /** Messages Luna holds for it until that draft is sent or cleared. */
+  held: number;
 }
 
 export interface CliTitleDto {

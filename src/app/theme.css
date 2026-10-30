@@ -1010,6 +1010,22 @@ body { margin: 0; overflow: hidden; }
   color: var(--wait);
 }
 [data-app] .chat-row[data-active="yes"] .row-tag { color: #ffc27a; }
+/* An unsent draft in the chat's composer, and the messages Luna holds for it
+   (drafts.store.ts): on the pane's title bar, a pill the bar's colour shows
+   through. */
+[data-app] .pane-tag {
+  flex: none;
+  margin-right: 6px;
+  padding: 0 5px;
+  border-radius: 3px;
+  background: rgba(0, 0, 0, .28);
+  color: #fff;
+  font-size: var(--fs-1);
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
 /* The helpers a chat spawned: a count to unfold, shaped like the folders'
    own fold button. */
 [data-app] .chat-row .kids {

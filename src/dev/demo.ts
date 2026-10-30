@@ -21,6 +21,7 @@ import { useBackground } from '../features/agents/background.store';
 import { useAccounts } from '../features/accounts/accounts.store';
 import { useAccountsWindow } from '../features/accounts/AccountsPanel';
 import { useChats } from '../features/chats/chats.store';
+import { useDrafts } from '../features/chats/drafts.store';
 import { useWorktrees } from '../features/chats/worktrees.store';
 import { useNewChat } from '../features/new-chat/newchat.store';
 import { usePanes, type Group, type Layout, type Slots } from '../features/panes/panes.store';
@@ -511,6 +512,9 @@ export function seedDemo(scene: Scene) {
     setName: () => {},
     setContext: () => {}
   });
+  // A draft left in the first chat, and a message from another session it
+  // holds up: the tag and the balloon both show.
+  useDrafts.setState({ by: { 'demo-1': { draft: true, held: 1 } }, set: () => {} });
   useAccounts.setState({
     accounts: ACCOUNTS,
     loaded: true,

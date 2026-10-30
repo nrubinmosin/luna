@@ -363,8 +363,14 @@ background helper spawned without tools.
   of them with `luna_send`, and read or wait on the answer, so you can tell one chat to pass
   word to another. `luna_sessions` narrows to one group (`group: "mine"` is the caller's
   own) and to rows with some text in them (`q`), so the chats you put in one group can be
-  told to settle something between themselves — who gets the machine next, say. `luna_send` will not type into a chat you are typing in or have left an unsent
-  draft in; the agent is told to try later. At most eight helpers under
+  told to settle something between themselves — who gets the machine next, say. Into a chat you are typing in, `luna_send` does not type: Luna holds the
+  text and types it in once you stop. Over an unsent draft in a Claude Code chat it puts the
+  draft aside (Ctrl+S, the CLI's own stash), sends, and the CLI puts the draft back, pastes
+  and images and all — unless a draft is stashed already, which another Ctrl+S would
+  replace. Codex has no stash, so there the text waits for the draft to be sent or cleared.
+  A chat with an unsent draft wears a **draft** tag in its row and title bar, with the count
+  of messages Luna holds for it, and a balloon over the pane says how many wait; a minute's
+  hold is announced on the desktop. At most eight helpers under
   one chat, and a helper's helpers get no tools of their own.
 - Every account is available to agents unless you switch it off with the robot button on
   its row in the Accounts window. `luna_list` names the ones that are, so you can tell a chat which one to use
@@ -406,8 +412,9 @@ background helper spawned without tools.
 - An agent that asked something and ended its turn without waiting is not left idle: once
   the answer comes — or the helper asks something, stops on a permission prompt, or exits — Luna types a
   one-line `[Luna notice, not typed by the user]` into the agent's chat, as soon as that
-  chat is between turns, you have not typed into it for 20 seconds, and nothing you typed
-  sits unsent in it (a minute's hold on a draft is announced on the desktop instead). A
+  chat is between turns and you have not typed into it for 20 seconds. A draft you left in
+  it is put aside for the notice the same way (Claude Code), or holds it (Codex; a minute's
+  hold is announced on the desktop). A
   `luna_wait` still out for that answer — Claude Code moves a call past two minutes to the
   background — hands it over instead, and the notice follows only if the wait has not done
   so within 10 seconds. A wait the agent's CLI cancels or interrupts hands nothing over,

@@ -36,7 +36,9 @@ src/                          frontend (feature-sliced)
               <select>); ui/dialogHost.ts
   features/
     chats/    sidebar: folders + chats (drag source, click = show), chats.store;
-              worktrees.store + WorktreesDialog (stale worktrees, the title bar's Worktrees)
+              worktrees.store + WorktreesDialog (stale worktrees, the title bar's Worktrees);
+              drafts.store — a running chat's unsent draft and the messages Luna holds for it
+              (the row's and title bar's `draft` tag, the pane's balloon)
     panes/    1/2/3/4 grid, Pane (drop target), Terminal (xterm), panes.store
               (auto-tiling lives there too: TILE_ORDER, board grows/shrinks by ±1 pane);
               peek — a sheet over the dimmed board, the same pane without remounting;
@@ -455,8 +457,7 @@ src-tauri/src/
   a debt (`queued`) a turn end counts as the answer only once no turn has begun 8 s later
   (`QUEUED_GRACE_MS`), for `wait`, `read` and the notice alike: a read settles such a debt once a
   turn past the running one has ended or the turn end has stood 8 s (`queue_settled`). A notifier thread looks at debts every 2 s and, when the caller is between turns
-  on two looks in a row (`Idle`, not starting, the person has not typed into it for 20 s and left no
-  unsent draft), types
+  on two looks in a row (`Idle`, not starting, the person has not typed into it for 20 s), types
   one line to it `[Luna notice, not typed by the user] …` with Enter — just like `send`: the helper
   finished a turn, stopped on a prompt (once per stop) or exited. The answer is everything the helper said
   past the debt's transcript offset (`replies_since`), not the transcript's last message: a helper's own
@@ -476,9 +477,23 @@ src-tauri/src/
   in `write_session` (`pty::draft_after`: characters add, Backspace subtracts, Enter,
   Ctrl+C, Ctrl+U reset, Enter right after `\` is a Claude Code line break, not a submit;
   key escape sequences print nothing, text inside a bracketed paste does):
-  a notification with Enter would go out together with the draft. Edits the counter does not see (Ctrl+W,
-  a cut selection) it does not subtract — then the notification waits for the next Enter, and after a minute
-  of waiting Luna says so once with a system notification. `wait(turn_done)` on a helper
+  a notification with Enter would go out together with the draft. The counter only says there may be
+  one: once the keys have settled (1.5 s), `has_draft` reads the composer off the screen
+  (`pty::read_composer` — the cursor stands at the caret in both CLIs; Claude Code's `❯` between two rules,
+  Codex's `›` down to the first blank row, its dim placeholder left out) and an empty one, or one of
+  spaces, zeroes the counter: edits the keys do not tell (Esc Esc, Ctrl+W, a cut selection) no longer hold
+  anything until the next Enter. A real draft in Claude Code is put aside for the text (`stash_and_type`):
+  the person's keys are held back (`hold_keys`, let go in order), Ctrl+S stashes the draft, the text and
+  Enter go in, and the CLI brings the draft back as it takes the text ("Draft restored") — that return is
+  the sign the text went, so there is no second Enter, which would send the draft. Not when the screen
+  says `› stashed` above the composer: a second Ctrl+S on text replaces the stash, and the draft in it is
+  lost. Codex has no stash. Where the draft stays, a notice waits for it; a `send` is held
+  (`Registry::held`, `deliver_held` in the notifier, in order per session; `held: true` in the result),
+  and so is one into a chat typed in within 5 s. A `wait` on a session with the caller's text held waits
+  for it to go in, and then for the turn it starts, not the `afterTurn` given (`Owed::late`); a session
+  that exits first is announced as such (`Owed::lost`). A draft or text held for a minute is announced
+  once on the desktop. `session_meta` carries `draft` and `held` (`held_count`: sends waiting to go in,
+  notices the chat's draft keeps back) for the chat row's and the title bar's tag and the pane's balloon. `wait(turn_done)` on a helper
   stopped on a prompt also returns (`waiting` with the screen): the turn itself will not end; for 8 s after
   a `send` from the same caller into such a session the prompt counts as answered. A notification is an ordinary turn of the caller; a dev caller without
   a terminal does not get them. While the caller's `wait` on that session is still running (`waits`), that

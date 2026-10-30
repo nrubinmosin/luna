@@ -8,6 +8,7 @@ import { CHAT_COLORS, chatColorTheme } from '../../shared/ui/chatColors';
 import { ACCENT, limitColor, shortSessionId, tail2, tint } from '../../shared/lib/format';
 import { useChats } from '../chats/chats.store';
 import { DeleteChatDialog } from '../chats/DeleteChatDialog';
+import { draftTag, useDrafts } from '../chats/drafts.store';
 import { claude, codex } from '../providers';
 import { PROVIDER_LABEL, type Chat } from '../../shared/types';
 import { currentLayout, currentSlots, usePanes } from './panes.store';
@@ -106,6 +107,8 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
   const beingDragged = usePanes(s => !soloChat && s.dragPane === index);
   const chat = useChats(s => s.findChat(chatId));
   const folder = useChats(s => (chatId ? s.folderOf(chatId) : null));
+  const drafts = useDrafts(s => (chatId ? s.by[chatId] : undefined));
+  const tag = draftTag(drafts);
   const [confirming, setConfirming] = useState(false);
   const [editing, setEditing] = useState(false);
   const [picking, setPicking] = useState<HTMLElement | null>(null);
@@ -279,6 +282,11 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
 
             <span className="pane-head">
               <StatusDot status={chat.status} />
+              {tag && (
+                <span className="pane-tag" title={tag.title}>
+                  {tag.text}
+                </span>
+              )}
               {editing ? (
                 <input
                   autoFocus
@@ -375,6 +383,18 @@ ${chat.worktreePath}` : ''}`}>
               <div className="balloon">
                 <b>Waiting for you</b>
                 Click into the pane to answer.
+              </div>
+            )}
+            {/* Shown on the focused pane too: whoever looks at it is the one
+                whose draft or typing holds the messages back. */}
+            {drafts && drafts.held > 0 && !(chat.status === 'waiting' && !focused) && (
+              <div className="balloon">
+                <b>
+                  Luna is holding {drafts.held} message{drafts.held === 1 ? '' : 's'}
+                </b>
+                {drafts.draft
+                  ? 'Send or clear the draft in this chat and they go in.'
+                  : 'They go in once you stop typing.'}
               </div>
             )}
           </div>

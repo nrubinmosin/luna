@@ -7,6 +7,7 @@ import { Icon, ToolButton } from '../../shared/ui/icons';
 import { numberedChats, useChats } from './chats.store';
 import { currentLayout, currentSlots, usePanes } from '../panes/panes.store';
 import { DeleteChatDialog } from './DeleteChatDialog';
+import { draftTag, useDrafts } from './drafts.store';
 import { BackgroundChip } from '../agents/BackgroundChip';
 
 export function ChatRow({
@@ -25,6 +26,7 @@ export function ChatRow({
   orphan?: boolean;
 }) {
   const active = useChats(s => s.active === chat.id);
+  const tag = draftTag(useDrafts(s => s.by[chat.id]));
   // An agent may spawn into any folder, so a parent missing from this one
   // is not necessarily gone.
   const parentName = useChats(s => (orphan ? s.findChat(chat.parentId ?? null)?.name ?? null : null));
@@ -165,6 +167,11 @@ export function ChatRow({
         </span>
       )}
       {chat.status === 'waiting' && !editing && <span className="row-tag">waiting</span>}
+      {tag && !editing && (
+        <span className="row-tag" data-kind="draft" title={tag.title}>
+          {tag.text}
+        </span>
+      )}
       {/* Sits after the flexible name, so appearing or vanishing on a layout
           switch only nudges the controls on the right, never the names. */}
       {badge != null && (

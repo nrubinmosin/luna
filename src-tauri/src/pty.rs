@@ -124,6 +124,12 @@ struct Session {
     /// keys tell (see `draft_after`): a notice typed on top of a draft would
     /// go out with it.
     draft: Arc<AtomicU64>,
+    /// The screen's word on the draft, for the keys and output it was read
+    /// at (see `has_draft`): reading it replays the scrollback.
+    draft_seen: Arc<Mutex<(u64, bool)>>,
+    /// A person's keys, kept back while Luna types into the composer around
+    /// their draft (see `hold_keys`); None the rest of the time.
+    held_keys: Arc<Mutex<Option<Vec<String>>>>,
 }
 
 #[derive(Default)]
@@ -537,6 +543,8 @@ async fn spawn(id: String, launch: impl FnOnce() -> Launch) -> Result<String, St
             size,
             typed_ms: Arc::new(AtomicU64::new(0)),
             draft: Arc::new(AtomicU64::new(0)),
+            draft_seen: Arc::new(Mutex::new((0, false))),
+            held_keys: Arc::new(Mutex::new(None)),
         },
     );
 
@@ -828,10 +836,83 @@ impl PtyManager {
     }
 
     /// Whether a person has left something typed and not sent in the
-    /// session's composer.
+    /// session's composer. The keys say whether there may be (`draft_after`);
+    /// the screen, where the composer can be read, says whether there is: a
+    /// draft cleared in a way the keys do not tell (Esc Esc, a word deleted)
+    /// or one of nothing but spaces is none, and the count starts over. Keys
+    /// just typed may not be drawn yet, so the screen is asked only once
+    /// they have settled.
     pub fn has_draft(&self, id: &str) -> bool {
+        let (draft, seen, n, key) = {
+            let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(s) = sessions.get(id) else { return false };
+            let n = s.draft.load(Ordering::Relaxed);
+            if n & !DRAFT_BACKSLASH == 0 {
+                return false;
+            }
+            if now_ms().saturating_sub(s.typed_ms.load(Ordering::Relaxed)) < DRAFT_SETTLE_MS {
+                return true;
+            }
+            let key = n.rotate_left(32) ^ s.last_output_ms.load(Ordering::Relaxed);
+            (Arc::clone(&s.draft), Arc::clone(&s.draft_seen), n, key)
+        };
+        let cached = *seen.lock().unwrap_or_else(|e| e.into_inner());
+        if cached.0 == key {
+            return cached.1;
+        }
+        let there = match self.composer(id) {
+            Some(c) if c.text.is_empty() => {
+                // Unless a key came in since.
+                let _ = draft.compare_exchange(n, 0, Ordering::Relaxed, Ordering::Relaxed);
+                false
+            }
+            _ => true,
+        };
+        *seen.lock().unwrap_or_else(|e| e.into_inner()) = (key, there);
+        there
+    }
+
+    pub fn provider(&self, id: &str) -> Option<Provider> {
         let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
-        sessions.get(id).is_some_and(|s| s.draft.load(Ordering::Relaxed) & !DRAFT_BACKSLASH > 0)
+        sessions.get(id).map(|s| s.provider)
+    }
+
+    /// The draft count as the keys have it (see `draft_after`), to be put
+    /// back with `set_draft` once a draft Luna stashed is back in place.
+    pub fn draft_count(&self, id: &str) -> u64 {
+        let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        sessions.get(id).map_or(0, |s| s.draft.load(Ordering::Relaxed))
+    }
+
+    pub fn set_draft(&self, id: &str, n: u64) {
+        let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(s) = sessions.get(id) {
+            s.draft.store(n, Ordering::Relaxed);
+        }
+    }
+
+    /// The session's composer as its screen shows it, None where the screen
+    /// does not show one (see `read_composer`).
+    pub fn composer(&self, id: &str) -> Option<Composer> {
+        let (provider, scrollback, size) = {
+            let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+            let s = sessions.get(id)?;
+            (s.provider, Arc::clone(&s.scrollback), Arc::clone(&s.size))
+        };
+        let bytes: Vec<u8> = scrollback.lock().unwrap_or_else(|e| e.into_inner()).make_contiguous().to_vec();
+        let (rows, cols) = *size.lock().unwrap_or_else(|e| e.into_inner());
+        read_composer(&bytes, rows, cols, provider)
+    }
+
+    /// Keeps a person's keys back from the session until the hold is
+    /// dropped, then sends them on in the order they came: Luna is typing
+    /// around their draft, and a key landing in between would go out with
+    /// Luna's text or into the stash. None if the session is not there.
+    pub fn hold_keys(&self, id: &str) -> Option<KeyHold> {
+        let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        let s = sessions.get(id)?;
+        *s.held_keys.lock().unwrap_or_else(|e| e.into_inner()) = Some(Vec::new());
+        Some(KeyHold { id: id.to_string() })
     }
 
     /// Whether a running session or a background helper uses this account
@@ -1228,6 +1309,16 @@ pub fn write_session(id: String, data: String) -> Result<(), String> {
     let state = manager();
     let sessions = state.sessions.lock().unwrap();
     let s = sessions.get(&id).ok_or("no such session")?;
+    if let Some(held) = s.held_keys.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+        held.push(data);
+        return Ok(());
+    }
+    take_keys(s, data)
+}
+
+/// A person's keys into the session, noted for `typed_ago_ms` and
+/// `has_draft`.
+fn take_keys(s: &Session, data: String) -> Result<(), String> {
     // Keys, not what the terminal reports by itself (focus, mouse), which
     // arrives as escape sequences on the same path.
     if !data.starts_with('\x1b') {
@@ -1239,6 +1330,25 @@ pub fn write_session(id: String, data: String) -> Result<(), String> {
     s.input_tx
         .send(Input::Bytes(data.into_bytes()))
         .map_err(|_| "session writer is gone".to_string())
+}
+
+/// A person's keys held back from a session (`PtyManager::hold_keys`); they
+/// go on when this is dropped.
+pub struct KeyHold {
+    id: String,
+}
+
+impl Drop for KeyHold {
+    fn drop(&mut self) {
+        // Under the session map, which every key takes on its way in: none
+        // can overtake the ones held.
+        let sessions = manager().sessions.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(s) = sessions.get(&self.id) else { return };
+        let held = s.held_keys.lock().unwrap_or_else(|e| e.into_inner()).take().unwrap_or_default();
+        for data in held {
+            let _ = take_keys(s, data);
+        }
+    }
 }
 
 /// Queued behind the keystrokes that preceded it and applied on the writer
@@ -1569,6 +1679,11 @@ pub struct SessionMeta {
     /// First real prompt of the session — the chat's title until the CLI
     /// comes up with one.
     pub first_prompt: Option<String>,
+    /// A person left something typed and not sent in its composer.
+    pub draft: bool,
+    /// Text Luna holds for it until that draft is sent or cleared: sends
+    /// from other sessions, notices to it (agents.rs `held_count`).
+    pub held: usize,
 }
 
 /// A session's title as its CLI has it, and whether the user typed it.
@@ -1699,6 +1814,82 @@ fn ctrl_letter(c: char) -> Option<char> {
 
 /// Set in the draft state when the last character typed was a backslash.
 const DRAFT_BACKSLASH: u64 = 1 << 63;
+/// How long after a key the screen may still not show it: until then the
+/// keys' word on a draft stands (see `has_draft`).
+const DRAFT_SETTLE_MS: u64 = 1_500;
+
+/// What a CLI's composer holds, read off its screen.
+#[derive(Debug, PartialEq)]
+pub struct Composer {
+    /// What is typed in it, blank lines and the edges trimmed; empty when
+    /// nothing is. A placeholder, drawn dim, is not text.
+    pub text: String,
+    /// Claude Code holds a draft put aside with Ctrl+S, and says so above
+    /// the composer until it is back: another Ctrl+S on text would replace
+    /// it.
+    pub stashed: bool,
+}
+
+/// The composer on a session's screen, read where the cursor is: both CLIs
+/// put the terminal's cursor at the caret. Its first row starts with the
+/// prompt mark — Claude Code's `❯` under a rule, Codex's `›`, which it draws
+/// dim on the prompts in the conversation and not on its composer — and it
+/// runs down to Claude Code's rule under it or to Codex's first blank row.
+/// None with the cursor hidden or anywhere else: a dialog, a picker, a mode
+/// with a mark of its own (`!`), a screen not drawn yet.
+pub fn read_composer(bytes: &[u8], rows: u16, cols: u16, provider: Provider) -> Option<Composer> {
+    let mut parser = vt100::Parser::new(rows.max(1), cols.max(1), 0);
+    parser.process(bytes);
+    let screen = parser.screen();
+    if screen.hide_cursor() {
+        return None;
+    }
+    let (cursor, _) = screen.cursor_position();
+    let first = |r: u16| screen.cell(r, 0).map_or("", |c| c.contents());
+    let rule = |r: u16| first(r) == "─";
+    let blank = |r: u16| (0..cols).all(|c| screen.cell(r, c).map_or(true, |x| x.contents().trim().is_empty()));
+    let mark = match provider {
+        Provider::Claude => "❯",
+        Provider::Codex => "›",
+    };
+    let top = (0..=cursor).rev().find(|&r| first(r) == mark)?;
+    let end = match provider {
+        Provider::Claude => {
+            if top == 0 || !rule(top - 1) {
+                return None;
+            }
+            // A pane too short for the rule under it ends with the composer.
+            (top + 1..rows).find(|&r| rule(r)).unwrap_or(rows)
+        }
+        Provider::Codex => {
+            if screen.cell(top, 0).is_some_and(|c| c.dim()) {
+                return None;
+            }
+            (top + 1..rows).find(|&r| blank(r)).unwrap_or(rows)
+        }
+    };
+    if cursor >= end {
+        return None;
+    }
+    let lines: Vec<String> = (top..end)
+        .map(|r| {
+            let row: String = (2..cols)
+                .filter_map(|c| screen.cell(r, c))
+                .filter(|c| !c.dim() && !c.is_wide_continuation())
+                .map(|c| if c.has_contents() { c.contents() } else { " " })
+                .collect();
+            row.trim_end().to_string()
+        })
+        .collect();
+    let stashed = provider == Provider::Claude
+        && (top.saturating_sub(3)..top.saturating_sub(1)).any(|r| {
+            let row: String =
+                (0..cols).filter_map(|c| screen.cell(r, c)).map(|c| if c.has_contents() { c.contents() } else { " " }).collect();
+            // The mark that stays, or the word the stash first flashes.
+            row.trim_end().ends_with("› stashed") || row.contains("stashed · ")
+        });
+    Some(Composer { text: lines.join("\n").trim().to_string(), stashed })
+}
 
 /// The composer's length after a person's keys, roughly: characters add,
 /// Backspace takes one off, Enter, Ctrl+C and Ctrl+U empty it — but not an
@@ -1950,6 +2141,13 @@ pub async fn session_meta(id: String, account_path: String) -> Result<Option<Ses
             m.status = Some("waiting".into());
         }
     }
+    if let Some(m) = meta.as_mut() {
+        // The screen may be read for it, which replays the scrollback: off
+        // the main thread, like the disk.
+        let of = id.clone();
+        m.draft = tauri::async_runtime::spawn_blocking(move || manager().has_draft(&of)).await.unwrap_or(false);
+        m.held = crate::agents::held_count(&id);
+    }
     Ok(meta)
 }
 
@@ -2030,6 +2228,52 @@ mod tests {
         assert_eq!(String::from_utf8(as_key_events(b"\x03\x14")).unwrap(), format!("{}{}", ctrl(67, 99), ctrl(84, 116)));
         // Backspace, Tab, Ctrl+J and Enter stay keys of their own.
         assert_eq!(String::from_utf8(as_key_events(b"\x08\t\n\r")).unwrap(), "\x08\t\n\r");
+    }
+
+    /// A screen drawn the way the CLIs draw theirs: text put at rows and
+    /// columns (1-based, as the escapes count), the cursor left at the end.
+    fn drawn(parts: &[(u16, u16, &str)], cursor: (u16, u16)) -> Vec<u8> {
+        let mut out = String::from("\x1b[2J");
+        for (r, c, text) in parts {
+            out.push_str(&format!("\x1b[{r};{c}H{text}"));
+        }
+        out.push_str(&format!("\x1b[{};{}H", cursor.0, cursor.1));
+        out.into_bytes()
+    }
+
+    #[test]
+    fn claude_codes_composer_is_read_between_its_rules() {
+        let rule = "─".repeat(40);
+        let read = |parts: &[(u16, u16, &str)], cursor| read_composer(&drawn(parts, cursor), 10, 40, Provider::Claude);
+        let empty = read(&[(1, 1, "❯ Reply with just OK."), (6, 1, &rule), (7, 1, "❯ "), (8, 1, &rule)], (7, 3));
+        assert_eq!(empty, Some(Composer { text: String::new(), stashed: false }));
+        // A lone space is no draft either.
+        let space = read(&[(6, 1, &rule), (7, 1, "❯  "), (8, 1, &rule)], (7, 4));
+        assert_eq!(space.map(|c| c.text), Some(String::new()));
+        let typed = read(&[(5, 1, &rule), (6, 1, "❯ line2"), (7, 1, "  third[Pasted text #1 +29 lines]"), (8, 1, &rule)], (7, 34));
+        assert_eq!(typed.map(|c| c.text).as_deref(), Some("line2\nthird[Pasted text #1 +29 lines]"));
+        let short = read(&[(9, 1, &rule), (10, 1, "❯ my draft")], (10, 11));
+        assert_eq!(short.map(|c| c.text).as_deref(), Some("my draft"), "no room left for the rule under it");
+        let stashed = read(&[(5, 30, "› stashed"), (6, 1, &rule), (7, 1, "❯ "), (8, 1, &rule)], (7, 3));
+        assert_eq!(stashed, Some(Composer { text: String::new(), stashed: true }));
+        // A prompt in the conversation, with no rule over it: a dialog has
+        // the cursor, not the composer.
+        assert_eq!(read(&[(2, 1, "❯ Reply with just OK."), (4, 1, "Do you trust this folder?")], (5, 1)), None);
+        let hidden = [drawn(&[(6, 1, &rule), (7, 1, "❯ hi"), (8, 1, &rule)], (7, 5)), b"\x1b[?25l".to_vec()].concat();
+        assert_eq!(read_composer(&hidden, 10, 40, Provider::Claude), None);
+    }
+
+    #[test]
+    fn codexs_composer_leaves_its_dim_placeholder_out() {
+        let read = |parts: &[(u16, u16, &str)], cursor| read_composer(&drawn(parts, cursor), 10, 60, Provider::Codex);
+        let history = (2, 1, "\x1b[2m› \x1b[22mReply with just OK.");
+        let footer = (9, 1, "  GPT-6.1-Sol low · C:\\src");
+        let empty = read(&[history, (6, 1, "› \x1b[2mAsk Codex to do anything\x1b[22m"), footer], (6, 3));
+        assert_eq!(empty, Some(Composer { text: String::new(), stashed: false }));
+        let typed = read(&[history, (6, 1, "› hello world"), (7, 1, "  second"), footer], (7, 9));
+        assert_eq!(typed.map(|c| c.text).as_deref(), Some("hello world\nsecond"));
+        // The cursor on a prompt in the conversation, drawn dim: not a composer.
+        assert_eq!(read(&[history, footer], (2, 3)), None);
     }
 
     #[test]

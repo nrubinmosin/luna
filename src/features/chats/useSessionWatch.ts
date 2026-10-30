@@ -5,6 +5,7 @@ import { PROVIDER_LABEL, type Chat } from '../../shared/types';
 import { accountOfChat, useAccounts } from '../accounts/accounts.store';
 import { ui } from '../providers';
 import { useChats } from './chats.store';
+import { useDrafts } from './drafts.store';
 
 const EVERY_MS = 4000;
 
@@ -56,6 +57,7 @@ export function useSessionWatch() {
           // No live session — the pty exited or was never started. Anything
           // other than resting would be a lie the sidebar keeps telling.
           if (fresh.status !== 'resting') store.setStatus(chat.id, 'resting');
+          useDrafts.getState().set(chat.id, null);
           // A chat restored from an earlier run may still wear the opening
           // prompt it was named after; the CLI's title is on disk by now.
           if (fresh.sessionId && fresh.nameSource !== 'user' && !titleLooked.has(chat.id)) {
@@ -73,6 +75,8 @@ export function useSessionWatch() {
         // settled on: the first generated title stays.
         if (meta.title) store.setName(chat.id, meta.title, meta.titleRenamed ? 'rename' : 'cli');
         else if (meta.firstPrompt) store.setName(chat.id, meta.firstPrompt, 'prompt');
+
+        useDrafts.getState().set(chat.id, { draft: meta.draft, held: meta.held });
 
         const next = mapStatus(meta.status);
         if (next === 'waiting' && fresh.status !== 'waiting') {

@@ -244,7 +244,7 @@ fn tools() -> Value {
         },
         {
             "name": "luna_send",
-            "description": "Send text to a session (any from luna_sessions) as a prompt; it reads as the user's, so say who you are to one you did not spawn. Returns stateBefore, queued (it was working: the text joins that turn or the next), started (false when not queued = not taken as a prompt, see screen) and turnsEnded to pass to luna_wait as afterTurn.",
+            "description": "Send text to a session (any from luna_sessions) as a prompt; it reads as the user's, so say who you are to one you did not spawn. Returns stateBefore, queued (it was working: joins that turn or the next), held (a user's draft is in the way: typed in later), started (false if neither = not taken, see screen), turnsEnded for luna_wait afterTurn.",
             "inputSchema": s(json!({
                 "id": { "type": "string" },
                 "text": { "type": "string" },
