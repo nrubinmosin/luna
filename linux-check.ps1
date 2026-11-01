@@ -16,17 +16,23 @@ if (git -C $root status --porcelain) { $build = "$build+" }
 docker build -t luna-linuxcheck -f "$root/docker/linux-check.Dockerfile" "$root/docker"
 if ($LASTEXITCODE) { throw "docker build failed (exit $LASTEXITCODE)" }
 
-# Single-quoted: the container's shell owns every $ in here.
+# Single-quoted: the container's shell owns every $ in here. No double quotes:
+# Windows PowerShell breaks up a native argument with one in it.
 #
-# - The tests need no frontend, and the build only wants a folder to embed.
-# - Every checkout shares the target volume under the same /app path, and cargo
-#   goes by file times: a checkout whose sources are older than the last build
-#   would pass for up to date. So the crate itself is always rebuilt; its
-#   dependencies stay cached.
+# Every checkout shares the target volume under the same /app path, and cargo goes
+# by file times: a checkout whose sources are older than the last build would pass
+# for up to date. So the crate itself is always rebuilt; its dependencies stay
+# cached. A volume to each checkout would cost a full build and 6 GB apiece.
+#
+# That rebuild and the tests it makes are one step, under a lock in the volume
+# itself: with another check's build landing between the two, this one would run
+# that one's tests and report them as its own. The mutex below cannot promise that:
+# off Windows it stops at the user, and a Docker daemon may have several. This lock
+# goes with the container, however it ends.
 $cmd = @'
 set -e
-mkdir -p /tmp/no-frontend
-export TAURI_CONFIG='{"build":{"frontendDist":"/tmp/no-frontend"}}'
+exec 9>/target/.linux-check.lock
+flock -n 9 || { echo 'another Linux check is using these volumes; waiting for it'; flock 9; }
 cd /app/src-tauri
 cargo clean --locked -p luna
 cargo test --locked --lib --bins
