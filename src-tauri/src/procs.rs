@@ -88,10 +88,28 @@ mod imp {
         let _ = set_limit(job, JOB_OBJECT_LIMIT(0));
     }
 
-    /// The OS saw to the last core's jobs as it died: over, every one.
-    pub fn end_last_ties() -> impl Fn(&str) -> bool {
-        |_| true
+    /// What became of the last core's jobs: the OS saw to them as it died.
+    pub struct LastTies;
+
+    impl LastTies {
+        /// A tied job was seen out, every one.
+        pub fn held(&self, _id: &str) -> bool {
+            true
+        }
+
+        /// Nothing written down, so nothing looked at to say otherwise now of a
+        /// job that was not tied.
+        pub fn confirmed(&self, _id: &str) -> bool {
+            false
+        }
     }
+
+    pub fn end_last_ties() -> LastTies {
+        LastTies
+    }
+
+    /// Needed only where a job goes by what is in the environment (keeper.rs).
+    pub fn also_marked(_job: &Job, _var: &str, _value: &str) {}
 
     /// The tie needs no process of its own here.
     pub fn keeper_from_args() -> bool {
@@ -363,7 +381,7 @@ mod imp {
 
 #[cfg(not(windows))]
 mod imp {
-    pub use crate::keeper::{adopt, end_last_ties, from_args as keeper_from_args, join, let_go, tie, Job};
+    pub use crate::keeper::{adopt, also_marked, end_last_ties, from_args as keeper_from_args, join, let_go, tie, Job};
 
     pub fn end(_pid: u32, _started_ms: u64) -> bool {
         false
@@ -396,7 +414,7 @@ mod imp {
     }
 }
 
-pub use imp::{adopt, alive, end_last_ties, join, keeper_from_args, let_go, tie, Job};
+pub use imp::{adopt, alive, also_marked, end_last_ties, join, keeper_from_args, let_go, tie, Job};
 
 /// When a process was created, epoch ms, where the platform says.
 pub fn created_ms(pid: u32) -> Option<u64> {
