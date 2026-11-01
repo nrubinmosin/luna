@@ -562,6 +562,9 @@ struct NoticeTurn {
     turn: u32,
     /// Those the notice told of that were the session's own helpers then.
     helpers: Vec<String>,
+    /// It told of nobody else: the turn was the session at work on what its
+    /// own helpers brought, and nobody's notice came back to it.
+    only_helpers: bool,
 }
 
 /// The last a caller heard of an account's usage window.
@@ -4451,7 +4454,12 @@ fn wait_for(
         if told_pending {
             let waits = waits_on_helpers(id, caller);
             let job = (ts.is_some_and(|t| t.children_busy) && alive) || waits;
-            let now = verdict(&Owed::pending(baseline, 0), turns_ended, turn, job, real_turn_past(id, caller, baseline, turns_ended, waits));
+            // What it has said since the caller last heard, as a notice would go by.
+            let upward = || {
+                let cursor = reg().lock().unwrap_or_else(|e| e.into_inner()).owed.get(&key).map(|o| o.cursor);
+                turn != Some(crate::activity::Turn::Busy) && cursor.is_some_and(|at| news_for_parent(&pty, caller, id, &known, at))
+            };
+            let now = verdict(&Owed::pending(baseline, 0), turns_ended, turn, job, real_turn_past(id, caller, baseline, turns_ended, waits, upward));
             if now == Verdict::OnlyNotices {
                 baseline = turns_ended;
             }
@@ -5427,21 +5435,46 @@ fn verdict(o: &Owed, ended: u32, turn: Option<crate::activity::Turn>, job: bool,
 /// `id` has all its own helpers' answers (`waits`: not yet), one on a notice
 /// from them, in which it goes on with what it was asked. Not when it is
 /// `caller` who is that helper: that is its own notice coming back.
-fn real_turn_past(id: &str, caller: &str, after: u32, ended: u32, waits: bool) -> bool {
-    let r = reg().lock().unwrap_or_else(|e| e.into_inner());
-    let marked = r.notice_turns.get(id);
-    (after.saturating_add(1)..=ended).any(|turn| match marked.and_then(|m| m.iter().find(|m| m.turn == turn)) {
-        None => true,
-        Some(m) => !waits && m.helpers.iter().any(|h| h != caller),
-    })
+///
+/// `upward`: `caller` is `id`'s parent and `id` has written more than a line
+/// or two since it last heard (`news_for_parent`). Then turns on its own
+/// helpers' notices reach it while others are still out, every turn since
+/// being one of those: what a helper makes of its helpers' answers goes up the
+/// tree it was spawned in, and nothing goes back to a session whose notice
+/// started a turn. Two chats that wrote to each other are no parent and helper
+/// to each other; one that is the other's parent hears only of turns on
+/// notices about its helper's own helpers, and the helper never of its parent.
+fn real_turn_past(id: &str, caller: &str, after: u32, ended: u32, waits: bool, upward: impl FnOnce() -> bool) -> bool {
+    let turns = after.saturating_add(1)..=ended;
+    let (counts, on_helpers) = {
+        let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+        let marked = r.notice_turns.get(id);
+        let mark = |turn: u32| marked.and_then(|m| m.iter().find(|m| m.turn == turn));
+        let counts = turns.clone().any(|turn| match mark(turn) {
+            None => true,
+            Some(m) => !waits && m.helpers.iter().any(|h| h != caller),
+        });
+        (counts, turns.clone().all(|turn| mark(turn).is_some_and(|m| m.only_helpers && !m.helpers.is_empty())))
+    };
+    // Read off the lock: it looks at the transcript.
+    counts || (on_helpers && !turns.is_empty() && upward())
+}
+
+/// For `real_turn_past`: `caller` is `id`'s parent, and `id` has written a
+/// message since `cursor` that is more than a line or two (SHORT_MESSAGE): a
+/// report worth a turn of the parent's, not "noted, waiting on the rest",
+/// which comes with the answer all the same.
+fn news_for_parent(pty: &crate::pty::PtyManager, caller: &str, id: &str, k: &Known, cursor: u64) -> bool {
+    k.parent.as_deref() == Some(caller) && said_since(pty, id, k.provider, cursor).iter().any(|m| m.chars().count() >= SHORT_MESSAGE)
 }
 
 /// A notice about `about` went into `caller` and starts its turn ending at
 /// `turn`.
 fn notice_turn(r: &mut Registry, caller: &str, turn: u32, about: &[String]) {
     let helpers: Vec<String> = about.iter().filter(|a| is_descendant(r, caller, a)).cloned().collect();
+    let only_helpers = helpers.len() == about.len();
     let turns = r.notice_turns.entry(caller.to_string()).or_default();
-    turns.push(NoticeTurn { turn, helpers });
+    turns.push(NoticeTurn { turn, helpers, only_helpers });
     if turns.len() > NOTICE_TURNS_KEPT {
         turns.remove(0);
     }
@@ -5501,12 +5534,14 @@ fn notice_line(
     let ended = ts.map(|t| t.turns_ended).unwrap_or(0);
     let turn = ts.map(|t| t.turn);
     let alive = live(pty, id);
-    // Claude Code ends a turn on a job it put in the background and takes it
-    // up again in a turn of its own when the job is done; for anything else
-    // that job's end is all there will be to hear of.
+    // A Claude Code chat ends a turn on a job it put in the background and takes
+    // it up again in a turn of its own when the job is done (`claude -p` stays
+    // in its turn until then); for anything else that job's end is all there
+    // will be to hear of.
     let background = ts.is_some_and(|t| t.children_busy) && alive;
     let waits = waits_on_helpers(id, caller);
-    let real_turn = o.told_pending && real_turn_past(id, caller, o.baseline, ended, waits);
+    let between_turns = turn != Some(crate::activity::Turn::Busy);
+    let real_turn = o.told_pending && real_turn_past(id, caller, o.baseline, ended, waits, || between_turns && news_for_parent(pty, caller, id, k, o.cursor));
     let now = verdict(&o, ended, turn, background || waits, real_turn);
     if now == Verdict::OnlyNotices {
         return Some((None, Settled::Skip(ended)));
@@ -7427,7 +7462,7 @@ mod tests {
             for (caller, id) in [(a, b), (b, a)] {
                 let Some(o) = reg().lock().unwrap().owed.get(&key(caller, id)).copied() else { continue };
                 let ended = turns[id];
-                let v = verdict(&o, ended, Some(Turn::Idle), job, real_turn_past(id, caller, o.baseline, ended, false));
+                let v = verdict(&o, ended, Some(Turn::Idle), job, real_turn_past(id, caller, o.baseline, ended, false, || true));
                 let settled = match v {
                     Verdict::OnlyNotices => {
                         reg().lock().unwrap().owed.get_mut(&key(caller, id)).unwrap().baseline = ended;
@@ -7493,13 +7528,13 @@ mod tests {
         let mut r = reg().lock().unwrap();
         notice_turn(&mut r, "rt-s", 4, &["rt-other".into()]);
         drop(r);
-        let past = |after, ended| real_turn_past("rt-s", "rt-c", after, ended, false);
+        let past = |after, ended| real_turn_past("rt-s", "rt-c", after, ended, false, || false);
         assert!(!past(3, 4), "the one a notice started");
         assert!(past(3, 5), "and the one after it, which none did");
         assert!(past(2, 4), "or one before");
         assert!(!past(4, 4), "none past the count");
         // A notice that did not start a turn is not marked: at worst one notice more.
-        assert!(real_turn_past("rt-unmarked", "rt-c", 0, 1, false));
+        assert!(real_turn_past("rt-unmarked", "rt-c", 0, 1, false, || false));
         forget("rt-s");
     }
 
@@ -7527,24 +7562,124 @@ mod tests {
         notice_turn(&mut reg().lock().unwrap(), "tr-mid", 2, &["tr-low".into()]);
         let waits = waits_on_helpers("tr-mid", "tr-top");
         assert!(waits);
-        assert_eq!(verdict(&told, 2, Some(Idle), waits, real_turn_past("tr-mid", "tr-top", 1, 2, waits)), Verdict::OnlyNotices, "quiet while one is out");
+        assert_eq!(verdict(&told, 2, Some(Idle), waits, real_turn_past("tr-mid", "tr-top", 1, 2, waits, || false)), Verdict::OnlyNotices, "quiet while one is out");
+        assert_eq!(
+            verdict(&told, 2, Some(Idle), waits, real_turn_past("tr-mid", "tr-top", 1, 2, waits, || true)),
+            Verdict::TurnOver,
+            "unless what it made of that is news for its parent"
+        );
         // The last one's notice starts its turn 3: this is the result.
         reg().lock().unwrap().owed.remove(&("tr-mid".to_string(), "tr-low2".to_string()));
         notice_turn(&mut reg().lock().unwrap(), "tr-mid", 3, &["tr-low2".into()]);
         let waits = waits_on_helpers("tr-mid", "tr-top");
         assert!(!waits);
         let told = Owed::pending(2, 0);
-        assert_eq!(verdict(&told, 3, Some(Idle), waits, real_turn_past("tr-mid", "tr-top", 2, 3, waits)), Verdict::TurnOver, "it reaches the top");
+        assert_eq!(verdict(&told, 3, Some(Idle), waits, real_turn_past("tr-mid", "tr-top", 2, 3, waits, || false)), Verdict::TurnOver, "it reaches the top");
         // A notice about something else, or about the caller itself, does not count.
         notice_turn(&mut reg().lock().unwrap(), "tr-mid", 4, &["tr-stranger".into()]);
-        assert!(!real_turn_past("tr-mid", "tr-top", 3, 4, false));
+        assert!(!real_turn_past("tr-mid", "tr-top", 3, 4, false, || false));
+        assert!(!real_turn_past("tr-mid", "tr-top", 3, 4, false, || true), "news or not");
+        // A notice about its helper and someone else: not all its own helpers' doing.
+        notice_turn(&mut reg().lock().unwrap(), "tr-mid", 6, &["tr-low".into(), "tr-stranger".into()]);
+        assert!(!real_turn_past("tr-mid", "tr-top", 5, 6, true, || true));
         notice_turn(&mut reg().lock().unwrap(), "tr-low", 1, &["tr-mid".into()]);
-        assert!(!real_turn_past("tr-low", "tr-mid", 0, 1, false), "not a helper of its own");
+        assert!(!real_turn_past("tr-low", "tr-mid", 0, 1, false, || false), "not a helper of its own");
         notice_turn(&mut reg().lock().unwrap(), "tr-mid", 5, &["tr-low".into()]);
-        assert!(!real_turn_past("tr-mid", "tr-low", 4, 5, false), "its own notice coming back");
+        assert!(!real_turn_past("tr-mid", "tr-low", 4, 5, false, || false), "its own notice coming back");
         for id in ["tr-low", "tr-low2", "tr-mid", "tr-top"] {
             forget(id);
         }
+    }
+
+    /// The QA helper of 0.8.1: its helpers' notices start its turns, each ends
+    /// on a report its parent needs now, and its parent heard none until the
+    /// last helper had answered.
+    #[test]
+    fn a_report_made_on_its_own_helpers_news_reaches_its_parent_once() {
+        let none = serde_json::json!({});
+        register("ir-top", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, none.clone());
+        register("ir-mid", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("ir-top"), true, serde_json::json!({ "background": true }));
+        register("ir-low", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("ir-mid"), false, none.clone());
+        register("ir-low2", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("ir-mid"), false, none.clone());
+        register("ir-peer", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, none);
+        crate::background::idle_for_test("ir-mid", Provider::Claude, 2, false);
+        owe_from("ir-mid", "ir-low2", 0, 0);
+        let said = |t: &str| format!("{}\n", serde_json::json!({ "type": "assistant", "message": { "content": [{ "type": "text", "text": t }] } }));
+        let notice = format!("{}\n", serde_json::json!({ "type": "user", "message": { "role": "user", "content": format!("{NOTICE_TAG} Your helper ir-low finished its turn.") } }));
+        let before = said("Started both helpers.");
+        let path = std::env::temp_dir().join(format!("luna-ir-mid-{}.jsonl", std::process::id()));
+        transcripts().lock().unwrap().insert("ir-mid".into(), path.clone());
+        // Its turn 2 is on ir-low's notice, with ir-low2 still out.
+        notice_turn(&mut reg().lock().unwrap(), "ir-mid", 2, &["ir-low".into()]);
+        let known = reg().lock().unwrap().known.get("ir-mid").cloned().unwrap();
+        let pty = crate::pty::manager();
+        let line = |caller: &str, transcript: &str| {
+            std::fs::write(&path, format!("{before}{transcript}")).unwrap();
+            notice_line(&pty, caller, "Your helper", "ir-mid", &known, Owed::pending(1, before.len() as u64))
+        };
+        let report = format!("Phase 1 is in: kill the core before 12:35 UTC. {}", "Evidence. ".repeat(45));
+
+        let Some((Some(text), Settled::Pending(2, cursor))) = line("ir-top", &format!("{notice}{}", said(&report))) else { panic!("its parent hears") };
+        assert!(text.contains("ended another turn") && text.contains("helpers of its own have yet to answer it"), "{text}");
+        assert!(text.contains("It begins: \"Phase 1 is in"), "{text}");
+        assert_eq!(cursor, std::fs::metadata(&path).unwrap().len(), "and what follows is what it hears next");
+        let file = text.split("the answer is in ").nth(1).and_then(|t| t.split(", its report first").next()).unwrap();
+        assert!(std::fs::read_to_string(file).unwrap().starts_with("Phase 1 is in"));
+        let _ = std::fs::remove_file(file);
+        // A line or two is no news worth a turn: it comes with the answer.
+        assert!(matches!(line("ir-top", &format!("{notice}{}", said("Noted; waiting on ir-low2."))), Some((None, Settled::Skip(2)))));
+        // Only its parent: a session that wrote to it is told of its own turns alone.
+        assert!(matches!(line("ir-peer", &format!("{notice}{}", said(&report))), Some((None, Settled::Skip(2)))));
+        // A turn on a notice about anyone but its own helpers is no news for the parent.
+        notice_turn(&mut reg().lock().unwrap(), "ir-mid", 2, &["ir-low".into(), "ir-peer".into()]);
+        reg().lock().unwrap().notice_turns.get_mut("ir-mid").unwrap().remove(0);
+        assert!(matches!(line("ir-top", &format!("{notice}{}", said(&report))), Some((None, Settled::Skip(2)))));
+        let _ = std::fs::remove_file(&path);
+        crate::background::gone_for_test("ir-mid");
+        for id in ["ir-low", "ir-low2", "ir-mid", "ir-top", "ir-peer"] {
+            forget(id);
+        }
+    }
+
+    /// The loop of that night, between a chat and its own helper that wrote to
+    /// each other, every turn on a notice saying plenty: what goes up to the
+    /// parent never comes back down.
+    #[test]
+    fn a_parent_and_its_helper_that_wrote_to_each_other_do_not_wake_each_other_forever() {
+        use crate::activity::Turn;
+        let (p, h) = ("pq-parent", "pq-helper");
+        let none = serde_json::json!({});
+        register(p, Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, none.clone());
+        register(h, Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some(p), true, none);
+        let key = |caller: &str, id: &str| (caller.to_string(), id.to_string());
+        let mut turns: HashMap<&str, u32> = HashMap::from([(p, 1), (h, 1)]);
+        owe_from(p, h, 0, 0);
+        owe_from(h, p, 0, 0);
+        let mut notices = 0;
+        for _ in 0..500 {
+            for (caller, id) in [(p, h), (h, p)] {
+                let Some(o) = reg().lock().unwrap().owed.get(&key(caller, id)).copied() else { continue };
+                let ended = turns[id];
+                // Always news, wherever its parent is the one to hear it.
+                let upward = || parent_of(id).as_deref() == Some(caller);
+                let v = verdict(&o, ended, Some(Turn::Idle), true, o.told_pending && real_turn_past(id, caller, o.baseline, ended, false, upward));
+                match v {
+                    Verdict::OnlyNotices => reg().lock().unwrap().owed.get_mut(&key(caller, id)).unwrap().baseline = ended,
+                    Verdict::TurnOver => {
+                        notices += 1;
+                        let mut r = reg().lock().unwrap();
+                        notice_turn(&mut r, caller, turns[caller] + 1, &[id.to_string()]);
+                        r.owed.insert(key(caller, id), Owed::pending(ended, 0));
+                        drop(r);
+                        *turns.get_mut(caller).unwrap() += 1;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        assert_eq!(notices, 2, "\"NOT done yet\" once each, and quiet after");
+        forget(h);
+        forget(p);
     }
 
     #[test]
