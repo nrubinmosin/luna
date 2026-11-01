@@ -113,6 +113,10 @@ const AUTO_DELETE_IDLE_MS: u64 = 30 * 60 * 1000;
 /// that chat's CLI again, seconds later; but a caller that never comes back
 /// must not keep a helper from `reap` for good.
 const CALLER_RETURN_MS: u64 = 10 * 60 * 1000;
+/// How long into a core's life a chat the last core knew (`restore_chats`) is
+/// given to start again before whoever is owed by it hears it has not: the
+/// window starts the ones in panes within seconds, the rest when opened.
+const SESSION_RETURN_MS: u64 = 60_000;
 /// How every notice opens, so a model tells it from what the user types.
 pub const NOTICE_TAG: &str = "[Luna notice, not typed by the user]";
 /// The most warning lines a spawn passes on from the helper's screen.
@@ -233,6 +237,9 @@ struct Known {
     settings: serde_json::Value,
     /// Luna's tools were given to it: `tools/list` offers them.
     tools: bool,
+    /// Known from what the last core saved (`restore_chats`): its CLI has not
+    /// started under this one yet.
+    waiting: bool,
 }
 
 /// What an agent asks for. Everything but the prompt may be left to the
@@ -396,6 +403,9 @@ struct Owed {
     /// A core's going stopped its turn and it has gone on by itself
     /// (`resumeOnRestart`); the caller has yet to hear.
     resumed: bool,
+    /// A chat's turn asked about went with a core (`restore_chats`): it did
+    /// not finish, and the caller hears so.
+    cut_short: bool,
 }
 
 impl Owed {
@@ -411,6 +421,7 @@ impl Owed {
             late: false,
             lost: false,
             resumed: false,
+            cut_short: false,
         }
     }
 }
@@ -505,7 +516,9 @@ fn owe_from(caller: &str, id: &str, baseline: u32, cursor: u64) {
     }
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
     let key = (caller.to_string(), id.to_string());
-    let (cursor, resumed) = r.owed.get(&key).map_or((cursor, false), |o| (o.cursor.min(cursor), o.resumed));
+    // A new turn answers this one; that the last was cut short has yet to be
+    // said all the same.
+    let (cursor, resumed) = r.owed.get(&key).map_or((cursor, false), |o| (o.cursor.min(cursor), o.resumed || o.cut_short));
     r.owed.insert(key, Owed { resumed, ..Owed::from(baseline, cursor) });
 }
 
@@ -551,6 +564,10 @@ pub fn init() {
     });
 }
 
+fn account_name(account_path: &str) -> String {
+    std::path::Path::new(account_path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
 /// A session is starting. Returns the bearer token for its MCP config when it
 /// gets tools. Called at every spawn, so a resumed session is re-registered
 /// with the same lineage and a fresh token.
@@ -564,10 +581,7 @@ pub fn register(
     settings: serde_json::Value,
 ) -> Option<String> {
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-    let account = std::path::Path::new(account_path)
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
+    let account = account_name(account_path);
     let previous = r.known.get(id).cloned();
     r.known.insert(
         id.to_string(),
@@ -579,6 +593,7 @@ pub fn register(
             parent: parent.map(str::to_owned).or_else(|| previous.as_ref().and_then(|k| k.parent.clone())),
             settings,
             tools,
+            waiting: false,
         },
     );
     // One token per session: a respawn invalidates the last one.
@@ -730,7 +745,10 @@ pub struct Ties {
 }
 
 pub fn ties_of(id: &str) -> Option<Ties> {
-    let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    ties_in(&reg().lock().unwrap_or_else(|e| e.into_inner()), id)
+}
+
+fn ties_in(r: &Registry, id: &str) -> Option<Ties> {
     let k = r.known.get(id)?;
     Some(Ties {
         parent: k.parent.clone(),
@@ -769,11 +787,199 @@ pub fn tie_back(id: &str, provider: Provider, folder: &str, account_path: &str, 
     token
 }
 
+/// A session the window runs, as `<data>/chat-ties.json` keeps it for the core
+/// started after this one, as `helpers.json` does a background helper's: whose
+/// it is, what it was handed and what its callers are owed. The window starts
+/// it again, and `register` takes it from there.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SavedChat {
+    id: String,
+    provider: Provider,
+    folder: String,
+    account_path: String,
+    /// See `activity::turns_counted`.
+    turns_ended: u32,
+    transcript: Option<std::path::PathBuf>,
+    ties: Ties,
+}
+
+/// Text Luna told its sender it would type in (`Held`).
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SavedSend {
+    caller: String,
+    id: String,
+    text: String,
+}
+
+#[derive(Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct SavedChats {
+    chats: Vec<SavedChat>,
+    sends: Vec<SavedSend>,
+}
+
+fn chat_ties_file() -> std::path::PathBuf {
+    crate::paths::data_dir().join("chat-ties.json")
+}
+
+/// Set once `restore_chats` has read the file: an empty registry before it is
+/// not to be written over what the last core left.
+static CHATS_READ: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// What there is to keep of the sessions the window runs. A chat nobody spawned,
+/// wrote to or handed anything has nothing to keep: it comes back as it was.
+fn chats_now() -> SavedChats {
+    let (mut chats, sends) = {
+        let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+        let sends: Vec<SavedSend> = r.held.iter().map(|h| SavedSend { caller: h.caller.clone(), id: h.id.clone(), text: h.text.clone() }).collect();
+        let chats: Vec<SavedChat> = r
+            .known
+            .iter()
+            .filter(|(id, k)| {
+                k.settings["background"] != true
+                    && id.as_str() != DEV_CALLER
+                    && (k.parent.is_some()
+                        || r.auto.contains_key(*id)
+                        || r.borrowed.contains(*id)
+                        || r.owed.keys().any(|(_, s)| s == *id)
+                        || sends.iter().any(|h| h.id == **id))
+            })
+            .filter_map(|(id, k)| {
+                Some(SavedChat {
+                    id: id.clone(),
+                    provider: k.provider,
+                    folder: k.folder.clone(),
+                    account_path: k.account_path.clone(),
+                    turns_ended: 0,
+                    transcript: None,
+                    ties: ties_in(&r, id)?,
+                })
+            })
+            .collect();
+        (chats, sends)
+    };
+    for c in &mut chats {
+        c.turns_ended = crate::activity::turns_counted(&c.id).unwrap_or(0);
+        c.transcript = transcripts().lock().unwrap_or_else(|e| e.into_inner()).get(&c.id).cloned();
+    }
+    chats.sort_by(|a, b| a.id.cmp(&b.id));
+    SavedChats { chats, sends }
+}
+
+/// Writes `chats_now` out if it changed since the last write (background.rs
+/// `save` keeps the beat).
+pub fn save_chats() {
+    use std::sync::atomic::Ordering;
+    static LAST: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+    if !CHATS_READ.load(Ordering::SeqCst) {
+        return;
+    }
+    let Ok(bytes) = serde_json::to_vec_pretty(&chats_now()) else { return };
+    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    if *last == bytes {
+        return;
+    }
+    let path = chat_ties_file();
+    let tmp = path.with_extension("json.tmp");
+    match std::fs::write(&tmp, &bytes).and_then(|()| std::fs::rename(&tmp, &path)) {
+        Ok(()) => *last = bytes,
+        Err(e) => crate::log::warn("agents", &format!("could not save the chats' ties to {}: {e}", path.display())),
+    }
+}
+
+/// Takes up what the last core saved of the sessions the window runs, before
+/// anything can ask after them. They are known again as they were, lineage
+/// and all, though not running until the window starts them (`Known::waiting`).
+pub fn restore_chats() {
+    let saved: SavedChats = match std::fs::read(chat_ties_file()) {
+        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|e| {
+            crate::log::warn("agents", &format!("could not read chat-ties.json: {e}"));
+            SavedChats::default()
+        }),
+        Err(_) => SavedChats::default(),
+    };
+    let n = saved.chats.len();
+    take_up_chats(saved);
+    CHATS_READ.store(true, std::sync::atomic::Ordering::SeqCst);
+    if n > 0 {
+        crate::log::warn("agents", &format!("took up the ties of {n} chat(s) the last core left"));
+    }
+}
+
+fn take_up_chats(saved: SavedChats) {
+    let mut counts: Vec<(String, u32, Option<std::path::PathBuf>)> = Vec::new();
+    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    for c in saved.chats {
+        let ties = c.ties;
+        r.known.entry(c.id.clone()).or_insert(Known {
+            provider: c.provider,
+            account: account_name(&c.account_path),
+            folder: c.folder,
+            account_path: c.account_path,
+            parent: ties.parent,
+            settings: ties.settings,
+            tools: ties.tools,
+            waiting: true,
+        });
+        if let Some(name) = ties.name {
+            r.names.insert(c.id.clone(), name);
+        }
+        if ties.borrowed {
+            r.borrowed.insert(c.id.clone());
+        }
+        if ties.auto_delete {
+            r.auto.insert(c.id.clone(), Auto::default());
+        }
+        // An answer not in by the time the core went will not come: the CLI
+        // it was being written by went with it, and the one the window starts
+        // is between turns. That turn counts as ended, as a helper's does.
+        let mut count = c.turns_ended;
+        for (caller, baseline, cursor) in ties.owed {
+            let mut o = Owed::from(baseline, cursor);
+            if c.turns_ended <= baseline {
+                o.cut_short = true;
+                count = count.max(baseline.saturating_add(1));
+            }
+            r.owed.insert((caller, c.id.clone()), o);
+        }
+        for (caller, n) in ties.seen {
+            r.seen.insert((caller, c.id.clone()), n);
+        }
+        counts.push((c.id, count, c.transcript));
+    }
+    for h in saved.sends {
+        r.held.push(Held { caller: h.caller, id: h.id, text: h.text, since: now_ms(), told: false });
+    }
+    drop(r);
+    for (id, count, transcript) in counts {
+        crate::activity::keep_count(&id, count);
+        if let Some(path) = transcript {
+            transcripts().lock().unwrap_or_else(|e| e.into_inner()).insert(id, path);
+        }
+    }
+}
+
+/// How long this core has been up.
+fn core_up_ms() -> u64 {
+    static UP: OnceLock<u64> = OnceLock::new();
+    now_ms().saturating_sub(*UP.get_or_init(now_ms))
+}
+
+/// Whether a session the last core knew may yet be started by the window.
+fn returning(k: &Known, up_ms: u64) -> bool {
+    k.waiting && up_ms < SESSION_RETURN_MS
+}
+
 /// The window's Delete on a background helper: as its agent would, the
 /// worktree it made going too unless it was handed one.
 pub fn delete_by_user(id: &str) -> Result<(), String> {
     let known = reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(id).cloned().ok_or("no such helper")?;
-    remove(id, known, true).map(|_| ())
+    match remove(id, known, true)?.worktree_error {
+        Some(why) => Err(why),
+        None => Ok(()),
+    }
 }
 
 /// A Claude Code hook (hub.rs): what it puts up for an answer, kept until
@@ -2306,6 +2512,10 @@ fn deliver_held(pty: &crate::pty::PtyManager) {
             }
         };
         if !live(pty, &id) {
+            // Kept across a core: it goes in once the window has started it.
+            if reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(&id).is_some_and(|k| returning(k, core_up_ms())) {
+                continue;
+            }
             drop_it(&mut *reg().lock().unwrap_or_else(|e| e.into_inner()));
             if caller != DEV_CALLER {
                 let ended = crate::activity::turn_state(&id).map_or(0, |t| t.turns_ended);
@@ -3077,7 +3287,7 @@ pub fn kill(caller: &str, id: &str) -> Result<(), String> {
 /// A person's Delete has its dialog to warn of the work in a worktree; an
 /// agent's refuses while there is any, unless `force`. Nothing has been touched
 /// by the time it does, the session still running if it was.
-pub fn delete(caller: &str, id: &str, drop_worktree: bool, force: bool) -> Result<Option<String>, String> {
+pub fn delete(caller: &str, id: &str, drop_worktree: bool, force: bool) -> Result<Removed, String> {
     let known = authorize(caller, id)?;
     if drop_worktree && !force {
         let folder = crate::worktree::project_of(&known.folder).unwrap_or_else(|| known.folder.clone());
@@ -3110,7 +3320,33 @@ fn worktree_to_drop(id: &str, folder: &str) -> Option<String> {
     (!pty.worktree_shared(id, &wt)).then_some(wt)
 }
 
-fn remove(id: &str, known: Known, drop_worktree: bool) -> Result<Option<String>, String> {
+/// What a delete did with the session's worktree. The session is gone either
+/// way: a worktree that would not go (a file held open) is named, for the
+/// caller to deal with, not an error that a retry could only answer with "not
+/// one you spawned".
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Removed {
+    pub ok: bool,
+    pub worktree_removed: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worktree_left: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worktree_error: Option<String>,
+}
+
+impl Removed {
+    fn of(worktree_removed: Option<String>) -> Removed {
+        Removed { ok: true, worktree_removed, worktree_left: None, worktree_error: None }
+    }
+
+    fn left(worktree: Option<String>, why: String) -> Removed {
+        crate::log::warn("delete", &format!("the session is gone, its worktree is not: {why}"));
+        Removed { ok: true, worktree_removed: None, worktree_left: worktree, worktree_error: Some(why) }
+    }
+}
+
+fn remove(id: &str, known: Known, drop_worktree: bool) -> Result<Removed, String> {
     let pty = crate::pty::manager();
     // What `luna_sessions` history has left to go on once it is gone.
     if known.parent.is_some() {
@@ -3132,22 +3368,30 @@ fn remove(id: &str, known: Known, drop_worktree: bool) -> Result<Option<String>,
         forget(id);
         crate::activity::forget(id);
         crate::log::info("delete", &format!("background helper {who}, worktree {made:?}, dropping {drop_worktree}"));
-        return match made {
+        return Ok(match made {
             // As for a chat (`PtyManager::delete`): a worktree another
             // session or helper is in stays, its work with it.
             Some(wt) if drop_worktree && pty.worktree_shared(id, &wt) => {
                 crate::log::warn("delete", &format!("kept worktree {wt}: another session is in it"));
-                Ok(None)
+                Removed::of(None)
             }
-            Some(wt) if drop_worktree => crate::worktree::remove_worktree_now(folder, wt.clone()).map(|_| Some(wt)),
-            _ => Ok(None),
-        };
+            Some(wt) if drop_worktree => match crate::worktree::remove_worktree_now(folder, wt.clone()) {
+                Ok(()) => Removed::of(Some(wt)),
+                Err(why) => Removed::left(Some(wt), why),
+            },
+            _ => Removed::of(None),
+        });
     }
+    // Asked before it goes: its process is what says where it works.
+    let at_stake = if drop_worktree { worktree_to_drop(id, &folder) } else { None };
     // PtyManager::delete forgets the session here too (see `forget`).
-    let worktree = tauri::async_runtime::block_on(pty.delete(id, &folder, None, drop_worktree))?;
+    let deleted = tauri::async_runtime::block_on(pty.delete(id, &folder, None, drop_worktree));
     crate::emit::to_ui("agent://deleted", Deleted { id: id.to_string() });
-    // Without the drop, `delete` names the worktree that stays.
-    Ok(worktree.filter(|_| drop_worktree))
+    Ok(match deleted {
+        // Without the drop, `delete` names the worktree that stays.
+        Ok(worktree) => Removed::of(worktree.filter(|_| drop_worktree)),
+        Err(why) => Removed::left(at_stake, why),
+    })
 }
 
 /// The shortest gap between two notifications from one session: a model in
@@ -3321,7 +3565,8 @@ fn note_file(id: &str, text: &str) -> Option<std::path::PathBuf> {
 /// ends on it: labelled so that it is not read as anything the helper said.
 fn undelivered_text(lost: &[String]) -> String {
     let mut text = format!(
-        "NOT DELIVERED: {} queued for this helper when Luna's core stopped its turn. It never saw them; send again what still matters. Word for word, oldest first:",
+        "NOT DELIVERED: {} meant for this helper when Luna's core stopped its turn. It never acted on them; send again what still matters. \
+         Word for word, oldest first (the first is its opening prompt, if it never got started):",
         count_of(lost)
     );
     for (i, message) in lost.iter().enumerate() {
@@ -3452,6 +3697,17 @@ fn notice_line(
             1 => format!(" with 1 message since you asked; {}", answer_where(file.as_deref())),
             n => format!(" with {n} messages since you asked; {}", answer_where(file.as_deref())),
         };
+        if crate::background::never_started(id) {
+            let what = match (lost.len(), &file) {
+                (_, None) => "its prompt was not kept".to_string(),
+                (1, Some(path)) => format!("its prompt is in {}", path.display()),
+                (n, Some(path)) => format!("its prompt and {} are in {}", count_of(&lost[1.min(n)..]).replace("message", "queued message"), path.display()),
+            };
+            return Some((
+                Some(format!("{who} never got started: Luna's core restarted before its first turn got anywhere, so its prompt was lost and there is nothing to carry on from; {what}. luna_send starts it afresh.")),
+                Settled::Answered,
+            ));
+        }
         let lost = undelivered_line(&lost, !replies.is_empty(), file.as_deref());
         if background {
             return Some((
@@ -3461,7 +3717,7 @@ fn notice_line(
                 Settled::Pending(ended, transcript_end(id)),
             ));
         }
-        if crate::background::cut_short(id) {
+        if crate::background::cut_short(id) || o.cut_short {
             return Some((
                 Some(format!("{who} did NOT finish its turn: Luna's core restarted while it worked and stopped it. It ended{reply}.{lost} luna_send has it carry on.")),
                 Settled::Answered,
@@ -3472,6 +3728,16 @@ fn notice_line(
         return Some((Some(format!("{who} finished its turn{reply}.{lost}{resumed}")), Settled::Answered));
     }
     if !live(pty, id) {
+        // The window has yet to start it, as it does a chat in a pane.
+        if returning(k, core_up_ms()) {
+            return None;
+        }
+        if o.cut_short {
+            return Some((
+                Some(format!("{who} did NOT finish its turn: Luna's core restarted while it worked, and it has not started again. It runs again once the user opens it.")),
+                Settled::Exited,
+            ));
+        }
         if o.lost {
             return Some((
                 Some(format!("{who} has exited before Luna could type your message in: the user's draft held it until then.")),
@@ -3567,17 +3833,16 @@ fn held_for_wait(pty: &crate::pty::PtyManager, caller: &str, id: &str, o: &Owed)
 
 /// Whether what `caller` is owed by `id` still stands `up_ms` into this core's
 /// life: a delete takes the session or the caller from `known`, but a caller
-/// not known yet may be one on its way back (CALLER_RETURN_MS).
+/// not started under this core yet may be one on its way back
+/// (CALLER_RETURN_MS).
 fn owed_stands(known: &HashMap<String, Known>, caller: &str, id: &str, up_ms: u64) -> bool {
-    known.contains_key(id) && (known.contains_key(caller) || up_ms < CALLER_RETURN_MS)
+    known.contains_key(id) && (known.get(caller).is_some_and(|k| !k.waiting) || up_ms < CALLER_RETURN_MS)
 }
 
 /// Runs for the life of the app: every few seconds, for each caller owed an
 /// answer, checks whether one came and tells the caller once it is idle; and
 /// deletes the `autoDelete` helpers that are done (see `reap`).
 fn notifier() {
-    // Started as the core comes up, right after `background::restore`.
-    let core_up = now_ms();
     let mut idle_looks: HashMap<String, u32> = HashMap::new();
     // Callers whose notice a draft is holding back: since when, and whether
     // the desktop has been told.
@@ -3595,7 +3860,7 @@ fn notifier() {
         {
             let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
             let Registry { owed, known, names, .. } = &mut *r;
-            let up_ms = now_ms().saturating_sub(core_up);
+            let up_ms = core_up_ms();
             owed.retain(|(caller, id), _| {
                 let stands = owed_stands(known, caller, id, up_ms);
                 if !stands && known.contains_key(id) {
@@ -3605,7 +3870,7 @@ fn notifier() {
             });
             for ((caller, id), o) in owed.iter() {
                 let Some(k) = known.get(id) else { continue };
-                if !known.contains_key(caller) {
+                if known.get(caller).map_or(true, |k| k.waiting) {
                     continue;
                 }
                 let parent = k.parent.as_deref() == Some(caller.as_str());
@@ -3750,6 +4015,8 @@ fn notifier() {
 #[tauri::command]
 pub fn chat_names(mut names: HashMap<String, String>, groups: Option<HashMap<String, u32>>) {
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    // A row deleted while no core ran told nobody.
+    let gone = gone_from_the_window(&r, &names);
     // A background helper has no row to be named by: it keeps the name it
     // was spawned with (`set_name`) until the window runs it as a chat.
     for (id, name) in &r.names {
@@ -3761,6 +4028,21 @@ pub fn chat_names(mut names: HashMap<String, String>, groups: Option<HashMap<Str
     if let Some(groups) = groups {
         r.groups = groups;
     }
+    drop(r);
+    for id in gone {
+        crate::log::info("agents", &format!("{id} has no row any more; letting go of what the last core kept of it"));
+        forget(&id);
+        crate::activity::forget(&id);
+    }
+}
+
+/// The sessions kept from the last core (`Known::waiting`) that the window, now
+/// it has said which chats it has, does not have.
+fn gone_from_the_window(r: &Registry, names: &HashMap<String, String>) -> Vec<String> {
+    if names.is_empty() {
+        return Vec::new();
+    }
+    r.known.iter().filter(|(id, k)| k.waiting && !names.contains_key(*id)).map(|(id, _)| id.clone()).collect()
 }
 
 /// Each account's usage as the window shows it, by `provider/name`, sent
@@ -4045,7 +4327,7 @@ mod tests {
     fn text_queued_as_the_core_went_comes_back_with_the_notice() {
         let none = serde_json::json!({});
         register("ql-child", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("ql-parent"), false, none);
-        crate::background::take_up_for_test("ql-child", "C:\\p", 3, &["first line\nsecond line", "and another"]);
+        crate::background::take_up_for_test("ql-child", "C:\\p", 3, &["first line\nsecond line", "and another"], None);
         owe_from("ql-parent", "ql-child", 3, 0);
         let (line, how) = notice_for("ql-parent", "ql-child", 5);
         let line = line.unwrap();
@@ -4075,7 +4357,7 @@ mod tests {
         register("rs-child", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("rs-parent"), false, none);
         assert!(resumes_on_restart("rs-child"));
         assert!(!resumes_on_restart("nobody"));
-        crate::background::take_up_for_test("rs-child", "C:\\p", 3, &[]);
+        crate::background::take_up_for_test("rs-child", "C:\\p", 3, &[], None);
         owe_from("rs-parent", "rs-child", 3, 40);
         // The stopped turn is counted (4); the answer ends the one started past it.
         resumed("rs-child", 4);
@@ -4089,6 +4371,125 @@ mod tests {
         assert!(owed().resumed && owed().cursor == 40, "asked again before the notice went, it still has to go");
         crate::background::remove("rs-child");
         forget("rs-child");
+    }
+
+    #[test]
+    fn a_helper_that_never_got_started_says_so_and_hands_back_its_prompt() {
+        register("ns-child", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("ns-parent"), false, serde_json::json!({}));
+        crate::background::take_up_for_test("ns-child", "C:\\p", 0, &["and a follow-up"], Some("do the whole job"));
+        owe_from("ns-parent", "ns-child", 0, 0);
+        let (line, how) = notice_for("ns-parent", "ns-child", 2);
+        let line = line.unwrap();
+        assert!(matches!(how, Settled::Answered));
+        assert!(line.contains("never got started") && line.contains("its prompt was lost") && line.contains("luna_send starts it afresh"), "{line}");
+        assert!(line.contains("its prompt and 1 queued message are in "), "{line}");
+        let file = line.split(" are in ").nth(1).and_then(|l| l.split(". luna_send").next()).unwrap();
+        let held = std::fs::read_to_string(file).unwrap();
+        let _ = std::fs::remove_file(file);
+        assert!(held.find("do the whole job").unwrap() < held.find("and a follow-up").unwrap(), "{held}");
+        // Still there to delete, which is what writes its end down.
+        assert!(reg().lock().unwrap().known.contains_key("ns-child"));
+        crate::background::remove("ns-child");
+        forget("ns-child");
+    }
+
+    #[test]
+    fn what_the_last_core_knew_of_a_chat_comes_back_with_it() {
+        let saved = SavedChats {
+            chats: vec![SavedChat {
+                id: "tc-chat".into(),
+                provider: Provider::Codex,
+                folder: "C:\\p".into(),
+                account_path: "C:\\acc\\openai\\two".into(),
+                turns_ended: 5,
+                transcript: None,
+                ties: Ties {
+                    parent: Some("tc-parent".into()),
+                    name: Some("the chat".into()),
+                    settings: serde_json::json!({ "sandbox": "read-only" }),
+                    tools: false,
+                    borrowed: true,
+                    auto_delete: true,
+                    // One whose answer was in, one whose turn went with the core.
+                    owed: vec![("tc-parent".into(), 4, 10), ("tc-peer".into(), 5, 20)],
+                    seen: vec![("tc-parent".into(), 5)],
+                },
+            }],
+            sends: vec![SavedSend { caller: "tc-parent".into(), id: "tc-chat".into(), text: "held across".into() }],
+        };
+        // As the file has it.
+        let saved: SavedChats = serde_json::from_slice(&serde_json::to_vec(&saved).unwrap()).unwrap();
+        take_up_chats(saved);
+        let key = |caller: &str| (caller.to_string(), "tc-chat".to_string());
+        {
+            let r = reg().lock().unwrap();
+            let k = &r.known["tc-chat"];
+            assert!(k.waiting && k.parent.as_deref() == Some("tc-parent") && k.account == "two");
+            assert!(r.borrowed.contains("tc-chat") && r.auto.contains_key("tc-chat"));
+            assert_eq!(r.names.get("tc-chat").map(String::as_str), Some("the chat"));
+            assert!(!r.owed[&key("tc-parent")].cut_short, "its answer was in before the core went");
+            assert!(r.owed[&key("tc-peer")].cut_short, "this one never will be");
+            assert_eq!(r.seen.get(&key("tc-parent")), Some(&5));
+            assert!(r.held.iter().any(|h| h.id == "tc-chat" && h.text == "held across"));
+        }
+        assert_eq!(crate::activity::turns_counted("tc-chat"), Some(6), "the stopped turn counts as ended, as a helper's does");
+        let k = reg().lock().unwrap().known["tc-chat"].clone();
+        assert!(returning(&k, 0) && returning(&k, SESSION_RETURN_MS - 1));
+        assert!(!returning(&k, SESSION_RETURN_MS), "it has had its chance");
+        // Held off while it may come back; then the caller hears.
+        let o = reg().lock().unwrap().owed[&key("tc-peer")];
+        assert!(notice_line(&crate::pty::manager(), "Session", "tc-chat", &k, o).is_none(), "the window has yet to start it");
+        let mut gone = k.clone();
+        gone.waiting = false;
+        let (said, how) = notice_line(&crate::pty::manager(), "Session", "tc-chat", &gone, o).unwrap();
+        assert!(matches!(how, Settled::Exited));
+        assert!(said.unwrap().contains("has not started again"));
+
+        // Text going in before that word is out does not swallow it.
+        owe_from("tc-peer", "tc-chat", 6, 30);
+        let o = reg().lock().unwrap().owed[&key("tc-peer")];
+        assert!(o.resumed && !o.cut_short && o.cursor == 20, "this turn answers; the last one's end is still to be told");
+
+        // Not back, it is not known for good to its callers either.
+        let stands = |up: u64| owed_stands(&reg().lock().unwrap().known, "tc-chat", "someone", up);
+        reg().lock().unwrap().known.entry("someone".into()).or_insert_with(|| k.clone());
+        assert!(stands(0) && !stands(CALLER_RETURN_MS), "a waiting caller is given as long as an unknown one");
+        reg().lock().unwrap().known.remove("someone");
+
+        // The window has no such row: what was kept goes.
+        {
+            let r = reg().lock().unwrap();
+            let names: HashMap<String, String> = [("other".to_string(), "x".to_string())].into_iter().collect();
+            assert!(gone_from_the_window(&r, &names).contains(&"tc-chat".to_string()));
+            assert!(gone_from_the_window(&r, &HashMap::new()).is_empty(), "a window with no list yet says nothing");
+            let names: HashMap<String, String> = [("tc-chat".to_string(), "x".to_string())].into_iter().collect();
+            assert!(!gone_from_the_window(&r, &names).contains(&"tc-chat".to_string()));
+        }
+
+        // Started again, it is any chat, and what it keeps stays for the next core.
+        register("tc-chat", Provider::Codex, "C:\\p", "C:\\acc\\openai\\two", Some("tc-parent"), false, serde_json::json!({}));
+        assert!(!reg().lock().unwrap().known["tc-chat"].waiting);
+        let now = chats_now();
+        let c = now.chats.iter().find(|c| c.id == "tc-chat").expect("a chat with ties is saved");
+        assert_eq!(c.turns_ended, 6);
+        assert!(c.ties.borrowed && c.ties.auto_delete && c.ties.owed.len() == 2);
+        assert!(now.sends.iter().any(|h| h.id == "tc-chat"));
+        reg().lock().unwrap().held.retain(|h| h.id != "tc-chat");
+        forget("tc-chat");
+        crate::activity::forget("tc-chat");
+    }
+
+    #[test]
+    fn a_chat_with_nothing_to_keep_or_a_helper_is_not_saved_as_one() {
+        let none = serde_json::json!({});
+        register("sv-plain", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, false, none.clone());
+        register("sv-bg", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("sv-plain"), false, serde_json::json!({ "background": true }));
+        register("sv-child", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("sv-plain"), false, none);
+        let ids: Vec<String> = chats_now().chats.into_iter().map(|c| c.id).filter(|id| id.starts_with("sv-")).collect();
+        assert_eq!(ids, ["sv-child"], "helpers.json has the background one");
+        for id in ["sv-plain", "sv-bg", "sv-child"] {
+            forget(id);
+        }
     }
 
     #[test]

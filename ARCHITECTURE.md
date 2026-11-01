@@ -614,15 +614,37 @@ src-tauri/src/
   transcript offset staying, and are marked: the caller gets one notice that it was cut short and
   resumed (`Settled::Resumed`), then the usual one. A turn too short for the first merges them. A
   resume that cannot start counts as an ended turn with its error (`run_turn`), and the notice is the
-  plain cut-short one with the text still held. One
-  whose first turn never named its conversation has nothing to resume and is let go. Nothing is
+  plain cut-short one with the text still held. A helper stopped before any turn named its conversation
+  is taken up like any other, so its debt, its lineage and in time its end record in `agents.jsonl`
+  survive: what its turn was started on is saved until then (`Entry::opening`) and becomes the first of
+  its undelivered text, the notice says it never got started (`never_started`), and its next turn is a
+  first turn, which `luna_send` starts, or with `resumeOnRestart` `resume` on that same text. Nothing is
   written before `restore` has read the file, so an empty registry never overwrites it.
-  **Deleting a worktree with work in it.** `luna_delete` with `dropWorktree` runs `git status --porcelain`
-  and a `rev-list` of commits on no other branch or remote in the worktree `remove` would take
-  (`worktree_to_drop`: not one handed to the session or shared; `worktree::unsaved_work`) before it
-  touches anything, and refuses with a short list; `force` skips that. A checkout git cannot read
-  counts as work. The window's Delete and `reap` (which never drops a worktree) go by `remove` as
-  before: the dialog has warned a person already.
+  **The chats' ties.** The sessions the window runs have no `helpers.json`, but as much that a core must
+  not forget: `<data>/chat-ties.json` (`agents::save_chats`, on `save`'s beat) keeps, for each that was
+  spawned, handed a worktree or is owed on, its `Ties`, turn count and transcript, and the sends Luna holds
+  (`Held`). `restore_chats` reads it first. A chat is known again from there (`Known::waiting`), its
+  lineage, `borrowed`, `auto` and debts with it, until the window starts it and `register` clears the
+  mark, so `dropWorktree` still will not touch a worktree it was handed. The count goes on
+  (`activity::keep_count`), since baselines go by it. A debt the count had not passed when the core went
+  is one whose turn went too (`Owed::cut_short`): that turn counts as ended, as a helper's does, and the
+  notice says it did not finish; text going in before that notice does (a held send, say) makes a new
+  debt, which carries the word on (`owe_from`). A session given `SESSION_RETURN_MS` (1 min) to come back that has not
+  is reported as not started again (a chat not in a pane starts only when opened), a send held for it as
+  lost; a caller marked waiting is given `CALLER_RETURN_MS`, as one not known at all. A row deleted while
+  no core ran told nobody: `chat_names`, the first list of rows after, drops what was kept of it. What a
+  chat's CLI was doing is not resumed: the window starts it between turns, for a person or `luna_send`.
+  **Deleting a worktree with work in it.** `luna_delete` with `dropWorktree` takes the worktree `remove`
+  would (`worktree_to_drop`: not one handed to the session or shared; a Codex worktree off its rollout
+  before the first turn's end records it) and, before it touches anything, runs `git status --porcelain`
+  and counts the commits that would go for good (`commits_lost`): those HEAD or a `worktree-*` branch
+  going with it reach, and no branch that stays and no remote does. That covers a detached HEAD, and a
+  throwaway branch left behind by a switch; a branch the session named itself stays, so its commits do
+  not count. It refuses with a short list; `force` skips that. A checkout git cannot read counts as work.
+  The session goes before its worktree, since its process holds the files: a removal that still fails is
+  not an error (a retry would find no session) but `worktreeLeft` and `worktreeError` in the result. The
+  log says which branches were deleted and which kept. The window's Delete and `reap` (which never drops
+  a worktree) go by `remove` too: the dialog has warned a person already.
   **One state, and what is asked.** Tool answers carry `state` (`state_of`: working, waiting,
   question, background, idle, starting, exited) instead of a turn word and a busy flag that could
   disagree, and `ask` (`ask_of`): a background helper's held call; for Claude Code the tool its

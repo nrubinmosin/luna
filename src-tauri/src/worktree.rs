@@ -286,8 +286,9 @@ pub fn remove_worktree_now(folder: String, worktree_path: String) -> Result<(), 
         let _ = git(&folder).args(["worktree", "prune"]).output();
     }
 
-    crate::log::info("worktree", &format!("removed {worktree_path} (branch {branch:?})"));
-    drop_branches(&folder, &worktree_path, branch);
+    let deleted = drop_branches(&folder, &worktree_path, branch.clone());
+    let kept = branch.filter(|b| !deleted.contains(b));
+    crate::log::info("worktree", &format!("removed {worktree_path}: branches deleted {deleted:?}, kept {kept:?}"));
     // Codex keeps each checkout in a bucket of its own, which git leaves
     // behind empty.
     if codex_shaped(&worktree_path) {
@@ -310,18 +311,23 @@ fn made_branch(worktree_path: &str) -> Option<String> {
     Some(format!("worktree-{dir}"))
 }
 
-/// Deletes the throwaway branches of a removed worktree: the one it was made
+/// The throwaway branches of a worktree, which go with it: the one it was made
 /// on, and the one checked out at the end if that is throwaway too.
 /// Restricted to Claude Code's `worktree-*` naming: anything else is a branch
 /// someone made on purpose, and `-D` would discard real commits.
-fn drop_branches(folder: &str, worktree_path: &str, checked_out: Option<String>) {
-    let mut branches: Vec<String> = made_branch(worktree_path).into_iter().chain(checked_out).collect();
+fn throwaway_branches(worktree_path: &str, checked_out: Option<&str>) -> Vec<String> {
+    let mut branches: Vec<String> = made_branch(worktree_path).into_iter().chain(checked_out.map(str::to_owned)).filter(|b| b.starts_with("worktree-")).collect();
     branches.dedup();
-    for branch in branches {
-        if branch.starts_with("worktree-") {
-            let _ = git(folder).args(["branch", "-D", &branch]).output();
-        }
-    }
+    branches
+}
+
+/// Deletes the throwaway branches of a removed worktree, and returns the ones
+/// that went.
+fn drop_branches(folder: &str, worktree_path: &str, checked_out: Option<String>) -> Vec<String> {
+    throwaway_branches(worktree_path, checked_out.as_deref())
+        .into_iter()
+        .filter(|branch| git(folder).args(["branch", "-D", branch]).output().is_ok_and(|o| o.status.success()))
+        .collect()
 }
 
 /// A worktree younger than this is assumed to belong to a session that has not
@@ -466,12 +472,36 @@ fn unique_commits(path: &str, branch: Option<&str>) -> Option<u32> {
     rev.output().ok().filter(|o| o.status.success()).and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok())
 }
 
+/// How many commits go for good with this worktree: those its HEAD or a branch
+/// going with it can reach (`throwaway_branches`, deleted whatever they hold)
+/// and no branch that stays and no remote can. A detached HEAD, as Codex's
+/// worktrees have, is reachable from nothing else once it is gone; a branch the
+/// session named itself stays, its commits with it.
+fn commits_lost(path: &str, checked_out: Option<&str>) -> Option<u32> {
+    let going = throwaway_branches(path, checked_out);
+    let mut rev = git(path);
+    rev.args(["rev-list", "--count", "HEAD"]);
+    for b in &going {
+        let there = git(path).args(["show-ref", "--verify", "--quiet", &format!("refs/heads/{b}")]).output().is_ok_and(|o| o.status.success());
+        if there {
+            rev.arg(format!("refs/heads/{b}"));
+        }
+    }
+    rev.arg("--not");
+    for b in &going {
+        rev.arg(format!("--exclude={b}"));
+    }
+    rev.args(["--branches", "--remotes"]);
+    rev.output().ok().filter(|o| o.status.success()).and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok())
+}
+
 /// The most changes a refusal to remove a worktree names: it is read by a
 /// model that has the whole of `git status` a command away.
 const UNSAVED_NAMED: usize = 10;
 
 /// What removing this worktree would lose for good, in words: the changes in
-/// it and the commits only it has. None when that is nothing, or it is gone.
+/// it and the commits that would go with it. None when that is nothing, or it
+/// is gone.
 pub fn unsaved_work(folder: &str, path: &str) -> Option<String> {
     if !Path::new(path).exists() {
         return None;
@@ -489,7 +519,7 @@ pub fn unsaved_work(folder: &str, path: &str) -> Option<String> {
         let what = if changes.len() == 1 { "1 uncommitted change".to_string() } else { format!("{} uncommitted changes", changes.len()) };
         said.push(format!("{what} ({}{more})", names.join(", ")));
     }
-    match unique_commits(path, branch_of(folder, path).as_deref()) {
+    match commits_lost(path, branch_of(folder, path).as_deref()) {
         None | Some(0) => {}
         Some(1) => said.push("1 commit on no other branch or remote".into()),
         Some(n) => said.push(format!("{n} commits on no other branch or remote")),
@@ -642,6 +672,36 @@ mod tests {
         std::fs::remove_file(Path::new(&wt).join(".git")).unwrap();
         assert!(unsaved_work(&repo, &wt).unwrap().contains("cannot read"), "unknown is not nothing");
         assert_eq!(unsaved_work(&repo, &root.join("gone").to_string_lossy()), None, "gone takes nothing with it");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_branch_that_goes_with_the_worktree_is_no_home_for_its_commits_and_one_that_stays_is() {
+        let Some((root, repo, _)) = codex_layout("branches") else { return };
+        let wt = root.join("repo").join(".claude").join("worktrees").join("w1");
+        let wt = wt.to_string_lossy().into_owned();
+        let ok = |c: &mut Command| c.output().is_ok_and(|o| o.status.success());
+        assert!(ok(git(&repo).args(["worktree", "add", "-q", "-b", "worktree-w1", &wt])));
+        let commit = |msg: &str| ok(git(&wt).args(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", msg]));
+        assert_eq!(unsaved_work(&repo, &wt), None, "nothing past what it was made from");
+        assert!(commit("on the throwaway branch"));
+        assert_eq!(unsaved_work(&repo, &wt).unwrap(), "1 commit on no other branch or remote", "branch -D takes it");
+        // Moved onto a branch of its own: that one stays, with the commit.
+        assert!(ok(git(&wt).args(["switch", "-q", "-c", "keeper"])));
+        assert!(commit("on its own branch"));
+        assert_eq!(unsaved_work(&repo, &wt), None, "nothing is lost with `keeper` staying");
+        // Back on the throwaway one, past what `keeper` has.
+        assert!(ok(git(&wt).args(["switch", "-q", "worktree-w1"])));
+        assert!(commit("again"));
+        assert_eq!(unsaved_work(&repo, &wt).unwrap(), "1 commit on no other branch or remote");
+        // And a throwaway branch left behind counts though HEAD is elsewhere.
+        assert!(ok(git(&wt).args(["switch", "-q", "keeper"])));
+        assert_eq!(unsaved_work(&repo, &wt).unwrap(), "1 commit on no other branch or remote");
+        // What removal says it did.
+        assert_eq!(throwaway_branches(&wt, Some("keeper")), ["worktree-w1"]);
+        remove_worktree_now(repo.clone(), wt.clone()).unwrap();
+        let branches = String::from_utf8_lossy(&git(&repo).args(["branch", "--list"]).output().unwrap().stdout).into_owned();
+        assert!(branches.contains("keeper") && !branches.contains("worktree-w1"), "{branches}");
         let _ = std::fs::remove_dir_all(&root);
     }
 

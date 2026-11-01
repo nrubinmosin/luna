@@ -103,6 +103,10 @@ struct Entry {
     /// reached the CLI. Kept, across cores too, until a caller has been told
     /// (agents.rs `undelivered_shown`) or a turn of `resume` has taken it.
     undelivered: Vec<String>,
+    /// What its latest turn was started on, for as long as no turn has named
+    /// its conversation: with nothing on disk to resume, that is all there is
+    /// of a helper a core's going stops now.
+    opening: Option<String>,
     /// The job every turn's process is put in, the first one's made for it:
     /// what a turn leaves running is still the helper's between turns, holds
     /// the machine as a chat's would, and is ended with the helper.
@@ -271,6 +275,7 @@ pub fn start(id: &str, spec: Spec, prompt: &str) -> Result<(), String> {
         error: None,
         cut_short: false,
         undelivered: Vec::new(),
+        opening: None,
         job: None,
     };
     claim(&mut e);
@@ -546,6 +551,7 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
                 e.run = Some(Run { pid, started_ms: crate::throttle::now_ms(), stopped: false });
                 e.error = None;
                 e.cut_short = false;
+                e.opening = e.session.is_none().then(|| prompt.to_string());
                 note(e, &format!("› {}", one_line(prompt)));
                 None
             }
@@ -828,15 +834,24 @@ pub fn made_worktree(id: &str) -> Option<String> {
     (!crate::pty::same_dir(&cwd, &folder)).then_some(cwd)
 }
 
-/// The worktree `remove` would hand back, with nothing touched.
+/// The worktree `remove` would hand back, with nothing touched: where the CLI
+/// has said it works, off Codex's rollout until the turn's end records it.
 pub fn removable_worktree(id: &str) -> Option<String> {
-    let r = lock();
-    let e = r.entries.get(id)?;
-    e.cwd.clone().filter(|c| !crate::pty::same_dir(c, &e.spec.folder) && crate::worktree::is_worktree_of(&e.spec.folder, c))
+    let (cwd, folder, provider, account, session) = {
+        let r = lock();
+        let e = r.entries.get(id)?;
+        (e.cwd.clone(), e.spec.folder.clone(), e.spec.provider, e.spec.account_path.clone(), e.session.clone())
+    };
+    let cwd = cwd.or_else(|| match provider {
+        Provider::Codex => crate::codex::session::thread_cwd(&account, session.as_deref()?),
+        Provider::Claude => None,
+    })?;
+    (!crate::pty::same_dir(&cwd, &folder) && crate::worktree::is_worktree_of(&folder, &cwd)).then_some(cwd)
 }
 
 /// Stops it and forgets it. Returns the worktree it made, if any.
 pub fn remove(id: &str) -> Option<String> {
+    let made = removable_worktree(id);
     kill(id);
     let e = lock().entries.remove(id);
     reg().1.notify_all();
@@ -845,7 +860,7 @@ pub fn remove(id: &str) -> Option<String> {
     let e = e?;
     crate::agents::undelivered_left(id, &e.undelivered);
     end_leftovers(id, e.job.as_deref());
-    e.cwd.filter(|c| !crate::pty::same_dir(c, &e.spec.folder) && crate::worktree::is_worktree_of(&e.spec.folder, c))
+    made
 }
 
 /// The last lines of what it did, in place of a screen.
@@ -1123,6 +1138,10 @@ struct Saved {
     /// See `Entry::undelivered`.
     #[serde(default)]
     undelivered: Vec<String>,
+    /// See `Entry::opening`: written only while no turn has named the
+    /// conversation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    opening: Option<String>,
     cut_short: bool,
     ties: crate::agents::Ties,
 }
@@ -1142,34 +1161,9 @@ fn save() {
     if !RESTORED.load(Ordering::SeqCst) {
         return;
     }
-    let rows: Vec<(String, Spec, u64, Option<String>, Option<String>, u32, bool, Vec<String>, Vec<String>, bool)> = lock()
-        .entries
-        .iter()
-        .map(|(id, e)| {
-            (id.clone(), e.spec.clone(), e.started_ms, e.session.clone(), e.cwd.clone(), e.turns_ended, e.run.is_some(), e.queue.clone(), e.undelivered.clone(), e.cut_short)
-        })
-        .collect();
-    // The agent layer's lock after this one is let go: it is the one taken
-    // first where both are held.
-    let mut saved: Vec<Saved> = rows
-        .into_iter()
-        .map(|(id, spec, started_ms, session, cwd, turns_ended, running, queue, undelivered, cut_short)| Saved {
-            ties: crate::agents::ties_of(&id).unwrap_or_default(),
-            id,
-            spec,
-            started_ms,
-            session,
-            cwd,
-            turns_ended,
-            running,
-            queued: !queue.is_empty(),
-            queue,
-            undelivered,
-            cut_short,
-        })
-        .collect();
-    saved.sort_by_key(|s| s.started_ms);
-    let Ok(bytes) = serde_json::to_vec_pretty(&saved) else { return };
+    // The chats' ties go by the same beat, in a file of their own.
+    crate::agents::save_chats();
+    let Ok(bytes) = serde_json::to_vec_pretty(&snapshot()) else { return };
     let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
     if *last == bytes {
         return;
@@ -1182,12 +1176,43 @@ fn save() {
     }
 }
 
+/// The registry as `helpers.json` keeps it.
+fn snapshot() -> Vec<Saved> {
+    let mut saved: Vec<Saved> = lock()
+        .entries
+        .iter()
+        .map(|(id, e)| Saved {
+            id: id.clone(),
+            spec: e.spec.clone(),
+            started_ms: e.started_ms,
+            session: e.session.clone(),
+            cwd: e.cwd.clone(),
+            turns_ended: e.turns_ended,
+            running: e.run.is_some(),
+            queued: !e.queue.is_empty(),
+            queue: e.queue.clone(),
+            undelivered: e.undelivered.clone(),
+            opening: e.opening.clone().filter(|_| e.session.is_none()),
+            cut_short: e.cut_short,
+            ties: Default::default(),
+        })
+        .collect();
+    // The agent layer's lock after this one is let go: it is the one taken
+    // first where both are held.
+    for s in &mut saved {
+        s.ties = crate::agents::ties_of(&s.id).unwrap_or_default();
+    }
+    saved.sort_by_key(|s| s.started_ms);
+    saved
+}
+
 /// Takes up the helpers the last core left, and keeps them saved from here
 /// on. A turn that core was in the middle of is over, stopped with it; the
 /// caller owed its answer is told so, and given back what was queued behind
 /// it. One spawned with `resumeOnRestart` goes on by itself (`resume_stopped`).
-/// One whose first turn never named its conversation has nothing to resume,
-/// and is let go.
+/// One stopped before any turn named its conversation is taken up all the
+/// same: its next turn starts one, and what it was started on goes back to the
+/// caller with the rest, or to that next turn if it resumes by itself.
 pub fn restore() {
     let saved: Vec<Saved> = match std::fs::read(saved_file()) {
         Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|e| {
@@ -1198,11 +1223,6 @@ pub fn restore() {
     };
     let mut back = Vec::new();
     for mut s in saved {
-        if s.session.is_none() {
-            crate::log::warn("background", &format!("let go of helper {}: its first turn never named its conversation", s.id));
-            crate::agents::undelivered_left(&s.id, &[std::mem::take(&mut s.undelivered), std::mem::take(&mut s.queue)].concat());
-            continue;
-        }
         let ties = std::mem::take(&mut s.ties);
         let token = crate::agents::tie_back(&s.id, s.spec.provider, &s.spec.folder, &s.spec.account_path, ties);
         let (id, running) = (s.id.clone(), s.running);
@@ -1248,12 +1268,16 @@ fn resume(id: &str) {
     let (text, count, carried) = {
         let mut r = lock();
         let Some(e) = r.entries.get_mut(id) else { return };
-        // Something got there first.
-        if e.run.is_some() {
+        // Something got there first. No conversation to go on with and no
+        // words of its first turn (a file from an older core): nothing to run.
+        let unnamed = e.session.is_none();
+        if e.run.is_some() || (unnamed && e.undelivered.is_empty()) {
             return;
         }
         claim(e);
-        (resume_text(&e.undelivered), e.turns_ended, e.undelivered.len())
+        // Never started, it is started now, on what it was given as it was.
+        let text = if unnamed { e.undelivered.join("\n\n") } else { resume_text(&e.undelivered) };
+        (text, e.turns_ended, e.undelivered.len())
     };
     crate::agents::resumed(id, count);
     match run_turn(id, &text) {
@@ -1264,7 +1288,7 @@ fn resume(id: &str) {
             }
             crate::log::warn(
                 "background",
-                &format!("{}: resumed by itself after a core stopped its turn, {carried} queued message(s) with it", crate::agents::label(id)),
+                &format!("{}: resumed by itself after a core stopped its turn, {carried} undelivered message(s) with it", crate::agents::label(id)),
             );
         }
         Err(why) => crate::log::warn("background", &format!("{}: could not resume by itself: {why}", crate::agents::label(id))),
@@ -1294,7 +1318,9 @@ fn resume_text(queued: &[String]) -> String {
 /// behind it, which never reached the CLI (as `stop` counts them) and is kept
 /// for its sender.
 fn taken_up(s: Saved) -> Entry {
-    let undelivered = [s.undelivered, s.queue].concat();
+    let stopped = s.running || s.cut_short;
+    let first: Vec<String> = s.opening.filter(|_| stopped && s.session.is_none()).into_iter().collect();
+    let undelivered = [first, s.undelivered, s.queue].concat();
     let mut e = Entry {
         spec: s.spec,
         started_ms: s.started_ms,
@@ -1306,8 +1332,9 @@ fn taken_up(s: Saved) -> Entry {
         log: VecDeque::new(),
         held: None,
         error: None,
-        cut_short: s.cut_short || s.running,
+        cut_short: stopped,
         undelivered,
+        opening: None,
         job: None,
     };
     if s.running {
@@ -1326,6 +1353,12 @@ pub fn cut_short(id: &str) -> bool {
     lock().entries.get(id).is_some_and(|e| e.cut_short)
 }
 
+/// Whether a core's going stopped it before any turn named its conversation:
+/// nothing it did can be carried on from.
+pub fn never_started(id: &str) -> bool {
+    lock().entries.get(id).is_some_and(|e| e.cut_short && e.session.is_none())
+}
+
 /// See `Entry::undelivered`.
 pub fn undelivered(id: &str) -> Vec<String> {
     lock().entries.get(id).map(|e| e.undelivered.clone()).unwrap_or_default()
@@ -1339,7 +1372,7 @@ pub fn clear_undelivered(id: &str) {
 
 /// A helper as a core takes it up, for the tests of what its caller is told.
 #[cfg(test)]
-pub fn take_up_for_test(id: &str, folder: &str, turns_ended: u32, queue: &[&str]) {
+pub fn take_up_for_test(id: &str, folder: &str, turns_ended: u32, queue: &[&str], opening: Option<&str>) {
     let spec: Spec = serde_json::from_value(json!({
         "provider": "claude", "accountPath": "C:\\acc", "folder": folder, "worktree": false, "model": null,
         "effort": "low", "mode": "default", "autoReview": false, "tools": false, "hooksUnasked": false,
@@ -1349,13 +1382,14 @@ pub fn take_up_for_test(id: &str, folder: &str, turns_ended: u32, queue: &[&str]
         id: id.to_string(),
         spec,
         started_ms: 0,
-        session: Some("sid".into()),
+        session: opening.is_none().then(|| "sid".to_string()),
         cwd: None,
         turns_ended,
         running: true,
         queued: !queue.is_empty(),
         queue: queue.iter().map(|t| t.to_string()).collect(),
         undelivered: Vec::new(),
+        opening: opening.map(str::to_owned),
         cut_short: false,
         ties: Default::default(),
     });
@@ -1392,6 +1426,7 @@ mod tests {
             error: None,
             cut_short: false,
             undelivered: Vec::new(),
+            opening: None,
             job: None,
         }
     }
@@ -1413,6 +1448,7 @@ mod tests {
             queued,
             queue: if queued { vec!["first".to_string(), "second".to_string()] } else { Vec::new() },
             undelivered: Vec::new(),
+            opening: None,
             cut_short: false,
             ties: Default::default(),
         };
@@ -1468,6 +1504,41 @@ mod tests {
     }
 
     #[test]
+    fn a_helper_stopped_before_it_named_its_conversation_keeps_what_it_was_given() {
+        // Saved as such only while no turn has named it.
+        let mut e = entry(Provider::Claude);
+        e.opening = Some("the prompt".into());
+        lock().entries.insert("unnamed".into(), e);
+        let saved = |id: &str| snapshot().into_iter().find(|s| s.id == id).unwrap();
+        assert_eq!(saved("unnamed").opening.as_deref(), Some("the prompt"));
+        on_claude_event(lock().entries.get_mut("unnamed").unwrap(), &json!({ "type": "system", "subtype": "init", "session_id": "s-1" }));
+        assert_eq!(saved("unnamed").opening, None, "the conversation holds it now");
+        lock().entries.remove("unnamed");
+
+        take_up_for_test("never", "C:\\luna-no-such-folder", 0, &["then this"], Some("the prompt"));
+        assert!(never_started("never"));
+        assert_eq!(undelivered("never"), ["the prompt", "then this"], "what it was started on goes first");
+        // A first turn again: no conversation to resume, its words as they were.
+        let (args, _, _) = command_for(lock().entries.get("never").unwrap(), "never");
+        assert!(!args.contains(&"--resume".to_string()));
+        resume("never");
+        let e = lock().entries.remove("never").unwrap();
+        assert_eq!(e.undelivered, ["the prompt", "then this"], "it could not start: kept");
+        assert!(e.cut_short);
+
+        // Stopped by nothing: a first turn that failed by itself has lost nothing to the core.
+        let s = serde_json::from_value::<Saved>(json!({
+            "id": "c1", "spec": serde_json::to_value(&entry(Provider::Claude).spec).unwrap(), "startedMs": 5, "session": null, "cwd": null,
+            "turnsEnded": 1, "running": false, "queued": false, "opening": "the prompt", "cutShort": false, "ties": {
+                "parent": null, "name": null, "settings": {}, "tools": false, "borrowed": false, "autoDelete": false, "owed": [], "seen": [],
+            },
+        }))
+        .unwrap();
+        let e = taken_up(s);
+        assert!(e.undelivered.is_empty() && !e.cut_short);
+    }
+
+    #[test]
     fn a_resumed_turn_is_told_why_and_given_what_was_queued() {
         let text = resume_text(&[]);
         assert!(text.starts_with(crate::agents::NOTICE_TAG) && text.contains("Carry on where you left off"));
@@ -1479,7 +1550,7 @@ mod tests {
 
     #[test]
     fn a_resume_that_cannot_start_leaves_the_helper_cut_short_with_its_text() {
-        take_up_for_test("resume-fail", "C:\\luna-no-such-folder", 3, &["queued"]);
+        take_up_for_test("resume-fail", "C:\\luna-no-such-folder", 3, &["queued"], None);
         resume("resume-fail");
         let e = lock().entries.remove("resume-fail").unwrap();
         assert!(e.run.is_none() && e.cut_short && e.error.is_some());

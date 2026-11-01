@@ -62,7 +62,8 @@ can start other sessions and work with them.
   the same directory.
 - `name` is its name in Luna.
 - `resumeOnRestart: true` (background only, either CLI; refused with `visible: true`, a chat
-  comes back with the window): a turn a restart of Luna's core stopped goes on by itself.
+  comes back with the window): a turn a restart of Luna's core stopped goes on by itself, or
+  starts afresh on its prompt if it had not got anywhere yet.
 - The result: `id`, the resolved `settings`, `started`, `starting` (the CLI has not drawn
   yet; the prompt is held, do not resend), `warnings`, `turnsEnded`. For a background
   helper `started` means its process is up. For a visible one, false means it was not seen
@@ -111,7 +112,11 @@ can start other sessions and work with them.
   `luna_send` has it carry on. Messages queued for it never reached it: the notice counts them
   and the file it names ends on them, word for word, to send again (`undelivered` in
   `luna_read` and `luna_wait`). With `resumeOnRestart` it goes on by itself, those messages
-  included: one notice says so, the usual one follows when that turn ends.
+  included: one notice says so, the usual one follows when that turn ends. Stopped before its
+  first turn got anywhere, the notice says it never got started and the file holds its prompt;
+  `luna_send` starts it afresh.
+- Visible sessions and chats you wrote to come back when the window starts them, with text Luna
+  was holding for them. The notice comes then, or after a minute saying it has not started again.
 
 ## Answering and steering
 - A session in state `question` or `waiting` has an `ask`: the questions with their
@@ -140,10 +145,12 @@ can start other sessions and work with them.
 - `luna_kill` stops a session's process (a background helper: its turn). A background
   helper's conversation stays for `luna_send` to continue; a killed visible session is not
   running, and text cannot reach it until the user resumes it. `luna_delete` removes it;
-  `dropWorktree: true` also removes the worktree and branch Luna made for it, unless
-  another session works in it. With uncommitted changes (untracked files too) or commits on
-  no other branch there it refuses, names them and changes nothing; `force: true` removes it
-  anyway.
+  `dropWorktree: true` also removes the worktree its CLI made and that worktree's `worktree-*`
+  branch; a branch it named itself stays, with its commits. Not if another session works in it.
+  If that would lose uncommitted changes (untracked files too) or commits no other branch or
+  remote has, it refuses, names them and changes nothing; `force: true` goes ahead. A worktree
+  that cannot be removed (a file held open) comes back as `worktreeLeft` with `worktreeError`:
+  the session is gone, the path is yours to deal with.
 - `autoDelete`: Luna deletes the helper 30 minutes after its answer reached you; a read or
   a send in between starts the 30 minutes over (`deletesInMin` in `luna_list` counts
   down). The worktree stays. On for background helpers unless `autoDelete: false`, off for
