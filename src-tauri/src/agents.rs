@@ -2213,14 +2213,15 @@ pub struct Worktree {
 }
 
 /// The worktree a session works in — the one it made or the one it was
-/// handed — with its branch; nothing for one in a plain folder.
+/// handed — with its branch; nothing for one in a plain folder. Its root,
+/// wherever in it the CLI says it is now.
 fn worktree_of(pty: &crate::pty::PtyManager, id: &str) -> Worktree {
     let dir = if crate::background::has(id) {
         crate::background::made_worktree(id).or_else(|| crate::background::working_dir(id))
     } else {
         pty.probe(id).and_then(|p| p.working_dir())
     };
-    let Some((dir, project)) = dir.and_then(|d| crate::worktree::project_of(&d).map(|p| (d, p))) else {
+    let Some((dir, project)) = dir.and_then(|d| crate::worktree::root_of(&d)) else {
         return Worktree::default();
     };
     Worktree { branch: crate::worktree::branch_of(&project, &dir), path: Some(dir) }
@@ -2369,7 +2370,9 @@ fn caller_worktree(caller: &str) -> Option<String> {
         Some(dir) => dir,
         None => crate::pty::manager().probe(caller)?.working_dir()?,
     };
-    crate::worktree::is_worktree_of(&folder, &cwd).then_some(cwd)
+    // Its root: the caller's shell may be in a folder of it.
+    let (root, _) = crate::worktree::root_of(&cwd)?;
+    crate::worktree::is_worktree_of(&folder, &root).then_some(root)
 }
 
 /// At this share of a usage window an account counts as spent when a spawn
