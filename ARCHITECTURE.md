@@ -272,7 +272,11 @@ src-tauri/src/
   `{timestamp,type,payload}`. Which file is ours: for a fresh session — the earliest of those that appeared
   after the spawn whose `session_meta` cwd is the folder, or a Codex worktree pointing back at it; for a
   resumed one — by the uuid in the name; the answer is remembered per chat, so two chats in one folder
-  do not share a file. Read on incrementally from where the last look stopped (a turn outgrows
+  do not share a file. A background helper claims nothing, as `codex exec` names its thread itself, so
+  every thread a helper has had is kept for the run and never guessed (`background::is_helper_conversation`,
+  deleted helpers included: their files stay), and a thread named after a chat took its file takes it back.
+  Claude Code's registry has the same trap by another door: `claude -p` keeps a `<pid>.json` too while it
+  runs, so the fallback to cwd + start time skips `entrypoint: sdk-cli` and those same ids. Read on incrementally from where the last look stopped (a turn outgrows
   any tail: a megabyte of tool output after `task_started` read as resting):
   `task_started`/`task_complete` (before 0.157 — `turn_started`/`turn_complete`/`turn_aborted`) →
   working/resting and the turn count, `request_user_input` (holds the turn) and
