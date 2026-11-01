@@ -1,4 +1,5 @@
 import { useMemo } from 'react';
+import { LooseHelpers } from '../agents/BackgroundChip';
 import { usePanes } from '../panes/panes.store';
 import { foldersOfGroup, useChats } from './chats.store';
 import { FolderSection } from './FolderSection';
@@ -23,6 +24,7 @@ export function ChatList() {
           Press <span style={{ fontWeight: 600 }}>New chat</span> to start.
         </div>
       )}
+      <LooseHelpers />
     </div>
   );
 }

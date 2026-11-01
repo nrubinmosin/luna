@@ -2,8 +2,9 @@ import { useState } from 'react';
 import type { Chat } from '../../shared/types';
 import { allChats, useChats } from './chats.store';
 import { ui } from '../providers';
-import { deleteSession } from '../../ipc/commands';
+import { backgroundDelete, deleteSession } from '../../ipc/commands';
 import { ConfirmDialog } from '../../shared/ui/ConfirmDialog';
+import { rootOf, useBackground } from '../agents/background.store';
 import { useDeletePrefs } from './deletePrefs.store';
 
 /**
@@ -52,10 +53,18 @@ export function DeleteChatDialog({ chat, onClose }: { chat: Chat; onClose: () =>
   // an answer nothing else has — and listed as orphans once the parent goes.
   const [withChildren, setWithChildren] = useState(false);
   const children = descendantsOf(chat);
+  // The ones with no row, under it or under a helper of its that has one.
+  const allBackground = useBackground(s => s.helpers);
+  const lines = new Set([chat.id, ...children.map(c => c.id)]);
+  const background = allBackground.filter(h => lines.has(rootOf(h, allBackground) ?? ''));
+  const spawned = [...children.map(c => c.name), ...background.map(h => h.name || h.id)];
 
   const doDelete = () => {
     onClose();
     if (withChildren) {
+      for (const h of background) {
+        void backgroundDelete(h.id, dropWorktree).catch(err => console.warn('[luna] delete failed', err));
+      }
       for (const c of [...children].reverse()) deleteOne(c, dropWorktree);
     }
     deleteOne(chat, dropWorktree);
@@ -90,9 +99,9 @@ export function DeleteChatDialog({ chat, onClose }: { chat: Chat; onClose: () =>
         </>
       }
       extra={
-        (chat.worktree || children.length > 0) && (
+        (chat.worktree || spawned.length > 0) && (
           <div onClick={e => e.stopPropagation()} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {(chat.worktree || (withChildren && children.some(c => c.worktree))) && (
+            {(chat.worktree || (withChildren && (children.some(c => c.worktree) || background.some(h => h.worktree)))) && (
               // The box itself is drawn by xp.css on the label, which is why
               // the input needs an id and the label a matching `for`: nested
               // inside one, the checkbox renders as nothing at all.
@@ -116,7 +125,7 @@ export function DeleteChatDialog({ chat, onClose }: { chat: Chat; onClose: () =>
                 </label>
               </div>
             )}
-            {children.length > 0 && (
+            {spawned.length > 0 && (
               <div style={{ display: 'flex', alignItems: 'flex-start', gap: 7, fontSize: 'var(--fs-4)', color: 'var(--dim)' }}>
                 <input
                   type="checkbox"
@@ -125,8 +134,9 @@ export function DeleteChatDialog({ chat, onClose }: { chat: Chat; onClose: () =>
                   onChange={e => setWithChildren(e.target.checked)}
                 />
                 <label htmlFor={`drop-children-${chat.id}`} style={{ display: 'block', cursor: 'default', lineHeight: 1.5 }}>
-                  Also delete the {children.length} session{children.length > 1 ? 's' : ''} its agent spawned
-                  ({children.map(c => c.name).join(', ')}). Left alone, they stay listed as orphans.
+                  Also delete the {spawned.length} session{spawned.length > 1 ? 's' : ''} its agent spawned
+                  ({spawned.join(', ')}). Left alone, they stay listed as orphans
+                  {background.length > 0 && ', and a background one goes by itself half an hour after it is done'}.
                 </label>
               </div>
             )}

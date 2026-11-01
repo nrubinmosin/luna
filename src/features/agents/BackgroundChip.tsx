@@ -6,7 +6,8 @@ import { Icon } from '../../shared/ui/icons';
 import { useDialogHost } from '../../shared/ui/dialogHost';
 import { sinceLabel } from '../../shared/lib/format';
 import { logWarn } from '../../shared/lib/log';
-import { useBackground } from './background.store';
+import { allChats, useChats } from '../chats/chats.store';
+import { rootOf, useBackground } from './background.store';
 
 /** A state as a person reads it. */
 const STATE_LABEL: Record<string, string> = {
@@ -52,13 +53,46 @@ function askLine(h: BackgroundHelperDto): string | null {
 }
 
 /**
- * The background helpers of one chat (background.rs): a count on its row,
- * and on a click a list of them with what each is doing, to open one as a
- * chat of its own, stop it or delete it. Its agent is the one told what they
- * say; this is for a person who wants to look.
+ * The background helpers of one chat (background.rs), its helpers' helpers
+ * with them: a count on its row, and on a click a list of them with what each
+ * is doing, to open one as a chat of its own, stop it or delete it. Its agent
+ * is the one told what they say; this is for a person who wants to look.
  */
 export function BackgroundChip({ parentId }: { parentId: string }) {
-  const helpers = useBackground(useShallow(s => s.helpers.filter(h => h.parent === parentId)));
+  const helpers = useBackground(useShallow(s => s.helpers.filter(h => rootOf(h, s.helpers) === parentId)));
+  return <HelperChip helpers={helpers} what="of this chat" />;
+}
+
+/**
+ * The helpers no chat answers for: the one that started them was deleted, and
+ * there is no row of theirs to get at them by. No agent reaches them either,
+ * so this is the only way to stop or delete one; left alone, each goes by
+ * itself half an hour after it is done (agents.rs `forget`).
+ */
+export function LooseHelpers() {
+  const chats = useChats(s => s.folders);
+  const helpers = useBackground(
+    useShallow(s => {
+      const rows = new Set(allChats(chats).map(c => c.id));
+      return s.helpers.filter(h => {
+        const root = rootOf(h, s.helpers);
+        return root === null || !rows.has(root);
+      });
+    })
+  );
+  if (helpers.length === 0) return null;
+  return (
+    <div
+      title="Background helpers whose chat was deleted. Each is deleted by itself half an hour after it is done."
+      style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '2px 8px', color: 'var(--taskpane-ink)', fontSize: 'var(--fs-4)' }}
+    >
+      <span style={{ flex: '1 1 auto' }}>Helpers with no chat</span>
+      <HelperChip helpers={helpers} what="with no chat" />
+    </div>
+  );
+}
+
+function HelperChip({ helpers, what }: { helpers: BackgroundHelperDto[]; what: string }) {
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const newest = Math.max(0, ...helpers.map(h => h.startedMs));
   const [fresh, setFresh] = useState(false);
@@ -79,7 +113,7 @@ export function BackgroundChip({ parentId }: { parentId: string }) {
   const asking = helpers.some(h => h.state === 'question' || h.state === 'waiting');
   const working = helpers.filter(h => h.state === 'working').length;
   const title = [
-    `${helpers.length} background helper${helpers.length > 1 ? 's' : ''} of this chat — click to see`,
+    `${helpers.length} background helper${helpers.length > 1 ? 's' : ''} ${what} — click to see`,
     ...helpers.map(h => `• ${h.name || h.id}: ${stateLine(h, Date.now())} (${setupLine(h)})`)
   ].join('\n');
   return (

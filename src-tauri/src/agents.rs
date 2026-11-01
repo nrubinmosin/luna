@@ -11,8 +11,9 @@
 //! with a parent is that parent's, and a caller may only reach its own
 //! descendants — except to list every session, type a message into one and
 //! read or wait on its answer, which is how sessions talk to each other; only
-//! killing and deleting stay with the lineage. Children outlive their parent;
-//! the UI marks them orphaned.
+//! killing and deleting stay with the lineage. Children outlive their parent:
+//! they pass to its parent, or with none stand alone, the window's to manage
+//! (see `forget`).
 //!
 //! A helper does not report back on its own the way a subagent does: its
 //! answer sits in its own transcript until someone waits for it or reads it.
@@ -238,6 +239,9 @@ struct Known {
     settings: serde_json::Value,
     /// Luna's tools were given to it: `tools/list` offers them.
     tools: bool,
+    /// Spawned by a chat since deleted, with no parent left to hand it to (see
+    /// `forget`): no agent reaches it, only the window.
+    orphan: bool,
 }
 
 /// What an agent asks for. Everything but the prompt may be left to the
@@ -361,8 +365,8 @@ struct Registry {
 struct NoticeTurn {
     /// The `turnsEnded` it ends at.
     turn: u32,
-    /// The sessions the notice told of.
-    about: Vec<String>,
+    /// Those the notice told of that were the session's own helpers then.
+    helpers: Vec<String>,
 }
 
 /// A `send` waiting for a person to send or clear what they typed.
@@ -474,12 +478,20 @@ fn reg() -> &'static Mutex<Registry> {
 /// what it asked about settles what it was owed, and so does the end of a job
 /// it was told of. It has seen that count too (see `seen`).
 fn shown(caller: &str, id: &str, turns_ended: u32) {
-    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
     let key = (caller.to_string(), id.to_string());
-    if r.owed.get(&key).is_some_and(|o| turns_ended > o.baseline || o.told_pending) {
+    let settled = reg().lock().unwrap_or_else(|e| e.into_inner()).owed.get(&key).is_some_and(|o| turns_ended > o.baseline || o.told_pending);
+    // What it says once its own helpers have answered it is what it was asked
+    // for: still owed, past what the caller has now, as a notice's "not done"
+    // leaves it.
+    let goes_on = settled && waits_on_helpers(id, caller);
+    let cursor = if goes_on { transcript_end(id) } else { 0 };
+    if settled {
+        let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
         r.owed.remove(&key);
+        if goes_on {
+            r.owed.insert(key, Owed::pending(turns_ended, cursor));
+        }
     }
-    drop(r);
     seen(caller, id, turns_ended);
 }
 
@@ -599,6 +611,10 @@ pub fn register(
         .unwrap_or_default();
     let previous = r.known.get(id).cloned();
     r.exits.remove(id);
+    // Whose it is since it last ran, if anything has changed that (`forget`):
+    // the window still names the parent it was spawned by.
+    let orphan = previous.as_ref().is_some_and(|k| k.orphan);
+    let parent = previous.as_ref().and_then(|k| k.parent.clone()).or_else(|| parent.filter(|_| !orphan).map(str::to_owned));
     r.known.insert(
         id.to_string(),
         Known {
@@ -606,9 +622,10 @@ pub fn register(
             folder: folder.to_string(),
             account_path: account_path.to_string(),
             account,
-            parent: parent.map(str::to_owned).or_else(|| previous.as_ref().and_then(|k| k.parent.clone())),
+            parent,
             settings,
             tools,
+            orphan,
         },
     );
     // One token per session: a respawn invalidates the last one.
@@ -741,6 +758,9 @@ pub struct Ties {
     pub tools: bool,
     pub borrowed: bool,
     pub auto_delete: bool,
+    /// See `Known::orphan`.
+    #[serde(default)]
+    pub orphan: bool,
     /// (caller, baseline, cursor) of every answer owed by it (see `Owed`).
     pub owed: Vec<(String, u32, u64)>,
     /// (caller, turns ended) each caller was last shown of it (see `seen`).
@@ -757,6 +777,7 @@ pub fn ties_of(id: &str) -> Option<Ties> {
         tools: k.tools,
         borrowed: r.borrowed.contains(id),
         auto_delete: r.auto.contains_key(id),
+        orphan: k.orphan,
         owed: r.owed.iter().filter(|((_, s), _)| s == id).map(|((c, _), o)| (c.clone(), o.baseline, o.cursor)).collect(),
         seen: r.seen.iter().filter(|((_, s), _)| s == id).map(|((c, _), n)| (c.clone(), *n)).collect(),
     })
@@ -770,6 +791,9 @@ pub fn tie_back(id: &str, provider: Provider, folder: &str, account_path: &str, 
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
     if let Some(name) = ties.name {
         r.names.insert(id.to_string(), name);
+    }
+    if let Some(k) = r.known.get_mut(id) {
+        k.orphan = ties.orphan;
     }
     if ties.borrowed {
         r.borrowed.insert(id.to_string());
@@ -788,10 +812,11 @@ pub fn tie_back(id: &str, provider: Provider, folder: &str, account_path: &str, 
 }
 
 /// The window's Delete on a background helper: as its agent would, the
-/// worktree it made going too unless it was handed one.
-pub fn delete_by_user(id: &str) -> Result<(), String> {
+/// worktree it made going too, unless it was handed one or the person said to
+/// keep it.
+pub fn delete_by_user(id: &str, drop_worktree: bool) -> Result<(), String> {
     let known = reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(id).cloned().ok_or("no such helper")?;
-    remove(id, known, true).map(|_| ())
+    remove(id, known, drop_worktree).map(|_| ())
 }
 
 /// A Claude Code hook (hub.rs): what it puts up for an answer, kept until
@@ -939,10 +964,17 @@ pub fn state_of(id: &str) -> (&'static str, Option<Ask>) {
         (_, Some(a)) if a.blocking && a.kind == "question" => "question",
         (Some(Turn::Waiting), _) => "waiting",
         (Some(Turn::Busy), _) => "working",
-        _ if ts.is_some_and(|t| t.children_busy) => "background",
+        _ if ts.is_some_and(|t| t.children_busy) || waits_on_helpers(id, "") => "background",
         _ => "idle",
     };
     (state, ask)
+}
+
+/// Whether `id` has helpers of its own still to answer it (`except` aside): it
+/// is not through with what it was asked until it has their answers.
+fn waits_on_helpers(id: &str, except: &str) -> bool {
+    let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    r.owed.keys().any(|(caller, helper)| caller == id && helper != except && is_descendant(&r, id, helper))
 }
 
 /// An answer to one question as the CLI is to get it: an option's number
@@ -2964,8 +2996,9 @@ pub fn wait(
         // What the job's end has to settle first (see `notice_line`).
         let mut job_done = false;
         if told_pending {
-            let job = ts.is_some_and(|t| t.children_busy) && alive;
-            let now = verdict(&Owed::pending(baseline, 0), turns_ended, turn, job, real_turn_past(id, baseline, turns_ended));
+            let waits = waits_on_helpers(id, caller);
+            let job = (ts.is_some_and(|t| t.children_busy) && alive) || waits;
+            let now = verdict(&Owed::pending(baseline, 0), turns_ended, turn, job, real_turn_past(id, caller, baseline, turns_ended, waits));
             if now == Verdict::OnlyNotices {
                 baseline = turns_ended;
             }
@@ -3143,7 +3176,7 @@ pub fn kill(caller: &str, id: &str) -> Result<(), String> {
 /// Stops the session, removes its attachments and — when asked — the
 /// worktree it made (never one it was handed), then tells the frontend to
 /// drop the row. Returns the worktree removed, if any. A session's own
-/// children are left where they are, orphaned.
+/// children go on, passed up to its parent (see `forget`).
 pub fn delete(caller: &str, id: &str, drop_worktree: bool) -> Result<Option<String>, String> {
     let known = authorize(caller, id)?;
     remove(id, known, drop_worktree)
@@ -3152,7 +3185,7 @@ pub fn delete(caller: &str, id: &str, drop_worktree: bool) -> Result<Option<Stri
 fn remove(id: &str, known: Known, drop_worktree: bool) -> Result<Option<String>, String> {
     let pty = crate::pty::manager();
     // What `luna_sessions` history has left to go on once it is gone.
-    if known.parent.is_some() {
+    if known.parent.is_some() || known.orphan {
         let transcript = transcript_path(&pty, id);
         let last = transcript.as_ref().and_then(|_| replies_since(&pty, id, known.provider, 0).pop());
         crate::agentlog::left(
@@ -3224,9 +3257,10 @@ pub fn notify(caller: &str, text: &str) -> Result<(), String> {
 }
 
 /// Deletes the `autoDelete` helpers that are done with: nobody is owed their
-/// answer or waiting on them, and they have sat idle — or exited — for
-/// AUTO_DELETE_IDLE_MS since. One a person has typed into is theirs now and
-/// stays. Its worktree stays too, with whatever work is in it.
+/// answer or waiting on them, nothing is owed to them, no helper of theirs is
+/// still there, and they have sat idle — or exited — for AUTO_DELETE_IDLE_MS
+/// since. One a person has typed into is theirs now and stays. Its worktree
+/// stays too, with whatever work is in it.
 fn reap(pty: &crate::pty::PtyManager) {
     let ids: Vec<String> = reg().lock().unwrap_or_else(|e| e.into_inner()).auto.keys().cloned().collect();
     for id in ids {
@@ -3239,9 +3273,15 @@ fn reap(pty: &crate::pty::PtyManager) {
         let idle = !live(pty, &id)
             || crate::activity::turn_state(&id)
                 .is_some_and(|t| t.turn == crate::activity::Turn::Idle && !t.children_busy);
+        // Gone, it would take with it what its own helpers are to answer it,
+        // and what it would make of that.
+        let below = descendants(&reg().lock().unwrap_or_else(|e| e.into_inner()), &id);
+        let helpers_there = below.iter().any(|k| live(pty, k));
         let known = {
             let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-            let quiet = !r.owed.keys().any(|(_, s)| *s == id) && !r.waits.keys().any(|(_, s)| *s == id);
+            let quiet = !helpers_there
+                && !r.owed.keys().any(|(c, s)| *s == id || *c == id)
+                && !r.waits.keys().any(|(_, s)| *s == id);
             let known = r.known.get(&id).cloned();
             let Some(a) = r.auto.get_mut(&id) else { continue };
             if !(quiet && idle) {
@@ -3271,11 +3311,30 @@ fn reap(pty: &crate::pty::PtyManager) {
 /// A chat is gone, however it was deleted: nothing here may keep it — not in
 /// `luna_sessions`, not against a caller's helper limit, not as a live token,
 /// and not as an answer owed to or by it.
+///
+/// Its helpers go on. Each passes to its own parent, whose it already was
+/// through this one, for that one's tools to go on reaching it. With no parent
+/// to pass to, it is an orphan: no agent has any claim on it, so it is the
+/// window's to stop or delete, and a background one, which no row shows and no
+/// answer of which is awaited any more, goes by itself once it has been idle
+/// for AUTO_DELETE_IDLE_MS, rather than hold its account and folder for good.
 pub fn forget(id: &str) {
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-    let spawned = r.known.get(id).is_some_and(|k| k.parent.is_some());
+    let gone = r.known.get(id).cloned();
+    let spawned = gone.as_ref().is_some_and(|k| k.parent.is_some() || k.orphan);
     let auto = r.auto.remove(id);
     r.known.remove(id);
+    let up = gone.and_then(|k| k.parent);
+    let Registry { known, auto: autos, .. } = &mut *r;
+    let mut handed = false;
+    for (kid, k) in known.iter_mut().filter(|(_, k)| k.parent.as_deref() == Some(id)) {
+        k.parent = up.clone();
+        k.orphan = up.is_none();
+        if k.orphan && k.settings["background"] == true {
+            autos.entry(kid.clone()).or_default();
+        }
+        handed = true;
+    }
     r.tokens.retain(|_, chat| chat != id);
     r.seen.retain(|(_, chat), _| chat != id);
     r.owed.retain(|(who, chat), _| who != id && chat != id);
@@ -3293,6 +3352,9 @@ pub fn forget(id: &str) {
     transcripts().lock().unwrap_or_else(|e| e.into_inner()).remove(id);
     if spawned {
         crate::agentlog::ended(id, if auto.is_some_and(|a| a.deleting) { "auto-deleted" } else { "deleted" });
+    }
+    if handed {
+        crate::background::changed();
     }
 }
 
@@ -3329,14 +3391,28 @@ enum Settled {
 /// its own (a resume): the last message there is the answer.
 fn replies_since(pty: &crate::pty::PtyManager, id: &str, provider: Provider, cursor: u64) -> Vec<String> {
     let Some(path) = transcript_path(pty, id) else { return Vec::new() };
-    let read = |from: u64| match provider {
-        Provider::Claude => crate::claude::session::messages_from(&path, from, false).0,
-        Provider::Codex => crate::codex::session::messages_from(&path, from).0,
-    };
-    let mut messages = read(cursor);
+    let mut messages = messages_at(&path, provider, cursor);
     if messages.is_empty() && cursor > 0 {
-        messages = read(0).into_iter().last().into_iter().collect();
+        messages = messages_at(&path, provider, 0).into_iter().last().into_iter().collect();
     }
+    own_words(messages)
+}
+
+/// `replies_since` for a caller already told of what came before `cursor`:
+/// nothing past it is nothing to tell, not a resume to look further back for.
+fn said_since(pty: &crate::pty::PtyManager, id: &str, provider: Provider, cursor: u64) -> Vec<String> {
+    let Some(path) = transcript_path(pty, id) else { return Vec::new() };
+    own_words(messages_at(&path, provider, cursor))
+}
+
+fn messages_at(path: &std::path::Path, provider: Provider, from: u64) -> Vec<Message> {
+    match provider {
+        Provider::Claude => crate::claude::session::messages_from(path, from, false).0,
+        Provider::Codex => crate::codex::session::messages_from(path, from).0,
+    }
+}
+
+fn own_words(messages: Vec<Message>) -> Vec<String> {
     if messages.last().map_or(true, |m| m.role != "assistant") {
         return Vec::new();
     }
@@ -3406,19 +3482,26 @@ fn verdict(o: &Owed, ended: u32, turn: Option<crate::activity::Turn>, job: bool,
     }
 }
 
-/// Whether a turn of `id` past `after` and up to `ended` ended that no Luna
-/// notice started: what a caller told it is not done is to hear of.
-fn real_turn_past(id: &str, after: u32, ended: u32) -> bool {
+/// Whether a turn of `id` past `after` and up to `ended` ended that `caller`,
+/// told it is not done, is to hear of: one no Luna notice started; or, once
+/// `id` has all its own helpers' answers (`waits`: not yet), one on a notice
+/// from them, in which it goes on with what it was asked. Not when it is
+/// `caller` who is that helper: that is its own notice coming back.
+fn real_turn_past(id: &str, caller: &str, after: u32, ended: u32, waits: bool) -> bool {
     let r = reg().lock().unwrap_or_else(|e| e.into_inner());
     let marked = r.notice_turns.get(id);
-    (after.saturating_add(1)..=ended).any(|turn| !marked.is_some_and(|m| m.iter().any(|m| m.turn == turn)))
+    (after.saturating_add(1)..=ended).any(|turn| match marked.and_then(|m| m.iter().find(|m| m.turn == turn)) {
+        None => true,
+        Some(m) => !waits && m.helpers.iter().any(|h| h != caller),
+    })
 }
 
 /// A notice about `about` went into `caller` and starts its turn ending at
 /// `turn`.
-fn notice_turn(r: &mut Registry, caller: &str, turn: u32, about: Vec<String>) {
+fn notice_turn(r: &mut Registry, caller: &str, turn: u32, about: &[String]) {
+    let helpers: Vec<String> = about.iter().filter(|a| is_descendant(r, caller, a)).cloned().collect();
     let turns = r.notice_turns.entry(caller.to_string()).or_default();
-    turns.push(NoticeTurn { turn, about });
+    turns.push(NoticeTurn { turn, helpers });
     if turns.len() > NOTICE_TURNS_KEPT {
         turns.remove(0);
     }
@@ -3467,6 +3550,7 @@ fn pair_stopped(pty: &crate::pty::PtyManager, caller: &str, id: &str) -> bool {
 /// The notice for one session, or None while nothing has happened to it.
 fn notice_line(
     pty: &crate::pty::PtyManager,
+    caller: &str,
     who: &str,
     id: &str,
     k: &Known,
@@ -3480,8 +3564,9 @@ fn notice_line(
     // up again in a turn of its own when the job is done; for anything else
     // that job's end is all there will be to hear of.
     let background = ts.is_some_and(|t| t.children_busy) && alive;
-    let real_turn = o.told_pending && real_turn_past(id, o.baseline, ended);
-    let now = verdict(&o, ended, turn, background, real_turn);
+    let waits = waits_on_helpers(id, caller);
+    let real_turn = o.told_pending && real_turn_past(id, caller, o.baseline, ended, waits);
+    let now = verdict(&o, ended, turn, background || waits, real_turn);
     if now == Verdict::OnlyNotices {
         return Some((None, Settled::Skip(ended)));
     }
@@ -3492,13 +3577,16 @@ fn notice_line(
         // Its processes come and go between samples, and a job's end may be
         // followed by the turn the CLI takes it up in.
         return match o.held {
-            Some((n, at)) if n == ended && now_ms().saturating_sub(at) >= BACKGROUND_GRACE_MS => Some((
-                Some(format!(
-                    "{who}: what it left running has ended, and it has said nothing since your last notice. \
-                     It does not take that up by itself; luna_send asks it how it went."
-                )),
-                Settled::Answered,
-            )),
+            Some((n, at)) if n == ended && now_ms().saturating_sub(at) >= BACKGROUND_GRACE_MS => {
+                // Its turns on notices may have said something since.
+                let said = said_since(pty, id, k.provider, o.cursor);
+                let said = match said.len() {
+                    0 => "it has said nothing since your last notice. It does not take that up by itself; luna_send asks it how it went".to_string(),
+                    1 => format!("it wrote 1 message since your last notice; {}", answer_file(id, &said)),
+                    n => format!("it wrote {n} messages since your last notice; {}", answer_file(id, &said)),
+                };
+                Some((Some(format!("{who}: what it left running has ended, and {said}.")), Settled::Answered))
+            }
             Some((n, _)) if n == ended => None,
             _ => Some((None, Settled::Hold(ended))),
         };
@@ -3543,14 +3631,15 @@ fn notice_line(
             let said = if replies.is_empty() { String::new() } else { format!(" It ended{reply}.") };
             return Some((Some(format!("{who} stopped on an error: {why}.{said} luna_send has it carry on.")), Settled::Answered));
         }
-        if background {
+        if background || waits {
             // Said first and plainly: a weak model read "ended a turn" as
             // done and deleted the helper mid-job. Once per debt: a job can
             // run for days, and each notice costs the caller a turn.
+            let what = if background { "a job it started still runs in the background" } else { "helpers of its own have yet to answer it" };
             let line = if o.told_pending {
-                format!("{who} ended another turn{reply}. A job of its still runs; the next notice comes when it ends, or with a turn of its own.")
+                format!("{who} ended another turn{reply}, but {what}. The next notice comes when that is over, or with a turn of its own.")
             } else {
-                format!("{who} is NOT done yet: a job it started still runs in the background. It ended a turn{reply}. The next notice comes when that job ends, or with a turn of its own.")
+                format!("{who} is NOT done yet: {what}. It ended a turn{reply}. The next notice comes when that is over, or with a turn of its own.")
             };
             return Some((Some(line), Settled::Pending(ended, transcript_end(id))));
         }
@@ -3625,8 +3714,10 @@ fn anything_to_say(pty: &crate::pty::PtyManager, items: &[(String, Known, Owed, 
     })
 }
 
-/// Whether a caller told a session is not done yet has that session's job to
-/// hear of: between turns, with nothing of its own left running.
+/// Whether a caller told a session is not done yet may have that session's job
+/// to hear of: between turns, with nothing of its own left running. For the
+/// holds that wait on news; helpers still to answer it keep `notice_line` from
+/// saying so.
 fn job_over(o: &Owed, ts: Option<crate::activity::TurnState>) -> bool {
     o.told_pending && ts.is_some_and(|t| t.turn == crate::activity::Turn::Idle && !t.children_busy)
 }
@@ -3721,7 +3812,7 @@ fn notifier() {
                 if pair_stopped(&pty, &caller, id) || held_for_wait(&pty, &caller, id, o) {
                     continue;
                 }
-                match notice_line(&pty, who, id, k, *o) {
+                match notice_line(&pty, &caller, who, id, k, *o) {
                     Some((Some(mut line), how)) => {
                         if counts_for_breaker(&how) && last_notice(&caller, id, now_ms()) {
                             line.push_str(&format!(
@@ -3810,7 +3901,8 @@ fn deliver_notice(pty: &crate::pty::PtyManager, caller: &str, text: &str, settle
             // A turn it did not start stays unmarked: at worst the caller hears
             // of a turn once too often, never misses one.
             if started {
-                notice_turn(&mut r, caller, turn, settled.iter().map(|(id, _, _)| id.clone()).collect());
+                let told_of: Vec<String> = settled.iter().map(|(id, _, _)| id.clone()).collect();
+                notice_turn(&mut r, caller, turn, &told_of);
             }
             for (id, how, told) in settled {
                 if counts_for_breaker(&how) && count_notice(&mut r, caller, &id, now_ms()) {
@@ -4152,7 +4244,7 @@ mod tests {
             for (caller, id) in [(a, b), (b, a)] {
                 let Some(o) = reg().lock().unwrap().owed.get(&key(caller, id)).copied() else { continue };
                 let ended = turns[id];
-                let v = verdict(&o, ended, Some(Turn::Idle), job, real_turn_past(id, o.baseline, ended));
+                let v = verdict(&o, ended, Some(Turn::Idle), job, real_turn_past(id, caller, o.baseline, ended, false));
                 let settled = match v {
                     Verdict::OnlyNotices => {
                         reg().lock().unwrap().owed.get_mut(&key(caller, id)).unwrap().baseline = ended;
@@ -4164,7 +4256,7 @@ mod tests {
                 };
                 sent += 1;
                 let mut r = reg().lock().unwrap();
-                notice_turn(&mut r, caller, turns[caller] + 1, vec![id.to_string()]);
+                notice_turn(&mut r, caller, turns[caller] + 1, &[id.to_string()]);
                 match settled {
                     Settled::Pending(n, c) => {
                         r.owed.insert(key(caller, id), Owed::pending(n, c));
@@ -4216,15 +4308,152 @@ mod tests {
     #[test]
     fn a_turn_counts_for_a_caller_told_it_is_not_done_unless_a_notice_started_it() {
         let mut r = reg().lock().unwrap();
-        notice_turn(&mut r, "rt-s", 4, vec!["rt-other".into()]);
+        notice_turn(&mut r, "rt-s", 4, &["rt-other".into()]);
         drop(r);
-        assert!(!real_turn_past("rt-s", 3, 4), "the one a notice started");
-        assert!(real_turn_past("rt-s", 3, 5), "and the one after it, which none did");
-        assert!(real_turn_past("rt-s", 2, 4), "or one before");
-        assert!(!real_turn_past("rt-s", 4, 4), "none past the count");
+        let past = |after, ended| real_turn_past("rt-s", "rt-c", after, ended, false);
+        assert!(!past(3, 4), "the one a notice started");
+        assert!(past(3, 5), "and the one after it, which none did");
+        assert!(past(2, 4), "or one before");
+        assert!(!past(4, 4), "none past the count");
         // A notice that did not start a turn is not marked: at worst one notice more.
-        assert!(real_turn_past("rt-unmarked", 0, 1));
+        assert!(real_turn_past("rt-unmarked", "rt-c", 0, 1, false));
         forget("rt-s");
+    }
+
+    /// A top chat, a helper with tools, and the helper's own helper: the first
+    /// answer of the middle one is "I have started it", and what it makes of
+    /// its helper's answer is what the top chat asked for.
+    #[test]
+    fn a_turn_on_its_own_helpers_news_reaches_the_caller_above() {
+        use crate::activity::Turn::Idle;
+        let none = serde_json::json!({});
+        register("tr-top", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, none.clone());
+        register("tr-mid", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("tr-top"), true, none.clone());
+        register("tr-low", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("tr-mid"), false, none.clone());
+        register("tr-low2", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("tr-mid"), false, none);
+        owe_from("tr-mid", "tr-low", 0, 0);
+        assert!(waits_on_helpers("tr-mid", "tr-top"));
+        assert!(!waits_on_helpers("tr-mid", "tr-low"), "not counting the one that would be told");
+        assert!(!waits_on_helpers("tr-top", ""), "answers owed to it, not those owed by it");
+        owe_from("tr-mid", "tr-low2", 0, 0);
+
+        // Its first turn ended: told it is not done (`notice_line`), the debt goes on.
+        let told = Owed::pending(1, 0);
+        // The first helper's notice starts its turn 2, with the other still out.
+        reg().lock().unwrap().owed.remove(&("tr-mid".to_string(), "tr-low".to_string()));
+        notice_turn(&mut reg().lock().unwrap(), "tr-mid", 2, &["tr-low".into()]);
+        let waits = waits_on_helpers("tr-mid", "tr-top");
+        assert!(waits);
+        assert_eq!(verdict(&told, 2, Some(Idle), waits, real_turn_past("tr-mid", "tr-top", 1, 2, waits)), Verdict::OnlyNotices, "quiet while one is out");
+        // The last one's notice starts its turn 3: this is the result.
+        reg().lock().unwrap().owed.remove(&("tr-mid".to_string(), "tr-low2".to_string()));
+        notice_turn(&mut reg().lock().unwrap(), "tr-mid", 3, &["tr-low2".into()]);
+        let waits = waits_on_helpers("tr-mid", "tr-top");
+        assert!(!waits);
+        let told = Owed::pending(2, 0);
+        assert_eq!(verdict(&told, 3, Some(Idle), waits, real_turn_past("tr-mid", "tr-top", 2, 3, waits)), Verdict::TurnOver, "it reaches the top");
+        // A notice about something else, or about the caller itself, does not count.
+        notice_turn(&mut reg().lock().unwrap(), "tr-mid", 4, &["tr-stranger".into()]);
+        assert!(!real_turn_past("tr-mid", "tr-top", 3, 4, false));
+        notice_turn(&mut reg().lock().unwrap(), "tr-low", 1, &["tr-mid".into()]);
+        assert!(!real_turn_past("tr-low", "tr-mid", 0, 1, false), "not a helper of its own");
+        notice_turn(&mut reg().lock().unwrap(), "tr-mid", 5, &["tr-low".into()]);
+        assert!(!real_turn_past("tr-mid", "tr-low", 4, 5, false), "its own notice coming back");
+        for id in ["tr-low", "tr-low2", "tr-mid", "tr-top"] {
+            forget(id);
+        }
+    }
+
+    #[test]
+    fn a_wait_that_takes_a_first_answer_leaves_the_rest_owed() {
+        let none = serde_json::json!({});
+        register("cw-top", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, none.clone());
+        register("cw-mid", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("cw-top"), true, none.clone());
+        register("cw-low", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("cw-mid"), false, none);
+        let key = ("cw-top".to_string(), "cw-mid".to_string());
+        owe_from("cw-top", "cw-mid", 0, 0);
+        owe_from("cw-mid", "cw-low", 0, 0);
+        shown("cw-top", "cw-mid", 1);
+        let o = reg().lock().unwrap().owed.get(&key).copied().expect("what it makes of its helper's answer is still owed");
+        assert!(o.told_pending);
+        assert_eq!(o.baseline, 1);
+        // With no helper out, a turn past the question settles it, as ever.
+        reg().lock().unwrap().owed.remove(&("cw-mid".to_string(), "cw-low".to_string()));
+        shown("cw-top", "cw-mid", 2);
+        assert!(reg().lock().unwrap().owed.get(&key).is_none());
+        for id in ["cw-low", "cw-mid", "cw-top"] {
+            forget(id);
+        }
+    }
+
+    #[test]
+    fn a_helper_with_helpers_or_answers_to_come_is_not_auto_deleted() {
+        let none = serde_json::json!({});
+        register("rq-top", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, none.clone());
+        register("rq-mid", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("rq-top"), true, none.clone());
+        register("rq-low", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("rq-mid"), false, none);
+        reg().lock().unwrap().auto.insert("rq-mid".into(), Auto::default());
+        let since = || reg().lock().unwrap().auto.get("rq-mid").and_then(|a| a.idle_since);
+        let pty = crate::pty::manager();
+        owe_from("rq-mid", "rq-low", 0, 0);
+        reap(&pty);
+        assert_eq!(since(), None, "an answer is still owed to it");
+        reg().lock().unwrap().owed.remove(&("rq-mid".to_string(), "rq-low".to_string()));
+        reap(&pty);
+        assert!(since().is_some(), "nothing owed, and its helper has gone: the clock runs");
+        for id in ["rq-low", "rq-mid", "rq-top"] {
+            forget(id);
+        }
+    }
+
+    #[test]
+    fn a_deleted_chats_helpers_pass_to_its_parent_or_stand_alone() {
+        let none = serde_json::json!({});
+        let bg = serde_json::json!({ "background": true });
+        register("og-top", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, none.clone());
+        register("og-mid", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("og-top"), true, bg.clone());
+        register("og-low", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("og-mid"), false, bg.clone());
+        register("og-vis", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("og-top"), false, none.clone());
+        register("og-other", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, none.clone());
+        owe_from("og-mid", "og-low", 0, 0);
+        assert!(authorize("og-top", "og-low").is_ok());
+
+        // A helper in the middle goes: its helper is the top chat's directly,
+        // which could reach it all along.
+        forget("og-mid");
+        assert_eq!(parent_of("og-low").as_deref(), Some("og-top"));
+        assert!(authorize("og-top", "og-low").is_ok(), "kill and delete still reach it");
+        assert!(list_ids("og-top").contains(&"og-low".to_string()), "and the list shows it");
+        assert!(reg().lock().unwrap().auto.get("og-low").is_none(), "its parent's to delete, as it says");
+
+        // The top chat goes: nobody is left above them.
+        forget("og-top");
+        assert_eq!(parent_of("og-low"), None);
+        assert!(reg().lock().unwrap().known.get("og-low").unwrap().orphan);
+        assert!(reg().lock().unwrap().auto.contains_key("og-low"), "a background one goes by itself once idle");
+        assert!(reg().lock().unwrap().known.get("og-vis").unwrap().orphan);
+        assert!(!reg().lock().unwrap().auto.contains_key("og-vis"), "a chat with a row is the person's to delete");
+        assert!(authorize("og-other", "og-low").is_err(), "no other chat's agent has a claim on it");
+        assert!(authorize_view("og-other", "og-low").is_ok(), "though it can read it, as any session");
+
+        // Running again, the window names the parent it was spawned by; that stands no more.
+        register("og-vis", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("og-top"), false, none.clone());
+        assert_eq!(parent_of("og-vis"), None);
+        // And saved with it, for the core after this one.
+        let ties = ties_of("og-low").unwrap();
+        assert!(ties.orphan && ties.parent.is_none() && ties.auto_delete);
+        let old: Ties = serde_json::from_value(serde_json::json!({
+            "parent": null, "name": null, "settings": {}, "tools": false, "borrowed": false, "autoDelete": false, "owed": [], "seen": []
+        }))
+        .expect("what an older core saved still reads");
+        assert!(!old.orphan);
+        for id in ["og-low", "og-vis", "og-other"] {
+            forget(id);
+        }
+    }
+
+    fn list_ids(caller: &str) -> Vec<String> {
+        descendants(&reg().lock().unwrap(), caller)
     }
 
     #[test]
@@ -4285,7 +4514,7 @@ mod tests {
         let known = reg().lock().unwrap().known.get(id).cloned().unwrap();
         let mut o = Owed::from(0, 0);
         o.held = Some((1, now_ms() - REPLY_GRACE_MS));
-        match notice_line(&pty, "Your helper", id, &known, o) {
+        match notice_line(&pty, "its-caller", "Your helper", id, &known, o) {
             Some((Some(line), Settled::Answered)) => line,
             _ => panic!("a turn is over: there is something to say"),
         }

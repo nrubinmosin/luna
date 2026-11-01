@@ -1111,8 +1111,8 @@ pub fn background_kill(id: String) {
 }
 
 #[tauri::command]
-pub fn background_delete(id: String) -> Result<(), String> {
-    crate::agents::delete_by_user(&id)
+pub fn background_delete(id: String, drop_worktree: Option<bool>) -> Result<(), String> {
+    crate::agents::delete_by_user(&id, drop_worktree.unwrap_or(true))
 }
 
 // ------------------------------------------------------- across cores --
