@@ -8,7 +8,7 @@
  */
 import { useEffect } from 'react';
 import {
-  accountUsage, agentSpawned, backgroundHelpers, chatNames, codexModels, deleteSession, ensureClaudeSession, ensureCodexSession,
+  accountUsage, agentResumes, agentSpawned, backgroundHelpers, chatNames, codexModels, deleteSession, ensureClaudeSession, ensureCodexSession,
   type AgentSpawnRequest, type CodexModelDto, type PromotedDto
 } from '../../ipc/commands';
 import { onAgentDeleted, onAgentPromote, onAgentReparent, onAgentSpawn, onBackgroundHelpers } from '../../ipc/events';
@@ -18,12 +18,13 @@ import {
   codexApprovalFromSetting, codexEffortFromSetting, codexSandboxFromSetting, effortFromSetting, modelFromSetting, permFromSetting,
   type Account, type ClaudeSettings, type CodexSettings
 } from '../../shared/types';
-import { findAccount, useAccounts } from '../accounts/accounts.store';
+import { accountOfChat, findAccount, useAccounts } from '../accounts/accounts.store';
 import { allChats, useChats } from '../chats/chats.store';
 import { useCore } from '../core/core.store';
 import { createChat } from '../new-chat/create';
 import type { From } from '../new-chat/draft';
 import { usePanes } from '../panes/panes.store';
+import { startSession } from '../panes/terminals';
 import { claude, codex } from '../providers';
 import { useBackground } from './background.store';
 
@@ -135,7 +136,8 @@ async function spawn(req: AgentSpawnRequest): Promise<void> {
     accountPath: account.path,
     tools,
     parent: parent?.id ?? req.parentId,
-    prompt: req.prompt
+    prompt: req.prompt,
+    spawnRequest: req.requestId
   };
   try {
     if (spec.provider === 'claude') {
@@ -169,6 +171,37 @@ const onCoreUp = (again: () => void) =>
     const was = prev.link.state === 'up' ? prev.link.core?.pid : null;
     if (pid != null && pid !== was) again();
   });
+
+/**
+ * Starts the visible helpers the core means to carry on after a restart
+ * (`resumeOnRestart`), as their panes would: a helper usually sits in none, and a
+ * chat's CLI otherwise starts as a pane attaches. One that cannot be started here
+ * the core gives up on within a minute, and its caller gets the plain notice.
+ */
+async function startResumes(): Promise<void> {
+  const ids = await agentResumes();
+  if (ids.length === 0) return;
+  await new Promise<void>(done => {
+    if (useAccounts.getState().loaded) return done();
+    const off = useAccounts.subscribe(s => {
+      if (s.loaded) {
+        off();
+        done();
+      }
+    });
+  });
+  for (const id of ids) {
+    const chats = useChats.getState();
+    const chat = chats.findChat(id);
+    const folder = chats.folderOf(id)?.path;
+    const account = chat ? accountOfChat(useAccounts.getState().accounts, chat) : null;
+    if (!chat || !folder || !account) {
+      logWarn('agents', `helper ${id} is to go on, and has no ${!chat ? 'row' : !folder ? 'folder' : 'account'} to start it from`);
+      continue;
+    }
+    startSession(chat, folder, account.path).catch(e => logWarn('agents', `starting helper ${id} to go on failed: ${String(e)}`));
+  }
+}
 
 const samePath = (a: string, b: string) =>
   a.replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase() === b.replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase();
@@ -250,6 +283,9 @@ export function useAgentBridge() {
     }).then(off => (dead ? off() : offs.push(off)));
     // The row names its parent at every spawn, a core started later included.
     void onAgentReparent(({ id, parent }) => useChats.getState().setParent(id, parent)).then(off => (dead ? off() : offs.push(off)));
+    const resume = () => void startResumes().catch(e => logWarn('agents', `asking which helpers go on failed: ${String(e)}`));
+    resume();
+    offs.push(onCoreUp(resume));
     return () => {
       dead = true;
       offs.forEach(off => off());

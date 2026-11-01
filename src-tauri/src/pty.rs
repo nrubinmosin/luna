@@ -196,7 +196,7 @@ struct Launch {
 // and rewrites the files the process reads at start. A pane attaching to a
 // running chat ensures it too, and doing all that then left the running
 // process holding a token Luna no longer knew.
-async fn spawn(id: String, launch: impl FnOnce() -> Launch) -> Result<String, String> {
+async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, String>) -> Result<String, String> {
     let state = manager();
     let gate = state.gate(&id);
     let _spawning = gate.lock().unwrap_or_else(|e| e.into_inner());
@@ -217,7 +217,7 @@ async fn spawn(id: String, launch: impl FnOnce() -> Launch) -> Result<String, St
     if let Some(old) = exited {
         end_leftovers(&old);
     }
-    let Launch { provider, cwd, account_path, args, envs, resume, describe } = launch();
+    let Launch { provider, cwd, account_path, args, envs, resume, describe } = launch()?;
 
     // portable-pty starts a process whose cwd is not there in the user
     // profile instead, without a word: a chat whose worktree had been removed
@@ -979,6 +979,13 @@ impl PtyManager {
         sessions.get(id).filter(|s| s.alive.load(Ordering::SeqCst)).map(|s| activity_probe(id, s))
     }
 
+    /// When a person last typed into the session, 0 if never: to tell whether
+    /// any key has come since.
+    pub fn typed_at_ms(&self, id: &str) -> u64 {
+        let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        sessions.get(id).map_or(0, |s| s.typed_ms.load(Ordering::Relaxed))
+    }
+
     /// How long ago a person last typed into the session, None if never.
     pub fn typed_ago_ms(&self, id: &str) -> Option<u64> {
         let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
@@ -1068,6 +1075,18 @@ impl PtyManager {
         read_composer(&bytes, rows, cols, provider)
     }
 
+    /// Whether its CLI stands at an empty prompt (see `at_empty_prompt`).
+    pub fn at_prompt(&self, id: &str) -> bool {
+        let found = {
+            let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+            sessions.get(id).map(|s| (s.provider, Arc::clone(&s.scrollback), Arc::clone(&s.size)))
+        };
+        let Some((provider, scrollback, size)) = found else { return false };
+        let bytes: Vec<u8> = scrollback.lock().unwrap_or_else(|e| e.into_inner()).make_contiguous().to_vec();
+        let (rows, cols) = *size.lock().unwrap_or_else(|e| e.into_inner());
+        at_empty_prompt(&bytes, rows, cols, provider)
+    }
+
     /// Keeps a person's keys back from the session until the hold is
     /// dropped, then sends them on in the order they came: Luna is typing
     /// around their draft, and a key landing in between would go out with
@@ -1075,7 +1094,7 @@ impl PtyManager {
     pub fn hold_keys(&self, id: &str) -> Option<KeyHold> {
         let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
         let s = sessions.get(id)?;
-        *s.held_keys.lock().unwrap_or_else(|e| e.into_inner()) = Some(Vec::new());
+        s.held_keys.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(Vec::new);
         Some(KeyHold { id: id.to_string() })
     }
 
@@ -1260,6 +1279,8 @@ pub async fn ensure_claude_session(
     read_only: Option<bool>,
     // The agent it runs as: `--agent`.
     agent: Option<String>,
+    // The spawn this is the session of, if an agent's (agents.rs `spawn_is`).
+    spawn_request: Option<u64>,
 ) -> Result<String, String> {
     // Built only if no process is running (see `spawn`).
     spawn(id.clone(), move || {
@@ -1330,6 +1351,9 @@ pub async fn ensure_claude_session(
         } else {
             crate::agents::register(&id, Provider::Claude, &folder, &account_path, parent.as_deref(), tools, settings)
         };
+        if let Some(request) = spawn_request {
+            crate::agents::spawn_is(request, &id)?;
+        }
         if let Some(mcp) = token.as_deref().and_then(|t| claude_mcp_file(&id, t)) {
             // Luna's tools without a permission prompt in every mode: the
             // user ticked the box that gives them. Variadic like
@@ -1362,7 +1386,7 @@ pub async fn ensure_claude_session(
             ("DISABLE_AUTOUPDATER", "1".to_string()),
         ];
         envs.extend(session_envs(&id, parent.as_deref()));
-        Launch {
+        Ok(Launch {
             provider: Provider::Claude,
             cwd: folder,
             account_path,
@@ -1370,7 +1394,7 @@ pub async fn ensure_claude_session(
             envs,
             resume,
             describe: format!("model {model} perm {permission_mode} worktree {worktree}"),
-        }
+        })
     })
     .await
 }
@@ -1397,6 +1421,7 @@ pub async fn ensure_codex_session(
     hooks_unasked: Option<bool>,
     parent: Option<String>,
     prompt: Option<String>,
+    spawn_request: Option<u64>,
 ) -> Result<String, String> {
     // Built only if no process is running (see `spawn`).
     spawn(id.clone(), move || {
@@ -1472,6 +1497,9 @@ pub async fn ensure_codex_session(
                 "effort": effort, "approval": approval, "sandbox": sandbox, "hooksUnasked": hooks_unasked,
             });
             let token = crate::agents::register(&id, Provider::Codex, &folder, &account_path, parent.as_deref(), tools, settings);
+            if let Some(request) = spawn_request {
+                crate::agents::spawn_is(request, &id)?;
+            }
             if let Some(token) = token.filter(|_| crate::hub::mcp_url().is_some()) {
                 args.extend(codex_mcp_args());
                 envs.push(("LUNA_MCP_TOKEN", token));
@@ -1486,7 +1514,7 @@ pub async fn ensure_codex_session(
                 model.as_deref().unwrap_or("default")
             );
         }
-        Launch {
+        Ok(Launch {
             provider: Provider::Codex,
             cwd: folder,
             account_path,
@@ -1494,7 +1522,7 @@ pub async fn ensure_codex_session(
             envs,
             resume: if login { None } else { resume },
             describe,
-        }
+        })
     })
     .await
 }
@@ -1726,9 +1754,14 @@ async fn take_and_shut_down(state: &PtyManager, id: &str) {
 /// stopped.
 #[tauri::command]
 pub async fn stop_all_sessions() -> Result<usize, String> {
-    tauri::async_runtime::spawn_blocking(|| manager().shut_down_all(GRACE) + crate::background::stop_turns(false))
-        .await
-        .map_err(|e| e.to_string())
+    tauri::async_runtime::spawn_blocking(|| {
+        // What a chat was doing is written down before quitting changes it.
+        crate::background::save();
+        crate::agents::freeze_chats();
+        manager().shut_down_all(GRACE) + crate::background::stop_turns(false)
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -2080,6 +2113,30 @@ pub fn read_composer(bytes: &[u8], rows: u16, cols: u16, provider: Provider) -> 
             row.trim_end().ends_with("› stashed") || row.contains("stashed · ")
         });
     Some(Composer { text: lines.join("\n").trim().to_string(), stashed })
+}
+
+/// Whether the screen shows the CLI at its prompt with nothing in it, for a chat
+/// nobody may be looking at. `read_composer` goes by the cursor, and that says
+/// nothing here: Claude Code asks to be told of the focus (`?1004`) and until it
+/// has it keeps the terminal's cursor hidden, drawing a caret of its own, as
+/// in a helper no pane has ever shown. So its composer is also the last `❯` on
+/// screen, under a rule and with a rule or the screen's end below it, nothing but
+/// a dim placeholder after it. A dialog's `❯` picks a line with words on it.
+pub fn at_empty_prompt(bytes: &[u8], rows: u16, cols: u16, provider: Provider) -> bool {
+    if let Some(c) = read_composer(bytes, rows, cols, provider) {
+        return c.text.is_empty();
+    }
+    if provider != Provider::Claude {
+        return false;
+    }
+    let mut parser = vt100::Parser::new(rows.max(1), cols.max(1), 0);
+    parser.process(bytes);
+    let screen = parser.screen();
+    let first = |r: u16| screen.cell(r, 0).map_or("", |c| c.contents());
+    let rule = |r: u16| first(r) == "─";
+    let Some(top) = (0..rows).rev().find(|&r| first(r) == "❯") else { return false };
+    let empty = (1..cols).filter_map(|c| screen.cell(top, c)).all(|c| c.dim() || c.contents().trim().is_empty());
+    empty && top > 0 && rule(top - 1) && (top + 1 == rows || rule(top + 1))
 }
 
 /// The composer's length after a person's keys, roughly: characters add,
@@ -2452,6 +2509,28 @@ mod tests {
         assert_eq!(read(&[(2, 1, "❯ Reply with just OK."), (4, 1, "Do you trust this folder?")], (5, 1)), None);
         let hidden = [drawn(&[(6, 1, &rule), (7, 1, "❯ hi"), (8, 1, &rule)], (7, 5)), b"\x1b[?25l".to_vec()].concat();
         assert_eq!(read_composer(&hidden, 10, 40, Provider::Claude), None);
+    }
+
+    #[test]
+    fn an_empty_prompt_is_told_with_the_cursor_hidden_as_in_a_helper_with_no_pane() {
+        let rule = "─".repeat(40);
+        let hidden = |parts: &[(u16, u16, &str)]| [b"\x1b[?25l".to_vec(), drawn(parts, (1, 1))].concat();
+        let at = |bytes: &[u8]| at_empty_prompt(bytes, 10, 40, Provider::Claude);
+        // What Claude Code 2.1.316 draws: a no-break space, its own caret in reverse.
+        let caret = "❯\u{a0}\x1b[7m \x1b[27m\x1b[K";
+        assert!(at(&hidden(&[(1, 1, "❯ say hello"), (6, 1, &rule), (7, 1, caret), (8, 1, &rule)])));
+        assert!(at(&hidden(&[(6, 1, &rule), (7, 1, "❯ \x1b[2mTry something\x1b[22m"), (8, 1, &rule)])), "a dim placeholder is nothing typed");
+        assert!(at(&hidden(&[(9, 1, &rule), (10, 1, caret)])), "no room left for the rule under it");
+        assert!(!at(&hidden(&[(6, 1, &rule), (7, 1, "❯ a draft"), (8, 1, &rule)])), "text in it");
+        assert!(!at(&hidden(&[(3, 1, "Use this API key?"), (5, 1, "❯ No (recommended)"), (6, 1, "  Yes")])), "a dialog's choice");
+        assert!(!at(&hidden(&[(1, 1, "❯ say hello"), (3, 1, "working")])), "a prompt in the conversation, with no composer under it");
+        assert!(!at(b""), "not drawn yet");
+        // The cursor where a pane has it: the composer as `read_composer` has it.
+        assert!(at(&drawn(&[(6, 1, &rule), (7, 1, "❯ "), (8, 1, &rule)], (7, 3))));
+        // Codex has one way of showing it, the cursor at its caret.
+        assert!(at_empty_prompt(&drawn(&[(6, 1, "› "), (8, 1, "? for shortcuts")], (6, 3)), 10, 40, Provider::Codex));
+        assert!(!at_empty_prompt(&drawn(&[(6, 1, "› a draft"), (8, 1, "? for shortcuts")], (6, 10)), 10, 40, Provider::Codex));
+        assert!(!at_empty_prompt(&hidden(&[(6, 1, "› "), (8, 1, "? for shortcuts")]), 10, 40, Provider::Codex), "not by the cursor, not at all");
     }
 
     #[test]
