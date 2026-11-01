@@ -29,6 +29,8 @@ Rules for anyone (person or agent) changing Luna.
 - There is no local Rust or Node toolchain: everything builds in Docker.
   - `./build-windows.ps1` — the release exe (`-Installer` for the setup).
   - `./test-build.ps1` — the **test build**, `test-build/luna-test.exe`.
+  - `./linux-check.ps1` — the crate built for Linux and all its unit tests run
+    there, the Unix code included.
   - `./screenshots.ps1 -Out test-build/shots` — headless shots of the UI on
     the demo data in `src/dev/demo.ts`.
 - Test only on the test build, never on the Luna in use. It has its own

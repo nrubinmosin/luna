@@ -68,14 +68,17 @@ const KEEPER: &str = "keeper";
 /// in the kernel. The job then counts as not ended.
 const ENDING_TAKES: Duration = Duration::from_secs(5);
 const LOOK_AGAIN: Duration = Duration::from_millis(25);
-/// Looks at a tree being frozen before it is ended whatever is still moving:
-/// what is frozen cannot fork, so only a fork bomb takes more than a few.
+/// Looks at a tree being frozen before it is ended whatever is still moving: what
+/// has stopped cannot fork, so only a fork bomb, or one stuck in the kernel and not
+/// stopping, takes more than a few.
 const FREEZE_LOOKS: usize = 50;
 /// How long the keeper listens before it looks at the core itself. The pipe says
 /// at once; this is for a pipe something else holds open as well.
 const CORE_LOOK_MS: i32 = 2000;
 /// A keeper that lasted less than this is not started again by itself.
 const KEEPER_LASTS: Duration = Duration::from_secs(5);
+/// How long a turn just started may take to have an environment to read.
+const ENVIRONMENT_WITHIN: Duration = Duration::from_secs(1);
 
 // -------------------------------------------------------------- the system --
 
@@ -135,6 +138,20 @@ mod os {
         }
     }
 
+    /// Whether no thread of it can start anything any more: a process has stopped
+    /// only as each of its threads takes the signal, and any of them may be the one
+    /// forking (Codex starts its tools from a worker thread). One that cannot be
+    /// looked at has gone, or leaves this to go by what the look finds.
+    pub fn stopped(pid: i32) -> bool {
+        let Ok(threads) = std::fs::read_dir(format!("/proc/{pid}/task")) else { return true };
+        threads.flatten().all(|thread| {
+            std::fs::read(thread.path().join("stat")).map_or(true, |stat| {
+                let stat = String::from_utf8_lossy(&stat);
+                stat.rsplit_once(')').and_then(|(_, rest)| rest.split_ascii_whitespace().next()).is_none_or(|state| matches!(state, "T" | "t" | "Z" | "X" | "x"))
+            })
+        })
+    }
+
     /// Ticks since boot start over at a boot, so a pid and a start time say
     /// nothing of a process written down before it.
     pub fn boot_id() -> Option<String> {
@@ -171,6 +188,8 @@ mod os {
     use std::os::raw::{c_char, c_int};
     use std::ptr::null_mut;
 
+    /// `SSTOP` in <sys/proc.h>.
+    const STOPPED: u32 = 4;
     /// `SZOMB` in <sys/proc.h>.
     const ZOMBIE: u32 = 5;
 
@@ -237,6 +256,12 @@ mod os {
         }
     }
 
+    /// Whether it can start nothing any more. One that cannot be looked at has
+    /// gone, or leaves this to go by what the look finds.
+    pub fn stopped(pid: i32) -> bool {
+        info(pid).map_or(true, |info| matches!(info.pbi_status, STOPPED | ZOMBIE))
+    }
+
     /// `kern.bootsessionuuid`, and not `kern.boottime`, which moves with the clock
     /// and would make this boot look like another. None tells nothing, which is
     /// safe: start times here are of the clock and do not repeat across boots.
@@ -295,6 +320,9 @@ mod os {
     }
     pub fn gone(_pid: i32, _started: u64) -> bool {
         false
+    }
+    pub fn stopped(_pid: i32) -> bool {
+        true
     }
     pub fn boot_id() -> Option<String> {
         None
@@ -412,15 +440,21 @@ fn tree(all: &[Proc], root: i32, me: i32, child_of: Option<i32>) -> Vec<&Proc> {
 /// looked below again, as a process killed outright would leave what it forked
 /// that moment with another parent and out of the walk. Each signal goes to the
 /// process looked at and no other (`os::signal`), so no group is signalled by its
-/// number, which may be another's by the time it arrives. Returns what it ended;
-/// None with nothing to look with.
+/// number, which may be another's by the time it arrives. A signal sent is not a
+/// process stopped: one may yet finish the fork it is in the middle of, so a look
+/// that finds nothing new counts only if all were still by the time it began.
+/// Returns what it ended; None with nothing to look with.
 fn freeze_and_end(look: impl Fn(&[Proc]) -> Vec<Proc>) -> Option<Vec<Proc>> {
     let mut frozen: Vec<Proc> = Vec::new();
     for _ in 0..FREEZE_LOOKS {
+        let all_still = frozen.iter().all(|p| !is_still(p) || os::stopped(p.pid));
         let all: Vec<Proc> = os::pids()?.into_iter().filter_map(os::read).collect();
         let new: Vec<Proc> = look(&all).into_iter().filter(|p| !frozen.iter().any(|f| f.pid == p.pid && f.started == p.started)).collect();
         if new.is_empty() {
-            break;
+            if all_still {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
         }
         for p in new {
             os::signal(&p, libc::SIGSTOP);
@@ -786,6 +820,23 @@ pub fn adopt(pid: u32) -> Option<Job> {
     Some(Job(Mutex::new(JobState { leaders: first.into_iter().collect(), since: first.map_or(0, |l| l.started), also: None, tied_for: None })))
 }
 
+/// For straight after a `spawn`, before `tie` or `join` and with nothing held, as
+/// this can take a while on a busy machine. `spawn` returns as the exec replaces the
+/// process's memory, before the new stack is laid out, and until it is Linux reads
+/// the environment as empty, which `shows_mark` would take for a mark hidden. Linux
+/// only: elsewhere an empty one may be all there will ever be (`os::environment`).
+pub fn await_environment(pid: u32) {
+    if !cfg!(target_os = "linux") {
+        return;
+    }
+    let pid = pid as i32;
+    let deadline = Instant::now() + ENVIRONMENT_WITHIN;
+    // One that has exited reads as empty for good, and `read` does not look at it.
+    while os::read(pid).is_some() && os::environment(pid).is_some_and(|env| env.is_empty()) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
 /// Whether a turn's process shows its mark, or has already gone, showing nothing
 /// and hiding nothing. Where it does not (macOS hides the environment of a
 /// restricted binary), what the turn leaves behind could not be told either.
@@ -1086,6 +1137,18 @@ mod tests {
         (keeper, pipe)
     }
 
+    /// Whether `done` comes true in time.
+    fn within(ms: u64, done: impl Fn() -> bool) -> bool {
+        let deadline = Instant::now() + Duration::from_millis(ms);
+        while !done() {
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        true
+    }
+
     fn all_gone_within(child: &mut Child, pids: &[i32], ms: u64) -> bool {
         let deadline = Instant::now() + Duration::from_millis(ms);
         while Instant::now() < deadline {
@@ -1343,8 +1406,22 @@ mod tests {
     }
 
     #[test]
+    fn a_turn_shows_its_mark_however_soon_after_its_start_it_is_looked_at() {
+        for _ in 0..300 {
+            let mut turn = Command::new("sleep").arg("60").env(MARK, mark_of("so-soon")).process_group(0).spawn().unwrap();
+            let pid = turn.id();
+            await_environment(pid);
+            let shown = leader(pid).is_some_and(|l| shows_mark(&l, "so-soon"));
+            let _ = turn.kill();
+            let _ = turn.wait();
+            assert!(shown, "a turn just started has nothing to hide");
+        }
+    }
+
+    #[test]
     fn a_turn_that_does_not_show_its_mark_is_not_counted_as_tied_but_still_goes() {
         let hidden = Command::new("sleep").arg("60").env_remove(MARK).process_group(0).spawn().unwrap();
+        await_environment(hidden.id());
         let job = adopt(hidden.id()).unwrap();
         assert!(!tie(&job, "hidden"), "nothing could tell what it leaves behind");
         assert!(ties().records.contains_key(&mark_of("hidden")), "the keeper has it for all that");
@@ -1352,9 +1429,11 @@ mod tests {
         assert!(!ties().records.contains_key(&mark_of("hidden")));
         // A later turn the same way: what it says goes against the helper's tie.
         let shown = Command::new("sleep").arg("60").env(MARK, mark_of("later")).process_group(0).spawn().unwrap();
+        await_environment(shown.id());
         let job = adopt(shown.id()).unwrap();
         assert!(tie(&job, "later"));
         let other = Command::new("sleep").arg("60").env_remove(MARK).process_group(0).spawn().unwrap();
+        await_environment(other.id());
         assert!(!join(&job, other.id()));
         // One gone already hides nothing.
         let mut quick = Command::new("true").spawn().unwrap();
@@ -1412,12 +1491,14 @@ mod tests {
         // tool that has exited left behind.
         let tool = "sleep 60 & echo on $!; (nohup sleep 60 > /dev/null 2>&1 & echo on $!); sleep 60 & echo on $!; wait";
         let mut turn = script(&format!(
-            "sleep 60 &\necho on $!\n{SETSID} sh -c '{tool}' &\n{SETSID} sh -c 'sleep 60 & echo left $!'\nwait\n"
+            "sleep 60 &\necho on $!\n{SETSID} sh -c '{tool}' &\n{SETSID} sh -c 'echo gone $$; sleep 60 & echo left $!'\nwait\n"
         ));
-        let said = said(&mut turn, 5);
-        let (on, left) = (the(&said, "on"), the(&said, "left"));
-        assert_eq!((on.len(), left.len()), (4, 1), "{said:?}");
+        let said = said(&mut turn, 6);
+        let (on, left, gone) = (the(&said, "on"), the(&said, "left"), the(&said, "gone"));
+        assert_eq!((on.len(), left.len(), gone.len()), (4, 1, 1), "{said:?}");
         assert!(on.iter().chain(&left).all(|pid| os::read(*pid).is_some()));
+        // Said is not done: until that tool has exited, what it left still hangs from it.
+        assert!(within(3000, || os::read(gone[0]).is_none()), "the tool that exits has");
         end_tree(turn.id());
         assert!(all_gone_within(&mut turn, &on, 3000), "the tool commands go too");
         assert!(os::read(left[0]).is_some(), "what outlived its tool is let go of");
@@ -1425,12 +1506,26 @@ mod tests {
     }
 
     #[test]
+    fn a_process_told_to_stop_has_stopped_only_once_it_has() {
+        let mut turn = Command::new("sleep").arg("60").process_group(0).spawn().unwrap();
+        let pid = turn.id() as i32;
+        assert!(within(3000, || os::read(pid).is_some()));
+        assert!(!os::stopped(pid), "asleep is not stopped");
+        // SAFETY: a plain signal, to a child of this test not yet reaped.
+        unsafe { libc::kill(pid, libc::SIGSTOP) };
+        assert!(within(3000, || os::stopped(pid)));
+        let _ = turn.kill();
+        let _ = turn.wait();
+        assert!(os::stopped(pid), "nothing left to start anything");
+    }
+
+    #[test]
     fn what_a_tree_forks_as_it_goes_goes_too() {
         // Each round leaves a sleep with no parent, in the group of the root.
-        let mark = "forks-as-it-goes";
+        let mark = format!("forks-as-it-goes-{}", std::process::id());
         let mut turn = Command::new("sh")
             .args(["-c", "while :; do (sleep 60 &); sleep 0.002; done"])
-            .env(MARK, mark)
+            .env(MARK, &mark)
             .process_group(0)
             .stdin(Stdio::null())
             .spawn()
@@ -1467,6 +1562,9 @@ mod tests {
         let mut core = script(&format!("{MARK}={KEEPER} sleep 60 & echo keeper $!; sleep 60 & echo other $!; wait"));
         let said = said(&mut core, 2);
         let (keeper, other) = (the(&said, "keeper"), the(&said, "other"));
+        // The shell says the pid as it forks, and the mark is there only from the exec.
+        let its_mark = format!("{MARK}={KEEPER}");
+        assert!(within(3000, || os::environment(keeper[0]).is_some_and(|env| holds(&env, &its_mark))), "it has its mark");
         end_tree(core.id());
         assert!(all_gone_within(&mut core, &other, 3000));
         assert!(os::read(keeper[0]).is_some(), "the core's death is what it is there for");
@@ -1479,6 +1577,7 @@ mod tests {
         let turn = || Command::new("sleep").arg("60").env(MARK, mark_of("written")).process_group(0).spawn().unwrap();
         let on_disk = || -> Record { serde_json::from_slice(&std::fs::read(record_file(&records_dir(), &mark_of("written"))).unwrap()).unwrap() };
         let mut first = turn();
+        await_environment(first.id());
         let job = adopt(first.id()).unwrap();
         assert!(job.state().tied_for.is_none(), "untied, as a chat's stays");
         assert!(tie(&job, "written"));
@@ -1491,6 +1590,7 @@ mod tests {
         let _ = first.kill();
         let _ = first.wait();
         let mut second = turn();
+        await_environment(second.id());
         assert!(join(&job, second.id()));
         assert_eq!(on_disk().leaders, [leader(second.id()).unwrap()]);
         assert_eq!(on_disk().id, "written");
