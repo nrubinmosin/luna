@@ -475,11 +475,17 @@ fn reg() -> &'static Mutex<Registry> {
 }
 
 /// `caller` has been handed the answer `id` gave by `turns_ended`: a turn past
-/// what it asked about settles what it was owed, and so does the end of a job
-/// it was told of. It has seen that count too (see `seen`).
+/// what it asked about settles what it was owed. It has seen that count too
+/// (see `seen`).
 fn shown(caller: &str, id: &str, turns_ended: u32) {
+    settle(caller, id, turns_ended, false);
+}
+
+/// `shown`; `job_ended`: what it was handed is the end of a job it was told of,
+/// which settles what it was owed with no turn past it.
+fn settle(caller: &str, id: &str, turns_ended: u32, job_ended: bool) {
     let key = (caller.to_string(), id.to_string());
-    let settled = reg().lock().unwrap_or_else(|e| e.into_inner()).owed.get(&key).is_some_and(|o| turns_ended > o.baseline || o.told_pending);
+    let settled = reg().lock().unwrap_or_else(|e| e.into_inner()).owed.get(&key).is_some_and(|o| turns_ended > o.baseline || job_ended);
     // What it says once its own helpers have answered it is what it was asked
     // for: still owed, past what the caller has now, as a notice's "not done"
     // leaves it.
@@ -498,13 +504,13 @@ fn shown(caller: &str, id: &str, turns_ended: u32) {
 /// `shown`, for a tool response the client may yet drop unread (a cancel
 /// that crosses it): returns what puts the debt and the count seen back as
 /// they were. Whatever a later call has recorded meanwhile stands.
-fn hand_over(caller: &str, id: &str, turns_ended: u32) -> impl FnOnce() + Send + 'static {
+fn hand_over(caller: &str, id: &str, turns_ended: u32, job_ended: bool) -> impl FnOnce() + Send + 'static {
     let key = (caller.to_string(), id.to_string());
     let (owed, seen_before) = {
         let r = reg().lock().unwrap_or_else(|e| e.into_inner());
         (r.owed.get(&key).copied(), r.seen.get(&key).copied())
     };
-    shown(caller, id, turns_ended);
+    settle(caller, id, turns_ended, job_ended);
     move || {
         let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
         if let Some(o) = owed {
@@ -2870,7 +2876,7 @@ pub fn read(
         && owed.is_some_and(|o| turns_ended > o.baseline && (!o.queued || queue_settled(&key, o, turns_ended)));
     if settles {
         // Cancelled first, it is put back; the response goes nowhere anyway.
-        call.commit(hand_over(caller, id, turns_ended));
+        call.commit(hand_over(caller, id, turns_ended, false));
     } else {
         seen(caller, id, turns_ended);
     }
@@ -3122,7 +3128,7 @@ pub fn wait(
             if !answers {
                 // Nothing was handed over: whatever is owed stays owed.
                 looked(id);
-            } else if !call.commit(hand_over(caller, id, turns_ended)) {
+            } else if !call.commit(hand_over(caller, id, turns_ended, outcome == "job_done")) {
                 // A cancel since the last look: it stays owed after all.
                 return gone_err();
             }
@@ -3645,7 +3651,7 @@ fn notice_line(
                     1 => format!("it wrote 1 message since your last notice; {}", answer_file(id, &said)),
                     n => format!("it wrote {n} messages since your last notice; {}", answer_file(id, &said)),
                 };
-                Some((Some(format!("{who}: what it left running has ended, and {said}.")), Settled::Answered))
+                Some((Some(format!("{who} has nothing left running now, and {said}.")), Settled::Answered))
             }
             Some((n, _)) if n == ended => None,
             _ => Some((None, Settled::Hold(ended))),
@@ -4181,14 +4187,14 @@ mod tests {
         let key = ("h-parent".to_string(), "h-child".to_string());
         owe_from("h-parent", "h-child", 1, 40);
         seen("h-parent", "h-child", 1);
-        let undo = hand_over("h-parent", "h-child", 2);
+        let undo = hand_over("h-parent", "h-child", 2, false);
         assert!(reg().lock().unwrap().owed.get(&key).is_none(), "handed over");
         assert_eq!(last_shown("h-parent", "h-child"), Some(2));
         undo();
         assert_eq!(reg().lock().unwrap().owed.get(&key).map(|o| (o.baseline, o.cursor)), Some((1, 40)));
         assert_eq!(last_shown("h-parent", "h-child"), Some(1));
         // A question asked in between stands, owing the dropped answer too.
-        let undo = hand_over("h-parent", "h-child", 2);
+        let undo = hand_over("h-parent", "h-child", 2, false);
         owe_from("h-parent", "h-child", 2, 90);
         seen("h-parent", "h-child", 2);
         undo();
@@ -4592,6 +4598,22 @@ mod tests {
         let o = reg().lock().unwrap().owed.remove(&("nd-a".to_string(), "nd-b".to_string())).unwrap();
         assert!(!o.told_pending, "this one may be told it is not done, once");
         assert_eq!((o.baseline, o.cursor), (3, 20));
+    }
+
+    #[test]
+    fn only_a_job_ending_or_a_later_turn_settles_a_caller_told_it_is_not_done() {
+        let key = ("js-a".to_string(), "js-b".to_string());
+        let owed = || reg().lock().unwrap().owed.get(&key).copied();
+        reg().lock().unwrap().owed.insert(key.clone(), Owed::pending(3, 0));
+        // A wait with an `afterTurn` from before the notice hands over a turn
+        // the caller was told of: the job's end is still to come.
+        drop(hand_over("js-a", "js-b", 3, false));
+        assert!(owed().is_some_and(|o| o.told_pending), "still owed");
+        drop(hand_over("js-a", "js-b", 3, true));
+        assert!(owed().is_none(), "the job's end, with no turn past it");
+        reg().lock().unwrap().owed.insert(key.clone(), Owed::pending(3, 0));
+        drop(hand_over("js-a", "js-b", 4, false));
+        assert!(owed().is_none(), "a later turn, as ever");
     }
 
     #[test]

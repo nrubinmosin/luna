@@ -425,6 +425,9 @@ fn run_turn(id: &str, prompt: &str) -> Result<(), String> {
 
 /// Why a turn claimed before a stop does not run.
 const STOPPED: &str = "it was stopped before it started";
+/// How long the CLI's last events get to be read once its process has gone, for
+/// a pipe that something it left running still holds open.
+const LAST_WORDS: std::time::Duration = std::time::Duration::from_secs(2);
 
 fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
     let (args, dir, envs, provider) = {
@@ -473,19 +476,37 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
             .name(format!("luna-bg-{id}"))
             .spawn(move || {
                 let Ok((mut child, stdout)) = take.recv() else { return };
-                // Read to its end as bytes, as stderr below is.
+                // Read to its end as bytes, as stderr below is, on a thread of
+                // its own: the turn is over when the CLI is, and a job it left
+                // running can have inherited this pipe and hold it open for as
+                // long as it runs. Nothing it might write there is the CLI's.
+                let over = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let (drained, read_out) = std::sync::mpsc::channel::<()>();
                 if let Some(out) = stdout {
-                    for line in BufReader::new(out).split(b'\n').map_while(Result::ok) {
-                        let Ok(v) = serde_json::from_slice::<Value>(&line) else { continue };
-                        let mut r = lock();
-                        let Some(e) = r.entries.get_mut(&id) else { break };
-                        match provider {
-                            Provider::Claude => on_claude_event(e, &v),
-                            Provider::Codex => on_codex_event(e, &v),
+                    let (helper, over) = (id.clone(), over.clone());
+                    let read = std::thread::Builder::new().name(format!("luna-bg-out-{id}")).spawn(move || {
+                        let _drained = drained;
+                        for line in BufReader::new(out).split(b'\n').map_while(Result::ok) {
+                            if over.load(std::sync::atomic::Ordering::SeqCst) {
+                                continue;
+                            }
+                            let Ok(v) = serde_json::from_slice::<Value>(&line) else { continue };
+                            let mut r = lock();
+                            let Some(e) = r.entries.get_mut(&helper) else { break };
+                            match provider {
+                                Provider::Claude => on_claude_event(e, &v),
+                                Provider::Codex => on_codex_event(e, &v),
+                            }
                         }
+                    });
+                    if let Err(e) = read {
+                        crate::log::warn("background", &format!("cannot read what {} says: {e}", crate::agents::label(&id)));
                     }
                 }
                 let code = child.wait().ok().and_then(|s| s.code());
+                // What it wrote before it went is in the pipe by now.
+                let _ = read_out.recv_timeout(LAST_WORDS);
+                over.store(true, std::sync::atomic::Ordering::SeqCst);
                 turn_over(&id, code);
             })
             .map_err(thread_err)?;
