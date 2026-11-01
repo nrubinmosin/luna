@@ -99,6 +99,10 @@ struct Entry {
     /// Its last turn was stopped by the core going, not ended by the CLI:
     /// what the caller is told of it says so.
     cut_short: bool,
+    /// Text that was queued behind a turn the core's going stopped: it never
+    /// reached the CLI. Kept, across cores too, until a caller has been told
+    /// (agents.rs `undelivered_shown`) or a turn of `resume` has taken it.
+    undelivered: Vec<String>,
     /// The job every turn's process is put in, the first one's made for it:
     /// what a turn leaves running is still the helper's between turns, holds
     /// the machine as a chat's would, and is ended with the helper.
@@ -203,10 +207,10 @@ fn end_leftovers(id: &str, job: Option<&crate::procs::Job>) {
     }
 }
 
-/// Stops every turn in progress with its process tree and drops what was
-/// queued; `close` also keeps any from starting after. A turn claimed but not
-/// yet started is stopped too: it does not start. Returns how many it
-/// stopped.
+/// Stops every turn in progress with its process tree and takes what was
+/// queued off it, kept as undelivered; `close` also keeps any from starting
+/// after. A turn claimed but not yet started is stopped too: it does not
+/// start. Returns how many it stopped.
 pub fn stop_turns(close: bool) -> usize {
     let (pids, claimed): (Vec<u32>, usize) = {
         let mut r = lock();
@@ -214,8 +218,11 @@ pub fn stop_turns(close: bool) -> usize {
         let mut pids = Vec::new();
         let mut claimed = 0;
         for e in r.entries.values_mut() {
-            // Stopped for Luna's sake, not ended: its caller hears so.
+            // Stopped for Luna's sake, not ended: its caller hears so, and gets
+            // back what was queued behind it, which `stop` drops.
             e.cut_short |= e.run.is_some();
+            let queued = e.queue.clone();
+            e.undelivered.extend(queued);
             match stop(e) {
                 Some(pid) => pids.push(pid),
                 None if e.run.is_some() => claimed += 1,
@@ -263,6 +270,7 @@ pub fn start(id: &str, spec: Spec, prompt: &str) -> Result<(), String> {
         held: None,
         error: None,
         cut_short: false,
+        undelivered: Vec::new(),
         job: None,
     };
     claim(&mut e);
@@ -651,9 +659,14 @@ fn turn_over(id: &str, code: Option<i32>) {
     };
     reg().1.notify_all();
     crate::log::info("background", &format!("{} turn over, code {code:?}", crate::agents::label(id)));
-    // One that cannot start is recorded as ended by `run_turn`.
+    // One that cannot start is recorded as ended by `run_turn`. Stopped for
+    // the core's sake as it started, its text is kept as if still queued.
     if let Some(text) = next {
-        let _ = run_turn(id, &text);
+        if run_turn(id, &text).is_err() {
+            if let Some(e) = lock().entries.get_mut(id).filter(|e| e.cut_short) {
+                e.undelivered.push(text);
+            }
+        }
     }
     changed();
 }
@@ -730,7 +743,10 @@ pub fn send(id: &str, text: &str) -> Result<bool, String> {
             false
         }
     };
-    if !queued {
+    if queued {
+        // At once: a core that goes hard (power, a crash) writes nothing more.
+        save();
+    } else {
         run_turn(id, text)?;
     }
     changed();
@@ -812,6 +828,13 @@ pub fn made_worktree(id: &str) -> Option<String> {
     (!crate::pty::same_dir(&cwd, &folder)).then_some(cwd)
 }
 
+/// The worktree `remove` would hand back, with nothing touched.
+pub fn removable_worktree(id: &str) -> Option<String> {
+    let r = lock();
+    let e = r.entries.get(id)?;
+    e.cwd.clone().filter(|c| !crate::pty::same_dir(c, &e.spec.folder) && crate::worktree::is_worktree_of(&e.spec.folder, c))
+}
+
 /// Stops it and forgets it. Returns the worktree it made, if any.
 pub fn remove(id: &str) -> Option<String> {
     kill(id);
@@ -820,6 +843,7 @@ pub fn remove(id: &str) -> Option<String> {
     let _ = std::fs::remove_file(crate::paths::data_dir().join("mcp").join(format!("{id}.json")));
     changed();
     let e = e?;
+    crate::agents::undelivered_left(id, &e.undelivered);
     end_leftovers(id, e.job.as_deref());
     e.cwd.filter(|c| !crate::pty::same_dir(c, &e.spec.folder) && crate::worktree::is_worktree_of(&e.spec.folder, c))
 }
@@ -1052,6 +1076,7 @@ pub fn background_promote(id: String) -> Result<(), String> {
         tools: e.spec.tools,
         id: id.clone(),
     };
+    crate::agents::undelivered_left(&id, &e.undelivered);
     crate::agents::promoted(&id);
     crate::emit::to_ui("agent://promote", promoted);
     changed();
@@ -1091,6 +1116,13 @@ struct Saved {
     running: bool,
     /// Text was queued behind that turn, which goes with it.
     queued: bool,
+    /// That text, word for word, for its sender to send again (a file an
+    /// older core left has only `queued`).
+    #[serde(default)]
+    queue: Vec<String>,
+    /// See `Entry::undelivered`.
+    #[serde(default)]
+    undelivered: Vec<String>,
     cut_short: bool,
     ties: crate::agents::Ties,
 }
@@ -1110,19 +1142,18 @@ fn save() {
     if !RESTORED.load(Ordering::SeqCst) {
         return;
     }
-    let rows: Vec<(String, Spec, u64, Option<String>, Option<String>, u32, bool, bool, bool)> = lock()
+    let rows: Vec<(String, Spec, u64, Option<String>, Option<String>, u32, bool, Vec<String>, Vec<String>, bool)> = lock()
         .entries
         .iter()
         .map(|(id, e)| {
-            let queued = !e.queue.is_empty();
-            (id.clone(), e.spec.clone(), e.started_ms, e.session.clone(), e.cwd.clone(), e.turns_ended, e.run.is_some(), queued, e.cut_short)
+            (id.clone(), e.spec.clone(), e.started_ms, e.session.clone(), e.cwd.clone(), e.turns_ended, e.run.is_some(), e.queue.clone(), e.undelivered.clone(), e.cut_short)
         })
         .collect();
     // The agent layer's lock after this one is let go: it is the one taken
     // first where both are held.
     let mut saved: Vec<Saved> = rows
         .into_iter()
-        .map(|(id, spec, started_ms, session, cwd, turns_ended, running, queued, cut_short)| Saved {
+        .map(|(id, spec, started_ms, session, cwd, turns_ended, running, queue, undelivered, cut_short)| Saved {
             ties: crate::agents::ties_of(&id).unwrap_or_default(),
             id,
             spec,
@@ -1131,7 +1162,9 @@ fn save() {
             cwd,
             turns_ended,
             running,
-            queued,
+            queued: !queue.is_empty(),
+            queue,
+            undelivered,
             cut_short,
         })
         .collect();
@@ -1151,8 +1184,10 @@ fn save() {
 
 /// Takes up the helpers the last core left, and keeps them saved from here
 /// on. A turn that core was in the middle of is over, stopped with it; the
-/// caller owed its answer is told so. One whose first turn never named its
-/// conversation has nothing to resume, and is let go.
+/// caller owed its answer is told so, and given back what was queued behind
+/// it. One spawned with `resumeOnRestart` goes on by itself (`resume_stopped`).
+/// One whose first turn never named its conversation has nothing to resume,
+/// and is let go.
 pub fn restore() {
     let saved: Vec<Saved> = match std::fs::read(saved_file()) {
         Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|e| {
@@ -1165,6 +1200,7 @@ pub fn restore() {
     for mut s in saved {
         if s.session.is_none() {
             crate::log::warn("background", &format!("let go of helper {}: its first turn never named its conversation", s.id));
+            crate::agents::undelivered_left(&s.id, &[std::mem::take(&mut s.undelivered), std::mem::take(&mut s.queue)].concat());
             continue;
         }
         let ties = std::mem::take(&mut s.ties);
@@ -1187,10 +1223,78 @@ pub fn restore() {
     });
 }
 
+/// The helpers a core took up stopped mid-turn that were spawned with
+/// `resumeOnRestart`: each starts its next turn by itself. Off this thread,
+/// and only once the hub listens: a turn's MCP config names its port.
+pub fn resume_stopped() {
+    let ids: Vec<String> = lock().entries.iter().filter(|(_, e)| e.cut_short && e.run.is_none()).map(|(id, _)| id.clone()).collect();
+    let ids: Vec<String> = ids.into_iter().filter(|id| crate::agents::resumes_on_restart(id)).collect();
+    if ids.is_empty() {
+        return;
+    }
+    let _ = std::thread::Builder::new().name("luna-bg-resume".into()).spawn(move || {
+        for id in ids {
+            resume(&id);
+        }
+    });
+}
+
+/// Starts the turn that carries on from one a core's going stopped. Its
+/// callers are owed the end of that turn, and told it is running. One that
+/// cannot start ends as `run_turn` records it and leaves the helper cut short
+/// with its text kept: the caller's notice is then the one for a helper that
+/// did not go on.
+fn resume(id: &str) {
+    let (text, count, carried) = {
+        let mut r = lock();
+        let Some(e) = r.entries.get_mut(id) else { return };
+        // Something got there first.
+        if e.run.is_some() {
+            return;
+        }
+        claim(e);
+        (resume_text(&e.undelivered), e.turns_ended, e.undelivered.len())
+    };
+    crate::agents::resumed(id, count);
+    match run_turn(id, &text) {
+        Ok(()) => {
+            if let Some(e) = lock().entries.get_mut(id) {
+                e.undelivered.clear();
+                note(e, "resumed by itself after a core stopped its turn");
+            }
+            crate::log::warn(
+                "background",
+                &format!("{}: resumed by itself after a core stopped its turn, {carried} queued message(s) with it", crate::agents::label(id)),
+            );
+        }
+        Err(why) => crate::log::warn("background", &format!("{}: could not resume by itself: {why}", crate::agents::label(id))),
+    }
+    changed();
+}
+
+/// What a resumed helper is told: why its turn stopped, and what was queued
+/// for it, word for word, as it would have come.
+fn resume_text(queued: &[String]) -> String {
+    let mut text = format!(
+        "{} Luna's core restarted and stopped your last turn before it finished. Carry on where you left off.",
+        crate::agents::NOTICE_TAG
+    );
+    if !queued.is_empty() {
+        text.push_str("\n\nThese messages were sent to you while you worked and never reached you, oldest first:");
+        for message in queued {
+            text.push_str("\n\n");
+            text.push_str(message);
+        }
+    }
+    text
+}
+
 /// A saved helper as a registry entry, between turns: a turn that ran went
 /// with the old core and counts as ended, and so does the text queued
-/// behind it, which went too (as `stop` counts them).
+/// behind it, which never reached the CLI (as `stop` counts them) and is kept
+/// for its sender.
 fn taken_up(s: Saved) -> Entry {
+    let undelivered = [s.undelivered, s.queue].concat();
     let mut e = Entry {
         spec: s.spec,
         started_ms: s.started_ms,
@@ -1203,6 +1307,7 @@ fn taken_up(s: Saved) -> Entry {
         held: None,
         error: None,
         cut_short: s.cut_short || s.running,
+        undelivered,
         job: None,
     };
     if s.running {
@@ -1210,7 +1315,7 @@ fn taken_up(s: Saved) -> Entry {
         e.error = Some("Luna's core restarted mid-turn and stopped the turn".into());
     }
     if s.queued {
-        note(&mut e, "dropped what was queued behind it");
+        note(&mut e, "what was queued behind it never reached it");
     }
     note(&mut e, "taken up by a new core");
     e
@@ -1219,6 +1324,42 @@ fn taken_up(s: Saved) -> Entry {
 /// Whether its last turn was stopped by the core going rather than ended.
 pub fn cut_short(id: &str) -> bool {
     lock().entries.get(id).is_some_and(|e| e.cut_short)
+}
+
+/// See `Entry::undelivered`.
+pub fn undelivered(id: &str) -> Vec<String> {
+    lock().entries.get(id).map(|e| e.undelivered.clone()).unwrap_or_default()
+}
+
+pub fn clear_undelivered(id: &str) {
+    if let Some(e) = lock().entries.get_mut(id) {
+        e.undelivered.clear();
+    }
+}
+
+/// A helper as a core takes it up, for the tests of what its caller is told.
+#[cfg(test)]
+pub fn take_up_for_test(id: &str, folder: &str, turns_ended: u32, queue: &[&str]) {
+    let spec: Spec = serde_json::from_value(json!({
+        "provider": "claude", "accountPath": "C:\\acc", "folder": folder, "worktree": false, "model": null,
+        "effort": "low", "mode": "default", "autoReview": false, "tools": false, "hooksUnasked": false,
+    }))
+    .unwrap();
+    let e = taken_up(Saved {
+        id: id.to_string(),
+        spec,
+        started_ms: 0,
+        session: Some("sid".into()),
+        cwd: None,
+        turns_ended,
+        running: true,
+        queued: !queue.is_empty(),
+        queue: queue.iter().map(|t| t.to_string()).collect(),
+        undelivered: Vec::new(),
+        cut_short: false,
+        ties: Default::default(),
+    });
+    lock().entries.insert(id.to_string(), e);
 }
 
 #[cfg(test)]
@@ -1250,6 +1391,7 @@ mod tests {
             held: None,
             error: None,
             cut_short: false,
+            undelivered: Vec::new(),
             job: None,
         }
     }
@@ -1269,6 +1411,8 @@ mod tests {
             turns_ended: 3,
             running,
             queued,
+            queue: if queued { vec!["first".to_string(), "second".to_string()] } else { Vec::new() },
+            undelivered: Vec::new(),
             cut_short: false,
             ties: Default::default(),
         };
@@ -1278,10 +1422,69 @@ mod tests {
         assert_eq!(e.turns_ended, 5, "the turn stopped and the text queued behind it");
         assert!(e.cut_short && e.error.is_some());
         assert_eq!(e.session.as_deref(), Some("sid"));
+        assert_eq!(e.undelivered, ["first", "second"], "kept word for word, none of it queued for a turn");
+        assert!(e.queue.is_empty());
 
         let e = taken_up(saved(false, false));
         assert_eq!(e.turns_ended, 3);
         assert!(!e.cut_short && e.error.is_none());
+    }
+
+    #[test]
+    fn a_file_an_older_core_left_still_reads() {
+        let spec = serde_json::to_value(&entry(Provider::Codex).spec).unwrap();
+        let s: Saved = serde_json::from_value(json!({
+            "id": "c1", "spec": spec, "startedMs": 5, "session": "t", "cwd": null, "turnsEnded": 3,
+            "running": true, "queued": true, "cutShort": false, "ties": {
+                "parent": null, "name": null, "settings": {}, "tools": false, "borrowed": false, "autoDelete": false, "owed": [], "seen": [],
+            },
+        }))
+        .unwrap();
+        let e = taken_up(s);
+        assert_eq!(e.turns_ended, 5, "what it queued is counted though its words are gone");
+        assert!(e.undelivered.is_empty());
+    }
+
+    #[test]
+    fn what_a_stopped_turn_had_queued_is_kept_and_counted() {
+        let mut e = entry(Provider::Codex);
+        e.run = Some(Run { pid: None, started_ms: 0, stopped: false });
+        e.queue = vec!["one".into(), "two".into()];
+        lock().entries.insert("stop-keeps".into(), e);
+        stop_turns(false);
+        let e = lock().entries.remove("stop-keeps").unwrap();
+        assert_eq!(e.undelivered, ["one", "two"]);
+        assert!(e.queue.is_empty() && e.cut_short);
+        assert_eq!(e.turns_ended, 1, "whoever queued it waits on an end that will not come");
+    }
+
+    #[test]
+    fn a_kill_drops_what_was_queued_as_it_did() {
+        let mut e = entry(Provider::Codex);
+        e.run = Some(Run { pid: None, started_ms: 0, stopped: false });
+        e.queue = vec!["one".into()];
+        assert_eq!(stop(&mut e), None);
+        assert!(e.queue.is_empty() && e.undelivered.is_empty() && !e.cut_short, "the agent's own stop, not Luna's");
+    }
+
+    #[test]
+    fn a_resumed_turn_is_told_why_and_given_what_was_queued() {
+        let text = resume_text(&[]);
+        assert!(text.starts_with(crate::agents::NOTICE_TAG) && text.contains("Carry on where you left off"));
+        assert!(!text.contains("never reached you"));
+        let text = resume_text(&["fix the test\nand push".into(), "also the docs".into()]);
+        let (first, second) = (text.find("fix the test\nand push").unwrap(), text.find("also the docs").unwrap());
+        assert!(text.contains("never reached you") && first < second, "word for word, oldest first: {text}");
+    }
+
+    #[test]
+    fn a_resume_that_cannot_start_leaves_the_helper_cut_short_with_its_text() {
+        take_up_for_test("resume-fail", "C:\\luna-no-such-folder", 3, &["queued"]);
+        resume("resume-fail");
+        let e = lock().entries.remove("resume-fail").unwrap();
+        assert!(e.run.is_none() && e.cut_short && e.error.is_some());
+        assert_eq!(e.undelivered, ["queued"], "still the caller's to resend");
+        assert_eq!(e.turns_ended, 6, "the stopped turn, what was queued behind it, the turn that could not start");
     }
 
     #[test]

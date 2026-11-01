@@ -149,6 +149,7 @@ fn run() {
     crate::hub::start();
     crate::agents::init();
     crate::agents::register_dev_caller();
+    crate::background::resume_stopped();
     crate::activity::start();
     crate::pty::prune_session_files_periodically();
     crate::media::prune_periodically();
