@@ -211,7 +211,7 @@ fn tools() -> Value {
     json!([
         {
             "name": "luna_list",
-            "description": "Your id (me), the sessions you spawned (state, ask, turnsEnded, worktree, deletesInMin) and the accounts you may use: models, a helper's defaults in your folder, usage (% per window, resets).",
+            "description": "Your id (me), sessions you spawned (state, ask, turnsEnded, worktree, deletesInMin) and accounts you may use: models, a helper's defaults in your folder, usage (% per window, resets).",
             "inputSchema": s(json!({}), &[]),
             "annotations": reads
         },
@@ -278,7 +278,7 @@ fn tools() -> Value {
         },
         {
             "name": "luna_wait",
-            "description": "Block until a Luna session (not yours; no task id, not a timer) ends a turn (reply: all it said since you asked), stops on a question or permission, or exits. Timeout, waiting and a reply-less turn come with the screen. `afterTurn`: wait for a turn past this turnsEnded (default: the last one you were shown). Optional: end your turn and a notice brings the answer.",
+            "description": "Block until a Luna session (not yours; no task id, not a timer) ends a turn (reply: all it said since you asked; failed: its error), stops on a question or permission, or exits. Timeout, waiting and a reply-less turn come with the screen. `afterTurn`: wait for a turn past this turnsEnded (default: the last you were shown). Or end your turn: a notice brings the answer.",
             "inputSchema": s(json!({
                 "id": { "type": "string" },
                 "until": { "type": "string", "enum": ["turn_done", "waiting", "exit"] },
@@ -372,7 +372,7 @@ fn call(caller: &str, params: &Value, this: &Call) -> Value {
         // The first block is the result's JSON; its few fields that say how
         // the call went.
         let v: Value = out["content"][0]["text"].as_str().and_then(|t| serde_json::from_str(t).ok()).unwrap_or(Value::Null);
-        const OUTCOME: &[&str] = &["id", "outcome", "started", "starting", "queued", "turnsEnded", "state", "leftOut", "worktreeRemoved"];
+        const OUTCOME: &[&str] = &["id", "outcome", "failed", "started", "starting", "queued", "turnsEnded", "state", "leftOut", "worktreeRemoved"];
         let got: Vec<String> = OUTCOME.iter().filter_map(|k| v.get(*k).filter(|v| !v.is_null()).map(|v| format!("{k}={v}"))).collect();
         crate::log::info("mcp", &format!("{line} in {ms}ms: {}", if got.is_empty() { "ok".to_string() } else { got.join(" ") }));
     }
