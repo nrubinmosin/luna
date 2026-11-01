@@ -68,8 +68,9 @@ const KEEPER: &str = "keeper";
 /// in the kernel. The job then counts as not ended.
 const ENDING_TAKES: Duration = Duration::from_secs(5);
 const LOOK_AGAIN: Duration = Duration::from_millis(25);
-/// Looks at a tree being frozen before it is ended whatever is still moving:
-/// what is frozen cannot fork, so only a fork bomb takes more than a few.
+/// Looks at a tree being frozen before it is ended whatever is still moving: what
+/// has stopped cannot fork, so only a fork bomb, or one stuck in the kernel and not
+/// stopping, takes more than a few.
 const FREEZE_LOOKS: usize = 50;
 /// How long the keeper listens before it looks at the core itself. The pipe says
 /// at once; this is for a pipe something else holds open as well.
@@ -137,6 +138,20 @@ mod os {
         }
     }
 
+    /// Whether no thread of it can start anything any more: a process has stopped
+    /// only as each of its threads takes the signal, and any of them may be the one
+    /// forking (Codex starts its tools from a worker thread). One that cannot be
+    /// looked at has gone, or leaves this to go by what the look finds.
+    pub fn stopped(pid: i32) -> bool {
+        let Ok(threads) = std::fs::read_dir(format!("/proc/{pid}/task")) else { return true };
+        threads.flatten().all(|thread| {
+            std::fs::read(thread.path().join("stat")).map_or(true, |stat| {
+                let stat = String::from_utf8_lossy(&stat);
+                stat.rsplit_once(')').and_then(|(_, rest)| rest.split_ascii_whitespace().next()).is_none_or(|state| matches!(state, "T" | "t" | "Z" | "X" | "x"))
+            })
+        })
+    }
+
     /// Ticks since boot start over at a boot, so a pid and a start time say
     /// nothing of a process written down before it.
     pub fn boot_id() -> Option<String> {
@@ -173,6 +188,8 @@ mod os {
     use std::os::raw::{c_char, c_int};
     use std::ptr::null_mut;
 
+    /// `SSTOP` in <sys/proc.h>.
+    const STOPPED: u32 = 4;
     /// `SZOMB` in <sys/proc.h>.
     const ZOMBIE: u32 = 5;
 
@@ -239,6 +256,12 @@ mod os {
         }
     }
 
+    /// Whether it can start nothing any more. One that cannot be looked at has
+    /// gone, or leaves this to go by what the look finds.
+    pub fn stopped(pid: i32) -> bool {
+        info(pid).map_or(true, |info| matches!(info.pbi_status, STOPPED | ZOMBIE))
+    }
+
     /// `kern.bootsessionuuid`, and not `kern.boottime`, which moves with the clock
     /// and would make this boot look like another. None tells nothing, which is
     /// safe: start times here are of the clock and do not repeat across boots.
@@ -297,6 +320,9 @@ mod os {
     }
     pub fn gone(_pid: i32, _started: u64) -> bool {
         false
+    }
+    pub fn stopped(_pid: i32) -> bool {
+        true
     }
     pub fn boot_id() -> Option<String> {
         None
@@ -414,15 +440,21 @@ fn tree(all: &[Proc], root: i32, me: i32, child_of: Option<i32>) -> Vec<&Proc> {
 /// looked below again, as a process killed outright would leave what it forked
 /// that moment with another parent and out of the walk. Each signal goes to the
 /// process looked at and no other (`os::signal`), so no group is signalled by its
-/// number, which may be another's by the time it arrives. Returns what it ended;
-/// None with nothing to look with.
+/// number, which may be another's by the time it arrives. A signal sent is not a
+/// process stopped: one may yet finish the fork it is in the middle of, so a look
+/// that finds nothing new counts only if all were still by the time it began.
+/// Returns what it ended; None with nothing to look with.
 fn freeze_and_end(look: impl Fn(&[Proc]) -> Vec<Proc>) -> Option<Vec<Proc>> {
     let mut frozen: Vec<Proc> = Vec::new();
     for _ in 0..FREEZE_LOOKS {
+        let all_still = frozen.iter().all(|p| !is_still(p) || os::stopped(p.pid));
         let all: Vec<Proc> = os::pids()?.into_iter().filter_map(os::read).collect();
         let new: Vec<Proc> = look(&all).into_iter().filter(|p| !frozen.iter().any(|f| f.pid == p.pid && f.started == p.started)).collect();
         if new.is_empty() {
-            break;
+            if all_still {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
         }
         for p in new {
             os::signal(&p, libc::SIGSTOP);
@@ -1474,12 +1506,26 @@ mod tests {
     }
 
     #[test]
+    fn a_process_told_to_stop_has_stopped_only_once_it_has() {
+        let mut turn = Command::new("sleep").arg("60").process_group(0).spawn().unwrap();
+        let pid = turn.id() as i32;
+        assert!(within(3000, || os::read(pid).is_some()));
+        assert!(!os::stopped(pid), "asleep is not stopped");
+        // SAFETY: a plain signal, to a child of this test not yet reaped.
+        unsafe { libc::kill(pid, libc::SIGSTOP) };
+        assert!(within(3000, || os::stopped(pid)));
+        let _ = turn.kill();
+        let _ = turn.wait();
+        assert!(os::stopped(pid), "nothing left to start anything");
+    }
+
+    #[test]
     fn what_a_tree_forks_as_it_goes_goes_too() {
         // Each round leaves a sleep with no parent, in the group of the root.
-        let mark = "forks-as-it-goes";
+        let mark = format!("forks-as-it-goes-{}", std::process::id());
         let mut turn = Command::new("sh")
             .args(["-c", "while :; do (sleep 60 &); sleep 0.002; done"])
-            .env(MARK, mark)
+            .env(MARK, &mark)
             .process_group(0)
             .stdin(Stdio::null())
             .spawn()
