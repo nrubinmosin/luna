@@ -34,6 +34,9 @@ export type ChatSpec = {
   /** The id to take: a background helper's, opened as a chat, keeps its own
    *  so its agent still knows it by it. */
   id?: string;
+  /** Claude Code: what the spawning agent asked of it, kept for every start. */
+  readOnly?: boolean;
+  agent?: string | null;
 } & ({ provider: 'claude'; settings: ClaudeSettings } | { provider: 'codex'; settings: CodexSettings });
 
 /**
@@ -77,7 +80,7 @@ export async function createChat(spec: ChatSpec): Promise<string> {
   };
   const chat: Chat =
     spec.provider === 'claude'
-      ? { ...base, provider: 'claude', ...spec.settings }
+      ? { ...base, provider: 'claude', ...spec.settings, readOnly: spec.readOnly, agent: spec.agent }
       : { ...base, provider: 'codex', ...spec.settings, hooksUnasked: spec.hooksUnasked ?? false };
 
   useChats.getState().addChat(spec.folder, chat, !spec.parentId && !spec.byAgent);

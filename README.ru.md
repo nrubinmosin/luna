@@ -107,7 +107,7 @@ effort, approval policy, sandbox mode), читает его собственны
     Reasoning effort — те уровни, что берёт эта модель (`low … ultra`, с описанием каждого
     уровня в подсказке); открывается на уровне модели по умолчанию и следует за моделью
     при её смене — если уровень не задан в файле настроек и не выбран руками. Approval
-    policy (`on-request/never/auto-review`) и sandbox mode (`read-only/workspace-write/danger-full-access`)
+    policy (`on-request/never/auto-review`) и sandbox mode (`read-only/read-only-net/workspace-write/danger-full-access`)
     выбираются отдельно; `never` + `danger-full-access` передаётся как
     `--dangerously-bypass-approvals-and-sandbox`, как это называет сам Codex. `auto-review` —
     это `--approve-for-me` Codex: что Codex спросил бы у вас, решает модель-ревьюер, одобряя
@@ -355,9 +355,25 @@ Codex вместо Claude — с открывающим промптом, дож
   — если только он не запущен с `approval: auto-review`: тогда отвечает модель-ревьюер.
 - Промпт или сообщение длиннее 8000 символов видимая сессия получает файлом, который ей
   велено прочитать; фоновая получает любой длины через stdin.
-- Codex в `read-only` и `workspace-write` (а значит и в `auto-review`) выполняет команды в своей песочнице Windows
+- Codex в `read-only`, `read-only-net` и `workspace-write` (а значит и в `auto-review`) выполняет команды в своей песочнице Windows
   (unelevated: без прав администратора и без отдельных пользователей), и без алиасов
   приложений из Store в PATH — песочница не может их запустить.
+- Сеть есть только в `read-only-net` и `danger-full-access`. `read-only-net` — значение самой
+  Luna: read-only от Codex с включённой сетью, в виде профиля разрешений, который передаётся
+  на запуск и никогда не пишется в `config.toml` аккаунта. На Windows TLS через schannel
+  (встроенный `curl`, `git` по https, `Invoke-WebRequest`) под токеном песочницы не работает;
+  `gh`, Python и обычный http работают.
+- `luna_spawn` умеет делать проверяющего: `readOnly: true` забирает у Claude Code Edit, Write
+  и NotebookEdit (его Bash писать всё ещё может), а Codex ставит в `read-only` или, если
+  попросить, в `read-only-net`. `agent: "<имя>"` запускает Claude Code как агента, заданного в
+  проекте или аккаунте (`--agent`); у Codex такого для целой сессии нет, и он это отклоняет.
+- `account` в `luna_spawn` может быть списком аккаунтов одного провайдера: берётся первый, где
+  выполнен вход и все окна использования ниже 95%, а иначе тот, где запас больше. `accountChoice`
+  в результате говорит, какой взят и почему пропущены другие.
+- Каждая сессия получает свой id в `LUNA_SESSION_ID`, а помощник ещё и id родителя в
+  `LUNA_PARENT_ID`. В системном промпте помощника тоже сказано, кто он
+  (`--append-system-prompt` или `developer_instructions` у Codex, вместе с тем, что там уже
+  задано в его конфиге).
 - Убивать и удалять агент может только сессии, которые породил сам (и их потомков). Видеть он
   может и все остальные, ваши тоже, через `luna_sessions` — имя, группа окна, аккаунт и его
   папка, папка проекта, cwd, id сессии CLI и путь к транскрипту, — написать в любую из них
