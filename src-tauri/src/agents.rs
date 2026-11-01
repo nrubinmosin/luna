@@ -1843,7 +1843,7 @@ pub fn sessions(caller: &str, filter: &SessionFilter) -> Result<Vec<AnySession>,
 /// What the CLI has on disk about a live session: its cwd, ids and title.
 fn disk_meta(p: &crate::pty::ActivityProbe) -> Option<crate::pty::SessionMeta> {
     match p.provider {
-        Provider::Claude => crate::claude::session::meta(p.pid, &p.cwd, p.spawned_at_ms, &p.account_path),
+        Provider::Claude => crate::claude::session::meta(p.pid, p.resume.as_deref(), &p.cwd, p.spawned_at_ms, &p.account_path),
         Provider::Codex => crate::codex::session::meta(&crate::codex::session::Live {
             chat_id: &p.id,
             cwd: &p.cwd,
@@ -3393,7 +3393,7 @@ fn find_transcript(pty: &crate::pty::PtyManager, id: &str) -> Option<std::path::
     }
     let p = pty.probe(id)?;
     match p.provider {
-        Provider::Claude => crate::claude::session::transcript_of(p.pid, &p.cwd, p.spawned_at_ms, &p.account_path),
+        Provider::Claude => crate::claude::session::transcript_of(p.pid, p.resume.as_deref(), &p.cwd, p.spawned_at_ms, &p.account_path),
         Provider::Codex => crate::codex::session::rollout_for(&crate::codex::session::Live {
             chat_id: &p.id,
             cwd: &p.cwd,
