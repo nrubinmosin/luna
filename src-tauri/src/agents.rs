@@ -4492,22 +4492,28 @@ fn wait_for(
             let answers = says || outcome == "job_done";
             // Read from where the caller's question found the transcript.
             let asked_at = reg().lock().unwrap_or_else(|e| e.into_inner()).owed.get(&key).map(|o| o.cursor);
-            let reply_now = || reply_of(&pty, id, known.provider, asked_at, alone);
+            let failure = || (answers || outcome == "exit").then(|| failure_of(&pty, id, known.provider)).flatten();
+            let mut failed = failure();
+            // A turn that stopped on an error has said all it will.
+            let reply_now = |stopped: bool| reply_of(&pty, id, known.provider, asked_at, alone, stopped);
             let mut reply = if outcome == "job_done" {
                 asked_at.and_then(|at| reply_text(id, &said_since(&pty, id, known.provider, at), alone))
+            } else if says {
+                reply_now(failed.is_some())
             } else {
-                says.then(reply_now).flatten()
+                None
             };
             let late = std::time::Instant::now() + std::time::Duration::from_millis(REPLY_GRACE_MS);
             while says && reply.is_none() && std::time::Instant::now() < late && !gone() {
                 std::thread::sleep(POLL);
-                reply = reply_now();
+                failed = failed.or_else(failure);
+                reply = reply_now(failed.is_some());
             }
             // In doubt again after the grace, it is the notice's to bring.
             if gone() || (answers && holding() == Holding::Unsure) {
                 return gone_err();
             }
-            let failed = (answers || outcome == "exit").then(|| failure_of(&pty, id, known.provider)).flatten();
+            let failed = failed.or_else(failure);
             let transcript_missing = says && reply.is_none() && !transcript_found(&pty, id);
             let bare = outcome == "turn_done" && (reply.is_none() || failed.is_some());
             let screen = (outcome == "waiting" || bare).then(|| screen_of(&pty, id)).flatten();
@@ -4768,13 +4774,13 @@ enum Holding {
 
 /// What a `wait` hands back: all the session said past `asked_at`, where
 /// the caller's question found its transcript, report first (`answer_text`);
-/// with no question out, its last message. None when the prompt is the last
-/// word: the turn ended on an error, which `failure_of` says, or on nothing.
-/// `cut` as in `reply_text`.
-fn reply_of(pty: &crate::pty::PtyManager, id: &str, provider: Provider, asked_at: Option<u64>, cut: bool) -> Option<String> {
+/// with no question out, its last message. None when it said nothing, or the
+/// prompt is the last word of a turn that has not `stopped` short
+/// (`own_words`). `cut` as in `reply_text`.
+fn reply_of(pty: &crate::pty::PtyManager, id: &str, provider: Provider, asked_at: Option<u64>, cut: bool, stopped: bool) -> Option<String> {
     let replies = match asked_at {
-        Some(at) => replies_since(pty, id, provider, at),
-        None => replies_since(pty, id, provider, 0).pop().into_iter().collect(),
+        Some(at) => replies_since(pty, id, provider, at, stopped),
+        None => replies_since(pty, id, provider, 0, false).pop().into_iter().collect(),
     };
     reply_text(id, &replies, cut)
 }
@@ -4907,7 +4913,7 @@ fn remove(id: &str, known: Known, drop_worktree: bool, worktree: Option<String>)
     // What `luna_sessions` history has left to go on once it is gone.
     if known.parent.is_some() || known.orphan {
         let transcript = transcript_path(&pty, id);
-        let last = transcript.as_ref().and_then(|_| replies_since(&pty, id, known.provider, 0).pop());
+        let last = transcript.as_ref().and_then(|_| replies_since(&pty, id, known.provider, 0, false).pop());
         crate::agentlog::left(
             id,
             transcript.map(|p| p.to_string_lossy().into_owned()).as_deref(),
@@ -5150,25 +5156,25 @@ enum Settled {
 }
 
 /// What the session has said since `cursor` (see `Owed::cursor`), read
-/// straight off its transcript, its own messages in order; empty when the
-/// prompt is the last word (the turn ended on an error, an interruption), or
-/// there is no transcript to read (`transcript_found` tells them apart).
-/// A transcript with nothing past the cursor has started over in a file of
-/// its own (a resume): the last message there is the answer.
-fn replies_since(pty: &crate::pty::PtyManager, id: &str, provider: Provider, cursor: u64) -> Vec<String> {
+/// straight off its transcript, its own messages in order (`own_words`;
+/// `stopped`: its turn stopped short); empty when there is no transcript to
+/// read (`transcript_found` tells that from saying nothing). A transcript
+/// with nothing past the cursor has started over in a file of its own (a
+/// resume): the last message there is the answer.
+fn replies_since(pty: &crate::pty::PtyManager, id: &str, provider: Provider, cursor: u64, stopped: bool) -> Vec<String> {
     let Some(path) = transcript_path(pty, id) else { return Vec::new() };
     let mut messages = messages_at(&path, provider, cursor);
     if messages.is_empty() && cursor > 0 {
         messages = messages_at(&path, provider, 0).into_iter().last().into_iter().collect();
     }
-    own_words(messages)
+    own_words(messages, stopped)
 }
 
 /// `replies_since` for a caller already told of what came before `cursor`:
 /// nothing past it is nothing to tell, not a resume to look further back for.
 fn said_since(pty: &crate::pty::PtyManager, id: &str, provider: Provider, cursor: u64) -> Vec<String> {
     let Some(path) = transcript_path(pty, id) else { return Vec::new() };
-    own_words(messages_at(&path, provider, cursor))
+    own_words(messages_at(&path, provider, cursor), false)
 }
 
 fn messages_at(path: &std::path::Path, provider: Provider, from: u64) -> Vec<Message> {
@@ -5178,8 +5184,14 @@ fn messages_at(path: &std::path::Path, provider: Provider, from: u64) -> Vec<Mes
     }
 }
 
-fn own_words(messages: Vec<Message>) -> Vec<String> {
-    if messages.last().map_or(true, |m| m.role != "assistant") {
+/// The session's own messages of these, in order. None while a prompt is the
+/// last word: its reply is still to come, and what came before it answered
+/// something else. Not so for a turn that `stopped` short (an error, a core's
+/// going), which has said all it will: what it got to say is handed over.
+/// What the CLI put in itself (a background task's end it takes up) is no
+/// prompt, and its transcript reader leaves it out.
+fn own_words(messages: Vec<Message>, stopped: bool) -> Vec<String> {
+    if !stopped && messages.last().map_or(true, |m| m.role != "assistant") {
         return Vec::new();
     }
     messages.into_iter().filter(|m| m.role == "assistant").map(|m| m.text).collect()
@@ -5230,6 +5242,17 @@ fn undelivered_text(lost: &[String]) -> String {
         text.push_str(&format!("\n\n--- message {} of {} ---\n\n{message}", i + 1, lost.len()));
     }
     text
+}
+
+/// Words that end a sentence in a notice, with a stop unless they bring their
+/// own: a CLI's error mostly does ("…pick a different model.").
+fn sentence(words: &str) -> String {
+    let words = words.trim_end();
+    if words.ends_with(['.', '!', '?', '…']) {
+        words.to_string()
+    } else {
+        format!("{words}.")
+    }
 }
 
 fn count_of(messages: &[String]) -> String {
@@ -5484,7 +5507,7 @@ fn notice_line(
                     1 => format!("it wrote 1 message since your last notice; {}{quoted}", answer_file(id, &said)),
                     n => format!("it wrote {n} messages since your last notice; {}{quoted}", answer_file(id, &said)),
                 };
-                let failed = failed.map_or(String::new(), |why| format!(" Its last turn stopped on an error: {why}."));
+                let failed = failed.map_or(String::new(), |why| format!(" Its last turn stopped on an error: {}", sentence(&why)));
                 let since = if o.job_went { " that Luna's core has restarted" } else { "" };
                 Some((Some(format!("{who} has nothing left running now{since}, and {said}.{failed}")), Settled::Answered))
             }
@@ -5494,7 +5517,9 @@ fn notice_line(
     }
     // Going on by itself any moment: what it said so far is no end of anything.
     if now == Verdict::TurnOver && !resume_pending(id) {
-        let replies = replies_since(pty, id, k.provider, o.cursor);
+        let cut = crate::background::cut_short(id) || o.cut_short;
+        let failed = if cut { None } else { failure_of(pty, id, k.provider) };
+        let replies = replies_since(pty, id, k.provider, o.cursor, cut || failed.is_some());
         let settle_ms = if background {
             BACKGROUND_GRACE_MS
         } else if replies.is_empty() {
@@ -5547,16 +5572,16 @@ fn notice_line(
         } else {
             ""
         };
-        if crate::background::cut_short(id) || o.cut_short {
+        if cut {
             return Some((
                 Some(format!("{who} did NOT finish its turn: Luna's core restarted while it worked and stopped it. It ended{reply}.{lost}{unsure} luna_send has it carry on.")),
                 Settled::Answered,
             ));
         }
         // Whatever else is going on: this turn did not get to its end.
-        if let Some(why) = failure_of(pty, id, k.provider) {
+        if let Some(why) = failed {
             let said = if replies.is_empty() { String::new() } else { format!(" It ended{reply}.") };
-            return Some((Some(format!("{who} stopped on an error: {why}.{said}{lost} luna_send has it carry on.")), Settled::Answered));
+            return Some((Some(format!("{who} stopped on an error: {}{said}{lost} luna_send has it carry on.", sentence(&why))), Settled::Answered));
         }
         let reply = format!("{reply}{}", begins(&replies));
         if background || waits {
@@ -5603,7 +5628,7 @@ fn standing_line(pty: &crate::pty::PtyManager, who: &str, id: &str, k: &Known, o
         }
         return Some((
             Some(match failure_of(pty, id, k.provider) {
-                Some(why) => format!("{who} has exited on an error: {why}."),
+                Some(why) => format!("{who} has exited on an error: {}", sentence(&why)),
                 None => format!("{who} has exited."),
             }),
             Settled::Exited,
@@ -5998,8 +6023,9 @@ fn spawn_failed_late(s: SpawnTaken, why: &str) {
         None => "Its prompt was not kept".to_string(),
     };
     let news = format!(
-        "Your luna_spawn {}, which had not started in time, did not come up after all: {why}. No helper came of it. {prompt}; spawn it again if it still matters.{}",
+        "Your luna_spawn {}, which had not started in time, did not come up after all: {} No helper came of it. {prompt}; spawn it again if it still matters.{}",
         spawn_called(&s),
+        sentence(why),
         worktrees_left(&s)
     );
     if let Some(left) = reg().lock().unwrap_or_else(|e| e.into_inner()).spawns.get_mut(&s.request) {
@@ -7850,6 +7876,67 @@ mod tests {
         forget("fl-lost");
         crate::activity::forget("fl-limit");
         crate::activity::forget("fl-lost");
+    }
+
+    /// A turn that stopped short hands over what it said before that, whatever
+    /// came after it; and a line the CLI put in itself (the end of a background
+    /// task it takes up) is no prompt whose reply is still to come.
+    #[test]
+    fn what_a_turn_said_comes_with_its_notice_whatever_came_after() {
+        use crate::activity::{on_hook, HookEvent};
+        let user = |t: &str| format!("{}\n", serde_json::json!({ "type": "user", "message": { "role": "user", "content": t } }));
+        let said = |t: &str| format!("{}\n", serde_json::json!({ "type": "assistant", "message": { "content": [{ "type": "text", "text": t }] } }));
+        let task = format!(
+            "{}\n",
+            serde_json::json!({ "type": "user", "message": { "role": "user", "content": "<task-notification>\n<task-id>b1</task-id>\n</task-notification>" },
+                "origin": { "kind": "task-notification" }, "promptSource": "system", "turnOrigin": "task_notification" })
+        );
+        let worked = format!("{}{}{}", user("fix it"), said("Read the code."), said("Half the fix is in."));
+        let pty = crate::pty::manager();
+        let line_of = |id: &str, transcript: String, cut: bool| -> String {
+            let path = std::env::temp_dir().join(format!("luna-{id}-{}.jsonl", std::process::id()));
+            std::fs::write(&path, transcript).unwrap();
+            transcripts().lock().unwrap().insert(id.into(), path.clone());
+            let known = reg().lock().unwrap().known.get(id).cloned().unwrap();
+            let mut o = Owed::from(0, 0);
+            o.cut_short = cut;
+            o.held = Some((1, now_ms() - REPLY_GRACE_MS));
+            let Some((Some(line), Settled::Answered)) = notice_line(&pty, "ws-caller", "Your helper", id, &known, o) else { panic!("its turn is over") };
+            let _ = std::fs::remove_file(&path);
+            line
+        };
+        let helper = |id: &str| {
+            register(id, Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, false, serde_json::json!({}));
+            crate::background::idle_for_test(id, Provider::Claude, 1, false);
+        };
+
+        // Cut short on the way to what was queued behind its turn.
+        helper("ws-cut");
+        let line = line_of("ws-cut", format!("{worked}{}", user("then the tests")), true);
+        assert!(line.contains("did NOT finish") && line.contains("It ended with 2 messages since you asked"), "{line}");
+        // The same transcript with nothing cut: a prompt last is a reply to come.
+        helper("ws-open");
+        assert!(line_of("ws-open", format!("{worked}{}", user("then the tests")), false).contains("without a reply"));
+        // Claude Code taking up the end of its background task wrote that line itself.
+        helper("ws-task");
+        let line = line_of("ws-task", format!("{worked}{task}"), true);
+        assert!(line.contains("It ended with 2 messages since you asked"), "{line}");
+        let line = line_of("ws-task", format!("{worked}{task}"), false);
+        assert!(line.contains("finished its turn with 2 messages since you asked"), "{line}");
+        // Stopped on an error: what it said before that, and the error's own stop.
+        register("ws-fail", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, false, serde_json::json!({}));
+        on_hook("ws-fail", HookEvent::Busy);
+        on_hook("ws-fail", HookEvent::Failed("rate_limit"));
+        let line = line_of("ws-fail", format!("{worked}{}", user("then the tests")), false);
+        assert!(line.starts_with("Your helper stopped on an error: rate_limit. It ended with 2 messages since you asked"), "{line}");
+        for id in ["ws-cut", "ws-open", "ws-task", "ws-fail"] {
+            crate::background::gone_for_test(id);
+            forget(id);
+        }
+        crate::activity::forget("ws-fail");
+        assert_eq!(sentence("pick a different model."), "pick a different model.");
+        assert_eq!(sentence("rate_limit"), "rate_limit.");
+        assert_eq!(sentence("cut short…"), "cut short…");
     }
 
     #[test]
