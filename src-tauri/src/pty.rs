@@ -1294,17 +1294,24 @@ pub async fn ensure_claude_session(
         // conversation found" and leaves the pane at a dead CLI: a chat that
         // was opened and never typed into starts afresh instead.
         let resume = resume.filter(|sid| crate::claude::session::find_transcript(&account_path, sid).is_some());
-        // Started afresh on nothing, its worktree not known yet: one a core cut it
-        // off making is gone back into by name, as Claude Code does with one that
-        // is there, and it keeps what is in it.
-        let again = spawn_request.is_none() && prompt.is_none() && worktree && worktree_name.is_none() && resume.is_none();
-        let reused = if again { crate::agents::worktree_to_reuse(&id, Provider::Claude, &folder, &account_path) } else { None };
-        let worktree_name = worktree_name.or_else(|| reused.as_deref().and_then(|wt| std::path::Path::new(wt).file_name()).map(|n| n.to_string_lossy().into_owned()));
+        let asked_nothing = spawn_request.is_none() && prompt.is_none();
+        // A conversation a core went in the middle of and the window never heard of.
+        let resume = resume.or_else(|| asked_nothing.then(|| crate::agents::conversation_of(&id, Provider::Claude, &folder, &account_path)).flatten());
+        // A helper's is named by Luna (`agents::helper_worktree_name`), so that this
+        // start knows which is its own: in a conversation that one, afresh that one if
+        // still as made, else another.
+        let worktree_name = match worktree_name {
+            Some(name) => Some(name),
+            None if !worktree => None,
+            None if spawn_request.is_some() => Some(crate::agents::helper_worktree_name(&id)),
+            None => crate::agents::worktree_for_start(&id, &folder, &account_path, resume.is_some()),
+        };
         // A new worktree is about to branch off origin; a resumed session
-        // already has its worktree. Here, under the spawn gate, so a pane
-        // asking for the session meanwhile waits for this spawn — the one
+        // already has its worktree, and this one its name. Here, under the spawn gate,
+        // so a pane asking for the session meanwhile waits for this spawn — the one
         // with the opening prompt — instead of starting its own without it.
-        if worktree && resume.is_none() && reused.is_none() {
+        let there = worktree_name.as_deref().is_some_and(|name| std::path::Path::new(&crate::worktree::named_path(&folder, name)).exists());
+        if worktree && resume.is_none() && !there {
             crate::worktree::fetch_origin(&folder);
         }
         let mut args = vec![
@@ -1320,14 +1327,7 @@ pub async fn ensure_claude_session(
             args.push(session_id.clone());
         }
         if worktree {
-            args.push("--worktree".into());
-            // The characters Claude Code takes in a name, and a guard against
-            // one being read as the flag after it.
-            if let Some(name) = worktree_name.as_deref().filter(|n| {
-                !n.is_empty() && !n.starts_with('-') && n.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
-            }) {
-                args.push(name.to_string());
-            }
+            args.push(crate::worktree::worktree_arg(worktree_name.as_deref()));
         }
         // Rewritten at every spawn: the listener's port is new with every Luna run.
         if let Some(hooks) = claude_hooks_file(&id) {
@@ -1439,13 +1439,17 @@ pub async fn ensure_codex_session(
     // Built only if no process is running (see `spawn`).
     spawn(id.clone(), move || {
         let parent = crate::agents::parent_on_start(&id, parent);
-        // Started afresh on nothing, its worktree not known yet: Codex takes no name
-        // for one, so one a core cut it off making is started in with `-C`, as a
-        // resume is, and it makes no other.
-        let again = !login && spawn_request.is_none() && prompt.is_none() && worktree.unwrap_or(false) && resume.is_none();
-        let reused = if again { crate::agents::worktree_to_reuse(&id, Provider::Codex, &folder, &account_path) } else { None };
-        let worktree = worktree.filter(|_| reused.is_none());
-        let folder = reused.unwrap_or(folder);
+        let asked_nothing = !login && spawn_request.is_none() && prompt.is_none();
+        // A conversation a core went in the middle of and the window never heard of,
+        // resumed where it works, as Codex refuses `--worktree` on a resume.
+        let recovered = if asked_nothing && resume.is_none() { crate::agents::conversation_of(&id, Provider::Codex, &folder, &account_path) } else { None };
+        let folder = recovered.as_deref().and_then(|thread| crate::codex::session::thread_cwd(&account_path, thread)).unwrap_or(folder);
+        let resume = resume.or(recovered);
+        // Afresh, it makes a new worktree: Codex takes no name to go back into one
+        // by. What it may have begun is told of, ahead of what this one makes.
+        if asked_nothing && resume.is_none() && worktree.unwrap_or(false) {
+            crate::agents::report_codex_worktrees(&id, &folder, &account_path);
+        }
         let mut args: Vec<String> = vec![];
         let mut envs = vec![("CODEX_HOME", account_path.clone())];
         let describe;

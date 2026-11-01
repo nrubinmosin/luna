@@ -124,10 +124,10 @@ can start other sessions and work with them.
 - A core restart stops a background helper's turn and what its turns left running (off Windows
   only if it died). You stay owed: once your chat is back (given up after 10 minutes) a notice
   says it did NOT finish; `luna_send` has it carry on. What you queued never reached it: the
-  notice counts it and its file ends on it word for word (`undelivered` in `luna_read`,
+  notice counts it and its file ends on it (`undelivered` in `luna_read`,
   `luna_wait`). A helper stopped with no conversation yet, visible too, "never got started": the
   file holds its prompt, then that text; `luna_send` starts it afresh, or with its CLI not back
-  spawn it again. The worktree it began is gone on in while as new, else named as `worktreeLeft`.
+  spawn it again. A worktree it began is reused only if Luna named it and untouched; else `worktreeLeft`.
 - `resumeOnRestart` goes on by itself with that text (afresh on its prompt if it never got started);
   one notice says so, the usual one follows. Else the plain notice: a background helper where Luna
   cannot tell the old turn ended, a visible one whose CLI Luna could not bring back, or that the
