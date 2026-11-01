@@ -330,6 +330,12 @@ struct Registry {
     owed: HashMap<(String, String), Owed>,
     /// `wait` calls in flight, by (caller, session).
     waits: HashMap<(String, String), u32>,
+    /// Sessions a `wait_many` in flight will answer for, by (caller, session):
+    /// their notices wait for it, however long the others take.
+    reserved: HashMap<(String, String), u32>,
+    /// Answers handed over so far, by (caller, session), the latest being the
+    /// only one a cancel may take back (see `hand_over`).
+    receipts: HashMap<(String, String), u64>,
     /// Helpers spawned with `autoDelete`, by id.
     auto: HashMap<String, Auto>,
     /// Each account's usage as the window last showed it, by `provider/name`.
@@ -438,6 +444,8 @@ fn reg() -> &'static Mutex<Registry> {
             answered: HashMap::new(),
             owed: HashMap::new(),
             waits: HashMap::new(),
+            reserved: HashMap::new(),
+            receipts: HashMap::new(),
             auto: HashMap::new(),
             usage: HashMap::new(),
             notified: HashMap::new(),
@@ -464,16 +472,24 @@ fn shown(caller: &str, id: &str, turns_ended: u32) {
 
 /// `shown`, for a tool response the client may yet drop unread (a cancel
 /// that crosses it): returns what puts the debt and the count seen back as
-/// they were. Whatever a later call has recorded meanwhile stands.
+/// they were. Whatever a later call has recorded meanwhile stands, and a later
+/// call that handed the answer over too has delivered it: this one's response
+/// being dropped then owes nothing.
 fn hand_over(caller: &str, id: &str, turns_ended: u32) -> impl FnOnce() + Send + 'static {
     let key = (caller.to_string(), id.to_string());
-    let (owed, seen_before) = {
-        let r = reg().lock().unwrap_or_else(|e| e.into_inner());
-        (r.owed.get(&key).copied(), r.seen.get(&key).copied())
+    let (owed, seen_before, receipt) = {
+        let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+        let receipt = r.receipts.entry(key.clone()).or_default();
+        *receipt += 1;
+        let receipt = *receipt;
+        (r.owed.get(&key).copied(), r.seen.get(&key).copied(), receipt)
     };
     shown(caller, id, turns_ended);
     move || {
         let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+        if r.receipts.get(&key) != Some(&receipt) {
+            return;
+        }
         if let Some(o) = owed {
             r.owed.entry(key.clone()).and_modify(|now| now.cursor = now.cursor.min(o.cursor)).or_insert(o);
         }
@@ -540,6 +556,32 @@ impl Drop for WaitOut {
             *n -= 1;
             if *n == 0 {
                 r.waits.remove(&self.0);
+            }
+        }
+    }
+}
+
+/// A `wait_many` out on a session, for as long as it runs. Its answer stays owed
+/// until the whole call has its response, so that a core going in between
+/// leaves it owed in `helpers.json`; this is what keeps the notice from telling
+/// it meanwhile.
+struct Reserved((String, String));
+
+impl Reserved {
+    fn start(caller: &str, id: &str) -> Reserved {
+        let key = (caller.to_string(), id.to_string());
+        *reg().lock().unwrap_or_else(|e| e.into_inner()).reserved.entry(key.clone()).or_default() += 1;
+        Reserved(key)
+    }
+}
+
+impl Drop for Reserved {
+    fn drop(&mut self) {
+        let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(n) = r.reserved.get_mut(&self.0) {
+            *n -= 1;
+            if *n == 0 {
+                r.reserved.remove(&self.0);
             }
         }
     }
@@ -2857,6 +2899,22 @@ pub fn wait(
     after_turn: Option<u32>,
     call: &crate::mcp::Call,
 ) -> Result<Waited, String> {
+    wait_for(caller, id, until, timeout_s, after_turn, call, true).map(|(waited, _)| waited)
+}
+
+/// The wait itself, and whether what it returns answers what was asked. With
+/// `alone` that answer is handed over here, the reply cut to fit a result; a
+/// `wait_many` hands over and cuts for all its sessions at once, when it has
+/// its response (`alone` false).
+fn wait_for(
+    caller: &str,
+    id: &str,
+    until: &str,
+    timeout_s: u64,
+    after_turn: Option<u32>,
+    call: &crate::mcp::Call,
+    alone: bool,
+) -> Result<(Waited, bool), String> {
     if !matches!(until, "turn_done" | "waiting" | "exit") {
         return Err(format!("unknown until {until:?}; use turn_done, waiting or exit"));
     }
@@ -2865,7 +2923,7 @@ pub fn wait(
     let key = (caller.to_string(), id.to_string());
     let holding = let_go(caller);
     let gone = || call.cancelled() || holding() == Holding::No;
-    let gone_err = || -> Result<Waited, String> { Err(LET_GO.into()) };
+    let gone_err = || -> Result<(Waited, bool), String> { Err(LET_GO.into()) };
     let pty = crate::pty::manager();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_s.clamp(1, 1800));
     // Text Luna holds for a person's draft goes in first; the turn to wait
@@ -2878,7 +2936,7 @@ pub fn wait(
             let (state, ask) = state_of(id);
             let turns_ended = crate::activity::turn_state(id).map_or(0, |t| t.turns_ended);
             let screen = screen_of(&pty, id);
-            return Ok(Waited { outcome: "timeout", state, ask, turns_ended, reply: None, screen });
+            return Ok((Waited { outcome: "timeout", state, ask, turns_ended, reply: None, screen }, false));
         }
         std::thread::sleep(POLL);
     }
@@ -2950,7 +3008,7 @@ pub fn wait(
             let answers = outcome == "turn_done" || (outcome == "exit" && turns_ended > baseline);
             // Read from where the caller's question found the transcript.
             let asked_at = reg().lock().unwrap_or_else(|e| e.into_inner()).owed.get(&key).map(|o| o.cursor);
-            let reply_now = || reply_of(&pty, id, known.provider, asked_at);
+            let reply_now = || reply_of(&pty, id, known.provider, asked_at, alone);
             let mut reply = answers.then(reply_now).flatten();
             let late = std::time::Instant::now() + std::time::Duration::from_millis(REPLY_GRACE_MS);
             while answers && reply.is_none() && std::time::Instant::now() < late && !gone() {
@@ -2966,12 +3024,12 @@ pub fn wait(
             if !answers {
                 // Nothing was handed over: whatever is owed stays owed.
                 looked(id);
-            } else if !call.commit(hand_over(caller, id, turns_ended)) {
+            } else if alone && !call.commit(hand_over(caller, id, turns_ended)) {
                 // A cancel since the last look: it stays owed after all.
                 return gone_err();
             }
             let (state, ask) = state_of(id);
-            return Ok(Waited { outcome, state, ask, turns_ended, reply, screen });
+            return Ok((Waited { outcome, state, ask, turns_ended, reply, screen }, answers));
         }
         if std::time::Instant::now() >= deadline {
             let screen = screen_of(&pty, id);
@@ -2979,7 +3037,7 @@ pub fn wait(
             // next wait still waits for it.
             looked(id);
             let (state, ask) = state_of(id);
-            return Ok(Waited { outcome: "timeout", state, ask, turns_ended, reply: None, screen });
+            return Ok((Waited { outcome: "timeout", state, ask, turns_ended, reply: None, screen }, false));
         }
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
@@ -3009,11 +3067,12 @@ pub struct WaitedMany {
 /// finished or the time is up; otherwise the first to finish stops the others,
 /// which come back `pending` with whatever they are owed still owed.
 ///
-/// One that finishes hands its answer over at once, with its own `Call`: no
-/// notice comes for it while the others run. All of it hangs on this call's
-/// fate, though. A cancel, now or crossing the response, undoes every hand-over
-/// and the notices bring the answers after all; so does a caller found to have
-/// let the call go (`let_go`), which any of the waits may be the one to see.
+/// Nothing is handed over until the response is: a session that has finished
+/// stays owed, reserved from the notice (`Reserved`), so a cancel, a caller found
+/// to have let the call go (`let_go`, which any of the waits may be the one to
+/// see) or a core going meanwhile leaves its answer for the notice to bring.
+/// Once the response is made they are all handed over together, and a cancel
+/// crossing it undoes them together.
 pub fn wait_many(
     caller: &str,
     ids: &[String],
@@ -3037,18 +3096,19 @@ pub fn wait_many(
     for id in &unique {
         authorize_view(caller, id)?;
     }
-    let calls: Vec<std::sync::Arc<crate::mcp::Call>> = unique.iter().map(|_| std::sync::Arc::new(crate::mcp::Call::new())).collect();
-    let mut got: Vec<Option<Result<Waited, String>>> = unique.iter().map(|_| None).collect();
+    let _reserved: Vec<Reserved> = unique.iter().map(|id| Reserved::start(caller, id)).collect();
+    let calls: Vec<crate::mcp::Call> = unique.iter().map(|_| crate::mcp::Call::new()).collect();
+    let mut got: Vec<Option<Result<(Waited, bool), String>>> = unique.iter().map(|_| None).collect();
     let mut let_go_seen = false;
     let mut no_thread: Option<String> = None;
     std::thread::scope(|scope| {
         let (tx, rx) = std::sync::mpsc::channel();
         for (i, id) in unique.iter().copied().enumerate() {
-            let (tx, one) = (tx.clone(), calls[i].clone());
+            let (tx, one) = (tx.clone(), &calls[i]);
             let thread = std::thread::Builder::new()
                 .name(format!("luna-wait-{id}"))
                 .spawn_scoped(scope, move || {
-                    let _ = tx.send((i, wait(caller, id, until, timeout_s, None, &one)));
+                    let _ = tx.send((i, wait_for(caller, id, until, timeout_s, None, one, false)));
                 });
             if let Err(e) = thread {
                 no_thread = Some(e.to_string());
@@ -3057,7 +3117,7 @@ pub fn wait_many(
         drop(tx);
         let mut stopped = no_thread.is_some();
         if stopped {
-            calls.iter().for_each(|c| c.stop());
+            calls.iter().for_each(|c| c.cancel());
         }
         // When the first of `any` came.
         let mut first_at: Option<std::time::Instant> = None;
@@ -3071,31 +3131,36 @@ pub fn wait_many(
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
             }
-            if !all && first_at.is_none() && got.iter().flatten().any(|r| r.as_ref().is_ok_and(|w| w.outcome != "timeout")) {
+            if !all && first_at.is_none() && got.iter().flatten().any(|r| r.as_ref().is_ok_and(|(w, _)| w.outcome != "timeout")) {
                 first_at = Some(std::time::Instant::now());
             }
             let enough = first_at.is_some_and(|at| at.elapsed() >= SAME_LOOK);
             if !stopped && (enough || let_go_seen || call.cancelled()) {
                 stopped = true;
-                calls.iter().for_each(|c| c.stop());
+                calls.iter().for_each(|c| c.cancel());
             }
         }
     });
     if let Some(e) = no_thread {
-        calls.iter().for_each(|c| c.cancel());
         return Err(e);
     }
     if let_go_seen || call.cancelled() {
-        calls.iter().for_each(|c| c.cancel());
         return Err(LET_GO.into());
     }
+    // (session, the count it answered by), for the hand-over below.
+    let mut answers: Vec<(String, u32)> = Vec::new();
     let mut results: Vec<WaitedOne> = unique
         .iter()
         .copied()
         .zip(got)
         .map(|(id, r)| {
             let waited = match r {
-                Some(Ok(w)) => w,
+                Some(Ok((w, answered))) => {
+                    if answered {
+                        answers.push((id.to_string(), w.turns_ended));
+                    }
+                    w
+                }
                 other => {
                     // Stopped for another's answer, nothing handed over. Any
                     // other error is a session gone since it was looked up.
@@ -3113,16 +3178,17 @@ pub fn wait_many(
     let finished: Vec<String> =
         results.iter().filter(|r| !matches!(r.waited.outcome, "timeout" | "pending")).map(|r| r.id.clone()).collect();
     let outcome = if !finished.is_empty() && (!all || finished.len() == results.len()) { "finished" } else { "timeout" };
-    let handed = calls.clone();
-    if !call.commit(move || handed.iter().for_each(|c| c.cancel())) {
+    let undo: Vec<_> = answers.iter().map(|(id, turns_ended)| hand_over(caller, id, *turns_ended)).collect();
+    if !call.commit(move || undo.into_iter().for_each(|u| u())) {
         return Err(LET_GO.into());
     }
     Ok(WaitedMany { outcome, finished, results })
 }
 
-/// Holds several replies to what one tool result carries (MAX_TEXT): the short
-/// ones whole, the rest cut to an even share of what is left, each naming a file
-/// with the whole of it, as a reply cut by itself does.
+/// Holds several replies, whole as `reply_of` gives them to a `wait_many`, to
+/// what one tool result carries (MAX_TEXT): the short ones whole, the rest cut to
+/// an even share of what is left, each naming a file with the whole of it, as a
+/// reply cut by itself does.
 fn share_replies(results: &mut [WaitedOne]) {
     let mut order: Vec<usize> = (0..results.len()).filter(|&i| results[i].waited.reply.is_some()).collect();
     let length = |r: &WaitedOne| r.waited.reply.as_ref().map_or(0, |t| t.chars().count());
@@ -3199,8 +3265,9 @@ enum Holding {
 /// the caller's question found its transcript, report first (`answer_text`);
 /// with no question out, its last message. None when the prompt is the last
 /// word: the turn ended on an error, which the screen shows and the
-/// transcript does not.
-fn reply_of(pty: &crate::pty::PtyManager, id: &str, provider: Provider, asked_at: Option<u64>) -> Option<String> {
+/// transcript does not. `cut` keeps it to what one result carries, naming a file
+/// with the whole; a `wait_many` shares that out itself (`share_replies`).
+fn reply_of(pty: &crate::pty::PtyManager, id: &str, provider: Provider, asked_at: Option<u64>, cut: bool) -> Option<String> {
     let replies = match asked_at {
         Some(at) => replies_since(pty, id, provider, at),
         None => replies_since(pty, id, provider, 0).pop().into_iter().collect(),
@@ -3209,7 +3276,7 @@ fn reply_of(pty: &crate::pty::PtyManager, id: &str, provider: Provider, asked_at
         return None;
     }
     let text = answer_text(&replies);
-    if text.chars().count() <= MAX_TEXT {
+    if !cut || text.chars().count() <= MAX_TEXT {
         return Some(text);
     }
     let head: String = text.chars().take(MAX_TEXT).collect();
@@ -3376,8 +3443,14 @@ pub fn forget(id: &str) {
     r.waits.retain(|(who, chat), _| who != id && chat != id);
     r.notified.remove(id);
     r.hook_asks.remove(id);
+    let told = r.quota_told.len();
     r.quota_told.retain(|(caller, _, _), _| caller != id);
+    let quota_now = (r.quota_told.len() != told).then(|| quota_bytes(&r.quota_told));
+    r.receipts.retain(|(who, chat), _| who != id && chat != id);
     drop(r);
+    if let Some(bytes) = quota_now {
+        save_quota_told(bytes);
+    }
     transcripts().lock().unwrap_or_else(|e| e.into_inner()).remove(id);
     if spawned {
         crate::agentlog::ended(id, if auto.is_some_and(|a| a.deleting) { "auto-deleted" } else { "deleted" });
@@ -3429,9 +3502,12 @@ fn replies_since(pty: &crate::pty::PtyManager, id: &str, provider: Provider, cur
 /// line (`begins`) — a caller that had a long answer cut read the whole of it
 /// back anyway, and a long notice reaches the CLI as a paste.
 fn answer_file(id: &str, replies: &[String]) -> String {
+    // Two in one millisecond must not be one file, the later over the earlier.
+    static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let serial = SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let whole = answer_text(replies);
     let dir = notes_dir();
-    let path = dir.join(format!("{id}-{}.md", now_ms()));
+    let path = dir.join(format!("{id}-{}-{serial}.md", now_ms()));
     match std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&path, whole)) {
         Ok(()) => format!("the answer is in {}, its report first", path.display()),
         Err(_) => "luna_read gives the answer".into(),
@@ -3620,6 +3696,37 @@ fn quota_step(told: Option<&QuotaTold>, pct: f64, resets_at: Option<&str>, now: 
     (level.max(had), level > had)
 }
 
+fn quota_file() -> std::path::PathBuf {
+    crate::paths::data_dir().join("quota-told.json")
+}
+
+/// `quota_told` as its file keeps it: a core started later is not to tell a
+/// caller again what this one already did.
+fn quota_bytes(told: &HashMap<(String, String, String), QuotaTold>) -> Vec<u8> {
+    let mut rows: Vec<(&String, &String, &String, u8, &Option<String>)> =
+        told.iter().map(|((c, a, l), t)| (c, a, l, t.level, &t.resets_at)).collect();
+    rows.sort();
+    serde_json::to_vec(&rows).unwrap_or_default()
+}
+
+/// The file's rows, but for windows over since they were written.
+fn quota_from(bytes: &[u8], now: u64) -> HashMap<(String, String, String), QuotaTold> {
+    let rows: Vec<(String, String, String, u8, Option<String>)> = serde_json::from_slice(bytes).unwrap_or_default();
+    rows.into_iter()
+        .filter(|row| !is_past(row.4.as_deref(), now))
+        .map(|(c, a, l, level, resets_at)| ((c, a, l), QuotaTold { level, resets_at }))
+        .collect()
+}
+
+/// Writes it out, with the registry's lock let go.
+fn save_quota_told(bytes: Vec<u8>) {
+    let path = quota_file();
+    let tmp = path.with_extension("json.tmp");
+    if let Err(e) = std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, &path)) {
+        crate::log::warn("agents", &format!("could not save {}: {e}", path.display()));
+    }
+}
+
 /// A usage window a caller is yet to hear of.
 struct QuotaNews {
     key: (String, String, String),
@@ -3671,6 +3778,7 @@ fn quota_news(pty: &crate::pty::PtyManager) -> HashMap<String, Vec<QuotaNews>> {
     let mut news: HashMap<String, Vec<QuotaNews>> = HashMap::new();
     let now = now_ms();
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    let before = quota_bytes(&r.quota_told);
     let mut pairs: Vec<&(String, String)> = live_ones.iter().collect();
     pairs.sort();
     pairs.dedup();
@@ -3689,6 +3797,11 @@ fn quota_news(pty: &crate::pty::PtyManager) -> HashMap<String, Vec<QuotaNews>> {
                 r.quota_told.insert(key, told);
             }
         }
+    }
+    let after = quota_bytes(&r.quota_told);
+    drop(r);
+    if after != before {
+        save_quota_told(after);
     }
     news
 }
@@ -3722,8 +3835,14 @@ fn anything_to_say(pty: &crate::pty::PtyManager, items: &[(String, Known, Owed, 
 /// still out by then belongs to a client that has let the call go.
 fn held_for_wait(pty: &crate::pty::PtyManager, caller: &str, id: &str, o: &Owed) -> bool {
     let key = (caller.to_string(), id.to_string());
-    if !reg().lock().unwrap_or_else(|e| e.into_inner()).waits.contains_key(&key) {
-        return false;
+    {
+        let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+        if r.reserved.contains_key(&key) {
+            return true;
+        }
+        if !r.waits.contains_key(&key) {
+            return false;
+        }
     }
     let ts = crate::activity::turn_state(id);
     let turn = ts.map(|t| t.turn);
@@ -3747,6 +3866,9 @@ fn held_for_wait(pty: &crate::pty::PtyManager, caller: &str, id: &str, o: &Owed)
 /// answer, checks whether one came and tells the caller once it is idle; and
 /// deletes the `autoDelete` helpers that are done (see `reap`).
 fn notifier() {
+    if let Ok(bytes) = std::fs::read(quota_file()) {
+        reg().lock().unwrap_or_else(|e| e.into_inner()).quota_told = quota_from(&bytes, now_ms());
+    }
     let mut idle_looks: HashMap<String, u32> = HashMap::new();
     // Callers whose notice a draft is holding back: since when, and whether
     // the desktop has been told.
@@ -3863,9 +3985,11 @@ fn notifier() {
                         crate::log::warn("agents", &format!("notice to {} about {about} did not start a turn", label(&caller)));
                     }
                     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+                    let told_quota = !quota_lines.is_empty();
                     for n in quota_lines {
                         r.quota_told.insert(n.key, n.told);
                     }
+                    let quota_now = told_quota.then(|| quota_bytes(&r.quota_told));
                     for (id, how, told) in settled {
                         let key = (caller.clone(), id);
                         // Typing the notice takes seconds, and the turn it
@@ -3892,6 +4016,10 @@ fn notifier() {
                             }
                             Settled::Hold(_) => {}
                         }
+                    }
+                    drop(r);
+                    if let Some(bytes) = quota_now {
+                        save_quota_told(bytes);
                     }
                 }
                 Err(e) => crate::log::warn("agents", &format!("notice to {} about {about} failed: {e}", label(&caller))),
@@ -4057,6 +4185,20 @@ mod tests {
         undo();
         assert_eq!(reg().lock().unwrap().owed.get(&key).map(|o| (o.baseline, o.cursor)), Some((2, 40)));
         reg().lock().unwrap().owed.remove(&key);
+    }
+
+    #[test]
+    fn a_dropped_response_does_not_take_back_what_a_later_call_delivered() {
+        let key = ("hr-parent".to_string(), "hr-child".to_string());
+        owe_from("hr-parent", "hr-child", 1, 40);
+        let dropped = hand_over("hr-parent", "hr-child", 2);
+        let read = hand_over("hr-parent", "hr-child", 2);
+        dropped();
+        assert!(reg().lock().unwrap().owed.get(&key).is_none(), "the later read delivered it");
+        assert_eq!(last_shown("hr-parent", "hr-child"), Some(2));
+        read();
+        forget("hr-parent");
+        forget("hr-child");
     }
 
     #[test]
@@ -4278,6 +4420,27 @@ mod tests {
         let (caller, done, busy, dir) = several("all");
         let ids = [done.clone(), busy.clone()];
 
+        // While the other runs, what has come is still owed, as a core going
+        // now would save it, and held from the notice.
+        let call = std::sync::Arc::new(crate::mcp::Call::new());
+        let waiting = {
+            let (caller, ids, call) = (caller.clone(), ids.clone(), call.clone());
+            std::thread::spawn(move || wait_many(&caller, &ids, true, "turn_done", 3, &call).is_ok())
+        };
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        assert!(owed_to(&caller, &done));
+        assert_eq!(ties_of(&done).unwrap().owed.len(), 1, "saved with the helper");
+        assert!(last_shown(&caller, &done) != Some(1), "not seen yet either");
+        let o = reg().lock().unwrap().owed.get(&(caller.clone(), done.clone())).copied().unwrap();
+        reg().lock().unwrap().owed.get_mut(&(caller.clone(), done.clone())).unwrap().ready_at = Some(now_ms() - WAIT_HOLD_MS - 1);
+        assert!(held_for_wait(&crate::pty::manager(), &caller, &done, &o), "past the hold of a wait on one");
+        assert!(waiting.join().unwrap());
+        assert!(!owed_to(&caller, &done), "handed over with the response");
+        reg().lock().unwrap().seen.remove(&(caller.clone(), done.clone()));
+        crate::background::test_helper(&done, &dir.to_string_lossy(), Some("sid-done"), false);
+        crate::background::test_turn_ended(&done);
+        owe_from(&caller, &done, 0, 0);
+
         // The time runs out on one: what came is handed over, the other is
         // a timeout with its screen, still owed.
         let call = crate::mcp::Call::new();
@@ -4324,7 +4487,7 @@ mod tests {
         });
         assert!(wait_many(&caller, &ids, true, "turn_done", 20, &call).is_err());
         cancelling.join().unwrap();
-        assert!(owed_to(&caller, &done), "owed again, for the notice");
+        assert!(owed_to(&caller, &done), "still owed, for the notice");
         assert!(owed_to(&caller, &busy));
         assert!(last_shown(&caller, &done).is_none());
 
@@ -4335,7 +4498,66 @@ mod tests {
         assert!(!owed_to(&caller, &done));
         call.cancel();
         assert!(owed_to(&caller, &done), "dropped unread: owed again");
+
+        // Another call collects it during the wait, which is then cancelled:
+        // nothing comes back, as nothing was the wait's to take.
+        let cancelled = std::sync::Arc::new(crate::mcp::Call::new());
+        let waiting = {
+            let (caller, ids, call) = (caller.clone(), ids.clone(), cancelled.clone());
+            std::thread::spawn(move || wait_many(&caller, &ids, true, "turn_done", 20, &call).is_err())
+        };
+        std::thread::sleep(std::time::Duration::from_millis(1200));
+        let _read = hand_over(&caller, &done, 1);
+        cancelled.cancel();
+        assert!(waiting.join().unwrap());
+        assert!(!owed_to(&caller, &done), "the read delivered it");
         leave(&[&caller, &done, &busy], &dir);
+    }
+
+    #[test]
+    fn a_long_answer_is_cut_once_and_its_file_has_the_whole() {
+        let (caller, done, busy, dir) = several("long");
+        let account = dir.to_string_lossy().into_owned();
+        let long = "z".repeat(MAX_TEXT + 500);
+        let path = crate::claude::session::transcript_file(&account, &account, "sid-done");
+        std::fs::write(&path, format!("{}\n", serde_json::json!({ "type": "assistant", "message": { "content": [{ "type": "text", "text": long }] } }))).unwrap();
+        crate::background::test_turn_ended(&busy);
+        let call = crate::mcp::Call::new();
+        let w = wait_many(&caller, &[done.clone()], false, "turn_done", 20, &call).unwrap();
+        let reply = w.results[0].waited.reply.as_ref().unwrap();
+        assert_eq!(reply.matches("[cut at").count(), 1, "once");
+        let file = reply.rsplit("the answer is in ").next().unwrap().trim_end_matches(", its report first]");
+        assert_eq!(std::fs::read_to_string(file).unwrap(), long, "the whole of it");
+        let _ = std::fs::remove_file(file);
+        leave(&[&caller, &done, &busy], &dir);
+    }
+
+    #[test]
+    fn answer_files_never_share_a_name() {
+        let line = |text: &str| answer_file("same-ms", &[text.to_string()]);
+        let lines: Vec<String> = (0..20).map(|i| line(&format!("answer {i}"))).collect();
+        for (i, l) in lines.iter().enumerate() {
+            let file = l.trim_start_matches("the answer is in ").trim_end_matches(", its report first");
+            assert_eq!(std::fs::read_to_string(file).unwrap(), format!("answer {i}"));
+            let _ = std::fs::remove_file(file);
+        }
+    }
+
+    #[test]
+    fn what_a_caller_was_told_of_quota_outlives_the_core() {
+        let now = now_ms();
+        let later = crate::background::iso(now + 3_600_000);
+        let gone = crate::background::iso(now - 60_000);
+        let mut told = HashMap::new();
+        let key = |l: &str| ("c".to_string(), "claude/a".to_string(), l.to_string());
+        told.insert(key("week"), QuotaTold { level: 95, resets_at: later.clone() });
+        told.insert(key("5 hours"), QuotaTold { level: 90, resets_at: gone });
+        let back = quota_from(&quota_bytes(&told), now);
+        assert_eq!(back.len(), 1, "a window over since is forgotten");
+        assert_eq!(back[&key("week")], QuotaTold { level: 95, resets_at: later.clone() });
+        let (level, say) = quota_step(back.get(&key("week")), 96.0, later.as_deref(), now);
+        assert_eq!((level, say), (95, false), "not told again");
+        assert!(quota_from(b"not json", now).is_empty());
     }
 
     #[test]
@@ -4408,6 +4630,12 @@ mod tests {
             assert!(!held_for_wait(&pty, "w-parent", "w-child", &o()), "a wait that sat on news is let go");
         }
         assert!(!reg().lock().unwrap().waits.contains_key(&key), "the count goes with the call");
+        {
+            // A wait on several holds it however long the others take.
+            let _reserved = Reserved::start("w-parent", "w-child");
+            assert!(held_for_wait(&pty, "w-parent", "w-child", &o()));
+        }
+        assert!(!held_for_wait(&pty, "w-parent", "w-child", &o()), "and no longer");
     }
 
     #[test]

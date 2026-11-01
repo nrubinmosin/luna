@@ -65,13 +65,6 @@ impl Call {
         self.state.load(Ordering::SeqCst) == CANCELLED
     }
 
-    /// Ends a call that has handed nothing over, as a cancel does, and leaves
-    /// one that has: what a wait on several does to the waits it no longer
-    /// needs (`agents::wait_many`), one of which may have just answered.
-    pub(crate) fn stop(&self) {
-        let _ = self.state.compare_exchange(RUNNING, CANCELLED, Ordering::SeqCst, Ordering::SeqCst);
-    }
-
     /// Commits the call to its response, once the hand-over `undo` reverses
     /// is done. False when a cancel came first: `undo` has run, and nothing
     /// is to be handed over.

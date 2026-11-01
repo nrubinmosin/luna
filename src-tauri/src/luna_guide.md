@@ -30,7 +30,9 @@ can start other sessions and work with them.
   - `spend`: `session` (so far) and `lastTurn`, each `input` (no cache), `output`, `cacheRead`,
     `cacheWrite`, and `costUsd`: Claude Code's estimate at the rates it knows, not a bill;
     Codex states no cost, so it has none. Spend is kept with a background helper across
-    core restarts. A Claude Code turn killed before it ended may go uncounted. Visible
+    core restarts. A turn killed before it ended is counted too: Codex's from its rollout,
+    Claude Code's from the messages it had shown, tokens only, its cost unknown. `lastTurn`
+    is left out when it cannot be told. Visible
     sessions: Codex gives `session` only; Claude Code gives none, since its transcript cannot
     be summed cheaply and reliably, and a helper opened as a chat stops being counted.
 - You kill and delete only sessions you spawned and theirs. Any other session you can read,
