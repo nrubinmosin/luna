@@ -181,6 +181,9 @@ struct Scan {
     /// The question the model last put to the user that nothing has answered
     /// yet, with the call id it came in.
     ask: Option<(String, crate::agents::Ask)>,
+    /// Why the last turn stopped short, if it did: `task_complete` carries the
+    /// error it ended on (Codex 0.166), `turn_aborted` why it was cut off.
+    failed: Option<String>,
 }
 
 fn turn_counts() -> &'static Mutex<HashMap<String, TurnCount>> {
@@ -241,6 +244,13 @@ pub fn turns_completed(live: &Live) -> Option<u32> {
     tracked(live).map(|s| s.completed)
 }
 
+/// Why this chat's last turn stopped short, if it did, as of the rollout's last
+/// read: the one the turn count comes from, so it goes with the turn counted,
+/// and the session may have exited since.
+pub fn last_failure(chat_id: &str) -> Option<String> {
+    turn_counts().lock().ok()?.get(chat_id)?.scan.failed.clone()
+}
+
 /// The question the session has put to the user and nobody has answered:
 /// `request_user_input`, which holds the turn until it is answered, or
 /// `request_user_input_async`, which lets the model work on and is open until
@@ -261,9 +271,18 @@ fn scan_rollout(path: &Path, from: u64, since_ms: i64, scan: &mut Scan) -> u64 {
         let Ok(v) = serde_json::from_str::<Value>(line) else { return };
         let payload = &v["payload"];
         match (v["type"].as_str(), payload["type"].as_str()) {
-            (Some("event_msg"), Some("task_started" | "turn_started")) => scan.working = Some(true),
-            (Some("event_msg"), Some("task_complete" | "turn_complete" | "turn_aborted" | "task_aborted")) => {
+            (Some("event_msg"), Some("task_started" | "turn_started")) => {
+                scan.working = Some(true);
+                scan.failed = None;
+            }
+            (Some("event_msg"), Some(end @ ("task_complete" | "turn_complete" | "turn_aborted" | "task_aborted"))) => {
                 scan.working = Some(false);
+                scan.failed = payload["error"]["message"].as_str().map(str::to_owned).or_else(|| {
+                    end.ends_with("_aborted").then(|| match payload["reason"].as_str() {
+                        Some(why) => format!("its turn was aborted ({why})"),
+                        None => "its turn was aborted".to_string(),
+                    })
+                });
                 // A blocking question goes with the turn that asked it.
                 if scan.ask.as_ref().is_some_and(|(_, a)| a.blocking) {
                     scan.ask = None;
@@ -851,6 +870,31 @@ mod format_tests {
         scan_rollout(&path, 0, 0, &mut s);
         assert_eq!(s.working, Some(true));
 
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// How a turn that failed reads in a 0.166 rollout (a bad key, seen on a
+    /// throwaway account): a `task_complete` like any other, with the error.
+    #[test]
+    fn a_turn_that_failed_says_why() {
+        let root = std::env::temp_dir().join(format!("luna-codex-failed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("rollout-2026-11-01T10-52-43-abc.jsonl");
+        let failed_after = |lines: &[&str]| {
+            std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+            let mut s = Scan::default();
+            scan_rollout(&path, 0, 0, &mut s);
+            (s.failed, s.completed)
+        };
+        let started = r#"{"timestamp":"t","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}"#;
+        let failed = r#"{"timestamp":"t","ordinal":14,"type":"event_msg","payload":{"type":"task_complete","turn_id":"t1","last_agent_message":null,"error":{"message":"unexpected status 401 Unauthorized"}}}"#;
+        let fine = r#"{"timestamp":"t","type":"event_msg","payload":{"type":"task_complete","turn_id":"t2","last_agent_message":"READY"}}"#;
+        let aborted = r#"{"timestamp":"t","type":"event_msg","payload":{"type":"turn_aborted","turn_id":"t3","reason":"interrupted"}}"#;
+        assert_eq!(failed_after(&[started, failed]), (Some("unexpected status 401 Unauthorized".into()), 1), "it ends a turn all the same");
+        assert_eq!(failed_after(&[started, failed, started]), (None, 1), "the next turn is another one");
+        assert_eq!(failed_after(&[started, failed, started, fine]), (None, 2));
+        assert_eq!(failed_after(&[started, aborted]).0.as_deref(), Some("its turn was aborted (interrupted)"));
         let _ = std::fs::remove_dir_all(&root);
     }
 

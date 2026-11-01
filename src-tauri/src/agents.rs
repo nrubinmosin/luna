@@ -351,6 +351,8 @@ struct Registry {
     notice_times: HashMap<(String, String), Vec<u64>>,
     /// The pairs Luna has stopped telling (BREAKER_NOTICES), and since when.
     stopped: HashMap<(String, String), u64>,
+    /// How each pty session last exited, by id, until it runs again.
+    exits: HashMap<String, Option<u32>>,
 }
 
 /// A turn a Luna notice started. Told a session is not done yet, a caller is
@@ -463,6 +465,7 @@ fn reg() -> &'static Mutex<Registry> {
             notice_turns: HashMap::new(),
             notice_times: HashMap::new(),
             stopped: HashMap::new(),
+            exits: HashMap::new(),
         })
     })
 }
@@ -595,6 +598,7 @@ pub fn register(
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
     let previous = r.known.get(id).cloned();
+    r.exits.remove(id);
     r.known.insert(
         id.to_string(),
         Known {
@@ -637,6 +641,11 @@ pub fn register_dev_caller() {
     r.tokens.insert(token.trim().to_string(), DEV_CALLER.to_string());
     let url = crate::hub::mcp_url().unwrap_or_default();
     crate::log::warn("agents", &format!("dev caller registered for {folder} ({account_path}); MCP at {url}"));
+}
+
+/// A pty session's process has gone, with this exit code if it left one.
+pub fn session_exited(id: &str, code: Option<u32>) {
+    reg().lock().unwrap_or_else(|e| e.into_inner()).exits.insert(id.to_string(), code);
 }
 
 /// The id of the dev caller (see `register_dev_caller`).
@@ -2585,6 +2594,9 @@ pub struct Reading {
     /// The terminal's last lines, when asked for (`screen: true`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub screen: Option<String>,
+    /// See `Waited::transcript_missing`.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub transcript_missing: bool,
 }
 
 /// The last transcript found for each session: Claude Code drops the
@@ -2623,6 +2635,37 @@ fn find_transcript(pty: &crate::pty::PtyManager, id: &str) -> Option<std::path::
             last_output_ms: p.last_output_ms,
         }),
     }
+}
+
+/// Whether the session's transcript is on disk where Luna looks for it. Without
+/// one, "it said nothing" cannot be told from "nothing could be read".
+fn transcript_found(pty: &crate::pty::PtyManager, id: &str) -> bool {
+    transcript_path(pty, id).is_some_and(|p| p.is_file())
+}
+
+/// Why a session's last turn stopped short, if it did: an API error, a usage
+/// limit, a CLI that quit on an error or was killed. On one line, as it goes
+/// into a notice. A background helper knows from its process and its events;
+/// a Claude Code chat from its transcript's last word and its `StopFailure`
+/// hook; a Codex chat from its rollout; and either from its exit code.
+fn failure_of(pty: &crate::pty::PtyManager, id: &str, provider: Provider) -> Option<String> {
+    let exit = || {
+        let code = reg().lock().unwrap_or_else(|e| e.into_inner()).exits.get(id).copied()?;
+        match code {
+            Some(0) => None,
+            Some(code) => Some(format!("its CLI exited with code {code}")),
+            None => Some("its CLI was killed".to_string()),
+        }
+    };
+    let why = match provider {
+        _ if crate::background::has(id) => crate::background::last_error(id),
+        Provider::Claude => transcript_path(pty, id)
+            .and_then(|p| crate::claude::session::api_error_of(&p))
+            .or_else(|| crate::activity::failed_of(id).map(str::to_owned))
+            .or_else(exit),
+        Provider::Codex => crate::codex::session::last_failure(id).or_else(exit),
+    };
+    why.map(|w| crate::background::one_line(&w))
 }
 
 fn is_zero(n: &usize) -> bool {
@@ -2748,6 +2791,7 @@ pub fn read(
         seen(caller, id, turns_ended);
     }
     Ok(Reading {
+        transcript_missing: messages.is_empty() && !transcript_found(&pty, id),
         messages,
         cursor,
         left_out,
@@ -2818,9 +2862,18 @@ pub struct Waited {
     /// since the caller asked it something, as `reply_of` puts it, so no
     /// `read` is needed.
     pub reply: Option<String>,
-    /// On `timeout`, `waiting` and a turn that ended without a reply: the
-    /// terminal's last lines, so the caller sees what the session is on — a
-    /// permission prompt, a question, an error, a notice nobody dismissed.
+    /// The turn did not end by itself: it stopped on this error (`failure_of`),
+    /// and `reply` is what it said before that, if anything.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failed: Option<String>,
+    /// Luna found no transcript, so a null `reply` says nothing about whether
+    /// it replied.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub transcript_missing: bool,
+    /// On `timeout`, `waiting`, a turn that ended on an error or without a
+    /// reply: the terminal's last lines, so the caller sees what the session
+    /// is on — a permission prompt, a question, an error, a notice nobody
+    /// dismissed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub screen: Option<String>,
 }
@@ -2866,7 +2919,7 @@ pub fn wait(
             let (state, ask) = state_of(id);
             let turns_ended = crate::activity::turn_state(id).map_or(0, |t| t.turns_ended);
             let screen = screen_of(&pty, id);
-            return Ok(Waited { outcome: "timeout", state, ask, turns_ended, reply: None, screen });
+            return Ok(Waited { outcome: "timeout", state, ask, turns_ended, reply: None, failed: None, transcript_missing: false, screen });
         }
         std::thread::sleep(POLL);
     }
@@ -2977,7 +3030,9 @@ pub fn wait(
             if gone() || (answers && holding() == Holding::Unsure) {
                 return gone_err();
             }
-            let bare = outcome == "turn_done" && reply.is_none();
+            let failed = (says || outcome == "exit").then(|| failure_of(&pty, id, known.provider)).flatten();
+            let transcript_missing = says && reply.is_none() && !transcript_found(&pty, id);
+            let bare = outcome == "turn_done" && (reply.is_none() || failed.is_some());
             let screen = (outcome == "waiting" || bare).then(|| screen_of(&pty, id)).flatten();
             if !answers {
                 // Nothing was handed over: whatever is owed stays owed.
@@ -2987,7 +3042,7 @@ pub fn wait(
                 return gone_err();
             }
             let (state, ask) = state_of(id);
-            return Ok(Waited { outcome, state, ask, turns_ended, reply, screen });
+            return Ok(Waited { outcome, state, ask, turns_ended, reply, failed, transcript_missing, screen });
         }
         if std::time::Instant::now() >= deadline {
             let screen = screen_of(&pty, id);
@@ -2995,7 +3050,7 @@ pub fn wait(
             // next wait still waits for it.
             looked(id);
             let (state, ask) = state_of(id);
-            return Ok(Waited { outcome: "timeout", state, ask, turns_ended, reply: None, screen });
+            return Ok(Waited { outcome: "timeout", state, ask, turns_ended, reply: None, failed: None, transcript_missing: false, screen });
         }
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
@@ -3053,8 +3108,7 @@ enum Holding {
 /// What a `wait` hands back: all the session said past `asked_at`, where
 /// the caller's question found its transcript, report first (`answer_text`);
 /// with no question out, its last message. None when the prompt is the last
-/// word: the turn ended on an error, which the screen shows and the
-/// transcript does not.
+/// word: the turn ended on an error, which `failure_of` says, or on nothing.
 fn reply_of(pty: &crate::pty::PtyManager, id: &str, provider: Provider, asked_at: Option<u64>) -> Option<String> {
     let replies = match asked_at {
         Some(at) => replies_since(pty, id, provider, at),
@@ -3234,6 +3288,7 @@ pub fn forget(id: &str) {
     r.notice_turns.remove(id);
     r.notice_times.retain(|(who, chat), _| who != id && chat != id);
     r.stopped.retain(|(who, chat), _| who != id && chat != id);
+    r.exits.remove(id);
     drop(r);
     transcripts().lock().unwrap_or_else(|e| e.into_inner()).remove(id);
     if spawned {
@@ -3268,7 +3323,8 @@ enum Settled {
 
 /// What the session has said since `cursor` (see `Owed::cursor`), read
 /// straight off its transcript, its own messages in order; empty when the
-/// prompt is the last word (the turn ended on an error, an interruption).
+/// prompt is the last word (the turn ended on an error, an interruption), or
+/// there is no transcript to read (`transcript_found` tells them apart).
 /// A transcript with nothing past the cursor has started over in a file of
 /// its own (a resume): the last message there is the answer.
 fn replies_since(pty: &crate::pty::PtyManager, id: &str, provider: Provider, cursor: u64) -> Vec<String> {
@@ -3469,10 +3525,24 @@ fn notice_line(
             }
         }
         let reply = match replies.len() {
-            0 => " without a reply (an error or an interruption; luna_read with screen: true shows it)".to_string(),
+            0 if !transcript_found(pty, id) => {
+                ", but Luna cannot find its transcript, so whether it replied is unknown (luna_read with screen: true shows what there is)".to_string()
+            }
+            0 => " without a reply (luna_read with screen: true shows why, if anything does)".to_string(),
             1 => format!(" with 1 message since you asked; {}", answer_file(id, &replies)),
             n => format!(" with {n} messages since you asked; {}", answer_file(id, &replies)),
         };
+        if crate::background::cut_short(id) {
+            return Some((
+                Some(format!("{who} did NOT finish its turn: Luna's core restarted while it worked and stopped it. It ended{reply}. luna_send has it carry on.")),
+                Settled::Answered,
+            ));
+        }
+        // Whatever else is going on: this turn did not get to its end.
+        if let Some(why) = failure_of(pty, id, k.provider) {
+            let said = if replies.is_empty() { String::new() } else { format!(" It ended{reply}.") };
+            return Some((Some(format!("{who} stopped on an error: {why}.{said} luna_send has it carry on.")), Settled::Answered));
+        }
         if background {
             // Said first and plainly: a weak model read "ended a turn" as
             // done and deleted the helper mid-job. Once per debt: a job can
@@ -3484,12 +3554,6 @@ fn notice_line(
             };
             return Some((Some(line), Settled::Pending(ended, transcript_end(id))));
         }
-        if crate::background::cut_short(id) {
-            return Some((
-                Some(format!("{who} did NOT finish its turn: Luna's core restarted while it worked and stopped it. It ended{reply}. luna_send has it carry on.")),
-                Settled::Answered,
-            ));
-        }
         return Some((Some(format!("{who} finished its turn{reply}.")), Settled::Answered));
     }
     if !alive {
@@ -3499,7 +3563,13 @@ fn notice_line(
                 Settled::Exited,
             ));
         }
-        return Some((Some(format!("{who} has exited.")), Settled::Exited));
+        return Some((
+            Some(match failure_of(pty, id, k.provider) {
+                Some(why) => format!("{who} has exited on an error: {why}."),
+                None => format!("{who} has exited."),
+            }),
+            Settled::Exited,
+        ));
     }
     let ask = ask_of(id);
     let held = turn == Some(crate::activity::Turn::Waiting) || ask.as_ref().is_some_and(|a| a.blocking && a.kind == "question");
@@ -4206,6 +4276,74 @@ mod tests {
         assert!(!counts_for_breaker(&Settled::Waiting), "a busy helper asks often, and holds until answered");
         assert!(!counts_for_breaker(&Settled::Asked(1)));
         assert!(!counts_for_breaker(&Settled::Exited));
+    }
+
+    /// `notice_line` on a session known only by its hooks, the debt past the
+    /// grace it gives a turn with no reply yet.
+    fn line_for(id: &str) -> String {
+        let pty = crate::pty::manager();
+        let known = reg().lock().unwrap().known.get(id).cloned().unwrap();
+        let mut o = Owed::from(0, 0);
+        o.held = Some((1, now_ms() - REPLY_GRACE_MS));
+        match notice_line(&pty, "Your helper", id, &known, o) {
+            Some((Some(line), Settled::Answered)) => line,
+            _ => panic!("a turn is over: there is something to say"),
+        }
+    }
+
+    #[test]
+    fn a_turn_that_failed_is_not_reported_as_finished() {
+        use crate::activity::{on_hook, HookEvent};
+        let none = serde_json::json!({});
+        register("fl-limit", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, false, none.clone());
+        on_hook("fl-limit", HookEvent::Busy);
+        on_hook("fl-limit", HookEvent::Failed("rate_limit"));
+        let line = line_for("fl-limit");
+        assert!(line.starts_with("Your helper stopped on an error: rate_limit."), "{line}");
+        assert!(!line.contains("finished"), "{line}");
+        // No error known and nothing to read: that it is not known is what it says.
+        register("fl-lost", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, false, none);
+        on_hook("fl-lost", HookEvent::Busy);
+        on_hook("fl-lost", HookEvent::Idle);
+        let line = line_for("fl-lost");
+        assert!(line.contains("cannot find its transcript"), "{line}");
+        assert!(!line.contains("without a reply"), "{line}");
+        forget("fl-limit");
+        forget("fl-lost");
+        crate::activity::forget("fl-limit");
+        crate::activity::forget("fl-lost");
+    }
+
+    #[test]
+    fn a_transcript_on_disk_with_no_reply_is_said_as_that() {
+        use crate::activity::{on_hook, HookEvent};
+        let path = std::env::temp_dir().join(format!("luna-no-reply-{}.jsonl", std::process::id()));
+        std::fs::write(&path, "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"go\"}}\n").unwrap();
+        register("nr-chat", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, false, serde_json::json!({}));
+        transcripts().lock().unwrap().insert("nr-chat".into(), path.clone());
+        on_hook("nr-chat", HookEvent::Busy);
+        on_hook("nr-chat", HookEvent::Idle);
+        let line = line_for("nr-chat");
+        assert!(line.contains("finished its turn without a reply"), "{line}");
+        forget("nr-chat");
+        crate::activity::forget("nr-chat");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn an_exit_says_how_it_went() {
+        let none = serde_json::json!({});
+        register("ex-bad", Provider::Codex, "C:\\p", "C:\\acc\\openai\\one", None, false, none.clone());
+        let pty = crate::pty::manager();
+        assert_eq!(failure_of(&pty, "ex-bad", Provider::Codex), None);
+        session_exited("ex-bad", Some(3));
+        assert_eq!(failure_of(&pty, "ex-bad", Provider::Codex).as_deref(), Some("its CLI exited with code 3"));
+        session_exited("ex-bad", Some(0));
+        assert_eq!(failure_of(&pty, "ex-bad", Provider::Codex), None, "a clean exit is no error");
+        session_exited("ex-bad", Some(3));
+        register("ex-bad", Provider::Codex, "C:\\p", "C:\\acc\\openai\\one", None, false, none);
+        assert_eq!(failure_of(&pty, "ex-bad", Provider::Codex), None, "running again, that is behind it");
+        forget("ex-bad");
     }
 
     #[test]

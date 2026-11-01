@@ -624,9 +624,16 @@ fn on_codex_event(e: &mut Entry, v: &Value) {
         Some("turn.failed") | Some("error") => {
             let why = v["error"]["message"].as_str().or(v["message"].as_str()).unwrap_or("error").to_string();
             note(e, &format!("error: {}", one_line(&why)));
-            e.error = Some(why);
+            // Codex says its retries the same way ("Reconnecting... 2/5"): a
+            // turn that gets through after them has not failed.
+            if !why.starts_with("Reconnecting") {
+                e.error = Some(why);
+            }
         }
-        Some("turn.completed") => note(e, "turn done"),
+        Some("turn.completed") => {
+            note(e, "turn done");
+            e.error = None;
+        }
         _ => {}
     }
 }
@@ -645,8 +652,12 @@ fn turn_over(id: &str, code: Option<i32>) {
         e.turns_ended += 1;
         e.held = None;
         e.left_running = left_running;
-        if code.is_some_and(|c| c != 0) && e.error.is_none() {
-            e.error = Some(format!("{} exited with code {}", e.spec.provider.as_str(), code.unwrap_or(-1)));
+        if code != Some(0) && e.error.is_none() {
+            e.error = Some(match code {
+                Some(c) => format!("{} exited with code {c}", e.spec.provider.as_str()),
+                // A signal on Unix: nothing says which but that it was not its own doing.
+                None => format!("{} was killed", e.spec.provider.as_str()),
+            });
         }
         // Codex says where it works only in its rollout.
         if e.spec.provider == Provider::Codex && e.cwd.is_none() {
@@ -676,7 +687,7 @@ fn note(e: &mut Entry, line: &str) {
     e.log.push_back(line.to_string());
 }
 
-fn one_line(text: &str) -> String {
+pub fn one_line(text: &str) -> String {
     let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if flat.chars().count() <= LOG_CHARS {
         return flat;
@@ -769,10 +780,19 @@ pub fn kill(id: &str) {
     let pid = {
         let mut r = lock();
         let Some(e) = r.entries.get_mut(id) else { return };
+        // Whoever is owed the turn hears it was stopped, not an exit code.
+        if e.run.is_some() {
+            e.error = Some("it was stopped, by luna_kill or from the window".into());
+        }
         stop(e)
     };
     reg().1.notify_all();
     crate::pty::kill_tree(pid);
+}
+
+/// Why its last turn stopped short, if it did.
+pub fn last_error(id: &str) -> Option<String> {
+    lock().entries.get(id)?.error.clone()
 }
 
 /// Stops the turn in progress and starts the next on `text`, with whatever
@@ -1379,6 +1399,61 @@ mod tests {
         on_codex_event(&mut e, &json!({ "type": "turn.failed", "error": { "message": "boom" } }));
         assert_eq!(e.error.as_deref(), Some("boom"));
         assert!(e.log.back().unwrap().contains("boom"));
+    }
+
+    #[test]
+    fn a_retry_codex_got_through_is_no_failure() {
+        // As `codex exec --json` 0.166 words them on a connection it retries.
+        let retry = json!({ "type": "error", "message": "Reconnecting... 2/5 (unexpected status 401 Unauthorized)" });
+        let mut e = entry(Provider::Codex);
+        on_codex_event(&mut e, &retry);
+        assert_eq!(e.error, None, "said in its log, and not a failure");
+        assert!(e.log.back().unwrap().contains("Reconnecting"));
+        on_codex_event(&mut e, &json!({ "type": "turn.completed" }));
+        assert_eq!(e.error, None);
+        // One that does not read as a retry, followed by a turn that completes.
+        on_codex_event(&mut e, &json!({ "type": "error", "message": "stream hiccup" }));
+        assert_eq!(e.error.as_deref(), Some("stream hiccup"));
+        on_codex_event(&mut e, &json!({ "type": "turn.completed" }));
+        assert_eq!(e.error, None, "the turn got through after all");
+        // The retries run out.
+        on_codex_event(&mut e, &retry);
+        on_codex_event(&mut e, &json!({ "type": "error", "message": "unexpected status 401 Unauthorized" }));
+        on_codex_event(&mut e, &json!({ "type": "turn.failed", "error": { "message": "unexpected status 401 Unauthorized" } }));
+        assert_eq!(e.error.as_deref(), Some("unexpected status 401 Unauthorized"));
+    }
+
+    #[test]
+    fn a_turn_killed_or_crashed_ends_on_an_error() {
+        let run = |e: &mut Entry| e.run = Some(Run { pid: Some(1), started_ms: 0, stopped: false });
+        for (id, code, why) in [
+            ("end-crash", Some(1), "codex exited with code 1"),
+            ("end-signal", None, "codex was killed"),
+        ] {
+            let mut e = entry(Provider::Codex);
+            run(&mut e);
+            lock().entries.insert(id.into(), e);
+            turn_over(id, code);
+            assert_eq!(last_error(id).as_deref(), Some(why));
+            assert_eq!(turn_state(id).unwrap().turns_ended, 1, "it still ends the turn");
+            lock().entries.remove(id);
+        }
+        // Stopped on purpose, it says so rather than the code that leaves.
+        let mut e = entry(Provider::Claude);
+        run(&mut e);
+        e.run.as_mut().unwrap().pid = None;
+        lock().entries.insert("end-killed".into(), e);
+        kill("end-killed");
+        turn_over("end-killed", Some(1));
+        assert_eq!(last_error("end-killed").as_deref(), Some("it was stopped, by luna_kill or from the window"));
+        lock().entries.remove("end-killed");
+        // A clean exit says nothing.
+        let mut e = entry(Provider::Claude);
+        run(&mut e);
+        lock().entries.insert("end-clean".into(), e);
+        turn_over("end-clean", Some(0));
+        assert_eq!(last_error("end-clean"), None);
+        lock().entries.remove("end-clean");
     }
 
     #[test]
