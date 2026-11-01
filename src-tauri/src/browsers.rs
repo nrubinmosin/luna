@@ -379,11 +379,14 @@ mod tests {
     #[test]
     fn a_chromium_browser_gets_an_entry_per_profile() {
         let read = |_: &std::path::Path| Some(r#"{"profile":{"info_cache":{"Profile 1":{"name":"Work"}}}}"#.to_string());
-        let e = entries_for(r"C:\B\brave.exe", "Brave", &read);
+        // In the platform's own separators: the browser is known by the exe's name.
+        let (brave, opera) =
+            if cfg!(windows) { (r"C:\B\brave.exe", r"C:\O\opera.exe") } else { ("/B/brave.exe", "/O/opera.exe") };
+        let e = entries_for(brave, "Brave", &read);
         assert_eq!(e.len(), 1);
         assert_eq!(e[0].name, "Brave — Work");
         assert_eq!(split(&e[0].command)[1], "--profile-directory=Profile 1");
-        let plain = entries_for(r"C:\O\opera.exe", "Opera", &|_: &std::path::Path| None);
-        assert_eq!(plain[0].command, r#""C:\O\opera.exe" %1"#);
+        let plain = entries_for(opera, "Opera", &|_: &std::path::Path| None);
+        assert_eq!(plain[0].command, format!("\"{opera}\" %1"));
     }
 }
