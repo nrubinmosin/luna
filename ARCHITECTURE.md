@@ -466,18 +466,24 @@ src-tauri/src/
   past the debt's transcript offset (`replies_since`), not the transcript's last message: a helper's own
   stale wakeup ("nothing changed") ending a later turn must not stand in for the report. The notice quotes
   only the report's first line, about 150 characters on one line (`opening_line`): the answer goes to
-  `<data>/agents/<id>-<ms>.md` — the longest message (the report) first,
+  `<data>/agents/<id>-<ms>-<serial>.md` — the longest message (the report) first,
   then the last, then the rest in order — and the notice gives the count of messages and the path. The
   same notice carries `quota_news`: an account a caller's live helpers run on at 90%, then 95%, of a usage
   window as `account_usage` last showed it, once per level per window; told only once the line has gone in,
-  forgotten when the window resets. `wait_many` (`luna_wait` with `ids`) is one `wait` per id in a thread of
-  its own, each with a `Call` of its own, so owing and collecting stay one wait's; the outer `Call`'s cancel
-  undoes every hand-over. `luna_list` adds `Signs` per row: for a background helper from its event stream
-  (`Observed`, saved in `helpers.json` but for the last event's moment), for a visible one from the activity
-  track and its transcript. Claude Code's turn figure is `model_usage_since_last_result`, since `modelUsage`
-  and `total_cost_usd` run on over a resume; Codex's `turn.completed.usage` is the thread's running total, so
-  its turn is the difference from the total saved with the helper, and its model comes from the rollout's
-  `turn_context`, or for that turn from the `model rerouted` item a reroute leaves in the stream. A
+  forgotten when the window resets, kept in `<data>/quota-told.json` across cores. `wait_many` (`luna_wait`
+  with `ids`) is one `wait` per id in a thread of its own. Those that finish stay owed, in `helpers.json` too,
+  reserved from the notice (`Reserved`) however long the others take; all are handed over together when the
+  response is made, and a cancel crossing it undoes them together, except an answer a later call has delivered
+  since (`receipts`): a core going or a cancel before that leaves the notice to bring them. `luna_list` adds
+  `Signs` per row: for a background helper from its event stream (`Observed`, saved in `helpers.json` but for
+  the last event's moment), for a visible one from the activity track and its transcript. Claude Code's turn
+  figure is `model_usage_since_last_result`, since `modelUsage` and `total_cost_usd` run on over a resume. A
+  turn it gets killed in has no `result` and is not in the next running total, so its messages' usage is added
+  up as they come (`unreported`), tokens with no cost. Codex's `turn.completed.usage` is the thread's running
+  total, so its turn is the difference from where the rollout's total stood as the turn started (a turn killed
+  before is in it), and a turn with no `turn.completed` is read off the rollout when it ends. Its model comes
+  from the rollout's `turn_context`, or for that turn from the `model rerouted` item a reroute leaves in the
+  stream. A
   caller handed a cut quote read the whole answer back anyway, and a long notice reached Claude Code as a
   paste. Typing a notice takes seconds, and the turn it starts may ask again meanwhile: the notifier
   then changes the debt only if it is still the one it announced (same baseline and offset).

@@ -561,6 +561,21 @@ pub fn last_model(path: &Path) -> Option<String> {
         .or_else(|| std::fs::read(path).ok().and_then(|b| model_in(&String::from_utf8_lossy(&b))))
 }
 
+/// The thread's running token totals as a rollout last counted them, the whole
+/// file read only when a turn with much output has pushed them out of the tail.
+pub fn last_total_usage(path: &Path) -> Option<Value> {
+    let total_in = |text: &str| {
+        text.lines().rev().filter(|l| l.contains("\"total_token_usage\"")).find_map(|line| {
+            let v = serde_json::from_str::<Value>(line).ok()?;
+            let total = &v["payload"]["info"]["total_token_usage"];
+            total.is_object().then(|| total.clone())
+        })
+    };
+    tail(path, 128 * 1024)
+        .and_then(|t| total_in(&t))
+        .or_else(|| std::fs::read(path).ok().and_then(|b| total_in(&String::from_utf8_lossy(&b))))
+}
+
 /// Whether a Codex screen shows an approval dialog — a command to run, an edit
 /// to make, a permission to grant. The rollout records none of them, and the
 /// screen does not go quiet under one (the quiet-screen guess below misses
@@ -689,6 +704,8 @@ mod tests {
         let filler = format!("{{\"type\":\"response_item\",\"payload\":\"{}\"}}\n", "x".repeat(200 * 1024));
         std::fs::write(&path, format!("{head}{filler}")).unwrap();
         assert_eq!(last_model(&path).as_deref(), Some("gpt-6.1-sol"), "read from the whole file");
+        let total = crate::background::Usage::of_codex(&last_total_usage(&path).unwrap());
+        assert_eq!(total.output, 10, "so are the totals");
 
         // A reroute stands for its turn; the next turn's context comes after it.
         let rerouted = r#"{"timestamp":"t","type":"event_msg","payload":{"type":"model_reroute","from_model":"gpt-6.1-sol","to_model":"gpt-other","reason":"x"}}"#;
