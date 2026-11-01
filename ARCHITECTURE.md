@@ -432,8 +432,9 @@ src-tauri/src/
   as `chat_names` on every change), `send`, which writes into any of them except its own, and
   `read`/`wait` — also on any except its own (the transcript is on disk anyway, and whoever wrote must
   be able to collect the answer); `kill`/`delete` — descendants only;
-  tool depth 1; at most 8 descendants. Children outlive the parent (orphans with ↳; a child in another folder also stands apart, but with the parent's name
-  in the tooltip); a helper started without a folder works where its caller does, worktree and all
+  tool depth 1; at most 8 descendants. Children outlive the parent (`forget`): each passes to the parent's own parent, which reached it already through
+  that one; with none it is an orphan (`Known::orphan`, saved in `Ties`): no agent has a claim on it, a visible one stays a row with ↳ (a child in another folder also stands apart, but with the parent's name
+  in the tooltip), and a background one is listed under "Helpers with no chat" (`LooseHelpers`, any helper whose line up through helpers ends at no chat row) and joins `auto`, since no row shows it and nobody awaits its answer; a helper started without a folder works where its caller does, worktree and all
   (`agents::caller_worktree`, both providers). Deleting a child via `delete` removes its worktree if asked — `remove -f -f`,
   because Claude Code locks its worktree and a killed one does not release the lock; the worktree is where the
   session actually works (`working_dir`), and the project for the removal is derived from the path
@@ -471,8 +472,33 @@ src-tauri/src/
   paste. Typing a notice takes seconds, and the turn it starts may ask again meanwhile: the notifier
   then changes the debt only if it is still the one it announced (same baseline and offset).
   A turn after which the helper still has processes running waits up to 20 s: they went quiet — "finished",
-  they did not — "left work in the background", and the debt moves to the next turn (Claude Code comes back by itself
-  when the background task ends). The CLI's own resident helpers (`codex-code-mode-host` and its
+  they did not — "NOT done yet", once per debt (`Owed::told_pending`; a question asked since is a new debt). From there
+  on the caller hears of a turn only if no notice started it (`notice_turn`, `real_turn_past`), or of the job's
+  end (`Verdict::JobOver`, 20 s of nothing running and no turn, as its processes come and go between samples and Claude
+  Code may take the end up in a turn of its own; Codex and a finished `claude -p` will not). Turns on notices are
+  skipped over, the cursor staying put, so what they said comes with the next word. This is what ended a night of
+  460 notices an hour: every notice started a turn, every such turn's end re-owed the answer at the new count, and any
+  leftover process made `children_busy` true. A debt that was not told this cannot loop: a notice consumes it.
+  A helper with its own helpers still to answer it (`waits_on_helpers`) is held the same way, and its state reads
+  `background`; a turn on a notice from them counts once it has all their answers, so what it makes of them reaches
+  its caller, and a `wait` or `read` that takes the first answer leaves the rest owed (`shown`).
+  **The breaker.** Past 12 turn-end notices in 15 minutes for one (caller, session) the notifier stops telling that
+  pair (`BREAKER_NOTICES`, `count_notice`, `pair_stopped`): the last notice says so, the log warns, the desktop is told
+  once, and only a person typing into either chat lifts it, as two models answering each other could lift anything else
+  forever. Prompts and questions do not count: they hold until answered, and a busy helper asks many. Real use peaked
+  at 3 per pair in half an hour; the loop ran one a minute.
+  The notifier types on a thread per notice (`TypingInto`, one at a time per session, shared with `luna-held`, which
+  types held sends): `type_text` waits up to 12 s for the turn to start, and one stuck caller delayed every other.
+  A notice a draft holds back is worked out again at each look, so answer files are named by their contents.
+  **A turn that failed.** `failure_of`: a background helper's `error` (its `result`/`turn.failed` event, a
+  non-zero exit, `luna_kill`), Claude Code's last transcript word when it is an `isApiErrorMessage` line, else its
+  `StopFailure` hook, Codex's `task_complete.error` or `turn_aborted` reason in its rollout (`Scan::failed`), and for a
+  pty session its exit code. The notice says "stopped on an error", `wait` has `failed`. `isApiErrorMessage` lines are
+  not messages (`message_of`), so "You've hit your session limit" is no reply. Codex's `exec` says its retries as
+  `error` events too ("Reconnecting... 2/5"), which are not failures. A Claude Code transcript is looked for under the
+  registry's cwd, then in every project folder (`located_transcript`): a session resumed elsewhere writes to the folder
+  it started in. No transcript is not "no reply": the notice and `transcriptMissing` say which.
+  The CLI's own resident helpers (`codex-code-mode-host` and its
   `conhost`) do not count as background work while they do not move (procs.rs, `without_furniture`):
   otherwise every Codex helper was announced "NOT done yet" after a turn. A turn with no answer in the transcript waits up to 5 s for it (Claude
   Code's Stop hook arrives before the last answer lands in the transcript; `wait` waits the same way), and then
@@ -526,8 +552,8 @@ src-tauri/src/
   only turns them into its labels, so the dialog, spawn and `list` say the same thing. `usage` —
   what the frontend shows in the Accounts window, sent as `account_usage` on every change:
   the core does not go to the limits endpoints itself.
-  **autoDelete.** `reap` on every notifier pass: a helper with no debt, no `wait` on it and
-  no turn (or one that exited) for 30 min in a row is deleted as via `delete`, without its worktree; to the log —
+  **autoDelete.** `reap` on every notifier pass: a helper with no debt either way, no `wait` on it, no helper of its
+  own still there, nothing left running and no turn (or one that exited) for 30 min in a row is deleted as via `delete`, without its worktree; to the log —
   `auto-deleted`. Any `read`/`wait`/`send` on it (`shown`) starts the 30 min over, and `list` shows what is left
   (`deletesInMin`). If the person ever typed into it (`typed_ago_ms`), or an agent `kill`ed it, Luna leaves it
   alone. Before any delete of a spawned session `remove` writes a `left` line to `agents.jsonl` — transcript
@@ -565,7 +591,8 @@ src-tauri/src/
   thread id the first turn printed — with the prompt on stdin (no command-line limit) and stdout
   parsed into a log of what it did (`luna_read(screen)` shows that in place of a screen); the
   conversation lands in the CLI's own transcript / rollout as with any session. Busy is the process
-  running; `send` during a turn queues the text for the next, and a turn about to start takes the
+  running; between turns `children_busy` is what the turn left in the helper's job (`procs::left_running`, read
+  as the turn ends and at each activity sample, as it takes a process snapshot); `send` during a turn queues the text for the next, and a turn about to start takes the
   helper's run under the same lock that found it free (`claim`), so text arriving before the process
   is up queues rather than starting a second one. A stop (`kill`, `stop_turns`) that finds a turn
   claimed but with no process yet marks the run `stopped`: `spawn_turn` does not start it, or kills
@@ -577,13 +604,15 @@ src-tauri/src/
   MCP server, if only for `--permission-prompt-tool mcp__luna__luna_permission` (hidden from its
   model by `--disallowedTools`): its permission prompts and `AskUserQuestion` arrive as that call,
   held on a Condvar until `luna_answer` (allow / deny with the input back, or `answers` by question
-  text) or the turn's end. Codex's `exec` asks nobody (approval never) and puts a question in its
-  reply — or, with `approval: auto-review`, runs `--approve-for-me`, and a reviewer model answers. Helpers are auto-deleted unless spawned with `autoDelete: false`. `send` with `interrupt` takes the
-  queue, kills the turn's process tree, waits for its reader to count the turn over, and starts the next
-  turn on queue + text (`background::interrupt`); in a terminal it is Esc, up to 3 s for the turn to read as
+  text) or the turn's end; several at once (parallel subagents) queue, and the oldest unanswered is the one shown. Codex's `exec` asks nobody (approval never) and puts a question in its
+  reply — or, with `approval: auto-review`, runs `--approve-for-me`, and a reviewer model answers. Helpers are auto-deleted unless spawned with `autoDelete: false`. `send` with `interrupt` puts the
+  text behind the queue, kills the turn's process tree, and waits for its reader to count the turn over, whose end
+  starts the next turn on the queue as with any other (`background::interrupt`), so no one's text hangs on how the kill
+  goes: a turn that will not stop, or has no process yet to stop within 3 s, has it all behind it, and the
+  result says `queued`; in a terminal it is Esc, up to 3 s for the turn to read as
   over, and the text typed as a prompt of its own. A spawn with `worktree: true` waits up to 20 s for the
   CLI to say where it made it (Claude Code's `init` event, Codex's rollout) and returns `worktree` and
-  `branch`, which `list` carries for every helper too. The window gets their list as `agent://background` (the
+  `branch`, which `list` carries for every helper too, or `worktreePending` if the CLI has not said by then. The window gets their list as `agent://background` (the
   count on the parent row) and can hand one to a chat row between turns (`background_promote` →
   `agent://promote`: same id, the session id to resume). Helpers outlive the core: every 2 s, and as
   the core leaves (`stop_all`), the registry goes to `<data>/helpers.json` when it has changed — the
@@ -608,8 +637,8 @@ src-tauri/src/
   is Enter (Codex: `y`) or Esc, a note typed after it; an async Codex question is answered by a
   message. `keys` takes `{enter}`, `{down}`… for any other dialog. `send` into a session on a
   blocking dialog refuses and points to `luna_answer`. A prompt or message past 8,000 characters
-  goes to a visible session as a file under `<data>/agents/` (a Claude Code helper gets it as an
-  `--add-dir`), swept after a week.
+  goes to a visible session as a file under `<data>/agents/` (every Claude Code session with Luna's tools or an agent
+  above it gets it as an `--add-dir`, as a notice's answer file is there too; Codex's sandboxes read anywhere), swept after a week.
   To test a build without a second Luna as the parent: `LUNA_DEV_TOKEN` (+ `LUNA_DEV_FOLDER`,
   `LUNA_DEV_ACCOUNT`) registers a caller `dev` with that bearer token; its spawns are
   top-level chats. `test-build.ps1 -Run -DevCaller` sets them itself.

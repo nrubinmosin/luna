@@ -8,8 +8,8 @@ can start other sessions and work with them.
 - Every chat in Luna is a session: the user's own chats and the helpers sessions start. Each
   has an id, a name, a provider (`claude` = Claude Code, `codex` = Codex), an account, a
   project folder and a state: `working`, `waiting` (a permission prompt), `question`,
-  `idle`, `starting` (its CLI has not drawn yet), `background` (a job of its still runs),
-  `exited`.
+  `idle`, `starting` (its CLI has not drawn yet), `background` (a job or helper of its still
+  runs), `exited`.
 - A helper is **background** by default: no row, no terminal; each turn is one run of the
   CLI's headless mode (`claude -p --output-format stream-json`, `codex exec --json`) on the
   helper's account, with the CLI Luna keeps for it, and the next turn resumes its
@@ -20,7 +20,8 @@ can start other sessions and work with them.
   session in Luna, the user's chats included, with its window group (I = 1). Window groups
   are how the user arranges chats; `group: "mine"` is yours.
 - You kill and delete only sessions you spawned and theirs. Any other session you can read,
-  wait on and send text to.
+  wait on and send text to. A deleted parent's helper passes to its parent; with none, only
+  the user can stop or delete it, and a background one goes once idle for 30 min.
 - At most eight helpers under one chat. A helper given `tools: true` gets these tools too,
   but its own helpers get none.
 
@@ -58,8 +59,8 @@ can start other sessions and work with them.
   one in a folder Codex does not trust yet has Luna trust it for that account.
 - `folder` runs it in another project. `worktree: true` gives it its own git worktree and
   branch, so it does not share files and git with the sessions in that folder; the result
-  names the worktree and branch. `sameFolder` in the result lists live sessions working in
-  the same directory.
+  names the worktree and branch, or `worktreePending` until the CLI has made it. `sameFolder`
+  in the result lists live sessions working in the same directory.
 - `name` is its name in Luna.
 - The result: `id`, the resolved `settings`, `started`, `starting` (the CLI has not drawn
   yet; the prompt is held, do not resend), `warnings`, `turnsEnded`. For a background
@@ -76,15 +77,20 @@ can start other sessions and work with them.
   session wrote since it was asked, and names a file holding them: the report (the longest
   message) first, then the last message, then the rest in order. The notice quotes none of it.
   The notice is delivered when your chat is between turns and the user is not typing in it.
+- "NOT done yet": a job it started still runs, or its own helpers have yet to answer it. Said
+  once; the next notice comes when that is over or a turn of its own ends, not one it only ran
+  on a Luna notice, unless that was its own helper's last answer.
+- Past 12 turn-end notices about one session in 15 minutes Luna stops telling you (the last
+  says so) until a person types into either chat; `luna_wait` and `luna_read` still work.
 - `luna_wait` blocks until a session ends a turn, stops on a question or permission
   (`until: "waiting"`), or exits (`until: "exit"`); up to 30 min (`timeoutS`, default 600).
   Use it when you need the answer within the same turn. `outcome` says which: `turn_done`,
   `waiting`, `exit`, `job_done` or `timeout`. On `turn_done` (and an `exit` after such a
   turn), `reply` holds all the session said since you asked, the report first, as the
-  notice's file has it. `failed` is set when the turn stopped on an error (an API error, a
-  usage limit, a crash, a kill) and says which: `reply` is then what it said before that,
-  null if nothing, and `screen` comes too. A null `reply` with no `failed` means it said
-  nothing, unless `transcriptMissing` says Luna could not find its transcript to look. A
+  notice's file has it. `failed` names the error a turn stopped on (API error, usage limit,
+  crash, kill), as the notice does: `reply` is what it said before that, if anything, and
+  `screen` comes too. `transcriptMissing`: no transcript found, so a null `reply` says
+  nothing. `job_done`: told it is not done, what it had running ended with no turn. A
   background helper does not exit between turns: `until: "exit"` returns once it is deleted.
 - A `luna_wait` still running when the answer comes hands it over instead of the notice;
   one your CLI moves to the background still returns, with no notice besides. One you
@@ -117,13 +123,14 @@ can start other sessions and work with them.
 - A visible Codex that stops on a list of its own — "Hooks need review" at startup, say —
   has it as a question too; its options are the only answers it takes. A spawn that did not
   start because of one returns it as `ask`.
-- A background Claude Code helper's questions and permission prompts come to you this way.
-  A background Codex helper cannot ask; what it would have asked is in its reply.
+- A background Claude Code helper's questions and permission prompts come to you this way, one
+  at a time. A background Codex helper cannot ask; what it would have asked is in its reply.
 - `luna_send` types text into a session as its next prompt. Sent while it works, the text
   is `queued`: a visible session's CLI takes it into the running turn or the next, a
   background helper always the next; `luna_wait` with the `turnsEnded` returned waits for
   whichever answers it. `interrupt: true` stops the current turn first and makes the text
-  the next one. The result already says how it went — `started` (a turn began on it),
+  the next one, behind any queued (`queued` if that turn would not stop).
+  The result already says how it went — `started` (a turn began on it),
   `queued`, or why not — so there is no need to `luna_read` the session to check that the
   text arrived. It reads as the user's words, so name yourself to a session you did not
   spawn. Where the user is typing, or has left an unsent draft Luna cannot put aside
@@ -136,18 +143,12 @@ can start other sessions and work with them.
   running, and text cannot reach it until the user resumes it. `luna_delete` removes it;
   `dropWorktree: true` also removes the worktree and branch Luna made for it, unless
   another session works in it.
-- `autoDelete`: Luna deletes the helper 30 minutes after its answer reached you; a read or
-  a send in between starts the 30 minutes over (`deletesInMin` in `luna_list` counts
-  down). The worktree stays. On for background helpers unless `autoDelete: false`, off for
+- `autoDelete`: Luna deletes the helper 30 minutes after its answer reached you, not while a
+  job or helper of its runs; a read or a send in between starts the 30 minutes over
+  (`deletesInMin` in `luna_list` counts down). The worktree stays. On for background helpers unless `autoDelete: false`, off for
   visible ones unless `true`. A helper the user typed into, or one you killed, is never
   auto-deleted.
-- `luna_notify` shows the user a desktop notification titled with your chat; a click opens
-  it. Keep it for what the user must see now — a result, a blocker — not progress. One per
-  10 s. A turn that ends on a question already notifies.
 - `luna_sessions` with `history: true` lists past spawns, deleted ones included: when, by
   whom, where, account, settings, the start of the prompt, how it ended, its transcript path
   and the start of its last message (`q` also searches prompts).
-- Ids in these tools are Luna's session ids, from `luna_spawn`, `luna_list` or
-  `luna_sessions`. Your CLI's own task, shell and subagent ids are not; a subagent of yours
-  that calls these tools acts as you. `luna_wait` is no timer.
 - Every helper costs its account's quota; several at once cost it in parallel.
