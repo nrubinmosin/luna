@@ -369,10 +369,13 @@ background helper spawned without tools.
   what ignores them (ssh, raw sockets) still connects: that keeps tools off the network by
   accident, not data in. `read-only-net` is Luna's own value: Codex's read-only with the
   network on, as a permission profile passed for the run and never written to the account's
-  `config.toml`; `auto-review` cannot use it, being `workspace-write` only. On Windows, TLS
-  through schannel (the built-in `curl`, `git` over https, `Invoke-WebRequest`) fails under the
-  sandbox's token, and so does Git's bundled ssh; `gh`, Python and plain http work, and so do
-  `git -c http.sslBackend=openssl` and `GIT_SSH` set to Windows' own `ssh.exe`.
+  `config.toml`; the profile's name is new on every start, so no config can have rules waiting
+  for it. `auto-review` cannot use it, being `workspace-write` only. On Windows, TLS through
+  schannel (the built-in `curl`, `Invoke-WebRequest`) fails under the sandbox's token, and so
+  does Git's bundled ssh; `gh`, Python and plain http work. So does git over https, because
+  Luna adds `http.sslBackend=openssl` to `GIT_CONFIG_*` there, after any you set and unless you
+  chose a backend that way, so it trusts Git's CA bundle rather than Windows' certificate store.
+  For git over ssh set `GIT_SSH` to Windows' own `ssh.exe`.
 - `luna_spawn` can make a checker: `readOnly: true` takes Edit, Write and NotebookEdit from
   Claude Code, whose Bash can still write, and puts Codex in `read-only`, or in
   `read-only-net` if asked. `agent: "<name>"` runs Claude Code as an agent the project or
@@ -381,9 +384,10 @@ background helper spawned without tools.
   with every usage window under 95%, else the one with the most room. The result's
   `accountChoice` says which it took and why it skipped the others.
 - Every session gets its own id as `LUNA_SESSION_ID`, and a helper its parent's as
-  `LUNA_PARENT_ID`. A helper's system prompt also says what it is
-  (`--append-system-prompt`, or Codex's `developer_instructions` added to whatever its
-  config already says there).
+  `LUNA_PARENT_ID`. A Claude Code helper's system prompt also says what it is
+  (`--append-system-prompt`). Codex can only replace `developer_instructions`, which would
+  drop what its config says there, so a Codex helper's opening prompt ends with a note from
+  Luna instead: a prompt that opens with a slash command goes without it, and compaction can lose it.
 - An agent kills and deletes only sessions it spawned (and theirs). It can see every other
   one, yours included, with `luna_sessions` — name, window group, account and its folder,
   project folder, cwd, the CLI's session id and transcript path — type a message into any

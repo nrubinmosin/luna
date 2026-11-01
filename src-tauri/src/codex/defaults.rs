@@ -148,18 +148,6 @@ fn read(account_path: &str, folder: &str) -> Said {
     out
 }
 
-/// The `developer_instructions` a session here would run with: the project's
-/// where its config loads, else the account's. Codex takes the one, not both.
-/// `run_trusted`: the run is trusted whatever the account says about the folder.
-pub fn developer_instructions(account_path: &str, folder: &str, run_trusted: bool) -> Option<String> {
-    const KEY: &str = "developer_instructions";
-    let trusted = run_trusted || super::trust::codex_folder_trusted(account_path.to_owned(), folder.to_owned()).unwrap_or(false);
-    let project = (trusted && !folder.is_empty())
-        .then(|| config::string_at(&config::read_or_empty(&Path::new(folder).join(".codex").join("config.toml")), KEY))
-        .flatten();
-    project.or_else(|| config::string_at(&config::read_or_empty(&config::account_file(account_path).ok()?), KEY))
-}
-
 /// The same as the flags a helper would be spawned with, for `luna_list` —
 /// off the model list as far as it is known without asking the CLI.
 pub fn flags(account_path: &str, folder: &str) -> serde_json::Value {
@@ -208,20 +196,6 @@ mod tests {
         assert_eq!(d.approval.value, "never");
         assert_eq!(d.sandbox.source, "account");
 
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn developer_instructions_are_the_projects_once_its_config_loads() {
-        let root = std::env::temp_dir().join(format!("luna-codex-developer-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        let (account, folder) = (root.join("account"), root.join("project"));
-        let (acc, dir) = (account.to_string_lossy().into_owned(), folder.to_string_lossy().into_owned());
-        assert_eq!(developer_instructions(&acc, &dir, true), None);
-        write(&account.join("config.toml"), "developer_instructions = \"from the account\"\n");
-        write(&folder.join(".codex").join("config.toml"), "developer_instructions = \"from the project\"\n");
-        assert_eq!(developer_instructions(&acc, &dir, false).as_deref(), Some("from the account"), "not trusted: its config stays out");
-        assert_eq!(developer_instructions(&acc, &dir, true).as_deref(), Some("from the project"));
         let _ = std::fs::remove_dir_all(&root);
     }
 
