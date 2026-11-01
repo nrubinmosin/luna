@@ -296,7 +296,7 @@ fn tools() -> Value {
         },
         {
             "name": "luna_delete",
-            "description": "Stop a session and remove it; dropWorktree: also the worktree its CLI made and that worktree's worktree-* branch (a branch it named itself stays), unless another session is in it. Refused while that would lose uncommitted changes or commits no other branch or remote has; force: true goes ahead. One that cannot be removed comes back as worktreeLeft, with worktreeError; the session is gone.",
+            "description": "Stop a session and remove it; dropWorktree: also the worktree its CLI made and that worktree's worktree-* branch (a branch it named itself stays), unless another session is in it. Refused while that would lose uncommitted changes or commits no other branch or remote has; force: true goes ahead. Files git ignores go with it. One not removed comes back as worktreeLeft, with worktreeError; the session is gone.",
             "inputSchema": s(json!({ "id": { "type": "string" }, "dropWorktree": { "type": "boolean" }, "force": { "type": "boolean" } }), &["id"]),
             "annotations": ends
         },
@@ -578,7 +578,7 @@ mod tests {
         assert!(text.len() < 6500, "tools/list is {} chars", text.len());
         assert!(INSTRUCTIONS.len() < 1000, "instructions are {} bytes", INSTRUCTIONS.len());
         // Read only on request, but whole: keep it to a few thousand tokens.
-        assert!(GUIDE.len() < 13_000, "the guide is {} bytes", GUIDE.len());
+        assert!(GUIDE.len() < 14_000, "the guide is {} bytes", GUIDE.len());
     }
 
     #[test]

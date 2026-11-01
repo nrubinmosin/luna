@@ -649,7 +649,12 @@ src-tauri/src/
   and counts the commits that would go for good (`commits_lost`): those HEAD or a `worktree-*` branch
   going with it reach, and no branch that stays and no remote does. That covers a detached HEAD, and a
   throwaway branch left behind by a switch; a branch the session named itself stays, so its commits do
-  not count. It refuses with a short list; `force` skips that. A checkout git cannot read counts as work.
+  not count. A checkout removed by hand still has its branch asked about, from the repository, and what
+  git cannot tell counts as work. `status` is told not to hide submodules; files git ignores do not stop a
+  delete (build output would stop every one), and the refusal and the result say they go with it. It
+  refuses with a short list; `force` skips that. Clean at that look, the session is stopped and what it
+  left ended (`stop_for_good`), then it looks again: what came up meanwhile keeps the worktree
+  (`worktreeLeft`), the session going all the same.
   The session goes before its worktree, since its process holds the files: a removal that still fails is
   not an error (a retry would find no session) but `worktreeLeft` and `worktreeError` in the result. The
   log says which branches were deleted and which kept. The window's Delete and `reap` (which never drops
