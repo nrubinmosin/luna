@@ -64,6 +64,20 @@ fn context_in(text: &str) -> Option<ContextRead> {
     None
 }
 
+/// The model of the last answer in a transcript's tail: the id the CLI really
+/// used, whatever alias it was started on. The CLI's own stand-in for a
+/// message no model wrote reads `<synthetic>`.
+pub fn last_model(path: &Path) -> Option<String> {
+    let text = crate::pty::tail(path, 128 * 1024)?;
+    text.lines().rev().filter(|l| l.contains("\"model\"")).find_map(|line| {
+        let v = serde_json::from_str::<serde_json::Value>(line).ok()?;
+        if v["isSidechain"].as_bool().unwrap_or(false) {
+            return None;
+        }
+        v["message"]["model"].as_str().filter(|m| !m.starts_with('<')).map(str::to_owned)
+    })
+}
+
 /// The titles the CLI keeps in the transcript. Both are re-appended with the
 /// session's other metadata as the transcript grows, so the last of each is
 /// the current one and sits near the end.
@@ -365,6 +379,25 @@ fn registry_entry(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_model_is_the_main_loop_s_last() {
+        let path = std::env::temp_dir().join(format!("luna-last-model-{}.jsonl", std::process::id()));
+        std::fs::write(
+            &path,
+            concat!(
+                r#"{"type":"assistant","message":{"model":"claude-opus-5-5","content":[]}}"#, "\n",
+                r#"{"type":"assistant","message":{"model":"claude-haiku-5-5","content":[]}}"#, "\n",
+                r#"{"type":"assistant","isSidechain":true,"message":{"model":"claude-sonnet-5-5","content":[]}}"#, "\n",
+                r#"{"type":"assistant","message":{"model":"<synthetic>","content":[]}}"#, "\n",
+                r#"{"type":"user","message":{"content":"the word \"model\" in passing"}}"#, "\n",
+            ),
+        )
+        .unwrap();
+        assert_eq!(last_model(&path).as_deref(), Some("claude-haiku-5-5"));
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(last_model(&path), None, "no file");
+    }
 
     #[test]
     fn a_turn_that_ended_on_a_usage_limit() {

@@ -506,6 +506,8 @@ pub struct Tail {
     pub context_window: Option<f64>,
     /// The last `rate_limits` snapshot and the timestamp of its line.
     pub rate_limits: Option<(Value, String)>,
+    /// The thread's running token totals (`total_token_usage`).
+    pub total_usage: Option<Value>,
 }
 
 pub fn read_tail(path: &Path) -> Tail {
@@ -531,6 +533,9 @@ pub fn read_tail(path: &Path) -> Tail {
                     if out.context_tokens.is_none() {
                         let info = &payload["info"];
                         if info.is_object() {
+                            if out.total_usage.is_none() && info["total_token_usage"].is_object() {
+                                out.total_usage = Some(info["total_token_usage"].clone());
+                            }
                             let last = &info["last_token_usage"];
                             let total = last["total_tokens"].as_f64().unwrap_or(0.0);
                             let reasoning = last["reasoning_output_tokens"].as_f64().unwrap_or(0.0);
@@ -557,6 +562,37 @@ pub fn read_tail(path: &Path) -> Tail {
         }
     }
     out
+}
+
+/// The model a rollout's last turn ran on: what a `model_reroute` moved it to,
+/// else what its `turn_context` names. A turn with much output pushes those
+/// lines out of the tail; the whole file is read only then.
+pub fn last_model(path: &Path) -> Option<String> {
+    let model_in = |text: &str| {
+        text.lines().rev().filter(|l| l.contains("\"turn_context\"") || l.contains("\"model_reroute\"")).find_map(|line| {
+            let v = serde_json::from_str::<Value>(line).ok()?;
+            let payload = &v["payload"];
+            payload["to_model"].as_str().or(payload["model"].as_str()).map(str::to_owned)
+        })
+    };
+    tail(path, 128 * 1024)
+        .and_then(|t| model_in(&t))
+        .or_else(|| std::fs::read(path).ok().and_then(|b| model_in(&String::from_utf8_lossy(&b))))
+}
+
+/// The thread's running token totals as a rollout last counted them, the whole
+/// file read only when a turn with much output has pushed them out of the tail.
+pub fn last_total_usage(path: &Path) -> Option<Value> {
+    let total_in = |text: &str| {
+        text.lines().rev().filter(|l| l.contains("\"total_token_usage\"")).find_map(|line| {
+            let v = serde_json::from_str::<Value>(line).ok()?;
+            let total = &v["payload"]["info"]["total_token_usage"];
+            total.is_object().then(|| total.clone())
+        })
+    };
+    tail(path, 128 * 1024)
+        .and_then(|t| total_in(&t))
+        .or_else(|| std::fs::read(path).ok().and_then(|b| total_in(&String::from_utf8_lossy(&b))))
 }
 
 /// Whether a Codex screen shows an approval dialog — a command to run, an edit
@@ -663,6 +699,41 @@ pub fn latest_rate_limits(account_path: &str) -> Option<(Value, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_rollout_names_its_model_and_running_totals() {
+        let path = std::env::temp_dir().join(format!("luna-rollout-model-{}.jsonl", std::process::id()));
+        // As `codex exec` 0.166.0 wrote them, cut to the fields read here. The
+        // last `token_count` is the one that counts; a later one with no
+        // `info` (rate limits alone) changes nothing.
+        let head = concat!(
+            r#"{"timestamp":"t","type":"turn_context","payload":{"model":"gpt-6.1-sol","effort":"low"}}"#, "\n",
+            r#"{"timestamp":"t","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":15515,"cached_input_tokens":12416,"output_tokens":5},"last_token_usage":{"total_tokens":15520}}}}"#, "\n",
+            r#"{"timestamp":"t","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":32377,"cached_input_tokens":27776,"output_tokens":10},"last_token_usage":{"total_tokens":16867}}}}"#, "\n",
+            r#"{"timestamp":"t","type":"event_msg","payload":{"type":"token_count","info":null,"rate_limits":{"primary":null}}}"#, "\n",
+        );
+        std::fs::write(&path, head).unwrap();
+        assert_eq!(last_model(&path).as_deref(), Some("gpt-6.1-sol"));
+        let tail = read_tail(&path);
+        assert_eq!(tail.model.as_deref(), Some("gpt-6.1-sol"));
+        let total = crate::background::Usage::of_codex(&tail.total_usage.unwrap());
+        assert_eq!((total.input, total.cache_read, total.output), (4601, 27776, 10));
+
+        // A turn whose output pushed the line out of the tail.
+        let filler = format!("{{\"type\":\"response_item\",\"payload\":\"{}\"}}\n", "x".repeat(200 * 1024));
+        std::fs::write(&path, format!("{head}{filler}")).unwrap();
+        assert_eq!(last_model(&path).as_deref(), Some("gpt-6.1-sol"), "read from the whole file");
+        let total = crate::background::Usage::of_codex(&last_total_usage(&path).unwrap());
+        assert_eq!(total.output, 10, "so are the totals");
+
+        // A reroute stands for its turn; the next turn's context comes after it.
+        let rerouted = r#"{"timestamp":"t","type":"event_msg","payload":{"type":"model_reroute","from_model":"gpt-6.1-sol","to_model":"gpt-other","reason":"x"}}"#;
+        std::fs::write(&path, format!("{head}{rerouted}\n")).unwrap();
+        assert_eq!(last_model(&path).as_deref(), Some("gpt-other"));
+        std::fs::write(&path, format!("{head}{rerouted}\n{}\n", r#"{"timestamp":"t","type":"turn_context","payload":{"model":"gpt-6.1-sol"}}"#)).unwrap();
+        assert_eq!(last_model(&path).as_deref(), Some("gpt-6.1-sol"));
+        let _ = std::fs::remove_file(&path);
+    }
 
     #[test]
     fn parses_rollout_names() {

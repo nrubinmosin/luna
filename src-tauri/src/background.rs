@@ -60,6 +60,217 @@ pub struct Spec {
     pub token: Option<String>,
 }
 
+/// Tokens and cost of a stretch of a helper's work, as `luna_list` gives them.
+/// `input` is what no cache served, on both CLIs: Claude Code counts it so,
+/// Codex's own `input_tokens` has the cached ones in it.
+#[derive(Clone, Copy, Default, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Usage {
+    pub input: u64,
+    pub output: u64,
+    pub cache_read: u64,
+    pub cache_write: u64,
+    /// Claude Code's estimate; Codex states no cost.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
+}
+
+/// Floats summed turn after turn, without their noise.
+fn usd(x: f64) -> f64 {
+    (x * 1e8).round() / 1e8
+}
+
+impl Usage {
+    fn plus(self, o: Usage) -> Usage {
+        Usage {
+            input: self.input.saturating_add(o.input),
+            output: self.output.saturating_add(o.output),
+            cache_read: self.cache_read.saturating_add(o.cache_read),
+            cache_write: self.cache_write.saturating_add(o.cache_write),
+            cost_usd: match (self.cost_usd, o.cost_usd) {
+                (None, None) => None,
+                (a, b) => Some(usd(a.unwrap_or(0.0) + b.unwrap_or(0.0))),
+            },
+        }
+    }
+
+    /// What `self` has on top of `o`, field by field.
+    fn since(self, o: Usage) -> Usage {
+        Usage {
+            input: self.input.saturating_sub(o.input),
+            output: self.output.saturating_sub(o.output),
+            cache_read: self.cache_read.saturating_sub(o.cache_read),
+            cache_write: self.cache_write.saturating_sub(o.cache_write),
+            cost_usd: None,
+        }
+    }
+
+    /// The larger of the two, field by field.
+    fn at_least(self, o: Usage) -> Usage {
+        Usage {
+            input: self.input.max(o.input),
+            output: self.output.max(o.output),
+            cache_read: self.cache_read.max(o.cache_read),
+            cache_write: self.cache_write.max(o.cache_write),
+            cost_usd: match (self.cost_usd, o.cost_usd) {
+                (Some(a), Some(b)) => Some(a.max(b)),
+                (a, b) => a.or(b),
+            },
+        }
+    }
+
+    /// Claude Code's usage object, on a message or a `result`.
+    fn of_claude(u: &Value) -> Usage {
+        let n = |k: &str| u[k].as_u64().unwrap_or(0);
+        Usage {
+            input: n("input_tokens"),
+            output: n("output_tokens"),
+            cache_read: n("cache_read_input_tokens"),
+            cache_write: n("cache_creation_input_tokens"),
+            cost_usd: None,
+        }
+    }
+
+    /// Claude Code's per-model figures (`modelUsage` and its kin), all models
+    /// together. None when the event does not have the field.
+    fn of_claude_models(models: &Value) -> Option<Usage> {
+        let n = |m: &Value, k: &str| m[k].as_u64().unwrap_or(0);
+        Some(models.as_object()?.values().fold(Usage::default(), |sum, m| {
+            sum.plus(Usage {
+                input: n(m, "inputTokens"),
+                output: n(m, "outputTokens"),
+                cache_read: n(m, "cacheReadInputTokens"),
+                cache_write: n(m, "cacheCreationInputTokens"),
+                cost_usd: m["costUSD"].as_f64(),
+            })
+        }))
+    }
+
+    /// Codex's usage object, which `exec --json` and the rollout share.
+    pub fn of_codex(u: &Value) -> Usage {
+        let n = |k: &str| u[k].as_u64().unwrap_or(0);
+        Usage {
+            input: n("input_tokens").saturating_sub(n("cached_input_tokens")),
+            output: n("output_tokens"),
+            cache_read: n("cached_input_tokens"),
+            cache_write: n("cache_write_input_tokens"),
+            cost_usd: None,
+        }
+    }
+}
+
+/// What a session has spent, for `luna_list`.
+#[derive(Clone, Copy, Default, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Spend {
+    /// The last turn that stated any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_turn: Option<Usage>,
+    pub session: Usage,
+}
+
+/// What a session's own events and files show beyond its state, as `luna_list`
+/// gives it: each row carries one of these whatever runs the session.
+#[derive(Serialize, Default, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Signs {
+    /// When the turn on now began; null between turns.
+    pub turn_started_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_activity_at: Option<String>,
+    /// The full model id the CLI used, whatever alias it was given.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolved_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spend: Option<Spend>,
+}
+
+/// An instant as the rest of `luna_list` writes one.
+pub fn iso(ms: u64) -> Option<String> {
+    let t = chrono::DateTime::<chrono::Utc>::from_timestamp((ms / 1000) as i64, 0)?;
+    Some(t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+}
+
+/// What a helper's turns have shown of it. All but the last event's moment
+/// is saved with it: spend must outlive a core, and a moment rewritten with
+/// every event would rewrite the file every SAVE_EVERY of every turn.
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct Observed {
+    spend: Spend,
+    model: Option<String>,
+    /// When its last turn ended: the last it did, for a core started since.
+    turn_ended_ms: u64,
+    /// Claude Code: what the turn on now has shown on its messages. A `result`
+    /// takes its place, and a turn killed first has none: the CLI states it
+    /// nowhere, even in the running totals of the next one.
+    unreported: Usage,
+    /// When it last printed anything.
+    #[serde(skip)]
+    event_ms: u64,
+    /// Codex has said this turn runs on another model than it asked for.
+    #[serde(skip)]
+    rerouted: bool,
+    /// `unreported` by message: the CLI writes a message once per block, with
+    /// the same usage on each.
+    #[serde(skip)]
+    by_message: HashMap<String, Usage>,
+    /// Codex: where the thread's running total stood as this turn started, if
+    /// that could be told. It counts what a turn killed before it had spent.
+    #[serde(skip)]
+    turn_base: Option<Usage>,
+    /// Codex: `turn.completed` has stated this turn.
+    #[serde(skip)]
+    turn_stated: bool,
+    /// Which turn this is, for what is read of the last one once it is over.
+    #[serde(skip)]
+    generation: u64,
+}
+
+impl Observed {
+    /// A turn's process is up.
+    fn begin_turn(&mut self, base: Option<Usage>) {
+        self.generation += 1;
+        self.rerouted = false;
+        self.turn_stated = false;
+        self.by_message.clear();
+        self.turn_base = base;
+        // What a turn killed before it spent, now that it is known.
+        if let Some(base) = base {
+            self.spend.session = self.spend.session.at_least(base);
+        }
+    }
+
+    /// A Claude Code turn has gone without a `result`: what its messages showed
+    /// is all there will be of it, tokens with no cost.
+    fn settle_unreported(&mut self) {
+        self.by_message.clear();
+        let seen = std::mem::take(&mut self.unreported);
+        if seen != Usage::default() {
+            self.spend = Spend { last_turn: Some(seen), session: self.spend.session.plus(seen) };
+        }
+    }
+
+    /// What the rollout said of a Codex turn once it was over, unless another
+    /// has begun since: its model, and for a turn gone with no `turn.completed`
+    /// the running total, which holds what it spent up to then.
+    fn apply_rollout(&mut self, generation: u64, model: Option<String>, total: Option<Usage>) {
+        if self.generation != generation {
+            return;
+        }
+        if model.is_some() {
+            self.model = model;
+        }
+        let Some(total) = total else { return };
+        self.spend.session = self.spend.session.at_least(total);
+        match self.turn_base {
+            Some(base) if total.since(base) != Usage::default() => self.spend.last_turn = Some(total.since(base)),
+            Some(_) => {}
+            None => self.spend.last_turn = None,
+        }
+    }
+}
+
 struct Run {
     pid: Option<u32>,
     /// When the turn started, for the window's "working 4 min".
@@ -110,6 +321,7 @@ struct Entry {
     /// a process snapshot, too much for every `turn_state`, and not under the
     /// registry lock.
     left_running: bool,
+    observed: Observed,
 }
 
 struct Registry {
@@ -272,6 +484,7 @@ pub fn start(id: &str, spec: Spec, prompt: &str) -> Result<(), String> {
         cut_short: false,
         job: None,
         left_running: false,
+        observed: Observed::default(),
     };
     claim(&mut e);
     lock().entries.insert(id.to_string(), e);
@@ -510,6 +723,7 @@ fn take_event(id: &str, provider: Provider, reader: &OutReader, v: &Value) -> bo
         return true;
     }
     let Some(e) = r.entries.get_mut(id) else { return false };
+    e.observed.event_ms = crate::throttle::now_ms();
     match provider {
         Provider::Claude => on_claude_event(e, v),
         Provider::Codex => on_codex_event(e, v),
@@ -517,7 +731,27 @@ fn take_event(id: &str, provider: Provider, reader: &OutReader, v: &Value) -> bo
     true
 }
 
+/// Where Codex's running total stands as a turn starts, off the rollout: the
+/// total saved when the last turn ended misses whatever a turn killed since
+/// spent, which the rollout has and the next `turn.completed` will include.
+/// None when that cannot be told, or for Claude Code.
+fn turn_base(id: &str) -> Option<Usage> {
+    let (account, thread) = {
+        let r = lock();
+        let e = r.entries.get(id)?;
+        if e.spec.provider != Provider::Codex {
+            return None;
+        }
+        let Some(thread) = e.session.clone() else { return Some(Usage::default()) };
+        (e.spec.account_path.clone(), thread)
+    };
+    let path = crate::codex::session::rollout_of_thread(&account, &thread)?;
+    // A rollout with no count yet: its thread has spent nothing.
+    Some(crate::codex::session::last_total_usage(&path).map_or(Usage::default(), |u| Usage::of_codex(&u)))
+}
+
 fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
+    let base = turn_base(id);
     let (args, dir, envs, provider) = {
         let r = lock();
         if r.closed {
@@ -626,6 +860,7 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
                     continue;
                 }
                 if let Some(e) = lock().entries.get_mut(&id) {
+                    e.observed.event_ms = crate::throttle::now_ms();
                     note(e, &format!("stderr: {}", one_line(line)));
                 }
             }
@@ -646,6 +881,7 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
             Some(e) if e.run.as_ref().is_some_and(|run| run.stopped) => Some(STOPPED),
             Some(e) => {
                 e.run = Some(Run { pid, started_ms: crate::throttle::now_ms(), stopped: false });
+                e.observed.begin_turn(base);
                 e.error = None;
                 e.cut_short = false;
                 note(e, &format!("› {}", one_line(prompt)));
@@ -676,12 +912,21 @@ fn abandon(mut child: std::process::Child, pid: Option<u32>) {
 }
 
 fn on_claude_event(e: &mut Entry, v: &Value) {
+    if v["type"] == "assistant" {
+        claude_message_usage(&mut e.observed, &v["message"]);
+    }
     match (v["type"].as_str(), v["subtype"].as_str()) {
         (Some("system"), Some("init")) => {
             e.session = v["session_id"].as_str().map(str::to_owned).or(e.session.take());
             e.cwd = v["cwd"].as_str().map(str::to_owned).or(e.cwd.take());
+            e.observed.model = v["model"].as_str().map(str::to_owned).or(e.observed.model.take());
         }
         (Some("assistant"), _) if v["parent_tool_use_id"].is_null() => {
+            // A fallback mid-turn shows here, not in `init`. The CLI's own
+            // stand-in for a message no model wrote reads `<synthetic>`.
+            if let Some(m) = v["message"]["model"].as_str().filter(|m| !m.starts_with('<')) {
+                e.observed.model = Some(m.to_string());
+            }
             for b in v["message"]["content"].as_array().into_iter().flatten() {
                 match b["type"].as_str() {
                     Some("text") => note(e, &format!("said: {}", one_line(b["text"].as_str().unwrap_or("")))),
@@ -694,6 +939,7 @@ fn on_claude_event(e: &mut Entry, v: &Value) {
             }
         }
         (Some("result"), sub) => {
+            claude_spend(e, v);
             let ok = sub == Some("success") && v["is_error"].as_bool() != Some(true);
             let secs = v["duration_ms"].as_f64().unwrap_or(0.0) / 1000.0;
             if ok {
@@ -706,6 +952,68 @@ fn on_claude_event(e: &mut Entry, v: &Value) {
         }
         _ => {}
     }
+}
+
+/// What a `result` says the turn spent. Its `total_cost_usd` and `modelUsage`
+/// run on from whatever the transcript saved, over a resume too, and `usage` is
+/// the main loop's alone, subagents left out: the turn is
+/// `model_usage_since_last_result`, summed for the session as the CLI's schema
+/// tells a reader to. Without that field (a CLI that does not write it, an error
+/// result) the turn is `usage`, its cost what the running total rose by. The
+/// running totals stand as a floor: they hold what a turn killed before its
+/// result left in the transcript, and what ran before Luna kept count.
+fn claude_spend(e: &mut Entry, v: &Value) {
+    let running_cost = v["total_cost_usd"].as_f64();
+    let spent = e.observed.spend.session;
+    let turn = Usage::of_claude_models(&v["model_usage_since_last_result"]).or_else(|| {
+        let u = &v["usage"];
+        u.is_object().then(|| Usage {
+            cost_usd: running_cost.map(|c| usd((c - spent.cost_usd.unwrap_or(0.0)).max(0.0))),
+            ..Usage::of_claude(u)
+        })
+    });
+    let Some(mut turn) = turn else { return };
+    // An error result states zeros where its turn did spend: the messages stand.
+    if (Usage { cost_usd: None, ..turn }) == Usage::default() {
+        turn = Usage { cost_usd: turn.cost_usd, ..e.observed.unreported };
+    }
+    e.observed.unreported = Usage::default();
+    e.observed.by_message.clear();
+    let mut running = Usage::of_claude_models(&v["modelUsage"]).unwrap_or_default();
+    running.cost_usd = running_cost.or(running.cost_usd).map(usd);
+    e.observed.spend = Spend { last_turn: Some(turn), session: spent.plus(turn).at_least(running) };
+}
+
+/// One assistant message of a Claude Code turn, for `unreported`.
+fn claude_message_usage(o: &mut Observed, message: &Value) {
+    let (Some(id), true) = (message["id"].as_str(), message["usage"].is_object()) else { return };
+    let was = o.by_message.get(id).copied().unwrap_or_default();
+    let now = Usage::of_claude(&message["usage"]).at_least(was);
+    o.by_message.insert(id.to_string(), now);
+    o.unreported = o.unreported.since(was).plus(now);
+}
+
+/// What `turn.completed` says: its usage is the thread's running total, resumes
+/// included, so the turn is what it rose by from where the total stood as it
+/// started. Not knowing that, there is no telling: the total saved when the last
+/// turn ended would charge this one with whatever a turn killed since spent.
+fn codex_spend(e: &mut Entry, usage: &Value) {
+    if !usage.is_object() {
+        return;
+    }
+    let total = Usage::of_codex(usage);
+    let o = &mut e.observed;
+    o.turn_stated = true;
+    o.spend = Spend { last_turn: o.turn_base.map(|base| total.since(base)), session: total.at_least(o.spend.session) };
+}
+
+/// The model Codex says it moved a turn to, from the one error item that is no
+/// error: `model rerouted: <from> -> <to> (<reason>)`.
+fn rerouted_to(message: &str) -> Option<&str> {
+    let (_, moved) = message.split_once("model rerouted: ")?;
+    let (_, to) = moved.split_once(" -> ")?;
+    let to = to.split(" (").next()?.trim();
+    (!to.is_empty()).then_some(to)
 }
 
 fn on_codex_event(e: &mut Entry, v: &Value) {
@@ -722,6 +1030,12 @@ fn on_codex_event(e: &mut Entry, v: &Value) {
                     item["exit_code"].as_i64().map(|c| c.to_string()).unwrap_or_else(|| "?".into())
                 ),
             ),
+            Some("error") if item["message"].as_str().and_then(rerouted_to).is_some() => {
+                let message = item["message"].as_str().unwrap_or("");
+                e.observed.model = rerouted_to(message).map(str::to_owned);
+                e.observed.rerouted = true;
+                note(e, &one_line(message));
+            }
             Some(other) if other != "reasoning" => note(e, other),
             _ => {}
         },
@@ -735,6 +1049,7 @@ fn on_codex_event(e: &mut Entry, v: &Value) {
             }
         }
         Some("turn.completed") => {
+            codex_spend(e, &v["usage"]);
             note(e, "turn done");
             e.error = None;
         }
@@ -749,11 +1064,13 @@ fn turn_over(id: &str, code: Option<i32>) {
     // "finished" ahead of the job it left running.
     let job = lock().entries.get(id).and_then(|e| e.job.clone());
     let left_running = job.is_some_and(|job| !crate::procs::left_running(&job).is_empty());
-    let next = {
+    let (next, thread, generation, stated, rerouted) = {
         let mut r = lock();
         let Some(e) = r.entries.get_mut(id) else { return };
         e.run = None;
         e.turns_ended += 1;
+        e.observed.turn_ended_ms = crate::throttle::now_ms();
+        e.observed.settle_unreported();
         e.held.clear();
         e.left_running = left_running;
         if code != Some(0) && e.error.is_none() {
@@ -773,10 +1090,20 @@ fn turn_over(id: &str, code: Option<i32>) {
         if next.is_some() {
             claim(e);
         }
-        next
+        let thread = e.session.clone().filter(|_| e.spec.provider == Provider::Codex).map(|t| (e.spec.account_path.clone(), t));
+        (next, thread, e.observed.generation, e.observed.turn_stated, std::mem::take(&mut e.observed.rerouted))
     };
     reg().1.notify_all();
     crate::log::info("background", &format!("{} turn over, code {code:?}", crate::agents::label(id)));
+    // Codex's events name no model but a reroute's, which stands for its turn;
+    // otherwise its rollout says what the turn ran on, read with the lock let go.
+    if let Some(rollout) = thread.and_then(|(account, t)| crate::codex::session::rollout_of_thread(&account, &t)) {
+        let model = if rerouted { None } else { crate::codex::session::last_model(&rollout) };
+        let total = if stated { None } else { crate::codex::session::last_total_usage(&rollout).map(|u| Usage::of_codex(&u)) };
+        if let Some(e) = lock().entries.get_mut(id) {
+            e.observed.apply_rollout(generation, model, total);
+        }
+    }
     // One that cannot start is recorded as ended by `run_turn`.
     if let Some(text) = next {
         let _ = run_turn(id, &text);
@@ -1214,6 +1541,22 @@ pub fn changed() {
     crate::emit::to_ui("agent://background", background_helpers());
 }
 
+/// What `luna_list` says of a helper beyond its state.
+pub fn signs(id: &str) -> Option<Signs> {
+    let r = lock();
+    let e = r.entries.get(id)?;
+    let o = &e.observed;
+    let turn_started = e.run.as_ref().map(|run| run.started_ms);
+    let last = [o.event_ms, o.turn_ended_ms, turn_started.unwrap_or(0)].into_iter().max().filter(|ms| *ms > 0);
+    Some(Signs {
+        turn_started_at: turn_started.and_then(iso),
+        last_activity_at: last.and_then(iso),
+        // A Codex rollout that would not read: what it was asked to run on.
+        resolved_model: o.model.clone().or_else(|| e.spec.model.clone().filter(|_| e.spec.provider == Provider::Codex && e.turns_ended > 0)),
+        spend: (o.spend != Spend::default()).then_some(o.spend),
+    })
+}
+
 /// What the window needs to make a helper a chat of its own.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1297,6 +1640,8 @@ struct Saved {
     queued: bool,
     cut_short: bool,
     ties: crate::agents::Ties,
+    #[serde(default)]
+    observed: Observed,
 }
 
 fn saved_file() -> std::path::PathBuf {
@@ -1314,19 +1659,19 @@ fn save() {
     if !RESTORED.load(Ordering::SeqCst) {
         return;
     }
-    let rows: Vec<(String, Spec, u64, Option<String>, Option<String>, u32, bool, bool, bool)> = lock()
+    let rows: Vec<(String, Spec, u64, Option<String>, Option<String>, u32, bool, bool, bool, Observed)> = lock()
         .entries
         .iter()
         .map(|(id, e)| {
             let queued = !e.queue.is_empty();
-            (id.clone(), e.spec.clone(), e.started_ms, e.session.clone(), e.cwd.clone(), e.turns_ended, e.run.is_some(), queued, e.cut_short)
+            (id.clone(), e.spec.clone(), e.started_ms, e.session.clone(), e.cwd.clone(), e.turns_ended, e.run.is_some(), queued, e.cut_short, e.observed.clone())
         })
         .collect();
     // The agent layer's lock after this one is let go: it is the one taken
     // first where both are held.
     let mut saved: Vec<Saved> = rows
         .into_iter()
-        .map(|(id, spec, started_ms, session, cwd, turns_ended, running, queued, cut_short)| Saved {
+        .map(|(id, spec, started_ms, session, cwd, turns_ended, running, queued, cut_short, observed)| Saved {
             ties: crate::agents::ties_of(&id).unwrap_or_default(),
             id,
             spec,
@@ -1337,6 +1682,7 @@ fn save() {
             running,
             queued,
             cut_short,
+            observed,
         })
         .collect();
     saved.sort_by_key(|s| s.started_ms);
@@ -1409,7 +1755,9 @@ fn taken_up(s: Saved) -> Entry {
         cut_short: s.cut_short || s.running,
         job: None,
         left_running: false,
+        observed: s.observed,
     };
+    e.observed.settle_unreported();
     if s.running {
         note(&mut e, "Luna's core went mid-turn and stopped the turn");
         e.error = Some("Luna's core restarted mid-turn and stopped the turn".into());
@@ -1449,9 +1797,351 @@ pub(crate) fn in_turn_for_test(id: &str) {
     }
 }
 
+/// A helper as `agents`'s tests need one, with no process behind it: in a
+/// turn or between turns, on a conversation they can write the transcript of.
+#[cfg(test)]
+pub fn test_helper(id: &str, account_path: &str, session: Option<&str>, busy: bool) {
+    let e = Entry {
+        spec: Spec {
+            provider: Provider::Claude,
+            account_path: account_path.into(),
+            folder: account_path.into(),
+            worktree: false,
+            model: None,
+            effort: "low".into(),
+            mode: "default".into(),
+            auto_review: false,
+            tools: false,
+            hooks_unasked: false,
+            token: None,
+        },
+        started_ms: 0,
+        session: session.map(str::to_owned),
+        cwd: None,
+        run: busy.then(|| Run { pid: None, started_ms: 1, stopped: false }),
+        turns_ended: 0,
+        queue: Vec::new(),
+        log: VecDeque::new(),
+        held: VecDeque::new(),
+        error: None,
+        cut_short: false,
+        job: None,
+        left_running: false,
+        observed: Observed::default(),
+    };
+    lock().entries.insert(id.to_string(), e);
+}
+
+/// A test helper's turn has ended, its process never having been.
+#[cfg(test)]
+pub fn test_turn_ended(id: &str) {
+    let mut r = lock();
+    let e = r.entries.get_mut(id).expect("a test helper");
+    e.run = None;
+    e.turns_ended += 1;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two turns of `claude -p --output-format stream-json --verbose` 2.1.316,
+    /// the second a `--resume`, cut to the fields read here.
+    const CLAUDE_TURN_1: &str = r#"{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.00289842,
+        "usage":{"input_tokens":2,"cache_creation_input_tokens":13583,"cache_read_input_tokens":16562,"output_tokens":32},
+        "modelUsage":{"claude-haiku-5-5":{"inputTokens":2,"outputTokens":32,"cacheReadInputTokens":16562,"cacheCreationInputTokens":13583,"costUSD":0.00289842}},
+        "model_usage_since_last_result":{"claude-haiku-5-5":{"inputTokens":2,"outputTokens":32,"cacheReadInputTokens":16562,"cacheCreationInputTokens":13583,"costUSD":0.00289842}}}"#;
+    const CLAUDE_TURN_2: &str = r#"{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.00329787,
+        "usage":{"input_tokens":2,"cache_creation_input_tokens":479,"cache_read_input_tokens":30145,"output_tokens":4},
+        "modelUsage":{"claude-haiku-5-5":{"inputTokens":4,"outputTokens":36,"cacheReadInputTokens":46707,"cacheCreationInputTokens":14062,"costUSD":0.00329787}},
+        "model_usage_since_last_result":{"claude-haiku-5-5":{"inputTokens":2,"outputTokens":4,"cacheReadInputTokens":30145,"cacheCreationInputTokens":479,"costUSD":0.00039945000000000003}}}"#;
+    /// The same of `codex exec --json` 0.166.0: `usage` runs on over a resume.
+    const CODEX_TURN_1: &str = r#"{"type":"turn.completed","usage":{"input_tokens":15515,"cached_input_tokens":12416,"cache_write_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":0}}"#;
+    const CODEX_TURN_2: &str = r#"{"type":"turn.completed","usage":{"input_tokens":32377,"cached_input_tokens":27776,"cache_write_input_tokens":0,"output_tokens":10,"reasoning_output_tokens":0}}"#;
+
+    fn event(line: &str) -> Value {
+        serde_json::from_str(line).unwrap()
+    }
+
+    #[test]
+    fn a_claude_turn_is_what_it_added_and_the_session_what_the_cli_says() {
+        let mut e = entry(Provider::Claude);
+        on_claude_event(&mut e, &event(CLAUDE_TURN_1));
+        on_claude_event(&mut e, &event(CLAUDE_TURN_2));
+        let s = e.observed.spend;
+        assert_eq!(s.last_turn, Some(Usage { input: 2, output: 4, cache_read: 30145, cache_write: 479, cost_usd: Some(0.00039945) }));
+        assert_eq!(s.session, Usage { input: 4, output: 36, cache_read: 46707, cache_write: 14062, cost_usd: Some(0.00329787) });
+    }
+
+    #[test]
+    fn a_claude_result_without_its_turn_figures_falls_back_on_the_running_total() {
+        let mut e = entry(Provider::Claude);
+        on_claude_event(&mut e, &event(CLAUDE_TURN_1));
+        let mut v = event(CLAUDE_TURN_2);
+        v.as_object_mut().unwrap().remove("model_usage_since_last_result");
+        on_claude_event(&mut e, &v);
+        let s = e.observed.spend;
+        let turn = s.last_turn.unwrap();
+        assert_eq!((turn.input, turn.output, turn.cache_read, turn.cache_write), (2, 4, 30145, 479));
+        assert_eq!(turn.cost_usd, Some(0.00039945), "what the running total rose by");
+        assert_eq!(s.session.cost_usd, Some(0.00329787));
+
+        // A resumed session Luna kept no count of: the CLI's total stands.
+        let mut e = entry(Provider::Claude);
+        on_claude_event(&mut e, &event(CLAUDE_TURN_2));
+        assert_eq!(e.observed.spend.session.output, 36);
+        assert_eq!(e.observed.spend.last_turn.unwrap().output, 4);
+
+        // An event with no figures at all leaves them be.
+        let before = e.observed.spend;
+        on_claude_event(&mut e, &json!({ "type": "result", "subtype": "error_during_execution" }));
+        assert_eq!(e.observed.spend, before);
+    }
+
+    #[test]
+    fn a_codex_turn_is_what_the_running_total_rose_by() {
+        let mut e = entry(Provider::Codex);
+        e.observed.begin_turn(Some(Usage::default()));
+        on_codex_event(&mut e, &event(CODEX_TURN_1));
+        assert_eq!(e.observed.spend.last_turn, Some(Usage { input: 3099, output: 5, cache_read: 12416, cache_write: 0, cost_usd: None }));
+        let base = e.observed.spend.session;
+        e.observed.begin_turn(Some(base));
+        on_codex_event(&mut e, &event(CODEX_TURN_2));
+        let s = e.observed.spend;
+        assert_eq!(s.last_turn, Some(Usage { input: 1502, output: 5, cache_read: 15360, cache_write: 0, cost_usd: None }), "as the rollout's last_token_usage has it");
+        assert_eq!(s.session, Usage { input: 4601, output: 10, cache_read: 27776, cache_write: 0, cost_usd: None });
+        assert!(!serde_json::to_string(&s).unwrap().contains("costUsd"), "Codex states no cost");
+    }
+
+    /// A turn of `codex exec resume` killed mid-way, as 0.166.0 left it: no
+    /// `turn.completed`, the rollout's total on, and the next turn's total
+    /// holding what the killed one spent.
+    fn codex_total(input: u64, cached: u64, output: u64) -> Usage {
+        Usage::of_codex(&json!({ "input_tokens": input, "cached_input_tokens": cached, "output_tokens": output }))
+    }
+
+    #[test]
+    fn a_killed_codex_turn_is_its_own_not_the_next_ones() {
+        let first = codex_total(16369, 12416, 5);
+        let killed = codex_total(32789, 28672, 50);
+        let mut e = entry(Provider::Codex);
+        e.observed.begin_turn(Some(Usage::default()));
+        on_codex_event(&mut e, &event(r#"{"type":"turn.completed","usage":{"input_tokens":16369,"cached_input_tokens":12416,"output_tokens":5}}"#));
+        assert_eq!(e.observed.spend.session, first);
+
+        // Killed: the rollout read once it is over counts it there and then.
+        e.observed.begin_turn(Some(first));
+        let generation = e.observed.generation;
+        e.observed.apply_rollout(generation, None, Some(killed));
+        assert_eq!(e.observed.spend.session, killed);
+        assert_eq!(e.observed.spend.last_turn, Some(killed.since(first)));
+
+        // The next turn is charged with what it spent itself.
+        e.observed.begin_turn(Some(killed));
+        on_codex_event(&mut e, &event(r#"{"type":"turn.completed","usage":{"input_tokens":50089,"cached_input_tokens":45312,"output_tokens":55}}"#));
+        let turn = e.observed.spend.last_turn.unwrap();
+        assert_eq!((turn.input, turn.cache_read, turn.output), (660, 16640, 5));
+        assert_eq!(e.observed.spend.session, codex_total(50089, 45312, 55));
+
+        // A core gone mid-turn: nothing read as it ended, the base has it.
+        let mut e = entry(Provider::Codex);
+        e.observed.spend.session = first;
+        e.observed.begin_turn(Some(killed));
+        assert_eq!(e.observed.spend.session, killed, "known as the turn starts");
+
+        // Where the total stood cannot be told: no figure, not a wrong one.
+        let mut e = entry(Provider::Codex);
+        e.observed.spend = Spend { last_turn: Some(first), session: first };
+        e.observed.begin_turn(None);
+        on_codex_event(&mut e, &event(r#"{"type":"turn.completed","usage":{"input_tokens":50089,"cached_input_tokens":45312,"output_tokens":55}}"#));
+        assert_eq!(e.observed.spend.last_turn, None);
+        assert_eq!(e.observed.spend.session.output, 55);
+
+        // A killed turn that spent nothing leaves the last one's figure.
+        let mut e = entry(Provider::Codex);
+        e.observed.spend = Spend { last_turn: Some(first), session: first };
+        e.observed.begin_turn(Some(first));
+        let generation = e.observed.generation;
+        e.observed.apply_rollout(generation, None, Some(first));
+        assert_eq!(e.observed.spend.last_turn, Some(first));
+    }
+
+    #[test]
+    fn what_is_read_of_a_turn_gone_by_does_not_touch_the_next() {
+        let mut o = Observed::default();
+        o.begin_turn(None);
+        let generation = o.generation;
+        o.begin_turn(None);
+        o.model = Some("rerouted-to".into());
+        o.rerouted = true;
+        o.apply_rollout(generation, Some("asked-for".into()), Some(codex_total(5, 0, 5)));
+        assert_eq!(o.model.as_deref(), Some("rerouted-to"));
+        assert!(o.rerouted, "its own lookup is its own to skip");
+        assert_eq!(o.spend, Spend::default());
+    }
+
+    /// A Claude Code turn killed mid-way, as 2.1.316 left it: its message shown
+    /// with usage, no `result`, and the next `modelUsage` without it.
+    #[test]
+    fn a_killed_claude_turn_is_counted_from_its_messages() {
+        let message = |id: &str| json!({ "type": "assistant", "parent_tool_use_id": null, "message": { "id": id, "content": [],
+            "usage": { "input_tokens": 2, "output_tokens": 16, "cache_read_input_tokens": 21390, "cache_creation_input_tokens": 7160 } } });
+        let mut e = entry(Provider::Claude);
+        e.observed.begin_turn(None);
+        on_claude_event(&mut e, &message("msg_1"));
+        on_claude_event(&mut e, &message("msg_1"));
+        assert_eq!(e.observed.unreported.output, 16, "one message, however many blocks");
+        on_claude_event(&mut e, &message("msg_2"));
+        assert_eq!(e.observed.unreported.output, 32);
+
+        // It ends with a result: that is the figure, nothing added.
+        on_claude_event(&mut e, &event(CLAUDE_TURN_1));
+        assert_eq!(e.observed.unreported, Usage::default());
+        e.observed.settle_unreported();
+        assert_eq!(e.observed.spend.session.output, 32, "the running total's 32, by chance the result's too");
+        assert_eq!(e.observed.spend.session.input, 2);
+
+        // Killed: its tokens count, and the next result adds to them.
+        e.observed.begin_turn(None);
+        on_claude_event(&mut e, &message("msg_3"));
+        e.observed.settle_unreported();
+        let s = e.observed.spend;
+        assert_eq!(s.last_turn, Some(Usage { input: 2, output: 16, cache_read: 21390, cache_write: 7160, cost_usd: None }));
+        assert_eq!((s.session.input, s.session.output), (4, 48));
+        assert_eq!(s.session.cost_usd, Some(0.00289842), "its cost is stated nowhere");
+        e.observed.begin_turn(None);
+        on_claude_event(&mut e, &event(CLAUDE_TURN_2));
+        let s = e.observed.spend;
+        assert_eq!((s.session.input, s.session.output), (6, 52), "above the running total, which never had it");
+        assert_eq!(s.session.cost_usd, Some(0.00329787));
+    }
+
+    #[test]
+    fn a_failed_result_with_zeros_leaves_what_the_messages_showed() {
+        let mut e = entry(Provider::Claude);
+        on_claude_event(&mut e, &json!({ "type": "assistant", "parent_tool_use_id": null, "message": { "id": "m", "content": [],
+            "usage": { "input_tokens": 3, "output_tokens": 7 } } }));
+        on_claude_event(&mut e, &json!({ "type": "result", "subtype": "error_during_execution", "is_error": true, "total_cost_usd": 0,
+            "usage": { "input_tokens": 0, "output_tokens": 0 }, "modelUsage": {} }));
+        assert_eq!((e.observed.spend.session.input, e.observed.spend.session.output), (3, 7));
+        assert_eq!(e.observed.unreported, Usage::default(), "not counted again");
+    }
+
+    #[test]
+    fn a_core_gone_mid_turn_counts_what_its_messages_showed() {
+        let spec = serde_json::to_value(&entry(Provider::Claude).spec).unwrap();
+        let mut observed = Observed::default();
+        observed.unreported.output = 9;
+        let bytes = serde_json::to_value(&observed).unwrap();
+        let e = taken_up(Saved {
+            id: "c1".into(),
+            spec: serde_json::from_value(spec).unwrap(),
+            started_ms: 5,
+            session: Some("sid".into()),
+            cwd: None,
+            turns_ended: 3,
+            running: true,
+            queued: false,
+            cut_short: false,
+            ties: Default::default(),
+            observed: serde_json::from_value(bytes).unwrap(),
+        });
+        assert_eq!(e.observed.spend.session.output, 9);
+        assert_eq!(e.observed.unreported, Usage::default());
+    }
+
+    #[test]
+    fn a_reroute_names_the_model_of_its_turn_and_the_rollout_the_next() {
+        assert_eq!(rerouted_to("model rerouted: gpt-a -> gpt-b (high risk)"), Some("gpt-b"));
+        assert_eq!(rerouted_to("model rerouted: gpt-a -> gpt-b"), Some("gpt-b"));
+        assert_eq!(rerouted_to("the model is overloaded"), None);
+
+        let dir = std::env::temp_dir().join(format!("luna-reroute-{}", std::process::id()));
+        let day = dir.join("sessions").join("2026").join("11").join("01");
+        std::fs::create_dir_all(&day).unwrap();
+        std::fs::write(
+            day.join("rollout-2026-11-01T10-31-15-thread-reroute.jsonl"),
+            format!("{}\n", r#"{"timestamp":"t","type":"turn_context","payload":{"model":"gpt-a"}}"#),
+        )
+        .unwrap();
+        let mut h = entry(Provider::Codex);
+        h.spec.account_path = dir.to_string_lossy().into_owned();
+        h.spec.model = Some("gpt-asked".into());
+        h.session = Some("thread-reroute".into());
+        lock().entries.insert("reroute-1".into(), h);
+        let model = || lock().entries.get("reroute-1").unwrap().observed.model.clone();
+
+        assert_eq!(signs("reroute-1").unwrap().resolved_model, None, "before its first turn");
+        turn_over("reroute-1", Some(0));
+        assert_eq!(model().as_deref(), Some("gpt-a"), "the rollout, with no reroute");
+        on_codex_event(
+            lock().entries.get_mut("reroute-1").unwrap(),
+            &json!({ "type": "item.completed", "item": { "id": "item_1", "type": "error", "message": "model rerouted: gpt-a -> gpt-b (high risk)" } }),
+        );
+        assert_eq!(model().as_deref(), Some("gpt-b"));
+        turn_over("reroute-1", Some(0));
+        assert_eq!(model().as_deref(), Some("gpt-b"), "the rollout does not take it back");
+        turn_over("reroute-1", Some(0));
+        assert_eq!(model().as_deref(), Some("gpt-a"), "the next turn asks again");
+        assert!(lock().entries.get("reroute-1").unwrap().error.is_none(), "no failure");
+
+        // A rollout that does not read: what it was asked to run on.
+        {
+            let mut r = lock();
+            let e = r.entries.get_mut("reroute-1").unwrap();
+            e.observed.model = None;
+        }
+        assert_eq!(signs("reroute-1").unwrap().resolved_model.as_deref(), Some("gpt-asked"));
+        lock().entries.remove("reroute-1");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_model_is_the_one_the_cli_says_it_used() {
+        let mut e = entry(Provider::Claude);
+        on_claude_event(&mut e, &json!({ "type": "system", "subtype": "init", "session_id": "s", "model": "claude-haiku-5-5" }));
+        assert_eq!(e.observed.model.as_deref(), Some("claude-haiku-5-5"));
+        let said = |model: &str, parent: Value| json!({ "type": "assistant", "parent_tool_use_id": parent, "message": { "model": model, "content": [] } });
+        on_claude_event(&mut e, &said("<synthetic>", Value::Null));
+        assert_eq!(e.observed.model.as_deref(), Some("claude-haiku-5-5"), "no model wrote that");
+        on_claude_event(&mut e, &said("claude-sonnet-5-5", json!("toolu_1")));
+        assert_eq!(e.observed.model.as_deref(), Some("claude-haiku-5-5"), "a subagent's model is its own");
+        on_claude_event(&mut e, &said("claude-sonnet-5-5", Value::Null));
+        assert_eq!(e.observed.model.as_deref(), Some("claude-sonnet-5-5"), "a fallback shows");
+    }
+
+    #[test]
+    fn spend_comes_back_with_the_helper_and_the_last_event_only_as_the_turn_end() {
+        let mut o = Observed { model: Some("m".into()), turn_ended_ms: 5, event_ms: 9, ..Default::default() };
+        o.spend.session.output = 7;
+        let json = serde_json::to_value(&o).unwrap();
+        assert!(json.get("eventMs").is_none(), "not written with every event");
+        let back: Observed = serde_json::from_value(json).unwrap();
+        assert_eq!((back.spend.session.output, back.model.as_deref(), back.turn_ended_ms, back.event_ms), (7, Some("m"), 5, 0));
+        // helpers.json from before these fields reads as nothing spent.
+        let bare: Observed = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(bare.spend, Spend::default());
+    }
+
+    #[test]
+    fn signs_say_when_the_turn_began_and_what_it_was_last_seen_doing() {
+        test_helper("signs-1", "C:\\acc", Some("s"), false);
+        let s = signs("signs-1").unwrap();
+        assert_eq!((s.turn_started_at.clone(), s.last_activity_at.clone(), s.spend), (None, None, None), "nothing known yet");
+        let text = serde_json::to_string(&s).unwrap();
+        assert_eq!(text, r#"{"turnStartedAt":null}"#, "null between turns, the rest left out");
+        {
+            let mut r = lock();
+            let e = r.entries.get_mut("signs-1").unwrap();
+            e.run = Some(Run { pid: None, started_ms: 1_793_000_000_000, stopped: false });
+            e.observed.event_ms = 1_793_000_060_000;
+        }
+        let s = signs("signs-1").unwrap();
+        assert_eq!(s.turn_started_at.as_deref(), iso(1_793_000_000_000).as_deref());
+        assert_eq!(s.last_activity_at.as_deref(), iso(1_793_000_060_000).as_deref());
+        assert!(s.turn_started_at.unwrap().ends_with('Z'));
+        lock().entries.remove("signs-1");
+    }
 
     pub(super) fn entry(provider: Provider) -> Entry {
         Entry {
@@ -1480,6 +2170,7 @@ mod tests {
             cut_short: false,
             job: None,
             left_running: false,
+            observed: Observed::default(),
         }
     }
 
@@ -1668,6 +2359,7 @@ mod tests {
             queued,
             cut_short: false,
             ties: Default::default(),
+            observed: Default::default(),
         };
 
         let e = taken_up(saved(true, true));

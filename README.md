@@ -432,7 +432,8 @@ background helper spawned without tools.
   or start the next one, so Luna gives the CLI 8 seconds after a turn ends to start another
   before it takes that turn as the answer.
 - The notice is one short line: what happened, how many messages the helper wrote since it
-  was asked, and a file with all of them — the report (the longest message) first, then the
+  was asked, the first line of its report, and a file with all of them — the report (the
+  longest message) first, then the
   last one, then the rest — so a closing "that was a stale wakeup, nothing changed" does not
   hide the report before it. A `luna_read` collects the answer only when it returns all of
   it, uncut, and the helper is done: one while it is still at work, or one with only the
@@ -454,6 +455,12 @@ background helper spawned without tools.
 - A background helper's prompts each have an `id` in `ask`, which `luna_answer` takes as
   `askId`: an answer written on one cannot land on the next. Without it, an answer is taken only
   when one is held.
+- `luna_wait` also takes several sessions (`ids`, `mode: "any"` or `"all"`) and says which
+  finished. `luna_list` shows, for each helper, when its turn began, when it last did
+  anything, the full model id it ran on and what it spent: tokens, plus the cost where the
+  CLI states it (Claude Code does, Codex does not). Visible sessions show less: Codex its
+  token total, Claude Code none. An agent also gets a notice when an account its helpers run
+  on reaches 90% and then 95% of a usage window, once each until that window resets.
 
 ## Power
 
