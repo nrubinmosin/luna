@@ -127,6 +127,9 @@ struct Track {
     /// When the first turn began (0 = never): children born after it are the
     /// model's own, whichever turn started them.
     first_turn_ms: u64,
+    /// When the turn on now began, for `luna_list`: a hook's moment, or the
+    /// sample that first saw it where no hook speaks.
+    turn_started_ms: Option<u64>,
     prev: Vec<ProcRead>,
     procs: Option<procs::Busy>,
     output_fresh: bool,
@@ -178,6 +181,11 @@ pub fn turn_state(chat_id: &str) -> Option<TurnState> {
 /// The API error a session's last turn ended on, per its `StopFailure` hook.
 pub fn failed_of(chat_id: &str) -> Option<&'static str> {
     state().lock().unwrap_or_else(|e| e.into_inner()).tracks.get(chat_id)?.failed
+}
+
+/// When a visible session's current turn began, None between turns.
+pub fn turn_started_ms(chat_id: &str) -> Option<u64> {
+    state().lock().unwrap_or_else(|e| e.into_inner()).tracks.get(chat_id)?.turn_started_ms
 }
 
 impl Default for Turn {
@@ -341,22 +349,31 @@ pub fn on_hook(chat_id: &str, ev: HookEvent) {
             if t.first_turn_ms == 0 {
                 t.first_turn_ms = now;
             }
+            t.turn_started_ms.get_or_insert(now);
             t.hook = Some(Turn::Busy);
         }
-        HookEvent::Waiting => t.hook = Some(Turn::Waiting),
+        HookEvent::Waiting => {
+            t.turn_started_ms.get_or_insert(now);
+            t.hook = Some(Turn::Waiting);
+        }
         HookEvent::Idle => {
             t.hook = Some(Turn::Idle);
+            t.turn_started_ms = None;
             // `Stop`: a turn is over, whether or not any sample saw it run.
             t.turns_ended += 1;
             t.was_busy = false;
         }
         HookEvent::Failed(error) => {
             t.hook = Some(Turn::Idle);
+            t.turn_started_ms = None;
             t.turns_ended += 1;
             t.was_busy = false;
             t.failed = Some(error);
         }
-        HookEvent::Gone => t.hook = Some(Turn::Idle),
+        HookEvent::Gone => {
+            t.hook = Some(Turn::Idle);
+            t.turn_started_ms = None;
+        }
     }
     t.hook_at_ms = now;
 }
@@ -546,6 +563,15 @@ pub fn sample(probes: Vec<crate::pty::ActivityProbe>, helpers: Vec<SessionActivi
                 t.first_turn_ms = now.saturating_sub(TURN_SLACK_MS);
             }
             t.turn = turn;
+            match turn {
+                Turn::Idle => t.turn_started_ms = None,
+                // A registry still busy after the hook's `Stop` has been left
+                // behind: no turn starts on its word.
+                _ if t.hook != Some(Turn::Idle) => {
+                    t.turn_started_ms.get_or_insert(now);
+                }
+                _ => {}
+            }
 
             let born_after = match t.first_turn_ms {
                 0 => 0,
@@ -670,6 +696,24 @@ mod tests {
         assert_eq!(HookEvent::parse("not json"), None);
         assert_eq!(ev("StopFailure", r#","error":"rate_limit""#), Some(HookEvent::Failed("rate_limit")));
         assert_eq!(ev("StopFailure", r#","error":"something_new""#), Some(HookEvent::Failed("unknown")));
+    }
+
+    #[test]
+    fn a_turn_s_start_lasts_as_long_as_the_turn() {
+        let id = "chat-turn-start";
+        assert_eq!(turn_started_ms(id), None);
+        on_hook(id, HookEvent::Busy);
+        let at = turn_started_ms(id).expect("begun");
+        state().lock().unwrap().tracks.get_mut(id).unwrap().turn_started_ms = Some(at - 1000);
+        on_hook(id, HookEvent::Busy);
+        on_hook(id, HookEvent::Waiting);
+        assert_eq!(turn_started_ms(id), Some(at - 1000), "a tool call or a prompt inside the turn does not move it");
+        on_hook(id, HookEvent::Idle);
+        assert_eq!(turn_started_ms(id), None, "null between turns");
+        on_hook(id, HookEvent::Busy);
+        on_hook(id, HookEvent::Failed("rate_limit"));
+        assert_eq!(turn_started_ms(id), None);
+        forget(id);
     }
 
     #[test]
