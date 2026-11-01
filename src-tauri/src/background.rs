@@ -403,13 +403,16 @@ struct Entry {
 struct Registry {
     entries: HashMap<String, Entry>,
     next_serial: u64,
+    /// Which helper each ask this core has given out went to, answered or not:
+    /// an `askId` that was never one is told apart from one that has gone.
+    asked: HashMap<u64, String>,
     /// The core is leaving (`stop_all`): no turn starts from here on.
     closed: bool,
 }
 
 fn reg() -> &'static (Mutex<Registry>, Condvar) {
     static R: OnceLock<(Mutex<Registry>, Condvar)> = OnceLock::new();
-    R.get_or_init(|| (Mutex::new(Registry { entries: HashMap::new(), next_serial: 1, closed: false }), Condvar::new()))
+    R.get_or_init(|| (Mutex::new(Registry { entries: HashMap::new(), next_serial: 1, asked: HashMap::new(), closed: false }), Condvar::new()))
 }
 
 fn lock() -> std::sync::MutexGuard<'static, Registry> {
@@ -1633,6 +1636,7 @@ pub fn permission(id: &str, args: &Value) -> Value {
         ask.id = Some(format!("a{serial}"));
         note(e, &format!("waits: {}", ask.line()));
         e.held.push_back(Held { serial, ask, input, answer: None });
+        r.asked.insert(serial, id.to_string());
         serial
     };
     changed();
@@ -1676,11 +1680,18 @@ pub fn permission(id: &str, args: &Value) -> Value {
 /// nothing says it was written on the first.
 pub fn answer(id: &str, ask_id: Option<&str>, answers: &[String], allow: Option<bool>, note_text: Option<&str>) -> Result<(), String> {
     let mut r = lock();
+    let given = ask_id.is_some_and(|want| {
+        want.strip_prefix('a').and_then(|n| n.parse::<u64>().ok()).and_then(|n| r.asked.get(&n)).is_some_and(|to| to == id)
+    });
     let e = r.entries.get_mut(id).ok_or("no such helper")?;
     let mut open = e.held.iter_mut().filter(|h| h.answer.is_none());
     let h = match ask_id {
         Some(want) => open.find(|h| h.ask.id.as_deref() == Some(want)).ok_or_else(|| {
-            format!("ask {want} of helper {id} is no longer open: it was answered or went with its turn. Its `ask` in luna_list says what it holds now")
+            if given {
+                format!("ask {want} of helper {id} is no longer open: it was answered or went with its turn. Its `ask` in luna_list says what it holds now")
+            } else {
+                format!("helper {id} has had no ask {want} (since Luna's core last started): the id is unknown. Its `ask` in luna_list has the id of what it holds now, if anything")
+            }
         })?,
         None => {
             let first = open.next().ok_or_else(|| format!("helper {id} is not waiting on anything"))?;
@@ -2744,6 +2755,14 @@ mod tests {
         // A second responder who also saw the first, its answer late.
         let late = answer("two-asks", Some(&stale), &[], Some(true), None).unwrap_err();
         assert!(late.contains("no longer open"), "{late}");
+        // An id it never had: none it was given, or another helper's.
+        for never in ["a0", "nonsense"] {
+            let e = answer("two-asks", Some(never), &[], Some(true), None).unwrap_err();
+            assert!(e.contains("unknown") && !e.contains("no longer open"), "{e}");
+        }
+        lock().asked.insert(u64::MAX, "another".into());
+        assert!(answer("two-asks", Some(&format!("a{}", u64::MAX)), &[], Some(true), None).unwrap_err().contains("unknown"));
+        lock().asked.remove(&u64::MAX);
         assert_eq!(super::ask("two-asks").unwrap().id, next.id, "the next is untouched");
         answer("two-asks", None, &[], Some(false), Some("not that")).unwrap();
         let no = second.join().unwrap();
