@@ -47,21 +47,40 @@ pnpm tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --no-bundle
 $(if ($Test) { 'cd src-tauri && cargo xwin test --release --no-run --target x86_64-pc-windows-msvc' })
 "@ -replace "`r`n", "`n"
 
-    docker run --rm `
-      -e COREPACK_ENABLE_DOWNLOAD_PROMPT=0 `
-      -e LUNA_BUILD=$build `
-      -e LUNA_FLAVOR=test `
-      -e VITE_LUNA_FLAVOR=test `
-      -e CARGO_TARGET_DIR=/app/test-build/target `
-      -v "${root}:/app" `
-      -v luna-node-modules:/app/node_modules `
-      -v luna-xwin-cache:/xwin-cache `
-      -v luna-cargo-registry:/usr/local/cargo/registry `
-      -v luna-tauri-cache:/root/.cache/tauri `
-      -w /app `
-      luna-winbuild `
-      bash -c $cmd
-    if ($LASTEXITCODE) { throw "test build failed (exit $LASTEXITCODE)" }
+    # One build at a time on this machine, from any checkout: the named
+    # volumes are shared, and builds in parallel break each other
+    # (build-windows.ps1 says how, and takes the same mutex).
+    $lock = [System.Threading.Mutex]::new($false, 'Global\luna-docker-build')
+    $held = $false
+    try {
+        try {
+            if (-not $lock.WaitOne(0)) {
+                Write-Host 'another Luna build is running; waiting for it'
+                [void]$lock.WaitOne()
+            }
+        } catch [System.Threading.AbandonedMutexException] {
+            # A build that died holding it: the mutex is ours now.
+        }
+        $held = $true
+        docker run --rm `
+          -e COREPACK_ENABLE_DOWNLOAD_PROMPT=0 `
+          -e LUNA_BUILD=$build `
+          -e LUNA_FLAVOR=test `
+          -e VITE_LUNA_FLAVOR=test `
+          -e CARGO_TARGET_DIR=/app/test-build/target `
+          -v "${root}:/app" `
+          -v luna-node-modules:/app/node_modules `
+          -v luna-xwin-cache:/xwin-cache `
+          -v luna-cargo-registry:/usr/local/cargo/registry `
+          -v luna-tauri-cache:/root/.cache/tauri `
+          -w /app `
+          luna-winbuild `
+          bash -c $cmd
+        if ($LASTEXITCODE) { throw "test build failed (exit $LASTEXITCODE)" }
+    } finally {
+        if ($held) { $lock.ReleaseMutex() }
+        $lock.Dispose()
+    }
 
     Copy-Item -Force (Join-Path $out 'target/x86_64-pc-windows-msvc/release/luna.exe') (Join-Path $out 'luna-test.exe')
     Write-Host "built $out\luna-test.exe"
