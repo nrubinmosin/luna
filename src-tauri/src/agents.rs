@@ -5316,10 +5316,10 @@ pub fn undelivered_left(id: &str, lost: &[crate::background::Queued]) {
     );
 }
 
-/// A helper's messages as one answer. The report is the longest message,
-/// ahead of the progress lines that came before it; then the last one, a
-/// closing word ("that was a stale wakeup, nothing changed") the report must
-/// not bury; then the rest, in order.
+/// A helper's messages as one answer: the report (`report_of`), ahead of the
+/// progress lines that came before it; then the last one, a closing word
+/// ("that was a stale wakeup, nothing changed") the report must not bury;
+/// then the rest, in order.
 fn answer_text(replies: &[String]) -> String {
     let longest = report_of(replies);
     let last = replies.len().saturating_sub(1);
@@ -5334,9 +5334,20 @@ fn answer_text(replies: &[String]) -> String {
     whole
 }
 
-/// Which message is the report: the longest.
+/// Shorter than this, a message is a line or two: progress, a closing word, a
+/// short answer. None of them is a report the others lead up to.
+const SHORT_MESSAGE: usize = 400;
+
+/// Which message is the report: the longest, unless every one is short — a
+/// Codex helper writes "still running…" a dozen times before "DONE", the
+/// longest of those a progress line — when it is the last, where it ended up.
 fn report_of(replies: &[String]) -> usize {
-    (0..replies.len()).max_by_key(|&i| replies[i].chars().count()).unwrap_or(0)
+    let longest = (0..replies.len()).max_by_key(|&i| replies[i].chars().count()).unwrap_or(0);
+    if replies.get(longest).map_or(0, |r| r.chars().count()) < SHORT_MESSAGE {
+        replies.len().saturating_sub(1)
+    } else {
+        longest
+    }
 }
 
 /// A report's first line that says anything, on one line and short, without
@@ -6820,7 +6831,7 @@ mod tests {
         assert_eq!(read(answer_file("q", &["Done.".into()])), "Done.");
         let replies = vec![
             "Let me look.".to_string(),
-            "REPORT: the long one, with what was done.".to_string(),
+            format!("REPORT: the long one, with what was done. {}", "Details. ".repeat(50)),
             "Now the tests.".to_string(),
             "Nothing else changed.".to_string(),
         ];
@@ -6829,6 +6840,29 @@ mod tests {
         let last = whole.find("Nothing else changed.").unwrap();
         assert!(last < whole.find("Let me look.").unwrap(), "the last word before the progress lines");
         assert!(whole.find("Let me look.").unwrap() < whole.find("Now the tests.").unwrap(), "the rest in order");
+    }
+
+    /// As Codex helper qa-r2 put it: a progress line every so often while its
+    /// command ran, then the answer, shorter than most of them.
+    #[test]
+    fn with_every_message_short_the_last_leads() {
+        let replies: Vec<String> = [
+            "I’ll run the ping in the foreground and wait for it to finish.",
+            "The restart disconnected the shell session. I’m checking the running ping processes so I can wait for completion.",
+            "The ping remains active.",
+            "I’m waiting for the ping process to exit.",
+            "R2 DONE FOURTH\nKIWI",
+        ]
+        .map(String::from)
+        .to_vec();
+        let whole = answer_text(&replies);
+        assert!(whole.starts_with("R2 DONE FOURTH\nKIWI\n\n---\n\nEverything else it said, in order:\n\nI’ll run the ping"), "{whole}");
+        assert!(!whole.contains("Its last message"), "it leads already");
+        assert_eq!(begins(&replies), ". It begins: \"R2 DONE FOURTH\"");
+        // One that is not short is the report, wherever it is.
+        let mut with_report = replies.clone();
+        with_report.insert(1, format!("Findings: {}", "a finding. ".repeat(40)));
+        assert!(answer_text(&with_report).starts_with("Findings:"));
     }
 
     #[test]
@@ -6930,7 +6964,8 @@ mod tests {
         assert!(cut.ends_with("word…"), "{cut}");
         assert!(cut.chars().count() <= NOTICE_QUOTE + 1, "{}", cut.chars().count());
 
-        let replies = vec!["Let me look.".to_string(), "# Report\nThe long one, with what was done.".to_string(), "Nothing else.".to_string()];
+        let report = format!("# Report\nThe long one, with what was done. {}", "Details. ".repeat(50));
+        let replies = vec!["Let me look.".to_string(), report, "Nothing else.".to_string()];
         assert_eq!(begins(&replies), ". It begins: \"Report\"", "the longest message, as the file leads with it");
         assert!(!begins(&replies).contains('\n'));
         assert_eq!(begins(&["---".to_string()]), "", "nothing worth quoting, no clause");
