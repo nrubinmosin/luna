@@ -4,6 +4,7 @@
 //! on a detached HEAD. Luna only finds them again — to remove one with its
 //! chat, or sweep the ones no chat claims — and never makes one itself.
 
+use crate::provider::Provider;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -438,6 +439,38 @@ pub fn left_since(now: Vec<String>, before: &[String], live_cwds: &[String]) -> 
         .collect()
 }
 
+/// Whether a worktree a CLI left is as a CLI would make it now: readable as a
+/// checkout, on the branch it was made on (Codex's: on none), with nothing that
+/// removing it would lose. Starting there is no different from starting in a new one.
+fn as_good_as_new(folder: &str, path: &str) -> bool {
+    let on_its_own = branch_of(folder, path) == made_branch(path);
+    on_its_own && Path::new(path).join(".git").is_file() && unsaved_work(folder, path).is_none()
+}
+
+/// Where a session of this account's runs by Claude Code's own registry, and a
+/// person's own sessions from a terminal. Only those with a process still there: a
+/// CLI that went with a core leaves its entry behind, and the worktree it names is
+/// the very one to go on in.
+pub fn claude_sessions_running(account_path: &str) -> Vec<String> {
+    [Some(account_path.to_string()), own_claude_dir()].into_iter().flatten().flat_map(|dir| crate::claude::session::running_cwds(&dir)).collect()
+}
+
+/// What a helper cut off before its CLI said where it works may have begun: the
+/// worktrees of its own CLI's kind new since it was spawned (`before`) that nobody
+/// claims. Those as good as new, then those holding something. Which of the first
+/// was whose does not matter: nothing in one tells it from the next.
+pub fn half_made(provider: Provider, folder: &str, account_path: &str, before: &[String], claimed: &[String]) -> (Vec<String>, Vec<String>) {
+    let mut left: Vec<String> = left_since(made_for(folder, account_path), before, claimed)
+        .into_iter()
+        .filter(|p| match provider {
+            Provider::Claude => under_claude_worktrees(folder, p),
+            Provider::Codex => codex_shaped(p),
+        })
+        .collect();
+    left.sort();
+    left.into_iter().partition(|p| as_good_as_new(folder, p))
+}
+
 /// What deleting a worktree would throw away.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -670,6 +703,41 @@ mod tests {
         let before = ["e:/p/.claude/worktrees/old".to_string()];
         let live = [r"E:\p\.claude\worktrees\busy\sub".to_string()];
         assert_eq!(left_since(now, &before, &live), [r"E:\p\.claude\worktrees\new"]);
+    }
+
+    #[test]
+    fn what_a_cut_off_start_left_is_gone_on_in_only_as_good_as_new() {
+        let Some((root, repo, codex)) = codex_layout("half-made") else { return };
+        let account = root.join("account").to_string_lossy().into_owned();
+        let ok = |c: &mut Command| c.output().is_ok_and(|o| o.status.success());
+        let user = ["-c", "user.email=t@t", "-c", "user.name=t"];
+        let claude = |name: &str| {
+            let wt = root.join("repo").join(".claude").join("worktrees").join(name).to_string_lossy().into_owned();
+            assert!(ok(git(&repo).args(["worktree", "add", "-q", "-b", &format!("worktree-{name}"), &wt])));
+            wt
+        };
+        let (fresh, dirty, moved, committed) = (claude("fresh"), claude("dirty"), claude("moved"), claude("committed"));
+        std::fs::write(Path::new(&dirty).join("half-done.txt"), "work").unwrap();
+        assert!(ok(git(&moved).args(["switch", "-q", "-c", "its-own"])));
+        assert!(ok(git(&committed).args(user).args(["commit", "-q", "--allow-empty", "-m", "work"])));
+        let (good, holding) = half_made(Provider::Claude, &repo, &account, &[], &[]);
+        assert_eq!(good, [fresh.clone()], "clean, on the branch it was made on, nothing of its own");
+        assert_eq!(holding, [committed.clone(), dirty.clone(), moved.clone()], "named, never gone on in");
+
+        // Each CLI goes on in what is its own kind: Codex's has no branch to be on.
+        assert_eq!(half_made(Provider::Codex, &repo, &account, &[], &[]), (vec![codex.clone()], Vec::new()));
+        // What was there as it was spawned, or anybody's, is nothing it began.
+        assert!(half_made(Provider::Claude, &repo, &account, &[fresh.clone()], &[]).0.is_empty());
+        assert!(half_made(Provider::Claude, &repo, &account, &[], &[fresh.clone()]).0.is_empty());
+        assert!(half_made(Provider::Claude, &repo, &account, &[], &[format!("{fresh}{}src", std::path::MAIN_SEPARATOR)]).0.is_empty(), "a session in a subfolder of it");
+
+        // A checkout cut short reads as changes; one with no `.git` as no checkout.
+        std::fs::remove_file(Path::new(&codex).join(".git")).unwrap();
+        assert!(!as_good_as_new(&repo, &codex));
+        for wt in [&dirty, &moved, &committed, &fresh] {
+            let _ = git(&repo).args(["worktree", "remove", "-f", "-f", wt]).output();
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

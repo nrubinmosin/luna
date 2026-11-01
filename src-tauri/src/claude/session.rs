@@ -341,6 +341,19 @@ pub fn live_cwds(account_path: &str) -> Vec<String> {
         .collect()
 }
 
+/// `live_cwds`, of the entries whose process is still there: one killed leaves its
+/// entry behind.
+pub fn running_cwds(account_path: &str) -> Vec<String> {
+    let dir = Path::new(account_path).join("sessions");
+    let Ok(entries) = std::fs::read_dir(&dir) else { return vec![] };
+    entries
+        .flatten()
+        .filter_map(|e| parse_session_file(&e.path()))
+        .filter(|v| v["pid"].as_u64().is_some_and(|pid| crate::procs::alive(pid as u32)))
+        .filter_map(|v| v["cwd"].as_str().map(str::to_owned))
+        .collect()
+}
+
 /// Finds the CLI's registry entry for a pty session: by pid when that matches;
 /// else, for a resumed one, by the session it was told to resume; else by cwd +
 /// start time. Launcher shims give the pty a different pid than the CLI process

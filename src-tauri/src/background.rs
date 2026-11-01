@@ -612,6 +612,11 @@ fn command_for(e: &Entry, id: &str) -> (Vec<String>, String, Vec<(&'static str, 
                     args.extend(["--worktree".into(), name, "--resume".into(), sid.clone()]);
                 }
                 (Some(sid), None) => args.extend(["--resume".into(), sid.clone()]),
+                // One a core cut its first turn off making (`settle_worktree`).
+                (None, Some(wt)) if s.worktree => {
+                    let name = std::path::Path::new(wt).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    args.extend(["--worktree".into(), name]);
+                }
                 (None, _) if s.worktree => args.push("--worktree".into()),
                 (None, _) => {}
             }
@@ -655,12 +660,17 @@ fn command_for(e: &Entry, id: &str) -> (Vec<String>, String, Vec<(&'static str, 
                         dir = wt;
                     }
                 }
-                None => {
-                    args.extend(["-C".into(), s.folder.clone()]);
-                    if s.worktree {
-                        args.push("--worktree".into());
+                // Codex names no worktree: one a core cut its first turn off making
+                // (`settle_worktree`) is started in, and it makes no other.
+                None => match made {
+                    Some(wt) if s.worktree => args.extend(["-C".into(), wt]),
+                    _ => {
+                        args.extend(["-C".into(), s.folder.clone()]);
+                        if s.worktree {
+                            args.push("--worktree".into());
+                        }
                     }
-                }
+                },
             }
             args.extend(["--json".into(), "--skip-git-repo-check".into()]);
             // `exec` cannot ask for the folder's trust and goes without the
@@ -885,6 +895,7 @@ fn turn_base(id: &str) -> Option<Usage> {
 
 fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
     let base = turn_base(id);
+    settle_worktree(id);
     let (args, dir, envs, provider, on_stdin) = {
         let r = lock();
         if r.closed {
@@ -1935,6 +1946,10 @@ fn snapshot() -> Vec<Saved> {
     // first where both are held.
     for s in &mut saved {
         s.ties = crate::agents::ties_of(&s.id).unwrap_or_default();
+        // Its CLI has said where it works.
+        if s.session.is_some() || s.cwd.is_some() {
+            s.ties.worktrees_before = None;
+        }
     }
     saved.sort_by_key(|s| s.started_ms);
     saved
@@ -2126,6 +2141,25 @@ pub fn told_parent_for_test(id: &str) -> Option<String> {
 /// nothing it did can be carried on from.
 pub fn never_started(id: &str) -> bool {
     lock().entries.get(id).is_some_and(|e| e.cut_short && e.session.is_none())
+}
+
+/// A helper a core's going stopped before its CLI said where it works: its next turn
+/// goes on in what that turn began, where that can be told from nothing new
+/// (`agents::worktree_to_reuse`). Once, as a first turn no core cut off is no business
+/// of this: it has not been stopped.
+pub fn settle_worktree(id: &str) {
+    let (provider, folder, account) = {
+        let r = lock();
+        let Some(e) = r.entries.get(id).filter(|e| e.cut_short && e.session.is_none() && e.spec.worktree && e.cwd.is_none()) else { return };
+        (e.spec.provider, e.spec.folder.clone(), e.spec.account_path.clone())
+    };
+    if let Some(wt) = crate::agents::worktree_to_reuse(id, provider, &folder, &account) {
+        if let Some(e) = lock().entries.get_mut(id) {
+            note(e, &format!("goes on in {wt}"));
+            e.cwd = Some(wt);
+        }
+        save();
+    }
 }
 
 /// What never reached it that `caller` is to hear of (`Entry::undelivered`):
@@ -2997,6 +3031,38 @@ mod tests {
         let at = args.iter().position(|a| a == "--resume").unwrap();
         assert_eq!(args[at + 1], "s-1");
         assert!(envs.iter().any(|(k, v)| *k == "CLAUDE_CONFIG_DIR" && v == "C:\\acc"));
+    }
+
+    #[test]
+    fn a_first_turn_a_core_cut_off_goes_on_in_what_it_began_and_otherwise_makes_its_own() {
+        let flag = |args: &[String]| args.iter().any(|a| a == "--worktree");
+        // Claude Code goes back into one by name, from the project.
+        let mut e = entry(Provider::Claude);
+        e.spec.worktree = true;
+        assert!(flag(&command_for(&e, "x").0));
+        e.cwd = Some(std::path::Path::new("C:\\p").join(".claude").join("worktrees").join("half").to_string_lossy().into_owned());
+        let (args, dir, _) = command_for(&e, "x");
+        assert_eq!(value_of(&args, "--worktree"), Some("half"));
+        assert_eq!(dir, "C:\\p");
+        assert!(!args.iter().any(|a| a == "--resume"), "there is no conversation to resume");
+
+        // Codex names none: it is started in that one, and makes no other.
+        let mut e = entry(Provider::Codex);
+        e.spec.worktree = true;
+        let (args, _, _) = command_for(&e, "x");
+        assert_eq!(args[..3], ["exec", "-C", "C:\\p"]);
+        assert!(flag(&args));
+        e.cwd = Some("C:\\acc\\worktrees\\0a1b\\p".into());
+        let (args, _, _) = command_for(&e, "x");
+        assert_eq!(args[..3], ["exec", "-C", "C:\\acc\\worktrees\\0a1b\\p"]);
+        assert!(!flag(&args));
+
+        // No core has cut off a first turn that is only just starting.
+        let mut e = entry(Provider::Claude);
+        e.spec.worktree = true;
+        lock().entries.insert("first-turn".into(), e);
+        settle_worktree("first-turn");
+        assert_eq!(lock().entries.remove("first-turn").unwrap().cwd, None);
     }
 
     fn value_of<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {

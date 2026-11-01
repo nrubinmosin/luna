@@ -324,8 +324,13 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   before its first turn got anywhere is reported as never started, with its prompt, and with
   `resumeOnRestart` starts afresh on it. A visible helper spawned with it goes on too: Luna
   starts its CLI, in a pane or not, and types the same word in once it is back at its prompt,
-  unless you typed into it or an agent wrote to it first. What agents hold of the chats you
-  see — who spawned them, a worktree they were handed, answers owed, messages Luna was holding
+  unless you typed into it or an agent wrote to it first. A visible helper without it that has
+  no conversation to come back to is reported as never started in the same way, the prompt
+  and that agent's messages Luna was holding in a file, to send again. A worktree the core cut
+  a helper off making is not made twice: its fresh start goes back into it (Claude Code by
+  name, Codex by starting there) if it is clean, on the branch it was made on and nobody else's;
+  otherwise it stays where it is and the agent hears of it as `worktreeLeft`. What agents hold
+  of the chats you see — who spawned them, a worktree they were handed, answers owed, messages Luna was holding
   for your draft — is kept in `chat-ties.json` the same way and picked up when each chat starts
   again. So is a `luna_spawn` the core went in the middle of: the agent is told no helper came
   of it, with its prompt in a file and any worktree it had begun named and left where it is,

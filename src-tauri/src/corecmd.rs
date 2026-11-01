@@ -72,7 +72,7 @@ pub fn dispatch(cmd: &str, args: Value) -> Result<Value, String> {
             request_id: u64, chat_id: Option<String>, name: Option<String>, error: Option<String>),
         "agent_resumes" => call!(ok args, agents::agent_resumes),
         "chat_names" => call!(ok args, agents::chat_names,
-            names: HashMap<String, String>, groups: Option<HashMap<String, u32>>),
+            names: HashMap<String, String>, groups: Option<HashMap<String, u32>>, worktrees: Option<Vec<String>>),
         "account_usage" => call!(ok args, agents::account_usage, usage: HashMap<String, Value>),
         "power_state" => call!(ok args, power::power_state),
         "set_keep_awake" => call!(res args, power::set_keep_awake, on: bool),

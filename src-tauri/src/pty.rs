@@ -768,6 +768,11 @@ pub(crate) fn codex_helper_prompt(parent: &str, prompt: &str) -> String {
 /// Where the note starts: what comes before it is the prompt as it was asked.
 const HELPER_NOTE: &str = "\n\n[A note from Luna, not part of the task: ";
 
+/// A prompt as it was asked, with no note on it.
+pub(crate) fn without_note(text: &str) -> &str {
+    text.split(HELPER_NOTE).next().unwrap_or(text)
+}
+
 /// What `readOnly` takes away from Claude Code. Bash stays, and can still
 /// write: it is a checker's tool, and no flag tells its reads from its writes.
 pub(crate) const CLAUDE_EDIT_TOOLS: [&str; 3] = ["Edit", "Write", "NotebookEdit"];
@@ -1289,11 +1294,17 @@ pub async fn ensure_claude_session(
         // conversation found" and leaves the pane at a dead CLI: a chat that
         // was opened and never typed into starts afresh instead.
         let resume = resume.filter(|sid| crate::claude::session::find_transcript(&account_path, sid).is_some());
+        // Started afresh on nothing, its worktree not known yet: one a core cut it
+        // off making is gone back into by name, as Claude Code does with one that
+        // is there, and it keeps what is in it.
+        let again = spawn_request.is_none() && prompt.is_none() && worktree && worktree_name.is_none() && resume.is_none();
+        let reused = if again { crate::agents::worktree_to_reuse(&id, Provider::Claude, &folder, &account_path) } else { None };
+        let worktree_name = worktree_name.or_else(|| reused.as_deref().and_then(|wt| std::path::Path::new(wt).file_name()).map(|n| n.to_string_lossy().into_owned()));
         // A new worktree is about to branch off origin; a resumed session
         // already has its worktree. Here, under the spawn gate, so a pane
         // asking for the session meanwhile waits for this spawn — the one
         // with the opening prompt — instead of starting its own without it.
-        if worktree && resume.is_none() {
+        if worktree && resume.is_none() && reused.is_none() {
             crate::worktree::fetch_origin(&folder);
         }
         let mut args = vec![
@@ -1351,8 +1362,10 @@ pub async fn ensure_claude_session(
         } else {
             crate::agents::register(&id, Provider::Claude, &folder, &account_path, parent.as_deref(), tools, settings)
         };
-        if let Some(request) = spawn_request {
-            crate::agents::spawn_is(request, &id)?;
+        match spawn_request {
+            Some(request) => crate::agents::spawn_is(request, &id)?,
+            None if prompt.is_none() => crate::agents::chat_starting(&id, resume.is_some()),
+            None => {}
         }
         if let Some(mcp) = token.as_deref().and_then(|t| claude_mcp_file(&id, t)) {
             // Luna's tools without a permission prompt in every mode: the
@@ -1426,6 +1439,13 @@ pub async fn ensure_codex_session(
     // Built only if no process is running (see `spawn`).
     spawn(id.clone(), move || {
         let parent = crate::agents::parent_on_start(&id, parent);
+        // Started afresh on nothing, its worktree not known yet: Codex takes no name
+        // for one, so one a core cut it off making is started in with `-C`, as a
+        // resume is, and it makes no other.
+        let again = !login && spawn_request.is_none() && prompt.is_none() && worktree.unwrap_or(false) && resume.is_none();
+        let reused = if again { crate::agents::worktree_to_reuse(&id, Provider::Codex, &folder, &account_path) } else { None };
+        let worktree = worktree.filter(|_| reused.is_none());
+        let folder = reused.unwrap_or(folder);
         let mut args: Vec<String> = vec![];
         let mut envs = vec![("CODEX_HOME", account_path.clone())];
         let describe;
@@ -1497,8 +1517,10 @@ pub async fn ensure_codex_session(
                 "effort": effort, "approval": approval, "sandbox": sandbox, "hooksUnasked": hooks_unasked,
             });
             let token = crate::agents::register(&id, Provider::Codex, &folder, &account_path, parent.as_deref(), tools, settings);
-            if let Some(request) = spawn_request {
-                crate::agents::spawn_is(request, &id)?;
+            match spawn_request {
+                Some(request) => crate::agents::spawn_is(request, &id)?,
+                None if prompt.is_none() => crate::agents::chat_starting(&id, resume.is_some()),
+                None => {}
             }
             if let Some(token) = token.filter(|_| crate::hub::mcp_url().is_some()) {
                 args.extend(codex_mcp_args());
@@ -1930,7 +1952,7 @@ pub fn sane_title(s: &str) -> Option<String> {
 /// A prompt trimmed to a title: whitespace flattened, 48 characters. Slash
 /// commands, replayed tool output and system reminders are not titles.
 pub fn title_from_prompt(text: &str) -> Option<String> {
-    let text = text.split(HELPER_NOTE).next().unwrap_or(text).trim();
+    let text = without_note(text).trim();
     if text.is_empty() || text.starts_with('<') || text.starts_with('/') {
         return None;
     }

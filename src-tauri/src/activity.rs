@@ -304,6 +304,15 @@ fn track<'a>(tracks: &'a mut HashMap<String, Track>, ended: &mut HashMap<String,
         .or_insert_with(|| Track { turns_ended: ended.remove(id).unwrap_or(0), ..Default::default() })
 }
 
+/// A session back between turns on the count it had, as the sampler has it once
+/// the window has started it, for the tests of what its caller is told.
+#[cfg(test)]
+pub(crate) fn between_turns_for_test(chat_id: &str) {
+    let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
+    let st = &mut *st;
+    track(&mut st.tracks, &mut st.ended, chat_id);
+}
+
 /// Drops the tracks of sessions that are no longer live, keeping their counts.
 fn drop_gone(tracks: &mut HashMap<String, Track>, ended: &mut HashMap<String, u32>, live: &[&str]) {
     tracks.retain(|id, t| {
