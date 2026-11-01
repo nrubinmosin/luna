@@ -161,6 +161,37 @@ pub fn release(chat_id: &str) {
     }
 }
 
+/// A helper's thread, named at last: a chat that took its file for its own in
+/// the moment before looks again.
+pub fn let_go_of_thread(id: &str) {
+    let of_thread = |p: &PathBuf| p.file_name().and_then(|n| parse_name(&n.to_string_lossy())).is_some_and(|(_, i)| i == id);
+    let chats: Vec<String> = match claims().lock() {
+        Ok(mut m) => {
+            let chats = m.iter().filter(|(_, p)| of_thread(p)).map(|(chat, _)| chat.clone()).collect();
+            m.retain(|_, p| !of_thread(p));
+            chats
+        }
+        Err(_) => return,
+    };
+    if let Ok(mut m) = turn_counts().lock() {
+        for chat in &chats {
+            m.remove(chat);
+        }
+    }
+    for chat in &chats {
+        crate::log::warn("codex", &format!("{}: had taken helper thread {id} for its own; looking again", crate::agents::label(chat)));
+    }
+}
+
+/// Whether a rollout is a background helper's, which no chat may guess its way
+/// into: `codex exec` claims nothing, and a helper's file written just before
+/// or after a chat starts looks like that chat's own.
+fn is_helpers(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| parse_name(&n.to_string_lossy()))
+        .is_some_and(|(_, id)| crate::background::is_helper_conversation(&id))
+}
+
 /// What the turn tracker of each chat has read of its rollout, and where it
 /// stopped.
 struct TurnCount {
@@ -381,7 +412,7 @@ pub fn rollout_for(live: &Live) -> Option<PathBuf> {
     let today = Local::now().date_naive();
     let mut candidates: Vec<(NaiveDateTime, PathBuf)> = rollouts_on(live.account_path, days_back(today, 2))
         .into_iter()
-        .filter(|(ts, _, p)| *ts >= not_before && !taken.contains(p))
+        .filter(|(ts, _, p)| *ts >= not_before && !taken.contains(p) && !is_helpers(p))
         .filter(|(_, _, p)| {
             first_line(p).and_then(|v| v["payload"]["cwd"].as_str().map(ours)).unwrap_or(false)
         })
@@ -398,9 +429,11 @@ pub fn rollout_for(live: &Live) -> Option<PathBuf> {
 
     // A guessed rollout is one chat's. The look above ran without the lock,
     // and another chat may have claimed the same file since: the first claim
-    // stands, and this chat looks again next time.
+    // stands, and this chat looks again next time. So may a helper have named
+    // it: asked under the lock, as `let_go_of_thread` notes the thread before
+    // it takes this lock, so one of the two sees the other.
     let mut m = claims().lock().ok()?;
-    if m.iter().any(|(k, v)| *k != live.chat_id && *v == found) {
+    if m.iter().any(|(k, v)| *k != live.chat_id && *v == found) || is_helpers(&found) {
         return None;
     }
     m.insert(live.chat_id.to_string(), found.clone());
@@ -699,6 +732,7 @@ pub fn latest_rate_limits(account_path: &str) -> Option<(Value, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provider::Provider;
 
     #[test]
     fn a_rollout_names_its_model_and_running_totals() {
@@ -808,6 +842,89 @@ mod tests {
         for chat in [a, b, c] {
             release(&chat);
         }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// An account folder to write rollouts into, and a moment long enough ago
+    /// for what is written after it to be in the past.
+    fn rollout_bench(tag: &str) -> (PathBuf, u64) {
+        let root = std::env::temp_dir().join(format!("luna-codex-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        (root, crate::throttle::now_ms() - 60_000)
+    }
+
+    fn write_rollout(root: &Path, at_ms: u64, uuid: &str) {
+        let ts = Local.timestamp_millis_opt(at_ms as i64).single().unwrap().naive_local();
+        let dir = day_dir(&root.to_string_lossy(), ts.date());
+        std::fs::create_dir_all(&dir).unwrap();
+        let name = format!("rollout-{}-{uuid}.jsonl", ts.format("%Y-%m-%dT%H-%M-%S"));
+        std::fs::write(dir.join(name), format!("{}\n", r#"{"type":"session_meta","payload":{"cwd":"E:\\p"}}"#)).unwrap();
+    }
+
+    fn takes(root: &Path, chat: &str, at_ms: u64, resume: Option<&str>) -> Option<String> {
+        rollout_for(&Live { chat_id: chat, cwd: "E:\\p", spawned_at_ms: at_ms as u128, resume, account_path: &root.to_string_lossy(), last_output_ms: 0 })
+            .and_then(|p| parse_name(&p.file_name()?.to_string_lossy()).map(|(_, id)| id))
+    }
+
+    #[test]
+    fn a_chat_never_takes_a_helpers_rollout_even_once_the_helper_is_gone() {
+        let (root, t0) = rollout_bench("helper-before");
+        let (helper, own) = (format!("helperbefore{t0}"), format!("ownbefore{t0}"));
+        let chat = format!("chat-before-{t0}");
+        // The helper's turn wrote its file a second before the chat started,
+        // and the chat's own is not there yet.
+        write_rollout(&root, t0 + 1_000, &helper);
+        assert_eq!(takes(&root, &chat, t0 + 2_000, None).as_deref(), Some(helper.as_str()), "what it did before Luna knew the thread");
+        release(&chat);
+        crate::background::note_helper_conversation(Provider::Codex, &helper);
+        assert_eq!(takes(&root, &chat, t0 + 2_000, None), None, "it waits for its own");
+        write_rollout(&root, t0 + 3_000, &own);
+        assert_eq!(takes(&root, &chat, t0 + 2_000, None).as_deref(), Some(own.as_str()));
+        release(&chat);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_helpers_rollout_made_after_the_chat_started_is_not_the_chats_either() {
+        let (root, t0) = rollout_bench("helper-after");
+        let helper = format!("helperafter{t0}");
+        let chat = format!("chat-after-{t0}");
+        write_rollout(&root, t0 + 3_000, &helper);
+        crate::background::note_helper_conversation(Provider::Codex, &helper);
+        assert_eq!(takes(&root, &chat, t0 + 2_000, None), None);
+        release(&chat);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_thread_named_late_takes_its_file_back_from_the_chat_that_took_it() {
+        let (root, t0) = rollout_bench("helper-late");
+        let (helper, own) = (format!("helperlate{t0}"), format!("ownlate{t0}"));
+        let chat = format!("chat-late-{t0}");
+        write_rollout(&root, t0 + 1_000, &helper);
+        assert_eq!(takes(&root, &chat, t0 + 2_000, None).as_deref(), Some(helper.as_str()));
+        let acct = root.to_string_lossy();
+        turns_completed(&Live { chat_id: &chat, cwd: "E:\\p", spawned_at_ms: (t0 + 2_000) as u128, resume: None, account_path: &acct, last_output_ms: 0 });
+        assert!(turn_counts().lock().unwrap().contains_key(&chat));
+        // `exec` says its thread id just after it has made the file.
+        crate::background::note_helper_conversation(Provider::Codex, &helper);
+        assert_eq!(takes(&root, &chat, t0 + 2_000, None), None, "the claim is gone with the turns counted off it");
+        assert!(turn_counts().lock().unwrap().get(&chat).is_none());
+        write_rollout(&root, t0 + 3_000, &own);
+        assert_eq!(takes(&root, &chat, t0 + 2_000, None).as_deref(), Some(own.as_str()));
+        release(&chat);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_helper_opened_as_a_chat_still_finds_its_own_by_id() {
+        let (root, t0) = rollout_bench("helper-open");
+        let helper = format!("helperopen{t0}");
+        let chat = format!("chat-open-{t0}");
+        write_rollout(&root, t0, &helper);
+        crate::background::note_helper_conversation(Provider::Codex, &helper);
+        assert_eq!(takes(&root, &chat, t0 + 30_000, Some(&helper)).as_deref(), Some(helper.as_str()));
+        release(&chat);
         let _ = std::fs::remove_dir_all(&root);
     }
 
