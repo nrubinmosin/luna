@@ -520,6 +520,9 @@ fn owe_from(caller: &str, id: &str, baseline: u32, cursor: u64) {
     // said all the same.
     let (cursor, resumed) = r.owed.get(&key).map_or((cursor, false), |o| (o.cursor.min(cursor), o.resumed || o.cut_short));
     r.owed.insert(key, Owed { resumed, ..Owed::from(baseline, cursor) });
+    drop(r);
+    // A spawn's or a question's: a core killed now must not forget either.
+    crate::background::save();
 }
 
 /// How far the session's transcript goes now, 0 before it has one.
@@ -3495,6 +3498,8 @@ pub fn forget(id: &str) {
     if spawned {
         crate::agentlog::ended(id, if auto.is_some_and(|a| a.deleting) { "auto-deleted" } else { "deleted" });
     }
+    // A core killed now must not bring it back.
+    crate::background::save();
 }
 
 // --------------------------------------------------------------- notifier --
