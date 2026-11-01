@@ -851,9 +851,17 @@ fn take_event(id: &str, provider: Provider, reader: &OutReader, v: &Value) -> bo
     }
     let Some(e) = r.entries.get_mut(id) else { return false };
     e.observed.event_ms = crate::throttle::now_ms();
+    let unnamed = e.session.is_none();
     match provider {
         Provider::Claude => on_claude_event(e, v),
         Provider::Codex => on_codex_event(e, v),
+    }
+    let named = unnamed && e.session.is_some();
+    drop(r);
+    // At once: a core killed now would take it up as one that never got started,
+    // and start its work over with this conversation unknown to it.
+    if named {
+        save();
     }
     true
 }
@@ -1943,9 +1951,6 @@ pub fn restore() {
         let ties = std::mem::take(&mut s.ties);
         let token = crate::agents::tie_back(&s.id, s.spec.provider, &s.spec.folder, &s.spec.account_path, ties);
         let (id, running) = (s.id.clone(), s.running);
-        if let Some(session) = &s.session {
-            note_helper_conversation(s.spec.provider, session);
-        }
         let mut e = taken_up(s);
         e.spec.token = token;
         lock().entries.insert(id.clone(), e);
@@ -2053,6 +2058,11 @@ fn resume_text(queued: &[Queued]) -> String {
 /// behind it, which never reached the CLI (as `stop` counts them) and is kept
 /// for its sender.
 fn taken_up(s: Saved) -> Entry {
+    // One that never got started has none yet: its next turn's CLI names one,
+    // by the events every turn's go through.
+    if let Some(session) = &s.session {
+        note_helper_conversation(s.spec.provider, session);
+    }
     let stopped = s.running || s.cut_short;
     // A turn no core stopped ended only if the OS saw to it (`Entry::tied`).
     let resumable = !s.running || s.cut_short || s.tied;
@@ -3097,6 +3107,19 @@ mod tests {
         }))
         .expect("helpers.json from before them still reads");
         assert!(!spec.read_only && spec.agent.is_none() && spec.parent.is_none());
+    }
+
+    #[test]
+    fn a_core_knows_the_conversations_of_the_helpers_it_takes_up_and_starts_afresh() {
+        take_up_for_test("known-on", "C:\\p", 1, &[], None);
+        assert!(is_helper_conversation("sid"), "taken up with its conversation");
+        take_up_for_test("known-new", "C:\\p", 0, &[], Some("the prompt"));
+        assert!(never_started("known-new"));
+        on_claude_event(lock().entries.get_mut("known-new").unwrap(), &json!({ "type": "system", "subtype": "init", "session_id": "started-afresh", "cwd": "C:\\p" }));
+        assert!(is_helper_conversation("started-afresh"), "started afresh, under the id its CLI gives it now");
+        assert!(!never_started("known-new"));
+        lock().entries.remove("known-on");
+        lock().entries.remove("known-new");
     }
 
     #[test]
