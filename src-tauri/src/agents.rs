@@ -2191,10 +2191,9 @@ pub struct AccountChoice {
     pub account: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub skipped: Vec<SkippedAccount>,
-    /// Anything to know about the one taken: that it is the fullest list's
-    /// best, or that its usage is not known.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub note: Option<String>,
+    /// Why this one: the first with room, and how full it is; the full list's
+    /// best; or the first signed in, its usage not known yet.
+    pub why: String,
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
@@ -2455,17 +2454,23 @@ fn pick_from_list(
                 spent.push((a, *pct));
             }
             _ => {
-                let note = windows.is_none().then(|| "its usage is not known yet".to_string());
-                return Ok((a.clone(), AccountChoice { account: a.name.clone(), skipped, note }));
+                let why = match (&windows, fullest) {
+                    (None, _) => "the first in the list signed in; its usage is not known yet".to_string(),
+                    (Some(_), None) => "the first in the list with room: its windows have reset since Luna last read them".to_string(),
+                    (Some(_), Some((label, pct))) => {
+                        format!("the first in the list with room in every window (under {ACCOUNT_SPENT_PCT:.0}%); the fullest, {label}, is at {pct:.0}%")
+                    }
+                };
+                return Ok((a.clone(), AccountChoice { account: a.name.clone(), skipped, why }));
             }
         }
     }
     if let Some((a, pct)) = spent.iter().min_by(|x, y| x.1.total_cmp(&y.1)) {
         skipped.retain(|s| s.account != a.name);
-        let note = Some(format!(
+        let why = format!(
             "every signed-in account in the list is at {ACCOUNT_SPENT_PCT:.0}% or more of a window; this one has the most room, at {pct:.0}%"
-        ));
-        return Ok(((*a).clone(), AccountChoice { account: a.name.clone(), skipped, note }));
+        );
+        return Ok(((*a).clone(), AccountChoice { account: a.name.clone(), skipped, why }));
     }
     if names.is_empty() {
         return Err("the account list is empty".into());
@@ -6517,7 +6522,7 @@ mod tests {
         assert_eq!(taken.name, "b", "under the line, and before c");
         assert_eq!(choice.account, "b");
         assert_eq!(choice.skipped, [SkippedAccount { account: "a".into(), why: "5 hours at 97%".into() }]);
-        assert_eq!(choice.note, None);
+        assert_eq!(choice.why, "the first in the list with room in every window (under 95%); the fullest, 5 hours, is at 94%");
     }
 
     #[test]
@@ -6528,7 +6533,7 @@ mod tests {
         assert_eq!(taken.name, "in");
         assert_eq!(choice.skipped.len(), 2);
         assert_eq!(choice.skipped[1].why, "not signed in");
-        assert_eq!(choice.note.as_deref(), Some("its usage is not known yet"));
+        assert_eq!(choice.why, "the first in the list signed in; its usage is not known yet");
     }
 
     #[test]
@@ -6538,7 +6543,7 @@ mod tests {
         let (taken, choice) = pick_from_list(&names(&["a", "b", "c"]), Provider::Claude, &allowed, &usage, |_| true, 0).unwrap();
         assert_eq!(taken.name, "b");
         assert_eq!(choice.skipped.iter().map(|s| s.account.as_str()).collect::<Vec<_>>(), ["a", "c"]);
-        assert!(choice.note.unwrap().contains("the most room, at 96%"));
+        assert!(choice.why.contains("the most room, at 96%"), "{}", choice.why);
     }
 
     #[test]
@@ -6560,8 +6565,8 @@ mod tests {
         let before = chrono::DateTime::parse_from_rfc3339("2025-12-31T00:00:00Z").unwrap().timestamp_millis() as u64;
         let after = chrono::DateTime::parse_from_rfc3339("2026-01-02T00:00:00Z").unwrap().timestamp_millis() as u64;
         let pick = |now| pick_from_list(&names(&["a"]), Provider::Claude, &allowed, &usage, |_| true, now).unwrap().1;
-        assert!(pick(before).note.is_some(), "spent, and the only one");
-        assert_eq!(pick(after).note, None, "the figure is from before the reset");
+        assert!(pick(before).why.contains("the most room, at 100%"), "spent, and the only one");
+        assert!(pick(after).why.contains("reset since"), "the figure is from before the reset");
     }
 
     #[test]
