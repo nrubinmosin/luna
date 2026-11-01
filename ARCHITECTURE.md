@@ -433,7 +433,7 @@ src-tauri/src/
   `read`/`wait` — also on any except its own (the transcript is on disk anyway, and whoever wrote must
   be able to collect the answer); `kill`/`delete` — descendants only;
   tool depth 1; at most 8 descendants. Children outlive the parent (`forget`): each passes to the parent's own parent, which reached it already through
-  that one; with none it is an orphan (`Known::orphan`, saved in `Ties`): no agent has a claim on it, a visible one stays a row with ↳ (a child in another folder also stands apart, but with the parent's name
+  that one (a visible one's row hears, `agent://reparent`, as it names its parent to every spawn, a core started later included); with none it is an orphan (`Known::orphan`, saved in `Ties`): no agent has a claim on it, a visible one stays a row with ↳ (a child in another folder also stands apart, but with the parent's name
   in the tooltip), and a background one is listed under "Helpers with no chat" (`LooseHelpers`, any helper whose line up through helpers ends at no chat row) and joins `auto`, since no row shows it and nobody awaits its answer; a helper started without a folder works where its caller does, worktree and all
   (`agents::caller_worktree`, both providers). Deleting a child via `delete` removes its worktree if asked — `remove -f -f`,
   because Claude Code locks its worktree and a killed one does not release the lock; the worktree is where the
@@ -482,13 +482,23 @@ src-tauri/src/
   A helper with its own helpers still to answer it (`waits_on_helpers`) is held the same way, and its state reads
   `background`; a turn on a notice from them counts once it has all their answers, so what it makes of them reaches
   its caller, and a `wait` or `read` that takes the first answer leaves the rest owed (`shown`).
+  A job's end is clocked on the debt itself (`Owed::held`): the notifier and a `wait` go by the same 20 s, the wait's
+  own hold counts only from there (`held_for_wait`, `job_end_stood`), so the end reaches the caller once, and `wait`'s
+  `job_done` brings what was said since as the notice does.
+  Every debt has a revision (`Owed::rev`), and what is decided about one touches only that one: `take_debt` looks and
+  takes in one hold of the lock, `settle_told` and a `job_done` go by the revision, so a question asked meanwhile stands
+  even with the same baseline and offset.
   **The breaker.** Past 12 turn-end notices in 15 minutes for one (caller, session) the notifier stops telling that
-  pair (`BREAKER_NOTICES`, `count_notice`, `pair_stopped`): the last notice says so, the log warns, the desktop is told
-  once, and only a person typing into either chat lifts it, as two models answering each other could lift anything else
-  forever. Prompts and questions do not count: they hold until answered, and a busy helper asks many. Real use peaked
-  at 3 per pair in half an hour; the loop ran one a minute.
-  The notifier types on a thread per notice (`TypingInto`, one at a time per session, shared with `luna-held`, which
-  types held sends): `type_text` waits up to 12 s for the turn to start, and one stuck caller delayed every other.
+  pair of that session's turns and jobs (`BREAKER_NOTICES`, `count_notice`, `pair_stopped`): the last notice says so, the
+  log warns, the desktop is told once, and only a person typing into either chat lifts it, as two models answering each
+  other could lift anything else forever. Prompts, questions and exits are neither counted nor silenced
+  (`standing_line`): they hold until answered and cannot loop, a busy helper asks many, and one must not sit on a prompt
+  until it times out. Real use peaked at 3 per pair in half an hour; the loop ran one a minute.
+  Luna types into a terminal one thing at a time (`TypingInto`): notices, each on a thread of its own as `type_text` waits
+  up to 12 s for the turn to start and one stuck caller delayed every other; held sends on `luna-held`; and `send` and
+  `answer` in the tool call's thread, which wait up to 25 s for their turn and read the session only then. A send not let
+  in by then is held, an answer is refused. A paste and its Enter 400 ms later, or a draft put aside and back, has
+  nothing typed in between.
   A notice a draft holds back is worked out again at each look, so answer files are named by their contents.
   **A turn that failed.** `failure_of`: a background helper's `error` (its `result`/`turn.failed` event, a
   non-zero exit, `luna_kill`), Claude Code's last transcript word when it is an `isApiErrorMessage` line, else its
@@ -592,7 +602,9 @@ src-tauri/src/
   parsed into a log of what it did (`luna_read(screen)` shows that in place of a screen); the
   conversation lands in the CLI's own transcript / rollout as with any session. Busy is the process
   running, not its stdout staying open: a job the turn left can have inherited that pipe, so it is read on a thread of
-  its own and the turn ends with the process, its last events given 2 s. Between turns `children_busy` is what the turn
+  its own (`OutReader`) and the turn ends with the process, once the reader has got through what the CLI wrote: it ended,
+  or it has sat in a read with nothing coming for 500 ms (30 s at most). An event is looked at under the lock against the
+  turn being over, so none lands after its turn. Between turns `children_busy` is what the turn
   left in the helper's job (`procs::left_running`, read as the turn ends and at each activity sample, as it takes a
   process snapshot); `send` during a turn queues the text for the next, and a turn about to start takes the
   helper's run under the same lock that found it free (`claim`), so text arriving before the process
@@ -606,7 +618,9 @@ src-tauri/src/
   MCP server, if only for `--permission-prompt-tool mcp__luna__luna_permission` (hidden from its
   model by `--disallowedTools`): its permission prompts and `AskUserQuestion` arrive as that call,
   held on a Condvar until `luna_answer` (allow / deny with the input back, or `answers` by question
-  text) or the turn's end; several at once (parallel subagents) queue, and the oldest unanswered is the one shown. Codex's `exec` asks nobody (approval never) and puts a question in its
+  text) or the turn's end; several at once (parallel subagents) queue, and the oldest unanswered is the one shown. Each
+  has an opaque id in `ask`, which `luna_answer` takes as `askId`: one no longer open is refused, and without it the
+  answer goes through only with a single ask held, so a slower responder's `allow` cannot land on the next. Codex's `exec` asks nobody (approval never) and puts a question in its
   reply — or, with `approval: auto-review`, runs `--approve-for-me`, and a reviewer model answers. Helpers are auto-deleted unless spawned with `autoDelete: false`. `send` with `interrupt` puts the
   text behind the queue, kills the turn's process tree, and waits for its reader to count the turn over, whose end
   starts the next turn on the queue as with any other (`background::interrupt`), so no one's text hangs on how the kill
