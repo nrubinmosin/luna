@@ -341,6 +341,26 @@ pub fn keep_count(chat_id: &str, turns_ended: u32) {
     state().lock().unwrap_or_else(|e| e.into_inner()).ended.insert(chat_id.to_string(), turns_ended);
 }
 
+/// The count is at least `turns_ended`: a turn that went with a core, found out
+/// only once the session is back.
+pub fn count_at_least(chat_id: &str, turns_ended: u32) {
+    let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
+    match st.tracks.get_mut(chat_id) {
+        Some(t) => t.turns_ended = t.turns_ended.max(turns_ended),
+        None => {
+            let kept = st.ended.entry(chat_id.to_string()).or_default();
+            *kept = (*kept).max(turns_ended);
+        }
+    }
+}
+
+/// How many turns the process started at `spawned_at_ms` has ended, the count of
+/// those before it aside; none before the sampler has first seen it.
+pub fn turns_of_process(chat_id: &str, spawned_at_ms: u128) -> u32 {
+    let st = state().lock().unwrap_or_else(|e| e.into_inner());
+    st.tracks.get(chat_id).filter(|t| t.spawned_at_ms == spawned_at_ms).map_or(0, |t| t.turns_ended.saturating_sub(t.turns_before))
+}
+
 /// A chat was deleted: its track and the count kept for its return go.
 pub fn forget(chat_id: &str) {
     let mut st = state().lock().unwrap_or_else(|e| e.into_inner());

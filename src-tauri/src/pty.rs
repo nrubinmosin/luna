@@ -196,7 +196,7 @@ struct Launch {
 // and rewrites the files the process reads at start. A pane attaching to a
 // running chat ensures it too, and doing all that then left the running
 // process holding a token Luna no longer knew.
-async fn spawn(id: String, launch: impl FnOnce() -> Launch) -> Result<String, String> {
+async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, String>) -> Result<String, String> {
     let state = manager();
     let gate = state.gate(&id);
     let _spawning = gate.lock().unwrap_or_else(|e| e.into_inner());
@@ -217,7 +217,7 @@ async fn spawn(id: String, launch: impl FnOnce() -> Launch) -> Result<String, St
     if let Some(old) = exited {
         end_leftovers(&old);
     }
-    let Launch { provider, cwd, account_path, args, envs, resume, describe } = launch();
+    let Launch { provider, cwd, account_path, args, envs, resume, describe } = launch()?;
 
     // portable-pty starts a process whose cwd is not there in the user
     // profile instead, without a word: a chat whose worktree had been removed
@@ -979,6 +979,13 @@ impl PtyManager {
         sessions.get(id).filter(|s| s.alive.load(Ordering::SeqCst)).map(|s| activity_probe(id, s))
     }
 
+    /// When a person last typed into the session, 0 if never: to tell whether
+    /// any key has come since.
+    pub fn typed_at_ms(&self, id: &str) -> u64 {
+        let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        sessions.get(id).map_or(0, |s| s.typed_ms.load(Ordering::Relaxed))
+    }
+
     /// How long ago a person last typed into the session, None if never.
     pub fn typed_ago_ms(&self, id: &str) -> Option<u64> {
         let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
@@ -1087,7 +1094,7 @@ impl PtyManager {
     pub fn hold_keys(&self, id: &str) -> Option<KeyHold> {
         let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
         let s = sessions.get(id)?;
-        *s.held_keys.lock().unwrap_or_else(|e| e.into_inner()) = Some(Vec::new());
+        s.held_keys.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(Vec::new);
         Some(KeyHold { id: id.to_string() })
     }
 
@@ -1345,7 +1352,7 @@ pub async fn ensure_claude_session(
             crate::agents::register(&id, Provider::Claude, &folder, &account_path, parent.as_deref(), tools, settings)
         };
         if let Some(request) = spawn_request {
-            crate::agents::spawn_is(request, &id);
+            crate::agents::spawn_is(request, &id)?;
         }
         if let Some(mcp) = token.as_deref().and_then(|t| claude_mcp_file(&id, t)) {
             // Luna's tools without a permission prompt in every mode: the
@@ -1379,7 +1386,7 @@ pub async fn ensure_claude_session(
             ("DISABLE_AUTOUPDATER", "1".to_string()),
         ];
         envs.extend(session_envs(&id, parent.as_deref()));
-        Launch {
+        Ok(Launch {
             provider: Provider::Claude,
             cwd: folder,
             account_path,
@@ -1387,7 +1394,7 @@ pub async fn ensure_claude_session(
             envs,
             resume,
             describe: format!("model {model} perm {permission_mode} worktree {worktree}"),
-        }
+        })
     })
     .await
 }
@@ -1491,7 +1498,7 @@ pub async fn ensure_codex_session(
             });
             let token = crate::agents::register(&id, Provider::Codex, &folder, &account_path, parent.as_deref(), tools, settings);
             if let Some(request) = spawn_request {
-                crate::agents::spawn_is(request, &id);
+                crate::agents::spawn_is(request, &id)?;
             }
             if let Some(token) = token.filter(|_| crate::hub::mcp_url().is_some()) {
                 args.extend(codex_mcp_args());
@@ -1507,7 +1514,7 @@ pub async fn ensure_codex_session(
                 model.as_deref().unwrap_or("default")
             );
         }
-        Launch {
+        Ok(Launch {
             provider: Provider::Codex,
             cwd: folder,
             account_path,
@@ -1515,7 +1522,7 @@ pub async fn ensure_codex_session(
             envs,
             resume: if login { None } else { resume },
             describe,
-        }
+        })
     })
     .await
 }
