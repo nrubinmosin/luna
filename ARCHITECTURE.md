@@ -359,7 +359,14 @@ src-tauri/src/
   (delete, kill, Quit, a respawn of one that exited) `procs::end_leftovers` ends what is still in it,
   which the CLI's tree kill misses once a parent has gone first, windowed programs spared. A
   background helper has one job for its life, each turn's process joined to it: between turns what
-  its turns left holds the machine by the same rule, and it is ended with the helper. Hooks print nothing: Claude Code adds the stdout of a hook exiting 0
+  its turns left holds the machine by the same rule, and it is ended with the helper. Its job alone
+  is tied to the core (`procs::tie`, `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`): a chat's CLI goes with its
+  terminal when a core dies, a helper's has none, and would run on unowned beside the turn the next
+  core starts on that conversation. This is the leftover rule, not an exception to it: a core that
+  leaves ends leftovers already (`stop_all`). The OS spares no window, so every way out that is not a
+  death lets go first (`let_go`, `Drop for Job`), `end_leftovers` sparing windows as ever; a window a
+  helper's turn opened dies with a core that dies, and only then. Windows only: elsewhere there is no
+  job, and a turn's process group runs on past a dead core. Hooks print nothing: Claude Code adds the stdout of a hook exiting 0
   to the context, and silence is free. Claude's registry beats an "idle" from a hook, a hook's
   "waiting" beats the registry's "busy" (a permission prompt is inside a turn). No mark is eternal:
   a hook's "busy" against the registry's "idle" goes stale in 15 s (a missed Stop), a hook's "waiting" — at
@@ -585,8 +592,10 @@ src-tauri/src/
   CLI to say where it made it (Claude Code's `init` event, Codex's rollout) and returns `worktree` and
   `branch`, which `list` carries for every helper too. The window gets their list as `agent://background` (the
   count on the parent row) and can hand one to a chat row between turns (`background_promote` →
-  `agent://promote`: same id, the session id to resume). Helpers outlive the core: every 2 s, and as
-  the core leaves (`stop_all`), the registry goes to `<data>/helpers.json` when it has changed — the
+  `agent://promote`: same id, the session id to resume). Helpers outlive the core: every 2 s, as
+  the core leaves (`stop_all`), and at once on what a core killed next must not undo (a spawn, a
+  delete, a question asked, an opening as a chat), the registry goes to `<data>/helpers.json` when it
+  has changed, one save at a time so that no older reading is written over a newer one — the
   spec without its token, the session id, the worktree, the turn count, whether a turn ran, the text
   queued behind it, and the agent layer's ties (`agents::Ties`: parent, name, settings, the answers
   owed and counts shown). Of the conversation itself nothing: that is in the CLI's transcript. A

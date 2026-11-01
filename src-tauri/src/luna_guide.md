@@ -107,7 +107,8 @@ can start other sessions and work with them.
   from a cursor taken after you asked, does not.
 - Asked again before an answer reached you, you are owed both: the next reply, read or
   notice covers everything said since the first question.
-- A restart of Luna's core stops a background helper's turn. You stay owed: the notice comes
+- A restart of Luna's core stops a background helper's turn and ends what its turns left
+  running. You stay owed: the notice comes
   once your own chat is back (given up after 10 minutes) and says it did NOT finish;
   `luna_send` has it carry on. Messages queued for it never reached it: the notice counts them
   and the file it names ends on them, word for word, to send again (`undelivered` in

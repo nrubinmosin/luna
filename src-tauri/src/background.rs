@@ -109,7 +109,10 @@ struct Entry {
     opening: Option<String>,
     /// The job every turn's process is put in, the first one's made for it:
     /// what a turn leaves running is still the helper's between turns, holds
-    /// the machine as a chat's would, and is ended with the helper.
+    /// the machine as a chat's would, and is ended with the helper. Tied to
+    /// the core: a helper has no terminal whose going would end its CLI, and
+    /// one left running by a core that died would run alongside the turn the
+    /// next core starts on the same conversation (procs.rs).
     job: Option<std::sync::Arc<crate::procs::Job>>,
 }
 
@@ -194,11 +197,13 @@ pub fn stop_all() {
     stop_turns(true);
     save();
     // A core that takes the helpers up again has no job of theirs to see
-    // what is left by: it goes with this one.
+    // what is left by: it goes with this one, but for programs with a window
+    // of their own, which the OS would end with the job if it were still tied.
     let jobs: Vec<(String, std::sync::Arc<crate::procs::Job>)> =
         lock().entries.iter().filter_map(|(id, e)| Some((id.clone(), e.job.clone()?))).collect();
     for (id, job) in jobs {
         end_leftovers(&id, Some(&job));
+        crate::procs::let_go(&job);
     }
 }
 
@@ -499,7 +504,12 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
                 Some(job) => {
                     crate::procs::join(job, pid);
                 }
-                None => e.job = crate::procs::adopt(pid).map(std::sync::Arc::new),
+                None => {
+                    e.job = crate::procs::adopt(pid).map(|job| {
+                        crate::procs::tie(&job);
+                        std::sync::Arc::new(job)
+                    })
+                }
             }
         }
     }
@@ -1095,6 +1105,8 @@ pub fn background_promote(id: String) -> Result<(), String> {
     crate::agents::promoted(&id);
     crate::emit::to_ui("agent://promote", promoted);
     changed();
+    // Or a core killed now would take it up beside the chat it has become.
+    save();
     Ok(())
 }
 
@@ -1154,17 +1166,23 @@ fn saved_file() -> std::path::PathBuf {
 /// not to be written over what the last core left.
 static RESTORED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Writes the helpers out if they changed since the last write.
-fn save() {
+/// Writes the helpers out if they changed since the last write: every
+/// SAVE_EVERY, and at once on what a core killed now must not undo (a spawn, a
+/// delete, a question asked). Not to be called with the registry's lock or the
+/// agent layer's held.
+pub fn save() {
     use std::sync::atomic::Ordering;
     static LAST: Mutex<Vec<u8>> = Mutex::new(Vec::new());
     if !RESTORED.load(Ordering::SeqCst) {
         return;
     }
+    // Held from before the reading: a save that read the registry ahead of a
+    // delete and wrote behind that delete's own save would bring the helper
+    // back, for a core killed before the next one.
+    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
     // The chats' ties go by the same beat, in a file of their own.
     crate::agents::save_chats();
     let Ok(bytes) = serde_json::to_vec_pretty(&snapshot()) else { return };
-    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
     if *last == bytes {
         return;
     }

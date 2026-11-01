@@ -474,7 +474,8 @@ moves or was started by a turn; what the CLI brings up with itself — MCP serve
 only while it moves, and a program with a window of its own, like a browser a login opened,
 not at all), and recent output. A background helper's leftovers between turns count the same
 way. Deleting a chat or a helper, or quitting Luna, ends whatever it left running, windowed
-programs aside. "Done" means no session is busy *or*
+programs aside. A core that dies takes a helper's whole job with it, a CLI still in its turn
+included, so nothing runs on unowned; there the OS spares no window. "Done" means no session is busy *or*
 waiting for a permission. A session whose turn ended on a usage limit (or another API error:
 a lost login, a billing problem) and sits on the dialog it left counts as done — nothing moves
 there before the reset — and the countdown notification says how many there were. Arming
