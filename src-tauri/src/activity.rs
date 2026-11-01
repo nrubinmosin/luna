@@ -329,6 +329,18 @@ fn count_on(t: &mut Track, spawned_at_ms: u128, disk: Option<u32>) {
     }
 }
 
+/// A session's turn count, running or gone.
+pub fn turns_counted(chat_id: &str) -> Option<u32> {
+    let st = state().lock().unwrap_or_else(|e| e.into_inner());
+    st.tracks.get(chat_id).map(|t| t.turns_ended).or_else(|| st.ended.get(chat_id).copied())
+}
+
+/// The count a session had under the last core, for the track it gets when
+/// the window starts it again: a caller's baseline goes by that count.
+pub fn keep_count(chat_id: &str, turns_ended: u32) {
+    state().lock().unwrap_or_else(|e| e.into_inner()).ended.insert(chat_id.to_string(), turns_ended);
+}
+
 /// A chat was deleted: its track and the count kept for its return go.
 pub fn forget(chat_id: &str) {
     let mut st = state().lock().unwrap_or_else(|e| e.into_inner());

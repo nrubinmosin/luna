@@ -16,8 +16,7 @@ can start other sessions and work with them.
   conversation. The user sees it as a count
   on your chat's row and can open it as a chat between its turns. `visible: true` makes it a
   normal chat row instead, nested under yours, that the user can type into.
-- `luna_list` covers what you spawned and what they spawned. Window groups are how the user
-  arranges chats.
+- Window groups are how the user arranges chats.
 - Each `luna_list` row also says, with no need to read the session:
   - `turnStartedAt`: when the turn on now began; null between turns. `lastActivityAt`: the
     last thing Luna saw it do: a background helper's last event, a visible session's last
@@ -126,6 +125,16 @@ can start other sessions and work with them.
   from a cursor taken after you asked, does not.
 - Asked again before an answer reached you, you are owed both: the next reply, read or
   notice covers everything said since the first question.
+- A restart of Luna's core stops a background helper's turn and what its turns left running. You
+  stay owed: once your chat is back (given up after 10 minutes) a notice says it did NOT finish;
+  `luna_send` has it carry on. What you queued never reached it: the notice counts it and its file
+  ends on it word for word (`undelivered` in `luna_read`, `luna_wait`). Stopped before its first
+  turn got anywhere, it "never got started" and the file holds its prompt.
+- `resumeOnRestart` goes on by itself with that text (afresh on its prompt if it never got started)
+  where Luna knows the old turn ended (a normal stop; on Windows any core death), else the plain
+  notice; one notice says so, the usual one follows.
+- Visible sessions and chats you wrote to come back when the window starts them, with text held for
+  them; the notice comes then, or after a minute saying they have not.
 
 ## Answering and steering
 - A session in state `question` or `waiting` has an `ask`: the questions with their
@@ -151,4 +160,3 @@ can start other sessions and work with them.
   job or helper of its runs; a read or a send in between starts the 30 minutes over
   (`deletesInMin` in `luna_list` counts down). The worktree stays. Off for visible ones unless
   `true`. A helper the user typed into, or one you killed, is never auto-deleted.
-- Every helper costs its account's quota; several at once cost it in parallel.

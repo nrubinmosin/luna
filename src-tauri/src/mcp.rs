@@ -243,7 +243,8 @@ fn tools() -> Value {
                 "name": { "type": "string" },
                 "tools": { "type": "boolean", "description": "these tools too (one level)" },
                 "visible": { "type": "boolean", "description": "a chat the user sees and types in" },
-                "autoDelete": { "type": "boolean", "description": "deleted 30 min after its answer reached you; default: background true" }
+                "autoDelete": { "type": "boolean", "description": "deleted 30 min after its answer reached you; default: background true" },
+                "resumeOnRestart": { "type": "boolean", "description": "background: goes on by itself after a core restart" }
             }), &["prompt"]),
             "annotations": acts
         },
@@ -303,8 +304,8 @@ fn tools() -> Value {
         },
         {
             "name": "luna_delete",
-            "description": "Stop a session and remove it; dropWorktree: also the worktree and branch Luna made for it, unless another session is in it.",
-            "inputSchema": s(json!({ "id": { "type": "string" }, "dropWorktree": { "type": "boolean" } }), &["id"]),
+            "description": "Stop a session and remove it; dropWorktree: also its worktree and worktree-* branch (one it named stays; ignored files go), unless another session is in it. Refused if that loses uncommitted changes or unmerged commits (force: true overrides). Not removed: worktreeLeft, worktreeError.",
+            "inputSchema": s(json!({ "id": { "type": "string" }, "dropWorktree": { "type": "boolean" }, "force": { "type": "boolean" } }), &["id"]),
             "annotations": ends
         },
         {
@@ -363,7 +364,7 @@ fn call(caller: &str, params: &Value, this: &Call) -> Value {
     const STEERING: &[&str] = &[
         "provider", "account", "model", "effort", "permissionMode", "sandbox", "readOnly", "agent", "approval", "folder", "worktree", "visible",
         "tools", "autoDelete", "name", "until", "timeoutS", "afterTurn", "since", "last", "screen", "interrupt", "dropWorktree",
-        "group", "history", "allow", "ids", "mode",
+        "group", "history", "allow", "ids", "mode", "resumeOnRestart", "force",
     ];
     let set: Vec<String> = STEERING.iter().filter_map(|k| a.get(*k).filter(|v| !v.is_null()).map(|v| format!("{k}={v}"))).collect();
     if !set.is_empty() {
@@ -380,7 +381,7 @@ fn call(caller: &str, params: &Value, this: &Call) -> Value {
         // The first block is the result's JSON; its few fields that say how
         // the call went.
         let v: Value = out["content"][0]["text"].as_str().and_then(|t| serde_json::from_str(t).ok()).unwrap_or(Value::Null);
-        const OUTCOME: &[&str] = &["id", "outcome", "failed", "finished", "started", "starting", "queued", "turnsEnded", "state", "leftOut", "worktreeRemoved"];
+        const OUTCOME: &[&str] = &["id", "outcome", "failed", "finished", "started", "starting", "queued", "turnsEnded", "state", "leftOut", "worktreeRemoved", "worktreeLeft"];
         let got: Vec<String> = OUTCOME.iter().filter_map(|k| v.get(*k).filter(|v| !v.is_null()).map(|v| format!("{k}={v}"))).collect();
         crate::log::info("mcp", &format!("{line} in {ms}ms: {}", if got.is_empty() { "ok".to_string() } else { got.join(" ") }));
     }
@@ -461,8 +462,8 @@ fn run(caller: &str, params: &Value, this: &Call) -> Value {
         )
         .map(|w| json!(w)),
         "luna_kill" => agents::kill(caller, &id).map(|()| json!({ "ok": true })),
-        "luna_delete" => agents::delete(caller, &id, a["dropWorktree"].as_bool().unwrap_or(false))
-            .map(|wt| json!({ "ok": true, "worktreeRemoved": wt })),
+        "luna_delete" => agents::delete(caller, &id, a["dropWorktree"].as_bool().unwrap_or(false), a["force"].as_bool().unwrap_or(false))
+            .map(|r| json!(r)),
         "luna_notify" => agents::notify(caller, a["text"].as_str().unwrap_or("")).map(|()| json!({ "ok": true })),
         _ => Err(format!("unknown tool {name}")),
     };
@@ -618,10 +619,10 @@ mod tests {
             t.as_object_mut().unwrap().remove("annotations");
         }
         let text = list.to_string();
-        assert!(text.len() < 6300, "tools/list is {} chars", text.len());
+        assert!(text.len() < 6600, "tools/list is {} chars", text.len());
         assert!(INSTRUCTIONS.len() < 1000, "instructions are {} bytes", INSTRUCTIONS.len());
         // Read only on request, but whole: keep it to a few thousand tokens.
-        assert!(GUIDE.len() < 12_000, "the guide is {} bytes", GUIDE.len());
+        assert!(GUIDE.len() < 12_700, "the guide is {} bytes", GUIDE.len());
     }
 
     #[test]

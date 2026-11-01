@@ -142,14 +142,16 @@ fn run() {
 
     // What the sessions send the page goes to every window there is.
     crate::emit::install(broadcast);
-    // The helpers the last core left, before a window or an MCP call can ask
-    // after them.
+    // The helpers the last core left and what it kept of the chats, before a
+    // window or an MCP call can ask after them.
+    crate::agents::restore_chats();
     crate::background::restore();
     // The hook listener before any session can be spawned with hooks
     // pointing at it; the activity sampler feeds power.rs from then on.
     crate::hub::start();
     crate::agents::init();
     crate::agents::register_dev_caller();
+    crate::background::resume_stopped();
     crate::activity::start();
     crate::pty::prune_session_files_periodically();
     crate::media::prune_periodically();
