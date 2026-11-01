@@ -394,7 +394,7 @@ background helper spawned without tools.
   account defines (`--agent`); Codex has no such thing for a whole session and refuses it.
 - `account` in `luna_spawn` can be a list of one provider's accounts: the first signed in
   with every usage window under 95%, else the one with the most room. The result's
-  `accountChoice` says which it took and why it skipped the others.
+  `accountChoice` says which it took and why, and why it skipped the others.
 - Every session gets its own id as `LUNA_SESSION_ID`, and a helper its parent's as
   `LUNA_PARENT_ID`. A Claude Code helper's system prompt also says what it is
   (`--append-system-prompt`). Codex can only replace `developer_instructions`, which would
@@ -474,18 +474,26 @@ background helper spawned without tools.
   before it takes that turn as the answer.
 - The notice is one short line: what happened, how many messages the helper wrote since it
   was asked, the first line of its report, and a file with all of them — the report (the
-  longest message) first, then the
+  longest message, or the last when every one is short) first, then the
   last one, then the rest — so a closing "that was a stale wakeup, nothing changed" does not
-  hide the report before it. A `luna_read` collects the answer only when it returns all of
+  hide the report before it, and a dozen "still running" lines do not hide the "DONE" after them. A `luna_read` collects the answer only when it returns all of
   it, uncut, and the helper is done: one while it is still at work, or one with only the
   last message of several, does not count, and the notice still comes.
 - A turn that stopped on an error (a usage limit, an API error, a crash, a kill) is reported as
-  that, with the reason, not as finished; `luna_wait` has it as `failed`.
+  that, with the reason, not as finished; `luna_wait` has it as `failed`. What the helper said
+  before it stopped comes with it, as it does for a turn a restart of Luna's core cut short. A
+  helper whose CLI quit before its model did anything (an unknown `agent`, a model that is not
+  there) is idle, not busy with what that CLI had started, and goes like any other.
 - A helper that ended its turn with a job still running, or helpers of its own still to answer
   it, is announced as not done once. The next notice comes when that is over or it ends a turn
   of its own: a turn it only ran on a Luna notice does not count, unless the notice was its own
   helper's and that was the last answer it waited for. So two chats with a stray process each
-  do not keep waking each other.
+  do not keep waking each other. While its helpers are still out, what a helper makes of their
+  answers reaches its own parent when it is more than a line or two (a message of 400
+  characters or more), once: that only ever goes up from helper to parent, never back.
+  A background Claude Code helper's own background job (`run_in_background`) keeps its turn
+  going: `claude -p` waits for the job and takes its end up itself, so the helper stays
+  `working` until then and there is one notice, with everything it said.
 - If a chat still gets more than 12 turn-end notices about one session in 15 minutes, Luna
   stops telling it of that session's turns and jobs, says so in the log and once on the desktop,
   and goes on when you type into either chat. Its prompts and questions still come: a helper is
@@ -494,11 +502,11 @@ background helper spawned without tools.
   lands inside a paste or in the way of a draft coming back. A send that cannot get its turn in
   time is held like one a draft is in the way of.
 - A background helper's prompts each have an `id` in `ask`, which `luna_answer` takes as
-  `askId`: an answer written on one cannot land on the next. Without it, an answer is taken only
-  when one is held.
+  `askId`: an answer written on one cannot land on the next, and an id it never had is refused
+  as unknown. Without it, an answer is taken only when one is held.
 - `luna_wait` also takes several sessions (`ids`, `mode: "any"` or `"all"`) and says which
   finished. `luna_list` shows, for each helper, when its turn began, when it last did
-  anything, the full model id it ran on and what it spent: tokens, plus the cost where the
+  anything, the full model id it ran on (none until a model has answered) and what it spent: tokens, plus the cost where the
   CLI states it (Claude Code does, Codex does not). Visible sessions show less: Codex its
   token total, Claude Code none. An agent also gets a notice when an account its helpers run
   on reaches 90% and then 95% of a usage window, once each until that window resets.

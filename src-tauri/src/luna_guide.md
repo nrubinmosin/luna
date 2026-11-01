@@ -12,9 +12,8 @@ can start other sessions and work with them.
   runs), `exited`.
 - A helper is **background** by default: no row, no terminal; each turn is one run of the
   CLI's headless mode (`claude -p --output-format stream-json`, `codex exec --json`) on the
-  helper's account, and the next turn resumes its
-  conversation. The user sees it as a count
-  on your chat's row and can open it as a chat between its turns. `visible: true` makes it a
+  helper's account, resuming its conversation. The user sees it as a count on your chat's row
+  and can open it as a chat between its turns. `visible: true` makes it a
   normal chat row instead, nested under yours, that the user can type into.
 - Window groups are how the user arranges chats.
 - Each `luna_list` row also says:
@@ -22,8 +21,8 @@ can start other sessions and work with them.
     last thing Luna saw it do: a background helper's last event, a visible session's last
     transcript write. A long command or think shows nothing until it ends, so a quiet session
     is not yet a stuck one. Times are UTC ISO.
-  - `resolvedModel`: the full model id the CLI used, after its first turn (Codex: what its
-    rollout says the turn ran on, or the `<to>` of a `model rerouted` message).
+  - `resolvedModel`: the full model id a model answered on; null until one has (Codex: what
+    its rollout says the turn ran on, or the `<to>` of a `model rerouted` message).
   - `spend`: `session` and `lastTurn`, each `input` (no cache), `output`, `cacheRead`,
     `cacheWrite`, and `costUsd`: Claude Code's estimate, not a bill; Codex states none. A turn
     killed before it ended counts too, Claude Code's as tokens only; `lastTurn` is left out
@@ -85,13 +84,15 @@ can start other sessions and work with them.
   something, stops on a prompt or exits, Luna types one line into your chat starting with
   `[Luna notice, not typed by the user]`. It says what happened and how many messages the
   session wrote since it was asked, and names a file holding them: the report (the longest
-  message) first, then the last message, then the rest in order. The notice quotes only the
-  report's first line, cut to about 150 characters (`It begins: "…"`), and not of a turn that
-  stopped on an error, where it says so and why.
+  message; if all are short, the last) first, then the last message, then the rest in order.
+  The notice quotes only the report's first line, cut to about 150 characters (`It begins:
+  "…"`), and not of a turn that stopped on an error, where it says so and why.
   It is delivered when your chat is between turns and the user is not typing in it.
 - "NOT done yet": a job it started still runs, or its own helpers have yet to answer it. Said
   once; the next notice comes when that is over or a turn of its own ends, not one it only ran
-  on a Luna notice, unless that was its own helper's last answer.
+  on a Luna notice: unless that was its own helper's last answer, or, to you its parent, one on
+  its helpers' notices that wrote a message of 400+ characters. A background Claude Code
+  helper's own `run_in_background` job keeps its turn going: `working` until it ends, one notice.
 - Past 12 turn-end notices about one session in 15 minutes Luna stops telling you of its turns
   and jobs (the last says so; its prompts and questions still come) until a person types into
   either chat; `luna_wait` and `luna_read` still work.
@@ -109,16 +110,15 @@ can start other sessions and work with them.
   single wait returns, with `id`. Under `any` the others come back `pending`, or `timeout`,
   and are still owed. Their replies share one result: past 60,000 characters in all the
   longest are cut, and each names a file with the whole.
-- A `luna_wait` still running when the answer comes hands it over instead of the notice;
-  one your CLI moves to the background still returns, with no notice besides. One you
-  cancel or interrupt hands nothing over, and the notice comes as usual. A wait on several
-  holds each answer until it returns; a cancel gives them all back.
+- A `luna_wait` running when the answer comes hands it over instead of the notice, one your
+  CLI moved to the background too. One you cancel or interrupt hands nothing over (one on
+  several: none of them), and the notice comes as usual.
 - Without `afterTurn`, a wait is for the answer you are still owed, else for a turn past the
   last count you were shown.
 - `luna_read` with `since` and `last` gives the last N after the cursor, which goes past all
   of them. `tools: true` is Claude Code only; `screen: true` gives a background helper's last
-  log lines. A read with `last` that is cut keeps the newest (the older: an earlier `since`). A single message past 60,000
-  characters is cut short; the transcript `luna_sessions` names has it whole.
+  log lines. A single message past 60,000 characters is cut short; the transcript
+  `luna_sessions` names has it whole.
 - A read that returns everything a session said since you asked, whole, after it finished,
   collects the answer: no notice follows. One with only the last message of several, or
   from a cursor taken after you asked, does not.
@@ -142,8 +142,9 @@ can start other sessions and work with them.
 ## Answering and steering
 - A session in state `question` or `waiting` has an `ask`: the questions with their
   options, or the tool up for permission. In `luna_answer` an option's number counts from 1.
-  It returns `state`, `ask` and the `screen` after it. A background helper's `ask` has an `id`: pass it as `askId`, so your answer cannot land on the next one;
-  a stale id is refused, and so is no id with several held.
+  It returns `state`, `ask` and the `screen` after it. A background helper's `ask` has an
+  `id`: pass it as `askId`, so your answer cannot land on the next one; a stale or unknown id
+  is refused, and so is no id with several held.
 - A visible Codex that stops on a list of its own — "Hooks need review" at startup, say —
   has it as a question too; its options are the only answers it takes. A spawn that did not
   start because of one returns it as `ask`.
@@ -152,13 +153,10 @@ can start other sessions and work with them.
 - `luna_send` sent while a session works is `queued`: a visible session's CLI takes it into
   the running turn or the next, a background helper always the next; `luna_wait` with the
   `turnsEnded` returned waits for whichever answers it. `interrupt: true` makes the text the
-  next turn, behind any queued (`queued` if that turn would not stop). The result says how
-  it went. Where the user
-  is typing, or has left an unsent draft Luna cannot put aside
-  (Claude Code's is put aside and comes back; Codex's cannot be), the result says
-  `held: true`: Luna types the text in once they are done, and the answer comes as a
-  notice, or to a `luna_wait`, which waits for the text to go in first. Do not send it
-  again.
+  next turn, behind any queued (`queued` if that turn would not stop). Where the user is
+  typing, or has left an unsent draft Luna cannot put aside (Claude Code's is put aside and
+  comes back; Codex's cannot be), the result says `held: true`: Luna types it in once they
+  are done, and a `luna_wait` waits for that first. Do not send it again.
 - `autoDelete`: Luna deletes the helper 30 minutes after its answer reached you, not while a
   job or helper of its runs; a read or a send in between starts the 30 minutes over
   (`deletesInMin` in `luna_list` counts down). The worktree stays. Off for visible ones unless
