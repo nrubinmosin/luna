@@ -1917,7 +1917,9 @@ fn visible_signs(pty: &crate::pty::PtyManager, id: &str, provider: Provider) -> 
         Provider::Codex => {
             let tail = crate::codex::session::read_tail(&path);
             let session = tail.total_usage.as_ref().map(crate::background::Usage::of_codex);
-            let model = crate::codex::session::last_model(&path);
+            // The rollout names the model a turn is to run on before asking it:
+            // one never answered on (no tokens spent yet) may not be there.
+            let model = session.and_then(|_| crate::codex::session::last_model(&path));
             (model, session.map(|session| crate::background::Spend { last_turn: None, session }))
         }
     };

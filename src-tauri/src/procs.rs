@@ -488,7 +488,17 @@ pub fn left_running(job: &Job) -> Vec<String> {
 /// `keep` (the CLI, which its own kill takes), and not a program with a
 /// window of its own (`children`). Returns the names of those it ended.
 pub fn end_leftovers(job: &Job, keep: Option<u32>) -> Vec<String> {
-    let left = children(Some(job), keep);
+    end_all(&children(Some(job), keep))
+}
+
+/// `end_leftovers` for what in the job was born at `since_ms` or later: what
+/// one turn started, and not what an earlier one left running.
+pub fn end_born_since(job: &Job, since_ms: u64) -> Vec<String> {
+    let born: Vec<ProcRead> = children(Some(job), None).into_iter().filter(|r| r.started_ms >= since_ms).collect();
+    end_all(&born)
+}
+
+fn end_all(left: &[ProcRead]) -> Vec<String> {
     let names = imp::names(&left.iter().map(|r| r.pid).collect::<Vec<_>>());
     left.iter()
         .filter(|r| imp::end(r.pid, r.started_ms))

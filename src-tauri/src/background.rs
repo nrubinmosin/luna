@@ -240,6 +240,10 @@ struct Observed {
     /// Which turn this is, for what is read of the last one once it is over.
     #[serde(skip)]
     generation: u64,
+    /// The model has written or run something this turn: a CLI that goes before
+    /// that has started nothing of the model's (`turn_over`).
+    #[serde(skip)]
+    acted: bool,
 }
 
 impl Observed {
@@ -248,6 +252,7 @@ impl Observed {
         self.generation += 1;
         self.rerouted = false;
         self.turn_stated = false;
+        self.acted = false;
         self.by_message.clear();
         self.turn_base = base;
         // What a turn killed before it spent, now that it is known.
@@ -953,6 +958,8 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
             })
             .map_err(thread_err)?;
     }
+    // Ahead of the process: what it starts is born after this (`turn_over`).
+    let started_ms = crate::throttle::now_ms();
     let mut child = cmd.spawn().map_err(|e| {
         crate::log::error("background", &format!("could not start {}: {e}", crate::agents::label(id)));
         format!("could not start {}: {e}", provider.as_str())
@@ -1027,7 +1034,7 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
             None => Some("the helper was deleted"),
             Some(e) if e.run.as_ref().is_some_and(|run| run.stopped) => Some(STOPPED),
             Some(e) => {
-                e.run = Some(Run { pid, started_ms: crate::throttle::now_ms(), stopped: false });
+                e.run = Some(Run { pid, started_ms, stopped: false });
                 e.observed.begin_turn(base);
                 e.error = None;
                 e.cut_short = false;
@@ -1071,6 +1078,10 @@ fn abandon(mut child: std::process::Child, pid: Option<u32>) {
 fn on_claude_event(e: &mut Entry, v: &Value) {
     if v["type"] == "assistant" {
         claude_message_usage(&mut e.observed, &v["message"]);
+        // The CLI's own stand-in for a message no model wrote reads `<synthetic>`.
+        if v["message"]["model"].as_str().is_some_and(|m| !m.starts_with('<')) {
+            e.observed.acted = true;
+        }
     }
     match (v["type"].as_str(), v["subtype"].as_str()) {
         (Some("system"), Some("init")) => {
@@ -1081,11 +1092,11 @@ fn on_claude_event(e: &mut Entry, v: &Value) {
             if e.cwd.is_none() {
                 e.cwd = v["cwd"].as_str().map(str::to_owned);
             }
-            e.observed.model = v["model"].as_str().map(str::to_owned).or(e.observed.model.take());
+            // Its `model` is only what it was asked for, resolved: a model that
+            // does not exist reads there too, and the turn fails on it.
         }
         (Some("assistant"), _) if v["parent_tool_use_id"].is_null() => {
-            // A fallback mid-turn shows here, not in `init`. The CLI's own
-            // stand-in for a message no model wrote reads `<synthetic>`.
+            // The model that wrote it: a fallback mid-turn shows here too.
             if let Some(m) = v["message"]["model"].as_str().filter(|m| !m.starts_with('<')) {
                 e.observed.model = Some(m.to_string());
             }
@@ -1180,6 +1191,9 @@ fn rerouted_to(message: &str) -> Option<&str> {
 
 fn on_codex_event(e: &mut Entry, v: &Value) {
     let item = &v["item"];
+    if v["type"].as_str().is_some_and(|t| t.starts_with("item.")) && item["type"] != "error" {
+        e.observed.acted = true;
+    }
     match v["type"].as_str() {
         Some("thread.started") => {
             e.session = v["thread_id"].as_str().map(str::to_owned).or(e.session.take());
@@ -1225,11 +1239,24 @@ fn on_codex_event(e: &mut Entry, v: &Value) {
 /// The turn's process has exited: count the turn, let any held question go,
 /// and start the turn the queue has waiting.
 fn turn_over(id: &str, code: Option<i32>) {
+    let (job, strays_since) = match lock().entries.get(id) {
+        Some(e) => (e.job.clone(), e.run.as_ref().filter(|_| !e.observed.acted).map(|run| run.started_ms)),
+        None => (None, None),
+    };
+    // A CLI that went before its model did anything (an unknown `--agent`, a
+    // model that is not there) leaves what it started of its own, a `git` it
+    // asked where it was: no job of anyone's, and no reason to call the helper
+    // busy or keep it from going.
+    if let (Some(job), Some(since)) = (&job, strays_since) {
+        let ended = crate::procs::end_born_since(job, since);
+        if !ended.is_empty() {
+            crate::log::info("background", &format!("{}: its CLI went before its model did anything; ended what it had started: {}", crate::agents::label(id), ended.join(", ")));
+        }
+    }
     // Before the turn reads as over: whoever is owed its answer must not hear
     // "finished" ahead of the job it left running.
-    let job = lock().entries.get(id).and_then(|e| e.job.clone());
     let left_running = job.is_some_and(|job| !crate::procs::left_running(&job).is_empty());
-    let (next, thread, generation, stated, rerouted) = {
+    let (next, thread, generation, stated, rerouted, acted) = {
         let mut r = lock();
         let Some(e) = r.entries.get_mut(id) else { return };
         e.run = None;
@@ -1260,14 +1287,16 @@ fn turn_over(id: &str, code: Option<i32>) {
             claim(e);
         }
         let thread = e.session.clone().filter(|_| e.spec.provider == Provider::Codex).map(|t| (e.spec.account_path.clone(), t));
-        (next, thread, e.observed.generation, e.observed.turn_stated, std::mem::take(&mut e.observed.rerouted))
+        (next, thread, e.observed.generation, e.observed.turn_stated, std::mem::take(&mut e.observed.rerouted), e.observed.acted)
     };
     reg().1.notify_all();
     crate::log::info("background", &format!("{} turn over, code {code:?}", crate::agents::label(id)));
     // Codex's events name no model but a reroute's, which stands for its turn;
     // otherwise its rollout says what the turn ran on, read with the lock let go.
+    // Not of a turn the model never got to: the rollout names the model it was
+    // to run on before asking for it, one that is not there too.
     if let Some(rollout) = thread.and_then(|(account, t)| crate::codex::session::rollout_of_thread(&account, &t)) {
-        let model = if rerouted { None } else { crate::codex::session::last_model(&rollout) };
+        let model = if rerouted || !acted { None } else { crate::codex::session::last_model(&rollout) };
         let total = if stated { None } else { crate::codex::session::last_total_usage(&rollout).map(|u| Usage::of_codex(&u)) };
         if let Some(e) = lock().entries.get_mut(id) {
             e.observed.apply_rollout(generation, model, total);
@@ -1759,8 +1788,11 @@ pub fn signs(id: &str) -> Option<Signs> {
     Some(Signs {
         turn_started_at: turn_started.and_then(iso),
         last_activity_at: last.and_then(iso),
-        // A Codex rollout that would not read: what it was asked to run on.
-        resolved_model: o.model.clone().or_else(|| e.spec.model.clone().filter(|_| e.spec.provider == Provider::Codex && e.turns_ended > 0)),
+        // A Codex rollout that would not read: what it was asked to run on,
+        // once a turn has got through on it.
+        resolved_model: o.model.clone().or_else(|| {
+            e.spec.model.clone().filter(|_| e.spec.provider == Provider::Codex && e.turns_ended > 0 && e.error.is_none())
+        }),
         spend: (o.spend != Spend::default()).then_some(o.spend),
     })
 }
@@ -2526,6 +2558,13 @@ mod tests {
         let model = || lock().entries.get("reroute-1").unwrap().observed.model.clone();
 
         assert_eq!(signs("reroute-1").unwrap().resolved_model, None, "before its first turn");
+        // The turn's process could not reach its model: what the rollout names is
+        // only what it was to run on.
+        turn_over("reroute-1", Some(1));
+        assert_eq!(model(), None);
+        assert_eq!(signs("reroute-1").unwrap().resolved_model, None, "a failed turn ran on nothing");
+        lock().entries.get_mut("reroute-1").unwrap().error = None;
+        on_codex_event(lock().entries.get_mut("reroute-1").unwrap(), &json!({ "type": "item.completed", "item": { "id": "item_0", "type": "agent_message", "text": "ok" } }));
         turn_over("reroute-1", Some(0));
         assert_eq!(model().as_deref(), Some("gpt-a"), "the rollout, with no reroute");
         on_codex_event(
@@ -2553,11 +2592,15 @@ mod tests {
     #[test]
     fn the_model_is_the_one_the_cli_says_it_used() {
         let mut e = entry(Provider::Claude);
-        on_claude_event(&mut e, &json!({ "type": "system", "subtype": "init", "session_id": "s", "model": "claude-haiku-5-5" }));
-        assert_eq!(e.observed.model.as_deref(), Some("claude-haiku-5-5"));
+        on_claude_event(&mut e, &json!({ "type": "system", "subtype": "init", "session_id": "s", "model": "claude-haiku-0-1" }));
+        assert_eq!(e.observed.model, None, "what it was asked for, which may not be there");
         let said = |model: &str, parent: Value| json!({ "type": "assistant", "parent_tool_use_id": parent, "message": { "model": model, "content": [] } });
         on_claude_event(&mut e, &said("<synthetic>", Value::Null));
-        assert_eq!(e.observed.model.as_deref(), Some("claude-haiku-5-5"), "no model wrote that");
+        assert_eq!(e.observed.model, None, "no model wrote that");
+        assert!(!e.observed.acted);
+        on_claude_event(&mut e, &said("claude-haiku-5-5", Value::Null));
+        assert_eq!(e.observed.model.as_deref(), Some("claude-haiku-5-5"));
+        assert!(e.observed.acted);
         on_claude_event(&mut e, &said("claude-sonnet-5-5", json!("toolu_1")));
         assert_eq!(e.observed.model.as_deref(), Some("claude-haiku-5-5"), "a subagent's model is its own");
         on_claude_event(&mut e, &said("claude-sonnet-5-5", Value::Null));
@@ -2813,6 +2856,65 @@ mod tests {
         let mut codex = entry(Provider::Codex);
         codex.spec.tools = true;
         assert!(!has_dir(&codex), "Codex's sandboxes read anywhere");
+    }
+
+    /// `--agent no-such-agent`: Claude Code exits at once, and a `git` it had
+    /// started runs on in the helper's job for minutes.
+    #[cfg(windows)]
+    #[test]
+    fn what_a_cli_gone_before_its_model_did_anything_started_goes_with_its_turn() {
+        use std::os::windows::process::CommandExt;
+        let start = || {
+            std::process::Command::new("ping")
+                .args(["-n", "30", "127.0.0.1"])
+                .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+                .stdout(std::process::Stdio::null())
+                .spawn()
+                .unwrap()
+        };
+        let pause = || std::thread::sleep(std::time::Duration::from_millis(60));
+        let ended_within = |c: &mut std::process::Child, ms: u64| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(ms);
+            while std::time::Instant::now() < deadline {
+                if c.try_wait().unwrap().is_some() {
+                    return true;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            false
+        };
+        // A job an earlier turn left running, and what this turn's CLI started.
+        let mut earlier = start();
+        let job = std::sync::Arc::new(crate::procs::adopt(earlier.id()).unwrap());
+        pause();
+        let since = crate::throttle::now_ms();
+        pause();
+        let mut stray = start();
+        assert!(crate::procs::join(&job, stray.id()));
+        let mut e = entry(Provider::Claude);
+        e.job = Some(job.clone());
+        e.run = Some(Run { pid: None, started_ms: since, stopped: false });
+        lock().entries.insert("strays".into(), e);
+        turn_over("strays", Some(1));
+        assert!(ended_within(&mut stray, 3000), "the CLI's own, started this turn");
+        assert!(!ended_within(&mut earlier, 300), "an earlier turn's job runs on");
+        assert!(turn_state("strays").unwrap().children_busy, "and is what keeps it busy");
+        // Its model at work: what the turn starts is its job.
+        let mut started = start();
+        assert!(crate::procs::join(&job, started.id()));
+        {
+            let mut r = lock();
+            let e = r.entries.get_mut("strays").unwrap();
+            e.run = Some(Run { pid: None, started_ms: since, stopped: false });
+            e.observed.acted = true;
+        }
+        turn_over("strays", Some(0));
+        assert!(!ended_within(&mut started, 300));
+        for c in [&mut earlier, &mut started] {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+        lock().entries.remove("strays");
     }
 
     #[test]
