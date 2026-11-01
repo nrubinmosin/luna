@@ -358,11 +358,16 @@ Codex вместо Claude — с открывающим промптом, дож
 - Codex в `read-only`, `read-only-net` и `workspace-write` (а значит и в `auto-review`) выполняет команды в своей песочнице Windows
   (unelevated: без прав администратора и без отдельных пользователей), и без алиасов
   приложений из Store в PATH — песочница не может их запустить.
-- Сеть есть только в `read-only-net` и `danger-full-access`. `read-only-net` — значение самой
-  Luna: read-only от Codex с включённой сетью, в виде профиля разрешений, который передаётся
-  на запуск и никогда не пишется в `config.toml` аккаунта. На Windows TLS через schannel
-  (встроенный `curl`, `git` по https, `Invoke-WebRequest`) под токеном песочницы не работает;
-  `gh`, Python и обычный http работают.
+- Сеть есть в `read-only-net` и `danger-full-access`. В `read-only` и `workspace-write` по
+  умолчанию её нет, но на Windows Codex только направляет переменные прокси на мёртвый порт,
+  так что всё, что их не читает (ssh, обычные сокеты), всё равно подключается: это убережёт от
+  случайного выхода в сеть, но не удержит данные внутри. `read-only-net` — значение самой Luna:
+  read-only от Codex с включённой сетью, в виде профиля разрешений, который передаётся на запуск
+  и никогда не пишется в `config.toml` аккаунта; `auto-review` его не принимает, он работает
+  только в `workspace-write`. На Windows TLS через schannel (встроенный `curl`, `git` по https,
+  `Invoke-WebRequest`) под токеном песочницы не работает, как и ssh из состава Git; `gh`, Python
+  и обычный http работают, как и `git -c http.sslBackend=openssl` и `GIT_SSH`, указывающий на
+  `ssh.exe` самой Windows.
 - `luna_spawn` умеет делать проверяющего: `readOnly: true` забирает у Claude Code Edit, Write
   и NotebookEdit (его Bash писать всё ещё может), а Codex ставит в `read-only` или, если
   попросить, в `read-only-net`. `agent: "<имя>"` запускает Claude Code как агента, заданного в
