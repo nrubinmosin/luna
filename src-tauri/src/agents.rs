@@ -140,6 +140,11 @@ pub struct Message {
 #[derive(Clone, Serialize, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Ask {
+    /// A background helper's: which of its held asks this is, for `luna_answer`
+    /// to name, so that an answer written on one cannot land on the next. A
+    /// terminal shows one dialog at a time and has none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     /// `question` or `permission`.
     pub kind: &'static str,
     /// The turn holds until it is answered. Codex's async question does not
@@ -171,11 +176,11 @@ pub struct AskQuestion {
 
 impl Ask {
     pub fn question(questions: Vec<AskQuestion>, blocking: bool) -> Ask {
-        Ask { kind: "question", blocking, questions, tool: None, detail: None }
+        Ask { id: None, kind: "question", blocking, questions, tool: None, detail: None }
     }
 
     pub fn permission(tool: Option<String>, detail: Option<String>) -> Ask {
-        Ask { kind: "permission", blocking: true, questions: Vec::new(), tool, detail }
+        Ask { id: None, kind: "permission", blocking: true, questions: Vec::new(), tool, detail }
     }
 
     /// Claude Code's `AskUserQuestion` input: `questions[]` with `question`,
@@ -294,6 +299,16 @@ struct SpawnRequest {
 #[serde(rename_all = "camelCase")]
 struct Deleted {
     id: String,
+}
+
+/// A visible chat has passed to its deleted parent's parent (`forget`). The
+/// window keeps a chat's parent and names it at every spawn, a core started
+/// later included, so the row has to hear.
+#[derive(Clone, Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+struct Reparented {
+    id: String,
+    parent: String,
 }
 
 #[derive(Default)]
@@ -2659,6 +2674,7 @@ const ANSWER_SETTLE: std::time::Duration = std::time::Duration::from_millis(1500
 pub fn answer(
     caller: &str,
     id: &str,
+    ask_id: Option<&str>,
     answers: &[String],
     allow: Option<bool>,
     note: Option<&str>,
@@ -2688,7 +2704,7 @@ pub fn answer(
                 "a background helper has no terminal: answer with answers or allow, or stop its turn with luna_send interrupt: true".into(),
             );
         }
-        crate::background::answer(id, answers, allow, note)?;
+        crate::background::answer(id, ask_id, answers, allow, note)?;
     } else {
         if pty.has_draft(id) || pty.typed_ago_ms(id).is_some_and(|ms| ms < SEND_TYPING_MS) {
             return Err(format!("the user is typing in session {id}; try again in a little while"));
@@ -3449,17 +3465,7 @@ pub fn forget(id: &str) {
     let spawned = gone.as_ref().is_some_and(|k| k.parent.is_some() || k.orphan);
     let auto = r.auto.remove(id);
     r.known.remove(id);
-    let up = gone.and_then(|k| k.parent);
-    let Registry { known, auto: autos, .. } = &mut *r;
-    let mut handed = false;
-    for (kid, k) in known.iter_mut().filter(|(_, k)| k.parent.as_deref() == Some(id)) {
-        k.parent = up.clone();
-        k.orphan = up.is_none();
-        if k.orphan && k.settings["background"] == true {
-            autos.entry(kid.clone()).or_default();
-        }
-        handed = true;
-    }
+    let (handed, passed) = pass_up(&mut r, id, gone.and_then(|k| k.parent));
     r.tokens.retain(|_, chat| chat != id);
     r.seen.retain(|(_, chat), _| chat != id);
     r.owed.retain(|(who, chat), _| who != id && chat != id);
@@ -3478,9 +3484,35 @@ pub fn forget(id: &str) {
     if spawned {
         crate::agentlog::ended(id, if auto.is_some_and(|a| a.deleting) { "auto-deleted" } else { "deleted" });
     }
+    for chat in passed {
+        crate::emit::to_ui("agent://reparent", chat);
+    }
     if handed {
         crate::background::changed();
     }
+}
+
+/// `id`'s helpers pass to `up`, or with no `up` stand alone (see `forget`).
+/// Returns whether it had any, and the visible ones that have a new parent. One
+/// with none keeps the parent it names: its row says it is an orphan by that,
+/// and in a core started later a parent nobody knows reaches it no better.
+fn pass_up(r: &mut Registry, id: &str, up: Option<String>) -> (bool, Vec<Reparented>) {
+    let Registry { known, auto, .. } = r;
+    let mut handed = false;
+    let mut passed = Vec::new();
+    for (kid, k) in known.iter_mut().filter(|(_, k)| k.parent.as_deref() == Some(id)) {
+        k.parent = up.clone();
+        k.orphan = up.is_none();
+        let background = k.settings["background"] == true;
+        if k.orphan && background {
+            auto.entry(kid.clone()).or_default();
+        }
+        if let (Some(parent), false) = (&up, background) {
+            passed.push(Reparented { id: kid.clone(), parent: parent.clone() });
+        }
+        handed = true;
+    }
+    (handed, passed)
 }
 
 // --------------------------------------------------------------- notifier --
@@ -3558,6 +3590,9 @@ fn answer_file(id: &str, replies: &[String]) -> String {
     whole.hash(&mut hash);
     let path = dir.join(format!("{id}-{:016x}.md", hash.finish()));
     if path.is_file() {
+        // Named just now, it is not to go with the week's sweep, which goes by
+        // when a file was last written.
+        let _ = std::fs::File::options().write(true).open(&path).and_then(|f| f.set_modified(std::time::SystemTime::now()));
         return format!("the answer is in {}, its report first", path.display());
     }
     match std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&path, whole)) {
@@ -3664,9 +3699,10 @@ fn last_notice(caller: &str, id: &str, now: u64) -> bool {
     })
 }
 
-/// Whether Luna has stopped telling `caller` about `id`. A person typing into
-/// either of them since is someone looking at it, and lifts that; nothing a
-/// model does does, or two models answering each other would lift it forever.
+/// Whether Luna has stopped telling `caller` of `id`'s turns and jobs. A person
+/// typing into either of them since is someone looking at it, and lifts that;
+/// nothing a model does does, or two models answering each other would lift it
+/// forever.
 fn pair_stopped(pty: &crate::pty::PtyManager, caller: &str, id: &str) -> bool {
     let key = (caller.to_string(), id.to_string());
     let Some(at) = reg().lock().unwrap_or_else(|e| e.into_inner()).stopped.get(&key).copied() else { return false };
@@ -3779,7 +3815,16 @@ fn notice_line(
         }
         return Some((Some(format!("{who} finished its turn{reply}.")), Settled::Answered));
     }
-    if !alive {
+    standing_line(pty, who, id, k, o)
+}
+
+/// What a notice has to say of where the session stands, whatever its turns
+/// have come to: it has exited, or it holds on a prompt or a question. All a
+/// pair the breaker has stopped still hears: a helper must never sit on a
+/// prompt until it times out for the breaker's sake.
+fn standing_line(pty: &crate::pty::PtyManager, who: &str, id: &str, k: &Known, o: Owed) -> Option<(Option<String>, Settled)> {
+    let turn = crate::activity::turn_state(id).map(|t| t.turn);
+    if !live(pty, id) {
         if o.lost {
             return Some((
                 Some(format!("{who} has exited before Luna could type your message in: the user's draft held it until then.")),
@@ -3798,7 +3843,10 @@ fn notice_line(
     let held = turn == Some(crate::activity::Turn::Waiting) || ask.as_ref().is_some_and(|a| a.blocking && a.kind == "question");
     if held && !o.told_waiting {
         let line = match &ask {
-            Some(a) => format!("{who} {}. Answer with luna_answer.", a.line()),
+            Some(a) => match &a.id {
+                Some(ask_id) => format!("{who} {}. Answer with luna_answer, askId {ask_id}.", a.line()),
+                None => format!("{who} {}. Answer with luna_answer.", a.line()),
+            },
             None => format!(
                 "{who} is stopped on a prompt in its terminal; luna_read with screen: true shows it, luna_answer with keys answers it."
             ),
@@ -3987,14 +4035,15 @@ fn notifier() {
             let mut lines = Vec::new();
             let mut settled = Vec::new();
             for (id, k, o, who) in &items {
-                if pair_stopped(&pty, &caller, id) || held_for_wait(&pty, &caller, id, o) {
+                if held_for_wait(&pty, &caller, id, o) {
                     continue;
                 }
-                match notice_line(&pty, &caller, who, id, k, *o) {
+                let said = if pair_stopped(&pty, &caller, id) { standing_line(&pty, who, id, k, *o) } else { notice_line(&pty, &caller, who, id, k, *o) };
+                match said {
                     Some((Some(mut line), how)) => {
                         if counts_for_breaker(&how) && last_notice(&caller, id, now_ms()) {
                             line.push_str(&format!(
-                                " Luna stops telling you about it now: {BREAKER_NOTICES} notices in {} minutes look like chats waking each other. luna_wait and luna_read still reach it, and a person typing into either chat lifts this.",
+                                " Luna stops telling you of its turns and jobs now: {BREAKER_NOTICES} notices in {} minutes look like chats waking each other. Its prompts and questions still come, luna_wait and luna_read still reach it, and a person typing into either chat lifts this.",
                                 BREAKER_WINDOW_MS / 60_000
                             ));
                         }
@@ -4043,9 +4092,9 @@ fn notifier() {
     }
 }
 
-/// What the breaker counts: notices a turn's end brings. Not a prompt or a
-/// question, which hold until they are answered and cannot loop by themselves,
-/// and a busy helper may ask many.
+/// What the breaker counts, and all it silences: notices a turn's or a job's
+/// end brings. Not a prompt or a question, which hold until they are answered
+/// and cannot loop by themselves, and a busy helper may ask many.
 fn counts_for_breaker(how: &Settled) -> bool {
     matches!(how, Settled::Answered | Settled::Pending(..))
 }
@@ -4142,7 +4191,7 @@ fn breaker_tripped(caller: &str, id: &str) {
     crate::log::warn(
         "agents",
         &format!(
-            "stopped telling {} about {}: {BREAKER_NOTICES} notices within {} minutes; a person typing into either lifts this",
+            "stopped telling {} of the turns and jobs of {}: {BREAKER_NOTICES} notices within {} minutes; a person typing into either lifts this",
             label(caller),
             label(id),
             BREAKER_WINDOW_MS / 60_000
@@ -4153,7 +4202,7 @@ fn breaker_tripped(caller: &str, id: &str) {
     crate::power::notify_chat(
         caller,
         "Luna stopped a notice loop",
-        &format!("\"{chat}\" and \"{other}\" kept waking each other, so Luna has stopped telling the first about the second. Type into either chat to let it go on."),
+        &format!("\"{chat}\" and \"{other}\" kept waking each other, so Luna has stopped telling the first when the second's turns end. Type into either chat to let it go on."),
     );
 }
 
@@ -4376,6 +4425,12 @@ mod tests {
         let other = path(&["Another report.".to_string()]);
         assert_ne!(first, other, "a different answer is another file");
         assert_eq!(std::fs::read_to_string(&first).unwrap(), "The report.");
+        // Named again, it is as good as new for the week's sweep.
+        let week_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(8 * 24 * 3600);
+        std::fs::File::options().write(true).open(&first).unwrap().set_modified(week_ago).unwrap();
+        assert_eq!(path(&replies), first);
+        let age = std::fs::metadata(&first).unwrap().modified().unwrap().elapsed().unwrap();
+        assert!(age < std::time::Duration::from_secs(60), "{age:?}");
         // Gone meanwhile (the week's sweep), it is written again.
         std::fs::remove_file(&first).unwrap();
         assert_eq!(path(&replies), first);
@@ -4687,6 +4742,23 @@ mod tests {
         register("og-other", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, none.clone());
         owe_from("og-mid", "og-low", 0, 0);
         assert!(authorize("og-top", "og-low").is_ok());
+        // What the window is told, for a visible chat whose parent goes.
+        register("rp-top", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, none.clone());
+        register("rp-mid", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("rp-top"), true, none.clone());
+        register("rp-vis", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("rp-mid"), false, none.clone());
+        register("rp-bg", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("rp-mid"), false, bg.clone());
+        let (handed, passed) = pass_up(&mut reg().lock().unwrap(), "rp-mid", Some("rp-top".into()));
+        assert!(handed);
+        assert_eq!(passed, [Reparented { id: "rp-vis".into(), parent: "rp-top".into() }], "a background one has no row to tell");
+        // As a core started later finds it: the row now names the one it passed to.
+        reg().lock().unwrap().known.remove("rp-vis");
+        register("rp-vis", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("rp-top"), false, none.clone());
+        assert!(authorize("rp-top", "rp-vis").is_ok(), "still within reach");
+        let (_, passed) = pass_up(&mut reg().lock().unwrap(), "rp-top", None);
+        assert!(passed.is_empty(), "with no one to pass to, the row keeps saying whose it was");
+        for id in ["rp-bg", "rp-vis", "rp-mid", "rp-top"] {
+            forget(id);
+        }
 
         // A helper in the middle goes: its helper is the top chat's directly,
         // which could reach it all along.
@@ -4899,6 +4971,38 @@ mod tests {
         assert!(!pair_stopped(&pty, id, caller), "the other way round is a pair of its own");
         forget(caller);
         assert!(!pair_stopped(&pty, caller, id), "gone with the chat");
+    }
+
+    #[test]
+    fn a_stopped_pair_still_hears_of_prompts_and_exits_and_nothing_else() {
+        let (known, o, path) = job_over_helper("bp-s", "bp-c", "");
+        let pty = crate::pty::manager();
+        let t0 = now_ms();
+        for _ in 0..BREAKER_NOTICES {
+            count_notice(&mut reg().lock().unwrap(), "bp-c", "bp-s", t0);
+        }
+        assert!(pair_stopped(&pty, "bp-c", "bp-s"));
+        // A job's end or a turn's, which is all the notifier would have for a
+        // stopped pair: nothing.
+        assert!(standing_line(&pty, "Your helper", "bp-s", &known, o).is_none());
+        // Held on a prompt, it is told, or the helper sits there until it times out.
+        crate::background::in_turn_for_test("bp-s");
+        let asks = std::thread::spawn(|| crate::background::permission("bp-s", &serde_json::json!({ "tool_name": "Bash", "input": { "command": "ls" } })));
+        for _ in 0..200 {
+            if ask_of("bp-s").is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let Some((Some(line), Settled::Waiting)) = standing_line(&pty, "Your helper", "bp-s", &known, o) else { panic!("a prompt goes through") };
+        assert!(line.contains("asks for permission to run Bash: ls") && line.contains("askId"), "{line}");
+        crate::background::kill("bp-s");
+        let _ = asks.join();
+        // And gone is gone.
+        crate::background::gone_for_test("bp-s");
+        assert!(matches!(standing_line(&pty, "Your helper", "bp-s", &known, o), Some((Some(_), Settled::Exited))));
+        forget("bp-s");
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

@@ -61,13 +61,11 @@ can start other sessions and work with them.
   branch, so it does not share files and git with the sessions in that folder; the result
   names the worktree and branch, or `worktreePending` until the CLI has made it. `sameFolder`
   in the result lists live sessions working in the same directory.
-- `name` is its name in Luna.
 - The result: `id`, the resolved `settings`, `started`, `starting` (the CLI has not drawn
   yet; the prompt is held, do not resend), `warnings`, `turnsEnded`. For a background
   helper `started` means its process is up. For a visible one, false means it was not seen
   on the prompt within 30 s, and `screen` shows why: an unknown slash command, a login
-  screen, a dialog (then `ask` too). A visible Codex can still be loading its MCP servers
-  and start a little later: `luna_wait` before you send the prompt again.
+  screen, a dialog (then `ask` too).
 - A prompt over 8,000 characters reaches a visible session as a file it is told to read.
 
 ## Getting the answer
@@ -80,17 +78,18 @@ can start other sessions and work with them.
 - "NOT done yet": a job it started still runs, or its own helpers have yet to answer it. Said
   once; the next notice comes when that is over or a turn of its own ends, not one it only ran
   on a Luna notice, unless that was its own helper's last answer.
-- Past 12 turn-end notices about one session in 15 minutes Luna stops telling you (the last
-  says so) until a person types into either chat; `luna_wait` and `luna_read` still work.
+- Past 12 turn-end notices about one session in 15 minutes Luna stops telling you of its turns
+  and jobs (the last says so; its prompts and questions still come) until a person types into
+  either chat; `luna_wait` and `luna_read` still work.
 - `luna_wait` blocks until a session ends a turn, stops on a question or permission
   (`until: "waiting"`), or exits (`until: "exit"`); up to 30 min (`timeoutS`, default 600).
   Use it when you need the answer within the same turn. `outcome` says which: `turn_done`,
   `waiting`, `exit`, `job_done` or `timeout`. On `turn_done` (and an `exit` after such a
   turn), `reply` holds all the session said since you asked, the report first, as the
   notice's file has it. `failed` names the error a turn stopped on (API error, usage limit,
-  crash, kill), as the notice does: `reply` is what it said before that, if anything, and
-  `screen` comes too. `transcriptMissing`: no transcript found, so a null `reply` says
-  nothing. `job_done`: told it is not done, what it had running ended with no turn. A
+  crash, kill): `reply` is what it said before that, if anything, and `screen` comes too.
+  `transcriptMissing`: no transcript found, so a null `reply` says nothing. `job_done`: told
+  it is not done, what it had running ended with no turn; `reply` is what it said since. A
   background helper does not exit between turns: `until: "exit"` returns once it is deleted.
 - A `luna_wait` still running when the answer comes hands it over instead of the notice;
   one your CLI moves to the background still returns, with no notice besides. One you
@@ -119,7 +118,9 @@ can start other sessions and work with them.
   an option's number, counted from 1, or its label, or your own words), `allow:
   true/false` with an optional `note` for a permission, or `keys` (`{down}{enter}`,
   `{esc}`, `{tab}`, `{shift+tab}`, `{up}`, `{left}`, `{right}`, `{space}`, `{backspace}`)
-  for any other dialog. It returns `state`, `ask` and the `screen` after it.
+  for any other dialog. It returns `state`, `ask` and the `screen` after it. A background
+  helper's `ask` has an `id`: pass it as `askId`, so your answer cannot land on the next one;
+  a stale id is refused, and so is no id with several held.
 - A visible Codex that stops on a list of its own — "Hooks need review" at startup, say —
   has it as a question too; its options are the only answers it takes. A spawn that did not
   start because of one returns it as `ask`.

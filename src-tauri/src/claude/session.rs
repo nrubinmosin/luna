@@ -233,7 +233,7 @@ fn cached_first_prompt(account_path: &str, cwd: &str, session_id: &str) -> Optio
 /// for the few seconds before the CLI's own title lands in the transcript.
 fn read_first_prompt(account_path: &str, cwd: &str, session_id: &str) -> Option<String> {
     use std::io::{BufRead, BufReader};
-    let path = transcript_path(account_path, cwd, session_id);
+    let path = located_transcript(account_path, cwd, session_id);
     let f = std::fs::File::open(&path).ok()?;
     // The opening prompt is near the top; no need to walk a 700KB transcript.
     for line in BufReader::new(f).lines().take(80).map_while(Result::ok) {
@@ -278,7 +278,7 @@ pub fn meta(pid: Option<u32>, cwd: &str, spawned_at_ms: u128, account_path: &str
         ..Default::default()
     };
     if let (Some(scwd), Some(sid)) = (m.cwd.clone(), m.session_id.clone()) {
-        let path = transcript_path(account_path, &scwd, &sid);
+        let path = located_transcript(account_path, &scwd, &sid);
         let text = crate::pty::tail(&path, 128 * 1024);
         if let Some(c) = text.as_deref().and_then(context_in) {
             m.context_tokens = Some(c.tokens);
@@ -508,13 +508,26 @@ pub fn transcript_file(account_path: &str, cwd: &str, session_id: &str) -> PathB
 /// whichever project folder holds it. A session resumed from another folder
 /// keeps writing to the one it started in, and its cwd's folder holds only its
 /// tool results. Not there yet (no message so far), it is still the file named
-/// by the cwd.
+/// by the cwd. Where one was found is kept, as a transcript does not move and
+/// the session's title and context are asked for every few seconds per pane.
 fn located_transcript(account_path: &str, cwd: &str, session_id: &str) -> PathBuf {
+    static ELSEWHERE: std::sync::OnceLock<Mutex<HashMap<String, PathBuf>>> = std::sync::OnceLock::new();
     let path = transcript_path(account_path, cwd, session_id);
     if path.is_file() {
         return path;
     }
-    find_transcript(account_path, session_id).unwrap_or(path)
+    let elsewhere = ELSEWHERE.get_or_init(Default::default);
+    let key = format!("{account_path}\n{session_id}");
+    if let Some(found) = elsewhere.lock().unwrap_or_else(|e| e.into_inner()).get(&key).filter(|p| p.is_file()) {
+        return found.clone();
+    }
+    let Some(found) = find_transcript(account_path, session_id) else { return path };
+    let mut map = elsewhere.lock().unwrap_or_else(|e| e.into_inner());
+    if map.len() >= CACHE_CAP {
+        map.clear();
+    }
+    map.insert(key, found.clone());
+    found
 }
 
 /// The tool call the conversation stands on:the last one the model made that
@@ -687,6 +700,20 @@ mod reading_tests {
         std::fs::write(&elsewhere, "{}\n").unwrap();
         assert_eq!(transcript_of(Some(77), "E:\\p", 0, &acct), Some(elsewhere.clone()));
         assert_eq!(transcript_file(&acct, "E:\\p\\.claude\\worktrees\\w", sid), elsewhere);
+        // And the chat's title and context are read from there too.
+        std::fs::write(
+            &elsewhere,
+            concat!(
+                r#"{"type":"user","message":{"role":"user","content":"look into the login bug"}}"#, "\n",
+                r#"{"type":"ai-title","aiTitle":"Login bug","sessionId":"s"}"#, "\n",
+                r#"{"type":"assistant","message":{"model":"claude-opus-5","usage":{"input_tokens":1000,"output_tokens":5},"content":[{"type":"text","text":"ok"}]}}"#, "\n",
+            ),
+        )
+        .unwrap();
+        let m = meta(Some(77), "E:\\p", 0, &acct).unwrap();
+        assert_eq!(m.title.as_deref(), Some("Login bug"));
+        assert_eq!(m.context_tokens, Some(1000.0));
+        assert_eq!(m.first_prompt.as_deref(), Some("look into the login bug"));
         // Where the cwd says, once there is one there.
         std::fs::write(&expected, "{}\n").unwrap();
         assert_eq!(transcript_of(Some(77), "E:\\p", 0, &acct), Some(expected));
