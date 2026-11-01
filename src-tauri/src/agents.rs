@@ -392,20 +392,33 @@ struct SpawnTaken {
     worktrees_before: Vec<String>,
     /// The session it came to, as soon as there is one (`spawn_is`).
     helper: Option<String>,
+    /// That session owes its caller by now, whatever has become of the debt since,
+    /// and no core after this is to make it owe again (`take_up_spawns`).
+    #[serde(default)]
+    owed_placed: bool,
     /// Read from what the last core left: no call waits on it any more.
     #[serde(skip)]
     left_by_core: bool,
+    /// Given up on, as far as starting goes: a session the window is still trying
+    /// to start for it is refused (`spawn_is`), so what its caller is told stays true.
+    #[serde(skip)]
+    settled: bool,
     /// What its caller is to be told, once worked out (`settle_spawns`).
     #[serde(skip)]
     news: Option<String>,
+    /// Asked for again and not answered yet, so the later request stands for it and
+    /// this has only its word to say: not saved, as two on disk would start two.
+    #[serde(skip)]
+    retried: bool,
 }
 
 /// A spawn's record for as long as its call runs, however that ends.
 struct SpawnUnderWay(u64);
 
 impl SpawnUnderWay {
-    /// On disk before anything is made.
-    fn begin(caller: &str, params: &SpawnParams, account_path: &str, in_worktree: Option<&str>) -> SpawnUnderWay {
+    /// On disk before anything is made. `replaces`: the record of the spawn this
+    /// asks for again, gone in the same hold, as two would start two after a restart.
+    fn begin(caller: &str, params: &SpawnParams, account_path: &str, in_worktree: Option<&str>, replaces: Option<u64>) -> SpawnUnderWay {
         let worktrees_before = match (params.worktree, params.folder.as_deref()) {
             (Some(true), Some(folder)) => crate::worktree::made_for(folder, account_path),
             _ => Vec::new(),
@@ -422,13 +435,19 @@ impl SpawnUnderWay {
             opening: None,
             worktrees_before,
             helper: None,
+            owed_placed: false,
             left_by_core: false,
+            settled: false,
             news: None,
+            retried: false,
         };
         let request = {
             let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
             let request = r.next_request;
             r.next_request += 1;
+            if let Some(old) = replaces {
+                r.spawns.remove(&old);
+            }
             r.spawns.insert(request, SpawnTaken { request, ..taken });
             request
         };
@@ -467,8 +486,11 @@ struct Registry {
     spawns: HashMap<u64, SpawnTaken>,
     /// Visible helpers that are to go on by themselves, by id.
     resumes: HashMap<String, ChatResume>,
-    /// What each visible helper with `resumeOnRestart` was started on, by id.
-    openings: HashMap<String, String>,
+    /// What each visible helper with `resumeOnRestart` was started on, by id, and
+    /// the turn count that says nothing of it: one under this core past that has
+    /// a conversation to go on with. A count kept across a core may be only a turn
+    /// that went with it.
+    openings: HashMap<String, (String, u32)>,
     /// Helpers that run in a worktree they were handed rather than made:
     /// deleting one never drops that worktree, whose work is its caller's.
     borrowed: std::collections::HashSet<String>,
@@ -557,6 +579,34 @@ struct Held {
     since: u64,
     /// The desktop has been told (DRAFT_ALERT_MS).
     told: bool,
+    /// On its way in: found so by the next core, a core went during that.
+    going_in: Option<GoingIn>,
+}
+
+/// How a core after this one tells whether text being typed arrived: the CLI went
+/// with the core, so what is in its conversation is what it took.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GoingIn {
+    /// The start of it, words only, to look for in what the session was told.
+    needle: String,
+    /// Where the transcript ended before it went in.
+    cursor: u64,
+}
+
+/// How much of a text is looked for: enough to tell it, in case its tail changed.
+const NEEDLE: usize = 200;
+
+/// Text with its white space as one space each.
+fn words(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// What to look for of `text` when `typed` is what goes in: itself, or if it went
+/// in with more or went to a file (`spill`), what was typed.
+fn needle_of(typed: &str, text: &str) -> String {
+    let (typed, text) = (words(typed), words(text));
+    (if typed.contains(&text) { text } else { typed }).chars().take(NEEDLE).collect()
 }
 
 /// An `autoDelete` helper's progress towards going.
@@ -602,6 +652,12 @@ struct Owed {
     /// A chat's turn asked about went with a core (`restore_chats`): it did
     /// not finish, and the caller hears so.
     cut_short: bool,
+    /// Told it is not done under a core since gone, which took what it had running
+    /// with it.
+    job_went: bool,
+    /// Text was going in as a core went, and nothing can tell whether it arrived
+    /// (`went_in`): not typed again, and the caller is told.
+    unsure: bool,
     /// The caller has been told the session is not done yet. It hears again
     /// when that ends or a turn no notice started does, not of every turn; a
     /// question asked since is a new debt.
@@ -628,6 +684,8 @@ impl Owed {
             lost: false,
             resumed: false,
             cut_short: false,
+            job_went: false,
+            unsure: false,
             told_pending: false,
         }
     }
@@ -647,7 +705,9 @@ fn reg() -> &'static Mutex<Registry> {
             pending: HashMap::new(),
             abandoned: HashMap::new(),
             borrowed: Default::default(),
-            next_request: 1,
+            // A page can still answer a request of a core gone since, which is
+            // not to land on one of this core's.
+            next_request: now_ms(),
             spawns: HashMap::new(),
             resumes: HashMap::new(),
             openings: HashMap::new(),
@@ -1134,6 +1194,11 @@ pub struct Ties {
     /// See `ChatResume::opening`: written only until a first turn has ended.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opening: Option<String>,
+    /// The callers among `owed` told it is not done (`Owed::told_pending`): the
+    /// count alone reads as nothing having happened, and what it had running goes
+    /// with the core.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub told_pending: Vec<String>,
 }
 
 pub fn ties_of(id: &str) -> Option<Ties> {
@@ -1153,7 +1218,8 @@ fn ties_in(r: &Registry, id: &str) -> Option<Ties> {
         owed: r.owed.iter().filter(|((_, s), _)| s == id).map(|((c, _), o)| (c.clone(), o.baseline, o.cursor)).collect(),
         seen: r.seen.iter().filter(|((_, s), _)| s == id).map(|((c, _), n)| (c.clone(), *n)).collect(),
         cut_short: r.owed.iter().filter(|((_, s), o)| s == id && o.cut_short).map(|((c, _), _)| c.clone()).collect(),
-        opening: r.openings.get(id).cloned(),
+        opening: r.openings.get(id).map(|(text, _)| text.clone()),
+        told_pending: r.owed.iter().filter(|((_, s), o)| s == id && o.told_pending).map(|((c, _), _)| c.clone()).collect(),
     })
 }
 
@@ -1177,7 +1243,9 @@ pub fn tie_back(id: &str, provider: Provider, folder: &str, account_path: &str, 
         r.auto.insert(id.to_string(), Auto::default());
     }
     for (caller, baseline, cursor) in ties.owed {
-        r.owed.insert((caller, id.to_string()), Owed::from(baseline, cursor));
+        let told = ties.told_pending.contains(&caller);
+        let o = if told { Owed { job_went: true, ..Owed::pending(baseline, cursor) } } else { Owed::from(baseline, cursor) };
+        r.owed.insert((caller, id.to_string()), o);
     }
     for (caller, n) in ties.seen {
         r.seen.insert((caller, id.to_string()), n);
@@ -1213,6 +1281,8 @@ struct SavedSend {
     caller: String,
     id: String,
     text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    going_in: Option<GoingIn>,
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -1245,9 +1315,10 @@ pub fn freeze_chats() {
 /// What there is to keep of the sessions the window runs. A chat nobody spawned,
 /// wrote to or handed anything has nothing to keep: it comes back as it was.
 fn chats_now() -> SavedChats {
-    let (mut chats, sends, mut spawns) = {
+    let (mut chats, sends, mut spawns, floors) = {
         let r = reg().lock().unwrap_or_else(|e| e.into_inner());
-        let sends: Vec<SavedSend> = r.held.iter().map(|h| SavedSend { caller: h.caller.clone(), id: h.id.clone(), text: h.text.clone() }).collect();
+        let sends: Vec<SavedSend> =
+            r.held.iter().map(|h| SavedSend { caller: h.caller.clone(), id: h.id.clone(), text: h.text.clone(), going_in: h.going_in.clone() }).collect();
         let chats: Vec<SavedChat> = r
             .known
             .iter()
@@ -1274,13 +1345,14 @@ fn chats_now() -> SavedChats {
                 })
             })
             .collect();
-        (chats, sends, r.spawns.values().cloned().collect::<Vec<SpawnTaken>>())
+        let floors: HashMap<String, u32> = r.openings.iter().map(|(id, (_, floor))| (id.clone(), *floor)).collect();
+        (chats, sends, r.spawns.values().filter(|s| !s.retried).cloned().collect::<Vec<SpawnTaken>>(), floors)
     };
     for c in &mut chats {
         c.turns_ended = crate::activity::turns_counted(&c.id).unwrap_or(0);
         c.transcript = transcripts().lock().unwrap_or_else(|e| e.into_inner()).get(&c.id).cloned();
         c.mid_turn |= crate::activity::turn_state(&c.id).is_some_and(|t| matches!(t.turn, crate::activity::Turn::Busy | crate::activity::Turn::Waiting));
-        if c.turns_ended > 0 {
+        if floors.get(&c.id).is_some_and(|floor| c.turns_ended > *floor) {
             c.ties.opening = None;
         }
     }
@@ -1376,16 +1448,16 @@ fn take_up_chats(saved: SavedChats) {
             r.seen.insert((caller, c.id.clone()), n);
         }
         if let Some(opening) = ties.opening {
-            r.openings.insert(c.id.clone(), opening);
+            r.openings.insert(c.id.clone(), (opening, count));
         }
         if resumes && went_now {
-            let opening = r.openings.get(&c.id).cloned();
+            let opening = r.openings.get(&c.id).map(|(text, _)| text.clone());
             r.resumes.insert(c.id.clone(), ChatResume { opening, looks: 0 });
         }
         counts.push((c.id, count, c.transcript));
     }
     for h in saved.sends {
-        r.held.push(Held { caller: h.caller, id: h.id, text: h.text, since: now_ms(), told: false });
+        r.held.push(Held { caller: h.caller, id: h.id, text: h.text, since: now_ms(), told: false, going_in: h.going_in });
     }
     // The window may be part way through one yet, and reach this core with it.
     for mut s in saved.spawns {
@@ -1414,39 +1486,48 @@ fn returning(k: &Known, up_ms: u64) -> bool {
     k.waiting && up_ms < SESSION_RETURN_MS
 }
 
-/// A spawn the last core left that had come to a session it saved: that session
-/// answers its caller as any other, so it owes it now if the call went before
-/// `owe_from`, and it may yet go on by itself. Once both registries are read.
+/// A spawn the last core left that had come to a session it saved, and that had not
+/// got as far as `owe_from`: that session answers its caller as any other, so owes
+/// it now. With no turn of it ended that turn went with the core, as `take_up_chats`
+/// has it for a chat's debt the count had not passed, and it may yet go on by itself.
+/// With one ended, it is the answer. Once for each spawn (`owed_placed`): under a later
+/// core the debt may have been told and settled, and the helper be long done. Once
+/// both registries are read.
 pub fn take_up_spawns() {
-    let mut counted = Vec::new();
-    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-    let made: Vec<(String, String)> = r
-        .spawns
-        .values()
-        .filter_map(|s| s.helper.as_ref().filter(|h| r.known.contains_key(*h)).map(|h| (s.caller.clone(), h.clone())))
-        .collect();
-    for (caller, id) in made {
+    let due: Vec<(u64, String, String)> = {
+        let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+        r.spawns
+            .values()
+            .filter(|s| !s.owed_placed)
+            .filter_map(|s| s.helper.as_ref().filter(|h| r.known.contains_key(*h)).map(|h| (s.request, s.caller.clone(), h.clone())))
+            .collect()
+    };
+    for (request, caller, id) in due {
         let chat = !crate::background::has(&id);
+        let ended = crate::activity::turns_counted(&id).unwrap_or(0);
+        let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(s) = r.spawns.get_mut(&request) {
+            s.owed_placed = true;
+        }
         let key = (caller, id.clone());
-        if !r.owed.contains_key(&key) {
-            // No turn of it counted yet: it went with the core, as `take_up_chats`
-            // has it for a chat's debt the count had not passed.
-            let mut o = Owed::from(0, 0);
-            o.cut_short = chat;
-            r.owed.insert(key.clone(), o);
-            if chat {
-                counted.push(id.clone());
-            }
+        if r.owed.contains_key(&key) {
+            continue;
         }
+        let went = chat && ended == 0;
+        r.owed.insert(key.clone(), Owed { cut_short: went, ..Owed::from(0, 0) });
         r.seen.entry(key).or_insert(0);
-        if chat && r.known.get(&id).is_some_and(|k| k.settings["resumeOnRestart"] == true) && !r.resumes.contains_key(&id) {
-            let opening = r.openings.get(&id).cloned();
-            r.resumes.insert(id, ChatResume { opening, looks: 0 });
+        if !went {
+            continue;
         }
-    }
-    drop(r);
-    for id in counted {
-        crate::activity::keep_count(&id, crate::activity::turns_counted(&id).unwrap_or(0).max(1));
+        if let Some(opening) = r.openings.get_mut(&id) {
+            opening.1 = opening.1.max(1);
+        }
+        if r.known.get(&id).is_some_and(|k| k.settings["resumeOnRestart"] == true) && !r.resumes.contains_key(&id) {
+            let opening = r.openings.get(&id).map(|(text, _)| text.clone());
+            r.resumes.insert(id.clone(), ChatResume { opening, looks: 0 });
+        }
+        drop(r);
+        crate::activity::keep_count(&id, 1);
     }
 }
 
@@ -2243,9 +2324,18 @@ fn has_started(id: &str, after_turn: u32) -> bool {
 /// over, and a blank terminal. Claude Code syncs the org's skills and plugins
 /// and makes its worktree before it draws a thing — minutes on a bad day,
 /// with the session looking dead all along. The opening prompt is a CLI
-/// argument and waits for it intact; text typed now would be lost.
+/// argument and waits for it intact; text typed now would be lost. Of this
+/// process's turns only: the count goes on across respawns, and one started again
+/// after a core's restart is as blank as a new one.
 fn still_starting(pty: &crate::pty::PtyManager, id: &str) -> bool {
-    !crate::background::has(id) && pty.alive(id) && !has_started(id, 0) && pty.screen(id).is_some_and(|s| s.trim().is_empty())
+    use crate::activity::Turn;
+    if crate::background::has(id) {
+        return false;
+    }
+    let Some(p) = pty.probe(id) else { return false };
+    !crate::activity::turn_state(id).is_some_and(|t| matches!(t.turn, Turn::Busy | Turn::Waiting))
+        && crate::activity::turns_of_process(id, p.spawned_at_ms) == 0
+        && pty.screen(id).is_some_and(|s| s.trim().is_empty())
 }
 
 /// Polls until the session starts working on `text` (see `has_started`),
@@ -2429,7 +2519,14 @@ fn settle_role(params: &mut SpawnParams, provider: Provider) -> Result<(), Strin
 
 /// Asks the frontend to make the chat and start its session; blocks until it
 /// answers or the timeout passes.
-pub fn spawn(caller: &str, mut params: SpawnParams) -> Result<Spawned, String> {
+pub fn spawn(caller: &str, params: SpawnParams) -> Result<Spawned, String> {
+    spawn_with(caller, params, None, &mut false)
+}
+
+/// `spawn`. `replaces`: the record of the spawn this asks for again. `still_coming`:
+/// set when the error is only that the window has not answered in time, the request
+/// standing for as long as it may yet (`agent_spawned`): no failure to act on.
+fn spawn_with(caller: &str, mut params: SpawnParams, replaces: Option<u64>, still_coming: &mut bool) -> Result<Spawned, String> {
     if params.prompt.trim().is_empty() {
         return Err("prompt is required".into());
     }
@@ -2521,7 +2618,7 @@ pub fn spawn(caller: &str, mut params: SpawnParams) -> Result<Spawned, String> {
         };
         params.account = Some(AccountAsk::One(account.name.clone()));
         let account_choice = picked.map(|(_, choice)| choice);
-        let taken = SpawnUnderWay::begin(caller, &params, &account.path, in_worktree.as_deref());
+        let taken = SpawnUnderWay::begin(caller, &params, &account.path, in_worktree.as_deref(), replaces);
         if !params.visible.unwrap_or(false) {
             return spawn_background(caller, params, account.path, in_worktree, taken.0).map(|s| Spawned { account_choice, ..s });
         }
@@ -2591,6 +2688,7 @@ pub fn spawn(caller: &str, mut params: SpawnParams) -> Result<Spawned, String> {
         None => {
             // Still under way, for as long as the window may answer it.
             std::mem::forget(taken);
+            *still_coming = true;
             return Err(format!(
                 "the app did not start the session within {}s. It may still come up: luna_list will show it as yours \
                  and Luna will tell you when it answers, so check luna_list before spawning again. Helpers are made by \
@@ -2827,7 +2925,10 @@ fn spawn_background(caller: &str, params: SpawnParams, account_path: String, in_
             r.auto.insert(id.clone(), Auto::default());
         }
     }
-    spawn_is(request, &id);
+    if let Err(e) = spawn_is(request, &id) {
+        forget(&id);
+        return Err(e);
+    }
     if let Err(e) = crate::background::start(&id, spec, &params.prompt) {
         forget(&id);
         return Err(e);
@@ -2896,13 +2997,21 @@ fn spill(text: &str) -> String {
     )
 }
 
-/// The session a spawn came to, as soon as it is registered: what the spawn asked
-/// of it that the window does not carry goes on it now, as a core may go before
-/// the spawn gets any further, and from here on `take_up_spawns` finds it.
-pub fn spawn_is(request: u64, id: &str) {
+/// The session a spawn came to, as soon as it is registered and before its CLI is
+/// started: what the spawn asked of it that the window does not carry goes on it now,
+/// as a core may go before the spawn gets any further, and from here on
+/// `take_up_spawns` finds it. Refused for a spawn given up on (`settle_spawns`), or
+/// asked for again since, whose caller has been or is being told so: the session
+/// goes unstarted and the window drops its row, rather than a second helper run or
+/// what was said prove false.
+pub fn spawn_is(request: u64, id: &str) -> Result<(), String> {
     {
         let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-        let Some(s) = r.spawns.get_mut(&request) else { return };
+        let Some(s) = r.spawns.get_mut(&request).filter(|s| !s.settled) else {
+            r.known.remove(id);
+            r.tokens.retain(|_, chat| chat != id);
+            return Err("Luna's core has since given up on this spawn".into());
+        };
         s.helper = Some(id.to_string());
         let (resumes, opening, borrowed, auto) = (s.resume_on_restart, s.opening.clone(), s.in_worktree.is_some(), s.auto_delete == Some(true));
         if borrowed {
@@ -2916,11 +3025,12 @@ pub fn spawn_is(request: u64, id: &str) {
                 k.settings["resumeOnRestart"] = serde_json::json!(true);
             }
             if let Some(opening) = opening {
-                r.openings.insert(id.to_string(), opening);
+                r.openings.insert(id.to_string(), (opening, 0));
             }
         }
     }
     crate::background::save();
+    Ok(())
 }
 
 /// The frontend's answer to `agent://spawn`.
@@ -2938,19 +3048,33 @@ pub fn agent_spawned(request_id: u64, chat_id: Option<String>, name: Option<Stri
         if let (Some((_, true)), Some(id)) = (&caller, &chat_id) {
             r.borrowed.insert(id.clone());
         }
-        // A failure of one the last core left is still news to its caller, who
-        // has heard nothing: `settle_spawns` tells it.
-        if chat_id.is_some() || r.spawns.get(&request_id).is_some_and(|s| !s.left_by_core) {
+        // One the last core had made a session of owes already (`take_up_spawns`),
+        // and what it said is not to be started over.
+        let owed = chat_id.as_ref().zip(caller.as_ref()).is_some_and(|(id, (c, _))| r.owed.contains_key(&(c.clone(), id.clone())));
+        // A failure of one the last core left is still news to its caller, who has
+        // heard nothing: `settle_spawns` tells it. One that had timed out was told it
+        // may yet come up, and is told now that it did not.
+        let mut failed = None;
+        if chat_id.is_some() {
             r.spawns.remove(&request_id);
+        } else if let Some(s) = r.spawns.get_mut(&request_id).filter(|s| !s.left_by_core && !s.settled) {
+            s.settled = true;
+            failed = Some(s.clone());
         }
         drop(r);
+        if let Some(s) = failed {
+            let why = error.clone().unwrap_or_else(|| "spawn failed".into());
+            let _ = std::thread::Builder::new().name("luna-spawn-failed".into()).spawn(move || spawn_failed_late(s, &why));
+        }
         // Too late for the caller's spawn, not for the caller: the session
         // registered as its child, so `luna_list` shows it, and the answer
         // to its prompt is owed like any other.
         if let (Some((caller, _)), Some(id)) = (caller, chat_id) {
             crate::log::warn("agents", &format!("session {} for {} came up after its spawn timed out", label(&id), label(&caller)));
-            shown(&caller, &id, 0);
-            owe_from(&caller, &id, 0, 0);
+            if !owed {
+                shown(&caller, &id, 0);
+                owe_from(&caller, &id, 0, 0);
+            }
         }
         crate::background::save();
         return;
@@ -2999,30 +3123,37 @@ pub struct Sent {
 }
 
 /// Types text into a session and presses Enter after it; returns whether a
-/// turn began.
+/// turn began. `hold` has kept a person's keys back since before the last look at
+/// the session, and does until the Enter: one landing in between would go out with
+/// the text. They go on after it, into an empty composer.
 fn type_in(
     pty: &crate::pty::PtyManager,
     id: &str,
     text: &str,
     turn_before: Option<crate::activity::Turn>,
     baseline: u32,
+    hold: crate::pty::KeyHold,
 ) -> Result<bool, String> {
+    let keys_at = pty.typed_at_ms(id);
     pty.paste(id, text)?;
     std::thread::sleep(ENTER_GAP);
     pty.write(id, b"\r")?;
+    drop(hold);
     // Mid-turn the text is queued by the CLI and nothing here can tell when
     // it is taken up; only an idle session is expected to start now.
-    Ok(if turn_before == Some(crate::activity::Turn::Busy) {
-        true
-    } else if await_start(pty, id, text, baseline, ENTER_RETRY) {
-        true
-    } else if pty.write(id, b"\r").is_err() {
+    if turn_before == Some(crate::activity::Turn::Busy) || await_start(pty, id, text, baseline, ENTER_RETRY) {
+        return Ok(true);
+    }
+    // An Enter the CLI missed gets another, unless a person has typed since, which
+    // it would send. Their next key waits while this looks.
+    let Some(again) = pty.hold_keys(id) else { return Ok(true) };
+    if pty.typed_at_ms(id) == keys_at && pty.write(id, b"\r").is_err() {
         // The text went in and the session is gone since — `/exit` does
         // exactly that. It was taken; there is just no turn to wait for.
-        true
-    } else {
-        await_start(pty, id, text, baseline, SEND_TIMEOUT.saturating_sub(ENTER_RETRY))
-    })
+        return Ok(true);
+    }
+    drop(again);
+    Ok(await_start(pty, id, text, baseline, SEND_TIMEOUT.saturating_sub(ENTER_RETRY)))
 }
 
 /// Types text into the session, presses Enter after it, and reports whether
@@ -3176,8 +3307,22 @@ fn type_text(
     turn_before: Option<crate::activity::Turn>,
     baseline: u32,
 ) -> Result<Option<bool>, String> {
+    let hold = pty.hold_keys(id).ok_or("no such session")?;
+    type_held(pty, id, text, turn_before, baseline, hold)
+}
+
+/// `type_text` with a person's keys held back already: what is to look at the
+/// session once more first takes them before it looks.
+fn type_held(
+    pty: &crate::pty::PtyManager,
+    id: &str,
+    text: &str,
+    turn_before: Option<crate::activity::Turn>,
+    baseline: u32,
+    hold: crate::pty::KeyHold,
+) -> Result<Option<bool>, String> {
     if !pty.has_draft(id) {
-        return type_in(pty, id, text, turn_before, baseline).map(Some);
+        return type_in(pty, id, text, turn_before, baseline, hold).map(Some);
     }
     // Codex has no way to put a draft aside: one that leaves the
     // composer by its keys (a line cut, a whole buffer selected) does not
@@ -3185,7 +3330,7 @@ fn type_text(
     if pty.provider(id) != Some(Provider::Claude) {
         return Ok(None);
     }
-    stash_and_type(pty, id, text, turn_before, baseline)
+    stash_and_type(pty, id, text, turn_before, baseline, hold)
 }
 
 /// Claude Code puts a draft aside on Ctrl+S and brings it back, pastes and
@@ -3200,8 +3345,8 @@ fn stash_and_type(
     text: &str,
     turn_before: Option<crate::activity::Turn>,
     baseline: u32,
+    hold: crate::pty::KeyHold,
 ) -> Result<Option<bool>, String> {
-    let hold = pty.hold_keys(id).ok_or("no such session")?;
     if !pty.composer(id).is_some_and(|c| !c.text.is_empty() && !c.stashed) {
         return Ok(None);
     }
@@ -3236,7 +3381,6 @@ fn stash_and_type(
     let mut restored = until(ENTER_RETRY, &back);
     // Luna's own text still sitting there, word for word, takes another
     // Enter; anything else may be the draft back, its mark not gone yet.
-    let words = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
     if !restored && pty.composer(id).is_some_and(|c| c.stashed && words(&c.text) == words(text)) {
         pty.write(id, b"\r")?;
         restored = until(ENTER_RETRY, &back);
@@ -3267,6 +3411,7 @@ fn hold(caller: &str, id: &str, text: &str) {
         text: text.to_string(),
         since: now_ms(),
         told: false,
+        going_in: None,
     });
     // "Do not send it again" goes back with the result: it must hold.
     crate::background::save();
@@ -3372,6 +3517,109 @@ fn resume_words(resuming: bool, opening: Option<String>, batch: &[crate::backgro
     Some(crate::background::joined(&[std::slice::from_ref(&first), batch].concat()))
 }
 
+/// Whether text a core went in the middle of typing is in the conversation the CLI
+/// came back on: what is there it took, and what is not it did not, the CLI that
+/// was to take it having gone with the core. A new conversation has none of it.
+#[derive(Debug, PartialEq)]
+enum WentIn {
+    Yes,
+    No,
+    CannotTell,
+}
+
+fn went_in(pty: &crate::pty::PtyManager, id: &str, g: &GoingIn) -> WentIn {
+    let Some(p) = pty.probe(id) else { return WentIn::CannotTell };
+    if p.resume.is_none() {
+        return WentIn::No;
+    }
+    let Some(path) = transcript_path(pty, id).filter(|path| path.is_file()) else { return WentIn::CannotTell };
+    said_to(&messages_at(&path, p.provider, g.cursor), &g.needle)
+}
+
+/// Whether anyone told the session this, in what a transcript holds.
+fn said_to(messages: &[Message], needle: &str) -> WentIn {
+    if messages.iter().any(|m| m.role == "user" && words(&m.text).contains(needle)) {
+        WentIn::Yes
+    } else {
+        WentIn::No
+    }
+}
+
+/// Text found on its way in (`Held::going_in`), its session back: what arrived is
+/// not typed again, its sender owed the end of a turn that went with the core.
+/// What did not goes in as any held text. What cannot be told is not typed again
+/// either, and the sender is told: twice is what an agent cannot take back.
+fn reconcile_held(pty: &crate::pty::PtyManager, id: &str) {
+    let marked: Vec<(String, String, GoingIn)> = {
+        let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+        r.held.iter().filter(|h| h.id == id).filter_map(|h| Some((h.caller.clone(), h.text.clone(), h.going_in.clone()?))).collect()
+    };
+    if marked.is_empty() {
+        return;
+    }
+    for (caller, text, g) in marked {
+        let went = went_in(pty, id, &g);
+        {
+            let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+            let at = r.held.iter().position(|h| h.id == id && h.caller == caller && h.text == text && h.going_in.is_some());
+            if let Some(at) = at {
+                if went == WentIn::No {
+                    r.held[at].going_in = None;
+                } else {
+                    r.held.remove(at);
+                }
+            }
+        }
+        crate::log::warn("agents", &format!("text from {} to {} was going in as a core went: {went:?}", label(&caller), label(id)));
+        if went != WentIn::No {
+            owe_cut_short(&caller, id, g.cursor, went == WentIn::CannotTell);
+        }
+    }
+    crate::background::save();
+}
+
+/// `caller`'s text went in and its turn went with a core: as `take_up_chats` has it
+/// for a debt known as the core went, found out only now.
+fn owe_cut_short(caller: &str, id: &str, cursor: u64, unsure: bool) {
+    let count = crate::activity::turns_counted(id).unwrap_or(0);
+    seen(caller, id, count);
+    owe_from(caller, id, count, cursor);
+    if let Some(o) = reg().lock().unwrap_or_else(|e| e.into_inner()).owed.get_mut(&(caller.to_string(), id.to_string())) {
+        o.cut_short = true;
+        o.resumed = false;
+        o.late = true;
+        o.unsure = unsure;
+    }
+    crate::activity::count_at_least(id, count.saturating_add(1));
+}
+
+/// Marks what is held for `id` as on its way in, as `typed`, on disk before it goes:
+/// a core gone before it is taken off leaves the next one to tell (`reconcile_held`).
+/// With `only` just that one, `Held::since` naming it.
+fn mark_going_in(id: &str, typed: &str, cursor: u64, only: Option<(&str, u64)>) {
+    {
+        let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+        let mut one = only.is_some();
+        for h in r.held.iter_mut().filter(|h| h.id == id) {
+            if let Some((caller, since)) = only {
+                if h.caller != caller || h.since != since || !one {
+                    continue;
+                }
+                one = false;
+            }
+            h.going_in = Some(GoingIn { needle: needle_of(typed, &h.text), cursor });
+        }
+    }
+    crate::background::save();
+}
+
+/// It did not go in after all.
+fn unmark_going_in(id: &str) {
+    for h in reg().lock().unwrap_or_else(|e| e.into_inner()).held.iter_mut().filter(|h| h.id == id) {
+        h.going_in = None;
+    }
+}
+
 /// Types in the text that carries a chat on, with what was held for it. A person
 /// or a `send` that has got there first has taken it off the list by now (as
 /// `resume` finds under its lock), and any `send` after this finds the turn it
@@ -3379,6 +3627,20 @@ fn resume_words(resuming: bool, opening: Option<String>, batch: &[crate::backgro
 /// it is running; a text that does not go in leaves them the plain notice.
 fn resume_chat(pty: &crate::pty::PtyManager, id: &str) {
     let Some(typing) = TypingInto::claim(id) else { return };
+    // No key of a person's lands from here to the Enter, so what this looks at now
+    // is what the text goes in on. What changed since the last look is looked at again.
+    let Some(hold) = pty.hold_keys(id) else { return };
+    if pty.typed_ago_ms(id).is_some() {
+        return call_off_resume(id, "a person has typed into it");
+    }
+    let before = crate::activity::turn_state(id);
+    if before.map(|t| t.turn) != Some(crate::activity::Turn::Idle) || !pty.at_prompt(id) {
+        if let Some(res) = reg().lock().unwrap_or_else(|e| e.into_inner()).resumes.get_mut(id) {
+            res.looks = 0;
+        }
+        return;
+    }
+    reconcile_held(pty, id);
     let resuming = pty.probe(id).is_some_and(|p| p.resume.is_some());
     let (opening, batch) = {
         let r = reg().lock().unwrap_or_else(|e| e.into_inner());
@@ -3387,19 +3649,24 @@ fn resume_chat(pty: &crate::pty::PtyManager, id: &str) {
             r.held.iter().filter(|h| h.id == id).map(|h| crate::background::Queued { from: Some(h.caller.clone()), text: h.text.clone() }).collect();
         (res.opening.clone(), batch)
     };
-    if pty.typed_ago_ms(id).is_some() {
-        return call_off_resume(id, "a person has typed into it");
-    }
     let Some(text) = resume_words(resuming, opening, &batch) else {
         return call_off_resume(id, "it came back with no conversation, and its prompt was not kept");
     };
-    let before = crate::activity::turn_state(id);
-    let count = before.map_or(0, |t| t.turns_ended);
+    // Counted once `reconcile_held` has had its say.
+    let count = crate::activity::turn_state(id).map_or(0, |t| t.turns_ended);
     let cursor = transcript_end(id);
-    let started = match type_text(pty, id, &spill(&text), before.map(|t| t.turn), count) {
+    let typed = spill(&text);
+    mark_going_in(id, &typed, cursor, None);
+    let started = match type_held(pty, id, &typed, before.map(|t| t.turn), count, hold) {
         Ok(Some(started)) => started,
-        Ok(None) => return call_off_resume(id, "a person's draft is in the way"),
-        Err(e) => return call_off_resume(id, &e),
+        Ok(None) => {
+            unmark_going_in(id);
+            return call_off_resume(id, "a person's draft is in the way");
+        }
+        Err(e) => {
+            unmark_going_in(id);
+            return call_off_resume(id, &e);
+        }
     };
     // Each sender's text went in as `deliver_held` would have typed it.
     let mut senders: Vec<&str> = batch.iter().filter_map(|q| q.from.as_deref()).collect();
@@ -3440,6 +3707,15 @@ fn resume_chat(pty: &crate::pty::PtyManager, id: &str) {
 /// that went before its text could, and the desktop of text a draft has held
 /// for long.
 fn deliver_held(pty: &crate::pty::PtyManager) {
+    // What a core went in the middle of typing, its session back; one carrying on
+    // sees to it itself (`resume_chat`).
+    let marked: std::collections::HashSet<String> =
+        reg().lock().unwrap_or_else(|e| e.into_inner()).held.iter().filter(|h| h.going_in.is_some()).map(|h| h.id.clone()).collect();
+    for id in marked {
+        if pty.alive(&id) && !resume_pending(&id) {
+            reconcile_held(pty, &id);
+        }
+    }
     let held: Vec<(String, String, String, u64, bool)> = {
         let r = reg().lock().unwrap_or_else(|e| e.into_inner());
         r.held.iter().map(|h| (h.caller.clone(), h.id.clone(), h.text.clone(), h.since, h.told)).collect()
@@ -3479,7 +3755,16 @@ fn deliver_held(pty: &crate::pty::PtyManager) {
         let before = crate::activity::turn_state(&id);
         let baseline = before.map(|t| t.turns_ended).unwrap_or(0);
         let typing = if blocked { None } else { TypingInto::claim(&id) };
-        let typed = if typing.is_some() { put_in(&caller, &id, &spill(&text), before, baseline, false) } else { Ok(None) };
+        let typed = if typing.is_some() {
+            let going = spill(&text);
+            mark_going_in(&id, &going, transcript_end(&id), Some((caller.as_str(), since)));
+            put_in(&caller, &id, &going, before, baseline, false)
+        } else {
+            Ok(None)
+        };
+        if !matches!(typed, Ok(Some(_))) {
+            unmark_going_in(&id);
+        }
         drop(typing);
         match typed {
             Ok(Some(sent)) => {
@@ -3698,6 +3983,8 @@ pub fn answer(
         }
         crate::background::answer(id, ask_id, answers, allow, note)?;
     } else {
+        // A person's keys between Luna's would land in the dialog or the answer.
+        let hold = pty.hold_keys(id).ok_or("no such session")?;
         if pty.has_draft(id) || pty.typed_ago_ms(id).is_some_and(|ms| ms < SEND_TYPING_MS) {
             return Err(format!("the user is typing in session {id}; try again in a little while"));
         }
@@ -3711,7 +3998,7 @@ pub fn answer(
                     return Err("give one answer per question".into());
                 }
                 let before = crate::activity::turn_state(id);
-                type_in(&pty, id, &format!("Answers to your question: {}", text.join("; ")), before.map(|t| t.turn), baseline)?;
+                type_in(&pty, id, &format!("Answers to your question: {}", text.join("; ")), before.map(|t| t.turn), baseline, hold)?;
             }
             (None, Some(a)) => press(&pty, id, &presses_for(known.provider, a, answers, allow, note)?)?,
             (None, None) => {
@@ -5198,7 +5485,8 @@ fn notice_line(
                     n => format!("it wrote {n} messages since your last notice; {}{quoted}", answer_file(id, &said)),
                 };
                 let failed = failed.map_or(String::new(), |why| format!(" Its last turn stopped on an error: {why}."));
-                Some((Some(format!("{who} has nothing left running now, and {said}.{failed}")), Settled::Answered))
+                let went = if o.job_went { " (Luna's core restarted, and that went with it)" } else { "" };
+                Some((Some(format!("{who} has nothing left running now{went}, and {said}.{failed}")), Settled::Answered))
             }
             Some((n, _)) if n == ended => None,
             _ => Some((None, Settled::Hold(ended))),
@@ -5254,9 +5542,14 @@ fn notice_line(
             ));
         }
         let lost = undelivered_line(&lost, !replies.is_empty(), file.as_deref());
+        let unsure = if o.unsure {
+            " Luna cannot tell whether your last message reached it: the core went as it was going in, and its transcript cannot be read. luna_read shows what it has."
+        } else {
+            ""
+        };
         if crate::background::cut_short(id) || o.cut_short {
             return Some((
-                Some(format!("{who} did NOT finish its turn: Luna's core restarted while it worked and stopped it. It ended{reply}.{lost} luna_send has it carry on.")),
+                Some(format!("{who} did NOT finish its turn: Luna's core restarted while it worked and stopped it. It ended{reply}.{lost}{unsure} luna_send has it carry on.")),
                 Settled::Answered,
             ));
         }
@@ -5280,7 +5573,7 @@ fn notice_line(
         }
         // Too short a turn for a notice of its own in between.
         let resumed = if o.resumed { " Luna's core stopped it on the way and it resumed automatically." } else { "" };
-        return Some((Some(format!("{who} finished its turn{reply}.{lost}{resumed}")), Settled::Answered));
+        return Some((Some(format!("{who} finished its turn{reply}.{lost}{resumed}{unsure}")), Settled::Answered));
     }
     standing_line(pty, who, id, k, o)
 }
@@ -5501,6 +5794,15 @@ fn ready_for_notice(pty: &crate::pty::PtyManager, caller: &str) -> bool {
         && crate::activity::turn_state(caller).is_some_and(|t| t.turn == crate::activity::Turn::Idle)
         && !still_starting(pty, caller)
         && pty.typed_ago_ms(caller).map_or(true, |ms| ms >= TYPING_QUIET_MS)
+        && drawn_for_notice(pty, caller)
+}
+
+/// A CLI just started has drawn something, and may not be taking text yet: its
+/// prompt says it is. For its first minute only: a prompt Luna cannot read (a mode
+/// with a mark of its own, a CLI that draws it differently) must not silence notices.
+fn drawn_for_notice(pty: &crate::pty::PtyManager, id: &str) -> bool {
+    let long_up = pty.probe(id).map_or(true, |p| (now_ms() as u128).saturating_sub(p.spawned_at_ms) >= SESSION_RETURN_MS as u128);
+    long_up || pty.at_prompt(id) || pty.has_draft(id)
 }
 
 /// Whether any of these owed answers has come in, without saying it yet.
@@ -5630,16 +5932,15 @@ fn worktrees_left(s: &SpawnTaken) -> String {
 
 /// The notice of a spawn nothing came of. It says why the call itself failed: the
 /// caller's CLI went with the same core, and all it has of that call is an error.
-fn never_completed(s: &SpawnTaken, why: Option<&str>) -> String {
+fn never_completed(s: &SpawnTaken, why: Option<&str>, left: &str) -> String {
     let prompt = match note_file(&format!("spawn-{}", s.request), &s.params.prompt) {
         Some(path) => format!("Its prompt is in {}", path.display()),
         None => "Its prompt was not kept".to_string(),
     };
     let why = why.map_or(String::new(), |w| format!(" (started afresh, it failed too: {w})"));
     format!(
-        "Your luna_spawn {} never completed: Luna's core restarted while it was being made, which is also why that call ended in an error or with no answer. No helper came of it{why}. {prompt}; spawn it again if it still matters.{}",
+        "Your luna_spawn {} never completed: Luna's core restarted while it was being made, which is also why that call ended in an error or with no answer. No helper came of it{why}. {prompt}; spawn it again if it still matters.{left}",
         spawn_called(s),
-        worktrees_left(s)
     )
 }
 
@@ -5654,23 +5955,56 @@ fn spawn_afresh(s: SpawnTaken) {
     if let Some(worktree) = &s.in_worktree {
         params.folder = Some(worktree.clone());
     }
-    let (news, helper) = match spawn(&s.caller, params) {
+    // Before this one can make a worktree of its own, which is no leftover.
+    let left = worktrees_left(&s);
+    let mut still_coming = false;
+    let made = spawn_with(&s.caller, params, Some(s.request), &mut still_coming);
+    let told = match &made {
         Ok(made) => {
             crate::log::warn("agents", &format!("{}'s spawn {} started afresh as {} after a core cut it off", label(&s.caller), s.request, label(&made.id)));
-            let line = format!(
-                "Your luna_spawn {} was cut off when Luna's core restarted, which is also why that call ended in an error or with no answer. As it asked with resumeOnRestart, Luna started it afresh as {}: do not spawn it again, and its answer comes as a notice.{}",
+            format!(
+                "Your luna_spawn {} was cut off when Luna's core restarted, which is also why that call ended in an error or with no answer. As it asked with resumeOnRestart, Luna started it afresh as {}: do not spawn it again, and its answer comes as a notice.{left}",
                 spawn_called(&s),
                 made.id,
-                worktrees_left(&s)
-            );
-            (line, Some(made.id))
+            )
+        }
+        // The later request stands and the window may yet answer it, so this is no
+        // failure: told to spawn again, the caller would have two.
+        Err(why) if still_coming => {
+            crate::log::warn("agents", &format!("{}'s spawn {} asked for afresh is not answered yet: {why}", label(&s.caller), s.request));
+            format!(
+                "Your luna_spawn {} was cut off when Luna's core restarted, which is also why that call ended in an error or with no answer. As it asked with resumeOnRestart, Luna asked for it afresh, and the window has not started it yet. It may still come up: luna_list will show it and its answer comes as a notice, or a notice says it failed. Do not spawn it again.{left}",
+                spawn_called(&s),
+            )
         }
         Err(why) => {
             crate::log::warn("agents", &format!("{}'s spawn {} could not start afresh after a core cut it off: {why}", label(&s.caller), s.request));
-            (never_completed(&s, Some(&why)), None)
+            never_completed(&s, Some(why), &left)
         }
     };
-    reg().lock().unwrap_or_else(|e| e.into_inner()).spawns.insert(s.request, SpawnTaken { news: Some(news), helper, ..s });
+    let helper = made.ok().map(|made| made.id);
+    let owed_placed = helper.is_some();
+    let told = SpawnTaken { news: Some(told), helper, owed_placed, settled: true, retried: still_coming, ..s };
+    reg().lock().unwrap_or_else(|e| e.into_inner()).spawns.insert(told.request, told);
+    crate::background::save();
+}
+
+/// A spawn that had timed out, its caller told it may yet come up, and the window
+/// says it did not.
+fn spawn_failed_late(s: SpawnTaken, why: &str) {
+    crate::log::warn("agents", &format!("{}'s spawn {} failed after it timed out: {why}", label(&s.caller), s.request));
+    let prompt = match note_file(&format!("spawn-{}", s.request), &s.params.prompt) {
+        Some(path) => format!("Its prompt is in {}", path.display()),
+        None => "Its prompt was not kept".to_string(),
+    };
+    let news = format!(
+        "Your luna_spawn {}, which had not started in time, did not come up after all: {why}. No helper came of it. {prompt}; spawn it again if it still matters.{}",
+        spawn_called(&s),
+        worktrees_left(&s)
+    );
+    if let Some(left) = reg().lock().unwrap_or_else(|e| e.into_inner()).spawns.get_mut(&s.request) {
+        left.news = Some(news);
+    }
     crate::background::save();
 }
 
@@ -5679,33 +6013,40 @@ fn spawn_afresh(s: SpawnTaken) {
 /// back): a session known by then is one that came of it, and answers as any other
 /// (`take_up_spawns`, and a row since deleted is no longer known); for the rest the
 /// caller is told, or with `resumeOnRestart` it is started afresh and then told.
+/// What it came to is decided under the lock that gives it up (`SpawnTaken::settled`):
+/// past that a session the window is still starting for it is refused (`spawn_is`),
+/// and before it that session is the one that came of it.
 fn settle_spawns(up_ms: u64) {
     if up_ms < SESSION_RETURN_MS {
         return;
     }
-    let due: Vec<SpawnTaken> =
-        reg().lock().unwrap_or_else(|e| e.into_inner()).spawns.values().filter(|s| s.left_by_core && s.news.is_none()).cloned().collect();
-    for s in due {
-        let made = {
-            let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-            let made = s.helper.as_ref().is_some_and(|h| r.known.contains_key(h));
-            // Started afresh it has a record of its own: with this one too, a core
-            // going meanwhile would leave two to start.
-            if made || s.resume_on_restart {
-                r.spawns.remove(&s.request);
-            }
+    let due: Vec<(SpawnTaken, bool)> = {
+        let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+        let Registry { spawns, known, abandoned, .. } = &mut *r;
+        let mut due = Vec::new();
+        for s in spawns.values_mut().filter(|s| s.left_by_core && !s.settled) {
+            let made = s.helper.as_ref().is_some_and(|h| known.contains_key(h));
+            s.settled = true;
             if !made && s.resume_on_restart {
-                r.abandoned.remove(&s.request);
+                abandoned.remove(&s.request);
             }
-            made
-        };
+            due.push((s.clone(), made));
+        }
+        for (s, made) in &due {
+            if *made {
+                spawns.remove(&s.request);
+            }
+        }
+        due
+    };
+    for (s, made) in due {
         if made {
             crate::log::info("agents", &format!("{}'s spawn {} had come to {} when a core went", label(&s.caller), s.request, s.helper.as_deref().unwrap_or("")));
             crate::background::save();
         } else if s.resume_on_restart {
             let _ = std::thread::Builder::new().name("luna-spawn-again".into()).spawn(move || spawn_afresh(s));
         } else {
-            let news = never_completed(&s, None);
+            let news = never_completed(&s, None, &worktrees_left(&s));
             crate::log::warn("agents", &format!("{}'s spawn {} went with a core: {}", label(&s.caller), s.request, news));
             if let Some(left) = reg().lock().unwrap_or_else(|e| e.into_inner()).spawns.get_mut(&s.request) {
                 left.news = Some(news);
@@ -7702,9 +8043,10 @@ mod tests {
                     cut_short: Vec::new(),
                     orphan: false,
                     opening: None,
+                    told_pending: Vec::new(),
                 },
             }],
-            sends: vec![SavedSend { caller: "tc-parent".into(), id: "tc-chat".into(), text: "held across".into() }],
+            sends: vec![SavedSend { caller: "tc-parent".into(), id: "tc-chat".into(), text: "held across".into(), going_in: None }],
             spawns: Vec::new(),
         };
         // As the file has it.
@@ -7975,8 +8317,13 @@ mod tests {
         chat.turns_ended = 0;
         chat.ties.owed = vec![("ho-parent".into(), 0, 0)];
         chat.ties.opening = Some("do it".into());
-        take_up(vec![chat], vec![SavedSend { caller: "ho-parent".into(), id: "ho-chat".into(), text: "and this".into() }], Vec::new());
+        take_up(vec![chat], vec![SavedSend { caller: "ho-parent".into(), id: "ho-chat".into(), text: "and this".into(), going_in: None }], Vec::new());
         assert_eq!(reg().lock().unwrap().resumes["ho-chat"].opening.as_deref(), Some("do it"));
+        assert_eq!(crate::activity::turns_counted("ho-chat"), Some(1), "its turn counts as gone with the core");
+        let saved = || chats_now().chats.into_iter().find(|c| c.id == "ho-chat").unwrap().ties.opening;
+        assert_eq!(saved().as_deref(), Some("do it"), "that count is no first turn: a second restart still has the prompt");
+        crate::activity::keep_count("ho-chat", 2);
+        assert_eq!(saved(), None, "one that ended under this core is");
         assert!(is_held("ho-parent", "ho-chat"));
         // `deliver_held` looks and leaves it (`resume_pending`), the session not
         // running here and so the same in either case while it may yet return.
@@ -7985,6 +8332,13 @@ mod tests {
         reg().lock().unwrap().held.retain(|h| h.id != "ho-chat");
         forget("ho-chat");
         assert!(!reg().lock().unwrap().openings.contains_key("ho-chat"));
+    }
+
+    /// `settle_spawns` and its like go over every spawn there is, a test's or
+    /// another's, as they do in a core: one test at a time.
+    fn spawns_to_myself() -> std::sync::MutexGuard<'static, ()> {
+        static ONE: Mutex<()> = Mutex::new(());
+        ONE.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     fn spawn_taken(request: u64, caller: &str, helper: Option<&str>, resume: bool) -> SpawnTaken {
@@ -8000,8 +8354,11 @@ mod tests {
             opening: None,
             worktrees_before: Vec::new(),
             helper: helper.map(str::to_owned),
+            owed_placed: false,
             left_by_core: false,
+            settled: false,
             news: None,
+            retried: false,
         }
     }
 
@@ -8009,7 +8366,7 @@ mod tests {
     fn a_spawn_is_on_disk_for_as_long_as_it_is_under_way() {
         let params: SpawnParams = serde_json::from_value(serde_json::json!({ "prompt": "go", "visible": true, "resumeOnRestart": true, "autoDelete": true })).unwrap();
         let saved = |request: u64| chats_now().spawns.into_iter().find(|s| s.request == request);
-        let under_way = SpawnUnderWay::begin("uw-caller", &params, "C:\\acc\\anthropic\\one", Some("C:\\p\\wt"));
+        let under_way = SpawnUnderWay::begin("uw-caller", &params, "C:\\acc\\anthropic\\one", Some("C:\\p\\wt"), None);
         let request = under_way.0;
         let s = saved(request).unwrap();
         assert_eq!((s.caller.as_str(), s.params.prompt.as_str(), s.in_worktree.as_deref()), ("uw-caller", "go", Some("C:\\p\\wt")));
@@ -8017,7 +8374,7 @@ mod tests {
         // Its session registers, and what the window does not carry goes on it.
         register("uw-helper", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("uw-caller"), false, serde_json::json!({}));
         reg().lock().unwrap().spawns.get_mut(&request).unwrap().opening = Some("go, with the note".into());
-        spawn_is(request, "uw-helper");
+        spawn_is(request, "uw-helper").unwrap();
         assert_eq!(saved(request).unwrap().helper.as_deref(), Some("uw-helper"));
         assert!(resumes_on_restart("uw-helper"));
         {
@@ -8032,6 +8389,7 @@ mod tests {
 
     #[test]
     fn what_a_spawn_came_to_decides_what_its_caller_is_told() {
+        let _one = spawns_to_myself();
         // One that had come to a session the last core saved: nothing to say of the
         // spawn, and that session owes its caller as if the call had got there.
         register("ws-caller", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, serde_json::json!({}));
@@ -8080,6 +8438,7 @@ mod tests {
 
     #[test]
     fn a_row_the_window_dropped_makes_it_a_spawn_nothing_came_of() {
+        let _one = spawns_to_myself();
         register("wd-caller", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, serde_json::json!({}));
         let mut made = cut_short_chat("wd-gone", "wd-caller", false, false, false);
         made.ties.owed.clear();
@@ -8097,6 +8456,7 @@ mod tests {
 
     #[test]
     fn the_window_finishing_a_spawn_with_the_next_core_owes_its_caller() {
+        let _one = spawns_to_myself();
         register("wf-caller", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, serde_json::json!({}));
         take_up(Vec::new(), Vec::new(), vec![spawn_taken(9_000_200, "wf-caller", None, false), spawn_taken(9_000_201, "wf-caller", None, false)]);
         register("wf-helper", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("wf-caller"), false, serde_json::json!({}));
@@ -8114,7 +8474,172 @@ mod tests {
     }
 
     #[test]
+    fn a_session_starting_for_a_spawn_given_up_on_is_refused_so_what_was_said_stays_true() {
+        let _one = spawns_to_myself();
+        register("gu-caller", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, serde_json::json!({}));
+        take_up(Vec::new(), Vec::new(), vec![spawn_taken(9_000_400, "gu-caller", None, false), spawn_taken(9_000_401, "gu-caller", None, false)]);
+        // Started as it is given up on: decided under one lock, whichever comes first.
+        register("gu-first", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("gu-caller"), false, serde_json::json!({}));
+        spawn_is(9_000_400, "gu-first").unwrap();
+        settle_spawns(SESSION_RETURN_MS);
+        assert!(!reg().lock().unwrap().spawns.contains_key(&9_000_400), "before: that session is what came of it");
+        register("gu-late", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("gu-caller"), false, serde_json::json!({}));
+        assert!(spawn_is(9_000_401, "gu-late").is_err(), "after: it does not start");
+        assert!(!reg().lock().unwrap().known.contains_key("gu-late"), "and leaves nothing behind");
+        assert!(reg().lock().unwrap().spawns[&9_000_401].helper.is_none());
+        // A request nothing stands for any more is refused the same.
+        register("gu-none", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("gu-caller"), false, serde_json::json!({}));
+        assert!(spawn_is(1, "gu-none").is_err());
+        forget("gu-first");
+        forget("gu-caller");
+    }
+
+    #[test]
+    fn a_retry_still_coming_is_not_saved_beside_its_own_request_and_a_late_failure_is_told() {
+        let _one = spawns_to_myself();
+        register("rc-caller", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, serde_json::json!({}));
+        let word = SpawnTaken { news: Some("asked again".into()), settled: true, retried: true, ..spawn_taken(9_000_500, "rc-caller", None, true) };
+        reg().lock().unwrap().spawns.insert(9_000_500, word);
+        assert!(!chats_now().spawns.iter().any(|s| s.request == 9_000_500), "two on disk would start two");
+        assert!(spawn_news(1000)["rc-caller"].iter().any(|(request, _)| *request == 9_000_500), "its word is still said");
+        // A spawn the caller was told may yet come up, and the window says it did not.
+        let timed_out = spawn_taken(9_000_501, "rc-caller", None, false);
+        {
+            let mut r = reg().lock().unwrap();
+            r.abandoned.insert(9_000_501, ("rc-caller".into(), false));
+            r.spawns.insert(9_000_501, timed_out);
+        }
+        agent_spawned(9_000_501, None, None, Some("the folder is gone".into()));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let news = loop {
+            if let Some(news) = reg().lock().unwrap().spawns[&9_000_501].news.clone() {
+                break news;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        assert!(news.contains("did not come up after all: the folder is gone") && news.contains("Its prompt is in "), "{news}");
+        let file = news.split("Its prompt is in ").nth(1).and_then(|l| l.split("; spawn it again").next()).unwrap();
+        let _ = std::fs::remove_file(file);
+        forget("rc-caller");
+    }
+
+    #[test]
+    fn a_helper_a_later_core_finds_done_is_neither_owed_again_nor_carried_on() {
+        let _one = spawns_to_myself();
+        register("fd-caller", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, serde_json::json!({}));
+        // The same spawn as a third core finds it: under the second the helper went on,
+        // finished, and its caller was told; the first left it no debt.
+        let mut done = cut_short_chat("fd-done", "fd-caller", true, false, false);
+        done.turns_ended = 2;
+        done.ties.owed.clear();
+        let placed = SpawnTaken { owed_placed: true, ..spawn_taken(9_000_600, "fd-caller", Some("fd-done"), true) };
+        // Under the first core, with a turn ended before `owe_from`: that is its answer.
+        let mut answered = cut_short_chat("fd-ans", "fd-caller", true, false, false);
+        answered.turns_ended = 1;
+        answered.ties.owed.clear();
+        let first = spawn_taken(9_000_601, "fd-caller", Some("fd-ans"), true);
+        take_up(vec![done, answered], Vec::new(), vec![placed, first]);
+        take_up_spawns();
+        {
+            let r = reg().lock().unwrap();
+            assert!(!r.owed.contains_key(&("fd-caller".to_string(), "fd-done".to_string())), "told already: no false did NOT finish");
+            assert!(!r.resumes.contains_key("fd-done"), "and no carry on");
+            let o = r.owed[&("fd-caller".to_string(), "fd-ans".to_string())];
+            assert!(!o.cut_short, "its turn ended: it finished");
+            assert!(!r.resumes.contains_key("fd-ans"));
+            assert!(r.spawns[&9_000_601].owed_placed, "and not again under the next");
+        }
+        forget("fd-done");
+        forget("fd-ans");
+        forget("fd-caller");
+    }
+
+    #[test]
+    fn text_going_in_is_found_in_what_the_session_was_told() {
+        let m = |role: &str, text: &str| Message { role: role.into(), text: text.into() };
+        let needle = needle_of("[tag] carry on\n\nThese messages:\n\nthe held   text", "the held\ntext");
+        assert_eq!(needle, "the held text", "words, however they are laid out");
+        let told = [m("assistant", "the held text"), m("user", "[tag] carry on\n\nthe held\n text and more")];
+        assert_eq!(said_to(&told, &needle), WentIn::Yes);
+        assert_eq!(said_to(&told[..1], &needle), WentIn::No, "said by the session itself is not told to it");
+        assert_eq!(said_to(&[], &needle), WentIn::No);
+        // A text long enough to go to a file is looked for as what was typed.
+        let spilled = "This message is 9000 characters long, so Luna put it in a file: x.md.";
+        assert_eq!(needle_of(spilled, &"long ".repeat(2000)), spilled);
+        assert_eq!(needle_of(&"a ".repeat(500), &"a ".repeat(500)).chars().count(), NEEDLE);
+    }
+
+    #[test]
+    fn a_held_text_on_its_way_in_comes_back_marked_and_only_it_is_marked() {
+        let held = |caller: &str, text: &str, since| Held { caller: caller.into(), id: "gi-chat".into(), text: text.into(), since, told: false, going_in: None };
+        reg().lock().unwrap().held.extend([held("gi-a", "first", 1), held("gi-b", "second", 2)]);
+        mark_going_in("gi-chat", "first", 77, Some(("gi-a", 1)));
+        let marks = || chats_now().sends.into_iter().filter(|s| s.id == "gi-chat").map(|s| s.going_in).collect::<Vec<_>>();
+        assert_eq!(marks(), [Some(GoingIn { needle: "first".into(), cursor: 77 }), None]);
+        mark_going_in("gi-chat", "carry on with first and second", 80, None);
+        assert!(marks().iter().all(|m| m.as_ref().is_some_and(|g| g.cursor == 80)), "a resume's batch");
+        // As a file written so reads back under the next core.
+        let saved: SavedSend = serde_json::from_str(&serde_json::to_string(&chats_now().sends.into_iter().find(|s| s.id == "gi-chat").unwrap()).unwrap()).unwrap();
+        assert_eq!(saved.going_in.as_ref().map(|g| g.needle.as_str()), Some("first"));
+        unmark_going_in("gi-chat");
+        assert_eq!(marks(), [None, None]);
+        let old: SavedSend = serde_json::from_str(r#"{"caller":"x","id":"y","text":"z"}"#).unwrap();
+        assert_eq!(old.going_in, None, "a file an older core left");
+        reg().lock().unwrap().held.retain(|h| h.id != "gi-chat");
+    }
+
+    #[test]
+    fn a_text_that_went_in_as_the_core_went_owes_a_turn_cut_short() {
+        register("cs-chat", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("cs-caller"), false, serde_json::json!({}));
+        crate::activity::keep_count("cs-chat", 3);
+        // Back under this core, with a track to count on.
+        crate::activity::on_hook("cs-chat", crate::activity::HookEvent::Gone);
+        owe_cut_short("cs-caller", "cs-chat", 55, true);
+        let o = reg().lock().unwrap().owed[&("cs-caller".to_string(), "cs-chat".to_string())];
+        assert!(o.cut_short && o.late && o.unsure && !o.resumed && o.baseline == 3 && o.cursor == 55);
+        assert_eq!(crate::activity::turns_counted("cs-chat"), Some(4), "so its end reads as one");
+        let (line, how) = notice_for("cs-caller", "cs-chat", 4);
+        let line = line.unwrap();
+        assert!(matches!(how, Settled::Answered));
+        assert!(line.contains("did NOT finish") && line.contains("cannot tell whether your last message reached it"), "{line}");
+        forget("cs-chat");
+        crate::activity::forget("cs-chat");
+    }
+
+    #[test]
+    fn a_helper_told_it_was_not_done_is_heard_of_past_a_core_that_took_its_job() {
+        crate::background::idle_for_test("tp-helper", Provider::Codex, 3, false);
+        // As the last core saved it.
+        let ties = Ties {
+            parent: Some("tp-caller".into()),
+            settings: serde_json::json!({ "background": true }),
+            owed: vec![("tp-caller".into(), 3, 40)],
+            told_pending: vec!["tp-caller".into()],
+            ..Default::default()
+        };
+        let ties: Ties = serde_json::from_slice(&serde_json::to_vec(&ties).unwrap()).unwrap();
+        tie_back("tp-helper", Provider::Codex, "C:\\p", "C:\\acc\\openai\\two", ties);
+        let key = ("tp-caller".to_string(), "tp-helper".to_string());
+        let o = reg().lock().unwrap().owed[&key];
+        assert!(o.told_pending && o.job_went);
+        // Not a turn in sight and nothing running: its job's end is all there will be.
+        assert_eq!(verdict(&o, 3, Some(crate::activity::Turn::Idle), false, false), Verdict::JobOver);
+        let (k, pty) = (reg().lock().unwrap().known["tp-helper"].clone(), crate::pty::manager());
+        let held = Owed { held: Some((3, now_ms() - BACKGROUND_GRACE_MS)), ..o };
+        let (line, how) = notice_line(&pty, "tp-caller", "Your helper", "tp-helper", &k, held).unwrap();
+        let line = line.unwrap();
+        assert!(matches!(how, Settled::Answered));
+        assert!(line.contains("has nothing left running now (Luna's core restarted, and that went with it)"), "{line}");
+        // And it comes back marked again from what this core saves.
+        assert_eq!(ties_of("tp-helper").unwrap().told_pending, vec!["tp-caller".to_string()]);
+        crate::background::gone_for_test("tp-helper");
+        forget("tp-helper");
+    }
+
+    #[test]
     fn a_spawn_with_the_flag_is_started_afresh_and_says_so_or_why_not() {
+        let _one = spawns_to_myself();
         // No such caller to spawn for: as a spawn would fail, and the caller told.
         let s = SpawnTaken { left_by_core: true, ..spawn_taken(9_000_300, "af-nobody", None, true) };
         spawn_afresh(s);

@@ -431,7 +431,9 @@ src-tauri/src/
   and answers `agent_spawned`; the core waits on a Condvar up to 90 s, and then up to 30 s more — until the
   session takes up the prompt (`started`); if it did not, the answer carries `screen`, and if the screen is still
   empty — `starting`: before its first draw Claude Code syncs the organisation's skills/plugins and
-  makes the worktree, and that can take minutes. The prompt meanwhile sits in the CLI's arguments, and anything typed into the pty
+  makes the worktree, and that can take minutes; a chat's CLI started again after a restart is as blank, however far
+  its count has gone (`still_starting` goes by this process's turns), and for its first minute a notice also waits for
+  its prompt (`drawn_for_notice`). The prompt meanwhile sits in the CLI's arguments, and anything typed into the pty
   would be lost, so `send` to such a session refuses. `read` and `wait` on timeout also return `starting`. `read` —
   from Claude's transcript (user/assistant, without tool_result) or Codex's rollout (`response_item`
   message user/assistant) with a byte cursor (whole lines only); a result is held to 60,000 characters
@@ -540,7 +542,10 @@ src-tauri/src/
   up to 12 s for the turn to start and one stuck caller delayed every other; held sends on `luna-held`; and `send` and
   `answer` in the tool call's thread, which wait up to 25 s for their turn and read the session only then. A send not let
   in by then is held, an answer is refused. A paste and its Enter 400 ms later, or a draft put aside and back, has
-  nothing typed in between.
+  nothing typed in between: that is Luna's writers, and `type_text` holds a person's keys back too (`hold_keys`) from
+  before its look at the draft to the Enter, as landing there they would go out with the text; they go on after it,
+  into an empty composer. `answer` does the same. A second Enter for one the CLI missed does not go over keys typed
+  since, which it would send.
   A notice a draft holds back is worked out again at each look, so answer files are named by their contents.
   **A turn that failed.** `failure_of`: a background helper's `error` (its `result`/`turn.failed` event, a
   non-zero exit, `luna_kill`), Claude Code's last transcript word when it is an `isApiErrorMessage` line, else its
@@ -760,12 +765,13 @@ src-tauri/src/
   its worktree, its settings) is the window's. On `luna-held`'s beat `resume_chats` looks at each
   (`resume_look`): it is typed into once it has stood two looks in a row at an empty prompt (`at_empty_prompt`:
   not by the cursor, which Claude Code hides until it hears it has the focus, as a helper in no pane never
-  does), between turns, with no blocking dialog. `resume_chat` takes `TypingInto`, looks again under the lock that it is still
-  on the list, and goes by `type_text`, with `spill` for a long one. A conversation to go on (`Session::resume`)
+  does), between turns, with no blocking dialog. `resume_chat` takes `TypingInto`, then a person's keys, looks again that it is still
+  on the list, untouched and at its prompt, and goes by `type_held`, with `spill` for a long one. A conversation to go on (`Session::resume`)
   gets what a background helper is told (`resume_text`); a CLI that came back afresh, its first turn having
   named nothing, gets the prompt it was opened on (`ChatResume::opening`, kept in the ties until a first
-  turn has ended; a Codex one with its note). The text Luna held for it (`Held`) goes with it in order, so
-  `deliver_held` passes it by, and each sender is owed as if it had gone in by itself. A debt that went in
+  turn has ended under a core, as a count kept across one may be only a turn that went with it; a Codex one with
+  its note). The text Luna held for it (`Held`) goes with it in order, so `deliver_held` passes it by, and each
+  sender is owed as if it had gone in by itself. A debt that went in
   moves past the count, cursor staying, and `resumed` marks the "cut short, resumed automatically" notice, in
   one hold with leaving the list. While it is on the list `notice_line` says nothing of the turn that ended,
   though it still tells of a dialog, `wait` waits (as for held text) and `read` settles nothing. It leaves the
@@ -774,19 +780,32 @@ src-tauri/src/
   gone, no window start within `SESSION_RETURN_MS`, or no prompt within `CALLER_RETURN_MS` (Claude Code may take
   minutes to draw). The caller then gets the plain notice. A later core does not bring it back: a debt marked
   `cut_short` by an earlier core is not a turn that went now.
+  **Text a core went in the middle of typing.** A held send, by `deliver_held` or with a resume, is marked on disk
+  as it goes in (`Held::going_in`: its first words and the transcript's end) and taken off once typed. Finding one
+  so, the next core does not type it again blind (`reconcile_held`): the CLI that was to take it went with that core,
+  so what the conversation it came back on holds is what it took. There, it is not typed again and its sender is owed
+  the end of a turn cut short; not there (or a new conversation), it goes in like any held text; with no transcript
+  to read it is not typed again and the notice says Luna cannot tell (`Owed::unsure`). A debt told "NOT done yet"
+  comes back so on a background helper (`Ties::told_pending`), or nothing would ever settle it: no turn is coming and
+  what it had running went with the core, which its notice says.
   **A spawn under way.** `spawn` writes a `SpawnTaken` to `chat-ties.json` (`SpawnUnderWay`) once it has settled
   what it asks for, before anything is made: the caller, the request with its prompt and settings, and with
-  `worktree` what worktrees there were. `spawn_is` names the session as it registers (`ensure_*` takes
-  `spawnRequest`), giving it what the window does not carry (`borrowed`, `auto`, the flag) and saving at once;
-  the record goes when the call ends, or on a timeout once the window answers. Its request ids carry on past
-  those in the file. Left in the file, it means the core went mid-way. `take_up_spawns`, with both registries
-  read: one that had come to a saved session has that session owe its caller, and its turn counts as cut short.
-  The window may still be part way through one (a graceful restart's `ensure_*` waits for the new core): such a
-  one is in `abandoned` too, so a late `agent_spawned` owes as ever and clears it. `SESSION_RETURN_MS` in,
-  `settle_spawns` takes what is left: with a session still known (a row the window dropped since it failed
-  is not), nothing more; with `resumeOnRestart`, `spawn_afresh` asks again, its record leaving meanwhile as the
-  new spawn has its own, and the notice names the new helper; otherwise the caller is told it never completed,
-  with the prompt in a file (`never_completed`). Each says that is why the call itself failed: the HTTP response
+  `worktree` what worktrees there were. `spawn_is` names the session as it registers and before its CLI starts
+  (`ensure_*` takes `spawnRequest`), giving it what the window does not carry (`borrowed`, `auto`, the flag) and
+  saving at once; the record goes when the call ends, or on a timeout once the window answers. Request ids start
+  from the clock, so a page's answer to a core gone since lands on nothing of this core's. Left in the file, it
+  means the core went mid-way. `take_up_spawns`, with both registries read and once per spawn (`owed_placed`): one
+  that had come to a saved session and no debt has that session owe its caller, as a turn cut short with no turn of
+  it ended (and it may go on by itself), as its answer with one. The window may still be part way through one (a
+  graceful restart's `ensure_*` waits for the new core): such a one is in `abandoned` too, so a late `agent_spawned`
+  owes as ever and clears it. `SESSION_RETURN_MS` in, `settle_spawns` takes what is left, deciding under the lock that
+  gives it up (`settled`), past which `spawn_is` refuses a session the window is still starting for it, so its CLI
+  never runs and the page drops the row: with a session known by then (a row the window dropped since it failed
+  is not), nothing more; with `resumeOnRestart`, `spawn_afresh` asks again, its new record replacing this one in one
+  hold, and the notice names the new helper. A window that has not answered that in time is no failure (`still_coming`):
+  the caller hears it may yet come up and not to spawn again, and the new record alone is saved (`retried`), so a core
+  going then starts one. It hears if that fails too (`spawn_failed_late`), as does any caller of a spawn that timed
+  out. Otherwise the caller is told it never completed, with the prompt in a file (`never_completed`). Each says that is why the call itself failed: the HTTP response
   went with the core, as usually did the caller's own CLI, which comes back with that call cut off and nothing
   to go on. A worktree new since the spawn was taken on with no session in it is named as `worktreeLeft` and
   never removed; the Worktrees window can sweep it. Told as a notice is (`spawn_news`, `deliver_notice`), or to
