@@ -475,6 +475,7 @@ async fn spawn(id: String, launch: impl FnOnce() -> Launch) -> Result<String, St
                 .get(&id)
                 .is_some_and(|s| !Arc::ptr_eq(&s.alive, &alive));
             if !replaced {
+                crate::agents::session_exited(&id, code);
                 crate::emit::to_ui("pty://exit", PtyExit { id: &id, code });
             }
             // The entry stays, for as long as the chat does: its transcript, its
@@ -1171,8 +1172,9 @@ pub async fn ensure_claude_session(
             args.push(mcp.to_string_lossy().into_owned());
         }
         // A long prompt or message from its agent comes as a file there
-        // (agents.rs `spill`), to read without asking.
-        if parent.is_some() {
+        // (agents.rs `spill`), and so does a helper's answer named in a
+        // notice, to read without asking.
+        if parent.is_some() || tools {
             let notes = crate::agents::notes_dir();
             if std::fs::create_dir_all(&notes).is_ok() {
                 args.push("--add-dir".into());
