@@ -272,11 +272,12 @@ src-tauri/src/
   `{timestamp,type,payload}`. Which file is ours: for a fresh session — the earliest of those that appeared
   after the spawn whose `session_meta` cwd is the folder, or a Codex worktree pointing back at it; for a
   resumed one — by the uuid in the name; the answer is remembered per chat, so two chats in one folder
-  do not share a file. A background helper claims nothing, as `codex exec` names its thread itself, so
-  every thread a helper has had is kept for the run and never guessed (`background::is_helper_conversation`,
-  deleted helpers included: their files stay), and a thread named after a chat took its file takes it back.
+  do not share a file. Only a rollout whose `session_meta.source` is `cli` can be guessed: a background
+  helper's says `exec` and a subagent's `{"subagent":…}`, in the same folder and at the same moment, and being
+  on the file that holds after a helper is deleted or the core restarts, with no list of ids to keep.
   Claude Code's registry has the same trap by another door: `claude -p` keeps a `<pid>.json` too while it
-  runs, so the fallback to cwd + start time skips `entrypoint: sdk-cli` and those same ids. Read on incrementally from where the last look stopped (a turn outgrows
+  runs, so past the pid and the session it was told to resume, the fallback to cwd + start time takes only
+  `entrypoint: cli`. Read on incrementally from where the last look stopped (a turn outgrows
   any tail: a megabyte of tool output after `task_started` read as resting):
   `task_started`/`task_complete` (before 0.157 — `turn_started`/`turn_complete`/`turn_aborted`) →
   working/resting and the turn count, `request_user_input` (holds the turn) and

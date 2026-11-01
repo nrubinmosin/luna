@@ -925,7 +925,7 @@ impl ActivityProbe {
     /// leave on disk says where — Claude Code's registry, Codex's rollout.
     pub fn working_dir(&self) -> Option<String> {
         match self.provider {
-            Provider::Claude => crate::claude::session::session_cwd(self.pid, &self.cwd, self.spawned_at_ms, &self.account_path),
+            Provider::Claude => crate::claude::session::session_cwd(self.pid, self.resume.as_deref(), &self.cwd, self.spawned_at_ms, &self.account_path),
             Provider::Codex => crate::codex::session::rollout_cwd(&crate::codex::session::Live {
                 chat_id: &self.id,
                 cwd: &self.cwd,
@@ -2282,7 +2282,7 @@ fn probe_of(id: &str, s: &Session) -> Probe {
 
 fn meta_from_disk(p: &Probe) -> Option<SessionMeta> {
     match p.provider {
-        Provider::Claude => crate::claude::session::meta(p.pid, &p.cwd, p.spawned_at_ms, &p.account_path),
+        Provider::Claude => crate::claude::session::meta(p.pid, p.resume.as_deref(), &p.cwd, p.spawned_at_ms, &p.account_path),
         Provider::Codex => crate::codex::session::meta(&crate::codex::session::Live {
             chat_id: &p.id,
             cwd: &p.cwd,

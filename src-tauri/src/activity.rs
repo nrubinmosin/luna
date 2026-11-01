@@ -413,7 +413,7 @@ pub fn reset_idle() {
 /// changed, where the CLI says (Claude Code's registry).
 fn disk_turn(p: &crate::pty::ActivityProbe) -> Option<(Turn, Option<u64>)> {
     let (raw, at) = match p.provider {
-        Provider::Claude => crate::claude::session::status(p.pid, &p.cwd, p.spawned_at_ms, &p.account_path)?,
+        Provider::Claude => crate::claude::session::status(p.pid, p.resume.as_deref(), &p.cwd, p.spawned_at_ms, &p.account_path)?,
         Provider::Codex => (
             crate::codex::session::status(&crate::codex::session::Live {
                 chat_id: &p.id,
@@ -437,7 +437,7 @@ fn disk_turn(p: &crate::pty::ActivityProbe) -> Option<(Turn, Option<u64>)> {
 /// ends such a turn like any other, so it never sits waiting on one.
 fn disk_api_error(p: &crate::pty::ActivityProbe) -> Option<&'static str> {
     match p.provider {
-        Provider::Claude => crate::claude::session::last_api_error(p.pid, &p.cwd, p.spawned_at_ms, &p.account_path),
+        Provider::Claude => crate::claude::session::last_api_error(p.pid, p.resume.as_deref(), &p.cwd, p.spawned_at_ms, &p.account_path),
         Provider::Codex => None,
     }
 }
