@@ -30,7 +30,7 @@ const SLOW_BUDGET_MS: Record<string, number> = {
 // answer, in the order they are made.
 const CORE_CALL: ReadonlySet<string> = new Set([
   'ensure_claude_session', 'ensure_codex_session', 'kill_session', 'delete_session', 'stop_all_sessions',
-  'orphan_sessions', 'session_meta', 'session_modes', 'agent_spawned', 'agent_resumes', 'chat_names', 'account_usage', 'power_state',
+  'orphan_sessions', 'session_meta', 'session_modes', 'agent_spawned', 'agent_resumes', 'agent_spawns', 'chat_names', 'account_usage', 'power_state',
   'background_helpers', 'background_promote', 'background_kill', 'background_delete',
   'set_keep_awake', 'arm_power_off', 'disarm_power_off', 'rename_account', 'orphan_worktrees',
   'remove_orphan_worktrees'
@@ -644,6 +644,9 @@ export const agentSpawned = (requestId: number, chatId: string | null, name: str
 
 /** The chats the core wants started to go on by themselves (agents.rs `resume_chats`). */
 export const agentResumes = () => call<string[]>('agent_resumes');
+/** What the window has been asked to start and nothing has come of yet: an event
+ *  reaches only a page that is listening. */
+export const agentSpawns = () => call<AgentSpawnRequest[]>('agent_spawns', {}, []);
 
 /** Every chat's name by id, for `luna_sessions` (agents.rs). */
 export const chatNames = (names: Record<string, string>, groups: Record<string, number>, worktrees: string[]) =>
