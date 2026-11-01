@@ -591,8 +591,10 @@ src-tauri/src/
   thread id the first turn printed — with the prompt on stdin (no command-line limit) and stdout
   parsed into a log of what it did (`luna_read(screen)` shows that in place of a screen); the
   conversation lands in the CLI's own transcript / rollout as with any session. Busy is the process
-  running; between turns `children_busy` is what the turn left in the helper's job (`procs::left_running`, read
-  as the turn ends and at each activity sample, as it takes a process snapshot); `send` during a turn queues the text for the next, and a turn about to start takes the
+  running, not its stdout staying open: a job the turn left can have inherited that pipe, so it is read on a thread of
+  its own and the turn ends with the process, its last events given 2 s. Between turns `children_busy` is what the turn
+  left in the helper's job (`procs::left_running`, read as the turn ends and at each activity sample, as it takes a
+  process snapshot); `send` during a turn queues the text for the next, and a turn about to start takes the
   helper's run under the same lock that found it free (`claim`), so text arriving before the process
   is up queues rather than starting a second one. A stop (`kill`, `stop_turns`) that finds a turn
   claimed but with no process yet marks the run `stopped`: `spawn_turn` does not start it, or kills

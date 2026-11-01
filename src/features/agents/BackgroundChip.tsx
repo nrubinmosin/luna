@@ -82,12 +82,13 @@ export function LooseHelpers() {
   );
   if (helpers.length === 0) return null;
   return (
-    <div
-      title="Background helpers whose chat was deleted. Each is deleted by itself half an hour after it is done."
-      style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '2px 8px', color: 'var(--taskpane-ink)', fontSize: 'var(--fs-4)' }}
-    >
-      <span style={{ flex: '1 1 auto' }}>Helpers with no chat</span>
-      <HelperChip helpers={helpers} what="with no chat" />
+    <div className="tp-group" title="Background helpers whose chat was deleted. Each is deleted by itself half an hour after it is done.">
+      <div className="tp-body">
+        <div className="chat-row" data-active="no" style={{ cursor: 'default' }}>
+          <span style={{ flex: '1 1 auto', paddingLeft: 4, fontSize: 'var(--fs-4)' }}>Helpers with no chat</span>
+          <HelperChip helpers={helpers} what="with no chat" />
+        </div>
+      </div>
     </div>
   );
 }
