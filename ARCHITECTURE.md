@@ -302,9 +302,11 @@ src-tauri/src/
   orphan sweep (the title bar's Worktrees window, every folder at once) scans each account's `worktrees/` as well as the project's. Removing a Codex worktree also
   removes its bucket dir once empty; only `worktree-*` branches are ever deleted (Codex's checkouts have
   none). Where a session actually works is `pty::ActivityProbe::working_dir()` (Claude registry / Codex
-  rollout); delete, `worktree_shared`, `live_cwds` and `agents::caller_worktree` go by it. A background
+  rollout); delete, `worktree_shared`, `live_cwds` and `agents::caller_worktree` go by it, the worktree's root
+  from anywhere in it (`worktree::root_of`: Claude Code moves its cwd with its shell's `cd`). A background
   helper has no pty to probe: `background::working_dirs` gives the folder it was sent to and the worktree
-  it made, between turns too, and `worktree_shared`, `live_cwds` (the orphan sweep) and `account_in_use`
+  it made (its first `init`'s cwd; a later one, of a turn `claude -p` takes up by itself, says where the shell
+  went, and a cwd saved that way comes back as the root, `home_of`), between turns too, and `worktree_shared`, `live_cwds` (the orphan sweep) and `account_in_use`
   (account rename) count it as they count a running session.
   `fetch_origin` (Settings "Fetch origin before Claude Code makes a worktree") applies only to Claude Code: Codex checks out the commit the folder is on, which no fetch moves, and Luna never moves the user's own checkout.
 - **Scrollback in Rust.** The output buffer (2MB cap) lives in the core, so that moving a chat between panes
@@ -522,8 +524,8 @@ src-tauri/src/
   stopped on an error, whose first words are no verdict on it: the answer goes to
   `<data>/agents/<id>-<sha256, 128 bits>.md` — named by what it holds, so two answers never share a file and a notice
   a draft holds back writes none anew at each look, with its time refreshed for the week's sweep when it is named
-  again — the longest message (the report) first,
-  then the last, then the rest in order — and the notice gives the count of messages and the path. The
+  again — the report first (`report_of`: the longest message, or with every one under 400 characters the last, as
+  a Codex helper's dozen "still running" lines would bury its "DONE"), then the last, then the rest in order — and the notice gives the count of messages and the path. The
   same notice carries `quota_news`: an account a caller's live helpers run on at 90%, then 95%, of a usage
   window as `account_usage` last showed it, once per level per window; told only once the line has gone in,
   forgotten when the window resets, kept in `<data>/quota-told.json` across cores. `wait_many` (`luna_wait`
@@ -539,7 +541,8 @@ src-tauri/src/
   total, so its turn is the difference from where the rollout's total stood as the turn started (a turn killed
   before is in it), and a turn with no `turn.completed` is read off the rollout when it ends. Its model comes
   from the rollout's `turn_context`, or for that turn from the `model rerouted` item a reroute leaves in the
-  stream. A
+  stream, and only of a turn its model got to: the rollout names the model a turn is to run on before asking
+  it. Claude Code's comes from the model's messages, not `init`, which names the one asked for, there or not. A
   caller handed a cut quote read the whole answer back anyway, and a long notice reached Claude Code as a
   paste. Typing a notice takes seconds, and the turn it starts may ask again meanwhile: the notifier
   then changes the debt only if it is still the one it announced (same baseline and offset).
@@ -547,13 +550,20 @@ src-tauri/src/
   they did not — "NOT done yet", once per debt (`Owed::told_pending`; a question asked since is a new debt). From there
   on the caller hears of a turn only if no notice started it (`notice_turn`, `real_turn_past`), or of the job's
   end (`Verdict::JobOver`, 20 s of nothing running and no turn, as its processes come and go between samples and Claude
-  Code may take the end up in a turn of its own; Codex and a finished `claude -p` will not). Turns on notices are
+  Code may take the end up in a turn of its own; Codex and a finished `claude -p` will not). A `claude -p` with a
+  `run_in_background` task open does not finish: it waits for the task and takes its end up itself in the same run,
+  so a background Claude Code helper reads `working` all along and its caller gets one notice, with everything it
+  said. Turns on notices are
   skipped over, the cursor staying put, so what they said comes with the next word. This is what ended a night of
   460 notices an hour: every notice started a turn, every such turn's end re-owed the answer at the new count, and any
   leftover process made `children_busy` true. A debt that was not told this cannot loop: a notice consumes it.
   A helper with its own helpers still to answer it (`waits_on_helpers`) is held the same way, and its state reads
   `background`; a turn on a notice from them counts once it has all their answers, so what it makes of them reaches
-  its caller, and a `wait` or `read` that takes the first answer leaves the rest owed (`shown`).
+  its caller, and a `wait` or `read` that takes the first answer leaves the rest owed (`shown`). While some are still
+  out, its parent hears of turns on their notices alone that wrote a message of 400 characters or more
+  (`news_for_parent`, `NoticeTurn::only_helpers`), each once, the cursor moving past it: a report its parent needs now
+  ("kill the core before 12:35") sat there unread. That goes up the tree the helpers were spawned in and never back:
+  two chats that wrote to each other are no parent and helper, and a helper hears nothing of its parent this way.
   A job's end is clocked on the debt itself (`Owed::held`): the notifier and a `wait` go by the same 20 s, the wait's
   own hold counts only from there (`held_for_wait`, `job_end_stood`), so the end reaches the caller once, and `wait`'s
   `job_done` brings what was said since as the notice does.
@@ -579,7 +589,11 @@ src-tauri/src/
   non-zero exit, `luna_kill`), Claude Code's last transcript word when it is an `isApiErrorMessage` line, else its
   `StopFailure` hook, Codex's `task_complete.error` or `turn_aborted` reason in its rollout (`Scan::failed`), and for a
   pty session its exit code. The notice says "stopped on an error", `wait` has `failed`. `isApiErrorMessage` lines are
-  not messages (`message_of`), so "You've hit your session limit" is no reply. Codex's `exec` says its retries as
+  not messages (`message_of`), so "You've hit your session limit" is no reply; nor are the user lines Claude Code puts
+  in itself (`injected`: a `<task-notification>` it takes up, an interrupt's marker, a compaction's summary, marked
+  by `turnOrigin`/`promptSource`) or its `<synthetic>` replies, as Codex's own `<…>` items are not. A prompt last means
+  the reply is still to come (`own_words`), but a turn cut short or failed has said all it will: it hands over
+  what it said before that, whatever came after. Codex's `exec` says its retries as
   `error` events too ("Reconnecting... 2/5"), which are not failures. A Claude Code transcript is looked for under the
   registry's cwd, then in every project folder (`located_transcript`): a session resumed elsewhere writes to the folder
   it started in. No transcript is not "no reply": the notice and `transcriptMissing` say which.
@@ -694,7 +708,10 @@ src-tauri/src/
   or it has sat in a read with nothing coming for 500 ms (30 s at most). An event is looked at under the lock against the
   turn being over, so none lands after its turn. Between turns `children_busy` is what the turn
   left in the helper's job (`procs::left_running`, read as the turn ends and at each activity sample, as it takes a
-  process snapshot); `send` during a turn queues the text for the next, and a turn about to start takes the
+  process snapshot). A turn whose CLI went before its model wrote or ran anything (`Observed::acted`: an unknown
+  `--agent`, a model that is not there) first ends what was born in the job since it started
+  (`procs::end_born_since`): the `git` Claude Code had started ran on for minutes, and the helper read `background`
+  and was never reaped; `send` during a turn queues the text for the next, and a turn about to start takes the
   helper's run under the same lock that found it free (`claim`), so text arriving before the process
   is up queues rather than starting a second one. A stop (`kill`, `stop_turns`) that finds a turn
   claimed but with no process yet marks the run `stopped`: `spawn_turn` does not start it, or kills
@@ -707,7 +724,8 @@ src-tauri/src/
   model by `--disallowedTools`): its permission prompts and `AskUserQuestion` arrive as that call,
   held on a Condvar until `luna_answer` (allow / deny with the input back, or `answers` by question
   text) or the turn's end; several at once (parallel subagents) queue, and the oldest unanswered is the one shown. Each
-  has an opaque id in `ask`, which `luna_answer` takes as `askId`: one no longer open is refused, and without it the
+  has an opaque id in `ask`, which `luna_answer` takes as `askId`: one no longer open is refused, one the helper never
+  had (`Registry::asked`) is called unknown, and without it the
   answer goes through only with a single ask held, so a slower responder's `allow` cannot land on the next. Codex's `exec` asks nobody (approval never) and puts a question in its
   reply — or, with `approval: auto-review`, runs `--approve-for-me`, and a reviewer model answers. Helpers are auto-deleted unless spawned with `autoDelete: false`. `send` with `interrupt` puts the
   text behind the queue, kills the turn's process tree, and waits for its reader to count the turn over, whose end
