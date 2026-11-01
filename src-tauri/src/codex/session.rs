@@ -545,13 +545,15 @@ pub fn read_tail(path: &Path) -> Tail {
     out
 }
 
-/// The model a rollout's last `turn_context` names. A turn with much output
-/// pushes that line out of the tail; the whole file is read only then.
+/// The model a rollout's last turn ran on: what a `model_reroute` moved it to,
+/// else what its `turn_context` names. A turn with much output pushes those
+/// lines out of the tail; the whole file is read only then.
 pub fn last_model(path: &Path) -> Option<String> {
     let model_in = |text: &str| {
-        text.lines().rev().filter(|l| l.contains("\"turn_context\"")).find_map(|line| {
+        text.lines().rev().filter(|l| l.contains("\"turn_context\"") || l.contains("\"model_reroute\"")).find_map(|line| {
             let v = serde_json::from_str::<Value>(line).ok()?;
-            v["payload"]["model"].as_str().map(str::to_owned)
+            let payload = &v["payload"];
+            payload["to_model"].as_str().or(payload["model"].as_str()).map(str::to_owned)
         })
     };
     tail(path, 128 * 1024)
@@ -687,6 +689,13 @@ mod tests {
         let filler = format!("{{\"type\":\"response_item\",\"payload\":\"{}\"}}\n", "x".repeat(200 * 1024));
         std::fs::write(&path, format!("{head}{filler}")).unwrap();
         assert_eq!(last_model(&path).as_deref(), Some("gpt-6.1-sol"), "read from the whole file");
+
+        // A reroute stands for its turn; the next turn's context comes after it.
+        let rerouted = r#"{"timestamp":"t","type":"event_msg","payload":{"type":"model_reroute","from_model":"gpt-6.1-sol","to_model":"gpt-other","reason":"x"}}"#;
+        std::fs::write(&path, format!("{head}{rerouted}\n")).unwrap();
+        assert_eq!(last_model(&path).as_deref(), Some("gpt-other"));
+        std::fs::write(&path, format!("{head}{rerouted}\n{}\n", r#"{"timestamp":"t","type":"turn_context","payload":{"model":"gpt-6.1-sol"}}"#)).unwrap();
+        assert_eq!(last_model(&path).as_deref(), Some("gpt-6.1-sol"));
         let _ = std::fs::remove_file(&path);
     }
 

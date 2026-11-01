@@ -24,7 +24,9 @@ can start other sessions and work with them.
     last thing it did that Luna saw: a background helper's last event, a visible session's
     last transcript write. A long command or a long think shows nothing until it ends, so a
     quiet session is not yet a stuck one. Times are UTC ISO.
-  - `resolvedModel`: the full model id the CLI used, after its first turn.
+  - `resolvedModel`: the full model id the CLI used, after its first turn. Codex's events
+    name none: it is the model its rollout says the turn ran on, normally the one asked for,
+    or the `<to>` of a `model rerouted` message for that turn.
   - `spend`: `session` (so far) and `lastTurn`, each `input` (no cache), `output`, `cacheRead`,
     `cacheWrite`, and `costUsd`: Claude Code's estimate at the rates it knows, not a bill;
     Codex states no cost, so it has none. Spend is kept with a background helper across
