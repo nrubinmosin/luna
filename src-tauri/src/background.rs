@@ -969,8 +969,10 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
         format!("could not start {}: {e}", provider.as_str())
     })?;
     let pid = Some(child.id());
-    // Into the helper's job before it has had time to start anything.
+    // Into the helper's job before it has had time to start anything. What is
+    // waited for here is not waited for with every helper's lock held.
     if let Some(pid) = pid {
+        crate::procs::await_environment(pid);
         if let Some(e) = lock().entries.get_mut(id) {
             match &e.job {
                 Some(job) => {

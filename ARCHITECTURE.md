@@ -991,3 +991,6 @@ src-tauri/src/
   identifier (`tauri.test.conf.json`), no updater, everything of its own next to the exe; `-Test` builds
   the Rust tests and runs them on the host. The rules are in AGENTS.md — the one instructions file for
   both CLIs (Claude Code reads it when there is no CLAUDE.md).
+- Linux check — `linux-check.ps1` (also Docker): builds the crate for Linux and runs its unit tests
+  there, which is the only thing in the repo that compiles and runs the Unix code (`keeper.rs` and
+  the like). Its own image and volumes; the checkout goes in read-only.

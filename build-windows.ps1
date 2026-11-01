@@ -25,9 +25,11 @@ Write-Host "build stamp: $build"
 docker build -t luna-winbuild -f docker/windows-build.Dockerfile docker
 if ($LASTEXITCODE) { throw "docker build failed (exit $LASTEXITCODE)" }
 
+# No double quotes in the command: Windows PowerShell breaks up a native argument
+# with one in it. bash splits nothing in the value of an `export`.
 $cmd = @"
 set -e
-export TAURI_SIGNING_PRIVATE_KEY="`$(cat /keys/updater.key)"
+export TAURI_SIGNING_PRIVATE_KEY=`$(cat /keys/updater.key)
 pnpm install --frozen-lockfile
 pnpm tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc $bundleArg
 "@ -replace "`r`n", "`n"
