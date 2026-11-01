@@ -73,6 +73,10 @@ const TYPING_QUIET_MS: u64 = 20_000;
 /// The same for `send`, whose text is held until then: a person who
 /// stopped typing this long ago has likely paused.
 const SEND_TYPING_MS: u64 = 5_000;
+/// How long a tool call waits for other text Luna is typing into the same
+/// terminal: more than a notice takes to go in, a draft put aside and back
+/// included, and its turn to start (SEND_TIMEOUT).
+const TYPING_WAIT: std::time::Duration = std::time::Duration::from_secs(25);
 /// A notice or a send held this long by an unsent draft is announced on the
 /// desktop, once: the draft may be forgotten, the text is not.
 const DRAFT_ALERT_MS: u64 = 60_000;
@@ -420,11 +424,17 @@ struct Owed {
     /// when that ends or a turn no notice started does, not of every turn; a
     /// question asked since is a new debt.
     told_pending: bool,
+    /// Which debt this is, whatever its numbers: asked again with nothing
+    /// moved since, a new one has the same baseline and cursor as the old, and
+    /// what was decided about the old is not to touch it.
+    rev: u64,
 }
 
 impl Owed {
     fn from(baseline: u32, cursor: u64) -> Owed {
+        static NEXT_REV: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         Owed {
+            rev: NEXT_REV.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             baseline,
             told_waiting: false,
             told_ask: 0,
@@ -478,39 +488,49 @@ fn reg() -> &'static Mutex<Registry> {
 /// what it asked about settles what it was owed. It has seen that count too
 /// (see `seen`).
 fn shown(caller: &str, id: &str, turns_ended: u32) {
-    settle(caller, id, turns_ended, false);
+    let key = (caller.to_string(), id.to_string());
+    let goes_on = take_debt(&mut reg().lock().unwrap_or_else(|e| e.into_inner()), &key, turns_ended, None);
+    owed_on(key, turns_ended, goes_on);
+    seen(caller, id, turns_ended);
 }
 
-/// `shown`; `job_ended`: what it was handed is the end of a job it was told of,
-/// which settles what it was owed with no turn past it.
-fn settle(caller: &str, id: &str, turns_ended: u32, job_ended: bool) {
-    let key = (caller.to_string(), id.to_string());
-    let settled = reg().lock().unwrap_or_else(|e| e.into_inner()).owed.get(&key).is_some_and(|o| turns_ended > o.baseline || job_ended);
-    // What it says once its own helpers have answered it is what it was asked
-    // for: still owed, past what the caller has now, as a notice's "not done"
-    // leaves it.
-    let goes_on = settled && waits_on_helpers(id, caller);
-    let cursor = if goes_on { transcript_end(id) } else { 0 };
-    if settled {
-        let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-        r.owed.remove(&key);
-        if goes_on {
-            r.owed.insert(key, Owed::pending(turns_ended, cursor));
-        }
+/// Takes what `caller` is owed by `id` if it has been handed the answer: a turn
+/// past what it asked about, or, `job_debt` being this very debt, the end of a
+/// job it was told of. In one hold of the lock, so that a question asked a
+/// moment later is a debt that stands. Returns whether what the session goes on
+/// to say is owed on (`owed_on`).
+fn take_debt(r: &mut Registry, key: &(String, String), turns_ended: u32, job_debt: Option<u64>) -> bool {
+    let Some(o) = r.owed.get(key) else { return false };
+    if turns_ended <= o.baseline && job_debt != Some(o.rev) {
+        return false;
     }
-    seen(caller, id, turns_ended);
+    r.owed.remove(key);
+    waits_on_helpers_in(r, &key.1, &key.0)
+}
+
+/// What a session says once its own helpers have answered it is what it was
+/// asked for: still owed, past what the caller has now, as a notice's "not
+/// done" leaves it. Off the lock, as this reads the transcript's length, and so
+/// behind a question asked meanwhile, whose debt covers that too.
+fn owed_on(key: (String, String), turns_ended: u32, goes_on: bool) {
+    if goes_on {
+        let cursor = transcript_end(&key.1);
+        reg().lock().unwrap_or_else(|e| e.into_inner()).owed.entry(key).or_insert_with(|| Owed::pending(turns_ended, cursor));
+    }
 }
 
 /// `shown`, for a tool response the client may yet drop unread (a cancel
 /// that crosses it): returns what puts the debt and the count seen back as
 /// they were. Whatever a later call has recorded meanwhile stands.
-fn hand_over(caller: &str, id: &str, turns_ended: u32, job_ended: bool) -> impl FnOnce() + Send + 'static {
+fn hand_over(caller: &str, id: &str, turns_ended: u32, job_debt: Option<u64>) -> impl FnOnce() + Send + 'static {
     let key = (caller.to_string(), id.to_string());
-    let (owed, seen_before) = {
-        let r = reg().lock().unwrap_or_else(|e| e.into_inner());
-        (r.owed.get(&key).copied(), r.seen.get(&key).copied())
+    let (owed, seen_before, goes_on) = {
+        let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+        let (owed, seen_before) = (r.owed.get(&key).copied(), r.seen.get(&key).copied());
+        (owed, seen_before, take_debt(&mut r, &key, turns_ended, job_debt))
     };
-    settle(caller, id, turns_ended, job_ended);
+    owed_on(key.clone(), turns_ended, goes_on);
+    seen(caller, id, turns_ended);
     move || {
         let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
         if let Some(o) = owed {
@@ -556,30 +576,51 @@ fn owe_from(caller: &str, id: &str, baseline: u32, cursor: u64) {
     r.owed.insert(key, Owed::from(baseline, cursor));
 }
 
-/// A session Luna is typing a notice or a held send into, for as long as this
-/// is held: typing one waits for its turn to start, off the notifier's loop so
-/// that one slow caller does not keep the others waiting, and two at once
-/// would land in each other.
+/// A terminal Luna is typing into, for as long as this is held, whatever it is
+/// typing: a notice, a send, a held send, an answer. Text goes in as a paste and
+/// an Enter 400 ms later, with a draft put aside first and brought back after,
+/// and anything else typed in between lands in it or breaks the draft's return.
+/// Held until the turn the text starts has begun, which a notice does off the
+/// notifier's loop: one slow caller is not to keep the others waiting.
 struct TypingInto(String);
 
 impl TypingInto {
-    fn all() -> &'static Mutex<std::collections::HashSet<String>> {
-        static T: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+    fn all() -> &'static (Mutex<std::collections::HashSet<String>>, Condvar) {
+        static T: OnceLock<(Mutex<std::collections::HashSet<String>>, Condvar)> = OnceLock::new();
         T.get_or_init(Default::default)
     }
 
+    /// The terminal if nothing else is typing into it now.
     fn claim(id: &str) -> Option<TypingInto> {
-        Self::all().lock().unwrap_or_else(|e| e.into_inner()).insert(id.to_string()).then(|| TypingInto(id.to_string()))
+        Self::all().0.lock().unwrap_or_else(|e| e.into_inner()).insert(id.to_string()).then(|| TypingInto(id.to_string()))
+    }
+
+    /// The terminal once what is typing into it is done, for a tool call that
+    /// has text to put in now; None if that takes longer than `timeout`.
+    fn wait_for(id: &str, timeout: std::time::Duration) -> Option<TypingInto> {
+        let (m, cv) = Self::all();
+        let deadline = std::time::Instant::now() + timeout;
+        let mut typing = m.lock().unwrap_or_else(|e| e.into_inner());
+        while !typing.insert(id.to_string()) {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                return None;
+            }
+            typing = cv.wait_timeout(typing, left).unwrap_or_else(|e| e.into_inner()).0;
+        }
+        Some(TypingInto(id.to_string()))
     }
 
     fn under_way(id: &str) -> bool {
-        Self::all().lock().unwrap_or_else(|e| e.into_inner()).contains(id)
+        Self::all().0.lock().unwrap_or_else(|e| e.into_inner()).contains(id)
     }
 }
 
 impl Drop for TypingInto {
     fn drop(&mut self) {
-        Self::all().lock().unwrap_or_else(|e| e.into_inner()).remove(&self.0);
+        let (m, cv) = Self::all();
+        m.lock().unwrap_or_else(|e| e.into_inner()).remove(&self.0);
+        cv.notify_all();
     }
 }
 
@@ -1007,8 +1048,11 @@ pub fn state_of(id: &str) -> (&'static str, Option<Ask>) {
 /// Whether `id` has helpers of its own still to answer it (`except` aside): it
 /// is not through with what it was asked until it has their answers.
 fn waits_on_helpers(id: &str, except: &str) -> bool {
-    let r = reg().lock().unwrap_or_else(|e| e.into_inner());
-    r.owed.keys().any(|(caller, helper)| caller == id && helper != except && is_descendant(&r, id, helper))
+    waits_on_helpers_in(&reg().lock().unwrap_or_else(|e| e.into_inner()), id, except)
+}
+
+fn waits_on_helpers_in(r: &Registry, id: &str, except: &str) -> bool {
+    r.owed.keys().any(|(caller, helper)| caller == id && helper != except && is_descendant(r, id, helper))
 }
 
 /// An answer to one question as the CLI is to get it: an option's number
@@ -2145,6 +2189,11 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool) -> Result<Sent,
     if !live(&pty, id) {
         return Err(format!("session {id} is not running"));
     }
+    // Before anything is read of it: what is going in now may be a notice, and
+    // the session busy on it by the time this text's turn comes. Not there in
+    // time, the text is held like any other (`hold`), and goes in when it can.
+    // A background helper has no terminal: its queue takes turns by itself.
+    let terminal = if crate::background::has(id) { None } else { TypingInto::wait_for(id, TYPING_WAIT) };
     let (state_before, ask) = state_of(id);
     if let Some(a) = ask.as_ref().filter(|a| a.blocking && !interrupt) {
         return Err(format!(
@@ -2185,7 +2234,7 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool) -> Result<Sent,
     let busy = |t: Option<crate::activity::TurnState>| {
         t.is_some_and(|t| matches!(t.turn, crate::activity::Turn::Busy | crate::activity::Turn::Waiting))
     };
-    let interrupted = interrupt && busy(before);
+    let interrupted = interrupt && busy(before) && terminal.is_some();
     if interrupted {
         press(&pty, id, &[Key::Seq("\x1b")])?;
         let deadline = std::time::Instant::now() + INTERRUPT_SETTLE;
@@ -2205,7 +2254,7 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool) -> Result<Sent,
     // go out with a draft they left: it waits for them (`deliver_held`),
     // unless the draft can be put aside (`type_text`).
     let typing = pty.typed_ago_ms(id).is_some_and(|ms| ms < SEND_TYPING_MS);
-    let typed = if typing { None } else { put_in(caller, id, &spill(text), before, baseline, interrupted)? };
+    let typed = if typing || terminal.is_none() { None } else { put_in(caller, id, &spill(text), before, baseline, interrupted)? };
     let Some(sent) = typed else {
         hold(caller, id, text);
         return Ok(Sent {
@@ -2363,7 +2412,7 @@ fn stash_and_type(
 
 /// Puts a caller's text by for the notifier to type in (`deliver_held`).
 fn hold(caller: &str, id: &str, text: &str) {
-    crate::log::info("agents", &format!("send from {} to {} held: the user is typing or has a draft", label(caller), label(id)));
+    crate::log::info("agents", &format!("send from {} to {} held: the user is typing or has a draft, or other text is going in", label(caller), label(id)));
     reg().lock().unwrap_or_else(|e| e.into_inner()).held.push(Held {
         caller: caller.to_string(),
         id: id.to_string(),
@@ -2620,6 +2669,14 @@ pub fn answer(
     if !live(&pty, id) {
         return Err(format!("session {id} is not running"));
     }
+    // Keys in the middle of a notice's paste would land in it: its turn first,
+    // and what is to be answered as it stands after that. A background helper
+    // has no terminal.
+    let terminal = if crate::background::has(id) {
+        None
+    } else {
+        Some(TypingInto::wait_for(id, TYPING_WAIT).ok_or_else(|| format!("Luna is still typing into session {id}; try again in a little while"))?)
+    };
     let baseline = crate::activity::turn_state(id).map(|t| t.turns_ended).unwrap_or(0);
     let ask = ask_of(id);
     // What the session says on the answer starts right away, long before
@@ -2658,6 +2715,7 @@ pub fn answer(
         }
         reg().lock().unwrap_or_else(|e| e.into_inner()).answered.insert((caller.to_string(), id.to_string()), now_ms());
     }
+    drop(terminal);
     std::thread::sleep(ANSWER_SETTLE);
     seen(caller, id, baseline);
     owe_from(caller, id, baseline, cursor);
@@ -2876,7 +2934,7 @@ pub fn read(
         && owed.is_some_and(|o| turns_ended > o.baseline && (!o.queued || queue_settled(&key, o, turns_ended)));
     if settles {
         // Cancelled first, it is put back; the response goes nowhere anyway.
-        call.commit(hand_over(caller, id, turns_ended, false));
+        call.commit(hand_over(caller, id, turns_ended, None));
     } else {
         seen(caller, id, turns_ended);
     }
@@ -3014,7 +3072,7 @@ pub fn wait(
         std::thread::sleep(POLL);
     }
     let now = crate::activity::turn_state(id).map(|t| t.turns_ended);
-    let (owed_since, answered_at, queued, late, told_pending) = {
+    let (owed_since, answered_at, queued, late, told_debt) = {
         let r = reg().lock().unwrap_or_else(|e| e.into_inner());
         let owed = r.owed.get(&key);
         (
@@ -3022,13 +3080,14 @@ pub fn wait(
             r.answered.get(&key).copied(),
             owed.is_some_and(|o| o.queued),
             owed.is_some_and(|o| o.late),
-            owed.is_some_and(|o| o.told_pending),
+            owed.filter(|o| o.told_pending).map(|o| o.rev),
         )
     };
     let after_turn = if late { None } else { after_turn };
     // Told it is not done, a wait is for what a notice would bring next: the
     // job's end or a turn no notice started. A count asked for is that count.
-    let told_pending = told_pending && after_turn.is_none();
+    let told_debt = told_debt.filter(|_| after_turn.is_none());
+    let told_pending = told_debt.is_some();
     // A count shown since the question (a read of part of the answer, a
     // timeout) does not make the answer seen.
     let mut baseline = match (after_turn, owed_since.or_else(|| last_shown(caller, id)), now) {
@@ -3128,7 +3187,7 @@ pub fn wait(
             if !answers {
                 // Nothing was handed over: whatever is owed stays owed.
                 looked(id);
-            } else if !call.commit(hand_over(caller, id, turns_ended, outcome == "job_done")) {
+            } else if !call.commit(hand_over(caller, id, turns_ended, told_debt.filter(|_| outcome == "job_done"))) {
                 // A cancel since the last look: it stays owed after all.
                 return gone_err();
             }
@@ -3907,7 +3966,7 @@ fn notifier() {
                     }
                     Some((None, Settled::Skip(ended))) => {
                         let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-                        if let Some(o) = r.owed.get_mut(&(caller.clone(), id.clone())).filter(|now| now.baseline == o.baseline) {
+                        if let Some(o) = r.owed.get_mut(&(caller.clone(), id.clone())).filter(|now| now.rev == o.rev) {
                             o.baseline = ended;
                             o.held = None;
                         }
@@ -3988,31 +4047,7 @@ fn deliver_notice(pty: &crate::pty::PtyManager, caller: &str, text: &str, settle
                 if counts_for_breaker(&how) && count_notice(&mut r, caller, &id, now_ms()) {
                     stopped.push(id.clone());
                 }
-                let key = (caller.to_string(), id);
-                // Typing the notice takes seconds, and the turn it
-                // starts may ask again before they are over: that
-                // question is owed on.
-                let asked_since = r.owed.get(&key).is_some_and(|o| o.baseline != told.baseline || o.cursor != told.cursor);
-                match how {
-                    _ if asked_since => {}
-                    Settled::Answered | Settled::Exited => {
-                        r.owed.remove(&key);
-                    }
-                    Settled::Waiting => {
-                        if let Some(o) = r.owed.get_mut(&key) {
-                            o.told_waiting = true;
-                        }
-                    }
-                    Settled::Pending(ended, cursor) => {
-                        r.owed.insert(key, Owed::pending(ended, cursor));
-                    }
-                    Settled::Asked(ask) => {
-                        if let Some(o) = r.owed.get_mut(&key) {
-                            o.told_ask = ask;
-                        }
-                    }
-                    Settled::Hold(_) | Settled::Unhold | Settled::Skip(_) => {}
-                }
+                settle_told(&mut r, (caller.to_string(), id), how, &told);
             }
             drop(r);
             for id in stopped {
@@ -4020,6 +4055,35 @@ fn deliver_notice(pty: &crate::pty::PtyManager, caller: &str, text: &str, settle
             }
         }
         Err(e) => crate::log::warn("agents", &format!("notice to {} about {about} failed: {e}", label(caller))),
+    }
+}
+
+/// What a notice that went in does to the debt it told of (`told`). Only to
+/// that debt: typing the notice takes seconds, and the turn it starts may ask
+/// again before they are over, a question that is owed on; and a `wait` may
+/// have taken the answer meanwhile, which leaves nothing to carry on.
+fn settle_told(r: &mut Registry, key: (String, String), how: Settled, told: &Owed) {
+    if r.owed.get(&key).map(|o| o.rev) != Some(told.rev) {
+        return;
+    }
+    match how {
+        Settled::Answered | Settled::Exited => {
+            r.owed.remove(&key);
+        }
+        Settled::Waiting => {
+            if let Some(o) = r.owed.get_mut(&key) {
+                o.told_waiting = true;
+            }
+        }
+        Settled::Pending(ended, cursor) => {
+            r.owed.insert(key, Owed::pending(ended, cursor));
+        }
+        Settled::Asked(ask) => {
+            if let Some(o) = r.owed.get_mut(&key) {
+                o.told_ask = ask;
+            }
+        }
+        Settled::Hold(_) | Settled::Unhold | Settled::Skip(_) => {}
     }
 }
 
@@ -4187,14 +4251,14 @@ mod tests {
         let key = ("h-parent".to_string(), "h-child".to_string());
         owe_from("h-parent", "h-child", 1, 40);
         seen("h-parent", "h-child", 1);
-        let undo = hand_over("h-parent", "h-child", 2, false);
+        let undo = hand_over("h-parent", "h-child", 2, None);
         assert!(reg().lock().unwrap().owed.get(&key).is_none(), "handed over");
         assert_eq!(last_shown("h-parent", "h-child"), Some(2));
         undo();
         assert_eq!(reg().lock().unwrap().owed.get(&key).map(|o| (o.baseline, o.cursor)), Some((1, 40)));
         assert_eq!(last_shown("h-parent", "h-child"), Some(1));
         // A question asked in between stands, owing the dropped answer too.
-        let undo = hand_over("h-parent", "h-child", 2, false);
+        let undo = hand_over("h-parent", "h-child", 2, None);
         owe_from("h-parent", "h-child", 2, 90);
         seen("h-parent", "h-child", 2);
         undo();
@@ -4280,6 +4344,29 @@ mod tests {
         drop(first);
         assert!(!TypingInto::under_way("ty-chat"));
         assert!(TypingInto::claim("ty-chat").is_some());
+    }
+
+    #[test]
+    fn a_tool_call_waits_its_turn_at_a_terminal() {
+        use std::time::{Duration, Instant};
+        let notice = TypingInto::claim("tw-chat").expect("nobody is typing into it");
+        // As a send finds it with a notice going in.
+        assert!(TypingInto::wait_for("tw-chat", Duration::from_millis(60)).is_none(), "not in time: it is held, not typed over the notice");
+        let send = std::thread::spawn(|| {
+            let started = Instant::now();
+            let got = TypingInto::wait_for("tw-chat", Duration::from_secs(10)).expect("its turn comes");
+            (started.elapsed(), got)
+        });
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(!send.is_finished(), "still behind the notice");
+        assert!(TypingInto::claim("tw-chat").is_none(), "and nothing gets in between");
+        drop(notice);
+        let (waited, got) = send.join().unwrap();
+        assert!(waited >= Duration::from_millis(150), "it went in after the notice, not during it");
+        assert!(TypingInto::under_way("tw-chat"), "now it is the one typing");
+        assert!(TypingInto::wait_for("tw-other", Duration::from_millis(1)).is_some(), "another terminal is another matter");
+        drop(got);
+        assert!(!TypingInto::under_way("tw-chat"));
     }
 
     #[test]
@@ -4604,16 +4691,66 @@ mod tests {
     fn only_a_job_ending_or_a_later_turn_settles_a_caller_told_it_is_not_done() {
         let key = ("js-a".to_string(), "js-b".to_string());
         let owed = || reg().lock().unwrap().owed.get(&key).copied();
-        reg().lock().unwrap().owed.insert(key.clone(), Owed::pending(3, 0));
+        let told = Owed::pending(3, 0);
+        reg().lock().unwrap().owed.insert(key.clone(), told);
         // A wait with an `afterTurn` from before the notice hands over a turn
         // the caller was told of: the job's end is still to come.
-        drop(hand_over("js-a", "js-b", 3, false));
+        drop(hand_over("js-a", "js-b", 3, None));
         assert!(owed().is_some_and(|o| o.told_pending), "still owed");
-        drop(hand_over("js-a", "js-b", 3, true));
+        drop(hand_over("js-a", "js-b", 3, Some(told.rev)));
         assert!(owed().is_none(), "the job's end, with no turn past it");
         reg().lock().unwrap().owed.insert(key.clone(), Owed::pending(3, 0));
-        drop(hand_over("js-a", "js-b", 4, false));
+        drop(hand_over("js-a", "js-b", 4, None));
         assert!(owed().is_none(), "a later turn, as ever");
+    }
+
+    #[test]
+    fn a_question_asked_meanwhile_outlives_what_was_decided_about_the_last_one() {
+        let key = ("rv-a".to_string(), "rv-b".to_string());
+        let owed = || reg().lock().unwrap().owed.get(&key).copied();
+        // A wait saw the job end on the debt it knew; the caller has asked again.
+        let old = Owed::pending(3, 0);
+        reg().lock().unwrap().owed.insert(key.clone(), old);
+        owe_from("rv-a", "rv-b", 3, 0);
+        let new = owed().unwrap();
+        assert_ne!(new.rev, old.rev, "the same numbers, another debt");
+        drop(hand_over("rv-a", "rv-b", 3, Some(old.rev)));
+        assert_eq!(owed().map(|o| o.rev), Some(new.rev), "the new question stands");
+        // A notice about the old one went in meanwhile: nor does that take it.
+        settle_told(&mut reg().lock().unwrap(), key.clone(), Settled::Answered, &old);
+        assert_eq!(owed().map(|o| o.rev), Some(new.rev));
+        settle_told(&mut reg().lock().unwrap(), key.clone(), Settled::Pending(9, 9), &old);
+        assert_eq!(owed().map(|o| (o.rev, o.baseline)), Some((new.rev, 3)));
+        settle_told(&mut reg().lock().unwrap(), key.clone(), Settled::Waiting, &old);
+        assert!(!owed().unwrap().told_waiting);
+        // The one it told of it settles, and a debt a wait took stays gone.
+        settle_told(&mut reg().lock().unwrap(), key.clone(), Settled::Answered, &new);
+        assert!(owed().is_none());
+        settle_told(&mut reg().lock().unwrap(), key.clone(), Settled::Pending(9, 9), &new);
+        assert!(owed().is_none(), "a notice does not bring back what a wait handed over");
+    }
+
+    #[test]
+    fn taking_a_debt_and_owing_on_leave_a_new_question_alone() {
+        let none = serde_json::json!({});
+        register("tk-top", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, none.clone());
+        register("tk-mid", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("tk-top"), true, none.clone());
+        register("tk-low", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("tk-mid"), false, none);
+        let key = ("tk-top".to_string(), "tk-mid".to_string());
+        owe_from("tk-mid", "tk-low", 0, 0);
+        owe_from("tk-top", "tk-mid", 0, 0);
+        let goes_on = take_debt(&mut reg().lock().unwrap(), &key, 1, None);
+        assert!(goes_on, "its own helper has yet to answer it");
+        assert!(reg().lock().unwrap().owed.get(&key).is_none(), "taken in the one hold of the lock");
+        // A question between the taking and the owing on is the debt from here.
+        owe_from("tk-top", "tk-mid", 1, 50);
+        let asked = reg().lock().unwrap().owed.get(&key).copied().unwrap();
+        owed_on(key.clone(), 1, goes_on);
+        let now = reg().lock().unwrap().owed.get(&key).copied().unwrap();
+        assert_eq!((now.rev, now.told_pending), (asked.rev, false));
+        for id in ["tk-low", "tk-mid", "tk-top"] {
+            forget(id);
+        }
     }
 
     #[test]
