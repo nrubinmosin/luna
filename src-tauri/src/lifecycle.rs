@@ -54,7 +54,7 @@ static NOTED: AtomicBool = AtomicBool::new(false);
 /// watcher's line and its report of the previous run are its own.
 static CORE: AtomicBool = AtomicBool::new(false);
 
-fn is_core() -> bool {
+pub(crate) fn is_core() -> bool {
     CORE.load(Ordering::Relaxed)
 }
 static ANSWERED: AtomicU64 = AtomicU64::new(0);

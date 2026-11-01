@@ -21,9 +21,10 @@
 //! conversation the next core may resume. That takes windowed programs too,
 //! which the OS will not except, so every way out that is not a death lets go
 //! of the tie first (`let_go`, and dropping a job), and `end_leftovers` spares
-//! them as ever. No job on other platforms, so no tie either: there a turn's
-//! process group runs on past a core that dies, and with no tie in place Luna
-//! does not start another on that conversation by itself (background.rs).
+//! them as ever. Off Windows a process stands in for the OS, with the same ways
+//! in and out (keeper.rs). There a job lists nothing: no window can be told from
+//! a job left running, so nothing is counted, and what a turn left runs on past
+//! every way out but a death.
 
 #[cfg(windows)]
 mod imp {
@@ -74,7 +75,7 @@ mod imp {
 
     /// Has the OS end everything in the job once its last handle closes, which
     /// this process's death does: nothing else holds one, and none is inherited.
-    pub fn tie(job: &Job) -> bool {
+    pub fn tie(job: &Job, _id: &str) -> bool {
         let tied = set_limit(job, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE);
         if let Err(e) = &tied {
             crate::log::warn("procs", &format!("could not tie a job to the core: {e}"));
@@ -85,6 +86,34 @@ mod imp {
     /// Undoes `tie`: what is in the job runs on when its handle closes.
     pub fn let_go(job: &Job) {
         let _ = set_limit(job, JOB_OBJECT_LIMIT(0));
+    }
+
+    /// What became of the last core's jobs: the OS saw to them as it died.
+    pub struct LastTies;
+
+    impl LastTies {
+        /// A tied job was seen out, every one.
+        pub fn held(&self, _id: &str) -> bool {
+            true
+        }
+
+        /// Nothing written down, so nothing looked at to say otherwise now of a
+        /// job that was not tied.
+        pub fn confirmed(&self, _id: &str) -> bool {
+            false
+        }
+    }
+
+    pub fn end_last_ties() -> LastTies {
+        LastTies
+    }
+
+    /// Needed only where a job goes by what is in the environment (keeper.rs).
+    pub fn also_marked(_job: &Job, _var: &str, _value: &str) {}
+
+    /// The tie needs no process of its own here.
+    pub fn keeper_from_args() -> bool {
+        false
     }
 
     /// The job's handle closed as a dying process's is, no `let_go` first.
@@ -352,17 +381,8 @@ mod imp {
 
 #[cfg(not(windows))]
 mod imp {
-    pub struct Job(());
-    pub fn adopt(_pid: u32) -> Option<Job> {
-        None
-    }
-    pub fn join(_job: &Job, _pid: u32) -> bool {
-        false
-    }
-    pub fn tie(_job: &Job) -> bool {
-        false
-    }
-    pub fn let_go(_job: &Job) {}
+    pub use crate::keeper::{adopt, also_marked, end_last_ties, from_args as keeper_from_args, join, let_go, tie, Job};
+
     pub fn end(_pid: u32, _started_ms: u64) -> bool {
         false
     }
@@ -394,7 +414,7 @@ mod imp {
     }
 }
 
-pub use imp::{adopt, alive, join, let_go, tie, Job};
+pub use imp::{adopt, alive, also_marked, end_last_ties, join, keeper_from_args, let_go, tie, Job};
 
 /// When a process was created, epoch ms, where the platform says.
 pub fn created_ms(pid: u32) -> Option<u64> {
@@ -571,14 +591,14 @@ mod tests {
         // As when a core dies.
         let mut c = start();
         let job = adopt(c.id()).unwrap();
-        tie(&job);
+        tie(&job, "t");
         imp::close_as_in_a_death(job);
         assert!(ended_within(&mut c, 3000), "the OS ends what is in it");
 
         // A helper deleted or opened as a chat: the job is dropped.
         let mut c = start();
         let job = adopt(c.id()).unwrap();
-        tie(&job);
+        tie(&job, "t");
         drop(job);
         assert!(!ended_within(&mut c, 500), "`end_leftovers` chose what goes; the rest stays");
         let _ = c.kill();
@@ -587,7 +607,7 @@ mod tests {
         // A core leaving: the job is never dropped, the process just ends.
         let mut c = start();
         let job = adopt(c.id()).unwrap();
-        tie(&job);
+        tie(&job, "t");
         let_go(&job);
         imp::close_as_in_a_death(job);
         assert!(!ended_within(&mut c, 500), "let go of, its handle closing ends nothing");

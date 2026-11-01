@@ -111,6 +111,9 @@ src-tauri/src/
   procs.rs      what the CLI has running under it: a Job Object per session, pid list,
                 CPU/IO/start time of each, the "busy" rule (judge), windowed programs left
                 out (shown), what is left ended with the session (end_leftovers)
+  keeper.rs     the tie to the core off Windows: the `--keep-ties` process that ends a dead
+                core's jobs, what a job holds there, the next core's backstop (end_last_ties);
+                and `kill_tree`'s walk there (end_tree)
   browsers.rs   which browser a terminal's link opens in: a command line with %1 per
                 browser; found on Windows (StartMenuInternet + each Chromium browser's
                 Local State profiles, Firefox's profiles.ini, the https UserChoice handler)
@@ -371,8 +374,33 @@ src-tauri/src/
   core starts on that conversation. This is the leftover rule, not an exception to it: a core that
   leaves ends leftovers already (`stop_all`). The OS spares no window, so every way out that is not a
   death lets go first (`let_go`, `Drop for Job`), `end_leftovers` sparing windows as ever; a window a
-  helper's turn opened dies with a core that dies, and only then. Windows only: elsewhere there is no
-  job, and a turn's process group runs on past a dead core. Hooks print nothing: Claude Code adds the stdout of a hook exiting 0
+  helper's turn opened dies with a core that dies, and only then. Off Windows the same tie is a process
+  of Luna's (`keeper.rs`): the keeper, this exe with `--keep-ties`, one to a core once a helper has a
+  turn, reads a pipe only the core writes, and the end of that input is the core's death, on which it
+  ends every job not let go of; it also looks at the core itself every 2 s by pid and start time, as on
+  macOS a pipe becomes close-on-exec a moment after it is made and a process started then holds the write
+  end. Not `PR_SET_PDEATHSIG`: it fires as the spawning *thread* ends, reaches one child, and macOS has
+  none. Such a job is more than a process group, since both CLIs start each tool command in a session of
+  its own (Claude Code `detached`, Codex `setsid`): it is what has its mark in the environment (`LUNA_JOB`,
+  one to a helper under a core), the turns' processes by pid and start time with their groups, and all
+  below those by parent link. Codex's `shell_environment_policy` may keep the mark from its tools, so
+  `CODEX_THREAD_ID`, which it sets after that filter, counts too for what was born since the job began;
+  a turn whose own process does not show its mark still goes with the core but is not counted as tied.
+  Everything is stopped from the top down before it is killed, and no signal goes to a group by its
+  number: on Linux each goes through a pidfd. A core writes what it has tied as it ties it, a file to a job
+  in `<data>/tied-jobs/`, so that letting go of one is one unlink a full disk does not refuse, and the next
+  ends what is left of those before it takes the helpers up (`end_last_ties`), for a keeper that went with
+  its core. A pid whose start time differs is another's and is left alone, a file of another boot names
+  nothing, and a job not seen out stays written down for the core after. One difference: a job there lists nothing, as nothing there tells a
+  window from a job left running, so `children_busy` stays false off Windows and what a turn left runs
+  on past every way out but a death. `kill_tree` is `taskkill /T` there by the same walk without the mark
+  (`keeper::end_tree`): the process, what it started, and what is in a group or session one of those
+  leads, each stopped from the top down and looked below again so that nothing forks out, then killed. So
+  `luna_kill`, an interrupt, a core's stop and a chat that would not quit take the tool commands with them,
+  a program with a window too if it still hangs from the tree, as `/T` takes it; what only the mark ties to
+  the job has outlived its tool and is left. A chat's CLI that quits when asked is gone by then: what is
+  left of its group goes, and what it left elsewhere stays. In the core a live pid that is no child of the
+  core is another program's and is left alone. Hooks print nothing: Claude Code adds the stdout of a hook exiting 0
   to the context, and silence is free. Claude's registry beats an "idle" from a hook, a hook's
   "waiting" beats the registry's "busy" (a permission prompt is inside a turn). No mark is eternal:
   a hook's "busy" against the registry's "idle" goes stale in 15 s (a missed Stop), a hook's "waiting" — at
@@ -672,7 +700,7 @@ src-tauri/src/
   claimed but with no process yet marks the run `stopped`: `spawn_turn` does not start it, or kills
   what it just started. A turn that cannot start counts as one ended turn with its error, since whoever
   queued it waits on that end; text queued behind it fails with it, as the turn after. On Unix each turn's process leads a process group
-  of its own, as a pty's CLI does, so `kill_tree` takes the turn whole. The core stops every turn
+  of its own, as a pty's CLI does. The core stops every turn
   as it leaves (`stop_all`, and no turn starts after), and `stop_all_sessions` before an update stops
   them too (`stop_turns`): a turn still running would keep the old core from being replaced. A Claude Code helper always gets Luna's
   MCP server, if only for `--permission-prompt-tool mcp__luna__luna_permission` (hidden from its
@@ -725,8 +753,11 @@ src-tauri/src/
   resume that cannot start counts as an ended turn with its error (`run_turn`), and the notice is the
   plain cut-short one with the text still held. It runs only where nothing of the old turn can overlap
   it (`Entry::resumable`): that core stopped it itself, or its processes were in a job tied to the core
-  (`Entry::tied`, saved). Elsewhere (no job off Windows, a join that failed) the caller gets the plain
-  notice and decides. It takes only the batch it captured, re-checking under the lock that the helper
+  (`Entry::tied`, saved; off Windows only if `end_last_ties` also finds nothing of the job left). Elsewhere
+  (a tie or join that failed, a keeper that could not start, a job not seen out, no record of it) the caller
+  gets the plain notice and decides. That stands across cores (`Entry::unsure`, saved, as the next would
+  read this one's `cut_short` as its having stopped the turn itself) until the helper's next turn, which
+  its caller chose knowing, or a later core's look finds the job over. It takes only the batch it captured, re-checking under the lock that the helper
   is still cut short, as a turn sent meanwhile has gone on already. A helper stopped before any turn named its conversation
   is taken up like any other, so its debt, its lineage and in time its end record in `agents.jsonl`
   survive: what its turn was started on is saved until then (`Entry::opening`) and becomes the first of
@@ -786,8 +817,8 @@ src-tauri/src/
   so what the conversation it came back on holds is what it took. There, it is not typed again and its sender is owed
   the end of a turn cut short; not there (or a new conversation), it goes in like any held text; with no transcript
   to read it is not typed again and the notice says Luna cannot tell (`Owed::unsure`). A debt told "NOT done yet"
-  comes back so on a background helper (`Ties::told_pending`), or nothing would ever settle it: no turn is coming and
-  what it had running went with the core, which its notice says.
+  comes back so on a background helper (`Ties::told_pending`), or nothing would ever settle it: on Windows what it had
+  running went with the core and no turn is coming, and its notice says the core restarted.
   **A spawn under way.** `spawn` writes a `SpawnTaken` to `chat-ties.json` (`SpawnUnderWay`) once it has settled
   what it asks for, before anything is made: the caller, the request with its prompt and settings, and with
   `worktree` what worktrees there were. `spawn_is` names the session as it registers and before its CLI starts

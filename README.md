@@ -320,7 +320,7 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   answer is told so once its own chat is back, along with any messages queued behind that
   turn, kept word for word to send again, and `luna_send` has the helper carry on. A helper
   spawned with `resumeOnRestart: true` goes on by itself, those messages included, where Luna
-  knows the old turn ended (a normal stop; on Windows any death of the core). One stopped
+  knows the old turn ended (a normal stop or any death of the core). One stopped
   before its first turn got anywhere is reported as never started, with its prompt, and with
   `resumeOnRestart` starts afresh on it. A visible helper spawned with it goes on too: Luna
   starts its CLI, in a pane or not, and types the same word in once it is back at its prompt,
@@ -531,7 +531,7 @@ moves or was started by a turn; what the CLI brings up with itself — MCP serve
 only while it moves, and a program with a window of its own, like a browser a login opened,
 not at all), and recent output. A background helper's leftovers between turns count the same
 way. Deleting a chat or a helper, or quitting Luna, ends whatever it left running, windowed
-programs aside. A core that dies takes a helper's whole job with it, a CLI still in its turn
+programs aside; off Windows, where nothing tells a window from a job, it runs on. A core that dies takes a helper's whole job with it, a CLI still in its turn
 included, so nothing runs on unowned; there the OS spares no window. "Done" means no session is busy *or*
 waiting for a permission. A session whose turn ended on a usage limit (or another API error:
 a lost login, a billing problem) and sits on the dialog it left counts as done — nothing moves
