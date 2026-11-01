@@ -445,8 +445,15 @@ background helper spawned without tools.
   helper's and that was the last answer it waited for. So two chats with a stray process each
   do not keep waking each other.
 - If a chat still gets more than 12 turn-end notices about one session in 15 minutes, Luna
-  stops telling it, says so in the log and once on the desktop, and goes on when you type into
-  either chat.
+  stops telling it of that session's turns and jobs, says so in the log and once on the desktop,
+  and goes on when you type into either chat. Its prompts and questions still come: a helper is
+  never left on a prompt until it times out.
+- Luna types into a terminal one thing at a time, notices, sends and answers alike, so nothing
+  lands inside a paste or in the way of a draft coming back. A send that cannot get its turn in
+  time is held like one a draft is in the way of.
+- A background helper's prompts each have an `id` in `ask`, which `luna_answer` takes as
+  `askId`: an answer written on one cannot land on the next. Without it, an answer is taken only
+  when one is held.
 
 ## Power
 
