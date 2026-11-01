@@ -32,17 +32,38 @@ pnpm install --frozen-lockfile
 pnpm tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc $bundleArg
 "@ -replace "`r`n", "`n"
 
-docker run --rm `
-  -e COREPACK_ENABLE_DOWNLOAD_PROMPT=0 `
-  -e LUNA_BUILD=$build `
-  -e TAURI_SIGNING_PRIVATE_KEY_PASSWORD= `
-  -v "${updaterKey}:/keys/updater.key:ro" `
-  -v "${PWD}:/app" `
-  -v luna-node-modules:/app/node_modules `
-  -v luna-xwin-cache:/xwin-cache `
-  -v luna-cargo-registry:/usr/local/cargo/registry `
-  -v luna-tauri-cache:/root/.cache/tauri `
-  -w /app `
-  luna-winbuild `
-  bash -c $cmd
-if ($LASTEXITCODE) { throw "app build failed (exit $LASTEXITCODE)" }
+# One build at a time on this machine, test builds included (test-build.ps1
+# takes the same mutex): the named volumes are shared by every checkout, and
+# two builds setting up the MSVC CRT in luna-xwin-cache at once break each
+# other ("Failed to setup MSVC CRT"), as two pnpm installs into
+# luna-node-modules would.
+$lock = [System.Threading.Mutex]::new($false, 'Global\luna-docker-build')
+$held = $false
+try {
+    try {
+        if (-not $lock.WaitOne(0)) {
+            Write-Host 'another Luna build is running; waiting for it'
+            [void]$lock.WaitOne()
+        }
+    } catch [System.Threading.AbandonedMutexException] {
+        # A build that died holding it: the mutex is ours now.
+    }
+    $held = $true
+    docker run --rm `
+      -e COREPACK_ENABLE_DOWNLOAD_PROMPT=0 `
+      -e LUNA_BUILD=$build `
+      -e TAURI_SIGNING_PRIVATE_KEY_PASSWORD= `
+      -v "${updaterKey}:/keys/updater.key:ro" `
+      -v "${PWD}:/app" `
+      -v luna-node-modules:/app/node_modules `
+      -v luna-xwin-cache:/xwin-cache `
+      -v luna-cargo-registry:/usr/local/cargo/registry `
+      -v luna-tauri-cache:/root/.cache/tauri `
+      -w /app `
+      luna-winbuild `
+      bash -c $cmd
+    if ($LASTEXITCODE) { throw "app build failed (exit $LASTEXITCODE)" }
+} finally {
+    if ($held) { $lock.ReleaseMutex() }
+    $lock.Dispose()
+}
