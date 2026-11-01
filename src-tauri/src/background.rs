@@ -103,6 +103,11 @@ struct Entry {
     /// what a turn leaves running is still the helper's between turns, holds
     /// the machine as a chat's would, and is ended with the helper.
     job: Option<std::sync::Arc<crate::procs::Job>>,
+    /// Its turns left something running in that job, when last looked: at the
+    /// end of its turn and at every activity sample since. Reading a job takes
+    /// a process snapshot, too much for every `turn_state`, and not under the
+    /// registry lock.
+    left_running: bool,
 }
 
 struct Registry {
@@ -264,6 +269,7 @@ pub fn start(id: &str, spec: Spec, prompt: &str) -> Result<(), String> {
         error: None,
         cut_short: false,
         job: None,
+        left_running: false,
     };
     claim(&mut e);
     lock().entries.insert(id.to_string(), e);
@@ -628,12 +634,17 @@ fn on_codex_event(e: &mut Entry, v: &Value) {
 /// The turn's process has exited: count the turn, let any held question go,
 /// and start the turn the queue has waiting.
 fn turn_over(id: &str, code: Option<i32>) {
+    // Before the turn reads as over: whoever is owed its answer must not hear
+    // "finished" ahead of the job it left running.
+    let job = lock().entries.get(id).and_then(|e| e.job.clone());
+    let left_running = job.is_some_and(|job| !crate::procs::left_running(&job).is_empty());
     let next = {
         let mut r = lock();
         let Some(e) = r.entries.get_mut(id) else { return };
         e.run = None;
         e.turns_ended += 1;
         e.held = None;
+        e.left_running = left_running;
         if code.is_some_and(|c| c != 0) && e.error.is_none() {
             e.error = Some(format!("{} exited with code {}", e.spec.provider.as_str(), code.unwrap_or(-1)));
         }
@@ -684,32 +695,48 @@ pub fn turn_state(id: &str) -> Option<crate::activity::TurnState> {
         (Some(_), None) => Turn::Busy,
         _ => Turn::Idle,
     };
-    Some(crate::activity::TurnState { turn, busy: e.run.is_some(), turns_ended: e.turns_ended, children_busy: false })
+    Some(crate::activity::TurnState {
+        turn,
+        busy: e.run.is_some(),
+        turns_ended: e.turns_ended,
+        children_busy: e.run.is_none() && e.left_running,
+    })
 }
 
 /// What the power rules see of every helper: its turn, and between turns
 /// what its turns left running, by the same rule as a chat's (activity.rs):
-/// it holds the machine for as long as it lives.
+/// it holds the machine for as long as it lives. Noted for `turn_state`, which
+/// is what tells its caller and `reap` that a job still runs.
 pub fn activity() -> Vec<crate::activity::SessionActivity> {
     let ids: Vec<(String, Option<std::sync::Arc<crate::procs::Job>>)> = lock()
         .entries
         .iter()
         .map(|(id, e)| (id.clone(), e.job.clone().filter(|_| e.run.is_none())))
         .collect();
-    ids.into_iter()
+    let mut moved = false;
+    let out = ids
+        .into_iter()
         .filter_map(|(id, job)| {
+            let left = job.map(|job| crate::procs::left_running(&job));
+            if let Some(left) = &left {
+                if let Some(e) = lock().entries.get_mut(&id).filter(|e| e.run.is_none()) {
+                    moved |= e.left_running != !left.is_empty();
+                    e.left_running = !left.is_empty();
+                }
+            }
             let t = turn_state(&id)?;
             let mut a = crate::activity::SessionActivity::of_turn(&id, t.turn, t.busy);
-            if let Some(job) = job {
-                let left = crate::procs::left_running(&job);
-                if !left.is_empty() {
-                    a.busy = true;
-                    a.procs = left;
-                }
+            if let Some(left) = left.filter(|left| !left.is_empty()) {
+                a.busy = true;
+                a.procs = left;
             }
             Some(a)
         })
-        .collect()
+        .collect();
+    if moved {
+        changed();
+    }
+    out
 }
 
 /// Text for the helper: the next turn now, or after the one running.
@@ -1204,6 +1231,7 @@ fn taken_up(s: Saved) -> Entry {
         error: None,
         cut_short: s.cut_short || s.running,
         job: None,
+        left_running: false,
     };
     if s.running {
         note(&mut e, "Luna's core went mid-turn and stopped the turn");
@@ -1251,7 +1279,21 @@ mod tests {
             error: None,
             cut_short: false,
             job: None,
+            left_running: false,
         }
+    }
+
+    #[test]
+    fn a_job_left_running_reads_as_one_between_turns_only() {
+        let mut e = entry(Provider::Claude);
+        e.turns_ended = 1;
+        e.left_running = true;
+        lock().entries.insert("left-job".into(), e);
+        let children_busy = || turn_state("left-job").unwrap().children_busy;
+        assert!(children_busy(), "between turns, what its turn left is a job");
+        lock().entries.get_mut("left-job").unwrap().run = Some(Run { pid: Some(1), started_ms: 0, stopped: false });
+        assert!(!children_busy(), "in a turn it is simply working");
+        lock().entries.remove("left-job");
     }
 
     #[test]
