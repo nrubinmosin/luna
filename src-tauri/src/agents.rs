@@ -335,7 +335,7 @@ impl SpawnParams {
 /// The request as the frontend receives it.
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct SpawnRequest {
+pub struct SpawnRequest {
     request_id: u64,
     parent_id: String,
     /// A worktree the helper is to run in without owning it: its caller's.
@@ -387,6 +387,10 @@ struct SpawnTaken {
     account_path: String,
     /// With `worktree`: the worktrees there were as it was taken on.
     worktrees_before: Vec<String>,
+    /// What the window was asked for, until a session has come of it (`agent_spawns`).
+    /// Not saved: it means a request of this core's, and one a core left is settled.
+    #[serde(skip)]
+    asked: Option<SpawnRequest>,
     /// The session it came to, as soon as there is one (`spawn_is`).
     helper: Option<String>,
     /// That session owes its caller by now, whatever has become of the debt since,
@@ -430,6 +434,7 @@ impl SpawnUnderWay {
             in_worktree: in_worktree.map(str::to_owned),
             account_path: account_path.to_string(),
             worktrees_before,
+            asked: None,
             helper: None,
             owed_placed: false,
             left_by_core: false,
@@ -2705,7 +2710,11 @@ fn spawn_with(caller: &str, mut params: SpawnParams, replaces: Option<u64>, stil
         spill(&params.prompt)
     };
     let hooks_unasked = provider == Provider::Codex.as_str() && crate::codex::hooks::unasked_in(&folder);
-    crate::emit::to_ui("agent://spawn", SpawnRequest { request_id, parent_id: caller.to_string(), in_worktree, hooks_unasked, params });
+    let asking = SpawnRequest { request_id, parent_id: caller.to_string(), in_worktree, hooks_unasked, params };
+    if let Some(s) = reg().lock().unwrap_or_else(|e| e.into_inner()).spawns.get_mut(&request_id) {
+        s.asked = Some(asking.clone());
+    }
+    crate::emit::to_ui("agent://spawn", asking);
 
     let (lock, cv) = &*slot;
     let mut p = lock.lock().unwrap_or_else(|e| e.into_inner());
@@ -3181,6 +3190,19 @@ fn leave_worktrees(id: &str, left: Vec<String>) {
     crate::log::warn("agents", &format!("{} leaves what a core cut it off making: {}", label(id), left.join(", ")));
     reg().lock().unwrap_or_else(|e| e.into_inner()).worktrees_left.insert(id.to_string(), left);
     crate::background::save();
+}
+
+/// What the window has been asked to start and nothing has come of yet. An event
+/// reaches only a page that is listening: `agent://spawn` sent with no window, or
+/// while one is still loading, is gone, and the spawn times out on a window that is
+/// there. So the page asks for these as it comes up and at every core, and takes each
+/// once (`bridge.ts`). The oldest first, in the order they were asked.
+#[tauri::command]
+pub fn agent_spawns() -> Vec<SpawnRequest> {
+    let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    let mut asked: Vec<SpawnRequest> = r.spawns.values().filter(|s| s.helper.is_none() && !s.settled).filter_map(|s| s.asked.clone()).collect();
+    asked.sort_by_key(|s| s.request_id);
+    asked
 }
 
 /// The frontend's answer to `agent://spawn`.
@@ -8640,6 +8662,7 @@ mod tests {
             in_worktree: None,
             account_path: "C:\\acc\\anthropic\\one".into(),
             worktrees_before: Vec::new(),
+            asked: None,
             helper: helper.map(str::to_owned),
             owed_placed: false,
             left_by_core: false,
@@ -8672,6 +8695,43 @@ mod tests {
         drop(under_way);
         assert!(saved(request).is_none(), "seen through, nothing is left to tell");
         forget("uw-helper");
+    }
+
+    #[test]
+    fn what_the_window_was_asked_stays_there_to_ask_for_until_a_session_comes_of_it() {
+        let _one = spawns_to_myself();
+        let pending = || agent_spawns().into_iter().map(|s| s.request_id).filter(|r| (9_000_500..9_000_600).contains(r)).collect::<Vec<u64>>();
+        let put = |request: u64| {
+            let mut s = spawn_taken(request, "as-caller", None, false);
+            s.asked = Some(SpawnRequest { request_id: request, parent_id: "as-caller".into(), in_worktree: None, hooks_unasked: false, params: s.params.clone() });
+            reg().lock().unwrap().spawns.insert(request, s);
+        };
+        put(9_000_502);
+        put(9_000_501);
+        // A background spawn asks the window nothing.
+        reg().lock().unwrap().spawns.insert(9_000_503, spawn_taken(9_000_503, "as-caller", None, false));
+        assert_eq!(pending(), [9_000_501, 9_000_502], "in the order they were asked");
+        let wire = serde_json::to_value(&agent_spawns().into_iter().find(|s| s.request_id == 9_000_501).unwrap()).unwrap();
+        assert_eq!((wire["requestId"].as_u64(), wire["parentId"].as_str(), wire["prompt"].as_str()), (Some(9_000_501), Some("as-caller"), Some("the whole job, word for word")), "as the event carries it");
+
+        // Its session registers: the window has it, whatever comes of the page.
+        register("as-helper", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("as-caller"), false, serde_json::json!({}));
+        spawn_is(9_000_501, "as-helper").unwrap();
+        assert_eq!(pending(), [9_000_502]);
+        // Given up on: a session would be refused, and its caller has been told.
+        reg().lock().unwrap().spawns.get_mut(&9_000_502).unwrap().settled = true;
+        assert!(pending().is_empty());
+        // A core after this one settles it from the file, and asks for nothing.
+        let saved = serde_json::to_vec(&reg().lock().unwrap().spawns[&9_000_501]).unwrap();
+        let back: SpawnTaken = serde_json::from_slice(&saved).unwrap();
+        assert!(back.asked.is_none());
+        // The record gone, so is the asking.
+        put(9_000_504);
+        assert_eq!(pending(), [9_000_504]);
+        drop(SpawnUnderWay(9_000_504));
+        assert!(pending().is_empty());
+        forget("as-helper");
+        reg().lock().unwrap().spawns.retain(|request, _| !(9_000_500..9_000_600).contains(request));
     }
 
     #[test]

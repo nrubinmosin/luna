@@ -71,6 +71,7 @@ pub fn dispatch(cmd: &str, args: Value) -> Result<Value, String> {
         "agent_spawned" => call!(ok args, agents::agent_spawned,
             request_id: u64, chat_id: Option<String>, name: Option<String>, error: Option<String>),
         "agent_resumes" => call!(ok args, agents::agent_resumes),
+        "agent_spawns" => call!(ok args, agents::agent_spawns),
         "chat_names" => call!(ok args, agents::chat_names,
             names: HashMap<String, String>, groups: Option<HashMap<String, u32>>, worktrees: Option<Vec<String>>),
         "account_usage" => call!(ok args, agents::account_usage, usage: HashMap<String, Value>),

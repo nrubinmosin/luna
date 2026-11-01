@@ -466,7 +466,11 @@ src-tauri/src/
   makes the worktree, and that can take minutes; a chat's CLI started again after a restart is as blank, however far
   its count has gone (`still_starting` goes by this process's turns), and for its first minute a notice also waits for
   its prompt (`drawn_for_notice`). The prompt meanwhile sits in the CLI's arguments, and anything typed into the pty
-  would be lost, so `send` to such a session refuses. `read` and `wait` on timeout also return `starting`. `read` —
+  would be lost, so `send` to such a session refuses. `read` and `wait` on timeout also return `starting`. An event reaches only a page that is listening:
+  `agent://spawn` sent with no window, or with one still loading, is gone, and the spawn would time out with a window right
+  there. So the request stays on its record until a session comes of it (`SpawnTaken::asked`), and the page asks for what is
+  waiting once it listens and at every core (`agent_spawns`), taking each once however it came. Its row is named by the request,
+  so a page reloaded half way finds the same row and no second, and `ensure_*` starts nothing that runs. `read` —
   from Claude's transcript (user/assistant, without tool_result) or Codex's rollout (`response_item`
   message user/assistant) with a byte cursor (whole lines only); a result is held to 60,000 characters
   (`MAX_TEXT`; Claude Code cuts an MCP result past 25,000 tokens): read on from `since`, it keeps the
