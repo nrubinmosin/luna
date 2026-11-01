@@ -125,11 +125,12 @@ can start other sessions and work with them.
   from a cursor taken after you asked, does not.
 - Asked again before an answer reached you, you are owed both: the next reply, read or
   notice covers everything said since the first question.
-- A restart of Luna's core stops a background helper's turn and what its turns left running. You
-  stay owed: once your chat is back (given up after 10 minutes) a notice says it did NOT finish;
-  `luna_send` has it carry on. What you queued never reached it: the notice counts it and its file
-  ends on it word for word (`undelivered` in `luna_read`, `luna_wait`). Stopped before its first
-  turn got anywhere, it "never got started" and the file holds its prompt.
+- A core restart stops a background helper's turn and what its turns left running (off Windows
+  only if it died). You stay owed: once your chat is back (given up after 10 minutes) a notice
+  says it did NOT finish; `luna_send` has it carry on. What you queued never reached it: the
+  notice counts it and its file ends on it word for word (`undelivered` in `luna_read`,
+  `luna_wait`). Stopped before its first turn got anywhere, it "never got started" and the file
+  holds its prompt.
 - `resumeOnRestart` goes on by itself with that text (afresh on its prompt if it never got started)
   where Luna knows the old turn ended (a normal stop or a core death), else the plain notice; one
   notice says so, the usual one follows.
