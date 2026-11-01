@@ -383,10 +383,7 @@ fn command_for(e: &Entry, id: &str) -> (Vec<String>, String, Vec<(&'static str, 
                 args.extend(crate::pty::codex_mcp_args());
                 envs.push(("LUNA_MCP_TOKEN", token));
             }
-            if let Some(parent) = &s.parent {
-                // A helper's run is trusted (`trust_override` above).
-                args.extend(crate::pty::codex_helper_args(parent, &s.account_path, &s.folder, true));
-            }
+            envs.extend(crate::pty::codex_git_envs(&s.mode));
             envs.push(("CODEX_HOME", s.account_path.clone()));
             // The prompt comes on stdin; Claude Code reads it there unasked.
             args.push("-".into());
@@ -1343,10 +1340,11 @@ mod tests {
         e.spec.mode = crate::pty::READ_ONLY_NET.into();
         for session in [None, Some("t-1".to_string())] {
             e.session = session;
-            let (args, _, _) = command_for(&e, "x");
-            assert!(args.contains(&"default_permissions=\"luna-read-only-net\"".to_string()));
-            assert!(args.contains(&"permissions.luna-read-only-net.network.enabled=true".to_string()));
+            let (args, _, envs) = command_for(&e, "x");
+            assert!(args.iter().any(|a| a.starts_with("default_permissions=\"luna-")));
+            assert!(args.iter().any(|a| a.ends_with(".network.enabled=true")));
             assert!(!args.iter().any(|a| a.starts_with("sandbox_mode=")), "Codex's docs say not to set both");
+            assert_eq!(envs.iter().any(|(k, _)| *k == "GIT_CONFIG_COUNT"), cfg!(windows), "git https, which schannel cannot do there");
             assert!(args.contains(&"approval_policy=\"never\"".to_string()));
         }
     }
@@ -1382,17 +1380,16 @@ mod tests {
             let (args, _, envs) = command_for(&e, "x");
             assert!(envs.iter().any(|(k, v)| *k == "LUNA_SESSION_ID" && v == "x"));
             assert!(envs.iter().any(|(k, v)| *k == "LUNA_PARENT_ID" && v == "p-1"));
-            let line = match provider {
-                Provider::Claude => value_of(&args, "--append-system-prompt").unwrap().to_string(),
-                Provider::Codex => args.iter().find(|a| a.starts_with("developer_instructions=")).unwrap().clone(),
-            };
-            assert!(line.contains("started through Luna by session p-1"), "{line}");
+            assert!(!args.iter().any(|a| a.contains("developer_instructions")), "that would replace what its config says");
+            if provider == Provider::Claude {
+                assert!(value_of(&args, "--append-system-prompt").unwrap().contains("started through Luna by session p-1"));
+            }
         }
         for provider in [Provider::Claude, Provider::Codex] {
             let (args, _, envs) = command_for(&entry(provider), "x");
             assert!(envs.iter().any(|(k, v)| *k == "LUNA_SESSION_ID" && v == "x"), "whoever started it");
             assert!(!envs.iter().any(|(k, _)| *k == "LUNA_PARENT_ID"));
-            assert!(!args.iter().any(|a| a == "--append-system-prompt" || a.starts_with("developer_instructions=")));
+            assert!(!args.iter().any(|a| a == "--append-system-prompt"));
         }
     }
 

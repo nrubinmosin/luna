@@ -403,10 +403,11 @@ src-tauri/src/
   `hub.rs`, a token per session, reissued on every spawn. The agent's instruction travels in the
   `instructions` of the `initialize` answer, so the system prompt is touched neither by a flag nor by a
   file; all of it together is ~2k tokens once. Plain sessions get neither MCP nor any knowledge of Luna.
-  A helper, tools or not, gets one line of system prompt saying what it is: `--append-system-prompt`, or
-  Codex's `-c developer_instructions=`, which replaces that key, so the value its config would have
-  goes in with it (AGENTS.md comes another way and stays). Every session has `LUNA_SESSION_ID` in its
-  environment, a helper `LUNA_PARENT_ID` too.
+  A helper, tools or not, is told what it is. Claude Code: one line by `--append-system-prompt`. Codex: a
+  note after its opening prompt, since `-c developer_instructions=` replaces that key and its value comes
+  from a stack of config files Luna would have to resolve as Codex does (ancestors' `.codex` included) and
+  could then overrun a command line. Slash-command prompts go without; compaction can lose it. Every
+  session has `LUNA_SESSION_ID` in its environment, a helper `LUNA_PARENT_ID` too.
   The core does not know chats, so a spawn is a round trip: `agent://spawn` to the frontend, which makes the chat
   (`parentId`, not seated in a pane) and `ensure_*` with the prompt as the CLI's positional argument after
   `--` (Claude Code's `--mcp-config` takes any number of files and swallowed the prompt as one more),
@@ -554,8 +555,11 @@ src-tauri/src/
   selection nor interrupted. Backspace, Tab, Ctrl+J, Enter and escape sequences go as is.
   Claude Code reads text and does not need this.
   **`read-only-net`** is Luna's value for what `sandbox_mode` cannot say: `-c default_permissions=
-  "luna-read-only-net"` with that profile defined in `-c` too (`extends = ":read-only"`,
+  "luna-<random>"` with that profile defined in `-c` too (`extends = ":read-only"`,
   `network.enabled = true`), in place of `--sandbox`/`sandbox_mode`, nothing written to `config.toml`.
+  The name is new on every start because Codex lays a config's rules for that name over these: a known
+  name would let a project's `.codex/config.toml` make it writable. On Windows it also gets
+  `http.sslBackend=openssl` appended to `GIT_CONFIG_*`, so git's https does not go through schannel.
   It beats a `sandbox_mode` or sits beside a `[sandbox_workspace_write]` in the account's or project's
   config without complaint (checked on 0.166: writes denied, network up). `network.enabled` is direct
   network, not Codex's proxy (`features.network_proxy`). The other side of it: on Windows the "no network"

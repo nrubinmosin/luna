@@ -23,18 +23,18 @@ can start other sessions and work with them.
   wait on and send text to.
 - At most eight helpers under one chat. A helper given `tools: true` gets these tools too,
   but its own helpers get none.
-- `LUNA_SESSION_ID` holds a session's id, `LUNA_PARENT_ID` a helper's parent's. A helper's
-  system prompt says it is one.
+- `LUNA_SESSION_ID` holds a session's id, `LUNA_PARENT_ID` a helper's parent's. A Claude Code
+  helper's system prompt says it is one; a Codex helper's opening prompt ends with Luna's note
+  saying so (not after a `/command`; compaction may lose it).
 
 ## Accounts and models
 - An account is a signed-in login of one provider: an Anthropic account runs Claude Code
   only, an OpenAI account runs Codex only. `provider` and `account` in `luna_spawn` must
   match; an `account` alone brings its own provider. Take them from `luna_list`, which lists
-  every account the user lets agents use (the user can switch accounts off for agents)
-  under its exact name.
+  every account the user lets agents use under its exact name.
 - `account` may be a list of one provider's: the first signed in with every usage window
-  under 95% (unknown usage passes), else the one with the most room. `accountChoice` in the
-  result says which it took and why it skipped others.
+  under 95% or unknown, else the one with the most room. `accountChoice` in the result says
+  which and why.
 - Accounts of one provider differ: personal or team plans, different organizations, their
   own allowed models and their own quota. Each row in `luna_list` gives the provider, the
   name, the models it offers (for Codex with their efforts and default effort), the
@@ -62,12 +62,12 @@ can start other sessions and work with them.
   folder it is sent to for its run, so the project's own `.codex/` config loads; a visible
   one in a folder Codex does not trust yet has Luna trust it for that account.
 - Codex's network: none in `read-only` or, unless its config says so, `workspace-write`, but
-  on Windows only by dead proxy variables: what ignores them (ssh, sockets) connects. The
-  machine's in `danger-full-access`. `read-only-net` reads only, with network, but on Windows
-  schannel TLS fails (built-in `curl`, `git` https, `Invoke-WebRequest`), as does git's own ssh;
-  `gh`, Python, plain http and `git -c http.sslBackend=openssl` work.
+  on Windows only by dead proxy variables: ssh and raw sockets still connect.
+  `danger-full-access`: the machine's. `read-only-net` reads only, with network; on Windows
+  schannel TLS fails (built-in `curl`, `Invoke-WebRequest`), as does git's own ssh; `gh`, Python,
+  plain http work, and git https (Luna sets `http.sslBackend=openssl`).
 - `readOnly: true`: Claude Code loses Edit, Write and NotebookEdit, but **Bash can still
-  write**; Codex gets `sandbox: read-only` (or `read-only-net` if given), which holds. Refused
+  write**; Codex gets `sandbox: read-only` (or `read-only-net`), which holds. Refused
   with `acceptEdits`, `auto-review` or a sandbox that writes.
 - `agent: "<name>"`: Claude Code's `--agent`; an unknown name stops it. Codex refuses it: its
   roles are for subagents only.

@@ -35,6 +35,14 @@ const INHERITED_SESSION_VARS: &[&str] = &[
     "CLAUDE_CODE_MESSAGING_TOKEN",
     "CLAUDE_PID",
     "CODEX_THREAD_ID",
+    "CODEX_SESSION_ID",
+    "CODEX_VERSION",
+    "CODEX_CI",
+    "CODEX_PERMISSION_PROFILE",
+    "CODEX_TOOL_CALL_ID",
+    "CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS",
+    "CODEX_NETWORK_PROXY_ACTIVE",
+    "CODEX_NETWORK_PROXY_CREDENTIAL_BROKER_ACTIVE",
     "CODEX_SANDBOX",
     "CODEX_SANDBOX_NETWORK_DISABLED",
 ];
@@ -620,19 +628,66 @@ pub(crate) const READ_ONLY_NET: &str = "read-only-net";
 /// extends Codex's `:read-only`, with direct network, and nothing written to
 /// the account's config.toml. Codex's docs say not to set `sandbox_mode` beside
 /// `default_permissions`; this override beats one in the account's or the
-/// project's config, so the disk stays read-only either way. On Windows TLS
-/// through schannel still fails under the sandbox's restricted token, as it
-/// does in `workspace-write` with its network on (see luna_guide.md).
+/// project's config, so the disk stays read-only either way. The name is new
+/// on every start: Codex lays the rules any config has for a profile's name
+/// over the ones given here, so a project's `.codex/config.toml` saying
+/// `":root" = "write"` for a name it could know would make this writable. It
+/// need not last: a resume takes a new one. On Windows TLS through schannel
+/// still fails under the sandbox's restricted token, as it does in
+/// `workspace-write` with its network on (see `codex_git_envs`, luna_guide.md).
 pub(crate) fn codex_read_only_net_args() -> Vec<String> {
-    const PROFILE: &str = "luna-read-only-net";
+    let profile = format!("luna-{}", &crate::agents::mint("read-only-net")[..16]);
     [
-        format!("default_permissions=\"{PROFILE}\""),
-        format!("permissions.{PROFILE}.extends=\":read-only\""),
-        format!("permissions.{PROFILE}.network.enabled=true"),
+        format!("default_permissions=\"{profile}\""),
+        format!("permissions.{profile}.extends=\":read-only\""),
+        format!("permissions.{profile}.network.enabled=true"),
     ]
     .into_iter()
     .flat_map(|value| ["-c".to_string(), value])
     .collect()
+}
+
+/// What `read-only-net` needs for git on Windows, whose https goes through
+/// schannel by default and fails under the sandbox's token: entries for
+/// `GIT_CONFIG_*`, after any it was started with. Nothing if those already
+/// choose a backend, or if their count is one git itself would refuse.
+fn git_ssl_backend_envs(count: Option<&str>, key: impl Fn(usize) -> Option<String>) -> Vec<(String, String)> {
+    let n: usize = match count {
+        None => 0,
+        Some(c) => match c.trim().parse() {
+            Ok(n) => n,
+            Err(_) => return Vec::new(),
+        },
+    };
+    if (0..n).any(|i| key(i).is_some_and(|k| k.eq_ignore_ascii_case("http.sslBackend"))) {
+        return Vec::new();
+    }
+    vec![
+        ("GIT_CONFIG_COUNT".to_string(), (n + 1).to_string()),
+        (format!("GIT_CONFIG_KEY_{n}"), "http.sslBackend".to_string()),
+        (format!("GIT_CONFIG_VALUE_{n}"), "openssl".to_string()),
+    ]
+}
+
+/// `git_ssl_backend_envs` for a session in that sandbox. Worked out once: the
+/// environment they build on is this process's, which stays as it started,
+/// and the names are made only the once for their `'static` lifetime.
+pub(crate) fn codex_git_envs(sandbox: &str) -> Vec<(&'static str, String)> {
+    static ENVS: std::sync::OnceLock<Vec<(&'static str, String)>> = std::sync::OnceLock::new();
+    if !cfg!(windows) || sandbox != READ_ONLY_NET {
+        return Vec::new();
+    }
+    ENVS.get_or_init(|| {
+        let count = std::env::var("GIT_CONFIG_COUNT").ok();
+        git_ssl_backend_envs(count.as_deref(), |i| std::env::var(format!("GIT_CONFIG_KEY_{i}")).ok())
+            .into_iter()
+            .map(|(k, v)| {
+                let k: &'static str = Box::leak(k.into_boxed_str());
+                (k, v)
+            })
+            .collect()
+    })
+    .clone()
 }
 
 /// A sandbox as `-c` overrides, for `codex exec`, which asks nobody.
@@ -680,9 +735,9 @@ pub(crate) fn session_envs(id: &str, parent: Option<&str>) -> Vec<(&'static str,
     envs
 }
 
-/// The line of a helper's system prompt that says what it is: instructions
-/// written for the chat a person talks to (say, to agree a plan with them
-/// first) would otherwise hold it up with nobody there to answer.
+/// What a helper is told it is: instructions written for the chat a person
+/// talks to (say, to agree a plan with them first) would otherwise hold it up
+/// with nobody there to answer.
 fn helper_line(parent: &str) -> String {
     format!(
         "You are a helper session started through Luna by session {parent}, not a chat with a person: your answers go to \
@@ -695,20 +750,22 @@ pub(crate) fn claude_helper_args(parent: &str) -> Vec<String> {
     vec!["--append-system-prompt".into(), helper_line(parent)]
 }
 
-/// `helper_line` for Codex, as developer instructions. AGENTS.md comes by
-/// another way and stays, but the override replaces what the account's or the
-/// project's config says under that key, so that goes in with it.
-/// `run_trusted`: the run is trusted whatever the account says.
-pub(crate) fn codex_helper_args(parent: &str, account_path: &str, folder: &str, run_trusted: bool) -> Vec<String> {
-    let line = helper_line(parent);
-    let text = match crate::codex::defaults::developer_instructions(account_path, folder, run_trusted) {
-        Some(own) => format!("{own}\n\n{line}"),
-        None => line,
-    };
-    // A JSON string is a TOML basic string, escapes and all.
-    let quoted = serde_json::to_string(&text).unwrap_or_default();
-    vec!["-c".into(), format!("developer_instructions={quoted}")]
+/// A Codex helper's opening prompt, with `helper_line` as a note after it.
+/// Codex can only replace `developer_instructions`, not add to them, and what
+/// they come to depends on its whole stack of config files: working that out
+/// here to pass it on would be Codex's resolution done twice, and a long one
+/// would not fit on a command line. After the prompt, not before: the opening
+/// words are what names the chat, and a slash command has to come first. One
+/// that does goes without the note, which would land in its arguments.
+pub(crate) fn codex_helper_prompt(parent: &str, prompt: &str) -> String {
+    if prompt.trim_start().starts_with('/') {
+        return prompt.to_string();
+    }
+    format!("{prompt}{HELPER_NOTE}{}]", helper_line(parent))
 }
+
+/// Where the note starts: what comes before it is the prompt as it was asked.
+const HELPER_NOTE: &str = "\n\n[A note from Luna, not part of the task: ";
 
 /// What `readOnly` takes away from Claude Code. Bash stays, and can still
 /// write: it is a checker's tool, and no flag tells its reads from its writes.
@@ -1398,13 +1455,11 @@ pub async fn ensure_codex_session(
                 if let Some(path) = codex_sandbox_path(sandbox) {
                     envs.push(("PATH", path));
                 }
+                envs.extend(codex_git_envs(sandbox));
             }
             let hooks_unasked = hooks_unasked.unwrap_or(false);
             if hooks_unasked {
                 args.push(HOOKS_UNASKED.into());
-            }
-            if let Some(parent) = &parent {
-                args.extend(codex_helper_args(parent, &account_path, &folder, false));
             }
             envs.extend(session_envs(&id, parent.as_deref()));
             let tools = tools.unwrap_or(false);
@@ -1845,7 +1900,7 @@ pub fn sane_title(s: &str) -> Option<String> {
 /// A prompt trimmed to a title: whitespace flattened, 48 characters. Slash
 /// commands, replayed tool output and system reminders are not titles.
 pub fn title_from_prompt(text: &str) -> Option<String> {
-    let text = text.trim();
+    let text = text.split(HELPER_NOTE).next().unwrap_or(text).trim();
     if text.is_empty() || text.starts_with('<') || text.starts_with('/') {
         return None;
     }
@@ -2436,10 +2491,11 @@ mod tests {
     fn read_only_net_is_a_profile_and_never_a_sandbox_mode() {
         let args = codex_sandbox_args(READ_ONLY_NET);
         assert!(!args.iter().any(|a| a.starts_with("sandbox_mode")), "Codex's docs say not to set both");
-        assert!(args.contains(&"default_permissions=\"luna-read-only-net\"".to_string()));
-        assert!(args.contains(&"permissions.luna-read-only-net.extends=\":read-only\"".to_string()));
-        assert!(args.contains(&"permissions.luna-read-only-net.network.enabled=true".to_string()));
+        let profile = args[1].strip_prefix("default_permissions=\"").and_then(|p| p.strip_suffix('"')).expect("the profile is named first");
+        assert!(args.contains(&format!("permissions.{profile}.extends=\":read-only\"")));
+        assert!(args.contains(&format!("permissions.{profile}.network.enabled=true")));
         assert_eq!(args.iter().filter(|a| *a == "-c").count(), 3);
+        assert_ne!(codex_sandbox_args(READ_ONLY_NET)[1], args[1], "no config can have rules ready for the next one's name");
         assert_eq!(codex_sandbox_args("read-only"), ["-c", "sandbox_mode=\"read-only\""]);
         assert_eq!(codex_windows_sandbox(READ_ONLY_NET), codex_windows_sandbox("read-only"), "it runs in the same sandbox");
     }
@@ -2457,14 +2513,47 @@ mod tests {
     }
 
     #[test]
-    fn the_helper_line_is_valid_toml_for_codex_and_plain_for_claude() {
+    fn a_helper_is_told_by_its_system_prompt_on_claude_and_a_note_on_codex() {
         let claude = claude_helper_args("p1");
         assert_eq!(claude[0], "--append-system-prompt");
         assert!(claude[1].contains("session p1"));
-        let codex = codex_helper_args("p1", "", "", false);
-        assert_eq!(codex[0], "-c");
-        let doc: toml_edit::DocumentMut = codex[1].parse().expect("a TOML assignment, or Codex takes the raw string");
-        assert_eq!(doc["developer_instructions"].as_str(), Some(claude[1].as_str()));
+        let codex = codex_helper_prompt("p1", "Fix the build.");
+        assert!(codex.starts_with("Fix the build.\n\n"), "the opening words name the chat: {codex}");
+        assert!(codex.contains(&claude[1]));
+        assert_eq!(title_from_prompt(&codex).as_deref(), Some("Fix the build."), "the note is no part of its name");
+        for command in ["/review the diff", "  /compact"] {
+            assert_eq!(codex_helper_prompt("p1", command), command, "its arguments are not the place for it");
+        }
+    }
+
+    #[test]
+    fn git_takes_its_backend_after_entries_it_already_has() {
+        let none = |_: usize| None;
+        let added = git_ssl_backend_envs(None, none);
+        assert_eq!(
+            added,
+            [
+                ("GIT_CONFIG_COUNT".to_string(), "1".to_string()),
+                ("GIT_CONFIG_KEY_0".to_string(), "http.sslBackend".to_string()),
+                ("GIT_CONFIG_VALUE_0".to_string(), "openssl".to_string()),
+            ]
+        );
+        let own = |i: usize| (i == 0).then(|| "user.name".to_string());
+        let added = git_ssl_backend_envs(Some("1"), own);
+        assert_eq!(added[0].1, "2");
+        assert_eq!(added[1].0, "GIT_CONFIG_KEY_1", "the one it has stays as it is");
+        let chosen = |i: usize| (i == 1).then(|| "HTTP.sslbackend".to_string());
+        assert!(git_ssl_backend_envs(Some("2"), chosen).is_empty(), "a backend chosen already stays chosen");
+        assert!(git_ssl_backend_envs(Some("many"), none).is_empty(), "a count git refuses is not made worse");
+        assert!(codex_git_envs("read-only").is_empty(), "only where the network is on");
+    }
+
+    #[test]
+    fn nothing_of_a_codex_session_reaches_one_luna_starts() {
+        for k in ["CODEX_SESSION_ID", "CODEX_VERSION", "CODEX_CI", "CODEX_PERMISSION_PROFILE", "CODEX_TOOL_CALL_ID"] {
+            assert!(INHERITED_SESSION_VARS.contains(&k), "{k}");
+        }
+        assert!(!INHERITED_SESSION_VARS.contains(&"CODEX_HOME"), "a person's to set, and Luna sets its own for Codex");
     }
 
     #[test]

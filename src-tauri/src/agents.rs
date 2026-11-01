@@ -645,7 +645,7 @@ pub fn label(id: &str) -> String {
     }
 }
 
-fn mint(id: &str) -> String {
+pub(crate) fn mint(id: &str) -> String {
     use sha2::{Digest, Sha256};
     use std::sync::atomic::{AtomicU64, Ordering};
     // Two spawns in the same millisecond must not share a token.
@@ -1792,7 +1792,11 @@ pub fn spawn(caller: &str, mut params: SpawnParams) -> Result<Spawned, String> {
     let (provider, account, prompt) =
         (params.provider.clone().unwrap_or_default(), params.account_name().unwrap_or_default().to_string(), params.prompt.clone());
     // A command line holds some 32 thousand characters on Windows.
-    params.prompt = spill(&params.prompt);
+    params.prompt = if provider == Provider::Codex.as_str() {
+        spill(&crate::pty::codex_helper_prompt(caller, &params.prompt))
+    } else {
+        spill(&params.prompt)
+    };
     let hooks_unasked = provider == Provider::Codex.as_str() && crate::codex::hooks::unasked_in(&folder);
     crate::emit::to_ui("agent://spawn", SpawnRequest { request_id, parent_id: caller.to_string(), in_worktree, hooks_unasked, params });
 
@@ -2064,7 +2068,11 @@ fn spawn_background(caller: &str, params: SpawnParams, account_path: String, in_
             r.auto.insert(id.clone(), Auto::default());
         }
     }
-    if let Err(e) = crate::background::start(&id, spec, &params.prompt) {
+    let opening = match provider {
+        Provider::Claude => params.prompt.clone(),
+        Provider::Codex => crate::pty::codex_helper_prompt(caller, &params.prompt),
+    };
+    if let Err(e) = crate::background::start(&id, spec, &opening) {
         forget(&id);
         return Err(e);
     }
