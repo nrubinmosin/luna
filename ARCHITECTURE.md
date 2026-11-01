@@ -465,8 +465,18 @@ src-tauri/src/
   finished a turn, stopped on a prompt (once per stop) or exited. The answer is everything the helper said
   past the debt's transcript offset (`replies_since`), not the transcript's last message: a helper's own
   stale wakeup ("nothing changed") ending a later turn must not stand in for the report. The notice quotes
-  none of it: the answer goes to `<data>/agents/<id>-<ms>.md` — the longest message (the report) first,
-  then the last, then the rest in order — and the notice gives the count of messages and the path. A
+  only the report's first line, about 150 characters on one line (`opening_line`): the answer goes to
+  `<data>/agents/<id>-<ms>.md` — the longest message (the report) first,
+  then the last, then the rest in order — and the notice gives the count of messages and the path. The
+  same notice carries `quota_news`: an account a caller's live helpers run on at 90%, then 95%, of a usage
+  window as `account_usage` last showed it, once per level per window; told only once the line has gone in,
+  forgotten when the window resets. `wait_many` (`luna_wait` with `ids`) is one `wait` per id in a thread of
+  its own, each with a `Call` of its own, so owing and collecting stay one wait's; the outer `Call`'s cancel
+  undoes every hand-over. `luna_list` adds `Signs` per row: for a background helper from its event stream
+  (`Observed`, saved in `helpers.json` but for the last event's moment), for a visible one from the activity
+  track and its transcript. Claude Code's turn figure is `model_usage_since_last_result`, since `modelUsage`
+  and `total_cost_usd` run on over a resume; Codex's `turn.completed.usage` is the thread's running total, so
+  its turn is the difference, and its model comes from the rollout's `turn_context`. A
   caller handed a cut quote read the whole answer back anyway, and a long notice reached Claude Code as a
   paste. Typing a notice takes seconds, and the turn it starts may ask again meanwhile: the notifier
   then changes the debt only if it is still the one it announced (same baseline and offset).
