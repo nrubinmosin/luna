@@ -908,8 +908,8 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
     // A group of its own, as a pty gives its CLI: what kills a turn
-    // (`pty::kill_tree`) takes the group whose id is the CLI's pid. The mark
-    // goes with what leaves that group (keeper.rs).
+    // (`pty::kill_tree`) takes that group with the rest of the tree. The mark
+    // goes with what leaves it, for a core's death (keeper.rs).
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
