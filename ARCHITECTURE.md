@@ -298,7 +298,11 @@ src-tauri/src/
   only finds them again — to remove one with its chat, or sweep the ones no chat claims. Claude Code's
   live under `<folder>/.claude/worktrees` on a `worktree-*` branch; Codex's are recognised by shape
   `…/worktrees/<4 hex>/<name>` plus a `.git` file (`gitdir: <repo>/.git/worktrees/<id>`) pointing back at
-  the folder (`worktree::is_worktree_of`, `project_of`); every destructive path is gated on this. The
+  the folder (`worktree::is_worktree_of`, `project_of`); every destructive path is gated on this. `project_of` goes by that
+  `.git` file for Claude Code's too, its path's shape saying only where to look: a folder under a worktree is of it if no
+  repository of its own lies on the way down and git does not ignore it (`in_checkout`), so a test project in a worktree's
+  `test-build` is no worktree of the main checkout, and a helper sent there makes its worktree where it was sent. One gone
+  from disk goes by where it was, as Claude Code removes a clean one on exit and makes it again by name. The
   orphan sweep (the title bar's Worktrees window, every folder at once) scans each account's `worktrees/` as well as the project's. Removing a Codex worktree also
   removes its bucket dir once empty; only `worktree-*` branches are ever deleted (Codex's checkouts have
   none). Where a session actually works is `pty::ActivityProbe::working_dir()` (Claude registry / Codex
@@ -462,7 +466,11 @@ src-tauri/src/
   makes the worktree, and that can take minutes; a chat's CLI started again after a restart is as blank, however far
   its count has gone (`still_starting` goes by this process's turns), and for its first minute a notice also waits for
   its prompt (`drawn_for_notice`). The prompt meanwhile sits in the CLI's arguments, and anything typed into the pty
-  would be lost, so `send` to such a session refuses. `read` and `wait` on timeout also return `starting`. `read` —
+  would be lost, so `send` to such a session refuses. `read` and `wait` on timeout also return `starting`. An event reaches only a page that is listening:
+  `agent://spawn` sent with no window, or with one still loading, is gone, and the spawn would time out with a window right
+  there. So the request stays on its record until a session comes of it (`SpawnTaken::asked`), and the page asks for what is
+  waiting once it listens and at every core (`agent_spawns`), taking each once however it came. Its row is named by the request,
+  so a page reloaded half way finds the same row and no second, and `ensure_*` starts nothing that runs. `read` —
   from Claude's transcript (user/assistant, without tool_result) or Codex's rollout (`response_item`
   message user/assistant) with a byte cursor (whole lines only); a result is held to 60,000 characters
   (`MAX_TEXT`; Claude Code cuts an MCP result past 25,000 tokens): read on from `since`, it keeps the
@@ -799,7 +807,7 @@ src-tauri/src/
   does), between turns, with no blocking dialog. `resume_chat` takes `TypingInto`, then a person's keys, looks again that it is still
   on the list, untouched and at its prompt, and goes by `type_held`, with `spill` for a long one. A conversation to go on (`Session::resume`)
   gets what a background helper is told (`resume_text`); a CLI that came back afresh, its first turn having
-  named nothing, gets the prompt it was opened on (`ChatResume::opening`, kept in the ties until a first
+  named nothing, gets the prompt it was opened on (`ChatResume::opening`, from `Opening`, kept in the ties until a first
   turn has ended under a core, as a count kept across one may be only a turn that went with it; a Codex one with
   its note). The text Luna held for it (`Held`) goes with it in order, so `deliver_held` passes it by, and each
   sender is owed as if it had gone in by itself. A debt that went in
@@ -841,6 +849,42 @@ src-tauri/src/
   to go on. A worktree new since the spawn was taken on with no session in it is named as `worktreeLeft` and
   never removed; the Worktrees window can sweep it. Told as a notice is (`spawn_news`, `deliver_notice`), or to
   the log for a caller not back in `CALLER_RETURN_MS`.
+  **A first turn a core went with.** A visible helper's first turn cut off leaves two cases, which the same notice
+  must not cover: with a conversation, its prompt is in it and "did NOT finish" is true; with none, nothing has what
+  it was asked, and "`luna_send` has it carry on" would carry on from nothing. So `spawn_is` keeps every visible
+  helper's prompt as it was asked (`Opening`, the note a Codex one is typed with added only then), saved in the ties
+  until a first turn has ended under a core; a `floor` of 1 or more says a core went with it. Which case it is goes by
+  what is on disk, not by whether the row has heard: the window learns a session id by polling, every few seconds, and a
+  core can go first. So before a CLI starts on no prompt `conversation_of` looks: the transcript the last core knew of
+  (its path is saved while it is on its first turn), else one begun since it was asked, where it was to work, that holds
+  what it was asked and is known to be no other session's. Found, the CLI resumes that, a Codex one where its rollout
+  says it works. Not found, it is `Opening::lost`, as a background helper with no `session` is `never_started`, and one
+  not back by `SESSION_RETURN_MS` is told of by the same look (`first_turn_lost`). The parent is told it never got
+  started, with the prompt and that parent's held text in the file (`undelivered_for`); that text is not typed in
+  meanwhile (`deliver_held`), as it would start the helper on the wrong foot. That is all it will ever have to say
+  (`lost_whole`), and text it holds will never go in, so `wait` answers at once rather than wait on either (`lost_answer`),
+  and `read` collects it: the debt goes with the payload so no notice says it again, and a cancel crossing the response
+  puts back both (`take_undelivered`). A helper going on by itself is given its prompt instead, and is none of this unless
+  that is called off. Other senders' held text goes in as ever. `lost` outlasts the count, so a turn a person starts in
+  the fresh CLI does not swallow what it was asked.
+  **A worktree half-made.** A helper's CLI that comes back afresh is `--worktree` again, and would make a second, the
+  first unclaimed and unreported as the spawn's own `worktreeLeft` comes only where no helper came of it. Being new since
+  the spawn, unclaimed and clean says nothing of whose a worktree is, so what goes on in one goes by a record made for
+  it. Claude Code: Luna names the worktree of every helper it spawns (`helper_worktree_name`), recorded with the helper
+  (`Registry::worktree_names`, a background one's in its `Spec`), and asks for it as `--worktree=<name>`: as an argument
+  of its own a name is read as a flag, and on 2.1.314 `--worktree --dangerously-skip-permissions` turns permissions off
+  (`worktree::name_ok`, `worktree_arg`). Given a name, the CLI makes that worktree or goes back into it as it is. A fresh
+  start goes back only into that one, and only if it is `as_made`, nobody being in it: on the branch made for it, its HEAD
+  the commit git has that branch created at (the oldest line of its reflog, as Luna cannot know it ahead: 2.1.314 starts
+  at origin's default branch, not the folder's HEAD, and a core may go before anything could note it), and nothing in it
+  that is not in that commit, what git ignores included, but the `.claude/settings.local.json` the CLI copies in. What
+  `.worktreeinclude` copies is not told from work. Anything else stays where it is, its parent hears of it as
+  `worktreeLeft`, once, with its first notice or `read`/`wait` (`worktrees_left_line`, saved till then), and the helper takes
+  the next name (`name_to_go_on`). In a conversation it goes back to its own whatever is in it. Codex takes no name and
+  says where it works only with a thread, which is then a conversation to resume; Luna making the worktree itself would
+  take it out of Codex's hands. So a Codex helper starting afresh makes a new one, and what is new of Codex's since it
+  was spawned is named (`codex_new_since`, `report_codex_worktrees`), in words that say Luna can only tell so far. A CLI
+  not back by `SESSION_RETURN_MS` has what it began named (`leave_half_made`), and opened later it makes its own.
   **Deleting a worktree with work in it.** `luna_delete` with `dropWorktree` takes the worktree `remove`
   would (`worktree_to_drop`: not one handed to the session or shared; a Codex worktree off its rollout
   before the first turn's end records it) and, before it touches anything, runs `git status --porcelain`
