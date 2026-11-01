@@ -343,7 +343,11 @@ pub fn live_cwds(account_path: &str) -> Vec<String> {
 
 /// Finds the CLI's registry entry for a pty session, by pid when that matches
 /// and otherwise by cwd + start time (launcher shims give the pty a different
-/// pid than the CLI process that writes the registry).
+/// pid than the CLI process that writes the registry; and the entry comes a
+/// moment after the pty). Going by those two, a background helper's entry would
+/// look like the chat's own while its turn runs: `claude -p` keeps one too,
+/// `kind` "interactive" like a chat's, told apart by `entrypoint`, and by the
+/// session id once the helper has said it, should that word ever change.
 fn registry_entry(
     dir: &Path,
     pid: Option<u32>,
@@ -363,6 +367,9 @@ fn registry_entry(
     let mut best: Option<(u64, serde_json::Value)> = None;
     for entry in std::fs::read_dir(dir).ok()?.flatten() {
         if let Some(v) = parse_session_file(&entry.path()) {
+            if v["entrypoint"] == "sdk-cli" || v["sessionId"].as_str().is_some_and(crate::background::is_helper_conversation) {
+                continue;
+            }
             let scwd = norm_path(v["cwd"].as_str().unwrap_or(""));
             let started = v["startedAt"].as_u64().unwrap_or(0);
             if (scwd == want || scwd.starts_with(&under)) && (started as u128) + 5000 >= spawned_at_ms {
@@ -379,6 +386,28 @@ fn registry_entry(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_chat_never_takes_a_helpers_registry_entry_for_its_own() {
+        let dir = std::env::temp_dir().join(format!("luna-claude-registry-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = |pid: u32, sid: &str, entrypoint: &str| {
+            let v = serde_json::json!({ "pid": pid, "sessionId": sid, "cwd": "E:\\p", "startedAt": 2000, "updatedAt": 3000, "kind": "interactive", "entrypoint": entrypoint });
+            std::fs::write(dir.join(format!("{pid}.json")), v.to_string()).unwrap();
+        };
+        let found = |pid: u32| registry_entry(&dir, Some(pid), "E:\\p", 1000).map(|v| v["sessionId"].as_str().unwrap_or("").to_string());
+        entry(111, "helper-by-word", "sdk-cli");
+        assert_eq!(found(999), None, "a running `claude -p` in the folder is not this chat, whose entry is yet to come");
+        let named = format!("helper-by-id-{}", std::process::id());
+        crate::background::note_helper_conversation(crate::provider::Provider::Claude, &named);
+        entry(222, &named, "cli");
+        assert_eq!(found(999), None, "nor one Luna knows is a helper's, whatever it calls itself");
+        entry(333, "a-chat", "cli");
+        assert_eq!(found(999).as_deref(), Some("a-chat"), "the shim's case still finds a chat's");
+        assert_eq!(found(111).as_deref(), Some("helper-by-word"), "its own pid is an exact answer");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn the_model_is_the_main_loop_s_last() {
