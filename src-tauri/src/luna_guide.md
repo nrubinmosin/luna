@@ -131,8 +131,8 @@ can start other sessions and work with them.
   ends on it word for word (`undelivered` in `luna_read`, `luna_wait`). Stopped before its first
   turn got anywhere, it "never got started" and the file holds its prompt.
 - `resumeOnRestart` goes on by itself with that text (afresh on its prompt if it never got started)
-  where Luna knows the old turn ended (a normal stop; on Windows any core death), else the plain
-  notice; one notice says so, the usual one follows.
+  where Luna knows the old turn ended (a normal stop or a core death), else the plain notice; one
+  notice says so, the usual one follows.
 - Visible sessions and chats you wrote to come back when the window starts them, with text held for
   them; the notice comes then, or after a minute saying they have not.
 

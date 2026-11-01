@@ -110,6 +110,8 @@ src-tauri/src/
   procs.rs      what the CLI has running under it: a Job Object per session, pid list,
                 CPU/IO/start time of each, the "busy" rule (judge), windowed programs left
                 out (shown), what is left ended with the session (end_leftovers)
+  keeper.rs     the tie to the core off Windows: the `--keep-ties` process that ends a dead
+                core's jobs, what a job holds there, the next core's backstop (end_last_ties)
   browsers.rs   which browser a terminal's link opens in: a command line with %1 per
                 browser; found on Windows (StartMenuInternet + each Chromium browser's
                 Local State profiles, Firefox's profiles.ini, the https UserChoice handler)
@@ -370,8 +372,19 @@ src-tauri/src/
   core starts on that conversation. This is the leftover rule, not an exception to it: a core that
   leaves ends leftovers already (`stop_all`). The OS spares no window, so every way out that is not a
   death lets go first (`let_go`, `Drop for Job`), `end_leftovers` sparing windows as ever; a window a
-  helper's turn opened dies with a core that dies, and only then. Windows only: elsewhere there is no
-  job, and a turn's process group runs on past a dead core. Hooks print nothing: Claude Code adds the stdout of a hook exiting 0
+  helper's turn opened dies with a core that dies, and only then. Off Windows the same tie is a process
+  of Luna's (`keeper.rs`): the keeper, this exe with `--keep-ties`, one to a core once a helper has a
+  turn, reads a pipe only the core writes, and the end of that input is the core's death, on which it
+  ends every job not let go of. Not `PR_SET_PDEATHSIG`: it fires as the spawning *thread* ends, reaches
+  one child, and macOS has none. Such a job is more than a process group, since both CLIs start each
+  tool command in a session of its own (Claude Code `detached`, Codex `setsid`): it is what has its mark
+  in the environment (`LUNA_JOB`, one to a helper under a core), the turns' processes by pid and start
+  time with their groups, and all below those by parent link. A core writes what it has tied to
+  `<data>/tied-jobs.json` as it ties it, and the next ends what is left of that before it takes the
+  helpers up (`end_last_ties`), for a keeper that went with its core; a pid whose start time differs is
+  another's and is left alone. One difference: a job there lists nothing, as nothing there tells a
+  window from a job left running, so `children_busy` stays false off Windows and what a turn left runs
+  on past every way out but a death. Hooks print nothing: Claude Code adds the stdout of a hook exiting 0
   to the context, and silence is free. Claude's registry beats an "idle" from a hook, a hook's
   "waiting" beats the registry's "busy" (a permission prompt is inside a turn). No mark is eternal:
   a hook's "busy" against the registry's "idle" goes stale in 15 s (a missed Stop), a hook's "waiting" — at
@@ -719,8 +732,8 @@ src-tauri/src/
   resume that cannot start counts as an ended turn with its error (`run_turn`), and the notice is the
   plain cut-short one with the text still held. It runs only where nothing of the old turn can overlap
   it (`Entry::resumable`): that core stopped it itself, or its processes were in a job tied to the core
-  (`Entry::tied`, saved). Elsewhere (no job off Windows, a join that failed) the caller gets the plain
-  notice and decides. It takes only the batch it captured, re-checking under the lock that the helper
+  (`Entry::tied`, saved; off Windows only if `end_last_ties` also finds nothing of the job left). Elsewhere
+  (a tie or join that failed, a keeper that could not start) the caller gets the plain notice and decides. It takes only the batch it captured, re-checking under the lock that the helper
   is still cut short, as a turn sent meanwhile has gone on already. A helper stopped before any turn named its conversation
   is taken up like any other, so its debt, its lineage and in time its end record in `agents.jsonl`
   survive: what its turn was started on is saved until then (`Entry::opening`) and becomes the first of
