@@ -271,7 +271,7 @@ struct Known {
 #[serde(rename_all = "camelCase")]
 pub struct SpawnParams {
     pub provider: Option<String>,
-    pub account: Option<String>,
+    pub account: Option<AccountAsk>,
     pub model: Option<String>,
     pub effort: Option<String>,
     pub permission_mode: Option<String>,
@@ -289,6 +289,29 @@ pub struct SpawnParams {
     /// in the background (background.rs) and the frontend never hears of it.
     #[serde(skip_serializing)]
     pub visible: Option<bool>,
+    /// Without the edit tools (Claude Code); in a read-only sandbox (Codex).
+    pub read_only: Option<bool>,
+    /// The agent it runs as: Claude Code's `--agent`.
+    pub agent: Option<String>,
+}
+
+/// `account` in a spawn: a name, or names to choose from (`pick_from_list`).
+/// By the time the frontend hears of it, the one name taken.
+#[derive(Clone, Serialize, Deserialize, Debug)]
+#[serde(untagged)]
+pub enum AccountAsk {
+    One(String),
+    List(Vec<String>),
+}
+
+impl SpawnParams {
+    /// The account's name, once `spawn` has settled it.
+    fn account_name(&self) -> Option<&str> {
+        match &self.account {
+            Some(AccountAsk::One(name)) => Some(name),
+            _ => None,
+        }
+    }
 }
 
 /// The request as the frontend receives it.
@@ -844,7 +867,7 @@ pub fn label(id: &str) -> String {
     }
 }
 
-fn mint(id: &str) -> String {
+pub(crate) fn mint(id: &str) -> String {
     use sha2::{Digest, Sha256};
     use std::sync::atomic::{AtomicU64, Ordering};
     // Two spawns in the same millisecond must not share a token.
@@ -1609,6 +1632,29 @@ pub struct Spawned {
     /// `luna_list` names it once it has.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub worktree_pending: bool,
+    /// With `account` as a list: the one taken, and why not the ones before.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_choice: Option<AccountChoice>,
+}
+
+/// How a list of accounts came down to one.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountChoice {
+    pub account: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub skipped: Vec<SkippedAccount>,
+    /// Anything to know about the one taken: that it is the fullest list's
+    /// best, or that its usage is not known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SkippedAccount {
+    pub account: String,
+    pub why: String,
 }
 
 /// Where a session in a worktree works: the path, and the branch there.
@@ -1772,6 +1818,151 @@ fn caller_worktree(caller: &str) -> Option<String> {
     crate::worktree::is_worktree_of(&folder, &cwd).then_some(cwd)
 }
 
+/// At this share of a usage window an account counts as spent when a spawn
+/// lists several: usage is as old as the window's last fetch and a helper's
+/// turn can use up what is left, stopping it on its limit mid-work.
+const ACCOUNT_SPENT_PCT: f64 = 95.0;
+
+/// The windows of an account's usage (as `account_usage` keeps it) that are
+/// still running, with the percent used: one past its reset says nothing any
+/// more, usage being only as fresh as the window's last fetch. None when it
+/// has no figures yet.
+fn usage_windows(usage: Option<&serde_json::Value>, now_ms: u64) -> Option<Vec<(String, f64)>> {
+    let limits = usage?["limits"].as_array().filter(|l| !l.is_empty())?;
+    let over = |l: &serde_json::Value| {
+        l["resetsAt"]
+            .as_str()
+            .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+            .is_some_and(|t| t.timestamp_millis() <= now_ms as i64)
+    };
+    Some(
+        limits
+            .iter()
+            .filter(|l| !over(l))
+            .filter_map(|l| Some((l["label"].as_str().unwrap_or("usage").to_string(), l["usedPct"].as_f64()?)))
+            .collect(),
+    )
+}
+
+/// The provider a list of accounts runs on: one that has every name agents may
+/// use at all, the caller's first. An account name can exist under both.
+fn list_provider(
+    names: &[String],
+    allowed: &[crate::accounts::AccountInfo],
+    asked: Option<Provider>,
+    mine: Provider,
+) -> Result<Provider, String> {
+    let known: Vec<&String> = names.iter().filter(|n| allowed.iter().any(|a| a.name == **n)).collect();
+    let other = if mine == Provider::Claude { Provider::Codex } else { Provider::Claude };
+    let order = asked.map_or(vec![mine, other], |p| vec![p]);
+    order
+        .into_iter()
+        .find(|p| known.iter().all(|n| allowed.iter().any(|a| a.provider == *p && a.name == **n)))
+        .ok_or_else(|| match asked {
+            Some(p) => format!("the accounts in the list must all be {} accounts", p.as_str()),
+            None => "the accounts in the list must all be of one provider".to_string(),
+        })
+}
+
+/// The first account of the list that is there, signed in and has room in all
+/// its windows; failing that, of those signed in, the one with the most room.
+/// Unknown usage is no reason to pass over an account the caller put first.
+fn pick_from_list(
+    names: &[String],
+    provider: Provider,
+    allowed: &[crate::accounts::AccountInfo],
+    usage: &HashMap<String, serde_json::Value>,
+    signed_in: impl Fn(&crate::accounts::AccountInfo) -> bool,
+    now_ms: u64,
+) -> Result<(crate::accounts::AccountInfo, AccountChoice), String> {
+    let mut skipped: Vec<SkippedAccount> = Vec::new();
+    // Signed in, over the line: what is left if nothing qualifies.
+    let mut spent: Vec<(&crate::accounts::AccountInfo, f64)> = Vec::new();
+    for name in names {
+        let mut skip = |why: String| skipped.push(SkippedAccount { account: name.clone(), why });
+        let Some(a) = allowed.iter().find(|a| a.provider == provider && a.name == *name) else {
+            skip(format!("no {} account of that name is available to agents", provider.as_str()));
+            continue;
+        };
+        if !signed_in(a) {
+            skip("not signed in".into());
+            continue;
+        }
+        let windows = usage_windows(usage.get(&format!("{}/{}", provider.as_str(), a.name)), now_ms);
+        let fullest = windows.iter().flatten().max_by(|x, y| x.1.total_cmp(&y.1));
+        match fullest {
+            Some((label, pct)) if *pct >= ACCOUNT_SPENT_PCT => {
+                skip(format!("{label} at {pct:.0}%"));
+                spent.push((a, *pct));
+            }
+            _ => {
+                let note = windows.is_none().then(|| "its usage is not known yet".to_string());
+                return Ok((a.clone(), AccountChoice { account: a.name.clone(), skipped, note }));
+            }
+        }
+    }
+    if let Some((a, pct)) = spent.iter().min_by(|x, y| x.1.total_cmp(&y.1)) {
+        skipped.retain(|s| s.account != a.name);
+        let note = Some(format!(
+            "every signed-in account in the list is at {ACCOUNT_SPENT_PCT:.0}% or more of a window; this one has the most room, at {pct:.0}%"
+        ));
+        return Ok(((*a).clone(), AccountChoice { account: a.name.clone(), skipped, note }));
+    }
+    if names.is_empty() {
+        return Err("the account list is empty".into());
+    }
+    let why: Vec<String> = skipped.iter().map(|s| format!("{}: {}", s.account, s.why)).collect();
+    Err(format!("no account in the list can take a helper ({}); luna_list shows the ones that can", why.join("; ")))
+}
+
+/// An agent's name as Claude Code takes one, a plugin's `plugin:name` too, and
+/// a guard against one being read as a flag.
+fn agent_name_ok(name: &str) -> bool {
+    !name.starts_with('-') && name.chars().all(|c| c.is_ascii_alphanumeric() || "._:-".contains(c))
+}
+
+/// `readOnly` and `agent` checked, for a helper however it starts: what cannot
+/// hold together is refused, and a read-only Codex gets its sandbox here.
+fn settle_role(params: &mut SpawnParams, provider: Provider) -> Result<(), String> {
+    use crate::pty::{AUTO_REVIEW, AUTO_REVIEW_SANDBOX, READ_ONLY_NET};
+    params.agent = asked(&params.agent).map(str::to_owned);
+    if let Some(agent) = params.agent.as_deref() {
+        if provider == Provider::Codex {
+            return Err("agent is a Claude Code option: Codex cannot start a session as a named agent; its roles \
+                        are for the subagents a session spawns itself"
+                .into());
+        }
+        if !agent_name_ok(agent) {
+            return Err(format!("\"{agent}\" is not an agent's name"));
+        }
+    }
+    if !params.read_only.unwrap_or(false) {
+        return Ok(());
+    }
+    match provider {
+        Provider::Claude => {
+            if asked(&params.permission_mode) == Some("acceptEdits") {
+                return Err("readOnly takes the edit tools away, so acceptEdits has nothing to accept; leave one out".into());
+            }
+        }
+        Provider::Codex => {
+            if asked(&params.approval) == Some(AUTO_REVIEW) {
+                return Err(format!("{AUTO_REVIEW} runs in {AUTO_REVIEW_SANDBOX}, which is not read-only; leave one out"));
+            }
+            match asked(&params.sandbox) {
+                None => params.sandbox = Some("read-only".into()),
+                Some("read-only") | Some(READ_ONLY_NET) => {}
+                Some(s) => {
+                    return Err(format!(
+                        "readOnly contradicts sandbox \"{s}\"; leave sandbox out, or use read-only or {READ_ONLY_NET}"
+                    ))
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Asks the frontend to make the chat and start its session; blocks until it
 /// answers or the timeout passes.
 pub fn spawn(caller: &str, mut params: SpawnParams) -> Result<Spawned, String> {
@@ -1781,7 +1972,7 @@ pub fn spawn(caller: &str, mut params: SpawnParams) -> Result<Spawned, String> {
     // Off the registry lock: this reads the CLI's registry from disk. A
     // helper works where its caller does, worktree and all.
     let worktree = if params.folder.is_none() { caller_worktree(caller) } else { None };
-    let (request_id, slot, in_worktree) = {
+    let (request_id, slot, in_worktree, account_choice) = {
         let me = {
             let r = reg().lock().unwrap_or_else(|e| e.into_inner());
             let me = r.known.get(caller).cloned().ok_or("caller is not a registered session")?;
@@ -1810,10 +2001,15 @@ pub fn spawn(caller: &str, mut params: SpawnParams) -> Result<Spawned, String> {
             }
         }
         let allowed = allowed_account_dirs();
+        let (one, list) = match params.account.take() {
+            Some(AccountAsk::One(name)) => (Some(name), None),
+            Some(AccountAsk::List(names)) => (None, Some(names)),
+            None => (None, None),
+        };
         let provider = match params.provider.as_deref() {
             // An account runs one provider only: one named that the
             // caller's provider has no account of brings its own.
-            None => match params.account.as_deref() {
+            None => match one.as_deref() {
                 Some(name) if !allowed.iter().any(|a| a.provider == me.provider && a.name == name) => {
                     allowed.iter().find(|a| a.name == name).map_or(me.provider, |a| a.provider)
                 }
@@ -1823,21 +2019,35 @@ pub fn spawn(caller: &str, mut params: SpawnParams) -> Result<Spawned, String> {
             Some("codex") => Provider::Codex,
             Some(other) => return Err(format!("unknown provider {other}; use claude or codex")),
         };
+        let provider = match &list {
+            Some(names) => list_provider(names, &allowed, params.provider.is_some().then_some(provider), me.provider)?,
+            None => provider,
+        };
+        settle_role(&mut params, provider)?;
         params.provider = Some(provider.as_str().to_string());
+        let picked = match &list {
+            Some(names) => {
+                // A copy, and off the lock: choosing reads login files.
+                let usage = reg().lock().unwrap_or_else(|e| e.into_inner()).usage.clone();
+                Some(pick_from_list(names, provider, &allowed, &usage, |a| signed_in(provider, &a.path), crate::throttle::now_ms())?)
+            }
+            None => None,
+        };
         let mut ours = allowed.iter().filter(|a| a.provider == provider);
-        let pick = match params.account.as_deref() {
-            Some(name) => ours.find(|a| a.name == name),
+        let pick = match (&picked, one.as_deref()) {
+            (Some((a, _)), _) => Some(a),
+            (None, Some(name)) => ours.find(|a| a.name == name),
             // The caller's own account, else one somebody signed in to, else
             // any: the user said which accounts agents may use, not which
             // of them works.
-            None => allowed
+            (None, None) => allowed
                 .iter()
                 .find(|a| a.provider == provider && provider == me.provider && a.name == me.account)
                 .or_else(|| allowed.iter().find(|a| a.provider == provider && signed_in(provider, &a.path)))
                 .or_else(|| ours.next()),
         };
         let Some(account) = pick.cloned() else {
-            return Err(match params.account.as_deref() {
+            return Err(match one.as_deref() {
                 Some(name) => format!(
                     "no {} account named {name:?} is available to agents; luna_list shows the ones that are",
                     provider.as_str()
@@ -1845,16 +2055,17 @@ pub fn spawn(caller: &str, mut params: SpawnParams) -> Result<Spawned, String> {
                 None => format!("no {} account is available to agents", provider.as_str()),
             });
         };
-        params.account = Some(account.name.clone());
+        params.account = Some(AccountAsk::One(account.name.clone()));
+        let account_choice = picked.map(|(_, choice)| choice);
         if !params.visible.unwrap_or(false) {
-            return spawn_background(caller, params, account.path, in_worktree);
+            return spawn_background(caller, params, account.path, in_worktree).map(|s| Spawned { account_choice, ..s });
         }
         let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
         let id = r.next_request;
         r.next_request += 1;
         let slot = std::sync::Arc::new((Mutex::new(Pending::default()), Condvar::new()));
         r.pending.insert(id, slot.clone());
-        (id, slot, in_worktree)
+        (id, slot, in_worktree, account_choice)
     };
 
     let borrowed = in_worktree.is_some();
@@ -1864,9 +2075,13 @@ pub fn spawn(caller: &str, mut params: SpawnParams) -> Result<Spawned, String> {
     // Where it will work: a worktree of its own shares nothing.
     let run_dir = (!own_worktree).then(|| in_worktree.clone().unwrap_or_else(|| folder.clone()));
     let (provider, account, prompt) =
-        (params.provider.clone().unwrap_or_default(), params.account.clone().unwrap_or_default(), params.prompt.clone());
+        (params.provider.clone().unwrap_or_default(), params.account_name().unwrap_or_default().to_string(), params.prompt.clone());
     // A command line holds some 32 thousand characters on Windows.
-    params.prompt = spill(&params.prompt);
+    params.prompt = if provider == Provider::Codex.as_str() {
+        spill(&crate::pty::codex_helper_prompt(caller, &params.prompt))
+    } else {
+        spill(&params.prompt)
+    };
     let hooks_unasked = provider == Provider::Codex.as_str() && crate::codex::hooks::unasked_in(&folder);
     crate::emit::to_ui("agent://spawn", SpawnRequest { request_id, parent_id: caller.to_string(), in_worktree, hooks_unasked, params });
 
@@ -1962,7 +2177,7 @@ pub fn spawn(caller: &str, mut params: SpawnParams) -> Result<Spawned, String> {
     owe_from(caller, &id, 0, 0);
     let worktree = worktree_of(&pty, &id);
     let worktree_pending = own_worktree && worktree.path.is_none();
-    Ok(Spawned { id, turns_ended: 0, settings, started, screen, ask, starting, warnings, same_folder, worktree, worktree_pending })
+    Ok(Spawned { id, turns_ended: 0, settings, started, screen, ask, starting, warnings, same_folder, worktree, worktree_pending, account_choice })
 }
 
 /// Claude Code's model aliases, as the new-chat dialog lists them.
@@ -2018,6 +2233,9 @@ fn background_spec(params: &SpawnParams, provider: Provider, account_path: &str,
                 auto_review: false,
                 tools,
                 hooks_unasked: false,
+                read_only: params.read_only.unwrap_or(false),
+                agent: params.agent.clone(),
+                parent: None,
                 token: None,
             })
         }
@@ -2042,8 +2260,8 @@ fn background_spec(params: &SpawnParams, provider: Provider, account_path: &str,
                 Some(s) if auto_review && s != AUTO_REVIEW_SANDBOX => {
                     return Err(format!("{AUTO_REVIEW} runs in {AUTO_REVIEW_SANDBOX} only; leave sandbox out"))
                 }
-                Some(s) if ["read-only", "workspace-write", "danger-full-access"].contains(&s) => s.to_string(),
-                Some(s) => return Err(format!("unknown sandbox \"{s}\"; use read-only, workspace-write, danger-full-access")),
+                Some(s) if ["read-only", crate::pty::READ_ONLY_NET, "workspace-write", "danger-full-access"].contains(&s) => s.to_string(),
+                Some(s) => return Err(format!("unknown sandbox \"{s}\"; use read-only, read-only-net, workspace-write, danger-full-access")),
                 None if auto_review => AUTO_REVIEW_SANDBOX.to_string(),
                 None => d["sandbox"].as_str().unwrap_or("read-only").to_string(),
             };
@@ -2074,6 +2292,9 @@ fn background_spec(params: &SpawnParams, provider: Provider, account_path: &str,
                 auto_review,
                 tools,
                 hooks_unasked: false,
+                read_only: false,
+                agent: None,
+                parent: None,
                 token: None,
             })
         }
@@ -2092,11 +2313,16 @@ fn spawn_background(caller: &str, params: SpawnParams, account_path: String, in_
     // As its project folder would start a chat of the user's: a helper does
     // not choose this for itself.
     spec.hooks_unasked = provider == Provider::Codex && crate::codex::hooks::unasked_in(&project);
+    spec.parent = Some(caller.to_string());
     let id = crate::background::mint_id();
     let settings = match provider {
-        Provider::Claude => serde_json::json!({
-            "model": spec.model, "effort": spec.effort, "permissionMode": spec.mode, "worktree": own_worktree, "background": true,
-        }),
+        Provider::Claude => crate::pty::with_role(
+            serde_json::json!({
+                "model": spec.model, "effort": spec.effort, "permissionMode": spec.mode, "worktree": own_worktree, "background": true,
+            }),
+            spec.read_only,
+            spec.agent.as_deref(),
+        ),
         Provider::Codex => serde_json::json!({
             "model": spec.model, "effort": spec.effort,
             "approval": if spec.auto_review { crate::pty::AUTO_REVIEW } else { "never" }, "sandbox": spec.mode,
@@ -2128,7 +2354,11 @@ fn spawn_background(caller: &str, params: SpawnParams, account_path: String, in_
             r.auto.insert(id.clone(), Auto::default());
         }
     }
-    if let Err(e) = crate::background::start(&id, spec, &params.prompt) {
+    let opening = match provider {
+        Provider::Claude => params.prompt.clone(),
+        Provider::Codex => crate::pty::codex_helper_prompt(caller, &params.prompt),
+    };
+    if let Err(e) = crate::background::start(&id, spec, &opening) {
         forget(&id);
         return Err(e);
     }
@@ -2139,7 +2369,7 @@ fn spawn_background(caller: &str, params: SpawnParams, account_path: String, in_
         folder: &project,
         worktree: own_worktree,
         provider: provider.as_str(),
-        account: params.account.as_deref().unwrap_or(""),
+        account: params.account_name().unwrap_or(""),
         settings: &settings,
         name: Some(name),
         prompt: &params.prompt,
@@ -2164,7 +2394,7 @@ fn spawn_background(caller: &str, params: SpawnParams, account_path: String, in_
         }
     }
     let worktree_pending = own_worktree && worktree.path.is_none();
-    Ok(Spawned { id, turns_ended: 0, settings, started: true, screen: None, ask: None, starting: false, warnings: Vec::new(), same_folder, worktree, worktree_pending })
+    Ok(Spawned { id, turns_ended: 0, settings, started: true, screen: None, ask: None, starting: false, warnings: Vec::new(), same_folder, worktree, worktree_pending, account_choice: None })
 }
 
 /// Past this many characters a prompt or message goes to a visible session
@@ -4779,6 +5009,173 @@ pub fn set_agent_account(provider: Provider, name: String, allowed: bool) -> Res
 mod tests {
     use super::*;
 
+    fn account(provider: Provider, name: &str) -> crate::accounts::AccountInfo {
+        crate::accounts::AccountInfo { provider, name: name.into(), path: format!("C:\\acc\\{name}") }
+    }
+
+    /// One window per figure, resetting far ahead.
+    fn used(pairs: &[(&str, &[(&str, f64)])]) -> HashMap<String, serde_json::Value> {
+        pairs
+            .iter()
+            .map(|(name, windows)| {
+                let limits: Vec<_> = windows
+                    .iter()
+                    .map(|(label, pct)| serde_json::json!({ "label": label, "usedPct": pct, "resetsAt": "2999-01-01T00:00:00Z" }))
+                    .collect();
+                (format!("claude/{name}"), serde_json::json!({ "limits": limits }))
+            })
+            .collect()
+    }
+
+    fn names(list: &[&str]) -> Vec<String> {
+        list.iter().map(|n| n.to_string()).collect()
+    }
+
+    #[test]
+    fn a_list_takes_the_first_with_room_and_says_what_it_passed_over() {
+        let allowed = [account(Provider::Claude, "a"), account(Provider::Claude, "b"), account(Provider::Claude, "c")];
+        let usage = used(&[("a", &[("5 hours", 97.0), ("week", 10.0)]), ("b", &[("5 hours", 94.0)]), ("c", &[("5 hours", 1.0)])]);
+        let (taken, choice) = pick_from_list(&names(&["a", "b", "c"]), Provider::Claude, &allowed, &usage, |_| true, 0).unwrap();
+        assert_eq!(taken.name, "b", "under the line, and before c");
+        assert_eq!(choice.account, "b");
+        assert_eq!(choice.skipped, [SkippedAccount { account: "a".into(), why: "5 hours at 97%".into() }]);
+        assert_eq!(choice.note, None);
+    }
+
+    #[test]
+    fn a_list_passes_over_who_is_not_signed_in_or_not_allowed() {
+        let allowed = [account(Provider::Claude, "out"), account(Provider::Claude, "in")];
+        let (taken, choice) =
+            pick_from_list(&names(&["blocked", "out", "in"]), Provider::Claude, &allowed, &HashMap::new(), |a| a.name == "in", 0).unwrap();
+        assert_eq!(taken.name, "in");
+        assert_eq!(choice.skipped.len(), 2);
+        assert_eq!(choice.skipped[1].why, "not signed in");
+        assert_eq!(choice.note.as_deref(), Some("its usage is not known yet"));
+    }
+
+    #[test]
+    fn a_full_list_comes_down_to_the_most_room() {
+        let allowed = [account(Provider::Claude, "a"), account(Provider::Claude, "b"), account(Provider::Claude, "c")];
+        let usage = used(&[("a", &[("week", 100.0)]), ("b", &[("week", 96.0), ("5 hours", 20.0)]), ("c", &[("week", 99.0)])]);
+        let (taken, choice) = pick_from_list(&names(&["a", "b", "c"]), Provider::Claude, &allowed, &usage, |_| true, 0).unwrap();
+        assert_eq!(taken.name, "b");
+        assert_eq!(choice.skipped.iter().map(|s| s.account.as_str()).collect::<Vec<_>>(), ["a", "c"]);
+        assert!(choice.note.unwrap().contains("the most room, at 96%"));
+    }
+
+    #[test]
+    fn a_list_with_nobody_to_take_it_is_an_error() {
+        let allowed = [account(Provider::Claude, "a")];
+        let e = pick_from_list(&names(&["a", "gone"]), Provider::Claude, &allowed, &HashMap::new(), |_| false, 0).err().unwrap();
+        assert!(e.contains("a: not signed in") && e.contains("gone: no claude account"), "{e}");
+        assert!(pick_from_list(&[], Provider::Claude, &allowed, &HashMap::new(), |_| true, 0).err().unwrap().contains("empty"));
+    }
+
+    #[test]
+    fn a_window_past_its_reset_no_longer_counts() {
+        let allowed = [account(Provider::Claude, "a")];
+        let usage: HashMap<String, serde_json::Value> = [(
+            "claude/a".to_string(),
+            serde_json::json!({ "limits": [{ "label": "5 hours", "usedPct": 100, "resetsAt": "2026-01-01T00:00:00+00:00" }] }),
+        )]
+        .into();
+        let before = chrono::DateTime::parse_from_rfc3339("2025-12-31T00:00:00Z").unwrap().timestamp_millis() as u64;
+        let after = chrono::DateTime::parse_from_rfc3339("2026-01-02T00:00:00Z").unwrap().timestamp_millis() as u64;
+        let pick = |now| pick_from_list(&names(&["a"]), Provider::Claude, &allowed, &usage, |_| true, now).unwrap().1;
+        assert!(pick(before).note.is_some(), "spent, and the only one");
+        assert_eq!(pick(after).note, None, "the figure is from before the reset");
+    }
+
+    #[test]
+    fn a_list_is_of_one_provider() {
+        let allowed = [account(Provider::Claude, "c"), account(Provider::Codex, "x"), account(Provider::Claude, "both"), account(Provider::Codex, "both")];
+        let of = |list: &[&str], asked| list_provider(&names(list), &allowed, asked, Provider::Claude);
+        assert_eq!(of(&["c", "both"], None), Ok(Provider::Claude));
+        assert_eq!(of(&["x", "both"], None), Ok(Provider::Codex), "the names bring their provider");
+        assert_eq!(of(&["both"], None), Ok(Provider::Claude), "the caller's first");
+        assert_eq!(of(&["c", "unknown"], None), Ok(Provider::Claude), "an unknown one is skipped later, with a reason");
+        assert!(of(&["c", "x"], None).is_err());
+        assert!(of(&["c"], Some(Provider::Codex)).is_err());
+        assert_eq!(of(&["both", "x"], Some(Provider::Codex)), Ok(Provider::Codex));
+    }
+
+    #[test]
+    fn account_comes_as_a_name_or_a_list_and_goes_out_as_a_name() {
+        let p: SpawnParams = serde_json::from_value(serde_json::json!({ "prompt": "x", "account": "a", "readOnly": true, "agent": "checker" })).unwrap();
+        assert_eq!(p.account_name(), Some("a"));
+        assert_eq!(p.read_only, Some(true));
+        assert_eq!(p.agent.as_deref(), Some("checker"));
+        let p: SpawnParams = serde_json::from_value(serde_json::json!({ "prompt": "x", "account": ["a", "b"] })).unwrap();
+        assert!(matches!(p.account, Some(AccountAsk::List(ref l)) if l.len() == 2));
+        assert_eq!(p.account_name(), None, "not settled yet");
+        let p = SpawnParams { account: Some(AccountAsk::One("a".into())), read_only: Some(true), agent: Some("checker".into()), ..Default::default() };
+        let out = serde_json::to_value(&p).unwrap();
+        assert_eq!(out["account"], "a", "the frontend reads a string");
+        assert_eq!(out["readOnly"], true);
+        assert_eq!(out["agent"], "checker");
+    }
+
+    fn role(read_only: bool, f: impl FnOnce(&mut SpawnParams)) -> SpawnParams {
+        let mut p = SpawnParams { read_only: Some(read_only), ..Default::default() };
+        f(&mut p);
+        p
+    }
+
+    #[test]
+    fn read_only_codex_goes_to_the_read_only_sandbox_unless_told_which() {
+        let mut p = role(true, |_| {});
+        settle_role(&mut p, Provider::Codex).unwrap();
+        assert_eq!(p.sandbox.as_deref(), Some("read-only"), "no network unless asked for");
+        let mut p = role(true, |p| p.sandbox = Some("read-only-net".into()));
+        settle_role(&mut p, Provider::Codex).unwrap();
+        assert_eq!(p.sandbox.as_deref(), Some("read-only-net"));
+        let mut p = role(false, |_| {});
+        settle_role(&mut p, Provider::Codex).unwrap();
+        assert_eq!(p.sandbox, None, "the account's default");
+    }
+
+    #[test]
+    fn read_only_net_goes_with_never_and_not_with_auto_review() {
+        let spec = |approval: &str| {
+            let p = SpawnParams { sandbox: Some("read-only-net".into()), approval: Some(approval.into()), ..Default::default() };
+            background_spec(&p, Provider::Codex, "", "")
+        };
+        assert_eq!(spec("never").ok().unwrap().mode, "read-only-net");
+        assert!(spec("auto-review").err().unwrap().contains("workspace-write only"), "the reviewer's sandbox is fixed");
+    }
+
+    #[test]
+    fn what_contradicts_read_only_is_refused() {
+        for sandbox in ["workspace-write", "danger-full-access"] {
+            let mut p = role(true, |p| p.sandbox = Some(sandbox.into()));
+            assert!(settle_role(&mut p, Provider::Codex).unwrap_err().contains("contradicts"), "{sandbox}");
+        }
+        let mut p = role(true, |p| p.approval = Some("auto-review".into()));
+        assert!(settle_role(&mut p, Provider::Codex).unwrap_err().contains("auto-review"));
+        let mut p = role(true, |p| p.permission_mode = Some("acceptEdits".into()));
+        assert!(settle_role(&mut p, Provider::Claude).unwrap_err().contains("acceptEdits"));
+        // A checker with Bash and nobody to ask is the point of it.
+        let mut p = role(true, |p| p.permission_mode = Some("bypassPermissions".into()));
+        settle_role(&mut p, Provider::Claude).unwrap();
+    }
+
+    #[test]
+    fn an_agent_is_for_claude_code_and_a_name_only() {
+        let mut p = role(false, |p| p.agent = Some("checker".into()));
+        settle_role(&mut p, Provider::Claude).unwrap();
+        assert_eq!(p.agent.as_deref(), Some("checker"));
+        assert!(settle_role(&mut p, Provider::Codex).unwrap_err().contains("Claude Code option"));
+        let mut p = role(false, |p| p.agent = Some("  ".into()));
+        settle_role(&mut p, Provider::Codex).unwrap();
+        assert_eq!(p.agent, None, "blank is not asked");
+        for bad in ["--dangerously-skip-permissions", "a b", "a/b"] {
+            let mut p = role(false, |p| p.agent = Some(bad.into()));
+            assert!(settle_role(&mut p, Provider::Claude).is_err(), "{bad}");
+        }
+        let mut p = role(false, |p| p.agent = Some("plugin:review-2.0_x".into()));
+        settle_role(&mut p, Provider::Claude).unwrap();
+    }
+
     #[test]
     fn sessions_filter_by_group_and_text() {
         let none = serde_json::json!({});
@@ -5012,6 +5409,7 @@ mod tests {
     fn a_worktree_still_being_made_says_so() {
         let spawned = |worktree: Worktree, worktree_pending: bool| {
             serde_json::to_value(Spawned {
+                account_choice: None,
                 id: "w".into(),
                 turns_ended: 0,
                 settings: serde_json::Value::Null,

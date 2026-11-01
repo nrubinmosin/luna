@@ -4,7 +4,7 @@
 //! them — every word here lands in the caller's context once per session —
 //! a short `instructions` string in place of any system-prompt flag, and
 //! the rest in `luna_guide`, read only by a model that asks for it. A
-//! session without the tools is told nothing.
+//! session without the tools is told nothing of them.
 //!
 //! Each request is answered with a plain JSON body (the transport allows it;
 //! no SSE stream is ever opened), so `wait` simply holds its HTTP request
@@ -223,22 +223,27 @@ fn tools() -> Value {
         },
         {
             "name": "luna_spawn",
-            "description": "Start a helper with an opening prompt, in the background (no row in Luna) unless visible: true. Omitted settings: the account's defaults. Returns id, resolved settings, started (false = not seen on the prompt in 30 s, see screen; a visible Codex may still start: luna_wait first), starting (not drawn yet; prompt held, do not resend), warnings, sameFolder, worktree.",
+            "description": "Start a helper, in the background unless visible: true. Omitted settings: the account's defaults. Returns id, resolved settings, started (false: see screen; a visible Codex may still start, luna_wait first), starting (prompt held, do not resend), warnings, sameFolder, worktree, accountChoice.",
             "inputSchema": s(json!({
                 "prompt": { "type": "string" },
                 "provider": { "type": "string", "enum": ["claude", "codex"], "description": "default: yours" },
-                "account": { "type": "string", "description": "account name from luna_list; default: yours" },
-                "model": { "type": "string", "description": "one luna_list names for the account; claude also a full id" },
+                "account": {
+                    "anyOf": [{ "type": "string" }, { "type": "array", "items": { "type": "string" } }],
+                    "description": "from luna_list; default: yours. A list: the first with room"
+                },
+                "model": { "type": "string", "description": "from luna_list; claude also a full id" },
                 "effort": { "type": "string", "description": "low|medium|high|xhigh|max; claude also ultracode; codex per model" },
                 "permissionMode": { "type": "string", "description": "claude: default|acceptEdits|plan|bypassPermissions" },
                 "approval": { "type": "string", "description": "codex: never|auto-review|on-request (visible only)" },
-                "sandbox": { "type": "string", "description": "codex: read-only|workspace-write|danger-full-access" },
+                "sandbox": { "type": "string", "description": "codex: read-only|read-only-net|workspace-write|danger-full-access" },
+                "readOnly": { "type": "boolean", "description": "claude: no edit tools, Bash still writes; codex: read-only sandbox" },
+                "agent": { "type": "string", "description": "claude: its --agent" },
                 "folder": { "type": "string", "description": "project folder; default: yours" },
                 "worktree": { "type": "boolean", "description": "its own git worktree" },
-                "name": { "type": "string", "description": "its name in Luna" },
-                "tools": { "type": "boolean", "description": "give it these tools too (one level only)" },
+                "name": { "type": "string" },
+                "tools": { "type": "boolean", "description": "these tools too (one level)" },
                 "visible": { "type": "boolean", "description": "a chat the user sees and types in" },
-                "autoDelete": { "type": "boolean", "description": "deleted 30 min after its answer reached you unless read or sent to; default: background true" }
+                "autoDelete": { "type": "boolean", "description": "deleted 30 min after its answer reached you; default: background true" }
             }), &["prompt"]),
             "annotations": acts
         },
@@ -356,7 +361,7 @@ fn call(caller: &str, params: &Value, this: &Call) -> Value {
         line.push_str(&format!(" on {}", agents::label(id)));
     }
     const STEERING: &[&str] = &[
-        "provider", "account", "model", "effort", "permissionMode", "sandbox", "approval", "folder", "worktree", "visible",
+        "provider", "account", "model", "effort", "permissionMode", "sandbox", "readOnly", "agent", "approval", "folder", "worktree", "visible",
         "tools", "autoDelete", "name", "until", "timeoutS", "afterTurn", "since", "last", "screen", "interrupt", "dropWorktree",
         "group", "history", "allow", "ids", "mode",
     ];

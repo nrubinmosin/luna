@@ -16,9 +16,8 @@ can start other sessions and work with them.
   conversation. The user sees it as a count
   on your chat's row and can open it as a chat between its turns. `visible: true` makes it a
   normal chat row instead, nested under yours, that the user can type into.
-- `luna_list` covers what you spawned (and what they spawned); `luna_sessions` covers every
-  session in Luna, the user's chats included, with its window group (I = 1). Window groups
-  are how the user arranges chats; `group: "mine"` is yours.
+- `luna_list` covers what you spawned and what they spawned. Window groups are how the user
+  arranges chats.
 - Each `luna_list` row also says, with no need to read the session:
   - `turnStartedAt`: when the turn on now began; null between turns. `lastActivityAt`: the
     last thing Luna saw it do: a background helper's last event, a visible session's last
@@ -36,30 +35,27 @@ can start other sessions and work with them.
   the user can stop or delete it, and a background one goes once idle for 30 min.
 - At most eight helpers under one chat. A helper given `tools: true` gets these tools too,
   but its own helpers get none.
+- `LUNA_SESSION_ID` holds a session's id, `LUNA_PARENT_ID` a helper's parent's. A Claude Code
+  helper's system prompt says it is one; a Codex helper's opening prompt ends with Luna's note
+  saying so (not after a `/command`; compaction may lose it).
 
 ## Accounts and models
 - An account is a signed-in login of one provider: an Anthropic account runs Claude Code
   only, an OpenAI account runs Codex only. `provider` and `account` in `luna_spawn` must
-  match; an `account` alone brings its own provider. Take them from `luna_list`, which lists
-  every account the user lets agents use (the user can switch accounts off for agents)
-  under its exact name.
+  match; an `account` alone brings its own provider. `luna_list` has only those the user lets
+  agents use.
+- `account` as a list, of one provider: the first signed in with every usage window under 95%
+  or unknown, else the most room. `accountChoice` says which and why.
 - Accounts of one provider differ: personal or team plans, different organizations, their
-  own allowed models and their own quota. Each row in `luna_list` gives the provider, the
-  name, the models it offers (for Codex with their efforts and default effort), the
-  `defaults` a helper there gets in your folder (model, effort, permission mode or
-  approval/sandbox, read from the account's and the project's settings) and `usage`: percent
-  used per window and when each resets. A window near 100% means a helper there may stop
+  own allowed models and their own quota. `defaults` in `luna_list` come from the account's
+  and the project's settings. A usage window near 100% means a helper there may stop
   on its limit. When an account one of your live helpers runs on reaches 90%, then 95%, of a
   window, a notice says so, once each until it resets; no need to poll. The numbers are the
   ones Luna's window keeps, so with no window open none come.
-- `model` takes one of the ids `luna_list` names for that account; Claude Code also takes a
-  full model id. Leave a setting out to get the account's default.
 - If the CLI swaps a model the organization does not allow, the spawn reports it in
   `warnings`.
 
 ## Spawning
-- `luna_spawn` needs only `prompt`; everything else defaults to your own provider, account
-  and folder.
 - Codex's `approval`: auto-review has a reviewer model answer what Codex would ask
   (workspace-write only); on-request is for visible ones: a background Codex has nobody to
   ask, and runs with never unless told auto-review, the sandbox being what holds it. Whether
@@ -68,8 +64,16 @@ can start other sessions and work with them.
   hooks not at all, and a visible one stops on the prompt. A background Codex trusts the
   folder it is sent to for its run, so the project's own `.codex/` config loads; a visible
   one in a folder Codex does not trust yet has Luna trust it for that account.
-- `folder` runs it in another project. `worktree: true` gives it its own git worktree and
-  branch, so it does not share files and git with the sessions in that folder; the result
+- Codex's network: none in `read-only` or, unless its config says so, `workspace-write`, but
+  on Windows only by dead proxy variables: ssh and raw sockets still connect.
+  `danger-full-access`: the machine's. `read-only-net` reads only, with network; on Windows
+  schannel TLS fails (built-in `curl`, `Invoke-WebRequest`), as does git's own ssh; `gh`, Python,
+  plain http work, and git https (Luna sets `http.sslBackend=openssl`).
+- `readOnly`: Claude Code's **Bash can still write**; Codex's sandbox (`read-only`, or
+  `read-only-net` if given) holds. Refused with `acceptEdits`, `auto-review` or a sandbox that
+  writes.
+- `agent`: an unknown name stops the CLI. Codex refuses it: its roles are for subagents only.
+- `worktree: true` shares no files or git with the sessions in that folder; the result
   names the worktree and branch, or `worktreePending` until the CLI has made it. `sameFolder`
   in the result lists live sessions working in the same directory.
 - In the result, for a background helper `started` means its process is up. For a visible
@@ -147,6 +151,4 @@ can start other sessions and work with them.
   job or helper of its runs; a read or a send in between starts the 30 minutes over
   (`deletesInMin` in `luna_list` counts down). The worktree stays. Off for visible ones unless
   `true`. A helper the user typed into, or one you killed, is never auto-deleted.
-- `luna_sessions` with `history: true` also says when, by whom, where, on which account and
-  settings each ran, the start of its prompt and how it ended.
 - Every helper costs its account's quota; several at once cost it in parallel.

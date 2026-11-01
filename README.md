@@ -108,7 +108,7 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
     (`low … ultra`, from the same list, each level's description as its tooltip), opening
     on the model's own default level and following the model when another is picked —
     unless a settings file names a level or one was picked by hand. Approval policy
-    (`on-request/never/auto-review`) and sandbox mode (`read-only/workspace-write/danger-full-access`)
+    (`on-request/never/auto-review`) and sandbox mode (`read-only/read-only-net/workspace-write/danger-full-access`)
     are picked separately; `never` + `danger-full-access` is passed as
     `--dangerously-bypass-approvals-and-sandbox`, as Codex spells it. `auto-review` is
     Codex's `--approve-for-me`: what Codex would ask you goes to a reviewer model, which
@@ -361,9 +361,33 @@ background helper spawned without tools.
   with `approval: auto-review`, where a reviewer model answers.
 - A prompt or message longer than 8,000 characters reaches a visible session as a file it
   is told to read; a background one gets any length on its stdin.
-- Codex under `read-only` or `workspace-write` (and so `auto-review`) runs its commands in its Windows sandbox
+- Codex under `read-only`, `read-only-net` or `workspace-write` (and so `auto-review`) runs its commands in its Windows sandbox
   (the unelevated kind: no administrator, no extra accounts), without the Store's app
   aliases on its PATH, which the sandbox cannot start.
+- `read-only-net` and `danger-full-access` have the network. `read-only` and `workspace-write`
+  do not by default, but on Windows Codex only points the proxy variables at a dead port, so
+  what ignores them (ssh, raw sockets) still connects: that keeps tools off the network by
+  accident, not data in. `read-only-net` is Luna's own value: Codex's read-only with the
+  network on, as a permission profile passed for the run and never written to the account's
+  `config.toml`; the profile's name is new on every start, so no config can have rules waiting
+  for it. `auto-review` cannot use it, being `workspace-write` only. On Windows, TLS through
+  schannel (the built-in `curl`, `Invoke-WebRequest`) fails under the sandbox's token, and so
+  does Git's bundled ssh; `gh`, Python and plain http work. So does git over https, because
+  Luna adds `http.sslBackend=openssl` to `GIT_CONFIG_*` there, after any you set and unless you
+  chose a backend that way, so it trusts Git's CA bundle rather than Windows' certificate store.
+  For git over ssh set `GIT_SSH` to Windows' own `ssh.exe`.
+- `luna_spawn` can make a checker: `readOnly: true` takes Edit, Write and NotebookEdit from
+  Claude Code, whose Bash can still write, and puts Codex in `read-only`, or in
+  `read-only-net` if asked. `agent: "<name>"` runs Claude Code as an agent the project or
+  account defines (`--agent`); Codex has no such thing for a whole session and refuses it.
+- `account` in `luna_spawn` can be a list of one provider's accounts: the first signed in
+  with every usage window under 95%, else the one with the most room. The result's
+  `accountChoice` says which it took and why it skipped the others.
+- Every session gets its own id as `LUNA_SESSION_ID`, and a helper its parent's as
+  `LUNA_PARENT_ID`. A Claude Code helper's system prompt also says what it is
+  (`--append-system-prompt`). Codex can only replace `developer_instructions`, which would
+  drop what its config says there, so a Codex helper's opening prompt ends with a note from
+  Luna instead: a prompt that opens with a slash command goes without it, and compaction can lose it.
 - An agent kills and deletes only sessions it spawned (and theirs). It can see every other
   one, yours included, with `luna_sessions` — name, window group, account and its folder,
   project folder, cwd, the CLI's session id and transcript path — type a message into any

@@ -483,7 +483,9 @@ function create(spec: TermSpec): Entry {
               worktreeName: claudeWorktree,
               resume: chat.sessionId ?? null,
               tools: chat.tools ?? false,
-              parent: chat.parentId ?? null
+              parent: chat.parentId ?? null,
+              readOnly: chat.readOnly ?? false,
+              agent: chat.agent ?? null
             });
     } catch (e) {
       // The ipc layer already logged the cause. Without this catch the
