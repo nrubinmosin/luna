@@ -319,7 +319,11 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   reboot. A turn the core was in the middle of is stopped with it; the agent owed the
   answer is told so once its own chat is back, along with any messages queued behind that
   turn, kept word for word to send again, and `luna_send` has the helper carry on. A helper
-  spawned with `resumeOnRestart: true` goes on by itself, those messages included.
+  spawned with `resumeOnRestart: true` goes on by itself, those messages included. One stopped
+  before its first turn got anywhere is reported as never started, with its prompt, and with
+  `resumeOnRestart` starts afresh on it. What agents hold of the chats you see — who spawned
+  them, a worktree they were handed, answers owed, messages Luna was holding for your draft —
+  is kept in `chat-ties.json` the same way and picked up when each chat starts again.
 - The log also says how each run ended. Luna names its own reasons for leaving (tray
   Quit, an update, Windows signing out or shutting down). A small watcher process logs
   the exit code when something else ends it, which tells a kill from outside (Task
@@ -333,7 +337,7 @@ A chat created with **Luna tools** ticked (off by default) gets Luna as an MCP s
 with it eleven tools: `luna_list`, `luna_sessions`, `luna_spawn`, `luna_send`, `luna_answer`,
 `luna_read`, `luna_wait`, `luna_kill`, `luna_delete`, `luna_guide`, `luna_notify`. The model can start a helper session — another model, another
 account, Codex instead of Claude — with an opening prompt, wait for its reply, send
-follow-ups, answer what it asks, and delete it when done, worktree and branch included if it asked for one.
+follow-ups, answer what it asks, and delete it when done, worktree and its `worktree-*` branch included if it asked for one.
 `luna_notify` lets it raise a desktop notification mid-turn, titled with its chat's name and
 opening that chat when clicked, at most one every 10 seconds. The
 tools and a short instruction cost about 2k tokens of context once per session; the full
@@ -408,9 +412,11 @@ background helper spawned without tools.
   `history: true` can show what ran before, deleted helpers included, and a run can be repeated as it was.
   A deleted helper leaves its transcript path (the whole prompt is there), its worktree and its
   last message, of which `history` gives the first 400 characters.
-- `luna_delete` with `dropWorktree` refuses a worktree with uncommitted changes, untracked
-  files or commits on no other branch, and says which, unless the agent adds `force: true`.
-  Your own Delete asks you instead, as ever.
+- `luna_delete` with `dropWorktree` takes the worktree the CLI made and its `worktree-*` branch;
+  a branch the helper named itself stays. It refuses when that would lose uncommitted changes,
+  untracked files or commits no other branch or remote has, and says which, unless the agent
+  adds `force: true`. A worktree that cannot be removed is named back to the agent as
+  `worktreeLeft`. Your own Delete asks you instead, as ever.
 - Deleting a parent by hand leaves its helpers as orphans, marked ↳ at the top level,
   unless you tick the box to take them along. Helpers deleted by their agent are gone for
   good, transcript aside.

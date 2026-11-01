@@ -296,7 +296,7 @@ fn tools() -> Value {
         },
         {
             "name": "luna_delete",
-            "description": "Stop a session and remove it; dropWorktree: also the worktree and branch Luna made for it, unless another session is in it. Refused while that worktree holds uncommitted changes or commits on no other branch; force: true removes it anyway.",
+            "description": "Stop a session and remove it; dropWorktree: also the worktree its CLI made and that worktree's worktree-* branch (a branch it named itself stays), unless another session is in it. Refused while that would lose uncommitted changes or commits no other branch or remote has; force: true goes ahead. One that cannot be removed comes back as worktreeLeft, with worktreeError; the session is gone.",
             "inputSchema": s(json!({ "id": { "type": "string" }, "dropWorktree": { "type": "boolean" }, "force": { "type": "boolean" } }), &["id"]),
             "annotations": ends
         },
@@ -373,7 +373,7 @@ fn call(caller: &str, params: &Value, this: &Call) -> Value {
         // The first block is the result's JSON; its few fields that say how
         // the call went.
         let v: Value = out["content"][0]["text"].as_str().and_then(|t| serde_json::from_str(t).ok()).unwrap_or(Value::Null);
-        const OUTCOME: &[&str] = &["id", "outcome", "started", "starting", "queued", "turnsEnded", "state", "leftOut", "worktreeRemoved"];
+        const OUTCOME: &[&str] = &["id", "outcome", "started", "starting", "queued", "turnsEnded", "state", "leftOut", "worktreeRemoved", "worktreeLeft"];
         let got: Vec<String> = OUTCOME.iter().filter_map(|k| v.get(*k).filter(|v| !v.is_null()).map(|v| format!("{k}={v}"))).collect();
         crate::log::info("mcp", &format!("{line} in {ms}ms: {}", if got.is_empty() { "ok".to_string() } else { got.join(" ") }));
     }
@@ -453,7 +453,7 @@ fn run(caller: &str, params: &Value, this: &Call) -> Value {
         .map(|w| json!(w)),
         "luna_kill" => agents::kill(caller, &id).map(|()| json!({ "ok": true })),
         "luna_delete" => agents::delete(caller, &id, a["dropWorktree"].as_bool().unwrap_or(false), a["force"].as_bool().unwrap_or(false))
-            .map(|wt| json!({ "ok": true, "worktreeRemoved": wt })),
+            .map(|r| json!(r)),
         "luna_notify" => agents::notify(caller, a["text"].as_str().unwrap_or("")).map(|()| json!({ "ok": true })),
         _ => Err(format!("unknown tool {name}")),
     };
