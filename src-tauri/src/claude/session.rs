@@ -247,7 +247,7 @@ fn cached_first_prompt(account_path: &str, cwd: &str, session_id: &str) -> Optio
 /// for the few seconds before the CLI's own title lands in the transcript.
 fn read_first_prompt(account_path: &str, cwd: &str, session_id: &str) -> Option<String> {
     use std::io::{BufRead, BufReader};
-    let path = transcript_path(account_path, cwd, session_id);
+    let path = located_transcript(account_path, cwd, session_id);
     let f = std::fs::File::open(&path).ok()?;
     // The opening prompt is near the top; no need to walk a 700KB transcript.
     for line in BufReader::new(f).lines().take(80).map_while(Result::ok) {
@@ -292,7 +292,7 @@ pub fn meta(pid: Option<u32>, cwd: &str, spawned_at_ms: u128, account_path: &str
         ..Default::default()
     };
     if let (Some(scwd), Some(sid)) = (m.cwd.clone(), m.session_id.clone()) {
-        let path = transcript_path(account_path, &scwd, &sid);
+        let path = located_transcript(account_path, &scwd, &sid);
         let text = crate::pty::tail(&path, 128 * 1024);
         if let Some(c) = text.as_deref().and_then(context_in) {
             m.context_tokens = Some(c.tokens);
@@ -501,15 +501,17 @@ pub fn last_api_error(pid: Option<u32>, cwd: &str, spawned_at_ms: u128, account_
 
 /// See `last_api_error`: the last user or assistant line decides.
 fn api_error_in(text: &str) -> Option<&'static str> {
+    api_error_line(text).map(|v| crate::activity::api_error_kind(v["error"].as_str().unwrap_or("")))
+}
+
+fn api_error_line(text: &str) -> Option<serde_json::Value> {
     for line in text.lines().rev() {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
         if v["isSidechain"].as_bool() == Some(true) {
             continue;
         }
         match v["type"].as_str() {
-            Some("assistant") if v["isApiErrorMessage"].as_bool() == Some(true) => {
-                return Some(crate::activity::api_error_kind(v["error"].as_str().unwrap_or("")));
-            }
+            Some("assistant") if v["isApiErrorMessage"].as_bool() == Some(true) => return Some(v),
             Some("assistant") | Some("user") => return None,
             _ => {}
         }
@@ -517,11 +519,48 @@ fn api_error_in(text: &str) -> Option<&'static str> {
     None
 }
 
+/// What a caller is told of the API error a transcript's last turn ended on,
+/// when it did: the CLI's kind of error and the words it shows for it.
+pub fn api_error_of(path: &Path) -> Option<String> {
+    let v = api_error_line(&crate::pty::tail(path, 64 * 1024)?)?;
+    let kind = crate::activity::api_error_kind(v["error"].as_str().unwrap_or(""));
+    Some(match content_text(&v["message"]["content"]).filter(|t| !t.trim().is_empty()) {
+        Some(said) => format!("{kind}: {said}"),
+        None => kind.to_string(),
+    })
+}
+
 /// The transcript of a session Luna knows by its id and cwd rather than
 /// through the registry — a background helper's, which `claude -p` names in
 /// its first event.
 pub fn transcript_file(account_path: &str, cwd: &str, session_id: &str) -> PathBuf {
-    transcript_path(account_path, cwd, session_id)
+    located_transcript(account_path, cwd, session_id)
+}
+
+/// Where a session's transcript is: under its cwd, or, where that has none, in
+/// whichever project folder holds it. A session resumed from another folder
+/// keeps writing to the one it started in, and its cwd's folder holds only its
+/// tool results. Not there yet (no message so far), it is still the file named
+/// by the cwd. Where one was found is kept, as a transcript does not move and
+/// the session's title and context are asked for every few seconds per pane.
+fn located_transcript(account_path: &str, cwd: &str, session_id: &str) -> PathBuf {
+    static ELSEWHERE: std::sync::OnceLock<Mutex<HashMap<String, PathBuf>>> = std::sync::OnceLock::new();
+    let path = transcript_path(account_path, cwd, session_id);
+    if path.is_file() {
+        return path;
+    }
+    let elsewhere = ELSEWHERE.get_or_init(Default::default);
+    let key = format!("{account_path}\n{session_id}");
+    if let Some(found) = elsewhere.lock().unwrap_or_else(|e| e.into_inner()).get(&key).filter(|p| p.is_file()) {
+        return found.clone();
+    }
+    let Some(found) = find_transcript(account_path, session_id) else { return path };
+    let mut map = elsewhere.lock().unwrap_or_else(|e| e.into_inner());
+    if map.len() >= CACHE_CAP {
+        map.clear();
+    }
+    map.insert(key, found.clone());
+    found
 }
 
 /// The tool call the conversation stands on:the last one the model made that
@@ -577,15 +616,17 @@ pub fn transcript_of(pid: Option<u32>, cwd: &str, spawned_at_ms: u128, account_p
     let v = registry_entry(&dir, pid, cwd, spawned_at_ms)?;
     let scwd = v["cwd"].as_str()?;
     let sid = v["sessionId"].as_str()?;
-    Some(transcript_path(account_path, scwd, sid))
+    Some(located_transcript(account_path, scwd, sid))
 }
 
 /// The conversation as another agent reads it: user and assistant turns from
 /// byte offset `from` on, tool calls folded to one line each when asked for
 /// and left out otherwise. Returns the messages and the offset to continue
 /// from: the end of the last complete line, so a line still being written is
-/// read whole next time rather than skipped. Subagent sidechains and
-/// CLI-injected turns are skipped. A cursor past the end is one into a file
+/// read whole next time rather than skipped. Subagent sidechains, CLI-injected
+/// turns and the lines an API error writes in the model's place ("You've hit
+/// your session limit", which `api_error_of` reports) are skipped: the model
+/// said none of them. A cursor past the end is one into a file
 /// since cut short or written anew, where it would land mid-line: the file is
 /// read from the top.
 pub fn messages_from(path: &Path, from: u64, with_tools: bool) -> (Vec<crate::agents::Message>, u64) {
@@ -602,7 +643,10 @@ pub fn messages_from(path: &Path, from: u64, with_tools: bool) -> (Vec<crate::ag
 /// One transcript line as a turn of the conversation, if it is one.
 fn message_of(line: &str, with_tools: bool) -> Option<crate::agents::Message> {
     let v = serde_json::from_str::<serde_json::Value>(line).ok()?;
-    if v["isSidechain"].as_bool().unwrap_or(false) || v["isMeta"].as_bool().unwrap_or(false) {
+    if v["isSidechain"].as_bool().unwrap_or(false)
+        || v["isMeta"].as_bool().unwrap_or(false)
+        || v["isApiErrorMessage"].as_bool().unwrap_or(false)
+    {
         return None;
     }
     let role = match v["type"].as_str() {
@@ -647,6 +691,67 @@ fn message_of(line: &str, with_tools: bool) -> Option<crate::agents::Message> {
 #[cfg(test)]
 mod reading_tests {
     use super::*;
+
+    /// As Claude Code 2.1.314 writes a turn the API refused.
+    const API_ERROR: &str = r#"{"parentUuid":"p","isSidechain":false,"type":"assistant","uuid":"u","message":{"id":"m","model":"<synthetic>","role":"assistant","content":[{"type":"text","text":"Invalid API key · Fix external API key"}]},"error":"authentication_failed","isApiErrorMessage":true,"apiErrorStatus":401}"#;
+
+    #[test]
+    fn an_api_error_is_no_message_and_says_why() {
+        let path = std::env::temp_dir().join(format!("luna-claude-api-error-{}.jsonl", std::process::id()));
+        let prompt = r#"{"type":"user","message":{"role":"user","content":"go on"}}"#;
+        let said = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Starting."}]}}"#;
+        std::fs::write(&path, format!("{prompt}\n{said}\n{API_ERROR}\n")).unwrap();
+        let (msgs, _) = messages_from(&path, 0, false);
+        let texts: Vec<&str> = msgs.iter().map(|m| m.text.as_str()).collect();
+        assert_eq!(texts, ["go on", "Starting."], "what the model said, and not what the CLI put in its place");
+        assert_eq!(api_error_of(&path).as_deref(), Some("authentication_failed: Invalid API key · Fix external API key"));
+        // A prompt since: that turn is another one.
+        std::fs::write(&path, format!("{prompt}\n{API_ERROR}\n{prompt}\n")).unwrap();
+        assert_eq!(api_error_of(&path), None);
+        // Words of the model's after the error: it went on.
+        std::fs::write(&path, format!("{API_ERROR}\n{said}\n")).unwrap();
+        assert_eq!(api_error_of(&path), None);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_transcript_is_found_wherever_the_session_keeps_it() {
+        let root = std::env::temp_dir().join(format!("luna-claude-located-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let acct = root.to_string_lossy().into_owned();
+        let sid = "41448537-aaaa-4bbb-8ccc-0123456789ab";
+        let sessions = root.join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::write(sessions.join("77.json"), format!(r#"{{"cwd":"E:\\p\\.claude\\worktrees\\w","sessionId":"{sid}"}}"#)).unwrap();
+        let expected = transcript_path(&acct, "E:\\p\\.claude\\worktrees\\w", sid);
+        // Nothing yet: the file it is going to write.
+        assert_eq!(transcript_of(Some(77), "E:\\p", 0, &acct), Some(expected.clone()));
+        // Resumed from another folder: its cwd's folder holds tool results only.
+        std::fs::create_dir_all(expected.parent().unwrap().join("tool-results")).unwrap();
+        let elsewhere = root.join("projects").join("E--p-app").join(format!("{sid}.jsonl"));
+        std::fs::create_dir_all(elsewhere.parent().unwrap()).unwrap();
+        std::fs::write(&elsewhere, "{}\n").unwrap();
+        assert_eq!(transcript_of(Some(77), "E:\\p", 0, &acct), Some(elsewhere.clone()));
+        assert_eq!(transcript_file(&acct, "E:\\p\\.claude\\worktrees\\w", sid), elsewhere);
+        // And the chat's title and context are read from there too.
+        std::fs::write(
+            &elsewhere,
+            concat!(
+                r#"{"type":"user","message":{"role":"user","content":"look into the login bug"}}"#, "\n",
+                r#"{"type":"ai-title","aiTitle":"Login bug","sessionId":"s"}"#, "\n",
+                r#"{"type":"assistant","message":{"model":"claude-opus-5","usage":{"input_tokens":1000,"output_tokens":5},"content":[{"type":"text","text":"ok"}]}}"#, "\n",
+            ),
+        )
+        .unwrap();
+        let m = meta(Some(77), "E:\\p", 0, &acct).unwrap();
+        assert_eq!(m.title.as_deref(), Some("Login bug"));
+        assert_eq!(m.context_tokens, Some(1000.0));
+        assert_eq!(m.first_prompt.as_deref(), Some("look into the login bug"));
+        // Where the cwd says, once there is one there.
+        std::fs::write(&expected, "{}\n").unwrap();
+        assert_eq!(transcript_of(Some(77), "E:\\p", 0, &acct), Some(expected));
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn the_pending_tool_is_the_last_one_without_a_result() {

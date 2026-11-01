@@ -304,7 +304,9 @@ struct Entry {
     /// Text sent while a turn ran, for the turn after it.
     queue: Vec<String>,
     log: VecDeque<String>,
-    held: Option<Held>,
+    /// What it is held on, oldest first: parallel subagents and tool calls ask
+    /// at once, and the first still unanswered is the one shown.
+    held: VecDeque<Held>,
     /// The CLI could not run or quit on an error before saying anything.
     error: Option<String>,
     /// Its last turn was stopped by the core going, not ended by the CLI:
@@ -314,6 +316,11 @@ struct Entry {
     /// what a turn leaves running is still the helper's between turns, holds
     /// the machine as a chat's would, and is ended with the helper.
     job: Option<std::sync::Arc<crate::procs::Job>>,
+    /// Its turns left something running in that job, when last looked: at the
+    /// end of its turn and at every activity sample since. Reading a job takes
+    /// a process snapshot, too much for every `turn_state`, and not under the
+    /// registry lock.
+    left_running: bool,
     observed: Observed,
 }
 
@@ -453,7 +460,7 @@ fn stop(e: &mut Entry) -> Option<u32> {
         e.queue.clear();
         e.turns_ended += 1;
     }
-    e.held = None;
+    e.held.clear();
     let run = e.run.as_mut()?;
     if run.pid.is_none() {
         run.stopped = true;
@@ -472,10 +479,11 @@ pub fn start(id: &str, spec: Spec, prompt: &str) -> Result<(), String> {
         turns_ended: 0,
         queue: Vec::new(),
         log: VecDeque::new(),
-        held: None,
+        held: VecDeque::new(),
         error: None,
         cut_short: false,
         job: None,
+        left_running: false,
         observed: Observed::default(),
     };
     claim(&mut e);
@@ -526,6 +534,14 @@ fn command_for(e: &Entry, id: &str) -> (Vec<String>, String, Vec<(&'static str, 
                 args.extend(["--disallowedTools".into(), "mcp__luna__luna_permission".into()]);
                 if s.tools {
                     args.extend(["--allowedTools".into(), "mcp__luna".into()]);
+                }
+            }
+            // A helper with tools has helpers of its own to hear from: what a
+            // notice names is a file there, to read without asking.
+            if s.tools {
+                let notes = crate::agents::notes_dir();
+                if std::fs::create_dir_all(&notes).is_ok() {
+                    args.extend(["--add-dir".into(), notes.to_string_lossy().into_owned()]);
                 }
             }
             envs.push(("CLAUDE_CONFIG_DIR", s.account_path.clone()));
@@ -622,6 +638,98 @@ fn run_turn(id: &str, prompt: &str) -> Result<(), String> {
 
 /// Why a turn claimed before a stop does not run.
 const STOPPED: &str = "it was stopped before it started";
+/// Once the CLI's process has gone, a reader blocked on its pipe this long has
+/// read all it wrote: the pipe is empty, and what holds it open is something it
+/// left running, which may do so for days.
+const DRAINED_AFTER: std::time::Duration = std::time::Duration::from_millis(500);
+/// The most a turn's end waits on a reader that is not there yet (a stalled
+/// disk behind the registry lock, a job writing to the pipe without end).
+const DRAIN_AT_MOST: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How the reader of a turn's stdout stands, for the thread that sees the turn
+/// out: the turn is over when the CLI is, not when the pipe closes, as a job it
+/// left running can have inherited the pipe. What the CLI wrote before it went
+/// is still to be read by then, and a blocked read is the only sign that all
+/// of it has been.
+#[derive(Default)]
+struct OutReader {
+    /// In a read that has not returned.
+    reading: std::sync::atomic::AtomicBool,
+    reads: std::sync::atomic::AtomicU64,
+    /// The turn is over: what comes down the pipe from here is not the CLI's.
+    over: std::sync::atomic::AtomicBool,
+}
+
+impl OutReader {
+    /// Reads `out` to its end as bytes, as stderr is, handing each line that
+    /// holds JSON to `on_event`, which says whether to go on.
+    fn read_events(&self, mut out: impl std::io::Read, mut on_event: impl FnMut(&Value) -> bool) {
+        use std::sync::atomic::Ordering::SeqCst;
+        let mut buf = vec![0u8; 64 * 1024];
+        let mut line = Vec::new();
+        loop {
+            self.reading.store(true, SeqCst);
+            let n = out.read(&mut buf).unwrap_or(0);
+            self.reading.store(false, SeqCst);
+            self.reads.fetch_add(1, SeqCst);
+            if n == 0 {
+                break;
+            }
+            for chunk in buf[..n].split_inclusive(|b| *b == b'\n') {
+                line.extend_from_slice(chunk);
+                if chunk.last() == Some(&b'\n') {
+                    if serde_json::from_slice::<Value>(&line).is_ok_and(|v| !on_event(&v)) {
+                        return;
+                    }
+                    line.clear();
+                }
+            }
+        }
+        // The last line, should it have come with no line end.
+        if let Ok(v) = serde_json::from_slice::<Value>(&line) {
+            on_event(&v);
+        }
+    }
+
+    /// Waits for what the CLI wrote before it went to have been read: for the
+    /// reader to end (`read_out` closes with it), or to sit in a read with
+    /// nothing coming, however long it took to get through the rest.
+    fn await_last_words(&self, read_out: &std::sync::mpsc::Receiver<()>, drained_after: std::time::Duration, at_most: std::time::Duration) {
+        use std::sync::atomic::Ordering::SeqCst;
+        let start = std::time::Instant::now();
+        let (mut reads, mut since) = (self.reads.load(SeqCst), start);
+        while start.elapsed() < at_most {
+            if !matches!(read_out.recv_timeout(std::time::Duration::from_millis(20)), Err(std::sync::mpsc::RecvTimeoutError::Timeout)) {
+                return;
+            }
+            let now = self.reads.load(SeqCst);
+            if now != reads {
+                (reads, since) = (now, std::time::Instant::now());
+            }
+            if self.reading.load(SeqCst) && since.elapsed() >= drained_after {
+                return;
+            }
+        }
+    }
+}
+
+/// One event off a turn's stdout, into its helper. The flag is looked at under
+/// the lock: `turn_over` takes it after the flag is up and the next turn starts
+/// after that, so an event of this turn can land neither after its end nor in
+/// the next one. Whether to go on reading: not once the helper is gone.
+fn take_event(id: &str, provider: Provider, reader: &OutReader, v: &Value) -> bool {
+    let mut r = lock();
+    if reader.over.load(std::sync::atomic::Ordering::SeqCst) {
+        return true;
+    }
+    let Some(e) = r.entries.get_mut(id) else { return false };
+    e.observed.event_ms = crate::throttle::now_ms();
+    match provider {
+        Provider::Claude => on_claude_event(e, v),
+        Provider::Codex => on_codex_event(e, v),
+    }
+    true
+}
 
 /// Where Codex's running total stands as a turn starts, off the rollout: the
 /// total saved when the last turn ended misses whatever a turn killed since
@@ -690,20 +798,22 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
             .name(format!("luna-bg-{id}"))
             .spawn(move || {
                 let Ok((mut child, stdout)) = take.recv() else { return };
-                // Read to its end as bytes, as stderr below is.
+                // On a thread of its own (see `OutReader`).
+                let reader = std::sync::Arc::new(OutReader::default());
+                let (drained, read_out) = std::sync::mpsc::channel::<()>();
                 if let Some(out) = stdout {
-                    for line in BufReader::new(out).split(b'\n').map_while(Result::ok) {
-                        let Ok(v) = serde_json::from_slice::<Value>(&line) else { continue };
-                        let mut r = lock();
-                        let Some(e) = r.entries.get_mut(&id) else { break };
-                        e.observed.event_ms = crate::throttle::now_ms();
-                        match provider {
-                            Provider::Claude => on_claude_event(e, &v),
-                            Provider::Codex => on_codex_event(e, &v),
-                        }
+                    let (helper, on_it) = (id.clone(), reader.clone());
+                    let read = std::thread::Builder::new().name(format!("luna-bg-out-{id}")).spawn(move || {
+                        let _drained = drained;
+                        on_it.read_events(out, |v| take_event(&helper, provider, &on_it, v));
+                    });
+                    if let Err(e) = read {
+                        crate::log::warn("background", &format!("cannot read what {} says: {e}", crate::agents::label(&id)));
                     }
                 }
                 let code = child.wait().ok().and_then(|s| s.code());
+                reader.await_last_words(&read_out, DRAINED_AFTER, DRAIN_AT_MOST);
+                reader.over.store(true, std::sync::atomic::Ordering::SeqCst);
                 turn_over(&id, code);
             })
             .map_err(thread_err)?;
@@ -932,11 +1042,16 @@ fn on_codex_event(e: &mut Entry, v: &Value) {
         Some("turn.failed") | Some("error") => {
             let why = v["error"]["message"].as_str().or(v["message"].as_str()).unwrap_or("error").to_string();
             note(e, &format!("error: {}", one_line(&why)));
-            e.error = Some(why);
+            // Codex says its retries the same way ("Reconnecting... 2/5"): a
+            // turn that gets through after them has not failed.
+            if !why.starts_with("Reconnecting") {
+                e.error = Some(why);
+            }
         }
         Some("turn.completed") => {
             codex_spend(e, &v["usage"]);
             note(e, "turn done");
+            e.error = None;
         }
         _ => {}
     }
@@ -945,6 +1060,10 @@ fn on_codex_event(e: &mut Entry, v: &Value) {
 /// The turn's process has exited: count the turn, let any held question go,
 /// and start the turn the queue has waiting.
 fn turn_over(id: &str, code: Option<i32>) {
+    // Before the turn reads as over: whoever is owed its answer must not hear
+    // "finished" ahead of the job it left running.
+    let job = lock().entries.get(id).and_then(|e| e.job.clone());
+    let left_running = job.is_some_and(|job| !crate::procs::left_running(&job).is_empty());
     let (next, thread, generation, stated, rerouted) = {
         let mut r = lock();
         let Some(e) = r.entries.get_mut(id) else { return };
@@ -952,9 +1071,14 @@ fn turn_over(id: &str, code: Option<i32>) {
         e.turns_ended += 1;
         e.observed.turn_ended_ms = crate::throttle::now_ms();
         e.observed.settle_unreported();
-        e.held = None;
-        if code.is_some_and(|c| c != 0) && e.error.is_none() {
-            e.error = Some(format!("{} exited with code {}", e.spec.provider.as_str(), code.unwrap_or(-1)));
+        e.held.clear();
+        e.left_running = left_running;
+        if code != Some(0) && e.error.is_none() {
+            e.error = Some(match code {
+                Some(c) => format!("{} exited with code {c}", e.spec.provider.as_str()),
+                // A signal on Unix: nothing says which but that it was not its own doing.
+                None => format!("{} was killed", e.spec.provider.as_str()),
+            });
         }
         // Codex says where it works only in its rollout.
         if e.spec.provider == Provider::Codex && e.cwd.is_none() {
@@ -994,7 +1118,7 @@ fn note(e: &mut Entry, line: &str) {
     e.log.push_back(line.to_string());
 }
 
-fn one_line(text: &str) -> String {
+pub fn one_line(text: &str) -> String {
     let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if flat.chars().count() <= LOG_CHARS {
         return flat;
@@ -1008,37 +1132,53 @@ pub fn turn_state(id: &str) -> Option<crate::activity::TurnState> {
     use crate::activity::Turn;
     let r = lock();
     let e = r.entries.get(id)?;
-    let turn = match (&e.run, &e.held) {
-        (Some(_), Some(_)) => Turn::Waiting,
-        (Some(_), None) => Turn::Busy,
-        _ => Turn::Idle,
+    let turn = match &e.run {
+        Some(_) if !e.held.is_empty() => Turn::Waiting,
+        Some(_) => Turn::Busy,
+        None => Turn::Idle,
     };
-    Some(crate::activity::TurnState { turn, busy: e.run.is_some(), turns_ended: e.turns_ended, children_busy: false })
+    Some(crate::activity::TurnState {
+        turn,
+        busy: e.run.is_some(),
+        turns_ended: e.turns_ended,
+        children_busy: e.run.is_none() && e.left_running,
+    })
 }
 
 /// What the power rules see of every helper: its turn, and between turns
 /// what its turns left running, by the same rule as a chat's (activity.rs):
-/// it holds the machine for as long as it lives.
+/// it holds the machine for as long as it lives. Noted for `turn_state`, which
+/// is what tells its caller and `reap` that a job still runs.
 pub fn activity() -> Vec<crate::activity::SessionActivity> {
     let ids: Vec<(String, Option<std::sync::Arc<crate::procs::Job>>)> = lock()
         .entries
         .iter()
         .map(|(id, e)| (id.clone(), e.job.clone().filter(|_| e.run.is_none())))
         .collect();
-    ids.into_iter()
+    let mut moved = false;
+    let out = ids
+        .into_iter()
         .filter_map(|(id, job)| {
+            let left = job.map(|job| crate::procs::left_running(&job));
+            if let Some(left) = &left {
+                if let Some(e) = lock().entries.get_mut(&id).filter(|e| e.run.is_none()) {
+                    moved |= e.left_running != !left.is_empty();
+                    e.left_running = !left.is_empty();
+                }
+            }
             let t = turn_state(&id)?;
             let mut a = crate::activity::SessionActivity::of_turn(&id, t.turn, t.busy);
-            if let Some(job) = job {
-                let left = crate::procs::left_running(&job);
-                if !left.is_empty() {
-                    a.busy = true;
-                    a.procs = left;
-                }
+            if let Some(left) = left.filter(|left| !left.is_empty()) {
+                a.busy = true;
+                a.procs = left;
             }
             Some(a)
         })
-        .collect()
+        .collect();
+    if moved {
+        changed();
+    }
+    out
 }
 
 /// Text for the helper: the next turn now, or after the one running.
@@ -1047,7 +1187,7 @@ pub fn send(id: &str, text: &str) -> Result<bool, String> {
     let queued = {
         let mut r = lock();
         let e = r.entries.get_mut(id).ok_or("no such helper")?;
-        if e.held.is_some() {
+        if !e.held.is_empty() {
             return Err(format!("helper {id} is waiting on a question or permission: answer it with luna_answer"));
         }
         if e.run.is_some() {
@@ -1071,56 +1211,96 @@ pub fn kill(id: &str) {
     let pid = {
         let mut r = lock();
         let Some(e) = r.entries.get_mut(id) else { return };
+        // Whoever is owed the turn hears it was stopped, not an exit code.
+        if e.run.is_some() {
+            e.error = Some("it was stopped, by luna_kill or from the window".into());
+        }
         stop(e)
     };
     reg().1.notify_all();
     crate::pty::kill_tree(pid);
 }
 
-/// Stops the turn in progress and starts the next on `text`, with whatever
-/// was queued for after it going first: the conversation goes on, the work
-/// the turn was doing does not. Returns whether a turn was stopped.
-pub fn interrupt(id: &str, text: &str) -> Result<bool, String> {
-    let (pid, queued) = {
+/// Why its last turn stopped short, if it did.
+pub fn last_error(id: &str) -> Option<String> {
+    lock().entries.get(id)?.error.clone()
+}
+
+/// How an `interrupt` went.
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub struct Interrupted {
+    /// The turn it was on was stopped, and the text starts the next.
+    pub stopped: bool,
+    /// The text waits behind a turn that goes on: one that would not stop in
+    /// time, or that has no process to stop yet. It ends a turn after that one.
+    pub queued: bool,
+}
+
+/// How long a turn claimed a moment ago gets to have a process to stop.
+const CLAIM_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+/// How long a stopped turn's process gets to read as gone.
+const STOP_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Stops the turn in progress and starts the next on `text`, behind whatever
+/// was queued for after it: the conversation goes on, the work the turn was
+/// doing does not. All of it waits in the queue, which the turn's end takes up
+/// whole, so nobody's text hangs on how the stop goes: what would not stop
+/// still has it all behind it.
+pub fn interrupt(id: &str, text: &str) -> Result<Interrupted, String> {
+    let free = {
         let mut r = lock();
         let e = r.entries.get_mut(id).ok_or("no such helper")?;
-        let queued = std::mem::take(&mut e.queue);
-        e.held = None;
-        (e.run.as_ref().and_then(|run| run.pid), queued)
-    };
-    let stopped = pid.is_some();
-    if stopped {
-        reg().1.notify_all();
-        crate::pty::kill_tree(pid);
-    }
-    let text = queued.into_iter().chain([text.to_string()]).collect::<Vec<_>>().join("\n\n");
-    {
-        // The turn is over once its reader has seen the process go, and the
-        // run is then free or taken by a turn queued before the kill.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
-        let (m, cv) = reg();
-        let mut r = m.lock().unwrap_or_else(|e| e.into_inner());
-        while stopped && r.entries.get(id).and_then(|e| e.run.as_ref()).is_some_and(|run| run.pid == pid) {
-            let left = deadline.saturating_duration_since(std::time::Instant::now());
-            if left.is_zero() {
-                return Err(format!("helper {id} did not stop within 15 s"));
-            }
-            r = cv.wait_timeout(r, left).unwrap_or_else(|e| e.into_inner()).0;
+        e.held.clear();
+        let free = e.run.is_none();
+        if free {
+            claim(e);
+        } else {
+            note(e, "interrupted");
+            e.queue.push(text.to_string());
         }
-        let e = r.entries.get_mut(id).ok_or("no such helper")?;
-        note(e, "interrupted");
-        // A turn something else started meanwhile: the text goes after it.
-        if e.run.is_some() {
-            e.queue.push(text);
+        free
+    };
+    reg().1.notify_all();
+    if free {
+        run_turn(id, text)?;
+        changed();
+        return Ok(Interrupted { stopped: false, queued: false });
+    }
+    let queued = Interrupted { stopped: false, queued: true };
+    let deadline = std::time::Instant::now() + CLAIM_WAIT;
+    let pid = loop {
+        {
+            let r = lock();
+            let e = r.entries.get(id).ok_or("no such helper")?;
+            // Taken up already: that turn ended by itself, and this is the next.
+            if e.queue.is_empty() {
+                return Ok(queued);
+            }
+            match e.run.as_ref().map(|run| run.pid) {
+                Some(Some(pid)) => break pid,
+                Some(None) if std::time::Instant::now() < deadline => {}
+                _ => return Ok(queued),
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    crate::pty::kill_tree(Some(pid));
+    // The turn is over once its reader has seen the process go.
+    let deadline = std::time::Instant::now() + STOP_WAIT;
+    let (m, cv) = reg();
+    let mut r = m.lock().unwrap_or_else(|e| e.into_inner());
+    while r.entries.get(id).and_then(|e| e.run.as_ref()).is_some_and(|run| run.pid == Some(pid)) {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
             drop(r);
             changed();
-            return Ok(stopped);
+            return Ok(queued);
         }
-        claim(e);
+        r = cv.wait_timeout(r, left).unwrap_or_else(|e| e.into_inner()).0;
     }
-    run_turn(id, &text)?;
+    drop(r);
     changed();
-    Ok(stopped)
+    Ok(Interrupted { stopped: true, queued: false })
 }
 
 /// The worktree it made, once the CLI has said where: Claude Code as its
@@ -1192,7 +1372,7 @@ pub fn working_dir(id: &str) -> Option<String> {
 }
 
 pub fn ask(id: &str) -> Option<Ask> {
-    lock().entries.get(id)?.held.as_ref().map(|h| h.ask.clone())
+    lock().entries.get(id)?.held.iter().find(|h| h.answer.is_none()).map(|h| h.ask.clone())
 }
 
 /// `luna_permission`: the CLI asks before a tool runs, or carries the model's
@@ -1201,7 +1381,7 @@ pub fn ask(id: &str) -> Option<Ask> {
 pub fn permission(id: &str, args: &Value) -> Value {
     let tool = args["tool_name"].as_str().unwrap_or("").to_string();
     let input = args["input"].clone();
-    let ask = if tool == "AskUserQuestion" {
+    let mut ask = if tool == "AskUserQuestion" {
         Ask::from_claude_questions(&input).unwrap_or_else(|| Ask::from_claude_tool(&tool, &input))
     } else {
         Ask::from_claude_tool(&tool, &input)
@@ -1213,8 +1393,9 @@ pub fn permission(id: &str, args: &Value) -> Value {
         let Some(e) = r.entries.get_mut(id) else {
             return json!({ "behavior": "deny", "message": "Luna does not know this session." });
         };
+        ask.id = Some(format!("a{serial}"));
         note(e, &format!("waits: {}", ask.line()));
-        e.held = Some(Held { serial, ask, input, answer: None });
+        e.held.push_back(Held { serial, ask, input, answer: None });
         serial
     };
     changed();
@@ -1222,14 +1403,15 @@ pub fn permission(id: &str, args: &Value) -> Value {
     let (m, cv) = reg();
     let mut r = m.lock().unwrap_or_else(|e| e.into_inner());
     let answer = loop {
-        match r.entries.get_mut(id).map(|e| (e.run.is_some(), e.held.as_mut())) {
-            Some((true, Some(h))) if h.serial == serial => {
+        let held = r.entries.get_mut(id).filter(|e| e.run.is_some()).and_then(|e| e.held.iter_mut().find(|h| h.serial == serial));
+        match held {
+            Some(h) => {
                 if let Some(a) = h.answer.take() {
                     break Some(a);
                 }
             }
             // Killed, deleted, or its turn is gone: nobody will answer.
-            _ => break None,
+            None => break None,
         }
         let left = deadline.saturating_duration_since(std::time::Instant::now());
         if left.is_zero() {
@@ -1238,9 +1420,7 @@ pub fn permission(id: &str, args: &Value) -> Value {
         r = cv.wait_timeout(r, left).unwrap_or_else(|e| e.into_inner()).0;
     };
     if let Some(e) = r.entries.get_mut(id) {
-        if e.held.as_ref().is_some_and(|h| h.serial == serial) {
-            e.held = None;
-        }
+        e.held.retain(|h| h.serial != serial);
     }
     drop(r);
     changed();
@@ -1251,10 +1431,32 @@ pub fn permission(id: &str, args: &Value) -> Value {
 /// (an option's number or label, or words of its own, one per question;
 /// several numbers apart by commas where more than one may be picked),
 /// `allow` for a permission, `note` as the reason for a refusal.
-pub fn answer(id: &str, answers: &[String], allow: Option<bool>, note_text: Option<&str>) -> Result<(), String> {
+///
+/// `ask_id` says which of what it holds this answers: two responders who saw
+/// the same ask must not have the slower one's `allow` land on the next. One no
+/// longer open is refused. Without it the answer goes through only when a
+/// single ask is held, as it did when there could be only one: with several,
+/// nothing says it was written on the first.
+pub fn answer(id: &str, ask_id: Option<&str>, answers: &[String], allow: Option<bool>, note_text: Option<&str>) -> Result<(), String> {
     let mut r = lock();
     let e = r.entries.get_mut(id).ok_or("no such helper")?;
-    let h = e.held.as_mut().ok_or_else(|| format!("helper {id} is not waiting on anything"))?;
+    let mut open = e.held.iter_mut().filter(|h| h.answer.is_none());
+    let h = match ask_id {
+        Some(want) => open.find(|h| h.ask.id.as_deref() == Some(want)).ok_or_else(|| {
+            format!("ask {want} of helper {id} is no longer open: it was answered or went with its turn. Its `ask` in luna_list says what it holds now")
+        })?,
+        None => {
+            let first = open.next().ok_or_else(|| format!("helper {id} is not waiting on anything"))?;
+            if open.next().is_some() {
+                return Err(format!(
+                    "helper {id} holds several asks at once: say which with askId. The first is {}: it {}",
+                    first.ask.id.as_deref().unwrap_or("?"),
+                    first.ask.line()
+                ));
+            }
+            first
+        }
+    };
     let reply = build_answer(&h.ask, &h.input, answers, allow, note_text)?;
     h.answer = Some(reply);
     drop(r);
@@ -1409,8 +1611,8 @@ pub fn background_kill(id: String) {
 }
 
 #[tauri::command]
-pub fn background_delete(id: String) -> Result<(), String> {
-    crate::agents::delete_by_user(&id)
+pub fn background_delete(id: String, drop_worktree: Option<bool>) -> Result<(), String> {
+    crate::agents::delete_by_user(&id, drop_worktree.unwrap_or(true))
 }
 
 // ------------------------------------------------------- across cores --
@@ -1548,10 +1750,11 @@ fn taken_up(s: Saved) -> Entry {
         turns_ended: s.turns_ended + u32::from(s.running) + u32::from(s.queued),
         queue: Vec::new(),
         log: VecDeque::new(),
-        held: None,
+        held: VecDeque::new(),
         error: None,
         cut_short: s.cut_short || s.running,
         job: None,
+        left_running: false,
         observed: s.observed,
     };
     e.observed.settle_unreported();
@@ -1569,6 +1772,29 @@ fn taken_up(s: Saved) -> Entry {
 /// Whether its last turn was stopped by the core going rather than ended.
 pub fn cut_short(id: &str) -> bool {
     lock().entries.get(id).is_some_and(|e| e.cut_short)
+}
+
+/// For the agent layer's tests: a helper as it stands between turns, there to
+/// talk to with no process behind it.
+#[cfg(test)]
+pub(crate) fn idle_for_test(id: &str, provider: Provider, turns_ended: u32, left_running: bool) {
+    let mut e = tests::entry(provider);
+    e.turns_ended = turns_ended;
+    e.left_running = left_running;
+    lock().entries.insert(id.to_string(), e);
+}
+
+#[cfg(test)]
+pub(crate) fn gone_for_test(id: &str) {
+    lock().entries.remove(id);
+}
+
+/// The helper in a turn with no process, so nothing real can be killed.
+#[cfg(test)]
+pub(crate) fn in_turn_for_test(id: &str) {
+    if let Some(e) = lock().entries.get_mut(id) {
+        claim(e);
+    }
 }
 
 /// A helper as `agents`'s tests need one, with no process behind it: in a
@@ -1596,10 +1822,11 @@ pub fn test_helper(id: &str, account_path: &str, session: Option<&str>, busy: bo
         turns_ended: 0,
         queue: Vec::new(),
         log: VecDeque::new(),
-        held: None,
+        held: VecDeque::new(),
         error: None,
         cut_short: false,
         job: None,
+        left_running: false,
         observed: Observed::default(),
     };
     lock().entries.insert(id.to_string(), e);
@@ -1916,7 +2143,7 @@ mod tests {
         lock().entries.remove("signs-1");
     }
 
-    fn entry(provider: Provider) -> Entry {
+    pub(super) fn entry(provider: Provider) -> Entry {
         Entry {
             spec: Spec {
                 provider,
@@ -1938,12 +2165,181 @@ mod tests {
             turns_ended: 0,
             queue: Vec::new(),
             log: VecDeque::new(),
-            held: None,
+            held: VecDeque::new(),
             error: None,
             cut_short: false,
             job: None,
+            left_running: false,
             observed: Observed::default(),
         }
+    }
+
+    /// An entry in a turn with no process yet, so nothing real can be killed.
+    fn in_claimed_turn(id: &str) {
+        let mut e = entry(Provider::Claude);
+        claim(&mut e);
+        lock().entries.insert(id.into(), e);
+    }
+
+    #[test]
+    fn two_prompts_at_once_are_both_held_and_answered_in_order() {
+        in_claimed_turn("two-asks");
+        let ask = |tool: &'static str| {
+            std::thread::spawn(move || permission("two-asks", &json!({ "tool_name": tool, "input": { "command": tool } })))
+        };
+        let held = || lock().entries.get("two-asks").unwrap().held.len();
+        let until = |n: usize| {
+            for _ in 0..200 {
+                if held() == n {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            panic!("never {n} held");
+        };
+        let first = ask("Bash");
+        until(1);
+        let second = ask("Edit");
+        until(2);
+        let asked = super::ask("two-asks").unwrap();
+        assert_eq!(asked.tool.as_deref(), Some("Bash"), "the one that came first");
+        assert_eq!(turn_state("two-asks").unwrap().turn, crate::activity::Turn::Waiting);
+        let stale = asked.id.clone().unwrap();
+        answer("two-asks", Some(&stale), &[], Some(true), None).unwrap();
+        reg().1.notify_all();
+        assert_eq!(first.join().unwrap()["behavior"], "allow", "the second did not cost it its answer");
+        let next = super::ask("two-asks").unwrap();
+        assert_eq!(next.tool.as_deref(), Some("Edit"), "and then the next");
+        assert_ne!(next.id, asked.id);
+        assert_eq!(turn_state("two-asks").unwrap().turn, crate::activity::Turn::Waiting, "still held on that one");
+        // A second responder who also saw the first, its answer late.
+        let late = answer("two-asks", Some(&stale), &[], Some(true), None).unwrap_err();
+        assert!(late.contains("no longer open"), "{late}");
+        assert_eq!(super::ask("two-asks").unwrap().id, next.id, "the next is untouched");
+        answer("two-asks", None, &[], Some(false), Some("not that")).unwrap();
+        let no = second.join().unwrap();
+        assert_eq!((no["behavior"].as_str(), no["message"].as_str()), (Some("deny"), Some("not that")));
+        assert_eq!(super::ask("two-asks"), None);
+        assert_eq!(turn_state("two-asks").unwrap().turn, crate::activity::Turn::Busy);
+        lock().entries.remove("two-asks");
+    }
+
+    #[test]
+    fn with_several_held_an_answer_says_which() {
+        in_claimed_turn("which-ask");
+        let ask = |tool: &'static str| {
+            std::thread::spawn(move || permission("which-ask", &json!({ "tool_name": tool, "input": {} })))
+        };
+        let first = ask("Bash");
+        for _ in 0..200 {
+            if lock().entries.get("which-ask").unwrap().held.len() == 1 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let second = ask("Edit");
+        for _ in 0..200 {
+            if lock().entries.get("which-ask").unwrap().held.len() == 2 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let unsaid = answer("which-ask", None, &[], Some(true), None).unwrap_err();
+        assert!(unsaid.contains("askId") && unsaid.contains("Bash"), "says how, and what is first: {unsaid}");
+        assert!(lock().entries.get("which-ask").unwrap().held.iter().all(|h| h.answer.is_none()), "and answers nothing");
+        // One named out of turn is the one it means.
+        let last = lock().entries.get("which-ask").unwrap().held.back().unwrap().ask.id.clone().unwrap();
+        answer("which-ask", Some(&last), &[], Some(false), None).unwrap();
+        reg().1.notify_all();
+        assert_eq!(second.join().unwrap()["behavior"], "deny");
+        assert_eq!(super::ask("which-ask").unwrap().tool.as_deref(), Some("Bash"));
+        // A single ask is answered with no id, as before.
+        answer("which-ask", None, &[], Some(true), None).unwrap();
+        reg().1.notify_all();
+        assert_eq!(first.join().unwrap()["behavior"], "allow");
+        assert!(answer("which-ask", None, &[], Some(true), None).unwrap_err().contains("not waiting"));
+        lock().entries.remove("which-ask");
+    }
+
+    #[test]
+    fn an_ask_says_its_id_to_whoever_is_to_answer_it() {
+        in_claimed_turn("id-ask");
+        let held = std::thread::spawn(|| permission("id-ask", &json!({ "tool_name": "Bash", "input": { "command": "ls" } })));
+        for _ in 0..200 {
+            if super::ask("id-ask").is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let shown = serde_json::to_value(super::ask("id-ask").unwrap()).unwrap();
+        assert!(shown["id"].as_str().is_some_and(|i| !i.is_empty()), "{shown}");
+        kill("id-ask");
+        let _ = held.join();
+        lock().entries.remove("id-ask");
+        assert!(serde_json::to_value(Ask::permission(None, None)).unwrap().get("id").is_none(), "a terminal's has none");
+    }
+
+    #[test]
+    fn a_kill_lets_every_held_prompt_go() {
+        in_claimed_turn("kill-asks");
+        let ask = |tool: &'static str| {
+            std::thread::spawn(move || permission("kill-asks", &json!({ "tool_name": tool, "input": {} })))
+        };
+        let (a, b) = (ask("Bash"), ask("Edit"));
+        for _ in 0..200 {
+            if lock().entries.get("kill-asks").unwrap().held.len() == 2 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        kill("kill-asks");
+        assert_eq!(a.join().unwrap()["behavior"], "deny");
+        assert_eq!(b.join().unwrap()["behavior"], "deny");
+        lock().entries.remove("kill-asks");
+    }
+
+    #[test]
+    fn an_interrupt_keeps_the_queue_and_counts_a_turn_with_no_process_yet() {
+        in_claimed_turn("int-claimed");
+        lock().entries.get_mut("int-claimed").unwrap().queue.push("from another caller".into());
+        // No process turns up to stop: the text waits behind the turn, which
+        // it ends a turn after, and nothing is lost.
+        let i = interrupt("int-claimed", "from this one").unwrap();
+        assert_eq!(i, Interrupted { stopped: false, queued: true });
+        assert_eq!(lock().entries.get("int-claimed").unwrap().queue, ["from another caller", "from this one"]);
+        // When that turn is over, they go together, in the order they came,
+        // and an empty queue in the meantime says the text has been taken up.
+        let text = std::mem::take(&mut lock().entries.get_mut("int-claimed").unwrap().queue).join("\n\n");
+        assert_eq!(text, "from another caller\n\nfrom this one");
+        lock().entries.remove("int-claimed");
+    }
+
+    #[test]
+    fn notes_are_open_to_a_helper_with_tools() {
+        let mut e = entry(Provider::Claude);
+        let has_dir = |e: &Entry| command_for(e, "x").0.iter().any(|a| a == "--add-dir");
+        assert!(!has_dir(&e), "one with no tools gets no notices");
+        e.spec.tools = true;
+        assert!(has_dir(&e));
+        let (args, _, _) = command_for(&e, "x");
+        let at = args.iter().position(|a| a == "--add-dir").unwrap();
+        assert_eq!(args[at + 1], crate::agents::notes_dir().to_string_lossy());
+        let mut codex = entry(Provider::Codex);
+        codex.spec.tools = true;
+        assert!(!has_dir(&codex), "Codex's sandboxes read anywhere");
+    }
+
+    #[test]
+    fn a_job_left_running_reads_as_one_between_turns_only() {
+        let mut e = entry(Provider::Claude);
+        e.turns_ended = 1;
+        e.left_running = true;
+        lock().entries.insert("left-job".into(), e);
+        let children_busy = || turn_state("left-job").unwrap().children_busy;
+        assert!(children_busy(), "between turns, what its turn left is a job");
+        lock().entries.get_mut("left-job").unwrap().run = Some(Run { pid: Some(1), started_ms: 0, stopped: false });
+        assert!(!children_busy(), "in a turn it is simply working");
+        lock().entries.remove("left-job");
     }
 
     #[test]
@@ -2030,6 +2426,153 @@ mod tests {
         on_codex_event(&mut e, &json!({ "type": "turn.failed", "error": { "message": "boom" } }));
         assert_eq!(e.error.as_deref(), Some("boom"));
         assert!(e.log.back().unwrap().contains("boom"));
+    }
+
+    /// A pipe its writer has left: what was written, then a read that blocks
+    /// for as long as something else holds it open, as a stray job does.
+    struct Pipe(std::sync::mpsc::Receiver<Vec<u8>>);
+
+    impl std::io::Read for Pipe {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let Ok(bytes) = self.0.recv() else { return Ok(0) };
+            buf[..bytes.len()].copy_from_slice(&bytes);
+            Ok(bytes.len())
+        }
+    }
+
+    /// Reads `lines` off such a pipe, each event taking `each` to handle, and
+    /// returns once `await_last_words` does: what was handled by then.
+    fn drained_with_a_stray(lines: &[&str], each: std::time::Duration) -> Vec<String> {
+        use std::sync::{Arc, Mutex};
+        let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        for line in lines {
+            tx.send(format!("{line}\n").into_bytes()).unwrap();
+        }
+        let reader = Arc::new(OutReader::default());
+        let got = Arc::new(Mutex::new(Vec::new()));
+        let (drained, read_out) = std::sync::mpsc::channel::<()>();
+        let (on_it, into) = (reader.clone(), got.clone());
+        std::thread::spawn(move || {
+            let _drained = drained;
+            on_it.read_events(Pipe(rx), |v| {
+                std::thread::sleep(each);
+                into.lock().unwrap().push(v["type"].as_str().unwrap_or("").to_string());
+                true
+            });
+        });
+        reader.await_last_words(&read_out, std::time::Duration::from_millis(150), std::time::Duration::from_secs(20));
+        let seen = got.lock().unwrap().clone();
+        drop(tx); // Only now does the stray let go.
+        seen
+    }
+
+    #[test]
+    fn a_turns_last_events_are_read_with_a_stray_holding_the_pipe() {
+        let events = [r#"{"type":"assistant"}"#, "not json", r#"{"type":"result"}"#];
+        let started = std::time::Instant::now();
+        assert_eq!(drained_with_a_stray(&events, std::time::Duration::ZERO), ["assistant", "result"]);
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "and the stray is not waited out");
+    }
+
+    #[test]
+    fn however_slowly_the_last_events_are_taken_none_is_left_behind() {
+        // Each behind a stalled lock: more than a turn's end used to give them.
+        let events = [r#"{"type":"one"}"#, r#"{"type":"two"}"#, r#"{"type":"result"}"#];
+        assert_eq!(drained_with_a_stray(&events, std::time::Duration::from_millis(900)), ["one", "two", "result"]);
+    }
+
+    #[test]
+    fn a_pipe_that_closes_ends_the_wait_at_once_and_a_last_line_counts_without_its_end() {
+        let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        tx.send(br#"{"type":"a"}"#.to_vec()).unwrap();
+        tx.send(b"\n{\"type\":\"b\"}\n{\"ty".to_vec()).unwrap();
+        tx.send(br#"pe":"c"}"#.to_vec()).unwrap();
+        drop(tx);
+        let reader = OutReader::default();
+        let mut got = Vec::new();
+        reader.read_events(Pipe(rx), |v| {
+            got.push(v["type"].as_str().unwrap_or("").to_string());
+            true
+        });
+        assert_eq!(got, ["a", "b", "c"], "split across reads, and the last with no line end");
+        let (drained, read_out) = std::sync::mpsc::channel::<()>();
+        drop(drained);
+        let started = std::time::Instant::now();
+        reader.await_last_words(&read_out, std::time::Duration::from_secs(9), std::time::Duration::from_secs(9));
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    #[test]
+    fn an_event_of_a_turn_over_lands_in_nothing() {
+        let id = "ev-after";
+        lock().entries.insert(id.into(), entry(Provider::Codex));
+        let reader = OutReader::default();
+        let failed = json!({ "type": "turn.failed", "error": { "message": "boom" } });
+        assert!(take_event(id, Provider::Codex, &reader, &failed));
+        assert_eq!(last_error(id).as_deref(), Some("boom"));
+        lock().entries.get_mut(id).unwrap().error = None;
+        // The turn is over and the next may be on: this one's words stay out of it.
+        reader.over.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(take_event(id, Provider::Codex, &reader, &failed), "it reads on, to keep the pipe drained");
+        assert_eq!(last_error(id), None);
+        lock().entries.remove(id);
+        let reader = OutReader::default();
+        assert!(!take_event(id, Provider::Codex, &reader, &failed), "the helper is gone: no more to read for");
+    }
+
+    #[test]
+    fn a_retry_codex_got_through_is_no_failure() {
+        // As `codex exec --json` 0.166 words them on a connection it retries.
+        let retry = json!({ "type": "error", "message": "Reconnecting... 2/5 (unexpected status 401 Unauthorized)" });
+        let mut e = entry(Provider::Codex);
+        on_codex_event(&mut e, &retry);
+        assert_eq!(e.error, None, "said in its log, and not a failure");
+        assert!(e.log.back().unwrap().contains("Reconnecting"));
+        on_codex_event(&mut e, &json!({ "type": "turn.completed" }));
+        assert_eq!(e.error, None);
+        // One that does not read as a retry, followed by a turn that completes.
+        on_codex_event(&mut e, &json!({ "type": "error", "message": "stream hiccup" }));
+        assert_eq!(e.error.as_deref(), Some("stream hiccup"));
+        on_codex_event(&mut e, &json!({ "type": "turn.completed" }));
+        assert_eq!(e.error, None, "the turn got through after all");
+        // The retries run out.
+        on_codex_event(&mut e, &retry);
+        on_codex_event(&mut e, &json!({ "type": "error", "message": "unexpected status 401 Unauthorized" }));
+        on_codex_event(&mut e, &json!({ "type": "turn.failed", "error": { "message": "unexpected status 401 Unauthorized" } }));
+        assert_eq!(e.error.as_deref(), Some("unexpected status 401 Unauthorized"));
+    }
+
+    #[test]
+    fn a_turn_killed_or_crashed_ends_on_an_error() {
+        let run = |e: &mut Entry| e.run = Some(Run { pid: Some(1), started_ms: 0, stopped: false });
+        for (id, code, why) in [
+            ("end-crash", Some(1), "codex exited with code 1"),
+            ("end-signal", None, "codex was killed"),
+        ] {
+            let mut e = entry(Provider::Codex);
+            run(&mut e);
+            lock().entries.insert(id.into(), e);
+            turn_over(id, code);
+            assert_eq!(last_error(id).as_deref(), Some(why));
+            assert_eq!(turn_state(id).unwrap().turns_ended, 1, "it still ends the turn");
+            lock().entries.remove(id);
+        }
+        // Stopped on purpose, it says so rather than the code that leaves.
+        let mut e = entry(Provider::Claude);
+        run(&mut e);
+        e.run.as_mut().unwrap().pid = None;
+        lock().entries.insert("end-killed".into(), e);
+        kill("end-killed");
+        turn_over("end-killed", Some(1));
+        assert_eq!(last_error("end-killed").as_deref(), Some("it was stopped, by luna_kill or from the window"));
+        lock().entries.remove("end-killed");
+        // A clean exit says nothing.
+        let mut e = entry(Provider::Claude);
+        run(&mut e);
+        lock().entries.insert("end-clean".into(), e);
+        turn_over("end-clean", Some(0));
+        assert_eq!(last_error("end-clean"), None);
+        lock().entries.remove("end-clean");
     }
 
     #[test]

@@ -178,6 +178,11 @@ pub fn turn_state(chat_id: &str) -> Option<TurnState> {
     Some(TurnState { turn: t.turn, busy, turns_ended: t.turns_ended, children_busy: t.procs.is_some() })
 }
 
+/// The API error a session's last turn ended on, per its `StopFailure` hook.
+pub fn failed_of(chat_id: &str) -> Option<&'static str> {
+    state().lock().unwrap_or_else(|e| e.into_inner()).tracks.get(chat_id)?.failed
+}
+
 /// When a visible session's current turn began, None between turns.
 pub fn turn_started_ms(chat_id: &str) -> Option<u64> {
     state().lock().unwrap_or_else(|e| e.into_inner()).tracks.get(chat_id)?.turn_started_ms

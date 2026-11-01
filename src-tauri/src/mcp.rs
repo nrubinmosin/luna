@@ -211,19 +211,19 @@ fn tools() -> Value {
     json!([
         {
             "name": "luna_list",
-            "description": "Your id (me), the sessions you spawned (state, ask, turnsEnded, worktree, deletesInMin, turnStartedAt, lastActivityAt, resolvedModel, spend) and the accounts you may use: models, a helper's defaults in your folder, usage (% per window, resets).",
+            "description": "Your id (me), sessions you spawned (state, ask, turnsEnded, worktree, deletesInMin, turnStartedAt, lastActivityAt, resolvedModel, spend) and accounts you may use: models, a helper's defaults in your folder, usage (% per window, resets).",
             "inputSchema": s(json!({}), &[]),
             "annotations": reads
         },
         {
             "name": "luna_sessions",
-            "description": "Every session in Luna, the user's own chats included: group (the user's window group, I=1), folders, transcript path, parent, you/yours, state. Filters: group (a number or \"mine\"), q (text in name/folder/account/id). history: true = past spawns instead, deleted too (with transcript, last message), newest first (q also searches prompts).",
+            "description": "Every session in Luna, the user's chats too: group (the user's window group, I=1), folders, transcript path, parent, you/yours, state. Filters: group (a number or \"mine\"), q (text in name/folder/account/id). history: true = past spawns instead, deleted too (with transcript, last message), newest first (q also searches prompts).",
             "inputSchema": s(json!({ "group": { "type": "string" }, "q": { "type": "string" }, "history": { "type": "boolean" } }), &[]),
             "annotations": reads
         },
         {
             "name": "luna_spawn",
-            "description": "Start a helper with an opening prompt, in the background (no row in Luna) unless visible: true. Omitted settings take the account's defaults. Returns id, resolved settings, started (false = not seen on the prompt in 30 s, see screen; a visible Codex may still start: luna_wait first), starting (not drawn yet; prompt held, do not resend), warnings, sameFolder, worktree.",
+            "description": "Start a helper with an opening prompt, in the background (no row in Luna) unless visible: true. Omitted settings: the account's defaults. Returns id, resolved settings, started (false = not seen on the prompt in 30 s, see screen; a visible Codex may still start: luna_wait first), starting (not drawn yet; prompt held, do not resend), warnings, sameFolder, worktree.",
             "inputSchema": s(json!({
                 "prompt": { "type": "string" },
                 "provider": { "type": "string", "enum": ["claude", "codex"], "description": "default: yours" },
@@ -234,17 +234,17 @@ fn tools() -> Value {
                 "approval": { "type": "string", "description": "codex: never|auto-review|on-request (visible only)" },
                 "sandbox": { "type": "string", "description": "codex: read-only|workspace-write|danger-full-access" },
                 "folder": { "type": "string", "description": "project folder; default: yours" },
-                "worktree": { "type": "boolean", "description": "run in its own git worktree" },
+                "worktree": { "type": "boolean", "description": "its own git worktree" },
                 "name": { "type": "string", "description": "its name in Luna" },
                 "tools": { "type": "boolean", "description": "give it these tools too (one level only)" },
-                "visible": { "type": "boolean", "description": "a chat the user sees and can type in" },
+                "visible": { "type": "boolean", "description": "a chat the user sees and types in" },
                 "autoDelete": { "type": "boolean", "description": "deleted 30 min after its answer reached you unless read or sent to; default: background true" }
             }), &["prompt"]),
             "annotations": acts
         },
         {
             "name": "luna_send",
-            "description": "Send text to a session (any from luna_sessions) as a prompt; it reads as the user's, so say who you are to one you did not spawn. Returns stateBefore, queued (it was working: joins that turn or the next), held (a user's draft is in the way: typed in later), started (false if neither = not taken, see screen), turnsEnded for luna_wait afterTurn.",
+            "description": "Send text to a session (any from luna_sessions) as a prompt; it reads as the user's, so name yourself to one you did not spawn. Returns stateBefore, queued (it was working: joins that turn or the next), held (a user's draft is in the way: typed in later), started (false if neither = not taken, see screen), turnsEnded for luna_wait afterTurn.",
             "inputSchema": s(json!({
                 "id": { "type": "string" },
                 "text": { "type": "string" },
@@ -254,9 +254,10 @@ fn tools() -> Value {
         },
         {
             "name": "luna_answer",
-            "description": "Answer what a session waits on (state question or waiting; ask says what): answers, one per question: an option's number or label, or your own words; allow: true/false for a permission, note: why not. keys: raw keystrokes for any other dialog, e.g. \"{down}{enter}\" (also {esc} {tab} {shift+tab} {up} {left} {right} {space} {backspace}).",
+            "description": "Answer what a session waits on (state question or waiting; ask says what, askId: its id if any): answers, one per question: an option's number or label, or your own words; allow: true/false for a permission, note: why not. keys: raw keystrokes for any other dialog, e.g. \"{down}{enter}\" (also {esc} {tab} {shift+tab} {up} {left} {right} {space} {backspace}).",
             "inputSchema": s(json!({
                 "id": { "type": "string" },
+                "askId": { "type": "string" },
                 "answers": { "type": "array", "items": { "type": "string" } },
                 "allow": { "type": "boolean" },
                 "note": { "type": "string" },
@@ -271,14 +272,14 @@ fn tools() -> Value {
                 "id": { "type": "string" },
                 "since": { "type": "integer" },
                 "last": { "type": "integer" },
-                "tools": { "type": "boolean", "description": "include one-line tool call markers" },
-                "screen": { "type": "boolean", "description": "include what the terminal shows (dialogs, errors, prompts)" }
+                "tools": { "type": "boolean", "description": "one-line tool call markers" },
+                "screen": { "type": "boolean", "description": "what the terminal shows (dialogs, errors, prompts)" }
             }), &["id"]),
             "annotations": reads
         },
         {
             "name": "luna_wait",
-            "description": "Block until a Luna session (not yours; no task id, not a timer) ends a turn (reply: all it said since you asked), stops on a question or permission, or exits. Timeout, waiting and a reply-less turn come with the screen. `afterTurn`: wait for a turn past this turnsEnded (default: the last one you were shown). `ids` instead of `id`: several, `mode` any (default) or all, no afterTurn. Optional: end your turn and a notice brings the answer.",
+            "description": "Block until a Luna session (not yours; no task id, not a timer) ends a turn (reply: all it said since you asked; failed: its error), stops on a question or permission, or exits. Timeout, waiting and no reply come with the screen. `afterTurn`: wait for a turn past this turnsEnded (default: the last you were shown). `ids`: several, `mode` any (default) or all, no afterTurn. Or end your turn: a notice brings the answer.",
             "inputSchema": s(json!({
                 "id": { "type": "string" },
                 "ids": { "type": "array", "items": { "type": "string" } },
@@ -291,7 +292,7 @@ fn tools() -> Value {
         },
         {
             "name": "luna_kill",
-            "description": "Stop a session's process (a background helper: its turn), not auto-deleted. A background helper goes on with luna_send, a visible one once the user resumes it.",
+            "description": "Stop a session's process (a background helper: its turn), not auto-deleted. A background one goes on with luna_send, a visible one once the user resumes it.",
             "inputSchema": s(json!({ "id": { "type": "string" } }), &["id"]),
             "annotations": ends
         },
@@ -374,7 +375,7 @@ fn call(caller: &str, params: &Value, this: &Call) -> Value {
         // The first block is the result's JSON; its few fields that say how
         // the call went.
         let v: Value = out["content"][0]["text"].as_str().and_then(|t| serde_json::from_str(t).ok()).unwrap_or(Value::Null);
-        const OUTCOME: &[&str] = &["id", "outcome", "finished", "started", "starting", "queued", "turnsEnded", "state", "leftOut", "worktreeRemoved"];
+        const OUTCOME: &[&str] = &["id", "outcome", "failed", "finished", "started", "starting", "queued", "turnsEnded", "state", "leftOut", "worktreeRemoved"];
         let got: Vec<String> = OUTCOME.iter().filter_map(|k| v.get(*k).filter(|v| !v.is_null()).map(|v| format!("{k}={v}"))).collect();
         crate::log::info("mcp", &format!("{line} in {ms}ms: {}", if got.is_empty() { "ok".to_string() } else { got.join(" ") }));
     }
@@ -405,6 +406,7 @@ fn run(caller: &str, params: &Value, this: &Call) -> Value {
         "luna_answer" => agents::answer(
             caller,
             &id,
+            a["askId"].as_str().filter(|k| !k.is_empty()),
             &strings(&a["answers"]),
             a["allow"].as_bool(),
             a["note"].as_str(),
@@ -611,10 +613,10 @@ mod tests {
             t.as_object_mut().unwrap().remove("annotations");
         }
         let text = list.to_string();
-        assert!(text.len() < 6500, "tools/list is {} chars", text.len());
+        assert!(text.len() < 6300, "tools/list is {} chars", text.len());
         assert!(INSTRUCTIONS.len() < 1000, "instructions are {} bytes", INSTRUCTIONS.len());
         // Read only on request, but whole: keep it to a few thousand tokens.
-        assert!(GUIDE.len() < 14_000, "the guide is {} bytes", GUIDE.len());
+        assert!(GUIDE.len() < 12_000, "the guide is {} bytes", GUIDE.len());
     }
 
     #[test]
@@ -701,6 +703,7 @@ mod tests {
 
     #[test]
     fn an_unknown_until_is_an_error_result() {
+        tooled("me");
         let r = handle("me", r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"luna_wait","arguments":{"id":"x","until":"forever"}}}"#).unwrap();
         assert_eq!(r["result"]["isError"], true);
         assert!(r["result"]["content"][0]["text"].as_str().unwrap().contains("unknown until"));
