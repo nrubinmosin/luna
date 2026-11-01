@@ -9,11 +9,21 @@
 //! all without walking parent pids, which pid reuse makes unreliable. The
 //! walk stays as the fallback for a CLI that could not be assigned.
 //!
-//! The job sets no limits. What is left in it when a session is done with
-//! is ended by `end_leftovers`, which the CLI's own tree kill misses: a
-//! process whose parent had already gone. A program with a window of its
-//! own — a browser a login opened, an editor — is the user's, not the
-//! session's work, and is neither counted nor ended.
+//! A chat's job sets no limits: its CLI goes with its terminal. What is left in
+//! a job when a session is done with is ended by `end_leftovers`, which the
+//! CLI's own tree kill misses: a process whose parent had already gone. A
+//! program with a window of its own — a browser a login opened, an editor — is
+//! the user's, not the session's work, and is neither counted nor ended.
+//!
+//! A background helper has no terminal to go with, so its job is tied to the
+//! core (`tie`): the OS ends what is in it when the core's handle closes, as it
+//! does however the core dies, and a CLI does not run on unowned on a
+//! conversation the next core may resume. That takes windowed programs too,
+//! which the OS will not except, so every way out that is not a death lets go
+//! of the tie first (`let_go`, and dropping a job), and `end_leftovers` spares
+//! them as ever. No job on other platforms, so no tie either: there a turn's
+//! process group runs on past a core that dies, and with no tie in place Luna
+//! does not start another on that conversation by itself (background.rs).
 
 #[cfg(windows)]
 mod imp {
@@ -22,8 +32,9 @@ mod imp {
         CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
     };
     use windows::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicProcessIdList, QueryInformationJobObject,
-        JOBOBJECT_BASIC_PROCESS_ID_LIST,
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicProcessIdList, JobObjectExtendedLimitInformation,
+        QueryInformationJobObject, SetInformationJobObject, JOBOBJECT_BASIC_PROCESS_ID_LIST,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
     use windows::Win32::System::Threading::{
         GetExitCodeProcess, GetProcessIoCounters, GetProcessTimes, OpenProcess, TerminateProcess, IO_COUNTERS,
@@ -38,10 +49,52 @@ mod imp {
 
     impl Drop for Job {
         fn drop(&mut self) {
+            let_go(self);
             // SAFETY: the handle was returned by CreateJobObjectW and is closed once.
             unsafe {
                 let _ = CloseHandle(self.0);
             }
+        }
+    }
+
+    fn set_limit(job: &Job, flags: JOB_OBJECT_LIMIT) -> windows::core::Result<()> {
+        let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        info.BasicLimitInformation.LimitFlags = flags;
+        // SAFETY: the job handle is open for as long as `job` lives, and the
+        // struct is the one the class names, of the size passed.
+        unsafe {
+            SetInformationJobObject(
+                job.0,
+                JobObjectExtendedLimitInformation,
+                &info as *const _ as *const std::ffi::c_void,
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            )
+        }
+    }
+
+    /// Has the OS end everything in the job once its last handle closes, which
+    /// this process's death does: nothing else holds one, and none is inherited.
+    pub fn tie(job: &Job) -> bool {
+        let tied = set_limit(job, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE);
+        if let Err(e) = &tied {
+            crate::log::warn("procs", &format!("could not tie a job to the core: {e}"));
+        }
+        tied.is_ok()
+    }
+
+    /// Undoes `tie`: what is in the job runs on when its handle closes.
+    pub fn let_go(job: &Job) {
+        let _ = set_limit(job, JOB_OBJECT_LIMIT(0));
+    }
+
+    /// The job's handle closed as a dying process's is, no `let_go` first.
+    #[cfg(test)]
+    pub fn close_as_in_a_death(job: Job) {
+        let h = job.0;
+        std::mem::forget(job);
+        // SAFETY: the handle is open, and `forget` keeps `Drop` from closing it again.
+        unsafe {
+            let _ = CloseHandle(h);
         }
     }
 
@@ -306,6 +359,10 @@ mod imp {
     pub fn join(_job: &Job, _pid: u32) -> bool {
         false
     }
+    pub fn tie(_job: &Job) -> bool {
+        false
+    }
+    pub fn let_go(_job: &Job) {}
     pub fn end(_pid: u32, _started_ms: u64) -> bool {
         false
     }
@@ -337,7 +394,7 @@ mod imp {
     }
 }
 
-pub use imp::{adopt, alive, join, Job};
+pub use imp::{adopt, alive, join, let_go, tie, Job};
 
 /// When a process was created, epoch ms, where the platform says.
 pub fn created_ms(pid: u32) -> Option<u64> {
@@ -487,6 +544,63 @@ pub fn without_furniture(busy: Option<Busy>) -> Option<Busy> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn a_tied_job_goes_with_a_death_and_not_with_a_way_out_chosen() {
+        use std::os::windows::process::CommandExt;
+        let start = || {
+            std::process::Command::new("ping")
+                .args(["-n", "30", "127.0.0.1"])
+                .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+                .stdout(std::process::Stdio::null())
+                .spawn()
+                .unwrap()
+        };
+        let ended_within = |c: &mut std::process::Child, ms: u64| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(ms);
+            while std::time::Instant::now() < deadline {
+                if c.try_wait().unwrap().is_some() {
+                    return true;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            false
+        };
+
+        // As when a core dies.
+        let mut c = start();
+        let job = adopt(c.id()).unwrap();
+        tie(&job);
+        imp::close_as_in_a_death(job);
+        assert!(ended_within(&mut c, 3000), "the OS ends what is in it");
+
+        // A helper deleted or opened as a chat: the job is dropped.
+        let mut c = start();
+        let job = adopt(c.id()).unwrap();
+        tie(&job);
+        drop(job);
+        assert!(!ended_within(&mut c, 500), "`end_leftovers` chose what goes; the rest stays");
+        let _ = c.kill();
+        let _ = c.wait();
+
+        // A core leaving: the job is never dropped, the process just ends.
+        let mut c = start();
+        let job = adopt(c.id()).unwrap();
+        tie(&job);
+        let_go(&job);
+        imp::close_as_in_a_death(job);
+        assert!(!ended_within(&mut c, 500), "let go of, its handle closing ends nothing");
+        let _ = c.kill();
+        let _ = c.wait();
+
+        // A chat's job is never tied.
+        let mut c = start();
+        imp::close_as_in_a_death(adopt(c.id()).unwrap());
+        assert!(!ended_within(&mut c, 500));
+        let _ = c.kill();
+        let _ = c.wait();
+    }
 
     fn p(pid: u32, cpu_ms: u64, io_bytes: u64, started_ms: u64) -> ProcRead {
         ProcRead { pid, cpu_ms, io_bytes, started_ms }

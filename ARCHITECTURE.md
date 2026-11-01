@@ -364,7 +364,14 @@ src-tauri/src/
   (delete, kill, Quit, a respawn of one that exited) `procs::end_leftovers` ends what is still in it,
   which the CLI's tree kill misses once a parent has gone first, windowed programs spared. A
   background helper has one job for its life, each turn's process joined to it: between turns what
-  its turns left holds the machine by the same rule, and it is ended with the helper. Hooks print nothing: Claude Code adds the stdout of a hook exiting 0
+  its turns left holds the machine by the same rule, and it is ended with the helper. Its job alone
+  is tied to the core (`procs::tie`, `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`): a chat's CLI goes with its
+  terminal when a core dies, a helper's has none, and would run on unowned beside the turn the next
+  core starts on that conversation. This is the leftover rule, not an exception to it: a core that
+  leaves ends leftovers already (`stop_all`). The OS spares no window, so every way out that is not a
+  death lets go first (`let_go`, `Drop for Job`), `end_leftovers` sparing windows as ever; a window a
+  helper's turn opened dies with a core that dies, and only then. Windows only: elsewhere there is no
+  job, and a turn's process group runs on past a dead core. Hooks print nothing: Claude Code adds the stdout of a hook exiting 0
   to the context, and silence is free. Claude's registry beats an "idle" from a hook, a hook's
   "waiting" beats the registry's "busy" (a permission prompt is inside a turn). No mark is eternal:
   a hook's "busy" against the registry's "idle" goes stale in 15 s (a missed Stop), a hook's "waiting" — at
@@ -673,17 +680,82 @@ src-tauri/src/
   CLI to say where it made it (Claude Code's `init` event, Codex's rollout) and returns `worktree` and
   `branch`, which `list` carries for every helper too, or `worktreePending` if the CLI has not said by then. The window gets their list as `agent://background` (the
   count on the parent row) and can hand one to a chat row between turns (`background_promote` →
-  `agent://promote`: same id, the session id to resume). Helpers outlive the core: every 2 s, and as
-  the core leaves (`stop_all`), the registry goes to `<data>/helpers.json` when it has changed — the
-  spec without its token, the session id, the worktree, the turn count, whether a turn ran, and the
-  agent layer's ties (`agents::Ties`: parent, name, settings, the answers owed and counts shown).
-  Nothing said in the conversation: that is in the CLI's transcript. The next core reads it before
-  the hub listens (`background::restore`, `agents::tie_back`, fresh tokens): a turn that ran then
-  went with the old core and counts as ended, the text queued behind it as the turn after. Such a
-  turn, or one `stop_turns` stopped, leaves the helper `cut_short` until its next turn, so the owed
-  caller's notice says it did not finish. One
-  whose first turn never named its conversation has nothing to resume and is let go. Nothing is
+  `agent://promote`: same id, the session id to resume). Helpers outlive the core: every 2 s, as
+  the core leaves (`stop_all`), and at once on what a core killed next must not undo (a spawn, a
+  conversation named, a delete, a question asked, an opening as a chat), the registry goes to `<data>/helpers.json` when it
+  has changed, one save at a time so that no older reading is written over a newer one — the
+  spec without its token, the session id, the worktree, the turn count, whether a turn ran, the text
+  queued behind it, and the agent layer's ties (`agents::Ties`: parent, name, settings, the answers
+  owed and counts shown). Of the conversation itself nothing: that is in the CLI's transcript. A
+  `send` that queues writes at once, as a core that goes hard writes nothing more. The next core
+  reads it before the hub listens (`background::restore`, `agents::tie_back`, fresh tokens): a turn
+  that ran then went with the old core and counts as ended, the text queued behind it as the turn
+  after. Such a turn, or one `stop_turns` stopped, leaves the helper `cut_short` until its next turn,
+  so the owed caller's notice says it did not finish.
+  A debt comes back with its helper, ahead of the chat it is owed to: the window registers that chat
+  only as it starts its CLI again, seconds later. So the notifier drops a debt for an unknown caller
+  only `CALLER_RETURN_MS` (10 min) into the core's life (`owed_stands`), until then telling that
+  caller nothing and keeping `reap` off the helper; a delete (`forget`) purges at once as ever. A
+  chat not opened by then gets no notice. The text queued behind a stopped turn stays with the helper,
+  each piece with its sender (`Queued`, `Entry::undelivered`, saved too), never run: only that sender
+  hears of it (what no session sent, its parent). Its notice counts it and the answer file ends on it,
+  labelled, word for word, or holds only it if there is no reply (`undelivered_text`); `read` and
+  `wait` name it as `undelivered`, and taking it off is part of `hand_over`, so a cancel crossing the
+  response puts it back with the debt. A helper deleted or opened as a chat first leaves what is left
+  in a file the log names (`undelivered_left`). `luna_kill` still drops the queue: that is the agent's
+  own stop. A batch a turn was claimed for is saved as `Entry::in_flight` before the CLI gets it and
+  cleared once stdin has it, so a core killed between neither forgets it nor hands back what ran.
+  A helper spawned with `resumeOnRestart` (the flag lives in `settings`, so in the ties, and `list`
+  echoes it; refused with `visible`, as a chat comes back by the window) goes on by itself:
+  `resume_stopped`, once the hub listens as its MCP config names the port, starts a turn on each that
+  is `cut_short`, on a tagged line saying why and carrying on, followed by the undelivered text. Debts
+  on it move past the turns counted so far, so only the end of this turn answers them (`resumed`), the
+  transcript offset staying, and are marked: the caller gets one notice that it was cut short and
+  resumed (`Settled::Resumed`), then the usual one. A turn too short for the first merges them. A
+  resume that cannot start counts as an ended turn with its error (`run_turn`), and the notice is the
+  plain cut-short one with the text still held. It runs only where nothing of the old turn can overlap
+  it (`Entry::resumable`): that core stopped it itself, or its processes were in a job tied to the core
+  (`Entry::tied`, saved). Elsewhere (no job off Windows, a join that failed) the caller gets the plain
+  notice and decides. It takes only the batch it captured, re-checking under the lock that the helper
+  is still cut short, as a turn sent meanwhile has gone on already. A helper stopped before any turn named its conversation
+  is taken up like any other, so its debt, its lineage and in time its end record in `agents.jsonl`
+  survive: what its turn was started on is saved until then (`Entry::opening`) and becomes the first of
+  its undelivered text, the notice says it never got started (`never_started`), and its next turn is a
+  first turn, which `luna_send` starts, or with `resumeOnRestart` `resume` on that same text. Nothing is
   written before `restore` has read the file, so an empty registry never overwrites it.
+  **The chats' ties.** The sessions the window runs have no `helpers.json`, but as much that a core must
+  not forget: `<data>/chat-ties.json` (`agents::save_chats`, on `save`'s beat) keeps, for each that was
+  spawned, handed a worktree or is owed on, its `Ties`, turn count and transcript, and the sends Luna holds
+  (`Held`). `restore_chats` reads it first. A chat is known again from there (`Known::waiting`), its
+  lineage, `borrowed`, `auto` and debts with it, until the window starts it and `register` clears the
+  mark, so `dropWorktree` still will not touch a worktree it was handed. The count goes on
+  (`activity::keep_count`), since baselines go by it. A debt the count had not passed when the core went
+  is one whose turn went too (`Owed::cut_short`): that turn counts as ended, as a helper's does, and the
+  notice says it did not finish; text going in before that notice does (a held send, say) makes a new
+  debt, which carries the word on (`owe_from`). A session given `SESSION_RETURN_MS` (1 min) to come back that has not
+  is reported as not started again (a chat not in a pane starts only when opened), a send held for it as
+  lost; a caller marked waiting is given `CALLER_RETURN_MS`, as one not known at all. A chat's parent
+  has one record, the core's (`Known::parent`, kept here and moved by `pass_up`): `register` takes the
+  window's word only where the core has none, not at all for an orphan, and where the two differ says
+  `agent://reparent` again, for a new parent the window never heard of before its core went. A row deleted while
+  no core ran told nobody: `chat_names`, the first list of rows after, drops what was kept of it. What a
+  chat's CLI was doing is not resumed: the window starts it between turns, for a person or `luna_send`.
+  **Deleting a worktree with work in it.** `luna_delete` with `dropWorktree` takes the worktree `remove`
+  would (`worktree_to_drop`: not one handed to the session or shared; a Codex worktree off its rollout
+  before the first turn's end records it) and, before it touches anything, runs `git status --porcelain`
+  and counts the commits that would go for good (`commits_lost`): those HEAD or a `worktree-*` branch
+  going with it reach, and no branch that stays and no remote does. That covers a detached HEAD, and a
+  throwaway branch left behind by a switch; a branch the session named itself stays, so its commits do
+  not count. A checkout removed by hand still has its branch asked about, from the repository, and what
+  git cannot tell counts as work. `status` is told not to hide submodules; files git ignores do not stop a
+  delete (build output would stop every one), and the refusal and the result say they go with it. It
+  refuses with a short list; `force` skips that. Clean at that look, the session is stopped and what it
+  left ended (`stop_for_good`), then it looks again: what came up meanwhile keeps the worktree
+  (`worktreeLeft`), the session going all the same.
+  The session goes before its worktree, since its process holds the files: a removal that still fails is
+  not an error (a retry would find no session) but `worktreeLeft` and `worktreeError` in the result. The
+  log says which branches were deleted and which kept. The window's Delete and `reap` (which never drops
+  a worktree) go by `remove` too: the dialog has warned a person already.
   **One state, and what is asked.** Tool answers carry `state` (`state_of`: working, waiting,
   question, background, idle, starting, exited) instead of a turn word and a busy flag that could
   disagree, and `ask` (`ask_of`): a background helper's held call; for Claude Code the tool its
