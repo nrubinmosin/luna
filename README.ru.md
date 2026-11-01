@@ -563,9 +563,13 @@ pnpm tauri dev    # полное приложение (нужен Rust-тулч�
 ## Проверка Rust-части без локального тулчейна (Docker)
 
 ```powershell
-docker run --rm -v "${PWD}:/app" -w /app/src-tauri rust:1-bookworm bash -c `
-  "apt-get update -qq && apt-get install -y -qq libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev pkg-config build-essential libxdo-dev >/dev/null && cargo check"
+./linux-check.ps1
 ```
+
+Собирает крейт под Linux и прогоняет там все его юнит-тесты: Unix-код (`keeper.rs`, части
+`procs.rs` и `pty.rs`), который `./test-build.ps1 -Test` с его Windows-бинарниками вообще не
+компилирует. Рабочая копия подключается только для чтения, а кэши (cargo registry, Linux-таргет)
+живут в собственных named volumes. Работает под `pwsh` на любом хосте с Docker.
 
 ## Windows-сборка через Docker
 

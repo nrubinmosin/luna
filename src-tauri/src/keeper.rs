@@ -76,6 +76,8 @@ const FREEZE_LOOKS: usize = 50;
 const CORE_LOOK_MS: i32 = 2000;
 /// A keeper that lasted less than this is not started again by itself.
 const KEEPER_LASTS: Duration = Duration::from_secs(5);
+/// How long a turn just started may take to have an environment to read.
+const MARK_SHOWS_WITHIN: Duration = Duration::from_secs(1);
 
 // -------------------------------------------------------------- the system --
 
@@ -789,9 +791,22 @@ pub fn adopt(pid: u32) -> Option<Job> {
 /// Whether a turn's process shows its mark, or has already gone, showing nothing
 /// and hiding nothing. Where it does not (macOS hides the environment of a
 /// restricted binary), what the turn leaves behind could not be told either.
+/// `spawn` returns as the exec replaces the process's memory, before the new stack
+/// is laid out, and until it is Linux reads the environment as empty: that is no
+/// answer yet, so only that is looked at again.
 fn shows_mark(turn: &Leader, id: &str) -> bool {
     let mark = format!("{MARK}={}", mark_of(id));
-    let shown = os::environment(turn.pid).is_some_and(|env| holds(&env, &mark)) || os::gone(turn.pid, turn.started);
+    let deadline = Instant::now() + MARK_SHOWS_WITHIN;
+    let shown = loop {
+        let env = os::environment(turn.pid);
+        if env.as_ref().is_some_and(|env| holds(env, &mark)) || os::gone(turn.pid, turn.started) {
+            break true;
+        }
+        if !env.is_some_and(|env| env.is_empty()) || Instant::now() >= deadline {
+            break false;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    };
     if !shown {
         crate::log::warn("tie", &format!("{id}: its turn does not show its mark: not counted as tied, though it still goes with the core"));
     }
@@ -1086,6 +1101,18 @@ mod tests {
         (keeper, pipe)
     }
 
+    /// Whether `done` comes true in time.
+    fn within(ms: u64, done: impl Fn() -> bool) -> bool {
+        let deadline = Instant::now() + Duration::from_millis(ms);
+        while !done() {
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        true
+    }
+
     fn all_gone_within(child: &mut Child, pids: &[i32], ms: u64) -> bool {
         let deadline = Instant::now() + Duration::from_millis(ms);
         while Instant::now() < deadline {
@@ -1343,6 +1370,18 @@ mod tests {
     }
 
     #[test]
+    fn a_turn_shows_its_mark_however_soon_after_its_start_it_is_looked_at() {
+        for _ in 0..300 {
+            let mut turn = Command::new("sleep").arg("60").env(MARK, mark_of("so-soon")).process_group(0).spawn().unwrap();
+            let pid = turn.id();
+            let shown = leader(pid).is_some_and(|l| shows_mark(&l, "so-soon"));
+            let _ = turn.kill();
+            let _ = turn.wait();
+            assert!(shown, "a turn just started has nothing to hide");
+        }
+    }
+
+    #[test]
     fn a_turn_that_does_not_show_its_mark_is_not_counted_as_tied_but_still_goes() {
         let hidden = Command::new("sleep").arg("60").env_remove(MARK).process_group(0).spawn().unwrap();
         let job = adopt(hidden.id()).unwrap();
@@ -1412,12 +1451,14 @@ mod tests {
         // tool that has exited left behind.
         let tool = "sleep 60 & echo on $!; (nohup sleep 60 > /dev/null 2>&1 & echo on $!); sleep 60 & echo on $!; wait";
         let mut turn = script(&format!(
-            "sleep 60 &\necho on $!\n{SETSID} sh -c '{tool}' &\n{SETSID} sh -c 'sleep 60 & echo left $!'\nwait\n"
+            "sleep 60 &\necho on $!\n{SETSID} sh -c '{tool}' &\n{SETSID} sh -c 'echo gone $$; sleep 60 & echo left $!'\nwait\n"
         ));
-        let said = said(&mut turn, 5);
-        let (on, left) = (the(&said, "on"), the(&said, "left"));
-        assert_eq!((on.len(), left.len()), (4, 1), "{said:?}");
+        let said = said(&mut turn, 6);
+        let (on, left, gone) = (the(&said, "on"), the(&said, "left"), the(&said, "gone"));
+        assert_eq!((on.len(), left.len(), gone.len()), (4, 1, 1), "{said:?}");
         assert!(on.iter().chain(&left).all(|pid| os::read(*pid).is_some()));
+        // Said is not done: until that tool has exited, what it left still hangs from it.
+        assert!(within(3000, || os::read(gone[0]).is_none()), "the tool that exits has");
         end_tree(turn.id());
         assert!(all_gone_within(&mut turn, &on, 3000), "the tool commands go too");
         assert!(os::read(left[0]).is_some(), "what outlived its tool is let go of");
@@ -1467,6 +1508,9 @@ mod tests {
         let mut core = script(&format!("{MARK}={KEEPER} sleep 60 & echo keeper $!; sleep 60 & echo other $!; wait"));
         let said = said(&mut core, 2);
         let (keeper, other) = (the(&said, "keeper"), the(&said, "other"));
+        // The shell says the pid as it forks, and the mark is there only from the exec.
+        let its_mark = format!("{MARK}={KEEPER}");
+        assert!(within(3000, || os::environment(keeper[0]).is_some_and(|env| holds(&env, &its_mark))), "it has its mark");
         end_tree(core.id());
         assert!(all_gone_within(&mut core, &other, 3000));
         assert!(os::read(keeper[0]).is_some(), "the core's death is what it is there for");

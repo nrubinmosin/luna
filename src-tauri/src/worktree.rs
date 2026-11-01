@@ -644,6 +644,16 @@ pub async fn remove_orphan_worktrees(
 mod tests {
     use super::*;
 
+    /// A path written `E:\p\x` as this platform has it (`/E/p/x` off Windows),
+    /// for what takes one apart by the platform's own separators.
+    fn native(path: &str) -> String {
+        if cfg!(windows) {
+            path.to_string()
+        } else {
+            format!("/{}", path.replace(':', "").replace('\\', "/"))
+        }
+    }
+
     /// A repository with one linked worktree where Codex puts them, under a
     /// fake account: (root, repo, worktree). None where there is no git.
     fn codex_layout(tag: &str) -> Option<(PathBuf, String, String)> {
@@ -683,8 +693,8 @@ mod tests {
 
     #[test]
     fn a_worktree_path_names_its_project() {
-        assert_eq!(project_of("E:/p/x/.claude/worktrees/a-b-c").as_deref(), Some(r"E:\p\x"));
-        assert_eq!(project_of(r"E:\p\x"), None);
+        assert_eq!(project_of(&native("E:/p/x/.claude/worktrees/a-b-c")), Some(native(r"E:\p\x")));
+        assert_eq!(project_of(&native(r"E:\p\x")), None);
         let Some((root, repo, wt)) = codex_layout("project") else { return };
         assert_eq!(project_of(&wt).map(|p| norm(&p)), Some(norm(&repo)));
         assert!(is_worktree_of(&repo, &wt));
@@ -789,11 +799,11 @@ mod tests {
 
     #[test]
     fn codex_worktrees_have_a_shape() {
-        assert!(codex_shaped(r"E:\acc\worktrees\d6ff\repo"));
+        assert!(codex_shaped(&native(r"E:\acc\worktrees\d6ff\repo")));
         assert!(codex_shaped("/home/u/.codex/worktrees/0a1B/app/"));
-        assert!(!codex_shaped(r"E:\acc\worktrees\d6ff"));
-        assert!(!codex_shaped(r"E:\acc\worktrees\codex-1\repo"));
-        assert!(!codex_shaped(r"E:\p\.codex\worktrees\codex-1a2b3c"));
+        assert!(!codex_shaped(&native(r"E:\acc\worktrees\d6ff")));
+        assert!(!codex_shaped(&native(r"E:\acc\worktrees\codex-1\repo")));
+        assert!(!codex_shaped(&native(r"E:\p\.codex\worktrees\codex-1a2b3c")));
     }
 
     #[test]
@@ -821,7 +831,7 @@ mod tests {
 
     #[test]
     fn a_worktree_names_the_branch_it_was_made_on() {
-        assert_eq!(made_branch(r"E:\p\.claude\worktrees\merry-coalescing-cosmos").as_deref(), Some("worktree-merry-coalescing-cosmos"));
-        assert_eq!(made_branch(r"E:\acc\worktrees\d6ff\repo"), None);
+        assert_eq!(made_branch(&native(r"E:\p\.claude\worktrees\merry-coalescing-cosmos")).as_deref(), Some("worktree-merry-coalescing-cosmos"));
+        assert_eq!(made_branch(&native(r"E:\acc\worktrees\d6ff\repo")), None);
     }
 }

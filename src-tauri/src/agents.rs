@@ -698,7 +698,7 @@ impl Owed {
 
 fn reg() -> &'static Mutex<Registry> {
     static R: OnceLock<Mutex<Registry>> = OnceLock::new();
-    R.get_or_init(|| {
+    let r = R.get_or_init(|| {
         Mutex::new(Registry {
             tokens: HashMap::new(),
             known: HashMap::new(),
@@ -731,7 +731,12 @@ fn reg() -> &'static Mutex<Registry> {
             exits: HashMap::new(),
             quota_told: HashMap::new(),
         })
-    })
+    });
+    // Tests assert with this held and all of them share it: one that fails is
+    // that test's failure, not that of every test after it.
+    #[cfg(test)]
+    r.clear_poison();
+    r
 }
 
 /// `caller` has been handed the answer `id` gave by `turns_ended`: a turn past
@@ -6630,12 +6635,13 @@ mod tests {
         register("grp-peer", Provider::Codex, "C:\\work\\asuri", "C:\\acc\\openai\\two", None, false, none.clone());
         register("grp-far", Provider::Claude, "C:\\work\\luna", "C:\\acc\\anthropic\\one", None, false, none.clone());
         register("grp-loose", Provider::Claude, "C:\\work\\luna", "C:\\acc\\anthropic\\one", None, false, none);
-        let names = [("grp-me", "builder"), ("grp-peer", "Tester"), ("grp-far", "docs")]
-            .into_iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect();
-        let groups = [("grp-me", 1), ("grp-peer", 1), ("grp-far", 0)].into_iter().map(|(k, v)| (k.to_string(), v)).collect();
-        chat_names(names, Some(groups));
+        // Added to what is there and not said as `chat_names` says it: the window's
+        // whole list, which would let go of every other test's waiting chat.
+        {
+            let mut r = reg().lock().unwrap();
+            r.names.extend([("grp-me", "builder"), ("grp-peer", "Tester"), ("grp-far", "docs")].map(|(k, v)| (k.to_string(), v.to_string())));
+            r.groups.extend([("grp-me", 1), ("grp-peer", 1), ("grp-far", 0)].map(|(k, v)| (k.to_string(), v)));
+        }
 
         let ids = |caller: &str, f: SessionFilter| -> Vec<String> {
             let mut v: Vec<String> =
@@ -8026,7 +8032,8 @@ mod tests {
                 id: "tc-chat".into(),
                 provider: Provider::Codex,
                 folder: "C:\\p".into(),
-                account_path: "C:\\acc\\openai\\two".into(),
+                // In the platform's own separators: the account's name is its last part.
+                account_path: if cfg!(windows) { "C:\\acc\\openai\\two" } else { "/acc/openai/two" }.into(),
                 turns_ended: 5,
                 transcript: None,
                 mid_turn: false,
