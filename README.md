@@ -319,7 +319,8 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   reboot. A turn the core was in the middle of is stopped with it; the agent owed the
   answer is told so once its own chat is back, along with any messages queued behind that
   turn, kept word for word to send again, and `luna_send` has the helper carry on. A helper
-  spawned with `resumeOnRestart: true` goes on by itself, those messages included. One stopped
+  spawned with `resumeOnRestart: true` goes on by itself, those messages included, where Luna
+  knows the old turn ended (a normal stop; on Windows any death of the core). One stopped
   before its first turn got anywhere is reported as never started, with its prompt, and with
   `resumeOnRestart` starts afresh on it. What agents hold of the chats you see — who spawned
   them, a worktree they were handed, answers owed, messages Luna was holding for your draft —

@@ -475,6 +475,10 @@ fn hand_over(caller: &str, id: &str, turns_ended: u32) -> impl FnOnce() + Send +
         (r.owed.get(&key).copied(), r.seen.get(&key).copied())
     };
     shown(caller, id, turns_ended);
+    // What never reached it goes back with the answer, and comes back with it.
+    let parent = parent_of(id).as_deref() == Some(caller);
+    let taken = crate::background::take_undelivered_for(id, caller, parent);
+    let id = id.to_string();
     move || {
         let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
         if let Some(o) = owed {
@@ -486,6 +490,9 @@ fn hand_over(caller: &str, id: &str, turns_ended: u32) -> impl FnOnce() + Send +
                 None => r.seen.remove(&key),
             };
         }
+        drop(r);
+        crate::background::put_back(&id, taken);
+        crate::background::save();
     }
 }
 
@@ -2283,9 +2290,9 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool) -> Result<Sent,
         // written, by the time the call returns.
         let cursor = transcript_end(id);
         let (queued, interrupted) = if interrupt {
-            (false, crate::background::interrupt(id, text)?)
+            (false, crate::background::interrupt(id, text, Some(caller))?)
         } else {
-            (crate::background::send(id, text)?, false)
+            (crate::background::send(id, text, Some(caller))?, false)
         };
         // The turn it was on ends before the one this text starts, and is
         // counted: the answer ends the turn after that.
@@ -2963,15 +2970,14 @@ pub fn read(
     let settles = whole
         && done
         && owed.is_some_and(|o| turns_ended > o.baseline && (!o.queued || queue_settled(&key, o, turns_ended)));
-    if settles {
+    // Ahead of the hand-over, which takes it off. With an answer still to come
+    // it stays for the notice; with none owed this read is all that tells it.
+    let undelivered = undelivered_note(caller, id);
+    if settles || (undelivered.is_some() && owed.is_none()) {
         // Cancelled first, it is put back; the response goes nowhere anyway.
         call.commit(hand_over(caller, id, turns_ended));
     } else {
         seen(caller, id, turns_ended);
-    }
-    let undelivered = undelivered_note(id);
-    if undelivered.is_some() {
-        undelivered_shown(id);
     }
     Ok(Reading {
         messages,
@@ -3180,16 +3186,14 @@ pub fn wait(
             }
             let bare = outcome == "turn_done" && reply.is_none();
             let screen = (outcome == "waiting" || bare).then(|| screen_of(&pty, id)).flatten();
+            // Ahead of the hand-over, which takes it off.
+            let undelivered = if answers { undelivered_note(caller, id) } else { None };
             if !answers {
                 // Nothing was handed over: whatever is owed stays owed.
                 looked(id);
             } else if !call.commit(hand_over(caller, id, turns_ended)) {
                 // A cancel since the last look: it stays owed after all.
                 return gone_err();
-            }
-            let undelivered = if answers { undelivered_note(id) } else { None };
-            if undelivered.is_some() {
-                undelivered_shown(id);
             }
             let (state, ask) = state_of(id);
             return Ok(Waited { outcome, state, ask, turns_ended, reply, screen, undelivered });
@@ -3637,9 +3641,10 @@ fn undelivered_line(lost: &[String], after_answer: bool, file: Option<&std::path
 }
 
 /// The same for a tool result: where they are, or them, cut as any words are
-/// that one result carries, should no file take them.
-fn undelivered_note(id: &str) -> Option<String> {
-    let lost = crate::background::undelivered(id);
+/// that one result carries, should no file take them. Only what `caller` itself
+/// is to hear of.
+fn undelivered_note(caller: &str, id: &str) -> Option<String> {
+    let lost = crate::background::undelivered_for(id, caller, parent_of(id).as_deref() == Some(caller));
     if lost.is_empty() {
         return None;
     }
@@ -3650,21 +3655,14 @@ fn undelivered_note(id: &str) -> Option<String> {
     })
 }
 
-/// Someone has been told what never reached `id`: it goes once nobody is owed
-/// its answer, so that each of several who wrote to it hears.
-fn undelivered_shown(id: &str) {
-    let open = reg().lock().unwrap_or_else(|e| e.into_inner()).owed.keys().any(|(_, s)| s == id);
-    if !open {
-        crate::background::clear_undelivered(id);
-    }
-}
-
 /// A helper leaves with text that never reached it and nobody told: somebody's
 /// words all the same, so to a file the log names.
-pub fn undelivered_left(id: &str, lost: &[String]) {
+pub fn undelivered_left(id: &str, lost: &[crate::background::Queued]) {
     if lost.is_empty() {
         return;
     }
+    let lost: Vec<String> = lost.iter().map(|q| q.text.clone()).collect();
+    let lost = lost.as_slice();
     let file = note_file(id, &undelivered_text(lost));
     crate::log::warn(
         "agents",
@@ -3693,6 +3691,7 @@ fn answer_text(replies: &[String]) -> String {
 /// The notice for one session, or None while nothing has happened to it.
 fn notice_line(
     pty: &crate::pty::PtyManager,
+    caller: &str,
     who: &str,
     id: &str,
     k: &Known,
@@ -3725,7 +3724,8 @@ fn notice_line(
                 _ => return Some((None, Settled::Hold(ended))),
             }
         }
-        let lost = crate::background::undelivered(id);
+        let parent = k.parent.as_deref() == Some(caller);
+        let lost = crate::background::undelivered_for(id, caller, parent);
         let file = match (replies.is_empty(), lost.is_empty()) {
             (true, true) => None,
             (true, false) => note_file(id, &undelivered_text(&lost)),
@@ -3737,7 +3737,7 @@ fn notice_line(
             1 => format!(" with 1 message since you asked; {}", answer_where(file.as_deref())),
             n => format!(" with {n} messages since you asked; {}", answer_where(file.as_deref())),
         };
-        if crate::background::never_started(id) {
+        if parent && crate::background::never_started(id) {
             let what = match (lost.len(), &file) {
                 (_, None) => "its prompt was not kept".to_string(),
                 (1, Some(path)) => format!("its prompt is in {}", path.display()),
@@ -3956,7 +3956,7 @@ fn notifier() {
                 if held_for_wait(&pty, &caller, id, o) {
                     continue;
                 }
-                match notice_line(&pty, who, id, k, *o) {
+                match notice_line(&pty, &caller, who, id, k, *o) {
                     Some((Some(line), how)) => {
                         lines.push(line);
                         settled.push((id.clone(), how, *o));
@@ -3978,7 +3978,7 @@ fn notifier() {
             let before = crate::activity::turn_state(&caller);
             let baseline = before.map(|t| t.turns_ended).unwrap_or(0);
             let typed = if crate::background::has(&caller) {
-                crate::background::send(&caller, &text).map(|_| Some(true))
+                crate::background::send(&caller, &text, None).map(|_| Some(true))
             } else {
                 type_text(&pty, &caller, &text, before.map(|t| t.turn), baseline)
             };
@@ -4002,7 +4002,8 @@ fn notifier() {
                         crate::log::warn("agents", &format!("notice to {} about {about} did not start a turn", label(&caller)));
                     }
                     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-                    let told: Vec<String> = settled.iter().map(|(id, _, _)| id.clone()).collect();
+                    // Its words on what never reached it went with this one.
+                    let told: Vec<String> = settled.iter().filter(|(_, how, _)| matches!(how, Settled::Answered)).map(|(id, _, _)| id.clone()).collect();
                     for (id, how, told) in settled {
                         let key = (caller.clone(), id);
                         // Typing the notice takes seconds, and the turn it
@@ -4036,8 +4037,11 @@ fn notifier() {
                         }
                     }
                     drop(r);
-                    for id in told {
-                        undelivered_shown(&id);
+                    for id in &told {
+                        crate::background::take_undelivered_for(id, &caller, parent_of(id).as_deref() == Some(caller.as_str()));
+                    }
+                    if !told.is_empty() {
+                        crate::background::save();
                     }
                 }
                 Err(e) => crate::log::warn("agents", &format!("notice to {} about {about} failed: {e}", label(&caller))),
@@ -4360,7 +4364,7 @@ mod tests {
             (r.known.get(id).cloned().unwrap(), r.owed.get(&(caller.to_string(), id.to_string())).copied().unwrap())
         };
         o.held = Some((turns_ended, now_ms() - REPLY_GRACE_MS));
-        notice_line(&crate::pty::manager(), "Your helper", id, &k, o).unwrap()
+        notice_line(&crate::pty::manager(), caller, "Your helper", id, &k, o).unwrap()
     }
 
     #[test]
@@ -4381,14 +4385,38 @@ mod tests {
         let (first, second) = (held.find("first line\nsecond line").unwrap(), held.find("and another").unwrap());
         assert!(first < second, "word for word, oldest first: {held}");
 
-        // Kept for as long as someone is owed; gone once all have been told.
-        undelivered_shown("ql-child");
-        assert_eq!(crate::background::undelivered("ql-child").len(), 2);
-        reg().lock().unwrap().owed.remove(&("ql-parent".to_string(), "ql-child".to_string()));
-        undelivered_shown("ql-child");
-        assert!(crate::background::undelivered("ql-child").is_empty());
         crate::background::remove("ql-child");
         forget("ql-child");
+    }
+
+    #[test]
+    fn what_never_reached_a_helper_goes_only_to_its_sender_and_a_cancel_brings_it_back() {
+        register("qs-child", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("qs-parent"), false, serde_json::json!({}));
+        crate::background::take_up_for_test("qs-child", "C:\\p", 3, &[], None);
+        crate::background::lose_for_test("qs-child", "qs-a", "a's private words");
+        crate::background::lose_for_test("qs-child", "qs-b", "b's words");
+        owe_from("qs-b", "qs-child", 3, 0);
+        let line = notice_for("qs-b", "qs-child", 4).0.unwrap();
+        assert!(line.contains("Not delivered: 1 message"), "{line}");
+        let file = line.split(", in ").nth(1).and_then(|l| l.split(';').next()).unwrap();
+        let held = std::fs::read_to_string(file).unwrap();
+        let _ = std::fs::remove_file(file);
+        assert!(held.contains("b's words") && !held.contains("a's private"), "{held}");
+        assert!(undelivered_note("qs-nobody", "qs-child").is_none(), "another reader hears nothing of it");
+        assert!(undelivered_note("qs-parent", "qs-child").is_none(), "nor does its parent, of what others sent");
+
+        // Handed over, it is gone; a cancel crossing the response brings it back.
+        let of_a = || crate::background::undelivered_for("qs-child", "qs-a", false);
+        assert_eq!(of_a(), ["a's private words"]);
+        let undo = hand_over("qs-a", "qs-child", 5);
+        assert!(of_a().is_empty());
+        assert_eq!(crate::background::undelivered_for("qs-child", "qs-b", false), ["b's words"], "b's stays");
+        undo();
+        assert_eq!(of_a(), ["a's private words"]);
+
+        crate::background::remove("qs-child");
+        forget("qs-child");
+        reg().lock().unwrap().owed.retain(|(_, s), _| s != "qs-child");
     }
 
     #[test]
@@ -4479,10 +4507,10 @@ mod tests {
         assert!(!returning(&k, SESSION_RETURN_MS), "it has had its chance");
         // Held off while it may come back; then the caller hears.
         let o = reg().lock().unwrap().owed[&key("tc-peer")];
-        assert!(notice_line(&crate::pty::manager(), "Session", "tc-chat", &k, o).is_none(), "the window has yet to start it");
+        assert!(notice_line(&crate::pty::manager(), "tc-peer", "Session", "tc-chat", &k, o).is_none(), "the window has yet to start it");
         let mut gone = k.clone();
         gone.waiting = false;
-        let (said, how) = notice_line(&crate::pty::manager(), "Session", "tc-chat", &gone, o).unwrap();
+        let (said, how) = notice_line(&crate::pty::manager(), "tc-peer", "Session", "tc-chat", &gone, o).unwrap();
         assert!(matches!(how, Settled::Exited));
         assert!(said.unwrap().contains("has not started again"));
 

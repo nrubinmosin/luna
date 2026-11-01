@@ -608,13 +608,15 @@ src-tauri/src/
   only as it starts its CLI again, seconds later. So the notifier drops a debt for an unknown caller
   only `CALLER_RETURN_MS` (10 min) into the core's life (`owed_stands`), until then telling that
   caller nothing and keeping `reap` off the helper; a delete (`forget`) purges at once as ever. A
-  chat not opened by then gets no notice. The text queued behind a stopped turn stays with the helper
-  (`Entry::undelivered`, saved too), never run: the notice counts it and the answer file ends on it,
+  chat not opened by then gets no notice. The text queued behind a stopped turn stays with the helper,
+  each piece with its sender (`Queued`, `Entry::undelivered`, saved too), never run: only that sender
+  hears of it (what no session sent, its parent). Its notice counts it and the answer file ends on it,
   labelled, word for word, or holds only it if there is no reply (`undelivered_text`); `read` and
-  `wait` name it as `undelivered`. It goes once somebody has been told and nobody is owed
-  (`undelivered_shown`), so each of several who wrote to the helper hears; a helper deleted or opened
-  as a chat first leaves it in a file the log names (`undelivered_left`). `luna_kill` still drops the
-  queue: that is the agent's own stop.
+  `wait` name it as `undelivered`, and taking it off is part of `hand_over`, so a cancel crossing the
+  response puts it back with the debt. A helper deleted or opened as a chat first leaves what is left
+  in a file the log names (`undelivered_left`). `luna_kill` still drops the queue: that is the agent's
+  own stop. A batch a turn was claimed for is saved as `Entry::in_flight` before the CLI gets it and
+  cleared once stdin has it, so a core killed between neither forgets it nor hands back what ran.
   A helper spawned with `resumeOnRestart` (the flag lives in `settings`, so in the ties, and `list`
   echoes it; refused with `visible`, as a chat comes back by the window) goes on by itself:
   `resume_stopped`, once the hub listens as its MCP config names the port, starts a turn on each that
@@ -623,7 +625,11 @@ src-tauri/src/
   transcript offset staying, and are marked: the caller gets one notice that it was cut short and
   resumed (`Settled::Resumed`), then the usual one. A turn too short for the first merges them. A
   resume that cannot start counts as an ended turn with its error (`run_turn`), and the notice is the
-  plain cut-short one with the text still held. A helper stopped before any turn named its conversation
+  plain cut-short one with the text still held. It runs only where nothing of the old turn can overlap
+  it (`Entry::resumable`): that core stopped it itself, or its processes were in a job tied to the core
+  (`Entry::tied`, saved). Elsewhere (no job off Windows, a join that failed) the caller gets the plain
+  notice and decides. It takes only the batch it captured, re-checking under the lock that the helper
+  is still cut short, as a turn sent meanwhile has gone on already. A helper stopped before any turn named its conversation
   is taken up like any other, so its debt, its lineage and in time its end record in `agents.jsonl`
   survive: what its turn was started on is saved until then (`Entry::opening`) and becomes the first of
   its undelivered text, the notice says it never got started (`never_started`), and its next turn is a

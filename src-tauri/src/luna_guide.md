@@ -63,7 +63,8 @@ can start other sessions and work with them.
 - `name` is its name in Luna.
 - `resumeOnRestart: true` (background only, either CLI; refused with `visible: true`, a chat
   comes back with the window): a turn a restart of Luna's core stopped goes on by itself, or
-  starts afresh on its prompt if it had not got anywhere yet.
+  starts afresh on its prompt if it had not got anywhere yet. Only where Luna knows the old turn
+  ended (a normal stop; on Windows any death of the core): else you get the plain notice.
 - The result: `id`, the resolved `settings`, `started`, `starting` (the CLI has not drawn
   yet; the prompt is held, do not resend), `warnings`, `turnsEnded`. For a background
   helper `started` means its process is up. For a visible one, false means it was not seen
@@ -110,9 +111,9 @@ can start other sessions and work with them.
 - A restart of Luna's core stops a background helper's turn and ends what its turns left
   running. You stay owed: the notice comes
   once your own chat is back (given up after 10 minutes) and says it did NOT finish;
-  `luna_send` has it carry on. Messages queued for it never reached it: the notice counts them
-  and the file it names ends on them, word for word, to send again (`undelivered` in
-  `luna_read` and `luna_wait`). With `resumeOnRestart` it goes on by itself, those messages
+  `luna_send` has it carry on. Messages you queued for it never reached it: the notice counts
+  them and the file it names ends on them, word for word, to send again (`undelivered` in
+  `luna_read` and `luna_wait`); each sender hears only of its own. With `resumeOnRestart` it goes on by itself, those messages
   included: one notice says so, the usual one follows when that turn ends. Stopped before its
   first turn got anywhere, the notice says it never got started and the file holds its prompt;
   `luna_send` starts it afresh.
