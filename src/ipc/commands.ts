@@ -168,6 +168,10 @@ export interface ClaudeSessionSpec {
   parent?: string | null;
   /** An opening prompt, for a chat an agent starts. */
   prompt?: string | null;
+  /** Without the edit tools. */
+  readOnly?: boolean;
+  /** The agent it runs as (`--agent`). */
+  agent?: string | null;
 }
 
 export const ensureClaudeSession = (spec: ClaudeSessionSpec) =>
@@ -184,7 +188,9 @@ export const ensureClaudeSession = (spec: ClaudeSessionSpec) =>
     resume: spec.resume ?? null,
     tools: spec.tools ?? false,
     parent: spec.parent ?? null,
-    prompt: spec.prompt ?? null
+    prompt: spec.prompt ?? null,
+    readOnly: spec.readOnly ?? false,
+    agent: spec.agent ?? null
   }, '');
 
 export interface CodexSessionSpec {
@@ -560,6 +566,8 @@ export interface AgentSpawnRequest {
   permissionMode?: string | null;
   approval?: string | null;
   sandbox?: string | null;
+  readOnly?: boolean | null;
+  agent?: string | null;
   folder: string;
   /** The caller's worktree, to run in without owning it; `folder` is its
    *  project. */

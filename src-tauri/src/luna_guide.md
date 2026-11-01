@@ -23,6 +23,8 @@ can start other sessions and work with them.
   wait on and send text to.
 - At most eight helpers under one chat. A helper given `tools: true` gets these tools too,
   but its own helpers get none.
+- `LUNA_SESSION_ID` holds a session's id, `LUNA_PARENT_ID` a helper's parent's. A helper's
+  system prompt says it is one.
 
 ## Accounts and models
 - An account is a signed-in login of one provider: an Anthropic account runs Claude Code
@@ -30,6 +32,9 @@ can start other sessions and work with them.
   match; an `account` alone brings its own provider. Take them from `luna_list`, which lists
   every account the user lets agents use (the user can switch accounts off for agents)
   under its exact name.
+- `account` may be a list of one provider's: the first signed in with every usage window
+  under 95% (unknown usage passes), else the one with the most room. `accountChoice` in the
+  result says which it took and why it skipped others.
 - Accounts of one provider differ: personal or team plans, different organizations, their
   own allowed models and their own quota. Each row in `luna_list` gives the provider, the
   name, the models it offers (for Codex with their efforts and default effort), the
@@ -47,8 +52,8 @@ can start other sessions and work with them.
   and folder.
 - Claude Code: `permissionMode` = default | acceptEdits | plan | bypassPermissions;
   `effort` = low | medium | high | xhigh | max (ultracode too).
-- Codex: `sandbox` = read-only | workspace-write | danger-full-access; `approval` =
-  never | auto-review (a reviewer model answers what Codex would ask; workspace-write only)
+- Codex: `sandbox` = read-only | read-only-net | workspace-write | danger-full-access;
+  `approval` = never | auto-review (a reviewer model answers what Codex would ask; workspace-write only)
   | on-request (visible only: a background Codex has nobody to ask, and runs with never
   unless told auto-review; the sandbox is what holds it); `effort` per model as `luna_list`
   gives it. Whether it runs the project's hooks without Codex's trust prompt is the user's
@@ -56,11 +61,19 @@ can start other sessions and work with them.
   hooks not at all, and a visible one stops on the prompt. A background Codex trusts the
   folder it is sent to for its run, so the project's own `.codex/` config loads; a visible
   one in a folder Codex does not trust yet has Luna trust it for that account.
+- Codex's network: none in `read-only` or, unless its config says so, `workspace-write`; the
+  machine's in `danger-full-access`. `read-only-net` reads only, with network, but on Windows
+  schannel TLS fails there (built-in `curl`, `git` https, `Invoke-WebRequest`); `gh`, Python,
+  plain http and `git -c http.sslBackend=openssl` work.
+- `readOnly: true`: Claude Code loses Edit, Write and NotebookEdit, but **Bash can still
+  write**; Codex gets `sandbox: read-only` (or `read-only-net` if given), which holds. Refused
+  with `acceptEdits`, `auto-review` or a sandbox that writes.
+- `agent: "<name>"`: Claude Code's `--agent`; an unknown name stops it. Codex refuses it: its
+  roles are for subagents only.
 - `folder` runs it in another project. `worktree: true` gives it its own git worktree and
   branch, so it does not share files and git with the sessions in that folder; the result
   names the worktree and branch. `sameFolder` in the result lists live sessions working in
   the same directory.
-- `name` is its name in Luna.
 - The result: `id`, the resolved `settings`, `started`, `starting` (the CLI has not drawn
   yet; the prompt is held, do not resend), `warnings`, `turnsEnded`. For a background
   helper `started` means its process is up. For a visible one, false means it was not seen
