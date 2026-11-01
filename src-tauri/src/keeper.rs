@@ -77,7 +77,7 @@ const CORE_LOOK_MS: i32 = 2000;
 /// A keeper that lasted less than this is not started again by itself.
 const KEEPER_LASTS: Duration = Duration::from_secs(5);
 /// How long a turn just started may take to have an environment to read.
-const MARK_SHOWS_WITHIN: Duration = Duration::from_secs(1);
+const ENVIRONMENT_WITHIN: Duration = Duration::from_secs(1);
 
 // -------------------------------------------------------------- the system --
 
@@ -788,25 +788,29 @@ pub fn adopt(pid: u32) -> Option<Job> {
     Some(Job(Mutex::new(JobState { leaders: first.into_iter().collect(), since: first.map_or(0, |l| l.started), also: None, tied_for: None })))
 }
 
+/// For straight after a `spawn`, before `tie` or `join` and with nothing held, as
+/// this can take a while on a busy machine. `spawn` returns as the exec replaces the
+/// process's memory, before the new stack is laid out, and until it is Linux reads
+/// the environment as empty, which `shows_mark` would take for a mark hidden. Linux
+/// only: elsewhere an empty one may be all there will ever be (`os::environment`).
+pub fn await_environment(pid: u32) {
+    if !cfg!(target_os = "linux") {
+        return;
+    }
+    let pid = pid as i32;
+    let deadline = Instant::now() + ENVIRONMENT_WITHIN;
+    // One that has exited reads as empty for good, and `read` does not look at it.
+    while os::read(pid).is_some() && os::environment(pid).is_some_and(|env| env.is_empty()) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
 /// Whether a turn's process shows its mark, or has already gone, showing nothing
 /// and hiding nothing. Where it does not (macOS hides the environment of a
 /// restricted binary), what the turn leaves behind could not be told either.
-/// `spawn` returns as the exec replaces the process's memory, before the new stack
-/// is laid out, and until it is Linux reads the environment as empty: that is no
-/// answer yet, so only that is looked at again.
 fn shows_mark(turn: &Leader, id: &str) -> bool {
     let mark = format!("{MARK}={}", mark_of(id));
-    let deadline = Instant::now() + MARK_SHOWS_WITHIN;
-    let shown = loop {
-        let env = os::environment(turn.pid);
-        if env.as_ref().is_some_and(|env| holds(env, &mark)) || os::gone(turn.pid, turn.started) {
-            break true;
-        }
-        if !env.is_some_and(|env| env.is_empty()) || Instant::now() >= deadline {
-            break false;
-        }
-        std::thread::sleep(Duration::from_millis(1));
-    };
+    let shown = os::environment(turn.pid).is_some_and(|env| holds(&env, &mark)) || os::gone(turn.pid, turn.started);
     if !shown {
         crate::log::warn("tie", &format!("{id}: its turn does not show its mark: not counted as tied, though it still goes with the core"));
     }
@@ -1374,6 +1378,7 @@ mod tests {
         for _ in 0..300 {
             let mut turn = Command::new("sleep").arg("60").env(MARK, mark_of("so-soon")).process_group(0).spawn().unwrap();
             let pid = turn.id();
+            await_environment(pid);
             let shown = leader(pid).is_some_and(|l| shows_mark(&l, "so-soon"));
             let _ = turn.kill();
             let _ = turn.wait();
@@ -1384,6 +1389,7 @@ mod tests {
     #[test]
     fn a_turn_that_does_not_show_its_mark_is_not_counted_as_tied_but_still_goes() {
         let hidden = Command::new("sleep").arg("60").env_remove(MARK).process_group(0).spawn().unwrap();
+        await_environment(hidden.id());
         let job = adopt(hidden.id()).unwrap();
         assert!(!tie(&job, "hidden"), "nothing could tell what it leaves behind");
         assert!(ties().records.contains_key(&mark_of("hidden")), "the keeper has it for all that");
@@ -1391,9 +1397,11 @@ mod tests {
         assert!(!ties().records.contains_key(&mark_of("hidden")));
         // A later turn the same way: what it says goes against the helper's tie.
         let shown = Command::new("sleep").arg("60").env(MARK, mark_of("later")).process_group(0).spawn().unwrap();
+        await_environment(shown.id());
         let job = adopt(shown.id()).unwrap();
         assert!(tie(&job, "later"));
         let other = Command::new("sleep").arg("60").env_remove(MARK).process_group(0).spawn().unwrap();
+        await_environment(other.id());
         assert!(!join(&job, other.id()));
         // One gone already hides nothing.
         let mut quick = Command::new("true").spawn().unwrap();
@@ -1523,6 +1531,7 @@ mod tests {
         let turn = || Command::new("sleep").arg("60").env(MARK, mark_of("written")).process_group(0).spawn().unwrap();
         let on_disk = || -> Record { serde_json::from_slice(&std::fs::read(record_file(&records_dir(), &mark_of("written"))).unwrap()).unwrap() };
         let mut first = turn();
+        await_environment(first.id());
         let job = adopt(first.id()).unwrap();
         assert!(job.state().tied_for.is_none(), "untied, as a chat's stays");
         assert!(tie(&job, "written"));
@@ -1535,6 +1544,7 @@ mod tests {
         let _ = first.kill();
         let _ = first.wait();
         let mut second = turn();
+        await_environment(second.id());
         assert!(join(&job, second.id()));
         assert_eq!(on_disk().leaders, [leader(second.id()).unwrap()]);
         assert_eq!(on_disk().id, "written");

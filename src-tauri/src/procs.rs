@@ -111,6 +111,9 @@ mod imp {
     /// Needed only where a job goes by what is in the environment (keeper.rs).
     pub fn also_marked(_job: &Job, _var: &str, _value: &str) {}
 
+    /// So is this.
+    pub fn await_environment(_pid: u32) {}
+
     /// The tie needs no process of its own here.
     pub fn keeper_from_args() -> bool {
         false
@@ -381,7 +384,7 @@ mod imp {
 
 #[cfg(not(windows))]
 mod imp {
-    pub use crate::keeper::{adopt, also_marked, end_last_ties, from_args as keeper_from_args, join, let_go, tie, Job};
+    pub use crate::keeper::{adopt, also_marked, await_environment, end_last_ties, from_args as keeper_from_args, join, let_go, tie, Job};
 
     pub fn end(_pid: u32, _started_ms: u64) -> bool {
         false
@@ -414,7 +417,7 @@ mod imp {
     }
 }
 
-pub use imp::{adopt, alive, also_marked, end_last_ties, join, keeper_from_args, let_go, tie, Job};
+pub use imp::{adopt, alive, also_marked, await_environment, end_last_ties, join, keeper_from_args, let_go, tie, Job};
 
 /// When a process was created, epoch ms, where the platform says.
 pub fn created_ms(pid: u32) -> Option<u64> {
