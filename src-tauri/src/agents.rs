@@ -652,8 +652,8 @@ struct Owed {
     /// A chat's turn asked about went with a core (`restore_chats`): it did
     /// not finish, and the caller hears so.
     cut_short: bool,
-    /// Told it is not done under a core since gone, which took what it had running
-    /// with it.
+    /// Told it is not done under a core since gone: on Windows what it had running
+    /// went with that core, and its own helpers' answers come as ever.
     job_went: bool,
     /// Text was going in as a core went, and nothing can tell whether it arrived
     /// (`went_in`): not typed again, and the caller is told.
@@ -5485,8 +5485,8 @@ fn notice_line(
                     n => format!("it wrote {n} messages since your last notice; {}{quoted}", answer_file(id, &said)),
                 };
                 let failed = failed.map_or(String::new(), |why| format!(" Its last turn stopped on an error: {why}."));
-                let went = if o.job_went { " (Luna's core restarted, and that went with it)" } else { "" };
-                Some((Some(format!("{who} has nothing left running now{went}, and {said}.{failed}")), Settled::Answered))
+                let since = if o.job_went { " that Luna's core has restarted" } else { "" };
+                Some((Some(format!("{who} has nothing left running now{since}, and {said}.{failed}")), Settled::Answered))
             }
             Some((n, _)) if n == ended => None,
             _ => Some((None, Settled::Hold(ended))),
@@ -8630,7 +8630,7 @@ mod tests {
         let (line, how) = notice_line(&pty, "tp-caller", "Your helper", "tp-helper", &k, held).unwrap();
         let line = line.unwrap();
         assert!(matches!(how, Settled::Answered));
-        assert!(line.contains("has nothing left running now (Luna's core restarted, and that went with it)"), "{line}");
+        assert!(line.contains("has nothing left running now that Luna's core has restarted"), "{line}");
         // And it comes back marked again from what this core saves.
         assert_eq!(ties_of("tp-helper").unwrap().told_pending, vec!["tp-caller".to_string()]);
         crate::background::gone_for_test("tp-helper");

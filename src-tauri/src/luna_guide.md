@@ -124,15 +124,16 @@ can start other sessions and work with them.
   from a cursor taken after you asked, does not.
 - Asked again before an answer reached you, the next reply, read or
   notice covers everything said since the first question.
-- A restart of Luna's core stops a background helper's turn and what its turns left running. You
-  stay owed: once your chat is back (given up after 10 minutes) a notice says it did NOT finish;
-  `luna_send` has it carry on. What you queued never reached it: the notice counts it and its file
-  ends on it word for word (`undelivered` in `luna_read`, `luna_wait`). Stopped before its first
-  turn got anywhere, it "never got started" and the file holds its prompt.
+- A core restart stops a background helper's turn and what its turns left running (off Windows
+  only if it died). You stay owed: once your chat is back (given up after 10 minutes) a notice
+  says it did NOT finish; `luna_send` has it carry on. What you queued never reached it: the
+  notice counts it and its file ends on it word for word (`undelivered` in `luna_read`,
+  `luna_wait`). Stopped before its first turn got anywhere, it "never got started" and the file
+  holds its prompt.
 - `resumeOnRestart` goes on by itself with that text (afresh on its prompt if it never got started);
   one notice says so, the usual one follows. Else the plain notice: a background helper where Luna
-  cannot tell the old turn ended (a core that died, off Windows), a visible one whose CLI Luna could
-  not bring back, or that the user or you wrote to first.
+  cannot tell the old turn ended, a visible one whose CLI Luna could not bring back, or that the
+  user or you wrote to first.
 - Visible sessions and chats you wrote to come back when the window starts them, with text held for
   them; the notice comes then, or after a minute saying they have not.
 - A `luna_spawn` a restart cut off errors. Wait for the notice before spawning again: no helper came

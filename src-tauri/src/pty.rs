@@ -3,9 +3,9 @@ use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, PtySize};
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
-// The kill path shells out (taskkill, pkill); a target with neither has no
-// use for it and would warn about it on every build.
-#[cfg(any(windows, unix))]
+// The kill path shells out to taskkill; anywhere else it has no use for this
+// and would warn about it on every build.
+#[cfg(windows)]
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -1608,17 +1608,10 @@ pub(crate) fn kill_tree(pid: Option<u32>) {
             .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
             .output();
     }
-    // The pty made the CLI a session and process-group leader (a background
-    // turn its group's leader), so its children are in the group whose id is
-    // its pid unless they left it; those that did are still its children by
-    // parent pid. And the process itself, should it lead no group after all.
+    // No one call does it here: the CLIs start each tool command in a session of
+    // its own, out of the CLI's group and with children of its own.
     #[cfg(unix)]
-    {
-        for by in ["-g", "-P"] {
-            let _ = Command::new("pkill").args(["-KILL", by, &pid.to_string()]).output();
-        }
-        let _ = Command::new("kill").args(["-KILL", &pid.to_string()]).output();
-    }
+    crate::keeper::end_tree(pid);
     #[cfg(not(any(windows, unix)))]
     let _ = pid;
 }
