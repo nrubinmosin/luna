@@ -107,6 +107,17 @@ const MAX_TEXT: usize = 60_000;
 /// idle this long since, nobody reading it either: room for a review of its
 /// work and a follow-up first.
 const AUTO_DELETE_IDLE_MS: u64 = 30 * 60 * 1000;
+/// The most turn-end notices one caller gets about one session within
+/// BREAKER_WINDOW_MS before Luna stops telling it: each costs a turn of the
+/// caller, and two chats that keep answering each other's notices would go on
+/// until a person came back. Real use never came near it (at most 3 in half an
+/// hour per pair, luna.log 10-28 to 11-01); the loop of that night ran one a
+/// minute per pair, for 13 hours.
+const BREAKER_NOTICES: usize = 12;
+const BREAKER_WINDOW_MS: u64 = 15 * 60 * 1000;
+/// The notice turns kept per session (see `NoticeTurn`): the debts that ask
+/// about them are never many turns behind.
+const NOTICE_TURNS_KEPT: usize = 64;
 /// How every notice opens, so a model tells it from what the user types.
 pub const NOTICE_TAG: &str = "[Luna notice, not typed by the user]";
 /// The most warning lines a spawn passes on from the helper's screen.
@@ -333,6 +344,23 @@ struct Registry {
     held: Vec<Held>,
     /// Notices a caller's draft holds back, by caller, for the chat row.
     notices_held: HashMap<String, usize>,
+    /// The turns Luna's notices started, by the session they went into.
+    notice_turns: HashMap<String, Vec<NoticeTurn>>,
+    /// When each turn-end notice went, by (caller, session), within
+    /// BREAKER_WINDOW_MS.
+    notice_times: HashMap<(String, String), Vec<u64>>,
+    /// The pairs Luna has stopped telling (BREAKER_NOTICES), and since when.
+    stopped: HashMap<(String, String), u64>,
+}
+
+/// A turn a Luna notice started. Told a session is not done yet, a caller is
+/// not told again of a turn that only answers a notice: two chats with a job
+/// each would wake each other for as long as the jobs run.
+struct NoticeTurn {
+    /// The `turnsEnded` it ends at.
+    turn: u32,
+    /// The sessions the notice told of.
+    about: Vec<String>,
 }
 
 /// A `send` waiting for a person to send or clear what they typed.
@@ -382,6 +410,10 @@ struct Owed {
     late: bool,
     /// The session exited with the caller's text still held, never typed in.
     lost: bool,
+    /// The caller has been told the session is not done yet. It hears again
+    /// when that ends or a turn no notice started does, not of every turn; a
+    /// question asked since is a new debt.
+    told_pending: bool,
 }
 
 impl Owed {
@@ -396,7 +428,13 @@ impl Owed {
             queued: false,
             late: false,
             lost: false,
+            told_pending: false,
         }
+    }
+
+    /// What is left of a debt once the caller has heard it is not done yet.
+    fn pending(baseline: u32, cursor: u64) -> Owed {
+        Owed { told_pending: true, ..Owed::from(baseline, cursor) }
     }
 }
 
@@ -422,17 +460,20 @@ fn reg() -> &'static Mutex<Registry> {
             hook_asks: HashMap::new(),
             held: Vec::new(),
             notices_held: HashMap::new(),
+            notice_turns: HashMap::new(),
+            notice_times: HashMap::new(),
+            stopped: HashMap::new(),
         })
     })
 }
 
 /// `caller` has been handed the answer `id` gave by `turns_ended`: a turn past
-/// what it asked about settles what it was owed. It has seen that count too
-/// (see `seen`).
+/// what it asked about settles what it was owed, and so does the end of a job
+/// it was told of. It has seen that count too (see `seen`).
 fn shown(caller: &str, id: &str, turns_ended: u32) {
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
     let key = (caller.to_string(), id.to_string());
-    if r.owed.get(&key).is_some_and(|o| turns_ended > o.baseline) {
+    if r.owed.get(&key).is_some_and(|o| turns_ended > o.baseline || o.told_pending) {
         r.owed.remove(&key);
     }
     drop(r);
@@ -2789,7 +2830,8 @@ pub struct Waited {
 /// caller's question still unanswered went in at, else the count it was
 /// last shown, so the reply to a prompt it just sent counts even if it
 /// landed before this call, and a turn it has already read does not — or
-/// the turn stopped on a prompt, which nothing but an answer moves on);
+/// the turn stopped on a prompt, which nothing but an answer moves on, or,
+/// told it is not done, the job it left running ended, outcome `job_done`);
 /// `waiting` — it stopped for a permission; `exit` — the process ended.
 /// A wait its caller let go (`call` cancelled, or see `let_go`) returns an
 /// error and hands nothing over: the answer stays owed, for the notice.
@@ -2829,15 +2871,24 @@ pub fn wait(
         std::thread::sleep(POLL);
     }
     let now = crate::activity::turn_state(id).map(|t| t.turns_ended);
-    let (owed_since, answered_at, queued, late) = {
+    let (owed_since, answered_at, queued, late, told_pending) = {
         let r = reg().lock().unwrap_or_else(|e| e.into_inner());
         let owed = r.owed.get(&key);
-        (owed.map(|o| o.baseline), r.answered.get(&key).copied(), owed.is_some_and(|o| o.queued), owed.is_some_and(|o| o.late))
+        (
+            owed.map(|o| o.baseline),
+            r.answered.get(&key).copied(),
+            owed.is_some_and(|o| o.queued),
+            owed.is_some_and(|o| o.late),
+            owed.is_some_and(|o| o.told_pending),
+        )
     };
     let after_turn = if late { None } else { after_turn };
+    // Told it is not done, a wait is for what a notice would bring next: the
+    // job's end or a turn no notice started. A count asked for is that count.
+    let told_pending = told_pending && after_turn.is_none();
     // A count shown since the question (a read of part of the answer, a
     // timeout) does not make the answer seen.
-    let baseline = match (after_turn, owed_since.or_else(|| last_shown(caller, id)), now) {
+    let mut baseline = match (after_turn, owed_since.or_else(|| last_shown(caller, id)), now) {
         (Some(n), _, _) => n,
         // A count the session is behind has been left over from before it
         // was respawned; waiting past it would sit out the whole timeout.
@@ -2857,9 +2908,21 @@ pub fn wait(
         let turns_ended = ts.map(|t| t.turns_ended).unwrap_or(0);
         let turn = ts.map(|t| t.turn);
         let mut ended = turns_ended > baseline && turn != Some(crate::activity::Turn::Busy);
-        if !ended {
+        // What the job's end has to settle first (see `notice_line`).
+        let mut job_done = false;
+        if told_pending {
+            let job = ts.is_some_and(|t| t.children_busy) && alive;
+            let now = verdict(&Owed::pending(baseline, 0), turns_ended, turn, job, real_turn_past(id, baseline, turns_ended));
+            if now == Verdict::OnlyNotices {
+                baseline = turns_ended;
+            }
+            ended = now == Verdict::TurnOver;
+            job_done = now == Verdict::JobOver && alive;
+        }
+        let grace = if job_done { BACKGROUND_GRACE_MS } else { QUEUED_GRACE_MS };
+        if !ended && !job_done {
             quiet = None;
-        } else if queued {
+        } else if queued || job_done {
             let since = match quiet {
                 Some((n, at)) if n == turns_ended => at,
                 _ => {
@@ -2868,7 +2931,9 @@ pub fn wait(
                     at
                 }
             };
-            ended = now_ms().saturating_sub(since) >= QUEUED_GRACE_MS;
+            let settled = now_ms().saturating_sub(since) >= grace;
+            ended = ended && settled;
+            job_done = job_done && settled;
         }
         // A question in the transcript holds the turn whatever the turn
         // word says; read for it every few looks, not every one.
@@ -2882,24 +2947,29 @@ pub fn wait(
         let done = match until {
             "exit" => !alive,
             "waiting" => turn == Some(crate::activity::Turn::Waiting) || question || !alive,
-            _ => ended || asking || !alive,
+            _ => ended || job_done || asking || !alive,
         };
         if done && holding() != Holding::Unsure {
             let outcome = if !alive {
                 "exit"
-            } else if until == "waiting" || (asking && !ended) {
+            } else if until == "waiting" || (asking && !ended && !job_done) {
                 "waiting"
+            } else if job_done && !ended {
+                "job_done"
             } else {
                 "turn_done"
             };
             // A turn it answered in before it exited is handed over too.
-            let answers = outcome == "turn_done" || (outcome == "exit" && turns_ended > baseline);
+            let says = outcome == "turn_done" || (outcome == "exit" && turns_ended > baseline);
+            // A job's end with no turn has no words to go with it, but it is
+            // what the caller was owed.
+            let answers = says || outcome == "job_done";
             // Read from where the caller's question found the transcript.
             let asked_at = reg().lock().unwrap_or_else(|e| e.into_inner()).owed.get(&key).map(|o| o.cursor);
             let reply_now = || reply_of(&pty, id, known.provider, asked_at);
-            let mut reply = answers.then(reply_now).flatten();
+            let mut reply = says.then(reply_now).flatten();
             let late = std::time::Instant::now() + std::time::Duration::from_millis(REPLY_GRACE_MS);
-            while answers && reply.is_none() && std::time::Instant::now() < late && !gone() {
+            while says && reply.is_none() && std::time::Instant::now() < late && !gone() {
                 std::thread::sleep(POLL);
                 reply = reply_now();
             }
@@ -3161,6 +3231,9 @@ pub fn forget(id: &str) {
     r.waits.retain(|(who, chat), _| who != id && chat != id);
     r.notified.remove(id);
     r.hook_asks.remove(id);
+    r.notice_turns.remove(id);
+    r.notice_times.retain(|(who, chat), _| who != id && chat != id);
+    r.stopped.retain(|(who, chat), _| who != id && chat != id);
     drop(r);
     transcripts().lock().unwrap_or_else(|e| e.into_inner()).remove(id);
     if spawned {
@@ -3175,12 +3248,18 @@ enum Settled {
     /// A turn past the one asked about ended.
     Answered,
     /// A turn ended, but the session left a job running in the background;
-    /// owed again from this turn count and transcript end, for the turn
-    /// that job will end in.
+    /// owed on from this turn count and transcript end, for that job's end or
+    /// a turn of its own.
     Pending(u32, u64),
     /// A turn ended but is not settled — processes still at work, or no
     /// reply in the transcript yet: nothing to say, start the grace from now.
     Hold(u32),
+    /// A job looked over and is at work again: the grace starts over.
+    Unhold,
+    /// Told it is not done, and all that ended since were turns on Luna's own
+    /// notices: nothing to say, and owed on from this turn count, what they
+    /// said included.
+    Skip(u32),
     Waiting,
     /// It asks a question it does not wait on; told once per question.
     Asked(u64),
@@ -3240,6 +3319,95 @@ fn answer_text(replies: &[String]) -> String {
     whole
 }
 
+/// Where a debt stands, by what the session is doing now.
+#[derive(Debug, PartialEq, Clone, Copy)]
+enum Verdict {
+    /// No news of a turn or a job: the session may still be on a prompt.
+    Nothing,
+    /// A turn the caller is to hear of ended.
+    TurnOver,
+    /// Told it is not done, and only turns on Luna's own notices ended since.
+    OnlyNotices,
+    /// Told it is not done, and it still is not.
+    AtWork,
+    /// Told it is not done, and what it had running has ended with no turn.
+    JobOver,
+}
+
+/// `real_turn`: a turn past the baseline counts for this caller (`real_turn_past`).
+fn verdict(o: &Owed, ended: u32, turn: Option<crate::activity::Turn>, job: bool, real_turn: bool) -> Verdict {
+    use crate::activity::Turn;
+    let past = ended > o.baseline && turn != Some(Turn::Busy);
+    if !o.told_pending {
+        return if past { Verdict::TurnOver } else { Verdict::Nothing };
+    }
+    match (past, real_turn) {
+        (true, true) => Verdict::TurnOver,
+        (true, false) => Verdict::OnlyNotices,
+        _ if turn != Some(Turn::Idle) => Verdict::Nothing,
+        _ if job => Verdict::AtWork,
+        _ => Verdict::JobOver,
+    }
+}
+
+/// Whether a turn of `id` past `after` and up to `ended` ended that no Luna
+/// notice started: what a caller told it is not done is to hear of.
+fn real_turn_past(id: &str, after: u32, ended: u32) -> bool {
+    let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    let marked = r.notice_turns.get(id);
+    (after.saturating_add(1)..=ended).any(|turn| !marked.is_some_and(|m| m.iter().any(|m| m.turn == turn)))
+}
+
+/// A notice about `about` went into `caller` and starts its turn ending at
+/// `turn`.
+fn notice_turn(r: &mut Registry, caller: &str, turn: u32, about: Vec<String>) {
+    let turns = r.notice_turns.entry(caller.to_string()).or_default();
+    turns.push(NoticeTurn { turn, about });
+    if turns.len() > NOTICE_TURNS_KEPT {
+        turns.remove(0);
+    }
+}
+
+/// Counts a notice to `caller` about `id`. Returns whether it was the last
+/// BREAKER_NOTICES allows: the pair is stopped from here on.
+fn count_notice(r: &mut Registry, caller: &str, id: &str, now: u64) -> bool {
+    let key = (caller.to_string(), id.to_string());
+    let times = r.notice_times.entry(key.clone()).or_default();
+    times.retain(|at| now.saturating_sub(*at) < BREAKER_WINDOW_MS);
+    times.push(now);
+    let last = times.len() >= BREAKER_NOTICES;
+    if last {
+        r.notice_times.remove(&key);
+        r.stopped.insert(key, now);
+    }
+    last
+}
+
+/// Whether the next notice to `caller` about `id` is the last the breaker lets
+/// through, for it to say so.
+fn last_notice(caller: &str, id: &str, now: u64) -> bool {
+    let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    r.notice_times.get(&(caller.to_string(), id.to_string())).is_some_and(|times| {
+        times.iter().filter(|at| now.saturating_sub(**at) < BREAKER_WINDOW_MS).count() + 1 >= BREAKER_NOTICES
+    })
+}
+
+/// Whether Luna has stopped telling `caller` about `id`. A person typing into
+/// either of them since is someone looking at it, and lifts that; nothing a
+/// model does does, or two models answering each other would lift it forever.
+fn pair_stopped(pty: &crate::pty::PtyManager, caller: &str, id: &str) -> bool {
+    let key = (caller.to_string(), id.to_string());
+    let Some(at) = reg().lock().unwrap_or_else(|e| e.into_inner()).stopped.get(&key).copied() else { return false };
+    let since = now_ms().saturating_sub(at);
+    let typed = |s: &str| pty.typed_ago_ms(s).is_some_and(|ago| ago < since);
+    if !typed(caller) && !typed(id) {
+        return true;
+    }
+    reg().lock().unwrap_or_else(|e| e.into_inner()).stopped.remove(&key);
+    crate::log::info("agents", &format!("notices to {} about {} go on: a person has typed in", label(caller), label(id)));
+    false
+}
+
 /// The notice for one session, or None while nothing has happened to it.
 fn notice_line(
     pty: &crate::pty::PtyManager,
@@ -3251,10 +3419,35 @@ fn notice_line(
     let ts = crate::activity::turn_state(id);
     let ended = ts.map(|t| t.turns_ended).unwrap_or(0);
     let turn = ts.map(|t| t.turn);
-    if ended > o.baseline && turn != Some(crate::activity::Turn::Busy) {
-        // Claude Code ends a turn on a job it put in the background and
-        // takes it up again in a turn of its own when the job is done.
-        let background = ts.is_some_and(|t| t.children_busy) && pty.alive(id);
+    let alive = live(pty, id);
+    // Claude Code ends a turn on a job it put in the background and takes it
+    // up again in a turn of its own when the job is done; for anything else
+    // that job's end is all there will be to hear of.
+    let background = ts.is_some_and(|t| t.children_busy) && alive;
+    let real_turn = o.told_pending && real_turn_past(id, o.baseline, ended);
+    let now = verdict(&o, ended, turn, background, real_turn);
+    if now == Verdict::OnlyNotices {
+        return Some((None, Settled::Skip(ended)));
+    }
+    if now == Verdict::AtWork && o.held.is_some() {
+        return Some((None, Settled::Unhold));
+    }
+    if now == Verdict::JobOver && alive {
+        // Its processes come and go between samples, and a job's end may be
+        // followed by the turn the CLI takes it up in.
+        return match o.held {
+            Some((n, at)) if n == ended && now_ms().saturating_sub(at) >= BACKGROUND_GRACE_MS => Some((
+                Some(format!(
+                    "{who}: what it left running has ended, and it has said nothing since your last notice. \
+                     It does not take that up by itself; luna_send asks it how it went."
+                )),
+                Settled::Answered,
+            )),
+            Some((n, _)) if n == ended => None,
+            _ => Some((None, Settled::Hold(ended))),
+        };
+    }
+    if now == Verdict::TurnOver {
         let replies = replies_since(pty, id, k.provider, o.cursor);
         let settle_ms = if background {
             BACKGROUND_GRACE_MS
@@ -3281,12 +3474,15 @@ fn notice_line(
             n => format!(" with {n} messages since you asked; {}", answer_file(id, &replies)),
         };
         if background {
-            return Some((
-                // Said first and plainly: a weak model read "ended a turn" as
-                // done and deleted the helper mid-job.
-                Some(format!("{who} is NOT done yet: a job it started still runs in the background. It ended a turn{reply}. Wait for the next notice, which comes when it finishes.")),
-                Settled::Pending(ended, transcript_end(id)),
-            ));
+            // Said first and plainly: a weak model read "ended a turn" as
+            // done and deleted the helper mid-job. Once per debt: a job can
+            // run for days, and each notice costs the caller a turn.
+            let line = if o.told_pending {
+                format!("{who} ended another turn{reply}. A job of its still runs; the next notice comes when it ends, or with a turn of its own.")
+            } else {
+                format!("{who} is NOT done yet: a job it started still runs in the background. It ended a turn{reply}. The next notice comes when that job ends, or with a turn of its own.")
+            };
+            return Some((Some(line), Settled::Pending(ended, transcript_end(id))));
         }
         if crate::background::cut_short(id) {
             return Some((
@@ -3296,7 +3492,7 @@ fn notice_line(
         }
         return Some((Some(format!("{who} finished its turn{reply}.")), Settled::Answered));
     }
-    if !live(pty, id) {
+    if !alive {
         if o.lost {
             return Some((
                 Some(format!("{who} has exited before Luna could type your message in: the user's draft held it until then.")),
@@ -3353,8 +3549,16 @@ fn anything_to_say(pty: &crate::pty::PtyManager, items: &[(String, Known, Owed, 
     items.iter().any(|(id, _, o, _)| {
         let ts = crate::activity::turn_state(id);
         let ended = ts.map(|t| t.turns_ended).unwrap_or(0);
-        (ended > o.baseline && ts.map(|t| t.turn) != Some(crate::activity::Turn::Busy)) || !live(pty, id)
+        (ended > o.baseline && ts.map(|t| t.turn) != Some(crate::activity::Turn::Busy))
+            || job_over(o, ts)
+            || !live(pty, id)
     })
+}
+
+/// Whether a caller told a session is not done yet has that session's job to
+/// hear of: between turns, with nothing of its own left running.
+fn job_over(o: &Owed, ts: Option<crate::activity::TurnState>) -> bool {
+    o.told_pending && ts.is_some_and(|t| t.turn == crate::activity::Turn::Idle && !t.children_busy)
 }
 
 /// Whether a `wait` the caller has out on `id` is to hand this answer over
@@ -3371,6 +3575,7 @@ fn held_for_wait(pty: &crate::pty::PtyManager, caller: &str, id: &str, o: &Owed)
     // A prompt it stopped on is news too: `wait(turn_done)` hands that back.
     let news = (ts.is_some_and(|t| t.turns_ended > o.baseline) && turn != Some(crate::activity::Turn::Busy))
         || turn == Some(crate::activity::Turn::Waiting)
+        || job_over(o, ts)
         || !live(pty, id);
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
     let Some(owed) = r.owed.get_mut(&key) else { return true };
@@ -3443,11 +3648,17 @@ fn notifier() {
             let mut lines = Vec::new();
             let mut settled = Vec::new();
             for (id, k, o, who) in &items {
-                if held_for_wait(&pty, &caller, id, o) {
+                if pair_stopped(&pty, &caller, id) || held_for_wait(&pty, &caller, id, o) {
                     continue;
                 }
                 match notice_line(&pty, who, id, k, *o) {
-                    Some((Some(line), how)) => {
+                    Some((Some(mut line), how)) => {
+                        if counts_for_breaker(&how) && last_notice(&caller, id, now_ms()) {
+                            line.push_str(&format!(
+                                " Luna stops telling you about it now: {BREAKER_NOTICES} notices in {} minutes look like chats waking each other. luna_wait and luna_read still reach it, and a person typing into either chat lifts this.",
+                                BREAKER_WINDOW_MS / 60_000
+                            ));
+                        }
                         lines.push(line);
                         settled.push((id.clone(), how, *o));
                     }
@@ -3457,6 +3668,19 @@ fn notifier() {
                             o.held = Some((ended, now_ms()));
                         }
                     }
+                    Some((None, Settled::Unhold)) => {
+                        let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+                        if let Some(o) = r.owed.get_mut(&(caller.clone(), id.clone())) {
+                            o.held = None;
+                        }
+                    }
+                    Some((None, Settled::Skip(ended))) => {
+                        let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+                        if let Some(o) = r.owed.get_mut(&(caller.clone(), id.clone())).filter(|now| now.baseline == o.baseline) {
+                            o.baseline = ended;
+                            o.held = None;
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -3464,67 +3688,118 @@ fn notifier() {
                 reg().lock().unwrap_or_else(|e| e.into_inner()).notices_held.remove(&caller);
                 continue;
             }
-            let text = format!("{NOTICE_TAG} {}", lines.join(" "));
-            let before = crate::activity::turn_state(&caller);
-            let baseline = before.map(|t| t.turns_ended).unwrap_or(0);
-            let typed = if crate::background::has(&caller) {
-                crate::background::send(&caller, &text).map(|_| Some(true))
-            } else {
-                type_text(&pty, &caller, &text, before.map(|t| t.turn), baseline)
-            };
-            let about = settled.iter().map(|(id, _, _)| label(id)).collect::<Vec<_>>().join(", ");
-            let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-            match typed {
-                Ok(None) => {
-                    r.notices_held.insert(caller.clone(), settled.len());
-                }
-                _ => {
-                    r.notices_held.remove(&caller);
-                }
-            }
-            drop(r);
-            match typed {
-                Ok(None) => {}
-                Ok(Some(started)) => {
-                    if started {
-                        crate::log::info("agents", &format!("notice to {} about {about}", label(&caller)));
-                    } else {
-                        crate::log::warn("agents", &format!("notice to {} about {about} did not start a turn", label(&caller)));
-                    }
-                    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-                    for (id, how, told) in settled {
-                        let key = (caller.clone(), id);
-                        // Typing the notice takes seconds, and the turn it
-                        // starts may ask again before they are over: that
-                        // question is owed on.
-                        let asked_since = r.owed.get(&key).is_some_and(|o| o.baseline != told.baseline || o.cursor != told.cursor);
-                        match how {
-                            _ if asked_since => {}
-                            Settled::Answered | Settled::Exited => {
-                                r.owed.remove(&key);
-                            }
-                            Settled::Waiting => {
-                                if let Some(o) = r.owed.get_mut(&key) {
-                                    o.told_waiting = true;
-                                }
-                            }
-                            Settled::Pending(ended, cursor) => {
-                                r.owed.insert(key, Owed::from(ended, cursor));
-                            }
-                            Settled::Asked(ask) => {
-                                if let Some(o) = r.owed.get_mut(&key) {
-                                    o.told_ask = ask;
-                                }
-                            }
-                            Settled::Hold(_) => {}
-                        }
-                    }
-                }
-                Err(e) => crate::log::warn("agents", &format!("notice to {} about {about} failed: {e}", label(&caller))),
-            }
+            deliver_notice(&pty, &caller, &format!("{NOTICE_TAG} {}", lines.join(" ")), settled);
             idle_looks.insert(caller, 0);
         }
     }
+}
+
+/// What the breaker counts: notices a turn's end brings. Not a prompt or a
+/// question, which hold until they are answered and cannot loop by themselves,
+/// and a busy helper may ask many.
+fn counts_for_breaker(how: &Settled) -> bool {
+    matches!(how, Settled::Answered | Settled::Pending(..))
+}
+
+/// Types a notice into `caller` and settles what it said (`settled`: the
+/// session, what became of it, the debt as it was announced).
+fn deliver_notice(pty: &crate::pty::PtyManager, caller: &str, text: &str, settled: Vec<(String, Settled, Owed)>) {
+    let before = crate::activity::turn_state(caller);
+    let baseline = before.map(|t| t.turns_ended).unwrap_or(0);
+    // The turn it starts: the next, or for a background caller that has begun
+    // one since the look, the one after that.
+    let (typed, turn) = if crate::background::has(caller) {
+        match crate::background::send(caller, text) {
+            Ok(queued) => (Ok(Some(true)), baseline + 1 + u32::from(queued)),
+            Err(e) => (Err(e), 0),
+        }
+    } else {
+        (type_text(pty, caller, text, before.map(|t| t.turn), baseline), baseline + 1)
+    };
+    let about = settled.iter().map(|(id, _, _)| label(id)).collect::<Vec<_>>().join(", ");
+    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    match typed {
+        Ok(None) => {
+            r.notices_held.insert(caller.to_string(), settled.len());
+        }
+        _ => {
+            r.notices_held.remove(caller);
+        }
+    }
+    drop(r);
+    match typed {
+        Ok(None) => {}
+        Ok(Some(started)) => {
+            if started {
+                crate::log::info("agents", &format!("notice to {} about {about}", label(caller)));
+            } else {
+                crate::log::warn("agents", &format!("notice to {} about {about} did not start a turn", label(caller)));
+            }
+            let mut stopped = Vec::new();
+            let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+            // A turn it did not start stays unmarked: at worst the caller hears
+            // of a turn once too often, never misses one.
+            if started {
+                notice_turn(&mut r, caller, turn, settled.iter().map(|(id, _, _)| id.clone()).collect());
+            }
+            for (id, how, told) in settled {
+                if counts_for_breaker(&how) && count_notice(&mut r, caller, &id, now_ms()) {
+                    stopped.push(id.clone());
+                }
+                let key = (caller.to_string(), id);
+                // Typing the notice takes seconds, and the turn it
+                // starts may ask again before they are over: that
+                // question is owed on.
+                let asked_since = r.owed.get(&key).is_some_and(|o| o.baseline != told.baseline || o.cursor != told.cursor);
+                match how {
+                    _ if asked_since => {}
+                    Settled::Answered | Settled::Exited => {
+                        r.owed.remove(&key);
+                    }
+                    Settled::Waiting => {
+                        if let Some(o) = r.owed.get_mut(&key) {
+                            o.told_waiting = true;
+                        }
+                    }
+                    Settled::Pending(ended, cursor) => {
+                        r.owed.insert(key, Owed::pending(ended, cursor));
+                    }
+                    Settled::Asked(ask) => {
+                        if let Some(o) = r.owed.get_mut(&key) {
+                            o.told_ask = ask;
+                        }
+                    }
+                    Settled::Hold(_) | Settled::Unhold | Settled::Skip(_) => {}
+                }
+            }
+            drop(r);
+            for id in stopped {
+                breaker_tripped(caller, &id);
+            }
+        }
+        Err(e) => crate::log::warn("agents", &format!("notice to {} about {about} failed: {e}", label(caller))),
+    }
+}
+
+/// Says that the breaker has stopped a pair: in the log, and once on the
+/// desktop, as nothing else will tell the person why these chats went quiet.
+fn breaker_tripped(caller: &str, id: &str) {
+    crate::log::warn(
+        "agents",
+        &format!(
+            "stopped telling {} about {}: {BREAKER_NOTICES} notices within {} minutes; a person typing into either lifts this",
+            label(caller),
+            label(id),
+            BREAKER_WINDOW_MS / 60_000
+        ),
+    );
+    let chat = chat_name(caller).unwrap_or_else(|| caller.to_string());
+    let other = chat_name(id).unwrap_or_else(|| id.to_string());
+    crate::power::notify_chat(
+        caller,
+        "Luna stopped a notice loop",
+        &format!("\"{chat}\" and \"{other}\" kept waking each other, so Luna has stopped telling the first about the second. Type into either chat to let it go on."),
+    );
 }
 
 // --------------------------------------------------------------- commands --
@@ -3785,6 +4060,152 @@ mod tests {
         reap(&pty);
         assert_eq!(since(), None, "a follow-up starts it over");
         reg().lock().unwrap().auto.remove("ad-child");
+    }
+
+    /// The loop of that night: two chats that wrote to each other, a stray
+    /// process under each. Every notice starts a turn in the chat it goes into,
+    /// and that turn's end is what the other is owed. Driven by the notifier's
+    /// own decisions, with a turn counted the moment its notice goes in.
+    #[test]
+    fn two_chats_with_a_job_each_do_not_wake_each_other_forever() {
+        use crate::activity::Turn;
+        let (a, b) = ("pp-a", "pp-b");
+        let key = |caller: &str, id: &str| (caller.to_string(), id.to_string());
+        let mut turns: HashMap<&str, u32> = HashMap::from([(a, 1), (b, 1)]);
+        owe_from(a, b, 0, 0);
+        owe_from(b, a, 0, 0);
+        let mut notices = 0;
+        // One pass over both debts, with or without the jobs; returns how many
+        // notices went.
+        let pass = |job: bool, turns: &mut HashMap<&str, u32>| {
+            let mut sent = 0;
+            for (caller, id) in [(a, b), (b, a)] {
+                let Some(o) = reg().lock().unwrap().owed.get(&key(caller, id)).copied() else { continue };
+                let ended = turns[id];
+                let v = verdict(&o, ended, Some(Turn::Idle), job, real_turn_past(id, o.baseline, ended));
+                let settled = match v {
+                    Verdict::OnlyNotices => {
+                        reg().lock().unwrap().owed.get_mut(&key(caller, id)).unwrap().baseline = ended;
+                        continue;
+                    }
+                    Verdict::TurnOver if job => Settled::Pending(ended, 0),
+                    Verdict::TurnOver | Verdict::JobOver => Settled::Answered,
+                    Verdict::Nothing | Verdict::AtWork => continue,
+                };
+                sent += 1;
+                let mut r = reg().lock().unwrap();
+                notice_turn(&mut r, caller, turns[caller] + 1, vec![id.to_string()]);
+                match settled {
+                    Settled::Pending(n, c) => {
+                        r.owed.insert(key(caller, id), Owed::pending(n, c));
+                    }
+                    _ => {
+                        r.owed.remove(&key(caller, id));
+                    }
+                }
+                drop(r);
+                *turns.get_mut(caller).unwrap() += 1;
+            }
+            sent
+        };
+        for _ in 0..500 {
+            notices += pass(true, &mut turns);
+        }
+        assert_eq!(notices, 2, "\"NOT done yet\" once per debt, whatever the turns on those notices");
+        let at_rest = turns.clone();
+        for _ in 0..500 {
+            notices += pass(true, &mut turns);
+        }
+        assert_eq!(turns, at_rest, "no notice, no turn: the chats are left at rest");
+        // The jobs end: each is told once, and that is the end of it.
+        for _ in 0..500 {
+            notices += pass(false, &mut turns);
+        }
+        assert_eq!(notices, 4, "the job's end is news, once per debt");
+        assert!(reg().lock().unwrap().owed.get(&key(a, b)).is_none());
+        assert!(reg().lock().unwrap().owed.get(&key(b, a)).is_none());
+        forget(a);
+        forget(b);
+    }
+
+    #[test]
+    fn told_it_is_not_done_a_caller_hears_only_of_news() {
+        use crate::activity::Turn::{Busy, Idle, Waiting};
+        let told = Owed::pending(5, 0);
+        assert_eq!(verdict(&Owed::from(5, 0), 6, Some(Idle), true, false), Verdict::TurnOver, "a first turn end is news, job or not");
+        assert_eq!(verdict(&Owed::from(5, 0), 5, Some(Idle), false, false), Verdict::Nothing);
+        assert_eq!(verdict(&told, 5, Some(Idle), true, false), Verdict::AtWork, "the job runs on");
+        assert_eq!(verdict(&told, 5, Some(Idle), false, false), Verdict::JobOver, "it ended with no turn");
+        assert_eq!(verdict(&told, 5, Some(Busy), false, false), Verdict::Nothing, "a turn runs: its end will say");
+        assert_eq!(verdict(&told, 5, Some(Waiting), false, false), Verdict::Nothing, "on a prompt: its own notice");
+        assert_eq!(verdict(&told, 6, Some(Idle), true, false), Verdict::OnlyNotices, "a turn on a notice is no news");
+        assert_eq!(verdict(&told, 6, Some(Idle), true, true), Verdict::TurnOver, "a turn of its own is");
+        assert_eq!(verdict(&told, 6, Some(Busy), true, true), Verdict::Nothing, "not before it is over");
+    }
+
+    #[test]
+    fn a_turn_counts_for_a_caller_told_it_is_not_done_unless_a_notice_started_it() {
+        let mut r = reg().lock().unwrap();
+        notice_turn(&mut r, "rt-s", 4, vec!["rt-other".into()]);
+        drop(r);
+        assert!(!real_turn_past("rt-s", 3, 4), "the one a notice started");
+        assert!(real_turn_past("rt-s", 3, 5), "and the one after it, which none did");
+        assert!(real_turn_past("rt-s", 2, 4), "or one before");
+        assert!(!real_turn_past("rt-s", 4, 4), "none past the count");
+        // A notice that did not start a turn is not marked: at worst one notice more.
+        assert!(real_turn_past("rt-unmarked", 0, 1));
+        forget("rt-s");
+    }
+
+    #[test]
+    fn a_question_asked_since_makes_a_new_debt() {
+        owe_from("nd-a", "nd-b", 1, 10);
+        reg().lock().unwrap().owed.insert(("nd-a".into(), "nd-b".into()), Owed::pending(2, 20));
+        owe_from("nd-a", "nd-b", 3, 30);
+        let o = reg().lock().unwrap().owed.remove(&("nd-a".to_string(), "nd-b".to_string())).unwrap();
+        assert!(!o.told_pending, "this one may be told it is not done, once");
+        assert_eq!((o.baseline, o.cursor), (3, 20));
+    }
+
+    #[test]
+    fn the_breaker_lets_so_many_notices_through_and_stops_the_pair() {
+        let (caller, id) = ("br-a", "br-b");
+        let pty = crate::pty::manager();
+        let t0 = now_ms();
+        for i in 0..BREAKER_NOTICES - 1 {
+            assert!(!pair_stopped(&pty, caller, id));
+            assert!(!last_notice(caller, id, t0));
+            assert!(!count_notice(&mut reg().lock().unwrap(), caller, id, t0), "notice {i}");
+        }
+        assert!(last_notice(caller, id, t0), "it says so as it goes");
+        assert!(count_notice(&mut reg().lock().unwrap(), caller, id, t0));
+        assert!(pair_stopped(&pty, caller, id), "nothing more for this pair");
+        assert!(!pair_stopped(&pty, id, caller), "the other way round is a pair of its own");
+        forget(caller);
+        assert!(!pair_stopped(&pty, caller, id), "gone with the chat");
+    }
+
+    #[test]
+    fn the_breaker_counts_only_what_falls_within_its_window() {
+        let (caller, id) = ("bw-a", "bw-b");
+        let t0 = now_ms();
+        for _ in 0..BREAKER_NOTICES - 1 {
+            assert!(!count_notice(&mut reg().lock().unwrap(), caller, id, t0));
+        }
+        // A notice now and then over a long job, as real use has it.
+        let later = t0 + BREAKER_WINDOW_MS;
+        assert!(!last_notice(caller, id, later), "the old ones have aged out");
+        assert!(!count_notice(&mut reg().lock().unwrap(), caller, id, later));
+        forget(caller);
+    }
+
+    #[test]
+    fn the_breaker_counts_turn_ends_and_not_prompts() {
+        assert!(counts_for_breaker(&Settled::Answered));
+        assert!(counts_for_breaker(&Settled::Pending(1, 0)));
+        assert!(!counts_for_breaker(&Settled::Waiting), "a busy helper asks often, and holds until answered");
+        assert!(!counts_for_breaker(&Settled::Asked(1)));
+        assert!(!counts_for_breaker(&Settled::Exited));
     }
 
     #[test]
