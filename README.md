@@ -364,11 +364,15 @@ background helper spawned without tools.
 - Codex under `read-only`, `read-only-net` or `workspace-write` (and so `auto-review`) runs its commands in its Windows sandbox
   (the unelevated kind: no administrator, no extra accounts), without the Store's app
   aliases on its PATH, which the sandbox cannot start.
-- Only `read-only-net` and `danger-full-access` have the network. `read-only-net` is Luna's
-  own value: Codex's read-only with the network on, as a permission profile passed for the
-  run and never written to the account's `config.toml`. On Windows, TLS through schannel
-  (the built-in `curl`, `git` over https, `Invoke-WebRequest`) fails under the sandbox's
-  token; `gh`, Python and plain http work.
+- `read-only-net` and `danger-full-access` have the network. `read-only` and `workspace-write`
+  do not by default, but on Windows Codex only points the proxy variables at a dead port, so
+  what ignores them (ssh, raw sockets) still connects: that keeps tools off the network by
+  accident, not data in. `read-only-net` is Luna's own value: Codex's read-only with the
+  network on, as a permission profile passed for the run and never written to the account's
+  `config.toml`; `auto-review` cannot use it, being `workspace-write` only. On Windows, TLS
+  through schannel (the built-in `curl`, `git` over https, `Invoke-WebRequest`) fails under the
+  sandbox's token, and so does Git's bundled ssh; `gh`, Python and plain http work, and so do
+  `git -c http.sslBackend=openssl` and `GIT_SSH` set to Windows' own `ssh.exe`.
 - `luna_spawn` can make a checker: `readOnly: true` takes Edit, Write and NotebookEdit from
   Claude Code, whose Bash can still write, and puts Codex in `read-only`, or in
   `read-only-net` if asked. `agent: "<name>"` runs Claude Code as an agent the project or

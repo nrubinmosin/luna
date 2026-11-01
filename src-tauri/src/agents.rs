@@ -3925,6 +3925,16 @@ mod tests {
     }
 
     #[test]
+    fn read_only_net_goes_with_never_and_not_with_auto_review() {
+        let spec = |approval: &str| {
+            let p = SpawnParams { sandbox: Some("read-only-net".into()), approval: Some(approval.into()), ..Default::default() };
+            background_spec(&p, Provider::Codex, "", "")
+        };
+        assert_eq!(spec("never").ok().unwrap().mode, "read-only-net");
+        assert!(spec("auto-review").err().unwrap().contains("workspace-write only"), "the reviewer's sandbox is fixed");
+    }
+
+    #[test]
     fn what_contradicts_read_only_is_refused() {
         for sandbox in ["workspace-write", "danger-full-access"] {
             let mut p = role(true, |p| p.sandbox = Some(sandbox.into()));

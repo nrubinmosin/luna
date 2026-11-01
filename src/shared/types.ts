@@ -247,7 +247,7 @@ export const CODEX_APPROVAL_HINTS: Record<CodexApproval, string> = {
 };
 
 export const CODEX_SANDBOX_HINTS: Record<CodexSandbox, string> = {
-  'read-only': 'commands can only read the disk, with no network',
+  'read-only': 'commands can only read the disk',
   'read-only-net': 'commands can only read the disk, with the network on',
   'workspace-write': 'writes inside the folder and temp, nowhere else',
   'danger-full-access': 'no sandbox at all'

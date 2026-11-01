@@ -556,8 +556,13 @@ src-tauri/src/
   **`read-only-net`** is Luna's value for what `sandbox_mode` cannot say: `-c default_permissions=
   "luna-read-only-net"` with that profile defined in `-c` too (`extends = ":read-only"`,
   `network.enabled = true`), in place of `--sandbox`/`sandbox_mode`, nothing written to `config.toml`.
-  It beats a `sandbox_mode` in the account's or project's config (checked on 0.166: writes denied,
-  network up). `network.enabled` is direct network, not Codex's proxy (`features.network_proxy`).
+  It beats a `sandbox_mode` or sits beside a `[sandbox_workspace_write]` in the account's or project's
+  config without complaint (checked on 0.166: writes denied, network up). `network.enabled` is direct
+  network, not Codex's proxy (`features.network_proxy`). The other side of it: on Windows the "no network"
+  of `read-only` and `workspace-write` is only env (`HTTP(S)_PROXY`, `ALL_PROXY` and git's at 127.0.0.1:9,
+  `GIT_SSH_COMMAND=cmd /c exit 1`), not a block: ssh and raw sockets connect, and so does `gh` with those
+  variables cleared. Under the restricted token schannel TLS fails (`SEC_E_NO_CREDENTIALS`) and Git's MSYS
+  `sh.exe`/`ssh.exe` die (`CreateFileMapping`, error 5), with the network on or off.
   **The Codex sandbox on Windows.** Without `windows.sandbox` Codex rejects (`approval never`) or
   sends for approval (`on-request`) every command under `read-only`, `read-only-net` and `workspace-write` — even
   `Get-Content`. So those modes get `-c windows.sandbox="unelevated"` (a restricted token per

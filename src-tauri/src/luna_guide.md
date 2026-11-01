@@ -61,10 +61,11 @@ can start other sessions and work with them.
   hooks not at all, and a visible one stops on the prompt. A background Codex trusts the
   folder it is sent to for its run, so the project's own `.codex/` config loads; a visible
   one in a folder Codex does not trust yet has Luna trust it for that account.
-- Codex's network: none in `read-only` or, unless its config says so, `workspace-write`; the
+- Codex's network: none in `read-only` or, unless its config says so, `workspace-write`, but
+  on Windows only by dead proxy variables: what ignores them (ssh, sockets) connects. The
   machine's in `danger-full-access`. `read-only-net` reads only, with network, but on Windows
-  schannel TLS fails there (built-in `curl`, `git` https, `Invoke-WebRequest`); `gh`, Python,
-  plain http and `git -c http.sslBackend=openssl` work.
+  schannel TLS fails (built-in `curl`, `git` https, `Invoke-WebRequest`), as does git's own ssh;
+  `gh`, Python, plain http and `git -c http.sslBackend=openssl` work.
 - `readOnly: true`: Claude Code loses Edit, Write and NotebookEdit, but **Bash can still
   write**; Codex gets `sandbox: read-only` (or `read-only-net` if given), which holds. Refused
   with `acceptEdits`, `auto-review` or a sandbox that writes.
