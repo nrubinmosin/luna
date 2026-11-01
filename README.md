@@ -322,9 +322,14 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   spawned with `resumeOnRestart: true` goes on by itself, those messages included, where Luna
   knows the old turn ended (a normal stop; on Windows any death of the core). One stopped
   before its first turn got anywhere is reported as never started, with its prompt, and with
-  `resumeOnRestart` starts afresh on it. What agents hold of the chats you see — who spawned
-  them, a worktree they were handed, answers owed, messages Luna was holding for your draft —
-  is kept in `chat-ties.json` the same way and picked up when each chat starts again.
+  `resumeOnRestart` starts afresh on it. A visible helper spawned with it goes on too: Luna
+  starts its CLI, in a pane or not, and types the same word in once it is back at its prompt,
+  unless you typed into it or an agent wrote to it first. What agents hold of the chats you
+  see — who spawned them, a worktree they were handed, answers owed, messages Luna was holding
+  for your draft — is kept in `chat-ties.json` the same way and picked up when each chat starts
+  again. So is a `luna_spawn` the core went in the middle of: the agent is told no helper came
+  of it, with its prompt in a file and any worktree it had begun named and left where it is,
+  or with `resumeOnRestart` Luna starts it afresh and says so.
 - The log also says how each run ended. Luna names its own reasons for leaving (tray
   Quit, an update, Windows signing out or shutting down). A small watcher process logs
   the exit code when something else ends it, which tells a kill from outside (Task

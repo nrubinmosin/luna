@@ -146,6 +146,7 @@ fn run() {
     // window or an MCP call can ask after them.
     crate::agents::restore_chats();
     crate::background::restore();
+    crate::agents::take_up_spawns();
     // The hook listener before any session can be spawned with hooks
     // pointing at it; the activity sampler feeds power.rs from then on.
     crate::hub::start();
@@ -197,6 +198,7 @@ fn leave(reason: &str) -> ! {
     crate::lifecycle::exiting(reason);
     let _ = std::fs::remove_file(ipc::discovery_file());
     crate::background::stop_all();
+    crate::agents::freeze_chats();
     crate::pty::manager().shut_down_all(crate::pty::GRACE);
     crate::lifecycle::end_process()
 }

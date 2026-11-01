@@ -270,9 +270,15 @@ fn scan_rollout(path: &Path, from: u64, since_ms: i64, scan: &mut Scan) -> u64 {
         }
         let Ok(v) = serde_json::from_str::<Value>(line) else { return };
         let payload = &v["payload"];
+        let new = v["timestamp"]
+            .as_str()
+            .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+            .map_or(true, |t| t.timestamp_millis() >= since_ms);
         match (v["type"].as_str(), payload["type"].as_str()) {
             (Some("event_msg"), Some("task_started" | "turn_started")) => {
-                scan.working = Some(true);
+                // A turn an earlier process was on went with it, and Codex (0.166)
+                // writes no end for it as it resumes: it sits at its composer.
+                scan.working = Some(new);
                 scan.failed = None;
             }
             (Some("event_msg"), Some(end @ ("task_complete" | "turn_complete" | "turn_aborted" | "task_aborted"))) => {
@@ -287,10 +293,6 @@ fn scan_rollout(path: &Path, from: u64, since_ms: i64, scan: &mut Scan) -> u64 {
                 if scan.ask.as_ref().is_some_and(|(_, a)| a.blocking) {
                     scan.ask = None;
                 }
-                let new = v["timestamp"]
-                    .as_str()
-                    .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
-                    .map_or(true, |t| t.timestamp_millis() >= since_ms);
                 if new {
                     scan.completed += 1;
                 }
@@ -924,6 +926,27 @@ pub fn messages_from(path: &Path, from: u64) -> (Vec<crate::agents::Message>, u6
 #[cfg(test)]
 mod format_tests {
     use super::*;
+
+    /// Killed mid-turn with its core and resumed: Codex 0.166 sits at its composer
+    /// and writes no end for that turn, which must not read as one on now.
+    #[test]
+    fn a_turn_an_earlier_process_was_on_is_not_running() {
+        let dir = std::env::temp_dir().join(format!("luna-rollout-resumed-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("r.jsonl");
+        let line = |at: &str, kind: &str| format!("{{\"timestamp\":\"{at}\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"{kind}\"}}}}\n");
+        std::fs::write(&path, line("2026-11-01T08:00:00.000Z", "task_started")).unwrap();
+        let since = chrono::DateTime::parse_from_rfc3339("2026-11-01T09:00:00.000Z").unwrap().timestamp_millis();
+        let mut scan = Scan::default();
+        let at = scan_rollout(&path, 0, since, &mut scan);
+        assert_eq!(scan.working, Some(false));
+        // The first turn this process runs reads as one.
+        let more = line("2026-11-01T09:00:05.000Z", "task_started");
+        std::fs::write(&path, format!("{}{more}", line("2026-11-01T08:00:00.000Z", "task_started"))).unwrap();
+        scan_rollout(&path, at, since, &mut scan);
+        assert_eq!(scan.working, Some(true));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// The 0.157 rollout: `task_started` / `task_complete` for the turn, and
     /// the conversation as `response_item` messages with roles.

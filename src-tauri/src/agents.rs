@@ -369,14 +369,106 @@ struct Pending {
     done: Option<Result<String, String>>,
 }
 
+/// A `luna_spawn` taken on, in `chat-ties.json` until a helper has come of it and
+/// its caller is owed by that: a core going before then leaves the caller an error
+/// from the call, or nothing at all, and this is what the next core tells it from.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SpawnTaken {
+    request: u64,
+    caller: String,
+    /// What was asked, its account and folder settled.
+    params: SpawnParams,
+    /// What `params` does not write, the window having no word on them.
+    auto_delete: Option<bool>,
+    resume_on_restart: bool,
+    visible: bool,
+    in_worktree: Option<String>,
+    account_path: String,
+    /// What a visible helper's CLI is started on, kept to give it again
+    /// (`ChatResume::opening`).
+    opening: Option<String>,
+    /// With `worktree`: the worktrees there were as it was taken on.
+    worktrees_before: Vec<String>,
+    /// The session it came to, as soon as there is one (`spawn_is`).
+    helper: Option<String>,
+    /// Read from what the last core left: no call waits on it any more.
+    #[serde(skip)]
+    left_by_core: bool,
+    /// What its caller is to be told, once worked out (`settle_spawns`).
+    #[serde(skip)]
+    news: Option<String>,
+}
+
+/// A spawn's record for as long as its call runs, however that ends.
+struct SpawnUnderWay(u64);
+
+impl SpawnUnderWay {
+    /// On disk before anything is made.
+    fn begin(caller: &str, params: &SpawnParams, account_path: &str, in_worktree: Option<&str>) -> SpawnUnderWay {
+        let worktrees_before = match (params.worktree, params.folder.as_deref()) {
+            (Some(true), Some(folder)) => crate::worktree::made_for(folder, account_path),
+            _ => Vec::new(),
+        };
+        let taken = SpawnTaken {
+            request: 0,
+            caller: caller.to_string(),
+            params: params.clone(),
+            auto_delete: params.auto_delete,
+            resume_on_restart: params.resume_on_restart == Some(true),
+            visible: params.visible == Some(true),
+            in_worktree: in_worktree.map(str::to_owned),
+            account_path: account_path.to_string(),
+            opening: None,
+            worktrees_before,
+            helper: None,
+            left_by_core: false,
+            news: None,
+        };
+        let request = {
+            let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+            let request = r.next_request;
+            r.next_request += 1;
+            r.spawns.insert(request, SpawnTaken { request, ..taken });
+            request
+        };
+        crate::background::save();
+        SpawnUnderWay(request)
+    }
+}
+
+impl Drop for SpawnUnderWay {
+    fn drop(&mut self) {
+        reg().lock().unwrap_or_else(|e| e.into_inner()).spawns.remove(&self.0);
+        crate::background::save();
+    }
+}
+
+/// A visible helper spawned with `resumeOnRestart` that a core's going stopped
+/// mid-turn, until the text that carries it on has gone in or will not.
+struct ChatResume {
+    /// What its CLI was first started on: with no conversation to carry on (the
+    /// CLI came back afresh), this is what it gets.
+    opening: Option<String>,
+    /// Looks in a row that found it up, drawn and between turns.
+    looks: u32,
+}
+
 struct Registry {
     tokens: HashMap<String, String>,
     known: HashMap<String, Known>,
     pending: HashMap<u64, std::sync::Arc<(Mutex<Pending>, Condvar)>>,
-    /// Spawns whose caller stopped waiting (SPAWN_TIMEOUT), by request id:
-    /// the caller to hand the chat to should the frontend still make it.
+    /// Spawns whose caller stopped waiting (SPAWN_TIMEOUT), or which the last
+    /// core left, by request id: the caller to hand the chat to should the
+    /// frontend still make it.
     abandoned: HashMap<u64, (String, bool)>,
     next_request: u64,
+    /// Spawns taken on and not yet seen through, by request id.
+    spawns: HashMap<u64, SpawnTaken>,
+    /// Visible helpers that are to go on by themselves, by id.
+    resumes: HashMap<String, ChatResume>,
+    /// What each visible helper with `resumeOnRestart` was started on, by id.
+    openings: HashMap<String, String>,
     /// Helpers that run in a worktree they were handed rather than made:
     /// deleting one never drops that worktree, whose work is its caller's.
     borrowed: std::collections::HashSet<String>,
@@ -556,6 +648,9 @@ fn reg() -> &'static Mutex<Registry> {
             abandoned: HashMap::new(),
             borrowed: Default::default(),
             next_request: 1,
+            spawns: HashMap::new(),
+            resumes: HashMap::new(),
+            openings: HashMap::new(),
             seen: HashMap::new(),
             names: HashMap::new(),
             groups: HashMap::new(),
@@ -845,6 +940,14 @@ pub fn register(
     let orphan = previous.as_ref().is_some_and(|k| k.orphan);
     let window_says = parent;
     let parent = parent_by_record(previous.as_ref(), parent);
+    // The window's settings are the flags it starts a CLI with: this one is the
+    // core's, kept across every start.
+    let mut settings = settings;
+    if previous.as_ref().is_some_and(|k| k.settings["resumeOnRestart"] == true) {
+        settings["resumeOnRestart"] = serde_json::json!(true);
+    }
+    // A session running again: what the chats' ties say is news once more.
+    CHATS_FROZEN.store(false, std::sync::atomic::Ordering::SeqCst);
     // Kept across cores too (`restore_chats`), so a new parent the window never
     // heard of before its core went is said again, and this stays the one record.
     if let (Some(says), Some(is)) = (window_says, &parent) {
@@ -994,10 +1097,14 @@ pub fn resumes_on_restart(id: &str) -> bool {
 /// `turns_ended` counted so far, and has yet to hear of it. The cursor stays:
 /// the answer is all it has said since they asked.
 pub fn resumed(id: &str, turns_ended: u32) {
-    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    resumed_in(&mut reg().lock().unwrap_or_else(|e| e.into_inner()), id, turns_ended);
+}
+
+fn resumed_in(r: &mut Registry, id: &str, turns_ended: u32) {
     for (_, o) in r.owed.iter_mut().filter(|((_, s), _)| s == id) {
         o.baseline = o.baseline.max(turns_ended);
         o.resumed = true;
+        o.cut_short = false;
     }
 }
 
@@ -1024,6 +1131,9 @@ pub struct Ties {
     /// the count alone reads as an answer once that turn is counted as ended.
     #[serde(default)]
     pub cut_short: Vec<String>,
+    /// See `ChatResume::opening`: written only until a first turn has ended.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opening: Option<String>,
 }
 
 pub fn ties_of(id: &str) -> Option<Ties> {
@@ -1043,6 +1153,7 @@ fn ties_in(r: &Registry, id: &str) -> Option<Ties> {
         owed: r.owed.iter().filter(|((_, s), _)| s == id).map(|((c, _), o)| (c.clone(), o.baseline, o.cursor)).collect(),
         seen: r.seen.iter().filter(|((_, s), _)| s == id).map(|((c, _), n)| (c.clone(), *n)).collect(),
         cut_short: r.owed.iter().filter(|((_, s), o)| s == id && o.cut_short).map(|((c, _), _)| c.clone()).collect(),
+        opening: r.openings.get(id).cloned(),
     })
 }
 
@@ -1088,6 +1199,10 @@ struct SavedChat {
     /// See `activity::turns_counted`.
     turns_ended: u32,
     transcript: Option<std::path::PathBuf>,
+    /// Its turn was running as this was written, or was yet to be carried on
+    /// (`Registry::resumes`).
+    #[serde(default)]
+    mid_turn: bool,
     ties: Ties,
 }
 
@@ -1105,6 +1220,8 @@ struct SavedSend {
 struct SavedChats {
     chats: Vec<SavedChat>,
     sends: Vec<SavedSend>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    spawns: Vec<SpawnTaken>,
 }
 
 fn chat_ties_file() -> std::path::PathBuf {
@@ -1115,10 +1232,20 @@ fn chat_ties_file() -> std::path::PathBuf {
 /// not to be written over what the last core left.
 static CHATS_READ: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// What the last write says stands, for the core after this one. Set as every
+/// session is stopped (a core leaving, an update): a turn asked to quit is a turn
+/// ended to the sampler, Codex writing an abort for it that counts as its end, and
+/// written down that would have the next core take it for one that finished.
+static CHATS_FROZEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn freeze_chats() {
+    CHATS_FROZEN.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
 /// What there is to keep of the sessions the window runs. A chat nobody spawned,
 /// wrote to or handed anything has nothing to keep: it comes back as it was.
 fn chats_now() -> SavedChats {
-    let (mut chats, sends) = {
+    let (mut chats, sends, mut spawns) = {
         let r = reg().lock().unwrap_or_else(|e| e.into_inner());
         let sends: Vec<SavedSend> = r.held.iter().map(|h| SavedSend { caller: h.caller.clone(), id: h.id.clone(), text: h.text.clone() }).collect();
         let chats: Vec<SavedChat> = r
@@ -1142,18 +1269,24 @@ fn chats_now() -> SavedChats {
                     account_path: k.account_path.clone(),
                     turns_ended: 0,
                     transcript: None,
+                    mid_turn: r.resumes.contains_key(id),
                     ties: ties_in(&r, id)?,
                 })
             })
             .collect();
-        (chats, sends)
+        (chats, sends, r.spawns.values().cloned().collect::<Vec<SpawnTaken>>())
     };
     for c in &mut chats {
         c.turns_ended = crate::activity::turns_counted(&c.id).unwrap_or(0);
         c.transcript = transcripts().lock().unwrap_or_else(|e| e.into_inner()).get(&c.id).cloned();
+        c.mid_turn |= crate::activity::turn_state(&c.id).is_some_and(|t| matches!(t.turn, crate::activity::Turn::Busy | crate::activity::Turn::Waiting));
+        if c.turns_ended > 0 {
+            c.ties.opening = None;
+        }
     }
     chats.sort_by(|a, b| a.id.cmp(&b.id));
-    SavedChats { chats, sends }
+    spawns.sort_by_key(|s| s.request);
+    SavedChats { chats, sends, spawns }
 }
 
 /// Writes `chats_now` out if it changed since the last write (background.rs
@@ -1161,7 +1294,7 @@ fn chats_now() -> SavedChats {
 pub fn save_chats() {
     use std::sync::atomic::Ordering;
     static LAST: Mutex<Vec<u8>> = Mutex::new(Vec::new());
-    if !CHATS_READ.load(Ordering::SeqCst) {
+    if !CHATS_READ.load(Ordering::SeqCst) || CHATS_FROZEN.load(Ordering::SeqCst) {
         return;
     }
     let Ok(bytes) = serde_json::to_vec_pretty(&chats_now()) else { return };
@@ -1201,6 +1334,7 @@ fn take_up_chats(saved: SavedChats) {
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
     for c in saved.chats {
         let ties = c.ties;
+        let resumes = ties.settings["resumeOnRestart"] == true;
         r.known.entry(c.id.clone()).or_insert(Known {
             provider: c.provider,
             account: account_name(&c.account_path),
@@ -1225,21 +1359,40 @@ fn take_up_chats(saved: SavedChats) {
         // it was being written by went with it, and the one the window starts
         // is between turns. That turn counts as ended, as a helper's does.
         let mut count = c.turns_ended;
+        // One cut short under an earlier core and not carried on by now was called
+        // off (`call_off_resume`): the mark would still be there otherwise.
+        let mut went_now = c.mid_turn;
         for (caller, baseline, cursor) in ties.owed {
             let mut o = Owed::from(baseline, cursor);
-            if c.turns_ended <= baseline || ties.cut_short.contains(&caller) {
+            let already = ties.cut_short.contains(&caller);
+            if c.turns_ended <= baseline || already {
                 o.cut_short = true;
                 count = count.max(baseline.saturating_add(1));
+                went_now |= !already;
             }
             r.owed.insert((caller, c.id.clone()), o);
         }
         for (caller, n) in ties.seen {
             r.seen.insert((caller, c.id.clone()), n);
         }
+        if let Some(opening) = ties.opening {
+            r.openings.insert(c.id.clone(), opening);
+        }
+        if resumes && went_now {
+            let opening = r.openings.get(&c.id).cloned();
+            r.resumes.insert(c.id.clone(), ChatResume { opening, looks: 0 });
+        }
         counts.push((c.id, count, c.transcript));
     }
     for h in saved.sends {
         r.held.push(Held { caller: h.caller, id: h.id, text: h.text, since: now_ms(), told: false });
+    }
+    // The window may be part way through one yet, and reach this core with it.
+    for mut s in saved.spawns {
+        s.left_by_core = true;
+        r.next_request = r.next_request.max(s.request.saturating_add(1));
+        r.abandoned.insert(s.request, (s.caller.clone(), s.in_worktree.is_some()));
+        r.spawns.insert(s.request, s);
     }
     drop(r);
     for (id, count, transcript) in counts {
@@ -1259,6 +1412,42 @@ fn core_up_ms() -> u64 {
 /// Whether a session the last core knew may yet be started by the window.
 fn returning(k: &Known, up_ms: u64) -> bool {
     k.waiting && up_ms < SESSION_RETURN_MS
+}
+
+/// A spawn the last core left that had come to a session it saved: that session
+/// answers its caller as any other, so it owes it now if the call went before
+/// `owe_from`, and it may yet go on by itself. Once both registries are read.
+pub fn take_up_spawns() {
+    let mut counted = Vec::new();
+    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    let made: Vec<(String, String)> = r
+        .spawns
+        .values()
+        .filter_map(|s| s.helper.as_ref().filter(|h| r.known.contains_key(*h)).map(|h| (s.caller.clone(), h.clone())))
+        .collect();
+    for (caller, id) in made {
+        let chat = !crate::background::has(&id);
+        let key = (caller, id.clone());
+        if !r.owed.contains_key(&key) {
+            // No turn of it counted yet: it went with the core, as `take_up_chats`
+            // has it for a chat's debt the count had not passed.
+            let mut o = Owed::from(0, 0);
+            o.cut_short = chat;
+            r.owed.insert(key.clone(), o);
+            if chat {
+                counted.push(id.clone());
+            }
+        }
+        r.seen.entry(key).or_insert(0);
+        if chat && r.known.get(&id).is_some_and(|k| k.settings["resumeOnRestart"] == true) && !r.resumes.contains_key(&id) {
+            let opening = r.openings.get(&id).cloned();
+            r.resumes.insert(id, ChatResume { opening, looks: 0 });
+        }
+    }
+    drop(r);
+    for id in counted {
+        crate::activity::keep_count(&id, crate::activity::turns_counted(&id).unwrap_or(0).max(1));
+    }
 }
 
 /// The window's Delete on a background helper: as its agent would, the
@@ -2244,13 +2433,10 @@ pub fn spawn(caller: &str, mut params: SpawnParams) -> Result<Spawned, String> {
     if params.prompt.trim().is_empty() {
         return Err("prompt is required".into());
     }
-    if params.resume_on_restart == Some(true) && params.visible == Some(true) {
-        return Err("resumeOnRestart is for background helpers: a visible chat comes back when the window starts it again, for the user to go on with".into());
-    }
     // Off the registry lock: this reads the CLI's registry from disk. A
     // helper works where its caller does, worktree and all.
     let worktree = if params.folder.is_none() { caller_worktree(caller) } else { None };
-    let (request_id, slot, in_worktree, account_choice) = {
+    let (taken, slot, in_worktree, account_choice) = {
         let me = {
             let r = reg().lock().unwrap_or_else(|e| e.into_inner());
             let me = r.known.get(caller).cloned().ok_or("caller is not a registered session")?;
@@ -2335,16 +2521,15 @@ pub fn spawn(caller: &str, mut params: SpawnParams) -> Result<Spawned, String> {
         };
         params.account = Some(AccountAsk::One(account.name.clone()));
         let account_choice = picked.map(|(_, choice)| choice);
+        let taken = SpawnUnderWay::begin(caller, &params, &account.path, in_worktree.as_deref());
         if !params.visible.unwrap_or(false) {
-            return spawn_background(caller, params, account.path, in_worktree).map(|s| Spawned { account_choice, ..s });
+            return spawn_background(caller, params, account.path, in_worktree, taken.0).map(|s| Spawned { account_choice, ..s });
         }
-        let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-        let id = r.next_request;
-        r.next_request += 1;
         let slot = std::sync::Arc::new((Mutex::new(Pending::default()), Condvar::new()));
-        r.pending.insert(id, slot.clone());
-        (id, slot, in_worktree, account_choice)
+        reg().lock().unwrap_or_else(|e| e.into_inner()).pending.insert(taken.0, slot.clone());
+        (taken, slot, in_worktree, account_choice)
     };
+    let request_id = taken.0;
 
     let borrowed = in_worktree.is_some();
     let auto_delete = params.auto_delete.unwrap_or(false);
@@ -2360,6 +2545,9 @@ pub fn spawn(caller: &str, mut params: SpawnParams) -> Result<Spawned, String> {
     } else {
         spill(&params.prompt)
     };
+    if let Some(s) = reg().lock().unwrap_or_else(|e| e.into_inner()).spawns.get_mut(&request_id).filter(|s| s.resume_on_restart) {
+        s.opening = Some(params.prompt.clone());
+    }
     let hooks_unasked = provider == Provider::Codex.as_str() && crate::codex::hooks::unasked_in(&folder);
     crate::emit::to_ui("agent://spawn", SpawnRequest { request_id, parent_id: caller.to_string(), in_worktree, hooks_unasked, params });
 
@@ -2401,6 +2589,8 @@ pub fn spawn(caller: &str, mut params: SpawnParams) -> Result<Spawned, String> {
         }
         Some(Err(e)) => return Err(e),
         None => {
+            // Still under way, for as long as the window may answer it.
+            std::mem::forget(taken);
             return Err(format!(
                 "the app did not start the session within {}s. It may still come up: luna_list will show it as yours \
                  and Luna will tell you when it answers, so check luna_list before spawning again. Helpers are made by \
@@ -2583,7 +2773,7 @@ fn background_spec(params: &SpawnParams, provider: Provider, account_path: &str,
 
 /// `spawn` for a helper with no row: started here, in the core, on the
 /// settings `background_spec` works out.
-fn spawn_background(caller: &str, params: SpawnParams, account_path: String, in_worktree: Option<String>) -> Result<Spawned, String> {
+fn spawn_background(caller: &str, params: SpawnParams, account_path: String, in_worktree: Option<String>, request: u64) -> Result<Spawned, String> {
     let provider = if params.provider.as_deref() == Some("codex") { Provider::Codex } else { Provider::Claude };
     let project = params.folder.clone().unwrap_or_default();
     let own_worktree = params.worktree.unwrap_or(false);
@@ -2637,6 +2827,7 @@ fn spawn_background(caller: &str, params: SpawnParams, account_path: String, in_
             r.auto.insert(id.clone(), Auto::default());
         }
     }
+    spawn_is(request, &id);
     if let Err(e) = crate::background::start(&id, spec, &params.prompt) {
         forget(&id);
         return Err(e);
@@ -2705,6 +2896,33 @@ fn spill(text: &str) -> String {
     )
 }
 
+/// The session a spawn came to, as soon as it is registered: what the spawn asked
+/// of it that the window does not carry goes on it now, as a core may go before
+/// the spawn gets any further, and from here on `take_up_spawns` finds it.
+pub fn spawn_is(request: u64, id: &str) {
+    {
+        let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+        let Some(s) = r.spawns.get_mut(&request) else { return };
+        s.helper = Some(id.to_string());
+        let (resumes, opening, borrowed, auto) = (s.resume_on_restart, s.opening.clone(), s.in_worktree.is_some(), s.auto_delete == Some(true));
+        if borrowed {
+            r.borrowed.insert(id.to_string());
+        }
+        if auto {
+            r.auto.entry(id.to_string()).or_default();
+        }
+        if resumes {
+            if let Some(k) = r.known.get_mut(id) {
+                k.settings["resumeOnRestart"] = serde_json::json!(true);
+            }
+            if let Some(opening) = opening {
+                r.openings.insert(id.to_string(), opening);
+            }
+        }
+    }
+    crate::background::save();
+}
+
 /// The frontend's answer to `agent://spawn`.
 #[tauri::command]
 pub fn agent_spawned(request_id: u64, chat_id: Option<String>, name: Option<String>, error: Option<String>) {
@@ -2720,6 +2938,11 @@ pub fn agent_spawned(request_id: u64, chat_id: Option<String>, name: Option<Stri
         if let (Some((_, true)), Some(id)) = (&caller, &chat_id) {
             r.borrowed.insert(id.clone());
         }
+        // A failure of one the last core left is still news to its caller, who
+        // has heard nothing: `settle_spawns` tells it.
+        if chat_id.is_some() || r.spawns.get(&request_id).is_some_and(|s| !s.left_by_core) {
+            r.spawns.remove(&request_id);
+        }
         drop(r);
         // Too late for the caller's spawn, not for the caller: the session
         // registered as its child, so `luna_list` shows it, and the answer
@@ -2729,6 +2952,7 @@ pub fn agent_spawned(request_id: u64, chat_id: Option<String>, name: Option<Stri
             shown(&caller, &id, 0);
             owe_from(&caller, &id, 0, 0);
         }
+        crate::background::save();
         return;
     };
     let (lock, cv) = &*slot;
@@ -2872,6 +3096,8 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool) -> Result<Sent,
              an opening prompt from luna_spawn is held and runs once it is up — luna_wait(turn_done) for the reply"
         ));
     }
+    // What a caller sends now is what it goes on with.
+    call_off_resume(id, "a session sent it text first");
     // Text typed now would land in the middle of what a person is typing, or
     // go out with a draft they left: it waits for them (`deliver_held`),
     // unless the draft can be put aside (`type_text`).
@@ -3058,7 +3284,154 @@ pub fn held_count(id: &str) -> usize {
 fn held_sender() {
     loop {
         std::thread::sleep(NOTIFY_EVERY);
-        deliver_held(&crate::pty::manager());
+        let pty = crate::pty::manager();
+        resume_chats(&pty);
+        deliver_held(&pty);
+    }
+}
+
+/// Whether Luna means to carry this chat on by itself and has not yet: the text
+/// held for it goes in with that (`resume_chat`), and what it said so far is no
+/// answer while the rest is on its way.
+fn resume_pending(id: &str) -> bool {
+    reg().lock().unwrap_or_else(|e| e.into_inner()).resumes.contains_key(id)
+}
+
+/// It is off: the caller hears the plain "did NOT finish" (`notice_line`), and
+/// what was held for it goes in as any held text does.
+fn call_off_resume(id: &str, why: &str) {
+    if reg().lock().unwrap_or_else(|e| e.into_inner()).resumes.remove(id).is_some() {
+        crate::log::warn("agents", &format!("{}: not carried on by itself after a core stopped its turn: {why}", label(id)));
+    }
+}
+
+/// The chats the window is to start for this (`resume_chats`): a chat's CLI
+/// otherwise starts as a pane attaches, and a helper usually sits in none.
+#[tauri::command]
+pub fn agent_resumes() -> Vec<String> {
+    let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    r.resumes.keys().filter(|id| r.known.get(*id).is_some_and(|k| k.waiting)).cloned().collect()
+}
+
+/// Where a chat to carry on stands: Ok(true) ready now, Ok(false) not yet, Err
+/// why it is off. `ready`: its CLI stands at an empty prompt, between turns with
+/// nothing up. Given as long as a chat is to come back at all, then as
+/// long as a caller is: Claude Code can take minutes to draw.
+fn resume_look(waiting: bool, up_ms: u64, alive: bool, typed: bool, ready: bool) -> Result<bool, &'static str> {
+    if waiting {
+        return if up_ms < SESSION_RETURN_MS { Ok(false) } else { Err("the window has not started it") };
+    }
+    if !alive {
+        return Err("its CLI did not stay up");
+    }
+    if typed {
+        return Err("a person has typed into it");
+    }
+    if up_ms >= CALLER_RETURN_MS {
+        return Err("its CLI has not come to its prompt");
+    }
+    Ok(ready)
+}
+
+/// One look at every chat to carry on, typing it in where it has stood ready for
+/// two looks in a row (`NOTIFY_IDLE_LOOKS`, as for a notice).
+fn resume_chats(pty: &crate::pty::PtyManager) {
+    let ids: Vec<String> = reg().lock().unwrap_or_else(|e| e.into_inner()).resumes.keys().cloned().collect();
+    for id in ids {
+        let waiting = reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(&id).map_or(true, |k| k.waiting);
+        let alive = pty.alive(&id);
+        let ready = alive
+            && crate::activity::turn_state(&id).is_some_and(|t| t.turn == crate::activity::Turn::Idle)
+            && pty.at_prompt(&id)
+            && !ask_of(&id).is_some_and(|a| a.blocking);
+        match resume_look(waiting, core_up_ms(), alive, pty.typed_ago_ms(&id).is_some(), ready) {
+            Err(why) => call_off_resume(&id, why),
+            Ok(ready) => {
+                let looks = {
+                    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+                    let Some(res) = r.resumes.get_mut(&id) else { continue };
+                    res.looks = if ready { res.looks + 1 } else { 0 };
+                    res.looks
+                };
+                if looks >= NOTIFY_IDLE_LOOKS {
+                    resume_chat(pty, &id);
+                }
+            }
+        }
+    }
+}
+
+/// What a chat is typed to go on: with a conversation (`resuming`), why it stopped
+/// and what never reached it, as a background helper is told; with none, its
+/// opening prompt and that. None with neither to go on.
+fn resume_words(resuming: bool, opening: Option<String>, batch: &[crate::background::Queued]) -> Option<String> {
+    if resuming {
+        return Some(crate::background::resume_text(batch));
+    }
+    let first = crate::background::Queued { from: None, text: opening? };
+    Some(crate::background::joined(&[std::slice::from_ref(&first), batch].concat()))
+}
+
+/// Types in the text that carries a chat on, with what was held for it. A person
+/// or a `send` that has got there first has taken it off the list by now (as
+/// `resume` finds under its lock), and any `send` after this finds the turn it
+/// starts and queues behind it. Its callers are owed the end of that turn, and told
+/// it is running; a text that does not go in leaves them the plain notice.
+fn resume_chat(pty: &crate::pty::PtyManager, id: &str) {
+    let Some(typing) = TypingInto::claim(id) else { return };
+    let resuming = pty.probe(id).is_some_and(|p| p.resume.is_some());
+    let (opening, batch) = {
+        let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+        let Some(res) = r.resumes.get(id) else { return };
+        let batch: Vec<crate::background::Queued> =
+            r.held.iter().filter(|h| h.id == id).map(|h| crate::background::Queued { from: Some(h.caller.clone()), text: h.text.clone() }).collect();
+        (res.opening.clone(), batch)
+    };
+    if pty.typed_ago_ms(id).is_some() {
+        return call_off_resume(id, "a person has typed into it");
+    }
+    let Some(text) = resume_words(resuming, opening, &batch) else {
+        return call_off_resume(id, "it came back with no conversation, and its prompt was not kept");
+    };
+    let before = crate::activity::turn_state(id);
+    let count = before.map_or(0, |t| t.turns_ended);
+    let cursor = transcript_end(id);
+    let started = match type_text(pty, id, &spill(&text), before.map(|t| t.turn), count) {
+        Ok(Some(started)) => started,
+        Ok(None) => return call_off_resume(id, "a person's draft is in the way"),
+        Err(e) => return call_off_resume(id, &e),
+    };
+    // Each sender's text went in as `deliver_held` would have typed it.
+    let mut senders: Vec<&str> = batch.iter().filter_map(|q| q.from.as_deref()).collect();
+    senders.dedup();
+    for sender in senders {
+        seen(sender, id, count);
+        owe_from(sender, id, count, cursor);
+        if let Some(o) = reg().lock().unwrap_or_else(|e| e.into_inner()).owed.get_mut(&(sender.to_string(), id.to_string())) {
+            o.late = true;
+        }
+    }
+    {
+        let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+        let mut typed_in = batch.len();
+        r.held.retain(|h| {
+            let went = h.id == id && typed_in > 0;
+            typed_in -= usize::from(went);
+            !went
+        });
+        // In one hold with its leaving the list, or the notifier could tell the
+        // plain notice in between.
+        if started {
+            resumed_in(&mut r, id, count);
+        }
+        r.resumes.remove(id);
+    }
+    drop(typing);
+    crate::background::save();
+    if started {
+        crate::log::warn("agents", &format!("{}: carried on by itself after a core stopped its turn, {} held message(s) with it", label(id), batch.len()));
+    } else {
+        crate::log::warn("agents", &format!("{}: Luna typed in what carries it on and no turn began", label(id)));
     }
 }
 
@@ -3090,6 +3463,10 @@ fn deliver_held(pty: &crate::pty::PtyManager) {
                 o.lost = true;
                 reg().lock().unwrap_or_else(|e| e.into_inner()).owed.insert((caller.clone(), id.clone()), o);
             }
+            continue;
+        }
+        // It goes in with what carries the chat on (`resume_chat`).
+        if resume_pending(&id) {
             continue;
         }
         // One at a time per session, so they go in the order they came.
@@ -3565,6 +3942,7 @@ pub fn read(
     let done = ts.map_or(true, |t| t.turn == crate::activity::Turn::Idle && !t.children_busy);
     let settles = whole
         && done
+        && !resume_pending(id)
         && owed.is_some_and(|o| turns_ended > o.baseline && (!o.queued || queue_settled(&key, o, turns_ended)));
     // Ahead of the hand-over, which takes it off. With an answer still to come
     // it stays for the notice; with none owed this read is all that tells it.
@@ -3718,8 +4096,9 @@ fn wait_for(
     let pty = crate::pty::manager();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_s.clamp(1, 1800));
     // Text Luna holds for a person's draft goes in first; the turn to wait
-    // for is the one it starts, past whatever the person sent meanwhile.
-    while is_held(caller, id) {
+    // for is the one it starts, past whatever the person sent meanwhile. So does
+    // what carries it on after a core stopped its turn.
+    while is_held(caller, id) || resume_pending(id) {
         if gone() {
             return gone_err();
         }
@@ -4392,6 +4771,9 @@ pub fn forget(id: &str) {
     r.owed.retain(|(who, chat), _| who != id && chat != id);
     r.answered.retain(|(who, chat), _| who != id && chat != id);
     r.abandoned.retain(|_, (caller, _)| caller != id);
+    r.spawns.retain(|_, s| s.caller != id);
+    r.resumes.remove(id);
+    r.openings.remove(id);
     r.borrowed.remove(id);
     r.waits.retain(|(who, chat), _| who != id && chat != id);
     r.notified.remove(id);
@@ -4822,7 +5204,8 @@ fn notice_line(
             _ => Some((None, Settled::Hold(ended))),
         };
     }
-    if now == Verdict::TurnOver {
+    // Going on by itself any moment: what it said so far is no end of anything.
+    if now == Verdict::TurnOver && !resume_pending(id) {
         let replies = replies_since(pty, id, k.provider, o.cursor);
         let settle_ms = if background {
             BACKGROUND_GRACE_MS
@@ -4933,7 +5316,7 @@ fn standing_line(pty: &crate::pty::PtyManager, who: &str, id: &str, k: &Known, o
             Settled::Exited,
         ));
     }
-    if o.resumed {
+    if o.resumed && !resume_pending(id) {
         return Some((
             Some(format!("{who} was cut short when Luna's core restarted and has resumed automatically, with anything queued for it. It works on; another notice comes when its turn ends.")),
             Settled::Resumed,
@@ -5222,6 +5605,141 @@ fn owed_stands(known: &HashMap<String, Known>, caller: &str, id: &str, up_ms: u6
     known.contains_key(id) && (known.get(caller).is_some_and(|k| !k.waiting) || up_ms < CALLER_RETURN_MS)
 }
 
+/// How a spawn is named to its caller, who may have several: as it was named,
+/// else by its prompt.
+fn spawn_called(s: &SpawnTaken) -> String {
+    let name = s.params.name.as_deref().map(str::trim).filter(|n| !n.is_empty()).map(str::to_owned);
+    match name.or_else(|| crate::pty::title_from_prompt(&s.params.prompt)) {
+        Some(name) => format!("\"{name}\""),
+        None => format!("number {}", s.request),
+    }
+}
+
+/// What a notice says of a worktree this spawn had begun that nothing came of. It
+/// is not removed: it may hold what a person would want, and nothing has claimed
+/// it. A worktree another chat made meanwhile that has no session running in it
+/// reads the same; it is only named.
+fn worktrees_left(s: &SpawnTaken) -> String {
+    let (Some(true), Some(folder)) = (s.params.worktree, s.params.folder.as_deref()) else { return String::new() };
+    let left = crate::worktree::left_since(crate::worktree::made_for(folder, &s.account_path), &s.worktrees_before, &crate::pty::live_cwds());
+    if left.is_empty() {
+        return String::new();
+    }
+    format!(" worktreeLeft: {}: it had begun that, nothing runs there and Luna has not removed it.", left.join(", "))
+}
+
+/// The notice of a spawn nothing came of. It says why the call itself failed: the
+/// caller's CLI went with the same core, and all it has of that call is an error.
+fn never_completed(s: &SpawnTaken, why: Option<&str>) -> String {
+    let prompt = match note_file(&format!("spawn-{}", s.request), &s.params.prompt) {
+        Some(path) => format!("Its prompt is in {}", path.display()),
+        None => "Its prompt was not kept".to_string(),
+    };
+    let why = why.map_or(String::new(), |w| format!(" (started afresh, it failed too: {w})"));
+    format!(
+        "Your luna_spawn {} never completed: Luna's core restarted while it was being made, which is also why that call ended in an error or with no answer. No helper came of it{why}. {prompt}; spawn it again if it still matters.{}",
+        spawn_called(s),
+        worktrees_left(s)
+    )
+}
+
+/// Asks for it again as it was asked (`resumeOnRestart`), as `spawn` would have it
+/// had it not settled anything yet, and leaves what its caller is to hear. Blocks
+/// as a spawn does.
+fn spawn_afresh(s: SpawnTaken) {
+    let mut params = s.params.clone();
+    params.visible = Some(s.visible);
+    params.auto_delete = s.auto_delete;
+    params.resume_on_restart = Some(true);
+    if let Some(worktree) = &s.in_worktree {
+        params.folder = Some(worktree.clone());
+    }
+    let (news, helper) = match spawn(&s.caller, params) {
+        Ok(made) => {
+            crate::log::warn("agents", &format!("{}'s spawn {} started afresh as {} after a core cut it off", label(&s.caller), s.request, label(&made.id)));
+            let line = format!(
+                "Your luna_spawn {} was cut off when Luna's core restarted, which is also why that call ended in an error or with no answer. As it asked with resumeOnRestart, Luna started it afresh as {}: do not spawn it again, and its answer comes as a notice.{}",
+                spawn_called(&s),
+                made.id,
+                worktrees_left(&s)
+            );
+            (line, Some(made.id))
+        }
+        Err(why) => {
+            crate::log::warn("agents", &format!("{}'s spawn {} could not start afresh after a core cut it off: {why}", label(&s.caller), s.request));
+            (never_completed(&s, Some(&why)), None)
+        }
+    };
+    reg().lock().unwrap_or_else(|e| e.into_inner()).spawns.insert(s.request, SpawnTaken { news: Some(news), helper, ..s });
+    crate::background::save();
+}
+
+/// What the spawns the last core left have come to, once a window has had the time
+/// to finish any it was part way through (`SESSION_RETURN_MS`, as for a chat coming
+/// back): a session known by then is one that came of it, and answers as any other
+/// (`take_up_spawns`, and a row since deleted is no longer known); for the rest the
+/// caller is told, or with `resumeOnRestart` it is started afresh and then told.
+fn settle_spawns(up_ms: u64) {
+    if up_ms < SESSION_RETURN_MS {
+        return;
+    }
+    let due: Vec<SpawnTaken> =
+        reg().lock().unwrap_or_else(|e| e.into_inner()).spawns.values().filter(|s| s.left_by_core && s.news.is_none()).cloned().collect();
+    for s in due {
+        let made = {
+            let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+            let made = s.helper.as_ref().is_some_and(|h| r.known.contains_key(h));
+            // Started afresh it has a record of its own: with this one too, a core
+            // going meanwhile would leave two to start.
+            if made || s.resume_on_restart {
+                r.spawns.remove(&s.request);
+            }
+            if !made && s.resume_on_restart {
+                r.abandoned.remove(&s.request);
+            }
+            made
+        };
+        if made {
+            crate::log::info("agents", &format!("{}'s spawn {} had come to {} when a core went", label(&s.caller), s.request, s.helper.as_deref().unwrap_or("")));
+            crate::background::save();
+        } else if s.resume_on_restart {
+            let _ = std::thread::Builder::new().name("luna-spawn-again".into()).spawn(move || spawn_afresh(s));
+        } else {
+            let news = never_completed(&s, None);
+            crate::log::warn("agents", &format!("{}'s spawn {} went with a core: {}", label(&s.caller), s.request, news));
+            if let Some(left) = reg().lock().unwrap_or_else(|e| e.into_inner()).spawns.get_mut(&s.request) {
+                left.news = Some(news);
+            }
+        }
+    }
+}
+
+/// What each caller is to hear of its spawns (`settle_spawns`), by caller: the
+/// request and the line, once it is there to hear it. One that has not come back
+/// in the time a caller gets (CALLER_RETURN_MS), or the dev caller with no terminal
+/// to be told in, goes to the log, which names the file.
+fn spawn_news(up_ms: u64) -> HashMap<String, Vec<(u64, String)>> {
+    let mut news: HashMap<String, Vec<(u64, String)>> = HashMap::new();
+    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    let Registry { spawns, known, .. } = &mut *r;
+    let mut gave_up = Vec::new();
+    let mut told: Vec<&SpawnTaken> = spawns.values().filter(|s| s.news.is_some()).collect();
+    told.sort_by_key(|s| s.request);
+    for s in told {
+        let line = s.news.clone().unwrap_or_default();
+        match known.get(&s.caller) {
+            Some(k) if !k.waiting && s.caller != DEV_CALLER => news.entry(s.caller.clone()).or_default().push((s.request, line)),
+            Some(k) if k.waiting && up_ms < CALLER_RETURN_MS => {}
+            _ => gave_up.push((s.request, s.caller.clone(), line)),
+        }
+    }
+    for (request, caller, line) in gave_up {
+        spawns.remove(&request);
+        crate::log::warn("agents", &format!("{caller} is not there to be told: {line}"));
+    }
+    news
+}
+
 /// Runs for the life of the app: every few seconds, for each caller owed an
 /// answer, checks whether one came and tells the caller once it is idle; and
 /// deletes the `autoDelete` helpers that are done (see `reap`).
@@ -5272,9 +5790,15 @@ fn notifier() {
         for (caller, id) in gave_up {
             crate::log::warn("agents", &format!("{caller} is owed the answer of {} but has not come back in {} min; no notice will go", label(&id), CALLER_RETURN_MS / 60_000));
         }
-        // A caller owed nothing still hears of the quota its helpers run on.
+        // A caller owed nothing still hears of the quota its helpers run on,
+        // and of a spawn of its own that a core's going cut off.
         let mut quota = quota_news(&pty);
         for caller in quota.keys() {
+            by_caller.entry(caller.clone()).or_default();
+        }
+        settle_spawns(core_up_ms());
+        let mut spawns = spawn_news(core_up_ms());
+        for caller in spawns.keys() {
             by_caller.entry(caller.clone()).or_default();
         }
         idle_looks.retain(|c, _| by_caller.contains_key(c));
@@ -5347,6 +5871,8 @@ fn notifier() {
             }
             let quota_lines = quota.remove(&caller).unwrap_or_default();
             lines.extend(quota_lines.iter().map(|n| n.line.clone()));
+            let spawn_lines = spawns.remove(&caller).unwrap_or_default();
+            lines.extend(spawn_lines.iter().map(|(_, line)| line.clone()));
             if lines.is_empty() {
                 reg().lock().unwrap_or_else(|e| e.into_inner()).notices_held.remove(&caller);
                 continue;
@@ -5358,7 +5884,7 @@ fn notifier() {
             let text = format!("{NOTICE_TAG} {}", lines.join(" "));
             let typed = std::thread::Builder::new().name("luna-notice".into()).spawn(move || {
                 let _typing = typing;
-                deliver_notice(&crate::pty::manager(), &caller, &text, settled, quota_lines);
+                deliver_notice(&crate::pty::manager(), &caller, &text, settled, quota_lines, spawn_lines);
             });
             if let Err(e) = typed {
                 crate::log::warn("agents", &format!("could not start typing a notice: {e}"));
@@ -5376,8 +5902,15 @@ fn counts_for_breaker(how: &Settled) -> bool {
 
 /// Types a notice into `caller` and settles what it said (`settled`: the
 /// session, what became of it, the debt as it was announced; `quota_lines`: the
-/// usage windows it told of).
-fn deliver_notice(pty: &crate::pty::PtyManager, caller: &str, text: &str, settled: Vec<(String, Settled, Owed)>, quota_lines: Vec<QuotaNews>) {
+/// usage windows it told of; `spawn_lines`: the spawns cut off by a core going).
+fn deliver_notice(
+    pty: &crate::pty::PtyManager,
+    caller: &str,
+    text: &str,
+    settled: Vec<(String, Settled, Owed)>,
+    quota_lines: Vec<QuotaNews>,
+    spawn_lines: Vec<(u64, String)>,
+) {
     let before = crate::activity::turn_state(caller);
     let baseline = before.map(|t| t.turns_ended).unwrap_or(0);
     // The turn it starts: the next, or for a background caller that has begun
@@ -5394,12 +5927,13 @@ fn deliver_notice(pty: &crate::pty::PtyManager, caller: &str, text: &str, settle
         .iter()
         .map(|(id, _, _)| label(id))
         .chain(quota_lines.iter().map(|n| format!("{} at {}%", n.key.1, n.told.level)))
+        .chain(spawn_lines.iter().map(|(request, _)| format!("spawn {request}")))
         .collect::<Vec<_>>()
         .join(", ");
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
     match typed {
         Ok(None) => {
-            r.notices_held.insert(caller.to_string(), settled.len() + quota_lines.len());
+            r.notices_held.insert(caller.to_string(), settled.len() + quota_lines.len() + spawn_lines.len());
         }
         _ => {
             r.notices_held.remove(caller);
@@ -5434,6 +5968,10 @@ fn deliver_notice(pty: &crate::pty::PtyManager, caller: &str, text: &str, settle
             for n in quota_lines {
                 r.quota_told.insert(n.key, n.told);
             }
+            let told_spawns = !spawn_lines.is_empty();
+            for (request, _) in spawn_lines {
+                r.spawns.remove(&request);
+            }
             let quota_now = told_quota.then(|| quota_bytes(&r.quota_told));
             drop(r);
             if let Some(bytes) = quota_now {
@@ -5442,7 +5980,7 @@ fn deliver_notice(pty: &crate::pty::PtyManager, caller: &str, text: &str, settle
             for id in &told_lost {
                 crate::background::take_undelivered_for(id, caller, parent_of(id).as_deref() == Some(caller));
             }
-            if !told_lost.is_empty() {
+            if !told_lost.is_empty() || told_spawns {
                 crate::background::save();
             }
             for id in stopped {
@@ -7150,6 +7688,7 @@ mod tests {
                 account_path: "C:\\acc\\openai\\two".into(),
                 turns_ended: 5,
                 transcript: None,
+                mid_turn: false,
                 ties: Ties {
                     parent: Some("tc-parent".into()),
                     name: Some("the chat".into()),
@@ -7162,9 +7701,11 @@ mod tests {
                     seen: vec![("tc-parent".into(), 5)],
                     cut_short: Vec::new(),
                     orphan: false,
+                    opening: None,
                 },
             }],
             sends: vec![SavedSend { caller: "tc-parent".into(), id: "tc-chat".into(), text: "held across".into() }],
+            spawns: Vec::new(),
         };
         // As the file has it.
         let saved: SavedChats = serde_json::from_slice(&serde_json::to_vec(&saved).unwrap()).unwrap();
@@ -7217,12 +7758,12 @@ mod tests {
 
         // The turn it counted as ended stays one that did not finish, core after core.
         let again = ties_of("tc-chat").unwrap();
-        let again = SavedChat { id: "tc-second".into(), provider: Provider::Codex, folder: "C:\\p".into(), account_path: "C:\\acc\\openai\\two".into(), turns_ended: 9, transcript: None, ties: again };
-        take_up_chats(SavedChats { chats: vec![again], sends: Vec::new() });
+        let again = SavedChat { id: "tc-second".into(), provider: Provider::Codex, folder: "C:\\p".into(), account_path: "C:\\acc\\openai\\two".into(), turns_ended: 9, transcript: None, mid_turn: false, ties: again };
+        take_up_chats(SavedChats { chats: vec![again], ..Default::default() });
         assert!(reg().lock().unwrap().owed[&("tc-parent".to_string(), "tc-second".to_string())].cut_short == false, "this debt was answered");
         let cut: Ties = Ties { owed: vec![("tc-peer".into(), 5, 20)], cut_short: vec!["tc-peer".into()], ..Default::default() };
-        let cut = SavedChat { id: "tc-third".into(), provider: Provider::Codex, folder: "C:\\p".into(), account_path: "C:\\acc\\openai\\two".into(), turns_ended: 6, transcript: None, ties: cut };
-        take_up_chats(SavedChats { chats: vec![cut], sends: Vec::new() });
+        let cut = SavedChat { id: "tc-third".into(), provider: Provider::Codex, folder: "C:\\p".into(), account_path: "C:\\acc\\openai\\two".into(), turns_ended: 6, transcript: None, mid_turn: false, ties: cut };
+        take_up_chats(SavedChats { chats: vec![cut], ..Default::default() });
         assert!(reg().lock().unwrap().owed[&("tc-peer".to_string(), "tc-third".to_string())].cut_short, "6 > 5 reads as answered but for the mark");
         forget("tc-second");
         forget("tc-third");
@@ -7289,9 +7830,10 @@ mod tests {
             account_path: "C:\\acc\\anthropic\\one".into(),
             turns_ended: 0,
             transcript: None,
+            mid_turn: false,
             ties: Ties { parent: parent.map(str::to_owned), orphan, ..Default::default() },
         };
-        take_up_chats(SavedChats { chats: vec![saved("rp-kid", Some("rp-grand"), false), saved("rp-orphan", None, true)], sends: Vec::new() });
+        take_up_chats(SavedChats { chats: vec![saved("rp-kid", Some("rp-grand"), false), saved("rp-orphan", None, true)], ..Default::default() });
         // The window starts each under the parent it last heard of.
         register("rp-kid", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("rp-gone"), false, serde_json::json!({}));
         assert_eq!(parent_of("rp-kid").as_deref(), Some("rp-grand"), "the core's record stands");
@@ -7308,12 +7850,279 @@ mod tests {
     }
 
     #[test]
-    fn a_visible_helper_is_refused_resume_on_restart() {
+    fn a_visible_helper_may_resume_on_restart_and_the_window_never_hears_of_it() {
         let p: SpawnParams = serde_json::from_value(serde_json::json!({ "prompt": "go", "visible": true, "resumeOnRestart": true })).unwrap();
-        assert!(spawn("nobody", p).err().unwrap().contains("background helpers"));
+        assert!(spawn("nobody", p).err().unwrap().contains("not a registered session"));
         let p: SpawnParams = serde_json::from_value(serde_json::json!({ "prompt": "go", "resumeOnRestart": true })).unwrap();
         assert_eq!(p.resume_on_restart, Some(true));
         assert!(serde_json::to_value(&p).unwrap().get("resumeOnRestart").is_none(), "Luna's to act on, not the window's");
+    }
+
+    /// A chat as the last core left it: spawned by `parent`, its turn cut short
+    /// with `flag` or not, and owed to `parent` from count 3 on.
+    fn cut_short_chat(id: &str, parent: &str, flag: bool, mid_turn: bool, already: bool) -> SavedChat {
+        let settings = if flag { serde_json::json!({ "resumeOnRestart": true }) } else { serde_json::json!({}) };
+        SavedChat {
+            id: id.into(),
+            provider: Provider::Claude,
+            folder: "C:\\p".into(),
+            account_path: "C:\\acc\\anthropic\\one".into(),
+            turns_ended: 3,
+            transcript: None,
+            mid_turn,
+            ties: Ties {
+                parent: Some(parent.into()),
+                settings,
+                owed: vec![(parent.into(), 3, 40)],
+                seen: vec![(parent.into(), 3)],
+                cut_short: if already { vec![parent.into()] } else { Vec::new() },
+                ..Default::default()
+            },
+        }
+    }
+
+    fn take_up(chats: Vec<SavedChat>, sends: Vec<SavedSend>, spawns: Vec<SpawnTaken>) {
+        take_up_chats(serde_json::from_slice(&serde_json::to_vec(&SavedChats { chats, sends, spawns }).unwrap()).unwrap());
+    }
+
+    #[test]
+    fn a_visible_helper_cut_short_with_the_flag_waits_to_go_on_and_says_nothing_yet() {
+        take_up(vec![cut_short_chat("vr-chat", "vr-parent", true, true, false)], Vec::new(), Vec::new());
+        assert!(resume_pending("vr-chat"));
+        assert!(agent_resumes().contains(&"vr-chat".to_string()), "the window is asked to start it");
+        // Its turn counts as ended, but it is no answer while it may yet go on.
+        let (k, o) = {
+            let r = reg().lock().unwrap();
+            (r.known["vr-chat"].clone(), r.owed[&("vr-parent".to_string(), "vr-chat".to_string())])
+        };
+        assert!(o.cut_short);
+        assert_eq!(crate::activity::turns_counted("vr-chat"), Some(4));
+        let pty = crate::pty::manager();
+        assert!(notice_line(&pty, "vr-parent", "Your helper", "vr-chat", &k, Owed { held: Some((4, 0)), ..o }).is_none());
+        // Told to start, it is no longer the window's to start, and keeps its flag.
+        register("vr-chat", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("vr-parent"), false, serde_json::json!({ "model": "sonnet" }));
+        assert!(!agent_resumes().contains(&"vr-chat".to_string()));
+        assert!(resumes_on_restart("vr-chat"), "the window's settings do not carry it");
+        // Typed in: both notices are owed, the first now.
+        resumed("vr-chat", 4);
+        reg().lock().unwrap().resumes.remove("vr-chat");
+        let o = reg().lock().unwrap().owed[&("vr-parent".to_string(), "vr-chat".to_string())];
+        assert!(o.resumed && !o.cut_short && o.baseline == 4 && o.cursor == 40, "all it said since it was asked, past the new turn");
+        forget("vr-chat");
+        assert!(!resume_pending("vr-chat"));
+    }
+
+    #[test]
+    fn called_off_a_helper_gets_the_plain_notice_and_is_not_carried_on_by_the_next_core() {
+        take_up(vec![cut_short_chat("co-chat", "co-parent", true, true, false)], Vec::new(), Vec::new());
+        call_off_resume("co-chat", "a person has typed into it");
+        assert!(!resume_pending("co-chat"));
+        let o = reg().lock().unwrap().owed[&("co-parent".to_string(), "co-chat".to_string())];
+        assert!(o.cut_short && !o.resumed, "the plain did NOT finish");
+        // A core going before that notice: the mark comes back, no new turn with it.
+        let saved = {
+            let r = reg().lock().unwrap();
+            ties_in(&r, "co-chat").unwrap()
+        };
+        assert_eq!(saved.cut_short, vec!["co-parent".to_string()]);
+        forget("co-chat");
+        take_up(vec![cut_short_chat("co-chat", "co-parent", true, false, true)], Vec::new(), Vec::new());
+        assert!(!resume_pending("co-chat"), "called off stays off");
+        forget("co-chat");
+        // Without the flag, or nothing cut short, nothing to carry on.
+        take_up(vec![cut_short_chat("co-plain", "co-parent", false, true, false)], Vec::new(), Vec::new());
+        assert!(!resume_pending("co-plain"));
+        forget("co-plain");
+        let mut done = cut_short_chat("co-done", "co-parent", true, false, false);
+        done.turns_ended = 4;
+        take_up(vec![done], Vec::new(), Vec::new());
+        assert!(!resume_pending("co-done"), "its answer was in as the core went");
+        forget("co-done");
+        // A turn running that nobody is owed the end of goes on all the same.
+        let mut own = cut_short_chat("co-own", "co-parent", true, true, false);
+        own.ties.owed.clear();
+        take_up(vec![own], Vec::new(), Vec::new());
+        assert!(resume_pending("co-own"));
+        forget("co-own");
+    }
+
+    #[test]
+    fn a_chat_goes_on_only_up_drawn_and_untouched_and_gives_up_in_time() {
+        let up = 1000;
+        assert_eq!(resume_look(true, up, false, false, false), Ok(false), "the window has yet to start it");
+        assert!(resume_look(true, SESSION_RETURN_MS, false, false, false).is_err(), "and did not");
+        assert_eq!(resume_look(false, up, true, false, false), Ok(false), "up, not drawn or not idle");
+        assert_eq!(resume_look(false, up, true, false, true), Ok(true));
+        assert!(resume_look(false, up, true, true, true).is_err(), "a person typed: never");
+        assert!(resume_look(false, up, false, false, false).is_err(), "its CLI went");
+        assert_eq!(resume_look(false, CALLER_RETURN_MS - 1, true, false, false), Ok(false), "a CLI can take minutes to draw");
+        assert!(resume_look(false, CALLER_RETURN_MS, true, false, false).is_err());
+    }
+
+    #[test]
+    fn a_chat_is_told_why_with_what_was_held_or_given_its_prompt_with_no_conversation() {
+        let batch = [crate::background::Queued { from: Some("x".into()), text: "the held text".into() }];
+        let told = resume_words(true, Some("the prompt".into()), &batch).unwrap();
+        assert!(told.starts_with(NOTICE_TAG) && told.contains("core restarted") && told.contains("Carry on") && told.contains("the held text"), "{told}");
+        assert!(!told.contains("the prompt"), "its conversation has that");
+        assert_eq!(resume_words(false, Some("the prompt".into()), &batch).unwrap(), "the prompt\n\nthe held text", "a first turn, on what it was given");
+        assert_eq!(resume_words(false, None, &batch), None, "nothing to go on from");
+    }
+
+    #[test]
+    fn text_held_across_a_core_waits_for_the_resume_and_a_saved_opening_comes_back() {
+        let mut chat = cut_short_chat("ho-chat", "ho-parent", true, true, false);
+        chat.turns_ended = 0;
+        chat.ties.owed = vec![("ho-parent".into(), 0, 0)];
+        chat.ties.opening = Some("do it".into());
+        take_up(vec![chat], vec![SavedSend { caller: "ho-parent".into(), id: "ho-chat".into(), text: "and this".into() }], Vec::new());
+        assert_eq!(reg().lock().unwrap().resumes["ho-chat"].opening.as_deref(), Some("do it"));
+        assert!(is_held("ho-parent", "ho-chat"));
+        // `deliver_held` looks and leaves it (`resume_pending`), the session not
+        // running here and so the same in either case while it may yet return.
+        deliver_held(&crate::pty::manager());
+        assert!(is_held("ho-parent", "ho-chat"));
+        reg().lock().unwrap().held.retain(|h| h.id != "ho-chat");
+        forget("ho-chat");
+        assert!(!reg().lock().unwrap().openings.contains_key("ho-chat"));
+    }
+
+    fn spawn_taken(request: u64, caller: &str, helper: Option<&str>, resume: bool) -> SpawnTaken {
+        SpawnTaken {
+            request,
+            caller: caller.into(),
+            params: serde_json::from_value(serde_json::json!({ "prompt": "the whole job, word for word", "name": "the job" })).unwrap(),
+            auto_delete: None,
+            resume_on_restart: resume,
+            visible: true,
+            in_worktree: None,
+            account_path: "C:\\acc\\anthropic\\one".into(),
+            opening: None,
+            worktrees_before: Vec::new(),
+            helper: helper.map(str::to_owned),
+            left_by_core: false,
+            news: None,
+        }
+    }
+
+    #[test]
+    fn a_spawn_is_on_disk_for_as_long_as_it_is_under_way() {
+        let params: SpawnParams = serde_json::from_value(serde_json::json!({ "prompt": "go", "visible": true, "resumeOnRestart": true, "autoDelete": true })).unwrap();
+        let saved = |request: u64| chats_now().spawns.into_iter().find(|s| s.request == request);
+        let under_way = SpawnUnderWay::begin("uw-caller", &params, "C:\\acc\\anthropic\\one", Some("C:\\p\\wt"));
+        let request = under_way.0;
+        let s = saved(request).unwrap();
+        assert_eq!((s.caller.as_str(), s.params.prompt.as_str(), s.in_worktree.as_deref()), ("uw-caller", "go", Some("C:\\p\\wt")));
+        assert!(s.resume_on_restart && s.visible && s.auto_delete == Some(true), "what the window never hears of");
+        // Its session registers, and what the window does not carry goes on it.
+        register("uw-helper", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("uw-caller"), false, serde_json::json!({}));
+        reg().lock().unwrap().spawns.get_mut(&request).unwrap().opening = Some("go, with the note".into());
+        spawn_is(request, "uw-helper");
+        assert_eq!(saved(request).unwrap().helper.as_deref(), Some("uw-helper"));
+        assert!(resumes_on_restart("uw-helper"));
+        {
+            let r = reg().lock().unwrap();
+            assert!(r.borrowed.contains("uw-helper") && r.auto.contains_key("uw-helper"));
+            assert_eq!(ties_in(&r, "uw-helper").unwrap().opening.as_deref(), Some("go, with the note"));
+        }
+        drop(under_way);
+        assert!(saved(request).is_none(), "seen through, nothing is left to tell");
+        forget("uw-helper");
+    }
+
+    #[test]
+    fn what_a_spawn_came_to_decides_what_its_caller_is_told() {
+        // One that had come to a session the last core saved: nothing to say of the
+        // spawn, and that session owes its caller as if the call had got there.
+        register("ws-caller", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, serde_json::json!({}));
+        let mut made = cut_short_chat("ws-made", "ws-caller", true, false, false);
+        made.turns_ended = 0;
+        made.ties.owed.clear();
+        made.ties.opening = Some("the opening".into());
+        // Asked for again by a request above any the file holds.
+        let lost = spawn_taken(9_000_001, "ws-caller", None, false);
+        take_up(vec![made], Vec::new(), vec![spawn_taken(9_000_000, "ws-caller", Some("ws-made"), true), lost]);
+        assert!(reg().lock().unwrap().next_request > 9_000_001);
+        take_up_spawns();
+        {
+            let r = reg().lock().unwrap();
+            let o = r.owed[&("ws-caller".to_string(), "ws-made".to_string())];
+            assert!(o.cut_short && o.baseline == 0 && o.cursor == 0);
+            assert_eq!(r.resumes["ws-made"].opening.as_deref(), Some("the opening"));
+        }
+        assert_eq!(crate::activity::turns_counted("ws-made"), Some(1), "its turn went with the core");
+        // Nothing before the window has had its chance.
+        settle_spawns(SESSION_RETURN_MS - 1);
+        assert!(reg().lock().unwrap().spawns[&9_000_001].news.is_none());
+        settle_spawns(SESSION_RETURN_MS);
+        {
+            let r = reg().lock().unwrap();
+            assert!(!r.spawns.contains_key(&9_000_000), "a helper came of it");
+            let news = r.spawns[&9_000_001].news.clone().unwrap();
+            assert!(news.contains("\"the job\"") && news.contains("never completed") && news.contains("core restarted"), "{news}");
+            assert!(news.contains("ended in an error"), "it says what became of the call: {news}");
+            assert!(!news.contains("worktreeLeft"), "{news}");
+            let file = news.split("Its prompt is in ").nth(1).and_then(|l| l.split("; spawn it again").next()).unwrap();
+            assert_eq!(std::fs::read_to_string(file).unwrap(), "the whole job, word for word");
+            let _ = std::fs::remove_file(file);
+        }
+        // Told only once it is back, and what was told goes.
+        let news = spawn_news(1000);
+        assert_eq!(news["ws-caller"].len(), 1);
+        reg().lock().unwrap().known.get_mut("ws-caller").unwrap().waiting = true;
+        assert!(!spawn_news(1000).contains_key("ws-caller"), "not started yet");
+        assert!(reg().lock().unwrap().spawns.contains_key(&9_000_001));
+        assert!(!spawn_news(CALLER_RETURN_MS).contains_key("ws-caller"));
+        assert!(!reg().lock().unwrap().spawns.contains_key(&9_000_001), "not back in time: to the log");
+        forget("ws-made");
+        forget("ws-caller");
+    }
+
+    #[test]
+    fn a_row_the_window_dropped_makes_it_a_spawn_nothing_came_of() {
+        register("wd-caller", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, serde_json::json!({}));
+        let mut made = cut_short_chat("wd-gone", "wd-caller", false, false, false);
+        made.ties.owed.clear();
+        take_up(vec![made], Vec::new(), vec![spawn_taken(9_000_100, "wd-caller", Some("wd-gone"), false)]);
+        take_up_spawns();
+        // `chat_names` finds no row for it: the caller's debt goes with it.
+        forget("wd-gone");
+        assert!(!reg().lock().unwrap().owed.contains_key(&("wd-caller".to_string(), "wd-gone".to_string())));
+        settle_spawns(SESSION_RETURN_MS);
+        let news = reg().lock().unwrap().spawns[&9_000_100].news.clone().unwrap();
+        assert!(news.contains("never completed"), "{news}");
+        forget("wd-caller");
+        assert!(!reg().lock().unwrap().spawns.contains_key(&9_000_100));
+    }
+
+    #[test]
+    fn the_window_finishing_a_spawn_with_the_next_core_owes_its_caller() {
+        register("wf-caller", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, serde_json::json!({}));
+        take_up(Vec::new(), Vec::new(), vec![spawn_taken(9_000_200, "wf-caller", None, false), spawn_taken(9_000_201, "wf-caller", None, false)]);
+        register("wf-helper", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("wf-caller"), false, serde_json::json!({}));
+        agent_spawned(9_000_200, Some("wf-helper".into()), Some("named".into()), None);
+        {
+            let r = reg().lock().unwrap();
+            assert!(!r.spawns.contains_key(&9_000_200), "seen through");
+            assert!(r.owed.contains_key(&("wf-caller".to_string(), "wf-helper".to_string())));
+        }
+        // One it gives up on: nobody has told the caller yet.
+        agent_spawned(9_000_201, None, None, Some("the core stopped".into()));
+        assert!(reg().lock().unwrap().spawns.contains_key(&9_000_201));
+        forget("wf-helper");
+        forget("wf-caller");
+    }
+
+    #[test]
+    fn a_spawn_with_the_flag_is_started_afresh_and_says_so_or_why_not() {
+        // No such caller to spawn for: as a spawn would fail, and the caller told.
+        let s = SpawnTaken { left_by_core: true, ..spawn_taken(9_000_300, "af-nobody", None, true) };
+        spawn_afresh(s);
+        let r = reg().lock().unwrap();
+        let news = r.spawns[&9_000_300].news.clone().unwrap();
+        assert!(news.contains("never completed") && news.contains("started afresh, it failed too"), "{news}");
+        drop(r);
+        reg().lock().unwrap().spawns.remove(&9_000_300);
     }
 
     #[test]
