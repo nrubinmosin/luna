@@ -423,6 +423,21 @@ fn candidates(folder: &str, account_paths: &[String]) -> Vec<PathBuf> {
     out
 }
 
+/// The worktrees a CLI has made for this folder on this account.
+pub fn made_for(folder: &str, account_path: &str) -> Vec<String> {
+    candidates(folder, &[account_path.to_string()]).into_iter().map(|p| p.to_string_lossy().into_owned()).collect()
+}
+
+/// Those of `now` not in `before` and with no session in them: what a spawn cut
+/// off by a core going had begun (agents.rs `worktrees_left`).
+pub fn left_since(now: Vec<String>, before: &[String], live_cwds: &[String]) -> Vec<String> {
+    let claimed: Vec<String> = live_cwds.iter().map(|p| norm(p)).collect();
+    now.into_iter()
+        .filter(|p| !before.iter().any(|b| norm(b) == norm(p)))
+        .filter(|p| !claimed.iter().any(|c| claims(c, &norm(p))))
+        .collect()
+}
+
 /// What deleting a worktree would throw away.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -647,6 +662,23 @@ mod tests {
         std::fs::create_dir_all(wt.parent()?).ok()?;
         let wt_s = wt.to_string_lossy().into_owned();
         ok(git(&repo_s).args(["worktree", "add", "-q", "--detach", &wt_s])).then_some((root, repo_s, wt_s))
+    }
+
+    #[test]
+    fn what_a_spawn_left_is_what_is_new_with_nobody_in_it() {
+        let now = vec![r"E:\p\.claude\worktrees\old".to_string(), r"E:\p\.claude\worktrees\new".to_string(), r"E:\p\.claude\worktrees\busy".to_string()];
+        let before = ["e:/p/.claude/worktrees/old".to_string()];
+        let live = [r"E:\p\.claude\worktrees\busy\sub".to_string()];
+        assert_eq!(left_since(now, &before, &live), [r"E:\p\.claude\worktrees\new"]);
+    }
+
+    #[test]
+    fn a_worktree_a_cli_made_is_found_for_its_folder_and_account() {
+        let Some((root, repo, wt)) = codex_layout("made-for") else { return };
+        let account = root.join("account").to_string_lossy().into_owned();
+        assert_eq!(made_for(&repo, &account), [wt.clone()]);
+        assert!(made_for(&repo, r"C:\no\such\account").is_empty());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

@@ -80,6 +80,50 @@ export const themeFor = (isDark: boolean) =>
       };
 
 /**
+ * Starts a chat's CLI where it left off, or if it runs already answers with what
+ * it has printed. If it lived in a worktree it relaunches in that worktree instead
+ * of creating a new one. A worktree Codex made is started in; it stays until Luna
+ * removes it. A worktree Claude Code made is asked for by name from the project
+ * folder (its own `--worktree <name> --resume <id>`) rather than by starting inside
+ * it: Claude Code removes a clean worktree when its session quits, which Luna's quit
+ * and every update make it do, and by name it is put back where it was.
+ */
+export function startSession(chat: Chat, folderPath: string, accountPath: string): Promise<string> {
+  const claudeWorktree =
+    chat.provider === 'claude' && chat.worktree ? claude.worktreeName(folderPath, chat.worktreePath) : null;
+  return chat.provider === 'codex'
+    ? ensureCodexSession({
+        chatId: chat.id,
+        folder: chat.worktreePath || folderPath,
+        worktree: chat.worktree && !chat.worktreePath,
+        accountPath,
+        model: chat.model,
+        effort: chat.effort,
+        approval: chat.approval,
+        sandbox: chat.sandbox,
+        resume: chat.sessionId ?? null,
+        tools: chat.tools ?? false,
+        hooksUnasked: chat.hooksUnasked ?? false,
+        parent: chat.parentId ?? null
+      })
+    : ensureClaudeSession({
+        chatId: chat.id,
+        folder: claudeWorktree ? folderPath : chat.worktreePath || folderPath,
+        accountPath,
+        model: chat.model,
+        effort: chat.effort,
+        perm: chat.perm,
+        worktree: chat.worktree && (!chat.worktreePath || claudeWorktree !== null),
+        worktreeName: claudeWorktree,
+        resume: chat.sessionId ?? null,
+        tools: chat.tools ?? false,
+        parent: chat.parentId ?? null,
+        readOnly: chat.readOnly ?? false,
+        agent: chat.agent ?? null
+      });
+}
+
+/**
  * Keystrokes only. xterm's `onData` also carries what the terminal itself
  * answers: the cursor-position reply the CLI asks for at startup, focus in/out,
  * and an SGR mouse report for every pointer move across a pane. Dropping just
@@ -444,49 +488,9 @@ function create(spec: TermSpec): Entry {
     }
     unlisteners.push(un1, un2);
 
-    // Resume a known session after an app restart; if it lived in a
-    // worktree, relaunch in that worktree instead of creating a new one. A
-    // worktree Codex made is started in; it stays until Luna removes it.
-    // A worktree Claude Code made is asked for by name from the project
-    // folder — its own `--worktree <name> --resume <id>` — rather than by
-    // starting inside it: Claude Code removes a clean worktree when its
-    // session quits, which Luna's quit and every update make it do, and by
-    // name it is put back where it was.
-    const claudeWorktree =
-      chat.provider === 'claude' && chat.worktree ? claude.worktreeName(folderPath, chat.worktreePath) : null;
     let backlog: string;
     try {
-      backlog =
-        chat.provider === 'codex'
-          ? await ensureCodexSession({
-              chatId,
-              folder: chat.worktreePath || folderPath,
-              worktree: chat.worktree && !chat.worktreePath,
-              accountPath,
-              model: chat.model,
-              effort: chat.effort,
-              approval: chat.approval,
-              sandbox: chat.sandbox,
-              resume: chat.sessionId ?? null,
-              tools: chat.tools ?? false,
-              hooksUnasked: chat.hooksUnasked ?? false,
-              parent: chat.parentId ?? null
-            })
-          : await ensureClaudeSession({
-              chatId,
-              folder: claudeWorktree ? folderPath : chat.worktreePath || folderPath,
-              accountPath,
-              model: chat.model,
-              effort: chat.effort,
-              perm: chat.perm,
-              worktree: chat.worktree && (!chat.worktreePath || claudeWorktree !== null),
-              worktreeName: claudeWorktree,
-              resume: chat.sessionId ?? null,
-              tools: chat.tools ?? false,
-              parent: chat.parentId ?? null,
-              readOnly: chat.readOnly ?? false,
-              agent: chat.agent ?? null
-            });
+      backlog = await startSession(chat, folderPath, accountPath);
     } catch (e) {
       // The ipc layer already logged the cause. Without this catch the
       // failure escaped the async block as an unhandled rejection and the

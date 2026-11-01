@@ -30,7 +30,7 @@ const SLOW_BUDGET_MS: Record<string, number> = {
 // answer, in the order they are made.
 const CORE_CALL: ReadonlySet<string> = new Set([
   'ensure_claude_session', 'ensure_codex_session', 'kill_session', 'delete_session', 'stop_all_sessions',
-  'orphan_sessions', 'session_meta', 'session_modes', 'agent_spawned', 'chat_names', 'account_usage', 'power_state',
+  'orphan_sessions', 'session_meta', 'session_modes', 'agent_spawned', 'agent_resumes', 'chat_names', 'account_usage', 'power_state',
   'background_helpers', 'background_promote', 'background_kill', 'background_delete',
   'set_keep_awake', 'arm_power_off', 'disarm_power_off', 'rename_account', 'orphan_worktrees',
   'remove_orphan_worktrees'
@@ -172,6 +172,8 @@ export interface ClaudeSessionSpec {
   readOnly?: boolean;
   /** The agent it runs as (`--agent`). */
   agent?: string | null;
+  /** The agent's spawn this is the session of (agents.rs `spawn_is`). */
+  spawnRequest?: number | null;
 }
 
 export const ensureClaudeSession = (spec: ClaudeSessionSpec) =>
@@ -190,7 +192,8 @@ export const ensureClaudeSession = (spec: ClaudeSessionSpec) =>
     parent: spec.parent ?? null,
     prompt: spec.prompt ?? null,
     readOnly: spec.readOnly ?? false,
-    agent: spec.agent ?? null
+    agent: spec.agent ?? null,
+    spawnRequest: spec.spawnRequest ?? null
   }, '');
 
 export interface CodexSessionSpec {
@@ -212,6 +215,8 @@ export interface CodexSessionSpec {
   hooksUnasked?: boolean;
   parent?: string | null;
   prompt?: string | null;
+  /** The agent's spawn this is the session of (agents.rs `spawn_is`). */
+  spawnRequest?: number | null;
 }
 
 export const ensureCodexSession = (spec: CodexSessionSpec) =>
@@ -229,7 +234,8 @@ export const ensureCodexSession = (spec: CodexSessionSpec) =>
     tools: spec.tools ?? false,
     hooksUnasked: spec.hooksUnasked ?? false,
     parent: spec.parent ?? null,
-    prompt: spec.prompt ?? null
+    prompt: spec.prompt ?? null,
+    spawnRequest: spec.spawnRequest ?? null
   }, '');
 
 export const writeSession = (id: string, data: string) =>
@@ -635,6 +641,9 @@ export const backgroundDelete = (id: string, dropWorktree = true) => call<void>(
 /** Answers `agent://spawn`: the chat made for it, or why not. */
 export const agentSpawned = (requestId: number, chatId: string | null, name: string | null, error: string | null) =>
   call<void>('agent_spawned', { requestId, chatId, name, error });
+
+/** The chats the core wants started to go on by themselves (agents.rs `resume_chats`). */
+export const agentResumes = () => call<string[]>('agent_resumes');
 
 /** Every chat's name by id, for `luna_sessions` (agents.rs). */
 export const chatNames = (names: Record<string, string>, groups: Record<string, number>) =>

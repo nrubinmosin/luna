@@ -244,7 +244,7 @@ fn tools() -> Value {
                 "tools": { "type": "boolean", "description": "these tools too (one level)" },
                 "visible": { "type": "boolean", "description": "a chat the user sees and types in" },
                 "autoDelete": { "type": "boolean", "description": "deleted 30 min after its answer reached you; default: background true" },
-                "resumeOnRestart": { "type": "boolean", "description": "background: goes on by itself after a core restart" }
+                "resumeOnRestart": { "type": "boolean", "description": "goes on by itself after a core restart" }
             }), &["prompt"]),
             "annotations": acts
         },

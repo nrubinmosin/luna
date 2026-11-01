@@ -77,6 +77,7 @@ src/                          frontend (feature-sliced)
     shortcuts/ the F1 / "?" window in the status bar: all shortcuts and mouse gestures in one list
     agents/   bridge.ts — the frontend half of agents: agent://spawn → createChat with parentId
               and ensure_* with the prompt → agent_spawned; agent://deleted → deleteChat;
+              agent_resumes → startSession (terminals.ts) for a helper to carry on, in a pane or not;
               a model asked for without an effort gets that model's default effort;
               agentAccounts.store — which accounts agents may not use (core settings.json)
   ipc/        commands.ts (invoke), events.ts (listen) — the only boundary with Rust
@@ -710,7 +711,7 @@ src-tauri/src/
   own stop. A batch a turn was claimed for is saved as `Entry::in_flight` before the CLI gets it and
   cleared once stdin has it, so a core killed between neither forgets it nor hands back what ran.
   A helper spawned with `resumeOnRestart` (the flag lives in `settings`, so in the ties, and `list`
-  echoes it; refused with `visible`, as a chat comes back by the window) goes on by itself:
+  echoes it; `register` keeps it over the window's settings, and a chat's way is below) goes on by itself:
   `resume_stopped`, once the hub listens as its MCP config names the port, starts a turn on each that
   is `cut_short`, on a tagged line saying why and carrying on, followed by the undelivered text. Debts
   on it move past the turns counted so far, so only the end of this turn answers them (`resumed`), the
@@ -742,8 +743,54 @@ src-tauri/src/
   has one record, the core's (`Known::parent`, kept here and moved by `pass_up`): `register` takes the
   window's word only where the core has none, not at all for an orphan, and where the two differ says
   `agent://reparent` again, for a new parent the window never heard of before its core went. A row deleted while
-  no core ran told nobody: `chat_names`, the first list of rows after, drops what was kept of it. What a
-  chat's CLI was doing is not resumed: the window starts it between turns, for a person or `luna_send`.
+  no core ran told nobody: `chat_names`, the first list of rows after, drops what was kept of it. Neither
+  CLI goes on with a turn a core killed: Claude Code's `--resume` only does under an environment variable
+  Luna does not set, and Codex's own continuation lives in the daemon `--no-daemon` keeps it out of, so
+  the window starts it between turns (Claude Code at its composer; Codex there too, saying "Conversation
+  interrupted" and writing no end for that turn, so a `task_started` older than this process does not read
+  as a turn on now: `scan_rollout`). `save_chats` stops as sessions are stopped (`freeze_chats`: a core
+  leaving, `stop_all_sessions`), as what quitting does to them, Codex writing an abort that counts as a turn's
+  end, must not be what the next core reads; `register` starts it again.
+  **A chat that goes on by itself.** One with `resumeOnRestart` whose turn went with the core (running or
+  waiting as last saved, `SavedChat::mid_turn`, or with a debt the count had not passed) is put on
+  `Registry::resumes` by `take_up_chats`. A helper usually sits in no pane, and nothing else would start its
+  CLI, so the window asks which to start (`agent_resumes`, on every core up) and does as a pane would
+  (`startSession`). Starting it there beats a plain notice for such a chat, which would make the flag mean
+  nothing for most visible helpers, and the core cannot do it alone: what a chat starts with (its session id,
+  its worktree, its settings) is the window's. On `luna-held`'s beat `resume_chats` looks at each
+  (`resume_look`): it is typed into once it has stood two looks in a row at an empty prompt (`at_empty_prompt`:
+  not by the cursor, which Claude Code hides until it hears it has the focus, as a helper in no pane never
+  does), between turns, with no blocking dialog. `resume_chat` takes `TypingInto`, looks again under the lock that it is still
+  on the list, and goes by `type_text`, with `spill` for a long one. A conversation to go on (`Session::resume`)
+  gets what a background helper is told (`resume_text`); a CLI that came back afresh, its first turn having
+  named nothing, gets the prompt it was opened on (`ChatResume::opening`, kept in the ties until a first
+  turn has ended; a Codex one with its note). The text Luna held for it (`Held`) goes with it in order, so
+  `deliver_held` passes it by, and each sender is owed as if it had gone in by itself. A debt that went in
+  moves past the count, cursor staying, and `resumed` marks the "cut short, resumed automatically" notice, in
+  one hold with leaving the list. While it is on the list `notice_line` says nothing of the turn that ended,
+  though it still tells of a dialog, `wait` waits (as for held text) and `read` settles nothing. It leaves the
+  list for good on: a person's key (`typed_ago_ms`; a draft stays theirs, Codex's and any `type_text` will not
+  take), a `send` going in or held (`call_off_resume`, whatever it finds of it under `TypingInto`), its CLI
+  gone, no window start within `SESSION_RETURN_MS`, or no prompt within `CALLER_RETURN_MS` (Claude Code may take
+  minutes to draw). The caller then gets the plain notice. A later core does not bring it back: a debt marked
+  `cut_short` by an earlier core is not a turn that went now.
+  **A spawn under way.** `spawn` writes a `SpawnTaken` to `chat-ties.json` (`SpawnUnderWay`) once it has settled
+  what it asks for, before anything is made: the caller, the request with its prompt and settings, and with
+  `worktree` what worktrees there were. `spawn_is` names the session as it registers (`ensure_*` takes
+  `spawnRequest`), giving it what the window does not carry (`borrowed`, `auto`, the flag) and saving at once;
+  the record goes when the call ends, or on a timeout once the window answers. Its request ids carry on past
+  those in the file. Left in the file, it means the core went mid-way. `take_up_spawns`, with both registries
+  read: one that had come to a saved session has that session owe its caller, and its turn counts as cut short.
+  The window may still be part way through one (a graceful restart's `ensure_*` waits for the new core): such a
+  one is in `abandoned` too, so a late `agent_spawned` owes as ever and clears it. `SESSION_RETURN_MS` in,
+  `settle_spawns` takes what is left: with a session still known (a row the window dropped since it failed
+  is not), nothing more; with `resumeOnRestart`, `spawn_afresh` asks again, its record leaving meanwhile as the
+  new spawn has its own, and the notice names the new helper; otherwise the caller is told it never completed,
+  with the prompt in a file (`never_completed`). Each says that is why the call itself failed: the HTTP response
+  went with the core, as usually did the caller's own CLI, which comes back with that call cut off and nothing
+  to go on. A worktree new since the spawn was taken on with no session in it is named as `worktreeLeft` and
+  never removed; the Worktrees window can sweep it. Told as a notice is (`spawn_news`, `deliver_notice`), or to
+  the log for a caller not back in `CALLER_RETURN_MS`.
   **Deleting a worktree with work in it.** `luna_delete` with `dropWorktree` takes the worktree `remove`
   would (`worktree_to_drop`: not one handed to the session or shared; a Codex worktree off its rollout
   before the first turn's end records it) and, before it touches anything, runs `git status --porcelain`
