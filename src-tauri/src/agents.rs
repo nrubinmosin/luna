@@ -550,6 +550,33 @@ fn owe_from(caller: &str, id: &str, baseline: u32, cursor: u64) {
     r.owed.insert(key, Owed::from(baseline, cursor));
 }
 
+/// A session Luna is typing a notice or a held send into, for as long as this
+/// is held: typing one waits for its turn to start, off the notifier's loop so
+/// that one slow caller does not keep the others waiting, and two at once
+/// would land in each other.
+struct TypingInto(String);
+
+impl TypingInto {
+    fn all() -> &'static Mutex<std::collections::HashSet<String>> {
+        static T: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+        T.get_or_init(Default::default)
+    }
+
+    fn claim(id: &str) -> Option<TypingInto> {
+        Self::all().lock().unwrap_or_else(|e| e.into_inner()).insert(id.to_string()).then(|| TypingInto(id.to_string()))
+    }
+
+    fn under_way(id: &str) -> bool {
+        Self::all().lock().unwrap_or_else(|e| e.into_inner()).contains(id)
+    }
+}
+
+impl Drop for TypingInto {
+    fn drop(&mut self) {
+        Self::all().lock().unwrap_or_else(|e| e.into_inner()).remove(&self.0);
+    }
+}
+
 /// How far the session's transcript goes now, 0 before it has one.
 fn transcript_end(id: &str) -> u64 {
     transcript_path(&crate::pty::manager(), id).and_then(|p| std::fs::metadata(p).ok()).map_or(0, |m| m.len())
@@ -584,11 +611,12 @@ fn last_shown(caller: &str, id: &str) -> Option<u32> {
     r.seen.get(&(caller.to_string(), id.to_string())).copied()
 }
 
-/// Starts the notifier, once.
+/// Starts the notifier and what types in the sends held for people, once.
 pub fn init() {
     static STARTED: std::sync::Once = std::sync::Once::new();
     STARTED.call_once(|| {
         std::thread::Builder::new().name("luna-notifier".into()).spawn(notifier).expect("spawn notifier thread");
+        std::thread::Builder::new().name("luna-held".into()).spawn(held_sender).expect("spawn held sender thread");
     });
 }
 
@@ -1414,6 +1442,10 @@ pub struct Spawned {
     /// The worktree it works in and its branch, once the CLI has made it.
     #[serde(flatten)]
     pub worktree: Worktree,
+    /// Asked for a worktree of its own and the CLI has not said where yet:
+    /// `luna_list` names it once it has.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub worktree_pending: bool,
 }
 
 /// Where a session in a worktree works: the path, and the branch there.
@@ -1587,14 +1619,20 @@ pub fn spawn(caller: &str, mut params: SpawnParams) -> Result<Spawned, String> {
     // helper works where its caller does, worktree and all.
     let worktree = if params.folder.is_none() { caller_worktree(caller) } else { None };
     let (request_id, slot, in_worktree) = {
-        let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-        let me = r.known.get(caller).cloned().ok_or("caller is not a registered session")?;
-        if descendants(&r, caller).len() >= MAX_DESCENDANTS {
-            return Err(format!("you already have {MAX_DESCENDANTS} sessions; delete some first"));
-        }
-        if params.tools.unwrap_or(false) && depth_of(&r, caller) >= MAX_TOOL_DEPTH {
-            return Err("a session this deep cannot spawn sessions with tools of their own".into());
-        }
+        let me = {
+            let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+            let me = r.known.get(caller).cloned().ok_or("caller is not a registered session")?;
+            if descendants(&r, caller).len() >= MAX_DESCENDANTS {
+                return Err(format!("you already have {MAX_DESCENDANTS} sessions; delete some first"));
+            }
+            if params.tools.unwrap_or(false) && depth_of(&r, caller) >= MAX_TOOL_DEPTH {
+                return Err("a session this deep cannot spawn sessions with tools of their own".into());
+            }
+            me
+        };
+        // Off the registry lock: what follows reads folders and login files,
+        // and every Claude Code session's hook waits on this lock with its next
+        // step behind it (activity.rs `sample` has the same care).
         if params.folder.is_none() {
             params.folder = Some(worktree.unwrap_or_else(|| me.folder.clone()));
         }
@@ -1646,9 +1684,9 @@ pub fn spawn(caller: &str, mut params: SpawnParams) -> Result<Spawned, String> {
         };
         params.account = Some(account.name.clone());
         if !params.visible.unwrap_or(false) {
-            drop(r);
             return spawn_background(caller, params, account.path, in_worktree);
         }
+        let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
         let id = r.next_request;
         r.next_request += 1;
         let slot = std::sync::Arc::new((Mutex::new(Pending::default()), Condvar::new()));
@@ -1760,7 +1798,8 @@ pub fn spawn(caller: &str, mut params: SpawnParams) -> Result<Spawned, String> {
     shown(caller, &id, 0);
     owe_from(caller, &id, 0, 0);
     let worktree = worktree_of(&pty, &id);
-    Ok(Spawned { id, turns_ended: 0, settings, started, screen, ask, starting, warnings, same_folder, worktree })
+    let worktree_pending = own_worktree && worktree.path.is_none();
+    Ok(Spawned { id, turns_ended: 0, settings, started, screen, ask, starting, warnings, same_folder, worktree, worktree_pending })
 }
 
 /// Claude Code's model aliases, as the new-chat dialog lists them.
@@ -1961,7 +2000,8 @@ fn spawn_background(caller: &str, params: SpawnParams, account_path: String, in_
             std::thread::sleep(POLL);
         }
     }
-    Ok(Spawned { id, turns_ended: 0, settings, started: true, screen: None, ask: None, starting: false, warnings: Vec::new(), same_folder, worktree })
+    let worktree_pending = own_worktree && worktree.path.is_none();
+    Ok(Spawned { id, turns_ended: 0, settings, started: true, screen: None, ask: None, starting: false, warnings: Vec::new(), same_folder, worktree, worktree_pending })
 }
 
 /// Past this many characters a prompt or message goes to a visible session
@@ -2113,7 +2153,8 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool) -> Result<Sent,
         // written, by the time the call returns.
         let cursor = transcript_end(id);
         let (queued, interrupted) = if interrupt {
-            (false, crate::background::interrupt(id, text)?)
+            let i = crate::background::interrupt(id, text)?;
+            (i.queued, i.stopped)
         } else {
             (crate::background::send(id, text)?, false)
         };
@@ -2333,6 +2374,15 @@ pub fn held_count(id: &str) -> usize {
     r.held.iter().filter(|h| h.id == id).count() + r.notices_held.get(id).copied().unwrap_or(0)
 }
 
+/// Looks for held sends to type in, on a thread of its own: typing one waits
+/// for its turn to start, which is not to keep the notices back.
+fn held_sender() {
+    loop {
+        std::thread::sleep(NOTIFY_EVERY);
+        deliver_held(&crate::pty::manager());
+    }
+}
+
 /// Types in the sends held for people at their keys (`hold`), each once its
 /// session is clear, in the order they came; tells the caller of a session
 /// that went before its text could, and the desktop of text a draft has held
@@ -2368,7 +2418,9 @@ fn deliver_held(pty: &crate::pty::PtyManager) {
             || pty.typed_ago_ms(&id).is_some_and(|ms| ms < SEND_TYPING_MS);
         let before = crate::activity::turn_state(&id);
         let baseline = before.map(|t| t.turns_ended).unwrap_or(0);
-        let typed = if blocked { Ok(None) } else { put_in(&caller, &id, &spill(&text), before, baseline, false) };
+        let typing = if blocked { None } else { TypingInto::claim(&id) };
+        let typed = if typing.is_some() { put_in(&caller, &id, &spill(&text), before, baseline, false) } else { Ok(None) };
+        drop(typing);
         match typed {
             Ok(Some(sent)) => {
                 let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
@@ -3424,9 +3476,17 @@ fn own_words(messages: Vec<Message>) -> Vec<String> {
 /// a long answer cut read the whole of it back anyway, and a long notice
 /// reaches the CLI as a paste.
 fn answer_file(id: &str, replies: &[String]) -> String {
+    use std::hash::{Hash, Hasher};
     let whole = answer_text(replies);
     let dir = notes_dir();
-    let path = dir.join(format!("{id}-{}.md", now_ms()));
+    // Named by what it holds: a notice a draft keeps back is worked out again
+    // at every look, and the same answer is the same file.
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    whole.hash(&mut hash);
+    let path = dir.join(format!("{id}-{:016x}.md", hash.finish()));
+    if path.is_file() {
+        return format!("the answer is in {}, its report first", path.display());
+    }
     match std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&path, whole)) {
         Ok(()) => format!("the answer is in {}, its report first", path.display()),
         Err(_) => "luna_read gives the answer".into(),
@@ -3762,7 +3822,6 @@ fn notifier() {
         std::thread::sleep(NOTIFY_EVERY);
         let pty = crate::pty::manager();
         reap(&pty);
-        deliver_held(&pty);
         // Owed by caller, each session with what is known of it; anything a
         // delete has made unknown is dropped on the way.
         let mut by_caller: std::collections::BTreeMap<String, Vec<(String, Known, Owed, String)>> = Default::default();
@@ -3787,6 +3846,11 @@ fn notifier() {
         drafts.retain(|c, _| by_caller.contains_key(c));
         reg().lock().unwrap_or_else(|e| e.into_inner()).notices_held.retain(|c, _| by_caller.contains_key(c));
         for (caller, items) in by_caller {
+            // The last notice is still going in: it starts a turn of its own.
+            if TypingInto::under_way(&caller) {
+                idle_looks.insert(caller, 0);
+                continue;
+            }
             if pty.has_draft(&caller) && pty.alive(&caller) && anything_to_say(&pty, &items) {
                 let (since, told) = drafts.entry(caller.clone()).or_insert((now_ms(), false));
                 if !*told && now_ms().saturating_sub(*since) >= DRAFT_ALERT_MS {
@@ -3849,8 +3913,18 @@ fn notifier() {
                 reg().lock().unwrap_or_else(|e| e.into_inner()).notices_held.remove(&caller);
                 continue;
             }
-            deliver_notice(&pty, &caller, &format!("{NOTICE_TAG} {}", lines.join(" ")), settled);
-            idle_looks.insert(caller, 0);
+            // Typing it waits up to SEND_TIMEOUT for the turn to start, off this
+            // loop: one caller stuck on that is no reason to hold back the rest.
+            let Some(typing) = TypingInto::claim(&caller) else { continue };
+            idle_looks.insert(caller.clone(), 0);
+            let text = format!("{NOTICE_TAG} {}", lines.join(" "));
+            let typed = std::thread::Builder::new().name("luna-notice".into()).spawn(move || {
+                let _typing = typing;
+                deliver_notice(&crate::pty::manager(), &caller, &text, settled);
+            });
+            if let Err(e) = typed {
+                crate::log::warn("agents", &format!("could not start typing a notice: {e}"));
+            }
         }
     }
 }
@@ -4172,6 +4246,60 @@ mod tests {
         let last = whole.find("Nothing else changed.").unwrap();
         assert!(last < whole.find("Let me look.").unwrap(), "the last word before the progress lines");
         assert!(whole.find("Let me look.").unwrap() < whole.find("Now the tests.").unwrap(), "the rest in order");
+    }
+
+    #[test]
+    fn the_same_answer_is_the_same_file() {
+        let path = |replies: &[String]| answer_file("same", replies).trim_start_matches("the answer is in ").trim_end_matches(", its report first").to_string();
+        let replies = vec!["The report.".to_string()];
+        let (first, again) = (path(&replies), path(&replies));
+        assert_eq!(first, again, "a notice a draft holds back writes no new file at every look");
+        let other = path(&["Another report.".to_string()]);
+        assert_ne!(first, other, "a different answer is another file");
+        assert_eq!(std::fs::read_to_string(&first).unwrap(), "The report.");
+        // Gone meanwhile (the week's sweep), it is written again.
+        std::fs::remove_file(&first).unwrap();
+        assert_eq!(path(&replies), first);
+        assert!(std::path::Path::new(&first).is_file());
+        let _ = std::fs::remove_file(&first);
+        let _ = std::fs::remove_file(&other);
+    }
+
+    #[test]
+    fn one_at_a_time_is_typed_into_a_session() {
+        let first = TypingInto::claim("ty-chat").expect("nobody is typing into it");
+        assert!(TypingInto::under_way("ty-chat"));
+        assert!(TypingInto::claim("ty-chat").is_none(), "a notice and a held send would land in each other");
+        assert!(TypingInto::claim("ty-other").is_some(), "another session is another matter");
+        drop(first);
+        assert!(!TypingInto::under_way("ty-chat"));
+        assert!(TypingInto::claim("ty-chat").is_some());
+    }
+
+    #[test]
+    fn a_worktree_still_being_made_says_so() {
+        let spawned = |worktree: Worktree, worktree_pending: bool| {
+            serde_json::to_value(Spawned {
+                id: "w".into(),
+                turns_ended: 0,
+                settings: serde_json::Value::Null,
+                started: true,
+                screen: None,
+                ask: None,
+                starting: false,
+                warnings: Vec::new(),
+                same_folder: Vec::new(),
+                worktree,
+                worktree_pending,
+            })
+            .unwrap()
+        };
+        let pending = spawned(Worktree::default(), true);
+        assert_eq!(pending["worktreePending"], true);
+        assert!(pending.get("worktree").is_none());
+        let made = spawned(Worktree { path: Some("C:\\w".into()), branch: None }, false);
+        assert_eq!(made["worktree"], "C:\\w");
+        assert!(made.get("worktreePending").is_none());
     }
 
     #[test]
