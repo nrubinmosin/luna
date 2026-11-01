@@ -16,6 +16,7 @@
 //! resumed one is found by the uuid in its name. Either way the answer is
 //! remembered per chat, so two chats in one folder never share a file.
 
+use crate::paths::path_key_loose as norm_path;
 use crate::pty::{sane_title, tail, title_from_prompt, CliTitle, SessionMeta};
 use chrono::{Datelike, Local, NaiveDate, NaiveDateTime, TimeZone, Timelike};
 use serde_json::Value;
@@ -40,10 +41,6 @@ pub struct Live<'a> {
 
 fn sessions_dir(account_path: &str) -> PathBuf {
     Path::new(account_path).join("sessions")
-}
-
-fn norm_path(p: &str) -> String {
-    p.replace('/', "\\").trim_end_matches('\\').to_lowercase()
 }
 
 /// `rollout-2026-09-17T14-03-22-<uuid>.jsonl` → (local time, uuid). A name

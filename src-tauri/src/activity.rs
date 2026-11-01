@@ -291,9 +291,14 @@ struct State {
 
 fn state() -> &'static Mutex<State> {
     static S: OnceLock<Mutex<State>> = OnceLock::new();
-    S.get_or_init(|| {
+    let s = S.get_or_init(|| {
         Mutex::new(State { tracks: HashMap::new(), ended: HashMap::new(), summary: Summary::default(), idle_since_ms: None })
-    })
+    });
+    // Tests assert with this held and all of them share it: one that fails is
+    // that test's failure, not that of every test after it.
+    #[cfg(test)]
+    s.clear_poison();
+    s
 }
 
 /// A session's track, made on first sight with the turn count it had when it

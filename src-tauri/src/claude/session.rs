@@ -4,6 +4,7 @@
 //! (context usage, the titles the CLI gave it, opening prompt). All of it is
 //! free to read — no tokens.
 
+use crate::paths::path_key_loose as norm_path;
 use crate::pty::{sane_title, CliTitle, SessionMeta};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -269,10 +270,6 @@ fn read_first_prompt(account_path: &str, cwd: &str, session_id: &str) -> Option<
     None
 }
 
-fn norm_path(p: &str) -> String {
-    p.replace('/', "\\").trim_end_matches('\\').to_lowercase()
-}
-
 fn parse_session_file(path: &Path) -> Option<serde_json::Value> {
     serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
 }
@@ -383,7 +380,7 @@ fn registry_entry(
     // The folder itself or one under it (a `--worktree` session reports its
     // worktree), not a sibling that shares the prefix: `luna` is not `luna-site`.
     let want = norm_path(cwd);
-    let under = format!("{want}\\");
+    let under = format!("{want}{}", crate::paths::KEY_SEP);
     let mut best: Option<(u64, serde_json::Value)> = None;
     for v in entries {
         if v["entrypoint"] != "cli" {
