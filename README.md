@@ -317,7 +317,9 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   `helpers.json` in the data folder (its settings, its conversation's id, whose it is —
   not what was said), and the next core takes them up, after an update, a restart or a
   reboot. A turn the core was in the middle of is stopped with it; the agent owed the
-  answer is told so, and `luna_send` has the helper carry on.
+  answer is told so once its own chat is back, along with any messages queued behind that
+  turn, kept word for word to send again, and `luna_send` has the helper carry on. A helper
+  spawned with `resumeOnRestart: true` goes on by itself, those messages included.
 - The log also says how each run ended. Luna names its own reasons for leaving (tray
   Quit, an update, Windows signing out or shutting down). A small watcher process logs
   the exit code when something else ends it, which tells a kill from outside (Task
@@ -406,6 +408,9 @@ background helper spawned without tools.
   `history: true` can show what ran before, deleted helpers included, and a run can be repeated as it was.
   A deleted helper leaves its transcript path (the whole prompt is there), its worktree and its
   last message, of which `history` gives the first 400 characters.
+- `luna_delete` with `dropWorktree` refuses a worktree with uncommitted changes, untracked
+  files or commits on no other branch, and says which, unless the agent adds `force: true`.
+  Your own Delete asks you instead, as ever.
 - Deleting a parent by hand leaves its helpers as orphans, marked ↳ at the top level,
   unless you tick the box to take them along. Helpers deleted by their agent are gone for
   good, transcript aside.

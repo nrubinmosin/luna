@@ -440,6 +440,63 @@ fn mtime_ms(p: &Path) -> Option<u64> {
     Some(t.duration_since(std::time::UNIX_EPOCH).ok()?.as_millis() as u64)
 }
 
+/// What `git status` lists in a worktree, a line per change, untracked files
+/// included; None when git cannot read it as a checkout.
+fn changes_in(path: &str) -> Option<Vec<String>> {
+    // Without its own `.git`, git would walk up and answer for the main
+    // checkout instead.
+    let status = Path::new(path)
+        .join(".git")
+        .exists()
+        .then(|| git(path).args(["-c", "core.quotepath=off", "status", "--porcelain", "--untracked-files=normal"]).output().ok())
+        .flatten()
+        .filter(|o| o.status.success())?;
+    Some(String::from_utf8_lossy(&status.stdout).lines().filter(|l| !l.is_empty()).map(str::to_owned).collect())
+}
+
+/// How many commits HEAD has that no other branch and no remote has.
+fn unique_commits(path: &str, branch: Option<&str>) -> Option<u32> {
+    let mut rev = git(path);
+    rev.args(["rev-list", "--count", "HEAD", "--not"]);
+    if let Some(b) = branch {
+        // Or the branch itself counts as another place the commits live.
+        rev.arg(format!("--exclude={b}"));
+    }
+    rev.args(["--branches", "--remotes"]);
+    rev.output().ok().filter(|o| o.status.success()).and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok())
+}
+
+/// The most changes a refusal to remove a worktree names: it is read by a
+/// model that has the whole of `git status` a command away.
+const UNSAVED_NAMED: usize = 10;
+
+/// What removing this worktree would lose for good, in words: the changes in
+/// it and the commits only it has. None when that is nothing, or it is gone.
+pub fn unsaved_work(folder: &str, path: &str) -> Option<String> {
+    if !Path::new(path).exists() {
+        return None;
+    }
+    let Some(changes) = changes_in(path) else {
+        return Some("files git cannot read as a checkout, so what they are worth is unknown".into());
+    };
+    let mut said = Vec::new();
+    if !changes.is_empty() {
+        let names: Vec<&str> = changes.iter().take(UNSAVED_NAMED).map(|l| l.get(3..).unwrap_or(l)).collect();
+        let more = match changes.len().saturating_sub(UNSAVED_NAMED) {
+            0 => String::new(),
+            n => format!(" and {n} more"),
+        };
+        let what = if changes.len() == 1 { "1 uncommitted change".to_string() } else { format!("{} uncommitted changes", changes.len()) };
+        said.push(format!("{what} ({}{more})", names.join(", ")));
+    }
+    match unique_commits(path, branch_of(folder, path).as_deref()) {
+        None | Some(0) => {}
+        Some(1) => said.push("1 commit on no other branch or remote".into()),
+        Some(n) => said.push(format!("{n} commits on no other branch or remote")),
+    }
+    (!said.is_empty()).then(|| said.join(" and "))
+}
+
 fn inspect(folder: &str, path: &str) -> WorktreeInfo {
     let branch = branch_of(folder, path);
     let wt = Path::new(path);
@@ -450,33 +507,12 @@ fn inspect(folder: &str, path: &str) -> WorktreeInfo {
         .and_then(|t| t.trim().strip_prefix("gitdir:").map(|g| PathBuf::from(g.trim()).join("index")));
     let touched_ms = [mtime_ms(wt), index.as_deref().and_then(mtime_ms)].into_iter().flatten().max();
 
-    // Without its own `.git`, git would walk up and answer for the main
-    // checkout instead.
-    let status = wt
-        .join(".git")
-        .exists()
-        .then(|| git(path).args(["status", "--porcelain", "--untracked-files=normal"]).output().ok())
-        .flatten()
-        .filter(|o| o.status.success());
-    let Some(status) = status else {
+    let Some(changes) = changes_in(path) else {
         return WorktreeInfo { path: path.to_string(), branch, uncommitted: None, unique_commits: None, touched_ms, broken: true };
     };
-    let uncommitted = String::from_utf8_lossy(&status.stdout).lines().filter(|l| !l.is_empty()).count() as u32;
+    let unique_commits = unique_commits(path, branch.as_deref());
 
-    let mut rev = git(path);
-    rev.args(["rev-list", "--count", "HEAD", "--not"]);
-    if let Some(b) = &branch {
-        // Or the branch itself counts as another place the commits live.
-        rev.arg(format!("--exclude={b}"));
-    }
-    rev.args(["--branches", "--remotes"]);
-    let unique_commits = rev
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok());
-
-    WorktreeInfo { path: path.to_string(), branch, uncommitted: Some(uncommitted), unique_commits, touched_ms, broken: false }
+    WorktreeInfo { path: path.to_string(), branch, uncommitted: Some(changes.len() as u32), unique_commits, touched_ms, broken: false }
 }
 
 /// Looks inside each worktree before it is offered for deletion. One git
@@ -582,6 +618,30 @@ mod tests {
         assert_eq!(candidates(&repo, &[account]).len(), 1);
         remove_worktree_now(repo.clone(), wt.clone()).unwrap();
         assert!(!root.join("account").join("worktrees").join("0a1b").exists(), "the bucket goes too");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_worktree_says_what_removing_it_would_lose() {
+        let Some((root, repo, wt)) = codex_layout("unsaved") else { return };
+        assert_eq!(unsaved_work(&repo, &wt), None, "clean, its HEAD on the main branch too");
+        std::fs::write(Path::new(&wt).join("new file.txt"), "x").unwrap();
+        let said = unsaved_work(&repo, &wt).unwrap();
+        assert!(said.starts_with("1 uncommitted change (") && said.contains("new file.txt"), "{said}");
+        for i in 0..UNSAVED_NAMED + 3 {
+            std::fs::write(Path::new(&wt).join(format!("f{i}.txt")), "x").unwrap();
+        }
+        let said = unsaved_work(&repo, &wt).unwrap();
+        assert!(said.contains("14 uncommitted changes") && said.contains("and 4 more"), "{said}");
+        let ok = |c: &mut Command| c.output().is_ok_and(|o| o.status.success());
+        assert!(ok(git(&wt).args(["add", "-A"])));
+        assert!(ok(git(&wt).args(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "w"])));
+        assert_eq!(unsaved_work(&repo, &wt).unwrap(), "1 commit on no other branch or remote");
+        assert!(ok(git(&wt).args(["branch", "kept"])));
+        assert_eq!(unsaved_work(&repo, &wt), None, "another branch holds it now");
+        std::fs::remove_file(Path::new(&wt).join(".git")).unwrap();
+        assert!(unsaved_work(&repo, &wt).unwrap().contains("cannot read"), "unknown is not nothing");
+        assert_eq!(unsaved_work(&repo, &root.join("gone").to_string_lossy()), None, "gone takes nothing with it");
         let _ = std::fs::remove_dir_all(&root);
     }
 

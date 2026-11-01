@@ -238,7 +238,8 @@ fn tools() -> Value {
                 "name": { "type": "string", "description": "its name in Luna" },
                 "tools": { "type": "boolean", "description": "give it these tools too (one level only)" },
                 "visible": { "type": "boolean", "description": "a chat the user sees and can type in" },
-                "autoDelete": { "type": "boolean", "description": "deleted 30 min after its answer reached you unless read or sent to; default: background true" }
+                "autoDelete": { "type": "boolean", "description": "deleted 30 min after its answer reached you unless read or sent to; default: background true" },
+                "resumeOnRestart": { "type": "boolean", "description": "background only: goes on by itself if a Luna core restart stops its turn" }
             }), &["prompt"]),
             "annotations": acts
         },
@@ -295,8 +296,8 @@ fn tools() -> Value {
         },
         {
             "name": "luna_delete",
-            "description": "Stop a session and remove it; dropWorktree: also the worktree and branch Luna made for it, unless another session is in it.",
-            "inputSchema": s(json!({ "id": { "type": "string" }, "dropWorktree": { "type": "boolean" } }), &["id"]),
+            "description": "Stop a session and remove it; dropWorktree: also the worktree and branch Luna made for it, unless another session is in it. Refused while that worktree holds uncommitted changes or commits on no other branch; force: true removes it anyway.",
+            "inputSchema": s(json!({ "id": { "type": "string" }, "dropWorktree": { "type": "boolean" }, "force": { "type": "boolean" } }), &["id"]),
             "annotations": ends
         },
         {
@@ -355,7 +356,7 @@ fn call(caller: &str, params: &Value, this: &Call) -> Value {
     const STEERING: &[&str] = &[
         "provider", "account", "model", "effort", "permissionMode", "sandbox", "approval", "folder", "worktree", "visible",
         "tools", "autoDelete", "name", "until", "timeoutS", "afterTurn", "since", "last", "screen", "interrupt", "dropWorktree",
-        "group", "history", "allow",
+        "group", "history", "allow", "resumeOnRestart", "force",
     ];
     let set: Vec<String> = STEERING.iter().filter_map(|k| a.get(*k).filter(|v| !v.is_null()).map(|v| format!("{k}={v}"))).collect();
     if !set.is_empty() {
@@ -451,7 +452,7 @@ fn run(caller: &str, params: &Value, this: &Call) -> Value {
         )
         .map(|w| json!(w)),
         "luna_kill" => agents::kill(caller, &id).map(|()| json!({ "ok": true })),
-        "luna_delete" => agents::delete(caller, &id, a["dropWorktree"].as_bool().unwrap_or(false))
+        "luna_delete" => agents::delete(caller, &id, a["dropWorktree"].as_bool().unwrap_or(false), a["force"].as_bool().unwrap_or(false))
             .map(|wt| json!({ "ok": true, "worktreeRemoved": wt })),
         "luna_notify" => agents::notify(caller, a["text"].as_str().unwrap_or("")).map(|()| json!({ "ok": true })),
         _ => Err(format!("unknown tool {name}")),
@@ -574,10 +575,10 @@ mod tests {
             t.as_object_mut().unwrap().remove("annotations");
         }
         let text = list.to_string();
-        assert!(text.len() < 6000, "tools/list is {} chars", text.len());
+        assert!(text.len() < 6500, "tools/list is {} chars", text.len());
         assert!(INSTRUCTIONS.len() < 1000, "instructions are {} bytes", INSTRUCTIONS.len());
         // Read only on request, but whole: keep it to a few thousand tokens.
-        assert!(GUIDE.len() < 12_000, "the guide is {} bytes", GUIDE.len());
+        assert!(GUIDE.len() < 13_000, "the guide is {} bytes", GUIDE.len());
     }
 
     #[test]

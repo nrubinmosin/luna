@@ -587,15 +587,42 @@ src-tauri/src/
   count on the parent row) and can hand one to a chat row between turns (`background_promote` →
   `agent://promote`: same id, the session id to resume). Helpers outlive the core: every 2 s, and as
   the core leaves (`stop_all`), the registry goes to `<data>/helpers.json` when it has changed — the
-  spec without its token, the session id, the worktree, the turn count, whether a turn ran, and the
-  agent layer's ties (`agents::Ties`: parent, name, settings, the answers owed and counts shown).
-  Nothing said in the conversation: that is in the CLI's transcript. The next core reads it before
-  the hub listens (`background::restore`, `agents::tie_back`, fresh tokens): a turn that ran then
-  went with the old core and counts as ended, the text queued behind it as the turn after. Such a
-  turn, or one `stop_turns` stopped, leaves the helper `cut_short` until its next turn, so the owed
-  caller's notice says it did not finish. One
+  spec without its token, the session id, the worktree, the turn count, whether a turn ran, the text
+  queued behind it, and the agent layer's ties (`agents::Ties`: parent, name, settings, the answers
+  owed and counts shown). Of the conversation itself nothing: that is in the CLI's transcript. A
+  `send` that queues writes at once, as a core that goes hard writes nothing more. The next core
+  reads it before the hub listens (`background::restore`, `agents::tie_back`, fresh tokens): a turn
+  that ran then went with the old core and counts as ended, the text queued behind it as the turn
+  after. Such a turn, or one `stop_turns` stopped, leaves the helper `cut_short` until its next turn,
+  so the owed caller's notice says it did not finish.
+  A debt comes back with its helper, ahead of the chat it is owed to: the window registers that chat
+  only as it starts its CLI again, seconds later. So the notifier drops a debt for an unknown caller
+  only `CALLER_RETURN_MS` (10 min) into the core's life (`owed_stands`), until then telling that
+  caller nothing and keeping `reap` off the helper; a delete (`forget`) purges at once as ever. A
+  chat not opened by then gets no notice. The text queued behind a stopped turn stays with the helper
+  (`Entry::undelivered`, saved too), never run: the notice counts it and the answer file ends on it,
+  labelled, word for word, or holds only it if there is no reply (`undelivered_text`); `read` and
+  `wait` name it as `undelivered`. It goes once somebody has been told and nobody is owed
+  (`undelivered_shown`), so each of several who wrote to the helper hears; a helper deleted or opened
+  as a chat first leaves it in a file the log names (`undelivered_left`). `luna_kill` still drops the
+  queue: that is the agent's own stop.
+  A helper spawned with `resumeOnRestart` (the flag lives in `settings`, so in the ties, and `list`
+  echoes it; refused with `visible`, as a chat comes back by the window) goes on by itself:
+  `resume_stopped`, once the hub listens as its MCP config names the port, starts a turn on each that
+  is `cut_short`, on a tagged line saying why and carrying on, followed by the undelivered text. Debts
+  on it move past the turns counted so far, so only the end of this turn answers them (`resumed`), the
+  transcript offset staying, and are marked: the caller gets one notice that it was cut short and
+  resumed (`Settled::Resumed`), then the usual one. A turn too short for the first merges them. A
+  resume that cannot start counts as an ended turn with its error (`run_turn`), and the notice is the
+  plain cut-short one with the text still held. One
   whose first turn never named its conversation has nothing to resume and is let go. Nothing is
   written before `restore` has read the file, so an empty registry never overwrites it.
+  **Deleting a worktree with work in it.** `luna_delete` with `dropWorktree` runs `git status --porcelain`
+  and a `rev-list` of commits on no other branch or remote in the worktree `remove` would take
+  (`worktree_to_drop`: not one handed to the session or shared; `worktree::unsaved_work`) before it
+  touches anything, and refuses with a short list; `force` skips that. A checkout git cannot read
+  counts as work. The window's Delete and `reap` (which never drops a worktree) go by `remove` as
+  before: the dialog has warned a person already.
   **One state, and what is asked.** Tool answers carry `state` (`state_of`: working, waiting,
   question, background, idle, starting, exited) instead of a turn word and a busy flag that could
   disagree, and `ask` (`ask_of`): a background helper's held call; for Claude Code the tool its
