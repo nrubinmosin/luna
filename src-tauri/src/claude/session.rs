@@ -670,9 +670,10 @@ pub fn transcript_of(pid: Option<u32>, resume: Option<&str>, cwd: &str, spawned_
 /// and left out otherwise. Returns the messages and the offset to continue
 /// from: the end of the last complete line, so a line still being written is
 /// read whole next time rather than skipped. Subagent sidechains, CLI-injected
-/// turns and the lines an API error writes in the model's place ("You've hit
-/// your session limit", which `api_error_of` reports) are skipped: the model
-/// said none of them. A cursor past the end is one into a file
+/// turns (`injected`) and the lines an API error writes in the model's place
+/// ("You've hit your session limit", which `api_error_of` reports) are skipped:
+/// neither the model nor whoever drives the session said any of them. A cursor
+/// past the end is one into a file
 /// since cut short or written anew, where it would land mid-line: the file is
 /// read from the top.
 pub fn messages_from(path: &Path, from: u64, with_tools: bool) -> (Vec<crate::agents::Message>, u64) {
@@ -697,6 +698,9 @@ fn message_of(line: &str, with_tools: bool) -> Option<crate::agents::Message> {
     }
     let role = match v["type"].as_str() {
         Some("user") => "user",
+        // The CLI's own stand-in reads `<synthetic>` ("No response requested."
+        // on a resume after an interrupt).
+        Some("assistant") if v["message"]["model"] == "<synthetic>" => return None,
         Some("assistant") => "assistant",
         _ => return None,
     };
@@ -728,10 +732,28 @@ fn message_of(line: &str, with_tools: bool) -> Option<crate::agents::Message> {
         }
     }
     let text = text.trim().to_string();
-    if text.is_empty() || text.starts_with("<local-command") || text.starts_with("<command-name") {
+    if text.is_empty() || text.starts_with("<local-command") || text.starts_with("<command-name") || (role == "user" && injected(&v, &text)) {
         return None;
     }
     Some(crate::agents::Message { role: role.to_string(), text })
+}
+
+/// A user line Claude Code wrote itself, not one it was given: the end of a
+/// background task it takes up in a turn of its own (`<task-notification>`),
+/// a wake-up it scheduled, a compaction's summary, the marker an interrupt
+/// leaves. Nobody asked anything there, so it is no prompt whose reply is
+/// still to come. 2.1.316 says where a turn came from (`turnOrigin`, these
+/// being the ones it counts as no person's, and `promptSource`); an older CLI
+/// only by the text.
+fn injected(v: &serde_json::Value, text: &str) -> bool {
+    const OWN: [&str; 5] = ["scheduled", "task_notification", "auto_continuation", "host_synthetic", "system"];
+    v["turnOrigin"].as_str().is_some_and(|o| OWN.contains(&o))
+        || v["promptSource"] == "system"
+        || v["origin"]["kind"] == "task-notification"
+        || v["isCompactSummary"].as_bool() == Some(true)
+        || v["isVisibleInTranscriptOnly"].as_bool() == Some(true)
+        || text.starts_with("<task-notification>")
+        || text.starts_with("[Request interrupted by user")
 }
 
 #[cfg(test)]
@@ -757,6 +779,29 @@ mod reading_tests {
         // Words of the model's after the error: it went on.
         std::fs::write(&path, format!("{API_ERROR}\n{said}\n")).unwrap();
         assert_eq!(api_error_of(&path), None);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// As Claude Code 2.1.316 writes what it puts in itself: a background task's
+    /// end, which it takes up in a turn of its own, and the stand-in reply it
+    /// writes on a resume after an interrupt.
+    #[test]
+    fn what_the_cli_puts_in_itself_is_nobodys_message() {
+        let path = std::env::temp_dir().join(format!("luna-claude-injected-{}.jsonl", std::process::id()));
+        let lines = [
+            r#"{"type":"user","message":{"role":"user","content":"build it"},"promptSource":"sdk","turnOrigin":"sdk"}"#,
+            r#"{"type":"assistant","message":{"model":"claude-opus-5-5","content":[{"type":"text","text":"Started the build in the background."}]}}"#,
+            r#"{"type":"user","message":{"role":"user","content":"<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n</task-notification>"},"origin":{"kind":"task-notification","producer":"session-task"},"promptSource":"system","turnOrigin":"task_notification"}"#,
+            r#"{"type":"assistant","message":{"model":"claude-opus-5-5","content":[{"type":"text","text":"The build passed."}]}}"#,
+            r#"{"type":"user","message":{"role":"user","content":"<task-notification>\n<task-id>b2</task-id>\n</task-notification>"}}"#,
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]}}"#,
+            r#"{"type":"assistant","message":{"model":"<synthetic>","content":[{"type":"text","text":"No response requested."}]},"isApiErrorMessage":false}"#,
+            r#"{"type":"user","message":{"role":"user","content":"This session is being continued from a previous conversation."},"isCompactSummary":true,"isVisibleInTranscriptOnly":true}"#,
+        ];
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let (msgs, _) = messages_from(&path, 0, false);
+        let got: Vec<(&str, &str)> = msgs.iter().map(|m| (m.role.as_str(), m.text.as_str())).collect();
+        assert_eq!(got, [("user", "build it"), ("assistant", "Started the build in the background."), ("assistant", "The build passed.")]);
         let _ = std::fs::remove_file(&path);
     }
 
