@@ -372,6 +372,10 @@ struct Entry {
     /// Taken up with nothing of the last core's turn left to overlap (`tied`, or
     /// that core stopped it itself): `resume` may start another.
     resumable: bool,
+    /// Nothing says an earlier core's turn ended. Saved, or the next core would
+    /// read the `cut_short` this core saves as that core having stopped it. Until
+    /// its next turn, which its caller chose knowing, or a later look (`LastTies`).
+    unsure: bool,
     /// What its latest turn was started on, for as long as no turn has named
     /// its conversation: with nothing on disk to resume, that is all there is
     /// of a helper a core's going stops now.
@@ -565,6 +569,7 @@ pub fn start(id: &str, spec: Spec, prompt: &str) -> Result<(), String> {
         undelivered: Vec::new(),
         tied: false,
         resumable: false,
+        unsure: false,
         opening: None,
         job: None,
         left_running: false,
@@ -966,6 +971,7 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
                     e.tied = e.job.as_deref().is_some_and(|job| crate::procs::tie(job, id));
                 }
             }
+            mark_by_thread(e);
         }
     }
     let stdin = child.stdin.take();
@@ -1025,6 +1031,7 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
                 e.observed.begin_turn(base);
                 e.error = None;
                 e.cut_short = false;
+                e.unsure = false;
                 e.opening = e.session.is_none().then(|| prompt.to_string());
                 e.spec.parent_moved = false;
                 note(e, &format!("› {}", one_line(prompt)));
@@ -1045,6 +1052,13 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
         turn_over(id, None);
     }
     Ok(())
+}
+
+/// Codex's tools have this whatever its config keeps from them (`procs::also_marked`).
+fn mark_by_thread(e: &Entry) {
+    if let (Provider::Codex, Some(job), Some(thread)) = (e.spec.provider, e.job.as_deref(), e.session.as_deref()) {
+        crate::procs::also_marked(job, "CODEX_THREAD_ID", thread);
+    }
 }
 
 /// Kills a turn's process that is not to run, its tree with it, and reaps it.
@@ -1162,7 +1176,10 @@ fn rerouted_to(message: &str) -> Option<&str> {
 fn on_codex_event(e: &mut Entry, v: &Value) {
     let item = &v["item"];
     match v["type"].as_str() {
-        Some("thread.started") => e.session = v["thread_id"].as_str().map(str::to_owned).or(e.session.take()),
+        Some("thread.started") => {
+            e.session = v["thread_id"].as_str().map(str::to_owned).or(e.session.take());
+            mark_by_thread(e);
+        }
         Some("item.completed") => match item["type"].as_str() {
             Some("agent_message") => note(e, &format!("said: {}", one_line(item["text"].as_str().unwrap_or("")))),
             Some("command_execution") => note(
@@ -1840,6 +1857,9 @@ struct Saved {
     /// See `Entry::tied`.
     #[serde(default)]
     tied: bool,
+    /// See `Entry::unsure`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    unsure: bool,
     /// See `Entry::opening`: written only while no turn has named the
     /// conversation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1904,6 +1924,7 @@ fn snapshot() -> Vec<Saved> {
             in_flight: e.in_flight.clone(),
             undelivered: e.undelivered.clone(),
             tied: e.tied,
+            unsure: e.unsure,
             opening: e.opening.clone().filter(|_| e.session.is_none()),
             cut_short: e.cut_short,
             observed: e.observed.clone(),
@@ -1935,9 +1956,10 @@ pub fn restore() {
         Err(_) => Vec::new(),
     };
     let mut back = Vec::new();
-    let job_over = crate::procs::end_last_ties();
+    let last_ties = crate::procs::end_last_ties();
     for mut s in saved {
-        s.tied = s.tied && job_over(&s.id);
+        s.tied = s.tied && last_ties.held(&s.id);
+        s.unsure = s.unsure && !last_ties.confirmed(&s.id);
         let ties = std::mem::take(&mut s.ties);
         // The agent layer's record of whose it is (`Known::parent`) is the one.
         s.spec.parent = ties.parent.clone();
@@ -2052,7 +2074,7 @@ fn resume_text(queued: &[Queued]) -> String {
 fn taken_up(s: Saved) -> Entry {
     let stopped = s.running || s.cut_short;
     // A turn no core stopped ended only if its tie saw to it (`Entry::tied`).
-    let resumable = !s.running || s.cut_short || s.tied;
+    let resumable = !s.unsure && (!s.running || s.cut_short || s.tied);
     let first: Vec<Queued> = s.opening.filter(|_| stopped && s.session.is_none()).map(|text| Queued { from: None, text }).into_iter().collect();
     let undelivered = [first, s.undelivered, s.in_flight, s.queue].concat();
     let mut e = Entry {
@@ -2071,6 +2093,7 @@ fn taken_up(s: Saved) -> Entry {
         undelivered,
         tied: false,
         resumable,
+        unsure: !resumable,
         opening: None,
         job: None,
         left_running: false,
@@ -2155,6 +2178,7 @@ pub fn take_up_for_test(id: &str, folder: &str, turns_ended: u32, queue: &[&str]
         in_flight: Vec::new(),
         undelivered: Vec::new(),
         tied: true,
+        unsure: false,
         opening: opening.map(str::to_owned),
         cut_short: false,
         observed: Default::default(),
@@ -2222,6 +2246,7 @@ pub fn test_helper(id: &str, account_path: &str, session: Option<&str>, busy: bo
         undelivered: Vec::new(),
         tied: false,
         resumable: false,
+        unsure: false,
         opening: None,
         job: None,
         left_running: false,
@@ -2446,6 +2471,7 @@ mod tests {
             in_flight: Vec::new(),
             undelivered: Vec::new(),
             tied: false,
+            unsure: false,
             opening: None,
             observed: serde_json::from_value(bytes).unwrap(),
         });
@@ -2579,6 +2605,7 @@ mod tests {
             undelivered: Vec::new(),
             tied: false,
             resumable: false,
+            unsure: false,
             opening: None,
             job: None,
             left_running: false,
@@ -2773,6 +2800,7 @@ mod tests {
             in_flight: Vec::new(),
             undelivered: Vec::new(),
             tied: false,
+            unsure: false,
             opening: None,
             cut_short: false,
             ties: Default::default(),
@@ -2800,6 +2828,21 @@ mod tests {
         assert!(taken_up(Saved { tied: true, ..saved(true, false) }).resumable);
         assert!(taken_up(Saved { cut_short: true, ..saved(true, false) }).resumable, "the last core stopped it itself");
         assert!(taken_up(saved(false, false)).resumable);
+
+        // Not known to have ended stays so through the next core, which reads the
+        // `cut_short` this one saved as if that core had stopped it, until its next
+        // turn or a later look says.
+        let first = taken_up(saved(true, false));
+        assert!(first.unsure && first.cut_short && first.run.is_none());
+        lock().entries.insert("unsure-across".into(), first);
+        let on_disk = snapshot().into_iter().find(|s| s.id == "unsure-across").unwrap();
+        lock().entries.remove("unsure-across");
+        assert!(on_disk.unsure && on_disk.cut_short && !on_disk.running && !on_disk.tied);
+        let second = taken_up(on_disk);
+        assert!(!second.resumable && second.unsure, "as it was");
+        let cleared = taken_up(Saved { unsure: false, cut_short: true, ..saved(false, false) });
+        assert!(cleared.resumable && !cleared.unsure);
+        assert!(!serde_json::to_value(saved(false, false)).unwrap().as_object().unwrap().contains_key("unsure"), "and nothing in the file otherwise");
     }
 
     #[test]
@@ -2993,6 +3036,7 @@ mod tests {
                 in_flight: Vec::new(),
                 undelivered: Vec::new(),
                 tied: true,
+                unsure: false,
                 opening: Some("the prompt".into()),
                 cut_short: false,
                 observed: Default::default(),

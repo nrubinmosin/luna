@@ -376,14 +376,21 @@ src-tauri/src/
   helper's turn opened dies with a core that dies, and only then. Off Windows the same tie is a process
   of Luna's (`keeper.rs`): the keeper, this exe with `--keep-ties`, one to a core once a helper has a
   turn, reads a pipe only the core writes, and the end of that input is the core's death, on which it
-  ends every job not let go of. Not `PR_SET_PDEATHSIG`: it fires as the spawning *thread* ends, reaches
-  one child, and macOS has none. Such a job is more than a process group, since both CLIs start each
-  tool command in a session of its own (Claude Code `detached`, Codex `setsid`): it is what has its mark
-  in the environment (`LUNA_JOB`, one to a helper under a core), the turns' processes by pid and start
-  time with their groups, and all below those by parent link. A core writes what it has tied to
-  `<data>/tied-jobs.json` as it ties it, and the next ends what is left of that before it takes the
-  helpers up (`end_last_ties`), for a keeper that went with its core; a pid whose start time differs is
-  another's and is left alone. One difference: a job there lists nothing, as nothing there tells a
+  ends every job not let go of; it also looks at the core itself every 2 s by pid and start time, as on
+  macOS a pipe becomes close-on-exec a moment after it is made and a process started then holds the write
+  end. Not `PR_SET_PDEATHSIG`: it fires as the spawning *thread* ends, reaches one child, and macOS has
+  none. Such a job is more than a process group, since both CLIs start each tool command in a session of
+  its own (Claude Code `detached`, Codex `setsid`): it is what has its mark in the environment (`LUNA_JOB`,
+  one to a helper under a core), the turns' processes by pid and start time with their groups, and all
+  below those by parent link. Codex's `shell_environment_policy` may keep the mark from its tools, so
+  `CODEX_THREAD_ID`, which it sets after that filter, counts too for what was born since the job began;
+  a turn whose own process does not show its mark still goes with the core but is not counted as tied.
+  Everything is stopped from the top down before it is killed, and no signal goes to a group by its
+  number: on Linux each goes through a pidfd. A core writes what it has tied as it ties it, a file to a job
+  in `<data>/tied-jobs/`, so that letting go of one is one unlink a full disk does not refuse, and the next
+  ends what is left of those before it takes the helpers up (`end_last_ties`), for a keeper that went with
+  its core. A pid whose start time differs is another's and is left alone, a file of another boot names
+  nothing, and a job not seen out stays written down for the core after. One difference: a job there lists nothing, as nothing there tells a
   window from a job left running, so `children_busy` stays false off Windows and what a turn left runs
   on past every way out but a death. `kill_tree` is `taskkill /T` there by the same walk without the mark
   (`keeper::end_tree`): the process, what it started, and what is in a group or session one of those
@@ -741,7 +748,10 @@ src-tauri/src/
   plain cut-short one with the text still held. It runs only where nothing of the old turn can overlap
   it (`Entry::resumable`): that core stopped it itself, or its processes were in a job tied to the core
   (`Entry::tied`, saved; off Windows only if `end_last_ties` also finds nothing of the job left). Elsewhere
-  (a tie or join that failed, a keeper that could not start) the caller gets the plain notice and decides. It takes only the batch it captured, re-checking under the lock that the helper
+  (a tie or join that failed, a keeper that could not start, a job not seen out, no record of it) the caller
+  gets the plain notice and decides. That stands across cores (`Entry::unsure`, saved, as the next would
+  read this one's `cut_short` as its having stopped the turn itself) until the helper's next turn, which
+  its caller chose knowing, or a later core's look finds the job over. It takes only the batch it captured, re-checking under the lock that the helper
   is still cut short, as a turn sent meanwhile has gone on already. A helper stopped before any turn named its conversation
   is taken up like any other, so its debt, its lineage and in time its end record in `agents.jsonl`
   survive: what its turn was started on is saved until then (`Entry::opening`) and becomes the first of

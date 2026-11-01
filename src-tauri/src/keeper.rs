@@ -11,11 +11,19 @@
 //! spawned the process ends, and turns start on threads that do not last; it
 //! reaches that one child and nothing it started; macOS has no such thing.
 //!
+//! The end of its input is not all it goes by: on macOS a pipe becomes
+//! close-on-exec a moment after it is made, and a process started in that moment
+//! keeps the write end for its life. So it also looks at the core itself now and
+//! then, by pid and start time.
+//!
 //! A keeper can go with its core (`killall -9`, the OOM killer), so a core also
-//! writes down what it has tied as it ties it, and the next one ends what is
-//! left of that before it takes the helpers up (`end_last_ties`). That alone
-//! would keep a resumed turn from overlapping the old one, but it would leave a
-//! dead core's turns running until a next core starts, which may be never.
+//! writes down what it has tied as it ties it, a file to a job, and the next one
+//! ends what is left of those before it takes the helpers up (`end_last_ties`).
+//! That alone would keep a resumed turn from overlapping the old one, but it
+//! would leave a dead core's turns running until a next core starts, which may be
+//! never. A file to a job so that letting go of one is one unlink, which a full
+//! disk does not refuse: a released job must not be there for the next core to
+//! end. A job not seen out stays written down, for the core after to try again.
 //!
 //! What is in a job. A process group is not enough: both CLIs start each tool
 //! command in a session of its own (Claude Code spawns it `detached`, Codex
@@ -23,8 +31,11 @@
 //! from the turn. So a job is, at any one look, whatever has its mark in the
 //! environment (`MARK`, which goes down through a new session and a new parent),
 //! the turns' own processes by pid and start time with their groups, and
-//! everything below any of those by parent link. Only a process that both
-//! cleared its environment and lost its parents gets away.
+//! everything below any of those by parent link. Codex filters what its tools
+//! inherit by its config, so there the mark may not get through; `CODEX_THREAD_ID`
+//! it sets after the filter, and that counts too (`also_marked`). A turn whose own
+//! process does not show its mark is not counted as tied at all (`tie`). Only a
+//! process that both cleared its environment and lost its parents gets away.
 //!
 //! No window spared and none could be: a dead core takes the programs a helper
 //! opened, as it does on Windows. Every way out that is not a death lets go.
@@ -38,9 +49,10 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
-use std::io::{BufRead, Write};
+use std::io::{Read, Write};
+use std::os::fd::FromRawFd;
 use std::os::unix::process::CommandExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -59,6 +71,9 @@ const LOOK_AGAIN: Duration = Duration::from_millis(25);
 /// Looks at a tree being frozen before it is ended whatever is still moving:
 /// what is frozen cannot fork, so only a fork bomb takes more than a few.
 const FREEZE_LOOKS: usize = 50;
+/// How long the keeper listens before it looks at the core itself. The pipe says
+/// at once; this is for a pipe something else holds open as well.
+const CORE_LOOK_MS: i32 = 2000;
 /// A keeper that lasted less than this is not started again by itself.
 const KEEPER_LASTS: Duration = Duration::from_secs(5);
 
@@ -110,6 +125,43 @@ mod os {
     pub fn environment(pid: i32) -> Option<Vec<u8>> {
         std::fs::read(format!("/proc/{pid}/environ")).ok()
     }
+
+    /// Whether it has exited or its pid is another's. Only on the word of the
+    /// system: a look that fails otherwise (out of descriptors) is no death.
+    pub fn gone(pid: i32, started: u64) -> bool {
+        match std::fs::read(format!("/proc/{pid}/stat")) {
+            Ok(stat) => parse_stat(pid, &String::from_utf8_lossy(&stat)).is_none_or(|p| p.started != started),
+            Err(e) => matches!(e.raw_os_error(), Some(libc::ENOENT | libc::ESRCH)),
+        }
+    }
+
+    /// Ticks since boot start over at a boot, so a pid and a start time say
+    /// nothing of a process written down before it.
+    pub fn boot_id() -> Option<String> {
+        Some(std::fs::read_to_string("/proc/sys/kernel/random/boot_id").ok()?.trim().to_string())
+    }
+
+    /// To that process and no other: a pidfd stays with a process whatever
+    /// becomes of its number, so what is read after opening one is what will
+    /// be signalled.
+    pub fn signal(p: &Proc, which: i32) {
+        // SAFETY: plain system calls; the descriptor opened here is closed here,
+        // and a null siginfo is what a plain signal takes.
+        unsafe {
+            let fd = libc::syscall(libc::SYS_pidfd_open, p.pid, 0);
+            if fd < 0 {
+                // A kernel before 5.3: as close to the signal as it gets.
+                if super::is_still(p) {
+                    libc::kill(p.pid, which);
+                }
+                return;
+            }
+            if super::is_still(p) {
+                libc::syscall(libc::SYS_pidfd_send_signal, fd, which, std::ptr::null::<libc::siginfo_t>(), 0);
+            }
+            libc::close(fd as i32);
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -141,16 +193,25 @@ mod os {
         }
     }
 
-    pub fn read(pid: i32) -> Option<Proc> {
+    /// The system's account of a process, or the error it gave.
+    fn info(pid: i32) -> Result<libc::proc_bsdinfo, Option<i32>> {
         let size = size_of::<libc::proc_bsdinfo>() as c_int;
         // SAFETY: a plain struct of the size passed, all zeroes valid for it.
-        let info = unsafe {
+        unsafe {
             let mut info: libc::proc_bsdinfo = zeroed();
             if libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, (&mut info as *mut libc::proc_bsdinfo).cast(), size) != size {
-                return None;
+                return Err(std::io::Error::last_os_error().raw_os_error());
             }
-            info
-        };
+            Ok(info)
+        }
+    }
+
+    fn started(info: &libc::proc_bsdinfo) -> u64 {
+        info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec
+    }
+
+    pub fn read(pid: i32) -> Option<Proc> {
+        let info = info(pid).ok()?;
         if info.pbi_status == ZOMBIE {
             return None;
         }
@@ -162,13 +223,45 @@ mod os {
             group: info.pbi_pgid as i32,
             // SAFETY: a plain query; -1, for one it will not say, leads to nothing.
             session: unsafe { libc::getsid(pid) },
-            started: info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec,
+            started: started(&info),
             name,
         })
     }
 
-    /// Its arguments and environment; the kernel may leave the environment out
-    /// for a process signed as restricted, which then goes by its parent links.
+    /// Whether it has exited or its pid is another's. Only on the word of the
+    /// system: a look that fails otherwise is no death.
+    pub fn gone(pid: i32, since: u64) -> bool {
+        match info(pid) {
+            Ok(info) => info.pbi_status == ZOMBIE || started(&info) != since,
+            Err(errno) => errno == Some(libc::ESRCH),
+        }
+    }
+
+    /// `kern.bootsessionuuid`, and not `kern.boottime`, which moves with the clock
+    /// and would make this boot look like another. None tells nothing, which is
+    /// safe: start times here are of the clock and do not repeat across boots.
+    pub fn boot_id() -> Option<String> {
+        let mut buf = [0u8; 64];
+        let mut size = buf.len();
+        // SAFETY: writes at most `size` bytes into a buffer of that size.
+        let got = unsafe { libc::sysctlbyname(c"kern.bootsessionuuid".as_ptr(), buf.as_mut_ptr().cast(), &mut size, null_mut(), 0) };
+        if got != 0 {
+            return None;
+        }
+        let id = String::from_utf8_lossy(&buf[..size]).trim_end_matches('\0').trim().to_string();
+        (!id.is_empty()).then_some(id)
+    }
+
+    /// There is no pidfd here: as close to the signal as it gets.
+    pub fn signal(p: &Proc, which: i32) {
+        if super::is_still(p) {
+            // SAFETY: a plain signal, to a process just seen to be this one.
+            unsafe { libc::kill(p.pid, which) };
+        }
+    }
+
+    /// The kernel may leave the environment out for a process signed as
+    /// restricted, which then goes by its parent links.
     pub fn environment(pid: i32) -> Option<Vec<u8>> {
         let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid];
         let mut size = 0usize;
@@ -182,8 +275,7 @@ mod os {
             if libc::sysctl(mib.as_mut_ptr(), 3, buf.as_mut_ptr().cast(), &mut size, null_mut(), 0) != 0 {
                 return None;
             }
-            buf.truncate(size);
-            Some(buf)
+            super::environment_of_procargs(buf.get(..size)?).map(<[u8]>::to_vec)
         }
     }
 }
@@ -201,10 +293,39 @@ mod os {
     pub fn environment(_pid: i32) -> Option<Vec<u8>> {
         None
     }
+    pub fn gone(_pid: i32, _started: u64) -> bool {
+        false
+    }
+    pub fn boot_id() -> Option<String> {
+        None
+    }
+    pub fn signal(_p: &Proc, _which: i32) {}
 }
 
 fn holds(environment: &[u8], mark: &str) -> bool {
     environment.split(|b| *b == 0).any(|var| var == mark.as_bytes())
+}
+
+/// The environment in what `KERN_PROCARGS2` gives: argc, the path it was started
+/// by, padding, the arguments, then the environment. Only that part: a command
+/// with a job's mark among its arguments (`grep`) is not of the job.
+#[cfg(any(target_os = "macos", test))]
+fn environment_of_procargs(args: &[u8]) -> Option<&[u8]> {
+    let argc = i32::from_ne_bytes(args.get(..4)?.try_into().ok()?);
+    let rest = args.get(4..)?;
+    let mut at = rest.iter().position(|b| *b == 0)?;
+    while rest.get(at) == Some(&0) {
+        at += 1;
+    }
+    for _ in 0..argc {
+        at += rest.get(at..)?.iter().position(|b| *b == 0)? + 1;
+    }
+    rest.get(at..)
+}
+
+/// Whether a pid is still the process that was looked at.
+fn is_still(p: &Proc) -> bool {
+    os::read(p.pid).is_some_and(|now| now.started == p.started)
 }
 
 // ------------------------------------------------------------ what a job is --
@@ -225,6 +346,15 @@ fn leader(pid: u32) -> Option<Leader> {
 struct Record {
     id: String,
     mark: String,
+    /// The boot it was written in: of another, all it names ended with that.
+    #[serde(default)]
+    boot: Option<String>,
+    /// What else in an environment says it is of this job (`also_marked`): for a
+    /// process born since the job began, as what a core let go of may have it too.
+    #[serde(default)]
+    also: Option<String>,
+    #[serde(default)]
+    since: u64,
     leaders: Vec<Leader>,
 }
 
@@ -278,19 +408,33 @@ fn tree(all: &[Proc], root: i32, me: i32, child_of: Option<i32>) -> Vec<&Proc> {
     and_below(&all, seeds)
 }
 
-/// A signal, if it is still the process that was looked at: a pid read a moment
-/// ago may belong to another by now.
-fn signal(p: &Proc, which: i32) {
-    if os::read(p.pid).is_some_and(|now| now.started == p.started) {
-        // SAFETY: a plain signal, to a process just seen to be this one.
-        unsafe { libc::kill(p.pid, which) };
+/// Ends all that `look` finds. Each is stopped first, from the top down, and
+/// looked below again, as a process killed outright would leave what it forked
+/// that moment with another parent and out of the walk. Each signal goes to the
+/// process looked at and no other (`os::signal`), so no group is signalled by its
+/// number, which may be another's by the time it arrives. Returns what it ended;
+/// None with nothing to look with.
+fn freeze_and_end(look: impl Fn(&[Proc]) -> Vec<Proc>) -> Option<Vec<Proc>> {
+    let mut frozen: Vec<Proc> = Vec::new();
+    for _ in 0..FREEZE_LOOKS {
+        let all: Vec<Proc> = os::pids()?.into_iter().filter_map(os::read).collect();
+        let new: Vec<Proc> = look(&all).into_iter().filter(|p| !frozen.iter().any(|f| f.pid == p.pid && f.started == p.started)).collect();
+        if new.is_empty() {
+            break;
+        }
+        for p in new {
+            os::signal(&p, libc::SIGSTOP);
+            frozen.push(p);
+        }
     }
+    for p in &frozen {
+        os::signal(p, libc::SIGKILL);
+    }
+    Some(frozen)
 }
 
 /// Ends a process and all that hangs from it, the way `taskkill /T` does: what
-/// has a window goes too if it still hangs from the tree. Each is stopped first,
-/// from the top down, and looked below again, as a process killed outright would
-/// leave what it forked that moment with another parent and out of the walk.
+/// has a window goes too if it still hangs from the tree.
 pub fn end_tree(root: u32) {
     let (root, me) = (root as i32, std::process::id() as i32);
     if root <= 1 || root == me {
@@ -309,27 +453,9 @@ pub fn end_tree(root: u32) {
     // child; the core only ever means a CLI it started.
     let child_of = crate::lifecycle::is_core().then_some(me);
     let keeper = format!("{MARK}={KEEPER}");
-    let mut frozen: Vec<Proc> = Vec::new();
-    for _ in 0..FREEZE_LOOKS {
-        let Some(pids) = os::pids() else { break };
-        let all: Vec<Proc> = pids.into_iter().filter_map(os::read).collect();
-        let new: Vec<Proc> = tree(&all, root, me, child_of)
-            .into_iter()
-            .filter(|p| !frozen.iter().any(|f| f.pid == p.pid && f.started == p.started))
-            .filter(|p| !os::environment(p.pid).is_some_and(|env| holds(&env, &keeper)))
-            .cloned()
-            .collect();
-        if new.is_empty() {
-            break;
-        }
-        for p in new {
-            signal(&p, libc::SIGSTOP);
-            frozen.push(p);
-        }
-    }
-    for p in &frozen {
-        signal(p, libc::SIGKILL);
-    }
+    freeze_and_end(|all| {
+        tree(all, root, me, child_of).into_iter().filter(|p| !os::environment(p.pid).is_some_and(|env| holds(&env, &keeper))).cloned().collect()
+    });
 }
 
 /// Ends all a job holds, looking until nothing is left or `within` is up.
@@ -337,26 +463,19 @@ pub fn end_tree(root: u32) {
 fn end_job(job: &Record, within: Duration) -> (bool, Vec<String>) {
     let me = std::process::id() as i32;
     let mark = format!("{MARK}={}", job.mark);
+    let marked = |p: &Proc| {
+        os::environment(p.pid).is_some_and(|env| holds(&env, &mark) || (p.started >= job.since && job.also.as_deref().is_some_and(|also| holds(&env, also))))
+    };
     let deadline = Instant::now() + within;
     let mut ended: Vec<String> = Vec::new();
     loop {
-        let Some(pids) = os::pids() else { return (false, ended) };
-        let all: Vec<Proc> = pids.into_iter().filter_map(os::read).collect();
-        let found = members(&all, &job.leaders, me, |p| os::environment(p.pid).is_some_and(|env| holds(&env, &mark)));
+        let Some(found) = freeze_and_end(|all| members(all, &job.leaders, me, marked).into_iter().cloned().collect()) else { return (false, ended) };
         if found.is_empty() {
             return (true, ended);
         }
-        for p in &found {
-            // A group at one stroke: what it forks meanwhile goes too.
-            if p.group == p.pid && job.leaders.iter().any(|l| l.pid == p.pid && l.started == p.started) {
-                // SAFETY: a plain signal, to a group just seen led by this process.
-                unsafe { libc::killpg(p.pid, libc::SIGKILL) };
-            }
-        }
         for p in found {
-            signal(p, libc::SIGKILL);
             if !ended.contains(&p.name) {
-                ended.push(p.name.clone());
+                ended.push(p.name);
             }
         }
         if Instant::now() >= deadline {
@@ -378,6 +497,8 @@ fn report(job: &Record, gone: bool, ended: &[String], why: &str) {
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 enum Word {
+    /// Who the core is, for the keeper to look at. The first word it hears.
+    Core(Leader),
     Tie(Record),
     LetGo(String),
 }
@@ -405,28 +526,74 @@ pub fn from_args() -> bool {
     true
 }
 
+/// What the keeper has heard so far.
+#[derive(Default)]
+struct Heard {
+    core: Option<Leader>,
+    jobs: BTreeMap<String, Record>,
+    partial: Vec<u8>,
+}
+
+impl Heard {
+    fn take(&mut self, bytes: &[u8]) {
+        self.partial.extend_from_slice(bytes);
+        while let Some(end) = self.partial.iter().position(|b| *b == b'\n') {
+            let line: Vec<u8> = self.partial.drain(..=end).collect();
+            match serde_json::from_slice(&line) {
+                Ok(Word::Core(core)) => self.core = Some(core),
+                Ok(Word::Tie(job)) => {
+                    self.jobs.insert(job.mark.clone(), job);
+                }
+                Ok(Word::LetGo(mark)) => {
+                    self.jobs.remove(&mark);
+                }
+                Err(e) => crate::log::warn("tie", &format!("a word the keeper could not read: {e}")),
+            }
+        }
+    }
+}
+
+/// Whether there is something to read on its input within `ms`, its end included.
+fn input_within(ms: i32) -> bool {
+    let mut input = libc::pollfd { fd: 0, events: libc::POLLIN, revents: 0 };
+    // SAFETY: one pollfd, as the count says, that outlives the call.
+    unsafe { libc::poll(&mut input, 1, ms) > 0 }
+}
+
+/// Listens until the core is gone: the end of its input, or the core itself looked
+/// at. Its last words are in the pipe by then, whoever else holds the other end.
+fn listen(heard: &mut Heard) {
+    // SAFETY: the pipe the core started it on, owned by nothing else in this process.
+    let mut input = unsafe { std::fs::File::from_raw_fd(0) };
+    let mut buf = [0u8; 8192];
+    let mut leaving = false;
+    loop {
+        if input_within(if leaving { 0 } else { CORE_LOOK_MS }) {
+            match input.read(&mut buf) {
+                Ok(0) => return,
+                Ok(n) => heard.take(&buf[..n]),
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => return,
+            }
+        } else if leaving {
+            return;
+        } else {
+            leaving = heard.core.is_some_and(|core| os::gone(core.pid, core.started));
+        }
+    }
+}
+
 fn keep() {
-    // Only the end of its input is the core's death. A signal sent by name
-    // (`killall luna`) would otherwise end this one along with the core, and
-    // what it keeps would run on.
+    // Only the core's going is the core's death. A signal sent by name (`killall
+    // luna`) would otherwise end this one along with the core, and what it keeps
+    // would run on.
     for signal in [libc::SIGHUP, libc::SIGINT, libc::SIGTERM] {
         // SAFETY: ignoring a signal touches nothing of this program's.
         unsafe { libc::signal(signal, libc::SIG_IGN) };
     }
-    let mut jobs: BTreeMap<String, Record> = BTreeMap::new();
-    for line in std::io::stdin().lock().lines().map_while(Result::ok) {
-        match serde_json::from_str(&line) {
-            Ok(Word::Tie(job)) => {
-                jobs.insert(job.mark.clone(), job);
-            }
-            Ok(Word::LetGo(mark)) => {
-                jobs.remove(&mark);
-            }
-            // The core killed halfway through a line: what it had said before stands.
-            Err(e) => crate::log::warn("tie", &format!("a word the keeper could not read: {e}")),
-        }
-    }
-    for job in jobs.values() {
+    let mut heard = Heard::default();
+    listen(&mut heard);
+    for job in heard.jobs.values() {
         let (gone, ended) = end_job(job, ENDING_TAKES);
         report(job, gone, &ended, "the core went");
     }
@@ -459,9 +626,8 @@ fn keeper_command() -> std::io::Result<Command> {
 
 struct Ties {
     records: BTreeMap<String, Record>,
-    /// The write end. Rust opens pipes close-on-exec, so nothing the core
-    /// starts holds it, and it closes when the core ends, or never before: a
-    /// live keeper whose pipe closes takes that for the core's death.
+    /// The write end, which closes when the core ends or never before: a live
+    /// keeper whose pipe closes takes that for the core's death.
     keeper: Option<ChildStdin>,
     generation: u64,
 }
@@ -474,23 +640,39 @@ fn ties() -> MutexGuard<'static, Ties> {
 
 /// In the data dir, written on every change: `helpers.json` goes by a two-second
 /// beat, and a core killed within it must still leave this behind.
-fn records_file() -> PathBuf {
-    crate::paths::data_dir().join("tied-jobs.json")
+fn records_dir() -> PathBuf {
+    crate::paths::data_dir().join("tied-jobs")
 }
 
-fn write_records(records: &BTreeMap<String, Record>) {
-    let path = records_file();
-    if records.is_empty() {
-        let _ = std::fs::remove_file(&path);
-        return;
-    }
-    let tmp = path.with_extension("json.tmp");
-    let written = serde_json::to_vec(&records.values().collect::<Vec<_>>())
-        .map_err(std::io::Error::other)
+fn record_file(dir: &Path, mark: &str) -> PathBuf {
+    let name: String = mark.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' }).collect();
+    dir.join(format!("{name}.json"))
+}
+
+/// One that cannot be written is not left saying less than is so: with none at
+/// all the next core does not count the job as over.
+fn write_record(dir: &Path, job: &Record) {
+    let path = record_file(dir, &job.mark);
+    let tmp = path.with_extension("tmp");
+    let written = std::fs::create_dir_all(dir)
+        .and_then(|()| serde_json::to_vec(job).map_err(std::io::Error::other))
         .and_then(|bytes| std::fs::write(&tmp, bytes))
         .and_then(|()| std::fs::rename(&tmp, &path));
     if let Err(e) = written {
         crate::log::warn("tie", &format!("could not write {}: {e}", path.display()));
+        let _ = std::fs::remove_file(&tmp);
+        let _ = std::fs::remove_file(&path);
+    }
+}
+
+/// A job let go of must not be there for the next core to end.
+fn remove_record(dir: &Path, mark: &str) {
+    let path = record_file(dir, mark);
+    match std::fs::remove_file(&path) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            crate::log::error("tie", &format!("could not remove {}, and the next core will end that job: {e}", path.display()));
+        }
+        _ => {}
     }
 }
 
@@ -503,7 +685,8 @@ fn start_keeper(ties: &mut Ties) -> bool {
         }
     };
     let Some(mut pipe) = child.stdin.take() else { return false };
-    if !ties.records.values().all(|job| say(&mut pipe, &Word::Tie(job.clone())).is_ok()) {
+    let core = leader(std::process::id()).map(Word::Core);
+    if !core.iter().chain(&ties.records.values().map(|job| Word::Tie(job.clone())).collect::<Vec<_>>()).all(|word| say(&mut pipe, word).is_ok()) {
         crate::log::warn("tie", "the keeper went as it started");
         let _ = child.kill();
         let _ = child.wait();
@@ -540,14 +723,16 @@ fn see_out(mut child: Child, generation: u64) {
 fn tell(word: Word) -> bool {
     let mut ties = ties();
     match &word {
+        Word::Core(_) => {}
         Word::Tie(job) => {
             ties.records.insert(job.mark.clone(), job.clone());
+            write_record(&records_dir(), job);
         }
         Word::LetGo(mark) => {
             ties.records.remove(mark);
+            remove_record(&records_dir(), mark);
         }
     }
-    write_records(&ties.records);
     if ties.keeper.as_mut().is_some_and(|keeper| say(keeper, &word).is_ok()) {
         return true;
     }
@@ -569,8 +754,17 @@ pub struct Job(Mutex<JobState>);
 
 struct JobState {
     leaders: Vec<Leader>,
+    /// When its first turn began.
+    since: u64,
+    also: Option<String>,
     /// The helper the keeper has it for, until `let_go`.
     tied_for: Option<String>,
+}
+
+impl JobState {
+    fn record(&self, id: &str) -> Record {
+        Record { id: id.to_string(), mark: mark_of(id), boot: os::boot_id(), also: self.also.clone(), since: self.since, leaders: self.leaders.clone() }
+    }
 }
 
 impl Job {
@@ -588,25 +782,38 @@ impl Drop for Job {
 /// A job for a process just started, which leads a group of its own. Nothing
 /// runs and nothing is told until `tie`: a chat's job is never tied.
 pub fn adopt(pid: u32) -> Option<Job> {
-    Some(Job(Mutex::new(JobState { leaders: leader(pid).into_iter().collect(), tied_for: None })))
+    let first = leader(pid);
+    Some(Job(Mutex::new(JobState { leaders: first.into_iter().collect(), since: first.map_or(0, |l| l.started), also: None, tied_for: None })))
+}
+
+/// Whether a turn's process shows its mark, or has already gone, showing nothing
+/// and hiding nothing. Where it does not (macOS hides the environment of a
+/// restricted binary), what the turn leaves behind could not be told either.
+fn shows_mark(turn: &Leader, id: &str) -> bool {
+    let mark = format!("{MARK}={}", mark_of(id));
+    let shown = os::environment(turn.pid).is_some_and(|env| holds(&env, &mark)) || os::gone(turn.pid, turn.started);
+    if !shown {
+        crate::log::warn("tie", &format!("{id}: its turn does not show its mark: not counted as tied, though it still goes with the core"));
+    }
+    shown
 }
 
 /// Has the keeper end the job with the core. True only once the keeper has it,
-/// and where there is a way to look at what a job holds.
+/// where there is a way to look at what a job holds, and its turn can be seen to
+/// carry the mark: what says the job is over when the next core takes it up.
 pub fn tie(job: &Job, id: &str) -> bool {
     if os::pids().is_none_or(|pids| pids.is_empty()) {
         crate::log::warn("tie", "no way to list processes here: helpers are not tied to the core");
         return false;
     }
     let mut state = job.state();
-    let told = tell(Word::Tie(Record { id: id.to_string(), mark: mark_of(id), leaders: state.leaders.clone() }));
-    if told {
-        state.tied_for = Some(id.to_string());
-    } else {
+    if !tell(Word::Tie(state.record(id))) {
         // Not tied, so nothing lets go of it later: the next core must not end it.
         tell(Word::LetGo(mark_of(id)));
+        return false;
     }
-    told
+    state.tied_for = Some(id.to_string());
+    state.leaders.iter().all(|turn| shows_mark(turn, id))
 }
 
 /// A later turn of the same helper, whose mark it has too. The turns already
@@ -615,10 +822,25 @@ pub fn tie(job: &Job, id: &str) -> bool {
 pub fn join(job: &Job, pid: u32) -> bool {
     let mut state = job.state();
     state.leaders.retain(|l| os::read(l.pid).is_some_and(|p| p.started == l.started));
-    state.leaders.extend(leader(pid));
+    let turn = leader(pid);
+    state.leaders.extend(turn);
     match state.tied_for.clone() {
-        Some(id) => tell(Word::Tie(Record { mark: mark_of(&id), id, leaders: state.leaders.clone() })),
+        Some(id) => tell(Word::Tie(state.record(&id))) && turn.is_none_or(|turn| shows_mark(&turn, &id)),
         None => true,
+    }
+}
+
+/// Something else in the environment that says a process is of this job, once it
+/// is known: `CODEX_THREAD_ID`, which Codex sets on its tools after its
+/// `shell_environment_policy`, whose `include_only` no setting of ours gets past.
+pub fn also_marked(job: &Job, var: &str, value: &str) {
+    let mut state = job.state();
+    let also = format!("{var}={value}");
+    if state.also.as_deref() != Some(&also) {
+        state.also = Some(also);
+        if let Some(id) = state.tied_for.clone() {
+            tell(Word::Tie(state.record(&id)));
+        }
     }
 }
 
@@ -630,30 +852,66 @@ pub fn let_go(job: &Job) {
     }
 }
 
-/// Ends what is left of the jobs the last core tied and did not let go of, which
-/// its keeper has done unless it went too. For taking the helpers up: says of a
-/// helper whether its job is known to be over.
-pub fn end_last_ties() -> impl Fn(&str) -> bool {
-    let left: Vec<Record> = std::fs::read(records_file()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-    let ended = end_all(&left);
-    let _ = std::fs::remove_file(records_file());
-    move |id: &str| ended.contains(id)
+/// What became of the jobs the last core left written down.
+pub struct LastTies {
+    over: HashSet<String>,
 }
 
-fn end_all(left: &[Record]) -> HashSet<String> {
-    left.iter()
-        .filter_map(|job| {
-            let (gone, ended) = end_job(job, ENDING_TAKES);
-            report(job, gone, &ended, "the last core's keeper did not see to it");
-            gone.then(|| job.id.clone())
-        })
-        .collect()
+impl LastTies {
+    /// Whether a helper's tied job was seen out: nothing of it is left.
+    pub fn held(&self, id: &str) -> bool {
+        self.over.contains(id)
+    }
+
+    /// Whether a job an earlier core could not see out has been now.
+    pub fn confirmed(&self, id: &str) -> bool {
+        self.over.contains(id)
+    }
+}
+
+/// Ends what is left of the jobs earlier cores tied and did not let go of, which a
+/// keeper has done unless it went too. For taking the helpers up.
+pub fn end_last_ties() -> LastTies {
+    end_records(&records_dir(), ENDING_TAKES, os::boot_id().as_deref())
+}
+
+/// A job's file goes once nothing of it is left, and only then: one not seen out
+/// is tried again by the core after, and until then says nothing of its helper.
+/// One of another boot needs no look: that boot took it all, and its pids and
+/// start times may by now name something else.
+fn end_records(dir: &Path, within: Duration, this_boot: Option<&str>) -> LastTies {
+    let (mut over, mut left) = (HashSet::new(), HashSet::new());
+    for path in std::fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path()) {
+        let job: Option<Record> = (path.extension().is_some_and(|e| e == "json"))
+            .then(|| std::fs::read(&path).ok().and_then(|b| serde_json::from_slice(&b).ok()))
+            .flatten();
+        let Some(job) = job else {
+            // Half a write or an unreadable file: it names nothing to act on, and
+            // with nothing written its helper does not count as seen out.
+            let _ = std::fs::remove_file(&path);
+            continue;
+        };
+        let of_another_boot = matches!((job.boot.as_deref(), this_boot), (Some(then), Some(now)) if then != now);
+        let gone = of_another_boot || {
+            let (gone, ended) = end_job(&job, within);
+            report(&job, gone, &ended, "the last core's keeper did not see to it");
+            gone
+        };
+        if gone {
+            let _ = std::fs::remove_file(&path);
+            over.insert(job.id);
+        } else {
+            left.insert(job.id);
+        }
+    }
+    over.retain(|id| !left.contains(id));
+    LastTies { over }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{BufReader, Read};
+    use std::io::{BufRead, BufReader};
 
     fn p(pid: i32, parent: i32, group: i32, started: u64) -> Proc {
         Proc { pid, parent, group, session: 0, started, name: format!("p{pid}") }
@@ -775,7 +1033,7 @@ mod tests {
 
     #[test]
     fn a_word_to_the_keeper_is_one_line() {
-        let word = Word::Tie(Record { id: "c 1".into(), mark: "m".into(), leaders: vec![Leader { pid: 2, started: 3 }] });
+        let word = Word::Tie(Record { id: "c 1".into(), mark: "m".into(), boot: None, also: None, since: 0, leaders: vec![Leader { pid: 2, started: 3 }] });
         let mut out = Vec::new();
         say(&mut out, &word).unwrap();
         assert_eq!(out.iter().filter(|b| **b == b'\n').count(), 1);
@@ -810,7 +1068,16 @@ mod tests {
     }
 
     fn record_of(child: &Child, mark: &str) -> Record {
-        Record { id: format!("id-{mark}"), mark: mark.to_string(), leaders: leader(child.id()).into_iter().collect() }
+        Record { id: format!("id-{mark}"), mark: mark.to_string(), boot: None, also: None, since: 0, leaders: leader(child.id()).into_iter().collect() }
+    }
+
+    /// A folder of the test's own, under the data dir that the test build keeps
+    /// beside its exe. The records of the tests that tie for real are elsewhere.
+    fn scratch(name: &str) -> PathBuf {
+        let dir = crate::paths::data_dir().join("keeper-tests").join(name);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
     }
 
     fn own_keeper() -> (Child, ChildStdin) {
@@ -871,19 +1138,243 @@ mod tests {
     fn the_next_core_ends_what_a_dead_keeper_left_and_says_of_which() {
         let (mut turn, left) = a_turn("next-core");
         let job = record_of(&turn, "next-core");
-        let ended = end_all(&[job.clone()]);
-        assert!(ended.contains(&job.id));
+        let dir = scratch("next-core");
+        write_record(&dir, &job);
+        assert!(end_records(&dir, ENDING_TAKES, None).held(&job.id));
         assert!(all_gone_within(&mut turn, &left, 3000));
+        assert!(!record_file(&dir, &job.mark).exists(), "seen out, so no longer written down");
         // Nothing left of one its keeper saw to: over all the same.
-        assert!(end_all(&[job.clone()]).contains(&job.id));
+        write_record(&dir, &job);
+        assert!(end_records(&dir, ENDING_TAKES, None).held(&job.id));
+    }
+
+    #[test]
+    fn a_job_not_seen_out_stays_written_down_for_the_core_after() {
+        let (mut turn, left) = a_turn("not-seen-out");
+        let job = record_of(&turn, "not-seen-out");
+        let dir = scratch("not-seen-out");
+        write_record(&dir, &job);
+        // No time to see it die: it counts as still there.
+        let first = end_records(&dir, Duration::ZERO, None);
+        assert!(!first.held(&job.id) && !first.confirmed(&job.id));
+        assert!(record_file(&dir, &job.mark).exists(), "for the next core to try again");
+        assert!(all_gone_within(&mut turn, &left, 3000));
+        let second = end_records(&dir, ENDING_TAKES, None);
+        assert!(second.held(&job.id) && second.confirmed(&job.id));
+        assert!(!record_file(&dir, &job.mark).exists());
+    }
+
+    #[test]
+    fn a_helper_with_two_records_is_over_only_when_both_are() {
+        let mut stuck = Command::new("sleep").arg("60").process_group(0).spawn().unwrap();
+        let dir = scratch("two-records");
+        let old = Record { id: "two".into(), mark: "two-old".into(), boot: None, also: None, since: 0, leaders: vec![] };
+        let new = Record { mark: "two-new".into(), leaders: leader(stuck.id()).into_iter().collect(), ..old.clone() };
+        write_record(&dir, &old);
+        write_record(&dir, &new);
+        assert!(!end_records(&dir, Duration::ZERO, None).held("two"));
+        let _ = stuck.wait();
+    }
+
+    #[test]
+    fn a_record_of_another_boot_names_nothing_now() {
+        let mut other = Command::new("sleep").arg("60").process_group(0).spawn().unwrap();
+        // The very pid and start time a process of the last boot had.
+        let job = Record { id: "rebooted".into(), mark: "rebooted".into(), boot: Some("then".into()), also: None, since: 0, leaders: vec![leader(other.id()).unwrap()] };
+        let dir = scratch("rebooted");
+        write_record(&dir, &job);
+        let last = end_records(&dir, ENDING_TAKES, Some("now"));
+        assert!(last.held("rebooted"), "that boot took it all");
+        assert!(!record_file(&dir, &job.mark).exists());
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(other.try_wait().unwrap(), None, "the process with that pid is another's");
+        // Of this boot, or of one that cannot be told: it goes by what it names.
+        write_record(&dir, &job);
+        assert!(end_records(&dir, ENDING_TAKES, Some("then")).held("rebooted"));
+        other.wait().unwrap();
+    }
+
+    #[test]
+    fn a_boot_has_an_id_where_the_system_gives_one() {
+        #[cfg(target_os = "linux")]
+        assert!(os::boot_id().is_some_and(|id| id.len() > 8));
+        assert_eq!(os::boot_id(), os::boot_id());
+    }
+
+    #[test]
+    fn a_job_let_go_of_is_gone_from_disk_whatever_became_of_the_others() {
+        let dir = scratch("released");
+        let keep = Record { id: "keep".into(), mark: "keep".into(), boot: None, also: None, since: 0, leaders: vec![] };
+        let release = Record { id: "release".into(), mark: "release".into(), ..keep.clone() };
+        write_record(&dir, &keep);
+        write_record(&dir, &release);
+        remove_record(&dir, "release");
+        assert!(!record_file(&dir, "release").exists());
+        assert!(record_file(&dir, "keep").exists());
+        remove_record(&dir, "never-there");
+    }
+
+    #[test]
+    fn a_record_that_cannot_be_written_is_not_left_saying_less_than_is_so() {
+        let dir = scratch("unwritable");
+        let job = Record { id: "w".into(), mark: "w".into(), boot: None, also: None, since: 0, leaders: vec![] };
+        write_record(&dir, &job);
+        assert!(record_file(&dir, "w").exists());
+        // A directory where its temporary file goes: the write fails, for root too.
+        std::fs::create_dir(record_file(&dir, "w").with_extension("tmp")).unwrap();
+        write_record(&dir, &Record { leaders: vec![Leader { pid: 5, started: 6 }], ..job });
+        assert!(!record_file(&dir, "w").exists(), "with none at all its helper does not count as seen out");
+    }
+
+    #[test]
+    fn a_broken_record_names_nothing_and_goes() {
+        let dir = scratch("broken");
+        std::fs::write(dir.join("half.json"), b"{\"id\":\"x").unwrap();
+        std::fs::write(dir.join("half.tmp"), b"{").unwrap();
+        let last = end_records(&dir, ENDING_TAKES, None);
+        assert!(!last.held("x"));
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn a_signal_goes_to_the_process_looked_at_and_no_other() {
+        let mut other = Command::new("sleep").arg("60").process_group(0).spawn().unwrap();
+        let now = os::read(other.id() as i32).unwrap();
+        os::signal(&Proc { started: now.started + 1, ..now.clone() }, libc::SIGKILL);
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(other.try_wait().unwrap(), None, "started at another time: another process");
+        os::signal(&now, libc::SIGKILL);
+        other.wait().unwrap();
+    }
+
+    #[test]
+    fn only_the_environment_in_procargs_counts_and_not_a_command_naming_the_mark() {
+        let mark = "LUNA_JOB=7-8-c1";
+        let procargs = |args: &[&str], env: &[&str]| {
+            let mut buf = (args.len() as i32).to_ne_bytes().to_vec();
+            buf.extend_from_slice(b"/usr/bin/grep\0\0\0\0");
+            for s in args.iter().chain(env) {
+                buf.extend_from_slice(s.as_bytes());
+                buf.push(0);
+            }
+            buf
+        };
+        let of = |buf: &[u8]| holds(environment_of_procargs(buf).unwrap(), mark);
+        assert!(!of(&procargs(&["grep", "-F", mark], &["PATH=/bin"])), "`grep -F <mark>` is not of the job");
+        assert!(of(&procargs(&["sleep", "60"], &["PATH=/bin", mark])));
+        assert!(of(&procargs(&["sleep"], &[mark, "PATH=/bin"])));
+        assert!(!of(&procargs(&["sleep", "60"], &[])), "a restricted binary's: nothing shown");
+        assert_eq!(environment_of_procargs(b"\x01"), None);
+        assert_eq!(environment_of_procargs(&2i32.to_ne_bytes()), None);
+    }
+
+    #[test]
+    fn a_keeper_goes_by_the_core_itself_when_something_else_holds_the_pipe() {
+        // The core's going, with its pipe held open by what leaked it: no end of
+        // input comes, and only the look at the core itself says.
+        let mut core = Command::new("sleep").arg("60").process_group(0).spawn().unwrap();
+        let (mut turn, left) = a_turn("held-open");
+        let (mut keeper, mut pipe) = own_keeper();
+        say(&mut pipe, &Word::Core(leader(core.id()).unwrap())).unwrap();
+        say(&mut pipe, &Word::Tie(record_of(&turn, "held-open"))).unwrap();
+        std::thread::sleep(Duration::from_millis(u64::from(CORE_LOOK_MS.unsigned_abs()) + 300));
+        assert!(left.iter().all(|pid| os::read(*pid).is_some()), "the core lives");
+        // Left a zombie, as a core whose window never reaps it is.
+        core.kill().unwrap();
+        assert!(all_gone_within(&mut turn, &left, 3 * CORE_LOOK_MS as u64 + 3000));
+        keeper.wait().unwrap();
+        drop(pipe);
+        core.wait().unwrap();
+
+        // Its last words are heard all the same.
+        let mut core = Command::new("sleep").arg("60").process_group(0).spawn().unwrap();
+        let (mut turn, left) = a_turn("held-open-let-go");
+        let (mut keeper, mut pipe) = own_keeper();
+        say(&mut pipe, &Word::Core(leader(core.id()).unwrap())).unwrap();
+        say(&mut pipe, &Word::Tie(record_of(&turn, "held-open-let-go"))).unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        say(&mut pipe, &Word::LetGo("held-open-let-go".into())).unwrap();
+        core.kill().unwrap();
+        keeper.wait().unwrap();
+        assert!(left.iter().all(|pid| os::read(*pid).is_some()), "let go of first");
+        drop(pipe);
+        core.wait().unwrap();
+        clean_up(&mut turn, &left);
+    }
+
+    #[test]
+    fn a_second_mark_counts_for_what_was_born_since_the_job_began() {
+        const SETSID: &str = "perl -e 'use POSIX; POSIX::setsid(); exec @ARGV'";
+        // What Codex's filter leaves: no LUNA_JOB, its own variable, a new session,
+        // a new parent. Nothing but the second mark says whose it is.
+        let start = |thread: &str| {
+            let mut c = Command::new("sh")
+                .args(["-c", &format!("{SETSID} sh -c 'sleep 60 & echo left $!'")])
+                .env("CODEX_THREAD_ID", thread)
+                .env_remove(MARK)
+                .process_group(0)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .spawn()
+                .unwrap();
+            let pid = the(&said(&mut c, 1), "left")[0];
+            c.wait().unwrap();
+            pid
+        };
+        let older = start("thread-a");
+        let since = os::read(older).unwrap().started + 1;
+        std::thread::sleep(Duration::from_millis(30));
+        let mine = start("thread-a");
+        let someone_elses = start("thread-b");
+        let job = Record { id: "second".into(), mark: "second-mark".into(), boot: None, also: Some("CODEX_THREAD_ID=thread-a".into()), since, leaders: vec![] };
+        let (gone, ended) = end_job(&job, ENDING_TAKES);
+        assert!(gone && ended.contains(&"sleep".to_string()), "{gone} {ended:?}");
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while os::read(mine).is_some() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(os::read(mine).is_none(), "its own conversation's");
+        assert!(os::read(older).is_some(), "left by a core before this job: it let go of that");
+        assert!(os::read(someone_elses).is_some(), "another conversation's");
+        for pid in [older, someone_elses] {
+            // SAFETY: a plain signal, to a process this test started and just saw.
+            unsafe { libc::kill(pid, libc::SIGKILL) };
+        }
+    }
+
+    #[test]
+    fn a_turn_that_does_not_show_its_mark_is_not_counted_as_tied_but_still_goes() {
+        let hidden = Command::new("sleep").arg("60").env_remove(MARK).process_group(0).spawn().unwrap();
+        let job = adopt(hidden.id()).unwrap();
+        assert!(!tie(&job, "hidden"), "nothing could tell what it leaves behind");
+        assert!(ties().records.contains_key(&mark_of("hidden")), "the keeper has it for all that");
+        drop(job);
+        assert!(!ties().records.contains_key(&mark_of("hidden")));
+        // A later turn the same way: what it says goes against the helper's tie.
+        let shown = Command::new("sleep").arg("60").env(MARK, mark_of("later")).process_group(0).spawn().unwrap();
+        let job = adopt(shown.id()).unwrap();
+        assert!(tie(&job, "later"));
+        let other = Command::new("sleep").arg("60").env_remove(MARK).process_group(0).spawn().unwrap();
+        assert!(!join(&job, other.id()));
+        // One gone already hides nothing.
+        let mut quick = Command::new("true").spawn().unwrap();
+        quick.wait().unwrap();
+        assert!(join(&job, quick.id()));
+        drop(job);
+        for mut c in [hidden, shown, other] {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
     }
 
     #[test]
     fn a_pid_since_reused_is_left_alone_by_the_next_core() {
         let mut other = Command::new("sleep").arg("60").process_group(0).spawn().unwrap();
         let was = leader(other.id()).unwrap();
-        let job = Record { id: "reused".into(), mark: "reused-no-such-mark".into(), leaders: vec![Leader { pid: was.pid, started: was.started + 1 }] };
-        assert!(end_all(&[job]).contains("reused"), "nothing of that job is there");
+        let job = Record { id: "reused".into(), mark: "reused-no-such-mark".into(), boot: None, also: None, since: 0, leaders: vec![Leader { pid: was.pid, started: was.started + 1 }] };
+        let dir = scratch("reused");
+        write_record(&dir, &job);
+        assert!(end_records(&dir, ENDING_TAKES, None).held("reused"), "nothing of that job is there");
         std::thread::sleep(Duration::from_millis(100));
         assert_eq!(other.try_wait().unwrap(), None, "the process with its old pid is another's");
         let _ = other.kill();
@@ -984,29 +1475,34 @@ mod tests {
 
     #[test]
     fn a_tie_is_written_down_until_let_go_and_a_job_dropped_lets_go() {
-        let mut first = Command::new("sleep").arg("60").process_group(0).spawn().unwrap();
+        let mark = mark_of("written");
+        let turn = || Command::new("sleep").arg("60").env(MARK, mark_of("written")).process_group(0).spawn().unwrap();
+        let on_disk = || -> Record { serde_json::from_slice(&std::fs::read(record_file(&records_dir(), &mark_of("written"))).unwrap()).unwrap() };
+        let mut first = turn();
         let job = adopt(first.id()).unwrap();
         assert!(job.state().tied_for.is_none(), "untied, as a chat's stays");
         assert!(tie(&job, "written"));
-        let mark = mark_of("written");
         assert!(ties().records.contains_key(&mark));
-        let mut on_disk = String::new();
-        std::fs::File::open(records_file()).unwrap().read_to_string(&mut on_disk).unwrap();
-        let on_disk: Vec<Record> = serde_json::from_str(&on_disk).unwrap();
-        let mine = on_disk.iter().find(|r| r.mark == mark).unwrap();
-        assert_eq!(mine.id, "written");
-        assert_eq!(mine.leaders, [leader(first.id()).unwrap()]);
+        assert_eq!(on_disk().id, "written");
+        assert_eq!(on_disk().leaders, [leader(first.id()).unwrap()]);
+        assert_eq!(on_disk().boot, os::boot_id());
 
         // A turn over is forgotten as the next joins.
         let _ = first.kill();
         let _ = first.wait();
-        let mut second = Command::new("sleep").arg("60").process_group(0).spawn().unwrap();
+        let mut second = turn();
         assert!(join(&job, second.id()));
-        assert_eq!(ties().records[&mark].leaders, [leader(second.id()).unwrap()]);
-        assert_eq!(ties().records[&mark].id, "written");
+        assert_eq!(on_disk().leaders, [leader(second.id()).unwrap()]);
+        assert_eq!(on_disk().id, "written");
+
+        // What Codex's filter cannot take out, once its thread has a name.
+        also_marked(&job, "CODEX_THREAD_ID", "t1");
+        assert_eq!(on_disk().also.as_deref(), Some("CODEX_THREAD_ID=t1"));
+        assert_eq!(on_disk().since, leader(second.id()).map(|_| job.state().since).unwrap());
 
         drop(job);
         assert!(!ties().records.contains_key(&mark));
+        assert!(!record_file(&records_dir(), &mark).exists(), "let go of, nothing for the next core to end");
         std::thread::sleep(Duration::from_millis(100));
         assert_eq!(second.try_wait().unwrap(), None, "let go of, nothing ends it");
         let _ = second.kill();
