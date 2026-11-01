@@ -57,3 +57,7 @@ export const onAgentPromote = (cb: (p: PromotedDto) => void): Promise<UnlistenFn
 
 export const onAgentDeleted =(cb: (p: { id: string }) => void): Promise<UnlistenFn> =>
   tauriAvailable ? listen<{ id: string }>('agent://deleted', e => cb(e.payload)) : Promise.resolve(() => {});
+
+/** A chat's parent was deleted, and it passed to that one's parent (agents.rs `forget`). */
+export const onAgentReparent = (cb: (p: { id: string; parent: string }) => void): Promise<UnlistenFn> =>
+  tauriAvailable ? listen<{ id: string; parent: string }>('agent://reparent', e => cb(e.payload)) : Promise.resolve(() => {});

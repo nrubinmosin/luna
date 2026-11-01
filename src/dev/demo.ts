@@ -498,6 +498,11 @@ const BACKGROUND: BackgroundHelperDto[] = [
     account: 'team', model: 'sonnet', effort: 'medium', worktree: false,
     startedMs: Date.now() - 6 * 60_000, turnStartedMs: Date.now() - 60_000,
     ask: { kind: 'question', blocking: true, questions: [{ text: 'Ship tonight or tomorrow?', options: ['Tonight', 'Tomorrow'] }] }
+  },
+  {
+    id: 'demo-bg-3', parent: null, name: 'Sweep old branches', provider: 'claude', state: 'idle',
+    account: 'team', model: 'haiku', effort: 'low', worktree: false,
+    startedMs: Date.now() - 40 * 60_000, turnStartedMs: null
   }
 ];
 

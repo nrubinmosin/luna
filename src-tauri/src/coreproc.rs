@@ -42,9 +42,10 @@ struct Window {
 static WINDOWS: Mutex<Vec<Window>> = Mutex::new(Vec::new());
 /// Events no window was there to take that the next one must still get: a
 /// chat an agent deleted would otherwise come back with the next window and
-/// resume, and a helper asked for would never be made.
+/// resume, a helper asked for would never be made, and a chat that passed to
+/// another parent would go back to naming the one that is gone.
 static HELD: Mutex<Vec<Vec<u8>>> = Mutex::new(Vec::new());
-const KEPT_FOR_A_WINDOW: [&str; 2] = ["agent://deleted", "agent://spawn"];
+const KEPT_FOR_A_WINDOW: [&str; 3] = ["agent://deleted", "agent://spawn", "agent://reparent"];
 /// Since when nothing has kept the core: no window, no session. Epoch ms.
 static ALONE_SINCE: AtomicU64 = AtomicU64::new(0);
 
@@ -390,6 +391,8 @@ mod tests {
         broadcast("agent://deleted", serde_json::json!({ "id": "x" }));
         let held = HELD.lock().unwrap().len();
         assert_eq!(held, 1, "a deleted chat waits for the next window; output does not");
+        broadcast("agent://reparent", serde_json::json!({ "id": "x", "parent": "y" }));
+        assert_eq!(HELD.lock().unwrap().len(), 2, "and so does a chat's new parent");
         HELD.lock().unwrap().clear();
     }
 }

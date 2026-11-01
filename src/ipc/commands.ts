@@ -629,7 +629,8 @@ export const backgroundHelpers = () => call<BackgroundHelperDto[]>('background_h
 export const backgroundPromote = (id: string) => call<void>('background_promote', { id });
 /** Stops the turn it is on; the conversation stays. */
 export const backgroundKill = (id: string) => call<void>('background_kill', { id });
-export const backgroundDelete = (id: string) => call<void>('background_delete', { id });
+/** Deletes it, the worktree it made too unless `dropWorktree` is false. */
+export const backgroundDelete = (id: string, dropWorktree = true) => call<void>('background_delete', { id, dropWorktree });
 
 /** Answers `agent://spawn`: the chat made for it, or why not. */
 export const agentSpawned = (requestId: number, chatId: string | null, name: string | null, error: string | null) =>
