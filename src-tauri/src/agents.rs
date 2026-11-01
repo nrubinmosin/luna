@@ -486,6 +486,9 @@ struct Opening {
     /// Its CLI came back afresh, with no conversation, and nothing has been given
     /// this since: its caller is told (`first_turn_lost`).
     lost: bool,
+    /// When it was asked: a conversation that holds this and began since is its own,
+    /// should nothing have said so before a core went (`conversation_on_disk`).
+    at_ms: u64,
 }
 
 struct Registry {
@@ -503,17 +506,17 @@ struct Registry {
     resumes: HashMap<String, ChatResume>,
     /// What each visible helper was first asked, by id.
     openings: HashMap<String, Opening>,
-    /// A helper to make a worktree of its own whose CLI has not yet said where, by
-    /// id: the worktrees there were as it was spawned. One new since that nobody
-    /// claims may be what a core cut it off making (`worktree_to_reuse`).
+    /// What Luna named the worktree of a visible Claude Code helper, by id: the one
+    /// it knows to be that helper's, what a fresh start goes back into if it is still
+    /// as made (`worktree_for_start`). A background helper's is in its `Spec`.
+    worktree_names: HashMap<String, String>,
+    /// A Codex helper to make a worktree of its own, by id, until its CLI has said
+    /// where: the worktrees there were as it was spawned. Codex takes no name, so one
+    /// new since is all that tells what a core may have cut it off making.
     worktrees_before: HashMap<String, Vec<String>>,
-    /// What such a helper began and is not going on in, by id, until its parent has
-    /// heard (`worktrees_left_line`).
+    /// What a helper began and is not going on in, by id, until its parent has heard
+    /// (`worktrees_left_line`).
     worktrees_left: HashMap<String, Vec<String>>,
-    /// The worktrees the window's rows say are theirs (`chat_names`), kept across
-    /// cores: what they come back to by name, known before the window is up to say
-    /// so again, as a helper may go on before then. None: no word of it yet.
-    row_worktrees: Option<Vec<String>>,
     /// Helpers that run in a worktree they were handed rather than made:
     /// deleting one never drops that worktree, whose work is its caller's.
     borrowed: std::collections::HashSet<String>,
@@ -734,9 +737,9 @@ fn reg() -> &'static Mutex<Registry> {
             spawns: HashMap::new(),
             resumes: HashMap::new(),
             openings: HashMap::new(),
+            worktree_names: HashMap::new(),
             worktrees_before: HashMap::new(),
             worktrees_left: HashMap::new(),
-            row_worktrees: None,
             seen: HashMap::new(),
             names: HashMap::new(),
             groups: HashMap::new(),
@@ -1229,6 +1232,12 @@ pub struct Ties {
     /// See `Opening::lost`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub opening_lost: bool,
+    /// See `Opening::at_ms`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opening_at: Option<u64>,
+    /// See `Registry::worktree_names`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_name: Option<String>,
     /// The callers among `owed` told it is not done (`Owed::told_pending`): the
     /// count alone reads as nothing having happened, and what it had running goes
     /// with the core.
@@ -1261,6 +1270,8 @@ fn ties_in(r: &Registry, id: &str) -> Option<Ties> {
         cut_short: r.owed.iter().filter(|((_, s), o)| s == id && o.cut_short).map(|((c, _), _)| c.clone()).collect(),
         opening: r.openings.get(id).map(|o| o.text.clone()),
         opening_lost: r.openings.get(id).is_some_and(|o| o.lost),
+        opening_at: r.openings.get(id).map(|o| o.at_ms),
+        worktree_name: r.worktree_names.get(id).cloned(),
         told_pending: r.owed.iter().filter(|((_, s), o)| s == id && o.told_pending).map(|((c, _), _)| c.clone()).collect(),
         worktrees_before: r.worktrees_before.get(id).cloned(),
         worktrees_left: r.worktrees_left.get(id).cloned().unwrap_or_default(),
@@ -1342,9 +1353,6 @@ struct SavedChats {
     sends: Vec<SavedSend>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     spawns: Vec<SpawnTaken>,
-    /// See `Registry::row_worktrees`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    row_worktrees: Option<Vec<String>>,
 }
 
 fn chat_ties_file() -> std::path::PathBuf {
@@ -1368,7 +1376,7 @@ pub fn freeze_chats() {
 /// What there is to keep of the sessions the window runs. A chat nobody spawned,
 /// wrote to or handed anything has nothing to keep: it comes back as it was.
 fn chats_now() -> SavedChats {
-    let (mut chats, sends, mut spawns, floors, row_worktrees) = {
+    let (mut chats, sends, mut spawns, floors) = {
         let r = reg().lock().unwrap_or_else(|e| e.into_inner());
         let sends: Vec<SavedSend> =
             r.held.iter().map(|h| SavedSend { caller: h.caller.clone(), id: h.id.clone(), text: h.text.clone(), going_in: h.going_in.clone() }).collect();
@@ -1399,7 +1407,7 @@ fn chats_now() -> SavedChats {
             })
             .collect();
         let floors: HashMap<String, u32> = r.openings.iter().filter(|(_, o)| !o.lost).map(|(id, o)| (id.clone(), o.floor)).collect();
-        (chats, sends, r.spawns.values().filter(|s| !s.retried).cloned().collect::<Vec<SpawnTaken>>(), floors, r.row_worktrees.clone())
+        (chats, sends, r.spawns.values().filter(|s| !s.retried).cloned().collect::<Vec<SpawnTaken>>(), floors)
     };
     let pty = crate::pty::manager();
     for c in &mut chats {
@@ -1419,7 +1427,7 @@ fn chats_now() -> SavedChats {
     }
     chats.sort_by(|a, b| a.id.cmp(&b.id));
     spawns.sort_by_key(|s| s.request);
-    SavedChats { chats, sends, spawns, row_worktrees }
+    SavedChats { chats, sends, spawns }
 }
 
 /// Writes `chats_now` out if it changed since the last write (background.rs
@@ -1511,7 +1519,10 @@ fn take_up_chats(saved: SavedChats) {
         if let Some(opening) = ties.opening {
             // As asked: a file an older core wrote has it as typed, with any note.
             let text = crate::pty::without_note(&opening).to_string();
-            r.openings.insert(c.id.clone(), Opening { text, floor: count, lost: ties.opening_lost });
+            r.openings.insert(c.id.clone(), Opening { text, floor: count, lost: ties.opening_lost, at_ms: ties.opening_at.unwrap_or(0) });
+        }
+        if let Some(name) = ties.worktree_name {
+            r.worktree_names.insert(c.id.clone(), name);
         }
         if let Some(before) = ties.worktrees_before {
             r.worktrees_before.insert(c.id.clone(), before);
@@ -1524,9 +1535,6 @@ fn take_up_chats(saved: SavedChats) {
             r.resumes.insert(c.id.clone(), ChatResume { opening, looks: 0 });
         }
         counts.push((c.id, count, c.transcript));
-    }
-    if saved.row_worktrees.is_some() {
-        r.row_worktrees = saved.row_worktrees;
     }
     for h in saved.sends {
         r.held.push(Held { caller: h.caller, id: h.id, text: h.text, since: now_ms(), told: false, going_in: h.going_in });
@@ -2866,6 +2874,7 @@ fn background_spec(params: &SpawnParams, provider: Provider, account_path: &str,
                 account_path: account_path.to_string(),
                 folder: folder.to_string(),
                 worktree,
+                worktree_name: None,
                 model,
                 effort,
                 mode,
@@ -2926,6 +2935,7 @@ fn background_spec(params: &SpawnParams, provider: Provider, account_path: &str,
                 account_path: account_path.to_string(),
                 folder: folder.to_string(),
                 worktree,
+                worktree_name: None,
                 model,
                 effort,
                 mode: sandbox,
@@ -2956,6 +2966,7 @@ fn spawn_background(caller: &str, params: SpawnParams, account_path: String, in_
     spec.hooks_unasked = provider == Provider::Codex && crate::codex::hooks::unasked_in(&project);
     spec.parent = Some(caller.to_string());
     let id = crate::background::mint_id();
+    spec.worktree_name = (own_worktree && provider == Provider::Claude).then(|| helper_worktree_name(&id));
     let mut settings = match provider {
         Provider::Claude => crate::pty::with_role(
             serde_json::json!({
@@ -3089,7 +3100,10 @@ pub fn spawn_is(request: u64, id: &str) -> Result<(), String> {
         let (resumes, borrowed, auto) = (s.resume_on_restart, s.in_worktree.is_some(), s.auto_delete == Some(true));
         // A background helper keeps its own (`Entry::opening`).
         let opening = s.visible.then(|| s.params.prompt.clone());
-        let before = (s.params.worktree == Some(true)).then(|| s.worktrees_before.clone());
+        let own_worktree = s.params.worktree == Some(true);
+        let codex = s.params.provider.as_deref() == Some(Provider::Codex.as_str());
+        let name = (own_worktree && !codex && s.visible).then(|| helper_worktree_name(id));
+        let before = (own_worktree && codex).then(|| s.worktrees_before.clone());
         if borrowed {
             r.borrowed.insert(id.to_string());
         }
@@ -3102,7 +3116,10 @@ pub fn spawn_is(request: u64, id: &str) -> Result<(), String> {
             }
         }
         if let Some(text) = opening {
-            r.openings.insert(id.to_string(), Opening { text, floor: 0, lost: false });
+            r.openings.insert(id.to_string(), Opening { text, floor: 0, lost: false, at_ms: now_ms() });
+        }
+        if let Some(name) = name {
+            r.worktree_names.insert(id.to_string(), name);
         }
         if let Some(before) = before {
             r.worktrees_before.insert(id.to_string(), before);
@@ -3126,65 +3143,81 @@ pub fn chat_starting(id: &str, conversation: bool) {
     }
 }
 
-/// What a helper cut off before its CLI said where it works began, by what is on
-/// disk now: those as good as new and those holding something
-/// (`worktree::half_made`), and whether the rows' word was there to go by.
-fn half_made_of(id: &str, provider: Provider, folder: &str, account_path: &str, given: &[String]) -> Option<(Vec<String>, Vec<String>, bool)> {
-    let (before, rows) = {
-        let r = reg().lock().unwrap_or_else(|e| e.into_inner());
-        (r.worktrees_before.get(id)?.clone(), r.row_worktrees.clone())
+
+/// What Luna names the worktree of a Claude Code helper it spawns, and so knows to be
+/// that helper's: nothing else goes by this name, where a worktree merely new since the
+/// spawn may be anybody's. Claude Code takes it by `--worktree=<name>`, makes it if it
+/// is not there and goes back in if it is. Codex takes no name.
+pub fn helper_worktree_name(id: &str) -> String {
+    format!("luna-{id}")
+}
+
+/// The name a visible helper's CLI is to ask for, starting on no prompt of its own:
+/// in a conversation the one it has, afresh the one it is still to go by. None for a
+/// session Luna named none for: its CLI names its own, as a chat of a person's does.
+pub fn worktree_for_start(id: &str, folder: &str, account_path: &str, conversation: bool) -> Option<String> {
+    let name = reg().lock().unwrap_or_else(|e| e.into_inner()).worktree_names.get(id).cloned()?;
+    if conversation {
+        return Some(name);
+    }
+    let name = name_to_go_on(id, &name, folder, account_path);
+    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    match &name {
+        Some(name) => r.worktree_names.insert(id.to_string(), name.clone()),
+        None => r.worktree_names.remove(id),
     };
-    let sure = rows.is_some();
-    let mut claimed = rows.unwrap_or_default();
-    claimed.extend(crate::pty::live_cwds());
-    claimed.extend(crate::worktree::claude_sessions_running(account_path));
-    claimed.extend_from_slice(given);
-    let (good, holding) = crate::worktree::half_made(provider, folder, account_path, &before, &claimed);
-    Some((good, holding, sure))
+    name
 }
 
-/// The worktree a helper cut off before its CLI said where it works is to go on in,
-/// rather than have its CLI make another: one new since it was spawned that nobody
-/// claims and that nothing tells from a new one. Claude Code goes back into one by
-/// name, Codex is started in it. Those holding something it leaves, and its parent
-/// hears (`worktrees_left_line`), as of any new one with no word yet of what the
-/// rows claim. None: its CLI makes its own, as ever, and this is not asked again.
-/// Given one, it stays on record until its CLI says where it works, as a core may
-/// go again before that and it is to find the same one.
-pub fn worktree_to_reuse(id: &str, provider: Provider, folder: &str, account_path: &str) -> Option<String> {
-    // Those given out and to whom, and one helper's decision at a time: git is too
-    // slow for the registry's lock, and two must not be given one.
-    static GIVEN: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
-    let mut given = GIVEN.lock().unwrap_or_else(|e| e.into_inner());
-    let others: Vec<String> = given.iter().filter(|(_, to)| to != id).map(|(wt, _)| wt.clone()).collect();
-    let mine = given.iter().find(|(_, to)| to == id).map(|(wt, _)| wt.clone());
-    let (good, mut left, sure) = half_made_of(id, provider, folder, account_path, &others)?;
-    let reuse = if sure { mine.filter(|wt| good.contains(wt)).or_else(|| good.first().cloned()) } else { None };
-    if !sure {
-        left.extend(good);
-    }
-    match &reuse {
-        Some(wt) => {
-            if !given.iter().any(|(had, to)| had == wt && to == id) {
-                given.push((wt.clone(), id.to_string()));
-            }
-            crate::log::warn("agents", &format!("{} goes on in {wt}, which a core cut it off making", label(id)));
+/// What a helper that has no conversation asks for, its worktree named `name`: that
+/// name if nothing is there, as the CLI then makes it, or if what is there is still as
+/// the CLI made it with nobody in it (`worktree::as_made`), as going back in is then the
+/// same as starting in a new one. Anything else is left alone, its parent hears of it
+/// (`worktrees_left_line`), and the helper takes the next name. None past a few of those:
+/// the CLI names its own.
+pub fn name_to_go_on(id: &str, name: &str, folder: &str, account_path: &str) -> Option<String> {
+    let mut busy = crate::pty::live_cwds();
+    busy.extend(crate::worktree::claude_sessions_running(account_path));
+    let mut left = Vec::new();
+    let mut chosen = None;
+    for n in 1..=9 {
+        let candidate = if n == 1 { name.to_string() } else { format!("{name}-{n}") };
+        let path = crate::worktree::named_path(folder, &candidate);
+        let there = std::path::Path::new(&path).exists();
+        if there && (!crate::worktree::as_made(folder, &path) || crate::worktree::someone_in(&path, &busy)) {
+            left.push(path);
+            continue;
         }
-        None => {
-            reg().lock().unwrap_or_else(|e| e.into_inner()).worktrees_before.remove(id);
+        if there {
+            crate::log::warn("agents", &format!("{} goes back into {path}, which a core cut it off in", label(id)));
         }
+        chosen = Some(candidate);
+        break;
     }
-    drop(given);
     leave_worktrees(id, left);
-    reuse
+    chosen.filter(|n| crate::worktree::name_ok(n))
 }
 
-/// `id`'s CLI is not back to go on in any of it: its parent hears of all it began,
-/// and opened after that it makes its own.
+/// A Codex helper starting afresh: what is new of Codex's since it was spawned may be
+/// what a core cut it off making, and its parent hears. It is not gone back into, as
+/// nothing says whose it is: Codex takes no name, and says where it works only with a
+/// thread, which is then a conversation to resume. Ahead of what this start makes.
+pub fn report_codex_worktrees(id: &str, folder: &str, account_path: &str) {
+    let Some(before) = reg().lock().unwrap_or_else(|e| e.into_inner()).worktrees_before.remove(id) else { return };
+    leave_worktrees(id, crate::worktree::codex_new_since(folder, account_path, &before, &crate::pty::live_cwds()));
+}
+
+/// `id`'s CLI is not back to go on in any of it: its parent hears of what it began, and
+/// opened after that it makes its own.
 fn leave_half_made(id: &str, k: &Known) {
-    if let Some((good, holding, _)) = half_made_of(id, k.provider, &k.folder, &k.account_path, &[]) {
-        reg().lock().unwrap_or_else(|e| e.into_inner()).worktrees_before.remove(id);
-        leave_worktrees(id, [good, holding].concat());
+    if k.provider == Provider::Codex {
+        return report_codex_worktrees(id, &k.folder, &k.account_path);
+    }
+    let Some(name) = reg().lock().unwrap_or_else(|e| e.into_inner()).worktree_names.get(id).cloned() else { return };
+    let path = crate::worktree::named_path(&k.folder, &name);
+    if std::path::Path::new(&path).exists() {
+        reg().lock().unwrap_or_else(|e| e.into_inner()).worktree_names.insert(id.to_string(), format!("{name}-2"));
+        leave_worktrees(id, vec![path]);
     }
 }
 
@@ -3192,9 +3225,62 @@ fn leave_worktrees(id: &str, left: Vec<String>) {
     if left.is_empty() {
         return;
     }
-    crate::log::warn("agents", &format!("{} leaves what a core cut it off making: {}", label(id), left.join(", ")));
-    reg().lock().unwrap_or_else(|e| e.into_inner()).worktrees_left.insert(id.to_string(), left);
+    crate::log::warn("agents", &format!("{} leaves what a core cut it off in: {}", label(id), left.join(", ")));
+    {
+        let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+        let told = r.worktrees_left.entry(id.to_string()).or_default();
+        for path in left {
+            if !told.contains(&path) {
+                told.push(path);
+            }
+        }
+    }
     crate::background::save();
+}
+
+/// The conversation a visible helper's CLI was on as a core went, where nothing has
+/// said so: it is told to the window by polling, every few seconds, and a core can go
+/// first. A conversation is on disk or it is not, and that is what decides whether it
+/// comes back to it, not whether the row has heard. Its session id as the CLI knows it.
+pub fn conversation_of(id: &str, provider: Provider, folder: &str, account_path: &str) -> Option<String> {
+    let path = conversation_on_disk(id, provider, folder, account_path)?;
+    let file = path.file_name()?.to_string_lossy().into_owned();
+    let session = match provider {
+        Provider::Claude => file.strip_suffix(".jsonl")?.to_string(),
+        Provider::Codex => crate::codex::session::parse_name(&file)?.1,
+    };
+    crate::log::warn("agents", &format!("{} goes back to its conversation {session}, which the window had not heard of", label(id)));
+    transcripts().lock().unwrap_or_else(|e| e.into_inner()).insert(id.to_string(), path);
+    Some(session)
+}
+
+/// The transcript of a conversation a helper whose first turn went with a core began:
+/// the one the last core knew of if it holds anything, else one begun since it was asked
+/// that holds what it was asked, in where it was to work, and no other session's.
+fn conversation_on_disk(id: &str, provider: Provider, folder: &str, account_path: &str) -> Option<std::path::PathBuf> {
+    let (text, at_ms, name) = {
+        let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+        let o = r.openings.get(id).filter(|o| o.floor >= 1)?;
+        (o.text.clone(), o.at_ms, r.worktree_names.get(id).cloned())
+    };
+    let (kept, others) = {
+        let known = transcripts().lock().unwrap_or_else(|e| e.into_inner());
+        let others: Vec<std::path::PathBuf> = known.iter().filter(|(k, _)| k.as_str() != id).map(|(_, p)| p.clone()).collect();
+        (known.get(id).cloned(), others)
+    };
+    if let Some(path) = kept.filter(|p| p.is_file() && !messages_at(p, provider, 0).is_empty()) {
+        return Some(path);
+    }
+    let found = match provider {
+        Provider::Claude => {
+            let mut cwds = vec![folder.to_string()];
+            cwds.extend(name.map(|name| crate::worktree::named_path(folder, &name)));
+            crate::claude::session::transcripts_since(account_path, &cwds, at_ms)
+        }
+        Provider::Codex => crate::codex::session::rollouts_since(account_path, folder, at_ms),
+    };
+    let needle: String = words(&text).chars().take(NEEDLE).collect();
+    found.into_iter().filter(|p| !others.contains(p)).find(|p| said_to(&messages_at(p, provider, 0), &needle) == WentIn::Yes)
 }
 
 /// What the window has been asked to start and nothing has come of yet. An event
@@ -3912,12 +3998,9 @@ fn deliver_held(pty: &crate::pty::PtyManager) {
             }
         };
         // Its parent gets it back with what it first asked (`undelivered_for`), the
-        // two being no use apart: typed in, this would start it on the wrong foot.
-        let owed = {
-            let r = reg().lock().unwrap_or_else(|e| e.into_inner());
-            r.known.get(&id).is_some_and(|k| k.parent.as_deref() == Some(caller.as_str())) && r.owed.contains_key(&(caller.clone(), id.clone()))
-        };
-        if owed && first_turn_lost(pty, &id) {
+        // two being no use apart: typed in, this would start it on the wrong foot. Not
+        // once that parent has sent it something that went in: it has started on that.
+        if still_all_lost(pty, &caller, &id) && reg().lock().unwrap_or_else(|e| e.into_inner()).owed.contains_key(&(caller.clone(), id.clone())) {
             continue;
         }
         if !live(pty, &id) {
@@ -4427,7 +4510,11 @@ pub fn read(
     // Ahead of the hand-over, which takes it off. With an answer still to come
     // it stays for the notice; with none owed this read is all that tells it.
     let undelivered = undelivered_note(caller, id);
-    if settles || (undelivered.is_some() && owed.is_none()) {
+    if undelivered.is_some() && lost_whole(&pty, caller, id) {
+        // No answer is to come: this was all of it, and no notice is to say it again.
+        // Cancelled first, it and the debt are put back together.
+        call.commit(hand_over(caller, id, lost_count(caller, id), None));
+    } else if settles || (undelivered.is_some() && owed.is_none()) {
         // Cancelled first, it is put back; the response goes nowhere anyway.
         call.commit(hand_over(caller, id, turns_ended, None));
     } else {
@@ -4575,12 +4662,19 @@ fn wait_for(
     let gone_err = || -> Result<(Waited, bool), String> { Err(LET_GO.into()) };
     let pty = crate::pty::manager();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_s.clamp(1, 1800));
+    // A first turn lost is all there is to wait for, and what Luna holds of the
+    // caller's stays for it (`deliver_held`), so nothing below would ever see it through.
+    // An `exit` waits for the session itself.
+    let lost = || (until == "turn_done" || !live(&pty, id)) && still_all_lost(&pty, caller, id) && holding() != Holding::Unsure;
     // Text Luna holds for a person's draft goes in first; the turn to wait
     // for is the one it starts, past whatever the person sent meanwhile. So does
     // what carries it on after a core stopped its turn.
     while is_held(caller, id) || resume_pending(id) {
         if gone() {
             return gone_err();
+        }
+        if lost() {
+            return lost_answer(caller, id, call, alone);
         }
         if std::time::Instant::now() >= deadline {
             let (state, ask) = state_of(id);
@@ -4623,6 +4717,9 @@ fn wait_for(
     loop {
         if gone() {
             return gone_err();
+        }
+        if lost() {
+            return lost_answer(caller, id, call, alone);
         }
         let alive = live(&pty, id);
         let ts = crate::activity::turn_state(id);
@@ -5254,6 +5351,7 @@ pub fn forget(id: &str) {
     r.spawns.retain(|_, s| s.caller != id);
     r.resumes.remove(id);
     r.openings.remove(id);
+    r.worktree_names.remove(id);
     r.worktrees_before.remove(id);
     r.worktrees_left.remove(id);
     r.borrowed.remove(id);
@@ -5419,7 +5517,7 @@ fn note_file(id: &str, text: &str) -> Option<std::path::PathBuf> {
 /// to come back to. Not while it is yet to go on by itself, which gives it its prompt.
 fn first_turn_lost(pty: &crate::pty::PtyManager, id: &str) -> bool {
     let count = crate::activity::turns_counted(id).unwrap_or(0);
-    let provider = {
+    let known = {
         let r = reg().lock().unwrap_or_else(|e| e.into_inner());
         let Some(o) = r.openings.get(id) else { return false };
         if r.resumes.contains_key(id) {
@@ -5431,13 +5529,50 @@ fn first_turn_lost(pty: &crate::pty::PtyManager, id: &str) -> bool {
         if o.floor == 0 || count > o.floor {
             return false;
         }
-        r.known.get(id).map(|k| k.provider)
+        r.known.get(id).cloned()
     };
     if pty.alive(id) {
         return false;
     }
-    let said = provider.zip(transcript_path(pty, id).filter(|path| path.is_file())).is_some_and(|(provider, path)| !messages_at(&path, provider, 0).is_empty());
-    !said
+    known.map_or(true, |k| conversation_on_disk(id, k.provider, &k.folder, &k.account_path).is_none())
+}
+
+/// Whether what `caller` is to hear of `id` is all there will be: it was asked, a core
+/// went, and nothing has that but Luna. No turn is coming to answer it, and what Luna
+/// holds of the caller's stays for this rather than going in.
+fn lost_whole(pty: &crate::pty::PtyManager, caller: &str, id: &str) -> bool {
+    parent_of(id).as_deref() == Some(caller) && (crate::background::never_started(id) || first_turn_lost(pty, id))
+}
+
+/// `lost_whole` of a visible helper with nothing asked of it since: `caller` is owed
+/// the turn a core went with and no other. Asked since, a text that went in has started
+/// it, and what it says to that is still to come, though what it was first asked is lost.
+fn still_all_lost(pty: &crate::pty::PtyManager, caller: &str, id: &str) -> bool {
+    let cut = reg().lock().unwrap_or_else(|e| e.into_inner()).owed.get(&(caller.to_string(), id.to_string())).map_or(true, |o| o.cut_short);
+    cut && parent_of(id).as_deref() == Some(caller) && first_turn_lost(pty, id)
+}
+
+/// The count that hands over a debt on a first turn lost: past a turn that went with a
+/// core, which a session not back has no track to count. A question asked since is no
+/// such debt, and still waits for its turn.
+fn lost_count(caller: &str, id: &str) -> u32 {
+    let count = crate::activity::turn_state(id).map(|t| t.turns_ended).or_else(|| crate::activity::turns_counted(id)).unwrap_or(0);
+    let cut = reg().lock().unwrap_or_else(|e| e.into_inner()).owed.get(&(caller.to_string(), id.to_string())).filter(|o| o.cut_short).map(|o| o.baseline.saturating_add(1));
+    count.max(cut.unwrap_or(0))
+}
+
+/// A `wait` on a helper whose first turn is lost: what there is, at once, handed over
+/// as any answer is, so that a cancel crossing it puts it back with the debt.
+fn lost_answer(caller: &str, id: &str, call: &crate::mcp::Call, alone: bool) -> Result<(Waited, bool), String> {
+    let turns_ended = lost_count(caller, id);
+    let undelivered = undelivered_note(caller, id);
+    if alone && !call.commit(hand_over(caller, id, turns_ended, None)) {
+        return Err(LET_GO.into());
+    }
+    let outcome = if live(&crate::pty::manager(), id) { "turn_done" } else { "exit" };
+    let (state, ask) = state_of(id);
+    let failed = Some("it never got started: Luna's core restarted before its first turn got anywhere".to_string());
+    Ok((Waited { outcome, state, ask, turns_ended, reply: None, failed, transcript_missing: false, screen: None, undelivered, job_debt: None }, true))
 }
 
 /// What never reached `id` that `caller` is to hear of: what a background helper
@@ -5537,7 +5672,11 @@ fn undelivered_note(caller: &str, id: &str) -> Option<String> {
         return (!left.is_empty()).then(|| left.trim_start().to_string());
     }
     let text = undelivered_text(&lost);
+    let whole = lost_whole(&crate::pty::manager(), caller, id);
     Some(match note_file(id, &text) {
+        Some(path) if whole => {
+            format!("It never got started: Luna's core restarted before its first turn got anywhere; {}. Send again what still matters.{left}", never_started_what(&lost, Some(&path)))
+        }
         Some(path) => format!("{}{left}", undelivered_line(&lost, false, Some(&path)).trim_start()),
         None => format!("{}{left}", text.chars().take(MAX_TEXT).collect::<String>()),
     })
@@ -5552,12 +5691,13 @@ fn never_started_what(lost: &[String], file: Option<&std::path::Path>) -> String
     }
 }
 
-/// What a notice says of worktrees begun and not gone on in.
+/// What a notice says of worktrees begun and not gone on in. Not all are known for its
+/// own (Codex's go by what is new), so it says what Luna can stand behind.
 fn left_words(left: &[String]) -> String {
     if left.is_empty() {
         return String::new();
     }
-    format!(" worktreeLeft: {}: it had begun that, nothing runs there and Luna has not removed it.", left.join(", "))
+    format!(" worktreeLeft: {}: begun for it as far as Luna can tell; nothing runs there and Luna has not removed it.", left.join(", "))
 }
 
 /// The same of what a helper a core cut off left (`Registry::worktrees_left`).
@@ -6702,14 +6842,10 @@ fn breaker_tripped(caller: &str, id: &str) {
 
 /// Every chat's name and window group, sent whenever one changes: what
 /// `luna_sessions` calls the user's own chats and where it puts them, which
-/// the core otherwise knows only by id. With the worktrees they know to be theirs
-/// (`Registry::row_worktrees`).
+/// the core otherwise knows only by id.
 #[tauri::command]
-pub fn chat_names(mut names: HashMap<String, String>, groups: Option<HashMap<String, u32>>, worktrees: Option<Vec<String>>) {
+pub fn chat_names(mut names: HashMap<String, String>, groups: Option<HashMap<String, u32>>) {
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-    if worktrees.is_some() {
-        r.row_worktrees = worktrees;
-    }
     // A row deleted while no core ran told nobody.
     let gone = gone_from_the_window(&r, &names);
     // A background helper has no row to be named by: it keeps the name it
@@ -8364,7 +8500,6 @@ mod tests {
             }],
             sends: vec![SavedSend { caller: "tc-parent".into(), id: "tc-chat".into(), text: "held across".into(), going_in: None }],
             spawns: Vec::new(),
-            row_worktrees: None,
         };
         // As the file has it.
         let saved: SavedChats = serde_json::from_slice(&serde_json::to_vec(&saved).unwrap()).unwrap();
@@ -8541,7 +8676,7 @@ mod tests {
     }
 
     fn take_up(chats: Vec<SavedChat>, sends: Vec<SavedSend>, spawns: Vec<SpawnTaken>) {
-        take_up_chats(serde_json::from_slice(&serde_json::to_vec(&SavedChats { chats, sends, spawns, row_worktrees: None }).unwrap()).unwrap());
+        take_up_chats(serde_json::from_slice(&serde_json::to_vec(&SavedChats { chats, sends, spawns }).unwrap()).unwrap());
     }
 
     #[test]
@@ -8751,13 +8886,20 @@ mod tests {
             let r = reg().lock().unwrap();
             ties_in(&r, id).unwrap()
         };
+        // Claude Code's worktree goes by a name Luna gave it.
         let ties = spawned(serde_json::json!({ "prompt": "go", "visible": true, "worktree": true, "folder": "C:\\no\\such\\folder" }), "ka-visible");
         assert_eq!(ties.opening.as_deref(), Some("go"));
+        assert_eq!(ties.worktree_name.as_deref(), Some("luna-ka-visible"));
+        assert_eq!(ties.worktrees_before, None);
+        // Codex takes no name: what is new since is all that says what it began.
+        let ties = spawned(serde_json::json!({ "prompt": "go", "visible": true, "worktree": true, "provider": "codex", "folder": "C:\\no\\such\\folder" }), "ka-codex");
+        assert_eq!(ties.worktree_name, None);
         assert_eq!(ties.worktrees_before, Some(Vec::new()), "none yet is a word too: all that come after may be its");
         let ties = spawned(serde_json::json!({ "prompt": "go", "worktree": true, "folder": "C:\\no\\such\\folder" }), "ka-background");
         assert_eq!(ties.opening, None, "`Entry::opening` has that");
-        assert_eq!(ties.worktrees_before, Some(Vec::new()));
+        assert_eq!(ties.worktree_name, None, "its `Spec` has that");
         forget("ka-visible");
+        forget("ka-codex");
         forget("ka-background");
     }
 
@@ -8811,7 +8953,8 @@ mod tests {
             // Only its own sender hears of it, and read or waited on, it goes with
             // that response; a cancel crossing it brings it back.
             assert!(undelivered_note("fs-nobody", id).is_none());
-            assert!(undelivered_note("fs-parent", id).unwrap().contains("Not delivered: 2 messages"));
+            let note = undelivered_note("fs-parent", id).unwrap();
+            assert!(note.contains("never got started") && note.contains("its prompt and 1 queued message are in "), "{note}");
             let undo = hand_over("fs-parent", id, 1, None);
             assert!(undelivered_note("fs-parent", id).is_none() && !is_held("fs-parent", id));
             assert!(!first_turn_lost(&crate::pty::manager(), id), "told: from here on it is as any other");
@@ -8860,7 +9003,7 @@ mod tests {
         // A first turn no core has been near: a CLI started afresh on nothing is
         // no loss of anything.
         register("fc-first", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("fc-parent"), false, serde_json::json!({}));
-        reg().lock().unwrap().openings.insert("fc-first".into(), Opening { text: "go".into(), floor: 0, lost: false });
+        reg().lock().unwrap().openings.insert("fc-first".into(), Opening { text: "go".into(), floor: 0, lost: false, at_ms: 0 });
         chat_starting("fc-first", false);
         assert!(!first_turn_lost(&crate::pty::manager(), "fc-first"));
         forget("fc-first");
@@ -8898,7 +9041,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    /// A throwaway repository with a worktree made as Claude Code makes them.
+    /// A throwaway repository with worktrees made as Claude Code makes them.
     fn repo_with(tag: &str, worktrees: &[&str]) -> Option<(std::path::PathBuf, String, Vec<String>)> {
         let root = std::env::temp_dir().join(format!("luna-rw-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
@@ -8914,7 +9057,7 @@ mod tests {
         }
         let mut made = Vec::new();
         for name in worktrees {
-            let wt = root.join(".claude").join("worktrees").join(name).to_string_lossy().into_owned();
+            let wt = crate::worktree::named_path(&repo, name);
             if !git(&repo, &["worktree", "add", "-q", "-b", &format!("worktree-{name}"), &wt]) {
                 return None;
             }
@@ -8923,90 +9066,252 @@ mod tests {
         Some((root, repo, made))
     }
 
-    fn cut_off_helper(id: &str, repo: &str) {
+    /// A visible helper its name was given, as `spawn_is` gives it.
+    fn named_helper(id: &str, repo: &str, name: &str) {
         register(id, Provider::Claude, repo, "C:\\no\\such\\account", Some("rw-parent"), false, serde_json::json!({}));
-        reg().lock().unwrap().worktrees_before.insert(id.to_string(), Vec::new());
+        reg().lock().unwrap().worktree_names.insert(id.to_string(), name.to_string());
     }
 
     #[test]
-    fn a_helper_cut_off_goes_on_in_what_it_began_and_its_parent_hears_of_what_it_leaves() {
-        let _one = spawns_to_myself();
-        let Some((root, repo, made)) = repo_with("reuse", &["half", "other", "worked"]) else { return };
-        let (half, other, worked) = (&made[0], &made[1], &made[2]);
-        std::fs::write(std::path::Path::new(worked).join("half-done.txt"), "work").unwrap();
-        let reuse = |id: &str| worktree_to_reuse(id, Provider::Claude, &repo, "C:\\no\\such\\account");
+    fn a_fresh_start_goes_back_only_into_the_worktree_luna_named_and_only_as_made() {
+        let Some((root, repo, made)) = repo_with("reuse", &["luna-a", "luna-b", "someone-elses"]) else { return };
+        let (a, b, elses) = (&made[0], &made[1], &made[2]);
+        let start = |id: &str| worktree_for_start(id, &repo, "C:\\no\\such\\account", false);
 
-        // No word yet of what the rows claim: nothing is gone on in, all is named.
-        reg().lock().unwrap().row_worktrees = None;
-        cut_off_helper("rw-unsure", &repo);
-        assert_eq!(reuse("rw-unsure"), None);
-        let said = worktrees_left_line("rw-unsure");
-        assert!(said.contains("worktreeLeft") && said.contains(half.as_str()) && said.contains(worked.as_str()), "{said}");
-        assert!(!reg().lock().unwrap().worktrees_before.contains_key("rw-unsure"), "asked once");
-        assert_eq!(reuse("rw-unsure"), None);
-        forget("rw-unsure");
+        // Its own, as made. The clean one beside it, new as it is, is nobody's to take.
+        named_helper("rw-a", &repo, "luna-a");
+        assert_eq!(start("rw-a").as_deref(), Some("luna-a"));
+        assert_eq!(worktrees_left_line("rw-a"), "");
+        // Not there: Claude Code makes it by that name.
+        named_helper("rw-new", &repo, "luna-new");
+        assert_eq!(start("rw-new").as_deref(), Some("luna-new"));
+        // Named none, a person's chat: its CLI names its own, and nothing is taken.
+        register("rw-none", Provider::Claude, &repo, "C:\\no\\such\\account", None, false, serde_json::json!({}));
+        assert_eq!(start("rw-none"), None);
 
-        // A row's is not to be had; of the rest, the first that is as good as new.
-        reg().lock().unwrap().row_worktrees = Some(vec![half.clone()]);
-        cut_off_helper("rw-first", &repo);
-        assert_eq!(reuse("rw-first").as_ref(), Some(other));
-        let said = worktrees_left_line("rw-first");
-        assert!(said.contains(worked.as_str()) && !said.contains(half.as_str()) && !said.contains(other.as_str()), "only what it holds something in: {said}");
+        // Something in it: left alone, told of, and the next name from here on.
+        std::fs::write(std::path::Path::new(b).join("half-done.txt"), "work").unwrap();
+        named_helper("rw-b", &repo, "luna-b");
+        assert_eq!(start("rw-b").as_deref(), Some("luna-b-2"));
+        let said = worktrees_left_line("rw-b");
+        assert!(said.contains("worktreeLeft") && said.contains(b.as_str()) && !said.contains(elses.as_str()) && !said.contains(a.as_str()), "{said}");
+        assert_eq!(reg().lock().unwrap().worktree_names["rw-b"], "luna-b-2");
+        assert_eq!(start("rw-b").as_deref(), Some("luna-b-2"));
+        assert_eq!(worktrees_left_line("rw-b"), said, "the one it left is not told of twice");
+        // In a conversation it is its own, whatever is in it.
+        named_helper("rw-talk", &repo, "luna-b");
+        assert_eq!(worktree_for_start("rw-talk", &repo, "C:\\no\\such\\account", true).as_deref(), Some("luna-b"));
+        // A name that would be a flag never goes out as one.
+        named_helper("rw-flag", &repo, "--dangerously-skip-permissions");
+        assert_eq!(start("rw-flag"), None);
 
-        // A core going again finds it the same one, and nobody else gets it.
-        reg().lock().unwrap().row_worktrees = Some(Vec::new());
-        assert_eq!(reuse("rw-first").as_ref(), Some(other));
-        cut_off_helper("rw-second", &repo);
-        assert_eq!(reuse("rw-second").as_ref(), Some(half));
-        // Its CLI says where it works: the record goes.
-        chat_starting("rw-second", true);
-        assert_eq!(reuse("rw-second"), None);
-
-        // Told once: by what is told first, or with a read; a cancel brings it back.
-        let note = undelivered_note("rw-parent", "rw-first").unwrap();
-        assert!(note.starts_with("worktreeLeft") && note.contains(worked.as_str()), "{note}");
-        assert!(undelivered_note("rw-nobody", "rw-first").is_none());
-        let undo = hand_over("rw-parent", "rw-first", 1, None);
-        assert_eq!(worktrees_left_line("rw-first"), "");
+        // Told once: with what is told first, or with a read; a cancel brings it back.
+        let note = undelivered_note("rw-parent", "rw-b").unwrap();
+        assert!(note.starts_with("worktreeLeft") && note.contains(b.as_str()), "{note}");
+        assert!(undelivered_note("rw-nobody", "rw-b").is_none());
+        let undo = hand_over("rw-parent", "rw-b", 1, None);
+        assert_eq!(worktrees_left_line("rw-b"), "");
         undo();
-        assert!(worktrees_left_line("rw-first").contains(worked.as_str()));
+        assert!(worktrees_left_line("rw-b").contains(b.as_str()));
 
         // Written down, it comes back with the helper.
         let ties = {
             let r = reg().lock().unwrap();
-            ties_in(&r, "rw-first").unwrap()
+            ties_in(&r, "rw-b").unwrap()
         };
-        assert_eq!(ties.worktrees_left, [worked.clone()]);
-        assert_eq!(ties.worktrees_before, Some(Vec::new()));
-        forget("rw-first");
-        forget("rw-second");
-        assert!(reg().lock().unwrap().worktrees_left.get("rw-first").is_none());
+        assert_eq!(ties.worktrees_left, [b.clone()]);
+        assert_eq!(ties.worktree_name.as_deref(), Some("luna-b-2"));
         let mut chat = cut_short_chat("rw-back", "rw-parent", false, true, false);
-        chat.ties.worktrees_before = Some(vec!["a".into()]);
+        chat.ties.worktree_name = Some("luna-back".into());
         chat.ties.worktrees_left = vec!["b".into()];
         take_up(vec![chat], Vec::new(), Vec::new());
         {
             let r = reg().lock().unwrap();
-            assert_eq!(r.worktrees_before["rw-back"], ["a"]);
+            assert_eq!(r.worktree_names["rw-back"], "luna-back");
             assert_eq!(r.worktrees_left["rw-back"], ["b"]);
         }
-        forget("rw-back");
-
-        reg().lock().unwrap().row_worktrees = None;
+        for id in ["rw-a", "rw-new", "rw-none", "rw-b", "rw-talk", "rw-flag", "rw-back"] {
+            forget(id);
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
-    fn what_the_rows_claim_is_kept_for_a_core_that_goes_on_before_the_window_is_up() {
-        let _one = spawns_to_myself();
-        // Set here and not by `chat_names`, whose list of names is the window's whole
-        // one and would take every other test's away.
-        reg().lock().unwrap().row_worktrees = Some(vec!["C:\\p\\.claude\\worktrees\\x".into()]);
-        assert_eq!(chats_now().row_worktrees, Some(vec!["C:\\p\\.claude\\worktrees\\x".to_string()]));
-        reg().lock().unwrap().row_worktrees = None;
-        take_up_chats(SavedChats { row_worktrees: Some(vec!["C:\\y".into()]), ..Default::default() });
-        assert_eq!(reg().lock().unwrap().row_worktrees, Some(vec!["C:\\y".to_string()]));
-        reg().lock().unwrap().row_worktrees = None;
+    fn a_helper_not_back_has_what_luna_named_told_of_and_then_makes_another() {
+        let Some((root, repo, made)) = repo_with("notback", &["luna-gone"]) else { return };
+        named_helper("nb-chat", &repo, "luna-gone");
+        let k = reg().lock().unwrap().known["nb-chat"].clone();
+        leave_half_made("nb-chat", &k);
+        assert!(worktrees_left_line("nb-chat").contains(made[0].as_str()));
+        assert_eq!(reg().lock().unwrap().worktree_names["nb-chat"], "luna-gone-2");
+        forget("nb-chat");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_conversation_on_disk_is_gone_back_to_and_never_told_of_as_never_started() {
+        let root = std::env::temp_dir().join(format!("luna-rc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let folder = root.join("proj").to_string_lossy().into_owned();
+        std::fs::create_dir_all(&folder).unwrap();
+        let account = root.join("anthropic").to_string_lossy().into_owned();
+        // Started by no window yet, a look at it goes by where it was to work.
+        let on_disk = |id: &str, provider: Provider, account: &str| {
+            register(id, provider, &folder, account, Some("rc-parent"), false, serde_json::json!({}));
+        };
+        let user_line = |text: &str| format!("{}\n", serde_json::json!({ "type": "user", "message": { "role": "user", "content": text } }));
+
+        // Claude Code: the window has not heard, and what it was asked is in one begun since.
+        first_turn_cut("rc-claude", "rc-parent", Provider::Claude, "the whole job", &[]);
+        on_disk("rc-claude", Provider::Claude, &account);
+        assert_eq!(conversation_of("rc-claude", Provider::Claude, &folder, &account), None, "nothing there yet");
+        assert!(first_turn_lost(&crate::pty::manager(), "rc-claude"));
+        let path = crate::claude::session::transcript_file(&account, &folder, "11111111-aaaa");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, user_line("some other job")).unwrap();
+        assert_eq!(conversation_of("rc-claude", Provider::Claude, &folder, &account), None, "not what it was asked: another session's");
+        std::fs::write(&path, user_line("the  whole\njob")).unwrap();
+        assert!(!first_turn_lost(&crate::pty::manager(), "rc-claude"), "not back, with a conversation to come back to");
+        let line = notice_for("rc-parent", "rc-claude", 1).0.unwrap();
+        assert!(line.contains("did NOT finish") && !line.contains("never got started"), "{line}");
+        reg().lock().unwrap().openings.get_mut("rc-claude").unwrap().at_ms = now_ms() + 3_600_000;
+        assert_eq!(conversation_of("rc-claude", Provider::Claude, &folder, &account), None, "begun before it was asked: an older one's");
+        reg().lock().unwrap().openings.get_mut("rc-claude").unwrap().at_ms = 0;
+        // Another session's, known to be, is not to be taken for it.
+        transcripts().lock().unwrap().insert("rc-other".into(), path.clone());
+        assert_eq!(conversation_of("rc-claude", Provider::Claude, &folder, &account), None);
+        transcripts().lock().unwrap().remove("rc-other");
+        assert_eq!(conversation_of("rc-claude", Provider::Claude, &folder, &account).as_deref(), Some("11111111-aaaa"));
+        // It goes back: no prompt is lost, and the caller hears it did not finish.
+        chat_starting("rc-claude", true);
+        assert!(!reg().lock().unwrap().openings["rc-claude"].lost);
+        assert!(undelivered_note("rc-parent", "rc-claude").is_none());
+        forget("rc-claude");
+
+        // Whatever the last core knew of: that one, whatever it holds of the prompt.
+        first_turn_cut("rc-kept", "rc-parent", Provider::Claude, "a prompt not in it", &[]);
+        on_disk("rc-kept", Provider::Claude, &account);
+        transcripts().lock().unwrap().insert("rc-kept".into(), path.clone());
+        assert_eq!(conversation_of("rc-kept", Provider::Claude, &folder, &account).as_deref(), Some("11111111-aaaa"));
+        forget("rc-kept");
+
+        // Codex: by its rollout, in the folder or a worktree of it.
+        let account = root.join("openai").to_string_lossy().into_owned();
+        first_turn_cut("rc-codex", "rc-parent", Provider::Codex, "the whole job", &[]);
+        on_disk("rc-codex", Provider::Codex, &account);
+        assert_eq!(conversation_of("rc-codex", Provider::Codex, &folder, &account), None);
+        let now = chrono::Local::now();
+        let dir = std::path::Path::new(&account).join("sessions").join(now.format("%Y").to_string()).join(now.format("%m").to_string()).join(now.format("%d").to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        let rollout = |source: &str, cwd: &str, said: &str, thread: &str| {
+            let file = dir.join(format!("rollout-{}-{thread}.jsonl", now.format("%Y-%m-%dT%H-%M-%S")));
+            let meta = serde_json::json!({ "type": "session_meta", "payload": { "id": thread, "cwd": cwd, "source": source } });
+            let user = serde_json::json!({ "type": "response_item", "payload": { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": said }] } });
+            std::fs::write(file, format!("{meta}\n{user}\n")).unwrap();
+        };
+        rollout("exec", &folder, "the whole job", "aaaa0000-exec");
+        rollout("cli", &root.join("elsewhere").to_string_lossy(), "the whole job", "aaaa0000-away");
+        rollout("cli", &folder, "another job", "aaaa0000-else");
+        assert_eq!(conversation_of("rc-codex", Provider::Codex, &folder, &account), None, "a helper's, another folder's, another's job");
+        rollout("cli", &folder, &crate::pty::codex_helper_prompt("rc-parent", "the whole job"), "aaaa0000-mine");
+        assert_eq!(conversation_of("rc-codex", Provider::Codex, &folder, &account).as_deref(), Some("aaaa0000-mine"), "with its note on it");
+        forget("rc-codex");
+        transcripts().lock().unwrap().retain(|k, _| !k.starts_with("rc-"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A caller a wait is not let go by, and a helper that lost its first turn, back
+    /// afresh with `held` from it waiting.
+    fn lost_helper(caller: &str, id: &str, dir: &str, held: &[&str]) {
+        register(caller, Provider::Claude, dir, dir, None, true, serde_json::json!({}));
+        crate::background::test_helper(caller, dir, None, false);
+        first_turn_cut(id, caller, Provider::Claude, "the whole job", held);
+        back(id, caller, Provider::Claude);
+        chat_starting(id, false);
+    }
+
+    #[test]
+    fn a_wait_on_a_lost_first_turn_answers_at_once_though_text_is_held_for_it() {
+        let dir = std::env::temp_dir().to_string_lossy().into_owned();
+        lost_helper("lw-parent", "lw-chat", &dir, &["and a follow-up"]);
+        let key = ("lw-parent".to_string(), "lw-chat".to_string());
+        // Held text clears only by going in, and this one is kept back: the wait used
+        // to sit its whole time out on it, with nothing to show.
+        let call = crate::mcp::Call::new();
+        let t0 = std::time::Instant::now();
+        let w = wait("lw-parent", "lw-chat", "turn_done", 30, None, &call).unwrap();
+        assert!(t0.elapsed() < std::time::Duration::from_secs(5), "{:?}", t0.elapsed());
+        assert!(w.failed.as_deref().is_some_and(|f| f.contains("never got started")), "{:?}", w.failed);
+        let note = w.undelivered.clone().unwrap();
+        assert!(note.contains("its prompt and 1 queued message are in "), "{note}");
+        let held = file_after(&note, "its prompt and 1 queued message are in ");
+        assert!(held.find("the whole job").unwrap() < held.find("and a follow-up").unwrap(), "{held}");
+        // Handed over with the debt, so no notice says it again.
+        assert!(!reg().lock().unwrap().owed.contains_key(&key));
+        assert!(!is_held("lw-parent", "lw-chat") && !first_turn_lost(&crate::pty::manager(), "lw-chat"));
+        // A cancel crossing the response brings back both, together.
+        call.cancel();
+        assert!(reg().lock().unwrap().owed.contains_key(&key) && is_held("lw-parent", "lw-chat"));
+        assert!(first_turn_lost(&crate::pty::manager(), "lw-chat"));
+        // A cancel first hands over nothing.
+        let call = crate::mcp::Call::new();
+        call.cancel();
+        assert!(wait("lw-parent", "lw-chat", "turn_done", 30, None, &call).is_err());
+        assert!(reg().lock().unwrap().owed.contains_key(&key) && is_held("lw-parent", "lw-chat"));
+        // Not running, it is all there is to wait for, whatever the wait was for.
+        let w = wait("lw-parent", "lw-chat", "waiting", 1, None, &crate::mcp::Call::new()).unwrap();
+        assert!(w.undelivered.is_some());
+        assert!(!still_all_lost(&crate::pty::manager(), "lw-nobody", "lw-chat"), "only its parent's to have");
+
+        // Asked something since that went in, it has started on that: the wait is for
+        // its answer, and text held since goes in as any does.
+        first_turn_cut("lw-sent", "lw-parent", Provider::Claude, "the whole job", &["a later one"]);
+        back("lw-sent", "lw-parent", Provider::Claude);
+        chat_starting("lw-sent", false);
+        assert!(still_all_lost(&crate::pty::manager(), "lw-parent", "lw-sent"));
+        owe_from("lw-parent", "lw-sent", 1, 0);
+        assert!(!still_all_lost(&crate::pty::manager(), "lw-parent", "lw-sent"));
+        assert!(first_turn_lost(&crate::pty::manager(), "lw-sent"), "what it was first asked is lost all the same, and told of with that answer");
+        assert!(undelivered_for("lw-sent", "lw-parent", true).iter().any(|t| t == "the whole job"));
+        reg().lock().unwrap().held.retain(|h| h.id != "lw-chat" && h.id != "lw-sent");
+        forget("lw-sent");
+        forget("lw-chat");
+        crate::background::gone_for_test("lw-parent");
+        forget("lw-parent");
+    }
+
+    #[test]
+    fn a_read_of_a_lost_first_turn_collects_it_and_a_cancel_puts_it_back_with_the_debt() {
+        let dir = std::env::temp_dir().to_string_lossy().into_owned();
+        lost_helper("lr-parent", "lr-chat", &dir, &["and a follow-up"]);
+        let key = ("lr-parent".to_string(), "lr-chat".to_string());
+        let read_it = |call: &crate::mcp::Call| read("lr-parent", "lr-chat", None, None, false, false, call).unwrap().undelivered;
+        let call = crate::mcp::Call::new();
+        let note = read_it(&call).unwrap();
+        assert!(note.contains("never got started") && note.contains("its prompt and 1 queued message are in "), "{note}");
+        assert!(!reg().lock().unwrap().owed.contains_key(&key), "all there was: no notice is to say it again");
+        assert!(!is_held("lr-parent", "lr-chat"));
+        assert_eq!(read_it(&crate::mcp::Call::new()), None, "and no read either");
+        call.cancel();
+        assert!(reg().lock().unwrap().owed.contains_key(&key) && is_held("lr-parent", "lr-chat"), "payload and debt together");
+        assert!(read_it(&crate::mcp::Call::new()).is_some());
+        // Another reader takes nothing of it.
+        reg().lock().unwrap().held.retain(|h| h.id != "lr-chat");
+        forget("lr-chat");
+
+        // A background helper's is the same, its prompt its own way.
+        register("lb-child", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("lr-parent"), false, serde_json::json!({}));
+        crate::background::take_up_for_test("lb-child", "C:\\p", 0, &[], Some("do the whole job"));
+        owe_from("lr-parent", "lb-child", 0, 0);
+        let call = crate::mcp::Call::new();
+        let note = read("lr-parent", "lb-child", None, None, false, false, &call).unwrap().undelivered.unwrap();
+        assert!(note.contains("never got started"), "{note}");
+        assert!(!reg().lock().unwrap().owed.contains_key(&("lr-parent".to_string(), "lb-child".to_string())));
+        assert_eq!(read("lr-parent", "lb-child", None, None, false, false, &crate::mcp::Call::new()).unwrap().undelivered, None);
+        crate::background::remove("lb-child");
+        forget("lb-child");
+        crate::background::gone_for_test("lr-parent");
+        forget("lr-parent");
     }
 
     #[test]

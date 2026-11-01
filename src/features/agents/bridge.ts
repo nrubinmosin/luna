@@ -325,21 +325,19 @@ export function useAgentBridge() {
 
   // The core knows sessions by id only; `luna_sessions` names them with the
   // rows' names and places them in their window groups, sent now and again
-  // whenever one changes. The worktrees rows know are theirs too: a helper a
-  // restart cut off goes on in one nobody claims (agents.rs `worktree_to_reuse`).
+  // whenever one changes.
   useEffect(() => {
     let last = '';
     const push = () => {
       const chats = allChats(useChats.getState().folders);
       const names = Object.fromEntries(chats.map(c => [c.id, c.name]));
       const groups = Object.fromEntries(chats.map(c => [c.id, c.group]));
-      const worktrees = chats.map(c => c.worktreePath).filter((p): p is string => !!p);
-      const key = JSON.stringify([names, groups, worktrees]);
+      const key = JSON.stringify([names, groups]);
       if (key === last) return;
       last = key;
       // Not sent (the core not up yet, or gone): not known there either, so
       // the next push must not take it for done.
-      chatNames(names, groups, worktrees).catch(() => {
+      chatNames(names, groups).catch(() => {
         if (last === key) last = '';
       });
     };

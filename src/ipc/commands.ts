@@ -649,8 +649,8 @@ export const agentResumes = () => call<string[]>('agent_resumes');
 export const agentSpawns = () => call<AgentSpawnRequest[]>('agent_spawns', {}, []);
 
 /** Every chat's name by id, for `luna_sessions` (agents.rs). */
-export const chatNames = (names: Record<string, string>, groups: Record<string, number>, worktrees: string[]) =>
-  call<void>('chat_names', { names, groups, worktrees });
+export const chatNames = (names: Record<string, string>, groups: Record<string, number>) =>
+  call<void>('chat_names', { names, groups });
 
 /** One account's usage as `luna_list` gives it to agents. */
 export interface AccountUsageDto {
