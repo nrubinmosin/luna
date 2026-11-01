@@ -11,7 +11,7 @@ import {
   accountUsage, agentSpawned, backgroundHelpers, chatNames, codexModels, deleteSession, ensureClaudeSession, ensureCodexSession,
   type AgentSpawnRequest, type CodexModelDto, type PromotedDto
 } from '../../ipc/commands';
-import { onAgentDeleted, onAgentPromote, onAgentSpawn, onBackgroundHelpers } from '../../ipc/events';
+import { onAgentDeleted, onAgentPromote, onAgentReparent, onAgentSpawn, onBackgroundHelpers } from '../../ipc/events';
 import { logWarn } from '../../shared/lib/log';
 import {
   AUTO_REVIEW_SANDBOX, CODEX_APPROVALS, CODEX_SANDBOXES, EFFORTS, MODEL_CLI, MODELS, PERM_CLI, accountKey,
@@ -248,6 +248,8 @@ export function useAgentBridge() {
       // only the row is left to drop.
       if (useChats.getState().findChat(id)) useChats.getState().deleteChat(id);
     }).then(off => (dead ? off() : offs.push(off)));
+    // The row names its parent at every spawn, a core started later included.
+    void onAgentReparent(({ id, parent }) => useChats.getState().setParent(id, parent)).then(off => (dead ? off() : offs.push(off)));
     return () => {
       dead = true;
       offs.forEach(off => off());

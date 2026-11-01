@@ -181,6 +181,9 @@ struct Scan {
     /// The question the model last put to the user that nothing has answered
     /// yet, with the call id it came in.
     ask: Option<(String, crate::agents::Ask)>,
+    /// Why the last turn stopped short, if it did: `task_complete` carries the
+    /// error it ended on (Codex 0.166), `turn_aborted` why it was cut off.
+    failed: Option<String>,
 }
 
 fn turn_counts() -> &'static Mutex<HashMap<String, TurnCount>> {
@@ -241,6 +244,13 @@ pub fn turns_completed(live: &Live) -> Option<u32> {
     tracked(live).map(|s| s.completed)
 }
 
+/// Why this chat's last turn stopped short, if it did, as of the rollout's last
+/// read: the one the turn count comes from, so it goes with the turn counted,
+/// and the session may have exited since.
+pub fn last_failure(chat_id: &str) -> Option<String> {
+    turn_counts().lock().ok()?.get(chat_id)?.scan.failed.clone()
+}
+
 /// The question the session has put to the user and nobody has answered:
 /// `request_user_input`, which holds the turn until it is answered, or
 /// `request_user_input_async`, which lets the model work on and is open until
@@ -261,9 +271,18 @@ fn scan_rollout(path: &Path, from: u64, since_ms: i64, scan: &mut Scan) -> u64 {
         let Ok(v) = serde_json::from_str::<Value>(line) else { return };
         let payload = &v["payload"];
         match (v["type"].as_str(), payload["type"].as_str()) {
-            (Some("event_msg"), Some("task_started" | "turn_started")) => scan.working = Some(true),
-            (Some("event_msg"), Some("task_complete" | "turn_complete" | "turn_aborted" | "task_aborted")) => {
+            (Some("event_msg"), Some("task_started" | "turn_started")) => {
+                scan.working = Some(true);
+                scan.failed = None;
+            }
+            (Some("event_msg"), Some(end @ ("task_complete" | "turn_complete" | "turn_aborted" | "task_aborted"))) => {
                 scan.working = Some(false);
+                scan.failed = payload["error"]["message"].as_str().map(str::to_owned).or_else(|| {
+                    end.ends_with("_aborted").then(|| match payload["reason"].as_str() {
+                        Some(why) => format!("its turn was aborted ({why})"),
+                        None => "its turn was aborted".to_string(),
+                    })
+                });
                 // A blocking question goes with the turn that asked it.
                 if scan.ask.as_ref().is_some_and(|(_, a)| a.blocking) {
                     scan.ask = None;
@@ -487,6 +506,8 @@ pub struct Tail {
     pub context_window: Option<f64>,
     /// The last `rate_limits` snapshot and the timestamp of its line.
     pub rate_limits: Option<(Value, String)>,
+    /// The thread's running token totals (`total_token_usage`).
+    pub total_usage: Option<Value>,
 }
 
 pub fn read_tail(path: &Path) -> Tail {
@@ -512,6 +533,9 @@ pub fn read_tail(path: &Path) -> Tail {
                     if out.context_tokens.is_none() {
                         let info = &payload["info"];
                         if info.is_object() {
+                            if out.total_usage.is_none() && info["total_token_usage"].is_object() {
+                                out.total_usage = Some(info["total_token_usage"].clone());
+                            }
                             let last = &info["last_token_usage"];
                             let total = last["total_tokens"].as_f64().unwrap_or(0.0);
                             let reasoning = last["reasoning_output_tokens"].as_f64().unwrap_or(0.0);
@@ -538,6 +562,37 @@ pub fn read_tail(path: &Path) -> Tail {
         }
     }
     out
+}
+
+/// The model a rollout's last turn ran on: what a `model_reroute` moved it to,
+/// else what its `turn_context` names. A turn with much output pushes those
+/// lines out of the tail; the whole file is read only then.
+pub fn last_model(path: &Path) -> Option<String> {
+    let model_in = |text: &str| {
+        text.lines().rev().filter(|l| l.contains("\"turn_context\"") || l.contains("\"model_reroute\"")).find_map(|line| {
+            let v = serde_json::from_str::<Value>(line).ok()?;
+            let payload = &v["payload"];
+            payload["to_model"].as_str().or(payload["model"].as_str()).map(str::to_owned)
+        })
+    };
+    tail(path, 128 * 1024)
+        .and_then(|t| model_in(&t))
+        .or_else(|| std::fs::read(path).ok().and_then(|b| model_in(&String::from_utf8_lossy(&b))))
+}
+
+/// The thread's running token totals as a rollout last counted them, the whole
+/// file read only when a turn with much output has pushed them out of the tail.
+pub fn last_total_usage(path: &Path) -> Option<Value> {
+    let total_in = |text: &str| {
+        text.lines().rev().filter(|l| l.contains("\"total_token_usage\"")).find_map(|line| {
+            let v = serde_json::from_str::<Value>(line).ok()?;
+            let total = &v["payload"]["info"]["total_token_usage"];
+            total.is_object().then(|| total.clone())
+        })
+    };
+    tail(path, 128 * 1024)
+        .and_then(|t| total_in(&t))
+        .or_else(|| std::fs::read(path).ok().and_then(|b| total_in(&String::from_utf8_lossy(&b))))
 }
 
 /// Whether a Codex screen shows an approval dialog — a command to run, an edit
@@ -644,6 +699,41 @@ pub fn latest_rate_limits(account_path: &str) -> Option<(Value, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_rollout_names_its_model_and_running_totals() {
+        let path = std::env::temp_dir().join(format!("luna-rollout-model-{}.jsonl", std::process::id()));
+        // As `codex exec` 0.166.0 wrote them, cut to the fields read here. The
+        // last `token_count` is the one that counts; a later one with no
+        // `info` (rate limits alone) changes nothing.
+        let head = concat!(
+            r#"{"timestamp":"t","type":"turn_context","payload":{"model":"gpt-6.1-sol","effort":"low"}}"#, "\n",
+            r#"{"timestamp":"t","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":15515,"cached_input_tokens":12416,"output_tokens":5},"last_token_usage":{"total_tokens":15520}}}}"#, "\n",
+            r#"{"timestamp":"t","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":32377,"cached_input_tokens":27776,"output_tokens":10},"last_token_usage":{"total_tokens":16867}}}}"#, "\n",
+            r#"{"timestamp":"t","type":"event_msg","payload":{"type":"token_count","info":null,"rate_limits":{"primary":null}}}"#, "\n",
+        );
+        std::fs::write(&path, head).unwrap();
+        assert_eq!(last_model(&path).as_deref(), Some("gpt-6.1-sol"));
+        let tail = read_tail(&path);
+        assert_eq!(tail.model.as_deref(), Some("gpt-6.1-sol"));
+        let total = crate::background::Usage::of_codex(&tail.total_usage.unwrap());
+        assert_eq!((total.input, total.cache_read, total.output), (4601, 27776, 10));
+
+        // A turn whose output pushed the line out of the tail.
+        let filler = format!("{{\"type\":\"response_item\",\"payload\":\"{}\"}}\n", "x".repeat(200 * 1024));
+        std::fs::write(&path, format!("{head}{filler}")).unwrap();
+        assert_eq!(last_model(&path).as_deref(), Some("gpt-6.1-sol"), "read from the whole file");
+        let total = crate::background::Usage::of_codex(&last_total_usage(&path).unwrap());
+        assert_eq!(total.output, 10, "so are the totals");
+
+        // A reroute stands for its turn; the next turn's context comes after it.
+        let rerouted = r#"{"timestamp":"t","type":"event_msg","payload":{"type":"model_reroute","from_model":"gpt-6.1-sol","to_model":"gpt-other","reason":"x"}}"#;
+        std::fs::write(&path, format!("{head}{rerouted}\n")).unwrap();
+        assert_eq!(last_model(&path).as_deref(), Some("gpt-other"));
+        std::fs::write(&path, format!("{head}{rerouted}\n{}\n", r#"{"timestamp":"t","type":"turn_context","payload":{"model":"gpt-6.1-sol"}}"#)).unwrap();
+        assert_eq!(last_model(&path).as_deref(), Some("gpt-6.1-sol"));
+        let _ = std::fs::remove_file(&path);
+    }
 
     #[test]
     fn parses_rollout_names() {
@@ -851,6 +941,31 @@ mod format_tests {
         scan_rollout(&path, 0, 0, &mut s);
         assert_eq!(s.working, Some(true));
 
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// How a turn that failed reads in a 0.166 rollout (a bad key, seen on a
+    /// throwaway account): a `task_complete` like any other, with the error.
+    #[test]
+    fn a_turn_that_failed_says_why() {
+        let root = std::env::temp_dir().join(format!("luna-codex-failed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("rollout-2026-11-01T10-52-43-abc.jsonl");
+        let failed_after = |lines: &[&str]| {
+            std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+            let mut s = Scan::default();
+            scan_rollout(&path, 0, 0, &mut s);
+            (s.failed, s.completed)
+        };
+        let started = r#"{"timestamp":"t","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}"#;
+        let failed = r#"{"timestamp":"t","ordinal":14,"type":"event_msg","payload":{"type":"task_complete","turn_id":"t1","last_agent_message":null,"error":{"message":"unexpected status 401 Unauthorized"}}}"#;
+        let fine = r#"{"timestamp":"t","type":"event_msg","payload":{"type":"task_complete","turn_id":"t2","last_agent_message":"READY"}}"#;
+        let aborted = r#"{"timestamp":"t","type":"event_msg","payload":{"type":"turn_aborted","turn_id":"t3","reason":"interrupted"}}"#;
+        assert_eq!(failed_after(&[started, failed]), (Some("unexpected status 401 Unauthorized".into()), 1), "it ends a turn all the same");
+        assert_eq!(failed_after(&[started, failed, started]), (None, 1), "the next turn is another one");
+        assert_eq!(failed_after(&[started, failed, started, fine]), (None, 2));
+        assert_eq!(failed_after(&[started, aborted]).0.as_deref(), Some("its turn was aborted (interrupted)"));
         let _ = std::fs::remove_dir_all(&root);
     }
 

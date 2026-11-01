@@ -31,6 +31,7 @@ interface ChatsState {
   setStatus: (chatId: string, status: Chat['status']) => void;
   /** Unfold or fold the children an agent spawned under this chat. */
   setChildrenOpen: (chatId: string, open: boolean) => void;
+  setParent: (chatId: string, parentId: string) => void;
   /** Names a chat from somewhere other than the user — a no-op where the
    *  name it has may not be replaced from there (see `mayRename`). */
   setName: (chatId: string, name: string, source: NameSource) => void;
@@ -144,6 +145,14 @@ export const useChats = create<ChatsState>()(
           folders: s.folders.map(f => ({
             ...f,
             chats: f.chats.map(c => (c.id === chatId ? { ...c, childrenOpen: open } : c))
+          }))
+        })),
+
+      setParent: (chatId, parentId) =>
+        set(s => ({
+          folders: s.folders.map(f => ({
+            ...f,
+            chats: f.chats.map(c => (c.id === chatId ? { ...c, parentId } : c))
           }))
         })),
 
