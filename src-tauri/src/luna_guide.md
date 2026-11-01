@@ -79,11 +79,13 @@ can start other sessions and work with them.
 - `luna_wait` blocks until a session ends a turn, stops on a question or permission
   (`until: "waiting"`), or exits (`until: "exit"`); up to 30 min (`timeoutS`, default 600).
   Use it when you need the answer within the same turn. `outcome` says which: `turn_done`,
-  `waiting`, `exit` or `timeout`. On `turn_done` (and an `exit` after such a turn), `reply`
-  holds all the session said since you asked, the report first, as the notice's file has
-  it; it is null when the turn ended on an error, and `screen` shows it. A background
-  helper does not exit between turns:
-  `until: "exit"` returns once it is deleted.
+  `waiting`, `exit`, `job_done` or `timeout`. On `turn_done` (and an `exit` after such a
+  turn), `reply` holds all the session said since you asked, the report first, as the
+  notice's file has it. `failed` is set when the turn stopped on an error (an API error, a
+  usage limit, a crash, a kill) and says which: `reply` is then what it said before that,
+  null if nothing, and `screen` comes too. A null `reply` with no `failed` means it said
+  nothing, unless `transcriptMissing` says Luna could not find its transcript to look. A
+  background helper does not exit between turns: `until: "exit"` returns once it is deleted.
 - A `luna_wait` still running when the answer comes hands it over instead of the notice;
   one your CLI moves to the background still returns, with no notice besides. One you
   cancel or interrupt hands nothing over, and the notice comes as usual.

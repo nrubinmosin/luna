@@ -475,6 +475,7 @@ async fn spawn(id: String, launch: impl FnOnce() -> Launch) -> Result<String, St
                 .get(&id)
                 .is_some_and(|s| !Arc::ptr_eq(&s.alive, &alive));
             if !replaced {
+                crate::agents::session_exited(&id, code);
                 crate::emit::to_ui("pty://exit", PtyExit { id: &id, code });
             }
             // The entry stays, for as long as the chat does: its transcript, its
