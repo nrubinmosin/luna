@@ -70,6 +70,36 @@ struct Run {
     stopped: bool,
 }
 
+/// Text sent to a helper, and by whom: what never reaches it goes back only to
+/// whoever sent it, sessions being free to keep things from each other.
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
+pub struct Queued {
+    /// None: no session's (a notice of Luna's, an opening prompt), its parent's
+    /// to hear of.
+    #[serde(default)]
+    pub from: Option<String>,
+    pub text: String,
+}
+
+#[cfg(test)]
+impl From<&str> for Queued {
+    fn from(text: &str) -> Queued {
+        Queued { from: None, text: text.to_string() }
+    }
+}
+
+#[cfg(test)]
+impl PartialEq<&str> for Queued {
+    fn eq(&self, other: &&str) -> bool {
+        self.text == *other
+    }
+}
+
+/// A batch as one prompt, as the turn gets it.
+fn joined(batch: &[Queued]) -> String {
+    batch.iter().map(|q| q.text.as_str()).collect::<Vec<_>>().join("\n\n")
+}
+
 /// A permission or question held for an answer.
 struct Held {
     serial: u64,
@@ -91,7 +121,11 @@ struct Entry {
     run: Option<Run>,
     turns_ended: u32,
     /// Text sent while a turn ran, for the turn after it.
-    queue: Vec<String>,
+    queue: Vec<Queued>,
+    /// The batch a turn was claimed for, from then until the CLI has it: saved,
+    /// so that a core killed in between neither forgets it nor, reading an older
+    /// save, hands back what was processed.
+    in_flight: Vec<Queued>,
     log: VecDeque<String>,
     held: Option<Held>,
     /// The CLI could not run or quit on an error before saying anything.
@@ -102,7 +136,14 @@ struct Entry {
     /// Text that was queued behind a turn the core's going stopped: it never
     /// reached the CLI. Kept, across cores too, until a caller has been told
     /// (agents.rs `undelivered_shown`) or a turn of `resume` has taken it.
-    undelivered: Vec<String>,
+    undelivered: Vec<Queued>,
+    /// Its turn's processes are in a job tied to the core (procs.rs), so a core
+    /// that dies takes them along. Saved: without it the next core cannot tell
+    /// that a turn it did not stop is over.
+    tied: bool,
+    /// Taken up with nothing of the last core's turn left to overlap (`tied`, or
+    /// that core stopped it itself): `resume` may start another.
+    resumable: bool,
     /// What its latest turn was started on, for as long as no turn has named
     /// its conversation: with nothing on disk to resume, that is all there is
     /// of a helper a core's going stops now.
@@ -230,6 +271,8 @@ pub fn stop_turns(close: bool) -> usize {
             // Stopped for Luna's sake, not ended: its caller hears so, and gets
             // back what was queued behind it, which `stop` drops.
             e.cut_short |= e.run.is_some();
+            let flying = std::mem::take(&mut e.in_flight);
+            e.undelivered.extend(flying);
             let queued = e.queue.clone();
             e.undelivered.extend(queued);
             match stop(e) {
@@ -253,6 +296,7 @@ pub fn stop_turns(close: bool) -> usize {
 /// come now), lets a held question go, and marks a claimed turn with no
 /// process yet stopped. Returns the pid left to kill.
 fn stop(e: &mut Entry) -> Option<u32> {
+    e.in_flight.clear();
     if !e.queue.is_empty() {
         e.queue.clear();
         e.turns_ended += 1;
@@ -275,11 +319,14 @@ pub fn start(id: &str, spec: Spec, prompt: &str) -> Result<(), String> {
         run: None,
         turns_ended: 0,
         queue: Vec::new(),
+        in_flight: Vec::new(),
         log: VecDeque::new(),
         held: None,
         error: None,
         cut_short: false,
         undelivered: Vec::new(),
+        tied: false,
+        resumable: false,
         opening: None,
         job: None,
     };
@@ -502,13 +549,12 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
         if let Some(e) = lock().entries.get_mut(id) {
             match &e.job {
                 Some(job) => {
-                    crate::procs::join(job, pid);
+                    let joined = crate::procs::join(job, pid);
+                    e.tied = e.tied && joined;
                 }
                 None => {
-                    e.job = crate::procs::adopt(pid).map(|job| {
-                        crate::procs::tie(&job);
-                        std::sync::Arc::new(job)
-                    })
+                    e.job = crate::procs::adopt(pid).map(std::sync::Arc::new);
+                    e.tied = e.job.as_deref().is_some_and(|job| crate::procs::tie(job));
                 }
             }
         }
@@ -519,8 +565,15 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
     // Written whole and closed: the CLI reads its prompt to the end of input.
     if let Some(mut stdin) = stdin {
         let prompt = prompt.to_string();
+        let writer_id = id.to_string();
         if let Err(e) = std::thread::Builder::new().spawn(move || {
-            let _ = stdin.write_all(prompt.as_bytes());
+            let wrote = stdin.write_all(prompt.as_bytes()).is_ok();
+            drop(stdin);
+            // The turn has it now: not to be handed back as undelivered.
+            let landed = wrote && lock().entries.get_mut(&writer_id).is_some_and(|e| !std::mem::take(&mut e.in_flight).is_empty());
+            if landed {
+                save();
+            }
         }) {
             abandon(child, pid);
             return Err(thread_err(e));
@@ -667,7 +720,11 @@ fn turn_over(id: &str, code: Option<i32>) {
                 e.cwd = crate::codex::session::thread_cwd(&e.spec.account_path, thread);
             }
         }
-        let next = (!e.queue.is_empty()).then(|| std::mem::take(&mut e.queue).join("\n\n"));
+        e.in_flight.clear();
+        let next = (!e.queue.is_empty()).then(|| {
+            e.in_flight = std::mem::take(&mut e.queue);
+            joined(&e.in_flight)
+        });
         if next.is_some() {
             claim(e);
         }
@@ -678,9 +735,14 @@ fn turn_over(id: &str, code: Option<i32>) {
     // One that cannot start is recorded as ended by `run_turn`. Stopped for
     // the core's sake as it started, its text is kept as if still queued.
     if let Some(text) = next {
+        // On disk before the CLI has it (`Entry::in_flight`).
+        save();
         if run_turn(id, &text).is_err() {
-            if let Some(e) = lock().entries.get_mut(id).filter(|e| e.cut_short) {
-                e.undelivered.push(text);
+            if let Some(e) = lock().entries.get_mut(id) {
+                let batch = std::mem::take(&mut e.in_flight);
+                if e.cut_short {
+                    e.undelivered.extend(batch);
+                }
             }
         }
     }
@@ -743,7 +805,7 @@ pub fn activity() -> Vec<crate::activity::SessionActivity> {
 
 /// Text for the helper: the next turn now, or after the one running.
 /// Returns whether it was queued.
-pub fn send(id: &str, text: &str) -> Result<bool, String> {
+pub fn send(id: &str, text: &str, from: Option<&str>) -> Result<bool, String> {
     let queued = {
         let mut r = lock();
         let e = r.entries.get_mut(id).ok_or("no such helper")?;
@@ -751,7 +813,7 @@ pub fn send(id: &str, text: &str) -> Result<bool, String> {
             return Err(format!("helper {id} is waiting on a question or permission: answer it with luna_answer"));
         }
         if e.run.is_some() {
-            e.queue.push(text.to_string());
+            e.queue.push(Queued { from: from.map(str::to_owned), text: text.to_string() });
             note(e, &format!("queued: {}", one_line(text)));
             true
         } else {
@@ -783,20 +845,22 @@ pub fn kill(id: &str) {
 /// Stops the turn in progress and starts the next on `text`, with whatever
 /// was queued for after it going first: the conversation goes on, the work
 /// the turn was doing does not. Returns whether a turn was stopped.
-pub fn interrupt(id: &str, text: &str) -> Result<bool, String> {
-    let (pid, queued) = {
+pub fn interrupt(id: &str, text: &str, from: Option<&str>) -> Result<bool, String> {
+    let (pid, mut all) = {
         let mut r = lock();
         let e = r.entries.get_mut(id).ok_or("no such helper")?;
-        let queued = std::mem::take(&mut e.queue);
+        e.in_flight = std::mem::take(&mut e.queue);
         e.held = None;
-        (e.run.as_ref().and_then(|run| run.pid), queued)
+        (e.run.as_ref().and_then(|run| run.pid), e.in_flight.clone())
     };
+    save();
     let stopped = pid.is_some();
     if stopped {
         reg().1.notify_all();
         crate::pty::kill_tree(pid);
     }
-    let text = queued.into_iter().chain([text.to_string()]).collect::<Vec<_>>().join("\n\n");
+    all.push(Queued { from: from.map(str::to_owned), text: text.to_string() });
+    let text = joined(&all);
     {
         // The turn is over once its reader has seen the process go, and the
         // run is then free or taken by a turn queued before the kill.
@@ -806,6 +870,12 @@ pub fn interrupt(id: &str, text: &str) -> Result<bool, String> {
         while stopped && r.entries.get(id).and_then(|e| e.run.as_ref()).is_some_and(|run| run.pid == pid) {
             let left = deadline.saturating_duration_since(std::time::Instant::now());
             if left.is_zero() {
+                // Back behind what came meanwhile: this call's own text goes back to its caller.
+                if let Some(e) = r.entries.get_mut(id) {
+                    let flying = std::mem::take(&mut e.in_flight);
+                    let later = std::mem::take(&mut e.queue);
+                    e.queue = [flying, later].concat();
+                }
                 return Err(format!("helper {id} did not stop within 15 s"));
             }
             r = cv.wait_timeout(r, left).unwrap_or_else(|e| e.into_inner()).0;
@@ -814,14 +884,22 @@ pub fn interrupt(id: &str, text: &str) -> Result<bool, String> {
         note(e, "interrupted");
         // A turn something else started meanwhile: the text goes after it.
         if e.run.is_some() {
-            e.queue.push(text);
+            e.in_flight.clear();
+            let later = std::mem::take(&mut e.queue);
+            e.queue = [all, later].concat();
             drop(r);
             changed();
             return Ok(stopped);
         }
+        e.in_flight = all;
         claim(e);
     }
-    run_turn(id, &text)?;
+    if let Err(why) = run_turn(id, &text) {
+        if let Some(e) = lock().entries.get_mut(id) {
+            e.in_flight.clear();
+        }
+        return Err(why);
+    }
     changed();
     Ok(stopped)
 }
@@ -1153,10 +1231,16 @@ struct Saved {
     /// That text, word for word, for its sender to send again (a file an
     /// older core left has only `queued`).
     #[serde(default)]
-    queue: Vec<String>,
+    queue: Vec<Queued>,
+    /// See `Entry::in_flight`.
+    #[serde(default)]
+    in_flight: Vec<Queued>,
     /// See `Entry::undelivered`.
     #[serde(default)]
-    undelivered: Vec<String>,
+    undelivered: Vec<Queued>,
+    /// See `Entry::tied`.
+    #[serde(default)]
+    tied: bool,
     /// See `Entry::opening`: written only while no turn has named the
     /// conversation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1216,7 +1300,9 @@ fn snapshot() -> Vec<Saved> {
             running: e.run.is_some(),
             queued: !e.queue.is_empty(),
             queue: e.queue.clone(),
+            in_flight: e.in_flight.clone(),
             undelivered: e.undelivered.clone(),
+            tied: e.tied,
             opening: e.opening.clone().filter(|_| e.session.is_none()),
             cut_short: e.cut_short,
             ties: Default::default(),
@@ -1272,7 +1358,12 @@ pub fn restore() {
 /// `resumeOnRestart`: each starts its next turn by itself. Off this thread,
 /// and only once the hub listens: a turn's MCP config names its port.
 pub fn resume_stopped() {
-    let ids: Vec<String> = lock().entries.iter().filter(|(_, e)| e.cut_short && e.run.is_none()).map(|(id, _)| id.clone()).collect();
+    let (ids, unsure): (Vec<(String, bool)>, Vec<(String, bool)>) =
+        lock().entries.iter().filter(|(_, e)| e.cut_short && e.run.is_none()).map(|(id, e)| (id.clone(), e.resumable)).partition(|(_, sure)| *sure);
+    for (id, _) in unsure.iter().filter(|(id, _)| crate::agents::resumes_on_restart(id)) {
+        crate::log::warn("background", &format!("{}: not resumed: nothing says the last core's turn ended, and a second could overlap it", crate::agents::label(id)));
+    }
+    let ids: Vec<String> = ids.into_iter().map(|(id, _)| id).collect();
     let ids: Vec<String> = ids.into_iter().filter(|id| crate::agents::resumes_on_restart(id)).collect();
     if ids.is_empty() {
         return;
@@ -1297,19 +1388,21 @@ fn resume(id: &str) {
         // words of its first turn (a file from an older core): nothing to run.
         let unnamed = e.session.is_none();
         // Or a turn it was sent meanwhile has gone on already, and been told.
-        if e.run.is_some() || !e.cut_short || (unnamed && e.undelivered.is_empty()) {
+        if e.run.is_some() || !e.cut_short || !e.resumable || (unnamed && e.undelivered.is_empty()) {
             return;
         }
         claim(e);
+        // This batch only: whatever is put by after this goes on being kept.
+        e.in_flight = std::mem::take(&mut e.undelivered);
         // Never started, it is started now, on what it was given as it was.
-        let text = if unnamed { e.undelivered.join("\n\n") } else { resume_text(&e.undelivered) };
-        (text, e.turns_ended, e.undelivered.len())
+        let text = if unnamed { joined(&e.in_flight) } else { resume_text(&e.in_flight) };
+        (text, e.turns_ended, e.in_flight.len())
     };
+    save();
     crate::agents::resumed(id, count);
     match run_turn(id, &text) {
         Ok(()) => {
             if let Some(e) = lock().entries.get_mut(id) {
-                e.undelivered.clear();
                 note(e, "resumed by itself after a core stopped its turn");
             }
             crate::log::warn(
@@ -1317,14 +1410,21 @@ fn resume(id: &str) {
                 &format!("{}: resumed by itself after a core stopped its turn, {carried} undelivered message(s) with it", crate::agents::label(id)),
             );
         }
-        Err(why) => crate::log::warn("background", &format!("{}: could not resume by itself: {why}", crate::agents::label(id))),
+        Err(why) => {
+            if let Some(e) = lock().entries.get_mut(id) {
+                let batch = std::mem::take(&mut e.in_flight);
+                let later = std::mem::take(&mut e.undelivered);
+                e.undelivered = [batch, later].concat();
+            }
+            crate::log::warn("background", &format!("{}: could not resume by itself: {why}", crate::agents::label(id)));
+        }
     }
     changed();
 }
 
 /// What a resumed helper is told: why its turn stopped, and what was queued
 /// for it, word for word, as it would have come.
-fn resume_text(queued: &[String]) -> String {
+fn resume_text(queued: &[Queued]) -> String {
     let mut text = format!(
         "{} Luna's core restarted and stopped your last turn before it finished. Carry on where you left off.",
         crate::agents::NOTICE_TAG
@@ -1333,7 +1433,7 @@ fn resume_text(queued: &[String]) -> String {
         text.push_str("\n\nThese messages were sent to you while you worked and never reached you, oldest first:");
         for message in queued {
             text.push_str("\n\n");
-            text.push_str(message);
+            text.push_str(&message.text);
         }
     }
     text
@@ -1345,8 +1445,10 @@ fn resume_text(queued: &[String]) -> String {
 /// for its sender.
 fn taken_up(s: Saved) -> Entry {
     let stopped = s.running || s.cut_short;
-    let first: Vec<String> = s.opening.filter(|_| stopped && s.session.is_none()).into_iter().collect();
-    let undelivered = [first, s.undelivered, s.queue].concat();
+    // A turn no core stopped ended only if the OS saw to it (`Entry::tied`).
+    let resumable = !s.running || s.cut_short || s.tied;
+    let first: Vec<Queued> = s.opening.filter(|_| stopped && s.session.is_none()).map(|text| Queued { from: None, text }).into_iter().collect();
+    let undelivered = [first, s.undelivered, s.in_flight, s.queue].concat();
     let mut e = Entry {
         spec: s.spec,
         started_ms: s.started_ms,
@@ -1355,11 +1457,14 @@ fn taken_up(s: Saved) -> Entry {
         run: None,
         turns_ended: s.turns_ended + u32::from(s.running) + u32::from(s.queued),
         queue: Vec::new(),
+        in_flight: Vec::new(),
         log: VecDeque::new(),
         held: None,
         error: None,
         cut_short: stopped,
         undelivered,
+        tied: false,
+        resumable,
         opening: None,
         job: None,
     };
@@ -1385,15 +1490,33 @@ pub fn never_started(id: &str) -> bool {
     lock().entries.get(id).is_some_and(|e| e.cut_short && e.session.is_none())
 }
 
-/// See `Entry::undelivered`.
-pub fn undelivered(id: &str) -> Vec<String> {
-    lock().entries.get(id).map(|e| e.undelivered.clone()).unwrap_or_default()
+/// What never reached it that `caller` is to hear of (`Entry::undelivered`):
+/// what it sent, and for its parent what no session did.
+pub fn undelivered_for(id: &str, caller: &str, parent: bool) -> Vec<String> {
+    let mine = |q: &Queued| q.from.as_deref().map_or(parent, |f| f == caller);
+    lock().entries.get(id).map(|e| e.undelivered.iter().filter(|q| mine(q)).map(|q| q.text.clone()).collect()).unwrap_or_default()
 }
 
-pub fn clear_undelivered(id: &str) {
+/// Takes it off, `caller` having been told: `put_back` undoes that.
+pub fn take_undelivered_for(id: &str, caller: &str, parent: bool) -> Vec<Queued> {
+    let mut r = lock();
+    let Some(e) = r.entries.get_mut(id) else { return Vec::new() };
+    let (taken, left) = std::mem::take(&mut e.undelivered).into_iter().partition(|q: &Queued| q.from.as_deref().map_or(parent, |f| f == caller));
+    e.undelivered = left;
+    taken
+}
+
+pub fn put_back(id: &str, taken: Vec<Queued>) {
     if let Some(e) = lock().entries.get_mut(id) {
-        e.undelivered.clear();
+        let left = std::mem::take(&mut e.undelivered);
+        e.undelivered = [taken, left].concat();
     }
+}
+
+/// Text that never reached a helper, by whom, for the tests of who hears of it.
+#[cfg(test)]
+pub fn lose_for_test(id: &str, from: &str, text: &str) {
+    lock().entries.get_mut(id).unwrap().undelivered.push(Queued { from: Some(from.to_string()), text: text.to_string() });
 }
 
 /// A helper as a core takes it up, for the tests of what its caller is told.
@@ -1413,8 +1536,10 @@ pub fn take_up_for_test(id: &str, folder: &str, turns_ended: u32, queue: &[&str]
         turns_ended,
         running: true,
         queued: !queue.is_empty(),
-        queue: queue.iter().map(|t| t.to_string()).collect(),
+        queue: queue.iter().map(|t| Queued::from(*t)).collect(),
+        in_flight: Vec::new(),
         undelivered: Vec::new(),
+        tied: true,
         opening: opening.map(str::to_owned),
         cut_short: false,
         ties: Default::default(),
@@ -1447,11 +1572,14 @@ mod tests {
             run: None,
             turns_ended: 0,
             queue: Vec::new(),
+            in_flight: Vec::new(),
             log: VecDeque::new(),
             held: None,
             error: None,
             cut_short: false,
             undelivered: Vec::new(),
+            tied: false,
+            resumable: false,
             opening: None,
             job: None,
         }
@@ -1472,8 +1600,10 @@ mod tests {
             turns_ended: 3,
             running,
             queued,
-            queue: if queued { vec!["first".to_string(), "second".to_string()] } else { Vec::new() },
+            queue: if queued { vec!["first".into(), "second".into()] } else { Vec::new() },
+            in_flight: Vec::new(),
             undelivered: Vec::new(),
+            tied: false,
             opening: None,
             cut_short: false,
             ties: Default::default(),
@@ -1490,6 +1620,52 @@ mod tests {
         let e = taken_up(saved(false, false));
         assert_eq!(e.turns_ended, 3);
         assert!(!e.cut_short && e.error.is_none());
+
+        // A batch a turn was claimed for and never got comes back in its place.
+        let e = taken_up(Saved { in_flight: vec!["flying".into()], ..saved(true, true) });
+        assert_eq!(e.undelivered, ["flying", "first", "second"]);
+
+        // A turn no core stopped is over only if the OS saw to it.
+        assert!(!taken_up(saved(true, false)).resumable, "no tie: its CLI may be running yet");
+        assert!(taken_up(Saved { tied: true, ..saved(true, false) }).resumable);
+        assert!(taken_up(Saved { cut_short: true, ..saved(true, false) }).resumable, "the last core stopped it itself");
+        assert!(taken_up(saved(false, false)).resumable);
+    }
+
+    #[test]
+    fn a_batch_on_its_way_is_kept_if_the_core_stops_it_and_goes_if_a_kill_does() {
+        let mut e = entry(Provider::Codex);
+        e.run = Some(Run { pid: None, started_ms: 0, stopped: false });
+        e.in_flight = vec!["flying".into()];
+        e.queue = vec!["behind it".into()];
+        lock().entries.insert("in-flight".into(), e);
+        stop_turns(false);
+        let e = lock().entries.remove("in-flight").unwrap();
+        assert_eq!(e.undelivered, ["flying", "behind it"]);
+        assert!(e.in_flight.is_empty());
+
+        let mut e = entry(Provider::Codex);
+        e.in_flight = vec!["flying".into()];
+        stop(&mut e);
+        assert!(e.in_flight.is_empty() && e.undelivered.is_empty());
+    }
+
+    #[test]
+    fn a_resume_nobody_can_vouch_for_is_not_tried_and_one_takes_only_its_batch() {
+        take_up_for_test("unsure", "C:\\luna-no-such-folder", 3, &["queued"], None);
+        lock().entries.get_mut("unsure").unwrap().resumable = false;
+        resume("unsure");
+        let e = lock().entries.remove("unsure").unwrap();
+        assert_eq!(e.turns_ended, 5, "no turn tried");
+        assert_eq!(e.undelivered, ["queued"]);
+
+        // What is put by while a turn is being started stays, behind what failed to go.
+        take_up_for_test("batch", "C:\\luna-no-such-folder", 3, &["queued"], None);
+        resume("batch");
+        lock().entries.get_mut("batch").unwrap().undelivered.push("later".into());
+        put_back("batch", vec!["queued again".into()]);
+        let e = lock().entries.remove("batch").unwrap();
+        assert_eq!(e.undelivered, ["queued again", "queued", "later"]);
     }
 
     #[test]
@@ -1543,7 +1719,7 @@ mod tests {
 
         take_up_for_test("never", "C:\\luna-no-such-folder", 0, &["then this"], Some("the prompt"));
         assert!(never_started("never"));
-        assert_eq!(undelivered("never"), ["the prompt", "then this"], "what it was started on goes first");
+        assert_eq!(undelivered_for("never", "its parent", true), ["the prompt", "then this"], "what it was started on goes first");
         // A first turn again: no conversation to resume, its words as they were.
         let (args, _, _) = command_for(lock().entries.get("never").unwrap(), "never");
         assert!(!args.contains(&"--resume".to_string()));

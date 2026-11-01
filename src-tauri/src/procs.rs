@@ -22,7 +22,8 @@
 //! which the OS will not except, so every way out that is not a death lets go
 //! of the tie first (`let_go`, and dropping a job), and `end_leftovers` spares
 //! them as ever. No job on other platforms, so no tie either: there a turn's
-//! process group runs on past a core that dies.
+//! process group runs on past a core that dies, and with no tie in place Luna
+//! does not start another on that conversation by itself (background.rs).
 
 #[cfg(windows)]
 mod imp {
@@ -73,10 +74,12 @@ mod imp {
 
     /// Has the OS end everything in the job once its last handle closes, which
     /// this process's death does: nothing else holds one, and none is inherited.
-    pub fn tie(job: &Job) {
-        if let Err(e) = set_limit(job, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE) {
+    pub fn tie(job: &Job) -> bool {
+        let tied = set_limit(job, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE);
+        if let Err(e) = &tied {
             crate::log::warn("procs", &format!("could not tie a job to the core: {e}"));
         }
+        tied.is_ok()
     }
 
     /// Undoes `tie`: what is in the job runs on when its handle closes.
@@ -356,7 +359,9 @@ mod imp {
     pub fn join(_job: &Job, _pid: u32) -> bool {
         false
     }
-    pub fn tie(_job: &Job) {}
+    pub fn tie(_job: &Job) -> bool {
+        false
+    }
     pub fn let_go(_job: &Job) {}
     pub fn end(_pid: u32, _started_ms: u64) -> bool {
         false
