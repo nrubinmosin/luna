@@ -691,6 +691,30 @@ fn command_for(e: &Entry, id: &str) -> (Vec<String>, String, Vec<(&'static str, 
     (args, dir, envs)
 }
 
+/// The conversations helpers have had: Claude Code's session ids and Codex's
+/// thread ids, never forgotten, as a deleted helper's files stay on disk. A
+/// visible session guesses which conversation is its own from the folder and
+/// the time (`codex::session::rollout_for`, `claude::session::registry_entry`),
+/// and these are never it. Behind a lock of its own that holds nothing else:
+/// both guesses ask from under locks of theirs.
+fn helper_conversations() -> &'static Mutex<std::collections::HashSet<String>> {
+    static SEEN: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+    SEEN.get_or_init(Default::default)
+}
+
+pub fn is_helper_conversation(id: &str) -> bool {
+    helper_conversations().lock().unwrap_or_else(|e| e.into_inner()).contains(id)
+}
+
+/// The CLI has named a helper's conversation. Codex's file exists before it
+/// says so, and a chat may have taken it for its own in between.
+pub(crate) fn note_helper_conversation(provider: Provider, id: &str) {
+    helper_conversations().lock().unwrap_or_else(|e| e.into_inner()).insert(id.to_string());
+    if provider == Provider::Codex {
+        crate::codex::session::let_go_of_thread(id);
+    }
+}
+
 /// Takes the helper's run for a turn about to start, under the same lock that
 /// found it free: text that arrives before the process is up queues behind
 /// it rather than starting a second process on the same conversation.
@@ -1033,6 +1057,9 @@ fn on_claude_event(e: &mut Entry, v: &Value) {
     match (v["type"].as_str(), v["subtype"].as_str()) {
         (Some("system"), Some("init")) => {
             e.session = v["session_id"].as_str().map(str::to_owned).or(e.session.take());
+            if let Some(id) = &e.session {
+                note_helper_conversation(Provider::Claude, id);
+            }
             e.cwd = v["cwd"].as_str().map(str::to_owned).or(e.cwd.take());
             e.observed.model = v["model"].as_str().map(str::to_owned).or(e.observed.model.take());
         }
@@ -1134,7 +1161,12 @@ fn rerouted_to(message: &str) -> Option<&str> {
 fn on_codex_event(e: &mut Entry, v: &Value) {
     let item = &v["item"];
     match v["type"].as_str() {
-        Some("thread.started") => e.session = v["thread_id"].as_str().map(str::to_owned).or(e.session.take()),
+        Some("thread.started") => {
+            e.session = v["thread_id"].as_str().map(str::to_owned).or(e.session.take());
+            if let Some(id) = &e.session {
+                note_helper_conversation(Provider::Codex, id);
+            }
+        }
         Some("item.completed") => match item["type"].as_str() {
             Some("agent_message") => note(e, &format!("said: {}", one_line(item["text"].as_str().unwrap_or("")))),
             Some("command_execution") => note(
@@ -1911,6 +1943,9 @@ pub fn restore() {
         let ties = std::mem::take(&mut s.ties);
         let token = crate::agents::tie_back(&s.id, s.spec.provider, &s.spec.folder, &s.spec.account_path, ties);
         let (id, running) = (s.id.clone(), s.running);
+        if let Some(session) = &s.session {
+            note_helper_conversation(s.spec.provider, session);
+        }
         let mut e = taken_up(s);
         e.spec.token = token;
         lock().entries.insert(id.clone(), e);
@@ -3062,6 +3097,17 @@ mod tests {
         }))
         .expect("helpers.json from before them still reads");
         assert!(!spec.read_only && spec.agent.is_none() && spec.parent.is_none());
+    }
+
+    #[test]
+    fn a_helpers_conversation_is_known_once_its_cli_names_it() {
+        let mut e = entry(Provider::Codex);
+        on_codex_event(&mut e, &json!({ "type": "thread.started", "thread_id": "noted-thread" }));
+        assert!(is_helper_conversation("noted-thread"));
+        let mut e = entry(Provider::Claude);
+        on_claude_event(&mut e, &json!({ "type": "system", "subtype": "init", "session_id": "noted-session", "cwd": "C:\\p" }));
+        assert!(is_helper_conversation("noted-session"));
+        assert!(!is_helper_conversation("someone-elses"));
     }
 
     #[test]
