@@ -24,6 +24,8 @@ const FRAME: std::time::Duration = std::time::Duration::from_millis(16);
 /// spawn); a session given Luna's tools gets a token of this Luna's after.
 const INHERITED_SESSION_VARS: &[&str] = &[
     "LUNA_MCP_TOKEN",
+    "LUNA_SESSION_ID",
+    "LUNA_PARENT_ID",
     "CLAUDECODE",
     "CLAUDE_CODE_CHILD_SESSION",
     "CLAUDE_CODE_ENTRYPOINT",
@@ -33,6 +35,14 @@ const INHERITED_SESSION_VARS: &[&str] = &[
     "CLAUDE_CODE_MESSAGING_TOKEN",
     "CLAUDE_PID",
     "CODEX_THREAD_ID",
+    "CODEX_SESSION_ID",
+    "CODEX_VERSION",
+    "CODEX_CI",
+    "CODEX_PERMISSION_PROFILE",
+    "CODEX_TOOL_CALL_ID",
+    "CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS",
+    "CODEX_NETWORK_PROXY_ACTIVE",
+    "CODEX_NETWORK_PROXY_CREDENTIAL_BROKER_ACTIVE",
     "CODEX_SANDBOX",
     "CODEX_SANDBOX_NETWORK_DISABLED",
 ];
@@ -611,6 +621,84 @@ pub(crate) const AUTO_REVIEW_SANDBOX: &str = "workspace-write";
 /// Codex runs the project's hooks without asking for trust (codex/hooks.rs).
 pub(crate) const HOOKS_UNASKED: &str = "--dangerously-bypass-hook-trust";
 
+/// Luna's own sandbox value: Codex's read-only with the network on, which
+/// `sandbox_mode` cannot say (see `codex_read_only_net_args`).
+pub(crate) const READ_ONLY_NET: &str = "read-only-net";
+
+/// `read-only-net` as `-c` overrides: a permission profile of Luna's that
+/// extends Codex's `:read-only`, with direct network, and nothing written to
+/// the account's config.toml. Codex's docs say not to set `sandbox_mode` beside
+/// `default_permissions`; this override beats one in the account's or the
+/// project's config, so the disk stays read-only either way. The name is new
+/// on every start: Codex lays the rules any config has for a profile's name
+/// over the ones given here, so a project's `.codex/config.toml` saying
+/// `":root" = "write"` for a name it could know would make this writable. It
+/// need not last: a resume takes a new one. On Windows TLS through schannel
+/// still fails under the sandbox's restricted token, as it does in
+/// `workspace-write` with its network on (see `codex_git_envs`, luna_guide.md).
+pub(crate) fn codex_read_only_net_args() -> Vec<String> {
+    let profile = format!("luna-{}", &crate::agents::mint("read-only-net")[..16]);
+    [
+        format!("default_permissions=\"{profile}\""),
+        format!("permissions.{profile}.extends=\":read-only\""),
+        format!("permissions.{profile}.network.enabled=true"),
+    ]
+    .into_iter()
+    .flat_map(|value| ["-c".to_string(), value])
+    .collect()
+}
+
+/// What `read-only-net` needs for git on Windows, whose https goes through
+/// schannel by default and fails under the sandbox's token: entries for
+/// `GIT_CONFIG_*`, after any it was started with. Nothing if those already
+/// choose a backend, or if their count is one git itself would refuse.
+fn git_ssl_backend_envs(count: Option<&str>, key: impl Fn(usize) -> Option<String>) -> Vec<(String, String)> {
+    let n: usize = match count {
+        None => 0,
+        Some(c) => match c.trim().parse() {
+            Ok(n) => n,
+            Err(_) => return Vec::new(),
+        },
+    };
+    if (0..n).any(|i| key(i).is_some_and(|k| k.eq_ignore_ascii_case("http.sslBackend"))) {
+        return Vec::new();
+    }
+    vec![
+        ("GIT_CONFIG_COUNT".to_string(), (n + 1).to_string()),
+        (format!("GIT_CONFIG_KEY_{n}"), "http.sslBackend".to_string()),
+        (format!("GIT_CONFIG_VALUE_{n}"), "openssl".to_string()),
+    ]
+}
+
+/// `git_ssl_backend_envs` for a session in that sandbox. Worked out once: the
+/// environment they build on is this process's, which stays as it started,
+/// and the names are made only the once for their `'static` lifetime.
+pub(crate) fn codex_git_envs(sandbox: &str) -> Vec<(&'static str, String)> {
+    static ENVS: std::sync::OnceLock<Vec<(&'static str, String)>> = std::sync::OnceLock::new();
+    if !cfg!(windows) || sandbox != READ_ONLY_NET {
+        return Vec::new();
+    }
+    ENVS.get_or_init(|| {
+        let count = std::env::var("GIT_CONFIG_COUNT").ok();
+        git_ssl_backend_envs(count.as_deref(), |i| std::env::var(format!("GIT_CONFIG_KEY_{i}")).ok())
+            .into_iter()
+            .map(|(k, v)| {
+                let k: &'static str = Box::leak(k.into_boxed_str());
+                (k, v)
+            })
+            .collect()
+    })
+    .clone()
+}
+
+/// A sandbox as `-c` overrides, for `codex exec`, which asks nobody.
+pub(crate) fn codex_sandbox_args(sandbox: &str) -> Vec<String> {
+    if sandbox == READ_ONLY_NET {
+        return codex_read_only_net_args();
+    }
+    vec!["-c".into(), format!("sandbox_mode=\"{sandbox}\"")]
+}
+
 /// The override that gives Codex its Windows sandbox, for the modes that
 /// need one. Without it Codex refuses every command under `read-only` and
 /// `workspace-write`, a `Get-Content` included. The unelevated kind runs each
@@ -618,7 +706,7 @@ pub(crate) const HOOKS_UNASKED: &str = "--dangerously-bypass-hook-trust";
 /// `workspace-write` Codex grants its sandbox write access to the folder
 /// once, in the folder's ACL.
 pub(crate) fn codex_windows_sandbox(sandbox: &str) -> Option<String> {
-    (cfg!(windows) && matches!(sandbox, "read-only" | "workspace-write")).then(|| "windows.sandbox=\"unelevated\"".to_string())
+    (cfg!(windows) && matches!(sandbox, "read-only" | READ_ONLY_NET | "workspace-write")).then(|| "windows.sandbox=\"unelevated\"".to_string())
 }
 
 /// PATH for a Codex session in that sandbox: without `…\Microsoft\WindowsApps`.
@@ -636,6 +724,64 @@ pub(crate) fn codex_sandbox_path(sandbox: &str) -> Option<String> {
 
 fn without_windows_apps(path: &str) -> String {
     path.split(';').filter(|p| !p.to_lowercase().replace('/', "\\").contains("\\microsoft\\windowsapps")).collect::<Vec<_>>().join(";")
+}
+
+/// What tells a session which one it is, for what it runs: every session its
+/// own id, a helper the session that started it too.
+pub(crate) fn session_envs(id: &str, parent: Option<&str>) -> Vec<(&'static str, String)> {
+    let mut envs = vec![("LUNA_SESSION_ID", id.to_string())];
+    if let Some(parent) = parent {
+        envs.push(("LUNA_PARENT_ID", parent.to_string()));
+    }
+    envs
+}
+
+/// What a helper is told it is: instructions written for the chat a person
+/// talks to (say, to agree a plan with them first) would otherwise hold it up
+/// with nobody there to answer.
+fn helper_line(parent: &str) -> String {
+    format!(
+        "You are a helper session started through Luna by session {parent}, not a chat with a person: your answers go to \
+         that session. Instructions meant only for the session a person talks to do not apply to you."
+    )
+}
+
+/// `helper_line` for Claude Code, added to its system prompt.
+pub(crate) fn claude_helper_args(parent: &str) -> Vec<String> {
+    vec!["--append-system-prompt".into(), helper_line(parent)]
+}
+
+/// A Codex helper's opening prompt, with `helper_line` as a note after it.
+/// Codex can only replace `developer_instructions`, not add to them, and what
+/// they come to depends on its whole stack of config files: working that out
+/// here to pass it on would be Codex's resolution done twice, and a long one
+/// would not fit on a command line. After the prompt, not before: the opening
+/// words are what names the chat, and a slash command has to come first. One
+/// that does goes without the note, which would land in its arguments.
+pub(crate) fn codex_helper_prompt(parent: &str, prompt: &str) -> String {
+    if prompt.trim_start().starts_with('/') {
+        return prompt.to_string();
+    }
+    format!("{prompt}{HELPER_NOTE}{}]", helper_line(parent))
+}
+
+/// Where the note starts: what comes before it is the prompt as it was asked.
+const HELPER_NOTE: &str = "\n\n[A note from Luna, not part of the task: ";
+
+/// What `readOnly` takes away from Claude Code. Bash stays, and can still
+/// write: it is a checker's tool, and no flag tells its reads from its writes.
+pub(crate) const CLAUDE_EDIT_TOOLS: [&str; 3] = ["Edit", "Write", "NotebookEdit"];
+
+/// `readOnly` and `agent` as they show in a Claude Code session's settings,
+/// where they are set: a helper opened as a chat takes them from there.
+pub(crate) fn with_role(mut settings: serde_json::Value, read_only: bool, agent: Option<&str>) -> serde_json::Value {
+    if read_only {
+        settings["readOnly"] = true.into();
+    }
+    if let Some(agent) = agent {
+        settings["agent"] = agent.into();
+    }
+    settings
 }
 
 /// Luna's MCP server as `-c` overrides for Codex, the token through
@@ -1110,6 +1256,10 @@ pub async fn ensure_claude_session(
     parent: Option<String>,
     // An opening prompt, for a chat an agent starts.
     prompt: Option<String>,
+    // Without the edit tools (`CLAUDE_EDIT_TOOLS`).
+    read_only: Option<bool>,
+    // The agent it runs as: `--agent`.
+    agent: Option<String>,
 ) -> Result<String, String> {
     // Built only if no process is running (see `spawn`).
     spawn(id.clone(), move || {
@@ -1152,9 +1302,26 @@ pub async fn ensure_claude_session(
             args.push(hooks.to_string_lossy().into_owned());
         }
         let tools = tools.unwrap_or(false);
-        let settings = serde_json::json!({
-            "model": model, "effort": args[3], "permissionMode": permission_mode, "worktree": worktree,
-        });
+        let read_only = read_only.unwrap_or(false);
+        let agent = agent.filter(|a| !a.is_empty());
+        let settings = with_role(
+            serde_json::json!({
+                "model": model, "effort": args[3], "permissionMode": permission_mode, "worktree": worktree,
+            }),
+            read_only,
+            agent.as_deref(),
+        );
+        if let Some(agent) = &agent {
+            args.push("--agent".into());
+            args.push(agent.clone());
+        }
+        if read_only {
+            args.push("--disallowedTools".into());
+            args.push(CLAUDE_EDIT_TOOLS.join(","));
+        }
+        if let Some(parent) = &parent {
+            args.extend(claude_helper_args(parent));
+        }
         // A login session runs in the account folder itself (the providers'
         // `loginSession`): not a chat, so not one agents may see or write to.
         let token = if same_dir(&folder, &account_path) {
@@ -1187,12 +1354,13 @@ pub async fn ensure_claude_session(
             args.push("--".into());
             args.push(p.to_string());
         }
-        let envs = vec![
+        let mut envs = vec![
             ("CLAUDE_CONFIG_DIR", account_path.clone()),
             // Luna updates the CLI itself; the CLI's own updater would install a
             // second copy under the user profile that nothing here ever runs.
             ("DISABLE_AUTOUPDATER", "1".to_string()),
         ];
+        envs.extend(session_envs(&id, parent.as_deref()));
         Launch {
             provider: Provider::Claude,
             cwd: folder,
@@ -1275,8 +1443,12 @@ pub async fn ensure_codex_session(
                 } else {
                     args.push("--ask-for-approval".into());
                     args.push(approval.clone());
-                    args.push("--sandbox".into());
-                    args.push(sandbox.to_string());
+                    if sandbox == READ_ONLY_NET {
+                        args.extend(codex_read_only_net_args());
+                    } else {
+                        args.push("--sandbox".into());
+                        args.push(sandbox.to_string());
+                    }
                 }
                 if let Some(sb) = codex_windows_sandbox(sandbox) {
                     args.push("-c".into());
@@ -1285,11 +1457,13 @@ pub async fn ensure_codex_session(
                 if let Some(path) = codex_sandbox_path(sandbox) {
                     envs.push(("PATH", path));
                 }
+                envs.extend(codex_git_envs(sandbox));
             }
             let hooks_unasked = hooks_unasked.unwrap_or(false);
             if hooks_unasked {
                 args.push(HOOKS_UNASKED.into());
             }
+            envs.extend(session_envs(&id, parent.as_deref()));
             let tools = tools.unwrap_or(false);
             let settings = serde_json::json!({
                 "model": model.as_deref().map(str::trim).filter(|m| !m.is_empty()),
@@ -1728,7 +1902,7 @@ pub fn sane_title(s: &str) -> Option<String> {
 /// A prompt trimmed to a title: whitespace flattened, 48 characters. Slash
 /// commands, replayed tool output and system reminders are not titles.
 pub fn title_from_prompt(text: &str) -> Option<String> {
-    let text = text.trim();
+    let text = text.split(HELPER_NOTE).next().unwrap_or(text).trim();
     if text.is_empty() || text.starts_with('<') || text.starts_with('/') {
         return None;
     }
@@ -2313,6 +2487,75 @@ mod tests {
         let s = draft_after(draft_after(0, "ab\\"), "\r");
         assert_eq!(s & !DRAFT_BACKSLASH, 4);
         assert_eq!(draft_after(draft_after(s, "c"), "\r"), 0);
+    }
+
+    #[test]
+    fn read_only_net_is_a_profile_and_never_a_sandbox_mode() {
+        let args = codex_sandbox_args(READ_ONLY_NET);
+        assert!(!args.iter().any(|a| a.starts_with("sandbox_mode")), "Codex's docs say not to set both");
+        let profile = args[1].strip_prefix("default_permissions=\"").and_then(|p| p.strip_suffix('"')).expect("the profile is named first");
+        assert!(args.contains(&format!("permissions.{profile}.extends=\":read-only\"")));
+        assert!(args.contains(&format!("permissions.{profile}.network.enabled=true")));
+        assert_eq!(args.iter().filter(|a| *a == "-c").count(), 3);
+        assert_ne!(codex_sandbox_args(READ_ONLY_NET)[1], args[1], "no config can have rules ready for the next one's name");
+        assert_eq!(codex_sandbox_args("read-only"), ["-c", "sandbox_mode=\"read-only\""]);
+        assert_eq!(codex_windows_sandbox(READ_ONLY_NET), codex_windows_sandbox("read-only"), "it runs in the same sandbox");
+    }
+
+    #[test]
+    fn a_session_is_told_its_id_and_a_helper_its_parent() {
+        assert_eq!(session_envs("c1", None), [("LUNA_SESSION_ID", "c1".to_string())]);
+        assert_eq!(
+            session_envs("c1", Some("p1")),
+            [("LUNA_SESSION_ID", "c1".to_string()), ("LUNA_PARENT_ID", "p1".to_string())]
+        );
+        for k in ["LUNA_SESSION_ID", "LUNA_PARENT_ID"] {
+            assert!(INHERITED_SESSION_VARS.contains(&k), "{k} must not reach a session of another Luna");
+        }
+    }
+
+    #[test]
+    fn a_helper_is_told_by_its_system_prompt_on_claude_and_a_note_on_codex() {
+        let claude = claude_helper_args("p1");
+        assert_eq!(claude[0], "--append-system-prompt");
+        assert!(claude[1].contains("session p1"));
+        let codex = codex_helper_prompt("p1", "Fix the build.");
+        assert!(codex.starts_with("Fix the build.\n\n"), "the opening words name the chat: {codex}");
+        assert!(codex.contains(&claude[1]));
+        assert_eq!(title_from_prompt(&codex).as_deref(), Some("Fix the build."), "the note is no part of its name");
+        for command in ["/review the diff", "  /compact"] {
+            assert_eq!(codex_helper_prompt("p1", command), command, "its arguments are not the place for it");
+        }
+    }
+
+    #[test]
+    fn git_takes_its_backend_after_entries_it_already_has() {
+        let none = |_: usize| None;
+        let added = git_ssl_backend_envs(None, none);
+        assert_eq!(
+            added,
+            [
+                ("GIT_CONFIG_COUNT".to_string(), "1".to_string()),
+                ("GIT_CONFIG_KEY_0".to_string(), "http.sslBackend".to_string()),
+                ("GIT_CONFIG_VALUE_0".to_string(), "openssl".to_string()),
+            ]
+        );
+        let own = |i: usize| (i == 0).then(|| "user.name".to_string());
+        let added = git_ssl_backend_envs(Some("1"), own);
+        assert_eq!(added[0].1, "2");
+        assert_eq!(added[1].0, "GIT_CONFIG_KEY_1", "the one it has stays as it is");
+        let chosen = |i: usize| (i == 1).then(|| "HTTP.sslbackend".to_string());
+        assert!(git_ssl_backend_envs(Some("2"), chosen).is_empty(), "a backend chosen already stays chosen");
+        assert!(git_ssl_backend_envs(Some("many"), none).is_empty(), "a count git refuses is not made worse");
+        assert!(codex_git_envs("read-only").is_empty(), "only where the network is on");
+    }
+
+    #[test]
+    fn nothing_of_a_codex_session_reaches_one_luna_starts() {
+        for k in ["CODEX_SESSION_ID", "CODEX_VERSION", "CODEX_CI", "CODEX_PERMISSION_PROFILE", "CODEX_TOOL_CALL_ID"] {
+            assert!(INHERITED_SESSION_VARS.contains(&k), "{k}");
+        }
+        assert!(!INHERITED_SESSION_VARS.contains(&"CODEX_HOME"), "a person's to set, and Luna sets its own for Codex");
     }
 
     #[test]

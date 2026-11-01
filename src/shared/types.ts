@@ -46,7 +46,9 @@ export type CodexEffort = string;
 /** `auto-review` is Codex's `--approve-for-me`: what it would ask goes to a
  *  reviewer model instead, always in `workspace-write`. */
 export type CodexApproval = 'on-request' | 'never' | 'auto-review';
-export type CodexSandbox = 'read-only' | 'workspace-write' | 'danger-full-access';
+/** `read-only-net` is Luna's own: read-only with the network on, passed to
+ *  Codex as a permission profile (pty.rs). */
+export type CodexSandbox = 'read-only' | 'read-only-net' | 'workspace-write' | 'danger-full-access';
 
 /** What Codex's `config.toml` can say and Luna passes as flags. The model is
  *  a free string — Codex's list moves too fast to enumerate — and null means
@@ -99,6 +101,10 @@ interface ChatBase {
 
 export interface ClaudeChat extends ChatBase, ClaudeSettings {
   provider: 'claude';
+  /** A helper without the edit tools; asked for by the agent that spawned it. */
+  readOnly?: boolean;
+  /** The agent it runs as (`--agent`), likewise. */
+  agent?: string | null;
 }
 
 export interface CodexChat extends ChatBase, CodexSettings {
@@ -230,7 +236,7 @@ export const permFromSetting = (raw: string): PermMode | null => PERM_OF_CLI[raw
 /** The levels shown when the account has no model list cached yet. */
 export const CODEX_EFFORTS: CodexEffort[] = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 export const CODEX_APPROVALS: CodexApproval[] = ['on-request', 'never', 'auto-review'];
-export const CODEX_SANDBOXES: CodexSandbox[] = ['read-only', 'workspace-write', 'danger-full-access'];
+export const CODEX_SANDBOXES: CodexSandbox[] = ['read-only', 'read-only-net', 'workspace-write', 'danger-full-access'];
 /** The one sandbox `auto-review` runs in. */
 export const AUTO_REVIEW_SANDBOX: CodexSandbox = 'workspace-write';
 
@@ -242,6 +248,7 @@ export const CODEX_APPROVAL_HINTS: Record<CodexApproval, string> = {
 
 export const CODEX_SANDBOX_HINTS: Record<CodexSandbox, string> = {
   'read-only': 'commands can only read the disk',
+  'read-only-net': 'commands can only read the disk, with the network on',
   'workspace-write': 'writes inside the folder and temp, nowhere else',
   'danger-full-access': 'no sandbox at all'
 };

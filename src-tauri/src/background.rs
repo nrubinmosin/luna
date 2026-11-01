@@ -53,6 +53,16 @@ pub struct Spec {
     /// Codex: run the project's hooks without their trust, which `exec` has
     /// no way to ask for (codex/hooks.rs).
     pub hooks_unasked: bool,
+    /// Claude: without the edit tools. Codex's sandbox says it there.
+    #[serde(default)]
+    pub read_only: bool,
+    /// Claude: the agent it runs as (`--agent`).
+    #[serde(default)]
+    pub agent: Option<String>,
+    /// The session that started it, for what it is told of itself. Here and
+    /// not looked up: `command_for` runs under this module's lock.
+    #[serde(default)]
+    pub parent: Option<String>,
     /// The bearer token of its MCP config: Luna's tools when `tools`, and
     /// `luna_permission` for every Claude Code helper. Never saved: a core
     /// started later issues its own.
@@ -595,15 +605,25 @@ fn command_for(e: &Entry, id: &str) -> (Vec<String>, String, Vec<(&'static str, 
                 (None, _) if s.worktree => args.push("--worktree".into()),
                 (None, _) => {}
             }
+            if let Some(agent) = &s.agent {
+                args.extend(["--agent".into(), agent.clone()]);
+            }
+            let mut denied: Vec<&str> = if s.read_only { crate::pty::CLAUDE_EDIT_TOOLS.to_vec() } else { Vec::new() };
             if let Some(mcp) = s.token.as_deref().and_then(|t| crate::pty::claude_mcp_file(id, t)) {
                 args.extend(["--mcp-config".into(), mcp.to_string_lossy().into_owned()]);
                 args.extend(["--permission-prompt-tool".into(), "mcp__luna__luna_permission".into()]);
                 // The CLI's to call, not the model's: hidden from its tools,
                 // and the prompts still come through.
-                args.extend(["--disallowedTools".into(), "mcp__luna__luna_permission".into()]);
+                denied.push("mcp__luna__luna_permission");
                 if s.tools {
                     args.extend(["--allowedTools".into(), "mcp__luna".into()]);
                 }
+            }
+            if !denied.is_empty() {
+                args.extend(["--disallowedTools".into(), denied.join(",")]);
+            }
+            if let Some(parent) = &s.parent {
+                args.extend(crate::pty::claude_helper_args(parent));
             }
             // A helper with tools has helpers of its own to hear from: what a
             // notice names is a file there, to read without asking.
@@ -649,7 +669,7 @@ fn command_for(e: &Entry, id: &str) -> (Vec<String>, String, Vec<(&'static str, 
             } else {
                 // `exec` asks nobody: the sandbox is what holds it.
                 args.extend(["-c".into(), "approval_policy=\"never\"".into()]);
-                args.extend(["-c".into(), format!("sandbox_mode=\"{}\"", s.mode)]);
+                args.extend(crate::pty::codex_sandbox_args(&s.mode));
             }
             if let Some(sb) = crate::pty::codex_windows_sandbox(&s.mode) {
                 args.extend(["-c".into(), sb]);
@@ -661,11 +681,13 @@ fn command_for(e: &Entry, id: &str) -> (Vec<String>, String, Vec<(&'static str, 
                 args.extend(crate::pty::codex_mcp_args());
                 envs.push(("LUNA_MCP_TOKEN", token));
             }
+            envs.extend(crate::pty::codex_git_envs(&s.mode));
             envs.push(("CODEX_HOME", s.account_path.clone()));
             // The prompt comes on stdin; Claude Code reads it there unasked.
             args.push("-".into());
         }
     }
+    envs.extend(crate::pty::session_envs(id, s.parent.as_deref()));
     (args, dir, envs)
 }
 
@@ -703,6 +725,18 @@ fn run_turn(id: &str, prompt: &str) -> Result<(), String> {
         changed();
     }
     started
+}
+
+/// What a turn's CLI is given: `prompt`, which on a Codex helper's first turn
+/// carries Luna's note (`pty::codex_helper_prompt`). Here, as whatever starts
+/// that turn is to bring it once: its spawn, a core's second try at one that
+/// never got started, a `luna_send` to such a one. Not on a conversation going
+/// on, and not in `Entry::opening`, which goes back to the caller as what it asked.
+fn stdin_text(e: &Entry, prompt: &str) -> String {
+    match (&e.spec.parent, e.spec.provider, &e.session) {
+        (Some(parent), Provider::Codex, None) => crate::pty::codex_helper_prompt(parent, prompt),
+        _ => prompt.to_string(),
+    }
 }
 
 /// Why a turn claimed before a stop does not run.
@@ -821,7 +855,7 @@ fn turn_base(id: &str) -> Option<Usage> {
 
 fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
     let base = turn_base(id);
-    let (args, dir, envs, provider) = {
+    let (args, dir, envs, provider, on_stdin) = {
         let r = lock();
         if r.closed {
             return Err("Luna is stopping".into());
@@ -831,7 +865,7 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
             return Err(STOPPED.into());
         }
         let (args, dir, envs) = command_for(e, id);
-        (args, dir, envs, e.spec.provider)
+        (args, dir, envs, e.spec.provider, stdin_text(e, prompt))
     };
     if !std::path::Path::new(&dir).is_dir() {
         return Err(format!("{dir} does not exist"));
@@ -912,7 +946,7 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
     let stderr = child.stderr.take();
     // Written whole and closed: the CLI reads its prompt to the end of input.
     if let Some(mut stdin) = stdin {
-        let prompt = prompt.to_string();
+        let prompt = on_stdin;
         let writer_id = id.to_string();
         if let Err(e) = std::thread::Builder::new().spawn(move || {
             let wrote = stdin.write_all(prompt.as_bytes()).is_ok();
@@ -2130,6 +2164,9 @@ pub fn test_helper(id: &str, account_path: &str, session: Option<&str>, busy: bo
             auto_review: false,
             tools: false,
             hooks_unasked: false,
+            read_only: false,
+            agent: None,
+            parent: None,
             token: None,
         },
         started_ms: 0,
@@ -2483,6 +2520,9 @@ mod tests {
                 auto_review: false,
                 tools: false,
                 hooks_unasked: false,
+                read_only: false,
+                agent: None,
+                parent: None,
                 token: None,
             },
             started_ms: 0,
@@ -2874,6 +2914,154 @@ mod tests {
         let at = args.iter().position(|a| a == "--resume").unwrap();
         assert_eq!(args[at + 1], "s-1");
         assert!(envs.iter().any(|(k, v)| *k == "CLAUDE_CONFIG_DIR" && v == "C:\\acc"));
+    }
+
+    fn value_of<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
+        args.iter().position(|a| a == flag).map(|at| args[at + 1].as_str())
+    }
+
+    #[test]
+    fn a_codex_helpers_note_goes_once_on_the_first_turn_whatever_starts_it() {
+        let mut e = entry(Provider::Codex);
+        e.spec.parent = Some("p-1".into());
+        let notes = |text: String| text.matches("A note from Luna").count();
+        assert_eq!(notes(stdin_text(&e, "the prompt")), 1, "the turn that starts its conversation");
+        assert_eq!(stdin_text(&e, "/review"), "/review", "not into a command's arguments");
+        e.session = Some("t-1".into());
+        assert_eq!(stdin_text(&e, "Carry on where you left off."), "Carry on where you left off.", "not on one going on");
+        let mut e = entry(Provider::Claude);
+        e.spec.parent = Some("p-1".into());
+        assert_eq!(stdin_text(&e, "the prompt"), "the prompt", "its system prompt says it there");
+    }
+
+    #[test]
+    fn a_core_after_this_runs_a_helper_as_it_was_spawned() {
+        // Through the file: what `save` writes and `restore` reads.
+        let through_a_core = |mut e: Entry, session: Option<&str>| {
+            e.session = session.map(str::to_owned);
+            let spec: Spec = serde_json::from_slice(&serde_json::to_vec(&e.spec).unwrap()).unwrap();
+            taken_up(Saved {
+                id: "x".into(),
+                spec,
+                started_ms: 0,
+                session: e.session.clone(),
+                cwd: None,
+                turns_ended: 1,
+                running: true,
+                queued: false,
+                queue: Vec::new(),
+                in_flight: Vec::new(),
+                undelivered: Vec::new(),
+                tied: true,
+                opening: Some("the prompt".into()),
+                cut_short: false,
+                observed: Default::default(),
+                ties: Default::default(),
+            })
+        };
+        let mut claude = entry(Provider::Claude);
+        claude.spec.read_only = true;
+        claude.spec.agent = Some("checker".into());
+        claude.spec.parent = Some("p-1".into());
+        let mut codex = entry(Provider::Codex);
+        codex.spec.mode = crate::pty::READ_ONLY_NET.into();
+        codex.spec.parent = Some("p-1".into());
+        // One that goes on and one that never got started alike.
+        for session in [Some("s-1"), None] {
+            let e = through_a_core(entry_like(&claude), session);
+            let (args, _, envs) = command_for(&e, "x");
+            assert_eq!(value_of(&args, "--agent"), Some("checker"));
+            assert_eq!(value_of(&args, "--disallowedTools"), Some("Edit,Write,NotebookEdit"));
+            assert_eq!(value_of(&args, "--resume"), session);
+            assert!(value_of(&args, "--append-system-prompt").unwrap().contains("by session p-1"));
+            assert!(envs.iter().any(|(k, v)| *k == "LUNA_PARENT_ID" && v == "p-1"));
+
+            let e = through_a_core(entry_like(&codex), session);
+            let (args, _, envs) = command_for(&e, "x");
+            assert!(args.iter().any(|a| a.starts_with("default_permissions=\"luna-")), "{args:?}");
+            assert_eq!(args.get(1).map(String::as_str) == Some("resume"), session.is_some());
+            assert!(envs.iter().any(|(k, v)| *k == "LUNA_PARENT_ID" && v == "p-1"));
+            // The caller gets back what it asked, the note going on as that turn starts.
+            if session.is_none() {
+                assert_eq!(e.undelivered, ["the prompt"]);
+                assert_eq!(stdin_text(&e, &e.undelivered[0].text).matches("A note from Luna").count(), 1);
+            }
+        }
+    }
+
+    fn entry_like(e: &Entry) -> Entry {
+        let mut new = entry(e.spec.provider);
+        new.spec = e.spec.clone();
+        new
+    }
+
+    #[test]
+    fn read_only_net_goes_to_codex_as_a_profile_on_every_turn() {
+        let mut e = entry(Provider::Codex);
+        e.spec.mode = crate::pty::READ_ONLY_NET.into();
+        for session in [None, Some("t-1".to_string())] {
+            e.session = session;
+            let (args, _, envs) = command_for(&e, "x");
+            assert!(args.iter().any(|a| a.starts_with("default_permissions=\"luna-")));
+            assert!(args.iter().any(|a| a.ends_with(".network.enabled=true")));
+            assert!(!args.iter().any(|a| a.starts_with("sandbox_mode=")), "Codex's docs say not to set both");
+            assert_eq!(envs.iter().any(|(k, _)| *k == "GIT_CONFIG_COUNT"), cfg!(windows), "git https, which schannel cannot do there");
+            assert!(args.contains(&"approval_policy=\"never\"".to_string()));
+        }
+    }
+
+    #[test]
+    fn read_only_takes_the_edit_tools_away_from_claude() {
+        let mut e = entry(Provider::Claude);
+        let (args, _, _) = command_for(&e, "x");
+        assert_eq!(value_of(&args, "--disallowedTools"), None);
+        e.spec.read_only = true;
+        let (args, _, _) = command_for(&e, "x");
+        assert_eq!(value_of(&args, "--disallowedTools"), Some("Edit,Write,NotebookEdit"));
+        assert_eq!(args.iter().filter(|a| *a == "--disallowedTools").count(), 1);
+    }
+
+    #[test]
+    fn an_agent_is_claude_codes_flag_on_every_turn() {
+        let mut e = entry(Provider::Claude);
+        e.spec.agent = Some("checker".into());
+        let (args, _, _) = command_for(&e, "x");
+        assert_eq!(value_of(&args, "--agent"), Some("checker"));
+        e.session = Some("s-1".into());
+        let (args, _, _) = command_for(&e, "x");
+        assert_eq!(value_of(&args, "--agent"), Some("checker"));
+        assert_eq!(value_of(&args, "--resume"), Some("s-1"));
+    }
+
+    #[test]
+    fn a_helper_knows_it_is_one_on_both_clis() {
+        for provider in [Provider::Claude, Provider::Codex] {
+            let mut e = entry(provider);
+            e.spec.parent = Some("p-1".into());
+            let (args, _, envs) = command_for(&e, "x");
+            assert!(envs.iter().any(|(k, v)| *k == "LUNA_SESSION_ID" && v == "x"));
+            assert!(envs.iter().any(|(k, v)| *k == "LUNA_PARENT_ID" && v == "p-1"));
+            assert!(!args.iter().any(|a| a.contains("developer_instructions")), "that would replace what its config says");
+            if provider == Provider::Claude {
+                assert!(value_of(&args, "--append-system-prompt").unwrap().contains("started through Luna by session p-1"));
+            }
+        }
+        for provider in [Provider::Claude, Provider::Codex] {
+            let (args, _, envs) = command_for(&entry(provider), "x");
+            assert!(envs.iter().any(|(k, v)| *k == "LUNA_SESSION_ID" && v == "x"), "whoever started it");
+            assert!(!envs.iter().any(|(k, _)| *k == "LUNA_PARENT_ID"));
+            assert!(!args.iter().any(|a| a == "--append-system-prompt"));
+        }
+    }
+
+    #[test]
+    fn a_helper_saved_before_these_options_comes_back_without_them() {
+        let spec: Spec = serde_json::from_value(json!({
+            "provider": "claude", "accountPath": "C:\\acc", "folder": "C:\\p", "worktree": false, "model": null,
+            "effort": "low", "mode": "default", "autoReview": false, "tools": false, "hooksUnasked": false,
+        }))
+        .expect("helpers.json from before them still reads");
+        assert!(!spec.read_only && spec.agent.is_none() && spec.parent.is_none());
     }
 
     #[test]

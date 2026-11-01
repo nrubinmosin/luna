@@ -123,8 +123,10 @@ async function spawn(req: AgentSpawnRequest): Promise<void> {
         };
   const inWorktree = req.inWorktree ?? undefined;
   const hooksUnasked = req.hooksUnasked;
+  const readOnly = req.readOnly ?? false;
+  const agent = req.agent ?? null;
   const id = await createChat({
-    ...spec, folder, account, worktree, tools, hooksUnasked, parentId: parent?.id, name, inWorktree, byAgent: true
+    ...spec, folder, account, worktree, tools, hooksUnasked, parentId: parent?.id, name, inWorktree, byAgent: true, readOnly, agent
   });
   const chat = useChats.getState().findChat(id);
   const common = {
@@ -137,7 +139,7 @@ async function spawn(req: AgentSpawnRequest): Promise<void> {
   };
   try {
     if (spec.provider === 'claude') {
-      await ensureClaudeSession({ ...common, ...spec.settings, worktree });
+      await ensureClaudeSession({ ...common, ...spec.settings, worktree, readOnly, agent });
     } else {
       await ensureCodexSession({ ...common, ...spec.settings, hooksUnasked, worktree: worktree && !inWorktree });
     }
@@ -214,7 +216,9 @@ async function promote(p: PromotedDto): Promise<void> {
     parentId: parent?.id,
     name: p.name ?? undefined,
     inWorktree: p.worktreePath ?? undefined,
-    byAgent: true
+    byAgent: true,
+    readOnly: p.settings.readOnly === true,
+    agent: word('agent') || null
   });
   if (p.sessionId) useChats.getState().setSessionId(id, p.sessionId);
   if (parent) useChats.getState().setChildrenOpen(parent.id, true);
