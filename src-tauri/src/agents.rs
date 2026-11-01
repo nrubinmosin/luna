@@ -812,6 +812,18 @@ fn account_name(account_path: &str) -> String {
     std::path::Path::new(account_path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
+/// Whose a session is: the core's record (`pass_up`, kept across cores), and only
+/// with none the window's word, never for an orphan.
+fn parent_by_record(record: Option<&Known>, window_says: Option<&str>) -> Option<String> {
+    let orphan = record.is_some_and(|k| k.orphan);
+    record.and_then(|k| k.parent.clone()).or_else(|| window_says.filter(|_| !orphan).map(str::to_owned))
+}
+
+/// Whom a session the window is starting is to be told it answers to.
+pub fn parent_on_start(id: &str, window_says: Option<String>) -> Option<String> {
+    parent_by_record(reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(id), window_says.as_deref())
+}
+
 /// A session is starting. Returns the bearer token for its MCP config when it
 /// gets tools. Called at every spawn, so a resumed session is re-registered
 /// with the same lineage and a fresh token.
@@ -832,7 +844,7 @@ pub fn register(
     // the window still names the parent it was spawned by.
     let orphan = previous.as_ref().is_some_and(|k| k.orphan);
     let window_says = parent;
-    let parent = previous.as_ref().and_then(|k| k.parent.clone()).or_else(|| parent.filter(|_| !orphan).map(str::to_owned));
+    let parent = parent_by_record(previous.as_ref(), parent);
     // Kept across cores too (`restore_chats`), so a new parent the window never
     // heard of before its core went is said again, and this stays the one record.
     if let (Some(says), Some(is)) = (window_says, &parent) {
@@ -2499,6 +2511,7 @@ fn background_spec(params: &SpawnParams, provider: Provider, account_path: &str,
                 auto_review: false,
                 tools,
                 hooks_unasked: false,
+                parent_moved: false,
                 read_only: params.read_only.unwrap_or(false),
                 agent: params.agent.clone(),
                 parent: None,
@@ -2558,6 +2571,7 @@ fn background_spec(params: &SpawnParams, provider: Provider, account_path: &str,
                 auto_review,
                 tools,
                 hooks_unasked: false,
+                parent_moved: false,
                 read_only: false,
                 agent: None,
                 parent: None,
@@ -4372,7 +4386,7 @@ pub fn forget(id: &str) {
     let spawned = gone.as_ref().is_some_and(|k| k.parent.is_some() || k.orphan);
     let auto = r.auto.remove(id);
     r.known.remove(id);
-    let (handed, passed) = pass_up(&mut r, id, gone.and_then(|k| k.parent));
+    let (handed, passed, moved) = pass_up(&mut r, id, gone.and_then(|k| k.parent));
     r.tokens.retain(|_, chat| chat != id);
     r.seen.retain(|(_, chat), _| chat != id);
     r.owed.retain(|(who, chat), _| who != id && chat != id);
@@ -4401,6 +4415,9 @@ pub fn forget(id: &str) {
     for chat in passed {
         crate::emit::to_ui("agent://reparent", chat);
     }
+    for (helper, parent) in moved {
+        crate::background::set_parent(&helper, parent);
+    }
     if handed {
         crate::background::changed();
     }
@@ -4409,13 +4426,15 @@ pub fn forget(id: &str) {
 }
 
 /// `id`'s helpers pass to `up`, or with no `up` stand alone (see `forget`).
-/// Returns whether it had any, and the visible ones that have a new parent. One
-/// with none keeps the parent it names: its row says it is an orphan by that,
-/// and in a core started later a parent nobody knows reaches it no better.
-fn pass_up(r: &mut Registry, id: &str, up: Option<String>) -> (bool, Vec<Reparented>) {
+/// Returns whether it had any, the visible ones that have a new parent, and the
+/// background ones with who they answer to now. A visible one with none keeps the
+/// parent its row names: its row says it is an orphan by that, and in a core
+/// started later a parent nobody knows reaches it no better.
+fn pass_up(r: &mut Registry, id: &str, up: Option<String>) -> (bool, Vec<Reparented>, Vec<(String, Option<String>)>) {
     let Registry { known, auto, .. } = r;
     let mut handed = false;
     let mut passed = Vec::new();
+    let mut moved = Vec::new();
     for (kid, k) in known.iter_mut().filter(|(_, k)| k.parent.as_deref() == Some(id)) {
         k.parent = up.clone();
         k.orphan = up.is_none();
@@ -4426,9 +4445,12 @@ fn pass_up(r: &mut Registry, id: &str, up: Option<String>) -> (bool, Vec<Reparen
         if let (Some(parent), false) = (&up, background) {
             passed.push(Reparented { id: kid.clone(), parent: parent.clone() });
         }
+        if background {
+            moved.push((kid.clone(), up.clone()));
+        }
         handed = true;
     }
-    (handed, passed)
+    (handed, passed, moved)
 }
 
 // --------------------------------------------------------------- notifier --
@@ -6633,14 +6655,15 @@ mod tests {
         register("rp-mid", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("rp-top"), true, none.clone());
         register("rp-vis", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("rp-mid"), false, none.clone());
         register("rp-bg", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("rp-mid"), false, bg.clone());
-        let (handed, passed) = pass_up(&mut reg().lock().unwrap(), "rp-mid", Some("rp-top".into()));
+        let (handed, passed, moved) = pass_up(&mut reg().lock().unwrap(), "rp-mid", Some("rp-top".into()));
         assert!(handed);
+        assert_eq!(moved, [("rp-bg".to_string(), Some("rp-top".to_string()))], "a background one hears as its next turn starts");
         assert_eq!(passed, [Reparented { id: "rp-vis".into(), parent: "rp-top".into() }], "a background one has no row to tell");
         // As a core started later finds it: the row now names the one it passed to.
         reg().lock().unwrap().known.remove("rp-vis");
         register("rp-vis", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("rp-top"), false, none.clone());
         assert!(authorize("rp-top", "rp-vis").is_ok(), "still within reach");
-        let (_, passed) = pass_up(&mut reg().lock().unwrap(), "rp-top", None);
+        let (_, passed, _) = pass_up(&mut reg().lock().unwrap(), "rp-top", None);
         assert!(passed.is_empty(), "with no one to pass to, the row keeps saying whose it was");
         for id in ["rp-bg", "rp-vis", "rp-mid", "rp-top"] {
             forget(id);
@@ -7228,6 +7251,32 @@ mod tests {
         for id in ["sv-plain", "sv-bg", "sv-child"] {
             forget(id);
         }
+    }
+
+    #[test]
+    fn a_helper_is_told_of_the_parent_it_passes_to_and_a_chat_as_it_starts() {
+        let (account, none) = ("C:\\acc\\anthropic\\one", serde_json::json!({}));
+        let background = serde_json::json!({ "background": true });
+        register("tp-grand", Provider::Claude, "C:\\p", account, None, true, none.clone());
+        register("tp-parent", Provider::Claude, "C:\\p", account, Some("tp-grand"), true, none.clone());
+        register("tp-kid", Provider::Claude, "C:\\p", account, Some("tp-parent"), false, background);
+        crate::background::take_up_for_test("tp-kid", "C:\\p", 1, &[], None);
+        crate::background::set_parent("tp-kid", Some("tp-parent".into()));
+        register("tp-chat", Provider::Claude, "C:\\p", account, Some("tp-parent"), false, none);
+
+        forget("tp-parent");
+        assert_eq!(crate::background::told_parent_for_test("tp-kid").as_deref(), Some("tp-grand"), "a background helper's next turn");
+        // A running chat keeps what it started with; its next start goes by the
+        // record, whatever parent the window last heard of.
+        assert_eq!(parent_on_start("tp-chat", Some("tp-parent".into())).as_deref(), Some("tp-grand"));
+        assert_eq!(parent_on_start("tp-unknown", Some("tp-parent".into())).as_deref(), Some("tp-parent"), "no record: the window's word");
+
+        forget("tp-grand");
+        assert_eq!(crate::background::told_parent_for_test("tp-kid"), None, "nobody left to answer to");
+        assert_eq!(parent_on_start("tp-chat", Some("tp-parent".into())), None, "an orphan, whatever its row still names");
+        crate::background::remove("tp-kid");
+        forget("tp-kid");
+        forget("tp-chat");
     }
 
     #[test]

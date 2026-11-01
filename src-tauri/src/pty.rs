@@ -1263,6 +1263,7 @@ pub async fn ensure_claude_session(
 ) -> Result<String, String> {
     // Built only if no process is running (see `spawn`).
     spawn(id.clone(), move || {
+        let parent = crate::agents::parent_on_start(&id, parent);
         // `--resume` of a session with no transcript fails with "No
         // conversation found" and leaves the pane at a dead CLI: a chat that
         // was opened and never typed into starts afresh instead.
@@ -1399,6 +1400,7 @@ pub async fn ensure_codex_session(
 ) -> Result<String, String> {
     // Built only if no process is running (see `spawn`).
     spawn(id.clone(), move || {
+        let parent = crate::agents::parent_on_start(&id, parent);
         let mut args: Vec<String> = vec![];
         let mut envs = vec![("CODEX_HOME", account_path.clone())];
         let describe;

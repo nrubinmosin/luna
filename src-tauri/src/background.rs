@@ -59,10 +59,15 @@ pub struct Spec {
     /// Claude: the agent it runs as (`--agent`).
     #[serde(default)]
     pub agent: Option<String>,
-    /// The session that started it, for what it is told of itself. Here and
-    /// not looked up: `command_for` runs under this module's lock.
+    /// The session it answers to, for what it is told of itself: who started it
+    /// until that one is deleted (`set_parent`). Here and not looked up:
+    /// `command_for` runs under this module's lock.
     #[serde(default)]
     pub parent: Option<String>,
+    /// Codex: what its conversation was told names a parent since deleted, and
+    /// its next turn is to say who it is now (`stdin_text`).
+    #[serde(default)]
+    pub parent_moved: bool,
     /// The bearer token of its MCP config: Luna's tools when `tools`, and
     /// `luna_permission` for every Claude Code helper. Never saved: a core
     /// started later issues its own.
@@ -730,12 +735,24 @@ fn run_turn(id: &str, prompt: &str) -> Result<(), String> {
 /// What a turn's CLI is given: `prompt`, which on a Codex helper's first turn
 /// carries Luna's note (`pty::codex_helper_prompt`). Here, as whatever starts
 /// that turn is to bring it once: its spawn, a core's second try at one that
-/// never got started, a `luna_send` to such a one. Not on a conversation going
-/// on, and not in `Entry::opening`, which goes back to the caller as what it asked.
+/// never got started, a `luna_send` to such a one. On a conversation going on
+/// only once its parent has changed, as Codex has nowhere else to hear it: Claude
+/// Code's system prompt says it every turn. Not in `Entry::opening`, which goes
+/// back to the caller as what it asked.
 fn stdin_text(e: &Entry, prompt: &str) -> String {
-    match (&e.spec.parent, e.spec.provider, &e.session) {
-        (Some(parent), Provider::Codex, None) => crate::pty::codex_helper_prompt(parent, prompt),
+    match (&e.spec.parent, e.spec.provider) {
+        (Some(parent), Provider::Codex) if e.session.is_none() || e.spec.parent_moved => crate::pty::codex_helper_prompt(parent, prompt),
         _ => prompt.to_string(),
+    }
+}
+
+/// It has passed to another parent, or with none stands alone (agents.rs
+/// `pass_up`): what its next turn is told. One running now has its environment
+/// and system prompt already.
+pub fn set_parent(id: &str, parent: Option<String>) {
+    if let Some(e) = lock().entries.get_mut(id) {
+        e.spec.parent_moved = parent.is_some() && e.spec.provider == Provider::Codex;
+        e.spec.parent = parent;
     }
 }
 
@@ -1007,6 +1024,7 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
                 e.error = None;
                 e.cut_short = false;
                 e.opening = e.session.is_none().then(|| prompt.to_string());
+                e.spec.parent_moved = false;
                 note(e, &format!("› {}", one_line(prompt)));
                 None
             }
@@ -1917,6 +1935,8 @@ pub fn restore() {
     let mut back = Vec::new();
     for mut s in saved {
         let ties = std::mem::take(&mut s.ties);
+        // The agent layer's record of whose it is (`Known::parent`) is the one.
+        s.spec.parent = ties.parent.clone();
         let token = crate::agents::tie_back(&s.id, s.spec.provider, &s.spec.folder, &s.spec.account_path, ties);
         let (id, running) = (s.id.clone(), s.running);
         let mut e = taken_up(s);
@@ -2069,6 +2089,12 @@ pub fn cut_short(id: &str) -> bool {
     lock().entries.get(id).is_some_and(|e| e.cut_short)
 }
 
+/// Whom it is told it answers to, for the tests of its passing to another.
+#[cfg(test)]
+pub fn told_parent_for_test(id: &str) -> Option<String> {
+    lock().entries.get(id)?.spec.parent.clone()
+}
+
 /// Whether a core's going stopped it before any turn named its conversation:
 /// nothing it did can be carried on from.
 pub fn never_started(id: &str) -> bool {
@@ -2172,6 +2198,7 @@ pub fn test_helper(id: &str, account_path: &str, session: Option<&str>, busy: bo
             auto_review: false,
             tools: false,
             hooks_unasked: false,
+            parent_moved: false,
             read_only: false,
             agent: None,
             parent: None,
@@ -2528,6 +2555,7 @@ mod tests {
                 auto_review: false,
                 tools: false,
                 hooks_unasked: false,
+                parent_moved: false,
                 read_only: false,
                 agent: None,
                 parent: None,
@@ -3004,6 +3032,40 @@ mod tests {
     }
 
     #[test]
+    fn a_helper_passed_to_another_parent_is_told_on_its_next_turn() {
+        for provider in [Provider::Claude, Provider::Codex] {
+            let mut e = entry(provider);
+            e.spec.parent = Some("old".into());
+            e.session = Some("s-1".into());
+            lock().entries.insert("moved".into(), e);
+            set_parent("moved", Some("new".into()));
+            let r = lock();
+            let e = &r.entries["moved"];
+            let (args, _, envs) = command_for(e, "moved");
+            assert!(envs.iter().any(|(k, v)| *k == "LUNA_PARENT_ID" && v == "new"), "{provider:?}");
+            let line = stdin_text(e, "go on");
+            match provider {
+                Provider::Claude => {
+                    assert!(value_of(&args, "--append-system-prompt").unwrap().contains("by session new"));
+                    assert_eq!(line, "go on", "its system prompt says it");
+                }
+                Provider::Codex => {
+                    assert!(line.starts_with("go on") && line.contains("by session new"), "{line}");
+                    assert_eq!(line.matches("A note from Luna").count(), 1);
+                }
+            }
+            drop(r);
+            // With nobody to answer to, it is told of nobody.
+            set_parent("moved", None);
+            let e = lock().entries.remove("moved").unwrap();
+            let (args, _, envs) = command_for(&e, "moved");
+            assert!(!envs.iter().any(|(k, _)| *k == "LUNA_PARENT_ID"));
+            assert!(!args.iter().any(|a| a == "--append-system-prompt"));
+            assert_eq!(stdin_text(&e, "go on"), "go on");
+        }
+    }
+
+    #[test]
     fn read_only_net_goes_to_codex_as_a_profile_on_every_turn() {
         let mut e = entry(Provider::Codex);
         e.spec.mode = crate::pty::READ_ONLY_NET.into();
@@ -3069,7 +3131,7 @@ mod tests {
             "effort": "low", "mode": "default", "autoReview": false, "tools": false, "hooksUnasked": false,
         }))
         .expect("helpers.json from before them still reads");
-        assert!(!spec.read_only && spec.agent.is_none() && spec.parent.is_none());
+        assert!(!spec.read_only && spec.agent.is_none() && spec.parent.is_none() && !spec.parent_moved);
     }
 
     #[test]
