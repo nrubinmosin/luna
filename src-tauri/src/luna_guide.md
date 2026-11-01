@@ -12,12 +12,12 @@ can start other sessions and work with them.
   runs), `exited`.
 - A helper is **background** by default: no row, no terminal; each turn is one run of the
   CLI's headless mode (`claude -p --output-format stream-json`, `codex exec --json`) on the
-  helper's account, with the CLI Luna keeps for it, and the next turn resumes its
+  helper's account, and the next turn resumes its
   conversation. The user sees it as a count
   on your chat's row and can open it as a chat between its turns. `visible: true` makes it a
   normal chat row instead, nested under yours, that the user can type into.
 - Window groups are how the user arranges chats.
-- Each `luna_list` row also says, with no need to read the session:
+- Each `luna_list` row also says:
   - `turnStartedAt`: when the turn on now began; null between turns. `lastActivityAt`: the
     last thing Luna saw it do: a background helper's last event, a visible session's last
     transcript write. A long command or think shows nothing until it ends, so a quiet session
@@ -49,7 +49,7 @@ can start other sessions and work with them.
   own allowed models and their own quota. `defaults` in `luna_list` come from the account's
   and the project's settings. A usage window near 100% means a helper there may stop
   on its limit. When an account one of your live helpers runs on reaches 90%, then 95%, of a
-  window, a notice says so, once each until it resets; no need to poll. The numbers are the
+  window, a notice says so, once each until it resets. The numbers are the
   ones Luna's window keeps, so with no window open none come.
 - If the CLI swaps a model the organization does not allow, the spawn reports it in
   `warnings`.
@@ -74,7 +74,7 @@ can start other sessions and work with them.
 - `agent`: an unknown name stops the CLI. Codex refuses it: its roles are for subagents only.
 - `worktree: true` shares no files or git with the sessions in that folder; the result
   names the worktree and branch, or `worktreePending` until the CLI has made it. `sameFolder`
-  in the result lists live sessions working in the same directory.
+  lists live sessions working in the same directory.
 - In the result, for a background helper `started` means its process is up. For a visible
   one, false means it was not seen on the prompt within 30 s, and `screen` shows why: an
   unknown slash command, a login screen, a dialog (then `ask` too).
@@ -88,7 +88,7 @@ can start other sessions and work with them.
   message) first, then the last message, then the rest in order. The notice quotes only the
   report's first line, cut to about 150 characters (`It begins: "…"`), and not of a turn that
   stopped on an error, where it says so and why.
-  The notice is delivered when your chat is between turns and the user is not typing in it.
+  It is delivered when your chat is between turns and the user is not typing in it.
 - "NOT done yet": a job it started still runs, or its own helpers have yet to answer it. Said
   once; the next notice comes when that is over or a turn of its own ends, not one it only ran
   on a Luna notice, unless that was its own helper's last answer.
@@ -112,18 +112,17 @@ can start other sessions and work with them.
 - A `luna_wait` still running when the answer comes hands it over instead of the notice;
   one your CLI moves to the background still returns, with no notice besides. One you
   cancel or interrupt hands nothing over, and the notice comes as usual. A wait on several
-  holds each answer the same way until it returns, and a cancel gives them all back.
+  holds each answer until it returns; a cancel gives them all back.
 - Without `afterTurn`, a wait is for the answer you are still owed, else for a turn past the
   last count you were shown.
-- `luna_read` with `since` and `last` gives the last N after the cursor, and the cursor goes
-  past all of them. `tools: true` is Claude Code only; `screen: true` gives a background
-  helper's last log lines. A read with `last` that is cut keeps the newest, and its cursor is
-  past the older ones too (read those from an earlier `since`). A single message past 60,000
+- `luna_read` with `since` and `last` gives the last N after the cursor, which goes past all
+  of them. `tools: true` is Claude Code only; `screen: true` gives a background helper's last
+  log lines. A read with `last` that is cut keeps the newest (the older: an earlier `since`). A single message past 60,000
   characters is cut short; the transcript `luna_sessions` names has it whole.
 - A read that returns everything a session said since you asked, whole, after it finished,
   collects the answer: no notice follows. One with only the last message of several, or
   from a cursor taken after you asked, does not.
-- Asked again before an answer reached you, you are owed both: the next reply, read or
+- Asked again before an answer reached you, the next reply, read or
   notice covers everything said since the first question.
 - A core restart stops a background helper's turn and what its turns left running (off Windows
   only if it died). You stay owed: once your chat is back (given up after 10 minutes) a notice
@@ -131,11 +130,14 @@ can start other sessions and work with them.
   notice counts it and its file ends on it word for word (`undelivered` in `luna_read`,
   `luna_wait`). Stopped before its first turn got anywhere, it "never got started" and the file
   holds its prompt.
-- `resumeOnRestart` goes on by itself with that text (afresh on its prompt if it never got started)
-  where Luna knows the old turn ended (a normal stop or a core death), else the plain notice; one
-  notice says so, the usual one follows.
+- `resumeOnRestart` goes on by itself with that text (afresh on its prompt if it never got started);
+  one notice says so, the usual one follows. Else the plain notice: a background helper where Luna
+  cannot tell the old turn ended, a visible one whose CLI Luna could not bring back, or that the
+  user or you wrote to first.
 - Visible sessions and chats you wrote to come back when the window starts them, with text held for
   them; the notice comes then, or after a minute saying they have not.
+- A `luna_spawn` a restart cut off errors. Wait for the notice before spawning again: no helper came
+  of it (a file has its prompt; any `worktreeLeft`), or with `resumeOnRestart` it started afresh.
 
 ## Answering and steering
 - A session in state `question` or `waiting` has an `ask`: the questions with their
@@ -146,12 +148,12 @@ can start other sessions and work with them.
   has it as a question too; its options are the only answers it takes. A spawn that did not
   start because of one returns it as `ask`.
 - A background Claude Code helper's questions and permission prompts come to you this way, one
-  at a time. A background Codex helper cannot ask; what it would have asked is in its reply.
+  at a time. A background Codex helper's are in its reply.
 - `luna_send` sent while a session works is `queued`: a visible session's CLI takes it into
   the running turn or the next, a background helper always the next; `luna_wait` with the
   `turnsEnded` returned waits for whichever answers it. `interrupt: true` makes the text the
   next turn, behind any queued (`queued` if that turn would not stop). The result says how
-  it went, so there is no need to `luna_read` to check that the text arrived. Where the user
+  it went. Where the user
   is typing, or has left an unsent draft Luna cannot put aside
   (Claude Code's is put aside and comes back; Codex's cannot be), the result says
   `held: true`: Luna types the text in once they are done, and the answer comes as a

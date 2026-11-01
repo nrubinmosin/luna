@@ -322,7 +322,7 @@ impl PartialEq<&str> for Queued {
 }
 
 /// A batch as one prompt, as the turn gets it.
-fn joined(batch: &[Queued]) -> String {
+pub(crate) fn joined(batch: &[Queued]) -> String {
     batch.iter().map(|q| q.text.as_str()).collect::<Vec<_>>().join("\n\n")
 }
 
@@ -2052,7 +2052,7 @@ fn resume(id: &str) {
 
 /// What a resumed helper is told: why its turn stopped, and what was queued
 /// for it, word for word, as it would have come.
-fn resume_text(queued: &[Queued]) -> String {
+pub(crate) fn resume_text(queued: &[Queued]) -> String {
     let mut text = format!(
         "{} Luna's core restarted and stopped your last turn before it finished. Carry on where you left off.",
         crate::agents::NOTICE_TAG
