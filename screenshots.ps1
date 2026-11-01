@@ -32,7 +32,9 @@ foreach ($f in $faces) {
 }
 if (-not $fontArgs) { Write-Warning 'no Windows fonts found — the shots will fall back to other faces' }
 
-# Single-quoted: the container's shell owns every $ in here.
+# Single-quoted: the container's shell owns every $ in here. No double quotes:
+# Windows PowerShell breaks up a native argument with one in it. With IFS empty
+# nothing past that line is split, so a -Out with a space in it needs none.
 $cmd = @'
 set -e
 fc-cache -f >/dev/null
@@ -42,13 +44,14 @@ for i in $(seq 1 90); do
   curl -sfo /dev/null http://localhost:1420/ && break
   sleep 1
 done
+IFS=
 shoot() {
   chromium --headless=new --no-sandbox --disable-gpu --hide-scrollbars \
-    --window-size="$SHOT_SIZE" --virtual-time-budget=8000 \
-    --screenshot="$SHOT_OUT/$1.png" "http://localhost:1420/?demo=$2"
-  echo "shot $1"
+    --window-size=$SHOT_SIZE --virtual-time-budget=8000 \
+    --screenshot=$SHOT_OUT/$1.png http://localhost:1420/\?demo=$2
+  echo shot $1
 }
-mkdir -p "$SHOT_OUT"
+mkdir -p $SHOT_OUT
 shoot panes main
 shoot new-chat newchat
 shoot dark dark

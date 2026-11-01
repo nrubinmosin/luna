@@ -4,12 +4,9 @@
 //! on a detached HEAD. Luna only finds them again — to remove one with its
 //! chat, or sweep the ones no chat claims — and never makes one itself.
 
+use crate::paths::{path_key as norm, path_key_loose as norm_in_use, KEY_SEP};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-
-fn norm(p: &str) -> String {
-    p.replace('/', "\\").trim_end_matches('\\').to_lowercase()
-}
 
 fn git(folder: &str) -> Command {
     let mut c = Command::new("git");
@@ -41,8 +38,8 @@ fn under_claude_worktrees(folder: &str, candidate: &str) -> bool {
     // `.claude\worktrees-old\x` is no worktree of the folder, and
     // `.claude\worktrees\x\src` only a part of one.
     c.strip_prefix(&base)
-        .and_then(|rest| rest.strip_prefix('\\'))
-        .is_some_and(|name| !name.is_empty() && !name.contains('\\'))
+        .and_then(|rest| rest.strip_prefix(KEY_SEP))
+        .is_some_and(|name| !name.is_empty() && !name.contains(KEY_SEP))
 }
 
 /// Shaped like a worktree Codex made: `…\worktrees\<4 hex>\<repo>`.
@@ -359,9 +356,10 @@ pub async fn orphan_worktrees(
         .map_err(|e| e.to_string())?
 }
 
-/// True when the (normalised) `cwd` is the worktree or anywhere inside it.
+/// True when the `cwd` is the worktree or anywhere inside it, both by
+/// `norm_in_use`: a claim missed leaves the worktree to be deleted under a session.
 fn claims(cwd: &str, worktree: &str) -> bool {
-    cwd == worktree || cwd.strip_prefix(worktree).is_some_and(|rest| rest.starts_with('\\'))
+    cwd == worktree || cwd.strip_prefix(worktree).is_some_and(|rest| rest.starts_with(KEY_SEP))
 }
 
 /// The user's own Claude Code config, for sessions started from a terminal
@@ -380,13 +378,13 @@ fn orphan_worktrees_now(
     account_paths: Vec<String>,
     live_pty_cwds: Vec<String>,
 ) -> Result<Vec<String>, String> {
-    let mut claimed: Vec<String> = in_use.iter().map(|p| norm(p)).collect();
+    let mut claimed: Vec<String> = in_use.iter().map(|p| norm_in_use(p)).collect();
     // Claude Code moves into its worktree on its own; only its registry says
     // where. Where a Codex session moved, its rollout says (`pty::live_cwds`).
     for account in account_paths.iter().cloned().chain(own_claude_dir()) {
-        claimed.extend(crate::claude::session::live_cwds(&account).iter().map(|p| norm(p)));
+        claimed.extend(crate::claude::session::live_cwds(&account).iter().map(|p| norm_in_use(p)));
     }
-    claimed.extend(live_pty_cwds.iter().map(|p| norm(p)));
+    claimed.extend(live_pty_cwds.iter().map(|p| norm_in_use(p)));
 
     let mut out = vec![];
     for path in candidates(&folder, &account_paths) {
@@ -394,7 +392,7 @@ fn orphan_worktrees_now(
             continue;
         }
         let path = path.to_string_lossy().into_owned();
-        let key = norm(&path);
+        let key = norm_in_use(&path);
         // A session sitting in a subfolder of the worktree is still using it.
         if !claimed.iter().any(|c| claims(c, &key)) {
             out.push(path);
@@ -431,10 +429,10 @@ pub fn made_for(folder: &str, account_path: &str) -> Vec<String> {
 /// Those of `now` not in `before` and with no session in them: what a spawn cut
 /// off by a core going had begun (agents.rs `worktrees_left`).
 pub fn left_since(now: Vec<String>, before: &[String], live_cwds: &[String]) -> Vec<String> {
-    let claimed: Vec<String> = live_cwds.iter().map(|p| norm(p)).collect();
+    let claimed: Vec<String> = live_cwds.iter().map(|p| norm_in_use(p)).collect();
     now.into_iter()
-        .filter(|p| !before.iter().any(|b| norm(b) == norm(p)))
-        .filter(|p| !claimed.iter().any(|c| claims(c, &norm(p))))
+        .filter(|p| !before.iter().any(|b| norm_in_use(b) == norm_in_use(p)))
+        .filter(|p| !claimed.iter().any(|c| claims(c, &norm_in_use(p))))
         .collect()
 }
 
@@ -644,6 +642,16 @@ pub async fn remove_orphan_worktrees(
 mod tests {
     use super::*;
 
+    /// A path written `E:\p\x` as this platform has it (`/E/p/x` off Windows),
+    /// for what takes one apart by the platform's own separators.
+    fn native(path: &str) -> String {
+        if cfg!(windows) {
+            path.to_string()
+        } else {
+            format!("/{}", path.replace(':', "").replace('\\', "/"))
+        }
+    }
+
     /// A repository with one linked worktree where Codex puts them, under a
     /// fake account: (root, repo, worktree). None where there is no git.
     fn codex_layout(tag: &str) -> Option<(PathBuf, String, String)> {
@@ -666,10 +674,10 @@ mod tests {
 
     #[test]
     fn what_a_spawn_left_is_what_is_new_with_nobody_in_it() {
-        let now = vec![r"E:\p\.claude\worktrees\old".to_string(), r"E:\p\.claude\worktrees\new".to_string(), r"E:\p\.claude\worktrees\busy".to_string()];
-        let before = ["e:/p/.claude/worktrees/old".to_string()];
-        let live = [r"E:\p\.claude\worktrees\busy\sub".to_string()];
-        assert_eq!(left_since(now, &before, &live), [r"E:\p\.claude\worktrees\new"]);
+        let now = vec![native(r"E:\p\.claude\worktrees\old"), native(r"E:\p\.claude\worktrees\new"), native(r"E:\p\.claude\worktrees\busy")];
+        let before = [native(r"E:\p\.claude\worktrees\old")];
+        let live = [native(r"E:\p\.claude\worktrees\busy\sub")];
+        assert_eq!(left_since(now, &before, &live), [native(r"E:\p\.claude\worktrees\new")]);
     }
 
     #[test]
@@ -683,8 +691,8 @@ mod tests {
 
     #[test]
     fn a_worktree_path_names_its_project() {
-        assert_eq!(project_of("E:/p/x/.claude/worktrees/a-b-c").as_deref(), Some(r"E:\p\x"));
-        assert_eq!(project_of(r"E:\p\x"), None);
+        assert_eq!(project_of(&native("E:/p/x/.claude/worktrees/a-b-c")), Some(native(r"E:\p\x")));
+        assert_eq!(project_of(&native(r"E:\p\x")), None);
         let Some((root, repo, wt)) = codex_layout("project") else { return };
         assert_eq!(project_of(&wt).map(|p| norm(&p)), Some(norm(&repo)));
         assert!(is_worktree_of(&repo, &wt));
@@ -789,39 +797,64 @@ mod tests {
 
     #[test]
     fn codex_worktrees_have_a_shape() {
-        assert!(codex_shaped(r"E:\acc\worktrees\d6ff\repo"));
+        assert!(codex_shaped(&native(r"E:\acc\worktrees\d6ff\repo")));
         assert!(codex_shaped("/home/u/.codex/worktrees/0a1B/app/"));
-        assert!(!codex_shaped(r"E:\acc\worktrees\d6ff"));
-        assert!(!codex_shaped(r"E:\acc\worktrees\codex-1\repo"));
-        assert!(!codex_shaped(r"E:\p\.codex\worktrees\codex-1a2b3c"));
+        assert!(!codex_shaped(&native(r"E:\acc\worktrees\d6ff")));
+        assert!(!codex_shaped(&native(r"E:\acc\worktrees\codex-1\repo")));
+        assert!(!codex_shaped(&native(r"E:\p\.codex\worktrees\codex-1a2b3c")));
     }
 
     #[test]
     fn claude_worktree_membership() {
-        assert!(is_worktree_of(r"E:\p", r"E:\p\.claude\worktrees\x"));
-        assert!(is_worktree_of(r"E:\p", "e:/p/.claude/worktrees/x"));
-        assert!(!is_worktree_of(r"E:\p", r"E:\p\.claude\worktrees"));
-        assert!(!is_worktree_of(r"E:\p", r"E:\q\.claude\worktrees\x"));
-        assert!(!is_worktree_of(r"E:\p", r"E:\p\.codex\worktrees\codex-abc"));
-        assert!(!is_worktree_of(r"E:\p", r"E:\p\.claude\worktrees\..\.."), "leads back to the folder");
-        assert!(!is_worktree_of(r"E:\p", r"E:\p\.claude\worktrees\x\..\..\.."));
-        assert!(!is_worktree_of(r"E:\p", r"E:\p\.claude\worktrees\.\x"));
-        assert!(!is_worktree_of(r"E:\p", r"E:\p\.claude\worktrees-old\x"));
-        assert!(!is_worktree_of(r"E:\p", r"E:\p\.claude\worktrees\x\src"), "a part of one");
+        let of = |candidate: &str| is_worktree_of(&native(r"E:\p"), &native(candidate));
+        assert!(of(r"E:\p\.claude\worktrees\x"));
+        assert!(!of(r"E:\p\.claude\worktrees"));
+        assert!(!of(r"E:\q\.claude\worktrees\x"));
+        assert!(!of(r"E:\p\.codex\worktrees\codex-abc"));
+        assert!(!of(r"E:\p\.claude\worktrees\..\.."), "leads back to the folder");
+        assert!(!of(r"E:\p\.claude\worktrees\x\..\..\.."));
+        assert!(!of(r"E:\p\.claude\worktrees\.\x"));
+        assert!(!of(r"E:\p\.claude\worktrees-old\x"));
+        assert!(!of(r"E:\p\.claude\worktrees\x\src"), "a part of one");
+        // Another spelling of it, on the one system where it certainly is one.
+        assert_eq!(is_worktree_of(r"E:\p", "e:/p/.claude/worktrees/x"), cfg!(windows));
+    }
+
+    #[test]
+    fn a_folder_that_differs_by_case_is_another_folders_before_anything_is_deleted() {
+        // The guard: only Windows is sure of it. On macOS that volume may be
+        // case-sensitive, and the worse mistake is deleting another's worktree.
+        let wt = native(r"E:\p\.claude\worktrees\x");
+        assert_eq!(is_worktree_of(&native(r"E:\P"), &wt), cfg!(windows));
+        assert_eq!(is_worktree_of(&native(r"E:\p"), &native(r"E:\p\.CLAUDE\worktrees\x")), cfg!(windows));
+        let Some((root, repo, wt)) = codex_layout("case") else { return };
+        assert!(is_worktree_of(&repo, &wt));
+        assert_eq!(is_worktree_of(&repo.to_uppercase(), &wt), cfg!(windows), "by what its checkout points back at");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_session_in_a_folder_that_differs_by_case_keeps_a_worktree_where_that_may_be_one_folder() {
+        // The other way about: what is missed here is deleted with a session in it.
+        let may_be_one = cfg!(any(windows, target_os = "macos"));
+        let (wt, shouted) = (native(r"E:\p\.claude\worktrees\a"), native(r"E:\P\.claude\worktrees\A"));
+        assert_eq!(left_since(vec![wt.clone()], &[], std::slice::from_ref(&shouted)).is_empty(), may_be_one, "a session in it");
+        assert_eq!(left_since(vec![wt.clone()], std::slice::from_ref(&shouted), &[]).is_empty(), may_be_one, "there before");
     }
 
     #[test]
     fn a_session_in_a_subfolder_claims_the_worktree() {
-        let wt = norm(r"E:\p\.claude\worktrees\a");
-        assert!(claims(&norm(r"e:/p/.claude/worktrees/a"), &wt));
-        assert!(claims(&norm(r"E:\p\.claude\worktrees\a\src"), &wt));
-        assert!(!claims(&norm(r"E:\p\.claude\worktrees\ab"), &wt));
-        assert!(!claims(&norm(r"E:\p"), &wt));
+        let wt = norm_in_use(&native(r"E:\p\.claude\worktrees\a"));
+        assert!(claims(&wt, &wt));
+        assert!(claims(&norm_in_use(&native(r"E:\p\.claude\worktrees\a\src")), &wt));
+        assert!(!claims(&norm_in_use(&native(r"E:\p\.claude\worktrees\ab")), &wt));
+        assert!(!claims(&norm_in_use(&native(r"E:\p")), &wt));
+        assert_eq!(claims(&norm_in_use("e:/p/.claude/worktrees/a"), &norm_in_use(r"E:\p\.claude\worktrees\a")), cfg!(windows));
     }
 
     #[test]
     fn a_worktree_names_the_branch_it_was_made_on() {
-        assert_eq!(made_branch(r"E:\p\.claude\worktrees\merry-coalescing-cosmos").as_deref(), Some("worktree-merry-coalescing-cosmos"));
-        assert_eq!(made_branch(r"E:\acc\worktrees\d6ff\repo"), None);
+        assert_eq!(made_branch(&native(r"E:\p\.claude\worktrees\merry-coalescing-cosmos")).as_deref(), Some("worktree-merry-coalescing-cosmos"));
+        assert_eq!(made_branch(&native(r"E:\acc\worktrees\d6ff\repo")), None);
     }
 }

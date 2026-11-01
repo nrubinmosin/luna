@@ -13,7 +13,7 @@
 import type { Terminal as XTerm } from '@xterm/xterm';
 import type { Account, Chat, ClaudeChat, CodexChat, Folder, Provider } from '../shared/types';
 import type {
-  AccountsRootInfo, BackgroundHelperDto, WorktreeInfoDto, ClaudeDefaultsDto, CliStatusDto, CodexDefaultsDto, CodexModelDto, PowerStateDto,
+  AccountsRootInfo, BackgroundHelperDto, WorktreeInfoDto, ClaudeDefaultsDto, CliStatusDto, CodexDefaultsDto, CodexModelDto, CoreStateDto, PowerStateDto,
   FileDiffDto, LibraryOverviewDto, PlaceDto
 } from '../ipc/commands';
 import { useLibrary } from '../features/library/library.store';
@@ -453,8 +453,17 @@ const LIBRARY_DIFF: FileDiffDto[] = [
   }
 ];
 
+// A browser has no core to ask, and no answer reads as one that stopped: the
+// banner saying so would be across the top of every shot.
+const CORE: CoreStateDto = {
+  state: 'up',
+  core: { pid: 1, version: '0.6.0', build: 'demo', fingerprint: 'demo', started: 0, sessions: 4 },
+  error: null
+};
+
 export function answer<T>(cmd: string, args: Record<string, unknown>, fallback: T): T {
   if (!seeded) return fallback;
+  if (cmd === 'core_state') return CORE as unknown as T;
   if (cmd === 'library_overview' || cmd === 'library_sync') return LIBRARY as unknown as T;
   if (cmd === 'library_diff') return LIBRARY_DIFF as unknown as T;
   if (cmd === 'orphan_worktrees') return (STALE[args.folder as string] ?? []).map(w => w.path) as unknown as T;

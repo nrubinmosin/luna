@@ -563,9 +563,14 @@ fixture is also the only way to retake all three shots from the same state.
 ## Checking the Rust side without a local toolchain (Docker)
 
 ```powershell
-docker run --rm -v "${PWD}:/app" -w /app/src-tauri rust:1-bookworm bash -c `
-  "apt-get update -qq && apt-get install -y -qq libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev pkg-config build-essential libxdo-dev >/dev/null && cargo check"
+./linux-check.ps1
 ```
+
+Builds the crate for Linux and runs its whole unit test suite there: the Unix code
+(`keeper.rs`, parts of `procs.rs` and `pty.rs`) that `./test-build.ps1 -Test`, with its
+Windows binaries, never compiles. The checkout goes in read-only, and the caches (the cargo
+registry, the Linux target) live in named volumes of its own. Runs under `pwsh` on any host
+with Docker.
 
 ## Windows build through Docker
 
