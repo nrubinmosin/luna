@@ -908,11 +908,13 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
     // A group of its own, as a pty gives its CLI: what kills a turn
-    // (`pty::kill_tree`) takes the group whose id is the CLI's pid.
+    // (`pty::kill_tree`) takes the group whose id is the CLI's pid. The mark
+    // goes with what leaves that group (keeper.rs).
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
         cmd.process_group(0);
+        cmd.env(crate::keeper::MARK, crate::keeper::mark_of(id));
     }
     let thread_err = |e: std::io::Error| format!("could not start {}: {e}", provider.as_str());
     // The thread that sees the turn out is there before the process: one
@@ -961,7 +963,7 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
                 }
                 None => {
                     e.job = crate::procs::adopt(pid).map(std::sync::Arc::new);
-                    e.tied = e.job.as_deref().is_some_and(|job| crate::procs::tie(job));
+                    e.tied = e.job.as_deref().is_some_and(|job| crate::procs::tie(job, id));
                 }
             }
         }
@@ -1933,7 +1935,9 @@ pub fn restore() {
         Err(_) => Vec::new(),
     };
     let mut back = Vec::new();
+    let job_over = crate::procs::end_last_ties();
     for mut s in saved {
+        s.tied = s.tied && job_over(&s.id);
         let ties = std::mem::take(&mut s.ties);
         // The agent layer's record of whose it is (`Known::parent`) is the one.
         s.spec.parent = ties.parent.clone();
@@ -2047,7 +2051,7 @@ fn resume_text(queued: &[Queued]) -> String {
 /// for its sender.
 fn taken_up(s: Saved) -> Entry {
     let stopped = s.running || s.cut_short;
-    // A turn no core stopped ended only if the OS saw to it (`Entry::tied`).
+    // A turn no core stopped ended only if its tie saw to it (`Entry::tied`).
     let resumable = !s.running || s.cut_short || s.tied;
     let first: Vec<Queued> = s.opening.filter(|_| stopped && s.session.is_none()).map(|text| Queued { from: None, text }).into_iter().collect();
     let undelivered = [first, s.undelivered, s.in_flight, s.queue].concat();
