@@ -14,6 +14,8 @@ mod coreproc;
 mod emit;
 mod hub;
 mod ipc;
+#[cfg(unix)]
+mod keeper;
 mod library;
 mod lifecycle;
 mod log;
@@ -110,9 +112,10 @@ fn with_dot(base: &tauri::image::Image<'_>) -> tauri::image::Image<'static> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // The exit watcher and the core are this same exe; neither may become a
-    // second Luna window.
+    // The exit watcher, the keeper and the core are this same exe; none may
+    // become a second Luna window.
     if lifecycle::watch_from_args()
+        || procs::keeper_from_args()
         || coreproc::from_args()
         || coreproc::fingerprint_from_args()
         || coreproc::stop_from_args()
