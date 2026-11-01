@@ -19,6 +19,22 @@ can start other sessions and work with them.
 - `luna_list` covers what you spawned (and what they spawned); `luna_sessions` covers every
   session in Luna, the user's chats included, with its window group (I = 1). Window groups
   are how the user arranges chats; `group: "mine"` is yours.
+- Each `luna_list` row also says, with no need to read the session:
+  - `turnStartedAt`: when the turn on now began; null between turns. `lastActivityAt`: the
+    last thing it did that Luna saw: a background helper's last event, a visible session's
+    last transcript write. A long command or a long think shows nothing until it ends, so a
+    quiet session is not yet a stuck one. Times are UTC ISO.
+  - `resolvedModel`: the full model id the CLI used, after its first turn. Codex's events
+    name none: it is the model its rollout says the turn ran on, normally the one asked for,
+    or the `<to>` of a `model rerouted` message for that turn.
+  - `spend`: `session` (so far) and `lastTurn`, each `input` (no cache), `output`, `cacheRead`,
+    `cacheWrite`, and `costUsd`: Claude Code's estimate at the rates it knows, not a bill;
+    Codex states no cost, so it has none. Spend is kept with a background helper across
+    core restarts. A turn killed before it ended is counted too: Codex's from its rollout,
+    Claude Code's from the messages it had shown, tokens only, its cost unknown. `lastTurn`
+    is left out when it cannot be told. Visible
+    sessions: Codex gives `session` only; Claude Code gives none, since its transcript cannot
+    be summed cheaply and reliably, and a helper opened as a chat stops being counted.
 - You kill and delete only sessions you spawned and theirs. Any other session you can read,
   wait on and send text to.
 - At most eight helpers under one chat. A helper given `tools: true` gets these tools too,
@@ -36,7 +52,9 @@ can start other sessions and work with them.
   `defaults` a helper there gets in your folder (model, effort, permission mode or
   approval/sandbox, read from the account's and the project's settings) and `usage`: percent
   used per window and when each resets. A window near 100% means a helper there may stop
-  on its limit.
+  on its limit. When an account one of your live helpers runs on reaches 90%, then 95%, of a
+  window, a notice says so, once each until that window resets; no need to poll `luna_list`
+  for it. The numbers are the ones Luna's window keeps, so with no window open none come.
 - `model` takes one of the ids `luna_list` names for that account; Claude Code also takes a
   full model id. Leave a setting out to get the account's default.
 - If the CLI swaps a model the organization does not allow, the spawn reports it in
@@ -74,7 +92,8 @@ can start other sessions and work with them.
   something, stops on a prompt or exits, Luna types one line into your chat starting with
   `[Luna notice, not typed by the user]`. It says what happened and how many messages the
   session wrote since it was asked, and names a file holding them: the report (the longest
-  message) first, then the last message, then the rest in order. The notice quotes none of it.
+  message) first, then the last message, then the rest in order. The notice quotes only the
+  report's first line, cut to about 150 characters (`It begins: "…"`).
   The notice is delivered when your chat is between turns and the user is not typing in it.
 - `luna_wait` blocks until a session ends a turn, stops on a question or permission
   (`until: "waiting"`), or exits (`until: "exit"`); up to 30 min (`timeoutS`, default 600).
@@ -84,9 +103,17 @@ can start other sessions and work with them.
   it; it is null when the turn ended on an error, and `screen` shows it. A background
   helper does not exit between turns:
   `until: "exit"` returns once it is deleted.
+- `luna_wait` with `ids: [..]` instead of `id` waits on several: `mode: "any"` (default) until
+  the first gets there, `"all"` until every one has or the time is up. It returns `outcome`
+  (`finished` or `timeout`), `finished` (the ids that got there) and `results`, one per id in
+  the shape a single wait returns, with `id`. Under `any` the others come back `pending`, or
+  `timeout` when time ran out, and are still owed. Their replies share one result: past
+  60,000 characters in all the longest are cut, and each names a file with the whole. No
+  `afterTurn` here: each waits as a wait with none does.
 - A `luna_wait` still running when the answer comes hands it over instead of the notice;
   one your CLI moves to the background still returns, with no notice besides. One you
-  cancel or interrupt hands nothing over, and the notice comes as usual.
+  cancel or interrupt hands nothing over, and the notice comes as usual. A wait on several
+  holds each answer the same way until it returns, and a cancel gives them all back.
 - Turns are counted: results carry `turnsEnded`; pass it to `luna_wait` as `afterTurn` to
   wait for a turn after that one. Without it, a wait is for the answer you are still owed,
   else for a turn past the last count you were shown.
