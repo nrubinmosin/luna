@@ -298,7 +298,11 @@ src-tauri/src/
   only finds them again — to remove one with its chat, or sweep the ones no chat claims. Claude Code's
   live under `<folder>/.claude/worktrees` on a `worktree-*` branch; Codex's are recognised by shape
   `…/worktrees/<4 hex>/<name>` plus a `.git` file (`gitdir: <repo>/.git/worktrees/<id>`) pointing back at
-  the folder (`worktree::is_worktree_of`, `project_of`); every destructive path is gated on this. The
+  the folder (`worktree::is_worktree_of`, `project_of`); every destructive path is gated on this. `project_of` goes by that
+  `.git` file for Claude Code's too, its path's shape saying only where to look: a folder under a worktree is of it if no
+  repository of its own lies on the way down and git does not ignore it (`in_checkout`), so a test project in a worktree's
+  `test-build` is no worktree of the main checkout, and a helper sent there makes its worktree where it was sent. One gone
+  from disk goes by where it was, as Claude Code removes a clean one on exit and makes it again by name. The
   orphan sweep (the title bar's Worktrees window, every folder at once) scans each account's `worktrees/` as well as the project's. Removing a Codex worktree also
   removes its bucket dir once empty; only `worktree-*` branches are ever deleted (Codex's checkouts have
   none). Where a session actually works is `pty::ActivityProbe::working_dir()` (Claude registry / Codex

@@ -64,9 +64,10 @@ fn repo_of_linked(worktree: &str) -> Option<String> {
     let text = std::fs::read_to_string(Path::new(worktree).join(".git")).ok()?;
     let gitdir = PathBuf::from(text.trim().strip_prefix("gitdir:")?.trim());
     let gitdir = if gitdir.is_absolute() { gitdir } else { Path::new(worktree).join(gitdir) };
-    // <repo>/.git/worktrees/<id> → <repo>
-    let dot_git = gitdir.parent()?.parent()?;
-    if dot_git.file_name()? != ".git" {
+    // <repo>/.git/worktrees/<id> → <repo>. A submodule's points at `.git/modules`.
+    let worktrees = gitdir.parent()?;
+    let dot_git = worktrees.parent()?;
+    if worktrees.file_name()? != "worktrees" || dot_git.file_name()? != ".git" {
         return None;
     }
     dot_git.parent().map(|r| r.to_string_lossy().into_owned())
@@ -82,18 +83,70 @@ pub fn is_worktree_of(folder: &str, candidate: &str) -> bool {
             && repo_of_linked(candidate).is_some_and(|r| norm(&r) == norm(folder)))
 }
 
-/// The project folder a CLI-made worktree belongs to: for Claude Code the part
-/// of the path before `.claude\worktrees`, for Codex the repository its
-/// checkout points back at.
+/// The project folder a CLI-made worktree belongs to, given that worktree or a
+/// folder of its checkout: for Claude Code the part of the path before
+/// `.claude\worktrees`, for Codex the repository its checkout points back at. The
+/// shape of a path only says where to look: its `.git` file says whether that is a
+/// worktree of the repository. Taken by shape alone, any folder under a worktree (a
+/// test project in its `test-build`) read as the main checkout, and a helper sent there
+/// with a worktree of its own made it in that checkout. One read of a file, and git
+/// only for a folder below a worktree's root, which nothing asks after on a beat.
 pub fn project_of(path: &str) -> Option<String> {
+    const MARK: &str = "\\.claude\\worktrees\\";
     // Found in a backslashed copy, cut from one that keeps the platform's own
     // separators: `/home/u/p` must not come back as `\home\u\p`. Both have the
     // same byte offsets.
     let p = if cfg!(windows) { path.replace('/', "\\") } else { path.to_string() };
-    if let Some(at) = p.replace('/', "\\").to_ascii_lowercase().find("\\.claude\\worktrees\\").filter(|&at| at > 0) {
-        return Some(p[..at].to_string());
+    let low = p.replace('/', "\\").to_ascii_lowercase();
+    let marks: Vec<usize> = low.match_indices(MARK).map(|(at, _)| at).filter(|&at| at > 0).collect();
+    // The innermost first: a project can lie inside a worktree of another.
+    for &at in marks.iter().rev() {
+        let project = &p[..at];
+        let below = &p[at + MARK.len()..];
+        let name = below.find(['\\', '/']).unwrap_or(below.len());
+        if name == 0 {
+            continue;
+        }
+        let root = &p[..at + MARK.len() + name];
+        if !Path::new(root).exists() {
+            // Gone: Claude Code removes a clean one as its session quits, and makes
+            // it again by name. Where it was is all there is to go by, in a repository
+            // or somewhere itself gone.
+            if !Path::new(project).exists() || Path::new(project).join(".git").exists() {
+                return Some(project.to_string());
+            }
+            continue;
+        }
+        let Some(repo) = repo_of_linked(root).filter(|r| Path::new(r).is_dir()) else { continue };
+        if !in_checkout(root, below[name..].trim_matches(['\\', '/'])) {
+            break;
+        }
+        return Some(if same_place(&repo, project) { project.to_string() } else { repo });
     }
     codex_shaped(path).then(|| repo_of_linked(path)).flatten()
+}
+
+/// Whether a folder below a worktree's root (`rest`, empty for the root) is part of
+/// its checkout: no repository of its own on the way down, and nothing git ignores,
+/// as build output and test folders are.
+fn in_checkout(root: &str, rest: &str) -> bool {
+    if rest.is_empty() {
+        return true;
+    }
+    let mut dir = PathBuf::from(root);
+    for part in rest.split(['\\', '/']).filter(|c| !c.is_empty()) {
+        dir.push(part);
+        if dir.join(".git").exists() {
+            return false;
+        }
+    }
+    // 0: ignored, 1: not. Anything else says nothing, and it goes as its root does.
+    !git(root).args(["check-ignore", "-q", "--", &rest.replace('\\', "/")]).output().is_ok_and(|o| o.status.code() == Some(0))
+}
+
+/// Whether two paths lead to one folder, however each is written.
+fn same_place(a: &str, b: &str) -> bool {
+    norm(a) == norm(b) || matches!((std::fs::canonicalize(a), std::fs::canonicalize(b)), (Ok(x), Ok(y)) if x == y)
 }
 
 /// Branch checked out in the given worktree, per `git worktree list`.
@@ -761,6 +814,88 @@ mod tests {
         assert_eq!(candidates(&repo, &[account]).len(), 1);
         remove_worktree_now(repo.clone(), wt.clone()).unwrap();
         assert!(!root.join("account").join("worktrees").join("0a1b").exists(), "the bucket goes too");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_folder_is_of_a_worktree_only_if_git_says_so_whatever_its_path_looks_like() {
+        let root = std::env::temp_dir().join(format!("luna-wt-of-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let repo = root.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let s = |p: &Path| p.to_string_lossy().into_owned();
+        let ok = |dir: &Path, args: &[&str]| git(&s(dir)).args(["-c", "user.email=t@t", "-c", "user.name=t"]).args(args).output().is_ok_and(|o| o.status.success());
+        if !ok(&repo, &["init", "-q"]) {
+            return;
+        }
+        std::fs::write(repo.join(".gitignore"), "test-build/\n").unwrap();
+        assert!(ok(&repo, &["add", "-A"]) && ok(&repo, &["commit", "-q", "-m", "i"]));
+        let of = |p: &Path| project_of(&s(p)).map(|found| norm(&found));
+        let is_repo = Some(norm(&s(&repo)));
+        let worktrees = repo.join(".claude").join("worktrees");
+
+        // A real one, and a folder of its checkout, tracked or not, there yet or not.
+        let wt = worktrees.join("real");
+        assert!(ok(&repo, &["worktree", "add", "-q", "-b", "worktree-real", &s(&wt)]));
+        assert_eq!(of(&wt), is_repo);
+        std::fs::create_dir_all(wt.join("src")).unwrap();
+        assert_eq!(of(&wt.join("src")), is_repo);
+        assert_eq!(of(&wt.join("src").join("not-yet")), is_repo);
+
+        // What its git ignores is no part of it: the test folder this is about.
+        let plain = wt.join("test-build").join("harness").join("plain");
+        std::fs::create_dir_all(&plain).unwrap();
+        assert_eq!(of(&plain), None, "a plain folder under <wt>\\test-build");
+        assert_eq!(of(&wt.join("test-build")), None);
+
+        // A repository of its own there, and what that one's CLIs make, are its own.
+        let own = wt.join("test-build").join("own");
+        std::fs::create_dir_all(&own).unwrap();
+        assert!(ok(&own, &["init", "-q"]) && ok(&own, &["commit", "-q", "--allow-empty", "-m", "i"]));
+        assert_eq!(of(&own), None);
+        std::fs::create_dir_all(own.join("deep")).unwrap();
+        assert_eq!(of(&own.join("deep")), None);
+        let own_wt = own.join(".claude").join("worktrees").join("its");
+        assert!(ok(&own, &["worktree", "add", "-q", "-b", "worktree-its", &s(&own_wt)]));
+        assert_eq!(of(&own_wt), Some(norm(&s(&own))));
+        let codex = wt.join("test-build").join("account").join("worktrees").join("0a1b").join("own");
+        std::fs::create_dir_all(codex.parent().unwrap()).unwrap();
+        assert!(ok(&own, &["worktree", "add", "-q", "--detach", &s(&codex)]));
+        assert_eq!(of(&codex), Some(norm(&s(&own))), "Codex's, in an account under a worktree");
+
+        // A worktree made from inside a worktree is of the repository.
+        let nested = wt.join(".claude").join("worktrees").join("nested");
+        assert!(ok(&wt, &["worktree", "add", "-q", "-b", "worktree-nested", &s(&nested)]));
+        assert_eq!(of(&nested), is_repo);
+
+        // In the right place and no worktree: a plain folder, a clone of its own, a
+        // submodule's `.git` file, one that points at another repository's.
+        let bare = worktrees.join("plain");
+        std::fs::create_dir_all(&bare).unwrap();
+        assert_eq!(of(&bare), None);
+        let clone = worktrees.join("clone");
+        std::fs::create_dir_all(&clone).unwrap();
+        assert!(ok(&clone, &["init", "-q"]));
+        assert_eq!(of(&clone), None);
+        let sub = worktrees.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join(".git"), format!("gitdir: {}", s(&repo.join(".git").join("modules").join("sub")))).unwrap();
+        assert_eq!(of(&sub), None);
+        let moved = worktrees.join("moved");
+        std::fs::create_dir_all(&moved).unwrap();
+        std::fs::write(moved.join(".git"), format!("gitdir: {}", s(&root.join("gone").join(".git").join("worktrees").join("moved")))).unwrap();
+        assert_eq!(of(&moved), None, "its repository is not there");
+
+        // Gone, as Claude Code leaves a clean one: where it was is all there is, in a
+        // repository; in a folder that is none, nothing says it ever was one.
+        assert_eq!(of(&worktrees.join("gone")), is_repo);
+        assert_eq!(of(&worktrees.join("gone").join("src")), is_repo);
+        let folder = root.join("no-repo");
+        std::fs::create_dir_all(folder.join(".claude").join("worktrees").join("there")).unwrap();
+        assert_eq!(of(&folder.join(".claude").join("worktrees").join("gone")), None);
+        assert_eq!(of(&folder.join(".claude").join("worktrees").join("there")), None);
+        assert_eq!(of(&worktrees), None, "the folder that holds them");
+
         let _ = std::fs::remove_dir_all(&root);
     }
 
