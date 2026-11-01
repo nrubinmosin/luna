@@ -1172,8 +1172,9 @@ pub async fn ensure_claude_session(
             args.push(mcp.to_string_lossy().into_owned());
         }
         // A long prompt or message from its agent comes as a file there
-        // (agents.rs `spill`), to read without asking.
-        if parent.is_some() {
+        // (agents.rs `spill`), and so does a helper's answer named in a
+        // notice, to read without asking.
+        if parent.is_some() || tools {
             let notes = crate::agents::notes_dir();
             if std::fs::create_dir_all(&notes).is_ok() {
                 args.push("--add-dir".into());
