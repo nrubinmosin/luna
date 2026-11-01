@@ -419,7 +419,11 @@ src-tauri/src/
   note after its opening prompt, since `-c developer_instructions=` replaces that key and its value comes
   from a stack of config files Luna would have to resolve as Codex does (ancestors' `.codex` included) and
   could then overrun a command line. Slash-command prompts go without; compaction can lose it. Every
-  session has `LUNA_SESSION_ID` in its environment, a helper `LUNA_PARENT_ID` too.
+  session has `LUNA_SESSION_ID` in its environment, a helper `LUNA_PARENT_ID` too. A helper that passes to
+  another parent (`pass_up`) is told as it next starts: a background one's next turn takes both from
+  `Spec::parent`, a Codex one with the note once more as its conversation has nowhere else to hear it; a
+  chat's next start goes by the core's record (`parent_on_start`), as a running process keeps what it has.
+  One left with no parent is told of none.
   The core does not know chats, so a spawn is a round trip: `agent://spawn` to the frontend, which makes the chat
   (`parentId`, not seated in a pane) and `ensure_*` with the prompt as the CLI's positional argument after
   `--` (Claude Code's `--mcp-config` takes any number of files and swallowed the prompt as one more),
