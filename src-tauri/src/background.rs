@@ -192,6 +192,9 @@ struct Observed {
     /// When it last printed anything.
     #[serde(skip)]
     event_ms: u64,
+    /// Codex has said this turn runs on another model than it asked for.
+    #[serde(skip)]
+    rerouted: bool,
 }
 
 struct Run {
@@ -772,14 +775,28 @@ fn claude_spend(e: &mut Entry, v: &Value) {
 }
 
 /// What `turn.completed` says: its usage is the thread's running total, resumes
-/// included, so the turn is what it rose by.
+/// included, so the turn is what it rose by, measured from the total saved with
+/// the helper across a core. A helper past its first turn with no total to
+/// measure from (saved before Luna kept count) gets none for this turn: the
+/// figure is the thread's, not the turn's.
 fn codex_spend(e: &mut Entry, usage: &Value) {
     if !usage.is_object() {
         return;
     }
     let total = Usage::of_codex(usage);
-    let spent = e.observed.spend.session;
-    e.observed.spend = Spend { last_turn: Some(total.since(spent)), session: total.at_least(spent) };
+    let spend = e.observed.spend;
+    let known = spend.session != Usage::default() || e.turns_ended == 0;
+    let last_turn = if known { Some(total.since(spend.session)) } else { spend.last_turn };
+    e.observed.spend = Spend { last_turn, session: total.at_least(spend.session) };
+}
+
+/// The model Codex says it moved a turn to, from the one error item that is no
+/// error: `model rerouted: <from> -> <to> (<reason>)`.
+fn rerouted_to(message: &str) -> Option<&str> {
+    let (_, moved) = message.split_once("model rerouted: ")?;
+    let (_, to) = moved.split_once(" -> ")?;
+    let to = to.split(" (").next()?.trim();
+    (!to.is_empty()).then_some(to)
 }
 
 fn on_codex_event(e: &mut Entry, v: &Value) {
@@ -796,6 +813,12 @@ fn on_codex_event(e: &mut Entry, v: &Value) {
                     item["exit_code"].as_i64().map(|c| c.to_string()).unwrap_or_else(|| "?".into())
                 ),
             ),
+            Some("error") if item["message"].as_str().and_then(rerouted_to).is_some() => {
+                let message = item["message"].as_str().unwrap_or("");
+                e.observed.model = rerouted_to(message).map(str::to_owned);
+                e.observed.rerouted = true;
+                note(e, &one_line(message));
+            }
             Some(other) if other != "reasoning" => note(e, other),
             _ => {}
         },
@@ -835,12 +858,18 @@ fn turn_over(id: &str, code: Option<i32>) {
         if next.is_some() {
             claim(e);
         }
-        let thread = e.session.clone().filter(|_| e.spec.provider == Provider::Codex).map(|t| (e.spec.account_path.clone(), t));
+        let rerouted = std::mem::take(&mut e.observed.rerouted);
+        let thread = e
+            .session
+            .clone()
+            .filter(|_| e.spec.provider == Provider::Codex && !rerouted)
+            .map(|t| (e.spec.account_path.clone(), t));
         (next, thread)
     };
     reg().1.notify_all();
     crate::log::info("background", &format!("{} turn over, code {code:?}", crate::agents::label(id)));
-    // Codex's events name no model; its rollout does, read with the lock let go.
+    // Codex's events name no model but a reroute's, which stands for its turn;
+    // otherwise its rollout says what the turn ran on, read with the lock let go.
     let model = thread.and_then(|(account, t)| crate::codex::session::last_model(&crate::codex::session::rollout_of_thread(&account, &t)?));
     if let (Some(model), Some(e)) = (model, lock().entries.get_mut(id)) {
         e.observed.model = Some(model);
@@ -1214,7 +1243,8 @@ pub fn signs(id: &str) -> Option<Signs> {
     Some(Signs {
         turn_started_at: turn_started.and_then(iso),
         last_activity_at: last.and_then(iso),
-        resolved_model: o.model.clone(),
+        // A Codex rollout that would not read: what it was asked to run on.
+        resolved_model: o.model.clone().or_else(|| e.spec.model.clone().filter(|_| e.spec.provider == Provider::Codex && e.turns_ended > 0)),
         spend: (o.spend != Spend::default()).then_some(o.spend),
     })
 }
@@ -1544,6 +1574,75 @@ mod tests {
         assert_eq!(s.last_turn, Some(Usage { input: 1502, output: 5, cache_read: 15360, cache_write: 0, cost_usd: None }), "as the rollout's last_token_usage has it");
         assert_eq!(s.session, Usage { input: 4601, output: 10, cache_read: 27776, cache_write: 0, cost_usd: None });
         assert!(!serde_json::to_string(&s).unwrap().contains("costUsd"), "Codex states no cost");
+    }
+
+    #[test]
+    fn a_codex_total_is_measured_from_what_came_back_with_the_helper() {
+        // The first turn after a core restart: its total runs on from the saved one.
+        let mut e = entry(Provider::Codex);
+        e.turns_ended = 1;
+        on_codex_event(&mut e, &event(CODEX_TURN_1));
+        let saved = serde_json::to_value(&e.observed).unwrap();
+
+        let mut e = entry(Provider::Codex);
+        e.turns_ended = 1;
+        e.observed = serde_json::from_value(saved).unwrap();
+        on_codex_event(&mut e, &event(CODEX_TURN_2));
+        assert_eq!(e.observed.spend.last_turn.map(|t| (t.input, t.cache_read, t.output)), Some((1502, 15360, 5)));
+        assert_eq!(e.observed.spend.session.output, 10);
+
+        // Nothing saved and past its first turn: the total is no turn's.
+        let mut e = entry(Provider::Codex);
+        e.turns_ended = 3;
+        on_codex_event(&mut e, &event(CODEX_TURN_2));
+        assert_eq!(e.observed.spend.last_turn, None);
+        assert_eq!(e.observed.spend.session.input, 4601);
+    }
+
+    #[test]
+    fn a_reroute_names_the_model_of_its_turn_and_the_rollout_the_next() {
+        assert_eq!(rerouted_to("model rerouted: gpt-a -> gpt-b (high risk)"), Some("gpt-b"));
+        assert_eq!(rerouted_to("model rerouted: gpt-a -> gpt-b"), Some("gpt-b"));
+        assert_eq!(rerouted_to("the model is overloaded"), None);
+
+        let dir = std::env::temp_dir().join(format!("luna-reroute-{}", std::process::id()));
+        let day = dir.join("sessions").join("2026").join("11").join("01");
+        std::fs::create_dir_all(&day).unwrap();
+        std::fs::write(
+            day.join("rollout-2026-11-01T10-31-15-thread-reroute.jsonl"),
+            format!("{}\n", r#"{"timestamp":"t","type":"turn_context","payload":{"model":"gpt-a"}}"#),
+        )
+        .unwrap();
+        let mut h = entry(Provider::Codex);
+        h.spec.account_path = dir.to_string_lossy().into_owned();
+        h.spec.model = Some("gpt-asked".into());
+        h.session = Some("thread-reroute".into());
+        lock().entries.insert("reroute-1".into(), h);
+        let model = || lock().entries.get("reroute-1").unwrap().observed.model.clone();
+
+        assert_eq!(signs("reroute-1").unwrap().resolved_model, None, "before its first turn");
+        turn_over("reroute-1", Some(0));
+        assert_eq!(model().as_deref(), Some("gpt-a"), "the rollout, with no reroute");
+        on_codex_event(
+            lock().entries.get_mut("reroute-1").unwrap(),
+            &json!({ "type": "item.completed", "item": { "id": "item_1", "type": "error", "message": "model rerouted: gpt-a -> gpt-b (high risk)" } }),
+        );
+        assert_eq!(model().as_deref(), Some("gpt-b"));
+        turn_over("reroute-1", Some(0));
+        assert_eq!(model().as_deref(), Some("gpt-b"), "the rollout does not take it back");
+        turn_over("reroute-1", Some(0));
+        assert_eq!(model().as_deref(), Some("gpt-a"), "the next turn asks again");
+        assert!(lock().entries.get("reroute-1").unwrap().error.is_none(), "no failure");
+
+        // A rollout that does not read: what it was asked to run on.
+        {
+            let mut r = lock();
+            let e = r.entries.get_mut("reroute-1").unwrap();
+            e.observed.model = None;
+        }
+        assert_eq!(signs("reroute-1").unwrap().resolved_model.as_deref(), Some("gpt-asked"));
+        lock().entries.remove("reroute-1");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

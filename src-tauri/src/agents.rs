@@ -1132,7 +1132,8 @@ fn visible_signs(pty: &crate::pty::PtyManager, id: &str, provider: Provider) -> 
         Provider::Codex => {
             let tail = crate::codex::session::read_tail(&path);
             let session = tail.total_usage.as_ref().map(crate::background::Usage::of_codex);
-            (tail.model, session.map(|session| crate::background::Spend { last_turn: None, session }))
+            let model = crate::codex::session::last_model(&path);
+            (model, session.map(|session| crate::background::Spend { last_turn: None, session }))
         }
     };
     crate::background::Signs { turn_started_at, last_activity_at, resolved_model, spend }

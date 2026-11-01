@@ -476,7 +476,8 @@ src-tauri/src/
   (`Observed`, saved in `helpers.json` but for the last event's moment), for a visible one from the activity
   track and its transcript. Claude Code's turn figure is `model_usage_since_last_result`, since `modelUsage`
   and `total_cost_usd` run on over a resume; Codex's `turn.completed.usage` is the thread's running total, so
-  its turn is the difference, and its model comes from the rollout's `turn_context`. A
+  its turn is the difference from the total saved with the helper, and its model comes from the rollout's
+  `turn_context`, or for that turn from the `model rerouted` item a reroute leaves in the stream. A
   caller handed a cut quote read the whole answer back anyway, and a long notice reached Claude Code as a
   paste. Typing a notice takes seconds, and the turn it starts may ask again meanwhile: the notifier
   then changes the debt only if it is still the one it announced (same baseline and offset).
