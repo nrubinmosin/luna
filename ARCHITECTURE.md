@@ -111,7 +111,8 @@ src-tauri/src/
                 CPU/IO/start time of each, the "busy" rule (judge), windowed programs left
                 out (shown), what is left ended with the session (end_leftovers)
   keeper.rs     the tie to the core off Windows: the `--keep-ties` process that ends a dead
-                core's jobs, what a job holds there, the next core's backstop (end_last_ties)
+                core's jobs, what a job holds there, the next core's backstop (end_last_ties);
+                and `kill_tree`'s walk there (end_tree)
   browsers.rs   which browser a terminal's link opens in: a command line with %1 per
                 browser; found on Windows (StartMenuInternet + each Chromium browser's
                 Local State profiles, Firefox's profiles.ini, the https UserChoice handler)
@@ -384,7 +385,14 @@ src-tauri/src/
   helpers up (`end_last_ties`), for a keeper that went with its core; a pid whose start time differs is
   another's and is left alone. One difference: a job there lists nothing, as nothing there tells a
   window from a job left running, so `children_busy` stays false off Windows and what a turn left runs
-  on past every way out but a death. Hooks print nothing: Claude Code adds the stdout of a hook exiting 0
+  on past every way out but a death. `kill_tree` is `taskkill /T` there by the same walk without the mark
+  (`keeper::end_tree`): the process, what it started, and what is in a group or session one of those
+  leads, each stopped from the top down and looked below again so that nothing forks out, then killed. So
+  `luna_kill`, an interrupt, a core's stop and a chat that would not quit take the tool commands with them,
+  a program with a window too if it still hangs from the tree, as `/T` takes it; what only the mark ties to
+  the job has outlived its tool and is left. A chat's CLI that quits when asked is gone by then: what is
+  left of its group goes, and what it left elsewhere stays. In the core a live pid that is no child of the
+  core is another program's and is left alone. Hooks print nothing: Claude Code adds the stdout of a hook exiting 0
   to the context, and silence is free. Claude's registry beats an "idle" from a hook, a hook's
   "waiting" beats the registry's "busy" (a permission prompt is inside a turn). No mark is eternal:
   a hook's "busy" against the registry's "idle" goes stale in 15 s (a missed Stop), a hook's "waiting" — at
@@ -679,7 +687,7 @@ src-tauri/src/
   claimed but with no process yet marks the run `stopped`: `spawn_turn` does not start it, or kills
   what it just started. A turn that cannot start counts as one ended turn with its error, since whoever
   queued it waits on that end; text queued behind it fails with it, as the turn after. On Unix each turn's process leads a process group
-  of its own, as a pty's CLI does, so `kill_tree` takes the turn whole. The core stops every turn
+  of its own, as a pty's CLI does. The core stops every turn
   as it leaves (`stop_all`, and no turn starts after), and `stop_all_sessions` before an update stops
   them too (`stop_turns`): a turn still running would keep the old core from being replaced. A Claude Code helper always gets Luna's
   MCP server, if only for `--permission-prompt-tool mcp__luna__luna_permission` (hidden from its

@@ -28,6 +28,13 @@
 //!
 //! No window spared and none could be: a dead core takes the programs a helper
 //! opened, as it does on Windows. Every way out that is not a death lets go.
+//!
+//! A stop that is chosen ends a tree instead (`end_tree`, for `pty::kill_tree`),
+//! which is `taskkill /T` here: the process and all that hangs from it, the tool
+//! commands with what they started. The same walk without the mark: what only
+//! the mark ties to the job has outlived its tool, and nothing here tells a job
+//! left running from a program with a window, so it is left, as `let_go` leaves
+//! it.
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
@@ -42,10 +49,16 @@ const FLAG: &str = "--keep-ties";
 /// Set on a helper's turn, so on all it starts. No KEY, SECRET or TOKEN in the
 /// name: Codex keeps those from its tools by default.
 pub const MARK: &str = "LUNA_JOB";
+/// The keeper's own value of `MARK`: an `end_tree` of its core leaves it, to do
+/// its work as for any other death.
+const KEEPER: &str = "keeper";
 /// How long a look at a job goes on finding what will not die: a process stuck
 /// in the kernel. The job then counts as not ended.
 const ENDING_TAKES: Duration = Duration::from_secs(5);
 const LOOK_AGAIN: Duration = Duration::from_millis(25);
+/// Looks at a tree being frozen before it is ended whatever is still moving:
+/// what is frozen cannot fork, so only a fork bomb takes more than a few.
+const FREEZE_LOOKS: usize = 50;
 /// A keeper that lasted less than this is not started again by itself.
 const KEEPER_LASTS: Duration = Duration::from_secs(5);
 
@@ -57,6 +70,7 @@ struct Proc {
     pid: i32,
     parent: i32,
     group: i32,
+    session: i32,
     /// Ticks since boot on Linux, microseconds since the epoch on macOS: only
     /// ever compared with its like, on this machine.
     started: u64,
@@ -86,9 +100,10 @@ mod os {
         }
         let parent = fields.next()?.parse().ok()?;
         let group = fields.next()?.parse().ok()?;
-        // Field 22 of proc(5); those were 3 to 5.
-        let started = fields.nth(16)?.parse().ok()?;
-        Some(Proc { pid, parent, group, started, name: name.to_string() })
+        let session = fields.next()?.parse().ok()?;
+        // Field 22 of proc(5); those were 3 to 6.
+        let started = fields.nth(15)?.parse().ok()?;
+        Some(Proc { pid, parent, group, session, started, name: name.to_string() })
     }
 
     /// One the same user may read, which leaves out whatever changed user.
@@ -145,6 +160,8 @@ mod os {
             pid,
             parent: info.pbi_ppid as i32,
             group: info.pbi_pgid as i32,
+            // SAFETY: a plain query; -1, for one it will not say, leads to nothing.
+            session: unsafe { libc::getsid(pid) },
             started: info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec,
             name,
         })
@@ -211,29 +228,107 @@ struct Record {
     leaders: Vec<Leader>,
 }
 
-/// What a job holds at one look. `me` and init are never of it, nor anything
-/// only through them.
-fn members<'a>(all: &'a [Proc], leaders: &[Leader], me: i32, marked: impl Fn(&Proc) -> bool) -> Vec<&'a Proc> {
-    let all: Vec<&Proc> = all.iter().filter(|p| p.pid > 1 && p.pid != me).collect();
-    let led = |p: &Proc| leaders.iter().any(|l| l.pid == p.pid && l.started == p.started);
-    // A leader that is still itself still names its group: the pid of a group
-    // with anyone in it is not given out again. One gone says nothing of
-    // whose its number is now, and what was in its group has the mark.
-    let groups: Vec<i32> = all.iter().filter(|p| led(p)).map(|p| p.pid).collect();
-    let mut found: Vec<&Proc> = all.iter().copied().filter(|p| led(p) || groups.contains(&p.group) || marked(p)).collect();
+/// Every process but `me` and init, which are never of a job or a tree, nor is
+/// anything only through them.
+fn others(all: &[Proc], me: i32) -> Vec<&Proc> {
+    all.iter().filter(|p| p.pid > 1 && p.pid != me).collect()
+}
+
+/// `found` and all that hangs from it at one look: what it started, and what is
+/// in a group or session one of it leads. The CLIs' tool commands lead both, so
+/// a job a tool put in the background is still in them once its parent has gone;
+/// the number of a group or session with anyone in it is not given out again.
+/// Born after whatever it hangs from, since a parent's pid may be another's by
+/// now (`procs::shown`).
+fn and_below<'a>(all: &[&'a Proc], mut found: Vec<&'a Proc>) -> Vec<&'a Proc> {
     loop {
-        // Born after its parent, since a parent's pid may be another's by now
-        // (`procs::shown`).
         let more: Vec<&Proc> = all
             .iter()
             .copied()
             .filter(|c| !found.iter().any(|f| f.pid == c.pid))
-            .filter(|c| found.iter().any(|f| f.pid == c.parent && c.started >= f.started))
+            .filter(|c| found.iter().any(|f| [c.parent, c.group, c.session].contains(&f.pid) && c.started >= f.started))
             .collect();
         if more.is_empty() {
             return found;
         }
         found.extend(more);
+    }
+}
+
+/// What a job holds at one look.
+fn members<'a>(all: &'a [Proc], leaders: &[Leader], me: i32, marked: impl Fn(&Proc) -> bool) -> Vec<&'a Proc> {
+    let all = others(all, me);
+    let led = |p: &Proc| leaders.iter().any(|l| l.pid == p.pid && l.started == p.started);
+    let seeds = all.iter().copied().filter(|p| led(p) || marked(p)).collect();
+    and_below(&all, seeds)
+}
+
+/// The tree of `root` at one look. With `root` gone what it started has other
+/// parents, and what is left of its group is all that names it: nobody else can
+/// have that number while the group has anyone in it. `child_of` is for a caller
+/// that only ever means a child of its own, which stays its child until reaped,
+/// so that a live pid with another parent is some other program's by now.
+fn tree(all: &[Proc], root: i32, me: i32, child_of: Option<i32>) -> Vec<&Proc> {
+    let all = others(all, me);
+    let seeds = match all.iter().copied().find(|p| p.pid == root) {
+        Some(top) if child_of.is_some_and(|parent| top.parent != parent) => return Vec::new(),
+        Some(top) => vec![top],
+        None => all.iter().copied().filter(|p| p.group == root).collect(),
+    };
+    and_below(&all, seeds)
+}
+
+/// A signal, if it is still the process that was looked at: a pid read a moment
+/// ago may belong to another by now.
+fn signal(p: &Proc, which: i32) {
+    if os::read(p.pid).is_some_and(|now| now.started == p.started) {
+        // SAFETY: a plain signal, to a process just seen to be this one.
+        unsafe { libc::kill(p.pid, which) };
+    }
+}
+
+/// Ends a process and all that hangs from it, the way `taskkill /T` does: what
+/// has a window goes too if it still hangs from the tree. Each is stopped first,
+/// from the top down, and looked below again, as a process killed outright would
+/// leave what it forked that moment with another parent and out of the walk.
+pub fn end_tree(root: u32) {
+    let (root, me) = (root as i32, std::process::id() as i32);
+    if root <= 1 || root == me {
+        return;
+    }
+    // Nothing to look with: the group and the process itself, as a last resort.
+    if os::pids().is_none() {
+        // SAFETY: plain signals, to the pid its owner asked to end.
+        unsafe {
+            libc::killpg(root, libc::SIGKILL);
+            libc::kill(root, libc::SIGKILL);
+        }
+        return;
+    }
+    // The window also kills a core that will not stop, which need not be its own
+    // child; the core only ever means a CLI it started.
+    let child_of = crate::lifecycle::is_core().then_some(me);
+    let keeper = format!("{MARK}={KEEPER}");
+    let mut frozen: Vec<Proc> = Vec::new();
+    for _ in 0..FREEZE_LOOKS {
+        let Some(pids) = os::pids() else { break };
+        let all: Vec<Proc> = pids.into_iter().filter_map(os::read).collect();
+        let new: Vec<Proc> = tree(&all, root, me, child_of)
+            .into_iter()
+            .filter(|p| !frozen.iter().any(|f| f.pid == p.pid && f.started == p.started))
+            .filter(|p| !os::environment(p.pid).is_some_and(|env| holds(&env, &keeper)))
+            .cloned()
+            .collect();
+        if new.is_empty() {
+            break;
+        }
+        for p in new {
+            signal(&p, libc::SIGSTOP);
+            frozen.push(p);
+        }
+    }
+    for p in &frozen {
+        signal(p, libc::SIGKILL);
     }
 }
 
@@ -259,12 +354,7 @@ fn end_job(job: &Record, within: Duration) -> (bool, Vec<String>) {
             }
         }
         for p in found {
-            // As close to the signal as it gets: a pid read a moment ago may
-            // belong to another process by now.
-            if os::read(p.pid).is_some_and(|now| now.started == p.started) {
-                // SAFETY: a plain signal, to a process just seen to be this one.
-                unsafe { libc::kill(p.pid, libc::SIGKILL) };
-            }
+            signal(p, libc::SIGKILL);
             if !ended.contains(&p.name) {
                 ended.push(p.name.clone());
             }
@@ -361,7 +451,7 @@ fn keeper_command() -> std::io::Result<Command> {
     };
     // A group of its own, so that a signal to the core's does not reach it; not
     // in any project folder, so that it never holds one open.
-    cmd.current_dir("/").stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0);
+    cmd.current_dir("/").env(MARK, KEEPER).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0);
     Ok(cmd)
 }
 
@@ -566,7 +656,11 @@ mod tests {
     use std::io::{BufReader, Read};
 
     fn p(pid: i32, parent: i32, group: i32, started: u64) -> Proc {
-        Proc { pid, parent, group, started, name: format!("p{pid}") }
+        Proc { pid, parent, group, session: 0, started, name: format!("p{pid}") }
+    }
+
+    fn in_session(session: i32, p: Proc) -> Proc {
+        Proc { session, ..p }
     }
 
     fn pids(found: Vec<&Proc>) -> Vec<i32> {
@@ -620,6 +714,48 @@ mod tests {
         assert!(members(&all, &[], 50, |p| p.pid == 1 || p.pid == 50).is_empty());
     }
 
+    /// The core 100, a chat's or a helper's CLI 200 under it, and all a turn does.
+    fn a_tree() -> Vec<Proc> {
+        vec![
+            p(100, 1, 100, 500),
+            p(200, 100, 200, 600),
+            p(201, 200, 200, 610),                     // in its group
+            in_session(210, p(210, 200, 210, 620)),    // a tool in a session of its own
+            in_session(210, p(211, 210, 211, 630)),    // a job its shell gave a group of its own
+            in_session(210, p(212, 1, 213, 640)),      // parent gone, in the live tool's session
+            in_session(210, p(214, 1, 210, 650)),      // parent gone, in the live tool's group
+            in_session(300, p(301, 1, 300, 660)),      // outlived a tool that has exited
+            p(400, 1, 400, 670),                       // someone else's
+        ]
+    }
+
+    #[test]
+    fn a_tree_is_all_that_hangs_from_its_root_and_nothing_that_outlived_its_tool() {
+        assert_eq!(pids(tree(&a_tree(), 200, 100, Some(100))), [200, 201, 210, 211, 212, 214]);
+    }
+
+    #[test]
+    fn with_its_root_gone_a_tree_is_what_is_left_of_its_group() {
+        let all: Vec<Proc> = a_tree().into_iter().filter(|p| p.pid != 200).collect();
+        assert_eq!(pids(tree(&all, 200, 100, Some(100))), [201], "the tool's parent link went with the root");
+        assert!(tree(&all, 999, 100, Some(100)).is_empty());
+    }
+
+    #[test]
+    fn a_live_pid_that_is_no_child_of_the_core_is_some_other_programs() {
+        let mut all = a_tree();
+        all[1].parent = 1;
+        assert!(tree(&all, 200, 100, Some(100)).is_empty(), "the pid is another's, and so is the group of that number");
+        // The window, killing a core it may not have started.
+        assert_eq!(pids(tree(&a_tree(), 100, 42, None)), [100, 200, 201, 210, 211, 212, 214]);
+    }
+
+    #[test]
+    fn a_process_older_than_what_it_would_hang_from_does_not() {
+        let all = [p(200, 100, 200, 600), p(201, 200, 300, 500), p(202, 1, 200, 500), in_session(200, p(203, 1, 203, 500))];
+        assert_eq!(pids(tree(&all, 200, 1, None)), [200]);
+    }
+
     #[test]
     fn an_environment_holds_a_mark_whole_or_not_at_all() {
         let env = b"PATH=/bin\0LUNA_JOB=7-8-c1\0HOME=/h\0";
@@ -632,8 +768,8 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn a_stat_line_is_read_past_a_name_of_any_shape() {
-        let stat = "123 (a) b (c)) S 45 67 67 0 -1 4194560 1 0 0 0 0 0 0 0 20 0 1 0 8910 1000 1 2";
-        assert_eq!(os::parse_stat(123, stat), Some(Proc { pid: 123, parent: 45, group: 67, started: 8910, name: "a) b (c)".into() }));
+        let stat = "123 (a) b (c)) S 45 67 68 0 -1 4194560 1 0 0 0 0 0 0 0 20 0 1 0 8910 1000 1 2";
+        assert_eq!(os::parse_stat(123, stat), Some(Proc { pid: 123, parent: 45, group: 67, session: 68, started: 8910, name: "a) b (c)".into() }));
         assert_eq!(os::parse_stat(123, &stat.replace(" S ", " Z ")), None, "exited, nothing to end");
     }
 
@@ -752,6 +888,98 @@ mod tests {
         assert_eq!(other.try_wait().unwrap(), None, "the process with its old pid is another's");
         let _ = other.kill();
         let _ = other.wait();
+    }
+
+    /// A process that goes on saying `text` as `sh`, leading a group of its own.
+    fn script(text: &str) -> Child {
+        Command::new("sh").args(["-c", text]).process_group(0).stdin(Stdio::null()).stdout(Stdio::piped()).spawn().unwrap()
+    }
+
+    /// What a test's script says it started, `<word> <pid>` to a line, in the
+    /// order they come, which is no order when two shells are saying it.
+    fn said(child: &mut Child, count: usize) -> Vec<(String, i32)> {
+        let mut out = BufReader::new(child.stdout.take().unwrap());
+        (0..count)
+            .map(|_| {
+                let mut line = String::new();
+                out.read_line(&mut line).unwrap();
+                let (word, pid) = line.trim().split_once(' ').unwrap();
+                (word.to_string(), pid.parse().unwrap())
+            })
+            .collect()
+    }
+
+    fn the(said: &[(String, i32)], word: &str) -> Vec<i32> {
+        said.iter().filter(|(w, _)| w == word).map(|(_, pid)| *pid).collect()
+    }
+
+    #[test]
+    fn a_tree_ends_whole_and_what_outlived_its_tool_is_left() {
+        const SETSID: &str = "perl -e 'use POSIX; POSIX::setsid(); exec @ARGV'";
+        // A job in the turn's group; a tool in a session of its own, still
+        // running, with a job, a detached job and a command in hand; and what a
+        // tool that has exited left behind.
+        let tool = "sleep 60 & echo on $!; (nohup sleep 60 > /dev/null 2>&1 & echo on $!); sleep 60 & echo on $!; wait";
+        let mut turn = script(&format!(
+            "sleep 60 &\necho on $!\n{SETSID} sh -c '{tool}' &\n{SETSID} sh -c 'sleep 60 & echo left $!'\nwait\n"
+        ));
+        let said = said(&mut turn, 5);
+        let (on, left) = (the(&said, "on"), the(&said, "left"));
+        assert_eq!((on.len(), left.len()), (4, 1), "{said:?}");
+        assert!(on.iter().chain(&left).all(|pid| os::read(*pid).is_some()));
+        end_tree(turn.id());
+        assert!(all_gone_within(&mut turn, &on, 3000), "the tool commands go too");
+        assert!(os::read(left[0]).is_some(), "what outlived its tool is let go of");
+        clean_up(&mut turn, &left);
+    }
+
+    #[test]
+    fn what_a_tree_forks_as_it_goes_goes_too() {
+        // Each round leaves a sleep with no parent, in the group of the root.
+        let mark = "forks-as-it-goes";
+        let mut turn = Command::new("sh")
+            .args(["-c", "while :; do (sleep 60 &); sleep 0.002; done"])
+            .env(MARK, mark)
+            .process_group(0)
+            .stdin(Stdio::null())
+            .spawn()
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        let holding = |proc: &Proc| os::environment(proc.pid).is_some_and(|env| holds(&env, &format!("{MARK}={mark}")));
+        let any_left = || os::pids().unwrap().into_iter().filter_map(os::read).any(|p| holding(&p));
+        assert!(any_left());
+        end_tree(turn.id());
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while any_left() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!any_left(), "nothing forked its way out");
+        turn.wait().unwrap();
+    }
+
+    #[test]
+    fn what_is_left_of_a_group_goes_once_its_root_is_gone() {
+        let mut turn = script("sleep 60 & echo left $!");
+        let left = the(&said(&mut turn, 1), "left");
+        turn.wait().unwrap();
+        assert!(os::read(left[0]).is_some());
+        end_tree(turn.id());
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while os::read(left[0]).is_some() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(os::read(left[0]).is_none());
+    }
+
+    #[test]
+    fn a_keeper_under_a_tree_is_left_to_do_its_work() {
+        let mut core = script(&format!("{MARK}={KEEPER} sleep 60 & echo keeper $!; sleep 60 & echo other $!; wait"));
+        let said = said(&mut core, 2);
+        let (keeper, other) = (the(&said, "keeper"), the(&said, "other"));
+        end_tree(core.id());
+        assert!(all_gone_within(&mut core, &other, 3000));
+        assert!(os::read(keeper[0]).is_some(), "the core's death is what it is there for");
+        clean_up(&mut core, &keeper);
     }
 
     #[test]
