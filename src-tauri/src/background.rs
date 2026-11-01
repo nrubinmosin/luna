@@ -1075,7 +1075,12 @@ fn on_claude_event(e: &mut Entry, v: &Value) {
     match (v["type"].as_str(), v["subtype"].as_str()) {
         (Some("system"), Some("init")) => {
             e.session = v["session_id"].as_str().map(str::to_owned).or(e.session.take());
-            e.cwd = v["cwd"].as_str().map(str::to_owned).or(e.cwd.take());
+            // Where its first turn started, or the worktree it made: the init of a
+            // turn the CLI takes up by itself (a background task's end) says where
+            // its shell has since gone with `cd`, which is not where it works.
+            if e.cwd.is_none() {
+                e.cwd = v["cwd"].as_str().map(str::to_owned);
+            }
             e.observed.model = v["model"].as_str().map(str::to_owned).or(e.observed.model.take());
         }
         (Some("assistant"), _) if v["parent_tool_use_id"].is_null() => {
@@ -2077,11 +2082,12 @@ fn taken_up(s: Saved) -> Entry {
     let resumable = !s.unsure && (!s.running || s.cut_short || s.tied);
     let first: Vec<Queued> = s.opening.filter(|_| stopped && s.session.is_none()).map(|text| Queued { from: None, text }).into_iter().collect();
     let undelivered = [first, s.undelivered, s.in_flight, s.queue].concat();
+    let cwd = s.cwd.map(|c| home_of(&s.spec, c));
     let mut e = Entry {
         spec: s.spec,
         started_ms: s.started_ms,
         session: s.session,
-        cwd: s.cwd,
+        cwd,
         run: None,
         turns_ended: s.turns_ended + u32::from(s.running) + u32::from(s.queued),
         queue: Vec::new(),
@@ -2109,6 +2115,25 @@ fn taken_up(s: Saved) -> Entry {
     }
     note(&mut e, "taken up by a new core");
     e
+}
+
+/// Where a helper works, from a cwd an older core saved after the CLI's shell
+/// had moved it: the worktree it made and is in, else the folder it was sent
+/// to if it is in that.
+fn home_of(spec: &Spec, cwd: String) -> String {
+    if let Some((root, _)) = crate::worktree::root_of(&cwd).filter(|_| spec.worktree) {
+        return root;
+    }
+    let mut dir = cwd.trim_end_matches(['\\', '/']);
+    loop {
+        if crate::pty::same_dir(dir, &spec.folder) {
+            return spec.folder.clone();
+        }
+        match dir.rfind(['\\', '/']) {
+            Some(at) => dir = &dir[..at],
+            None => return cwd,
+        }
+    }
 }
 
 /// Whether its last turn was stopped by the core going rather than ended.
@@ -2537,6 +2562,28 @@ mod tests {
         assert_eq!(e.observed.model.as_deref(), Some("claude-haiku-5-5"), "a subagent's model is its own");
         on_claude_event(&mut e, &said("claude-sonnet-5-5", Value::Null));
         assert_eq!(e.observed.model.as_deref(), Some("claude-sonnet-5-5"), "a fallback shows");
+    }
+
+    /// A turn Claude Code takes up by itself (a background task's end) starts
+    /// with an `init` that says where its shell went with `cd`.
+    #[test]
+    fn where_a_helper_works_does_not_follow_its_shell() {
+        let wt = r"C:\p\.claude\worktrees\joyful-dragonfly";
+        let mut e = entry(Provider::Claude);
+        e.spec.worktree = true;
+        let init = |cwd: &str| json!({ "type": "system", "subtype": "init", "session_id": "s", "cwd": cwd });
+        on_claude_event(&mut e, &init(wt));
+        on_claude_event(&mut e, &init(&format!(r"{wt}\src-tauri\src")));
+        assert_eq!(e.cwd.as_deref(), Some(wt));
+        // What an older core saved with the shell's move in it.
+        assert_eq!(home_of(&e.spec, format!(r"{wt}\src-tauri\src")), wt);
+        assert_eq!(home_of(&e.spec, wt.to_string()), wt);
+        let mut plain = entry(Provider::Claude);
+        assert_eq!(home_of(&plain.spec, r"C:\p\src".into()), r"C:\p", "the folder it was sent to");
+        assert_eq!(home_of(&plain.spec, r"D:\elsewhere".into()), r"D:\elsewhere", "nothing to go by");
+        // Sent into a folder of a worktree, that folder is where it works.
+        plain.spec.folder = format!(r"{wt}\docs");
+        assert_eq!(home_of(&plain.spec, format!(r"{wt}\docs\img")), format!(r"{wt}\docs"));
     }
 
     #[test]

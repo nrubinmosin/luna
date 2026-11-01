@@ -95,6 +95,19 @@ pub fn project_of(path: &str) -> Option<String> {
     codex_shaped(path).then(|| repo_of_linked(path)).flatten()
 }
 
+/// The CLI-made worktree `path` is in, itself or a folder inside it, with the
+/// project it belongs to: a session's cwd follows its shell's `cd` (Claude
+/// Code moves its own with it), and where it works is the worktree all the same.
+pub fn root_of(path: &str) -> Option<(String, String)> {
+    let mut dir = path.trim_end_matches(['\\', '/']);
+    loop {
+        if let Some(project) = project_of(dir).filter(|project| is_worktree_of(project, dir)) {
+            return Some((dir.to_string(), project));
+        }
+        dir = &dir[..dir.rfind(['\\', '/'])?];
+    }
+}
+
 /// Branch checked out in the given worktree, per `git worktree list`.
 pub fn branch_of(folder: &str, worktree_path: &str) -> Option<String> {
     let out = git(folder)
@@ -694,6 +707,23 @@ mod tests {
         remove_worktree_now(repo.clone(), wt.clone()).unwrap();
         assert!(!root.join("account").join("worktrees").join("0a1b").exists(), "the bucket goes too");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_cwd_inside_a_worktree_is_that_worktree() {
+        let claude = r"E:\p\x\.claude\worktrees\a-b-c";
+        let root = |p: &str| root_of(p).map(|(wt, project)| (norm(&wt), norm(&project)));
+        let want = Some((norm(claude), norm(r"E:\p\x")));
+        assert_eq!(root(claude), want);
+        assert_eq!(root(&format!(r"{claude}\src-tauri\src")), want, "a shell that went into it");
+        assert_eq!(root("E:/p/x/.claude/worktrees/a-b-c/src/"), want);
+        assert_eq!(root(r"E:\p\x\src"), None, "no worktree");
+        assert_eq!(root(r"E:\p\x\.claude\worktrees"), None);
+        let Some((tmp, repo, wt)) = codex_layout("root") else { return };
+        let inside = Path::new(&wt).join("src").to_string_lossy().into_owned();
+        assert_eq!(root(&inside), Some((norm(&wt), norm(&repo))), "Codex's own shape");
+        let _ = remove_worktree_now(repo, wt);
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
