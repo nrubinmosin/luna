@@ -681,7 +681,7 @@ src-tauri/src/
   count on the parent row) and can hand one to a chat row between turns (`background_promote` →
   `agent://promote`: same id, the session id to resume). Helpers outlive the core: every 2 s, as
   the core leaves (`stop_all`), and at once on what a core killed next must not undo (a spawn, a
-  delete, a question asked, an opening as a chat), the registry goes to `<data>/helpers.json` when it
+  conversation named, a delete, a question asked, an opening as a chat), the registry goes to `<data>/helpers.json` when it
   has changed, one save at a time so that no older reading is written over a newer one — the
   spec without its token, the session id, the worktree, the turn count, whether a turn ran, the text
   queued behind it, and the agent layer's ties (`agents::Ties`: parent, name, settings, the answers
