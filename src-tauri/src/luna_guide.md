@@ -148,10 +148,12 @@ can start other sessions and work with them.
   running, and text cannot reach it until the user resumes it. `luna_delete` removes it;
   `dropWorktree: true` also removes the worktree its CLI made and that worktree's `worktree-*`
   branch; a branch it named itself stays, with its commits. Not if another session works in it.
-  If that would lose uncommitted changes (untracked files too) or commits no other branch or
-  remote has, it refuses, names them and changes nothing; `force: true` goes ahead. A worktree
-  that cannot be removed (a file held open) comes back as `worktreeLeft` with `worktreeError`:
-  the session is gone, the path is yours to deal with.
+  If that would lose uncommitted changes (untracked files and submodule changes too) or commits
+  no other branch or remote has, it refuses, names them and changes nothing; `force: true` goes
+  ahead. Files git ignores do not count and go with it. Clean, the session is stopped and the
+  worktree looked at again. One not removed (it came to hold work as the session stopped, a file
+  held open) comes back as `worktreeLeft` with `worktreeError`: the session is gone, the path is
+  yours to deal with.
 - `autoDelete`: Luna deletes the helper 30 minutes after its answer reached you; a read or
   a send in between starts the 30 minutes over (`deletesInMin` in `luna_list` counts
   down). The worktree stays. On for background helpers unless `autoDelete: false`, off for

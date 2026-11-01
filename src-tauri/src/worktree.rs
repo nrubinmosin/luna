@@ -447,14 +447,16 @@ fn mtime_ms(p: &Path) -> Option<u64> {
 }
 
 /// What `git status` lists in a worktree, a line per change, untracked files
-/// included; None when git cannot read it as a checkout.
+/// and whatever a submodule hides included (a repo's config may ask to hide it);
+/// not files git ignores, or build output would stop every delete. None when git
+/// cannot read it as a checkout.
 fn changes_in(path: &str) -> Option<Vec<String>> {
     // Without its own `.git`, git would walk up and answer for the main
     // checkout instead.
     let status = Path::new(path)
         .join(".git")
         .exists()
-        .then(|| git(path).args(["-c", "core.quotepath=off", "status", "--porcelain", "--untracked-files=normal"]).output().ok())
+        .then(|| git(path).args(["-c", "core.quotepath=off", "status", "--porcelain", "--untracked-files=normal", "--ignore-submodules=none"]).output().ok())
         .flatten()
         .filter(|o| o.status.success())?;
     Some(String::from_utf8_lossy(&status.stdout).lines().filter(|l| !l.is_empty()).map(str::to_owned).collect())
@@ -476,16 +478,27 @@ fn unique_commits(path: &str, branch: Option<&str>) -> Option<u32> {
 /// going with it can reach (`throwaway_branches`, deleted whatever they hold)
 /// and no branch that stays and no remote can. A detached HEAD, as Codex's
 /// worktrees have, is reachable from nothing else once it is gone; a branch the
-/// session named itself stays, its commits with it.
-fn commits_lost(path: &str, checked_out: Option<&str>) -> Option<u32> {
+/// session named itself stays, its commits with it. Asked of the repository: a
+/// checkout removed by hand leaves its branch to go all the same. None: unknown.
+fn commits_lost(folder: &str, path: &str, checked_out: Option<&str>) -> Option<u32> {
     let going = throwaway_branches(path, checked_out);
-    let mut rev = git(path);
-    rev.args(["rev-list", "--count", "HEAD"]);
+    let mut rev = git(folder);
+    rev.args(["rev-list", "--count"]);
+    let mut tips = 0;
+    if Path::new(path).join(".git").exists() {
+        let head = git(path).args(["rev-parse", "--verify", "HEAD"]).output().ok().filter(|o| o.status.success())?;
+        rev.arg(String::from_utf8_lossy(&head.stdout).trim());
+        tips += 1;
+    }
     for b in &going {
-        let there = git(path).args(["show-ref", "--verify", "--quiet", &format!("refs/heads/{b}")]).output().is_ok_and(|o| o.status.success());
+        let there = git(folder).args(["show-ref", "--verify", "--quiet", &format!("refs/heads/{b}")]).output().ok()?.status.success();
         if there {
             rev.arg(format!("refs/heads/{b}"));
+            tips += 1;
         }
+    }
+    if tips == 0 {
+        return Some(0);
     }
     rev.arg("--not");
     for b in &going {
@@ -500,27 +513,27 @@ fn commits_lost(path: &str, checked_out: Option<&str>) -> Option<u32> {
 const UNSAVED_NAMED: usize = 10;
 
 /// What removing this worktree would lose for good, in words: the changes in
-/// it and the commits that would go with it. None when that is nothing, or it
-/// is gone.
+/// it and the commits that would go with it, its checkout gone or not. None
+/// when that is nothing; what cannot be told counts as something.
 pub fn unsaved_work(folder: &str, path: &str) -> Option<String> {
-    if !Path::new(path).exists() {
-        return None;
-    }
-    let Some(changes) = changes_in(path) else {
-        return Some("files git cannot read as a checkout, so what they are worth is unknown".into());
-    };
     let mut said = Vec::new();
-    if !changes.is_empty() {
-        let names: Vec<&str> = changes.iter().take(UNSAVED_NAMED).map(|l| l.get(3..).unwrap_or(l)).collect();
-        let more = match changes.len().saturating_sub(UNSAVED_NAMED) {
-            0 => String::new(),
-            n => format!(" and {n} more"),
+    if Path::new(path).exists() {
+        let Some(changes) = changes_in(path) else {
+            return Some("files git cannot read as a checkout, so what they are worth is unknown".into());
         };
-        let what = if changes.len() == 1 { "1 uncommitted change".to_string() } else { format!("{} uncommitted changes", changes.len()) };
-        said.push(format!("{what} ({}{more})", names.join(", ")));
+        if !changes.is_empty() {
+            let names: Vec<&str> = changes.iter().take(UNSAVED_NAMED).map(|l| l.get(3..).unwrap_or(l)).collect();
+            let more = match changes.len().saturating_sub(UNSAVED_NAMED) {
+                0 => String::new(),
+                n => format!(" and {n} more"),
+            };
+            let what = if changes.len() == 1 { "1 uncommitted change".to_string() } else { format!("{} uncommitted changes", changes.len()) };
+            said.push(format!("{what} ({}{more})", names.join(", ")));
+        }
     }
-    match commits_lost(path, branch_of(folder, path).as_deref()) {
-        None | Some(0) => {}
+    match commits_lost(folder, path, branch_of(folder, path).as_deref()) {
+        None => said.push("commits git could not count".into()),
+        Some(0) => {}
         Some(1) => said.push("1 commit on no other branch or remote".into()),
         Some(n) => said.push(format!("{n} commits on no other branch or remote")),
     }
@@ -702,6 +715,43 @@ mod tests {
         remove_worktree_now(repo.clone(), wt.clone()).unwrap();
         let branches = String::from_utf8_lossy(&git(&repo).args(["branch", "--list"]).output().unwrap().stdout).into_owned();
         assert!(branches.contains("keeper") && !branches.contains("worktree-w1"), "{branches}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_checkout_gone_leaves_its_branch_to_answer_for() {
+        let Some((root, repo, _)) = codex_layout("gone") else { return };
+        let wt = root.join("repo").join(".claude").join("worktrees").join("w2").to_string_lossy().into_owned();
+        let ok = |c: &mut Command| c.output().is_ok_and(|o| o.status.success());
+        assert!(ok(git(&repo).args(["worktree", "add", "-q", "-b", "worktree-w2", &wt])));
+        assert!(ok(git(&wt).args(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "c"])));
+        std::fs::remove_dir_all(&wt).unwrap();
+        assert_eq!(unsaved_work(&repo, &wt).unwrap(), "1 commit on no other branch or remote", "branch -D would take it");
+        assert!(ok(git(&repo).args(["branch", "kept", "worktree-w2"])));
+        assert_eq!(unsaved_work(&repo, &wt), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_hidden_submodule_change_counts_and_an_ignored_file_does_not() {
+        let Some((root, repo, wt)) = codex_layout("sub") else { return };
+        let ok = |c: &mut Command| c.output().is_ok_and(|o| o.status.success());
+        let user = ["-c", "user.email=t@t", "-c", "user.name=t"];
+        std::fs::write(Path::new(&wt).join(".gitignore"), "build/\nsub-ignored\n").unwrap();
+        let sub = Path::new(&wt).join("sub").to_string_lossy().into_owned();
+        assert!(ok(git(&wt).args(["init", "-q", "sub"])));
+        assert!(ok(git(&sub).args(user).args(["commit", "-q", "--allow-empty", "-m", "s1"])));
+        assert!(ok(git(&wt).args(["add", "-A"])));
+        assert!(ok(git(&wt).args(user).args(["commit", "-q", "-m", "w"])));
+        assert!(ok(git(&wt).args(["branch", "kept"])));
+        std::fs::create_dir_all(Path::new(&wt).join("build")).unwrap();
+        std::fs::write(Path::new(&wt).join("build").join("out.bin"), "x").unwrap();
+        assert_eq!(unsaved_work(&repo, &wt), None, "build output would stop every delete");
+        // Moved on in the submodule, with the repo's config asking not to see it.
+        assert!(ok(git(&repo).args(["config", "diff.ignoreSubmodules", "all"])));
+        assert!(ok(git(&sub).args(user).args(["commit", "-q", "--allow-empty", "-m", "s2"])));
+        let said = unsaved_work(&repo, &wt).unwrap_or_default();
+        assert!(said.contains("1 uncommitted change") && said.contains("sub"), "{said}");
         let _ = std::fs::remove_dir_all(&root);
     }
 

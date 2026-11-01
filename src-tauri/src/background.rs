@@ -859,6 +859,13 @@ pub fn removable_worktree(id: &str) -> Option<String> {
     (!crate::pty::same_dir(&cwd, &folder) && crate::worktree::is_worktree_of(&folder, &cwd)).then_some(cwd)
 }
 
+/// Stops its turn and what its turns left, for a look at what they leave behind.
+pub fn stop_for_good(id: &str) {
+    kill(id);
+    let job = lock().entries.get(id).and_then(|e| e.job.clone());
+    end_leftovers(id, job.as_deref());
+}
+
 /// Stops it and forgets it. Returns the worktree it made, if any.
 pub fn remove(id: &str) -> Option<String> {
     let made = removable_worktree(id);
@@ -1289,7 +1296,8 @@ fn resume(id: &str) {
         // Something got there first. No conversation to go on with and no
         // words of its first turn (a file from an older core): nothing to run.
         let unnamed = e.session.is_none();
-        if e.run.is_some() || (unnamed && e.undelivered.is_empty()) {
+        // Or a turn it was sent meanwhile has gone on already, and been told.
+        if e.run.is_some() || !e.cut_short || (unnamed && e.undelivered.is_empty()) {
             return;
         }
         claim(e);
@@ -1564,6 +1572,15 @@ mod tests {
         let text = resume_text(&["fix the test\nand push".into(), "also the docs".into()]);
         let (first, second) = (text.find("fix the test\nand push").unwrap(), text.find("also the docs").unwrap());
         assert!(text.contains("never reached you") && first < second, "word for word, oldest first: {text}");
+    }
+
+    #[test]
+    fn a_resume_finds_a_turn_sent_meanwhile_has_gone_on_already() {
+        take_up_for_test("resume-late", "C:\\luna-no-such-folder", 3, &[], None);
+        lock().entries.get_mut("resume-late").unwrap().cut_short = false;
+        resume("resume-late");
+        let e = lock().entries.remove("resume-late").unwrap();
+        assert_eq!(e.turns_ended, 4, "no second turn tried");
     }
 
     #[test]

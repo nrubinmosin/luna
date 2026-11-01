@@ -745,6 +745,10 @@ pub struct Ties {
     pub owed: Vec<(String, u32, u64)>,
     /// (caller, turns ended) each caller was last shown of it (see `seen`).
     pub seen: Vec<(String, u32)>,
+    /// The callers among `owed` whose turn went with a core (`Owed::cut_short`):
+    /// the count alone reads as an answer once that turn is counted as ended.
+    #[serde(default)]
+    pub cut_short: Vec<String>,
 }
 
 pub fn ties_of(id: &str) -> Option<Ties> {
@@ -762,6 +766,7 @@ fn ties_in(r: &Registry, id: &str) -> Option<Ties> {
         auto_delete: r.auto.contains_key(id),
         owed: r.owed.iter().filter(|((_, s), _)| s == id).map(|((c, _), o)| (c.clone(), o.baseline, o.cursor)).collect(),
         seen: r.seen.iter().filter(|((_, s), _)| s == id).map(|((c, _), n)| (c.clone(), *n)).collect(),
+        cut_short: r.owed.iter().filter(|((_, s), o)| s == id && o.cut_short).map(|((c, _), _)| c.clone()).collect(),
     })
 }
 
@@ -941,7 +946,7 @@ fn take_up_chats(saved: SavedChats) {
         let mut count = c.turns_ended;
         for (caller, baseline, cursor) in ties.owed {
             let mut o = Owed::from(baseline, cursor);
-            if c.turns_ended <= baseline {
+            if c.turns_ended <= baseline || ties.cut_short.contains(&caller) {
                 o.cut_short = true;
                 count = count.max(baseline.saturating_add(1));
             }
@@ -979,7 +984,7 @@ fn returning(k: &Known, up_ms: u64) -> bool {
 /// worktree it made going too unless it was handed one.
 pub fn delete_by_user(id: &str) -> Result<(), String> {
     let known = reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(id).cloned().ok_or("no such helper")?;
-    match remove(id, known, true)?.worktree_error {
+    match remove(id, known, true, None)?.worktree_error {
         Some(why) => Err(why),
         None => Ok(()),
     }
@@ -2489,6 +2494,8 @@ fn hold(caller: &str, id: &str, text: &str) {
         since: now_ms(),
         told: false,
     });
+    // "Do not send it again" goes back with the result: it must hold.
+    crate::background::save();
 }
 
 /// What Luna holds for a chat: sends waiting to go into it, and notices a
@@ -2546,6 +2553,8 @@ fn deliver_held(pty: &crate::pty::PtyManager) {
                     o.late = true;
                 }
                 drop(r);
+                // Or a core killed now would type it in again.
+                crate::background::save();
                 crate::log::info(
                     "agents",
                     &format!("held send from {} typed into {} (started {})", label(&caller), label(&id), sent.started),
@@ -3297,13 +3306,31 @@ pub fn delete(caller: &str, id: &str, drop_worktree: bool, force: bool) -> Resul
         if let Some(wt) = worktree_to_drop(id, &folder) {
             if let Some(work) = crate::worktree::unsaved_work(&folder, &wt) {
                 return Err(format!(
-                    "not deleted: worktree {wt} holds {work}, which removing it would lose. Save what matters (commit and merge, or copy it), \
-                     or call luna_delete without dropWorktree to keep the worktree, or with force: true to remove it anyway"
+                    "not deleted: worktree {wt} holds {work}, which removing it would lose (files git ignores do not count, and would go too). \
+                     Save what matters (commit and merge, or copy it), or call luna_delete without dropWorktree to keep the worktree, \
+                     or with force: true to remove it anyway"
                 ));
             }
+            // Clean as it stands; a session still at it may yet change that. It
+            // is stopped first and looked at again.
+            stop_for_good(id);
+            if let Some(work) = crate::worktree::unsaved_work(&folder, &wt) {
+                return remove(id, known, false, None)
+                    .map(|_| Removed::left(Some(wt), format!("kept: it came to hold {work} as the session was stopped")));
+            }
+            return remove(id, known, true, Some(wt));
         }
     }
-    remove(id, known, drop_worktree)
+    remove(id, known, drop_worktree, None)
+}
+
+/// Stops a session and what it has running, its row kept.
+fn stop_for_good(id: &str) {
+    if crate::background::has(id) {
+        crate::background::stop_for_good(id);
+    } else {
+        tauri::async_runtime::block_on(crate::pty::manager().kill(id));
+    }
 }
 
 /// The worktree `remove` would take with the session, as it would judge it:
@@ -3336,20 +3363,28 @@ pub struct Removed {
     pub worktree_left: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worktree_error: Option<String>,
+    /// What went with a worktree without counting as work, said when one goes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<&'static str>,
 }
+
+/// Files git ignores do not stop a delete: build output would stop every one.
+const IGNORED_GO: &str = "files git ignores went with it";
 
 impl Removed {
     fn of(worktree_removed: Option<String>) -> Removed {
-        Removed { ok: true, worktree_removed, worktree_left: None, worktree_error: None }
+        let note = worktree_removed.is_some().then_some(IGNORED_GO);
+        Removed { ok: true, worktree_removed, worktree_left: None, worktree_error: None, note }
     }
 
     fn left(worktree: Option<String>, why: String) -> Removed {
         crate::log::warn("delete", &format!("the session is gone, its worktree is not: {why}"));
-        Removed { ok: true, worktree_removed: None, worktree_left: worktree, worktree_error: Some(why) }
+        Removed { ok: true, worktree_removed: None, worktree_left: worktree, worktree_error: Some(why), note: None }
     }
 }
 
-fn remove(id: &str, known: Known, drop_worktree: bool) -> Result<Removed, String> {
+/// `worktree`: the one to drop, where the session may no longer say itself.
+fn remove(id: &str, known: Known, drop_worktree: bool, worktree: Option<String>) -> Result<Removed, String> {
     let pty = crate::pty::manager();
     // What `luna_sessions` history has left to go on once it is gone.
     if known.parent.is_some() {
@@ -3386,9 +3421,9 @@ fn remove(id: &str, known: Known, drop_worktree: bool) -> Result<Removed, String
         });
     }
     // Asked before it goes: its process is what says where it works.
-    let at_stake = if drop_worktree { worktree_to_drop(id, &folder) } else { None };
+    let at_stake = if drop_worktree { worktree.clone().or_else(|| worktree_to_drop(id, &folder)) } else { None };
     // PtyManager::delete forgets the session here too (see `forget`).
-    let deleted = tauri::async_runtime::block_on(pty.delete(id, &folder, None, drop_worktree));
+    let deleted = tauri::async_runtime::block_on(pty.delete(id, &folder, worktree, drop_worktree));
     crate::emit::to_ui("agent://deleted", Deleted { id: id.to_string() });
     Ok(match deleted {
         // Without the drop, `delete` names the worktree that stays.
@@ -3463,7 +3498,7 @@ fn reap(pty: &crate::pty::PtyManager) {
             a.deleting = true;
             known
         };
-        match known.map(|k| remove(&id, k, false)) {
+        match known.map(|k| remove(&id, k, false, None)) {
             Some(Ok(_)) => crate::log::info("agents", &format!("auto-deleted helper {}", label(&id))),
             Some(Err(e)) => {
                 crate::log::warn("agents", &format!("could not auto-delete helper {}: {e}", label(&id)));
@@ -4418,6 +4453,7 @@ mod tests {
                     // One whose answer was in, one whose turn went with the core.
                     owed: vec![("tc-parent".into(), 4, 10), ("tc-peer".into(), 5, 20)],
                     seen: vec![("tc-parent".into(), 5)],
+                    cut_short: Vec::new(),
                 },
             }],
             sends: vec![SavedSend { caller: "tc-parent".into(), id: "tc-chat".into(), text: "held across".into() }],
@@ -4470,6 +4506,18 @@ mod tests {
             let names: HashMap<String, String> = [("tc-chat".to_string(), "x".to_string())].into_iter().collect();
             assert!(!gone_from_the_window(&r, &names).contains(&"tc-chat".to_string()));
         }
+
+        // The turn it counted as ended stays one that did not finish, core after core.
+        let again = ties_of("tc-chat").unwrap();
+        let again = SavedChat { id: "tc-second".into(), provider: Provider::Codex, folder: "C:\\p".into(), account_path: "C:\\acc\\openai\\two".into(), turns_ended: 9, transcript: None, ties: again };
+        take_up_chats(SavedChats { chats: vec![again], sends: Vec::new() });
+        assert!(reg().lock().unwrap().owed[&("tc-parent".to_string(), "tc-second".to_string())].cut_short == false, "this debt was answered");
+        let cut: Ties = Ties { owed: vec![("tc-peer".into(), 5, 20)], cut_short: vec!["tc-peer".into()], ..Default::default() };
+        let cut = SavedChat { id: "tc-third".into(), provider: Provider::Codex, folder: "C:\\p".into(), account_path: "C:\\acc\\openai\\two".into(), turns_ended: 6, transcript: None, ties: cut };
+        take_up_chats(SavedChats { chats: vec![cut], sends: Vec::new() });
+        assert!(reg().lock().unwrap().owed[&("tc-peer".to_string(), "tc-third".to_string())].cut_short, "6 > 5 reads as answered but for the mark");
+        forget("tc-second");
+        forget("tc-third");
 
         // Started again, it is any chat, and what it keeps stays for the next core.
         register("tc-chat", Provider::Codex, "C:\\p", "C:\\acc\\openai\\two", Some("tc-parent"), false, serde_json::json!({}));
