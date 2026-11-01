@@ -3008,7 +3008,8 @@ pub struct Waited {
     pub turns_ended: u32,
     /// On `turn_done`, and on `exit` after such a turn: all the session said
     /// since the caller asked it something, as `reply_of` puts it, so no
-    /// `read` is needed.
+    /// `read` is needed. On `job_done`: what it said since it was announced as
+    /// not done, the same as that notice would bring.
     pub reply: Option<String>,
     /// The turn did not end by itself: it stopped on this error (`failure_of`),
     /// and `reply` is what it said before that, if anything.
@@ -3110,7 +3111,7 @@ pub fn wait(
         let turns_ended = ts.map(|t| t.turns_ended).unwrap_or(0);
         let turn = ts.map(|t| t.turn);
         let mut ended = turns_ended > baseline && turn != Some(crate::activity::Turn::Busy);
-        // What the job's end has to settle first (see `notice_line`).
+        // A job's end that has stood its grace (`job_end_stood`).
         let mut job_done = false;
         if told_pending {
             let waits = waits_on_helpers(id, caller);
@@ -3120,12 +3121,11 @@ pub fn wait(
                 baseline = turns_ended;
             }
             ended = now == Verdict::TurnOver;
-            job_done = now == Verdict::JobOver && alive;
+            job_done = job_end_stood(&key, turns_ended, now == Verdict::JobOver && alive);
         }
-        let grace = if job_done { BACKGROUND_GRACE_MS } else { QUEUED_GRACE_MS };
-        if !ended && !job_done {
+        if !ended {
             quiet = None;
-        } else if queued || job_done {
+        } else if queued {
             let since = match quiet {
                 Some((n, at)) if n == turns_ended => at,
                 _ => {
@@ -3134,9 +3134,7 @@ pub fn wait(
                     at
                 }
             };
-            let settled = now_ms().saturating_sub(since) >= grace;
-            ended = ended && settled;
-            job_done = job_done && settled;
+            ended = now_ms().saturating_sub(since) >= QUEUED_GRACE_MS;
         }
         // A question in the transcript holds the turn whatever the turn
         // word says; read for it every few looks, not every one.
@@ -3164,13 +3162,17 @@ pub fn wait(
             };
             // A turn it answered in before it exited is handed over too.
             let says = outcome == "turn_done" || (outcome == "exit" && turns_ended > baseline);
-            // A job's end with no turn has no words to go with it, but it is
-            // what the caller was owed.
+            // A job's end is what the caller was owed, with no turn to wait
+            // for the words of: what it said since is there already.
             let answers = says || outcome == "job_done";
             // Read from where the caller's question found the transcript.
             let asked_at = reg().lock().unwrap_or_else(|e| e.into_inner()).owed.get(&key).map(|o| o.cursor);
             let reply_now = || reply_of(&pty, id, known.provider, asked_at);
-            let mut reply = says.then(reply_now).flatten();
+            let mut reply = if outcome == "job_done" {
+                asked_at.and_then(|at| reply_text(id, &said_since(&pty, id, known.provider, at)))
+            } else {
+                says.then(reply_now).flatten()
+            };
             let late = std::time::Instant::now() + std::time::Duration::from_millis(REPLY_GRACE_MS);
             while says && reply.is_none() && std::time::Instant::now() < late && !gone() {
                 std::thread::sleep(POLL);
@@ -3180,7 +3182,7 @@ pub fn wait(
             if gone() || (answers && holding() == Holding::Unsure) {
                 return gone_err();
             }
-            let failed = (says || outcome == "exit").then(|| failure_of(&pty, id, known.provider)).flatten();
+            let failed = (answers || outcome == "exit").then(|| failure_of(&pty, id, known.provider)).flatten();
             let transcript_missing = says && reply.is_none() && !transcript_found(&pty, id);
             let bare = outcome == "turn_done" && (reply.is_none() || failed.is_some());
             let screen = (outcome == "waiting" || bare).then(|| screen_of(&pty, id)).flatten();
@@ -3264,15 +3266,21 @@ fn reply_of(pty: &crate::pty::PtyManager, id: &str, provider: Provider, asked_at
         Some(at) => replies_since(pty, id, provider, at),
         None => replies_since(pty, id, provider, 0).pop().into_iter().collect(),
     };
+    reply_text(id, &replies)
+}
+
+/// Messages as one reply in a tool result, cut past MAX_TEXT with word of a
+/// file that holds them whole; None for no messages.
+fn reply_text(id: &str, replies: &[String]) -> Option<String> {
     if replies.is_empty() {
         return None;
     }
-    let text = answer_text(&replies);
+    let text = answer_text(replies);
     if text.chars().count() <= MAX_TEXT {
         return Some(text);
     }
     let head: String = text.chars().take(MAX_TEXT).collect();
-    Some(format!("{head}\n\n[cut at {MAX_TEXT} characters; {}]", answer_file(id, &replies)))
+    Some(format!("{head}\n\n[cut at {MAX_TEXT} characters; {}]", answer_file(id, replies)))
 }
 
 /// Stops the session; the chat row stays and can be resumed by hand.
@@ -3710,7 +3718,8 @@ fn notice_line(
                     1 => format!("it wrote 1 message since your last notice; {}", answer_file(id, &said)),
                     n => format!("it wrote {n} messages since your last notice; {}", answer_file(id, &said)),
                 };
-                Some((Some(format!("{who} has nothing left running now, and {said}.")), Settled::Answered))
+                let failed = failure_of(pty, id, k.provider).map_or(String::new(), |why| format!(" Its last turn stopped on an error: {why}."));
+                Some((Some(format!("{who} has nothing left running now, and {said}.{failed}")), Settled::Answered))
             }
             Some((n, _)) if n == ended => None,
             _ => Some((None, Settled::Hold(ended))),
@@ -3847,10 +3856,33 @@ fn job_over(o: &Owed, ts: Option<crate::activity::TurnState>) -> bool {
     o.told_pending && ts.is_some_and(|t| t.turn == crate::activity::Turn::Idle && !t.children_busy)
 }
 
+/// For a `wait`: whether a job's end (`over`) has stood BACKGROUND_GRACE_MS, by
+/// the debt's own clock (`Owed::held`), the one the notifier goes by too: with
+/// a clock each, the notice could go out while the wait still counted, and the
+/// caller hear of it twice. A job at work again starts it over. With no debt
+/// left to clock (a notice has just settled it), there is nothing to hold for.
+fn job_end_stood(key: &(String, String), turns_ended: u32, over: bool) -> bool {
+    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    let Some(o) = r.owed.get_mut(key) else { return over };
+    if !over {
+        o.held = None;
+        return false;
+    }
+    match o.held {
+        Some((n, at)) if n == turns_ended => now_ms().saturating_sub(at) >= BACKGROUND_GRACE_MS,
+        _ => {
+            o.held = Some((turns_ended, now_ms()));
+            false
+        }
+    }
+}
+
 /// Whether a `wait` the caller has out on `id` is to hand this answer over
 /// rather than a notice: while nothing has come in, and for WAIT_HOLD_MS
 /// after something did — the wait answers within a second or two, so one
-/// still out by then belongs to a client that has let the call go.
+/// still out by then belongs to a client that has let the call go. A job's end
+/// comes in only once it has stood its grace, on the clock the wait goes by
+/// too (`job_end_stood`), which this starts for a wait that is not counting.
 fn held_for_wait(pty: &crate::pty::PtyManager, caller: &str, id: &str, o: &Owed) -> bool {
     let key = (caller.to_string(), id.to_string());
     if !reg().lock().unwrap_or_else(|e| e.into_inner()).waits.contains_key(&key) {
@@ -3858,17 +3890,34 @@ fn held_for_wait(pty: &crate::pty::PtyManager, caller: &str, id: &str, o: &Owed)
     }
     let ts = crate::activity::turn_state(id);
     let turn = ts.map(|t| t.turn);
+    let alive = live(pty, id);
+    let ended = ts.map_or(0, |t| t.turns_ended);
     // A prompt it stopped on is news too: `wait(turn_done)` hands that back.
-    let news = (ts.is_some_and(|t| t.turns_ended > o.baseline) && turn != Some(crate::activity::Turn::Busy))
+    let other_news = (ended > o.baseline && turn != Some(crate::activity::Turn::Busy))
         || turn == Some(crate::activity::Turn::Waiting)
-        || job_over(o, ts)
-        || !live(pty, id);
+        || !alive;
+    let job_ended = alive && job_over(o, ts) && !waits_on_helpers(id, caller);
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
     let Some(owed) = r.owed.get_mut(&key) else { return true };
-    if !news {
+    let job_news = job_ended && {
+        let since = match owed.held {
+            Some((n, at)) if n == ended => at,
+            _ => {
+                let at = now_ms();
+                owed.held = Some((ended, at));
+                at
+            }
+        };
+        now_ms().saturating_sub(since) >= BACKGROUND_GRACE_MS
+    };
+    if !other_news && !job_news {
         // Taken back by a turn begun since (a queued send): the wait gets
         // its whole hold again for the news that turn brings.
         owed.ready_at = None;
+        // A job at work again: its end starts its grace over.
+        if owed.told_pending && !job_ended {
+            owed.held = None;
+        }
         return true;
     }
     let at = *owed.ready_at.get_or_insert(now_ms());
@@ -4751,6 +4800,87 @@ mod tests {
         for id in ["tk-low", "tk-mid", "tk-top"] {
             forget(id);
         }
+    }
+
+    /// A helper announced as not done, its job over, with a transcript on disk
+    /// holding what `said` past `cursor`, the debt `caller` is owed.
+    fn job_over_helper(id: &str, caller: &str, said: &str) -> (Known, Owed, std::path::PathBuf) {
+        let none = serde_json::json!({});
+        register(id, Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, false, none);
+        crate::background::idle_for_test(id, Provider::Claude, 3, false);
+        let path = std::env::temp_dir().join(format!("luna-{id}-{}.jsonl", std::process::id()));
+        let before = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"I am starting the job.\"}]}}\n";
+        std::fs::write(&path, format!("{before}{said}")).unwrap();
+        transcripts().lock().unwrap().insert(id.into(), path.clone());
+        let o = Owed::pending(3, before.len() as u64);
+        reg().lock().unwrap().owed.insert((caller.to_string(), id.to_string()), o);
+        (reg().lock().unwrap().known.get(id).cloned().unwrap(), o, path)
+    }
+
+    #[test]
+    fn a_jobs_end_brings_what_was_said_on_notices_since() {
+        let prompt = "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"[Luna notice]\"}}\n";
+        let result = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"Here are the real results.\"}]}}\n";
+        let (known, o, path) = job_over_helper("jr-s", "jr-c", &format!("{prompt}{result}"));
+        let pty = crate::pty::manager();
+        // As `wait` puts it for `job_done`.
+        assert_eq!(reply_text("jr-s", &said_since(&pty, "jr-s", Provider::Claude, o.cursor)).as_deref(), Some("Here are the real results."));
+        // The same as the notice brings: nothing is settled without its report.
+        let mut stood = o;
+        stood.held = Some((3, now_ms() - BACKGROUND_GRACE_MS));
+        let Some((Some(line), Settled::Answered)) = notice_line(&pty, "jr-c", "Your helper", "jr-s", &known, stood) else { panic!("the job's end is news") };
+        assert!(line.contains("it wrote 1 message since your last notice"), "{line}");
+        // Nothing since: nothing to hand over, not an old message.
+        let (_, o2, path2) = job_over_helper("jr-q", "jr-c", "");
+        assert_eq!(reply_text("jr-q", &said_since(&pty, "jr-q", Provider::Claude, o2.cursor)), None);
+        for id in ["jr-s", "jr-q"] {
+            crate::background::gone_for_test(id);
+            forget(id);
+        }
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&path2);
+    }
+
+    #[test]
+    fn a_jobs_end_goes_to_a_wait_that_is_out_and_not_to_a_notice_too() {
+        let (known, o, path) = job_over_helper("jw-s", "jw-c", "");
+        let key = ("jw-c".to_string(), "jw-s".to_string());
+        let pty = crate::pty::manager();
+        let debt = || reg().lock().unwrap().owed.get(&key).copied().unwrap();
+        let out = WaitOut::start("jw-c", "jw-s");
+        // The one clock: whoever looks first starts it, the other reads it.
+        assert!(held_for_wait(&pty, "jw-c", "jw-s", &o), "the wait has it reserved");
+        let started = debt().held.expect("the hold starts the clock");
+        assert!(!job_end_stood(&key, 3, true), "the wait goes by the same clock");
+        assert_eq!(debt().held, Some(started), "and does not start its own");
+        assert_eq!(debt().ready_at, None, "not news yet");
+        // Past where a notice used to give up on the wait, still reserved.
+        reg().lock().unwrap().owed.get_mut(&key).unwrap().held = Some((3, now_ms() - BACKGROUND_GRACE_MS + 5_000));
+        assert!(held_for_wait(&pty, "jw-c", "jw-s", &debt()), "through the whole grace");
+        assert!(!job_end_stood(&key, 3, true));
+        // The grace is over: the wait hands it over now, with its hold to do it in.
+        reg().lock().unwrap().owed.get_mut(&key).unwrap().held = Some((3, now_ms() - BACKGROUND_GRACE_MS));
+        assert!(job_end_stood(&key, 3, true), "the wait's moment");
+        assert!(held_for_wait(&pty, "jw-c", "jw-s", &debt()), "and the notice still holds for it");
+        assert!(debt().ready_at.is_some(), "from here on it is WAIT_HOLD_MS");
+        // A wait that sat on it past that has been let go: the notice is free.
+        reg().lock().unwrap().owed.get_mut(&key).unwrap().ready_at = Some(now_ms() - WAIT_HOLD_MS - 1);
+        assert!(!held_for_wait(&pty, "jw-c", "jw-s", &debt()));
+        // With the wait gone the notice goes by the clock the wait left running.
+        drop(out);
+        let stood = debt();
+        assert!(!held_for_wait(&pty, "jw-c", "jw-s", &stood));
+        assert!(matches!(notice_line(&pty, "jw-c", "Your helper", "jw-s", &known, stood), Some((Some(_), Settled::Answered))));
+        // A job back at work starts it over.
+        assert!(!job_end_stood(&key, 3, false));
+        assert_eq!(debt().held, None);
+        assert!(!job_end_stood(&key, 3, true), "from nothing");
+        // A notice settled it first: the wait is not left counting for ever.
+        reg().lock().unwrap().owed.remove(&key);
+        assert!(job_end_stood(&key, 3, true));
+        crate::background::gone_for_test("jw-s");
+        forget("jw-s");
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

@@ -1330,11 +1330,26 @@ pub fn cut_short(id: &str) -> bool {
     lock().entries.get(id).is_some_and(|e| e.cut_short)
 }
 
+/// For the agent layer's tests: a helper as it stands between turns, there to
+/// talk to with no process behind it.
+#[cfg(test)]
+pub(crate) fn idle_for_test(id: &str, provider: Provider, turns_ended: u32, left_running: bool) {
+    let mut e = tests::entry(provider);
+    e.turns_ended = turns_ended;
+    e.left_running = left_running;
+    lock().entries.insert(id.to_string(), e);
+}
+
+#[cfg(test)]
+pub(crate) fn gone_for_test(id: &str) {
+    lock().entries.remove(id);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn entry(provider: Provider) -> Entry {
+    pub(super) fn entry(provider: Provider) -> Entry {
         Entry {
             spec: Spec {
                 provider,
