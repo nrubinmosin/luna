@@ -400,7 +400,8 @@ background helper spawned without tools.
   as not started, with the screen that says so.
 - `autoDelete` has Luna delete the helper once its answer has reached the agent and it has sat
   idle for 30 minutes; the agent reading it or writing to it starts that over, and `luna_list`
-  shows the minutes left (`deletesInMin`). It is on for background helpers unless the spawn says
+  shows the minutes left (`deletesInMin`). It waits for a job the helper left running and for
+  helpers of its own. It is on for background helpers unless the spawn says
   `autoDelete: false`, off for visible ones unless it says `true`. A helper stopped with
   `luna_kill` is never auto-deleted: a background one's conversation stays for `luna_send` to
   go on with, a visible one is not running until you resume it. One
@@ -420,7 +421,9 @@ background helper spawned without tools.
   `worktreeLeft`. Your own Delete asks you instead, as ever.
 - Deleting a parent by hand leaves its helpers as orphans, marked ↳ at the top level,
   unless you tick the box to take them along. Helpers deleted by their agent are gone for
-  good, transcript aside.
+  good, transcript aside; what those had spawned passes to that agent. A background helper
+  with no parent left is listed under "Helpers with no chat" at the end of the chat list, to
+  stop, open or delete, and goes by itself half an hour after it is done.
 - `luna_read` reads the transcript, not the screen; `luna_wait` returns the reply itself —
   everything the helper said since it was asked, the report first — for an agent that needs
   it in the same turn (past 60,000 characters either is cut: `luna_read` says how many
@@ -441,11 +444,35 @@ background helper spawned without tools.
   or start the next one, so Luna gives the CLI 8 seconds after a turn ends to start another
   before it takes that turn as the answer.
 - The notice is one short line: what happened, how many messages the helper wrote since it
-  was asked, and a file with all of them — the report (the longest message) first, then the
+  was asked, the first line of its report, and a file with all of them — the report (the
+  longest message) first, then the
   last one, then the rest — so a closing "that was a stale wakeup, nothing changed" does not
   hide the report before it. A `luna_read` collects the answer only when it returns all of
   it, uncut, and the helper is done: one while it is still at work, or one with only the
   last message of several, does not count, and the notice still comes.
+- A turn that stopped on an error (a usage limit, an API error, a crash, a kill) is reported as
+  that, with the reason, not as finished; `luna_wait` has it as `failed`.
+- A helper that ended its turn with a job still running, or helpers of its own still to answer
+  it, is announced as not done once. The next notice comes when that is over or it ends a turn
+  of its own: a turn it only ran on a Luna notice does not count, unless the notice was its own
+  helper's and that was the last answer it waited for. So two chats with a stray process each
+  do not keep waking each other.
+- If a chat still gets more than 12 turn-end notices about one session in 15 minutes, Luna
+  stops telling it of that session's turns and jobs, says so in the log and once on the desktop,
+  and goes on when you type into either chat. Its prompts and questions still come: a helper is
+  never left on a prompt until it times out.
+- Luna types into a terminal one thing at a time, notices, sends and answers alike, so nothing
+  lands inside a paste or in the way of a draft coming back. A send that cannot get its turn in
+  time is held like one a draft is in the way of.
+- A background helper's prompts each have an `id` in `ask`, which `luna_answer` takes as
+  `askId`: an answer written on one cannot land on the next. Without it, an answer is taken only
+  when one is held.
+- `luna_wait` also takes several sessions (`ids`, `mode: "any"` or `"all"`) and says which
+  finished. `luna_list` shows, for each helper, when its turn began, when it last did
+  anything, the full model id it ran on and what it spent: tokens, plus the cost where the
+  CLI states it (Claude Code does, Codex does not). Visible sessions show less: Codex its
+  token total, Claude Code none. An agent also gets a notice when an account its helpers run
+  on reaches 90% and then 95% of a usage window, once each until that window resets.
 
 ## Power
 
