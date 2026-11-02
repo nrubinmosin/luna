@@ -16,17 +16,19 @@ can start other sessions and work with them.
   a chat between its turns. `visible: true` makes it a normal chat row instead, nested under
   yours, that the user can type into.
 - Each `luna_list` row also says:
-  - `turnStartedAt`: when the turn on now began; null between turns. `lastActivityAt`: the
-    last thing Luna saw it do: a background helper's last event, a visible session's last
-    transcript write. A long command or think shows nothing until it ends, so a quiet session
-    is not yet a stuck one. Times are UTC ISO.
-  - `resolvedModel`: the full model id the CLI used, after its first turn (Codex: what its
-    rollout says the turn ran on, or the `<to>` of a `model rerouted` message).
+  - `turnStartedAt`: when the turn on now began; null between turns. `lastActivityAt`: its
+    last event (a visible session's last transcript write); a long command or think shows
+    nothing until it ends, so quiet is not stuck. Times are UTC ISO.
+  - `resolvedModel`: the full model id a model answered on; null until one has (Codex: what
+    its rollout says the turn ran on, or the `<to>` of a `model rerouted` message).
   - `spend`: `session` and `lastTurn`, each `input` (no cache), `output`, `cacheRead`,
     `cacheWrite`, and `costUsd`: Claude Code's estimate, not a bill; Codex states none. A turn
     killed before it ended counts too, Claude Code's as tokens only; `lastTurn` is left out
     when it cannot be told. Visible sessions: Codex gives `session` only, Claude Code none,
     and a helper opened as a chat stops being counted.
+  - `leftRunning`: what its turns left running, between turns: `exe`, `pid`, `startedAt`,
+    `active` (CPU or I/O in the last 10 min), `quietMin`. It keeps the PC awake until idle 2 h
+    on end. `luna_kill` ends a background helper's alone (the user's Stop too).
 - You kill and delete only sessions you spawned and theirs. Any other session you can read,
   wait on and send text to. A deleted parent's helper passes to its parent; with none, only
   the user can stop or delete it, and a background one goes once idle for 30 min.
@@ -45,20 +47,18 @@ can start other sessions and work with them.
   or unknown, else the most room. `accountChoice` says which and why.
 - Accounts of one provider differ: personal or team plans, different organizations, their
   own allowed models and their own quota. `defaults` in `luna_list` come from the account's
-  and the project's settings. A usage window near 100% means a helper there may stop
-  on its limit. When an account one of your live helpers runs on reaches 90%, then 95%, of a
-  window, a notice says so, once each until it resets. The numbers are the
-  ones Luna's window keeps, so with no window open none come.
-- If the CLI swaps a model the organization does not allow, the spawn reports it in
-  `warnings`.
+  and the project's settings. A usage window near 100% means a helper there may stop on its
+  limit. When an account your live helpers run on reaches 90%, then 95%, of a window, a
+  notice says so, once each until it resets (by the figures Luna's window keeps: none open,
+  no notice).
+- A model the organization does not allow, swapped by the CLI, is in the spawn's `warnings`.
 
 ## Spawning
 - Codex's `approval`: auto-review has a reviewer model answer what Codex would ask
   (workspace-write only); on-request is for visible ones: a background Codex has nobody to
-  ask, and runs with never unless told auto-review, the sandbox being what holds it. Whether
-  it runs the project's hooks without Codex's trust prompt is the user's
-  setting for that folder, not a spawn option; without it a background Codex runs untrusted
-  hooks not at all, and a visible one stops on the prompt. A background Codex trusts the
+  ask, and runs with never unless told auto-review, the sandbox being what holds it. Running
+  the project's hooks past Codex's trust prompt is the user's setting per folder: without it
+  a background Codex skips untrusted hooks, a visible one stops on it. A background Codex trusts the
   folder it is sent to for its run, so the project's own `.codex/` config loads; a visible
   one in a folder Codex does not trust yet has Luna trust it for that account.
 - Codex's network: none in `read-only` or, unless its config says so, `workspace-write`, but
@@ -73,9 +73,8 @@ can start other sessions and work with them.
 - `worktree: true` shares no files or git with the sessions in that folder; the result
   names the worktree and branch, or `worktreePending` until the CLI has made it. `sameFolder`
   lists live sessions working in the same directory.
-- In the result, for a background helper `started` means its process is up. For a visible
-  one, false means it was not seen on the prompt within 30 s, and `screen` shows why: an
-  unknown slash command, a login screen, a dialog (then `ask` too).
+- `started`: a background helper's process is up; a visible one was seen on its prompt within
+  30 s, else `screen` shows why (a dialog: `ask` too).
 - A prompt over 8,000 characters reaches a visible session as a file it is told to read.
 
 ## Getting the answer
@@ -83,13 +82,16 @@ can start other sessions and work with them.
   something, stops on a prompt or exits, Luna types one line into your chat starting with
   `[Luna notice, not typed by the user]`. It says what happened and how many messages the
   session wrote since it was asked, and names a file holding them: the report (the longest
-  message) first, then the last message, then the rest in order. The notice quotes only the
-  report's first line, cut to about 150 characters (`It begins: "…"`), and not of a turn that
-  stopped on an error, which it says.
-  It is delivered when your chat is between turns and the user is not typing in it.
-- "NOT done yet": a job it started still runs, or its own helpers have yet to answer it. Said
-  once; the next notice comes when that is over or a turn of its own ends, not one it only ran
-  on a Luna notice, unless that was its own helper's last answer.
+  message; if all are short, the last) first, then the last message, then the rest in order.
+  The notice quotes only the report's first line, cut to about 150 characters (`It begins:
+  "…"`), and not of a turn that stopped on an error, which it says.
+  It comes when your chat is between turns and the user is not typing in it.
+- "NOT done yet": a job it started still runs (named), or its own helpers have yet to answer
+  it. Said once; the next notice comes when that is over or a turn of its own ends (all of it
+  idle 30 min: one more says so; it may be stuck or waiting), not one it only ran
+  on a Luna notice: unless that was its own helper's last answer, or, to you its parent, one on
+  its helpers' notices that wrote a message of 400+ characters. A background Claude Code
+  helper's own `run_in_background` job keeps its turn going: `working` until it ends, one notice.
 - Past 12 turn-end notices about one session in 15 minutes Luna stops telling you of its turns
   and jobs (the last says so; its prompts and questions still come) until a person types into
   either chat; `luna_wait` and `luna_read` still work.
@@ -106,21 +108,18 @@ can start other sessions and work with them.
   single wait returns, with `id`. Under `any` the others come back `pending`, or `timeout`,
   and are still owed. Their replies share one result: past 60,000 characters in all the
   longest are cut, and each names a file with the whole.
-- A `luna_wait` still running when the answer comes hands it over instead of the notice;
-  one your CLI moves to the background still returns, with no notice besides. One you
-  cancel or interrupt hands nothing over, and the notice comes as usual. A wait on several
-  holds each answer until it returns; a cancel gives them all back.
+- A `luna_wait` running when the answer comes hands it over instead of the notice, one your
+  CLI moved to the background too. One you cancel or interrupt hands nothing over (one on
+  several: none of them), and the notice comes as usual.
 - Without `afterTurn`, a wait is for the answer you are still owed, else for a turn past the
   last count you were shown.
 - `luna_read` with `since` and `last` gives the last N after the cursor, which goes past all
   of them. `tools: true` is Claude Code only; `screen: true` gives a background helper's last
-  log lines. A read with `last` that is cut keeps the newest (the older: an earlier `since`). A single message past 60,000
-  characters is cut short; the transcript `luna_sessions` names has it whole.
-- A read that returns everything a session said since you asked, whole, after it finished,
-  collects the answer: no notice follows. One with only the last message of several, or
-  from a cursor taken after you asked, does not.
-- Asked again before an answer reached you, the next reply, read or
-  notice covers everything said since the first question.
+  log lines. A message past 60,000 characters is cut; `luna_sessions`' transcript has it whole.
+- A read of all a session said since you asked, whole, after it finished, collects the answer:
+  no notice follows. Not one of only the last of several, or from a cursor taken since.
+- Asked again before an answer reached you, the next reply, read or notice covers all since the
+  first question.
 - A core restart stops a background helper's turn and what its turns left running (off Windows
   only if it died). You stay owed: once your chat is back (given up after 10 minutes) a notice
   says it did NOT finish; `luna_send` has it carry on. What you queued never reached it: the
@@ -140,23 +139,21 @@ can start other sessions and work with them.
 ## Answering and steering
 - A session in state `question` or `waiting` has an `ask`: the questions with their
   options, or the tool up for permission. In `luna_answer` an option's number counts from 1.
-  It returns `state`, `ask` and the `screen` after it. A background helper's `ask` has an `id`: pass it as `askId`, so your answer cannot land on the next one;
-  a stale id is refused, and so is no id with several held.
-- A visible Codex that stops on a list of its own — "Hooks need review" at startup, say —
-  has it as a question too; its options are the only answers it takes. A spawn that did not
-  start because of one returns it as `ask`.
+  It returns `state`, `ask` and the `screen` after it. A background helper's `ask` has an
+  `id`: pass it as `askId`, so your answer cannot land on the next one; a stale or unknown id
+  is refused, and so is no id with several held.
+- A visible Codex stopped on a list of its own ("Hooks need review" at startup) has it as a
+  question too, its options the only answers it takes; a spawn it kept back returns it as `ask`.
 - A background Claude Code helper's questions and permission prompts come to you this way, one
   at a time. A background Codex helper's are in its reply.
 - `luna_send` sent while a session works is `queued`: a visible session's CLI takes it into
   the running turn or the next, a background helper always the next; `luna_wait` with the
   `turnsEnded` returned waits for whichever answers it. `interrupt: true` makes the text the
   next turn, behind any queued (`queued` if that turn would not stop). Where the user is
-  typing, or has left an unsent draft Luna cannot put aside
-  (Claude Code's is put aside and comes back; Codex's cannot be), the result says
-  `held: true`: Luna types the text in once they are done, and the answer comes as a
-  notice, or to a `luna_wait`, which waits for the text to go in first. Do not send it
-  again.
+  typing, or has left an unsent draft Luna cannot put aside (Claude Code's is put aside and
+  comes back; Codex's cannot be), the result says `held: true`: Luna types it in once they
+  are done, and a `luna_wait` waits for that first. Do not send it again.
 - `autoDelete`: Luna deletes the helper 30 minutes after its answer reached you, not while a
-  job or helper of its runs; a read or a send in between starts the 30 minutes over
-  (`deletesInMin` in `luna_list` counts down). The worktree stays. Off for visible ones unless
-  `true`. A helper the user typed into, or one you killed, is never auto-deleted.
+  job or helper of its runs (processes idle 2 h on end do not count: they go with it, and you
+  hear so); a read or a send starts that over (`deletesInMin` counts down). The worktree stays. Off
+  for visible ones unless `true`. One the user typed into, or you killed, is never deleted.
