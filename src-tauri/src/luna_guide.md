@@ -155,6 +155,6 @@ can start other sessions and work with them.
   comes back; Codex's cannot be), the result says `held: true`: Luna types it in once they
   are done, and a `luna_wait` waits for that first. Do not send it again.
 - `autoDelete`: Luna deletes the helper 30 minutes after its answer reached you, not while a
-  job or helper of its runs; a read or a send in between starts the 30 minutes over
-  (`deletesInMin` in `luna_list` counts down). The worktree stays. Off for visible ones unless
-  `true`. A helper the user typed into, or one you killed, is never auto-deleted.
+  job or helper of its runs (processes idle past the 30-min notice do not count, and go with
+  it); a read or a send starts that over (`deletesInMin` counts down). The worktree stays. Off
+  for visible ones unless `true`. One the user typed into, or you killed, is never deleted.

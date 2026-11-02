@@ -677,7 +677,9 @@ src-tauri/src/
   what the frontend shows in the Accounts window, sent as `account_usage` on every change:
   the core does not go to the limits endpoints itself.
   **autoDelete.** `reap` on every notifier pass: a helper with no debt either way, no `wait` on it, no helper of its
-  own still there, nothing left running and no turn (or one that exited) for 30 min in a row is deleted as via `delete`, without its worktree; to the log —
+  own still there, nothing at work left running (`job_at_work`: leftovers idle past `IDLE_JOB_MS`, which its caller
+  has been told of, do not count, and `remove` ends them) and no turn (or one that exited) for 30 min in a row is
+  deleted as via `delete`, without its worktree; to the log —
   `auto-deleted`. Any `read`/`wait`/`send` on it (`shown`) starts the 30 min over, and `list` shows what is left
   (`deletesInMin`). If the person ever typed into it (`typed_ago_ms`), or an agent `kill`ed it, Luna leaves it
   alone. Before any delete of a spawned session `remove` writes a `left` line to `agents.jsonl` — transcript
