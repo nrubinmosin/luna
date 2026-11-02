@@ -601,6 +601,33 @@ pub fn last_model(path: &Path) -> Option<String> {
 
 /// The thread's running token totals as a rollout last counted them, the whole
 /// file read only when a turn with much output has pushed them out of the tail.
+/// The model of the last turn that was answered: the latest `turn_context` (or
+/// reroute) that a `token_count` with usage came after. The rollout names a
+/// turn's model before asking it, so the latest alone may be one that never
+/// answered — not there, or not allowed.
+pub fn answered_model(path: &Path) -> Option<String> {
+    let answered_in = |text: &str| {
+        let (mut asked, mut answered) = (None::<String>, None::<String>);
+        for line in text.lines() {
+            let model = line.contains("\"turn_context\"") || line.contains("\"model_reroute\"");
+            if !model && !(line.contains("\"token_count\"") && asked.is_some()) {
+                continue;
+            }
+            let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+            let payload = &v["payload"];
+            if model {
+                asked = payload["to_model"].as_str().or(payload["model"].as_str()).map(str::to_owned).or(asked);
+            } else if payload["info"].is_object() {
+                answered = asked.clone();
+            }
+        }
+        answered
+    };
+    tail(path, 128 * 1024)
+        .and_then(|t| answered_in(&t))
+        .or_else(|| std::fs::read(path).ok().and_then(|b| answered_in(&String::from_utf8_lossy(&b))))
+}
+
 pub fn last_total_usage(path: &Path) -> Option<Value> {
     let total_in = |text: &str| {
         text.lines().rev().filter(|l| l.contains("\"total_token_usage\"")).find_map(|line| {
@@ -733,6 +760,15 @@ mod tests {
         );
         std::fs::write(&path, head).unwrap();
         assert_eq!(last_model(&path).as_deref(), Some("gpt-6.1-sol"));
+        assert_eq!(answered_model(&path).as_deref(), Some("gpt-6.1-sol"));
+        // A turn on a model that never answered: named, and no more.
+        let asked = r#"{"timestamp":"t","type":"turn_context","payload":{"model":"gpt-0-missing","effort":"low"}}"#;
+        std::fs::write(&path, format!("{head}{asked}\n")).unwrap();
+        assert_eq!(last_model(&path).as_deref(), Some("gpt-0-missing"));
+        assert_eq!(answered_model(&path).as_deref(), Some("gpt-6.1-sol"), "the last one that answered");
+        std::fs::write(&path, format!("{asked}\n")).unwrap();
+        assert_eq!(answered_model(&path), None, "none has yet");
+        std::fs::write(&path, head).unwrap();
         let tail = read_tail(&path);
         assert_eq!(tail.model.as_deref(), Some("gpt-6.1-sol"));
         let total = crate::background::Usage::of_codex(&tail.total_usage.unwrap());

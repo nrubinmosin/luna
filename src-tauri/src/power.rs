@@ -29,6 +29,10 @@ const COUNTDOWN_MS: u64 = 60_000;
 /// so a night that ends with the PC still on can be read back.
 const BLOCKED_LOG_MIN_MS: u64 = 60_000;
 const BLOCKED_LOG_EVERY_MS: u64 = 10 * 60_000;
+/// While the awake hold stands, the log says this often what keeps it: a hold
+/// set in the evening and still on in the morning said nothing more, and
+/// nobody could tell why the PC had stayed up.
+const HOLD_LOG_EVERY_MS: u64 = 60 * 60_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -91,6 +95,9 @@ struct State {
     /// the hold was let go: Windows sleeps at that moment when nobody has
     /// touched the PC for longer than its sleep timeout.
     held_by: String,
+    /// When the hold was set, and when the log last said what keeps it.
+    held_since_ms: u64,
+    hold_logged_ms: u64,
     /// The last state sent to the UI, to send only changes.
     last_sent: Option<PowerState>,
     firing: bool,
@@ -224,6 +231,8 @@ pub fn tick(summary: &Summary) {
                 if on && st.holding {
                     let why = if summary.busy > 0 { busy_now() } else { "armed".to_string() };
                     crate::log::warn("power", &format!("awake hold set: {why}"));
+                    st.held_since_ms = now;
+                    st.hold_logged_ms = now;
                 } else if !on && !st.holding {
                     crate::log::warn("power", &format!("awake hold let go: nothing busy for a minute; last held by {}", st.held_by));
                 }
@@ -251,6 +260,11 @@ pub fn tick(summary: &Summary) {
 
     if st.holding && summary.busy > 0 {
         st.held_by = busy_now();
+        if now.saturating_sub(st.hold_logged_ms) >= HOLD_LOG_EVERY_MS {
+            st.hold_logged_ms = now;
+            let hours = now.saturating_sub(st.held_since_ms) / (60 * 60_000);
+            crate::log::warn("power", &format!("awake hold kept for {hours} h: {}", st.held_by));
+        }
     }
 
     // -- say why an armed rule is not firing --------------------------------

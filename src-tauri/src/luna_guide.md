@@ -26,9 +26,9 @@ can start other sessions and work with them.
     killed before it ended counts too, Claude Code's as tokens only; `lastTurn` is left out
     when it cannot be told. Visible sessions: Codex gives `session` only, Claude Code none,
     and a helper opened as a chat stops being counted.
-  - `leftRunning`: a background helper's leftovers between turns, each `exe`, `pid`,
-    `startedAt`, `active` (CPU or I/O in the last 10 min; only those keep the PC awake) and
-    `quietMin`. `luna_kill` (or the user's Stop) then ends them.
+  - `leftRunning`: what its turns left running, between turns: `exe`, `pid`, `startedAt`,
+    `active` (CPU or I/O in the last 10 min; only those keep the PC awake), `quietMin`.
+    `luna_kill` ends a background helper's alone (the user's Stop too).
 - You kill and delete only sessions you spawned and theirs. Any other session you can read,
   wait on and send text to. A deleted parent's helper passes to its parent; with none, only
   the user can stop or delete it, and a background one goes once idle for 30 min.
@@ -87,8 +87,8 @@ can start other sessions and work with them.
   "…"`), and not of a turn that stopped on an error, which it says.
   It comes when your chat is between turns and the user is not typing in it.
 - "NOT done yet": a job it started still runs (named), or its own helpers have yet to answer
-  it. Said once; the next notice comes when that is over (or, a background helper's, all of it
-  has been idle for 30 min: that notice says so) or a turn of its own ends, not one it only ran
+  it. Said once; the next notice comes when that is over (or all of it has been idle for
+  30 min: that notice says so) or a turn of its own ends, not one it only ran
   on a Luna notice: unless that was its own helper's last answer, or, to you its parent, one on
   its helpers' notices that wrote a message of 400+ characters. A background Claude Code
   helper's own `run_in_background` job keeps its turn going: `working` until it ends, one notice.

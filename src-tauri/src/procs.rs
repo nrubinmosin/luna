@@ -498,11 +498,117 @@ pub fn end_leftovers(job: &Job, keep: Option<u32>) -> Vec<String> {
     end_all(&children(Some(job), keep))
 }
 
-/// `end_leftovers` for what in the job was born at `since_ms` or later: what
-/// one turn started, and not what an earlier one left running.
-pub fn end_born_since(job: &Job, since_ms: u64) -> Vec<String> {
-    let born: Vec<ProcRead> = children(Some(job), None).into_iter().filter(|r| r.started_ms >= since_ms).collect();
+/// `end_leftovers` for what one turn started: what in the job was born at
+/// `since_ms` or later, but not what an earlier turn's leftovers (`earlier`, by
+/// pid and start) started meanwhile — a server's worker, a build's next step,
+/// which are theirs. Followed up through parents in the job, each born before
+/// the child it is taken for the parent of, so a reused pid is no parent.
+pub fn end_born_since(job: &Job, since_ms: u64, earlier: &[Leftover]) -> Vec<String> {
+    let reads = children(Some(job), None);
+    let edges = imp::parents();
+    let parent_of = |r: &ProcRead| edges.iter().find(|(pid, _)| *pid == r.pid).map(|(_, ppid)| *ppid);
+    let theirs = |r: &ProcRead| {
+        if earlier.iter().any(|l| l.pid == r.pid && l.started_ms == r.started_ms) {
+            return true;
+        }
+        let mut at = *r;
+        for _ in 0..32 {
+            let Some(ppid) = parent_of(&at) else { return false };
+            if earlier.iter().any(|l| l.pid == ppid && l.started_ms <= at.started_ms) {
+                return true;
+            }
+            match reads.iter().find(|p| p.pid == ppid && p.started_ms <= at.started_ms) {
+                Some(p) => at = *p,
+                None => return false,
+            }
+        }
+        false
+    };
+    let born: Vec<ProcRead> = reads.iter().filter(|r| r.started_ms >= since_ms && !theirs(r)).copied().collect();
     end_all(&born)
+}
+
+/// A process a session's turns left running past their end — a helper's in its
+/// job, a chat's under its CLI — as last read, and when it was last at work.
+/// One model for both: what `luna_list` names, what holds the machine, and what
+/// a turn that comes to nothing may end of its own (`end_born_since`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Leftover {
+    pub pid: u32,
+    pub exe: String,
+    pub started_ms: u64,
+    pub cpu_ms: u64,
+    pub io_bytes: u64,
+    /// When it was read.
+    pub read_ms: u64,
+    /// When it was last at work, or first seen.
+    pub moved_ms: u64,
+}
+
+/// A leftover is at work while it uses at least this much CPU per second of
+/// the time between two reads (1% of a core), or moves LEFTOVER_IO_PER_S
+/// bytes. Measured on Windows: a `tail -F` polling its file uses about 1 ms a
+/// second and 300 bytes of I/O, a `ping` none and 100; a compiler, a test run
+/// or a download is far past both.
+pub const LEFTOVER_CPU_MS_PER_S: u64 = 10;
+pub const LEFTOVER_IO_PER_S: u64 = 16 * 1024;
+/// The shortest stretch a rate is taken over: Windows counts CPU time in ticks
+/// of 15.6 ms, one of which over a second or so reads as a busy process. A read
+/// sooner after the last (a stop's) is measured with the next.
+pub const LEFTOVER_WINDOW_MS: u64 = 4_000;
+/// A leftover that has not been at work for this long holds the machine awake
+/// no longer: a forgotten `tail -F` or a server waiting on its socket kept a PC
+/// up all night. Long enough for a real job's quiet stretch (a link, a test on
+/// a timeout, a build the Docker CLI only waits on while it prints nothing).
+pub const LEFTOVER_AWAKE_MS: u64 = 10 * 60 * 1000;
+
+/// Each process of `now` with when it was last at work, by the rates it moved at
+/// since `old` read it. One not in `old` is new: as good as at work, its turn
+/// having just ended or it having just started.
+pub fn leftovers(old: &[Leftover], now: Vec<(ProcRead, String)>, at: u64) -> Vec<Leftover> {
+    now.into_iter()
+        .map(|(r, exe)| {
+            let moved_ms = match old.iter().find(|o| o.pid == r.pid && o.started_ms == r.started_ms) {
+                Some(o) if at.saturating_sub(o.read_ms) < LEFTOVER_WINDOW_MS => return Leftover { exe, ..o.clone() },
+                Some(o) => {
+                    let ms = at.saturating_sub(o.read_ms).max(1);
+                    let cpu = r.cpu_ms.saturating_sub(o.cpu_ms);
+                    let io = r.io_bytes.saturating_sub(o.io_bytes);
+                    let working = cpu.saturating_mul(1000) >= LEFTOVER_CPU_MS_PER_S * ms || io.saturating_mul(1000) >= LEFTOVER_IO_PER_S * ms;
+                    if working { at } else { o.moved_ms }
+                }
+                None => at,
+            };
+            Leftover { pid: r.pid, exe, started_ms: r.started_ms, cpu_ms: r.cpu_ms, io_bytes: r.io_bytes, read_ms: at, moved_ms }
+        })
+        .collect()
+}
+
+impl Leftover {
+    /// At work within LEFTOVER_AWAKE_MS: it holds the machine.
+    pub fn at_work(&self, now: u64) -> bool {
+        now.saturating_sub(self.moved_ms) < LEFTOVER_AWAKE_MS
+    }
+
+    /// "tail.exe (pid 22104)".
+    pub fn label(&self) -> String {
+        format!("{} (pid {})", self.exe, self.pid)
+    }
+}
+
+/// How long all of these have done nothing, the least of them; None for none.
+pub fn quiet_ms(left: &[Leftover], now: u64) -> Option<u64> {
+    left.iter().map(|l| now.saturating_sub(l.moved_ms)).min()
+}
+
+/// A few of them by `label`, for a notice.
+pub fn left_names(left: &[Leftover]) -> String {
+    const SHOWN: usize = 3;
+    let mut names: Vec<String> = left.iter().take(SHOWN).map(Leftover::label).collect();
+    if left.len() > SHOWN {
+        names.push(format!("{} more", left.len() - SHOWN));
+    }
+    names.join(", ")
 }
 
 fn end_all(left: &[ProcRead]) -> Vec<String> {
@@ -530,19 +636,18 @@ pub struct Busy {
 
 /// Compares two samples of the same session's children. `born_after_ms` is
 /// when the CLI began its first turn (0 = never): a process born after that
-/// is the model's doing — a background job it means to come back to — and
-/// counts while it lives, however long after its turn: nothing tells a job
-/// that waits a day for its moment from one forgotten, and a machine let
-/// sleep or shut down on a guess stops work only a person can restart. The
-/// MCP servers and shells
-/// that came up with the session are furniture and only count while they
-/// move, as do the CLIs' own helpers (`without_furniture`).
-pub fn judge(prev: &[ProcRead], now: &[ProcRead], born_after_ms: u64, min_cpu_ms: u64) -> Option<Busy> {
+/// is the model's doing — a background job it means to come back to — and is
+/// `young` while it lives, however long after its turn: its session's job is
+/// not over. Whether it holds the machine is its `Leftover`'s to say, by what
+/// it does. The MCP servers and shells that came up with the session are
+/// furniture and only count while they move (`min_cpu_ms`, `min_io_bytes` since
+/// the last sample), as do the CLIs' own helpers (`without_furniture`).
+pub fn judge(prev: &[ProcRead], now: &[ProcRead], born_after_ms: u64, min_cpu_ms: u64, min_io_bytes: u64) -> Option<Busy> {
     let mut active = Vec::new();
     let mut young = Vec::new();
     for p in now {
         if let Some(q) = prev.iter().find(|q| q.pid == p.pid && q.started_ms == p.started_ms) {
-            if p.cpu_ms.saturating_sub(q.cpu_ms) >= min_cpu_ms || p.io_bytes > q.io_bytes {
+            if p.cpu_ms.saturating_sub(q.cpu_ms) >= min_cpu_ms || p.io_bytes.saturating_sub(q.io_bytes) >= min_io_bytes {
                 active.push(p.pid);
             }
         }
@@ -576,6 +681,66 @@ pub fn without_furniture(busy: Option<Busy>) -> Option<Busy> {
         b.young.retain(|p| !furniture.contains(p));
     }
     (!b.active.is_empty() || !b.young.is_empty()).then_some(b)
+}
+
+/// What tests that start processes share: real ones, ended however a test
+/// ends, a panic included, and none that runs on unbounded if one is missed.
+#[cfg(all(test, windows))]
+pub(crate) mod testkit {
+    /// Processes a test starts, ended when it is dropped. A test binary killed
+    /// outright takes them along by the job `job_of` ties them in.
+    pub struct Kids(pub Vec<std::process::Child>);
+
+    impl Drop for Kids {
+        fn drop(&mut self) {
+            for c in &mut self.0 {
+                let _ = c.kill();
+                let _ = c.wait();
+            }
+        }
+    }
+
+    pub fn hidden(exe: &str, args: &[&str]) -> std::process::Child {
+        use std::os::windows::process::CommandExt;
+        std::process::Command::new(exe)
+            .args(args)
+            .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap()
+    }
+
+    /// A ping that sits there for at most `secs`.
+    pub fn idler(secs: u32) -> std::process::Child {
+        hidden("ping", &["-n", &secs.to_string(), "127.0.0.1"])
+    }
+
+    /// A loop that burns a core for at most `secs`.
+    pub fn burner(secs: u32) -> std::process::Child {
+        let script = format!("$end = [DateTime]::Now.AddSeconds({secs}); while ([DateTime]::Now -lt $end) {{ }}");
+        hidden("powershell", &["-NoProfile", "-NonInteractive", "-Command", &script])
+    }
+
+    /// A job for a test's processes, tied as a helper's is: they go with the
+    /// test binary should it die.
+    pub fn job_of(first: &std::process::Child) -> std::sync::Arc<super::Job> {
+        let job = super::adopt(first.id()).unwrap();
+        super::tie(&job, "test");
+        std::sync::Arc::new(job)
+    }
+
+    pub fn ended_within(c: &mut std::process::Child, ms: u64) -> bool {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(ms);
+        while std::time::Instant::now() < deadline {
+            if c.try_wait().unwrap().is_some() {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        false
+    }
 }
 
 #[cfg(test)]
@@ -643,25 +808,51 @@ mod tests {
         ProcRead { pid, cpu_ms, io_bytes, started_ms }
     }
 
+    /// The rates a leftover counts as at work by, on figures as Windows gave them
+    /// for a `tail -F` and a `ping` left running, and for real work.
+    #[test]
+    fn a_leftover_is_at_work_by_what_it_uses_not_by_being_there() {
+        let read = |pid: u32, cpu_ms: u64, io_bytes: u64| (ProcRead { pid, cpu_ms, io_bytes, started_ms: 7 }, format!("p{pid}"));
+        let first = leftovers(&[], vec![read(1, 16, 20_000), read(2, 31, 19_000), read(3, 500, 0), read(4, 0, 0)], 1_000);
+        assert!(first.iter().all(|l| l.moved_ms == 1_000), "new, as good as at work");
+        let old = first.iter().map(|l| Leftover { moved_ms: 0, ..l.clone() }).collect::<Vec<_>>();
+        // Five seconds on.
+        let next = leftovers(&old, vec![read(1, 31, 21_400), read(2, 31, 19_500), read(3, 3_000, 0), read(4, 0, 900_000)], 6_000);
+        let moved: Vec<bool> = next.iter().map(|l| l.moved_ms == 6_000).collect();
+        assert_eq!(moved, [false, false, true, true], "tail -F, ping: idle; a compiler, a download: at work");
+        // A second on, one tick of CPU is no rate yet: measured with the next.
+        let soon = leftovers(&old, vec![read(1, 32, 20_000)], 2_000);
+        assert_eq!((soon[0].moved_ms, soon[0].read_ms, soon[0].cpu_ms), (0, 1_000, 16));
+        // A pid taken by another process is a new one.
+        let reborn = leftovers(&old, vec![(ProcRead { pid: 1, cpu_ms: 31, io_bytes: 21_400, started_ms: 8 }, "p1".into())], 6_000);
+        assert_eq!(reborn[0].moved_ms, 6_000);
+        assert_eq!(left_names(&next), "p1 (pid 1), p2 (pid 2), p3 (pid 3), 1 more");
+        assert_eq!(quiet_ms(&next, 6_000 + LEFTOVER_AWAKE_MS), Some(LEFTOVER_AWAKE_MS));
+        assert!(next[2].at_work(6_000 + LEFTOVER_AWAKE_MS - 1) && !next[0].at_work(LEFTOVER_AWAKE_MS));
+    }
+
     #[test]
     fn quiet_furniture_is_not_busy() {
         let prev = [p(10, 100, 1000, 1_000)];
         let now = [p(10, 100, 1000, 1_000)];
-        assert_eq!(judge(&prev, &now, 5_000, 50), None);
+        assert_eq!(judge(&prev, &now, 5_000, 50, 1024), None);
     }
 
     #[test]
     fn cpu_growth_is_busy() {
         let prev = [p(10, 100, 0, 1_000)];
         let now = [p(10, 180, 0, 1_000)];
-        assert_eq!(judge(&prev, &now, 0, 50).unwrap().active, vec![10]);
+        assert_eq!(judge(&prev, &now, 0, 50, 1024).unwrap().active, vec![10]);
     }
 
     #[test]
     fn io_growth_is_busy_even_without_cpu() {
         let prev = [p(10, 100, 500, 1_000)];
-        let now = [p(10, 101, 900, 1_000)];
-        assert_eq!(judge(&prev, &now, 0, 50).unwrap().active, vec![10]);
+        let now = [p(10, 101, 90_000, 1_000)];
+        assert_eq!(judge(&prev, &now, 0, 50, 64 * 1024).unwrap().active, vec![10]);
+        // A `tail -F`'s polling of its file is no work.
+        let polled = [p(10, 101, 1_900, 1_000)];
+        assert_eq!(judge(&prev, &polled, 0, 50, 64 * 1024), None);
     }
 
     #[test]
@@ -669,7 +860,7 @@ mod tests {
         // Born after the first turn started, no CPU at all: `sleep 90` in the background.
         let prev = [p(10, 0, 0, 9_000)];
         let now = [p(10, 0, 0, 9_000)];
-        let b = judge(&prev, &now, 8_000, 50).unwrap();
+        let b = judge(&prev, &now, 8_000, 50, 1024).unwrap();
         assert!(b.active.is_empty());
         assert_eq!(b.young, vec![10]);
     }
@@ -678,7 +869,7 @@ mod tests {
     fn a_child_older_than_the_first_turn_is_furniture() {
         let prev = [p(10, 0, 0, 7_000)];
         let now = [p(10, 0, 0, 7_000)];
-        assert_eq!(judge(&prev, &now, 8_000, 50), None);
+        assert_eq!(judge(&prev, &now, 8_000, 50, 1024), None);
     }
 
     #[test]
@@ -707,6 +898,6 @@ mod tests {
     fn pid_reuse_does_not_count_as_growth() {
         let prev = [p(10, 5000, 0, 1_000)];
         let now = [p(10, 10, 0, 2_000)]; // same pid, a different process
-        assert_eq!(judge(&prev, &now, 0, 50), None);
+        assert_eq!(judge(&prev, &now, 0, 50, 1024), None);
     }
 }
