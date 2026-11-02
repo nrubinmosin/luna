@@ -601,6 +601,44 @@ pub fn last_model(path: &Path) -> Option<String> {
 
 /// The thread's running token totals as a rollout last counted them, the whole
 /// file read only when a turn with much output has pushed them out of the tail.
+/// The model of the last turn that was answered: the latest `turn_context` (or
+/// reroute) after which the thread's running total of tokens grew. The rollout
+/// names a turn's model before asking it, so the latest alone may be one that
+/// never answered — not there, or not allowed — and a `token_count` is written
+/// again unchanged (rate limits renewed), which is no answer either. The tail
+/// does not say what the total stood at before its first count, so that count
+/// says nothing there; failing the tail, the whole file is read from nothing.
+pub fn answered_model(path: &Path) -> Option<String> {
+    let answered_in = |text: &str, from: Option<u64>| {
+        let (mut asked, mut answered, mut total) = (None::<String>, None::<String>, from);
+        for line in text.lines() {
+            let model = line.contains("\"turn_context\"") || line.contains("\"model_reroute\"");
+            if !model && !line.contains("\"token_count\"") {
+                continue;
+            }
+            let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+            let payload = &v["payload"];
+            if model {
+                asked = payload["to_model"].as_str().or(payload["model"].as_str()).map(str::to_owned).or(asked);
+                continue;
+            }
+            let usage = &payload["info"]["total_token_usage"];
+            if !usage.is_object() {
+                continue;
+            }
+            let now = usage["input_tokens"].as_u64().unwrap_or(0) + usage["output_tokens"].as_u64().unwrap_or(0);
+            if total.is_some_and(|before| now > before) && asked.is_some() {
+                answered = asked.clone();
+            }
+            total = Some(now);
+        }
+        answered
+    };
+    tail(path, 128 * 1024)
+        .and_then(|t| answered_in(&t, None))
+        .or_else(|| std::fs::read(path).ok().and_then(|b| answered_in(&String::from_utf8_lossy(&b), Some(0))))
+}
+
 pub fn last_total_usage(path: &Path) -> Option<Value> {
     let total_in = |text: &str| {
         text.lines().rev().filter(|l| l.contains("\"total_token_usage\"")).find_map(|line| {
@@ -733,6 +771,19 @@ mod tests {
         );
         std::fs::write(&path, head).unwrap();
         assert_eq!(last_model(&path).as_deref(), Some("gpt-6.1-sol"));
+        assert_eq!(answered_model(&path).as_deref(), Some("gpt-6.1-sol"));
+        // A turn on a model that never answered: named, and no more.
+        let asked = r#"{"timestamp":"t","type":"turn_context","payload":{"model":"gpt-0-missing","effort":"low"}}"#;
+        std::fs::write(&path, format!("{head}{asked}\n")).unwrap();
+        assert_eq!(last_model(&path).as_deref(), Some("gpt-0-missing"));
+        assert_eq!(answered_model(&path).as_deref(), Some("gpt-6.1-sol"), "the last one that answered");
+        // A count written again unchanged as the next turn starts is no answer.
+        let again = r#"{"timestamp":"t","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":32377,"cached_input_tokens":27776,"output_tokens":10},"last_token_usage":{"total_tokens":16867}}}}"#;
+        std::fs::write(&path, format!("{head}{asked}\n{again}\n")).unwrap();
+        assert_eq!(answered_model(&path).as_deref(), Some("gpt-6.1-sol"), "unchanged: no answer of the new one");
+        std::fs::write(&path, format!("{asked}\n")).unwrap();
+        assert_eq!(answered_model(&path), None, "none has yet");
+        std::fs::write(&path, head).unwrap();
         let tail = read_tail(&path);
         assert_eq!(tail.model.as_deref(), Some("gpt-6.1-sol"));
         let total = crate::background::Usage::of_codex(&tail.total_usage.unwrap());

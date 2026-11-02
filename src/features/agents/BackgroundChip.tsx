@@ -185,6 +185,8 @@ function HelperList({ helpers, anchor, onClose }: { helpers: BackgroundHelperDto
       {helpers.map(h => {
         const line = askLine(h);
         const busy = h.state === 'working' || h.state === 'waiting' || h.state === 'question';
+        // Between turns, what its turns left running is what there is to stop.
+        const left = h.state === 'background' ? h.leftRunning ?? [] : [];
         return (
           <div key={h.id} style={{ display: 'grid', gap: 4 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
@@ -213,7 +215,11 @@ function HelperList({ helpers, anchor, onClose }: { helpers: BackgroundHelperDto
               >
                 Open as chat
               </button>
-              <button disabled={!busy} onClick={act('stopping a helper', () => backgroundKill(h.id))}>
+              <button
+                disabled={!busy && left.length === 0}
+                title={left.length > 0 ? `End what its turn left running: ${left.join(', ')}` : undefined}
+                onClick={act('stopping a helper', () => backgroundKill(h.id))}
+              >
                 Stop
               </button>
               <button onClick={act('deleting a helper', () => backgroundDelete(h.id))}>Delete</button>

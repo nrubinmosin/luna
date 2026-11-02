@@ -145,6 +145,25 @@ fn same_place(a: &str, b: &str) -> bool {
     norm(a) == norm(b) || matches!((std::fs::canonicalize(a), std::fs::canonicalize(b)), (Ok(x), Ok(y)) if x == y)
 }
 
+/// The CLI-made worktree `path` is in, itself or a folder of its checkout, with
+/// the project it belongs to: a session's cwd follows its shell's `cd` (Claude Code
+/// moves its own with it), and where it works is the worktree all the same. Its
+/// root is the nearest folder up that is one of the project's worktrees by shape,
+/// or by its `.git` file (one made from inside another worktree). `project_of`
+/// knows a Codex worktree by its root alone, so a folder of one is looked up from.
+pub fn root_of(path: &str) -> Option<(String, String)> {
+    let codex = || Path::new(path).ancestors().map(|d| d.to_string_lossy().into_owned()).find(|d| codex_shaped(d) && repo_of_linked(d).is_some());
+    let project = project_of(path).or_else(|| project_of(&codex()?))?;
+    let mut dir = Path::new(path);
+    loop {
+        let d = dir.to_string_lossy();
+        if is_worktree_of(&project, &d) || repo_of_linked(&d).is_some_and(|r| same_place(&r, &project)) {
+            return Some((d.into_owned(), project));
+        }
+        dir = dir.parent()?;
+    }
+}
+
 /// Branch checked out in the given worktree, per `git worktree list`.
 pub fn branch_of(folder: &str, worktree_path: &str) -> Option<String> {
     let out = git(folder)
@@ -1007,6 +1026,30 @@ mod tests {
         assert_eq!(of(&worktrees), None, "the folder that holds them");
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_cwd_inside_a_worktree_is_that_worktree() {
+        let s = |p: &Path| p.to_string_lossy().into_owned();
+        let root = |p: &Path| root_of(&s(p)).map(|(wt, project)| (norm(&wt), norm(&project)));
+        // Gone, as a clean one is between turns, from a project gone too: its shape.
+        let gone = std::env::temp_dir().join(format!("luna-root-of-gone-{}", std::process::id())).join("x");
+        let wt = gone.join(".claude").join("worktrees").join("a-b-c");
+        let want = Some((norm(&s(&wt)), norm(&s(&gone))));
+        assert_eq!(root(&wt), want);
+        assert_eq!(root(&wt.join("src-tauri").join("src")), want, "a shell that went into it");
+        assert_eq!(root(&gone.join("src")), None, "no worktree");
+        assert_eq!(root(&gone.join(".claude").join("worktrees")), None);
+        // Real ones, by what git says of them.
+        let Some((tmp, repo, codex)) = codex_layout("root") else { return };
+        assert_eq!(root(&Path::new(&codex).join("src")), Some((norm(&codex), norm(&repo))), "Codex's own shape");
+        let claude = Path::new(&repo).join(".claude").join("worktrees").join("real");
+        assert!(git(&repo).args(["worktree", "add", "-q", "-b", "worktree-real", &s(&claude)]).output().is_ok_and(|o| o.status.success()));
+        std::fs::create_dir_all(claude.join("src").join("deep")).unwrap();
+        assert_eq!(root(&claude.join("src").join("deep")), Some((norm(&s(&claude)), norm(&repo))));
+        let _ = remove_worktree_now(repo.clone(), codex);
+        let _ = remove_worktree_now(repo, s(&claude));
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]

@@ -211,7 +211,7 @@ fn tools() -> Value {
     json!([
         {
             "name": "luna_list",
-            "description": "Your id (me), sessions you spawned (state, ask, turnsEnded, worktree, deletesInMin, turnStartedAt, lastActivityAt, resolvedModel, spend) and accounts you may use: models, a helper's defaults in your folder, usage (% per window, resets).",
+            "description": "Your id (me), sessions you spawned (state, ask, turnsEnded, worktree, deletesInMin, turnStartedAt, lastActivityAt, resolvedModel, spend, leftRunning) and accounts you may use: models, a helper's defaults in your folder, usage (% per window, resets).",
             "inputSchema": s(json!({}), &[]),
             "annotations": reads
         },
@@ -298,7 +298,7 @@ fn tools() -> Value {
         },
         {
             "name": "luna_kill",
-            "description": "Stop a session's process (a background helper: its turn), not auto-deleted. A background one goes on with luna_send, a visible one once the user resumes it.",
+            "description": "Stop a session's process: a background helper's turn (no autoDelete after; luna_send goes on), between turns its leftRunning (ended); a visible one's, till resumed.",
             "inputSchema": s(json!({ "id": { "type": "string" } }), &["id"]),
             "annotations": ends
         },
@@ -461,7 +461,7 @@ fn run(caller: &str, params: &Value, this: &Call) -> Value {
             this,
         )
         .map(|w| json!(w)),
-        "luna_kill" => agents::kill(caller, &id).map(|()| json!({ "ok": true })),
+        "luna_kill" => agents::kill(caller, &id).map(|k| json!(k)),
         "luna_delete" => agents::delete(caller, &id, a["dropWorktree"].as_bool().unwrap_or(false), a["force"].as_bool().unwrap_or(false))
             .map(|r| json!(r)),
         "luna_notify" => agents::notify(caller, a["text"].as_str().unwrap_or("")).map(|()| json!({ "ok": true })),
