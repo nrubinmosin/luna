@@ -43,6 +43,10 @@ pub struct Spec {
     pub folder: String,
     /// A worktree of its own, made by the CLI on the first turn.
     pub worktree: bool,
+    /// What Luna named that worktree (`agents::helper_worktree_name`): Claude Code's,
+    /// as Codex takes no name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_name: Option<String>,
     pub model: Option<String>,
     pub effort: String,
     /// Claude: the permission mode. Codex: the sandbox.
@@ -616,11 +620,16 @@ fn command_for(e: &Entry, id: &str) -> (Vec<String>, String, Vec<(&'static str, 
                     args.extend(["--resume".into(), sid.clone()]);
                 }
                 (Some(sid), Some(wt)) => {
-                    let name = std::path::Path::new(wt).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                    args.extend(["--worktree".into(), name, "--resume".into(), sid.clone()]);
+                    let name = std::path::Path::new(wt).file_name().map(|n| n.to_string_lossy().into_owned());
+                    // By a name that will do, or it stays where it is: no worktree of
+                    // any other name is the one this conversation was in.
+                    if let Some(name) = name.filter(|n| crate::worktree::name_ok(n)) {
+                        args.push(crate::worktree::worktree_arg(Some(&name)));
+                    }
+                    args.extend(["--resume".into(), sid.clone()]);
                 }
                 (Some(sid), None) => args.extend(["--resume".into(), sid.clone()]),
-                (None, _) if s.worktree => args.push("--worktree".into()),
+                (None, _) if s.worktree => args.push(crate::worktree::worktree_arg(s.worktree_name.as_deref())),
                 (None, _) => {}
             }
             if let Some(agent) = &s.agent {
@@ -893,6 +902,7 @@ fn turn_base(id: &str) -> Option<Usage> {
 
 fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
     let base = turn_base(id);
+    settle_worktree(id);
     let (args, dir, envs, provider, on_stdin) = {
         let r = lock();
         if r.closed {
@@ -968,8 +978,10 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
         format!("could not start {}: {e}", provider.as_str())
     })?;
     let pid = Some(child.id());
-    // Into the helper's job before it has had time to start anything.
+    // Into the helper's job before it has had time to start anything. What is
+    // waited for here is not waited for with every helper's lock held.
     if let Some(pid) = pid {
+        crate::procs::await_environment(pid);
         if let Some(e) = lock().entries.get_mut(id) {
             match &e.job {
                 Some(job) => {
@@ -1983,6 +1995,10 @@ fn snapshot() -> Vec<Saved> {
     // first where both are held.
     for s in &mut saved {
         s.ties = crate::agents::ties_of(&s.id).unwrap_or_default();
+        // Its CLI has said where it works.
+        if s.session.is_some() || s.cwd.is_some() {
+            s.ties.worktrees_before = None;
+        }
     }
     saved.sort_by_key(|s| s.started_ms);
     saved
@@ -2167,15 +2183,11 @@ fn home_of(spec: &Spec, cwd: String) -> String {
     if let Some((root, _)) = crate::worktree::root_of(&cwd).filter(|_| spec.worktree) {
         return root;
     }
-    let mut dir = cwd.trim_end_matches(['\\', '/']);
-    loop {
-        if crate::pty::same_dir(dir, &spec.folder) {
-            return spec.folder.clone();
-        }
-        match dir.rfind(['\\', '/']) {
-            Some(at) => dir = &dir[..at],
-            None => return cwd,
-        }
+    let inside = std::path::Path::new(&cwd).ancestors().any(|dir| crate::pty::same_dir(&dir.to_string_lossy(), &spec.folder));
+    if inside {
+        spec.folder.clone()
+    } else {
+        cwd
     }
 }
 
@@ -2194,6 +2206,30 @@ pub fn told_parent_for_test(id: &str) -> Option<String> {
 /// nothing it did can be carried on from.
 pub fn never_started(id: &str) -> bool {
     lock().entries.get(id).is_some_and(|e| e.cut_short && e.session.is_none())
+}
+
+/// A helper a core's going stopped before its CLI said where it works: what its next
+/// turn does of the worktree that turn began, and what its parent hears of it. Claude
+/// Code goes back into the one Luna named if that is still as made (`agents::
+/// name_to_go_on`), and Codex makes another, naming none. A first turn no core cut off
+/// is no business of this: it has not been stopped.
+pub fn settle_worktree(id: &str) {
+    let (provider, folder, account, name) = {
+        let r = lock();
+        let Some(e) = r.entries.get(id).filter(|e| e.cut_short && e.session.is_none() && e.spec.worktree) else { return };
+        (e.spec.provider, e.spec.folder.clone(), e.spec.account_path.clone(), e.spec.worktree_name.clone())
+    };
+    match (provider, name) {
+        (Provider::Codex, _) => crate::agents::report_codex_worktrees(id, &folder, &account),
+        (Provider::Claude, None) => {}
+        (Provider::Claude, Some(name)) => {
+            let name = crate::agents::name_to_go_on(id, &name, &folder, &account);
+            if let Some(e) = lock().entries.get_mut(id) {
+                e.spec.worktree_name = name;
+            }
+            save();
+        }
+    }
 }
 
 /// What never reached it that `caller` is to hear of (`Entry::undelivered`):
@@ -2288,6 +2324,7 @@ pub fn test_helper(id: &str, account_path: &str, session: Option<&str>, busy: bo
             account_path: account_path.into(),
             folder: account_path.into(),
             worktree: false,
+            worktree_name: None,
             model: None,
             effort: "low".into(),
             mode: "default".into(),
@@ -2622,22 +2659,29 @@ mod tests {
     /// with an `init` that says where its shell went with `cd`.
     #[test]
     fn where_a_helper_works_does_not_follow_its_shell() {
-        let wt = r"C:\p\.claude\worktrees\joyful-dragonfly";
+        // A project and worktree gone from disk, where the shape is all there is.
+        let s = |p: &std::path::Path| p.to_string_lossy().into_owned();
+        let project = std::env::temp_dir().join(format!("luna-home-of-{}", std::process::id())).join("p");
+        let wt = s(&project.join(".claude").join("worktrees").join("joyful-dragonfly"));
+        let inside = |dir: &str, parts: &[&str]| s(&parts.iter().fold(std::path::PathBuf::from(dir), |p, part| p.join(part)));
         let mut e = entry(Provider::Claude);
+        e.spec.folder = s(&project);
         e.spec.worktree = true;
         let init = |cwd: &str| json!({ "type": "system", "subtype": "init", "session_id": "s", "cwd": cwd });
-        on_claude_event(&mut e, &init(wt));
-        on_claude_event(&mut e, &init(&format!(r"{wt}\src-tauri\src")));
-        assert_eq!(e.cwd.as_deref(), Some(wt));
+        on_claude_event(&mut e, &init(&wt));
+        on_claude_event(&mut e, &init(&inside(&wt, &["src-tauri", "src"])));
+        assert_eq!(e.cwd.as_deref(), Some(wt.as_str()));
         // What an older core saved with the shell's move in it.
-        assert_eq!(home_of(&e.spec, format!(r"{wt}\src-tauri\src")), wt);
-        assert_eq!(home_of(&e.spec, wt.to_string()), wt);
+        assert_eq!(home_of(&e.spec, inside(&wt, &["src-tauri", "src"])), wt);
+        assert_eq!(home_of(&e.spec, wt.clone()), wt);
         let mut plain = entry(Provider::Claude);
-        assert_eq!(home_of(&plain.spec, r"C:\p\src".into()), r"C:\p", "the folder it was sent to");
-        assert_eq!(home_of(&plain.spec, r"D:\elsewhere".into()), r"D:\elsewhere", "nothing to go by");
+        plain.spec.folder = s(&project);
+        assert_eq!(home_of(&plain.spec, inside(&plain.spec.folder, &["src"])), plain.spec.folder, "the folder it was sent to");
+        let elsewhere = s(&std::env::temp_dir().join("luna-elsewhere"));
+        assert_eq!(home_of(&plain.spec, elsewhere.clone()), elsewhere, "nothing to go by");
         // Sent into a folder of a worktree, that folder is where it works.
-        plain.spec.folder = format!(r"{wt}\docs");
-        assert_eq!(home_of(&plain.spec, format!(r"{wt}\docs\img")), format!(r"{wt}\docs"));
+        plain.spec.folder = inside(&wt, &["docs"]);
+        assert_eq!(home_of(&plain.spec, inside(&wt, &["docs", "img"])), plain.spec.folder);
     }
 
     #[test]
@@ -2680,6 +2724,7 @@ mod tests {
                 account_path: "C:\\acc".into(),
                 folder: "C:\\p".into(),
                 worktree: false,
+                worktree_name: None,
                 model: Some("haiku".into()),
                 effort: "low".into(),
                 mode: "read-only".into(),
@@ -3165,6 +3210,46 @@ mod tests {
         let at = args.iter().position(|a| a == "--resume").unwrap();
         assert_eq!(args[at + 1], "s-1");
         assert!(envs.iter().any(|(k, v)| *k == "CLAUDE_CONFIG_DIR" && v == "C:\\acc"));
+    }
+
+    #[test]
+    fn a_helpers_worktree_goes_by_the_name_luna_gave_it_never_as_an_argument_of_its_own() {
+        const FLAG: &str = "--dangerously-skip-permissions";
+        // Named, with `=`, from the project.
+        let mut e = entry(Provider::Claude);
+        e.spec.worktree = true;
+        e.spec.worktree_name = Some("luna-x".into());
+        let (args, dir, _) = command_for(&e, "x");
+        assert!(args.contains(&"--worktree=luna-x".to_string()) && !args.contains(&"--worktree".to_string()));
+        assert_eq!(dir, "C:\\p");
+        assert!(!args.iter().any(|a| a == "--resume"), "there is no conversation to resume");
+
+        // A name that is a flag turns permissions off, as Claude Code reads it, if it
+        // ever gets to be an argument: not from the spec, and not from where it worked.
+        e.spec.worktree_name = Some(FLAG.into());
+        let (args, _, _) = command_for(&e, "x");
+        assert!(args.contains(&"--worktree".to_string()) && !args.iter().any(|a| a.contains(FLAG)), "{args:?}");
+        e.session = Some("s-1".into());
+        e.cwd = Some(std::path::Path::new("C:\\no\\such").join(FLAG).to_string_lossy().into_owned());
+        let (args, _, _) = command_for(&e, "x");
+        assert!(args.contains(&"--resume".to_string()) && !args.iter().any(|a| a.contains(FLAG)), "{args:?}");
+        e.cwd = Some(std::path::Path::new("C:\\no\\such").join("luna-x").to_string_lossy().into_owned());
+        assert!(command_for(&e, "x").0.contains(&"--worktree=luna-x".to_string()), "gone from disk, Claude Code makes it again by name");
+
+        // Codex names none, and always makes its own.
+        let mut e = entry(Provider::Codex);
+        e.spec.worktree = true;
+        let (args, _, _) = command_for(&e, "x");
+        assert_eq!(args[..3], ["exec", "-C", "C:\\p"]);
+        assert!(args.contains(&"--worktree".to_string()));
+
+        // No core has cut off a first turn that is only just starting.
+        let mut e = entry(Provider::Claude);
+        e.spec.worktree = true;
+        e.spec.worktree_name = Some("luna-first".into());
+        lock().entries.insert("first-turn".into(), e);
+        settle_worktree("first-turn");
+        assert_eq!(lock().entries.remove("first-turn").unwrap().spec.worktree_name.as_deref(), Some("luna-first"));
     }
 
     fn value_of<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {

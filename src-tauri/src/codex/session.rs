@@ -16,6 +16,7 @@
 //! resumed one is found by the uuid in its name. Either way the answer is
 //! remembered per chat, so two chats in one folder never share a file.
 
+use crate::paths::path_key_loose as norm_path;
 use crate::pty::{sane_title, tail, title_from_prompt, CliTitle, SessionMeta};
 use chrono::{Datelike, Local, NaiveDate, NaiveDateTime, TimeZone, Timelike};
 use serde_json::Value;
@@ -40,10 +41,6 @@ pub struct Live<'a> {
 
 fn sessions_dir(account_path: &str) -> PathBuf {
     Path::new(account_path).join("sessions")
-}
-
-fn norm_path(p: &str) -> String {
-    p.replace('/', "\\").trim_end_matches('\\').to_lowercase()
 }
 
 /// `rollout-2026-09-17T14-03-22-<uuid>.jsonl` → (local time, uuid). A name
@@ -340,6 +337,22 @@ fn ask_of(args: &Value, blocking: bool) -> Option<crate::agents::Ask> {
         })
         .collect();
     (!questions.is_empty()).then(|| crate::agents::Ask::question(questions, blocking))
+}
+
+/// The rollouts a terminal session started at or after `since_ms` in this folder, or
+/// in a worktree of it, whichever chat's they are.
+pub fn rollouts_since(account_path: &str, folder: &str, since_ms: u64) -> Vec<PathBuf> {
+    let Some(since) = Local.timestamp_millis_opt(since_ms as i64).single().map(|t| t.naive_local()) else { return Vec::new() };
+    let want = norm_path(folder);
+    let ours = |cwd: &str| norm_path(cwd) == want || (crate::worktree::codex_shaped(cwd) && crate::worktree::project_of(cwd).is_some_and(|p| norm_path(&p) == want));
+    // Its name has it to the second, and the clocks may differ by a few.
+    let not_before = since - chrono::Duration::seconds(5);
+    rollouts_on(account_path, days_back(Local::now().date_naive(), 2))
+        .into_iter()
+        .filter(|(ts, _, _)| *ts >= not_before)
+        .filter(|(_, _, p)| first_line(p).is_some_and(|v| v["payload"]["source"] == "cli" && v["payload"]["cwd"].as_str().is_some_and(&ours)))
+        .map(|(_, _, p)| p)
+        .collect()
 }
 
 /// The rollout file this live session writes to, once it exists.

@@ -4,6 +4,7 @@
 //! (context usage, the titles the CLI gave it, opening prompt). All of it is
 //! free to read — no tokens.
 
+use crate::paths::path_key_loose as norm_path;
 use crate::pty::{sane_title, CliTitle, SessionMeta};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -269,10 +270,6 @@ fn read_first_prompt(account_path: &str, cwd: &str, session_id: &str) -> Option<
     None
 }
 
-fn norm_path(p: &str) -> String {
-    p.replace('/', "\\").trim_end_matches('\\').to_lowercase()
-}
-
 fn parse_session_file(path: &Path) -> Option<serde_json::Value> {
     serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
 }
@@ -341,6 +338,31 @@ pub fn live_cwds(account_path: &str) -> Vec<String> {
         .collect()
 }
 
+/// `live_cwds`, of the entries whose process is still there: one killed leaves its
+/// entry behind.
+pub fn running_cwds(account_path: &str) -> Vec<String> {
+    let dir = Path::new(account_path).join("sessions");
+    let Ok(entries) = std::fs::read_dir(&dir) else { return vec![] };
+    entries
+        .flatten()
+        .filter_map(|e| parse_session_file(&e.path()))
+        .filter(|v| v["pid"].as_u64().is_some_and(|pid| crate::procs::alive(pid as u32)))
+        .filter_map(|v| v["cwd"].as_str().map(str::to_owned))
+        .collect()
+}
+
+/// The transcripts begun at or after `since_ms` by sessions that started in one of
+/// these folders, each of which has a folder of its own under the account.
+pub fn transcripts_since(account_path: &str, cwds: &[String], since_ms: u64) -> Vec<PathBuf> {
+    let since = std::time::UNIX_EPOCH + std::time::Duration::from_millis(since_ms);
+    let began = |p: &Path| std::fs::metadata(p).ok().and_then(|m| m.created().or_else(|_| m.modified()).ok()).is_some_and(|t| t >= since);
+    cwds.iter()
+        .filter_map(|cwd| std::fs::read_dir(Path::new(account_path).join("projects").join(encode_project_dir(cwd))).ok())
+        .flat_map(|dir| dir.flatten().map(|e| e.path()).collect::<Vec<_>>())
+        .filter(|p| p.extension().is_some_and(|e| e == "jsonl") && began(p))
+        .collect()
+}
+
 /// Finds the CLI's registry entry for a pty session: by pid when that matches;
 /// else, for a resumed one, by the session it was told to resume; else by cwd +
 /// start time. Launcher shims give the pty a different pid than the CLI process
@@ -370,7 +392,7 @@ fn registry_entry(
     // The folder itself or one under it (a `--worktree` session reports its
     // worktree), not a sibling that shares the prefix: `luna` is not `luna-site`.
     let want = norm_path(cwd);
-    let under = format!("{want}\\");
+    let under = format!("{want}{}", crate::paths::KEY_SEP);
     let mut best: Option<(u64, serde_json::Value)> = None;
     for v in entries {
         if v["entrypoint"] != "cli" {
