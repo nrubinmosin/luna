@@ -5329,8 +5329,9 @@ pub fn notify(caller: &str, text: &str) -> Result<(), String> {
 /// Deletes the `autoDelete` helpers that are done with: nobody is owed their
 /// answer or waiting on them, nothing is owed to them, no helper of theirs is
 /// still there, and they have sat idle — or exited — for AUTO_DELETE_IDLE_MS
-/// since. One a person has typed into is theirs now and stays. Its worktree
-/// stays too, with whatever work is in it.
+/// since. Idle with processes left is idle once those have done nothing for
+/// IDLE_JOB_MS (`job_at_work`); they go with it. One a person has typed into is
+/// theirs now and stays. Its worktree stays too, with whatever work is in it.
 fn reap(pty: &crate::pty::PtyManager) {
     let ids: Vec<String> = reg().lock().unwrap_or_else(|e| e.into_inner()).auto.keys().cloned().collect();
     for id in ids {
@@ -5340,9 +5341,11 @@ fn reap(pty: &crate::pty::PtyManager) {
         }
         // Between turns with no job left running; what its terminal last drew
         // and when does not matter here.
-        let idle = !live(pty, &id)
-            || crate::activity::turn_state(&id)
-                .is_some_and(|t| t.turn == crate::activity::Turn::Idle && !t.children_busy);
+        // Between turns with no job at work: nothing left running, or only what
+        // has sat idle for IDLE_JOB_MS, which its caller has been told of and
+        // which goes with it (`remove` ends what is left in its job).
+        let ts = crate::activity::turn_state(&id);
+        let idle = !live(pty, &id) || (ts.is_some_and(|t| t.turn == crate::activity::Turn::Idle) && !job_at_work(&id, ts, true));
         // Gone, it would take with it what its own helpers are to answer it,
         // and what it would make of that.
         let below = descendants(&reg().lock().unwrap_or_else(|e| e.into_inner()), &id);
@@ -7964,6 +7967,36 @@ mod tests {
         reap(&pty);
         assert_eq!(since(), None, "a follow-up starts it over");
         reg().lock().unwrap().auto.remove("ad-child");
+    }
+
+    /// An `autoDelete` helper kept forever by a `tail -F` that does nothing: once
+    /// all it left has sat idle past IDLE_JOB_MS (its caller told so), it goes as
+    /// any idle one does, and that with it; a leftover at work still keeps it.
+    #[test]
+    fn an_auto_delete_helper_with_only_idle_leftovers_goes_as_usual() {
+        register("ai-top", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, serde_json::json!({}));
+        register("ai-s", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("ai-top"), false, serde_json::json!({ "background": true }));
+        crate::background::idle_for_test("ai-s", Provider::Claude, 1, false);
+        reg().lock().unwrap().auto.insert("ai-s".into(), Auto::default());
+        let since = || reg().lock().unwrap().auto.get("ai-s").and_then(|a| a.idle_since);
+        let pty = crate::pty::manager();
+        let left = |quiet_ms: u64| crate::background::left_for_test("ai-s", &[("tail.exe", 22104, quiet_ms)]);
+        left(0);
+        reap(&pty);
+        assert_eq!(since(), None, "a leftover at work keeps it");
+        left(IDLE_JOB_MS - 60_000);
+        reap(&pty);
+        assert_eq!(since(), None, "quiet, but not for long enough to be told of");
+        left(IDLE_JOB_MS + 60_000);
+        reap(&pty);
+        assert!(since().is_some(), "only idle processes left: the clock runs as for any idle helper");
+        left(0);
+        reap(&pty);
+        assert_eq!(since(), None, "at work again: it starts over");
+        reg().lock().unwrap().auto.remove("ai-s");
+        crate::background::gone_for_test("ai-s");
+        forget("ai-s");
+        forget("ai-top");
     }
 
     /// The loop of that night: two chats that wrote to each other, a stray

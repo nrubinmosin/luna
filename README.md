@@ -436,7 +436,8 @@ background helper spawned without tools.
 - `autoDelete` has Luna delete the helper once its answer has reached the agent and it has sat
   idle for 30 minutes; the agent reading it or writing to it starts that over, and `luna_list`
   shows the minutes left (`deletesInMin`). It waits for a job the helper left running and for
-  helpers of its own. It is on for background helpers unless the spawn says
+  helpers of its own; processes it left that have done nothing for the 30 minutes its agent
+  was told of do not count, and go with it. It is on for background helpers unless the spawn says
   `autoDelete: false`, off for visible ones unless it says `true`. A helper stopped with
   `luna_kill` is never auto-deleted: a background one's conversation stays for `luna_send` to
   go on with, a visible one is not running until you resume it. One
