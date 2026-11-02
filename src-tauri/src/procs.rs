@@ -481,9 +481,11 @@ fn shown(reads: &[ProcRead], windowed: &std::collections::HashSet<u32>, edges: &
 pub fn left_in(job: &Job) -> Vec<(ProcRead, String)> {
     let reads = children(Some(job), None);
     let names = imp::names(&reads.iter().map(|r| r.pid).collect::<Vec<_>>());
+    // Names come from a snapshot of every process: one not in it has gone since
+    // the job was read (a launcher on its way out).
     reads
         .into_iter()
-        .map(|r| (r, names.iter().find(|(p, _)| *p == r.pid).map_or_else(|| r.pid.to_string(), |(_, n)| n.clone())))
+        .filter_map(|r| Some((r, names.iter().find(|(p, _)| *p == r.pid)?.1.clone())))
         .filter(|(_, name)| !is_furniture(name))
         .collect()
 }
