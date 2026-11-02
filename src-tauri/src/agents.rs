@@ -578,6 +578,8 @@ struct Registry {
     /// How far each caller has been told a usage window has gone, by (caller,
     /// `provider/name`, the window's label).
     quota_told: HashMap<(String, String, String), QuotaTold>,
+    /// Lines for a caller's next notice that no debt brings: by caller.
+    news: Vec<(String, String)>,
 }
 
 /// A turn a Luna notice started. Told a session is not done yet, a caller is
@@ -691,6 +693,9 @@ struct Owed {
     /// when that ends or a turn no notice started does, not of every turn; a
     /// question asked since is a new debt.
     told_pending: bool,
+    /// The caller has been told all its job left has sat idle (IDLE_JOB_MS):
+    /// once per debt, which stays open for the job's end.
+    told_idle: bool,
     /// Which debt this is, whatever its numbers: asked again with nothing
     /// moved since, a new one has the same baseline and cursor as the old, and
     /// what was decided about the old is not to touch it.
@@ -716,6 +721,7 @@ impl Owed {
             job_went: false,
             unsure: false,
             told_pending: false,
+            told_idle: false,
         }
     }
 
@@ -762,6 +768,7 @@ fn reg() -> &'static Mutex<Registry> {
             stopped: HashMap::new(),
             exits: HashMap::new(),
             quota_told: HashMap::new(),
+            news: Vec::new(),
         })
     });
     // Tests assert with this held and all of them share it: one that fails is
@@ -4744,7 +4751,7 @@ fn wait_for(
         let mut job_done = false;
         if told_pending {
             let waits = waits_on_helpers(id, caller);
-            let job = job_at_work(id, ts, alive) || waits;
+            let job = (ts.is_some_and(|t| t.children_busy) && alive) || waits;
             // What it has said since the caller last heard, as a notice would go by.
             let upward = || {
                 let cursor = reg().lock().unwrap_or_else(|e| e.into_inner()).owed.get(&key).map(|o| o.cursor);
@@ -5329,8 +5336,8 @@ pub fn notify(caller: &str, text: &str) -> Result<(), String> {
 /// Deletes the `autoDelete` helpers that are done with: nobody is owed their
 /// answer or waiting on them, nothing is owed to them, no helper of theirs is
 /// still there, and they have sat idle — or exited — for AUTO_DELETE_IDLE_MS
-/// since. Idle with processes left is idle once those have done nothing for
-/// IDLE_JOB_MS (`job_at_work`); they go with it. One a person has typed into is
+/// since. Idle with processes left is idle once none of those holds the machine
+/// any more (`left_holds`); they go with it. One a person has typed into is
 /// theirs now and stays. Its worktree stays too, with whatever work is in it.
 fn reap(pty: &crate::pty::PtyManager) {
     let ids: Vec<String> = reg().lock().unwrap_or_else(|e| e.into_inner()).auto.keys().cloned().collect();
@@ -5340,12 +5347,14 @@ fn reap(pty: &crate::pty::PtyManager) {
             continue;
         }
         // Between turns with no job left running; what its terminal last drew
-        // and when does not matter here.
-        // Between turns with no job at work: nothing left running, or only what
-        // has sat idle for IDLE_JOB_MS, which its caller has been told of and
-        // which goes with it (`remove` ends what is left in its job).
+        // and when does not matter here. Or with only what has done nothing
+        // past LEFTOVER_HOLD_MS left: it holds nothing any more, it has had its
+        // caller told it sat idle, and it goes with the helper (`remove` ends
+        // what is left in its job), the debt for its end settled by one line.
         let ts = crate::activity::turn_state(&id);
-        let idle = !live(pty, &id) || (ts.is_some_and(|t| t.turn == crate::activity::Turn::Idle) && !job_at_work(&id, ts, true));
+        let between = ts.is_some_and(|t| t.turn == crate::activity::Turn::Idle);
+        let only_idle = between && ts.is_some_and(|t| t.children_busy) && !left_holds(&id);
+        let idle = !live(pty, &id) || (between && (ts.is_some_and(|t| !t.children_busy) || only_idle));
         // Gone, it would take with it what its own helpers are to answer it,
         // and what it would make of that.
         let below = descendants(&reg().lock().unwrap_or_else(|e| e.into_inner()), &id);
@@ -5353,7 +5362,7 @@ fn reap(pty: &crate::pty::PtyManager) {
         let known = {
             let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
             let quiet = !helpers_there
-                && !r.owed.keys().any(|(c, s)| *s == id || *c == id)
+                && !r.owed.iter().any(|((c, s), o)| (*s == id && !(only_idle && o.told_pending)) || *c == id)
                 && !r.waits.keys().any(|(_, s)| *s == id);
             let known = r.known.get(&id).cloned();
             let Some(a) = r.auto.get_mut(&id) else { continue };
@@ -5368,9 +5377,15 @@ fn reap(pty: &crate::pty::PtyManager) {
             a.deleting = true;
             known
         };
-        match known.map(|k| remove(&id, k, false, None)) {
-            Some(Ok(_)) => crate::log::info("agents", &format!("auto-deleted helper {}", label(&id))),
-            Some(Err(e)) => {
+        let left = only_idle.then(|| left_quiet(&id)).flatten();
+        match known.map(|k| (k.parent.clone(), remove(&id, k, false, None))) {
+            Some((parent, Ok(_))) => {
+                crate::log::info("agents", &format!("auto-deleted helper {}", label(&id)));
+                if let Some((quiet, names)) = left {
+                    reaped_with_leftovers(&id, parent, quiet, &names);
+                }
+            }
+            Some((_, Err(e))) => {
                 crate::log::warn("agents", &format!("could not auto-delete helper {}: {e}", label(&id)));
                 reg().lock().unwrap_or_else(|e| e.into_inner()).auto.remove(&id);
             }
@@ -5378,6 +5393,23 @@ fn reap(pty: &crate::pty::PtyManager) {
                 reg().lock().unwrap_or_else(|e| e.into_inner()).auto.remove(&id);
             }
         }
+    }
+}
+
+/// An `autoDelete` helper went with only idle leftovers: whoever was owed the
+/// end of its job is told, in one line, and owed nothing more; with nobody
+/// owed, its parent.
+fn reaped_with_leftovers(id: &str, parent: Option<String>, quiet_ms: u64, names: &str) {
+    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    let owed: Vec<String> = r.owed.keys().filter(|(_, s)| s == id).map(|(c, _)| c.clone()).collect();
+    r.owed.retain(|(_, s), _| s != id);
+    let line = format!(
+        "Your helper {id} was auto-deleted: its turn was long over and what it had left running had done nothing for {} min: {names}, which went with it.",
+        quiet_ms / 60_000
+    );
+    let to = if owed.is_empty() { parent.into_iter().collect() } else { owed };
+    for caller in to {
+        r.news.push((caller, line.clone()));
     }
 }
 
@@ -5494,6 +5526,8 @@ enum Settled {
     Asked(u64),
     /// A core's going stopped its turn and it went on by itself; told once.
     Resumed,
+    /// All its job left has sat idle for IDLE_JOB_MS; told once, and owed on.
+    Idle,
     Exited,
 }
 
@@ -6007,9 +6041,7 @@ fn notice_line(
     // in its turn until then); for anything else that job's end is all there
     // will be to hear of.
     let left = if ts.is_some_and(|t| t.children_busy) && alive { left_quiet(id) } else { None };
-    // All it left running has sat there doing nothing for long: no job at work.
-    let idle = left.as_ref().filter(|(quiet, _)| *quiet >= IDLE_JOB_MS);
-    let background = ts.is_some_and(|t| t.children_busy) && alive && idle.is_none();
+    let background = ts.is_some_and(|t| t.children_busy) && alive;
     let waits = waits_on_helpers(id, caller);
     let between_turns = turn != Some(crate::activity::Turn::Busy);
     let real_turn = o.told_pending && real_turn_past(id, caller, o.baseline, ended, waits, || between_turns && news_for_parent(pty, caller, id, k, o.cursor));
@@ -6019,6 +6051,20 @@ fn notice_line(
     }
     if now == Verdict::AtWork && o.held.is_some() {
         return Some((None, Settled::Unhold));
+    }
+    // Long idle is no proof of an end — a client waiting on work done
+    // elsewhere, a slow download — so the caller hears it once, and the debt
+    // stays open for that end.
+    if now == Verdict::AtWork && !o.told_idle {
+        if let Some((quiet, names)) = left.as_ref().filter(|(quiet, _)| *quiet >= IDLE_JOB_MS) {
+            return Some((
+                Some(format!(
+                    "{who} has only idle processes left, which have done nothing for {} min: {names}. They may be stuck or waiting on something; luna_kill ends them. You will still hear when they end.",
+                    quiet / 60_000
+                )),
+                Settled::Idle,
+            ));
+        }
     }
     if now == Verdict::JobOver && alive {
         // Its processes come and go between samples, and a job's end may be
@@ -6035,15 +6081,6 @@ fn notice_line(
                     n => format!("it wrote {n} messages since your last notice; {}{quoted}", answer_file(id, &said)),
                 };
                 let failed = failed.map_or(String::new(), |why| format!(" Its last turn stopped on an error: {}", sentence(&why)));
-                if let Some((quiet, names)) = idle {
-                    return Some((
-                        Some(format!(
-                            "{who} has only idle processes left, which have done nothing for {} min and will bring nothing by themselves: {names}. luna_kill ends them. As for its words, {said}.{failed}",
-                            quiet / 60_000
-                        )),
-                        Settled::Answered,
-                    ));
-                }
                 let since = if o.job_went { " that Luna's core has restarted" } else { "" };
                 Some((Some(format!("{who} has nothing left running now{since}, and {said}.{failed}")), Settled::Answered))
             }
@@ -6136,10 +6173,7 @@ fn notice_line(
         }
         // Too short a turn for a notice of its own in between.
         let resumed = if o.resumed { " Luna's core stopped it on the way and it resumed automatically." } else { "" };
-        let idle = idle.map_or(String::new(), |(quiet, names)| {
-            format!(" It left processes running that have done nothing for {} min: {names}; luna_kill ends them.", quiet / 60_000)
-        });
-        return Some((Some(format!("{who} finished its turn{reply}.{lost}{resumed}{unsure}{idle}")), Settled::Answered));
+        return Some((Some(format!("{who} finished its turn{reply}.{lost}{resumed}{unsure}")), Settled::Answered));
     }
     standing_line(pty, caller, who, id, k, o)
 }
@@ -6390,32 +6424,34 @@ fn anything_to_say(pty: &crate::pty::PtyManager, items: &[(String, Known, Owed, 
         let ended = ts.map(|t| t.turns_ended).unwrap_or(0);
         o.resumed
             || (ended > o.baseline && ts.map(|t| t.turn) != Some(crate::activity::Turn::Busy))
-            || job_over(id, o, ts)
+            || job_over(o, ts)
             || !live(pty, id)
     })
 }
 
 /// Whether a caller told a session is not done yet may have that session's job
-/// to hear of: between turns, with no job of its own at work (`job_at_work`). For
-/// the holds that wait on news; helpers still to answer it keep `notice_line` from
+/// to hear of: between turns, with nothing of its own left running. For the
+/// holds that wait on news; helpers still to answer it keep `notice_line` from
 /// saying so.
-fn job_over(id: &str, o: &Owed, ts: Option<crate::activity::TurnState>) -> bool {
-    o.told_pending && ts.is_some_and(|t| t.turn == crate::activity::Turn::Idle) && !job_at_work(id, ts, true)
+fn job_over(o: &Owed, ts: Option<crate::activity::TurnState>) -> bool {
+    o.told_pending && ts.is_some_and(|t| t.turn == crate::activity::Turn::Idle && !t.children_busy)
 }
 
 /// What a session's turns left running and has done nothing (no CPU, no I/O:
-/// `left_quiet`) for this long is no job at work: its caller
-/// is told so once, with what they are and how to end them, and the debt settles
-/// as at a job's end. A real job's quiet stretch is minutes (a link, a test on a
-/// timeout); half an hour of nothing is a `tail -F` or a server nobody uses, whose
-/// end would never come and whose caller would never hear. As long as an
-/// `autoDelete` helper waits once idle.
+/// `left_quiet`) for this long, its caller hears of once (`Settled::Idle`): that
+/// may be a job that is stuck, or one waiting on something, which its caller can
+/// end. Not its end, which doing nothing is no proof of: the debt stays open. A
+/// real job's quiet stretch is minutes (a link, a test on a timeout).
 const IDLE_JOB_MS: u64 = 30 * 60 * 1000;
 
-/// Whether `id` has a job at work between turns: what its turns left running,
-/// unless all of that has sat idle for IDLE_JOB_MS.
-fn job_at_work(id: &str, ts: Option<crate::activity::TurnState>, alive: bool) -> bool {
-    alive && ts.is_some_and(|t| t.children_busy) && !left_quiet(id).is_some_and(|(quiet, _)| quiet >= IDLE_JOB_MS)
+/// Whether anything a session's turns left still holds the machine
+/// (`procs::Leftover::holds`): with nothing that does, it is no job at work for
+/// `reap` either.
+fn left_holds(id: &str) -> bool {
+    if crate::background::has(id) {
+        return crate::background::left_holds(id);
+    }
+    crate::activity::children_hold(id)
 }
 
 /// Between turns, how long all a session's turns left running has done nothing,
@@ -6474,7 +6510,7 @@ fn held_for_wait(pty: &crate::pty::PtyManager, caller: &str, id: &str, o: &Owed)
     let other_news = (ended > o.baseline && turn != Some(crate::activity::Turn::Busy))
         || turn == Some(crate::activity::Turn::Waiting)
         || !alive;
-    let job_ended = alive && job_over(id, o, ts) && !waits_on_helpers(id, caller);
+    let job_ended = alive && job_over(o, ts) && !waits_on_helpers(id, caller);
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
     let Some(owed) = r.owed.get_mut(&key) else { return true };
     let job_news = job_ended && {
@@ -6738,6 +6774,18 @@ fn notifier() {
             by_caller.entry(caller.clone()).or_default();
         }
         settle_spawns(core_up_ms());
+        let mut news: HashMap<String, Vec<String>> = HashMap::new();
+        {
+            let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+            let Registry { news: queued, known, .. } = &mut *r;
+            queued.retain(|(caller, _)| known.contains_key(caller));
+            for (caller, line) in queued.iter() {
+                news.entry(caller.clone()).or_default().push(line.clone());
+            }
+        }
+        for caller in news.keys() {
+            by_caller.entry(caller.clone()).or_default();
+        }
         let mut spawns = spawn_news(core_up_ms());
         for caller in spawns.keys() {
             by_caller.entry(caller.clone()).or_default();
@@ -6816,6 +6864,8 @@ fn notifier() {
             }
             let quota_lines = quota.remove(&caller).unwrap_or_default();
             lines.extend(quota_lines.iter().map(|n| n.line.clone()));
+            let news_lines = news.remove(&caller).unwrap_or_default();
+            lines.extend(news_lines.iter().cloned());
             let spawn_lines = spawns.remove(&caller).unwrap_or_default();
             lines.extend(spawn_lines.iter().map(|(_, line)| line.clone()));
             if lines.is_empty() {
@@ -6829,7 +6879,7 @@ fn notifier() {
             let text = format!("{NOTICE_TAG} {}", lines.join(" "));
             let typed = std::thread::Builder::new().name("luna-notice".into()).spawn(move || {
                 let _typing = typing;
-                deliver_notice(&crate::pty::manager(), &caller, &text, settled, quota_lines, spawn_lines);
+                deliver_notice(&crate::pty::manager(), &caller, &text, settled, quota_lines, spawn_lines, news_lines);
             });
             if let Err(e) = typed {
                 crate::log::warn("agents", &format!("could not start typing a notice: {e}"));
@@ -6855,6 +6905,7 @@ fn deliver_notice(
     settled: Vec<(String, Settled, Owed)>,
     quota_lines: Vec<QuotaNews>,
     spawn_lines: Vec<(u64, String)>,
+    news_lines: Vec<String>,
 ) {
     let before = crate::activity::turn_state(caller);
     let baseline = before.map(|t| t.turns_ended).unwrap_or(0);
@@ -6873,12 +6924,13 @@ fn deliver_notice(
         .map(|(id, _, _)| label(id))
         .chain(quota_lines.iter().map(|n| format!("{} at {}%", n.key.1, n.told.level)))
         .chain(spawn_lines.iter().map(|(request, _)| format!("spawn {request}")))
+        .chain(news_lines.iter().map(|_| "an auto-delete".to_string()))
         .collect::<Vec<_>>()
         .join(", ");
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
     match typed {
         Ok(None) => {
-            r.notices_held.insert(caller.to_string(), settled.len() + quota_lines.len() + spawn_lines.len());
+            r.notices_held.insert(caller.to_string(), settled.len() + quota_lines.len() + spawn_lines.len() + news_lines.len());
         }
         _ => {
             r.notices_held.remove(caller);
@@ -6917,6 +6969,7 @@ fn deliver_notice(
             for n in quota_lines {
                 r.quota_told.insert(n.key, n.told);
             }
+            r.news.retain(|(c, line)| !(c == caller && news_lines.contains(line)));
             let told_spawns = !spawn_lines.is_empty();
             for (request, _) in spawn_lines {
                 r.spawns.remove(&request);
@@ -6968,6 +7021,11 @@ fn settle_told(r: &mut Registry, key: (String, String), how: Settled, told: &Owe
         Settled::Resumed => {
             if let Some(o) = r.owed.get_mut(&key) {
                 o.resumed = false;
+            }
+        }
+        Settled::Idle => {
+            if let Some(o) = r.owed.get_mut(&key) {
+                o.told_idle = true;
             }
         }
         Settled::Hold(_) | Settled::Unhold | Settled::Skip(_) => {}
@@ -7970,31 +8028,47 @@ mod tests {
     }
 
     /// An `autoDelete` helper kept forever by a `tail -F` that does nothing: once
-    /// all it left has sat idle past IDLE_JOB_MS (its caller told so), it goes as
-    /// any idle one does, and that with it; a leftover at work still keeps it.
+    /// all it left has sat idle past its grace (LEFTOVER_HOLD_MS, its caller told
+    /// of it long before), it goes as any idle one does, and that with it, the
+    /// debt for its end settled by one line; a leftover at work still keeps it.
     #[test]
-    fn an_auto_delete_helper_with_only_idle_leftovers_goes_as_usual() {
+    fn an_auto_delete_helper_with_only_long_idle_leftovers_goes_and_says_so() {
         register("ai-top", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, serde_json::json!({}));
         register("ai-s", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("ai-top"), false, serde_json::json!({ "background": true }));
         crate::background::idle_for_test("ai-s", Provider::Claude, 1, false);
         reg().lock().unwrap().auto.insert("ai-s".into(), Auto::default());
+        let key = ("ai-top".to_string(), "ai-s".to_string());
+        let mut told = Owed::pending(1, 0);
+        told.told_idle = true;
+        reg().lock().unwrap().owed.insert(key.clone(), told);
         let since = || reg().lock().unwrap().auto.get("ai-s").and_then(|a| a.idle_since);
         let pty = crate::pty::manager();
         let left = |quiet_ms: u64| crate::background::left_for_test("ai-s", &[("tail.exe", 22104, quiet_ms)]);
         left(0);
         reap(&pty);
         assert_eq!(since(), None, "a leftover at work keeps it");
-        left(IDLE_JOB_MS - 60_000);
+        left(crate::procs::LEFTOVER_HOLD_MS - 60_000);
         reap(&pty);
-        assert_eq!(since(), None, "quiet, but not for long enough to be told of");
-        left(IDLE_JOB_MS + 60_000);
+        assert_eq!(since(), None, "idle, but still within its grace: the job may be waiting on something");
+        left(crate::procs::LEFTOVER_HOLD_MS + 60_000);
         reap(&pty);
-        assert!(since().is_some(), "only idle processes left: the clock runs as for any idle helper");
+        assert!(since().is_some(), "past its grace: the clock runs as for any idle helper, its open debt no bar");
         left(0);
         reap(&pty);
         assert_eq!(since(), None, "at work again: it starts over");
-        reg().lock().unwrap().auto.remove("ai-s");
-        crate::background::gone_for_test("ai-s");
+        // Its time come: it goes, and whoever was owed its job's end hears so.
+        left(crate::procs::LEFTOVER_HOLD_MS + 60_000);
+        reap(&pty);
+        reg().lock().unwrap().auto.get_mut("ai-s").unwrap().idle_since = Some(now_ms() - AUTO_DELETE_IDLE_MS - 1);
+        reap(&pty);
+        assert!(!crate::background::has("ai-s"), "auto-deleted");
+        let r = reg().lock().unwrap();
+        assert!(!r.owed.contains_key(&key), "owed nothing more");
+        let said: Vec<&String> = r.news.iter().filter(|(c, _)| c == "ai-top").map(|(_, l)| l).collect();
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert!(said[0].contains("auto-deleted") && said[0].contains("tail.exe (pid 22104), which went with it"), "{}", said[0]);
+        drop(r);
+        reg().lock().unwrap().news.retain(|(c, _)| c != "ai-top");
         forget("ai-s");
         forget("ai-top");
     }
@@ -8441,10 +8515,10 @@ mod tests {
     }
 
     /// The night of 0.8.1: a `tail -F` its own tool left running after its turn
-    /// kept a helper "not done" for 14 hours, its caller told nothing.
+    /// kept a helper "not done" for 14 hours, its caller told nothing. Idle is
+    /// no proof of an end: told once, and the debt waits for the end itself.
     #[test]
     fn what_a_turn_left_is_named_and_an_idle_one_is_told_of_once() {
-        use crate::activity::Turn::Idle;
         let (known, o, path) = job_over_helper("lj-s", "lj-c", "");
         let pty = crate::pty::manager();
         let line = |o: Owed| notice_line(&pty, "lj-c", "Your helper", "lj-s", &known, o);
@@ -8454,25 +8528,25 @@ mod tests {
         first.held = Some((3, now_ms() - BACKGROUND_GRACE_MS));
         let Some((Some(text), Settled::Pending(3, _))) = line(first) else { panic!("not done yet") };
         assert!(text.contains("NOT done yet: a job it started still runs in the background (tail.exe (pid 22104))"), "{text}");
-        assert!(job_at_work("lj-s", crate::activity::turn_state("lj-s"), true));
         // Quiet for a while, but not for long: still a job, nothing to say.
         crate::background::left_for_test("lj-s", &[("tail.exe", 22104, IDLE_JOB_MS - 60_000)]);
-        assert!(matches!(line(o), Some((None, Settled::Hold(3))) | None));
-        // Half an hour of nothing: told once, how to end it with it, and settled.
+        assert!(matches!(line(o), None | Some((None, _))));
+        // Half an hour of nothing: said once, how to end it with it, and still owed.
         crate::background::left_for_test("lj-s", &[("tail.exe", 22104, IDLE_JOB_MS + 60_000)]);
-        assert!(!job_at_work("lj-s", crate::activity::turn_state("lj-s"), true));
-        assert!(job_over("lj-s", &o, Some(crate::activity::TurnState { turn: Idle, busy: false, turns_ended: 3, children_busy: true })));
-        assert!(matches!(line(o), Some((None, Settled::Hold(3)))), "after the grace a job's end stands for");
-        let mut stood = o;
-        stood.held = Some((3, now_ms() - BACKGROUND_GRACE_MS));
-        let Some((Some(text), Settled::Answered)) = line(stood) else { panic!("its idle job is news") };
-        assert!(text.contains("only idle processes left, which have done nothing for 31 min") && text.contains("tail.exe (pid 22104). luna_kill ends them."), "{text}");
-        assert_eq!(crate::agents::state_of("lj-s").0, "background", "what is there is there");
-        // A first notice that finds it idle already says so as it says it finished.
-        let mut late = Owed::from(2, o.cursor);
-        late.held = Some((3, now_ms() - BACKGROUND_GRACE_MS));
-        let Some((Some(text), Settled::Answered)) = line(late) else { panic!("finished") };
-        assert!(text.contains("finished its turn") && text.contains("It left processes running that have done nothing for 31 min: tail.exe (pid 22104)"), "{text}");
+        let Some((Some(text), Settled::Idle)) = line(o) else { panic!("its idle job is news") };
+        assert!(text.contains("only idle processes left, which have done nothing for 31 min: tail.exe (pid 22104)"), "{text}");
+        assert!(text.contains("luna_kill ends them") && text.contains("You will still hear when they end"), "{text}");
+        settle_told(&mut reg().lock().unwrap(), ("lj-c".to_string(), "lj-s".to_string()), Settled::Idle, &o);
+        let told = reg().lock().unwrap().owed.get(&("lj-c".to_string(), "lj-s".to_string())).copied().expect("the debt stays open");
+        assert!(told.told_idle && told.told_pending);
+        assert!(matches!(line(told), None | Some((None, _))), "said once");
+        assert!(!job_over(&told, crate::activity::turn_state("lj-s")), "and no end for a wait either");
+        // Its end: that is the news the debt waited for.
+        crate::background::left_for_test("lj-s", &[]);
+        let mut ended = told;
+        ended.held = Some((3, now_ms() - BACKGROUND_GRACE_MS));
+        let Some((Some(text), Settled::Answered)) = line(ended) else { panic!("the job's end") };
+        assert!(text.contains("has nothing left running now"), "{text}");
         crate::background::gone_for_test("lj-s");
         forget("lj-s");
         let _ = std::fs::remove_file(&path);

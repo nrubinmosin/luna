@@ -27,8 +27,8 @@ can start other sessions and work with them.
     when it cannot be told. Visible sessions: Codex gives `session` only, Claude Code none,
     and a helper opened as a chat stops being counted.
   - `leftRunning`: what its turns left running, between turns: `exe`, `pid`, `startedAt`,
-    `active` (CPU or I/O in the last 10 min; only those keep the PC awake), `quietMin`.
-    `luna_kill` ends a background helper's alone (the user's Stop too).
+    `active` (CPU or I/O in the last 10 min), `quietMin`. It keeps the PC awake until idle 2 h
+    on end. `luna_kill` ends a background helper's alone (the user's Stop too).
 - You kill and delete only sessions you spawned and theirs. Any other session you can read,
   wait on and send text to. A deleted parent's helper passes to its parent; with none, only
   the user can stop or delete it, and a background one goes once idle for 30 min.
@@ -87,8 +87,8 @@ can start other sessions and work with them.
   "…"`), and not of a turn that stopped on an error, which it says.
   It comes when your chat is between turns and the user is not typing in it.
 - "NOT done yet": a job it started still runs (named), or its own helpers have yet to answer
-  it. Said once; the next notice comes when that is over (or all of it has been idle for
-  30 min: that notice says so) or a turn of its own ends, not one it only ran
+  it. Said once; the next notice comes when that is over or a turn of its own ends (all of it
+  idle 30 min: one more says so; it may be stuck or waiting), not one it only ran
   on a Luna notice: unless that was its own helper's last answer, or, to you its parent, one on
   its helpers' notices that wrote a message of 400+ characters. A background Claude Code
   helper's own `run_in_background` job keeps its turn going: `working` until it ends, one notice.
@@ -100,8 +100,7 @@ can start other sessions and work with them.
   turn), `reply` holds all the session said since you asked, the report first. `failed` names the error a turn stopped on (API error, usage limit,
   crash, kill): `reply` is what it said before that, if anything, and `screen` comes too.
   `transcriptMissing`: no transcript found, so a null `reply` says nothing. `job_done`: told
-  it is not done, what it had running ended, or sat idle for 30 min, with no turn; `reply` is
-  what it said since. A
+  it is not done, what it had running ended with no turn; `reply` is what it said since. A
   background helper does not exit between turns: `until: "exit"` returns once it is deleted.
 - `luna_wait` with `ids: [..]` waits on several: `mode: "any"` until the first gets there,
   `"all"` until every one has or the time is up. It returns `outcome` (`finished` or
@@ -155,6 +154,6 @@ can start other sessions and work with them.
   comes back; Codex's cannot be), the result says `held: true`: Luna types it in once they
   are done, and a `luna_wait` waits for that first. Do not send it again.
 - `autoDelete`: Luna deletes the helper 30 minutes after its answer reached you, not while a
-  job or helper of its runs (processes idle past the 30-min notice do not count, and go with
-  it); a read or a send starts that over (`deletesInMin` counts down). The worktree stays. Off
+  job or helper of its runs (processes idle 2 h on end do not count: they go with it, and you
+  hear so); a read or a send starts that over (`deletesInMin` counts down). The worktree stays. Off
   for visible ones unless `true`. One the user typed into, or you killed, is never deleted.

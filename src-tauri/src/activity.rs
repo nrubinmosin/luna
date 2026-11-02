@@ -138,6 +138,9 @@ struct Track {
     /// with when it was last at work: what holds the machine of it, what
     /// `luna_list` names between turns, and what its caller hears has sat idle.
     left: Vec<procs::Leftover>,
+    /// The last sample its turn was on (busy, or holding on a prompt): what a
+    /// child born since is as quiet as, to begin with (`procs::leftovers`).
+    turn_at_ms: u64,
     output_fresh: bool,
     /// Turns finished: what an agent's `wait` counts. From the CLI's own
     /// record where there is one — Claude Code's `Stop` hook, Codex's
@@ -178,6 +181,17 @@ pub struct TurnState {
 pub fn left_running(chat_id: &str) -> Vec<procs::Leftover> {
     let st = state().lock().unwrap_or_else(|e| e.into_inner());
     st.tracks.get(chat_id).filter(|t| t.turn == Turn::Idle).map(|t| t.left.clone()).unwrap_or_default()
+}
+
+/// Whether anything of a session's children still holds the machine: what moved
+/// at the last sample, or what its turns left that has not sat idle for
+/// LEFTOVER_HOLD_MS. `background::left_holds` for a session with a terminal.
+pub fn children_hold(chat_id: &str) -> bool {
+    let st = state().lock().unwrap_or_else(|e| e.into_inner());
+    let now = now_ms();
+    st.tracks.get(chat_id).is_some_and(|t| {
+        t.procs.as_ref().is_some_and(|b| !b.active.is_empty() || (t.left.is_empty() && !b.young.is_empty())) || t.left.iter().any(|l| l.holds(now))
+    })
 }
 
 /// `background::left_quiet` for a session the activity track follows.
@@ -580,25 +594,26 @@ fn combine(t: &mut Track, disk: Option<Turn>, now: u64) -> Turn {
 }
 
 /// One session's children at a sample: what of them is at work, and what holds
-/// the machine, by label. What moved since the last sample holds it (`judge`),
-/// and what its turns started (`young`) while it is at work, as a helper's
-/// leftovers do (`procs::leftovers`): one that only sits there, a `tail -F` or a
-/// server waiting on its socket, holds nothing once it has sat LEFTOVER_AWAKE_MS.
-/// One with no name has gone since the read.
-fn children_at(t: &mut Track, children: Vec<ProcRead>, born_after: u64, name_of: &dyn Fn(u32) -> Option<String>, now: u64) -> Vec<String> {
+/// the machine, by label, and what of its turns' leftovers has just let it go.
+/// What moved since the last sample holds it (`judge`), and what its turns
+/// started (`young`) until it has sat idle for LEFTOVER_HOLD_MS, as a helper's
+/// leftovers do (`procs::leftovers`). One with no name has gone since the read.
+fn children_at(t: &mut Track, children: Vec<ProcRead>, born_after: u64, name_of: &dyn Fn(u32) -> Option<String>, now: u64) -> (Vec<String>, Vec<String>) {
     t.procs = procs::without_furniture(procs::judge(&t.prev, &children, born_after, MIN_CPU_MS, MIN_IO_BYTES));
     let young: Vec<(ProcRead, String)> = match &t.procs {
         Some(b) => children.iter().filter(|r| b.young.contains(&r.pid)).filter_map(|r| Some((*r, name_of(r.pid)?))).collect(),
         None => Vec::new(),
     };
-    t.left = procs::leftovers(&t.left, young, now);
+    let left = procs::leftovers(&t.left, young, now, t.turn_at_ms);
+    let gone_quiet = procs::gone_quiet(&t.left, &left, now);
+    t.left = left;
     t.prev = children;
     let moving: Vec<u32> = t.procs.as_ref().map(|b| b.active.clone()).unwrap_or_default();
     let mut holding: Vec<String> = moving.iter().filter_map(|&pid| Some(format!("{} (pid {pid})", name_of(pid)?))).collect();
-    holding.extend(t.left.iter().filter(|l| l.at_work(now) && !moving.contains(&l.pid)).map(procs::Leftover::label));
+    holding.extend(t.left.iter().filter(|l| l.holds(now) && !moving.contains(&l.pid)).map(procs::Leftover::label));
     holding.sort();
     holding.dedup();
-    holding
+    (holding, gone_quiet)
 }
 
 /// One pass over every live session, plus the background helpers as they
@@ -621,8 +636,9 @@ pub fn sample(probes: Vec<crate::pty::ActivityProbe>, helpers: Vec<SessionActivi
 
     let mut sessions = Vec::with_capacity(probes.len());
     // Per session, whether to look behind its wait for an API error: read once
-    // the lock is let go.
+    // the lock is let go. And whose leftovers have let the machine go, for the log.
     let mut later: Vec<bool> = Vec::with_capacity(probes.len());
+    let mut let_go: Vec<(String, Vec<String>)> = Vec::new();
     {
         let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
         let st = &mut *st;
@@ -654,6 +670,9 @@ pub fn sample(probes: Vec<crate::pty::ActivityProbe>, helpers: Vec<SessionActivi
                 t.first_turn_ms = now.saturating_sub(TURN_SLACK_MS);
             }
             t.turn = turn;
+            if turn != Turn::Idle {
+                t.turn_at_ms = now;
+            }
             match turn {
                 Turn::Idle => t.turn_started_ms = None,
                 // A registry still busy after the hook's `Stop` has been left
@@ -668,7 +687,10 @@ pub fn sample(probes: Vec<crate::pty::ActivityProbe>, helpers: Vec<SessionActivi
                 0 => 0,
                 first => first.max(p.spawned_at_ms as u64 + STARTUP_MS),
             };
-            let holding = children_at(t, children, born_after, &name_of, now);
+            let (holding, gone_quiet) = children_at(t, children, born_after, &name_of, now);
+            if !gone_quiet.is_empty() {
+                let_go.push((p.id.clone(), gone_quiet));
+            }
             t.output_fresh = now.saturating_sub(p.last_output_ms) < OUTPUT_FRESH_MS;
 
             // A turn "ends" for an agent when the model stops, not when its
@@ -703,6 +725,12 @@ pub fn sample(probes: Vec<crate::pty::ActivityProbe>, helpers: Vec<SessionActivi
         }
     }
 
+    for (id, gone) in let_go {
+        crate::log::warn(
+            "power",
+            &format!("{}: no longer holds the PC by what its turns left, idle {} min on end: {}", crate::agents::label(&id), procs::LEFTOVER_HOLD_MS / 60_000, gone.join(", ")),
+        );
+    }
     for ((s, p), ask) in sessions.iter_mut().zip(&probes).zip(later) {
         if ask {
             s.stalled = disk_api_error(p);
@@ -760,24 +788,24 @@ mod tests {
     /// A chat's leftovers by a helper's measure: a `tail -F` its tool left held
     /// the machine for as long as it lived.
     #[test]
-    fn a_chats_leftover_holds_the_machine_only_while_at_work() {
+    fn a_chats_leftover_holds_the_machine_until_long_idle() {
         let read = |pid: u32, cpu_ms: u64| ProcRead { pid, cpu_ms, io_bytes: 0, started_ms: 2_000 };
         let name = |pid: u32| Some(format!("p{pid}.exe"));
-        let mut t = Track::default();
-        // Started by its turns (after 1_000), and both new: at work as far as anyone knows.
-        let first = children_at(&mut t, vec![read(1, 10), read(2, 10)], 1_000, &name, 10_000);
+        // Started by its turns (after 1_000), which were on until 9_000: as quiet as that.
+        let mut t = Track { turn_at_ms: 9_000, ..Default::default() };
+        let (first, _) = children_at(&mut t, vec![read(1, 10), read(2, 10)], 1_000, &name, 10_000);
         assert_eq!(first, ["p1.exe (pid 1)", "p2.exe (pid 2)"]);
-        for l in &mut t.left {
-            l.moved_ms = 0;
-        }
-        // A sample on: one burns CPU, one only sits there, long past LEFTOVER_AWAKE_MS.
-        let at = procs::LEFTOVER_AWAKE_MS + 15_000;
-        t.left.iter_mut().for_each(|l| l.read_ms = at - 5_000);
-        assert_eq!(children_at(&mut t, vec![read(1, 10), read(2, 2_010)], 1_000, &name, at), ["p2.exe (pid 2)"]);
+        assert!(t.left.iter().all(|l| l.moved_ms == 9_000), "birth is no work");
+        // Long past LEFTOVER_HOLD_MS: one burns CPU, one only sits there and lets go.
+        let at = 9_000 + procs::LEFTOVER_HOLD_MS + 15_000;
+        t.left.iter_mut().for_each(|l| l.read_ms = 9_000 + procs::LEFTOVER_HOLD_MS - 1_000);
+        let (holding, gone) = children_at(&mut t, vec![read(1, 10), read(2, 2_010)], 1_000, &name, at);
+        assert_eq!((holding, gone), (vec!["p2.exe (pid 2)".to_string()], vec!["p1.exe (pid 1)".to_string()]));
         // That one gone, the idle one holds nothing, and is still there for its notice.
-        assert!(children_at(&mut t, vec![read(1, 11)], 1_000, &name, at + 5_000).is_empty());
+        let (holding, gone) = children_at(&mut t, vec![read(1, 11)], 1_000, &name, at + 5_000);
+        assert!(holding.is_empty() && gone.is_empty(), "let go once");
         assert!(t.procs.as_ref().is_some_and(|b| b.young == [1]), "its job is not over");
-        assert_eq!(procs::quiet_ms(&t.left, at + 5_000), Some(at + 5_000));
+        assert_eq!(procs::quiet_ms(&t.left, at + 5_000), Some(at + 5_000 - 9_000));
     }
 
     #[test]

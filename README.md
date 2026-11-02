@@ -436,8 +436,8 @@ background helper spawned without tools.
 - `autoDelete` has Luna delete the helper once its answer has reached the agent and it has sat
   idle for 30 minutes; the agent reading it or writing to it starts that over, and `luna_list`
   shows the minutes left (`deletesInMin`). It waits for a job the helper left running and for
-  helpers of its own; processes it left that have done nothing for the 30 minutes its agent
-  was told of do not count, and go with it. It is on for background helpers unless the spawn says
+  helpers of its own; processes it left that have done nothing for 2 hours on end do not
+  count: they go with it, and its agent is told so in one line. It is on for background helpers unless the spawn says
   `autoDelete: false`, off for visible ones unless it says `true`. A helper stopped with
   `luna_kill` is never auto-deleted: a background one's conversation stays for `luna_send` to
   go on with, a visible one is not running until you resume it. One
@@ -506,8 +506,8 @@ background helper spawned without tools.
   with its pid, when it started and whether it has used CPU or I/O in the last 10 minutes.
   For a background helper `luna_kill`, or Stop in the helper's list on its chat's row, ends
   it once the turn is over. When all of it has done nothing for 30 minutes, the agent owed
-  the session's answer gets one notice saying so and how to end it, and from there on it
-  counts as a job that has ended.
+  the session's answer gets one notice saying so — it may be stuck, or waiting on something
+  — and how to end it; the notice of its end still comes, as doing nothing is no proof of one.
 - If a chat still gets more than 12 turn-end notices about one session in 15 minutes, Luna
   stops telling it of that session's turns and jobs, says so in the log and once on the desktop,
   and goes on when you type into either chat. Its prompts and questions still come: a helper is
@@ -533,10 +533,10 @@ The power field in the status bar opens the two rules the machine follows.
   request — `powercfg /requests` lists it as Luna's — while any session is busy, and lets it
   go a minute after the last one goes quiet. A session waiting for your answer does not hold
   the machine. What a session started in a turn, a chat's or a helper's, holds it after the
-  turn only while it does something: CPU (1% of a core) or I/O (16 KiB a second). One that
-  has done neither for 10 minutes — a `tail -F` polling its file, a server waiting on its
-  socket — holds nothing, nor keeps the "when done" rule below waiting; it still shows in
-  `luna_list` and in its notice. Windows does not restart its
+  turn until it has done nothing — under 1% of a core and 1 KiB of I/O a second — for 2 hours
+  on end: a client waiting on work done elsewhere is quiet too, but a forgotten `tail -F` or a
+  server nobody uses is let go then, and stops keeping the "when done" rule below waiting; the
+  log says so, and it still shows in `luna_list`. Windows does not restart its
   sleep timer for the request: if nobody has touched the PC for longer than that timer, it
   sleeps the moment the hold is let go. `luna.log` says when the hold was set and let go, and
   which session held it last, and every hour it is kept, which process keeps it.
