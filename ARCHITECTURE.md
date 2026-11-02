@@ -380,7 +380,10 @@ src-tauri/src/
   showed about 1 ms/s and 300 B/s, a `ping` none and 100) within
   the last 10 min (`LEFTOVER_AWAKE_MS`; long enough for a link or a Docker client printing nothing while
   the build it waits on compiles). A Claude Code Monitor's `tail -F`, left running past its expiry, kept a
-  PC awake all night. A chat has no such measure: what its turns started holds as long as it runs. Its job alone
+  PC awake all night. A chat's are measured the same way (activity.rs `Track::left`, the processes
+  `procs::judge` calls young): a forgotten `tail -F` under a chat held the machine just the same, and
+  `judge` itself counts a child's I/O only past that rate, as a polling one moves a few bytes every
+  sample. While the hold stands, power.rs says every hour what keeps it (`HOLD_LOG_EVERY_MS`). Its job alone
   is tied to the core (`procs::tie`, `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`): a chat's CLI goes with its
   terminal when a core dies, a helper's has none, and would run on unowned beside the turn the next
   core starts on that conversation. This is the leftover rule, not an exception to it: a core that
@@ -556,7 +559,9 @@ src-tauri/src/
   before is in it), and a turn with no `turn.completed` is read off the rollout when it ends. Its model comes
   from the rollout's `turn_context`, or for that turn from the `model rerouted` item a reroute leaves in the
   stream, and only of a turn its model got to: the rollout names the model a turn is to run on before asking
-  it. Claude Code's comes from the model's messages, not `init`, which names the one asked for, there or not. A
+  it. Claude Code's comes from the model's messages, not `init`, which names the one asked for, there or not;
+  where the rollout names none, the one asked for stands only once a model has answered (`Observed::answered`,
+  saved). A visible Codex's is the last `turn_context` a `token_count` came after (`answered_model`). A
   caller handed a cut quote read the whole answer back anyway, and a long notice reached Claude Code as a
   paste. Typing a notice takes seconds, and the turn it starts may ask again meanwhile: the notifier
   then changes the debt only if it is still the one it announced (same baseline and offset).
@@ -608,10 +613,12 @@ src-tauri/src/
   `StopFailure` hook, Codex's `task_complete.error` or `turn_aborted` reason in its rollout (`Scan::failed`), and for a
   pty session its exit code. The notice says "stopped on an error", `wait` has `failed`. `isApiErrorMessage` lines are
   not messages (`message_of`), so "You've hit your session limit" is no reply; nor are the user lines Claude Code puts
-  in itself (`injected`: a `<task-notification>` it takes up, an interrupt's marker, a compaction's summary, marked
-  by `turnOrigin`/`promptSource`) or its `<synthetic>` replies, as Codex's own `<…>` items are not. A prompt last means
-  the reply is still to come (`own_words`), but a turn cut short or failed has said all it will: it hands over
-  what it said before that, whatever came after. Codex's `exec` says its retries as
+  in itself (`injected`: a `<task-notification>` it takes up, an interrupt's marker, a compaction's summary, by
+  `turnOrigin`/`promptSource` where the line says where it came from, which wins over its text, and by the text
+  where it says nothing, as the interrupt marker does) or its `<synthetic>` replies, as Codex's own `<…>` items are
+  not. A prompt last means the reply is still to come (`own_words`), but a turn cut short or failed has said all
+  it will: it hands over what it said before that, whatever came after, in a notice and a `wait` alike, a turn a
+  core's going stopped with no error of its own left (taken up a second time) as one too. Codex's `exec` says its retries as
   `error` events too ("Reconnecting... 2/5"), which are not failures. A Claude Code transcript is looked for under the
   registry's cwd, then in every project folder (`located_transcript`): a session resumed elsewhere writes to the folder
   it started in. No transcript is not "no reply": the notice and `transcriptMissing` say which.
@@ -731,7 +738,8 @@ src-tauri/src/
   stop between turns (`luna_kill`, that Stop) has only them to stop and ends them, leaving `autoDelete` as it
   was. A turn whose CLI went before its model wrote or ran anything (`Observed::acted`: an unknown
   `--agent`, a model that is not there) first ends what was born in the job since it started
-  (`procs::end_born_since`): the `git` Claude Code had started ran on for minutes, and the helper read `background`
+  (`procs::end_born_since`), but for what earlier turns left (`Entry::left`, read until this turn began) and
+  what they started since, followed up through parents: the `git` Claude Code had started ran on for minutes, and the helper read `background`
   and was never reaped; `send` during a turn queues the text for the next, and a turn about to start takes the
   helper's run under the same lock that found it free (`claim`), so text arriving before the process
   is up queues rather than starting a second one. A stop (`kill`, `stop_turns`) that finds a turn

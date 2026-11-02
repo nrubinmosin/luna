@@ -2001,12 +2001,13 @@ fn visible_signs(pty: &crate::pty::PtyManager, id: &str, provider: Provider) -> 
             let tail = crate::codex::session::read_tail(&path);
             let session = tail.total_usage.as_ref().map(crate::background::Usage::of_codex);
             // The rollout names the model a turn is to run on before asking it:
-            // one never answered on (no tokens spent yet) may not be there.
-            let model = session.and_then(|_| crate::codex::session::last_model(&path));
+            // the one that answered is the last with tokens spent after it.
+            let model = crate::codex::session::answered_model(&path);
             (model, session.map(|session| crate::background::Spend { last_turn: None, session }))
         }
     };
-    crate::background::Signs { turn_started_at, last_activity_at, resolved_model, spend, left_running: Vec::new() }
+    let left_running = crate::background::shown(&crate::activity::left_running(id), now_ms());
+    crate::background::Signs { turn_started_at, last_activity_at, resolved_model, spend, left_running }
 }
 
 pub fn list(caller: &str) -> Listing {
@@ -4799,8 +4800,19 @@ fn wait_for(
             // for the words of: what it said since is there already.
             let answers = says || outcome == "job_done";
             // Read from where the caller's question found the transcript.
-            let asked_at = reg().lock().unwrap_or_else(|e| e.into_inner()).owed.get(&key).map(|o| o.cursor);
-            let failure = || (answers || outcome == "exit").then(|| failure_of(&pty, id, known.provider)).flatten();
+            let (asked_at, debt_cut) = {
+                let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+                r.owed.get(&key).map_or((None, false), |o| (Some(o.cursor), o.cut_short))
+            };
+            // A core's going stopped the turn (the helper's word or the debt's, a
+            // chat brought back): as the notice says it, and with what it said.
+            let cut = says && (crate::background::cut_short(id) || debt_cut);
+            let failure = || {
+                (answers || outcome == "exit")
+                    .then(|| failure_of(&pty, id, known.provider))
+                    .flatten()
+                    .or_else(|| cut.then(|| "it did NOT finish its turn: Luna's core restarted while it worked and stopped it".to_string()))
+            };
             let mut failed = failure();
             // A turn that stopped on an error has said all it will.
             let reply_now = |stopped: bool| reply_of(&pty, id, known.provider, asked_at, alone, stopped);
@@ -5991,7 +6003,7 @@ fn notice_line(
     // it up again in a turn of its own when the job is done (`claude -p` stays
     // in its turn until then); for anything else that job's end is all there
     // will be to hear of.
-    let left = if ts.is_some_and(|t| t.children_busy) && alive { crate::background::left_quiet(id) } else { None };
+    let left = if ts.is_some_and(|t| t.children_busy) && alive { left_quiet(id) } else { None };
     // All it left running has sat there doing nothing for long: no job at work.
     let idle = left.as_ref().filter(|(quiet, _)| *quiet >= IDLE_JOB_MS);
     let background = ts.is_some_and(|t| t.children_busy) && alive && idle.is_none();
@@ -6388,8 +6400,8 @@ fn job_over(id: &str, o: &Owed, ts: Option<crate::activity::TurnState>) -> bool 
     o.told_pending && ts.is_some_and(|t| t.turn == crate::activity::Turn::Idle) && !job_at_work(id, ts, true)
 }
 
-/// What a background helper's turns left running and has done nothing (no CPU,
-/// no I/O: `background::left_quiet`) for this long is no job at work: its caller
+/// What a session's turns left running and has done nothing (no CPU, no I/O:
+/// `left_quiet`) for this long is no job at work: its caller
 /// is told so once, with what they are and how to end them, and the debt settles
 /// as at a job's end. A real job's quiet stretch is minutes (a link, a test on a
 /// timeout); half an hour of nothing is a `tail -F` or a server nobody uses, whose
@@ -6398,10 +6410,19 @@ fn job_over(id: &str, o: &Owed, ts: Option<crate::activity::TurnState>) -> bool 
 const IDLE_JOB_MS: u64 = 30 * 60 * 1000;
 
 /// Whether `id` has a job at work between turns: what its turns left running,
-/// unless all of that has sat idle for IDLE_JOB_MS. A visible session's leftovers
-/// are its activity track's, which has no such measure: running is at work.
+/// unless all of that has sat idle for IDLE_JOB_MS.
 fn job_at_work(id: &str, ts: Option<crate::activity::TurnState>, alive: bool) -> bool {
-    alive && ts.is_some_and(|t| t.children_busy) && !crate::background::left_quiet(id).is_some_and(|(quiet, _)| quiet >= IDLE_JOB_MS)
+    alive && ts.is_some_and(|t| t.children_busy) && !left_quiet(id).is_some_and(|(quiet, _)| quiet >= IDLE_JOB_MS)
+}
+
+/// Between turns, how long all a session's turns left running has done nothing,
+/// and their names: a helper's job's (background.rs), a chat's under its CLI
+/// (activity.rs). None with nothing left.
+fn left_quiet(id: &str) -> Option<(u64, String)> {
+    if crate::background::has(id) {
+        return crate::background::left_quiet(id);
+    }
+    crate::activity::left_quiet(id)
 }
 
 /// For a `wait`: whether a job's end (`over`) has stood BACKGROUND_GRACE_MS, by
@@ -8676,6 +8697,41 @@ mod tests {
         assert_eq!(sentence("pick a different model."), "pick a different model.");
         assert_eq!(sentence("rate_limit"), "rate_limit.");
         assert_eq!(sentence("cut short…"), "cut short…");
+    }
+
+    /// A wait on a helper a restart cut off hands over what it said, as its notice
+    /// would, and says it did not finish: with no error to go by and a prompt as
+    /// the last word, it once handed back nothing and settled the debt.
+    #[test]
+    fn a_wait_on_a_turn_a_restart_cut_short_keeps_what_it_said() {
+        let none = serde_json::json!({});
+        let dir = std::env::temp_dir().join(format!("luna-wait-cut-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let account = dir.to_string_lossy().into_owned();
+        register("wc-caller", Provider::Claude, &account, &account, None, true, none.clone());
+        crate::background::test_helper("wc-caller", &account, None, false);
+        register("wc-helper", Provider::Claude, &account, &account, Some("wc-caller"), false, none);
+        crate::background::test_helper("wc-helper", &account, None, false);
+        let line = |role: &str, t: &str| match role {
+            "user" => format!("{}\n", serde_json::json!({ "type": "user", "message": { "role": "user", "content": t } })),
+            _ => format!("{}\n", serde_json::json!({ "type": "assistant", "message": { "content": [{ "type": "text", "text": t }] } })),
+        };
+        let path = dir.join("wc-helper.jsonl");
+        std::fs::write(&path, format!("{}{}{}", line("user", "fix it"), line("assistant", "Half the fix is in."), line("user", "then the tests"))).unwrap();
+        transcripts().lock().unwrap().insert("wc-helper".into(), path);
+        owe_from("wc-caller", "wc-helper", 0, 0);
+        crate::background::test_turn_ended("wc-helper");
+        crate::background::cut_for_test("wc-helper");
+        let call = crate::mcp::Call::new();
+        let w = wait("wc-caller", "wc-helper", "turn_done", 10, None, &call).unwrap();
+        assert_eq!(w.outcome, "turn_done");
+        assert_eq!(w.reply.as_deref(), Some("Half the fix is in."));
+        assert!(w.failed.as_deref().is_some_and(|f| f.contains("did NOT finish")), "{:?}", w.failed);
+        for id in ["wc-helper", "wc-caller"] {
+            crate::background::remove(id);
+            forget(id);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
