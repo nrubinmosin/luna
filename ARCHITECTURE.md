@@ -374,13 +374,16 @@ src-tauri/src/
   (delete, kill, Quit, a respawn of one that exited) `procs::end_leftovers` ends what is still in it,
   which the CLI's tree kill misses once a parent has gone first, windowed programs spared. A
   background helper has one job for its life, each turn's process joined to it: between turns what
-  its turns left holds the machine while it is at work, and it is ended with the helper. At work is
-  measured there, per process (`background::leftovers`): CPU at 1% of a core or 16 KiB/s of I/O between
-  two samples at least 4 s apart, as Windows counts CPU in 15.6 ms ticks (a `tail -F` polling its file
-  showed about 1 ms/s and 300 B/s, a `ping` none and 100) within
-  the last 10 min (`LEFTOVER_AWAKE_MS`; long enough for a link or a Docker client printing nothing while
-  the build it waits on compiles). A Claude Code Monitor's `tail -F`, left running past its expiry, kept a
-  PC awake all night. A chat's are measured the same way (activity.rs `Track::left`, the processes
+  its turns left holds the machine until it has done nothing for 2 h on end (`LEFTOVER_HOLD_MS`), and it is
+  ended with the helper. Doing something is measured per process (`procs::leftovers`): CPU at 1% of a core or
+  1 KiB/s of I/O between two samples at least 4 s apart, as Windows counts CPU in 15.6 ms ticks (over a minute
+  a `tail -F` polling its file used 0.5 ms/s and 250 B/s, a `ping` 1 ms/s and 100; an 8 KiB/s download is past
+  it). Doing nothing is no proof a job is over — a Docker or remote client waits on work done elsewhere — so
+  the grace is long, but it ends, with a log line: a Claude Code Monitor's `tail -F`, left running past its
+  expiry, kept a PC awake all night. Birth is no work: a process first seen is as quiet as the job it came
+  into, and until it is 30 s old only its CPU since it started can say otherwise (its I/O then is loading,
+  which a read in the middle of its start would count next time), so a loop starting a `sleep 60` a minute
+  stays idle. `luna_list`'s `active` is work in the last 10 min. A chat's are measured the same way (activity.rs `Track::left`, the processes
   `procs::judge` calls young): a forgotten `tail -F` under a chat held the machine just the same, and
   `judge` itself counts a child's I/O only past that rate, as a polling one moves a few bytes every
   sample. While the hold stands, power.rs says every hour what keeps it (`HOLD_LOG_EVERY_MS`). Its job alone
@@ -561,7 +564,8 @@ src-tauri/src/
   stream, and only of a turn its model got to: the rollout names the model a turn is to run on before asking
   it. Claude Code's comes from the model's messages, not `init`, which names the one asked for, there or not;
   where the rollout names none, the one asked for stands only once a model has answered (`Observed::answered`,
-  saved). A visible Codex's is the last `turn_context` a `token_count` came after (`answered_model`). A
+  saved). A visible Codex's is the last `turn_context` after which the thread's token total grew
+  (`answered_model`): a count is written again unchanged when rate limits renew. A
   caller handed a cut quote read the whole answer back anyway, and a long notice reached Claude Code as a
   paste. Typing a notice takes seconds, and the turn it starts may ask again meanwhile: the notifier
   then changes the debt only if it is still the one it announced (same baseline and offset).
@@ -572,11 +576,11 @@ src-tauri/src/
   Code may take the end up in a turn of its own; Codex and a finished `claude -p` will not). A `claude -p` with a
   `run_in_background` task open does not finish: it waits for the task and takes its end up itself in the same run,
   so a background Claude Code helper reads `working` all along and its caller gets one notice, with everything it
-  said. The "NOT done yet" names a background helper's leftovers. Once all of them have done nothing for
-  30 min (`IDLE_JOB_MS`, `job_at_work`) they are no job at work: the caller is told once that only idle
-  processes are left, named, and that `luna_kill` ends them, and the debt settles as at a job's end
-  (`luna_wait`: `job_done`). Before that a helper whose Monitor left a `tail -F` read "not done" for 14 h with
-  no word to its caller. Turns on notices are
+  said. The "NOT done yet" names what a session's turns left. Once all of it has done nothing for 30 min
+  (`IDLE_JOB_MS`) the caller is told once (`Owed::told_idle`, `Settled::Idle`) that only idle processes are
+  left, named, that they may be stuck or waiting, that `luna_kill` ends them, and that their end still comes:
+  idleness is no end, so the debt stays open and `luna_wait` gives no `job_done` for it. Before that a helper
+  whose Monitor left a `tail -F` read "not done" for 14 h with no word to its caller. Turns on notices are
   skipped over, the cursor staying put, so what they said comes with the next word. This is what ended a night of
   460 notices an hour: every notice started a turn, every such turn's end re-owed the answer at the new count, and any
   leftover process made `children_busy` true. A debt that was not told this cannot loop: a notice consumes it.
@@ -677,9 +681,10 @@ src-tauri/src/
   what the frontend shows in the Accounts window, sent as `account_usage` on every change:
   the core does not go to the limits endpoints itself.
   **autoDelete.** `reap` on every notifier pass: a helper with no debt either way, no `wait` on it, no helper of its
-  own still there, nothing at work left running (`job_at_work`: leftovers idle past `IDLE_JOB_MS`, which its caller
-  has been told of, do not count, and `remove` ends them) and no turn (or one that exited) for 30 min in a row is
-  deleted as via `delete`, without its worktree; to the log —
+  own still there, nothing left running that still holds the machine (`left_holds`: leftovers idle past their
+  2 h grace do not, and `remove` ends them; the debt open for their end is no bar, and is settled by one line to
+  whoever held it, `reaped_with_leftovers`, `Registry::news`) and no turn (or one that exited) for 30 min in a
+  row is deleted as via `delete`, without its worktree; to the log —
   `auto-deleted`. Any `read`/`wait`/`send` on it (`shown`) starts the 30 min over, and `list` shows what is left
   (`deletesInMin`). If the person ever typed into it (`typed_ago_ms`), or an agent `kill`ed it, Luna leaves it
   alone. Before any delete of a spawned session `remove` writes a `left` line to `agents.jsonl` — transcript
@@ -738,10 +743,12 @@ src-tauri/src/
   process snapshot), each process kept with when it was last at work (`Leftover`); `luna_list` shows them
   (`leftRunning`: exe, pid, start, `active`, `quietMin`), the window lists them on the helper's Stop, and a
   stop between turns (`luna_kill`, that Stop) has only them to stop and ends them, leaving `autoDelete` as it
-  was. A turn whose CLI went before its model wrote or ran anything (`Observed::acted`: an unknown
-  `--agent`, a model that is not there) first ends what was born in the job since it started
-  (`procs::end_born_since`), but for what earlier turns left (`Entry::left`, read until this turn began) and
-  what they started since, followed up through parents: the `git` Claude Code had started ran on for minutes, and the helper read `background`
+  was; it holds the helper meanwhile (`Entry::ending_left`), so a send queues rather than start a CLI in the
+  job being emptied, and starts the next turn once the stop is through. A turn whose CLI went before its model
+  wrote or ran anything (`Observed::acted`: an unknown `--agent`, a model that is not there) first ends what is
+  that CLI's by descent (`procs::end_tree_of`: up through parents in the job, each born since the turn began, to
+  its pid); a way up that breaks, a launcher gone, proves nothing and is spared, as is all an earlier turn
+  left: the `git` Claude Code had started ran on for minutes, and the helper read `background`
   and was never reaped; `send` during a turn queues the text for the next, and a turn about to start takes the
   helper's run under the same lock that found it free (`claim`), so text arriving before the process
   is up queues rather than starting a second one. A stop (`kill`, `stop_turns`) that finds a turn

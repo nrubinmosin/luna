@@ -498,40 +498,40 @@ pub fn end_leftovers(job: &Job, keep: Option<u32>) -> Vec<String> {
     end_all(&children(Some(job), keep))
 }
 
-/// `end_leftovers` for what one turn started: what in the job was born at
-/// `since_ms` or later, but not what an earlier turn's leftovers (`earlier`, by
-/// pid and start) started meanwhile — a server's worker, a build's next step,
-/// which are theirs. Followed up through parents in the job, each born before
-/// the child it is taken for the parent of, so a reused pid is no parent.
-pub fn end_born_since(job: &Job, since_ms: u64, earlier: &[Leftover]) -> Vec<String> {
+/// `end_leftovers` for what a turn that came to nothing started of its own:
+/// what in the job descends from its CLI (`cli`, started at `since_ms`) through
+/// parents still there, each born no earlier than `since_ms` nor than the child
+/// it is taken for the parent of, so a reused pid is no parent. Only that: a
+/// process whose way up breaks (a launcher that has gone) is no proof of whose
+/// it is and is spared, as is all an earlier turn left and what that starts.
+pub fn end_tree_of(job: &Job, cli: u32, since_ms: u64) -> Vec<String> {
     let reads = children(Some(job), None);
     let edges = imp::parents();
-    let parent_of = |r: &ProcRead| edges.iter().find(|(pid, _)| *pid == r.pid).map(|(_, ppid)| *ppid);
-    let theirs = |r: &ProcRead| {
-        if earlier.iter().any(|l| l.pid == r.pid && l.started_ms == r.started_ms) {
-            return true;
+    let parent_of = |pid: u32| edges.iter().find(|(p, _)| *p == pid).map(|(_, ppid)| *ppid);
+    let of_cli = |r: &ProcRead| {
+        if r.started_ms < since_ms {
+            return false;
         }
         let mut at = *r;
         for _ in 0..32 {
-            let Some(ppid) = parent_of(&at) else { return false };
-            if earlier.iter().any(|l| l.pid == ppid && l.started_ms <= at.started_ms) {
+            let Some(ppid) = parent_of(at.pid) else { return false };
+            if ppid == cli {
                 return true;
             }
-            match reads.iter().find(|p| p.pid == ppid && p.started_ms <= at.started_ms) {
+            match reads.iter().find(|p| p.pid == ppid && p.started_ms >= since_ms && p.started_ms <= at.started_ms) {
                 Some(p) => at = *p,
                 None => return false,
             }
         }
         false
     };
-    let born: Vec<ProcRead> = reads.iter().filter(|r| r.started_ms >= since_ms && !theirs(r)).copied().collect();
-    end_all(&born)
+    let its: Vec<ProcRead> = reads.iter().filter(|r| r.pid != cli && of_cli(r)).copied().collect();
+    end_all(&its)
 }
 
 /// A process a session's turns left running past their end — a helper's in its
 /// job, a chat's under its CLI — as last read, and when it was last at work.
-/// One model for both: what `luna_list` names, what holds the machine, and what
-/// a turn that comes to nothing may end of its own (`end_born_since`).
+/// One model for both: what `luna_list` names, and what holds the machine.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Leftover {
     pub pid: u32,
@@ -541,43 +541,58 @@ pub struct Leftover {
     pub io_bytes: u64,
     /// When it was read.
     pub read_ms: u64,
-    /// When it was last at work, or first seen.
+    /// When it was last at work, or since when the job it came into was quiet.
     pub moved_ms: u64,
 }
 
 /// A leftover is at work while it uses at least this much CPU per second of
 /// the time between two reads (1% of a core), or moves LEFTOVER_IO_PER_S
-/// bytes. Measured on Windows: a `tail -F` polling its file uses about 1 ms a
-/// second and 300 bytes of I/O, a `ping` none and 100; a compiler, a test run
-/// or a download is far past both.
+/// bytes. Measured on Windows over a minute: a `tail -F` polling its file
+/// used 0.5 ms a second and 250 bytes of I/O, a `ping` 1 ms and 100; a slow
+/// download of 8 KiB a second, a compiler or a test run is past one or both.
 pub const LEFTOVER_CPU_MS_PER_S: u64 = 10;
-pub const LEFTOVER_IO_PER_S: u64 = 16 * 1024;
+pub const LEFTOVER_IO_PER_S: u64 = 1024;
 /// The shortest stretch a rate is taken over: Windows counts CPU time in ticks
 /// of 15.6 ms, one of which over a second or so reads as a busy process. A read
 /// sooner after the last (a stop's) is measured with the next.
 pub const LEFTOVER_WINDOW_MS: u64 = 4_000;
-/// A leftover that has not been at work for this long holds the machine awake
-/// no longer: a forgotten `tail -F` or a server waiting on its socket kept a PC
-/// up all night. Long enough for a real job's quiet stretch (a link, a test on
-/// a timeout, a build the Docker CLI only waits on while it prints nothing).
-pub const LEFTOVER_AWAKE_MS: u64 = 10 * 60 * 1000;
+/// A process younger than this is judged by its CPU since it started alone,
+/// over this long: a start's own CPU (a `sleep` loading its DLLs) is no work,
+/// and its I/O then is loading, not doing.
+const NEWBORN_WINDOW_MS: u64 = 30_000;
+/// At work this recently: what `luna_list` calls `active`.
+pub const LEFTOVER_ACTIVE_MS: u64 = 10 * 60 * 1000;
+/// A leftover holds the machine awake until it has done nothing for this long
+/// on end, then lets go, and the log says so; any work starts it over. Doing
+/// nothing is no proof a job is over — a Docker or remote client waits on work
+/// done elsewhere, a slow download dips under any rate — so this is long, but
+/// it ends: a forgotten `tail -F` once kept a PC up all night.
+pub const LEFTOVER_HOLD_MS: u64 = 2 * 60 * 60 * 1000;
 
 /// Each process of `now` with when it was last at work, by the rates it moved at
-/// since `old` read it. One not in `old` is new: as good as at work, its turn
-/// having just ended or it having just started.
-pub fn leftovers(old: &[Leftover], now: Vec<(ProcRead, String)>, at: u64) -> Vec<Leftover> {
+/// since `old` read it. Birth is no work: one not in `old` is as quiet as the job
+/// it came into (the latest any of `old` was at work, or `last_work`, its turn's
+/// end), unless its own counters since it started show work — so a loop that
+/// starts a `sleep 60` every minute stays as idle as it is.
+pub fn leftovers(old: &[Leftover], now: Vec<(ProcRead, String)>, at: u64, last_work: u64) -> Vec<Leftover> {
+    let quiet_since = old.iter().map(|o| o.moved_ms).max().unwrap_or(0).max(last_work);
+    let working = |cpu: u64, io: u64, ms: u64| cpu.saturating_mul(1000) >= LEFTOVER_CPU_MS_PER_S * ms || io.saturating_mul(1000) >= LEFTOVER_IO_PER_S * ms;
     now.into_iter()
         .map(|(r, exe)| {
+            // Young, it is judged by its CPU since it started alone, however it
+            // was first seen: a read in the middle of its start would count the
+            // rest of its loading as work the next time.
+            let lived = at.saturating_sub(r.started_ms);
+            let newborn = lived < NEWBORN_WINDOW_MS;
             let moved_ms = match old.iter().find(|o| o.pid == r.pid && o.started_ms == r.started_ms) {
                 Some(o) if at.saturating_sub(o.read_ms) < LEFTOVER_WINDOW_MS => return Leftover { exe, ..o.clone() },
+                Some(o) if newborn => if working(r.cpu_ms, 0, NEWBORN_WINDOW_MS) { at } else { o.moved_ms },
                 Some(o) => {
                     let ms = at.saturating_sub(o.read_ms).max(1);
-                    let cpu = r.cpu_ms.saturating_sub(o.cpu_ms);
-                    let io = r.io_bytes.saturating_sub(o.io_bytes);
-                    let working = cpu.saturating_mul(1000) >= LEFTOVER_CPU_MS_PER_S * ms || io.saturating_mul(1000) >= LEFTOVER_IO_PER_S * ms;
-                    if working { at } else { o.moved_ms }
+                    if working(r.cpu_ms.saturating_sub(o.cpu_ms), r.io_bytes.saturating_sub(o.io_bytes), ms) { at } else { o.moved_ms }
                 }
-                None => at,
+                None if working(r.cpu_ms, 0, lived.max(NEWBORN_WINDOW_MS)) => at,
+                None => quiet_since,
             };
             Leftover { pid: r.pid, exe, started_ms: r.started_ms, cpu_ms: r.cpu_ms, io_bytes: r.io_bytes, read_ms: at, moved_ms }
         })
@@ -585,15 +600,29 @@ pub fn leftovers(old: &[Leftover], now: Vec<(ProcRead, String)>, at: u64) -> Vec
 }
 
 impl Leftover {
-    /// At work within LEFTOVER_AWAKE_MS: it holds the machine.
-    pub fn at_work(&self, now: u64) -> bool {
-        now.saturating_sub(self.moved_ms) < LEFTOVER_AWAKE_MS
+    /// At work within LEFTOVER_ACTIVE_MS.
+    pub fn active(&self, now: u64) -> bool {
+        now.saturating_sub(self.moved_ms) < LEFTOVER_ACTIVE_MS
+    }
+
+    /// Not idle for LEFTOVER_HOLD_MS on end: it holds the machine.
+    pub fn holds(&self, now: u64) -> bool {
+        now.saturating_sub(self.moved_ms) < LEFTOVER_HOLD_MS
     }
 
     /// "tail.exe (pid 22104)".
     pub fn label(&self) -> String {
         format!("{} (pid {})", self.exe, self.pid)
     }
+}
+
+/// Those of `new` that have let the machine go since `old` was read, idle for
+/// LEFTOVER_HOLD_MS on end: for the log to say so.
+pub fn gone_quiet(old: &[Leftover], new: &[Leftover], now: u64) -> Vec<String> {
+    new.iter()
+        .filter(|l| !l.holds(now) && old.iter().any(|o| o.pid == l.pid && o.started_ms == l.started_ms && o.holds(o.read_ms)))
+        .map(Leftover::label)
+        .collect()
 }
 
 /// How long all of these have done nothing, the least of them; None for none.
@@ -809,26 +838,49 @@ mod tests {
     }
 
     /// The rates a leftover counts as at work by, on figures as Windows gave them
-    /// for a `tail -F` and a `ping` left running, and for real work.
+    /// for a `tail -F` and a `ping` left running, and for real work; and birth is
+    /// no work.
     #[test]
     fn a_leftover_is_at_work_by_what_it_uses_not_by_being_there() {
         let read = |pid: u32, cpu_ms: u64, io_bytes: u64| (ProcRead { pid, cpu_ms, io_bytes, started_ms: 7 }, format!("p{pid}"));
-        let first = leftovers(&[], vec![read(1, 16, 20_000), read(2, 31, 19_000), read(3, 500, 0), read(4, 0, 0)], 1_000);
-        assert!(first.iter().all(|l| l.moved_ms == 1_000), "new, as good as at work");
+        // Just left by a turn that ended at 900: as quiet as the job since then.
+        let first = leftovers(&[], vec![read(1, 16, 20_000), read(2, 31, 19_000), read(3, 50, 0), read(4, 0, 0)], 1_000, 900);
+        assert!(first.iter().all(|l| l.moved_ms == 900), "{first:?}");
         let old = first.iter().map(|l| Leftover { moved_ms: 0, ..l.clone() }).collect::<Vec<_>>();
-        // Five seconds on.
-        let next = leftovers(&old, vec![read(1, 31, 21_400), read(2, 31, 19_500), read(3, 3_000, 0), read(4, 0, 900_000)], 6_000);
-        let moved: Vec<bool> = next.iter().map(|l| l.moved_ms == 6_000).collect();
+        // A minute on: a `tail -F`, a `ping`, a compiler, a download at 8 KiB/s.
+        let next = leftovers(&old, vec![read(1, 46, 35_000), read(2, 91, 25_000), read(3, 30_000, 0), read(4, 0, 480_000)], 61_000, 900);
+        let moved: Vec<bool> = next.iter().map(|l| l.moved_ms == 61_000).collect();
         assert_eq!(moved, [false, false, true, true], "tail -F, ping: idle; a compiler, a download: at work");
         // A second on, one tick of CPU is no rate yet: measured with the next.
-        let soon = leftovers(&old, vec![read(1, 32, 20_000)], 2_000);
+        let soon = leftovers(&old, vec![read(1, 32, 20_000)], 2_000, 900);
         assert_eq!((soon[0].moved_ms, soon[0].read_ms, soon[0].cpu_ms), (0, 1_000, 16));
+        // A child that takes another's place is as quiet as the job was: a loop's
+        // `sleep 60`, its start's CPU and I/O loading, not work...
+        let now = 10 * 60_000;
+        let sleep = (ProcRead { pid: 9, cpu_ms: 31, io_bytes: 30_000, started_ms: now - 2_000 }, "sleep.exe".to_string());
+        let quiet = leftovers(&old, vec![sleep.clone()], now, 900);
+        assert_eq!(quiet[0].moved_ms, 900, "birth is no work");
+        // Seen in the middle of its start, the rest of its loading is no work either.
+        let mid = |at: u64, cpu_ms: u64, io_bytes: u64| (ProcRead { pid: 11, cpu_ms, io_bytes, started_ms: now - 50 + at }, "sleep.exe".to_string());
+        let seen = leftovers(&old, vec![mid(0, 15, 2_000)], now, 900);
+        let next_read = leftovers(&seen, vec![mid(0, 31, 30_000)], now + 5_000, 900);
+        assert_eq!(next_read[0].moved_ms, 900, "{next_read:?}");
+        // ...but one that has used a core since it started is.
+        let busy = (ProcRead { pid: 10, cpu_ms: 2_500, io_bytes: 0, started_ms: now - 3_000 }, "rustc.exe".to_string());
+        assert_eq!(leftovers(&old, vec![busy], now, 900)[0].moved_ms, now);
         // A pid taken by another process is a new one.
-        let reborn = leftovers(&old, vec![(ProcRead { pid: 1, cpu_ms: 31, io_bytes: 21_400, started_ms: 8 }, "p1".into())], 6_000);
-        assert_eq!(reborn[0].moved_ms, 6_000);
+        let reborn = leftovers(&old, vec![(ProcRead { pid: 1, cpu_ms: 31, io_bytes: 21_400, started_ms: 8 }, "p1".into())], 6_000, 900);
+        assert_eq!(reborn[0].moved_ms, 900);
         assert_eq!(left_names(&next), "p1 (pid 1), p2 (pid 2), p3 (pid 3), 1 more");
-        assert_eq!(quiet_ms(&next, 6_000 + LEFTOVER_AWAKE_MS), Some(LEFTOVER_AWAKE_MS));
-        assert!(next[2].at_work(6_000 + LEFTOVER_AWAKE_MS - 1) && !next[0].at_work(LEFTOVER_AWAKE_MS));
+        // Active for luna_list, holding for the machine, and letting go once.
+        let t = 61_000;
+        assert!(next[2].active(t + LEFTOVER_ACTIVE_MS - 1) && !next[2].active(t + LEFTOVER_ACTIVE_MS));
+        assert!(next[2].holds(t + LEFTOVER_HOLD_MS - 1) && !next[2].holds(t + LEFTOVER_HOLD_MS));
+        let later = t + LEFTOVER_HOLD_MS;
+        let after = leftovers(&next, vec![read(3, 30_000, 0)], later, 900);
+        assert_eq!(gone_quiet(&next, &after, later), ["p3 (pid 3)"]);
+        assert!(gone_quiet(&after, &leftovers(&after, vec![read(3, 30_000, 0)], later + 5_000, 900), later + 5_000).is_empty(), "said once");
+        assert_eq!(quiet_ms(&after, later), Some(LEFTOVER_HOLD_MS));
     }
 
     #[test]
