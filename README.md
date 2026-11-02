@@ -500,6 +500,12 @@ background helper spawned without tools.
   A background Claude Code helper's own background job (`run_in_background`) keeps its turn
   going: `claude -p` waits for the job and takes its end up itself, so the helper stays
   `working` until then and there is one notice, with everything it said.
+- What a background helper's turns left running past their end — a server, a watcher, a
+  `tail -F` a tool forgot — is named: in its notice, and in `luna_list` as `leftRunning`, each
+  process with its pid, when it started and whether it has used CPU or I/O in the last 10
+  minutes. `luna_kill`, or Stop in the helper's list on its chat's row, ends it once the turn
+  is over. When all of it has done nothing for 30 minutes, the agent gets one notice saying
+  so and how to end it, and from there on it counts as a job that has ended.
 - If a chat still gets more than 12 turn-end notices about one session in 15 minutes, Luna
   stops telling it of that session's turns and jobs, says so in the log and once on the desktop,
   and goes on when you type into either chat. Its prompts and questions still come: a helper is
@@ -524,9 +530,12 @@ The power field in the status bar opens the two rules the machine follows.
 - **Keep the PC awake while sessions work** (on by default). Luna holds a Windows power
   request — `powercfg /requests` lists it as Luna's — while any session is busy, and lets it
   go a minute after the last one goes quiet. A session waiting for your answer does not hold
-  the machine. What a session started in a turn holds it for as long as it runs, however long
+  the machine. What a chat started in a turn holds it for as long as it runs, however long
   after the turn: Luna cannot tell a forgotten `tail -f` from a job that waits a day for its
-  moment, and a PC that slept or shut down on a guess leaves work nobody restarts. Windows does not restart its
+  moment, and a PC that slept or shut down on a guess leaves work nobody restarts. A
+  background helper's leftovers are measured: they hold it only while they use CPU (1% of a
+  core) or I/O, and one quiet for 10 minutes — a `tail -F` polling its file, a server waiting on
+  its socket — holds nothing, nor keeps the "when done" rule below waiting. Windows does not restart its
   sleep timer for the request: if nobody has touched the PC for longer than that timer, it
   sleeps the moment the hold is let go. `luna.log` says when the hold was set and let go, and
   which session held it last.
