@@ -764,18 +764,23 @@ fn message_of(line: &str, with_tools: bool) -> Option<crate::agents::Message> {
 /// background task it takes up in a turn of its own (`<task-notification>`),
 /// a wake-up it scheduled, a compaction's summary, the marker an interrupt
 /// leaves. Nobody asked anything there, so it is no prompt whose reply is
-/// still to come. 2.1.316 says where a turn came from (`turnOrigin`, these
-/// being the ones it counts as no person's, and `promptSource`); an older CLI
-/// only by the text.
+/// still to come. 2.1.316 says where a prompt came from (`turnOrigin`, these
+/// being the ones it counts as no person's, and `promptSource`), and that word
+/// stands: a person may paste a `<task-notification>` of their own. Its
+/// interrupt marker says nothing of where it came from, nor does an older CLI's
+/// line: those go by the text.
 fn injected(v: &serde_json::Value, text: &str) -> bool {
     const OWN: [&str; 5] = ["scheduled", "task_notification", "auto_continuation", "host_synthetic", "system"];
-    v["turnOrigin"].as_str().is_some_and(|o| OWN.contains(&o))
-        || v["promptSource"] == "system"
-        || v["origin"]["kind"] == "task-notification"
-        || v["isCompactSummary"].as_bool() == Some(true)
-        || v["isVisibleInTranscriptOnly"].as_bool() == Some(true)
-        || text.starts_with("<task-notification>")
-        || text.starts_with("[Request interrupted by user")
+    if v["isCompactSummary"].as_bool() == Some(true) || v["isVisibleInTranscriptOnly"].as_bool() == Some(true) || v["origin"]["kind"] == "task-notification" {
+        return true;
+    }
+    if let Some(origin) = v["turnOrigin"].as_str() {
+        return OWN.contains(&origin);
+    }
+    if let Some(source) = v["promptSource"].as_str() {
+        return source == "system";
+    }
+    text.starts_with("<task-notification>") || text.starts_with("[Request interrupted by user")
 }
 
 #[cfg(test)]
@@ -824,6 +829,13 @@ mod reading_tests {
         let (msgs, _) = messages_from(&path, 0, false);
         let got: Vec<(&str, &str)> = msgs.iter().map(|m| (m.role.as_str(), m.text.as_str())).collect();
         assert_eq!(got, [("user", "build it"), ("assistant", "Started the build in the background."), ("assistant", "The build passed.")]);
+        // A person's paste that reads like one: where the line says it came from wins.
+        let pasted = [
+            r#"{"type":"user","message":{"role":"user","content":"<task-notification> is what I saw, why?"},"promptSource":"typed","turnOrigin":"human"}"#,
+            r#"{"type":"user","message":{"role":"user","content":"[Request interrupted by user] showed up, is that bad?"},"promptSource":"sdk"}"#,
+        ];
+        std::fs::write(&path, pasted.join("\n") + "\n").unwrap();
+        assert_eq!(messages_from(&path, 0, false).0.len(), 2, "both are a person's");
         let _ = std::fs::remove_file(&path);
     }
 
