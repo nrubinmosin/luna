@@ -11,11 +11,10 @@ can start other sessions and work with them.
   `idle`, `starting` (its CLI has not drawn yet), `background` (a job or helper of its still
   runs), `exited`.
 - A helper is **background** by default: no row, no terminal; each turn is one run of the
-  CLI's headless mode (`claude -p --output-format stream-json`, `codex exec --json`) on the
-  helper's account, resuming its conversation. The user sees it as a count on your chat's row
-  and can open it as a chat between its turns. `visible: true` makes it a
-  normal chat row instead, nested under yours, that the user can type into.
-- Window groups are how the user arranges chats.
+  CLI's headless mode (`claude -p`, `codex exec`) on the helper's account, and the next turn
+  resumes its conversation. The user sees it as a count on your chat's row and can open it as
+  a chat between its turns. `visible: true` makes it a normal chat row instead, nested under
+  yours, that the user can type into.
 - Each `luna_list` row also says:
   - `turnStartedAt`: when the turn on now began; null between turns. `lastActivityAt`: the
     last thing Luna saw it do: a background helper's last event, a visible session's last
@@ -46,12 +45,11 @@ can start other sessions and work with them.
   or unknown, else the most room. `accountChoice` says which and why.
 - Accounts of one provider differ: personal or team plans, different organizations, their
   own allowed models and their own quota. `defaults` in `luna_list` come from the account's
-  and the project's settings. A usage window near 100% means a helper there may stop
-  on its limit. When an account one of your live helpers runs on reaches 90%, then 95%, of a
-  window, a notice says so, once each until it resets. The numbers are the
-  ones Luna's window keeps, so with no window open none come.
-- If the CLI swaps a model the organization does not allow, the spawn reports it in
-  `warnings`.
+  and the project's settings. A usage window near 100% means a helper there may stop on its
+  limit. When an account your live helpers run on reaches 90%, then 95%, of a window, a
+  notice says so, once each until it resets (by the figures Luna's window keeps: none open,
+  no notice).
+- A model the organization does not allow, swapped by the CLI, is in the spawn's `warnings`.
 
 ## Spawning
 - Codex's `approval`: auto-review has a reviewer model answer what Codex would ask
@@ -86,7 +84,7 @@ can start other sessions and work with them.
   session wrote since it was asked, and names a file holding them: the report (the longest
   message; if all are short, the last) first, then the last message, then the rest in order.
   The notice quotes only the report's first line, cut to about 150 characters (`It begins:
-  "…"`), and not of a turn that stopped on an error, where it says so and why.
+  "…"`), and not of a turn that stopped on an error, which it says.
   It is delivered when your chat is between turns and the user is not typing in it.
 - "NOT done yet": a job it started still runs, or its own helpers have yet to answer it. Said
   once; the next notice comes when that is over or a turn of its own ends, not one it only ran
@@ -98,8 +96,7 @@ can start other sessions and work with them.
   either chat; `luna_wait` and `luna_read` still work.
 - Use `luna_wait` when you need the answer within the same turn. `outcome` says which: `turn_done`,
   `waiting`, `exit`, `job_done` or `timeout`. On `turn_done` (and an `exit` after such a
-  turn), `reply` holds all the session said since you asked, the report first, as the
-  notice's file has it. `failed` names the error a turn stopped on (API error, usage limit,
+  turn), `reply` holds all the session said since you asked, the report first. `failed` names the error a turn stopped on (API error, usage limit,
   crash, kill): `reply` is what it said before that, if anything, and `screen` comes too.
   `transcriptMissing`: no transcript found, so a null `reply` says nothing. `job_done`: told
   it is not done, what it had running ended with no turn; `reply` is what it said since. A
@@ -127,9 +124,10 @@ can start other sessions and work with them.
 - A core restart stops a background helper's turn and what its turns left running (off Windows
   only if it died). You stay owed: once your chat is back (given up after 10 minutes) a notice
   says it did NOT finish; `luna_send` has it carry on. What you queued never reached it: the
-  notice counts it and its file ends on it word for word (`undelivered` in `luna_read`,
-  `luna_wait`). Stopped before its first turn got anywhere, it "never got started" and the file
-  holds its prompt.
+  notice counts it and its file ends on it (`undelivered` in `luna_read`,
+  `luna_wait`). A helper stopped with no conversation yet, visible too, "never got started": the
+  file holds its prompt, then that text; `luna_send` starts it afresh, or with its CLI not back
+  spawn it again. A worktree it began is reused only if Luna named it and untouched; else `worktreeLeft`.
 - `resumeOnRestart` goes on by itself with that text (afresh on its prompt if it never got started);
   one notice says so, the usual one follows. Else the plain notice: a background helper where Luna
   cannot tell the old turn ended, a visible one whose CLI Luna could not bring back, or that the

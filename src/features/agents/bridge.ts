@@ -8,7 +8,7 @@
  */
 import { useEffect } from 'react';
 import {
-  accountUsage, agentResumes, agentSpawned, backgroundHelpers, chatNames, codexModels, deleteSession, ensureClaudeSession, ensureCodexSession,
+  accountUsage, agentResumes, agentSpawned, agentSpawns, backgroundHelpers, chatNames, codexModels, deleteSession, ensureClaudeSession, ensureCodexSession,
   type AgentSpawnRequest, type CodexModelDto, type PromotedDto
 } from '../../ipc/commands';
 import { onAgentDeleted, onAgentPromote, onAgentReparent, onAgentSpawn, onBackgroundHelpers } from '../../ipc/events';
@@ -99,7 +99,21 @@ async function codexSettings(
   return { model, effort, approval, sandbox };
 }
 
+/** The accounts have come in: a chat is started from one, and a request looked up
+ *  before then would be refused as naming none. */
+const accountsLoaded = () =>
+  new Promise<void>(done => {
+    if (useAccounts.getState().loaded) return done();
+    const off = useAccounts.subscribe(s => {
+      if (s.loaded) {
+        off();
+        done();
+      }
+    });
+  });
+
 async function spawn(req: AgentSpawnRequest): Promise<void> {
+  await accountsLoaded();
   const chats = useChats.getState();
   // A caller without a row of its own — the dev caller of agents.rs, or a
   // chat whose row was dropped while its session lived on — gets a top-level
@@ -126,9 +140,14 @@ async function spawn(req: AgentSpawnRequest): Promise<void> {
   const hooksUnasked = req.hooksUnasked;
   const readOnly = req.readOnly ?? false;
   const agent = req.agent ?? null;
-  const id = await createChat({
-    ...spec, folder, account, worktree, tools, hooksUnasked, parentId: parent?.id, name, inWorktree, byAgent: true, readOnly, agent
-  });
+  // Named by the request: asked for until answered (`agent_spawns`), it is the same
+  // row should a page before this one have got that far, and no second.
+  const rowId = `c${req.requestId.toString(36)}`;
+  const id = useChats.getState().findChat(rowId)
+    ? rowId
+    : await createChat({
+        ...spec, id: rowId, folder, account, worktree, tools, hooksUnasked, parentId: parent?.id, name, inWorktree, byAgent: true, readOnly, agent
+      });
   const chat = useChats.getState().findChat(id);
   const common = {
     chatId: id,
@@ -181,15 +200,7 @@ const onCoreUp = (again: () => void) =>
 async function startResumes(): Promise<void> {
   const ids = await agentResumes();
   if (ids.length === 0) return;
-  await new Promise<void>(done => {
-    if (useAccounts.getState().loaded) return done();
-    const off = useAccounts.subscribe(s => {
-      if (s.loaded) {
-        off();
-        done();
-      }
-    });
-  });
+  await accountsLoaded();
   for (const id of ids) {
     const chats = useChats.getState();
     const chat = chats.findChat(id);
@@ -201,6 +212,20 @@ async function startResumes(): Promise<void> {
     }
     startSession(chat, folder, account.path).catch(e => logWarn('agents', `starting helper ${id} to go on failed: ${String(e)}`));
   }
+}
+
+/** The requests this page has taken up: one may come both ways, by its event and
+ *  by asking (`agent_spawns`), and is taken up once. */
+const taken = new Set<number>();
+
+function takeSpawn(req: AgentSpawnRequest): void {
+  if (taken.has(req.requestId)) return;
+  taken.add(req.requestId);
+  spawn(req).catch(e => {
+    logWarn('agents', `spawn for ${req.parentId} failed: ${String(e)}`);
+    // The agent reads this as the tool's error: the message, not "Error: …".
+    agentSpawned(req.requestId, null, null, e instanceof Error ? e.message : String(e)).catch(() => {});
+  });
 }
 
 const samePath = (a: string, b: string) =>
@@ -269,13 +294,19 @@ export function useAgentBridge() {
     void onAgentPromote(p => {
       promote(p).catch(e => logWarn('agents', `opening helper ${p.id} as a chat failed: ${String(e)}`));
     }).then(off => (dead ? off() : offs.push(off)));
-    void onAgentSpawn(req => {
-      spawn(req).catch(e => {
-        logWarn('agents', `spawn for ${req.parentId} failed: ${String(e)}`);
-        // The agent reads this as the tool's error: the message, not "Error: …".
-        agentSpawned(req.requestId, null, null, e instanceof Error ? e.message : String(e)).catch(() => {});
-      });
-    }).then(off => (dead ? off() : offs.push(off)));
+    // Asked once listening, so that nothing falls between: what was sent before this
+    // page could hear it, with no window or while one loaded, was sent to nobody.
+    const askForSpawns = () =>
+      void agentSpawns().then(asked => asked.forEach(takeSpawn)).catch(e => logWarn('agents', `asking which spawns are waiting failed: ${String(e)}`));
+    void onAgentSpawn(takeSpawn).then(off => {
+      if (dead) {
+        off();
+        return;
+      }
+      offs.push(off);
+      askForSpawns();
+    });
+    offs.push(onCoreUp(askForSpawns));
     void onAgentDeleted(({ id }) => {
       // The session, attachments and worktree are already gone (agents.rs);
       // only the row is left to drop.

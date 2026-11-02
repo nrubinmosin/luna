@@ -324,8 +324,14 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   before its first turn got anywhere is reported as never started, with its prompt, and with
   `resumeOnRestart` starts afresh on it. A visible helper spawned with it goes on too: Luna
   starts its CLI, in a pane or not, and types the same word in once it is back at its prompt,
-  unless you typed into it or an agent wrote to it first. What agents hold of the chats you
-  see — who spawned them, a worktree they were handed, answers owed, messages Luna was holding
+  unless you typed into it or an agent wrote to it first. A visible helper without it that has
+  no conversation to come back to is reported as never started in the same way, the prompt
+  and that agent's messages Luna was holding in a file, to send again. Luna names a Claude Code
+  helper's worktree itself, so a fresh start goes back into that one and no other, and only if
+  nothing has touched it since Claude Code made it. Anything else, and whatever a Codex helper
+  began (Codex takes no name, so nothing says whose a worktree is), stays where it is and the
+  agent hears of it as `worktreeLeft`. What agents hold
+  of the chats you see — who spawned them, a worktree they were handed, answers owed, messages Luna was holding
   for your draft — is kept in `chat-ties.json` the same way and picked up when each chat starts
   again. So is a `luna_spawn` the core went in the middle of: the agent is told no helper came
   of it, with its prompt in a file and any worktree it had begun named and left where it is,
@@ -571,9 +577,14 @@ fixture is also the only way to retake all three shots from the same state.
 ## Checking the Rust side without a local toolchain (Docker)
 
 ```powershell
-docker run --rm -v "${PWD}:/app" -w /app/src-tauri rust:1-bookworm bash -c `
-  "apt-get update -qq && apt-get install -y -qq libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev pkg-config build-essential libxdo-dev >/dev/null && cargo check"
+./linux-check.ps1
 ```
+
+Builds the crate for Linux and runs its whole unit test suite there: the Unix code
+(`keeper.rs`, parts of `procs.rs` and `pty.rs`) that `./test-build.ps1 -Test`, with its
+Windows binaries, never compiles. The checkout goes in read-only, and the caches (the cargo
+registry, the Linux target) live in named volumes of its own. Runs under `pwsh` on any host
+with Docker.
 
 ## Windows build through Docker
 

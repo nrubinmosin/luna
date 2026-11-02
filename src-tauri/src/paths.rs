@@ -66,6 +66,36 @@ pub fn same_dir(a: &Path, b: &Path) -> bool {
     matches!((std::fs::canonicalize(a), std::fs::canonicalize(b)), (Ok(a), Ok(b)) if a == b)
 }
 
+/// What `path_key` leaves between the parts of a path.
+pub const KEY_SEP: char = if cfg!(windows) { '\\' } else { '/' };
+
+/// What two spellings of a path compare by where taking them for one place would
+/// be the mistake: nothing is deleted on a likeness. Only Windows has them the
+/// same in any case and either separator; on Linux `/p/Foo` and `/p/foo` are two
+/// folders and a backslash is part of a name. So is macOS taken at its word: APFS
+/// is usually case-insensitive but may not be, and there two spellings of one
+/// folder only leave a worktree on disk, where one taken for another deletes it.
+pub fn path_key(p: &str) -> String {
+    if cfg!(windows) {
+        p.replace('/', "\\").trim_end_matches('\\').to_lowercase()
+    } else {
+        p.trim_end_matches('/').to_string()
+    }
+}
+
+/// `path_key` for where it is missing a likeness that would be the mistake: a
+/// live session not seen in a worktree leaves that worktree to be deleted under
+/// it, and a session not recognised as a chat's leaves the chat without it. On
+/// macOS the spelling a chat was given and the one its CLI reports differ only
+/// where the volume does not care, as it usually does not.
+pub fn path_key_loose(p: &str) -> String {
+    if cfg!(target_os = "macos") {
+        path_key(p).to_lowercase()
+    } else {
+        path_key(p)
+    }
+}
+
 /// The WebView's profile: localStorage, which holds the chats and the
 /// layout, and the browser's caches. Windows only. Elsewhere the exe's folder
 /// is an app bundle or a system path, so the data dir is in the user's folder
@@ -113,4 +143,23 @@ fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_path_in_another_case_or_with_other_separators_is_the_same_only_on_windows() {
+        assert_eq!(path_key("/p/Foo") == path_key("/p/foo"), cfg!(windows));
+        assert_eq!(path_key(r"/p\foo") == path_key("/p/foo"), cfg!(windows));
+        assert_eq!(path_key("/p/foo/"), path_key("/p/foo"), "a trailing separator says nothing");
+    }
+
+    #[test]
+    fn the_loose_key_takes_case_for_nothing_on_macos_too_and_separators_nowhere_more() {
+        assert_eq!(path_key_loose("/p/Foo") == path_key_loose("/p/foo"), cfg!(any(windows, target_os = "macos")));
+        assert_eq!(path_key_loose(r"/p\foo") == path_key_loose("/p/foo"), cfg!(windows));
+        assert_eq!(path_key_loose("/p/foo/"), path_key_loose("/p/foo"));
+    }
 }
