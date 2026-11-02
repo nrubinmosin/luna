@@ -474,16 +474,18 @@ fn shown(reads: &[ProcRead], windowed: &std::collections::HashSet<u32>, edges: &
     }
 }
 
-/// What is left running in a helper's job between its turns, by name: every
-/// process, as each was born of a turn, but the CLIs' own helpers
-/// (`without_furniture`) and programs with a window of their own.
-pub fn left_running(job: &Job) -> Vec<String> {
-    let pids: Vec<u32> = children(Some(job), None).iter().map(|r| r.pid).collect();
-    let Some(b) = without_furniture(Some(Busy { active: Vec::new(), young: pids })) else { return Vec::new() };
-    let mut names: Vec<String> = imp::names(&b.young).into_iter().map(|(_, n)| n).collect();
-    names.sort();
-    names.dedup();
-    names
+/// What is left running in a helper's job between its turns, each process with
+/// its counters and name, for telling what is at work from what only sits there:
+/// every process, as each was born of a turn, but the CLIs' own helpers
+/// (`is_furniture`) and programs with a window of their own.
+pub fn left_in(job: &Job) -> Vec<(ProcRead, String)> {
+    let reads = children(Some(job), None);
+    let names = imp::names(&reads.iter().map(|r| r.pid).collect::<Vec<_>>());
+    reads
+        .into_iter()
+        .map(|r| (r, names.iter().find(|(p, _)| *p == r.pid).map_or_else(|| r.pid.to_string(), |(_, n)| n.clone())))
+        .filter(|(_, name)| !is_furniture(name))
+        .collect()
 }
 
 /// Ends what is left in a job once its session or helper is done with: what

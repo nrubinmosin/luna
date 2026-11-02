@@ -374,7 +374,13 @@ src-tauri/src/
   (delete, kill, Quit, a respawn of one that exited) `procs::end_leftovers` ends what is still in it,
   which the CLI's tree kill misses once a parent has gone first, windowed programs spared. A
   background helper has one job for its life, each turn's process joined to it: between turns what
-  its turns left holds the machine by the same rule, and it is ended with the helper. Its job alone
+  its turns left holds the machine while it is at work, and it is ended with the helper. At work is
+  measured there, per process (`background::leftovers`): CPU at 1% of a core or 16 KiB/s of I/O between
+  two samples at least 4 s apart, as Windows counts CPU in 15.6 ms ticks (a `tail -F` polling its file
+  showed about 1 ms/s and 300 B/s, a `ping` none and 100) within
+  the last 10 min (`LEFTOVER_AWAKE_MS`; long enough for a link or a Docker client printing nothing while
+  the build it waits on compiles). A Claude Code Monitor's `tail -F`, left running past its expiry, kept a
+  PC awake all night. A chat has no such measure: what its turns started holds as long as it runs. Its job alone
   is tied to the core (`procs::tie`, `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`): a chat's CLI goes with its
   terminal when a core dies, a helper's has none, and would run on unowned beside the turn the next
   core starts on that conversation. This is the leftover rule, not an exception to it: a core that
@@ -561,7 +567,11 @@ src-tauri/src/
   Code may take the end up in a turn of its own; Codex and a finished `claude -p` will not). A `claude -p` with a
   `run_in_background` task open does not finish: it waits for the task and takes its end up itself in the same run,
   so a background Claude Code helper reads `working` all along and its caller gets one notice, with everything it
-  said. Turns on notices are
+  said. The "NOT done yet" names a background helper's leftovers. Once all of them have done nothing for
+  30 min (`IDLE_JOB_MS`, `job_at_work`) they are no job at work: the caller is told once that only idle
+  processes are left, named, and that `luna_kill` ends them, and the debt settles as at a job's end
+  (`luna_wait`: `job_done`). Before that a helper whose Monitor left a `tail -F` read "not done" for 14 h with
+  no word to its caller. Turns on notices are
   skipped over, the cursor staying put, so what they said comes with the next word. This is what ended a night of
   460 notices an hour: every notice started a turn, every such turn's end re-owed the answer at the new count, and any
   leftover process made `children_busy` true. A debt that was not told this cannot loop: a notice consumes it.
@@ -715,8 +725,11 @@ src-tauri/src/
   its own (`OutReader`) and the turn ends with the process, once the reader has got through what the CLI wrote: it ended,
   or it has sat in a read with nothing coming for 500 ms (30 s at most). An event is looked at under the lock against the
   turn being over, so none lands after its turn. Between turns `children_busy` is what the turn
-  left in the helper's job (`procs::left_running`, read as the turn ends and at each activity sample, as it takes a
-  process snapshot). A turn whose CLI went before its model wrote or ran anything (`Observed::acted`: an unknown
+  left in the helper's job (`procs::left_in`, read as the turn ends and at each activity sample, as it takes a
+  process snapshot), each process kept with when it was last at work (`Leftover`); `luna_list` shows them
+  (`leftRunning`: exe, pid, start, `active`, `quietMin`), the window lists them on the helper's Stop, and a
+  stop between turns (`luna_kill`, that Stop) has only them to stop and ends them, leaving `autoDelete` as it
+  was. A turn whose CLI went before its model wrote or ran anything (`Observed::acted`: an unknown
   `--agent`, a model that is not there) first ends what was born in the job since it started
   (`procs::end_born_since`): the `git` Claude Code had started ran on for minutes, and the helper read `background`
   and was never reaped; `send` during a turn queues the text for the next, and a turn about to start takes the

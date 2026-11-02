@@ -202,6 +202,86 @@ pub struct Signs {
     pub resolved_model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub spend: Option<Spend>,
+    /// Between turns, what its turns left running (`Leftover`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub left_running: Vec<LeftRunning>,
+}
+
+/// One process a helper's turns left running, as `luna_list` shows it.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct LeftRunning {
+    pub exe: String,
+    pub pid: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
+    /// It used CPU or I/O within LEFTOVER_AWAKE_MS: what holds the machine awake.
+    pub active: bool,
+    /// Minutes since it last did (or since its turn ended, if it has not since).
+    pub quiet_min: u64,
+}
+
+/// A process left in a helper's job is at work while it uses at least this
+/// much CPU per second of the time between two samples (1% of a core), or
+/// moves LEFTOVER_IO_PER_S bytes. Measured on Windows: a `tail -F` polling its
+/// file uses about 1 ms a second and 300 bytes of I/O, a `ping` none and 100;
+/// a compiler, a test run or a download is far past both.
+const LEFTOVER_CPU_MS_PER_S: u64 = 10;
+const LEFTOVER_IO_PER_S: u64 = 16 * 1024;
+/// The shortest stretch a rate is taken over: Windows counts CPU time in ticks
+/// of 15.6 ms, one of which over a second or so reads as a busy process. A read
+/// sooner after the last (a stop's) is measured with the next.
+const LEFTOVER_WINDOW_MS: u64 = 4_000;
+/// A leftover that has not been at work for this long holds the machine awake
+/// no longer: a forgotten `tail -F` or a server waiting on its socket kept a PC
+/// up all night. Long enough for a real job's quiet stretch (a link, a test on
+/// a timeout, a build the Docker CLI only waits on while it prints nothing).
+const LEFTOVER_AWAKE_MS: u64 = 10 * 60 * 1000;
+
+/// A process a helper's turns left in its job, between its samples.
+#[derive(Clone, Debug, PartialEq)]
+struct Leftover {
+    pid: u32,
+    exe: String,
+    started_ms: u64,
+    cpu_ms: u64,
+    io_bytes: u64,
+    /// When it was read.
+    read_ms: u64,
+    /// When it was last at work, or first seen.
+    moved_ms: u64,
+}
+
+/// Each process of `now` with when it was last at work, by the rates it moved at
+/// since `old` read it. One not in `old` is new: as good as at work, its turn
+/// having just ended or it having just started.
+fn leftovers(old: &[Leftover], now: Vec<(crate::procs::ProcRead, String)>, at: u64) -> Vec<Leftover> {
+    now.into_iter()
+        .map(|(r, exe)| {
+            let moved_ms = match old.iter().find(|o| o.pid == r.pid && o.started_ms == r.started_ms) {
+                Some(o) if at.saturating_sub(o.read_ms) < LEFTOVER_WINDOW_MS => return Leftover { exe, ..o.clone() },
+                Some(o) => {
+                    let ms = at.saturating_sub(o.read_ms).max(1);
+                    let cpu = r.cpu_ms.saturating_sub(o.cpu_ms);
+                    let io = r.io_bytes.saturating_sub(o.io_bytes);
+                    let working = cpu.saturating_mul(1000) >= LEFTOVER_CPU_MS_PER_S * ms || io.saturating_mul(1000) >= LEFTOVER_IO_PER_S * ms;
+                    if working { at } else { o.moved_ms }
+                }
+                None => at,
+            };
+            Leftover { pid: r.pid, exe, started_ms: r.started_ms, cpu_ms: r.cpu_ms, io_bytes: r.io_bytes, read_ms: at, moved_ms }
+        })
+        .collect()
+}
+
+/// "tail.exe (pid 22104)", a few of them, for a notice.
+fn left_names(left: &[Leftover]) -> String {
+    const SHOWN: usize = 3;
+    let mut names: Vec<String> = left.iter().take(SHOWN).map(|l| format!("{} (pid {})", l.exe, l.pid)).collect();
+    if left.len() > SHOWN {
+        names.push(format!("{} more", left.len() - SHOWN));
+    }
+    names.join(", ")
 }
 
 /// An instant as the rest of `luna_list` writes one.
@@ -401,6 +481,9 @@ struct Entry {
     /// a process snapshot, too much for every `turn_state`, and not under the
     /// registry lock.
     left_running: bool,
+    /// What that is, process by process, as last sampled between turns: what
+    /// `luna_list` names, and whether it does anything (`leftovers`).
+    left: Vec<Leftover>,
     observed: Observed,
 }
 
@@ -585,6 +668,7 @@ pub fn start(id: &str, spec: Spec, prompt: &str) -> Result<(), String> {
         opening: None,
         job: None,
         left_running: false,
+        left: Vec::new(),
         observed: Observed::default(),
     };
     claim(&mut e);
@@ -1270,7 +1354,7 @@ fn turn_over(id: &str, code: Option<i32>) {
     }
     // Before the turn reads as over: whoever is owed its answer must not hear
     // "finished" ahead of the job it left running.
-    let left_running = job.is_some_and(|job| !crate::procs::left_running(&job).is_empty());
+    let left = job.map(|job| crate::procs::left_in(&job)).unwrap_or_default();
     let (next, thread, generation, stated, rerouted, acted) = {
         let mut r = lock();
         let Some(e) = r.entries.get_mut(id) else { return };
@@ -1279,7 +1363,9 @@ fn turn_over(id: &str, code: Option<i32>) {
         e.observed.turn_ended_ms = crate::throttle::now_ms();
         e.observed.settle_unreported();
         e.held.clear();
-        e.left_running = left_running;
+        e.left_running = !left.is_empty();
+        // What was already there before the turn keeps its own clock.
+        e.left = leftovers(&e.left, left, crate::throttle::now_ms());
         if code != Some(0) && e.error.is_none() {
             e.error = Some(match code {
                 Some(c) => format!("{} exited with code {c}", e.spec.provider.as_str()),
@@ -1368,10 +1454,10 @@ pub fn turn_state(id: &str) -> Option<crate::activity::TurnState> {
     })
 }
 
-/// What the power rules see of every helper: its turn, and between turns
-/// what its turns left running, by the same rule as a chat's (activity.rs):
-/// it holds the machine for as long as it lives. Noted for `turn_state`, which
-/// is what tells its caller and `reap` that a job still runs.
+/// What the power rules see of every helper: its turn, and between turns what
+/// its turns left running, which holds the machine while it is at work
+/// (LEFTOVER_AWAKE_MS). Noted for `turn_state`, which is what tells its caller
+/// and `reap` that a job still runs, however idle.
 pub fn activity() -> Vec<crate::activity::SessionActivity> {
     let ids: Vec<(String, Option<std::sync::Arc<crate::procs::Job>>)> = lock()
         .entries
@@ -1382,18 +1468,26 @@ pub fn activity() -> Vec<crate::activity::SessionActivity> {
     let out = ids
         .into_iter()
         .filter_map(|(id, job)| {
-            let left = job.map(|job| crate::procs::left_running(&job));
-            if let Some(left) = &left {
+            let read = job.map(|job| crate::procs::left_in(&job));
+            let now = crate::throttle::now_ms();
+            let mut at_work = Vec::new();
+            if let Some(read) = read {
                 if let Some(e) = lock().entries.get_mut(&id).filter(|e| e.run.is_none()) {
-                    moved |= e.left_running != !left.is_empty();
-                    e.left_running = !left.is_empty();
+                    let pids = |left: &[Leftover]| left.iter().map(|l| (l.pid, l.started_ms)).collect::<Vec<_>>();
+                    let before = pids(&e.left);
+                    e.left_running = !read.is_empty();
+                    e.left = leftovers(&e.left, read, now);
+                    moved |= pids(&e.left) != before;
+                    at_work = e.left.iter().filter(|l| now.saturating_sub(l.moved_ms) < LEFTOVER_AWAKE_MS).map(|l| l.exe.clone()).collect();
                 }
             }
             let t = turn_state(&id)?;
             let mut a = crate::activity::SessionActivity::of_turn(&id, t.turn, t.busy);
-            if let Some(left) = left.filter(|left| !left.is_empty()) {
+            if !at_work.is_empty() {
+                at_work.sort();
+                at_work.dedup();
                 a.busy = true;
-                a.procs = left;
+                a.procs = at_work;
             }
             Some(a)
         })
@@ -1432,19 +1526,70 @@ pub fn send(id: &str, text: &str, from: Option<&str>) -> Result<bool, String> {
     Ok(queued)
 }
 
-/// Stops the turn in progress; the conversation stays for the next one.
-pub fn kill(id: &str) {
-    let pid = {
+/// Stops the turn in progress; the conversation stays for the next one. Between
+/// turns there is no turn to stop, and what its turns left running is what is
+/// left of it to stop: that is ended, and what went is returned by name.
+pub fn kill(id: &str) -> Vec<String> {
+    let (pid, job) = {
         let mut r = lock();
-        let Some(e) = r.entries.get_mut(id) else { return };
+        let Some(e) = r.entries.get_mut(id) else { return Vec::new() };
         // Whoever is owed the turn hears it was stopped, not an exit code.
         if e.run.is_some() {
             e.error = Some("it was stopped, by luna_kill or from the window".into());
         }
-        stop(e)
+        let job = e.job.clone().filter(|_| e.run.is_none() && e.left_running);
+        (stop(e), job)
     };
     reg().1.notify_all();
     crate::pty::kill_tree(pid);
+    let Some(job) = job else { return Vec::new() };
+    let ended = crate::procs::end_leftovers(&job, None);
+    // A process ended is still in the job for a moment, as the OS tears it down.
+    let mut still = crate::procs::left_in(&job);
+    for _ in 0..20 {
+        if still.is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        still = crate::procs::left_in(&job);
+    }
+    if let Some(e) = lock().entries.get_mut(id).filter(|e| e.run.is_none()) {
+        e.left_running = !still.is_empty();
+        e.left = leftovers(&e.left, still, crate::throttle::now_ms());
+    }
+    if !ended.is_empty() {
+        crate::log::info("background", &format!("{}: stopped between turns, which ended what its turns left running: {}", crate::agents::label(id), ended.join(", ")));
+    }
+    changed();
+    ended
+}
+
+/// Between turns, what its turns left running, for `luna_list`.
+fn left_shown(e: &Entry, now: u64) -> Vec<LeftRunning> {
+    if e.run.is_some() {
+        return Vec::new();
+    }
+    e.left
+        .iter()
+        .map(|l| LeftRunning {
+            exe: l.exe.clone(),
+            pid: l.pid,
+            started_at: (l.started_ms > 0).then(|| iso(l.started_ms)).flatten(),
+            active: now.saturating_sub(l.moved_ms) < LEFTOVER_AWAKE_MS,
+            quiet_min: now.saturating_sub(l.moved_ms) / 60_000,
+        })
+        .collect()
+}
+
+/// Between turns, how long all its turns left running has done nothing — the
+/// least of them — and their names for a notice; None with nothing left, or
+/// in a turn.
+pub fn left_quiet(id: &str) -> Option<(u64, String)> {
+    let r = lock();
+    let e = r.entries.get(id).filter(|e| e.run.is_none() && e.left_running && !e.left.is_empty())?;
+    let now = crate::throttle::now_ms();
+    let quiet = e.left.iter().map(|l| now.saturating_sub(l.moved_ms)).min()?;
+    Some((quiet, left_names(&e.left)))
 }
 
 /// Why its last turn stopped short, if it did.
@@ -1768,18 +1913,25 @@ pub struct Row {
     pub started_ms: u64,
     /// While a turn runs, when it started.
     pub turn_started_ms: Option<u64>,
+    /// Between turns, what its turns left running ("tail.exe (pid 22104)"):
+    /// what its Stop ends then.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub left_running: Vec<String>,
 }
 
 /// Every helper, for the window.
 #[tauri::command]
 pub fn background_helpers() -> Vec<Row> {
-    let ids: Vec<(String, Spec, u64, Option<u64>)> = lock()
+    let ids: Vec<(String, Spec, u64, Option<u64>, Vec<String>)> = lock()
         .entries
         .iter()
-        .map(|(id, e)| (id.clone(), e.spec.clone(), e.started_ms, e.run.as_ref().map(|r| r.started_ms)))
+        .map(|(id, e)| {
+            let left = if e.run.is_none() && e.left_running { e.left.iter().map(|l| format!("{} (pid {})", l.exe, l.pid)).collect() } else { Vec::new() };
+            (id.clone(), e.spec.clone(), e.started_ms, e.run.as_ref().map(|r| r.started_ms), left)
+        })
         .collect();
     ids.into_iter()
-        .map(|(id, spec, started_ms, turn_started_ms)| Row {
+        .map(|(id, spec, started_ms, turn_started_ms, left_running)| Row {
             parent: crate::agents::parent_of(&id),
             name: crate::agents::chat_name(&id).unwrap_or_default(),
             state: crate::agents::state_of(&id).0,
@@ -1791,6 +1943,7 @@ pub fn background_helpers() -> Vec<Row> {
             worktree: spec.worktree,
             started_ms,
             turn_started_ms,
+            left_running,
             id,
         })
         .collect()
@@ -1817,6 +1970,7 @@ pub fn signs(id: &str) -> Option<Signs> {
             e.spec.model.clone().filter(|_| e.spec.provider == Provider::Codex && e.turns_ended > 0 && e.error.is_none())
         }),
         spend: (o.spend != Spend::default()).then_some(o.spend),
+        left_running: left_shown(e, crate::throttle::now_ms()),
     })
 }
 
@@ -2162,6 +2316,7 @@ fn taken_up(s: Saved) -> Entry {
         opening: None,
         job: None,
         left_running: false,
+        left: Vec::new(),
         observed: s.observed,
     };
     e.observed.settle_unreported();
@@ -2301,6 +2456,20 @@ pub(crate) fn idle_for_test(id: &str, provider: Provider, turns_ended: u32, left
     lock().entries.insert(id.to_string(), e);
 }
 
+/// What a test helper's turns left running: each by name and pid, quiet for so
+/// many ms.
+#[cfg(test)]
+pub(crate) fn left_for_test(id: &str, left: &[(&str, u32, u64)]) {
+    let now = crate::throttle::now_ms();
+    let mut r = lock();
+    let e = r.entries.get_mut(id).expect("a test helper");
+    e.left_running = !left.is_empty();
+    e.left = left
+        .iter()
+        .map(|(exe, pid, quiet)| Leftover { pid: *pid, exe: exe.to_string(), started_ms: 0, cpu_ms: 0, io_bytes: 0, read_ms: now, moved_ms: now - quiet })
+        .collect();
+}
+
 #[cfg(test)]
 pub(crate) fn gone_for_test(id: &str) {
     lock().entries.remove(id);
@@ -2355,6 +2524,7 @@ pub fn test_helper(id: &str, account_path: &str, session: Option<&str>, busy: bo
         opening: None,
         job: None,
         left_running: false,
+        left: Vec::new(),
         observed: Observed::default(),
     };
     lock().entries.insert(id.to_string(), e);
@@ -2755,6 +2925,7 @@ mod tests {
             opening: None,
             job: None,
             left_running: false,
+            left: Vec::new(),
             observed: Observed::default(),
         }
     }
@@ -2979,6 +3150,86 @@ mod tests {
             let _ = c.wait();
         }
         lock().entries.remove("strays");
+    }
+
+    /// The rates a leftover counts as at work by, on figures as Windows gave them
+    /// for a `tail -F` and a `ping` left running, and for real work.
+    #[test]
+    fn a_leftover_is_at_work_by_what_it_uses_not_by_being_there() {
+        let read = |pid: u32, cpu_ms: u64, io_bytes: u64| (crate::procs::ProcRead { pid, cpu_ms, io_bytes, started_ms: 7 }, format!("p{pid}"));
+        let first = leftovers(&[], vec![read(1, 16, 20_000), read(2, 31, 19_000), read(3, 500, 0), read(4, 0, 0)], 1_000);
+        assert!(first.iter().all(|l| l.moved_ms == 1_000), "new, as good as at work");
+        let old = first.iter().map(|l| Leftover { moved_ms: 0, ..l.clone() }).collect::<Vec<_>>();
+        // Five seconds on.
+        let next = leftovers(&old, vec![read(1, 31, 21_400), read(2, 31, 19_500), read(3, 3_000, 0), read(4, 0, 900_000)], 6_000);
+        let moved: Vec<bool> = next.iter().map(|l| l.moved_ms == 6_000).collect();
+        assert_eq!(moved, [false, false, true, true], "tail -F, ping: idle; a compiler, a download: at work");
+        // A pid taken by another process is a new one.
+        let reborn = leftovers(&old, vec![(crate::procs::ProcRead { pid: 1, cpu_ms: 31, io_bytes: 21_400, started_ms: 8 }, "p1".into())], 6_000);
+        assert_eq!(reborn[0].moved_ms, 6_000);
+        assert_eq!(left_names(&next), "p1 (pid 1), p2 (pid 2), p3 (pid 3), 1 more");
+    }
+
+    /// A job left between turns holds the machine while it works and not once it
+    /// only sits there, `luna_list` says which is which, and a stop between turns
+    /// ends it.
+    #[cfg(windows)]
+    #[test]
+    fn a_leftover_holds_the_machine_while_at_work_and_a_stop_ends_it() {
+        use std::os::windows::process::CommandExt;
+        let start = |exe: &str, args: &[&str]| {
+            std::process::Command::new(exe)
+                .args(args)
+                .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+                .stdout(std::process::Stdio::null())
+                .spawn()
+                .unwrap()
+        };
+        let mut idle = start("ping", &["-n", "120", "127.0.0.1"]);
+        let mut burner = start("cmd", &["/d", "/c", "for /l %i in (0,0,1) do @rem"]);
+        let job = std::sync::Arc::new(crate::procs::adopt(idle.id()).unwrap());
+        assert!(crate::procs::join(&job, burner.id()));
+        let mut e = entry(Provider::Claude);
+        e.turns_ended = 1;
+        e.job = Some(job.clone());
+        lock().entries.insert("left-work".into(), e);
+        let sample = || activity().into_iter().find(|a| a.id == "left-work").unwrap();
+        let first = sample();
+        assert!(first.busy, "just left: at work as far as anyone knows");
+        assert!(turn_state("left-work").unwrap().children_busy);
+        // As if both had sat there for longer than LEFTOVER_AWAKE_MS since.
+        let backdate = || {
+            for l in lock().entries.get_mut("left-work").unwrap().left.iter_mut() {
+                l.moved_ms = l.moved_ms.saturating_sub(LEFTOVER_AWAKE_MS + 60_000);
+            }
+        };
+        backdate();
+        std::thread::sleep(std::time::Duration::from_millis(LEFTOVER_WINDOW_MS + 500));
+        let now = sample();
+        assert!(now.busy, "the loop burns a core");
+        assert!(now.procs.len() == 1 && now.procs[0].eq_ignore_ascii_case("cmd.exe"), "and is all that holds the machine: {:?}", now.procs);
+        let shown = signs("left-work").unwrap().left_running;
+        let active = |exe: &str| shown.iter().find(|l| l.exe.eq_ignore_ascii_case(exe)).map(|l| l.active);
+        assert_eq!((active("cmd.exe"), active("PING.EXE")), (Some(true), Some(false)), "{shown:?}");
+        assert!(shown.iter().all(|l| l.started_at.is_some()));
+        assert!(left_quiet("left-work").is_some_and(|(quiet, _)| quiet < 60_000), "something is at work");
+        // The burner gone, the ping alone does not hold it.
+        let _ = burner.kill();
+        let _ = burner.wait();
+        backdate();
+        std::thread::sleep(std::time::Duration::from_millis(LEFTOVER_WINDOW_MS + 500));
+        let now = sample();
+        assert!(!now.busy, "an idle leftover holds nothing: {:?}", now.procs);
+        assert!(turn_state("left-work").unwrap().children_busy, "though it is there");
+        let (quiet, names) = left_quiet("left-work").unwrap();
+        assert!(quiet >= LEFTOVER_AWAKE_MS && names.to_ascii_lowercase().contains("ping.exe"), "{names}");
+        // A stop between turns is for what is left.
+        let ended = kill("left-work");
+        assert!(ended.iter().any(|n| n.eq_ignore_ascii_case("ping.exe")), "{ended:?}");
+        assert!(!turn_state("left-work").unwrap().children_busy);
+        assert!(signs("left-work").unwrap().left_running.is_empty());
+        let _ = idle.wait();
+        lock().entries.remove("left-work");
     }
 
     #[test]

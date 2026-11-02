@@ -613,6 +613,8 @@ export interface BackgroundHelperDto {
   startedMs: number;
   /** While a turn runs, when it started. */
   turnStartedMs: number | null;
+  /** Between turns, what its turns left running ("tail.exe (pid 22104)"): what Stop ends then. */
+  leftRunning?: string[];
 }
 
 /** A background helper handed over to a chat row (`agent://promote`). */
@@ -633,7 +635,7 @@ export interface PromotedDto {
 export const backgroundHelpers = () => call<BackgroundHelperDto[]>('background_helpers', {}, []);
 /** Makes the helper a chat of its own; refused while a turn runs. */
 export const backgroundPromote = (id: string) => call<void>('background_promote', { id });
-/** Stops the turn it is on; the conversation stays. */
+/** Stops the turn it is on, or between turns what its turns left running; the conversation stays. */
 export const backgroundKill = (id: string) => call<void>('background_kill', { id });
 /** Deletes it, the worktree it made too unless `dropWorktree` is false. */
 export const backgroundDelete = (id: string, dropWorktree = true) => call<void>('background_delete', { id, dropWorktree });
