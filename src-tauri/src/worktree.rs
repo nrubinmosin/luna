@@ -149,9 +149,11 @@ fn same_place(a: &str, b: &str) -> bool {
 /// the project it belongs to: a session's cwd follows its shell's `cd` (Claude Code
 /// moves its own with it), and where it works is the worktree all the same. Its
 /// root is the nearest folder up that is one of the project's worktrees by shape,
-/// or by its `.git` file (one made from inside another worktree).
+/// or by its `.git` file (one made from inside another worktree). `project_of`
+/// knows a Codex worktree by its root alone, so a folder of one is looked up from.
 pub fn root_of(path: &str) -> Option<(String, String)> {
-    let project = project_of(path)?;
+    let codex = || Path::new(path).ancestors().map(|d| d.to_string_lossy().into_owned()).find(|d| codex_shaped(d) && repo_of_linked(d).is_some());
+    let project = project_of(path).or_else(|| project_of(&codex()?))?;
     let mut dir = Path::new(path);
     loop {
         let d = dir.to_string_lossy();
