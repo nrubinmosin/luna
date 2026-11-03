@@ -1965,6 +1965,16 @@ pub fn signs(id: &str) -> Option<Signs> {
     })
 }
 
+/// While a turn runs, how long its CLI has said nothing: no event on its
+/// stdout or stderr since this long, or since the turn began. A tool call that
+/// hangs shows as this and nothing else.
+pub fn turn_quiet_ms(id: &str, now: u64) -> Option<u64> {
+    let r = lock();
+    let e = r.entries.get(id)?;
+    let run = e.run.as_ref()?;
+    Some(now.saturating_sub(e.observed.event_ms.max(run.started_ms)))
+}
+
 /// What the window needs to make a helper a chat of its own.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -2483,6 +2493,21 @@ pub(crate) fn in_turn_for_test(id: &str) {
     if let Some(e) = lock().entries.get_mut(id) {
         claim(e);
     }
+}
+
+/// A test helper in a turn that has said nothing for `quiet` ms.
+#[cfg(test)]
+pub(crate) fn quiet_for_test(id: &str, quiet: u64) {
+    let now = crate::throttle::now_ms();
+    let mut r = lock();
+    let e = r.entries.get_mut(id).expect("a test helper");
+    if e.run.is_none() {
+        claim(e);
+    }
+    if let Some(run) = e.run.as_mut() {
+        run.started_ms = now - quiet;
+    }
+    e.observed.event_ms = now - quiet;
 }
 
 /// A helper as `agents`'s tests need one, with no process behind it: in a

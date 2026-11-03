@@ -1,6 +1,6 @@
 //! Luna as an MCP server, for the sessions that asked for it: JSON-RPC over
 //! streamable HTTP on the hub listener (`POST /mcp`, bearer token per
-//! session). Eleven tools, described as briefly as a model can still use
+//! session). Twelve tools, described as briefly as a model can still use
 //! them — every word here lands in the caller's context once per session —
 //! a short `instructions` string in place of any system-prompt flag, and
 //! the rest in `luna_guide`, read only by a model that asks for it. A
@@ -319,6 +319,15 @@ fn tools() -> Value {
             "description": "Desktop notification to the user, titled with your chat. For a result or blocker they must see now, not progress; a turn ending on a question already notifies. One per 10 s.",
             "inputSchema": s(json!({ "text": { "type": "string" } }), &["text"]),
             "annotations": acts
+        },
+        {
+            "name": "luna_power",
+            "description": "Only when the user asked: shut down, hibernate or sleep the PC once all Luna sessions are quiet for quietS (default: the user's), CLIs closed first; off cancels. Returns busy, waitingForAPerson: what holds it up.",
+            "inputSchema": s(json!({
+                "action": { "type": "string", "enum": ["shutdown", "hibernate", "sleep", "off"] },
+                "quietS": { "type": "integer" }
+            }), &["action"]),
+            "annotations": ends
         }
     ])
 }
@@ -364,7 +373,7 @@ fn call(caller: &str, params: &Value, this: &Call) -> Value {
     const STEERING: &[&str] = &[
         "provider", "account", "model", "effort", "permissionMode", "sandbox", "readOnly", "agent", "approval", "folder", "worktree", "visible",
         "tools", "autoDelete", "name", "until", "timeoutS", "afterTurn", "since", "last", "screen", "interrupt", "dropWorktree",
-        "group", "history", "allow", "ids", "mode", "resumeOnRestart", "force",
+        "group", "history", "allow", "ids", "mode", "resumeOnRestart", "force", "action", "quietS",
     ];
     let set: Vec<String> = STEERING.iter().filter_map(|k| a.get(*k).filter(|v| !v.is_null()).map(|v| format!("{k}={v}"))).collect();
     if !set.is_empty() {
@@ -465,6 +474,7 @@ fn run(caller: &str, params: &Value, this: &Call) -> Value {
         "luna_delete" => agents::delete(caller, &id, a["dropWorktree"].as_bool().unwrap_or(false), a["force"].as_bool().unwrap_or(false))
             .map(|r| json!(r)),
         "luna_notify" => agents::notify(caller, a["text"].as_str().unwrap_or("")).map(|()| json!({ "ok": true })),
+        "luna_power" => crate::power::arm_for_agent(caller, a["action"].as_str().unwrap_or(""), a["quietS"].as_u64()),
         _ => Err(format!("unknown tool {name}")),
     };
     match out {
@@ -537,7 +547,7 @@ mod tests {
         assert!(handle("me", r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#).is_none());
         let list = handle("me", r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#).unwrap();
         let names: Vec<&str> = list["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names, ["luna_list", "luna_sessions", "luna_spawn", "luna_send", "luna_answer", "luna_read", "luna_wait", "luna_kill", "luna_delete", "luna_guide", "luna_notify"]);
+        assert_eq!(names, ["luna_list", "luna_sessions", "luna_spawn", "luna_send", "luna_answer", "luna_read", "luna_wait", "luna_kill", "luna_delete", "luna_guide", "luna_notify", "luna_power"]);
         // One without them is offered none, and may call none.
         agents::register("plain", crate::provider::Provider::Claude, "C:/p", "C:/acc/anthropic/one", None, false, json!({}));
         assert_eq!(handle("plain", r#"{"jsonrpc":"2.0","id":9,"method":"tools/list"}"#).unwrap()["result"]["tools"], json!([]));
@@ -619,10 +629,10 @@ mod tests {
             t.as_object_mut().unwrap().remove("annotations");
         }
         let text = list.to_string();
-        assert!(text.len() < 6600, "tools/list is {} chars", text.len());
+        assert!(text.len() < 7100, "tools/list is {} chars", text.len());
         assert!(INSTRUCTIONS.len() < 1000, "instructions are {} bytes", INSTRUCTIONS.len());
         // Read only on request, but whole: keep it to a few thousand tokens.
-        assert!(GUIDE.len() < 12_700, "the guide is {} bytes", GUIDE.len());
+        assert!(GUIDE.len() < 14_800, "the guide is {} bytes", GUIDE.len());
     }
 
     #[test]
@@ -650,7 +660,7 @@ mod tests {
         for name in ["luna_list", "luna_sessions", "luna_read", "luna_wait", "luna_guide"] {
             assert_eq!(hint(name, "readOnlyHint"), Some(true), "{name}");
         }
-        for name in ["luna_kill", "luna_delete"] {
+        for name in ["luna_kill", "luna_delete", "luna_power"] {
             assert_eq!(hint(name, "destructiveHint"), Some(true), "{name}");
         }
         assert_eq!(hint("luna_spawn", "readOnlyHint"), Some(false));

@@ -450,6 +450,31 @@ pub fn disarm_power_off() -> PowerState {
     snapshot(&st, &crate::activity::summary())
 }
 
+/// An agent's `luna_power`: the rule the power chip arms, so the PC goes down
+/// the way Luna takes it down — once every session is quiet, each CLI asked to
+/// quit first — rather than by a `shutdown` that takes the other chats' work
+/// with it. "off" disarms. Says what still holds the rule up, the caller aside:
+/// its own turn ends once it has answered.
+pub fn arm_for_agent(caller: &str, action: &str, quiet_s: Option<u64>) -> Result<serde_json::Value, String> {
+    if action == "off" {
+        disarm_power_off();
+        return Ok(serde_json::json!({ "armed": null }));
+    }
+    let Some(a) = Action::parse(action).filter(|a| *a != Action::Log) else {
+        return Err(format!("unknown action {action:?}; use shutdown, hibernate, sleep or off"));
+    };
+    let quiet_s = quiet_s.unwrap_or(crate::settings::get().quiet_window_s);
+    let state = arm_power_off(a.as_str().to_string(), quiet_s)?;
+    let name = |id: &str| crate::agents::chat_name(id).unwrap_or_else(|| id.to_string());
+    let busy: Vec<String> = state.summary.sessions.iter().filter(|s| s.busy && s.id != caller).map(|s| name(&s.id)).collect();
+    let (waiting, _) = parked(&state.summary);
+    Ok(serde_json::json!({
+        "armed": { "action": a.as_str(), "quietS": state.armed.as_ref().map_or(quiet_s, |x| x.quiet_s) },
+        "busy": busy,
+        "waitingForAPerson": waiting,
+    }))
+}
+
 /// Let go of the awake request on the way out.
 pub fn clear() {
     let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
@@ -658,6 +683,15 @@ mod tests {
         let t = 1_000 + BLOCKED_LOG_MIN_MS;
         assert!(!blocked_log_due(&mut st, "b printing", t + BLOCKED_LOG_EVERY_MS - 1));
         assert!(blocked_log_due(&mut st, "b printing", t + BLOCKED_LOG_EVERY_MS));
+    }
+
+    #[test]
+    fn an_agent_arms_only_what_the_chip_offers() {
+        for bad in ["reboot", "log", ""] {
+            let e = arm_for_agent("me", bad, None).unwrap_err();
+            assert!(e.contains("use shutdown, hibernate, sleep or off"), "{e}");
+        }
+        assert!(state().lock().unwrap().armed.is_none(), "nothing armed on a refusal");
     }
 
     #[test]
