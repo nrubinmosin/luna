@@ -29,7 +29,8 @@ accounts and models included: read it before the first spawn. Once a session you
 to answers, asks something, stops on a prompt or exits, Luna types a notice into your session, \
 opening \"[Luna notice\" (Luna's, not the user's words): end your turn to get it, no need to poll. \
 Session ids are Luna's; your CLI's task and subagent ids are not, and a subagent of yours using these \
-tools acts as you.";
+tools acts as you. Ending a turn on a question the user must answer before you can go on: call \
+luna_waiting with it first.";
 
 /// What `luna_guide` returns: everything the instructions leave out.
 const GUIDE: &str = include_str!("luna_guide.md");
@@ -316,8 +317,14 @@ fn tools() -> Value {
         },
         {
             "name": "luna_notify",
-            "description": "Desktop notification to the user, titled with your chat. For a result or blocker they must see now, not progress; a turn ending on a question already notifies. One per 10 s.",
+            "description": "Desktop notification to the user, titled with your chat. For a result or blocker they must see now, not progress; a turn ending on a question (luna_waiting) already notifies. One per 10 s.",
             "inputSchema": s(json!({ "text": { "type": "string" } }), &["text"]),
+            "annotations": acts
+        },
+        {
+            "name": "luna_waiting",
+            "description": "A turn ending on a question the user must answer before you go on: call last, then ask in your reply; the chat shows waiting till they write. Not for offers. No question: undo.",
+            "inputSchema": s(json!({ "question": { "type": "string" } }), &[]),
             "annotations": acts
         },
         {
@@ -349,9 +356,13 @@ fn permission_tool() -> Value {
 }
 
 /// The tools a caller is offered: Luna's own when it was given them, and
-/// the permission handler when it is a background helper.
+/// the permission handler when it is a background helper. A helper asks its
+/// parent, not the user: `luna_waiting` is not for it.
 fn tools_for(caller: &str) -> Value {
     let mut list: Vec<Value> = if crate::agents::has_tools(caller) { tools().as_array().cloned().unwrap_or_default() } else { Vec::new() };
+    if crate::agents::parent_of(caller).is_some() {
+        list.retain(|t| t["name"] != "luna_waiting");
+    }
     if crate::background::has(caller) {
         list.push(permission_tool());
     }
@@ -474,6 +485,7 @@ fn run(caller: &str, params: &Value, this: &Call) -> Value {
         "luna_delete" => agents::delete(caller, &id, a["dropWorktree"].as_bool().unwrap_or(false), a["force"].as_bool().unwrap_or(false))
             .map(|r| json!(r)),
         "luna_notify" => agents::notify(caller, a["text"].as_str().unwrap_or("")).map(|()| json!({ "ok": true })),
+        "luna_waiting" => crate::asking::declare(caller, a["question"].as_str()),
         "luna_power" => crate::power::arm_for_agent(caller, a["action"].as_str().unwrap_or(""), a["quietS"].as_u64()),
         _ => Err(format!("unknown tool {name}")),
     };
@@ -547,7 +559,14 @@ mod tests {
         assert!(handle("me", r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#).is_none());
         let list = handle("me", r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#).unwrap();
         let names: Vec<&str> = list["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names, ["luna_list", "luna_sessions", "luna_spawn", "luna_send", "luna_answer", "luna_read", "luna_wait", "luna_kill", "luna_delete", "luna_guide", "luna_notify", "luna_power"]);
+        assert_eq!(names, ["luna_list", "luna_sessions", "luna_spawn", "luna_send", "luna_answer", "luna_read", "luna_wait", "luna_kill", "luna_delete", "luna_guide", "luna_notify", "luna_waiting", "luna_power"]);
+        // A helper asks its parent: it is not offered the user's waiting.
+        agents::register("tooled-helper", crate::provider::Provider::Claude, "C:/p", "C:/acc/anthropic/one", Some("me"), true, json!({}));
+        let list = handle("tooled-helper", r#"{"jsonrpc":"2.0","id":13,"method":"tools/list"}"#).unwrap();
+        assert!(!list["result"]["tools"].as_array().unwrap().iter().any(|t| t["name"] == "luna_waiting"));
+        let r = handle("tooled-helper", r#"{"jsonrpc":"2.0","id":14,"method":"tools/call","params":{"name":"luna_waiting","arguments":{"question":"go?"}}}"#).unwrap();
+        assert_eq!(r["result"]["isError"], true);
+        agents::forget("tooled-helper");
         // One without them is offered none, and may call none.
         agents::register("plain", crate::provider::Provider::Claude, "C:/p", "C:/acc/anthropic/one", None, false, json!({}));
         assert_eq!(handle("plain", r#"{"jsonrpc":"2.0","id":9,"method":"tools/list"}"#).unwrap()["result"]["tools"], json!([]));
@@ -629,7 +648,7 @@ mod tests {
             t.as_object_mut().unwrap().remove("annotations");
         }
         let text = list.to_string();
-        assert!(text.len() < 7100, "tools/list is {} chars", text.len());
+        assert!(text.len() < 7400, "tools/list is {} chars", text.len());
         assert!(INSTRUCTIONS.len() < 1000, "instructions are {} bytes", INSTRUCTIONS.len());
         // Read only on request, but whole: keep it to a few thousand tokens.
         assert!(GUIDE.len() < 14_800, "the guide is {} bytes", GUIDE.len());

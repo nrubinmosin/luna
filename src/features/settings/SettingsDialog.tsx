@@ -6,7 +6,8 @@ import { agoLabel } from '../../shared/lib/format';
 import {
   getAccountsRoot, pickFolder, setAccountsRoot, cliUpdateNow, fetchBeforeWorktree, setFetchBeforeWorktree,
   codexHooksStart, setCodexHooksDefault, codexTrustedRoots, setCodexTrustedRoots,
-  coreRestart, coreState, type AccountsRootInfo, type CoreStateDto
+  coreRestart, coreState, waitingMarker, setWaitingMarker, type AccountsRootInfo, type CoreStateDto,
+  type WaitingMarker
 } from '../../ipc/commands';
 import { onCoreState } from '../../ipc/events';
 import { useAccounts } from '../accounts/accounts.store';
@@ -316,6 +317,57 @@ function SoundRow() {
   );
 }
 
+/** The text a chat's last message ends on when its turn waits for you, as a
+ *  reply format of yours writes it. Kept by the Rust side (asking.rs), which
+ *  reads it against every turn that ends. */
+function WaitingMarkerRow() {
+  const [saved, setSaved] = useState<WaitingMarker | null>(null);
+  const [text, setText] = useState('');
+  useEffect(() => {
+    void waitingMarker().then(m => {
+      setSaved(m);
+      setText(m.text);
+    });
+  }, []);
+  const save = (on: boolean, next: string) =>
+    void setWaitingMarker(on, next).then(m => {
+      setSaved(m);
+      setText(m.text);
+    });
+  return (
+    <>
+      <div className="field-row" style={{ padding: '3px 0' }}>
+        <input
+          type="checkbox"
+          id="waiting-marker-toggle"
+          checked={saved?.on ?? true}
+          disabled={saved === null}
+          onChange={e => save(e.target.checked, text)}
+        />
+        <label htmlFor="waiting-marker-toggle" style={{ cursor: 'default', fontSize: 'var(--fs-4)' }}>
+          A last line holding
+        </label>
+      </div>
+      <div style={{ display: 'flex', gap: 6, marginTop: 2 }}>
+        <input
+          type="text"
+          value={text}
+          disabled={saved === null || !saved.on}
+          onChange={e => setText(e.target.value)}
+          onKeyDown={e => {
+            if (e.key === 'Enter' && saved) save(saved.on, text);
+          }}
+          style={{ flex: 1, minWidth: 0, fontFamily: 'var(--mono, monospace)', fontSize: 'var(--fs-2)' }}
+          aria-label="Waiting marker"
+        />
+        <button className="slim" disabled={!saved || text.trim() === saved.text} onClick={() => saved && save(saved.on, text)}>
+          Save
+        </button>
+      </div>
+    </>
+  );
+}
+
 /** The folders whose projects Codex sessions start trusted on this machine:
  *  Codex looks trust up by a checkout's exact path, so a parent folder in its
  *  own config covers nothing below it (codex/trust.rs). */
@@ -517,6 +569,16 @@ function SettingsWindow({ onClose }: { onClose: () => void }) {
               The system’s own notification sound, at its volume and muted by Do Not Disturb like any
               other. A click on a notification about a chat — waiting for you, or one its agent raised
               with <code>luna_notify</code> — brings that chat up on the peek sheet.
+            </div>
+          </Section>
+          <Section label="Waiting for you">
+            <WaitingMarkerRow />
+            <div style={{ fontSize: 'var(--fs-1)', color: 'var(--faint)', marginTop: 4 }}>
+              A chat of yours whose turn is over and whose last message ends on a line holding this
+              text shows as waiting, as one on a permission prompt does, until you next write to it.
+              For a reply format that ends on a status line; a chat with Luna tools can also say so
+              itself, with <code>luna_waiting</code>. Helpers ask the chat that started them, not you.
+              A power-off armed for when all is done does not wait for such a chat.
             </div>
           </Section>
           <Section label="Deleting chats">

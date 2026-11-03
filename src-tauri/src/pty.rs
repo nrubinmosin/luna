@@ -1219,9 +1219,11 @@ impl PtyManager {
         take_and_shut_down(self, id).await;
         // Everything else that kept count of it, so nothing keeps the chat on
         // after it is gone: the agent registry (luna_sessions, the helper
-        // limit, its token), the turn counters, the Codex rollout it held.
+        // limit, its token), the turn counters, the question it ended on, the
+        // Codex rollout it held.
         crate::agents::forget(id);
         crate::activity::forget(id);
+        crate::asking::forget(id);
         crate::codex::session::release(id);
 
         let _ = crate::media::clear_media(id.to_string());
@@ -1934,6 +1936,12 @@ pub struct SessionMeta {
     /// Text Luna holds for it until that draft is sent or cleared: sends
     /// from other sessions, notices to it (agents.rs `held_count`).
     pub held: usize,
+    /// What the turn ended asking the user, when it said (asking.rs).
+    pub question: Option<String>,
+    /// The model's last message of a turn that is over, for the waiting
+    /// marker; not sent to the window.
+    #[serde(skip)]
+    pub last_said: Option<String>,
 }
 
 /// A session's title as its CLI has it, and whether the user typed it.
@@ -2416,6 +2424,7 @@ pub async fn session_meta(id: String, account_path: String) -> Result<Option<Ses
         }
     }
     if let Some(m) = meta.as_mut() {
+        crate::asking::overlay(&id, m);
         // The screen may be read for it, which replays the scrollback: off
         // the main thread, like the disk.
         let of = id.clone();

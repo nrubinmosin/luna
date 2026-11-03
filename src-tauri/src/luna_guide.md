@@ -10,6 +10,10 @@ can start other sessions and work with them.
   project folder and a state: `working`, `waiting` (a permission prompt), `question`,
   `idle`, `starting` (its CLI has not drawn yet), `background` (a job or helper of its still
   runs), `exited`.
+- `luna_waiting` (the user's own chats): a turn that ends on a question the user must answer
+  before you can go on shows as waiting for them, until they next write; a Luna notice does
+  not end it, nor does it hold a power-off. Not for offers or "anything else?"; no question
+  takes it back.
 - A helper is **background** by default: no row, no terminal; each turn is one run of the
   CLI's headless mode (`claude -p`, `codex exec`) on the helper's account, and the next turn
   resumes its conversation. The user sees it as a count on your chat's row and can open it as

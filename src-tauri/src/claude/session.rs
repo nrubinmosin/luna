@@ -306,8 +306,41 @@ pub fn meta(pid: Option<u32>, resume: Option<&str>, cwd: &str, spawned_at_ms: u1
         m.title_renamed = renamed.is_some();
         m.title = renamed.or(titles.ai);
         m.first_prompt = cached_first_prompt(account_path, &scwd, &sid);
+        m.last_said = text.as_deref().and_then(last_said_in);
     }
     Some(m)
+}
+
+/// The text the model last wrote since the last prompt, if any: what a turn
+/// that is over ended on. One the API refused ended on no words of its own.
+fn last_said_in(text: &str) -> Option<String> {
+    for line in text.lines().rev() {
+        if !line.contains("\"assistant\"") && !line.contains("\"user\"") {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        if v["isSidechain"].as_bool() == Some(true) || v["isMeta"].as_bool() == Some(true) {
+            continue;
+        }
+        let content = &v["message"]["content"];
+        match v["type"].as_str() {
+            Some("assistant") => {
+                if v["isApiErrorMessage"].as_bool() == Some(true) || v["message"]["model"] == "<synthetic>" {
+                    return None;
+                }
+                let said: Vec<&str> = content.as_array().into_iter().flatten().filter(|b| b["type"] == "text").filter_map(|b| b["text"].as_str()).collect();
+                if !said.is_empty() {
+                    return Some(said.join("\n"));
+                }
+            }
+            // A tool's result is the turn going on; anything else a prompt,
+            // with nothing said since.
+            Some("user") if content.as_array().is_some_and(|c| c.iter().any(|b| b["type"] == "tool_result")) => {}
+            Some("user") => return None,
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Just the registry's status word for a live session — one small file, no
@@ -915,5 +948,17 @@ mod reading_tests {
         let (msgs, _) = messages_from(&path, next, false);
         assert_eq!(msgs, vec![crate::agents::Message { role: "user".into(), text: "ping".into() }]);
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_turn_ends_on_its_last_words() {
+        let prompt = r#"{"type":"user","message":{"role":"user","content":"which one?"}}"#;
+        let said = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Pick one.\nSTATUS: AWAITING OPERATOR"}]}}"#;
+        let tool = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"mcp__luna__luna_waiting","input":{}}]}}"#;
+        let result = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}"#;
+        let title = r#"{"type":"ai-title","aiTitle":"x"}"#;
+        assert_eq!(last_said_in(&[prompt, said, tool, result, title].join("\n")).as_deref(), Some("Pick one.\nSTATUS: AWAITING OPERATOR"));
+        assert_eq!(last_said_in(&[said, prompt].join("\n")), None, "a new prompt: nothing said to it yet");
+        assert_eq!(last_said_in(&[prompt, said, API_ERROR].join("\n")), None, "the API's words, not the model's");
     }
 }
