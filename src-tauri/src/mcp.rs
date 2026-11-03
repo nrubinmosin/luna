@@ -360,7 +360,7 @@ fn permission_tool() -> Value {
 /// parent, not the user: `luna_waiting` is not for it.
 fn tools_for(caller: &str) -> Value {
     let mut list: Vec<Value> = if crate::agents::has_tools(caller) { tools().as_array().cloned().unwrap_or_default() } else { Vec::new() };
-    if crate::agents::parent_of(caller).is_some() {
+    if !crate::asking::for_user(caller) {
         list.retain(|t| t["name"] != "luna_waiting");
     }
     if crate::background::has(caller) {

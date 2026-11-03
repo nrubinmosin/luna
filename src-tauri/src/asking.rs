@@ -29,10 +29,17 @@ fn declared() -> &'static Mutex<HashMap<String, Declared>> {
     D.get_or_init(Default::default)
 }
 
+/// Whether a session is the user's own chat rather than a helper. The dev
+/// caller's spawns come up as top-level chats (bridge.ts), with nobody above
+/// them to ask.
+pub fn for_user(chat_id: &str) -> bool {
+    crate::agents::parent_of(chat_id).is_none_or(|p| p == crate::agents::DEV_CALLER)
+}
+
 /// `luna_waiting`: the caller ends its turn on this question (None takes it
 /// back). Refused for a helper, whose questions go to its parent.
 pub fn declare(chat_id: &str, question: Option<&str>) -> Result<serde_json::Value, String> {
-    if crate::agents::parent_of(chat_id).is_some() {
+    if !for_user(chat_id) {
         return Err("only the user's own chats wait on them: your parent gets your reply as it is".into());
     }
     let mut d = declared().lock().unwrap_or_else(|e| e.into_inner());
@@ -98,7 +105,7 @@ fn marked_by(said: &str, marker: &str) -> bool {
 pub fn overlay(chat_id: &str, meta: &mut crate::pty::SessionMeta) {
     let idle = meta.status.as_deref().map_or(true, |s| crate::activity::turn_of(s) == crate::activity::Turn::Idle);
     let busy = crate::activity::turn_state(chat_id).is_some_and(|t| t.turn != crate::activity::Turn::Idle);
-    if !idle || busy || crate::agents::parent_of(chat_id).is_some() {
+    if !idle || busy || !for_user(chat_id) {
         return;
     }
     if let Some(q) = question_of(chat_id) {
