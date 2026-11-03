@@ -306,14 +306,46 @@ pub fn meta(pid: Option<u32>, resume: Option<&str>, cwd: &str, spawned_at_ms: u1
         m.title_renamed = renamed.is_some();
         m.title = renamed.or(titles.ai);
         m.first_prompt = cached_first_prompt(account_path, &scwd, &sid);
-        m.last_said = text.as_deref().and_then(last_said_in);
+        m.last_said = last_said(&path);
     }
     Some(m)
 }
 
 /// The text the model last wrote since the last prompt, if any: what a turn
-/// that is over ended on. One the API refused ended on no words of its own.
-fn last_said_in(text: &str) -> Option<String> {
+/// that is over ended on. Read back from the end in growing pieces: after its
+/// last words Claude Code writes the turn's whole system prompt (an attachment,
+/// `prompt_snapshot`, 150 KB and more). Kept per file length, as it is asked
+/// for every few seconds and changes only when the file grows.
+fn last_said(path: &Path) -> Option<String> {
+    static SEEN: std::sync::OnceLock<Mutex<HashMap<PathBuf, (u64, Option<String>)>>> = std::sync::OnceLock::new();
+    let len = std::fs::metadata(path).ok()?.len();
+    let seen = SEEN.get_or_init(Default::default);
+    if let Some((at, said)) = seen.lock().unwrap_or_else(|e| e.into_inner()).get(path) {
+        if *at == len {
+            return said.clone();
+        }
+    }
+    let mut said = None;
+    for max in [128 * 1024, 1024 * 1024, 8 * 1024 * 1024] {
+        if let Some(found) = crate::pty::tail(path, max).as_deref().and_then(last_said_in) {
+            said = found;
+            break;
+        }
+        if len <= max {
+            break;
+        }
+    }
+    let mut map = seen.lock().unwrap_or_else(|e| e.into_inner());
+    if map.len() >= CACHE_CAP {
+        map.clear();
+    }
+    map.insert(path.to_path_buf(), (len, said.clone()));
+    said
+}
+
+/// See `last_said`: Some(what was said, if anything) once the text reaches
+/// back to the model's last words or to a prompt, None if it does not.
+fn last_said_in(text: &str) -> Option<Option<String>> {
     for line in text.lines().rev() {
         if !line.contains("\"assistant\"") && !line.contains("\"user\"") {
             continue;
@@ -326,17 +358,17 @@ fn last_said_in(text: &str) -> Option<String> {
         match v["type"].as_str() {
             Some("assistant") => {
                 if v["isApiErrorMessage"].as_bool() == Some(true) || v["message"]["model"] == "<synthetic>" {
-                    return None;
+                    return Some(None);
                 }
                 let said: Vec<&str> = content.as_array().into_iter().flatten().filter(|b| b["type"] == "text").filter_map(|b| b["text"].as_str()).collect();
                 if !said.is_empty() {
-                    return Some(said.join("\n"));
+                    return Some(Some(said.join("\n")));
                 }
             }
             // A tool's result is the turn going on; anything else a prompt,
             // with nothing said since.
             Some("user") if content.as_array().is_some_and(|c| c.iter().any(|b| b["type"] == "tool_result")) => {}
-            Some("user") => return None,
+            Some("user") => return Some(None),
             _ => {}
         }
     }
@@ -957,8 +989,17 @@ mod reading_tests {
         let tool = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"mcp__luna__luna_waiting","input":{}}]}}"#;
         let result = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}"#;
         let title = r#"{"type":"ai-title","aiTitle":"x"}"#;
-        assert_eq!(last_said_in(&[prompt, said, tool, result, title].join("\n")).as_deref(), Some("Pick one.\nSTATUS: AWAITING OPERATOR"));
-        assert_eq!(last_said_in(&[said, prompt].join("\n")), None, "a new prompt: nothing said to it yet");
-        assert_eq!(last_said_in(&[prompt, said, API_ERROR].join("\n")), None, "the API's words, not the model's");
+        assert_eq!(last_said_in(&[prompt, said, tool, result, title].join("\n")), Some(Some("Pick one.\nSTATUS: AWAITING OPERATOR".into())));
+        assert_eq!(last_said_in(&[said, prompt].join("\n")), Some(None), "a new prompt: nothing said to it yet");
+        assert_eq!(last_said_in(&[prompt, said, API_ERROR].join("\n")), Some(None), "the API's words, not the model's");
+        assert_eq!(last_said_in(title), None, "not far enough back to tell");
+
+        // As Claude Code 2.1.3xx ends a turn: its system prompt, written after
+        // the last words, outgrows a short tail.
+        let path = std::env::temp_dir().join(format!("luna-claude-last-said-{}.jsonl", std::process::id()));
+        let snapshot = format!(r#"{{"type":"attachment","attachment":{{"type":"prompt_snapshot","systemPrompt":["{}"]}}}}"#, "x".repeat(300 * 1024));
+        std::fs::write(&path, [prompt, said, &snapshot, title].join("\n") + "\n").unwrap();
+        assert_eq!(last_said(&path).as_deref(), Some("Pick one.\nSTATUS: AWAITING OPERATOR"));
+        let _ = std::fs::remove_file(&path);
     }
 }
