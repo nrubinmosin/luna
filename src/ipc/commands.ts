@@ -269,6 +269,8 @@ export interface SessionMetaDto {
   draft: boolean;
   /** Messages Luna holds for it until that draft is sent or cleared. */
   held: number;
+  /** What a turn that is over ended asking the user, when it said (asking.rs). */
+  question: string | null;
 }
 
 export interface CliTitleDto {
@@ -302,6 +304,15 @@ export const orphanSessions = (known: string[]) =>
 /** Whether origin is fetched before a worktree is made (Settings). */
 export const fetchBeforeWorktree = () => call<boolean>('fetch_before_worktree', {}, true);
 export const setFetchBeforeWorktree = (on: boolean) => call<boolean>('set_fetch_before_worktree', { on }, on);
+
+/** The text a last message ends on that makes its chat wait for the user. */
+export interface WaitingMarker {
+  on: boolean;
+  text: string;
+}
+export const waitingMarker = () => call<WaitingMarker>('waiting_marker', {}, { on: true, text: 'AWAITING OPERATOR' });
+export const setWaitingMarker = (on: boolean, text: string) =>
+  call<WaitingMarker>('set_waiting_marker', { on, text }, { on, text });
 
 /** Whether Codex runs a folder's hooks without asking: the default in
  *  Settings and what was kept for the folder (codex/hooks.rs). */

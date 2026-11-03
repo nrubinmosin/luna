@@ -3,6 +3,7 @@ mod accounts;
 mod activity;
 mod agentlog;
 mod agents;
+mod asking;
 mod background;
 mod browsers;
 mod claude;
@@ -306,6 +307,8 @@ pub fn run() {
             watchdog::ui_heartbeat,
             worktree::fetch_before_worktree,
             worktree::set_fetch_before_worktree,
+            asking::waiting_marker,
+            asking::set_waiting_marker,
             worktree::inspect_worktrees,
         ])
         .build(tauri::generate_context!())

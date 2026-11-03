@@ -123,7 +123,7 @@ src-tauri/src/
                 POST /hook/<chat>/<secret> takes Claude Code hooks' stdin;
                 POST /mcp with the session's bearer token — MCP for agents; a thread per request
   mcp.rs        the MCP server's JSON-RPC: initialize (with instructions), tools/list, tools/call;
-                ten luna_* tools with short descriptions (~2k tokens), offered to sessions given
+                thirteen luna_* tools with short descriptions (~2k tokens), offered to sessions given
                 them; luna_permission only to a background Claude Code helper's CLI
   agents.rs     registry of sessions with tools and those they spawned: tokens, kinship,
                 rights (kill/delete — descendants only; sessions, send, read, wait — all), spawn via the frontend
@@ -137,6 +137,8 @@ src-tauri/src/
   agentlog.rs   <data>/agents.jsonl: a line per spawn and per end, for luna_sessions(history: true)
   activity.rs   sampler every 5 s: turn (hooks + registry / rollout), descendants, output →
                 busy / waiting / idle per session and a summary
+  asking.rs     a user's chat whose turn ended on a question: luna_waiting or the marker
+                setting → `waiting` in session_meta, cleared by their next prompt
   power.rs      keep-awake (PowerSetRequest) and "shut down when everything is done":
                 arming, quiet window, countdown, action; commands and the power://state event
   claude/
@@ -431,6 +433,12 @@ src-tauri/src/
   an API error sends no Stop — it sends `StopFailure`, which Luna also subscribes to: end of turn
   plus the kind of error). A session waiting on a dialog after such an error (by `StopFailure` or by
   the last transcript line with `isApiErrorMessage`) is *stalled*: it does not count as `waiting`.
+- **A turn that ended on a question** (`asking.rs`) is waiting for the eye only: `session_meta` reads
+  `waiting` (with the question, if given) for a user's chat, no helper's, whose turn is over and either
+  called `luna_waiting` (kept in memory until the next prompt that is not a Luna notice: the
+  `UserPromptSubmit` hook, a `user_message` in the rollout) or whose last message (the transcript's tail,
+  the rollout's `task_complete.last_agent_message`) ends on a line holding the marker from settings.
+  The activity tracker keeps the turn idle, so power counts it as done.
 - **Power follows busyness** (`power.rs`). Keep-awake — `PowerSetRequest(SystemRequired)`
   with a reason visible in `powercfg /requests`, while busy > 0, released after 60 s of quiet;
   `waiting` does not keep the machine up (nobody is answering), but blocks shutdown (the work is not

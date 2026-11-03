@@ -1,5 +1,5 @@
-//! The few settings the Rust side has to know on its own — today just where
-//! the account folders live. They sit in `<data>/settings.json` rather than
+//! The settings the Rust side has to know on its own, such as where the
+//! account folders live. They sit in `<data>/settings.json` rather than
 //! the webview's localStorage because background threads (models.rs) need
 //! them before, and without, any window asking.
 
@@ -40,6 +40,10 @@ pub struct Settings {
     pub library: LibrarySettings,
     /// Which browser a terminal's links open in (browsers.rs).
     pub browsers: crate::browsers::BrowserSettings,
+    /// A chat whose last message ends on a line holding this text is waiting
+    /// for its user (asking.rs).
+    pub waiting_marker_on: bool,
+    pub waiting_marker: String,
 }
 
 /// Which accounts something goes into: `all`, a provider's every account
@@ -147,6 +151,8 @@ impl Default for Settings {
             codex_trusted_roots: Vec::new(),
             library: LibrarySettings::default(),
             browsers: Default::default(),
+            waiting_marker_on: true,
+            waiting_marker: "AWAITING OPERATOR".into(),
         }
     }
 }
