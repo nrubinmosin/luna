@@ -18,6 +18,7 @@ fn encode_project_dir(p: &str) -> String {
         .collect()
 }
 
+#[derive(Clone, Debug, PartialEq)]
 struct ContextRead {
     tokens: f64,
     window: f64,
@@ -291,7 +292,8 @@ pub fn meta(pid: Option<u32>, resume: Option<&str>, cwd: &str, spawned_at_ms: u1
     if let (Some(scwd), Some(sid)) = (m.cwd.clone(), m.session_id.clone()) {
         let path = located_transcript(account_path, &scwd, &sid);
         let text = crate::pty::tail(&path, 128 * 1024);
-        if let Some(c) = text.as_deref().and_then(context_in) {
+        let end = ending(&path);
+        if let Some(c) = end.context {
             m.context_tokens = Some(c.tokens);
             m.context_window = Some(c.window);
             m.context = Some((c.tokens / c.window).min(1.0));
@@ -306,32 +308,48 @@ pub fn meta(pid: Option<u32>, resume: Option<&str>, cwd: &str, spawned_at_ms: u1
         m.title_renamed = renamed.is_some();
         m.title = renamed.or(titles.ai);
         m.first_prompt = cached_first_prompt(account_path, &scwd, &sid);
-        m.last_said = last_said(&path);
+        m.last_said = end.last_said;
     }
     Some(m)
 }
 
-/// The text the model last wrote since the last prompt, if any: what a turn
-/// that is over ended on. Read back from the end in growing pieces: after its
-/// last words Claude Code writes the turn's whole system prompt (an attachment,
-/// `prompt_snapshot`, 150 KB and more). Kept per file length, as it is asked
-/// for every few seconds and changes only when the file grows.
-fn last_said(path: &Path) -> Option<String> {
-    static SEEN: std::sync::OnceLock<Mutex<HashMap<PathBuf, (u64, Option<String>)>>> = std::sync::OnceLock::new();
-    let len = std::fs::metadata(path).ok()?.len();
+/// What the end of a transcript says of the session: the context its last
+/// answer used, and the text the model last wrote since the last prompt —
+/// what a turn that is over ended on.
+#[derive(Clone, Default)]
+struct Ending {
+    context: Option<ContextRead>,
+    last_said: Option<String>,
+}
+
+/// The transcript's `Ending`, read back from the end in growing pieces: after
+/// a turn Claude Code writes its whole system prompt (an attachment,
+/// `prompt_snapshot`, 150 KB and more), which a short tail is all of. Kept per
+/// file length, as it is asked for every few seconds and changes only when the
+/// file grows.
+fn ending(path: &Path) -> Ending {
+    static SEEN: std::sync::OnceLock<Mutex<HashMap<PathBuf, (u64, Ending)>>> = std::sync::OnceLock::new();
+    let Ok(len) = std::fs::metadata(path).map(|m| m.len()) else { return Ending::default() };
     let seen = SEEN.get_or_init(Default::default);
-    if let Some((at, said)) = seen.lock().unwrap_or_else(|e| e.into_inner()).get(path) {
+    if let Some((at, end)) = seen.lock().unwrap_or_else(|e| e.into_inner()).get(path) {
         if *at == len {
-            return said.clone();
+            return end.clone();
         }
     }
-    let mut said = None;
+    let mut end = Ending::default();
+    let mut said_known = false;
     for max in [128 * 1024, 1024 * 1024, 8 * 1024 * 1024] {
-        if let Some(found) = crate::pty::tail(path, max).as_deref().and_then(last_said_in) {
-            said = found;
-            break;
+        let Some(text) = crate::pty::tail(path, max) else { break };
+        if end.context.is_none() {
+            end.context = context_in(&text);
         }
-        if len <= max {
+        if !said_known {
+            if let Some(said) = last_said_in(&text) {
+                end.last_said = said;
+                said_known = true;
+            }
+        }
+        if (end.context.is_some() && said_known) || len <= max {
             break;
         }
     }
@@ -339,11 +357,11 @@ fn last_said(path: &Path) -> Option<String> {
     if map.len() >= CACHE_CAP {
         map.clear();
     }
-    map.insert(path.to_path_buf(), (len, said.clone()));
-    said
+    map.insert(path.to_path_buf(), (len, end.clone()));
+    end
 }
 
-/// See `last_said`: Some(what was said, if anything) once the text reaches
+/// See `Ending`: Some(what was said, if anything) once the text reaches
 /// back to the model's last words or to a prompt, None if it does not.
 fn last_said_in(text: &str) -> Option<Option<String>> {
     for line in text.lines().rev() {
@@ -995,11 +1013,14 @@ mod reading_tests {
         assert_eq!(last_said_in(title), None, "not far enough back to tell");
 
         // As Claude Code 2.1.3xx ends a turn: its system prompt, written after
-        // the last words, outgrows a short tail.
+        // the last words and the usage they came with, outgrows a short tail.
         let path = std::env::temp_dir().join(format!("luna-claude-last-said-{}.jsonl", std::process::id()));
+        let answer = r#"{"type":"assistant","message":{"model":"claude-sonnet-5-5","usage":{"input_tokens":10,"cache_read_input_tokens":20000},"content":[{"type":"text","text":"Pick one.\nSTATUS: AWAITING OPERATOR"}]}}"#;
         let snapshot = format!(r#"{{"type":"attachment","attachment":{{"type":"prompt_snapshot","systemPrompt":["{}"]}}}}"#, "x".repeat(300 * 1024));
-        std::fs::write(&path, [prompt, said, &snapshot, title].join("\n") + "\n").unwrap();
-        assert_eq!(last_said(&path).as_deref(), Some("Pick one.\nSTATUS: AWAITING OPERATOR"));
+        std::fs::write(&path, [prompt, answer, &snapshot, title].join("\n") + "\n").unwrap();
+        let end = ending(&path);
+        assert_eq!(end.last_said.as_deref(), Some("Pick one.\nSTATUS: AWAITING OPERATOR"));
+        assert_eq!(end.context.map(|c| c.tokens), Some(20010.0));
         let _ = std::fs::remove_file(&path);
     }
 }
