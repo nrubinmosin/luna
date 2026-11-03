@@ -1228,7 +1228,16 @@ body { margin: 0; overflow: hidden; }
   padding: 2px 6px 4px;
   white-space: nowrap;
 }
+[data-app] .library-grid th { vertical-align: bottom; }
 [data-app] .library-grid th:first-child { text-align: left; }
+/* Under a group heading the first column's heading spans both rows: the second row's first is a column like the rest. */
+[data-app] .library-grid tr + tr th:first-child { text-align: center; }
+/* A heading over several columns: a CLI's accounts, the folders. */
+[data-app] .library-grid th.group { border-bottom: 1px solid var(--line); padding-bottom: 2px; }
+/* A folder's remove button shows only on its heading, so it does not read as an error mark. */
+[data-app] .library-grid th.library-folder button { opacity: 0; }
+[data-app] .library-grid th.library-folder:hover button,
+[data-app] .library-grid th.library-folder:focus-within button { opacity: 1; }
 [data-app] .library-grid td { border-top: 1px solid var(--line); padding: 5px 6px; vertical-align: middle; }
 [data-app] .library-grid td.cell { text-align: center; width: 1%; white-space: nowrap; }
 

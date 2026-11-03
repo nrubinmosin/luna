@@ -9,7 +9,7 @@ import {
 import { useDialogHost } from '../../shared/ui/dialogHost';
 import { ConfirmDialog } from '../../shared/ui/ConfirmDialog';
 import { Icon, ToolButton } from '../../shared/ui/icons';
-import { PROVIDER_LABEL, type Provider } from '../../shared/types';
+import { PROVIDERS, PROVIDER_LABEL, type Provider } from '../../shared/types';
 import { DiffView } from './DiffView';
 import { LibraryEditor } from './LibraryEditor';
 import { needsLook, useLibrary, waiting } from './library.store';
@@ -54,7 +54,60 @@ function TargetLabel({ target }: { target: LibraryTarget }) {
   );
 }
 
-const what = (p: PlaceDto) => p.skill ?? (p.instructions ? `${p.instructions} instructions` : 'Instructions');
+/** A copy of the name, to name the skill or instructions in a chat: a tick for a moment once it is on the clipboard. */
+function CopyName({ name }: { name: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <ToolButton
+      icon={copied ? 'check' : 'copy'}
+      size={20}
+      title={copied ? `Copied ${name}` : `Copy ${name}, to name it in a chat`}
+      onClick={() =>
+        void navigator.clipboard
+          .writeText(name)
+          .then(() => {
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1200);
+          })
+          .catch(() => {})
+      }
+    />
+  );
+}
+
+/** A row's name with its copy button; `onDoubleClick` renames, where the row can be. */
+function NameCell({ name, onDoubleClick }: { name: string; onDoubleClick?: () => void }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+      <span
+        style={{ fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+        title={onDoubleClick ? `${name}\nDouble-click to rename` : name}
+        onDoubleClick={onDoubleClick}
+      >
+        {name}
+      </span>
+      <CopyName name={name} />
+    </div>
+  );
+}
+
+const DOTS: [string, string][] = [[GREEN, 'in place'], ['var(--wait)', 'needs a look'], [RED, 'cannot be laid out'], ['var(--faint)', 'yet to be laid out']];
+
+/** What a cell's dot says, once above each table that has them (`CellDot`). */
+function DotLegend() {
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-1)', color: 'var(--faint)' }}>
+      {DOTS.map(([color, says]) => (
+        <span key={says} style={{ display: 'inline-flex', alignItems: 'center', gap: 3, whiteSpace: 'nowrap' }}>
+          <span style={{ width: 8, height: 8, borderRadius: '50%', background: color, display: 'inline-block' }} />
+          {says}
+        </span>
+      ))}
+    </span>
+  );
+}
+
+const what = (p: PlaceDto) =>p.skill ?? (p.instructions ? `${p.instructions} instructions` : 'Instructions');
 
 type AccountRef = { provider: Provider; name: string };
 const accountKey = (a: AccountRef) => `${a.provider}/${a.name}`;
@@ -189,6 +242,9 @@ function InstructionsGrid({ o, busy, act, edit, remove }: {
     setRenaming(null);
     if (renaming && to && to !== renaming.from) void act(libraryRenameInstructions(renaming.from, to));
   };
+  // The accounts by CLI, so a CLI's columns stand under one heading and two
+  // accounts of one name, one in each CLI, are told apart by it.
+  const cols = PROVIDERS.flatMap(provider => o.accounts.filter(a => a.provider === provider));
   const copies = (i: string, a: AccountRef) =>
     o.places.filter(p => p.instructions === i && p.target.kind === 'account' && p.target.provider === a.provider && p.target.name === a.name);
 
@@ -213,9 +269,7 @@ function InstructionsGrid({ o, busy, act, edit, remove }: {
             style={{ width: '100%', fontWeight: 700 }}
           />
         ) : (
-          <div style={{ fontWeight: 700 }} title="Double-click to rename" onDoubleClick={() => setRenaming({ from: i.name, to: i.name })}>
-            {i.name}
-          </div>
+          <NameCell name={i.name} onDoubleClick={() => setRenaming({ from: i.name, to: i.name })} />
         )}
         <div
           title={i.problem ?? i.description}
@@ -227,7 +281,7 @@ function InstructionsGrid({ o, busy, act, edit, remove }: {
       <td className="cell">
         <ReachPicker id={`lib-ins-${i.name}`} reach={i.accounts} accounts={o.accounts} onChange={r => act(librarySetInstructions(i.name, r))} />
       </td>
-      {o.accounts.map(a => {
+      {cols.map(a => {
         const key = accountKey(a);
         const gets = o.instructionsFor[key] === i.name;
         const way = how(i.accounts, a);
@@ -255,8 +309,7 @@ function InstructionsGrid({ o, busy, act, edit, remove }: {
       })}
       <td className="cell">
         <span style={{ display: 'inline-flex', gap: 2 }}>
-          <ToolButton icon="file" size={22} title={`Edit ${i.name}`} onClick={() => edit(i.name)} />
-          <ToolButton icon="pencil" size={22} title={`Rename ${i.name}`} onClick={() => setRenaming({ from: i.name, to: i.name })} />
+          <ToolButton icon="pencil" size={22} title={`Edit ${i.name}`} onClick={() => edit(i.name)} />
           <ToolButton icon="trash" size={22} danger title={`Take ${i.name} out of the library — asks first`} onClick={() => remove(i.name)} />
         </span>
       </td>
@@ -267,17 +320,29 @@ function InstructionsGrid({ o, busy, act, edit, remove }: {
     <table className="library-grid">
       <thead>
         <tr>
-          <th>Instructions</th>
-          <th title="The accounts each goes into — every account, every one of a CLI, or those you name">Accounts</th>
-          {o.accounts.map(a => (
+          <th rowSpan={2}>Instructions</th>
+          <th rowSpan={2} title="The accounts each is meant for — every account, every one of a CLI, or those you name">
+            Meant for
+          </th>
+          {PROVIDERS.map(provider => {
+            const span = cols.filter(a => a.provider === provider).length;
+            return span ? (
+              <th key={provider} colSpan={span} className="group" title={`Which instructions each ${PROVIDER_LABEL[provider]} account gets — one at most`}>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+                  <Icon name={provider} size={14} />
+                  {PROVIDER_LABEL[provider]} gets
+                </span>
+              </th>
+            ) : null;
+          })}
+          <th rowSpan={2} />
+        </tr>
+        <tr>
+          {cols.map(a => (
             <th key={accountKey(a)} title={`What ${a.name} (${PROVIDER_LABEL[a.provider]}) gets`}>
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
-                <Icon name={a.provider} size={14} />
-                {a.name}
-              </span>
+              {a.name}
             </th>
           ))}
-          <th />
         </tr>
       </thead>
       <tbody>
@@ -293,7 +358,7 @@ function InstructionsGrid({ o, busy, act, edit, remove }: {
             </div>
           </td>
           <td />
-          {o.accounts.map(a => {
+          {cols.map(a => {
             const key = accountKey(a);
             const none = !(key in o.instructionsFor);
             return (
@@ -447,14 +512,13 @@ function LibraryDialog({ onClose }: { onClose: () => void }) {
                     <LookRow key={place.dest} place={place} count={count} act={act} />
                   ))}
                   <Note>
-                    A copy changed where it lies is never replaced unasked. Taking it makes it the library’s and every
-                    other copy’s; putting the library’s back replaces it. Whichever side is replaced is kept in Luna’s
+                    A copy changed where it lies is never replaced unasked. Whichever side is replaced is kept in Luna’s
                     backups for 30 days.
                   </Note>
                 </Section>
               )}
 
-              <Section label="Instructions">
+              <Section label="Instructions" aside={o.instructions.length > 0 && <DotLegend />}>
                 {o.instructions.length > 0 ? (
                   <InstructionsGrid
                     o={o}
@@ -483,10 +547,12 @@ function LibraryDialog({ onClose }: { onClose: () => void }) {
                 </div>
                 {o.foundInstructions.length > 0 && (
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginTop: 6, fontSize: 'var(--fs-2)', color: 'var(--dim)' }}>
-                    An account’s own file, where no instructions go — take it in as new instructions for that account:
+                    Has a file of its own, not from the library:
                     {o.foundInstructions.map(f => (
-                      <button key={f.dest} className="slim" title={`${f.dest}\nBecomes instructions named after the account, going into it alone`} onClick={() => act(libraryResolve(f.dest, true))}>
-                        <TargetLabel target={f.target} />
+                      <button key={f.dest} className="slim" title={`${f.dest}\nBecomes instructions named after the account, meant for it alone`} onClick={() => act(libraryResolve(f.dest, true))}>
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                          <TargetLabel target={f.target} />— take into library
+                        </span>
                       </button>
                     ))}
                   </div>
@@ -508,49 +574,67 @@ function LibraryDialog({ onClose }: { onClose: () => void }) {
                   </div>
                 )}
                 <Note>
-                  An instructions file serves both CLIs — <code>CLAUDE.md</code> for Claude Code, <code>AGENTS.md</code> for
-                  Codex — read at the start of every session: the place for rules that always hold. An account gets one at
-                  most: where several take it in, the one that names it wins over every one of its CLI, and that over every
-                  account. An account’s own file is replaced only once you take it or replace it under Needs a look.
+                  Read by both CLIs at the start of every session — as <code>CLAUDE.md</code> in Claude Code,{' '}
+                  <code>AGENTS.md</code> in Codex: the place for rules that always hold. An account gets one at most: where
+                  several are meant for it, one that names it beats one for its CLI, which beats one for all. A radio gives an
+                  account that one. Its own file is replaced only once you say so under Needs a look.
                 </Note>
               </Section>
 
               <Section
                 label="Skills"
                 aside={
-                  <ToolButton
-                    icon="folder"
-                    label="Add folder"
-                    title="A folder the ticked skills go into, each as <folder>/<name>"
-                    onClick={() =>
-                      void pickFolder().then(p => {
-                        if (p && !o.folders.some(f => f.path.toLowerCase() === p.toLowerCase())) act(librarySetFolder(p, []));
-                      })
-                    }
-                  />
+                  <>
+                    {o.skills.length > 0 && <DotLegend />}
+                    <ToolButton
+                      icon="folder"
+                      label="Copy into a folder…"
+                      title={
+                        'Lay skills out into a folder of yours too — a repository’s .agents/skills, say.\n' +
+                        'It becomes a column here: the skills ticked in it go into it, each as <folder>/<name>.'
+                      }
+                      onClick={() =>
+                        void pickFolder().then(p => {
+                          if (p && !o.folders.some(f => f.path.toLowerCase() === p.toLowerCase())) act(librarySetFolder(p, []));
+                        })
+                      }
+                    />
+                  </>
                 }
               >
                 {o.skills.length > 0 && (
                   <table className="library-grid">
                     <thead>
                       <tr>
-                        <th>Skill</th>
-                        <th title="The Claude Code and Codex accounts it goes into">Accounts</th>
-                        {o.folders.map(f => (
-                          <th key={f.path} title={f.path}>
-                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
-                              <span style={{ color: f.found ? undefined : RED }}>{baseName(f.path)}</span>
-                              <ToolButton
-                                icon="close"
-                                size={18}
-                                title={`Stop laying skills out into ${f.path}\nLuna's copies there go, those still as it wrote them`}
-                                onClick={() => act(librarySetFolder(f.path, null))}
-                              />
-                            </span>
+                        <th rowSpan={o.folders.length ? 2 : 1}>Skill</th>
+                        <th rowSpan={o.folders.length ? 2 : 1} title="The accounts each is meant for — every account, every one of a CLI, or those you name">
+                          Meant for
+                        </th>
+                        {o.folders.length > 0 && (
+                          <th colSpan={o.folders.length} className="group" title="Folders of yours the skills ticked under them are copied into">
+                            Copied into
                           </th>
-                        ))}
-                        <th />
+                        )}
+                        <th rowSpan={o.folders.length ? 2 : 1} />
                       </tr>
+                      {o.folders.length > 0 && (
+                        <tr>
+                          {o.folders.map(f => (
+                            <th key={f.path} className="library-folder" title={f.found ? f.path : `${f.path}\nNot there`}>
+                              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+                                <Icon name="folder" size={14} />
+                                <span style={{ color: f.found ? undefined : RED }}>{baseName(f.path)}</span>
+                                <ToolButton
+                                  icon="close"
+                                  size={18}
+                                  title={`Stop copying skills into ${f.path}\nLuna's copies there go, those still as it wrote them`}
+                                  onClick={() => act(librarySetFolder(f.path, null))}
+                                />
+                              </span>
+                            </th>
+                          ))}
+                        </tr>
+                      )}
                     </thead>
                     <tbody>
                       {o.skills.map(s => {
@@ -558,7 +642,7 @@ function LibraryDialog({ onClose }: { onClose: () => void }) {
                         return (
                           <tr key={s.name}>
                             <td style={{ maxWidth: 0, width: '100%' }}>
-                              <div style={{ fontWeight: 700 }}>{s.name}</div>
+                              <NameCell name={s.name} />
                               <div
                                 title={s.problem ?? s.description}
                                 style={{ fontSize: 'var(--fs-2)', color: s.problem ? RED : 'var(--faint)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
@@ -618,11 +702,10 @@ function LibraryDialog({ onClose }: { onClose: () => void }) {
                   </button>
                 </div>
                 <Note>
-                  A skill is a folder with a <code>SKILL.md</code>: its description is all the model sees until it decides
-                  to open it — the place for procedures and recipes. Into the accounts picked for it — every account,
-                  every one of a CLI, or those you name — it goes into each one’s <code>skills/</code>; ticked for a folder it goes into that folder as <code>&lt;folder&gt;/&lt;name&gt;</code>, and how a
-                  CLI gets to it from there — a link into <code>.claude/skills</code> or <code>.agents/skills</code>, a git
-                  ignore — is yours to set up. Nothing else in an account or a folder is touched.
+                  A skill is a folder with a <code>SKILL.md</code>, whose description is all the model sees until it opens it:
+                  the place for procedures and recipes. It goes into the <code>skills/</code> of each account it is meant for,
+                  and into each folder it is ticked under as <code>&lt;folder&gt;/&lt;name&gt;</code> — how a CLI finds it
+                  there, a link from <code>.claude/skills</code> or <code>.agents/skills</code>, is yours to set up.
                 </Note>
               </Section>
 

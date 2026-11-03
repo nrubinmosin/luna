@@ -14,7 +14,7 @@ export type IconName =
   | 'plus' | 'pencil' | 'trash' | 'reset' | 'sun' | 'moon' | 'auto' | 'hide' | 'show'
   | 'even' | 'gear' | 'refresh' | 'accounts' | 'key' | 'power' | 'help'
   | 'agents' | 'sweep' | 'download' | 'warn' | 'update' | 'close' | 'check' | 'child' | 'claude' | 'codex'
-  | 'recommend' | 'sync' | 'file' | 'folder' | 'library';
+  | 'recommend' | 'sync' | 'file' | 'copy' | 'folder' | 'library';
 
 const grad = (id: string, top: string, bottom: string) => (
   <linearGradient id={id} x1="0" y1="0" x2="0" y2="1">
@@ -253,6 +253,16 @@ function draw(name: IconName, p: string): ReactNode {
           <path d="M3.5 1.5h6l3 3v10h-9z" fill={`url(#${p}g)`} stroke="#5b6472" strokeLinejoin="round" />
           <path d="M9.5 1.5v3h3" fill="#c9cfd9" stroke="#5b6472" strokeLinejoin="round" />
           <path d="M5.5 7.5h5M5.5 9.5h5M5.5 11.5h3" stroke="#2a62c9" strokeWidth=".9" strokeLinecap="round" />
+        </>
+      );
+    case 'copy':
+      // Two of the file's pages, one over the other: the same again, to paste.
+      return (
+        <>
+          <defs>{grad(`${p}g`, '#ffffff', '#dfe3ea')}</defs>
+          <path d="M2.5 1.5h6.5v9.5h-6.5z" fill="#dfe3ea" stroke="#5b6472" strokeLinejoin="round" />
+          <path d="M6.5 4.5h7v10h-7z" fill={`url(#${p}g)`} stroke="#5b6472" strokeLinejoin="round" />
+          <path d="M8.5 7.5h3M8.5 9.5h3M8.5 11.5h2" stroke="#2a62c9" strokeWidth=".9" strokeLinecap="round" />
         </>
       );
     case 'folder':

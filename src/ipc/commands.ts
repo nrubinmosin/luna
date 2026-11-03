@@ -756,7 +756,7 @@ export interface LibrarySkillDto {
 }
 export interface LibraryInstructionsDto {
   name: string;
-  /** Its first line with words in it. */
+  /** Its first heading, `#` or else `##`; empty without one. */
   description: string;
   /** Why it is laid out nowhere: blank, or a file that will not do. */
   problem: string | null;
