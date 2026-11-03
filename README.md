@@ -346,12 +346,14 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
 ## Agents: sessions that run sessions
 
 A chat created with **Luna tools** ticked (off by default) gets Luna as an MCP server, and
-with it eleven tools: `luna_list`, `luna_sessions`, `luna_spawn`, `luna_send`, `luna_answer`,
-`luna_read`, `luna_wait`, `luna_kill`, `luna_delete`, `luna_guide`, `luna_notify`. The model can start a helper session — another model, another
+with it twelve tools: `luna_list`, `luna_sessions`, `luna_spawn`, `luna_send`, `luna_answer`,
+`luna_read`, `luna_wait`, `luna_kill`, `luna_delete`, `luna_guide`, `luna_notify`, `luna_power`. The model can start a helper session — another model, another
 account, Codex instead of Claude — with an opening prompt, wait for its reply, send
 follow-ups, answer what it asks, and delete it when done, worktree and its `worktree-*` branch included if it asked for one.
 `luna_notify` lets it raise a desktop notification mid-turn, titled with its chat's name and
-opening that chat when clicked, at most one every 10 seconds. The
+opening that chat when clicked, at most one every 10 seconds. `luna_power`, for when the user
+asks for it, arms the same shut-down, hibernate or sleep "when done" as the power chip, which
+shows it and cancels it. The
 tools and a short instruction cost about 2k tokens of context once per session; the full
 account of sessions, accounts, models and tools is `luna_guide`'s, read only when the model
 asks for it. A chat without the box ticked knows nothing of Luna at all, and neither does a
@@ -508,6 +510,9 @@ background helper spawned without tools.
   it once the turn is over. When all of it has done nothing for 30 minutes, the agent owed
   the session's answer gets one notice saying so — it may be stuck, or waiting on something
   — and how to end it; the notice of its end still comes, as doing nothing is no proof of one.
+- A turn that has written nothing for 30 minutes — no output from a background helper, no
+  transcript line from a chat — gets the agent owed its answer one notice per turn: a command
+  in it may hang, or just take long. The usual notice still comes when the turn ends.
 - If a chat still gets more than 12 turn-end notices about one session in 15 minutes, Luna
   stops telling it of that session's turns and jobs, says so in the log and once on the desktop,
   and goes on when you type into either chat. Its prompts and questions still come: a helper is
@@ -546,7 +551,8 @@ The power field in the status bar opens the two rules the machine follows.
   Any activity during the count cancels it too and leaves the rule armed. Shutdown asks each
   CLI to quit first; sleep and hibernate leave the sessions running, and the same rule applies
   again after the wake. While the rule is armed and something holds it up, `luna.log` says
-  which session and why, so a morning with the PC still on can be read back.
+  which session and why, so a morning with the PC still on can be read back. An agent asked
+  to turn the PC off when done arms this same rule with `luna_power`.
 
 "Busy" is measured, not guessed, from three signals per session: the turn (Claude Code's
 own hooks and registry, Codex's rollout), the processes under the CLI (put in a Job Object at

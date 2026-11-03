@@ -110,7 +110,10 @@ can start other sessions and work with them.
   longest are cut, and each names a file with the whole.
 - A `luna_wait` running when the answer comes hands it over instead of the notice, one your
   CLI moved to the background too. One you cancel or interrupt hands nothing over (one on
-  several: none of them), and the notice comes as usual.
+  several: none of them), and the notice comes as usual. Claude Code hands a background one's
+  result over HTML-escaped (`&lt;`, `&gt;`): take code from `luna_read`, not from that.
+- A turn that has written nothing for 30 min is told of once ("mid-turn and has written
+  nothing"): a hung command, or a long one. `luna_read` with `screen: true` tells which.
 - Without `afterTurn`, a wait is for the answer you are still owed, else for a turn past the
   last count you were shown.
 - `luna_read` with `since` and `last` gives the last N after the cursor, which goes past all
@@ -157,3 +160,16 @@ can start other sessions and work with them.
   job or helper of its runs (processes idle 2 h on end do not count: they go with it, and you
   hear so); a read or a send starts that over (`deletesInMin` counts down). The worktree stays. Off
   for visible ones unless `true`. One the user typed into, or you killed, is never deleted.
+- A deleted session's transcript stays in its account's folder (`luna_sessions` history names
+  it). If a helper printed what it should not have, tell the user that path.
+
+## Working with helpers
+- A helper acts as you. Messages, posts, emails, pushes or writes elsewhere in the user's name
+  go out only when the user asked for them, by you or by a helper you brief.
+- Relaying a report, keep its caveats ("possibly a false flag", "not tested live") with the
+  claim. Ask reviewers and implementers to say which findings they think wrong, and why.
+- Before ending a turn on "a notice will come", for anything long or overnight: a `luna_wait`
+  with a timeout, or check `luna_list` when the user is back. "NOT done yet" comes once.
+- Before anything that stops Luna's core or the PC: `luna_list` for helpers at work; they lose
+  their turns. To turn the PC off when work is done use `luna_power`, not a `shutdown` command:
+  it waits for every session and closes the CLIs first.

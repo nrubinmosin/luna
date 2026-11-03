@@ -696,6 +696,9 @@ struct Owed {
     /// The caller has been told all its job left has sat idle (IDLE_JOB_MS):
     /// once per debt, which stays open for the job's end.
     told_idle: bool,
+    /// The turn count during which the caller was told the turn has gone quiet
+    /// (QUIET_TURN_MS): once per turn.
+    told_quiet: Option<u32>,
     /// Which debt this is, whatever its numbers: asked again with nothing
     /// moved since, a new one has the same baseline and cursor as the old, and
     /// what was decided about the old is not to touch it.
@@ -722,6 +725,7 @@ impl Owed {
             unsure: false,
             told_pending: false,
             told_idle: false,
+            told_quiet: None,
         }
     }
 
@@ -5528,6 +5532,9 @@ enum Settled {
     Resumed,
     /// All its job left has sat idle for IDLE_JOB_MS; told once, and owed on.
     Idle,
+    /// Its turn at this count has gone quiet (QUIET_TURN_MS); told once per
+    /// turn, and owed on.
+    Quiet(u32),
     Exited,
 }
 
@@ -6175,7 +6182,41 @@ fn notice_line(
         let resumed = if o.resumed { " Luna's core stopped it on the way and it resumed automatically." } else { "" };
         return Some((Some(format!("{who} finished its turn{reply}.{lost}{resumed}{unsure}")), Settled::Answered));
     }
+    if turn == Some(crate::activity::Turn::Busy) && alive && o.told_quiet != Some(ended) {
+        if let Some(quiet) = turn_quiet_ms(pty, id).filter(|q| *q >= QUIET_TURN_MS) {
+            return Some((Some(quiet_line(who, quiet)), Settled::Quiet(ended)));
+        }
+    }
     standing_line(pty, caller, who, id, k, o)
+}
+
+/// A turn that has said nothing for this long, its caller hears of once: a
+/// command that hangs looks like this and like nothing else from outside, and
+/// a caller that ended its turn on "a notice comes when it is done" would
+/// otherwise hear nothing until a person asks. A long build looks the same,
+/// hence once per turn and not its end.
+const QUIET_TURN_MS: u64 = 30 * 60 * 1000;
+
+fn quiet_line(who: &str, quiet_ms: u64) -> String {
+    format!(
+        "{who} is mid-turn and has written nothing for {} min. A command it runs may hang, or simply take long; luna_read with screen: true shows where it is, luna_kill stops the turn. Said once per turn; the usual notice comes when it ends.",
+        quiet_ms / 60_000
+    )
+}
+
+/// While a session's turn runs, how long nothing has come of it: a helper's
+/// output (background.rs), a chat's transcript; None between turns.
+fn turn_quiet_ms(pty: &crate::pty::PtyManager, id: &str) -> Option<u64> {
+    let now = now_ms();
+    if crate::background::has(id) {
+        return crate::background::turn_quiet_ms(id, now);
+    }
+    let started = crate::activity::turn_started_ms(id)?;
+    let written = transcript_path(pty, id)
+        .and_then(|p| std::fs::metadata(p).ok()?.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_millis() as u64);
+    Some(now.saturating_sub(written.max(started)))
 }
 
 /// What a notice has to say of where the session stands, whatever its turns
@@ -7026,6 +7067,11 @@ fn settle_told(r: &mut Registry, key: (String, String), how: Settled, told: &Owe
         Settled::Idle => {
             if let Some(o) = r.owed.get_mut(&key) {
                 o.told_idle = true;
+            }
+        }
+        Settled::Quiet(ended) => {
+            if let Some(o) = r.owed.get_mut(&key) {
+                o.told_quiet = Some(ended);
             }
         }
         Settled::Hold(_) | Settled::Unhold | Settled::Skip(_) => {}
@@ -8550,6 +8596,35 @@ mod tests {
         crate::background::gone_for_test("lj-s");
         forget("lj-s");
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// 2 November: a helper's pwsh hung for 25 minutes mid-turn on a process a
+    /// failed test had left, and nothing told its caller, who had ended its turn
+    /// on "the notice comes when it is done". A quiet turn is told of once.
+    #[test]
+    fn a_turn_gone_quiet_is_told_of_once() {
+        let none = serde_json::json!({});
+        register("qt-s", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("qt-c"), false, none);
+        crate::background::idle_for_test("qt-s", Provider::Claude, 3, false);
+        let o = Owed::from(3, 0);
+        reg().lock().unwrap().owed.insert(("qt-c".to_string(), "qt-s".to_string()), o);
+        let known = reg().lock().unwrap().known.get("qt-s").cloned().unwrap();
+        let pty = crate::pty::manager();
+        let line = |o: Owed| notice_line(&pty, "qt-c", "Your helper", "qt-s", &known, o);
+        // At work and writing: nothing to say.
+        crate::background::quiet_for_test("qt-s", QUIET_TURN_MS - 60_000);
+        assert!(matches!(line(o), None | Some((None, _))));
+        // Half an hour of nothing: said once for this turn, and still owed.
+        crate::background::quiet_for_test("qt-s", QUIET_TURN_MS + 60_000);
+        let Some((Some(text), Settled::Quiet(3))) = line(o) else { panic!("a quiet turn is news") };
+        assert!(text.contains("mid-turn and has written nothing for 31 min") && text.contains("luna_kill stops the turn"), "{text}");
+        settle_told(&mut reg().lock().unwrap(), ("qt-c".to_string(), "qt-s".to_string()), Settled::Quiet(3), &o);
+        let told = reg().lock().unwrap().owed.get(&("qt-c".to_string(), "qt-s".to_string())).copied().expect("still owed");
+        assert_eq!(told.told_quiet, Some(3));
+        assert!(matches!(line(told), None | Some((None, _))), "once per turn");
+        assert!(!counts_for_breaker(&Settled::Quiet(3)), "no turn's end");
+        crate::background::gone_for_test("qt-s");
+        forget("qt-s");
     }
 
     #[test]

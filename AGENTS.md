@@ -8,6 +8,8 @@ Rules for anyone (person or agent) changing Luna.
   and why — and only once the operator has agreed does it make the changes. A
   finding met along the way that calls for more than the agreed plan goes back
   to the operator as a new plan, not straight into the code.
+- What a script or a tool can do, the agent does; the operator is asked for
+  decisions, not for hands.
 
 ## Where things go
 - The repo holds only what is in use. No scratch files, experiments or one-off
@@ -38,8 +40,12 @@ Rules for anyone (person or agent) changing Luna.
   beside its exe in `test-build/` (ignored by git), so it runs alongside the
   real one. `./test-build.ps1 -Run -DevCaller ...` also registers a scripted
   MCP caller for exercising Luna tools.
-- Anything that writes into account folders (settings, sync) is tried on
-  throwaway accounts under `test-build/accounts`, not on real ones.
+- Anything that writes into account folders (settings, sync, helpers run end to
+  end) is tried on throwaway accounts under `test-build/accounts`, not on real
+  ones, and never through a junction or symlink to one: `test-build.ps1 -Run`
+  refuses links there.
+- Before stopping a Luna core or the PC (a restart test, a kill), check
+  `luna_list` and `luna_sessions` for work in progress: it loses its turn.
 
 ## Code
 - Match the surrounding code: its comment density (comments say why), naming

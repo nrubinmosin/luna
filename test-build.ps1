@@ -97,6 +97,16 @@ if ($Test) {
 if ($Run) {
     $exe = Join-Path $out 'luna-test.exe'
     if (-not (Test-Path $exe)) { throw "no $exe yet - run without -NoBuild first" }
+    # The test build's accounts are throwaway ones. A junction or symlink there
+    # to a real account folder once had test helpers write their transcripts
+    # into the user's own account; refused rather than followed.
+    $accounts = Join-Path $out 'accounts'
+    if (Test-Path $accounts) {
+        $linked = Get-ChildItem $accounts -Recurse -Depth 2 -Force -Attributes ReparsePoint -ErrorAction SilentlyContinue
+        if ($linked) {
+            throw "test-build\accounts holds links, which may lead to real accounts: $($linked.FullName -join ', '). Use throwaway accounts there instead."
+        }
+    }
     if ($DevCaller) {
         if (-not $DevFolder -or -not $DevAccount) { throw '-DevCaller needs -DevFolder and -DevAccount' }
         $token = [guid]::NewGuid().ToString('N')
