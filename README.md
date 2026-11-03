@@ -240,7 +240,9 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
 - Luna keeps a library of your own: instructions files, each with a name, and any number of
   skills, in a folder of its own (`library` in Luna's data folder) or one you choose — a
   repository of your dotfiles, say. The **Skills & instructions** window, from the Accounts
-  window, makes, renames and edits them and says where each one goes.
+  window, makes, renames and edits them and says where each one goes. Instructions are
+  told apart there by their first heading; each name has a copy button, to name a skill or
+  instructions in a chat.
 - Each skill, and each instructions file, goes into the accounts you pick for it: every
   account, every account of one CLI, or accounts by name — and an account that is renamed
   keeps what was picked for it.

@@ -345,7 +345,7 @@ fn read_skills(dirs: &Dirs) -> Result<Skills, String> {
 #[serde(rename_all = "camelCase")]
 pub struct InstructionsInfo {
     pub name: String,
-    /// Its first line with words in it, to tell it by.
+    /// Its first heading, to tell it by (`instructions_title`); empty without one.
     pub description: String,
     /// Why it is laid out nowhere, while it is not fit to be.
     pub problem: Option<String>,
@@ -383,15 +383,42 @@ fn read_instructions(dirs: &Dirs) -> Result<Instructions, String> {
     Ok(out)
 }
 
+/// What tells instructions apart in the window: their first `#` heading, or
+/// the first `##` where they have none — the names their author gave them.
+/// Without either, nothing: a line of prose cut off mid-sentence, or one
+/// section's heading, would claim to say what the whole file is about.
+/// Lines in a fenced block are code, so a shell comment there is no heading.
+fn instructions_title(text: &str) -> String {
+    let mut fenced = false;
+    let mut second = None;
+    for line in text.lines().map(str::trim) {
+        if line.starts_with("```") || line.starts_with("~~~") {
+            fenced = !fenced;
+            continue;
+        }
+        let level = line.chars().take_while(|&c| c == '#').count();
+        let rest = &line[level..];
+        // `#tag` and `###` are not what the file is called.
+        if fenced || !(1..=2).contains(&level) || !(rest.is_empty() || rest.starts_with([' ', '\t'])) {
+            continue;
+        }
+        let title = rest.trim();
+        if title.is_empty() {
+            continue;
+        }
+        if level == 1 {
+            return title.to_string();
+        }
+        second.get_or_insert_with(|| title.to_string());
+    }
+    second.unwrap_or_default()
+}
+
 /// The window's line for instructions: what tells them apart, or what is
 /// wrong with them.
 fn instructions_info(name: &str, text: &Result<Option<Vec<u8>>, String>, lib: &LibrarySettings) -> InstructionsInfo {
     let (description, problem) = match text {
-        Ok(Some(t)) => {
-            let t = String::from_utf8_lossy(t);
-            let line = t.lines().map(|l| l.trim().trim_start_matches('#').trim()).find(|l| !l.is_empty()).unwrap_or_default();
-            (line.to_string(), None)
-        }
+        Ok(Some(t)) => (instructions_title(&String::from_utf8_lossy(t)), None),
         Ok(None) => (String::new(), Some("Blank: laid out nowhere until it has something in it".to_string())),
         Err(e) => (String::new(), Some(e.clone())),
     };
@@ -1626,6 +1653,16 @@ mod tests {
         assert!(ok("---\nname: other\ndescription: x\n---\n").unwrap_err().contains("other"));
         assert!(ok("---\nname: review\n---\n").unwrap_err().contains("description"));
         assert!(check_skill("Bad Name", "---\nname: Bad Name\ndescription: x\n---\n").is_err());
+    }
+
+    #[test]
+    fn instructions_are_told_by_their_first_heading() {
+        assert_eq!(instructions_title("# Talking to the operator\n\n## Language\n"), "Talking to the operator");
+        assert_eq!(instructions_title("Some prose first.\n\n## Language\n\n# Late title\n"), "Late title");
+        assert_eq!(instructions_title("Some prose first.\n\n## Language\n## Reports\n"), "Language");
+        assert_eq!(instructions_title("```sh\n# a comment\n```\n## Real\n"), "Real");
+        assert_eq!(instructions_title("#tag\n### Deep\n#\n"), "");
+        assert_eq!(instructions_title("Only prose, cut off somewhere.\n"), "");
     }
 
     #[test]
