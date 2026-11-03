@@ -260,11 +260,20 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   same accounts.
 - A skill is a folder with a `SKILL.md` (front matter with its `name` and a `description`,
   then the instructions) and whatever files it needs beside it. In each account picked for
-  it, it goes into the account's `skills/`; ticked for a folder you added, into that folder as
-  `<folder>/<name>`. A folder is for what belongs to one project but not to everyone who
-  works on it: a folder of the repository that git ignores, with `.claude/skills/<name>` and
-  `.agents/skills/<name>` linked to it. The ignore and the links are yours to set up; Luna
-  only fills the folder.
+  it, it goes into the account's `skills/`, for every session in every project.
+- A folder you add — a repository, say — is for what belongs to one project but not to
+  everyone who works on it. A skill ticked for it goes to the sessions Luna starts there,
+  its worktrees included (helpers, resumes and the CLIs' own subagents too), given to each
+  at its start: nothing is written into the folder, so nothing shows up in `git status` and
+  nothing is missing from a fresh worktree. Claude Code gets the skills through `--add-dir`
+  of a folder in Luna's data and lists them by their own names; one whose name the
+  repository or the account already has goes by `luna-<name>` there. Codex gets them as a
+  plugin in the account, switched on for the session, and lists them as
+  `<folder>:<name>`. Sessions started outside Luna do not see them.
+- Each skill takes its accounts and its folders one of two ways. **or**, the default: the
+  accounts picked get it everywhere, and every account's sessions get it in the folders it
+  is ticked for. **and**: only the accounts picked, and only in those folders — a skill for
+  one repository on every account but one, say.
 - The library is the original and every place holds a copy. Luna remembers what it wrote
   where, so it touches only its own copies: anything else in an account or a folder stays,
   and a copy no longer wanted goes only while it is still exactly what Luna wrote. A copy

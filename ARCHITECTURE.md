@@ -65,7 +65,8 @@ src/                          frontend (feature-sliced)
               look): the library's folder, a grid of instructions against the accounts (a radio
               per account column for the one it gets, or none; ReachPicker per row: all, a CLI's,
               by name), a grid of skills against the
-              accounts each goes into (ReachPicker) and each folder, "Needs a look" with differences (diff.ts — a line LCS);
+              accounts each goes into (ReachPicker, and an or/and switch once it is ticked for a
+              folder) and each folder whose sessions get it, "Needs a look" with differences (diff.ts — a line LCS);
               LibraryEditor — instructions/<name>.md / SKILL.md in CodeMirror, saved and laid out at once;
               library.store — the overview, a pass at startup, a look on every window focus
     settings/ Settings (gear in the status bar and in Accounts): accounts folder, auto-tiling,
@@ -193,9 +194,10 @@ src-tauri/src/
                 the user's) with `instructions/<name>.md` and `skills/<name>/SKILL.md`, laid out into the
                 accounts each is meant for — a reach of `all`, `claude`/`codex` or `provider/name`
                 entries (`CLAUDE.md` / `AGENTS.md`, one instructions file per account, the closest
-                reach winning; `skills/<name>`) — and skills into folders the user names
-                (`<folder>/<name>`); a ledger of what Luna wrote where (`<data>/library-state.json`,
-                bytes in `library-blobs/` by hash) so only its own copies are touched — see Key decisions
+                reach winning; `skills/<name>`) — and skills for the sessions in folders the user
+                names, handed out at every start by `session_args` (pty.rs, background.rs); a ledger
+                of what Luna wrote where (`<data>/library-state.json`, bytes in `library-blobs/` by
+                hash) so only its own copies are touched — see Key decisions
   watchdog.rs   a window whose page stopped responding (WebView2 died) is rebuilt
   coreproc.rs   the core: the same exe with `--core`, no window; one per data dir (core.lock), listens on
                 127.0.0.1 with a token from <data>/core/core.json, exits by itself after 10 minutes with no
@@ -1006,9 +1008,30 @@ src-tauri/src/
   `instructions.md` of before moves to `instructions/main.md` at the first pass (its reach is
   read as `main`'s); with both there neither is touched and the window says so, and until it
   has moved every instructions unit is `failed`. An account's own file where no instructions
-  go is taken in as new instructions named after the account, going into it alone. The library is the source; a
-  destination — an account's instructions file or `skills/<name>`, a named folder's `<name>`
-  — holds a copy. A pass compares three things per destination: the library's files, what is
+  go is taken in as new instructions named after the account, going into it alone. A folder
+  the user names gets nothing written into it: a copy there reaches no worktree (each CLI
+  makes one of what git tracks — Claude Code off origin's default branch, Codex off HEAD
+  under `CODEX_HOME`) and is one `git add` from the team's repository. Its skills wait per
+  account where only a session given them sees them: for Claude Code in
+  `<data>/library-folders/<slug>/<account>/.claude/skills/<name>`, passed as `--add-dir`
+  (listed under their own names; its `.claude/skills` made before the start, or a skill
+  added later never shows); for Codex as a plugin in the account's
+  `plugins/cache/luna/<slug>/local/` (manifest written and removed by Luna, outside the
+  ledger), off until `-c plugins.<slug>@luna.enabled=true` turns it on, listed as
+  `<slug>:<name>`. The slug is the folder's name in `[a-z0-9-]`, no dots: Codex splits a
+  `-c` key at each. `session_args` maps a session's folder (a worktree through
+  `worktree::root_of` to its project) onto the folders it lies in, at every start: a resume
+  or helper turn without them keeps the skills named in its history, unanswerable. A skill
+  reaches a folder's sessions on every account but those that have it as a whole (twice
+  over, Claude Code would list the second scoped to Luna's folder), or — `foldersOnly` — only
+  on the accounts of its reach, and then into none as a whole. A Claude Code copy whose name
+  the folder's `.claude/skills` up to the repository root, the account's `skills/` (Luna's
+  own copies aside) or its synced skills already have goes by `luna-<name>` (`free_names`,
+  `with_name` on its SKILL.md): Claude Code would list ours as `<folder>:<name>`, scoped to
+  files under Luna's folder. Such a copy is compared, put back and diffed as the renamed
+  skill, and taken into the library under its own name again. The library is the source; a
+  destination — an account's instructions file or `skills/<name>`, a folder's copy for an
+  account — holds a copy. A pass compares three things per destination: the library's files, what is
   there now, and the ledger's hashes of what Luna wrote there last. Missing → written; there
   and equal to the ledger but behind the library → rewritten; equal to the library with no
   ledger entry → adopted; different from the ledger → `changed` (or `gone`), with no ledger
@@ -1024,8 +1047,8 @@ src-tauri/src/
   take their copies out. A library folder that is not there wants nothing and touches nothing.
   Paths are compared as the file system tells them apart (`ident`: on Windows either slash and
   any case), so an account renamed in case only keeps its copies and ledger entries. A
-  destination inside the library's `skills/` (a library pointed at an account folder, a folder
-  named inside it) or one holding the library is `failed`: it is the source itself, never
+  destination inside the library's `skills/` (a library pointed at an account folder) or one
+  holding the library is `failed`: it is the source itself, never
   written, adopted or removed. Luna writes through temp files `<file>.<pid>-<n>.luna-tmp`,
   which are no part of a skill or a copy. A link at a destination, or inside it, is never followed or written over.
   Passes run when the window starts, after every change made in the window and on Sync now,

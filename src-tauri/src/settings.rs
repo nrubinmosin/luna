@@ -63,8 +63,13 @@ pub struct LibrarySettings {
     pub no_instructions: Reach,
     /// The accounts each skill goes into, by the skill's name.
     pub skills: std::collections::BTreeMap<String, Reach>,
-    /// Folders the user named, each with the skills that go into it.
+    /// Folders the user named, each with the skills that sessions working
+    /// in it get.
     pub folders: Vec<LibraryFolder>,
+    /// Skills that go only where their accounts and their folders meet:
+    /// into no account as a whole, and into a folder's sessions only on the
+    /// accounts their reach takes in.
+    pub folders_only: Vec<String>,
     /// Destinations left out on purpose, by path.
     pub skipped: Vec<String>,
 }
@@ -82,6 +87,7 @@ struct LibrarySettingsFile {
     skills: std::collections::BTreeMap<String, Reach>,
     everywhere: Vec<String>,
     folders: Vec<LibraryFolder>,
+    folders_only: Vec<String>,
     skipped: Vec<String>,
 }
 
@@ -116,6 +122,7 @@ impl From<LibrarySettingsFile> for LibrarySettings {
             no_instructions: f.no_instructions,
             skills,
             folders: f.folders,
+            folders_only: f.folders_only,
             skipped: f.skipped,
         }
     }
@@ -304,15 +311,18 @@ mod tests {
         assert_eq!(old.library.skipped, vec!["x".to_string()]);
         let off: Settings = serde_json::from_str(r#"{"library": {"instructions": false}}"#).unwrap();
         assert!(off.library.instructions.is_empty());
+        assert!(old.library.folders_only.is_empty(), "before the mode every skill is one of either");
 
         // Written back, it reads the same.
         let mut s = Settings::default();
         s.library.instructions.insert("main".into(), vec!["claude".into(), "codex/home".into()]);
         s.library.no_instructions = vec!["codex/work".into()];
         s.library.skills.insert("review".into(), vec!["claude/work".into()]);
+        s.library.folders_only = vec!["review".into()];
         let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
         assert_eq!(back.library.instructions, s.library.instructions);
         assert_eq!(back.library.no_instructions, s.library.no_instructions);
         assert_eq!(back.library.skills, s.library.skills);
+        assert_eq!(back.library.folders_only, s.library.folders_only);
     }
 }

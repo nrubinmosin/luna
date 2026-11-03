@@ -2,8 +2,8 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import {
   libraryDeleteInstructions, libraryDeleteSkill, libraryNewInstructions, libraryNewSkill, libraryOpen,
-  libraryRenameInstructions, libraryResolve, librarySetAccounts, librarySetFolder, librarySetInstructions,
-  librarySetSource, librarySkip, librarySync, pickFolder,
+  libraryRenameInstructions, libraryResolve, librarySetAccounts, librarySetFolder, librarySetFoldersOnly,
+  librarySetInstructions, librarySetSource, librarySkip, librarySync, pickFolder,
   type LibraryEntry, type LibraryInstructionsDto, type LibraryOverviewDto, type LibraryTarget, type PlaceDto, type Reach
 } from '../../ipc/commands';
 import { useDialogHost } from '../../shared/ui/dialogHost';
@@ -39,17 +39,26 @@ const Note = ({ children }: { children: ReactNode }) => (
   <div style={{ fontSize: 'var(--fs-1)', color: 'var(--faint)', marginTop: 4, lineHeight: 1.4 }}>{children}</div>
 );
 
-/** Whose a copy is: an account by its CLI's icon and name, a folder by its name. */
+/** Whose a copy is: an account by its CLI's icon and name, a folder's
+ *  sessions on an account by the folder's name and then the account's. */
 function TargetLabel({ target }: { target: LibraryTarget }) {
-  return target.kind === 'account' ? (
-    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }} title={`${PROVIDER_LABEL[target.provider]} account`}>
+  const account = (
+    <>
       <Icon name={target.provider} size={14} />
       {target.name}
+    </>
+  );
+  return target.kind === 'account' ? (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }} title={`${PROVIDER_LABEL[target.provider]} account`}>
+      {account}
     </span>
   ) : (
-    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }} title={target.path}>
+    <span
+      style={{ display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }}
+      title={`Sessions in ${target.path} on ${target.name} (${PROVIDER_LABEL[target.provider]})`}
+    >
       <Icon name="folder" size={14} />
-      {baseName(target.path)}
+      {baseName(target.path)} ·{account}
     </span>
   );
 }
@@ -217,7 +226,7 @@ function CellDot({ places }: { places: PlaceDto[] }) {
         ? GREEN
         : 'var(--faint)';
   const title = places
-    .map(p => `${p.target.kind === 'account' ? p.target.name : baseName(p.target.path)}: ${needsLook(p) ? sayStatus(p) : p.status}`)
+    .map(p => `${p.target.name}${p.shownAs ? ` (as ${p.shownAs})` : ''}: ${needsLook(p) ? sayStatus(p) : p.status}`)
     .join('\n');
   return <span title={title} style={{ width: 8, height: 8, borderRadius: '50%', background: color, display: 'inline-block', marginLeft: 4 }} />;
 }
@@ -384,7 +393,7 @@ function InstructionsGrid({ o, busy, act, edit, remove }: {
 
 /**
  * The user's own skills and instructions, kept in Luna's library and laid out
- * into the accounts each is meant for and into folders named here. Raised from the Accounts
+ * into the accounts each is meant for and for the sessions in folders named here. Raised from the Accounts
  * window, or from the status bar while a copy needs a look.
  */
 export function LibraryWindow() {
@@ -588,10 +597,10 @@ function LibraryDialog({ onClose }: { onClose: () => void }) {
                     {o.skills.length > 0 && <DotLegend />}
                     <ToolButton
                       icon="folder"
-                      label="Copy into a folder…"
+                      label="Add a folder…"
                       title={
-                        'Lay skills out into a folder of yours too — a repository’s .agents/skills, say.\n' +
-                        'It becomes a column here: the skills ticked in it go into it, each as <folder>/<name>.'
+                        'Give skills to the sessions Luna starts in a folder of yours — a repository, say — and in its worktrees.\n' +
+                        'It becomes a column here; nothing is written into the folder itself.'
                       }
                       onClick={() =>
                         void pickFolder().then(p => {
@@ -611,8 +620,12 @@ function LibraryDialog({ onClose }: { onClose: () => void }) {
                           Meant for
                         </th>
                         {o.folders.length > 0 && (
-                          <th colSpan={o.folders.length} className="group" title="Folders of yours the skills ticked under them are copied into">
-                            Copied into
+                          <th
+                            colSpan={o.folders.length}
+                            className="group"
+                            title="The sessions Luna starts in these folders, their worktrees included, get the skills ticked under them"
+                          >
+                            Sessions in
                           </th>
                         )}
                         <th rowSpan={o.folders.length ? 2 : 1} />
@@ -627,7 +640,7 @@ function LibraryDialog({ onClose }: { onClose: () => void }) {
                                 <ToolButton
                                   icon="close"
                                   size={18}
-                                  title={`Stop copying skills into ${f.path}\nLuna's copies there go, those still as it wrote them`}
+                                  title={`Stop giving skills to sessions in ${f.path}\nWhat waits for them goes, those copies still as Luna wrote them`}
                                   onClick={() => act(librarySetFolder(f.path, null))}
                                 />
                               </span>
@@ -657,13 +670,32 @@ function LibraryDialog({ onClose }: { onClose: () => void }) {
                                 accounts={o.accounts}
                                 onChange={r => act(librarySetAccounts(s.name, r))}
                               />
+                              {o.folders.length > 0 && (
+                                <button
+                                  className="slim"
+                                  disabled={busy}
+                                  // Kept in place, unseen, while no folder has it: the pickers stay in line.
+                                  style={{
+                                    marginLeft: 4, minWidth: 34, padding: '0 4px',
+                                    visibility: o.folders.some(f => f.skills.includes(s.name)) ? undefined : 'hidden'
+                                  }}
+                                  title={
+                                    s.foldersOnly
+                                      ? 'And: only these accounts, and only in the folders it is ticked in — into none of them as a whole.\nClick for or.'
+                                      : 'Or: into these accounts everywhere, and into every account’s sessions in the folders it is ticked in.\nClick for and.'
+                                  }
+                                  onClick={() => act(librarySetFoldersOnly(s.name, !s.foldersOnly))}
+                                >
+                                  {s.foldersOnly ? 'and' : 'or'}
+                                </button>
+                              )}
                               <CellDot places={mine.filter(p => p.target.kind === 'account')} />
                             </td>
                             {o.folders.map((f, i) => (
                               <td key={f.path} className="cell">
                                 <Tick
                                   id={`lib-${s.name}-folder-${i}`}
-                                  title={`${s.name} into ${f.path}`}
+                                  title={`${s.name} for the sessions in ${f.path}`}
                                   checked={f.skills.includes(s.name)}
                                   // A tick sends the folder's whole list: one made before the last
                                   // answer is in would build on the list without the last tick.
@@ -704,8 +736,11 @@ function LibraryDialog({ onClose }: { onClose: () => void }) {
                 <Note>
                   A skill is a folder with a <code>SKILL.md</code>, whose description is all the model sees until it opens it:
                   the place for procedures and recipes. It goes into the <code>skills/</code> of each account it is meant for,
-                  and into each folder it is ticked under as <code>&lt;folder&gt;/&lt;name&gt;</code> — how a CLI finds it
-                  there, a link from <code>.claude/skills</code> or <code>.agents/skills</code>, is yours to set up.
+                  and to the sessions Luna starts in each folder it is ticked under, worktrees included — given at their start,
+                  nothing written into the folder. <i>or</i>: those accounts everywhere, and every account in its folders;{' '}
+                  <i>and</i>: only those accounts, and only in its folders. Codex lists a folder's skills as{' '}
+                  <code>&lt;folder&gt;:&lt;name&gt;</code>; for Claude Code a copy whose name a skill there already has goes by{' '}
+                  <code>luna-&lt;name&gt;</code>.
                 </Note>
               </Section>
 
