@@ -278,6 +278,7 @@ pub fn run() {
             library::library_set_instructions,
             library::library_set_accounts,
             library::library_set_folder,
+            library::library_set_folders_only,
             library::library_skip,
             library::library_resolve,
             library::library_diff,

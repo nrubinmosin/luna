@@ -693,6 +693,9 @@ fn command_for(e: &Entry, id: &str) -> (Vec<String>, String, Vec<(&'static str, 
                     args.extend(["--add-dir".into(), notes.to_string_lossy().into_owned()]);
                 }
             }
+            // The skills the library gives sessions where it works, on every
+            // turn: each is a process of its own (library.rs `session_args`).
+            args.extend(crate::library::session_args(Provider::Claude, &s.account_path, &dir));
             envs.push(("CLAUDE_CONFIG_DIR", s.account_path.clone()));
             envs.push(("DISABLE_AUTOUPDATER", "1".into()));
         }
@@ -743,6 +746,7 @@ fn command_for(e: &Entry, id: &str) -> (Vec<String>, String, Vec<(&'static str, 
             }
             envs.extend(crate::pty::codex_git_envs(&s.mode));
             envs.push(("CODEX_HOME", s.account_path.clone()));
+            args.extend(crate::library::session_args(Provider::Codex, &s.account_path, &dir));
             // The prompt comes on stdin; Claude Code reads it there unasked.
             args.push("-".into());
         }

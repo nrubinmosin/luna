@@ -1388,6 +1388,11 @@ pub async fn ensure_claude_session(
                 args.push(notes.to_string_lossy().into_owned());
             }
         }
+        // The skills the library gives sessions in this folder, at every
+        // start (library.rs `session_args`); not to a login session.
+        if !same_dir(&folder, &account_path) {
+            args.extend(crate::library::session_args(Provider::Claude, &account_path, &folder));
+        }
         if let Some(p) = prompt.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
             // `--mcp-config` takes any number of files, and took the prompt
             // after it for one more: "MCP config file not found: <prompt>".
@@ -1532,6 +1537,9 @@ pub async fn ensure_codex_session(
                 args.extend(codex_mcp_args());
                 envs.push(("LUNA_MCP_TOKEN", token));
             }
+            // The skills the library gives sessions in this folder, at every
+            // start (library.rs `session_args`).
+            args.extend(crate::library::session_args(Provider::Codex, &account_path, &folder));
             if let Some(p) = prompt.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
                 // A prompt that starts with a dash is still a prompt.
                 args.push("--".into());

@@ -728,7 +728,10 @@ export const renameAccount = (provider: Provider, name: string, to: string) =>
 
 // --------------------------------------------------------------- library --
 
-export type LibraryTarget = { kind: 'account'; provider: Provider; name: string } | { kind: 'folder'; path: string };
+/** An account, or what the sessions in a folder get on one account. */
+export type LibraryTarget =
+  | { kind: 'account'; provider: Provider; name: string }
+  | { kind: 'folder'; path: string; provider: Provider; name: string };
 export type PlaceStatus = 'current' | 'behind' | 'missing' | 'changed' | 'gone' | 'taken' | 'skipped' | 'failed';
 
 /** One copy the library wants somewhere, and where it stands. */
@@ -739,6 +742,8 @@ export interface PlaceDto {
   skill: string | null;
   /** Which instructions, for an instructions file. */
   instructions: string | null;
+  /** The name a folder's copy goes by, where the skill's own is another skill's there. */
+  shownAs: string | null;
   status: PlaceStatus;
   /** Changed there, and in the library too, since Luna wrote it. */
   both: boolean;
@@ -753,6 +758,8 @@ export interface LibrarySkillDto {
   /** Why it is laid out nowhere, while it is not fit to be. */
   problem: string | null;
   accounts: Reach;
+  /** Only where its accounts and its folders meet, and into no account as a whole. */
+  foldersOnly: boolean;
 }
 export interface LibraryInstructionsDto {
   name: string;
@@ -809,9 +816,12 @@ export const librarySetSource = (path: string) => call<LibraryOverviewDto>('libr
 export const librarySetInstructions = (name: string | null, accounts: Reach) =>
   call<LibraryOverviewDto>('library_set_instructions', { name, accounts });
 export const librarySetAccounts = (skill: string, accounts: Reach) => call<LibraryOverviewDto>('library_set_accounts', { skill, accounts });
-/** A folder's skills; null stops laying anything out into it. */
+/** The skills a folder's sessions get; null stops giving them any. */
 export const librarySetFolder = (path: string, skills: string[] | null) =>
   call<LibraryOverviewDto>('library_set_folder', { path, skills });
+/** Whether a skill goes only where its accounts and its folders meet. */
+export const librarySetFoldersOnly = (skill: string, on: boolean) =>
+  call<LibraryOverviewDto>('library_set_folders_only', { skill, on });
 export const librarySkip = (dest: string, on: boolean) => call<LibraryOverviewDto>('library_skip', { dest, on });
 /** `take`: the copy there becomes the library's; otherwise the library's goes back there. */
 export const libraryResolve = (dest: string, take: boolean) => call<LibraryOverviewDto>('library_resolve', { dest, take });
