@@ -91,13 +91,16 @@ pub fn root_override(folder: &str) -> Option<[String; 2]> {
     under_root(&project, &crate::settings::get().codex_trusted_roots).then(|| trust_override(folder))
 }
 
+/// As Codex compares project keys (`same_project`): either separator and any
+/// case on Windows, the path as it is elsewhere.
 fn under_root(folder: &str, roots: &[String]) -> bool {
-    let n = |s: &str| {
-        let s = s.replace('\\', "/").trim_end_matches('/').to_string();
-        if cfg!(windows) { s.to_lowercase() } else { s }
-    };
-    let folder = n(folder);
-    roots.iter().map(|r| n(r)).filter(|r| !r.is_empty()).any(|r| folder == r || folder.starts_with(&format!("{r}/")))
+    let sep = if cfg!(windows) { '\\' } else { '/' };
+    let folder = crate::paths::path_key(folder);
+    roots
+        .iter()
+        .map(|r| crate::paths::path_key(r))
+        .filter(|r| !r.is_empty())
+        .any(|r| folder == r || folder.starts_with(&format!("{r}{sep}")))
 }
 
 #[tauri::command]
@@ -117,6 +120,7 @@ pub fn set_codex_trusted_roots(roots: Vec<String>) -> Result<Vec<String>, String
 #[tauri::command]
 pub fn codex_trust_folder(account_path: String, folder: String) -> Result<(), String> {
     let path = config::account_file(&account_path)?;
+    let _editing = crate::account_settings::editing();
     let mut doc = config::read(&path)?;
     if trusted_in(&doc, &folder) {
         return Ok(());
@@ -158,13 +162,27 @@ pub fn codex_trust_folder(account_path: String, folder: String) -> Result<(), St
 mod tests {
     use super::*;
 
+    #[cfg(windows)]
     #[test]
     fn a_root_covers_the_folders_under_it_and_nothing_beside_it() {
         let roots = vec!["E:\\Projects\\".to_string()];
         assert!(under_root("E:\\Projects", &roots));
         assert!(under_root("E:/Projects/Sprouter/app", &roots), "either separator");
+        assert!(under_root("e:\\projects\\app", &roots), "any case");
         assert!(!under_root("E:\\Projects2\\app", &roots), "a sibling that shares the prefix");
         assert!(!under_root("E:\\Projects\\app", &[String::new()]));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn a_root_covers_the_folders_under_it_and_nothing_beside_it() {
+        let roots = vec!["/home/u/projects/".to_string()];
+        assert!(under_root("/home/u/projects", &roots));
+        assert!(under_root("/home/u/projects/app", &roots));
+        assert!(!under_root("/home/u/Projects/app", &roots), "another folder");
+        assert!(!under_root("/home/u/projects\\app", &roots), "a backslash is part of a name");
+        assert!(!under_root("/home/u/projects2/app", &roots), "a sibling that shares the prefix");
+        assert!(!under_root("/home/u/projects/app", &[String::new()]));
     }
 
     #[test]

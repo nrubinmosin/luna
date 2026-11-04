@@ -69,6 +69,7 @@ pub fn write(path: &Path, doc: &DocumentMut) -> Result<(), String> {
 /// own startup check would only nag about a version Luna is about to install.
 pub fn seed(account_path: &str) -> Result<(), String> {
     let path = account_file(account_path)?;
+    let _editing = crate::account_settings::editing();
     let mut doc = read(&path)?;
     if doc.get("check_for_update_on_startup").is_none() {
         doc["check_for_update_on_startup"] = toml_edit::value(false);
