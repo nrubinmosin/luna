@@ -670,15 +670,17 @@ fn sweep_blobs(dirs: &Dirs, ledger: &Ledger) {
 
 /// Puts `files` — what is about to be replaced at `from` — under a folder of
 /// its own in the backups, named for the moment and the last two parts of the
-/// path (the whole path would outgrow Windows' limit), with the whole of it
-/// written beside the files.
+/// path (the whole path would outgrow Windows' limit): the file, or the folder
+/// with all in it, by its own name, and the whole path beside it in `from.txt`,
+/// where no file of a skill's own can be.
 fn back_up(dirs: &Dirs, from: &Path, files: &Files) -> Result<PathBuf, String> {
     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S-%3f");
     let tail: Vec<String> = from.components().rev().take(2).map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
     let tail: String = tail.into_iter().rev().collect::<Vec<_>>().join("-").chars().filter(|c| !matches!(c, ':' | '\\' | '/')).collect();
     let dir = dirs.backups().join(format!("{stamp}-{tail}"));
+    let saved = dir.join(from.file_name().unwrap_or_default());
     for (rel, bytes) in files {
-        let path = if rel.is_empty() { dir.join(from.file_name().unwrap_or_default()) } else { join_rel(&dir, rel) };
+        let path = if rel.is_empty() { saved.clone() } else { join_rel(&saved, rel) };
         write_file(&path, bytes)?;
     }
     write_file(&dir.join("from.txt"), from.to_string_lossy().as_bytes())?;
@@ -699,24 +701,69 @@ fn sweep_backups(dirs: &Dirs) {
 
 // ---------------------------------------------------------------- folders --
 
-/// Each folder of the library with the name its skills wait under: the
-/// folder's own name as `check_name` takes names — the prefix Codex lists them
-/// by, and a part of a `-c` key, which Codex splits at every dot — with `-2`,
-/// `-3` after a name an earlier folder of the list has.
+/// Each folder of the library with the name its skills wait under: the one it
+/// keeps (`LibraryFolder::slug`), unless an earlier folder keeps that too, else
+/// one made for it (`fresh_slug`) past those kept. A list with none kept, as
+/// before they were, gets the names it always had: by its order.
 fn folder_slugs(folders: &[LibraryFolder]) -> Vec<(&LibraryFolder, String)> {
     let mut taken = BTreeSet::new();
+    let kept: Vec<bool> = folders.iter().map(|f| slug_ok(&f.slug) && taken.insert(f.slug.clone())).collect();
     folders
         .iter()
-        .map(|f| {
-            let own = Path::new(&f.path).file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
-            let base: String = own.chars().map(|c| if c.is_ascii_lowercase() || c.is_ascii_digit() { c } else { '-' }).collect();
-            let base: String = base.split('-').filter(|p| !p.is_empty()).collect::<Vec<_>>().join("-").chars().take(56).collect();
-            let base = if base.is_empty() { "folder".to_string() } else { base.trim_end_matches('-').to_string() };
-            let slug = std::iter::once(base.clone()).chain((2..).map(|i| format!("{base}-{i}"))).find(|s| !taken.contains(s)).unwrap_or(base);
+        .zip(kept)
+        .map(|(f, kept)| {
+            if kept {
+                return (f, f.slug.clone());
+            }
+            let slug = fresh_slug(&f.path, &taken);
             taken.insert(slug.clone());
             (f, slug)
         })
         .collect()
+}
+
+/// A name for the folder at `path` to keep its skills under: its own name as
+/// `check_name` takes names — the prefix Codex lists them by, and a part of a
+/// `-c` key, which Codex splits at every dot — with `-2`, `-3` after one taken.
+fn fresh_slug(path: &str, taken: &BTreeSet<String>) -> String {
+    let own = Path::new(path).file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+    let base: String = own.chars().map(|c| if c.is_ascii_lowercase() || c.is_ascii_digit() { c } else { '-' }).collect();
+    let base: String = base.split('-').filter(|p| !p.is_empty()).collect::<Vec<_>>().join("-").chars().take(56).collect();
+    let base = if base.is_empty() { "folder".to_string() } else { base.trim_end_matches('-').to_string() };
+    std::iter::once(base.clone()).chain((2..).map(|i| format!("{base}-{i}"))).find(|s| !taken.contains(s)).unwrap_or(base)
+}
+
+/// Whether a kept slug is one `fresh_slug` could have made: a settings file
+/// edited by hand is not to put a dot or a path in a `-c` key.
+fn slug_ok(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 64
+        && !s.starts_with('-')
+        && !s.ends_with('-')
+        && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
+/// Every folder keeps the name it goes by now, so that none passes to another
+/// as an earlier one goes.
+fn settle_slugs(lib: &mut LibrarySettings) {
+    let slugs: Vec<String> = folder_slugs(&lib.folders).into_iter().map(|(_, s)| s).collect();
+    for (f, slug) in lib.folders.iter_mut().zip(slugs) {
+        f.slug = slug;
+    }
+}
+
+/// The names folders' skills wait under on disk: `library-folders` and each
+/// Codex account's marketplace. A folder gone may have left copies changed
+/// since there, which stay: a new folder is not to take them up as its own.
+fn slugs_on_disk(dirs: &Dirs) -> BTreeSet<String> {
+    let names = |dir: PathBuf| -> Vec<String> {
+        std::fs::read_dir(dir).map(|e| e.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect()).unwrap_or_default()
+    };
+    let mut out: BTreeSet<String> = names(dirs.folders()).into_iter().collect();
+    for a in crate::accounts::list_accounts().unwrap_or_default().iter().filter(|a| a.provider == Provider::Codex) {
+        out.extend(names(codex_market_dir(a)));
+    }
+    out
 }
 
 /// Where a folder's skills for one Claude Code account wait: the folder a
@@ -857,6 +904,16 @@ fn codex_manifests(lib: &LibrarySettings, accounts: &[AccountInfo]) {
         for slug in names {
             let plugin = codex_plugin_dir(a, &slug);
             let manifest = plugin.join(".codex-plugin").join("plugin.json");
+            // Luna's own folders, and none that leads elsewhere: through a
+            // link on the way the manifest would be written, or taken out,
+            // wherever that leads.
+            let way = [market.clone(), market.join(&slug), plugin.clone(), plugin.join(".codex-plugin"), manifest.clone()];
+            if let Some(link) = way.iter().find(|p| std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_symlink())) {
+                if link_is_news(link) {
+                    crate::log::warn("library", &format!("{} is a link — Luna leaves the plugin there alone", link.display()));
+                }
+                continue;
+            }
             let holds = std::fs::read_dir(plugin.join("skills")).is_ok_and(|mut e| e.next().is_some());
             if holds {
                 // A folder no longer listed holds only copies changed since,
@@ -1444,6 +1501,13 @@ pub struct Overview {
 
 /// Whether these kept copies are not what the log said last: a pass comes
 /// before every session's start, and each list once is enough.
+/// Whether a link `codex_manifests` keeps clear of is yet to be said: once a
+/// run, as a pass comes with every session's start.
+fn link_is_news(link: &Path) -> bool {
+    static SAID: Mutex<BTreeSet<PathBuf>> = Mutex::new(BTreeSet::new());
+    SAID.lock().unwrap_or_else(|e| e.into_inner()).insert(link.to_path_buf())
+}
+
 fn kept_is_news(kept: &[String]) -> bool {
     static SAID: Mutex<Vec<String>> = Mutex::new(Vec::new());
     let mut said = SAID.lock().unwrap_or_else(|e| e.into_inner());
@@ -1462,7 +1526,13 @@ fn overview(act: bool) -> Result<Overview, String> {
 fn overview_locked(act: bool) -> Result<Overview, String> {
     let dirs = Dirs::current();
     // A pass goes by settings as the file has them now, or not at all.
-    let lib = if act { crate::settings::get_checked()?.library } else { crate::settings::get().library };
+    let mut lib = if act { crate::settings::get_checked()?.library } else { crate::settings::get().library };
+    // Folders listed before they kept their names keep the ones they have
+    // gone by, which is what is on disk.
+    if act && lib.folders.iter().any(|f| f.slug.is_empty()) {
+        crate::settings::update(|s| settle_slugs(&mut s.library))?;
+        settle_slugs(&mut lib);
+    }
     let accounts = crate::accounts::list_accounts()?;
     let found = dirs.root.is_dir();
     if act && found {
@@ -1632,7 +1702,10 @@ pub fn library_set_folder(path: String, skills: Option<Vec<String>>, off: Option
         return Err("A folder must be an absolute path".into());
     }
     skills.iter().chain(&off).flatten().try_for_each(|n| check_name(n))?;
+    let on_disk = slugs_on_disk(&Dirs::current());
     change(|l| {
+        // Kept before any goes, so that none passes to another.
+        settle_slugs(l);
         let at = l.folders.iter().position(|f| crate::pty::same_dir(&f.path, &path));
         let Some(skills) = skills else {
             if let Some(i) = at {
@@ -1641,7 +1714,10 @@ pub fn library_set_folder(path: String, skills: Option<Vec<String>>, off: Option
             return;
         };
         let i = at.unwrap_or_else(|| {
-            l.folders.push(LibraryFolder { path, ..Default::default() });
+            let mut taken: BTreeSet<String> = l.folders.iter().map(|f| f.slug.clone()).collect();
+            taken.extend(on_disk);
+            let slug = fresh_slug(&path, &taken);
+            l.folders.push(LibraryFolder { path, slug, ..Default::default() });
             l.folders.len() - 1
         });
         let f = &mut l.folders[i];
@@ -2452,6 +2528,51 @@ mod tests {
         assert!(slugs.iter().all(|s| check_name(s).is_ok()));
     }
 
+    /// Kept, a folder's name stays its own as an earlier folder goes; one the
+    /// file holds that no folder could have been given is not taken.
+    #[test]
+    fn a_folder_keeps_its_name_when_an_earlier_one_goes() {
+        let mut lib = LibrarySettings {
+            folders: ["E:/a/app", "E:/b/app", "E:/c/app"].iter().map(|p| LibraryFolder { path: p.to_string(), ..Default::default() }).collect(),
+            ..Default::default()
+        };
+        settle_slugs(&mut lib);
+        let slugs = |lib: &LibrarySettings| folder_slugs(&lib.folders).into_iter().map(|(_, s)| s).collect::<Vec<_>>();
+        assert_eq!(slugs(&lib), ["app", "app-2", "app-3"], "as they always were, by their order");
+        lib.folders.remove(0);
+        assert_eq!(slugs(&lib), ["app-2", "app-3"]);
+        // A new one takes none listed and none on disk.
+        let taken: BTreeSet<String> = lib.folders.iter().map(|f| f.slug.clone()).chain(["app".to_string()]).collect();
+        assert_eq!(fresh_slug("E:/d/app", &taken), "app-4");
+        lib.folders[0].slug = "../x".into();
+        lib.folders[1].slug = "app-2".into();
+        assert_eq!(slugs(&lib), ["app", "app-2"], "a bad one is made anew, past the one kept");
+    }
+
+    /// A link on the way to a plugin's manifest: neither written through nor
+    /// taken out through.
+    #[cfg(unix)]
+    #[test]
+    fn a_manifest_behind_a_link_is_left_alone() {
+        let f = Fixture::new("manifest-link");
+        f.skill("review", "v1");
+        let (_, folder) = repo_folder(&f, "repo", &["review"]);
+        let lib = LibrarySettings { folders: vec![folder], ..Default::default() };
+        let elsewhere = f.base.join("elsewhere");
+        std::fs::create_dir_all(elsewhere.join("skills").join("x")).unwrap();
+        std::fs::write(elsewhere.join("skills").join("x").join("SKILL.md"), "x").unwrap();
+        let plugin = codex_plugin_dir(&f.accounts[1], "repo");
+        std::fs::create_dir_all(plugin.join("skills").join("review")).unwrap();
+        std::fs::write(plugin.join("skills").join("review").join("SKILL.md"), "v1").unwrap();
+        std::os::unix::fs::symlink(&elsewhere, plugin.join(".codex-plugin")).unwrap();
+        codex_manifests(&lib, &f.accounts);
+        assert!(!elsewhere.join("plugin.json").exists(), "not written through the link");
+        std::fs::remove_dir_all(plugin.join("skills")).unwrap();
+        std::fs::write(elsewhere.join("plugin.json"), "theirs").unwrap();
+        codex_manifests(&lib, &f.accounts);
+        assert_eq!(std::fs::read_to_string(elsewhere.join("plugin.json")).unwrap(), "theirs", "nor taken out through it");
+    }
+
     #[test]
     fn a_session_in_a_folder_or_a_worktree_of_it_is_given_its_skills() {
         let f = Fixture::new("folder-args");
@@ -2501,7 +2622,7 @@ mod tests {
         // `work` gives notes and keeps review; `work/repo` inside it keeps notes.
         let outer = f.base.join("work");
         std::fs::create_dir_all(&outer).unwrap();
-        let outer_folder = LibraryFolder { path: outer.to_string_lossy().into_owned(), skills: vec!["notes".into()], off: vec!["review".into()] };
+        let outer_folder = LibraryFolder { path: outer.to_string_lossy().into_owned(), skills: vec!["notes".into()], off: vec!["review".into()], ..Default::default() };
         let (repo, mut inner) = repo_folder(&f, "work/repo", &[]);
         inner.off = vec!["notes".into()];
         let lib = LibrarySettings {
@@ -2644,6 +2765,12 @@ mod tests {
 
         let saved = back_up(&f.dirs, Path::new(&dest), &Files::from([(String::new(), b"mine".to_vec())])).unwrap();
         assert_eq!(std::fs::read(saved.join("CLAUDE.md")).unwrap(), b"mine");
+        // A skill's folder, a `from.txt` of its own in it: kept beside Luna's.
+        let skill = f.dirs.root.join("skills").join("notes");
+        let files = Files::from([("SKILL.md".to_string(), b"s".to_vec()), ("from.txt".to_string(), b"its own".to_vec())]);
+        let saved = back_up(&f.dirs, &skill, &files).unwrap();
+        assert_eq!(std::fs::read(saved.join("notes").join("from.txt")).unwrap(), b"its own");
+        assert_eq!(std::fs::read(saved.join("from.txt")).unwrap(), skill.to_string_lossy().as_bytes());
 
         // A blob no entry names goes at the sweep.
         ledger.written.clear();

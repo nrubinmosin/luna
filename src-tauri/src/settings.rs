@@ -137,6 +137,11 @@ pub struct LibraryFolder {
     /// Kept from its sessions, though an account has it as a whole or a
     /// folder this one lies in gives it (library.rs `deciding`).
     pub off: Vec<String>,
+    /// The name its skills wait under (library.rs `folder_slugs`), given once
+    /// and kept: one read off its place in the list would pass to another
+    /// folder as an earlier one goes.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub slug: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default)]
