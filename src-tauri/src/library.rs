@@ -10,7 +10,7 @@
 //! `<data>/library-folders/<folder>/<account>/.claude/skills/<name>` for
 //! Claude Code, passed as `--add-dir`; for Codex a plugin in the account's
 //! own plugin cache, off until the session's `-c` turns it on — and
-//! `session_args` hands them out at every start. A skill reaches a folder's
+//! `session_args` lays the library out and hands them out at every start. A skill reaches a folder's
 //! sessions on every account, or — `folders_only` — only on the accounts it
 //! is meant for, and then into none of them as a whole.
 //!
@@ -44,8 +44,28 @@ type Skills = BTreeMap<String, (SkillInfo, Result<Files, String>)>;
 type Instructions = BTreeMap<String, Result<Option<Vec<u8>>, String>>;
 
 /// One pass at a time: the window can fire several changes in a row, and two
-/// passes writing the same copy would each read the other's half.
+/// passes writing the same copy would each read the other's half. The window
+/// and the core both run passes (a session's start is the core's), so the
+/// mutex has a lock file beside the ledger for the other process (`lock`).
 static LOCK: Mutex<()> = Mutex::new(());
+
+/// Both locks, held for as long as it lives.
+struct Locked {
+    _file: Option<std::fs::File>,
+    _threads: std::sync::MutexGuard<'static, ()>,
+}
+
+fn lock() -> Locked {
+    let threads = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let path = Dirs::current().ledger().with_extension("json.lock");
+    let file = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&path).and_then(|f| f.lock().map(|()| f));
+    // Without it a pass still runs, as one did before passes came from two
+    // processes.
+    if let Err(e) = &file {
+        crate::log::warn("library", &format!("library lock {}: {e}", path.display()));
+    }
+    Locked { _file: file.ok(), _threads: threads }
+}
 
 /// The folder of instructions files, `<name>.md` each.
 const INSTRUCTIONS_DIR: &str = "instructions";
@@ -842,7 +862,10 @@ fn prune_folder_dirs(dirs: &Dirs, lib: &LibrarySettings) {
 /// turning that folder's plugin on where the account has one. Due at every
 /// start, resumes and each helper turn included: one started without them
 /// keeps the skills named in its conversation, and none of them answers.
+/// The library is laid out first, so the session reads its copies as the
+/// library has them now.
 pub fn session_args(provider: Provider, account_path: &str, folder: &str) -> Vec<String> {
+    lay_out("before a session starts");
     let lib = crate::settings::get().library;
     if lib.folders.is_empty() {
         return Vec::new();
@@ -1286,8 +1309,20 @@ pub struct Overview {
     pub kept: Vec<String>,
 }
 
+/// Whether these kept copies are not what the log said last: a pass comes
+/// before every session's start, and each list once is enough.
+fn kept_is_news(kept: &[String]) -> bool {
+    static SAID: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    let mut said = SAID.lock().unwrap_or_else(|e| e.into_inner());
+    if *said == kept {
+        return false;
+    }
+    *said = kept.to_vec();
+    true
+}
+
 fn overview(act: bool) -> Result<Overview, String> {
-    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = lock();
     overview_locked(act)
 }
 
@@ -1312,7 +1347,7 @@ fn overview_locked(act: bool) -> Result<Overview, String> {
         ledger.save(&dirs)?;
         sweep_blobs(&dirs, &ledger);
         sweep_backups(&dirs);
-        if !p.kept.is_empty() {
+        if !p.kept.is_empty() && kept_is_news(&p.kept) {
             crate::log::info("library", &format!("left in place, changed since Luna wrote them: {}", p.kept.join(", ")));
         }
     }
@@ -1380,6 +1415,16 @@ pub fn library_overview() -> Result<Overview, String> {
 #[tauri::command]
 pub fn library_sync() -> Result<Overview, String> {
     overview(true)
+}
+
+/// A pass as Sync makes one, for a caller that only needs it done. A file
+/// changed in the library by another program — a model improving a skill
+/// there — is seen by no window, and the accounts would keep the old copy
+/// until a click in it.
+pub fn lay_out(when: &str) {
+    if let Err(e) = overview(true) {
+        crate::log::warn("library", &format!("laying the library out {when}: {e}"));
+    }
 }
 
 /// Points the library at another folder; empty = back to `<data>/library`.
@@ -1458,7 +1503,7 @@ pub fn library_set_folder(path: String, skills: Option<Vec<String>>) -> Result<O
 /// is no longer Luna's copy: whatever is there stays, as anyone's file.
 #[tauri::command]
 pub fn library_skip(dest: String, on: bool) -> Result<Overview, String> {
-    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = lock();
     let dirs = Dirs::current();
     let mut ledger = Ledger::load(&dirs);
     // Under any spelling of the path, as a pass goes by.
@@ -1534,7 +1579,7 @@ fn take_unclaimed(dirs: &Dirs, ledger: &mut Ledger, dest: &str, a: &AccountInfo)
 /// file where no instructions go is taken as new instructions of its own.
 #[tauri::command]
 pub fn library_resolve(dest: String, take: bool) -> Result<Overview, String> {
-    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = lock();
     let dirs = Dirs::current();
     let located = locate(&dirs, &dest)?;
     let to = PathBuf::from(&dest);
@@ -1602,7 +1647,7 @@ pub struct FileDiff {
 
 #[tauri::command]
 pub fn library_diff(dest: String) -> Result<Vec<FileDiff>, String> {
-    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = lock();
     let dirs = Dirs::current();
     let Located::Copy { from, file, source, .. } = locate(&dirs, &dest)? else {
         return Err("No instructions of the library go there".into());
@@ -1680,7 +1725,7 @@ pub fn library_read(entry: Entry) -> Result<LibraryFile, String> {
 /// it does.
 #[tauri::command]
 pub fn library_write(entry: Entry, text: String) -> Result<Overview, String> {
-    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = lock();
     let path = library_path(&Dirs::current(), &entry)?;
     write_file(&path, text.as_bytes())?;
     overview_locked(true)
@@ -1696,7 +1741,7 @@ pub fn library_check_skill(skill: String, text: String) -> Option<String> {
 pub fn library_new_skill(name: String) -> Result<Overview, String> {
     let name = name.trim().to_string();
     check_name(&name)?;
-    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = lock();
     let dirs = Dirs::current();
     let dir = dirs.skills().join(&name);
     if dir.exists() {
@@ -1714,7 +1759,7 @@ pub fn library_new_skill(name: String) -> Result<Overview, String> {
 #[tauri::command]
 pub fn library_delete_skill(name: String) -> Result<Overview, String> {
     check_name(&name)?;
-    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = lock();
     let dirs = Dirs::current();
     let dir = dirs.skills().join(&name);
     if let Some(files) = read_at(&dir, false)? {
@@ -1739,7 +1784,7 @@ pub fn library_delete_skill(name: String) -> Result<Overview, String> {
 pub fn library_new_instructions(name: String) -> Result<Overview, String> {
     let name = name.trim().to_string();
     check_name(&name)?;
-    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = lock();
     let dirs = Dirs::current();
     let path = dirs.instructions_file(&name);
     if std::fs::symlink_metadata(&path).is_ok() {
@@ -1759,7 +1804,7 @@ pub fn library_rename_instructions(from: String, to: String) -> Result<Overview,
     let to = to.trim().to_string();
     check_name(&from)?;
     check_name(&to)?;
-    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = lock();
     let dirs = Dirs::current();
     let (old, new) = (dirs.instructions_file(&from), dirs.instructions_file(&to));
     if from == to {
@@ -1790,7 +1835,7 @@ pub fn library_rename_instructions(from: String, to: String) -> Result<Overview,
 #[tauri::command]
 pub fn library_delete_instructions(name: String) -> Result<Overview, String> {
     check_name(&name)?;
-    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = lock();
     let dirs = Dirs::current();
     let path = dirs.instructions_file(&name);
     if let Some(files) = read_at(&path, true)? {
@@ -1951,6 +1996,15 @@ mod tests {
         assert!(lib.no_instructions.is_empty());
         assert!(!lib.skills.contains_key("review"), "a skill that goes nowhere any more is dropped");
         assert_eq!(lib.skills["notes"], all());
+    }
+
+    /// A pass before every session's start says the same kept copies once.
+    #[test]
+    fn kept_copies_are_logged_once_a_list() {
+        let a = vec!["E:/acc/skills/x".to_string()];
+        assert!(kept_is_news(&a));
+        assert!(!kept_is_news(&a), "the same list again is no news");
+        assert!(kept_is_news(&["E:/acc/skills/y".to_string()]));
     }
 
     #[test]
