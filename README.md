@@ -282,9 +282,11 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   with its differences from what Luna wrote. Take it into the library and it becomes every
   copy's; put the library's back; or leave that place out. Whichever side is replaced is kept
   in Luna's backups for 30 days.
-- The library is laid out when Luna starts, on every change made in the window and on Sync
-  now, and looked at again whenever the window comes back to the front, so a copy edited in
-  another program is noticed then. A skill whose `SKILL.md` does not do (no front matter, a
+- The library is laid out when Luna starts, before every session Luna starts (a chat, a
+  resume, each turn of a helper), on every change made in the window and on Sync now: a file
+  changed in the library by another program — a model improving a skill there, say —
+  reaches the accounts by the next session. It is looked at again whenever the window comes
+  back to the front, so a copy edited in another program is noticed then. A skill whose `SKILL.md` does not do (no front matter, a
   name other than its folder's) is laid out nowhere until it does, and its copies stay as they
   were; so do those of a library that will not read for a moment (a file held open mid-save).
   Paths are compared as the system compares them — on Windows regardless of case — so an
