@@ -31,7 +31,7 @@ const SLOW_BUDGET_MS: Record<string, number> = {
 const CORE_CALL: ReadonlySet<string> = new Set([
   'ensure_claude_session', 'ensure_codex_session', 'kill_session', 'delete_session', 'stop_all_sessions',
   'orphan_sessions', 'session_meta', 'session_modes', 'agent_spawned', 'agent_resumes', 'agent_spawns', 'chat_names', 'account_usage', 'power_state',
-  'background_helpers', 'background_promote', 'background_kill', 'background_delete',
+  'background_helpers', 'background_promote', 'background_promoted', 'background_kill', 'background_delete',
   'set_keep_awake', 'arm_power_off', 'disarm_power_off', 'rename_account', 'orphan_worktrees',
   'remove_orphan_worktrees'
 ]);
@@ -626,9 +626,11 @@ export interface BackgroundHelperDto {
   turnStartedMs: number | null;
   /** Between turns, what its turns left running ("tail.exe (pid 22104)"): what Stop ends then. */
   leftRunning?: string[];
+  /** Being opened as a chat: no turn starts until the window says how that went (`backgroundPromoted`). */
+  promoting?: boolean;
 }
 
-/** A background helper handed over to a chat row (`agent://promote`). */
+/** A background helper to be handed over to a chat row (`backgroundPromote`). */
 export interface PromotedDto {
   id: string;
   provider: Provider;
@@ -644,8 +646,12 @@ export interface PromotedDto {
 }
 
 export const backgroundHelpers = () => call<BackgroundHelperDto[]>('background_helpers', {}, []);
-/** Makes the helper a chat of its own; refused while a turn runs. */
-export const backgroundPromote = (id: string) => call<void>('background_promote', { id });
+/** Starts making the helper a chat of its own, refused while a turn runs: what the row needs. The
+ *  helper stays, with no turn starting, until `backgroundPromoted` says how the row came out. */
+export const backgroundPromote = (id: string) => call<PromotedDto>('background_promote', { id });
+/** The row for a helper being opened is made (`error` null), and the core lets the helper go; or it
+ *  could not be, and the helper goes on as it was. */
+export const backgroundPromoted = (id: string, error: string | null) => call<void>('background_promoted', { id, error });
 /** Stops the turn it is on, or between turns what its turns left running; the conversation stays. */
 export const backgroundKill = (id: string) => call<void>('background_kill', { id });
 /** Deletes it, the worktree it made too unless `dropWorktree` is false. */

@@ -791,8 +791,12 @@ src-tauri/src/
   over, and the text typed as a prompt of its own. A spawn with `worktree: true` waits up to 20 s for the
   CLI to say where it made it (Claude Code's `init` event, Codex's rollout) and returns `worktree` and
   `branch`, which `list` carries for every helper too, or `worktreePending` if the CLI has not said by then. The window gets their list as `agent://background` (the
-  count on the parent row) and can hand one to a chat row between turns (`background_promote` →
-  `agent://promote`: same id, the session id to resume). Helpers outlive the core: every 2 s, as
+  count on the parent row) and can hand one to a chat row between turns, in two steps so that a row
+  that cannot be made leaves the helper rather than neither: `background_promote` marks it (no turn
+  starts, text sent queues) and returns what the row needs (same id, the session id to resume); the
+  window makes the row and says so with `background_promoted`, which lets the helper go, or with an
+  error, which unmarks it. A window coming up, or finding the core again, settles what one gone
+  meanwhile was opening: a row with a helper's id is made by nothing else. Helpers outlive the core: every 2 s, as
   the core leaves (`stop_all`), and at once on what a core killed next must not undo (a spawn, a
   conversation named, a delete, a question asked, an opening as a chat), the registry goes to `<data>/helpers.json` when it
   has changed, one save at a time so that no older reading is written over a newer one — the

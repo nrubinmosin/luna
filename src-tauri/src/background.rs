@@ -428,6 +428,10 @@ struct Entry {
     /// starts meanwhile, as its CLI would land in the job being emptied; text
     /// sent queues, and starts the next turn once the stop is through.
     ending_left: bool,
+    /// Being opened as a chat (`background_promote`), until the window says how
+    /// its row came out: no turn starts meanwhile, as its conversation may be
+    /// resumed in a terminal any moment; text sent queues, and goes with it.
+    promoting: bool,
     observed: Observed,
 }
 
@@ -617,6 +621,7 @@ pub fn start(id: &str, spec: Spec, prompt: &str) -> Result<(), String> {
         left_running: false,
         left: Vec::new(),
         ending_left: false,
+        promoting: false,
         observed: Observed::default(),
     };
     claim(&mut e);
@@ -1515,7 +1520,7 @@ pub fn send(id: &str, text: &str, from: Option<&str>) -> Result<bool, String> {
         if !e.held.is_empty() {
             return Err(format!("helper {id} is waiting on a question or permission: answer it with luna_answer"));
         }
-        if e.run.is_some() || e.ending_left {
+        if e.run.is_some() || e.ending_left || e.promoting {
             e.queue.push(Queued { from: from.map(str::to_owned), text: text.to_string() });
             note(e, &format!("queued: {}", one_line(text)));
             true
@@ -1577,7 +1582,7 @@ pub fn kill(id: &str) -> Vec<String> {
         e.left_running = !still.is_empty();
         e.left = leftovers(&e.left, still, crate::throttle::now_ms(), e.observed.turn_ended_ms);
         // What was sent meanwhile is the next turn's, as after any turn.
-        (e.run.is_none() && !e.queue.is_empty()).then(|| {
+        (e.run.is_none() && !e.promoting && !e.queue.is_empty()).then(|| {
             e.in_flight = std::mem::take(&mut e.queue);
             claim(e);
             joined(&e.in_flight)
@@ -1671,7 +1676,7 @@ pub fn interrupt(id: &str, text: &str, from: Option<&str>) -> Result<Interrupted
         let mut r = lock();
         let e = r.entries.get_mut(id).ok_or("no such helper")?;
         e.held.clear();
-        let free = e.run.is_none() && !e.ending_left;
+        let free = e.run.is_none() && !e.ending_left && !e.promoting;
         if free {
             claim(e);
         } else {
@@ -1967,21 +1972,24 @@ pub struct Row {
     /// what its Stop ends then.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub left_running: Vec<String>,
+    /// Being opened as a chat (`background_promote`).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub promoting: bool,
 }
 
 /// Every helper, for the window.
 #[tauri::command]
 pub fn background_helpers() -> Vec<Row> {
-    let ids: Vec<(String, Spec, u64, Option<u64>, Vec<String>)> = lock()
+    let ids: Vec<(String, Spec, u64, Option<u64>, Vec<String>, bool)> = lock()
         .entries
         .iter()
         .map(|(id, e)| {
             let left = if e.run.is_none() && e.left_running { e.left.iter().map(Leftover::label).collect() } else { Vec::new() };
-            (id.clone(), e.spec.clone(), e.started_ms, e.run.as_ref().map(|r| r.started_ms), left)
+            (id.clone(), e.spec.clone(), e.started_ms, e.run.as_ref().map(|r| r.started_ms), left, e.promoting)
         })
         .collect();
     ids.into_iter()
-        .map(|(id, spec, started_ms, turn_started_ms, left_running)| Row {
+        .map(|(id, spec, started_ms, turn_started_ms, left_running, promoting)| Row {
             parent: crate::agents::parent_of(&id),
             name: crate::agents::chat_name(&id).unwrap_or_default(),
             state: crate::agents::state_of(&id).0,
@@ -1994,6 +2002,7 @@ pub fn background_helpers() -> Vec<Row> {
             started_ms,
             turn_started_ms,
             left_running,
+            promoting,
             id,
         })
         .collect()
@@ -2050,14 +2059,17 @@ pub struct Promoted {
     pub tools: bool,
 }
 
-/// Hands a helper over to a chat row: from here on the window runs it, by
-/// resuming its conversation in a terminal like any chat's. Not while a turn
-/// runs — the conversation would be in two processes at once.
+/// Starts handing a helper over to a chat row, from which on the window runs
+/// it by resuming its conversation in a terminal like any chat's: what the row
+/// needs. Not while a turn runs — the conversation would be in two processes at
+/// once. The helper stays, with no turn starting, until the window says how the
+/// row came out (`background_promoted`): a row it could not make leaves the
+/// helper as it was, rather than neither.
 #[tauri::command]
-pub fn background_promote(id: String) -> Result<(), String> {
-    let e = {
+pub fn background_promote(id: String) -> Result<Promoted, String> {
+    let (spec, cwd, session) = {
         let mut r = lock();
-        let e = r.entries.get(&id).ok_or("no such helper")?;
+        let e = r.entries.get_mut(&id).ok_or("no such helper")?;
         if e.run.is_some() {
             return Err("it is in the middle of a turn; open it once the turn is over".into());
         }
@@ -2066,27 +2078,74 @@ pub fn background_promote(id: String) -> Result<(), String> {
         if e.left_running || e.ending_left {
             return Err("what its turns left is still running; stop it first, or open it once that is over".into());
         }
-        r.entries.remove(&id).ok_or("no such helper")?
+        // One opening at a time: a second would make a second row of the one id.
+        if e.promoting {
+            return Err("it is being opened as a chat already".into());
+        }
+        e.promoting = true;
+        (e.spec.clone(), e.cwd.clone(), e.session.clone())
     };
-    let worktree_path = e.cwd.clone().filter(|c| !crate::pty::same_dir(c, &e.spec.folder));
-    let promoted = Promoted {
-        provider: e.spec.provider,
-        account_path: e.spec.account_path.clone(),
-        folder: crate::worktree::project_of(&e.spec.folder).unwrap_or_else(|| e.spec.folder.clone()),
-        worktree_path: worktree_path.or_else(|| crate::worktree::project_of(&e.spec.folder).map(|_| e.spec.folder.clone())),
-        session_id: e.session.clone(),
+    changed();
+    let worktree_path = cwd.filter(|c| !crate::pty::same_dir(c, &spec.folder));
+    Ok(Promoted {
+        provider: spec.provider,
+        account_path: spec.account_path.clone(),
+        folder: crate::worktree::project_of(&spec.folder).unwrap_or_else(|| spec.folder.clone()),
+        worktree_path: worktree_path.or_else(|| crate::worktree::project_of(&spec.folder).map(|_| spec.folder.clone())),
+        session_id: session,
         parent: crate::agents::parent_of(&id),
         name: crate::agents::chat_name(&id),
         settings: crate::agents::settings_of(&id),
-        tools: e.spec.tools,
-        id: id.clone(),
+        tools: spec.tools,
+        id,
+    })
+}
+
+/// The window's word on a helper `background_promote` began handing over: its
+/// row made (`error` None), the helper goes, what was sent to it meanwhile with
+/// what never reached it; or the row could not be made, and it goes on as a
+/// helper, what was sent meanwhile its next turn. Also said by a window settling
+/// what one gone before it was opening, whose row it finds or not.
+#[tauri::command]
+pub fn background_promoted(id: String, error: Option<String>) -> Result<(), String> {
+    let Some(why) = error else {
+        // Gone already (deleted meanwhile): the row has its conversation.
+        let Some(mut e) = lock().entries.remove(&id) else { return Ok(()) };
+        let queued = std::mem::take(&mut e.queue);
+        e.undelivered.extend(queued);
+        crate::agents::undelivered_left(&id, &e.undelivered);
+        crate::agents::promoted(&id);
+        changed();
+        // Or a core killed now would take it up beside the chat it has become.
+        save();
+        return Ok(());
     };
-    crate::agents::undelivered_left(&id, &e.undelivered);
-    crate::agents::promoted(&id);
-    crate::emit::to_ui("agent://promote", promoted);
+    crate::log::warn("background", &format!("{} was not opened as a chat: {why}", crate::agents::label(&id)));
+    let next = {
+        let mut r = lock();
+        let Some(e) = r.entries.get_mut(&id) else { return Ok(()) };
+        e.promoting = false;
+        (e.run.is_none() && !e.ending_left && !e.queue.is_empty()).then(|| {
+            e.in_flight = std::mem::take(&mut e.queue);
+            claim(e);
+            joined(&e.in_flight)
+        })
+    };
+    match next {
+        Some(text) => {
+            save();
+            if run_turn(&id, &text).is_err() {
+                if let Some(e) = lock().entries.get_mut(&id) {
+                    e.in_flight.clear();
+                }
+            }
+        }
+        // A `resumeOnRestart` helper a restart left to go on, which the opening
+        // held back: it goes on now, if nothing else has taken it up.
+        None if crate::agents::resumes_on_restart(&id) => resume(&id),
+        None => {}
+    }
     changed();
-    // Or a core killed now would take it up beside the chat it has become.
-    save();
     Ok(())
 }
 
@@ -2299,7 +2358,8 @@ fn resume(id: &str) {
         // words of its first turn (a file from an older core): nothing to run.
         let unnamed = e.session.is_none();
         // Or a turn it was sent meanwhile has gone on already, and been told.
-        if e.run.is_some() || !e.cut_short || !e.resumable || (unnamed && e.undelivered.is_empty()) {
+        // Or it is being opened as a chat, which takes the conversation up.
+        if e.run.is_some() || e.promoting || !e.cut_short || !e.resumable || (unnamed && e.undelivered.is_empty()) {
             return;
         }
         claim(e);
@@ -2383,6 +2443,7 @@ fn taken_up(s: Saved) -> Entry {
         left_running: false,
         left: Vec::new(),
         ending_left: false,
+        promoting: false,
         observed: s.observed,
     };
     e.observed.settle_unreported();
@@ -2616,6 +2677,7 @@ pub fn test_helper(id: &str, account_path: &str, session: Option<&str>, busy: bo
         left_running: false,
         left: Vec::new(),
         ending_left: false,
+        promoting: false,
         observed: Observed::default(),
     };
     lock().entries.insert(id.to_string(), e);
@@ -3045,6 +3107,7 @@ mod tests {
             left_running: false,
             left: Vec::new(),
             ending_left: false,
+            promoting: false,
             observed: Observed::default(),
         }
     }
