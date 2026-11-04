@@ -568,6 +568,18 @@ pub fn as_made(folder: &str, path: &str) -> bool {
     status.is_some_and(|o| String::from_utf8_lossy(&o.stdout).lines().all(|l| l.is_empty() || l == LEFT_BY_CLAUDE))
 }
 
+/// Whether a worktree holds files git ignores, beside what Claude Code leaves in
+/// each it makes: what removing it takes without counting as work. None when git
+/// cannot say.
+pub fn ignored_in(path: &str) -> Option<bool> {
+    let out = git(path)
+        .args(["-c", "core.quotepath=off", "status", "--porcelain", "--ignored=matching", "--untracked-files=all"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
+    Some(String::from_utf8_lossy(&out.stdout).lines().any(|l| l.starts_with("!! ") && l != LEFT_BY_CLAUDE))
+}
+
 /// Whether any of these working folders is this worktree or inside it.
 pub fn someone_in(path: &str, cwds: &[String]) -> bool {
     let path = norm_in_use(path);
@@ -1121,9 +1133,11 @@ mod tests {
         assert!(ok(git(&wt).args(["add", "-A"])));
         assert!(ok(git(&wt).args(user).args(["commit", "-q", "-m", "w"])));
         assert!(ok(git(&wt).args(["branch", "kept"])));
+        assert_eq!(ignored_in(&wt), Some(false), "nothing ignored yet: a delete says nothing of it");
         std::fs::create_dir_all(Path::new(&wt).join("build")).unwrap();
         std::fs::write(Path::new(&wt).join("build").join("out.bin"), "x").unwrap();
         assert_eq!(unsaved_work(&repo, &wt), None, "build output would stop every delete");
+        assert_eq!(ignored_in(&wt), Some(true), "and goes with it, which a delete says");
         // Moved on in the submodule, with the repo's config asking not to see it.
         assert!(ok(git(&repo).args(["config", "diff.ignoreSubmodules", "all"])));
         assert!(ok(git(&sub).args(user).args(["commit", "-q", "--allow-empty", "-m", "s2"])));

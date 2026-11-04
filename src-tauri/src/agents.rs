@@ -419,7 +419,9 @@ struct SpawnUnderWay(u64);
 impl SpawnUnderWay {
     /// On disk before anything is made. `replaces`: the record of the spawn this
     /// asks for again, gone in the same hold, as two would start two after a restart.
-    fn begin(caller: &str, params: &SpawnParams, account_path: &str, in_worktree: Option<&str>, replaces: Option<u64>) -> SpawnUnderWay {
+    /// Refused past the cap, counted in that same hold (`under_cap`): two spawns at
+    /// once cannot both take the last place.
+    fn begin(caller: &str, params: &SpawnParams, account_path: &str, in_worktree: Option<&str>, replaces: Option<u64>) -> Result<SpawnUnderWay, String> {
         let worktrees_before = match (params.worktree, params.folder.as_deref()) {
             (Some(true), Some(folder)) => crate::worktree::made_for(folder, account_path),
             _ => Vec::new(),
@@ -444,6 +446,7 @@ impl SpawnUnderWay {
         };
         let request = {
             let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+            cap_room(&r, caller, replaces)?;
             let request = r.next_request;
             r.next_request += 1;
             if let Some(old) = replaces {
@@ -453,8 +456,49 @@ impl SpawnUnderWay {
             request
         };
         crate::background::save();
-        SpawnUnderWay(request)
+        Ok(SpawnUnderWay(request))
     }
+}
+
+/// The chat at the top of `id`'s lineage, whose sessions the cap counts.
+fn top_of(r: &Registry, id: &str) -> String {
+    let mut cur = id.to_string();
+    for _ in 0..16 {
+        match r.known.get(&cur).and_then(|k| k.parent.clone()) {
+            Some(p) => cur = p,
+            None => break,
+        }
+    }
+    cur
+}
+
+/// How many sessions count against the cap of `caller`'s top chat: all under it,
+/// every generation, and the spawns of any of them under way with no session yet,
+/// `except` aside (the one asked for again).
+fn under_cap(r: &Registry, caller: &str, except: Option<u64>) -> usize {
+    let top = top_of(r, caller);
+    let coming = r
+        .spawns
+        .values()
+        .filter(|s| s.helper.is_none() && !s.settled && Some(s.request) != except)
+        .filter(|s| s.caller == top || is_descendant(r, &top, &s.caller))
+        .count();
+    descendants(r, &top).len() + coming
+}
+
+/// Whether `caller` may spawn one more (MAX_DESCENDANTS).
+fn cap_room(r: &Registry, caller: &str, except: Option<u64>) -> Result<(), String> {
+    if under_cap(r, caller, except) < MAX_DESCENDANTS {
+        return Ok(());
+    }
+    Err(if top_of(r, caller) == caller {
+        format!("you already have {MAX_DESCENDANTS} sessions under you, spawns under way counted; delete some first")
+    } else {
+        format!(
+            "the chat at the top of your line already has {MAX_DESCENDANTS} sessions under it, yours and the other helpers' \
+             counted; delete some first"
+        )
+    })
 }
 
 impl Drop for SpawnUnderWay {
@@ -550,7 +594,7 @@ struct Registry {
     reserved: HashMap<(String, String), u32>,
     /// Answers handed over so far, by (caller, session), the latest being the
     /// only one a cancel may take back (see `hand_over`).
-    receipts: HashMap<(String, String), u64>,
+    receipts: HashMap<(String, String), Receipt>,
     /// Helpers spawned with `autoDelete`, by id.
     auto: HashMap<String, Auto>,
     /// Each account's usage as the window last showed it, by `provider/name`.
@@ -811,10 +855,41 @@ fn take_debt(r: &mut Registry, key: &(String, String), turns_ended: u32, job_deb
 /// done" leaves it. Off the lock, as this reads the transcript's length, and so
 /// behind a question asked meanwhile, whose debt covers that too.
 fn owed_on(key: (String, String), turns_ended: u32, goes_on: bool) {
-    if goes_on {
-        let cursor = transcript_end(&key.1);
-        reg().lock().unwrap_or_else(|e| e.into_inner()).owed.entry(key).or_insert_with(|| Owed::pending(turns_ended, cursor));
+    owed_on_for(key, turns_ended, goes_on, None);
+}
+
+/// `owed_on` by a hand-over of the debt of rev `taken`: the one put in is said
+/// to the receipt that stands for that debt in the same hold (`Receipt::put_in`),
+/// so a hand-over coming in next finds them tied. Returns the one put in, by
+/// `rev`: none when a question since stands there already.
+fn owed_on_for(key: (String, String), turns_ended: u32, goes_on: bool, taken: Option<u64>) -> Option<u64> {
+    if !goes_on {
+        return None;
     }
+    let cursor = transcript_end(&key.1);
+    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    let r = &mut *r;
+    let rev = match r.owed.entry(key.clone()) {
+        std::collections::hash_map::Entry::Vacant(v) => v.insert(Owed::pending(turns_ended, cursor)).rev,
+        std::collections::hash_map::Entry::Occupied(_) => return None,
+    };
+    if let Some(x) = r.receipts.get_mut(&key).filter(|x| taken.is_some() && x.stands_for.map(|(o, _)| o.rev) == taken) {
+        x.put_in = Some(rev);
+    }
+    Some(rev)
+}
+
+/// The latest answer handed over to a caller about a session (`hand_over`).
+#[derive(Default)]
+struct Receipt {
+    n: u64,
+    /// The debt it stands for, and since when: the one it took, or, taking none,
+    /// the one a response just before it took, which that response's cancel may
+    /// still come for (mcp.rs LATE_CANCEL) and find this one in its place.
+    stands_for: Option<(Owed, std::time::Instant)>,
+    /// The debt of "not done yet" a hand-over put in that one's place
+    /// (`owed_on`), by `rev`: what an undo takes back out.
+    put_in: Option<u64>,
 }
 
 /// `shown`, for a tool response the client may yet drop unread (a cancel
@@ -824,15 +899,25 @@ fn owed_on(key: (String, String), turns_ended: u32, goes_on: bool) {
 /// being dropped then owes nothing.
 fn hand_over(caller: &str, id: &str, turns_ended: u32, job_debt: Option<u64>) -> impl FnOnce() + Send + 'static {
     let key = (caller.to_string(), id.to_string());
-    let (owed, seen_before, receipt, goes_on) = {
+    let (taken, seen_before, receipt, goes_on) = {
         let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+        let (now, seen_before) = (r.owed.get(&key).copied(), r.seen.get(&key).copied());
         let receipt = r.receipts.entry(key.clone()).or_default();
-        *receipt += 1;
-        let receipt = *receipt;
-        let (owed, seen_before) = (r.owed.get(&key).copied(), r.seen.get(&key).copied());
-        (owed, seen_before, receipt, take_debt(&mut r, &key, turns_ended, job_debt))
+        receipt.n += 1;
+        // Two responses on one answer, both dropped: the earlier one's undo
+        // finds this one in its place and leaves the debt to it, so this one
+        // puts back what that one took — and not what that one put in its
+        // place, which is all this one finds.
+        let recent = receipt.stands_for.is_some_and(|(_, at)| at.elapsed() < crate::mcp::LATE_CANCEL);
+        let inherits = recent && now.is_none_or(|o| receipt.put_in == Some(o.rev));
+        if !inherits {
+            receipt.stands_for = now.map(|o| (o, std::time::Instant::now()));
+            receipt.put_in = None;
+        }
+        let (n, taken) = (receipt.n, receipt.stands_for.map(|(o, _)| o.rev));
+        (taken, seen_before, n, take_debt(&mut r, &key, turns_ended, job_debt))
     };
-    owed_on(key.clone(), turns_ended, goes_on);
+    owed_on_for(key.clone(), turns_ended, goes_on, taken);
     seen(caller, id, turns_ended);
     // What never reached it goes with this response alone: any later one no
     // longer finds it, so the receipt below says nothing of it.
@@ -843,11 +928,21 @@ fn hand_over(caller: &str, id: &str, turns_ended: u32, job_debt: Option<u64>) ->
         put_undelivered_back(&id, taken);
         crate::background::save();
         let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-        if r.receipts.get(&key) != Some(&receipt) {
+        // As the receipt has them now: a stand-in put in after this response
+        // came by is tied to it there (`owed_on_for`).
+        let Some((owed, put_in)) = r.receipts.get(&key).filter(|x| x.n == receipt).map(|x| (x.stands_for.map(|(o, _)| o), x.put_in)) else {
             return;
-        }
+        };
         if let Some(o) = owed {
-            r.owed.entry(key.clone()).and_modify(|now| now.cursor = now.cursor.min(o.cursor)).or_insert(o);
+            match r.owed.get_mut(&key) {
+                // What was put in the place of the debt it stands for
+                // (`owed_on`) goes, and that debt is back as it was.
+                Some(now) if Some(now.rev) == put_in => *now = o,
+                Some(now) => now.cursor = now.cursor.min(o.cursor),
+                None => {
+                    r.owed.insert(key.clone(), o);
+                }
+            }
         }
         if r.seen.get(&key) == Some(&turns_ended) {
             match seen_before {
@@ -2666,9 +2761,8 @@ fn spawn_with(caller: &str, mut params: SpawnParams, replaces: Option<u64>, stil
         let me = {
             let r = reg().lock().unwrap_or_else(|e| e.into_inner());
             let me = r.known.get(caller).cloned().ok_or("caller is not a registered session")?;
-            if descendants(&r, caller).len() >= MAX_DESCENDANTS {
-                return Err(format!("you already have {MAX_DESCENDANTS} sessions; delete some first"));
-            }
+            // Early, before folders and logins are read; `begin` counts again.
+            cap_room(&r, caller, replaces)?;
             if params.tools.unwrap_or(false) && depth_of(&r, caller) >= MAX_TOOL_DEPTH {
                 return Err("a session this deep cannot spawn sessions with tools of their own".into());
             }
@@ -2747,7 +2841,7 @@ fn spawn_with(caller: &str, mut params: SpawnParams, replaces: Option<u64>, stil
         };
         params.account = Some(AccountAsk::One(account.name.clone()));
         let account_choice = picked.map(|(_, choice)| choice);
-        let taken = SpawnUnderWay::begin(caller, &params, &account.path, in_worktree.as_deref(), replaces);
+        let taken = SpawnUnderWay::begin(caller, &params, &account.path, in_worktree.as_deref(), replaces)?;
         if !params.visible.unwrap_or(false) {
             return spawn_background(caller, params, account.path, in_worktree, taken.0).map(|s| Spawned { account_choice, ..s });
         }
@@ -5265,8 +5359,10 @@ pub struct Removed {
 const IGNORED_GO: &str = "files git ignores went with it";
 
 impl Removed {
-    fn of(worktree_removed: Option<String>) -> Removed {
-        let note = worktree_removed.is_some().then_some(IGNORED_GO);
+    /// `ignored`: whether the worktree held files git ignores, as looked at
+    /// before it went (`worktree::ignored_in`); not known, the note is said.
+    fn of(worktree_removed: Option<String>, ignored: Option<bool>) -> Removed {
+        let note = (worktree_removed.is_some() && ignored != Some(false)).then_some(IGNORED_GO);
         Removed { ok: true, worktree_removed, worktree_left: None, worktree_error: None, note }
     }
 
@@ -5304,23 +5400,32 @@ fn remove(id: &str, known: Known, drop_worktree: bool, worktree: Option<String>)
             // session or helper is in stays, its work with it.
             Some(wt) if drop_worktree && pty.worktree_shared(id, &wt) => {
                 crate::log::warn("delete", &format!("kept worktree {wt}: another session is in it"));
-                Removed::of(None)
+                Removed::of(None, None)
             }
-            Some(wt) if drop_worktree => match crate::worktree::remove_worktree_now(folder, wt.clone()) {
-                Ok(()) => Removed::of(Some(wt)),
-                Err(why) => Removed::left(Some(wt), why),
-            },
-            _ => Removed::of(None),
+            Some(wt) if drop_worktree => {
+                let ignored = crate::worktree::ignored_in(&wt);
+                match crate::worktree::remove_worktree_now(folder, wt.clone()) {
+                    Ok(()) => Removed::of(Some(wt), ignored),
+                    Err(why) => Removed::left(Some(wt), why),
+                }
+            }
+            _ => Removed::of(None, None),
         });
     }
     // Asked before it goes: its process is what says where it works.
     let at_stake = if drop_worktree { worktree.clone().or_else(|| worktree_to_drop(id, &folder)) } else { None };
+    let ignored = at_stake.as_deref().and_then(crate::worktree::ignored_in);
     // PtyManager::delete forgets the session here too (see `forget`).
     let deleted = tauri::async_runtime::block_on(pty.delete(id, &folder, worktree, drop_worktree));
     crate::emit::to_ui("agent://deleted", Deleted { id: id.to_string() });
     Ok(match deleted {
-        // Without the drop, `delete` names the worktree that stays.
-        Ok(worktree) => Removed::of(worktree.filter(|_| drop_worktree)),
+        // Without the drop, `delete` names the worktree that stays; what was
+        // looked at is of the worktree that went only if that is the one.
+        Ok(worktree) => {
+            let gone = worktree.filter(|_| drop_worktree);
+            let ignored = ignored.filter(|_| gone.as_deref().zip(at_stake.as_deref()).is_some_and(|(g, a)| crate::pty::same_dir(g, a)));
+            Removed::of(gone, ignored)
+        }
         Err(why) => Removed::left(at_stake, why),
     })
 }
@@ -6993,6 +7098,20 @@ fn deliver_notice(
     } else {
         (type_text(pty, caller, text, before.map(|t| t.turn), baseline), baseline + 1)
     };
+    // Typed and no turn begun, with text still in the composer: its Enter went
+    // astray, and it never reached the model. What it told of stays owed, as it
+    // is for text held back, and the text stands as a draft: the next notice
+    // waits on it as on a person's, and its reader may send it themselves.
+    // Where the composer will not read, a turn begun late cannot be told from
+    // text a dialog took: settled, as ever.
+    let stuck = matches!(typed, Ok(Some(false))) && pty.composer(caller).is_some_and(|c| !c.text.trim().is_empty());
+    let typed = if stuck {
+        crate::log::warn("agents", &format!("notice to {} sits in its composer, no turn begun: kept as a draft, still owed", label(caller)));
+        pty.set_draft(caller, text.chars().count() as u64);
+        Ok(None)
+    } else {
+        typed
+    };
     let about = settled
         .iter()
         .map(|(id, _, _)| label(id))
@@ -7486,6 +7605,31 @@ mod tests {
         read();
         forget("hr-parent");
         forget("hr-child");
+    }
+
+    /// Two responses on one answer, both dropped, in either order: the earlier
+    /// one's undo leaves the debt to the later, which puts back what the earlier
+    /// took, so the answer is still owed.
+    #[test]
+    fn two_responses_dropped_leave_the_answer_owed() {
+        for (pair, earlier_first) in [("hd-a", true), ("hd-b", false)] {
+            let (caller, child) = (format!("{pair}-parent"), format!("{pair}-child"));
+            let key = (caller.clone(), child.clone());
+            owe_from(&caller, &child, 1, 40);
+            let earlier = hand_over(&caller, &child, 2, None);
+            let later = hand_over(&caller, &child, 2, None);
+            if earlier_first {
+                earlier();
+                later();
+            } else {
+                later();
+                earlier();
+            }
+            assert_eq!(reg().lock().unwrap().owed.get(&key).map(|o| (o.baseline, o.cursor)), Some((1, 40)), "neither reached it");
+            reg().lock().unwrap().owed.remove(&key);
+            forget(&caller);
+            forget(&child);
+        }
     }
 
     #[test]
@@ -8577,6 +8721,37 @@ mod tests {
         }
     }
 
+    /// A hand-over that found its session waiting on its own helpers put a debt
+    /// of "not done yet" in place of the one it took: dropped, the one it took is
+    /// back as it was, not that one with its cursor moved.
+    #[test]
+    fn a_hand_over_undone_puts_back_the_debt_it_took_not_the_one_it_owed_on() {
+        let none = serde_json::json!({});
+        register("uo-top", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, none.clone());
+        register("uo-mid", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("uo-top"), true, none.clone());
+        register("uo-low", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("uo-mid"), false, none);
+        let key = ("uo-top".to_string(), "uo-mid".to_string());
+        owe_from("uo-mid", "uo-low", 0, 0);
+        owe_from("uo-top", "uo-mid", 0, 30);
+        let asked = reg().lock().unwrap().owed.get(&key).copied().unwrap();
+        let undo = hand_over("uo-top", "uo-mid", 1, None);
+        let put_in = reg().lock().unwrap().owed.get(&key).copied().unwrap();
+        assert!(put_in.told_pending && put_in.rev != asked.rev, "owed on, as its helper has yet to answer it");
+        undo();
+        let back = reg().lock().unwrap().owed.get(&key).copied().unwrap();
+        assert_eq!((back.rev, back.baseline, back.cursor, back.told_pending), (asked.rev, 0, 30, false));
+        // Two on it, both dropped: the later found only what the earlier put in.
+        let earlier = hand_over("uo-top", "uo-mid", 1, None);
+        let later = hand_over("uo-top", "uo-mid", 1, None);
+        earlier();
+        later();
+        let back = reg().lock().unwrap().owed.get(&key).copied().unwrap();
+        assert_eq!((back.rev, back.baseline, back.cursor, back.told_pending), (asked.rev, 0, 30, false), "the one asked, as it was");
+        for id in ["uo-low", "uo-mid", "uo-top"] {
+            forget(id);
+        }
+    }
+
     /// A helper announced as not done, its job over, with a transcript on disk
     /// holding what `said` past `cursor`, the debt `caller` is owed.
     fn job_over_helper(id: &str, caller: &str, said: &str) -> (Known, Owed, std::path::PathBuf) {
@@ -9462,7 +9637,7 @@ mod tests {
     fn a_spawn_is_on_disk_for_as_long_as_it_is_under_way() {
         let params: SpawnParams = serde_json::from_value(serde_json::json!({ "prompt": "go", "visible": true, "resumeOnRestart": true, "autoDelete": true })).unwrap();
         let saved = |request: u64| chats_now().spawns.into_iter().find(|s| s.request == request);
-        let under_way = SpawnUnderWay::begin("uw-caller", &params, "C:\\acc\\anthropic\\one", Some("C:\\p\\wt"), None);
+        let under_way = SpawnUnderWay::begin("uw-caller", &params, "C:\\acc\\anthropic\\one", Some("C:\\p\\wt"), None).unwrap();
         let request = under_way.0;
         let s = saved(request).unwrap();
         assert_eq!((s.caller.as_str(), s.params.prompt.as_str(), s.in_worktree.as_deref()), ("uw-caller", "go", Some("C:\\p\\wt")));
@@ -9520,11 +9695,42 @@ mod tests {
         reg().lock().unwrap().spawns.retain(|request, _| !(9_000_500..9_000_600).contains(request));
     }
 
+    /// The cap is the top chat's, every generation and every spawn under way
+    /// counted, in the hold that records a spawn.
+    #[test]
+    fn the_cap_counts_all_under_the_top_chat_and_the_spawns_under_way() {
+        let one = |id: &str, parent: Option<&str>| {
+            register(id, Provider::Claude, "C:\\no\\such\\folder", "C:\\no\\such\\account", parent, false, serde_json::json!({}));
+        };
+        let ids: Vec<String> = std::iter::once("cap-tools".to_string()).chain((0..6).map(|i| format!("cap-kid-{i}"))).collect();
+        one("cap-top", None);
+        for id in &ids {
+            one(id, Some("cap-top"));
+        }
+        let room = |caller: &str, except: Option<u64>| cap_room(&reg().lock().unwrap(), caller, except).is_ok();
+        assert!(room("cap-top", None) && room("cap-tools", None), "seven under it");
+        // A helper's own helper takes the last place, whoever asks next.
+        one("cap-grandkid", Some("cap-tools"));
+        assert!(!room("cap-top", None));
+        assert!(!room("cap-tools", None), "its helpers count against the top chat");
+        forget("cap-grandkid");
+        // A spawn under way holds its place until it has a session.
+        let params: SpawnParams = serde_json::from_value(serde_json::json!({ "prompt": "go" })).unwrap();
+        let taken = SpawnUnderWay::begin("cap-tools", &params, "C:\\no\\such\\account", None, None).unwrap();
+        assert!(SpawnUnderWay::begin("cap-top", &params, "C:\\no\\such\\account", None, None).is_err(), "the last place is taken");
+        assert!(room("cap-top", Some(taken.0)), "asked for again, it stands in for itself");
+        drop(taken);
+        assert!(room("cap-top", None), "gone with its call");
+        for id in ids.iter().map(String::as_str).chain(["cap-top"]) {
+            forget(id);
+        }
+    }
+
     #[test]
     fn a_spawn_keeps_what_was_asked_with_or_without_the_flag_and_a_background_helper_its_own_way() {
         let spawned = |ask: serde_json::Value, id: &str| {
             let params: SpawnParams = serde_json::from_value(ask).unwrap();
-            let taken = SpawnUnderWay::begin("ka-caller", &params, "C:\\no\\such\\account", None, None);
+            let taken = SpawnUnderWay::begin("ka-caller", &params, "C:\\no\\such\\account", None, None).unwrap();
             register(id, Provider::Codex, "C:\\no\\such\\folder", "C:\\no\\such\\account", Some("ka-caller"), false, serde_json::json!({}));
             spawn_is(taken.0, id).unwrap();
             let r = reg().lock().unwrap();
