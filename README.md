@@ -340,7 +340,8 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   hooks' listener, the agents' MCP server, activity and power run there too, so an agent's
   `luna_wait` keeps working with no window open. Settings → Versions shows the core and can
   restart it; it leaves by itself once it has had no window and no session (a background
-  helper in a turn counts as one) for ten minutes.
+  helper in a turn counts as one, and so does one whose turns left work running, for as
+  long as that work keeps the PC awake) for ten minutes.
   If the core itself stops, the sessions in it end: a banner over the board says so, and
   Restart the core brings the chats back from their transcripts. It is never restarted
   behind your back. Background helpers outlive the core too: each is kept in

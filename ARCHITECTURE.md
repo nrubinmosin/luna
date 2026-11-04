@@ -204,7 +204,8 @@ src-tauri/src/
   watchdog.rs   a window whose page stopped responding (WebView2 died) is rebuilt
   coreproc.rs   the core: the same exe with `--core`, no window; one per data dir (core.lock), listens on
                 127.0.0.1 with a token from <data>/core/core.json, exits by itself after 10 minutes with no
-                window and no sessions (a background helper in a turn is one, in the welcome's count too);
+                window and no sessions (a background helper in a turn is one, and one whose turns left
+                work that still holds the PC, `background::running`; in the welcome's count too);
                 leaving, it stops every helper's turn with its process tree (`background::stop_all`); on Windows it runs from a copy of the exe <data>/core/<fingerprint>/,
                 so the installer can replace luna.exe. pty, hub, agents/mcp, activity and power
                 live here; events go to all windows through a per-window queue (a window that falls

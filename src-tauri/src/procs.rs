@@ -30,7 +30,8 @@
 mod imp {
     use windows::Win32::Foundation::{CloseHandle, ERROR_ACCESS_DENIED, FILETIME, HANDLE};
     use windows::Win32::System::Diagnostics::ToolHelp::{
-        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, Thread32First, Thread32Next, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS, TH32CS_SNAPTHREAD, THREADENTRY32,
     };
     use windows::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicProcessIdList, JobObjectExtendedLimitInformation,
@@ -38,8 +39,9 @@ mod imp {
         JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
     use windows::Win32::System::Threading::{
-        GetExitCodeProcess, GetProcessIoCounters, GetProcessTimes, OpenProcess, TerminateProcess, IO_COUNTERS,
-        PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
+        GetExitCodeProcess, GetProcessIoCounters, GetProcessTimes, OpenProcess, OpenThread, ResumeThread,
+        TerminateProcess, IO_COUNTERS, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
+        THREAD_SUSPEND_RESUME,
     };
     use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, GetWindowThreadProcessId, IsWindowVisible};
 
@@ -174,6 +176,57 @@ mod imp {
             let _ = CloseHandle(proc_);
             assigned.is_ok()
         }
+    }
+
+    /// Lets a process created suspended run, once it is in its job: nothing it
+    /// starts can be born outside. Created so, it has the one thread.
+    pub fn resume(pid: u32) -> bool {
+        let mut resumed = false;
+        // SAFETY: a snapshot and thread handles opened and closed here; the
+        // entry is a plain stack struct of the size it says.
+        unsafe {
+            let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) else { return false };
+            let mut t = THREADENTRY32 { dwSize: std::mem::size_of::<THREADENTRY32>() as u32, ..Default::default() };
+            if Thread32First(snap, &mut t).is_ok() {
+                loop {
+                    if t.th32OwnerProcessID == pid {
+                        if let Ok(h) = OpenThread(THREAD_SUSPEND_RESUME, false, t.th32ThreadID) {
+                            resumed |= ResumeThread(h) != u32::MAX;
+                            let _ = CloseHandle(h);
+                        }
+                    }
+                    if Thread32Next(snap, &mut t).is_err() {
+                        break;
+                    }
+                }
+            }
+            let _ = CloseHandle(snap);
+        }
+        resumed
+    }
+
+    /// A process held open: its pid is not given to another process while
+    /// this lives, however soon the process itself ends.
+    pub struct Pin(Option<HANDLE>);
+    // A process handle is a kernel object; any thread may close it.
+    unsafe impl Send for Pin {}
+
+    impl Drop for Pin {
+        fn drop(&mut self) {
+            if let Some(h) = self.0.take() {
+                // SAFETY: opened by `pin` and closed once.
+                unsafe {
+                    let _ = CloseHandle(h);
+                }
+            }
+        }
+    }
+
+    /// Pins `pid` while it is still known to be the process meant: taken where
+    /// something else holds it open (a turn's `Child`), it stays that one's after.
+    pub fn pin(pid: u32) -> Pin {
+        // SAFETY: a handle owned by the `Pin`, closed when it drops.
+        Pin(unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }.ok())
     }
 
     /// Ends one process, if it is still the one created at `started_ms`: a
@@ -397,6 +450,14 @@ mod imp {
 mod imp {
     pub use crate::keeper::{adopt, also_marked, await_environment, end_last_ties, from_args as keeper_from_args, join, let_go, tie, Job};
 
+    /// Nothing holds a pid here: the CLI is reaped as it ends, and what kills by
+    /// pid looks again before it does (keeper.rs `end_tree`).
+    pub struct Pin;
+
+    pub fn pin(_pid: u32) -> Pin {
+        Pin
+    }
+
     pub fn end(_pid: u32, _started_ms: u64) -> bool {
         false
     }
@@ -428,7 +489,9 @@ mod imp {
     }
 }
 
-pub use imp::{adopt, alive, also_marked, await_environment, end_last_ties, join, keeper_from_args, let_go, tie, Job};
+pub use imp::{adopt, alive, also_marked, await_environment, end_last_ties, join, keeper_from_args, let_go, pin, tie, Job, Pin};
+#[cfg(windows)]
+pub use imp::resume;
 
 /// When a process was created, epoch ms, where the platform says.
 pub fn created_ms(pid: u32) -> Option<u64> {
@@ -846,6 +909,26 @@ mod tests {
         assert!(!ended_within(&mut c, 500));
         let _ = c.kill();
         let _ = c.wait();
+    }
+
+    /// A helper's CLI is made suspended and let run once in its job.
+    #[cfg(windows)]
+    #[test]
+    fn a_process_made_suspended_runs_once_resumed() {
+        use std::os::windows::process::CommandExt;
+        let c = std::process::Command::new("cmd")
+            .args(["/c", "exit", "0"])
+            .creation_flags(0x0800_0000 | 0x0000_0004) // CREATE_NO_WINDOW | CREATE_SUSPENDED
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut kids = testkit::Kids(vec![c]);
+        let c = &mut kids.0[0];
+        assert!(!testkit::ended_within(c, 500), "suspended, it does not run");
+        let job = testkit::job_of(c);
+        assert!(resume(c.id()));
+        assert!(testkit::ended_within(c, 5000), "resumed, it runs to its end");
+        drop(job);
     }
 
     fn p(pid: u32, cpu_ms: u64, io_bytes: u64, started_ms: u64) -> ProcRead {
