@@ -205,7 +205,8 @@ src-tauri/src/
                 leaving, it stops every helper's turn with its process tree (`background::stop_all`); on Windows it runs from a copy of the exe <data>/core/<fingerprint>/,
                 so the installer can replace luna.exe. pty, hub, agents/mcp, activity and power
                 live here; events go to all windows through a per-window queue (a window that falls
-                behind is disconnected, the pty does not wait for it)
+                behind is disconnected, the pty does not wait for it, and the window goes back to the
+                core at once, its panes reattached from the scrollback: corelink.rs `rejoin`)
   corecmd.rs    commands the core answers: the page calls them as before, the window forwards
                 (core_call / core_send for input), here they map by name onto the same functions
   corelink.rs   the window side: find the core of its own build or start it, hello, hold the connection
@@ -455,10 +456,11 @@ src-tauri/src/
   `luna.log` takes INFO too (log.rs): events only — session start/exit/delete, helper turns, one line per
   MCP call with its steering arguments and outcome but never its text, notices — each session named by id
   and chat name (`agents::label`), so a night can be read back after its sessions are deleted.
-  A child born of a turn holds for as long as it lives, with no limit: a `tail -f` left behind and a
-  `sleep 64000` before a check due tomorrow look the same from outside, and a PC let sleep or shut
-  down on a guess stops work that only a person can start again; no clock runs from the end of a
-  turn. The hold itself is logged both ways: `awake hold set: <who>` and `awake hold
+  A child born of a turn holds for as long as it is at work, and once idle for 2 h on end
+  (`LEFTOVER_HOLD_MS`) no longer: a `tail -f` left behind and a `sleep 64000` before a check due
+  tomorrow look the same from outside, and a PC let sleep or shut down on a guess stops work that only
+  a person can start again, so the clock runs from when it last did anything, not from the end of
+  the turn. The hold itself is logged both ways: `awake hold set: <who>` and `awake hold
   let go: … last held by <who>`. The request does not restart Windows'
   idle timer: once nobody has touched the PC for longer than its sleep timeout, it sleeps the moment
   the hold is let go, so that line is the time of the sleep.
@@ -1021,7 +1023,14 @@ src-tauri/src/
   `<slug>:<name>`. The slug is the folder's name in `[a-z0-9-]`, no dots: Codex splits a
   `-c` key at each. `session_args` maps a session's folder (a worktree through
   `worktree::root_of` to its project) onto the folders it lies in, at every start: a resume
-  or helper turn without them keeps the skills named in its history, unanswerable. A skill
+  or helper turn without them keeps the skills named in its history, unanswerable. Each start
+  lays the library out first (`lay_out`), so a skill another program changed on disk reaches
+  the next session; the code that starts one calls it before taking any lock of its own (a
+  background turn's registry lock would hold every helper's events up for the pass). The
+  window's and the core's passes share a lock file beside the ledger, and the window's library
+  commands run off its main thread (`command(async)`) to wait on it. A pass goes only by
+  settings as the file has them now (`settings::get_checked`): on the defaults of a process
+  that could not read them it would take every copy out. A skill
   reaches a folder's sessions on every account but those that have it as a whole (twice
   over, Claude Code would list the second scoped to Luna's folder), or — `foldersOnly` — only
   on the accounts of its reach, and then into none as a whole. A Claude Code copy whose name

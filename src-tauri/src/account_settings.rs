@@ -510,11 +510,25 @@ pub fn write_account_config(provider: Provider, account_path: String, text: Stri
 /// onto every account. A parent without one has nothing to copy.
 fn parent_text(provider: Provider, parent: &str) -> Result<String, String> {
     let path = config_file(provider, parent)?;
-    let text = match std::fs::read_to_string(&path) {
-        Ok(t) => t,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(format!("{} does not exist", path.display())),
-        Err(e) => return Err(format!("{}: {e}", path.display())),
+    let read = || match std::fs::read_to_string(&path) {
+        Ok(t) => Ok(t),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(format!("{} does not exist", path.display())),
+        Err(e) => Err(format!("{}: {e}", path.display())),
     };
+    // A blank file is TOML all the same, and an editor saving one empties it
+    // first: looked at again, and one still blank is not spread onto every
+    // account as their settings.
+    let mut text = read()?;
+    for _ in 0..2 {
+        if !text.trim().is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        text = read()?;
+    }
+    if text.trim().is_empty() {
+        return Err(format!("{} is empty: nothing to copy from it", path.display()));
+    }
     check_config(provider, &text).map_err(|e| format!("{}: {e}", path.display()))?;
     Ok(text)
 }
@@ -837,6 +851,11 @@ a=\"x\"
         std::fs::write(parent.join("settings.json"), "{ not json").unwrap();
         assert!(sync_one(Provider::Claude, &p, &c).is_err());
         assert_eq!(std::fs::read_to_string(child.join("settings.json")).unwrap(), "{\"model\":\"opus\"}");
+        // A blank config.toml parses, as an editor's save leaves it for a moment.
+        std::fs::write(child.join("config.toml"), "model = \"x\"\n").unwrap();
+        std::fs::write(parent.join("config.toml"), "\n").unwrap();
+        assert!(sync_one(Provider::Codex, &p, &c).is_err());
+        assert_eq!(std::fs::read_to_string(child.join("config.toml")).unwrap(), "model = \"x\"\n");
         let _ = std::fs::remove_dir_all(&parent);
         let _ = std::fs::remove_dir_all(&child);
     }

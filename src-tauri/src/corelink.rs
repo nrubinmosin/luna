@@ -50,6 +50,10 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(10);
 /// core as `ui` and every event would reach the page twice. `connect` lets go
 /// of it once the new link is set up.
 static RESTARTING: AtomicBool = AtomicBool::new(false);
+/// Held while a connection is made the current one or let go: a way back to
+/// a core that let the window go (`rejoin`) checks there that no restart has
+/// begun since, and a restart's own link waits for it to be done.
+static TAKING: Mutex<()> = Mutex::new(());
 
 fn link() -> &'static Mutex<LinkState> {
     static L: std::sync::OnceLock<Mutex<LinkState>> = std::sync::OnceLock::new();
@@ -75,14 +79,46 @@ fn connect() {
     RESTARTING.store(false, Ordering::SeqCst);
     match attached {
         Ok(Attached::Ours(stream, core)) => {
-            let Ok(writer) = stream.try_clone() else {
-                set(LinkState { state: "down", core: None, error: Some("cannot use the connection".into()) });
-                return;
-            };
-            let conn = Arc::new(Conn { writer: Mutex::new(writer), pending: Mutex::new(Some(HashMap::new())) });
-            *CURRENT.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::clone(&conn));
-            set(LinkState { state: "up", core: Some(core), error: None });
-            hold(stream, conn, generation);
+            let (mut link, mut rejoined) = (Some((stream, core)), false);
+            while let Some((stream, core)) = link.take() {
+                let Ok(writer) = stream.try_clone() else {
+                    set(LinkState { state: "down", core: None, error: Some("cannot use the connection".into()) });
+                    return;
+                };
+                let conn = Arc::new(Conn { writer: Mutex::new(writer), pending: Mutex::new(Some(HashMap::new())) });
+                // A restart has taken over from here, or is stopping this core
+                // to start the next: no core for this connection to stand for.
+                // Looked at under the lock every taking of the line holds, so a
+                // way back that took its time cannot land over a restart's.
+                {
+                    let _taking = TAKING.lock().unwrap_or_else(|e| e.into_inner());
+                    if GENERATION.load(Ordering::SeqCst) != generation || (rejoined && RESTARTING.load(Ordering::SeqCst)) {
+                        return;
+                    }
+                    if rejoined {
+                        // The panes start over, as after any core's start.
+                        set(LinkState { state: "starting", ..Default::default() });
+                    }
+                    *CURRENT.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::clone(&conn));
+                    set(LinkState { state: "up", core: Some(core), error: None });
+                }
+                hold(stream, conn);
+                {
+                    let _taking = TAKING.lock().unwrap_or_else(|e| e.into_inner());
+                    if GENERATION.load(Ordering::SeqCst) != generation || RESTARTING.load(Ordering::SeqCst) {
+                        return;
+                    }
+                    *CURRENT.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                }
+                link = rejoin();
+                rejoined = true;
+            }
+            // Not over a restart that began while the way back was tried.
+            let _taking = TAKING.lock().unwrap_or_else(|e| e.into_inner());
+            if GENERATION.load(Ordering::SeqCst) == generation && !RESTARTING.load(Ordering::SeqCst) {
+                crate::log::warn("core", "the core went away");
+                set(LinkState { state: "down", core: None, error: None });
+            }
         }
         Ok(Attached::Foreign(core)) => {
             crate::log::warn(
@@ -101,9 +137,26 @@ fn connect() {
     }
 }
 
-/// Reads the core's frames until its end of the connection closes, which is
-/// the core gone: nothing else closes it while the window lives.
-fn hold(mut stream: TcpStream, conn: Arc<Conn>, generation: u64) {
+/// A core that let this window go is still there to go back to: it does that
+/// to a window that fell behind on the output (coreproc.rs `broadcast`), while
+/// its sessions run on. Only to a core of this build that answers; one that is
+/// gone stays gone until the user restarts it (CoreBanner), never behind their
+/// back. Going back, the window says it is starting, so its panes start over
+/// and each reattaches from the scrollback (core.store.ts).
+fn rejoin() -> Option<(TcpStream, Welcome)> {
+    let found = discover().filter(Discovery::running)?;
+    match hello(&found, "ui") {
+        Ok((stream, core)) if core.fingerprint == env!("LUNA_CORE_FP") => {
+            crate::log::warn("core", "the core let this window go and is still running; going back to it");
+            Some((stream, core))
+        }
+        _ => None,
+    }
+}
+
+/// Reads the core's frames until its end of the connection closes: the core
+/// gone, or one that let this window go (`rejoin`).
+fn hold(mut stream: TcpStream, conn: Arc<Conn>) {
     while let Ok((kind, payload)) = ipc::read_frame(&mut stream) {
         match kind {
             ipc::EVENT => {
@@ -130,11 +183,6 @@ fn hold(mut stream: TcpStream, conn: Arc<Conn>, generation: u64) {
     let waiting = conn.pending.lock().unwrap_or_else(|e| e.into_inner()).take();
     for (_, tx) in waiting.into_iter().flatten() {
         let _ = tx.send(Err("the core stopped".into()));
-    }
-    if GENERATION.load(Ordering::SeqCst) == generation {
-        *CURRENT.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        crate::log::warn("core", "the core went away");
-        set(LinkState { state: "down", core: None, error: None });
     }
 }
 
@@ -318,9 +366,12 @@ fn core_exe() -> Result<std::path::PathBuf, String> {
 /// Returns once it is gone.
 pub fn shut_down() {
     // The connection in use is about to end on purpose: not news for the log
-    // or the page.
-    GENERATION.fetch_add(1, Ordering::SeqCst);
-    *CURRENT.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    // or the page, and not one for a way back (`rejoin`) to make current again.
+    {
+        let _taking = TAKING.lock().unwrap_or_else(|e| e.into_inner());
+        GENERATION.fetch_add(1, Ordering::SeqCst);
+        *CURRENT.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
     if let Some(found) = discover().filter(Discovery::running) {
         if let Ok((stream, _)) = hello(&found, "ctl") {
             stop(stream, found.pid);

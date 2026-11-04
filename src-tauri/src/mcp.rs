@@ -286,7 +286,7 @@ fn tools() -> Value {
         },
         {
             "name": "luna_wait",
-            "description": "Block until a Luna session (not yours; no task id, not a timer) ends a turn (reply: all it said since you asked; failed: its error), stops on a question or permission, or exits. Timeout, waiting and no reply come with the screen. `afterTurn`: wait for a turn past this turnsEnded (default: the last you were shown). `ids`: several, `mode` any (default) or all, no afterTurn. Or end your turn: a notice brings the answer.",
+            "description": "Block until a Luna session (not yours; no task id, not a timer) ends a turn (reply: all it said since you asked; failed: its error), stops on a question or permission, or exits. Timeout, waiting and no reply come with the screen. `afterTurn`: wait for a turn past this turnsEnded (default: the answer you are owed, else the last you were shown). `ids`: several, `mode` any (default) or all, no afterTurn. Or end your turn: a notice brings the answer.",
             "inputSchema": s(json!({
                 "id": { "type": "string" },
                 "ids": { "type": "array", "items": { "type": "string" } },

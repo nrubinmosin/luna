@@ -13,7 +13,7 @@ function atStake(w: WorktreeInfoDto): string | null {
   if (w.broken) return 'not a git checkout any more — its contents could not be checked';
   const parts: string[] = [];
   if (w.uncommitted) parts.push(`${w.uncommitted} uncommitted file${w.uncommitted > 1 ? 's' : ''}`);
-  if (w.uniqueCommits) parts.push(`${w.uniqueCommits} commit${w.uniqueCommits > 1 ? 's' : ''} on no other branch`);
+  if (w.uniqueCommits) parts.push(`${w.uniqueCommits} commit${w.uniqueCommits > 1 ? 's' : ''} on no branch that stays`);
   if (w.uniqueCommits == null) parts.push('commits could not be checked');
   return parts.length ? parts.join(', ') : null;
 }

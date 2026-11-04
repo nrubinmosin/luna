@@ -23,10 +23,10 @@ use super::config;
 use toml_edit::{Item, Table};
 
 /// Codex compares project keys case-insensitively on Windows and tries both
-/// spellings of the separator; the same leniency here.
+/// spellings of the separator; the same leniency here, and only there:
+/// elsewhere `/projects/App` and `/projects/app` are two folders.
 fn same_project(a: &str, b: &str) -> bool {
-    let n = |s: &str| s.replace('/', "\\").trim_end_matches('\\').to_lowercase();
-    n(a) == n(b)
+    crate::paths::path_key(a) == crate::paths::path_key(b)
 }
 
 fn native(folder: &str) -> String {
@@ -198,7 +198,8 @@ mod tests {
         assert!(!codex_folder_trusted(acc.clone(), r"E:\Projects\App".into()).unwrap());
         codex_trust_folder(acc.clone(), r"E:\Projects\App".into()).unwrap();
         assert!(codex_folder_trusted(acc.clone(), r"E:\Projects\App".into()).unwrap());
-        // Other spellings of the same folder count too.
+        // Other spellings of the same folder count too, where they are one.
+        #[cfg(windows)]
         assert!(codex_folder_trusted(acc.clone(), "e:/projects/app/".into()).unwrap());
 
         let text = std::fs::read_to_string(root.join("config.toml")).unwrap();
@@ -212,6 +213,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// Under the other separator, which is the same folder on Windows only.
+    #[cfg(windows)]
     #[test]
     fn upgrades_an_untrusted_entry_in_place() {
         let root = temp("up");
@@ -232,6 +235,14 @@ mod tests {
     fn dotted_form_is_recognised() {
         let doc: toml_edit::DocumentMut =
             "[projects]\n\"E:\\\\Projects\\\\App\" = { trust_level = \"trusted\" }\n".parse().unwrap();
-        assert!(trusted_in(&doc, r"e:\projects\app"));
+        assert!(trusted_in(&doc, r"E:\Projects\App"));
+        assert_eq!(trusted_in(&doc, r"e:\projects\app"), cfg!(windows), "case counts only off Windows");
+    }
+
+    #[test]
+    fn a_folder_differing_in_case_is_another_off_windows() {
+        let doc: toml_edit::DocumentMut = "[projects.'/projects/App']\ntrust_level = \"trusted\"\n".parse().unwrap();
+        assert!(trusted_in(&doc, "/projects/App/"));
+        assert_eq!(trusted_in(&doc, "/projects/app"), cfg!(windows));
     }
 }

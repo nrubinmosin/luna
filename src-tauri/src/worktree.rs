@@ -599,8 +599,9 @@ pub struct WorktreeInfo {
     pub branch: Option<String>,
     /// Entries `git status` lists: modified, staged, untracked.
     pub uncommitted: Option<u32>,
-    /// Commits on the worktree's HEAD that no other branch, local or remote,
-    /// has — the ones `branch -D` would lose for good.
+    /// Commits that removing it would lose for good: on its HEAD or on a
+    /// branch that goes with it, and on no branch that stays and no remote
+    /// (`commits_lost`, what removal itself goes by).
     pub unique_commits: Option<u32>,
     /// Newest of the directory's and its index's change times, ms since epoch.
     pub touched_ms: Option<u64>,
@@ -628,18 +629,6 @@ fn changes_in(path: &str) -> Option<Vec<String>> {
         .flatten()
         .filter(|o| o.status.success())?;
     Some(String::from_utf8_lossy(&status.stdout).lines().filter(|l| !l.is_empty()).map(str::to_owned).collect())
-}
-
-/// How many commits HEAD has that no other branch and no remote has.
-fn unique_commits(path: &str, branch: Option<&str>) -> Option<u32> {
-    let mut rev = git(path);
-    rev.args(["rev-list", "--count", "HEAD", "--not"]);
-    if let Some(b) = branch {
-        // Or the branch itself counts as another place the commits live.
-        rev.arg(format!("--exclude={b}"));
-    }
-    rev.args(["--branches", "--remotes"]);
-    rev.output().ok().filter(|o| o.status.success()).and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok())
 }
 
 /// How many commits go for good with this worktree: those its HEAD or a branch
@@ -721,7 +710,7 @@ fn inspect(folder: &str, path: &str) -> WorktreeInfo {
     let Some(changes) = changes_in(path) else {
         return WorktreeInfo { path: path.to_string(), branch, uncommitted: None, unique_commits: None, touched_ms, broken: true };
     };
-    let unique_commits = unique_commits(path, branch.as_deref());
+    let unique_commits = commits_lost(folder, path, branch.as_deref());
 
     WorktreeInfo { path: path.to_string(), branch, uncommitted: Some(changes.len() as u32), unique_commits, touched_ms, broken: false }
 }

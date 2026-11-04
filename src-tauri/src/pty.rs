@@ -1391,6 +1391,7 @@ pub async fn ensure_claude_session(
         // The skills the library gives sessions in this folder, at every
         // start (library.rs `session_args`); not to a login session.
         if !same_dir(&folder, &account_path) {
+            crate::library::lay_out("before a session starts");
             args.extend(crate::library::session_args(Provider::Claude, &account_path, &folder));
         }
         if let Some(p) = prompt.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
@@ -1539,6 +1540,7 @@ pub async fn ensure_codex_session(
             }
             // The skills the library gives sessions in this folder, at every
             // start (library.rs `session_args`).
+            crate::library::lay_out("before a session starts");
             args.extend(crate::library::session_args(Provider::Codex, &account_path, &folder));
             if let Some(p) = prompt.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
                 // A prompt that starts with a dash is still a prompt.

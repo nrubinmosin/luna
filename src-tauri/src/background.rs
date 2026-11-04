@@ -940,6 +940,10 @@ fn turn_base(id: &str) -> Option<Usage> {
 fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
     let base = turn_base(id);
     settle_worktree(id);
+    // Before the registry is locked for the command line: a pass reads and
+    // writes every account's copies, and every helper's events wait on that
+    // lock (library.rs `session_args`).
+    crate::library::lay_out("before a helper's turn");
     let (args, dir, envs, provider, on_stdin) = {
         let r = lock();
         if r.closed {
@@ -1411,6 +1415,13 @@ pub fn turn_state(id: &str) -> Option<crate::activity::TurnState> {
     })
 }
 
+/// Whether a helper's turn keeps the machine awake: one held on a question or
+/// permission waits for whoever answers it, which blocks a shutdown but keeps
+/// nothing awake.
+fn turn_holds(t: &crate::activity::TurnState) -> bool {
+    t.busy && t.turn != crate::activity::Turn::Waiting
+}
+
 /// What the power rules see of every helper: its turn, and between turns what
 /// its turns left running, which holds the machine until it has done nothing
 /// for LEFTOVER_HOLD_MS on end (`Leftover::holds`). Noted for `turn_state`,
@@ -1448,7 +1459,7 @@ pub fn activity() -> Vec<crate::activity::SessionActivity> {
                 );
             }
             let t = turn_state(&id)?;
-            let mut a = crate::activity::SessionActivity::of_turn(&id, t.turn, t.busy);
+            let mut a = crate::activity::SessionActivity::of_turn(&id, t.turn, turn_holds(&t));
             if !at_work.is_empty() {
                 at_work.sort();
                 at_work.dedup();
@@ -1504,7 +1515,12 @@ pub fn kill(id: &str) -> Vec<String> {
             e.error = Some("it was stopped, by luna_kill or from the window".into());
         }
         let job = e.job.clone().filter(|_| e.run.is_none() && e.left_running && !e.ending_left);
-        e.ending_left = job.is_some();
+        // Only the Stop that takes the ending on sets the mark, and only it
+        // lets it go: a second one meanwhile would let a send start a turn in
+        // the job the first is still clearing.
+        if job.is_some() {
+            e.ending_left = true;
+        }
         (stop(e), job)
     };
     reg().1.notify_all();
@@ -2005,6 +2021,11 @@ pub fn background_promote(id: String) -> Result<(), String> {
         let e = r.entries.get(&id).ok_or("no such helper")?;
         if e.run.is_some() {
             return Err("it is in the middle of a turn; open it once the turn is over".into());
+        }
+        // Its job goes with the entry, and what is still in it would run on
+        // with nobody counting it for the machine or ending it.
+        if e.left_running || e.ending_left {
+            return Err("what its turns left is still running; stop it first, or open it once that is over".into());
         }
         r.entries.remove(&id).ok_or("no such helper")?
     };
@@ -2996,6 +3017,7 @@ mod tests {
         let asked = super::ask("two-asks").unwrap();
         assert_eq!(asked.tool.as_deref(), Some("Bash"), "the one that came first");
         assert_eq!(turn_state("two-asks").unwrap().turn, crate::activity::Turn::Waiting);
+        assert!(!turn_holds(&turn_state("two-asks").unwrap()), "held: waiting, keeping nothing awake");
         let stale = asked.id.clone().unwrap();
         answer("two-asks", Some(&stale), &[], Some(true), None).unwrap();
         reg().1.notify_all();
@@ -3280,6 +3302,10 @@ mod tests {
         assert!(lock().entries.get("stopping").unwrap().run.is_none(), "no turn started");
         assert_eq!(interrupt("stopping", "now", None).map(|i| i.queued), Ok(true));
         assert_eq!(lock().entries.get("stopping").unwrap().queue.len(), 2);
+        // A second stop meanwhile has nothing to end and leaves the first's mark.
+        assert!(kill("stopping").is_empty());
+        assert!(lock().entries.get("stopping").unwrap().ending_left, "still the first stop's");
+        assert_eq!(send("stopping", "and this", None), Ok(true), "still queued");
         lock().entries.remove("stopping");
     }
 
