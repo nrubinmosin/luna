@@ -32,7 +32,9 @@ can start other sessions and work with them.
     and a helper opened as a chat stops being counted.
   - `leftRunning`: what its turns left running, between turns: `exe`, `pid`, `startedAt`,
     `active` (CPU or I/O in the last 10 min), `quietMin`. It keeps the PC awake until idle 2 h
-    on end. `luna_kill` ends a background helper's alone (the user's Stop too).
+    on end. `luna_kill` ends a background helper's alone (the user's Stop too). Killing a
+    turn stops its CLI; what outlives that (on Windows a Git Bash command's own processes, a
+    `run_in_background` job's) shows here after, for a second `luna_kill` to end.
 - You kill and delete only sessions you spawned and theirs. Any other session you can read,
   wait on and send text to. A deleted parent's helper passes to its parent; with none, only
   the user can stop or delete it, and a background one goes once idle for 30 min.
@@ -70,6 +72,8 @@ can start other sessions and work with them.
   `danger-full-access`: the machine's. `read-only-net` reads only, with network; on Windows
   schannel TLS fails (built-in `curl`, `Invoke-WebRequest`), as does git's own ssh; `gh`, Python,
   plain http work, and git https (Luna sets `http.sslBackend=openssl`).
+- Codex's `workspace-write` keeps `.git` read-only, its own rule: such a helper cannot commit,
+  in a worktree or not. One that must commit needs `danger-full-access`.
 - `readOnly`: Claude Code's **Bash can still write**; Codex's sandbox (`read-only`, or
   `read-only-net` if given) holds. Refused with `acceptEdits`, `auto-review` or a sandbox that
   writes.
@@ -163,7 +167,8 @@ can start other sessions and work with them.
 - `autoDelete`: Luna deletes the helper 30 minutes after its answer reached you, not while a
   job or helper of its runs (processes idle 2 h on end do not count: they go with it, and you
   hear so); a read or a send starts that over (`deletesInMin` counts down). The worktree stays. Off
-  for visible ones unless `true`. One the user typed into, or you killed, is never deleted.
+  for visible ones unless `true`. One the user typed into, or whose turn you killed, is never
+  deleted; ending only what it left running between turns keeps it as it was.
 - A deleted session's transcript stays in its account's folder (`luna_sessions` history names
   it). If a helper printed what it should not have, tell the user that path.
 

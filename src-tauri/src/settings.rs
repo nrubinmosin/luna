@@ -209,6 +209,20 @@ pub fn get() -> Settings {
     c.0.clone()
 }
 
+/// `get` for what must not act on a guess: an error while the file does not
+/// read, rather than what was read last or — in a process that has read
+/// nothing yet — the defaults. A library pass on those would take out every
+/// copy the real settings want.
+pub fn get_checked() -> Result<Settings, String> {
+    let path = file();
+    let now = stamp(&path);
+    let s = read(&path)?;
+    if let Ok(mut c) = cache().lock() {
+        *c = (s.clone(), now);
+    }
+    Ok(s)
+}
+
 /// Changes one or more fields and writes the file. Under a lock file, and
 /// from what is on disk at that moment rather than from memory: two
 /// processes each writing back their own stale copy would undo each other.

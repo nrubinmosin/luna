@@ -1292,6 +1292,14 @@ fn ties_in(r: &Registry, id: &str) -> Option<Ties> {
     })
 }
 
+/// An answer a caller had been told was not done yet, as a core that saved it
+/// is followed by the next: that turn was over, and what it had left running
+/// went with the core. The same for a background helper and a visible one;
+/// None for any other answer owed.
+fn told_job_went(told_pending: &[String], caller: &str, baseline: u32, cursor: u64) -> Option<Owed> {
+    told_pending.iter().any(|c| c == caller).then(|| Owed { job_went: true, ..Owed::pending(baseline, cursor) })
+}
+
 /// A helper a previous core saved is known again, as it was. Returns the
 /// token for its MCP config, a fresh one: the old core's went with it.
 pub fn tie_back(id: &str, provider: Provider, folder: &str, account_path: &str, ties: Ties) -> Option<String> {
@@ -1312,8 +1320,7 @@ pub fn tie_back(id: &str, provider: Provider, folder: &str, account_path: &str, 
         r.auto.insert(id.to_string(), Auto::default());
     }
     for (caller, baseline, cursor) in ties.owed {
-        let told = ties.told_pending.contains(&caller);
-        let o = if told { Owed { job_went: true, ..Owed::pending(baseline, cursor) } } else { Owed::from(baseline, cursor) };
+        let o = told_job_went(&ties.told_pending, &caller, baseline, cursor).unwrap_or_else(|| Owed::from(baseline, cursor));
         r.owed.insert((caller, id.to_string()), o);
     }
     for (caller, n) in ties.seen {
@@ -1518,6 +1525,12 @@ fn take_up_chats(saved: SavedChats) {
         // off (`call_off_resume`): the mark would still be there otherwise.
         let mut went_now = c.mid_turn;
         for (caller, baseline, cursor) in ties.owed {
+            // Its turn was over, told so: what it left went with the core. Not
+            // one it was in the middle of again: that turn is cut short below.
+            if let Some(o) = told_job_went(&ties.told_pending, &caller, baseline, cursor).filter(|_| !c.mid_turn) {
+                r.owed.insert((caller, c.id.clone()), o);
+                continue;
+            }
             let mut o = Owed::from(baseline, cursor);
             let already = ties.cut_short.contains(&caller);
             if c.turns_ended <= baseline || already {
@@ -1877,8 +1890,19 @@ fn authorize_send(caller: &str, target: &str) -> Result<Known, String> {
     if caller == target {
         return Err("that is your own session".into());
     }
-    let r = reg().lock().unwrap_or_else(|e| e.into_inner());
-    r.known.get(target).cloned().ok_or_else(|| format!("unknown session {target}; luna_sessions lists them"))
+    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    // `reap` has let the lock go to remove it: text taken now would start a
+    // turn that goes with it, and a question nobody hears the end of.
+    if r.auto.get(target).is_some_and(|a| a.deleting) {
+        return Err(format!("{target} is being deleted (autoDelete, idle since its answer); spawn a helper again for more"));
+    }
+    let known = r.known.get(target).cloned().ok_or_else(|| format!("unknown session {target}; luna_sessions lists them"))?;
+    // Text on its way starts the idle count over now, under the lock `reap`
+    // decides under: it cannot be taken for deletion while this is delivered.
+    if let Some(a) = r.auto.get_mut(target) {
+        a.idle_since = None;
+    }
+    Ok(known)
 }
 
 // ------------------------------------------------------------------ tools --
@@ -5382,11 +5406,17 @@ fn reap(pty: &crate::pty::PtyManager) {
             known
         };
         let left = only_idle.then(|| left_quiet(&id)).flatten();
+        // Whoever was told it was not done yet, before its removal forgets them.
+        let owed: Vec<String> = if left.is_some() {
+            reg().lock().unwrap_or_else(|e| e.into_inner()).owed.keys().filter(|(_, s)| *s == id).map(|(c, _)| c.clone()).collect()
+        } else {
+            Vec::new()
+        };
         match known.map(|k| (k.parent.clone(), remove(&id, k, false, None))) {
             Some((parent, Ok(_))) => {
                 crate::log::info("agents", &format!("auto-deleted helper {}", label(&id)));
                 if let Some((quiet, names)) = left {
-                    reaped_with_leftovers(&id, parent, quiet, &names);
+                    reaped_with_leftovers(&id, owed, parent, quiet, &names);
                 }
             }
             Some((_, Err(e))) => {
@@ -5401,11 +5431,10 @@ fn reap(pty: &crate::pty::PtyManager) {
 }
 
 /// An `autoDelete` helper went with only idle leftovers: whoever was owed the
-/// end of its job is told, in one line, and owed nothing more; with nobody
-/// owed, its parent.
-fn reaped_with_leftovers(id: &str, parent: Option<String>, quiet_ms: u64, names: &str) {
+/// end of its job (`owed`, as it stood before the helper was removed) is told,
+/// in one line, and owed nothing more; with nobody owed, its parent.
+fn reaped_with_leftovers(id: &str, owed: Vec<String>, parent: Option<String>, quiet_ms: u64, names: &str) {
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-    let owed: Vec<String> = r.owed.keys().filter(|(_, s)| s == id).map(|(c, _)| c.clone()).collect();
     r.owed.retain(|(_, s), _| s != id);
     let line = format!(
         "Your helper {id} was auto-deleted: its turn was long over and what it had left running had done nothing for {} min: {names}, which went with it.",
@@ -5435,7 +5464,7 @@ pub fn forget(id: &str) {
     r.known.remove(id);
     let (handed, passed, moved) = pass_up(&mut r, id, gone.and_then(|k| k.parent));
     r.tokens.retain(|_, chat| chat != id);
-    r.seen.retain(|(_, chat), _| chat != id);
+    r.seen.retain(|(who, chat), _| who != id && chat != id);
     r.owed.retain(|(who, chat), _| who != id && chat != id);
     r.answered.retain(|(who, chat), _| who != id && chat != id);
     r.abandoned.retain(|_, (caller, _)| caller != id);
@@ -5455,11 +5484,11 @@ pub fn forget(id: &str) {
     r.exits.remove(id);
     let told = r.quota_told.len();
     r.quota_told.retain(|(caller, _, _), _| caller != id);
-    let quota_now = (r.quota_told.len() != told).then(|| quota_bytes(&r.quota_told));
+    let quota_now = r.quota_told.len() != told;
     r.receipts.retain(|(who, chat), _| who != id && chat != id);
     drop(r);
-    if let Some(bytes) = quota_now {
-        save_quota_told(bytes);
+    if quota_now {
+        save_quota_told();
     }
     transcripts().lock().unwrap_or_else(|e| e.into_inner()).remove(id);
     if spawned {
@@ -6347,8 +6376,14 @@ fn quota_from(bytes: &[u8], now: u64) -> HashMap<(String, String, String), Quota
         .collect()
 }
 
-/// Writes it out, with the registry's lock let go.
-fn save_quota_told(bytes: Vec<u8>) {
+/// Writes it out as it is now, called with the registry's lock let go. One
+/// save at a time, each taking its own look: two threads that each took a
+/// snapshot under the lock and saved it after would race on the one temp file,
+/// and the older could land last, a warning told since told again after a restart.
+fn save_quota_told() {
+    static SAVING: Mutex<()> = Mutex::new(());
+    let _saving = SAVING.lock().unwrap_or_else(|e| e.into_inner());
+    let bytes = quota_bytes(&reg().lock().unwrap_or_else(|e| e.into_inner()).quota_told);
     let path = quota_file();
     let tmp = path.with_extension("json.tmp");
     if let Err(e) = std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, &path)) {
@@ -6430,7 +6465,7 @@ fn quota_news(pty: &crate::pty::PtyManager) -> HashMap<String, Vec<QuotaNews>> {
     let after = quota_bytes(&r.quota_told);
     drop(r);
     if after != before {
-        save_quota_told(after);
+        save_quota_told();
     }
     news
 }
@@ -7015,10 +7050,9 @@ fn deliver_notice(
             for (request, _) in spawn_lines {
                 r.spawns.remove(&request);
             }
-            let quota_now = told_quota.then(|| quota_bytes(&r.quota_told));
             drop(r);
-            if let Some(bytes) = quota_now {
-                save_quota_told(bytes);
+            if told_quota {
+                save_quota_told();
             }
             for id in &told_lost {
                 take_undelivered(id, caller, parent_of(id).as_deref() == Some(caller));

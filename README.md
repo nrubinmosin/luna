@@ -308,7 +308,7 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
 - **Worktrees** on the title bar lists the worktrees Claude Code and Codex left behind with
   no chat in them, by folder and by CLI, with a count on the button when there are any.
   Each is looked inside first: the clean ones start ticked, the ones holding uncommitted
-  files or commits on no other branch say so. Delete them one by one or all ticked at
+  files or commits that deleting them would lose (on no branch that stays, nor a remote) say so. Delete them one by one or all ticked at
   once; nothing a live session or a background helper sits in is ever deleted.
 - Deleting a chat takes its worktree, and the branch Claude Code made for it,
   along by default, unless another chat or helper still works in it; the checkbox can be unticked per chat, and where it
@@ -324,7 +324,9 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
 - The sessions run in Luna's core, a second process from the same exe (`luna-core.exe`,
   started from a copy under the data folder on Windows so that an update can replace the
   exe), not in the window. A window that crashes, hangs or is killed takes nothing with it:
-  the CLIs carry on, background work and all, and the next window reattaches to them. The
+  the CLIs carry on, background work and all, and the next window reattaches to them. A
+  window that falls behind on the sessions' output is let go by the core and goes straight
+  back to it, its terminals redrawn from the scrollback. The
   hooks' listener, the agents' MCP server, activity and power run there too, so an agent's
   `luna_wait` keeps working with no window open. Settings → Versions shows the core and can
   restart it; it leaves by itself once it has had no window and no session (a background
@@ -384,7 +386,8 @@ background helper spawned without tools.
   with nobody reading it or writing to it (see `autoDelete` below). Its parent's row
   shows how many there are, and the count glows for a few seconds when one is spawned; a
   click lists them with what each is doing and for how long, its model, effort, account and
-  worktree, and opens one as a chat of its own (between its turns), stops it or deletes it.
+  worktree, and opens one as a chat of its own (between its turns, once nothing they left
+  runs), stops it or deletes it.
 - A visible helper is a normal chat row, nested under the one that made it and folded by
   default; the count on the parent row unfolds it. It is not seated in a pane unless you
   open it. Its own status, context and title work as for any chat.
@@ -554,8 +557,9 @@ The power field in the status bar opens the two rules the machine follows.
 
 - **Keep the PC awake while sessions work** (on by default). Luna holds a Windows power
   request — `powercfg /requests` lists it as Luna's — while any session is busy, and lets it
-  go a minute after the last one goes quiet. A session waiting for your answer does not hold
-  the machine. What a session started in a turn, a chat's or a helper's, holds it after the
+  go a minute after the last one goes quiet. A session waiting for an answer — yours, or a
+  background helper's question or permission its agent is to answer — does not hold the
+  machine. What a session started in a turn, a chat's or a helper's, holds it after the
   turn until it has done nothing — under 1% of a core and 1 KiB of I/O a second — for 2 hours
   on end: a client waiting on work done elsewhere is quiet too, but a forgotten `tail -F` or a
   server nobody uses is let go then, and stops keeping the "when done" rule below waiting; the

@@ -206,8 +206,14 @@ function HelperList({ helpers, anchor, onClose }: { helpers: BackgroundHelperDto
             )}
             <div style={{ display: 'flex', gap: 6 }}>
               <button
-                disabled={busy}
-                title={busy ? 'Open it once its turn is over' : 'Make it a chat you can see and type in'}
+                disabled={busy || left.length > 0}
+                title={
+                  busy
+                    ? 'Open it once its turn is over'
+                    : left.length > 0
+                      ? 'Stop what its turn left running first'
+                      : 'Make it a chat you can see and type in'
+                }
                 onClick={act('opening a helper', async () => {
                   await backgroundPromote(h.id);
                   onClose();
