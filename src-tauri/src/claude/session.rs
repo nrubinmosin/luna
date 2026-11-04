@@ -66,11 +66,16 @@ fn context_in(text: &str) -> Option<ContextRead> {
     None
 }
 
-/// The model of the last answer in a transcript's tail: the id the CLI really
-/// used, whatever alias it was started on. The CLI's own stand-in for a
-/// message no model wrote reads `<synthetic>`.
+/// The model of the last answer in a transcript: the id the CLI really used,
+/// whatever alias it was started on. Read with the rest of its `Ending`: the
+/// first turn's `prompt_snapshot` after it fills any short tail.
 pub fn last_model(path: &Path) -> Option<String> {
-    let text = crate::pty::tail(path, 128 * 1024)?;
+    ending(path).model
+}
+
+/// See `last_model`: the CLI's own stand-in for a message no model wrote
+/// reads `<synthetic>`.
+fn model_in(text: &str) -> Option<String> {
     text.lines().rev().filter(|l| l.contains("\"model\"")).find_map(|line| {
         let v = serde_json::from_str::<serde_json::Value>(line).ok()?;
         if v["isSidechain"].as_bool().unwrap_or(false) {
@@ -314,34 +319,43 @@ pub fn meta(pid: Option<u32>, resume: Option<&str>, cwd: &str, spawned_at_ms: u1
 }
 
 /// What the end of a transcript says of the session: the context its last
-/// answer used, and the text the model last wrote since the last prompt —
-/// what a turn that is over ended on.
+/// answer used and the model that wrote it, the text the model last wrote
+/// since the last prompt — what a turn that is over ended on — and the API
+/// error that turn ended on, if it did.
 #[derive(Clone, Default)]
 struct Ending {
     context: Option<ContextRead>,
     last_said: Option<String>,
+    model: Option<String>,
+    api_error: Option<serde_json::Value>,
 }
 
 /// The transcript's `Ending`, read back from the end in growing pieces: after
-/// a turn Claude Code writes its whole system prompt (an attachment,
-/// `prompt_snapshot`, 150 KB and more), which a short tail is all of. Kept per
-/// file length, as it is asked for every few seconds and changes only when the
+/// a turn Claude Code writes lines of 100 KB and more — the first turn's whole
+/// system prompt (an attachment, `prompt_snapshot`, 150 KB), `api-request-shape`
+/// and `-blob` lines — which a short tail is all of. Kept per file length and
+/// change time, as it is asked for every few seconds and changes only when the
 /// file grows.
 fn ending(path: &Path) -> Ending {
-    static SEEN: std::sync::OnceLock<Mutex<HashMap<PathBuf, (u64, Ending)>>> = std::sync::OnceLock::new();
-    let Ok(len) = std::fs::metadata(path).map(|m| m.len()) else { return Ending::default() };
+    type Stamp = (u64, Option<std::time::SystemTime>);
+    static SEEN: std::sync::OnceLock<Mutex<HashMap<PathBuf, (Stamp, Ending)>>> = std::sync::OnceLock::new();
+    let Ok(meta) = std::fs::metadata(path) else { return Ending::default() };
+    let (len, stamp) = (meta.len(), (meta.len(), meta.modified().ok()));
     let seen = SEEN.get_or_init(Default::default);
     if let Some((at, end)) = seen.lock().unwrap_or_else(|e| e.into_inner()).get(path) {
-        if *at == len {
+        if *at == stamp {
             return end.clone();
         }
     }
     let mut end = Ending::default();
-    let mut said_known = false;
+    let (mut said_known, mut error_known) = (false, false);
     for max in [128 * 1024, 1024 * 1024, 8 * 1024 * 1024] {
         let Some(text) = crate::pty::tail(path, max) else { break };
         if end.context.is_none() {
             end.context = context_in(&text);
+        }
+        if end.model.is_none() {
+            end.model = model_in(&text);
         }
         if !said_known {
             if let Some(said) = last_said_in(&text) {
@@ -349,7 +363,13 @@ fn ending(path: &Path) -> Ending {
                 said_known = true;
             }
         }
-        if (end.context.is_some() && said_known) || len <= max {
+        if !error_known {
+            if let Some(error) = api_error_line(&text) {
+                end.api_error = error;
+                error_known = true;
+            }
+        }
+        if (end.context.is_some() && end.model.is_some() && said_known && error_known) || len <= max {
             break;
         }
     }
@@ -357,7 +377,7 @@ fn ending(path: &Path) -> Ending {
     if map.len() >= CACHE_CAP {
         map.clear();
     }
-    map.insert(path.to_path_buf(), (len, end.clone()));
+    map.insert(path.to_path_buf(), (stamp, end.clone()));
     end
 }
 
@@ -647,23 +667,27 @@ mod tests {
 /// was heard: one that has sat on the limit dialog since before Luna started.
 pub fn last_api_error(pid: Option<u32>, resume: Option<&str>, cwd: &str, spawned_at_ms: u128, account_path: &str) -> Option<&'static str> {
     let path = transcript_of(pid, resume, cwd, spawned_at_ms, account_path)?;
-    api_error_in(&crate::pty::tail(&path, 64 * 1024)?)
+    let v = ending(&path).api_error?;
+    Some(crate::activity::api_error_kind(v["error"].as_str().unwrap_or("")))
 }
 
-/// See `last_api_error`: the last user or assistant line decides.
+/// See `last_api_error`, of a text alone.
+#[cfg(test)]
 fn api_error_in(text: &str) -> Option<&'static str> {
-    api_error_line(text).map(|v| crate::activity::api_error_kind(v["error"].as_str().unwrap_or("")))
+    api_error_line(text).flatten().map(|v| crate::activity::api_error_kind(v["error"].as_str().unwrap_or("")))
 }
 
-fn api_error_line(text: &str) -> Option<serde_json::Value> {
+/// The last user or assistant line decides: Some(the error line, if it is
+/// one), or None when the text does not reach back to either.
+fn api_error_line(text: &str) -> Option<Option<serde_json::Value>> {
     for line in text.lines().rev() {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
         if v["isSidechain"].as_bool() == Some(true) {
             continue;
         }
         match v["type"].as_str() {
-            Some("assistant") if v["isApiErrorMessage"].as_bool() == Some(true) => return Some(v),
-            Some("assistant") | Some("user") => return None,
+            Some("assistant") if v["isApiErrorMessage"].as_bool() == Some(true) => return Some(Some(v)),
+            Some("assistant") | Some("user") => return Some(None),
             _ => {}
         }
     }
@@ -673,7 +697,7 @@ fn api_error_line(text: &str) -> Option<serde_json::Value> {
 /// What a caller is told of the API error a transcript's last turn ended on,
 /// when it did: the CLI's kind of error and the words it shows for it.
 pub fn api_error_of(path: &Path) -> Option<String> {
-    let v = api_error_line(&crate::pty::tail(path, 64 * 1024)?)?;
+    let v = ending(path).api_error?;
     let kind = crate::activity::api_error_kind(v["error"].as_str().unwrap_or(""));
     Some(match content_text(&v["message"]["content"]).filter(|t| !t.trim().is_empty()) {
         Some(said) => format!("{kind}: {said}"),
@@ -1021,6 +1045,15 @@ mod reading_tests {
         let end = ending(&path);
         assert_eq!(end.last_said.as_deref(), Some("Pick one.\nSTATUS: AWAITING OPERATOR"));
         assert_eq!(end.context.map(|c| c.tokens), Some(20010.0));
+        assert_eq!(last_model(&path).as_deref(), Some("claude-sonnet-5-5"), "the model, past the snapshot too");
+        assert!(end.api_error.is_none());
+        let _ = std::fs::remove_file(&path);
+
+        // A first turn that ended on an API error has its snapshot after it all the same.
+        let path = std::env::temp_dir().join(format!("luna-claude-error-snapshot-{}.jsonl", std::process::id()));
+        std::fs::write(&path, [prompt, API_ERROR, &snapshot, title].join("\n") + "\n").unwrap();
+        let said = api_error_of(&path).expect("the error, past the snapshot");
+        assert!(said.ends_with("Invalid API key · Fix external API key"), "{said}");
         let _ = std::fs::remove_file(&path);
     }
 }
