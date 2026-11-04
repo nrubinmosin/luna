@@ -98,6 +98,11 @@ fn days_back(from: NaiveDate, n: usize) -> impl Iterator<Item = NaiveDate> {
 /// directories newest first and stops at the first hit; a thread months old
 /// costs a longer walk once, after which the answer is cached.
 fn rollout_by_id(account_path: &str, id: &str) -> Option<PathBuf> {
+    rollout_where(account_path, |of| of == id)
+}
+
+/// `rollout_by_id` for the first whose thread id passes `is`.
+fn rollout_where(account_path: &str, is: impl Fn(&str) -> bool) -> Option<PathBuf> {
     let root = sessions_dir(account_path);
     let mut years: Vec<PathBuf> = std::fs::read_dir(&root).ok()?.flatten().map(|e| e.path()).collect();
     years.sort();
@@ -113,7 +118,7 @@ fn rollout_by_id(account_path: &str, id: &str) -> Option<PathBuf> {
                 let Ok(files) = std::fs::read_dir(&d) else { continue };
                 for f in files.flatten() {
                     let name = f.file_name().to_string_lossy().into_owned();
-                    if parse_name(&name).map(|(_, i)| i == id).unwrap_or(false) {
+                    if parse_name(&name).is_some_and(|(_, i)| is(&i)) {
                         return Some(f.path());
                     }
                 }
@@ -165,6 +170,11 @@ struct TurnCount {
     /// Bytes consumed: the end of the last complete line.
     offset: u64,
     scan: Scan,
+    /// The rollouts it was on before this one in this process (a `/new`, a
+    /// `/resume` in its TUI), by path, as far as they were read: their turns
+    /// count on with this one's, once each, and one gone back to goes on from
+    /// where it was left.
+    before: HashMap<PathBuf, (u64, Scan)>,
 }
 
 /// The rollout read so far, as the tracker keeps it.
@@ -201,15 +211,28 @@ fn turn_counts() -> &'static Mutex<HashMap<String, TurnCount>> {
 /// `task_started` and the tail read the session as resting. None until the
 /// rollout exists, i.e. before the first turn.
 fn tracked(live: &Live) -> Option<Scan> {
-    let path = rollout_for(live)?;
+    tracked_at(live, rollout_for(live)?)
+}
+
+/// `tracked`, the chat on the rollout at `path` now.
+fn tracked_at(live: &Live, path: PathBuf) -> Option<Scan> {
     let mut counts = turn_counts().lock().ok()?;
     let entry = counts
         .entry(live.chat_id.to_string())
-        .or_insert_with(|| TurnCount { path: path.clone(), offset: 0, scan: Scan::default() });
-    if entry.path != path {
-        *entry = TurnCount { path: path.clone(), offset: 0, scan: Scan::default() };
-    }
+        .or_insert_with(|| TurnCount { path: path.clone(), offset: 0, scan: Scan::default(), before: HashMap::new() });
     let since = live.spawned_at_ms as i64;
+    if entry.path != path {
+        // What the one it leaves wrote since the last look counts first: a turn
+        // that ended just before the `/new`. Read no further after that: what
+        // comes there later is another process's on that thread.
+        if !past_end(&entry.path, entry.offset) {
+            entry.offset = scan_rollout(&entry.path, entry.offset, since, &mut entry.scan);
+        }
+        let (offset, scan) = entry.before.remove(&path).unwrap_or_default();
+        let was = std::mem::replace(&mut entry.path, path.clone());
+        let left = (std::mem::replace(&mut entry.offset, offset), std::mem::replace(&mut entry.scan, scan));
+        entry.before.insert(was, left);
+    }
     if past_end(&path, entry.offset) {
         // Cut short or written anew under the same name: what was read of it
         // no longer lines up, so it is read again from the top. The count
@@ -225,14 +248,16 @@ fn tracked(live: &Live) -> Option<Scan> {
         let mut scan = Scan::default();
         let offset = scan_rollout(&path, 0, since, &mut scan);
         scan.completed = scan.completed.max(entry.scan.completed);
-        *entry = TurnCount { path: path.clone(), offset, scan };
+        (entry.offset, entry.scan) = (offset, scan);
     } else {
         entry.offset = scan_rollout(&path, entry.offset, since, &mut entry.scan);
     }
     if let Some(at) = entry.scan.prompt_ms {
         crate::asking::prompted_at(live.chat_id, at);
     }
-    Some(entry.scan.clone())
+    let mut scan = entry.scan.clone();
+    scan.completed += entry.before.values().map(|(_, s)| s.completed).sum::<u32>();
+    Some(scan)
 }
 
 /// Whether `offset` lies past the end of the file: a cursor into one since
@@ -381,14 +406,74 @@ pub fn rollouts_since(account_path: &str, folder: &str, since_ms: u64) -> Vec<Pa
         .collect()
 }
 
-/// The rollout file this live session writes to, once it exists.
-pub fn rollout_for(live: &Live) -> Option<PathBuf> {
-    if let Ok(m) = claims().lock() {
-        if let Some(p) = m.get(live.chat_id) {
-            if p.is_file() {
-                return Some(p.clone());
-            }
+/// The rollout of a thread a live session's TUI says it is on, by the start of
+/// its id that the title holds (pty.rs `thread_in_title`): looked for where a
+/// thread of now is written, the last two days, and once in all the rest, for a
+/// thread `/resume` went back to. One not written yet (Codex writes it at the
+/// thread's first turn) costs only the first look after that. Two of now that
+/// start alike are no answer.
+fn thread_file(account_path: &str, thread: &str) -> Option<PathBuf> {
+    // What the walk found, kept, as a thread's file never moves; and the
+    // threads it found nothing for, not walked again.
+    static FOUND: OnceLock<Mutex<HashMap<String, PathBuf>>> = OnceLock::new();
+    static MISSED: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+    let key = format!("{account_path}\n{thread}");
+    let found = FOUND.get_or_init(Default::default);
+    if let Some(p) = found.lock().ok()?.get(&key).filter(|p| p.is_file()) {
+        return Some(p.clone());
+    }
+    let mut recent = rollouts_on(account_path, days_back(Local::now().date_naive(), 2)).into_iter().filter(|(_, id, _)| id.starts_with(thread));
+    if let Some((_, _, p)) = recent.next() {
+        return recent.next().is_none().then_some(p);
+    }
+    let missed = MISSED.get_or_init(Default::default);
+    if missed.lock().ok()?.contains(&key) {
+        return None;
+    }
+    match rollout_where(account_path, |id| id.starts_with(thread)) {
+        Some(p) => {
+            found.lock().ok()?.insert(key, p.clone());
+            Some(p)
         }
+        None => {
+            missed.lock().ok()?.insert(key);
+            None
+        }
+    }
+}
+
+/// The rollout file this live session writes to, once it exists. Codex says
+/// which thread its TUI is on (pty.rs `CODEX_TITLE`), and that settles it: its
+/// file once written, a `/new`, `/resume` or `/fork` in it followed, and until a
+/// new thread's file is written the one it was on, never a guess.
+pub fn rollout_for(live: &Live) -> Option<PathBuf> {
+    rollout_on(live, crate::pty::manager().codex_thread(live.chat_id))
+}
+
+/// `rollout_for`, its TUI on `thread`, if it has said.
+fn rollout_on(live: &Live, thread: Option<String>) -> Option<PathBuf> {
+    let claimed = claims().lock().ok().and_then(|m| m.get(live.chat_id).cloned()).filter(|p| p.is_file());
+    if let Some(thread) = thread {
+        let of_it = |p: &PathBuf| p.file_name().and_then(|n| parse_name(&n.to_string_lossy())).is_some_and(|(_, id)| id.starts_with(&thread));
+        if claimed.as_ref().is_some_and(of_it) {
+            return claimed;
+        }
+        let Some(found) = thread_file(live.account_path, &thread) else { return claimed };
+        crate::log::info(
+            "codex",
+            &format!(
+                "{} is on thread {thread}{}",
+                crate::agents::label(live.chat_id),
+                claimed.as_ref().map_or(String::new(), |p| format!(", no longer {}", p.display()))
+            ),
+        );
+        if let Ok(mut m) = claims().lock() {
+            m.insert(live.chat_id.to_string(), found.clone());
+        }
+        return Some(found);
+    }
+    if claimed.is_some() {
+        return claimed;
     }
 
     // A resumed thread is found by its id, which says whose file it is.
@@ -926,6 +1011,48 @@ mod tests {
         let name = format!("rollout-{}-{uuid}.jsonl", ts.format("%Y-%m-%dT%H-%M-%S"));
         let source = source.map(|s| format!(r#","source":{s}"#)).unwrap_or_default();
         std::fs::write(dir.join(name), format!(r#"{{"type":"session_meta","payload":{{"cwd":"E:\\p"{source}}}}}"#) + "\n").unwrap();
+    }
+
+    /// A `/new` in its TUI, and a `/resume` back: the chat goes where it says it
+    /// is, once that thread's file is written, never to another chat's file, and
+    /// its turns count on over all of them, each once.
+    #[test]
+    fn a_chat_follows_the_thread_its_tui_is_on_and_counts_on() {
+        let (root, t0) = rollout_bench("follow");
+        let acct = root.to_string_lossy().into_owned();
+        let chat = format!("chat-follow-{t0}");
+        let (a, b) = (format!("aaaa{t0}"), format!("bbbb{t0}"));
+        let at = |ms: u64| chrono::DateTime::from_timestamp_millis(ms as i64).unwrap().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let turn = |ms: u64| format!("{{\"timestamp\":\"{}\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"task_complete\"}}}}\n", at(ms));
+        let file = |uuid: &str, ms: u64| {
+            let ts = Local.timestamp_millis_opt(ms as i64).single().unwrap().naive_local();
+            day_dir(&acct, ts.date()).join(format!("rollout-{}-{uuid}.jsonl", ts.format("%Y-%m-%dT%H-%M-%S")))
+        };
+        let (fa, fb) = (file(&a, t0 + 1_000), file(&b, t0 + 5_000));
+        std::fs::create_dir_all(fa.parent().unwrap()).unwrap();
+        let meta = r#"{"type":"session_meta","payload":{"cwd":"E:\\p","source":"cli"}}"#.to_string() + "\n";
+        std::fs::write(&fa, meta.clone() + &turn(t0 + 2_000)).unwrap();
+        let live = Live { chat_id: &chat, cwd: "E:\\p", spawned_at_ms: t0 as u128, resume: None, account_path: &acct, last_output_ms: 0 };
+        let on = |thread: &str| rollout_on(&live, Some(thread.to_string()));
+        let count = |path: Option<PathBuf>| tracked_at(&live, path.unwrap()).map(|s| s.completed);
+        assert_eq!(on(&a), Some(fa.clone()));
+        assert_eq!(count(on(&a)), Some(1));
+        // A turn that ends just before the `/new`, never looked at on its file.
+        std::fs::write(&fa, meta.clone() + &turn(t0 + 2_000) + &turn(t0 + 3_000)).unwrap();
+        // `/new`: a thread with no file yet keeps it on the one it was on.
+        assert_eq!(on(&b), Some(fa.clone()), "not written yet: no guess, and no move");
+        // Another chat's file in the folder is never this one's.
+        let other = file(&format!("cccc{t0}"), t0 + 6_000);
+        std::fs::write(&other, meta.clone() + &turn(t0 + 7_000)).unwrap();
+        assert_eq!(on(&b), Some(fa.clone()));
+        std::fs::write(&fb, meta.clone() + &turn(t0 + 8_000)).unwrap();
+        assert_eq!(on(&b), Some(fb.clone()), "written: it moves there");
+        assert_eq!(count(on(&b)), Some(3), "on from the first thread's turns, the one ended last among them");
+        // `/resume` back to the first, which gets a turn more.
+        std::fs::write(&fa, meta + &turn(t0 + 2_000) + &turn(t0 + 3_000) + &turn(t0 + 9_000)).unwrap();
+        assert_eq!(count(on(&a)), Some(4), "its earlier turns not counted again");
+        release(&chat);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     fn takes(root: &Path, chat: &str, at_ms: u64, resume: Option<&str>) -> Option<String> {

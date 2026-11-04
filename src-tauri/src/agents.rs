@@ -4471,15 +4471,47 @@ fn transcripts() -> &'static Mutex<HashMap<String, std::path::PathBuf>> {
 }
 
 fn transcript_path(pty: &crate::pty::PtyManager, id: &str) -> Option<std::path::PathBuf> {
+    transcript_seen(pty, id).0
+}
+
+/// `transcript_path`, and where what is owed now reads from in it if this very
+/// look found the session gone on in another (`moved_to`): a cursor its caller
+/// took before is into the last one.
+fn transcript_seen(pty: &crate::pty::PtyManager, id: &str) -> (Option<std::path::PathBuf>, Option<u64>) {
     let found = find_transcript(pty, id);
     let mut known = transcripts().lock().unwrap_or_else(|e| e.into_inner());
     match found {
         Some(path) => {
-            known.insert(id.to_string(), path.clone());
-            Some(path)
+            let was = known.insert(id.to_string(), path.clone()).filter(|was| *was != path);
+            drop(known);
+            let moved = was.map(|was| moved_to(id, &was, &path));
+            (Some(path), moved)
         }
-        None => known.get(id).cloned(),
+        None => (known.get(id).cloned(), None),
     }
+}
+
+/// A session went on in another transcript: Claude Code's `/clear` or
+/// `/resume`, Codex's `/new`, `/resume` or `/fork` in its TUI. What it is owed
+/// for is read on from where its words in that one start: all of one made after
+/// the last it was on, as a fresh conversation is; past what is there now of an
+/// older one it went back to. Offsets into the last say nothing of it. (Claude
+/// Code writes to the transcript it leaves after making the next.)
+fn moved_to(id: &str, was: &std::path::Path, now: &std::path::Path) -> u64 {
+    let born = |p: &std::path::Path| std::fs::metadata(p).and_then(|m| m.created()).ok();
+    let fresh = matches!((born(now), born(was)), (Some(now), Some(was)) if now > was);
+    let from = if fresh { 0 } else { std::fs::metadata(now).map_or(0, |m| m.len()) };
+    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    let mut moved = 0;
+    for ((_, of), o) in r.owed.iter_mut() {
+        if of == id {
+            o.cursor = from;
+            moved += 1;
+        }
+    }
+    drop(r);
+    crate::log::info("agents", &format!("{} goes on in {} (was {}): {moved} owed answer(s) read from {from}", label(id), now.display(), was.display()));
+    from
 }
 
 fn find_transcript(pty: &crate::pty::PtyManager, id: &str) -> Option<std::path::PathBuf> {
@@ -4926,7 +4958,9 @@ fn wait_for(
             // A job's end is what the caller was owed, with no turn to wait
             // for the words of: what it said since is there already.
             let answers = says || outcome == "job_done";
-            // Read from where the caller's question found the transcript.
+            // Read from where the caller's question found the transcript, once
+            // a move to another is seen to (`moved_to`).
+            transcript_path(&pty, id);
             let (asked_at, debt_cut) = {
                 let r = reg().lock().unwrap_or_else(|e| e.into_inner());
                 r.owed.get(&key).map_or((None, false), |o| (Some(o.cursor), o.cut_short))
@@ -5677,7 +5711,8 @@ enum Settled {
 /// with nothing past the cursor has started over in a file of its own (a
 /// resume): the last message there is the answer.
 fn replies_since(pty: &crate::pty::PtyManager, id: &str, provider: Provider, cursor: u64, stopped: bool) -> Vec<String> {
-    let Some(path) = transcript_path(pty, id) else { return Vec::new() };
+    let (Some(path), moved) = transcript_seen(pty, id) else { return Vec::new() };
+    let cursor = moved.unwrap_or(cursor);
     let mut messages = messages_at(&path, provider, cursor);
     if messages.is_empty() && cursor > 0 {
         messages = messages_at(&path, provider, 0).into_iter().last().into_iter().collect();
@@ -5688,8 +5723,8 @@ fn replies_since(pty: &crate::pty::PtyManager, id: &str, provider: Provider, cur
 /// `replies_since` for a caller already told of what came before `cursor`:
 /// nothing past it is nothing to tell, not a resume to look further back for.
 fn said_since(pty: &crate::pty::PtyManager, id: &str, provider: Provider, cursor: u64) -> Vec<String> {
-    let Some(path) = transcript_path(pty, id) else { return Vec::new() };
-    own_words(messages_at(&path, provider, cursor), false)
+    let (Some(path), moved) = transcript_seen(pty, id) else { return Vec::new() };
+    own_words(messages_at(&path, provider, moved.unwrap_or(cursor)), false)
 }
 
 fn messages_at(path: &std::path::Path, provider: Provider, from: u64) -> Vec<Message> {
@@ -6171,6 +6206,13 @@ fn notice_line(
     k: &Known,
     o: Owed,
 ) -> Option<(Option<String>, Settled)> {
+    // A move to another transcript since the debt was looked at, seen to by this
+    // look or another's (`moved_to`), has it read from where it reads now.
+    let mut o = o;
+    transcript_path(pty, id);
+    if let Some(now) = reg().lock().unwrap_or_else(|e| e.into_inner()).owed.get(&(caller.to_string(), id.to_string())).filter(|now| now.rev == o.rev) {
+        o.cursor = now.cursor;
+    }
     let ts = crate::activity::turn_state(id);
     let ended = ts.map(|t| t.turns_ended).unwrap_or(0);
     let turn = ts.map(|t| t.turn);
