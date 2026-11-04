@@ -321,6 +321,17 @@ fn recommend(provider: Provider, account_path: &str) -> Result<Vec<Rec>, String>
     Ok(out)
 }
 
+/// One change of an account's config files at a time in this process. Each
+/// reads its file, changes it and writes it back, and two at once — the start-up
+/// sync on its thread, a chat starting that writes its folder's trust — would
+/// each write back what it read without the other's change. Every writer of
+/// them is in the window's process; the CLIs write them too, which nothing here
+/// can hold back.
+pub(crate) fn editing() -> std::sync::MutexGuard<'static, ()> {
+    static L: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    L.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// Sets the `add` keys to their recommended values and takes the `remove`
 /// ones out — only where the file still says exactly what was recommended:
 /// a value the user wrote themselves is theirs, not a recommendation to undo.
@@ -332,6 +343,7 @@ fn apply(provider: Provider, account_path: &str, add: &[String], remove: &[Strin
     if add.is_empty() && remove.is_empty() {
         return Ok(());
     }
+    let _editing = editing();
     match provider {
         Provider::Claude => {
             // `.claude.json` is the CLI's own: touched only for a key of its.
@@ -499,7 +511,9 @@ pub fn read_account_config(provider: Provider, account_path: String) -> Result<C
 pub fn write_account_config(provider: Provider, account_path: String, text: String) -> Result<(), String> {
     check_config(provider, &text)?;
     let path = config_file(provider, &account_path)?;
+    let editing = editing();
     write_text(&path, &text)?;
+    drop(editing);
     crate::log::info("settings", &format!("{} edited by hand", path.display()));
     Ok(())
 }
@@ -564,6 +578,7 @@ fn codex_copy(parent: &str, child: &DocumentMut) -> Result<String, String> {
 fn sync_one(provider: Provider, parent: &str, child: &str) -> Result<(), String> {
     let from = parent_text(provider, parent)?;
     let path = config_file(provider, child)?;
+    let _editing = editing();
     let text = match provider {
         Provider::Claude => from,
         Provider::Codex => codex_copy(&from, &crate::codex::config::read(&path)?)?,
