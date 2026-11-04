@@ -20,7 +20,7 @@ use crate::provider::Provider;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
-use std::io::{BufRead, BufReader, Write};
+use std::io::Write;
 use std::sync::{Condvar, Mutex, OnceLock};
 
 /// Lines of what a helper did kept for `luna_read(screen)`: its messages,
@@ -475,10 +475,13 @@ pub fn has(id: &str) -> bool {
     lock().entries.contains_key(id)
 }
 
-/// How many helpers are in a turn: what keeps the core, as a running
-/// session does. Between turns a helper has no process to keep.
+/// How many helpers are in a turn, or between turns have what their turns left
+/// still at work (`left_holds`): what keeps the core, as a running session does,
+/// for the core's going would end that work. Left idle past LEFTOVER_HOLD_MS it
+/// keeps the core no more than it keeps the machine.
 pub fn running() -> usize {
-    lock().entries.values().filter(|e| e.run.is_some()).count()
+    let now = crate::throttle::now_ms();
+    lock().entries.values().filter(|e| e.run.is_some() || leftovers_hold(e, now)).count()
 }
 
 /// Whether a helper runs on this account folder, between turns too: its next
@@ -539,14 +542,14 @@ fn end_leftovers(id: &str, job: Option<&crate::procs::Job>) {
 /// after. A turn claimed but not yet started is stopped too: it does not
 /// start. Returns how many it stopped.
 pub fn stop_turns(close: bool) -> usize {
-    let (pids, claimed): (Vec<u32>, usize) = {
+    let (pids, claimed): (Vec<(u32, crate::procs::Pin)>, usize) = {
         let mut r = lock();
         r.closed |= close;
         let mut pids = Vec::new();
         let mut claimed = 0;
         for e in r.entries.values_mut() {
             match stop_for_luna(e) {
-                Some(pid) => pids.push(pid),
+                Some(pid) => pids.push((pid, crate::procs::pin(pid))),
                 None if e.run.is_some() => claimed += 1,
                 None => {}
             }
@@ -555,7 +558,7 @@ pub fn stop_turns(close: bool) -> usize {
     };
     reg().1.notify_all();
     let stopped = pids.len() + claimed;
-    for pid in pids {
+    for (pid, _pin) in pids {
         crate::pty::kill_tree(Some(pid));
     }
     stopped
@@ -840,9 +843,15 @@ struct OutReader {
 }
 
 impl OutReader {
-    /// Reads `out` to its end as bytes, as stderr is, handing each line that
-    /// holds JSON to `on_event`, which says whether to go on.
-    fn read_events(&self, mut out: impl std::io::Read, mut on_event: impl FnMut(&Value) -> bool) {
+    /// Reads `out` to its end as bytes, handing each line that holds JSON to
+    /// `on_event`, which says whether to go on.
+    fn read_events(&self, out: impl std::io::Read, mut on_event: impl FnMut(&Value) -> bool) {
+        self.read_lines(out, |line| serde_json::from_slice::<Value>(line).map_or(true, |v| on_event(&v)));
+    }
+
+    /// Reads `out` to its end as bytes, handing each line to `on_line`, which
+    /// says whether to go on; the last one too, should it come with no line end.
+    fn read_lines(&self, mut out: impl std::io::Read, mut on_line: impl FnMut(&[u8]) -> bool) {
         use std::sync::atomic::Ordering::SeqCst;
         let mut buf = vec![0u8; 64 * 1024];
         let mut line = Vec::new();
@@ -857,16 +866,15 @@ impl OutReader {
             for chunk in buf[..n].split_inclusive(|b| *b == b'\n') {
                 line.extend_from_slice(chunk);
                 if chunk.last() == Some(&b'\n') {
-                    if serde_json::from_slice::<Value>(&line).is_ok_and(|v| !on_event(&v)) {
+                    if !on_line(&line) {
                         return;
                     }
                     line.clear();
                 }
             }
         }
-        // The last line, should it have come with no line end.
-        if let Ok(v) = serde_json::from_slice::<Value>(&line) {
-            on_event(&v);
+        if !line.is_empty() {
+            on_line(&line);
         }
     }
 
@@ -914,6 +922,27 @@ fn take_event(id: &str, provider: Provider, reader: &OutReader, v: &Value) -> bo
     // and start its work over.
     if named {
         save();
+    }
+    true
+}
+
+/// A line off a turn's stderr, into its helper's log, under the same flag as
+/// `take_event`: what a process the turn left writes there after the turn is
+/// over is neither the helper's word nor a sign of it at work. Read on to the
+/// end all the same, so that nothing writing there blocks.
+fn take_stderr(id: &str, reader: &OutReader, line: &[u8]) -> bool {
+    let line = String::from_utf8_lossy(line);
+    let line = line.trim();
+    if line.is_empty() || line.starts_with("Reading additional input") {
+        return true;
+    }
+    let mut r = lock();
+    if reader.over.load(std::sync::atomic::Ordering::SeqCst) {
+        return true;
+    }
+    if let Some(e) = r.entries.get_mut(id) {
+        e.observed.event_ms = crate::throttle::now_ms();
+        note(e, &format!("stderr: {}", one_line(line)));
     }
     true
 }
@@ -966,10 +995,12 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
         cmd.env(k, v);
     }
     cmd.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+    // Suspended until it is in the helper's job (`procs::resume`): what it
+    // starts at once would otherwise be born outside it.
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        cmd.creation_flags(0x0800_0000 | 0x0000_0004); // CREATE_NO_WINDOW | CREATE_SUSPENDED
     }
     // A group of its own, as a pty gives its CLI: what kills a turn
     // (`pty::kill_tree`) takes that group with the rest of the tree. The mark
@@ -985,14 +1016,18 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
     // that could not be made after it would leave the process running with
     // nobody to reap it or end its turn. It is handed the process once the
     // turn is recorded, and nothing if the turn does not start.
-    let (hand, take) = std::sync::mpsc::channel::<(std::process::Child, Option<std::process::ChildStdout>)>();
+    type Pipes = (std::process::Child, Option<std::process::ChildStdout>, Option<std::process::ChildStderr>);
+    let (hand, take) = std::sync::mpsc::channel::<Pipes>();
     {
         let id = id.to_string();
         std::thread::Builder::new()
             .name(format!("luna-bg-{id}"))
             .spawn(move || {
-                let Ok((mut child, stdout)) = take.recv() else { return };
-                // On a thread of its own (see `OutReader`).
+                let Ok((mut child, stdout, stderr)) = take.recv() else { return };
+                // Each pipe on a thread of its own (see `OutReader`). Both are
+                // read to their end as bytes: `lines()` stops at the first line
+                // that is not UTF-8 — a hook's output in the console's code page
+                // — and a pipe nobody drains any more blocks the CLI once it fills.
                 let reader = std::sync::Arc::new(OutReader::default());
                 let (drained, read_out) = std::sync::mpsc::channel::<()>();
                 if let Some(out) = stdout {
@@ -1005,9 +1040,23 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
                         crate::log::warn("background", &format!("cannot read what {} says: {e}", crate::agents::label(&id)));
                     }
                 }
+                let err_reader = std::sync::Arc::new(OutReader::default());
+                let (err_drained, err_out) = std::sync::mpsc::channel::<()>();
+                if let Some(err) = stderr {
+                    let (helper, on_it) = (id.clone(), err_reader.clone());
+                    let read = std::thread::Builder::new().name(format!("luna-bg-err-{id}")).spawn(move || {
+                        let _drained = err_drained;
+                        on_it.read_lines(err, |line| take_stderr(&helper, &on_it, line));
+                    });
+                    if let Err(e) = read {
+                        crate::log::warn("background", &format!("cannot read what {} says on stderr: {e}", crate::agents::label(&id)));
+                    }
+                }
                 let code = child.wait().ok().and_then(|s| s.code());
                 reader.await_last_words(&read_out, DRAINED_AFTER, DRAIN_AT_MOST);
+                err_reader.await_last_words(&err_out, DRAINED_AFTER, DRAIN_AT_MOST);
                 reader.over.store(true, std::sync::atomic::Ordering::SeqCst);
+                err_reader.over.store(true, std::sync::atomic::Ordering::SeqCst);
                 turn_over(&id, code);
             })
             .map_err(thread_err)?;
@@ -1036,6 +1085,12 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
             }
             mark_by_thread(e);
         }
+        #[cfg(windows)]
+        if !crate::procs::resume(pid) {
+            crate::log::error("background", &format!("could not let {} run once in its job", crate::agents::label(id)));
+            abandon(child, Some(pid));
+            return Err(format!("could not start {}: its process would not resume", provider.as_str()));
+        }
     }
     let stdin = child.stdin.take();
     let stdout = child.stdout.take();
@@ -1053,29 +1108,6 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
                 save();
             }
         }) {
-            abandon(child, pid);
-            return Err(thread_err(e));
-        }
-    }
-    // Both pipes are read to their end as bytes: `lines()` stops at the first
-    // line that is not UTF-8 — a hook's output in the console's code page —
-    // and a pipe nobody drains any more blocks the CLI once it fills.
-    if let Some(err) = stderr {
-        let id = id.to_string();
-        let drained = std::thread::Builder::new().spawn(move || {
-            for line in BufReader::new(err).split(b'\n').map_while(Result::ok) {
-                let line = String::from_utf8_lossy(&line);
-                let line = line.trim();
-                if line.is_empty() || line.starts_with("Reading additional input") {
-                    continue;
-                }
-                if let Some(e) = lock().entries.get_mut(&id) {
-                    e.observed.event_ms = crate::throttle::now_ms();
-                    note(e, &format!("stderr: {}", one_line(line)));
-                }
-            }
-        });
-        if let Err(e) = drained {
             abandon(child, pid);
             return Err(thread_err(e));
         }
@@ -1109,7 +1141,7 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
     crate::log::info("background", &format!("{} turn started, pid {pid:?}: {} {}", crate::agents::label(id), provider.as_str(), args.join(" ")));
     // The reader waits on the other end; should it be gone, the turn still
     // ends here rather than with nobody to say so.
-    if let Err(std::sync::mpsc::SendError((child, _))) = hand.send((child, stdout)) {
+    if let Err(std::sync::mpsc::SendError((child, _, _))) = hand.send((child, stdout, stderr)) {
         abandon(child, pid);
         turn_over(id, None);
     }
@@ -1506,7 +1538,7 @@ pub fn send(id: &str, text: &str, from: Option<&str>) -> Result<bool, String> {
 /// turns there is no turn to stop, and what its turns left running is what is
 /// left of it to stop: that is ended, and what went is returned by name.
 pub fn kill(id: &str) -> Vec<String> {
-    let (pid, job) = {
+    let (pid, job, _pin) = {
         let mut r = lock();
         let Some(e) = r.entries.get_mut(id) else { return Vec::new() };
         // Whoever is owed the turn hears it was stopped, not an exit code.
@@ -1520,7 +1552,10 @@ pub fn kill(id: &str) -> Vec<String> {
         if job.is_some() {
             e.ending_left = true;
         }
-        (stop(e), job)
+        let pid = stop(e);
+        // Under the lock, while the turn's own handle still holds the pid: a
+        // turn that ends a moment later then leaves it to nobody else.
+        (pid, job, pid.map(crate::procs::pin))
     };
     reg().1.notify_all();
     crate::pty::kill_tree(pid);
@@ -1567,7 +1602,11 @@ pub fn kill(id: &str) -> Vec<String> {
 /// once none does, an idle helper with only that left goes as any idle one does.
 pub fn left_holds(id: &str) -> bool {
     let now = crate::throttle::now_ms();
-    lock().entries.get(id).is_some_and(|e| e.left_running && (e.left.is_empty() || e.left.iter().any(|l| l.holds(now))))
+    lock().entries.get(id).is_some_and(|e| leftovers_hold(e, now))
+}
+
+fn leftovers_hold(e: &Entry, now: u64) -> bool {
+    e.left_running && (e.left.is_empty() || e.left.iter().any(|l| l.holds(now)))
 }
 
 /// Between turns, what its turns left running, for `luna_list`.
@@ -1651,7 +1690,7 @@ pub fn interrupt(id: &str, text: &str, from: Option<&str>) -> Result<Interrupted
     }
     let queued = Interrupted { stopped: false, queued: true };
     let deadline = std::time::Instant::now() + CLAIM_WAIT;
-    let pid = loop {
+    let (pid, _pin) = loop {
         {
             let r = lock();
             let e = r.entries.get(id).ok_or("no such helper")?;
@@ -1660,7 +1699,8 @@ pub fn interrupt(id: &str, text: &str, from: Option<&str>) -> Result<Interrupted
                 return Ok(queued);
             }
             match e.run.as_ref().map(|run| run.pid) {
-                Some(Some(pid)) => break pid,
+                // Pinned under the lock, as `kill` does.
+                Some(Some(pid)) => break (pid, crate::procs::pin(pid)),
                 Some(None) if std::time::Instant::now() < deadline => {}
                 _ => return Ok(queued),
             }
@@ -2939,6 +2979,31 @@ mod tests {
         assert_eq!(s.last_activity_at.as_deref(), iso(1_793_000_060_000).as_deref());
         assert!(s.turn_started_at.unwrap().ends_with('Z'));
         lock().entries.remove("signs-1");
+    }
+
+    /// What keeps the core: a turn, or between turns what the turns left while
+    /// it is at work, by the machine's measure.
+    #[test]
+    fn leftovers_at_work_keep_the_core_and_long_idle_ones_do_not() {
+        let now = 1_793_000_000_000;
+        let left = |moved_ms: u64| Leftover {
+            pid: 7,
+            exe: "cargo.exe".into(),
+            started_ms: now - 60_000,
+            cpu_ms: 0,
+            io_bytes: 0,
+            read_ms: now,
+            seen_ms: now,
+            moved_ms,
+        };
+        let mut e = entry(Provider::Codex);
+        assert!(!leftovers_hold(&e, now), "nothing left");
+        e.left_running = true;
+        assert!(leftovers_hold(&e, now), "left, not looked at yet");
+        e.left = vec![left(now - 60_000)];
+        assert!(leftovers_hold(&e, now), "at work a minute ago");
+        e.left = vec![left(now - crate::procs::LEFTOVER_HOLD_MS - 1)];
+        assert!(!leftovers_hold(&e, now), "idle past the hold: the core may go");
     }
 
     pub(super) fn entry(provider: Provider) -> Entry {

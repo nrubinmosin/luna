@@ -494,12 +494,27 @@ pub fn end_tree(root: u32) {
 
 /// Ends all a job holds, looking until nothing is left or `within` is up.
 /// Returns whether nothing is left, and the names of what it ended.
-fn end_job(job: &Record, within: Duration) -> (bool, Vec<String>) {
+/// What the job's second mark (`also`) names, at one look: the processes that
+/// have it and were born since the job began. Taken as soon as the core is seen
+/// gone, and kept: one that comes by it later is no turn's of that core, but of a
+/// later core's that took the same conversation up.
+fn thread_marked(job: &Record) -> HashSet<(i32, u64)> {
+    let Some(also) = job.also.as_deref() else { return HashSet::new() };
+    let me = std::process::id() as i32;
+    let all: Vec<Proc> = os::pids().unwrap_or_default().into_iter().filter_map(os::read).collect();
+    others(&all, me)
+        .into_iter()
+        .filter(|p| p.started >= job.since && os::environment(p.pid).is_some_and(|env| holds(&env, also)))
+        .map(|p| (p.pid, p.started))
+        .collect()
+}
+
+/// Ends the job: what has its mark, what its leaders are, `by_thread`
+/// (`thread_marked`), and all that hangs from any of it.
+fn end_job(job: &Record, by_thread: &HashSet<(i32, u64)>, within: Duration) -> (bool, Vec<String>) {
     let me = std::process::id() as i32;
     let mark = format!("{MARK}={}", job.mark);
-    let marked = |p: &Proc| {
-        os::environment(p.pid).is_some_and(|env| holds(&env, &mark) || (p.started >= job.since && job.also.as_deref().is_some_and(|also| holds(&env, also))))
-    };
+    let marked = |p: &Proc| by_thread.contains(&(p.pid, p.started)) || os::environment(p.pid).is_some_and(|env| holds(&env, &mark));
     let deadline = Instant::now() + within;
     let mut ended: Vec<String> = Vec::new();
     loop {
@@ -627,8 +642,10 @@ fn keep() {
     }
     let mut heard = Heard::default();
     listen(&mut heard);
-    for job in heard.jobs.values() {
-        let (gone, ended) = end_job(job, ENDING_TAKES);
+    // Every job's at once, before any is ended, which can take a while each.
+    let marked: Vec<(&Record, HashSet<(i32, u64)>)> = heard.jobs.values().map(|job| (job, thread_marked(job))).collect();
+    for (job, by_thread) in marked {
+        let (gone, ended) = end_job(job, &by_thread, ENDING_TAKES);
         report(job, gone, &ended, "the core went");
     }
 }
@@ -944,7 +961,7 @@ fn end_records(dir: &Path, within: Duration, this_boot: Option<&str>) -> LastTie
         };
         let of_another_boot = matches!((job.boot.as_deref(), this_boot), (Some(then), Some(now)) if then != now);
         let gone = of_another_boot || {
-            let (gone, ended) = end_job(&job, within);
+            let (gone, ended) = end_job(&job, &thread_marked(&job), within);
             report(&job, gone, &ended, "the last core's keeper did not see to it");
             gone
         };
@@ -1390,7 +1407,10 @@ mod tests {
         let mine = start("thread-a");
         let someone_elses = start("thread-b");
         let job = Record { id: "second".into(), mark: "second-mark".into(), boot: None, also: Some("CODEX_THREAD_ID=thread-a".into()), since, leaders: vec![] };
-        let (gone, ended) = end_job(&job, ENDING_TAKES);
+        let by_thread = thread_marked(&job);
+        // Born once the core was seen gone: a later core's turn on the same thread.
+        let later = start("thread-a");
+        let (gone, ended) = end_job(&job, &by_thread, ENDING_TAKES);
         assert!(gone && ended.contains(&"sleep".to_string()), "{gone} {ended:?}");
         let deadline = Instant::now() + Duration::from_secs(3);
         while os::read(mine).is_some() && Instant::now() < deadline {
@@ -1399,7 +1419,8 @@ mod tests {
         assert!(os::read(mine).is_none(), "its own conversation's");
         assert!(os::read(older).is_some(), "left by a core before this job: it let go of that");
         assert!(os::read(someone_elses).is_some(), "another conversation's");
-        for pid in [older, someone_elses] {
+        assert!(os::read(later).is_some(), "the same conversation's, taken up by a later core");
+        for pid in [older, someone_elses, later] {
             // SAFETY: a plain signal, to a process this test started and just saw.
             unsafe { libc::kill(pid, libc::SIGKILL) };
         }
