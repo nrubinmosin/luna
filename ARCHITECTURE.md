@@ -474,14 +474,16 @@ src-tauri/src/
   `hub.rs`, a token per session, reissued on every spawn. The agent's instruction travels in the
   `instructions` of the `initialize` answer, so the system prompt is touched neither by a flag nor by a
   file; all of it together is ~2k tokens once. Plain sessions get neither MCP nor any knowledge of Luna.
-  A helper, tools or not, is told what it is. Claude Code: one line by `--append-system-prompt`. Codex: a
-  note after its opening prompt, since `-c developer_instructions=` replaces that key and its value comes
+  A helper, tools or not, is told what it is, and to write in the language of its task (an account's
+  instructions may set the user's language for their chat). Claude Code: one line by `--append-system-prompt`. Codex: a
+  note after each turn's prompt of a background helper (a visible one's opening prompt only; `luna_read`
+  gives the prompt back without it), since `-c developer_instructions=` replaces that key and its value comes
   from a stack of config files Luna would have to resolve as Codex does (ancestors' `.codex` included) and
-  could then overrun a command line. Slash-command prompts go without; compaction can lose it. Every
+  could then overrun a command line. Slash-command prompts go without; a compaction can lose a visible
+  one's. Every
   session has `LUNA_SESSION_ID` in its environment, a helper `LUNA_PARENT_ID` too. A helper that passes to
   another parent (`pass_up`) is told as it next starts: a background one's next turn takes both from
-  `Spec::parent`, a Codex one with the note once more as its conversation has nowhere else to hear it; a
-  chat's next start goes by the core's record (`parent_on_start`), as a running process keeps what it has.
+  `Spec::parent`, a Codex one's note with it; a chat's next start goes by the core's record (`parent_on_start`), as a running process keeps what it has.
   One left with no parent is told of none.
   The core does not know chats, so a spawn is a round trip: `agent://spawn` to the frontend, which makes the chat
   (`parentId`, not seated in a pane) and `ensure_*` with the prompt as the CLI's positional argument after

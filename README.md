@@ -425,10 +425,11 @@ background helper spawned without tools.
   with every usage window under 95%, else the one with the most room. The result's
   `accountChoice` says which it took and why, and why it skipped the others.
 - Every session gets its own id as `LUNA_SESSION_ID`, and a helper its parent's as
-  `LUNA_PARENT_ID`. A Claude Code helper's system prompt also says what it is
-  (`--append-system-prompt`). Codex can only replace `developer_instructions`, which would
-  drop what its config says there, so a Codex helper's opening prompt ends with a note from
-  Luna instead: a prompt that opens with a slash command goes without it, and compaction can lose it.
+  `LUNA_PARENT_ID`. A Claude Code helper's system prompt also says what it is, and that it
+  writes in the language of its task (`--append-system-prompt`). Codex can only replace `developer_instructions`, which would
+  drop what its config says there, so each prompt of a background Codex helper (a visible
+  one's first) ends with a note from Luna instead: a prompt that opens with a slash command
+  goes without it, and a compaction can lose a visible one's.
 - An agent kills and deletes only sessions it spawned (and theirs). It can see every other
   one, yours included, with `luna_sessions` — name, window group, account and its folder,
   project folder, cwd, the CLI's session id and transcript path — type a message into any

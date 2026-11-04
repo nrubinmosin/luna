@@ -68,10 +68,6 @@ pub struct Spec {
     /// `command_for` runs under this module's lock.
     #[serde(default)]
     pub parent: Option<String>,
-    /// Codex: what its conversation was told names a parent since deleted, and
-    /// its next turn is to say who it is now (`stdin_text`).
-    #[serde(default)]
-    pub parent_moved: bool,
     /// The bearer token of its MCP config: Luna's tools when `tools`, and
     /// `luna_permission` for every Claude Code helper. Never saved: a core
     /// started later issues its own.
@@ -791,16 +787,16 @@ fn run_turn(id: &str, prompt: &str) -> Result<(), String> {
     started
 }
 
-/// What a turn's CLI is given: `prompt`, which on a Codex helper's first turn
-/// carries Luna's note (`pty::codex_helper_prompt`). Here, as whatever starts
-/// that turn is to bring it once: its spawn, a core's second try at one that
-/// never got started, a `luna_send` to such a one. On a conversation going on
-/// only once its parent has changed, as Codex has nowhere else to hear it: Claude
-/// Code's system prompt says it every turn. Not in `Entry::opening`, which goes
-/// back to the caller as what it asked.
+/// What a turn's CLI is given: `prompt`, which on every turn of a Codex helper
+/// carries Luna's note (`pty::codex_helper_prompt`), naming its parent as it is
+/// now. Claude Code's system prompt says it every turn; Codex has nowhere but
+/// the conversation, where one note at its start goes with a compaction, and a
+/// long helper would go on as the chat of a person. Not in `Entry::opening`,
+/// which goes back to the caller as what it asked, nor in what `luna_read`
+/// gives back (codex/session.rs `message_of`).
 fn stdin_text(e: &Entry, prompt: &str) -> String {
     match (&e.spec.parent, e.spec.provider) {
-        (Some(parent), Provider::Codex) if e.session.is_none() || e.spec.parent_moved => crate::pty::codex_helper_prompt(parent, prompt),
+        (Some(parent), Provider::Codex) => crate::pty::codex_helper_prompt(parent, prompt),
         _ => prompt.to_string(),
     }
 }
@@ -810,7 +806,6 @@ fn stdin_text(e: &Entry, prompt: &str) -> String {
 /// and system prompt already.
 pub fn set_parent(id: &str, parent: Option<String>) {
     if let Some(e) = lock().entries.get_mut(id) {
-        e.spec.parent_moved = parent.is_some() && e.spec.provider == Provider::Codex;
         e.spec.parent = parent;
     }
 }
@@ -1096,7 +1091,6 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
                 e.cut_short = false;
                 e.unsure = false;
                 e.opening = e.session.is_none().then(|| prompt.to_string());
-                e.spec.parent_moved = false;
                 note(e, &format!("› {}", one_line(prompt)));
                 None
             }
@@ -2552,7 +2546,6 @@ pub fn test_helper(id: &str, account_path: &str, session: Option<&str>, busy: bo
             auto_review: false,
             tools: false,
             hooks_unasked: false,
-            parent_moved: false,
             read_only: false,
             agent: None,
             parent: None,
@@ -2957,7 +2950,6 @@ mod tests {
                 auto_review: false,
                 tools: false,
                 hooks_unasked: false,
-                parent_moved: false,
                 read_only: false,
                 agent: None,
                 parent: None,
@@ -3597,14 +3589,14 @@ mod tests {
     }
 
     #[test]
-    fn a_codex_helpers_note_goes_once_on_the_first_turn_whatever_starts_it() {
+    fn a_codex_helpers_note_goes_with_every_turn() {
         let mut e = entry(Provider::Codex);
         e.spec.parent = Some("p-1".into());
         let notes = |text: String| text.matches("A note from Luna").count();
         assert_eq!(notes(stdin_text(&e, "the prompt")), 1, "the turn that starts its conversation");
         assert_eq!(stdin_text(&e, "/review"), "/review", "not into a command's arguments");
         e.session = Some("t-1".into());
-        assert_eq!(stdin_text(&e, "Carry on where you left off."), "Carry on where you left off.", "not on one going on");
+        assert_eq!(notes(stdin_text(&e, "Carry on where you left off.")), 1, "and each one after: a compaction loses the first");
         let mut e = entry(Provider::Claude);
         e.spec.parent = Some("p-1".into());
         assert_eq!(stdin_text(&e, "the prompt"), "the prompt", "its system prompt says it there");
@@ -3770,9 +3762,11 @@ mod tests {
         let spec: Spec = serde_json::from_value(json!({
             "provider": "claude", "accountPath": "C:\\acc", "folder": "C:\\p", "worktree": false, "model": null,
             "effort": "low", "mode": "default", "autoReview": false, "tools": false, "hooksUnasked": false,
+            // Gone since, and no bar to what it is said beside.
+            "parentMoved": true,
         }))
         .expect("helpers.json from before them still reads");
-        assert!(!spec.read_only && spec.agent.is_none() && spec.parent.is_none() && !spec.parent_moved);
+        assert!(!spec.read_only && spec.agent.is_none() && spec.parent.is_none());
     }
 
     #[test]

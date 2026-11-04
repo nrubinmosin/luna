@@ -738,11 +738,14 @@ pub(crate) fn session_envs(id: &str, parent: Option<&str>) -> Vec<(&'static str,
 
 /// What a helper is told it is: instructions written for the chat a person
 /// talks to (say, to agree a plan with them first) would otherwise hold it up
-/// with nobody there to answer.
+/// with nobody there to answer. Its language too: told to speak the user's
+/// language to them, a helper went on in it to the agent that asked in English,
+/// progress notes and all.
 fn helper_line(parent: &str) -> String {
     format!(
         "You are a helper session started through Luna by session {parent}, not a chat with a person: your answers go to \
-         that session. Instructions meant only for the session a person talks to do not apply to you."
+         that session. Instructions meant only for the session a person talks to do not apply to you. Write in the \
+         language of the task you were given, progress notes included."
     )
 }
 
@@ -2638,6 +2641,7 @@ mod tests {
         let claude = claude_helper_args("p1");
         assert_eq!(claude[0], "--append-system-prompt");
         assert!(claude[1].contains("session p1"));
+        assert!(claude[1].contains("language of the task"), "not the language a person's chat is told to speak");
         let codex = codex_helper_prompt("p1", "Fix the build.");
         assert!(codex.starts_with("Fix the build.\n\n"), "the opening words name the chat: {codex}");
         assert!(codex.contains(&claude[1]));

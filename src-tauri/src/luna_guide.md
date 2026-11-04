@@ -41,8 +41,8 @@ can start other sessions and work with them.
 - At most eight helpers under one chat. A helper given `tools: true` gets these tools too,
   but its own helpers get none.
 - `LUNA_SESSION_ID` holds a session's id, `LUNA_PARENT_ID` a helper's parent's. A Claude Code
-  helper's system prompt says it is one; a Codex helper's opening prompt ends with Luna's note
-  saying so (not after a `/command`; compaction may lose it).
+  helper's system prompt says it is one; a background Codex helper's every prompt ends with
+  Luna's note saying so, a visible one's first (not after a `/command`).
 
 ## Accounts and models
 - An account is a signed-in login of one provider: an Anthropic account runs Claude Code
