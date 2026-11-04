@@ -46,7 +46,7 @@ const CANCELLED: u8 = 2;
 
 /// How long a call that has been answered stays where a cancel finds it: a
 /// client that cancels as the response crosses its cancel drops it unread.
-const LATE_CANCEL: Duration = Duration::from_secs(10);
+pub(crate) const LATE_CANCEL: Duration = Duration::from_secs(10);
 
 /// One tool call's fate, decided once: committed to its response (a `wait`
 /// or `read` has handed an owed answer over in it) or cancelled (no
