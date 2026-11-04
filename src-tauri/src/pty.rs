@@ -566,36 +566,50 @@ async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, String>) -> R
     Ok(String::new())
 }
 
-/// The hooks a Claude Code session is started with: each event posts its
-/// stdin to Luna's loopback listener (hub.rs) and prints nothing — a hook's
-/// stdout is added to the model's context, silence is free. Written to a file
-/// under the data dir rather than passed inline, so the command line stays
-/// readable and quoting is not a concern. None while the listener is off.
-fn claude_hooks_file(chat_id: &str) -> Option<std::path::PathBuf> {
-    let url = crate::hub::hook_url(chat_id)?;
-    // curl.exe by name on Windows: there `curl` in PowerShell is an alias for
-    // Invoke-WebRequest. Its stdin — the hook's JSON — goes up as the body;
-    // the 204 answer has no body, so nothing comes back to print.
-    let curl = if cfg!(windows) { "curl.exe" } else { "curl" };
-    let command = format!("{curl} -s -m 3 -X POST --data-binary @- {url}");
-    let hook = |timeout: u32| {
-        serde_json::json!([{ "hooks": [{ "type": "command", "command": command, "timeout": timeout }] }])
-    };
-    let settings = serde_json::json!({
-        "hooks": {
-            "UserPromptSubmit": hook(5),
-            "PostToolUse": hook(5),
-            "Stop": hook(5),
-            "StopFailure": hook(5),
-            "Notification": hook(5),
-            "SessionEnd": hook(5),
-            // What a prompt asks, which neither the screen nor the transcript
-            // gives whole: the question and its options (the transcript gets
-            // the call only once it is answered), the command up for leave.
-            "PreToolUse": [{ "matcher": "AskUserQuestion", "hooks": [{ "type": "command", "command": command, "timeout": 5 }] }],
-            "PermissionRequest": hook(5),
-        }
-    });
+/// The settings a Claude Code session is started with, as its `--settings`
+/// (one only: a second takes the first's place). `hooks`: each event posts
+/// its stdin to Luna's loopback listener (hub.rs) and prints nothing — a
+/// hook's stdout is added to the model's context, silence is free — while
+/// the listener is on. `hidden`: the skills the library keeps from sessions
+/// in its folder (library.rs `SessionSkills`), off in `skillOverrides`, which
+/// settings of this source beat whatever the account's or the project's say.
+/// Written to a file under the data dir (`hooks/`, named for what it first
+/// held) rather than passed inline, so the command line stays readable and
+/// quoting is not a concern. None with nothing to say.
+pub(crate) fn claude_settings_file(chat_id: &str, hooks: bool, hidden: &[String]) -> Option<std::path::PathBuf> {
+    let mut settings = serde_json::Map::new();
+    if let Some(url) = crate::hub::hook_url(chat_id).filter(|_| hooks) {
+        // curl.exe by name on Windows: there `curl` in PowerShell is an alias for
+        // Invoke-WebRequest. Its stdin — the hook's JSON — goes up as the body;
+        // the 204 answer has no body, so nothing comes back to print.
+        let curl = if cfg!(windows) { "curl.exe" } else { "curl" };
+        let command = format!("{curl} -s -m 3 -X POST --data-binary @- {url}");
+        let hook = |timeout: u32| {
+            serde_json::json!([{ "hooks": [{ "type": "command", "command": command, "timeout": timeout }] }])
+        };
+        settings.insert(
+            "hooks".into(),
+            serde_json::json!({
+                "UserPromptSubmit": hook(5),
+                "PostToolUse": hook(5),
+                "Stop": hook(5),
+                "StopFailure": hook(5),
+                "Notification": hook(5),
+                "SessionEnd": hook(5),
+                // What a prompt asks, which neither the screen nor the transcript
+                // gives whole: the question and its options (the transcript gets
+                // the call only once it is answered), the command up for leave.
+                "PreToolUse": [{ "matcher": "AskUserQuestion", "hooks": [{ "type": "command", "command": command, "timeout": 5 }] }],
+                "PermissionRequest": hook(5),
+            }),
+        );
+    }
+    if !hidden.is_empty() {
+        settings.insert("skillOverrides".into(), hidden.iter().map(|n| (n.clone(), serde_json::json!("off"))).collect());
+    }
+    if settings.is_empty() {
+        return None;
+    }
     let dir = crate::paths::data_dir().join("hooks");
     std::fs::create_dir_all(&dir).ok()?;
     let path = dir.join(format!("{chat_id}.json"));
@@ -1334,10 +1348,20 @@ pub async fn ensure_claude_session(
         if worktree {
             args.push(crate::worktree::worktree_arg(worktree_name.as_deref()));
         }
+        // The skills the library gives sessions in this folder and keeps from
+        // them, at every start (library.rs `session_args`); not to a login
+        // session.
+        let login = same_dir(&folder, &account_path);
+        let skills = if login {
+            crate::library::SessionSkills::default()
+        } else {
+            crate::library::lay_out("before a session starts");
+            crate::library::session_args(Provider::Claude, &account_path, &folder)
+        };
         // Rewritten at every spawn: the listener's port is new with every Luna run.
-        if let Some(hooks) = claude_hooks_file(&id) {
+        if let Some(settings) = claude_settings_file(&id, true, &skills.hidden) {
             args.push("--settings".into());
-            args.push(hooks.to_string_lossy().into_owned());
+            args.push(settings.to_string_lossy().into_owned());
         }
         let tools = tools.unwrap_or(false);
         let read_only = read_only.unwrap_or(false);
@@ -1362,7 +1386,7 @@ pub async fn ensure_claude_session(
         }
         // A login session runs in the account folder itself (the providers'
         // `loginSession`): not a chat, so not one agents may see or write to.
-        let token = if same_dir(&folder, &account_path) {
+        let token = if login {
             None
         } else {
             crate::agents::register(&id, Provider::Claude, &folder, &account_path, parent.as_deref(), tools, settings)
@@ -1391,12 +1415,7 @@ pub async fn ensure_claude_session(
                 args.push(notes.to_string_lossy().into_owned());
             }
         }
-        // The skills the library gives sessions in this folder, at every
-        // start (library.rs `session_args`); not to a login session.
-        if !same_dir(&folder, &account_path) {
-            crate::library::lay_out("before a session starts");
-            args.extend(crate::library::session_args(Provider::Claude, &account_path, &folder));
-        }
+        args.extend(skills.args);
         if let Some(p) = prompt.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
             // `--mcp-config` takes any number of files, and took the prompt
             // after it for one more: "MCP config file not found: <prompt>".
@@ -1541,10 +1560,10 @@ pub async fn ensure_codex_session(
                 args.extend(codex_mcp_args());
                 envs.push(("LUNA_MCP_TOKEN", token));
             }
-            // The skills the library gives sessions in this folder, at every
-            // start (library.rs `session_args`).
+            // The skills the library gives sessions in this folder and keeps
+            // from them, at every start (library.rs `session_args`).
             crate::library::lay_out("before a session starts");
-            args.extend(crate::library::session_args(Provider::Codex, &account_path, &folder));
+            args.extend(crate::library::session_args(Provider::Codex, &account_path, &folder).args);
             if let Some(p) = prompt.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
                 // A prompt that starts with a dash is still a prompt.
                 args.push("--".into());

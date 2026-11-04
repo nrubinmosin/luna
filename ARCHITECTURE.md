@@ -66,7 +66,9 @@ src/                          frontend (feature-sliced)
               per account column for the one it gets, or none; ReachPicker per row: all, a CLI's,
               by name), a grid of skills against the
               accounts each goes into (ReachPicker, and an or/and switch once it is ticked for a
-              folder) and each folder whose sessions get it, "Needs a look" with differences (diff.ts — a line LCS);
+              folder) and each folder whose sessions get it (FolderTick: ticked, turned off, or a faint
+              tick for what they get anyway; AddFolder — the new-chat dialog's folders, or the picker),
+              "Needs a look" with differences (diff.ts — a line LCS);
               LibraryEditor — instructions/<name>.md / SKILL.md in CodeMirror, saved and laid out at once;
               library.store — the overview, a pass at startup, a look on every window focus
     settings/ Settings (gear in the status bar and in Accounts): accounts folder, auto-tiling,
@@ -195,7 +197,8 @@ src-tauri/src/
                 accounts each is meant for — a reach of `all`, `claude`/`codex` or `provider/name`
                 entries (`CLAUDE.md` / `AGENTS.md`, one instructions file per account, the closest
                 reach winning; `skills/<name>`) — and skills for the sessions in folders the user
-                names, handed out at every start by `session_args` (pty.rs, background.rs); a ledger
+                names, handed out (or kept from them) at every start by `session_args` (pty.rs,
+                background.rs); a ledger
                 of what Luna wrote where (`<data>/library-state.json`, bytes in `library-blobs/` by
                 hash) so only its own copies are touched — see Key decisions
   watchdog.rs   a window whose page stopped responding (WebView2 died) is rebuilt
@@ -1035,7 +1038,21 @@ src-tauri/src/
   that could not read them it would take every copy out. A skill
   reaches a folder's sessions on every account but those that have it as a whole (twice
   over, Claude Code would list the second scoped to Luna's folder), or — `foldersOnly` — only
-  on the accounts of its reach, and then into none as a whole. A Claude Code copy whose name
+  on the accounts of its reach, and then into none as a whole. A folder can keep a skill from
+  its sessions too (`off`, beside its `skills`): one an account has as a whole, or an outer
+  folder gives. Nothing moves at layout; at the start the session is told to hide it, the one
+  way to keep from it what its account holds — Claude Code by `skillOverrides: {name: "off"}`
+  in its `--settings` file (one flag only: `claude_settings_file` puts the hooks and the
+  overrides in one, and background helpers get it too), which beats the account's and the
+  project's own; Codex by one `-c skills.config=[{name=…, enabled=false}]`, whose entries Codex
+  adds to the account's `config.toml` ones selector by selector. Both go by name: a copy an
+  outer folder gives is hidden as Claude Code lists it (`luna-<name>` where renamed) or as
+  Codex's `<slug>:<name>`, and a repository's skill of the same name goes too. Where a
+  session's folders nest, the deepest that names the skill decides (`deciding`), so off in a
+  parent can be ticked again in one repository. The window shows, per cell, what a folder's
+  sessions would get with no mark (`inherited`: some accounts or all), and a click flips it,
+  skipping a mark that would change nothing. A session started outside Luna still has the
+  account's copy. A Claude Code copy whose name
   the folder's `.claude/skills` up to the repository root, the account's `skills/` (Luna's
   own copies aside) or its synced skills already have goes by `luna-<name>` (`free_names`,
   `with_name` on its SKILL.md): Claude Code would list ours as `<folder>:<name>`, scoped to

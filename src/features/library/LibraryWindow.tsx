@@ -4,12 +4,13 @@ import {
   libraryDeleteInstructions, libraryDeleteSkill, libraryNewInstructions, libraryNewSkill, libraryOpen,
   libraryRenameInstructions, libraryResolve, librarySetAccounts, librarySetFolder, librarySetFoldersOnly,
   librarySetInstructions, librarySetSource, librarySkip, librarySync, pickFolder,
-  type LibraryEntry, type LibraryInstructionsDto, type LibraryOverviewDto, type LibraryTarget, type PlaceDto, type Reach
+  type LibraryEntry, type LibraryFolderDto, type LibraryInstructionsDto, type LibraryOverviewDto, type LibraryTarget, type PlaceDto, type Reach
 } from '../../ipc/commands';
 import { useDialogHost } from '../../shared/ui/dialogHost';
 import { ConfirmDialog } from '../../shared/ui/ConfirmDialog';
 import { Icon, ToolButton } from '../../shared/ui/icons';
 import { PROVIDERS, PROVIDER_LABEL, type Provider } from '../../shared/types';
+import { AddFolder } from './AddFolder';
 import { DiffView } from './DiffView';
 import { LibraryEditor } from './LibraryEditor';
 import { needsLook, useLibrary, waiting } from './library.store';
@@ -191,11 +192,13 @@ function LookRow({ place, count, act }: { place: PlaceDto; count: number; act: (
 }
 
 /** A checkbox, or one of a column's radios, with no words beside it: the theme draws the box on a label. */
-function Tick({ id, radio, checked, disabled, title, onChange }: {
+function Tick({ id, radio, checked, mark, disabled, title, onChange }: {
   id: string;
   /** The group a radio belongs to. */
   radio?: string;
   checked: boolean;
+  /** An unticked box drawn as turned off, or as ticked by something else (theme.css). */
+  mark?: 'off' | 'inherited';
   disabled: boolean;
   title: string;
   onChange: (on: boolean) => void;
@@ -207,11 +210,77 @@ function Tick({ id, radio, checked, disabled, title, onChange }: {
         name={radio}
         id={id}
         checked={checked}
+        data-mark={mark}
         disabled={disabled}
         onChange={e => onChange(e.target.checked)}
       />
       <label htmlFor={id} title={title} style={{ display: 'inline-block', width: 0, height: 16, marginLeft: 18, verticalAlign: 'middle' }} />
     </>
+  );
+}
+
+type Mark = 'on' | 'off' | null;
+
+/** What a folder says of a skill, and next what a click makes it say: none, on and off in turn, past one that
+ *  would change nothing — on where every account a tick gives it to has it anyway, off where none has. */
+function nextMark(mark: Mark, inherited: 'some' | 'all' | undefined): Mark {
+  const order: Mark[] = [null, 'on', 'off'];
+  const pointless = (m: Mark) => (m === 'on' && inherited === 'all') || (m === 'off' && !inherited);
+  for (let i = 1; i < order.length; i++) {
+    const m = order[(order.indexOf(mark) + i) % order.length];
+    if (!pointless(m)) return m;
+  }
+  return null;
+}
+
+/**
+ * Whether the sessions in a folder get a skill: ticked there, turned off there
+ * (kept from them, though an account has it as a whole or an outer folder
+ * gives it), or — as the folder says nothing — what they get anyway, a faint
+ * tick. A click turns it the other way.
+ */
+function FolderTick({ id, skill, folder, busy, act }: {
+  id: string;
+  skill: string;
+  folder: LibraryFolderDto;
+  busy: boolean;
+  act: (p: Promise<LibraryOverviewDto>) => void;
+}) {
+  const mark: Mark = folder.skills.includes(skill) ? 'on' : folder.off.includes(skill) ? 'off' : null;
+  const inherited = folder.inherited[skill];
+  const next = nextMark(mark, inherited);
+  const anyway = `, as it is meant for or from a folder ${folder.path} lies in`;
+  const says =
+    mark === 'on'
+      ? `Sessions in ${folder.path} get ${skill}: ticked here`
+      : mark === 'off'
+        ? `Sessions in ${folder.path} do not get ${skill}: turned off here`
+        : inherited === 'all'
+          ? `Sessions in ${folder.path} get ${skill}${anyway}`
+          : inherited === 'some'
+            ? `Some accounts’ sessions in ${folder.path} get ${skill}${anyway}`
+            : `Sessions in ${folder.path} do not get ${skill}`;
+  const does = next === 'on' ? 'tick it here' : next === 'off' ? 'turn it off here' : mark === 'on' ? 'untick it' : 'take the off back';
+  const without = (list: string[]) => list.filter(n => n !== skill);
+  return (
+    <Tick
+      id={id}
+      title={`${says}\nClick: ${does}`}
+      checked={mark === 'on'}
+      mark={mark === 'off' ? 'off' : !mark && inherited ? 'inherited' : undefined}
+      // A click sends the folder's whole lists: one made before the last
+      // answer is in would build on the lists without the last click.
+      disabled={busy}
+      onChange={() =>
+        act(
+          librarySetFolder(
+            folder.path,
+            next === 'on' ? [...without(folder.skills), skill] : without(folder.skills),
+            next === 'off' ? [...without(folder.off), skill] : without(folder.off)
+          )
+        )
+      }
+    />
   );
 }
 
@@ -595,19 +664,7 @@ function LibraryDialog({ onClose }: { onClose: () => void }) {
                 aside={
                   <>
                     {o.skills.length > 0 && <DotLegend />}
-                    <ToolButton
-                      icon="folder"
-                      label="Add a folder…"
-                      title={
-                        'Give skills to the sessions Luna starts in a folder of yours — a repository, say — and in its worktrees.\n' +
-                        'It becomes a column here; nothing is written into the folder itself.'
-                      }
-                      onClick={() =>
-                        void pickFolder().then(p => {
-                          if (p && !o.folders.some(f => f.path.toLowerCase() === p.toLowerCase())) act(librarySetFolder(p, []));
-                        })
-                      }
-                    />
+                    <AddFolder columns={o.folders.map(f => f.path)} onAdd={p => void act(librarySetFolder(p, [], []))} />
                   </>
                 }
               >
@@ -623,7 +680,7 @@ function LibraryDialog({ onClose }: { onClose: () => void }) {
                           <th
                             colSpan={o.folders.length}
                             className="group"
-                            title="The sessions Luna starts in these folders, their worktrees included, get the skills ticked under them"
+                            title="The sessions Luna starts in these folders, their worktrees included, get the skills ticked under them, and not those turned off"
                           >
                             Sessions in
                           </th>
@@ -693,15 +750,7 @@ function LibraryDialog({ onClose }: { onClose: () => void }) {
                             </td>
                             {o.folders.map((f, i) => (
                               <td key={f.path} className="cell">
-                                <Tick
-                                  id={`lib-${s.name}-folder-${i}`}
-                                  title={`${s.name} for the sessions in ${f.path}`}
-                                  checked={f.skills.includes(s.name)}
-                                  // A tick sends the folder's whole list: one made before the last
-                                  // answer is in would build on the list without the last tick.
-                                  disabled={busy}
-                                  onChange={on => act(librarySetFolder(f.path, on ? [...f.skills, s.name] : f.skills.filter(n => n !== s.name)))}
-                                />
+                                <FolderTick id={`lib-${s.name}-folder-${i}`} skill={s.name} folder={f} busy={busy} act={act} />
                                 <CellDot places={mine.filter(p => p.target.kind === 'folder' && p.target.path === f.path)} />
                               </td>
                             ))}
@@ -738,7 +787,9 @@ function LibraryDialog({ onClose }: { onClose: () => void }) {
                   the place for procedures and recipes. It goes into the <code>skills/</code> of each account it is meant for,
                   and to the sessions Luna starts in each folder it is ticked under, worktrees included — given at their start,
                   nothing written into the folder. <i>or</i>: those accounts everywhere, and every account in its folders;{' '}
-                  <i>and</i>: only those accounts, and only in its folders. Codex lists a folder's skills as{' '}
+                  <i>and</i>: only those accounts, and only in its folders. A faint tick is a skill a folder’s sessions get
+                  anyway; turned off (✕), they do not — hidden at their start, so a CLI started outside Luna there still
+                  has an account’s copy. In a folder inside another, the inner one decides. Codex lists a folder's skills as{' '}
                   <code>&lt;folder&gt;:&lt;name&gt;</code>; for Claude Code a copy whose name a skill there already has goes by{' '}
                   <code>luna-&lt;name&gt;</code>.
                 </Note>

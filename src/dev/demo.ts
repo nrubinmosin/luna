@@ -392,7 +392,7 @@ const STALE: Record<string, WorktreeInfoDto[]> = {
 // The library: two skills laid out — one into every Claude Code account and to
 // the Codex sessions in a repository, one only for the work account's sessions
 // there, under another name as the repository has its own — and a draft that
-// does not do yet; instructions for everyone, others for the work account
+// does not do yet, turned off in the repository; instructions for everyone, others for the work account
 // alone (edited by hand there since Luna wrote them), a blank draft, and a
 // Codex account kept on its own file.
 const REPO = 'C:\\src\\asuri-app';
@@ -430,7 +430,7 @@ const LIBRARY: LibraryOverviewDto = {
     { provider: 'codex', name: 'personal' },
     { provider: 'codex', name: 'team' }
   ],
-  folders: [{ path: REPO, skills: ['luna-review', 'release-notes'], found: true }],
+  folders: [{ path: REPO, skills: ['luna-review', 'release-notes'], off: ['migrations'], found: true, inherited: { 'luna-review': 'some', migrations: 'some' } }],
   places: [
     place({ dest: `${accountsDir('anthropic', 'personal')}\\CLAUDE.md`, target: { kind: 'account', provider: 'claude', name: 'personal' }, instructions: 'main' }),
     place({ dest: `${accountsDir('anthropic', 'work')}\\CLAUDE.md`, target: { kind: 'account', provider: 'claude', name: 'work' }, instructions: 'work', status: 'changed' }),

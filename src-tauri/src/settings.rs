@@ -64,7 +64,7 @@ pub struct LibrarySettings {
     /// The accounts each skill goes into, by the skill's name.
     pub skills: std::collections::BTreeMap<String, Reach>,
     /// Folders the user named, each with the skills that sessions working
-    /// in it get.
+    /// in it get and those they do not.
     pub folders: Vec<LibraryFolder>,
     /// Skills that go only where their accounts and their folders meet:
     /// into no account as a whole, and into a folder's sessions only on the
@@ -132,7 +132,11 @@ impl From<LibrarySettingsFile> for LibrarySettings {
 #[serde(rename_all = "camelCase", default)]
 pub struct LibraryFolder {
     pub path: String,
+    /// Given to its sessions.
     pub skills: Vec<String>,
+    /// Kept from its sessions, though an account has it as a whole or a
+    /// folder this one lies in gives it (library.rs `deciding`).
+    pub off: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default)]
