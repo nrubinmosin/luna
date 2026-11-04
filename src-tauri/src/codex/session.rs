@@ -518,7 +518,8 @@ fn message_of(v: &Value) -> Option<crate::agents::Message> {
             text.push_str(t);
         }
     }
-    let text = text.trim().to_string();
+    // A helper's prompt as its caller wrote it, without Luna's note on it.
+    let text = if role == "user" { crate::pty::without_note(&text) } else { &text }.trim().to_string();
     if text.is_empty() || (role == "user" && (text.starts_with('<') || text.starts_with("# AGENTS.md"))) {
         return None;
     }
@@ -1087,6 +1088,11 @@ mod format_tests {
             r#"{"timestamp":"t","type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","text":"Reply with the single word READY."}}}"#,
             r#"{"timestamp":"t","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"READY"}]}}"#,
             r#"{"timestamp":"t","type":"event_msg","payload":{"type":"task_complete","turn_id":"t1","last_agent_message":"READY"}}"#,
+            // A helper's next turn, with the note Luna puts on each.
+            &format!(
+                r#"{{"timestamp":"t","type":"response_item","payload":{{"type":"message","role":"user","content":[{{"type":"input_text","text":{}}}]}}}}"#,
+                serde_json::to_string(&crate::pty::codex_helper_prompt("p-1", "And now?")).unwrap()
+            ),
         ];
         std::fs::write(&path, lines.join("\n") + "\n").unwrap();
 
@@ -1096,7 +1102,7 @@ mod format_tests {
 
         let (msgs, cursor) = messages_from(&path, 0);
         let got: Vec<(&str, &str)> = msgs.iter().map(|m| (m.role.as_str(), m.text.as_str())).collect();
-        assert_eq!(got, vec![("user", "Reply with the single word READY."), ("assistant", "READY")]);
+        assert_eq!(got, vec![("user", "Reply with the single word READY."), ("assistant", "READY"), ("user", "And now?")], "as asked, without Luna's note");
         assert_eq!(cursor, std::fs::metadata(&path).unwrap().len());
         let (more, _) = messages_from(&path, cursor);
         assert!(more.is_empty(), "nothing new after the cursor");
