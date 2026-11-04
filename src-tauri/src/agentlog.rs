@@ -86,8 +86,17 @@ pub fn ended(id: &str, how: &str) {
     append(&file(), json!({ "at": now(), "event": "end", "id": id, "how": how }));
 }
 
+/// UTC, as `luna_list` gives its times (background.rs `iso`).
 fn now() -> String {
-    chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%:z").to_string()
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
+/// A moment as the history gives it: UTC, a line written with the local offset
+/// before the history was in UTC too; as written, should it not read.
+fn utc(at: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(at)
+        .map(|t| t.with_timezone(&chrono::Utc).to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+        .unwrap_or_else(|_| at.to_string())
 }
 
 fn append(path: &Path, line: Value) {
@@ -159,7 +168,7 @@ fn runs_in(path: &Path, q: Option<&str>) -> Vec<Run> {
         match v["event"].as_str() {
             Some("spawn") => runs.push(Run {
                 id: s("id"),
-                at: s("at"),
+                at: utc(&s("at")),
                 ended: None,
                 how: None,
                 parent: s("parent"),
@@ -187,7 +196,7 @@ fn runs_in(path: &Path, q: Option<&str>) -> Vec<Run> {
             Some("end") => {
                 let id = s("id");
                 if let Some(run) = runs.iter_mut().rev().find(|r| r.id == id && r.ended.is_none()) {
-                    run.ended = opt("at");
+                    run.ended = opt("at").map(|at| utc(&at));
                     run.how = opt("how");
                 }
             }
@@ -212,6 +221,14 @@ fn runs_in(path: &Path, q: Option<&str>) -> Vec<Run> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_moment_is_given_in_utc_whatever_offset_it_was_written_with() {
+        assert_eq!(utc("2026-11-04T18:05:02+07:00"), "2026-11-04T11:05:02Z");
+        assert_eq!(utc("2026-11-04T11:05:02Z"), "2026-11-04T11:05:02Z");
+        assert_eq!(utc("t"), "t", "as written, should it not read");
+        assert!(now().ends_with('Z'));
+    }
 
     #[test]
     fn runs_fold_their_ends_and_come_newest_first() {

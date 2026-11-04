@@ -14,3 +14,7 @@
 src-tauri/Cargo.toml         eol=lf
 src-tauri/Cargo.lock         eol=lf
 src-tauri/gen/schemas/*.json eol=lf
+
+# The guide goes into the exe as it is checked out (mcp.rs `include_str!`), and
+# agents read it whole: the same bytes from any checkout, and no CR in them.
+src-tauri/src/luna_guide.md  eol=lf
