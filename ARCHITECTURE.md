@@ -282,7 +282,14 @@ src-tauri/src/
   the root needs no migration — just move the folders.
 - **A Codex session on disk.** Codex has no live registry, only the thread's rollout file
   `<CODEX_HOME>/sessions/YYYY/MM/DD/rollout-<local time>-<uuid>.jsonl`, a line = JSON
-  `{timestamp,type,payload}`. Which file is ours: for a fresh session — the earliest of those that appeared
+  `{timestamp,type,payload}`. Which file is ours: the thread the TUI says it is on — Luna starts it with
+  `-c tui.terminal_title=["thread-id"]`, and the pty reads the window title (OSC 0/2) off the output, which no
+  pane shows; 0.166 cuts the item to 29 characters, which leaves 25 hex digits of the uuid, matched against
+  the start of the one in the name (two alike are no answer) — once written. That follows a `/new`, `/clear`, `/fork` or `/resume`
+  in the TUI, whose new thread keeps the file it was on until its own is written; the turn count goes on
+  over every file the process has been on, each read once, and what agents are owed is read on from the
+  start of a fresh transcript or the end of one gone back to (agents.rs `moved_to`, Claude Code's `/clear`
+  and `/resume` too). Before the title has said: for a fresh session — the earliest of those that appeared
   after the spawn whose `session_meta` cwd is the folder, or a Codex worktree pointing back at it; for a
   resumed one — by the uuid in the name; the answer is remembered per chat, so two chats in one folder
   do not share a file. Only a rollout whose `session_meta.source` is `cli` can be guessed: a background

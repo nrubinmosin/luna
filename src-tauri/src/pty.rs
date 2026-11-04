@@ -634,6 +634,11 @@ pub(crate) const AUTO_REVIEW: &str = "auto-review";
 pub(crate) const AUTO_REVIEW_SANDBOX: &str = "workspace-write";
 /// Codex runs the project's hooks without asking for trust (codex/hooks.rs).
 pub(crate) const HOOKS_UNASKED: &str = "--dangerously-bypass-hook-trust";
+/// Codex puts the id of the thread it is on in the window title, which no pane
+/// shows (`PtyManager::codex_thread`): what follows it through a `/new`, a
+/// `/resume` or a `/fork` in its TUI, and tells two chats in one folder apart
+/// before either has a rollout (codex/session.rs `rollout_for`).
+const CODEX_TITLE: &str = "tui.terminal_title=[\"thread-id\"]";
 
 /// Luna's own sandbox value: Codex's read-only with the network on, which
 /// `sandbox_mode` cannot say (see `codex_read_only_net_args`).
@@ -1097,6 +1102,19 @@ impl PtyManager {
         read_composer(&bytes, rows, cols, provider)
     }
 
+    /// The thread a Codex session's TUI says it is on now (`CODEX_TITLE`), by
+    /// its id or the start of it (`thread_in_title`); None before it says, for
+    /// a session gone, and for Claude Code.
+    pub fn codex_thread(&self, id: &str) -> Option<String> {
+        let modes = {
+            let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+            let s = sessions.get(id).filter(|s| s.provider == Provider::Codex)?;
+            Arc::clone(&s.modes)
+        };
+        let m = modes.lock().unwrap_or_else(|e| e.into_inner());
+        thread_in_title(m.title.as_deref()?).map(str::to_owned)
+    }
+
     /// Whether its CLI stands at an empty prompt (see `at_empty_prompt`).
     pub fn at_prompt(&self, id: &str) -> bool {
         let found = {
@@ -1544,6 +1562,8 @@ pub async fn ensure_codex_session(
             if hooks_unasked {
                 args.push(HOOKS_UNASKED.into());
             }
+            args.push("-c".into());
+            args.push(CODEX_TITLE.into());
             envs.extend(session_envs(&id, parent.as_deref()));
             let tools = tools.unwrap_or(false);
             let settings = serde_json::json!({
@@ -2284,23 +2304,71 @@ fn split_dsr(carry: &mut Vec<u8>, chunk: &[u8]) -> Vec<Vec<u8>> {
 /// (2026), which would freeze the pane if it were replayed mid-frame.
 const KEPT_MODES: &[u16] = &[1, 25, 1000, 1002, 1003, 1004, 1006, 2004];
 
+/// The longest window title kept (`Modes::title`): a thread id is 36.
+const TITLE_MAX: usize = 256;
+
+/// The thread id a Codex title holds (`CODEX_TITLE`), or as much of it as the
+/// title gives: Codex 0.166 cuts each item to 29 characters and an ellipsis,
+/// whatever the width, which leaves 25 of its 32 hex digits — no two threads
+/// share them. The first run shaped like one, hex in groups of 8-4-4-4-12, at
+/// least into the fifth group; the shortest is told apart where it is used.
+fn thread_in_title(title: &str) -> Option<&str> {
+    const SHORTEST: usize = 25;
+    let b = title.as_bytes();
+    let fits = |j: usize, c: u8| if matches!(j, 8 | 13 | 18 | 23) { c == b'-' } else { c.is_ascii_hexdigit() };
+    (0..b.len()).find_map(|i| {
+        if i > 0 && (b[i - 1].is_ascii_hexdigit() || b[i - 1] == b'-') {
+            return None;
+        }
+        let len = b[i..].iter().take(36).enumerate().take_while(|(j, c)| fits(*j, **c)).count();
+        let ends = b.get(i + len).is_none_or(|c| !c.is_ascii_hexdigit() && *c != b'-');
+        (len >= SHORTEST && ends).then(|| &title[i..i + len])
+    })
+}
+
 /// The last state of each of `KEPT_MODES`, read off the output as it streams,
-/// so the scrollback cap cannot take it away. The scanner keeps its place
-/// between reads, so a sequence split across two of them still counts.
+/// so the scrollback cap cannot take it away, and the window title the CLI last
+/// set (OSC 0 or 2), which no pane shows. The scanner keeps its place between
+/// reads, so a sequence split across two of them still counts.
 #[derive(Default)]
 struct Modes {
     on: std::collections::BTreeMap<u16, bool>,
-    /// 0 ground, 1 after ESC, 2 after ESC [, 3 in the parameters of ESC [ ?.
+    /// 0 ground, 1 after ESC, 2 after ESC [, 3 in the parameters of ESC [ ?,
+    /// 4 in the number of ESC ], 5 in the text of a title.
     state: u8,
     params: Vec<u8>,
+    title: Option<String>,
 }
 
 impl Modes {
     fn feed(&mut self, bytes: &[u8]) {
         for &b in bytes {
             self.state = match (self.state, b) {
+                // BEL ends a title, as does ST (ESC \), whose ESC ends it here.
+                (5, 0x07 | 0x1b) => {
+                    self.title = Some(String::from_utf8_lossy(&self.params).into_owned());
+                    if b == 0x1b { 1 } else { 0 }
+                }
+                (5, _) => {
+                    if self.params.len() < TITLE_MAX {
+                        self.params.push(b);
+                    }
+                    5
+                }
                 (_, 0x1b) => 1,
                 (1, b'[') => 2,
+                (1, b']') => {
+                    self.params.clear();
+                    4
+                }
+                (4, b'0'..=b'9') if self.params.len() < 4 => {
+                    self.params.push(b);
+                    4
+                }
+                (4, b';') if matches!(self.params.as_slice(), b"0" | b"2") => {
+                    self.params.clear();
+                    5
+                }
                 (2, b'?') => {
                     self.params.clear();
                     3
@@ -2508,6 +2576,34 @@ mod tests {
         m.feed(b"text\x1b[?1000l\x1b[31m\x1b[?");
         m.feed(b"1004h");
         assert_eq!(m.replay(), "\x1b[?25l\x1b[?1000l\x1b[?1004h\x1b[?1006h\x1b[?2004h");
+    }
+
+    #[test]
+    fn the_title_is_read_across_reads_whichever_way_it_ends() {
+        let mut m = Modes::default();
+        assert_eq!(m.title, None);
+        m.feed(b"\x1b[?25l\x1b]0;01a1a632-e9d4-79");
+        assert_eq!(m.title, None, "not over yet");
+        m.feed(b"13-af6d-a936925dd16c\x07text");
+        assert_eq!(m.title.as_deref(), Some("01a1a632-e9d4-7913-af6d-a936925dd16c"));
+        assert_eq!(thread_in_title(m.title.as_deref().unwrap()), Some("01a1a632-e9d4-7913-af6d-a936925dd16c"));
+        // ST ends one too, and what follows it is read as ever.
+        m.feed(b"\x1b]2;work \xe2\x80\x94 01a1a631-dc9f-7170-a47e-388412a20b13\x1b\\\x1b[?2004h");
+        assert_eq!(thread_in_title(m.title.as_deref().unwrap()), Some("01a1a631-dc9f-7170-a47e-388412a20b13"));
+        assert!(m.replay().contains("\x1b[?2004h"));
+        // Another OSC (a hyperlink, Codex's run state) is no title.
+        m.feed(b"\x1b]8;;https://x\x07link\x1b]8;;\x07\x1b]7501;state=idle:app=codex\x07");
+        assert_eq!(thread_in_title(m.title.as_deref().unwrap()), Some("01a1a631-dc9f-7170-a47e-388412a20b13"));
+        // As Codex 0.166 draws it under ConPTY: cut to 29 and an ellipsis, alone
+        // or beside another item.
+        assert_eq!(thread_in_title("01a1a697-6e85-7be0-b03c-583f7..."), Some("01a1a697-6e85-7be0-b03c-583f7"));
+        assert_eq!(thread_in_title("01a1a698-30e8-7c22-86a3-0d5ef... | Ready"), Some("01a1a698-30e8-7c22-86a3-0d5ef"));
+        assert_eq!(thread_in_title("codex"), None);
+        assert_eq!(thread_in_title("E:\\Programs\\Luna\\codex-cli\\versions\\0.166.0\\bin\\codex.exe"), None);
+        assert_eq!(thread_in_title("01a1a631-dc9f-7170-a47e-"), None, "too little of one to tell");
+        assert_eq!(thread_in_title("01a1a631-dc9f-7170-a47e-3..."), Some("01a1a631-dc9f-7170-a47e-3"), "enough");
+        assert_eq!(thread_in_title("x01a1a631-dc9f-7170-a47e-388412a20b13"), Some("01a1a631-dc9f-7170-a47e-388412a20b13"), "a letter not hex before it");
+        assert_eq!(thread_in_title("f01a1a631-dc9f-7170-a47e-388412a20b13"), None, "a run that is not shaped like one");
     }
 
     #[test]
