@@ -332,10 +332,21 @@ mod imp {
             Some(super::ProcRead {
                 pid,
                 cpu_ms: (filetime_100ns(k) + filetime_100ns(u)) / 10_000,
-                io_bytes: io.ReadTransferCount + io.WriteTransferCount + io.OtherTransferCount,
+                io_bytes: io_bytes(&io),
                 started_ms: filetime_to_unix_ms(c),
             })
         }
+    }
+
+    /// What a process moved, read and written. Not "other" transfer, which is
+    /// control traffic: a Git Bash `grep` waiting on a pipe from `tail -f`
+    /// polls it some 70 times a second, 2.8 KB/s of "other" with nothing read
+    /// or written, which read as work and held a PC up all night. Nothing
+    /// real is lost with it: a download's network bytes show in none of the
+    /// three, only as the writes of what it saves (a `curl` to NUL: 2 MB/s
+    /// written, 32 bytes/s other).
+    pub(super) fn io_bytes(io: &IO_COUNTERS) -> u64 {
+        io.ReadTransferCount + io.WriteTransferCount
     }
 
     /// Whether a process of this pid is running now.
@@ -430,7 +441,7 @@ pub struct ProcRead {
     pub pid: u32,
     /// Kernel + user time, cumulative.
     pub cpu_ms: u64,
-    /// Read + write + other transfer, cumulative.
+    /// Read + write transfer, cumulative (`imp::io_bytes`).
     pub io_bytes: u64,
     pub started_ms: u64,
 }
@@ -537,28 +548,37 @@ pub struct Leftover {
     pub pid: u32,
     pub exe: String,
     pub started_ms: u64,
+    /// Its counters as of `read_ms`, which its rate is next taken from.
     pub cpu_ms: u64,
     pub io_bytes: u64,
-    /// When it was read.
+    /// When the counters were read: kept for LEFTOVER_WINDOW_MS, so a rate is
+    /// taken over that long.
     pub read_ms: u64,
+    /// When it was last looked at, every sample.
+    pub seen_ms: u64,
     /// When it was last at work, or since when the job it came into was quiet.
     pub moved_ms: u64,
 }
 
 /// A leftover is at work while it uses at least this much CPU per second of
-/// the time between two reads (1% of a core), or moves LEFTOVER_IO_PER_S
-/// bytes. Measured on Windows over a minute: a `tail -F` polling its file
-/// used 0.5 ms a second and 250 bytes of I/O, a `ping` 1 ms and 100; a slow
+/// the time between two reads (1% of a core), or reads and writes
+/// LEFTOVER_IO_PER_S bytes. Measured on Windows over a minute or less: a
+/// `tail -F` polling its file used 0.5 ms a second and read 4 bytes, a Git
+/// Bash `grep` waiting on its pipe 1.5 ms and none, a `ping` 1 ms; a slow
 /// download of 8 KiB a second, a compiler or a test run is past one or both.
 pub const LEFTOVER_CPU_MS_PER_S: u64 = 10;
 pub const LEFTOVER_IO_PER_S: u64 = 1024;
-/// The shortest stretch a rate is taken over: Windows counts CPU time in ticks
-/// of 15.6 ms, one of which over a second or so reads as a busy process. A read
-/// sooner after the last (a stop's) is measured with the next.
-pub const LEFTOVER_WINDOW_MS: u64 = 4_000;
-/// A process younger than this is judged by its CPU since it started alone,
-/// over this long: a start's own CPU (a `sleep` loading its DLLs) is no work,
-/// and its I/O then is loading, not doing.
+/// The shortest stretch a rate is taken over; a read sooner after the last is
+/// measured with a later one. A minute, not a sample: Windows counts CPU time
+/// in ticks of 15.6 ms, and a Git Bash loop forking a `grep` and a `sleep` every
+/// ten seconds, 1 ms a second on average, now and then passed a rate over one
+/// five-second sample — each time its LEFTOVER_HOLD_MS started over, and a
+/// dozen loops waiting for lines that never came held a PC up all night.
+pub const LEFTOVER_WINDOW_MS: u64 = 60_000;
+/// A process first seen younger than this is judged by its CPU since it
+/// started over this long: a start's own CPU (a `sleep` loading its DLLs, 16 ms
+/// and 20 KB read in its first 100 ms) is no work, nor its I/O then. Seen in
+/// the middle of its start, the rest of it is spread over the window after.
 const NEWBORN_WINDOW_MS: u64 = 30_000;
 /// At work this recently: what `luna_list` calls `active`.
 pub const LEFTOVER_ACTIVE_MS: u64 = 10 * 60 * 1000;
@@ -579,14 +599,9 @@ pub fn leftovers(old: &[Leftover], now: Vec<(ProcRead, String)>, at: u64, last_w
     let working = |cpu: u64, io: u64, ms: u64| cpu.saturating_mul(1000) >= LEFTOVER_CPU_MS_PER_S * ms || io.saturating_mul(1000) >= LEFTOVER_IO_PER_S * ms;
     now.into_iter()
         .map(|(r, exe)| {
-            // Young, it is judged by its CPU since it started alone, however it
-            // was first seen: a read in the middle of its start would count the
-            // rest of its loading as work the next time.
             let lived = at.saturating_sub(r.started_ms);
-            let newborn = lived < NEWBORN_WINDOW_MS;
             let moved_ms = match old.iter().find(|o| o.pid == r.pid && o.started_ms == r.started_ms) {
-                Some(o) if at.saturating_sub(o.read_ms) < LEFTOVER_WINDOW_MS => return Leftover { exe, ..o.clone() },
-                Some(o) if newborn => if working(r.cpu_ms, 0, NEWBORN_WINDOW_MS) { at } else { o.moved_ms },
+                Some(o) if at.saturating_sub(o.read_ms) < LEFTOVER_WINDOW_MS => return Leftover { exe, seen_ms: at, ..o.clone() },
                 Some(o) => {
                     let ms = at.saturating_sub(o.read_ms).max(1);
                     if working(r.cpu_ms.saturating_sub(o.cpu_ms), r.io_bytes.saturating_sub(o.io_bytes), ms) { at } else { o.moved_ms }
@@ -594,7 +609,7 @@ pub fn leftovers(old: &[Leftover], now: Vec<(ProcRead, String)>, at: u64, last_w
                 None if working(r.cpu_ms, 0, lived.max(NEWBORN_WINDOW_MS)) => at,
                 None => quiet_since,
             };
-            Leftover { pid: r.pid, exe, started_ms: r.started_ms, cpu_ms: r.cpu_ms, io_bytes: r.io_bytes, read_ms: at, moved_ms }
+            Leftover { pid: r.pid, exe, started_ms: r.started_ms, cpu_ms: r.cpu_ms, io_bytes: r.io_bytes, read_ms: at, seen_ms: at, moved_ms }
         })
         .collect()
 }
@@ -616,11 +631,11 @@ impl Leftover {
     }
 }
 
-/// Those of `new` that have let the machine go since `old` was read, idle for
-/// LEFTOVER_HOLD_MS on end: for the log to say so.
+/// Those of `new` that have let the machine go since `old` was looked at, idle
+/// for LEFTOVER_HOLD_MS on end: for the log to say so.
 pub fn gone_quiet(old: &[Leftover], new: &[Leftover], now: u64) -> Vec<String> {
     new.iter()
-        .filter(|l| !l.holds(now) && old.iter().any(|o| o.pid == l.pid && o.started_ms == l.started_ms && o.holds(o.read_ms)))
+        .filter(|l| !l.holds(now) && old.iter().any(|o| o.pid == l.pid && o.started_ms == l.started_ms && o.holds(o.seen_ms)))
         .map(Leftover::label)
         .collect()
 }
@@ -860,11 +875,14 @@ mod tests {
         let sleep = (ProcRead { pid: 9, cpu_ms: 31, io_bytes: 30_000, started_ms: now - 2_000 }, "sleep.exe".to_string());
         let quiet = leftovers(&old, vec![sleep.clone()], now, 900);
         assert_eq!(quiet[0].moved_ms, 900, "birth is no work");
-        // Seen in the middle of its start, the rest of its loading is no work either.
-        let mid = |at: u64, cpu_ms: u64, io_bytes: u64| (ProcRead { pid: 11, cpu_ms, io_bytes, started_ms: now - 50 + at }, "sleep.exe".to_string());
-        let seen = leftovers(&old, vec![mid(0, 15, 2_000)], now, 900);
-        let next_read = leftovers(&seen, vec![mid(0, 31, 30_000)], now + 5_000, 900);
-        assert_eq!(next_read[0].moved_ms, 900, "{next_read:?}");
+        // Seen in the middle of its start, the rest of its loading is no work
+        // either: it is taken over the window after.
+        let mid = |cpu_ms: u64, io_bytes: u64| (ProcRead { pid: 11, cpu_ms, io_bytes, started_ms: now - 50 }, "sleep.exe".to_string());
+        let seen = leftovers(&old, vec![mid(15, 2_000)], now, 900);
+        let next_read = leftovers(&seen, vec![mid(31, 30_000)], now + 5_000, 900);
+        assert_eq!((next_read[0].read_ms, next_read[0].seen_ms), (now, now + 5_000), "too soon for a rate");
+        let window_on = leftovers(&next_read, vec![mid(31, 30_000)], now + LEFTOVER_WINDOW_MS, 900);
+        assert_eq!((window_on[0].moved_ms, window_on[0].read_ms), (900, now + LEFTOVER_WINDOW_MS), "{window_on:?}");
         // ...but one that has used a core since it started is.
         let busy = (ProcRead { pid: 10, cpu_ms: 2_500, io_bytes: 0, started_ms: now - 3_000 }, "rustc.exe".to_string());
         assert_eq!(leftovers(&old, vec![busy], now, 900)[0].moved_ms, now);
@@ -881,6 +899,49 @@ mod tests {
         assert_eq!(gone_quiet(&next, &after, later), ["p3 (pid 3)"]);
         assert!(gone_quiet(&after, &leftovers(&after, vec![read(3, 30_000, 0)], later + 5_000, 900), later + 5_000).is_empty(), "said once");
         assert_eq!(quiet_ms(&after, later), Some(LEFTOVER_HOLD_MS));
+    }
+
+    /// A Git Bash `grep` left waiting on a pipe from `tail -f`, read every five
+    /// seconds as Windows gave its figures: a tick of CPU every ten seconds,
+    /// nothing read or written (its polling is "other" I/O, `imp::io_bytes`).
+    /// It holds the machine for LEFTOVER_HOLD_MS after its turn, then lets go,
+    /// once, and nothing it does in between is work.
+    #[test]
+    fn a_grep_waiting_on_a_pipe_lets_go() {
+        let turn_end = 900;
+        let read = |cpu_ms: u64| vec![(ProcRead { pid: 5, cpu_ms, io_bytes: 0, started_ms: 100 }, "grep.exe".to_string())];
+        let mut left = leftovers(&[], read(16), 1_000, turn_end);
+        let mut said = Vec::new();
+        let mut cpu = 16;
+        let end = turn_end + LEFTOVER_HOLD_MS + 10 * 60_000;
+        let mut at = 1_000;
+        for i in 1.. {
+            at += 5_000;
+            if at >= end {
+                break;
+            }
+            if i % 2 == 0 {
+                cpu += 16;
+            }
+            let next = leftovers(&left, read(cpu), at, turn_end);
+            said.extend(gone_quiet(&left, &next, at).into_iter().map(|g| (at, g)));
+            left = next;
+            assert_eq!(left[0].moved_ms, turn_end, "at {at}: no work");
+            assert_eq!(left[0].holds(at), at - turn_end < LEFTOVER_HOLD_MS, "at {at}");
+        }
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert!(said[0].0 - turn_end >= LEFTOVER_HOLD_MS && said[0].0 - turn_end < LEFTOVER_HOLD_MS + 5_000);
+    }
+
+    /// The pipe polling that made such a `grep` read as at work is not counted.
+    #[cfg(windows)]
+    #[test]
+    fn other_transfer_is_not_io() {
+        use windows::Win32::System::Threading::IO_COUNTERS;
+        let polling = IO_COUNTERS { OtherOperationCount: 1_417, OtherTransferCount: 56_680, ..Default::default() };
+        assert_eq!(imp::io_bytes(&polling), 0);
+        let download = IO_COUNTERS { WriteOperationCount: 2_067, WriteTransferCount: 16_826_368, OtherTransferCount: 256, ..Default::default() };
+        assert_eq!(imp::io_bytes(&download), 16_826_368);
     }
 
     #[test]

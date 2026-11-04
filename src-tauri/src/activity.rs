@@ -595,11 +595,18 @@ fn combine(t: &mut Track, disk: Option<Turn>, now: u64) -> Turn {
 
 /// One session's children at a sample: what of them is at work, and what holds
 /// the machine, by label, and what of its turns' leftovers has just let it go.
-/// What moved since the last sample holds it (`judge`), and what its turns
-/// started (`young`) until it has sat idle for LEFTOVER_HOLD_MS, as a helper's
-/// leftovers do (`procs::leftovers`). One with no name has gone since the read.
+/// What came up with the session holds it while it moves (`judge`, sample to
+/// sample); what its turns started (`young`) until it has sat idle for
+/// LEFTOVER_HOLD_MS, by its rate over LEFTOVER_WINDOW_MS, as a helper's
+/// leftovers do (`procs::leftovers`): a loop's one busy sample is no work, and
+/// counted as moving it would start a power-off's quiet window over each time.
+/// One with no name has gone since the read.
 fn children_at(t: &mut Track, children: Vec<ProcRead>, born_after: u64, name_of: &dyn Fn(u32) -> Option<String>, now: u64) -> (Vec<String>, Vec<String>) {
     t.procs = procs::without_furniture(procs::judge(&t.prev, &children, born_after, MIN_CPU_MS, MIN_IO_BYTES));
+    if let Some(b) = t.procs.as_mut() {
+        let young = b.young.clone();
+        b.active.retain(|p| !young.contains(p));
+    }
     let young: Vec<(ProcRead, String)> = match &t.procs {
         Some(b) => children.iter().filter(|r| b.young.contains(&r.pid)).filter_map(|r| Some((*r, name_of(r.pid)?))).collect(),
         None => Vec::new(),
@@ -796,9 +803,13 @@ mod tests {
         let (first, _) = children_at(&mut t, vec![read(1, 10), read(2, 10)], 1_000, &name, 10_000);
         assert_eq!(first, ["p1.exe (pid 1)", "p2.exe (pid 2)"]);
         assert!(t.left.iter().all(|l| l.moved_ms == 9_000), "birth is no work");
-        // Long past LEFTOVER_HOLD_MS: one burns CPU, one only sits there and lets go.
+        // Long past LEFTOVER_HOLD_MS, a window after their last read: one burns
+        // CPU, one only sits there and lets go.
         let at = 9_000 + procs::LEFTOVER_HOLD_MS + 15_000;
-        t.left.iter_mut().for_each(|l| l.read_ms = 9_000 + procs::LEFTOVER_HOLD_MS - 1_000);
+        t.left.iter_mut().for_each(|l| {
+            l.read_ms = at - procs::LEFTOVER_WINDOW_MS;
+            l.seen_ms = 9_000 + procs::LEFTOVER_HOLD_MS - 1_000;
+        });
         let (holding, gone) = children_at(&mut t, vec![read(1, 10), read(2, 2_010)], 1_000, &name, at);
         assert_eq!((holding, gone), (vec!["p2.exe (pid 2)".to_string()], vec!["p1.exe (pid 1)".to_string()]));
         // That one gone, the idle one holds nothing, and is still there for its notice.
@@ -806,6 +817,42 @@ mod tests {
         assert!(holding.is_empty() && gone.is_empty(), "let go once");
         assert!(t.procs.as_ref().is_some_and(|b| b.young == [1]), "its job is not over");
         assert_eq!(procs::quiet_ms(&t.left, at + 5_000), Some(at + 5_000 - 9_000));
+    }
+
+    /// A wait loop its turn left (`until grep …; do sleep 10; done`), sampled
+    /// every five seconds: a fork's 80 ms in one sample is no work. It neither
+    /// holds the machine at that sample, which would start a power-off's quiet
+    /// window over, nor starts its LEFTOVER_HOLD_MS over; it lets go once.
+    #[test]
+    fn a_loops_busy_sample_is_no_work() {
+        let read = |cpu_ms: u64| ProcRead { pid: 7, cpu_ms, io_bytes: 0, started_ms: 2_000 };
+        let name = |pid: u32| Some(format!("bash{pid}.exe"));
+        let mut t = Track { turn_at_ms: 9_000, ..Default::default() };
+        children_at(&mut t, vec![read(100)], 1_000, &name, 10_000);
+        // Just short of LEFTOVER_HOLD_MS since its turn, as last looked at a sample ago.
+        let start = 9_000 + procs::LEFTOVER_HOLD_MS - 30_000;
+        t.left.iter_mut().for_each(|l| {
+            l.read_ms = start - 5_000;
+            l.seen_ms = start - 5_000;
+        });
+        let mut cpu = 100;
+        let mut gone_said = 0;
+        for i in 0..36u64 {
+            let at = start + i * SAMPLE_EVERY.as_millis() as u64;
+            // A tick of CPU now and then, and one sample of 80 ms once it has
+            // sat idle long enough to let go.
+            cpu += match i {
+                8 => 80,
+                i if i % 3 == 0 => 16,
+                _ => 0,
+            };
+            let (holding, gone) = children_at(&mut t, vec![read(cpu)], 1_000, &name, at);
+            let quiet = at.saturating_sub(9_000) >= procs::LEFTOVER_HOLD_MS;
+            assert_eq!(holding.is_empty(), quiet, "sample {i}: {holding:?}");
+            gone_said += gone.len();
+            assert_eq!(t.left[0].moved_ms, 9_000, "sample {i}: no work, so none is noted");
+        }
+        assert_eq!(gone_said, 1, "let go, and said so once");
     }
 
     #[test]

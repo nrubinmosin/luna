@@ -2482,7 +2482,7 @@ pub(crate) fn left_for_test(id: &str, left: &[(&str, u32, u64)]) {
     e.left_running = !left.is_empty();
     e.left = left
         .iter()
-        .map(|(exe, pid, quiet)| Leftover { pid: *pid, exe: exe.to_string(), started_ms: 0, cpu_ms: 0, io_bytes: 0, read_ms: now, moved_ms: now - quiet })
+        .map(|(exe, pid, quiet)| Leftover { pid: *pid, exe: exe.to_string(), started_ms: 0, cpu_ms: 0, io_bytes: 0, read_ms: now, seen_ms: now, moved_ms: now - quiet })
         .collect();
 }
 
@@ -3239,11 +3239,13 @@ mod tests {
         let first = sample();
         assert!(first.busy, "just left: as quiet as its turn's end, which is no time ago");
         assert!(turn_state("left-work").unwrap().children_busy);
-        // As if both had sat there for longer than LEFTOVER_HOLD_MS since.
+        // As if both had sat there for longer than LEFTOVER_HOLD_MS since, and
+        // were last read a window ago: the next sample takes their rates.
         for l in lock().entries.get_mut("left-work").unwrap().left.iter_mut() {
             l.moved_ms = l.moved_ms.saturating_sub(crate::procs::LEFTOVER_HOLD_MS + 60_000);
+            l.read_ms = l.read_ms.saturating_sub(crate::procs::LEFTOVER_WINDOW_MS);
         }
-        std::thread::sleep(std::time::Duration::from_millis(crate::procs::LEFTOVER_WINDOW_MS + 500));
+        std::thread::sleep(std::time::Duration::from_millis(2_000));
         let now = sample();
         assert!(now.busy, "the loop burns a core");
         assert!(
