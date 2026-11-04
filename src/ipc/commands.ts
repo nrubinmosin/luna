@@ -770,6 +770,17 @@ export interface LibraryInstructionsDto {
   /** The accounts its reach takes in; a closer reach of other instructions wins. */
   accounts: Reach;
 }
+export interface LibraryFolderDto {
+  path: string;
+  /** Given to its sessions. */
+  skills: string[];
+  /** Kept from its sessions, though an account has it as a whole or a folder this one lies in gives it. */
+  off: string[];
+  found: boolean;
+  /** What its sessions would get of each skill were the folder to say nothing of it: `some` accounts' or
+   *  `all` a tick would give it to; absent: none. */
+  inherited: Record<string, 'some' | 'all'>;
+}
 export interface LibraryOverviewDto {
   root: string;
   isDefault: boolean;
@@ -785,7 +796,7 @@ export interface LibraryOverviewDto {
   skills: LibrarySkillDto[];
   /** Every account, to pick a reach from. */
   accounts: { provider: Provider; name: string }[];
-  folders: { path: string; skills: string[]; found: boolean }[];
+  folders: LibraryFolderDto[];
   places: PlaceDto[];
   /** Accounts' instruction files Luna did not write, where no instructions go, to start new ones from. */
   foundInstructions: { dest: string; target: LibraryTarget }[];
@@ -816,9 +827,10 @@ export const librarySetSource = (path: string) => call<LibraryOverviewDto>('libr
 export const librarySetInstructions = (name: string | null, accounts: Reach) =>
   call<LibraryOverviewDto>('library_set_instructions', { name, accounts });
 export const librarySetAccounts = (skill: string, accounts: Reach) => call<LibraryOverviewDto>('library_set_accounts', { skill, accounts });
-/** The skills a folder's sessions get; null stops giving them any. */
-export const librarySetFolder = (path: string, skills: string[] | null) =>
-  call<LibraryOverviewDto>('library_set_folder', { path, skills });
+/** The skills a folder's sessions get and those it keeps from them (`off`, null: as they are); `skills` null
+ *  stops the folder saying anything of either. */
+export const librarySetFolder = (path: string, skills: string[] | null, off: string[] | null = null) =>
+  call<LibraryOverviewDto>('library_set_folder', { path, skills, off });
 /** Whether a skill goes only where its accounts and its folders meet. */
 export const librarySetFoldersOnly = (skill: string, on: boolean) =>
   call<LibraryOverviewDto>('library_set_folders_only', { skill, on });

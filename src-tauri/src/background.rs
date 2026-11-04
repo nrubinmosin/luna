@@ -689,9 +689,14 @@ fn command_for(e: &Entry, id: &str) -> (Vec<String>, String, Vec<(&'static str, 
                     args.extend(["--add-dir".into(), notes.to_string_lossy().into_owned()]);
                 }
             }
-            // The skills the library gives sessions where it works, on every
-            // turn: each is a process of its own (library.rs `session_args`).
-            args.extend(crate::library::session_args(Provider::Claude, &s.account_path, &dir));
+            // The skills the library gives sessions where it works and keeps
+            // from them, on every turn: each is a process of its own
+            // (library.rs `session_args`). No hooks: its stream says it all.
+            let skills = crate::library::session_args(Provider::Claude, &s.account_path, &dir);
+            if let Some(settings) = crate::pty::claude_settings_file(id, false, &skills.hidden) {
+                args.extend(["--settings".into(), settings.to_string_lossy().into_owned()]);
+            }
+            args.extend(skills.args);
             envs.push(("CLAUDE_CONFIG_DIR", s.account_path.clone()));
             envs.push(("DISABLE_AUTOUPDATER", "1".into()));
         }
@@ -742,7 +747,7 @@ fn command_for(e: &Entry, id: &str) -> (Vec<String>, String, Vec<(&'static str, 
             }
             envs.extend(crate::pty::codex_git_envs(&s.mode));
             envs.push(("CODEX_HOME", s.account_path.clone()));
-            args.extend(crate::library::session_args(Provider::Codex, &s.account_path, &dir));
+            args.extend(crate::library::session_args(Provider::Codex, &s.account_path, &dir).args);
             // The prompt comes on stdin; Claude Code reads it there unasked.
             args.push("-".into());
         }

@@ -274,6 +274,16 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   accounts picked get it everywhere, and every account's sessions get it in the folders it
   is ticked for. **and**: only the accounts picked, and only in those folders — a skill for
   one repository on every account but one, say.
+- A folder can also keep a skill from its sessions — a repository with a skill of its own
+  that does the same job, say. A faint tick is a skill the folder's sessions get anyway, from
+  the accounts it is meant for or a folder this one lies in; a click turns it off there, a
+  red cross, and the next back. Luna hides it from the session at its start
+  (`skillOverrides` in Claude Code's `--settings`, `skills.config` in Codex's `-c`); the
+  account's copy stays, so a CLI started outside Luna there still has it. Both CLIs hide a
+  skill by name, so one of the same name the repository has goes too. Where one folder lies
+  in another, the inner one decides — off in a parent folder, ticked again in one repository.
+- "Add a folder…" lists the folders the new-chat dialog offers, and any other through the
+  picker: one holding several repositories gives its skills to each.
 - The library is the original and every place holds a copy. Luna remembers what it wrote
   where, so it touches only its own copies: anything else in an account or a folder stays,
   and a copy no longer wanted goes only while it is still exactly what Luna wrote. A copy
