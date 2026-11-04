@@ -22,7 +22,8 @@ can start other sessions and work with them.
 - Each `luna_list` row also says:
   - `turnStartedAt`: when the turn on now began; null between turns. `lastActivityAt`: its
     last event (a visible session's last transcript write); a long command or think shows
-    nothing until it ends, so quiet is not stuck. Times are UTC ISO.
+    nothing until it ends, so quiet is not stuck. Times are UTC ISO, as in `luna_sessions`
+    history.
   - `resolvedModel`: the full model id a model answered on; null until one has (Codex: what
     its rollout says the turn ran on, or the `<to>` of a `model rerouted` message).
   - `spend`: `session` and `lastTurn`, each `input` (no cache), `output`, `cacheRead`,
