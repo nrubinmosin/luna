@@ -66,6 +66,7 @@ pub fn dispatch(cmd: &str, args: Value) -> Result<Value, String> {
         "session_modes" => call!(ok args, pty::session_modes, id: String),
         "background_helpers" => call!(ok args, crate::background::background_helpers),
         "background_promote" => call!(res args, crate::background::background_promote, id: String),
+        "background_promoted" => call!(res args, crate::background::background_promoted, id: String, error: Option<String>),
         "background_kill" => call!(ok args, crate::background::background_kill, id: String),
         "background_delete" => call!(res args, crate::background::background_delete, id: String, drop_worktree: Option<bool>),
         "agent_spawned" => call!(ok args, agents::agent_spawned,

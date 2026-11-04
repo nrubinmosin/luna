@@ -8,10 +8,10 @@
  */
 import { useEffect } from 'react';
 import {
-  accountUsage, agentResumes, agentSpawned, agentSpawns, backgroundHelpers, chatNames, codexModels, deleteSession, ensureClaudeSession, ensureCodexSession,
-  type AgentSpawnRequest, type CodexModelDto, type PromotedDto
+  accountUsage, agentResumes, agentSpawned, agentSpawns, backgroundHelpers, backgroundPromote, backgroundPromoted, chatNames, codexModels, deleteSession,
+  ensureClaudeSession, ensureCodexSession, type AgentSpawnRequest, type BackgroundHelperDto, type CodexModelDto, type PromotedDto
 } from '../../ipc/commands';
-import { onAgentDeleted, onAgentPromote, onAgentReparent, onAgentSpawn, onBackgroundHelpers } from '../../ipc/events';
+import { onAgentDeleted, onAgentReparent, onAgentSpawn, onBackgroundHelpers } from '../../ipc/events';
 import { logWarn } from '../../shared/lib/log';
 import {
   AUTO_REVIEW_SANDBOX, CODEX_APPROVALS, CODEX_SANDBOXES, EFFORTS, MODEL_CLI, MODELS, PERM_CLI, accountKey,
@@ -231,10 +231,53 @@ function takeSpawn(req: AgentSpawnRequest): void {
 const samePath = (a: string, b: string) =>
   a.replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase() === b.replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase();
 
+/** Helpers this page is opening as chats right now, which the settling below leaves to it. */
+const opening = new Set<string>();
+
+/**
+ * Opens a background helper as a chat. The core holds the helper, with no turn
+ * starting, until the row is made, and lets it go only then: a row that could
+ * not be made leaves the helper as it was, never neither.
+ */
+export async function openAsChat(id: string): Promise<void> {
+  // A second click while the first is on its way: one row, made once.
+  if (opening.has(id)) return;
+  opening.add(id);
+  try {
+    const p = await backgroundPromote(id);
+    try {
+      await promote(p);
+    } catch (e) {
+      const why = e instanceof Error ? e.message : String(e);
+      await backgroundPromoted(id, why).catch(() => {});
+      throw e;
+    }
+    await backgroundPromoted(id, null);
+  } finally {
+    opening.delete(id);
+  }
+}
+
+/**
+ * Helpers a window that went away was opening as chats, settled by what this
+ * one has: its row made, the core lets the helper go; none, it goes on as a
+ * helper. A row with a helper's id is made by nothing but an opening.
+ */
+function settleOpenings(rows: BackgroundHelperDto[]): void {
+  for (const h of rows) {
+    if (opening.has(h.id)) continue;
+    const made = !!useChats.getState().findChat(h.id);
+    if (!made && !h.promoting) continue;
+    backgroundPromoted(h.id, made ? null : 'the window that was opening it as a chat went away').catch(e =>
+      logWarn('agents', `settling the opening of helper ${h.id} failed: ${String(e)}`)
+    );
+  }
+}
+
 /**
  * A background helper the user opened as a chat: a row under its parent,
  * keeping the helper's id, and its conversation resumed when a pane first
- * shows it — the core has already let go of it.
+ * shows it, once the core has let go of it.
  */
 async function promote(p: PromotedDto): Promise<void> {
   const account = useAccounts.getState().accounts.find(a => a.provider === p.provider && samePath(a.path, p.accountPath));
@@ -289,11 +332,25 @@ export function useAgentBridge() {
     let dead = false;
     const offs: Array<() => void> = [];
     const { setHelpers } = useBackground.getState();
-    void backgroundHelpers().then(rows => !dead && setHelpers(rows)).catch(() => {});
-    void onBackgroundHelpers(setHelpers).then(off => (dead ? off() : offs.push(off)));
-    void onAgentPromote(p => {
-      promote(p).catch(e => logWarn('agents', `opening helper ${p.id} as a chat failed: ${String(e)}`));
-    }).then(off => (dead ? off() : offs.push(off)));
+    // Settled as this page comes up and whenever it finds the core again: what
+    // a page gone meanwhile was opening it could not say.
+    const helpersNow = (settle: boolean) =>
+      void backgroundHelpers()
+        .then(rows => {
+          if (dead) return;
+          setHelpers(rows);
+          if (settle) settleOpenings(rows);
+        })
+        .catch(() => {});
+    void onBackgroundHelpers(setHelpers).then(off => {
+      if (dead) {
+        off();
+        return;
+      }
+      offs.push(off);
+      helpersNow(true);
+    });
+    offs.push(onCoreUp(() => helpersNow(true)));
     // Asked once listening, so that nothing falls between: what was sent before this
     // page could hear it, with no window or while one loaded, was sent to nobody.
     const askForSpawns = () =>

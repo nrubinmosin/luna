@@ -1,13 +1,14 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useShallow } from 'zustand/react/shallow';
-import { backgroundDelete, backgroundKill, backgroundPromote, type BackgroundHelperDto } from '../../ipc/commands';
+import { backgroundDelete, backgroundKill, type BackgroundHelperDto } from '../../ipc/commands';
 import { Icon } from '../../shared/ui/icons';
 import { useDialogHost } from '../../shared/ui/dialogHost';
 import { sinceLabel } from '../../shared/lib/format';
 import { logWarn } from '../../shared/lib/log';
 import { allChats, useChats } from '../chats/chats.store';
 import { rootOf, useBackground } from './background.store';
+import { openAsChat } from './bridge';
 
 /** A state as a person reads it. */
 const STATE_LABEL: Record<string, string> = {
@@ -215,7 +216,7 @@ function HelperList({ helpers, anchor, onClose }: { helpers: BackgroundHelperDto
                       : 'Make it a chat you can see and type in'
                 }
                 onClick={act('opening a helper', async () => {
-                  await backgroundPromote(h.id);
+                  await openAsChat(h.id);
                   onClose();
                 })}
               >
