@@ -87,7 +87,8 @@ can start other sessions and work with them.
   something, stops on a prompt or exits, Luna types one line into your chat starting with
   `[Luna notice, not typed by the user]`. It says what happened and how many messages the
   session wrote since it was asked, and names a file holding them: the report (the longest
-  message; if all are short, the last) first, then the last message, then the rest in order.
+  message of its last turn that wrote any; if all of those are short, the last) first, then
+  the last message, then the rest in order, earlier turns' reports among them.
   The notice quotes only the report's first line, cut to about 150 characters (`It begins:
   "…"`), and not of a turn that stopped on an error, which it says.
   It comes when your chat is between turns and the user is not typing in it; a subagent you

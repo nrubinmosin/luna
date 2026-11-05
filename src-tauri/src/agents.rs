@@ -154,6 +154,11 @@ const LET_GO: &str = "this wait was let go before it ended; the answer stays owe
 pub struct Message {
     pub role: String,
     pub text: String,
+    /// The first message after a prompt the CLI put in itself (a background
+    /// task's end it takes up), which its reader leaves out: a turn's start
+    /// all the same, for which report leads (`own_words`).
+    #[serde(skip)]
+    pub after_cli: bool,
 }
 
 /// What a session waits on a person for: a question its model put (Claude
@@ -5210,7 +5215,7 @@ fn share_replies(results: &mut [WaitedOne]) {
         let r = &mut results[i];
         if let Some(whole) = r.waited.reply.take() {
             let head: String = whole.chars().take(share).collect();
-            r.waited.reply = Some(format!("{head}\n\n[cut at {share} characters, several sessions sharing this result; {}]", answer_file(&r.id, &[whole])));
+            r.waited.reply = Some(format!("{head}\n\n[cut at {share} characters, several sessions sharing this result; {}]", answer_file(&r.id, &Said::one_turn(vec![whole]))));
         }
     }
 }
@@ -5272,7 +5277,7 @@ enum Holding {
 fn reply_of(pty: &crate::pty::PtyManager, id: &str, provider: Provider, asked_at: Option<u64>, cut: bool, stopped: bool) -> Option<String> {
     let replies = match asked_at {
         Some(at) => replies_since(pty, id, provider, at, stopped),
-        None => replies_since(pty, id, provider, 0, false).pop().into_iter().collect(),
+        None => Said::one_turn(replies_since(pty, id, provider, 0, false).texts.pop().into_iter().collect()),
     };
     reply_text(id, &replies, cut)
 }
@@ -5280,7 +5285,7 @@ fn reply_of(pty: &crate::pty::PtyManager, id: &str, provider: Provider, asked_at
 /// Messages as one reply in a tool result; None for no messages. `cut` keeps it
 /// to what one result carries, naming a file with the whole; a `wait_many`
 /// shares that out itself (`share_replies`).
-fn reply_text(id: &str, replies: &[String], cut: bool) -> Option<String> {
+fn reply_text(id: &str, replies: &Said, cut: bool) -> Option<String> {
     if replies.is_empty() {
         return None;
     }
@@ -5423,7 +5428,7 @@ fn remove(id: &str, known: Known, drop_worktree: bool, worktree: Option<String>)
     // What `luna_sessions` history has left to go on once it is gone.
     if known.parent.is_some() || known.orphan {
         let transcript = transcript_path(&pty, id);
-        let last = transcript.as_ref().and_then(|_| replies_since(&pty, id, known.provider, 0, false).pop());
+        let last = transcript.as_ref().and_then(|_| replies_since(&pty, id, known.provider, 0, false).texts.pop());
         crate::agentlog::left(
             id,
             transcript.map(|p| p.to_string_lossy().into_owned()).as_deref(),
@@ -5721,8 +5726,8 @@ enum Settled {
 /// read (`transcript_found` tells that from saying nothing). A transcript
 /// with nothing past the cursor has started over in a file of its own (a
 /// resume): the last message there is the answer.
-fn replies_since(pty: &crate::pty::PtyManager, id: &str, provider: Provider, cursor: u64, stopped: bool) -> Vec<String> {
-    let (Some(path), moved) = transcript_seen(pty, id) else { return Vec::new() };
+fn replies_since(pty: &crate::pty::PtyManager, id: &str, provider: Provider, cursor: u64, stopped: bool) -> Said {
+    let (Some(path), moved) = transcript_seen(pty, id) else { return Said::default() };
     let cursor = moved.unwrap_or(cursor);
     let mut messages = messages_at(&path, provider, cursor);
     if messages.is_empty() && cursor > 0 {
@@ -5733,8 +5738,8 @@ fn replies_since(pty: &crate::pty::PtyManager, id: &str, provider: Provider, cur
 
 /// `replies_since` for a caller already told of what came before `cursor`:
 /// nothing past it is nothing to tell, not a resume to look further back for.
-fn said_since(pty: &crate::pty::PtyManager, id: &str, provider: Provider, cursor: u64) -> Vec<String> {
-    let (Some(path), moved) = transcript_seen(pty, id) else { return Vec::new() };
+fn said_since(pty: &crate::pty::PtyManager, id: &str, provider: Provider, cursor: u64) -> Said {
+    let (Some(path), moved) = transcript_seen(pty, id) else { return Said::default() };
     own_words(messages_at(&path, provider, moved.unwrap_or(cursor)), false)
 }
 
@@ -5745,24 +5750,63 @@ fn messages_at(path: &std::path::Path, provider: Provider, from: u64) -> Vec<Mes
     }
 }
 
-/// The session's own messages of these, in order. None while a prompt is the
-/// last word: its reply is still to come, and what came before it answered
-/// something else. Not so for a turn that `stopped` short (an error, a core's
-/// going), which has said all it will: what it got to say is handed over.
-/// What the CLI put in itself (a background task's end it takes up) is no
-/// prompt, and its transcript reader leaves it out.
-fn own_words(messages: Vec<Message>, stopped: bool) -> Vec<String> {
-    if !stopped && messages.last().map_or(true, |m| m.role != "assistant") {
-        return Vec::new();
+/// What a session said since a point: its own messages in order, and where
+/// the last of its turns that said anything begins among them. Text that
+/// reached it mid-turn starts a turn of its own after that one, and the
+/// newest turn is where it stands now: its report is the one to lead with.
+#[derive(Debug, Default, PartialEq)]
+struct Said {
+    texts: Vec<String>,
+    /// Index in `texts` of the first message of the last turn that wrote any.
+    last_turn: usize,
+}
+
+impl Said {
+    /// Messages of one turn, or of turns that cannot be told apart.
+    fn one_turn(texts: Vec<String>) -> Said {
+        Said { texts, last_turn: 0 }
     }
-    messages.into_iter().filter(|m| m.role == "assistant").map(|m| m.text).collect()
+}
+
+impl std::ops::Deref for Said {
+    type Target = [String];
+    fn deref(&self) -> &[String] {
+        &self.texts
+    }
+}
+
+/// The session's own messages of these, in order, with where its last turn
+/// begins: a prompt between two of them is a turn's start, the CLI's own too. None while a prompt
+/// is the last word: its reply is still to come, and what came before it
+/// answered something else. Not so for a turn that `stopped` short (an error, a
+/// core's going), which has said all it will: what it got to say is handed
+/// over. What the CLI put in itself (a background task's end it takes up) is no
+/// prompt, and its transcript reader leaves it out.
+fn own_words(messages: Vec<Message>, stopped: bool) -> Said {
+    if !stopped && messages.last().map_or(true, |m| m.role != "assistant") {
+        return Said::default();
+    }
+    let mut said = Said::default();
+    let mut prompted = false;
+    for m in messages {
+        if m.role != "assistant" {
+            prompted = true;
+            continue;
+        }
+        if prompted || m.after_cli {
+            said.last_turn = said.texts.len();
+            prompted = false;
+        }
+        said.texts.push(m.text);
+    }
+    said
 }
 
 /// Where a notice says the answer is: a file holding it, report first
 /// (`answer_text`). The notice itself quotes no more than the report's first
 /// line (`begins`) — a caller that had a long answer cut read the whole of it
 /// back anyway, and a long notice reaches the CLI as a paste.
-fn answer_file(id: &str, replies: &[String]) -> String {
+fn answer_file(id: &str, replies: &Said) -> String {
     answer_where(note_file(id, &answer_text(replies)).as_deref())
 }
 
@@ -6014,8 +6058,8 @@ pub fn undelivered_left(id: &str, lost: &[crate::background::Queued]) {
 /// A helper's messages as one answer: the report (`report_of`), ahead of the
 /// progress lines that came before it; then the last one, a closing word
 /// ("that was a stale wakeup, nothing changed") the report must not bury;
-/// then the rest, in order.
-fn answer_text(replies: &[String]) -> String {
+/// then the rest, in order, earlier turns' reports among them.
+fn answer_text(replies: &Said) -> String {
     let longest = report_of(replies);
     let last = replies.len().saturating_sub(1);
     let mut whole = replies[longest].clone();
@@ -6033,11 +6077,15 @@ fn answer_text(replies: &[String]) -> String {
 /// short answer. None of them is a report the others lead up to.
 const SHORT_MESSAGE: usize = 400;
 
-/// Which message is the report: the longest, unless every one is short — a
-/// Codex helper writes "still running…" a dozen times before "DONE", the
-/// longest of those a progress line — when it is the last, where it ended up.
-fn report_of(replies: &[String]) -> usize {
-    let longest = (0..replies.len()).max_by_key(|&i| replies[i].chars().count()).unwrap_or(0);
+/// Which message is the report: the longest of the last turn that wrote any,
+/// unless every one of those is short — a Codex helper writes "still
+/// running…" a dozen times before "DONE", the longest of those a progress line
+/// — when it is the last, where it ended up. Not the longest of all: a turn on
+/// text sent mid-turn answers after the first, and the first's long report
+/// would lead with what it has since moved past (a commit it has rebased).
+fn report_of(replies: &Said) -> usize {
+    let from = replies.last_turn.min(replies.len().saturating_sub(1));
+    let longest = (from..replies.len()).max_by_key(|&i| replies[i].chars().count()).unwrap_or(from);
     if replies.get(longest).map_or(0, |r| r.chars().count()) < SHORT_MESSAGE {
         replies.len().saturating_sub(1)
     } else {
@@ -6079,7 +6127,7 @@ fn opening_line(report: &str) -> Option<String> {
 
 /// What a notice says of the answer beyond where it is. Not for a turn that
 /// stopped short: the first line of what it got to say is no verdict on it.
-fn begins(replies: &[String]) -> String {
+fn begins(replies: &Said) -> String {
     match replies.get(report_of(replies)).and_then(|r| opening_line(r)) {
         Some(line) => format!(". It begins: \"{line}\""),
         None => String::new(),
@@ -7696,7 +7744,7 @@ mod tests {
         let messages_at = |at: u64| -> Messages {
             let text = std::fs::read_to_string(&path).unwrap();
             let rest = &text[(at as usize).min(text.len())..];
-            (rest.lines().map(|l| Message { role: "assistant".into(), text: l.into() }).collect(), text.len() as u64)
+            (rest.lines().map(|l| Message { role: "assistant".into(), text: l.into(), after_cli: false }).collect(), text.len() as u64)
         };
         assert_eq!(cursor_after(&path, 0, 6, 3, 1, &messages_at), 2);
         assert_eq!(cursor_after(&path, 2, 6, 2, 1, &messages_at), 4);
@@ -7726,14 +7774,14 @@ mod tests {
             let _ = std::fs::remove_file(&file);
             whole
         };
-        assert_eq!(read(answer_file("q", &["Done.".into()])), "Done.");
+        assert_eq!(read(answer_file("q", &Said::one_turn(vec!["Done.".into()]))), "Done.");
         let replies = vec![
             "Let me look.".to_string(),
             format!("REPORT: the long one, with what was done. {}", "Details. ".repeat(50)),
             "Now the tests.".to_string(),
             "Nothing else changed.".to_string(),
         ];
-        let whole = read(answer_file("q", &replies));
+        let whole = read(answer_file("q", &Said::one_turn(replies)));
         assert!(whole.starts_with("REPORT: the long one"), "the report leads: {whole}");
         let last = whole.find("Nothing else changed.").unwrap();
         assert!(last < whole.find("Let me look.").unwrap(), "the last word before the progress lines");
@@ -7753,14 +7801,56 @@ mod tests {
         ]
         .map(String::from)
         .to_vec();
+        let replies = Said::one_turn(replies);
         let whole = answer_text(&replies);
         assert!(whole.starts_with("R2 DONE FOURTH\nKIWI\n\n---\n\nEverything else it said, in order:\n\nI’ll run the ping"), "{whole}");
         assert!(!whole.contains("Its last message"), "it leads already");
         assert_eq!(begins(&replies), ". It begins: \"R2 DONE FOURTH\"");
         // One that is not short is the report, wherever it is.
-        let mut with_report = replies.clone();
+        let mut with_report = replies.texts.clone();
         with_report.insert(1, format!("Findings: {}", "a finding. ".repeat(40)));
-        assert!(answer_text(&with_report).starts_with("Findings:"));
+        assert!(answer_text(&Said::one_turn(with_report)).starts_with("Findings:"));
+    }
+
+    /// As helper B put it on 2026-11-04: a long report at one commit, then text
+    /// queued mid-turn, then a shorter report at the commit it moved on to.
+    #[test]
+    fn the_last_turn_reports() {
+        let m = |role: &str, text: String| Message { role: role.into(), text, after_cli: false };
+        let first = format!("The new tip is 5ce3b92d2. {}", "Details. ".repeat(120));
+        let second = format!("The new tip is cfeb7186f. {}", "Lanes green. ".repeat(40));
+        let said = own_words(
+            vec![
+                m("user", "Rebase and verify.".into()),
+                m("assistant", "Rebasing.".into()),
+                m("assistant", first.clone()),
+                m("user", "Also add the two ride-alongs.".into()),
+                m("assistant", "On it.".into()),
+                m("assistant", second.clone()),
+                m("assistant", "Nothing pushed.".into()),
+            ],
+            false,
+        );
+        assert_eq!(said.last_turn, 2, "the second prompt's turn starts at its first message");
+        assert_eq!(said[report_of(&said)], second, "not the longest of all: that one is behind it");
+        assert!(begins(&said).starts_with(". It begins: \"The new tip is cfeb7186f."), "the notice quotes it too");
+        let whole = answer_text(&said);
+        assert!(whole.starts_with("The new tip is cfeb7186f."), "{whole}");
+        let (last, older) = (whole.find("Nothing pushed.").unwrap(), whole.find("The new tip is 5ce3b92d2.").unwrap());
+        assert!(last < older, "the last word, then the earlier turn among the rest");
+        // A last turn of short lines only: its last line leads, not the
+        // earlier turn's long report.
+        let said = own_words(vec![m("assistant", first.clone()), m("user", "Status?".into()), m("assistant", "Still green at 5ce3b92d2.".into())], false);
+        assert_eq!(said[report_of(&said)], "Still green at 5ce3b92d2.");
+        // Stopped on its prompt, with nothing said to it: the turn before stands.
+        let said = own_words(vec![m("assistant", first.clone()), m("user", "And now?".into())], true);
+        assert_eq!((said.last_turn, said[report_of(&said)].clone()), (0, first.clone()));
+        // A turn the CLI started itself, on a background job's end, is one
+        // too, though its prompt is not among the messages.
+        let mut taken_up = m("assistant", "The lane finished green at 9f3e2a1; nothing else changed.".into());
+        taken_up.after_cli = true;
+        let said = own_words(vec![m("user", "Verify it.".into()), m("assistant", first), taken_up], false);
+        assert_eq!(said[report_of(&said)], "The lane finished green at 9f3e2a1; nothing else changed.");
     }
 
     /// Two subagents on permission prompts at once: each answer settles its
@@ -7782,7 +7872,7 @@ mod tests {
 
     #[test]
     fn the_same_answer_is_the_same_file() {
-        let path = |replies: &[String]| answer_file("same", replies).trim_start_matches("the answer is in ").trim_end_matches(", its report first").to_string();
+        let path = |replies: &[String]| answer_file("same", &Said::one_turn(replies.to_vec())).trim_start_matches("the answer is in ").trim_end_matches(", its report first").to_string();
         let replies = vec!["The report.".to_string()];
         let (first, again) = (path(&replies), path(&replies));
         assert_eq!(first, again, "a notice a draft holds back writes no new file at every look");
@@ -7880,11 +7970,11 @@ mod tests {
         assert!(cut.chars().count() <= NOTICE_QUOTE + 1, "{}", cut.chars().count());
 
         let report = format!("# Report\nThe long one, with what was done. {}", "Details. ".repeat(50));
-        let replies = vec!["Let me look.".to_string(), report, "Nothing else.".to_string()];
+        let replies = Said::one_turn(vec!["Let me look.".to_string(), report, "Nothing else.".to_string()]);
         assert_eq!(begins(&replies), ". It begins: \"Report\"", "the longest message, as the file leads with it");
         assert!(!begins(&replies).contains('\n'));
-        assert_eq!(begins(&["---".to_string()]), "", "nothing worth quoting, no clause");
-        assert_eq!(begins(&[]), "");
+        assert_eq!(begins(&Said::one_turn(vec!["---".to_string()])), "", "nothing worth quoting, no clause");
+        assert_eq!(begins(&Said::default()), "");
     }
 
     #[test]
@@ -8146,7 +8236,7 @@ mod tests {
 
     #[test]
     fn answer_files_never_share_a_name() {
-        let line = |text: &str| answer_file("same-ms", &[text.to_string()]);
+        let line = |text: &str| answer_file("same-ms", &Said::one_turn(vec![text.to_string()]));
         let lines: Vec<String> = (0..20).map(|i| line(&format!("answer {i}"))).collect();
         for (i, l) in lines.iter().enumerate() {
             let file = l.trim_start_matches("the answer is in ").trim_end_matches(", its report first");
@@ -10407,7 +10497,7 @@ mod tests {
 
     #[test]
     fn text_going_in_is_found_in_what_the_session_was_told() {
-        let m = |role: &str, text: &str| Message { role: role.into(), text: text.into() };
+        let m = |role: &str, text: &str| Message { role: role.into(), text: text.into(), after_cli: false };
         let needle = needle_of("[tag] carry on\n\nThese messages:\n\nthe held   text", "the held\ntext");
         assert_eq!(needle, "the held text", "words, however they are laid out");
         let told = [m("assistant", "the held text"), m("user", "[tag] carry on\n\nthe held\n text and more")];
