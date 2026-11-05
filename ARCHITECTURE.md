@@ -616,8 +616,8 @@ src-tauri/src/
   reserved from the notice (`Reserved`) however long the others take; all are handed over together when the
   response is made, and a cancel crossing it undoes them together, except an answer a later call has delivered
   since (`receipts`): a core going or a cancel before that leaves the notice to bring them. `luna_list` adds
-  a `task` (the prompt's first line, `Registry::tasks`, kept in the ties as `agents.jsonl` is cut under a live
-  helper), `branch` and `sha` (`worktree::head_at`: off the `.git` files through any symbolic refs, no process
+  a `task` (the prompt's first line, `Registry::tasks`, set in `spawn_is` as a session comes of the spawn, however
+  late, and kept in the ties as `agents.jsonl` is cut under a live helper), `branch` and `sha` (`worktree::head_at`: off the `.git` files through any symbolic refs, no process
   per row) and
   `Signs` per row: for a background helper from its event stream (`Observed`, saved in `helpers.json` but for
   the last event's moment), for a visible one from the activity track and its transcript. Its `context` is
@@ -648,7 +648,8 @@ src-tauri/src/
   they go once they are all it is owed, or nothing anywhere is busy (`Summary::busy`; all a power-off's count starts
   on, and it knows no debts), or after `RIDE_MAX_MS`, as a caller may be waiting on that very job while another
   runs for days. Their debts stay open meanwhile, so `luna_wait` and `reap` see them as ever, and news
-  replaces the line. Turns on notices are
+  replaces the line. Let out is not heard: a draft that holds a Codex caller's notice back starts no turn, so a
+  power-off goes ahead of it, as it does of any notice held so. Turns on notices are
   skipped over, the cursor staying put, so what they said comes with the next word. This is what ended a night of
   460 notices an hour: every notice started a turn, every such turn's end re-owed the answer at the new count, and any
   leftover process made `children_busy` true. A debt that was not told this cannot loop: a notice consumes it.

@@ -3007,7 +3007,6 @@ fn spawn_with(caller: &str, mut params: SpawnParams, replaces: Option<u64>, stil
     if auto_delete {
         reg().lock().unwrap_or_else(|e| e.into_inner()).auto.insert(id.clone(), Auto::default());
     }
-    note_task(&id, &prompt);
     crate::agentlog::spawned(&crate::agentlog::Spawn {
         id: &id,
         parent: caller,
@@ -3232,7 +3231,6 @@ fn spawn_background(caller: &str, params: SpawnParams, account_path: String, in_
         forget(&id);
         return Err(e);
     }
-    note_task(&id, &params.prompt);
     crate::agentlog::spawned(&crate::agentlog::Spawn {
         id: &id,
         parent: caller,
@@ -3320,6 +3318,7 @@ pub fn spawn_is(request: u64, id: &str) -> Result<(), String> {
         let codex = s.params.provider.as_deref() == Some(Provider::Codex.as_str());
         let name = (own_worktree && !codex && s.visible).then(|| helper_worktree_name(id));
         let before = (own_worktree && codex).then(|| s.worktrees_before.clone());
+        let task = first_words(&s.params.prompt, TASK_CHARS);
         if borrowed {
             r.borrowed.insert(id.to_string());
         }
@@ -3333,6 +3332,9 @@ pub fn spawn_is(request: u64, id: &str) -> Result<(), String> {
         }
         if let Some(text) = opening {
             r.openings.insert(id.to_string(), Opening { text, floor: 0, lost: false, at_ms: now_ms() });
+        }
+        if let Some(task) = task {
+            r.tasks.insert(id.to_string(), task);
         }
         if let Some(name) = name {
             r.worktree_names.insert(id.to_string(), name);
@@ -6165,13 +6167,6 @@ fn opening_line(report: &str) -> Option<String> {
 
 /// The most of a helper's task `luna_list` gives: it comes with every row.
 const TASK_CHARS: usize = 100;
-
-/// Keeps what a helper was spawned on for `luna_list`.
-fn note_task(id: &str, prompt: &str) {
-    if let Some(task) = first_words(crate::pty::without_note(prompt), TASK_CHARS) {
-        reg().lock().unwrap_or_else(|e| e.into_inner()).tasks.insert(id.to_string(), task);
-    }
-}
 
 /// The first line of `text` that says anything, as `opening_line` puts it, cut to
 /// `most` characters.
@@ -9146,7 +9141,7 @@ mod tests {
         let none = serde_json::json!({});
         // A background helper, through helpers.json.
         register("tk-h", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("tk-c"), false, none.clone());
-        note_task("tk-h", "Review the diff\nin detail");
+        reg().lock().unwrap().tasks.insert("tk-h".into(), first_words("Review the diff\nin detail", TASK_CHARS).unwrap());
         let saved: Ties = serde_json::from_slice(&serde_json::to_vec(&ties_of("tk-h").unwrap()).unwrap()).unwrap();
         assert_eq!(saved.task.as_deref(), Some("Review the diff"));
         forget("tk-h");
@@ -9156,7 +9151,7 @@ mod tests {
         forget("tk-h");
         // A visible one, through chat-ties.json.
         register("tk-v", Provider::Codex, "C:\\p", "C:\\acc\\openai\\one", Some("tk-c"), false, none);
-        note_task("tk-v", "Run the lane");
+        reg().lock().unwrap().tasks.insert("tk-v".into(), "Run the lane".into());
         let ties = ties_of("tk-v").unwrap();
         let chat = SavedChat { id: "tk-v".into(), provider: Provider::Codex, folder: "C:\\p".into(), account_path: "C:\\acc\\openai\\one".into(), turns_ended: 0, transcript: None, mid_turn: false, ties };
         let saved: SavedChats = serde_json::from_slice(&serde_json::to_vec(&SavedChats { chats: vec![chat], ..Default::default() }).unwrap()).unwrap();
@@ -9167,6 +9162,34 @@ mod tests {
         // A file from before there were tasks reads as none.
         let older: Ties = serde_json::from_value(serde_json::json!({ "parent": null, "name": null, "settings": {}, "tools": false, "borrowed": false, "autoDelete": false, "owed": [], "seen": [] })).unwrap();
         assert_eq!(older.task, None);
+    }
+
+    /// A visible spawn the window answers past SPAWN_TIMEOUT never gets past its
+    /// wait, and a core may go before it does: its task is there from the moment
+    /// a session comes of it, in what the next core reads.
+    #[test]
+    fn a_spawn_has_its_task_as_soon_as_a_session_comes_of_it() {
+        let _one = spawns_to_myself();
+        let params: SpawnParams = serde_json::from_value(serde_json::json!({ "prompt": "# Late to the window\n\nThe rest.", "visible": true })).unwrap();
+        let under_way = SpawnUnderWay::begin("tl-caller", &params, "C:\\acc\\anthropic\\one", None, None).unwrap();
+        let request = under_way.0;
+        register("tl-helper", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("tl-caller"), false, serde_json::json!({}));
+        spawn_is(request, "tl-helper").unwrap();
+        // Nothing past that has run: the spawn's own thread has long given up.
+        let saved = chats_now();
+        assert_eq!(saved.chats.iter().find(|c| c.id == "tl-helper").and_then(|c| c.ties.task.as_deref()), Some("Late to the window"));
+        let saved: SavedChats = serde_json::from_slice(&serde_json::to_vec(&saved).unwrap()).unwrap();
+        forget("tl-helper");
+        take_up_chats(saved);
+        assert_eq!(reg().lock().unwrap().tasks["tl-helper"], "Late to the window", "across a core");
+        drop(under_way);
+        forget("tl-helper");
+        // A spawn given up on leaves nothing behind.
+        let under_way = SpawnUnderWay::begin("tl-caller", &params, "C:\\acc\\anthropic\\one", None, None).unwrap();
+        reg().lock().unwrap().spawns.get_mut(&under_way.0).unwrap().settled = true;
+        register("tl-late", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("tl-caller"), false, serde_json::json!({}));
+        assert!(spawn_is(under_way.0, "tl-late").is_err());
+        assert!(!reg().lock().unwrap().tasks.contains_key("tl-late"));
     }
 
     /// A job's end with no word from it, or an idle job, is told of with the
