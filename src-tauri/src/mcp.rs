@@ -251,7 +251,7 @@ fn tools() -> Value {
         },
         {
             "name": "luna_send",
-            "description": "Send text to a session (any from luna_sessions) as a prompt; it reads as the user's, so name yourself to one you did not spawn. Returns stateBefore, queued (it was working: joins that turn or the next), held (a user's draft is in the way: typed in later), started (false if neither = not taken, see screen), turnsEnded for luna_wait afterTurn.",
+            "description": "Send a prompt to a session (any from luna_sessions), read as the user's: name yourself to one you did not spawn. Returns stateBefore, queued (it was working: that turn or the next; Codex helper: next), joined (Claude helper: next tool boundary), held (a user's draft: typed in later), started (false if neither = not taken, see screen), turnsEnded for luna_wait afterTurn.",
             "inputSchema": s(json!({
                 "id": { "type": "string" },
                 "text": { "type": "string" },
@@ -274,7 +274,7 @@ fn tools() -> Value {
         },
         {
             "name": "luna_read",
-            "description": "Messages of any session from its transcript. `since` = cursor from an earlier read; `last` = only the last N messages (default 1; all after `since`). Cut past 60k chars (leftOut): `since` alone goes on from cursor, `last` keeps the newest. Also returns state and ask.",
+            "description": "Messages of any session from its transcript. `since` = cursor from an earlier read; `last` = only the last N messages (default 1; all after `since`). Cut past 60k chars (leftOut): `since` alone goes on from cursor, `last` keeps the newest. Also: state, ask.",
             "inputSchema": s(json!({
                 "id": { "type": "string" },
                 "since": { "type": "integer" },
@@ -318,7 +318,7 @@ fn tools() -> Value {
         },
         {
             "name": "luna_notify",
-            "description": "Desktop notification to the user. For a result or blocker they must see now, not progress; a turn ending on a question to them already notifies. One per 10 s.",
+            "description": "Desktop notification. For a result or blocker they must see now, not progress; a turn ending on a question notifies anyway. One per 10 s.",
             "inputSchema": s(json!({ "text": { "type": "string" } }), &["text"]),
             "annotations": acts
         },

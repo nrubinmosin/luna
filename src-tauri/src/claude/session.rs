@@ -939,6 +939,24 @@ pub fn messages_from(path: &Path, from: u64, with_tools: bool) -> (Vec<crate::ag
     (out, read)
 }
 
+/// Whether the conversation has taken in the stdin line `uuid`: a line that
+/// opened a turn is a user line under that uuid, one taken in at a tool boundary
+/// an attachment naming it. Its `queue-operation` lines are no sign: what is only
+/// queued goes with the process. None if the file cannot be read.
+pub fn took_line(path: &Path, uuid: &str) -> Option<bool> {
+    std::fs::File::open(path).ok()?;
+    let mut found = false;
+    crate::pty::complete_lines(path, 0, |line| {
+        if found || !line.contains(uuid) {
+            return;
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { return };
+        let attached = &v["attachment"];
+        found = (v["type"] == "user" && v["uuid"] == uuid) || (v["type"] == "attachment" && attached["type"] == "queued_command" && attached["source_uuid"] == uuid);
+    });
+    Some(found)
+}
+
 /// A transcript line that is a turn of the conversation.
 enum Line {
     Said(crate::agents::Message),
@@ -1260,5 +1278,25 @@ mod reading_tests {
         let said = api_error_of(&path).expect("the error, past the snapshot");
         assert!(said.ends_with("Invalid API key · Fix external API key"), "{said}");
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_line_counts_as_taken_in_by_a_user_line_or_its_attachment_not_by_the_queue() {
+        let dir = std::env::temp_dir().join(format!("luna-took-line-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.jsonl");
+        let lines = [
+            r#"{"type":"queue-operation","operation":"enqueue","content":"only queued 11111111"}"#,
+            r#"{"type":"user","uuid":"22222222","message":{"role":"user","content":"it opened a turn"}}"#,
+            r#"{"type":"attachment","attachment":{"type":"queued_command","prompt":"folded","source_uuid":"33333333"}}"#,
+            r#"{"type":"assistant","uuid":"44444444","message":{"content":[{"type":"text","text":"says 11111111"}]}}"#,
+        ];
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        assert_eq!(took_line(&path, "11111111"), Some(false));
+        assert_eq!(took_line(&path, "22222222"), Some(true));
+        assert_eq!(took_line(&path, "33333333"), Some(true));
+        assert_eq!(took_line(&path, "44444444"), Some(false), "not a prompt");
+        assert_eq!(took_line(&dir.join("gone.jsonl"), "22222222"), None);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
