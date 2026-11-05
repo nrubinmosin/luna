@@ -2127,10 +2127,7 @@ fn signed_in(provider: Provider, account_path: &str) -> bool {
 /// What `luna_list` says of a visible session beyond its state: its turn's
 /// start from the activity tracker, and from its transcript when the CLI last
 /// wrote there — the screen is no measure, a spinner paints through a hung
-/// call — and the model. What it spent only where the file has it to hand:
-/// Codex's rollout states the thread's total. Claude Code's transcript would
-/// have to be summed whole, line by line with repeats, its subagents in files
-/// of their own and no cost anywhere.
+/// call — the model and how full its context is.
 fn visible_signs(pty: &crate::pty::PtyManager, id: &str, provider: Provider) -> crate::background::Signs {
     let turn_started_at = crate::activity::turn_started_ms(id).and_then(crate::background::iso);
     let Some(path) = transcript_path(pty, id) else {
@@ -2141,19 +2138,15 @@ fn visible_signs(pty: &crate::pty::PtyManager, id: &str, provider: Provider) -> 
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .and_then(|d| crate::background::iso(d.as_millis() as u64));
-    let (resolved_model, spend) = match provider {
-        Provider::Claude => (crate::claude::session::last_model(&path), None),
-        Provider::Codex => {
-            let tail = crate::codex::session::read_tail(&path);
-            let session = tail.total_usage.as_ref().map(crate::background::Usage::of_codex);
-            // The rollout names the model a turn is to run on before asking it:
-            // the one that answered is the last with tokens spent after it.
-            let model = crate::codex::session::answered_model(&path);
-            (model, session.map(|session| crate::background::Spend { last_turn: None, session }))
-        }
+    let resolved_model = match provider {
+        Provider::Claude => crate::claude::session::last_model(&path),
+        // The rollout names the model a turn is to run on before asking it:
+        // the one that answered is the last with tokens spent after it.
+        Provider::Codex => crate::codex::session::answered_model(&path),
     };
+    let context = crate::background::Context::of(&path, provider);
     let left_running = crate::background::shown(&crate::activity::left_running(id), now_ms());
-    crate::background::Signs { turn_started_at, last_activity_at, resolved_model, spend, left_running }
+    crate::background::Signs { turn_started_at, last_activity_at, resolved_model, context, left_running }
 }
 
 pub fn list(caller: &str) -> Listing {

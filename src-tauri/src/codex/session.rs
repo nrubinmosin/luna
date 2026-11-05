@@ -618,8 +618,6 @@ pub struct Tail {
     pub context_window: Option<f64>,
     /// The last `rate_limits` snapshot and the timestamp of its line.
     pub rate_limits: Option<(Value, String)>,
-    /// The thread's running token totals (`total_token_usage`).
-    pub total_usage: Option<Value>,
 }
 
 pub fn read_tail(path: &Path) -> Tail {
@@ -645,9 +643,6 @@ pub fn read_tail(path: &Path) -> Tail {
                     if out.context_tokens.is_none() {
                         let info = &payload["info"];
                         if info.is_object() {
-                            if out.total_usage.is_none() && info["total_token_usage"].is_object() {
-                                out.total_usage = Some(info["total_token_usage"].clone());
-                            }
                             let last = &info["last_token_usage"];
                             let total = last["total_tokens"].as_f64().unwrap_or(0.0);
                             let reasoning = last["reasoning_output_tokens"].as_f64().unwrap_or(0.0);
@@ -692,8 +687,6 @@ pub fn last_model(path: &Path) -> Option<String> {
         .or_else(|| std::fs::read(path).ok().and_then(|b| model_in(&String::from_utf8_lossy(&b))))
 }
 
-/// The thread's running token totals as a rollout last counted them, the whole
-/// file read only when a turn with much output has pushed them out of the tail.
 /// The model of the last turn that was answered: the latest `turn_context` (or
 /// reroute) after which the thread's running total of tokens grew. The rollout
 /// names a turn's model before asking it, so the latest alone may be one that
@@ -781,19 +774,6 @@ fn due_in(text: &str) -> Option<u64> {
         }
     }
     open.iter().map(|(_, due)| *due).max()
-}
-
-pub fn last_total_usage(path: &Path) -> Option<Value> {
-    let total_in = |text: &str| {
-        text.lines().rev().filter(|l| l.contains("\"total_token_usage\"")).find_map(|line| {
-            let v = serde_json::from_str::<Value>(line).ok()?;
-            let total = &v["payload"]["info"]["total_token_usage"];
-            total.is_object().then(|| total.clone())
-        })
-    };
-    tail(path, 128 * 1024)
-        .and_then(|t| total_in(&t))
-        .or_else(|| std::fs::read(path).ok().and_then(|b| total_in(&String::from_utf8_lossy(&b))))
 }
 
 /// Whether a Codex screen shows an approval dialog — a command to run, an edit
@@ -905,7 +885,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_rollout_names_its_model_and_running_totals() {
+    fn a_rollout_names_its_model_and_context() {
         let path = std::env::temp_dir().join(format!("luna-rollout-model-{}.jsonl", std::process::id()));
         // As `codex exec` 0.166.0 wrote them, cut to the fields read here. The
         // last `token_count` is the one that counts; a later one with no
@@ -932,16 +912,12 @@ mod tests {
         assert_eq!(answered_model(&path), None, "none has yet");
         std::fs::write(&path, head).unwrap();
         let tail = read_tail(&path);
-        assert_eq!(tail.model.as_deref(), Some("gpt-6.1-sol"));
-        let total = crate::background::Usage::of_codex(&tail.total_usage.unwrap());
-        assert_eq!((total.input, total.cache_read, total.output), (4601, 27776, 10));
+        assert_eq!((tail.model.as_deref(), tail.context_tokens), (Some("gpt-6.1-sol"), Some(16867.0)));
 
         // A turn whose output pushed the line out of the tail.
         let filler = format!("{{\"type\":\"response_item\",\"payload\":\"{}\"}}\n", "x".repeat(200 * 1024));
         std::fs::write(&path, format!("{head}{filler}")).unwrap();
         assert_eq!(last_model(&path).as_deref(), Some("gpt-6.1-sol"), "read from the whole file");
-        let total = crate::background::Usage::of_codex(&last_total_usage(&path).unwrap());
-        assert_eq!(total.output, 10, "so are the totals");
 
         // A reroute stands for its turn; the next turn's context comes after it.
         let rerouted = r#"{"timestamp":"t","type":"event_msg","payload":{"type":"model_reroute","from_model":"gpt-6.1-sol","to_model":"gpt-other","reason":"x"}}"#;

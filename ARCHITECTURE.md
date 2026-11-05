@@ -593,15 +593,11 @@ src-tauri/src/
   response is made, and a cancel crossing it undoes them together, except an answer a later call has delivered
   since (`receipts`): a core going or a cancel before that leaves the notice to bring them. `luna_list` adds
   `Signs` per row: for a background helper from its event stream (`Observed`, saved in `helpers.json` but for
-  the last event's moment), for a visible one from the activity track and its transcript. Claude Code's turn
-  figure is `model_usage_since_last_result`, since `modelUsage` and `total_cost_usd` run on over a resume. A
-  turn it gets killed in has no `result` and is not in the next running total, so its messages' usage is added
-  up as they come (`unreported`), tokens with no cost. Codex's `turn.completed.usage` is the thread's running
-  total, so its turn is the difference from where the rollout's total stood as the turn started (a turn killed
-  before is in it), and a turn with no `turn.completed` is read off the rollout when it ends. Its model comes
-  from the rollout's `turn_context`, or for that turn from the `model rerouted` item a reroute leaves in the
-  stream, and only of a turn its model got to: the rollout names the model a turn is to run on before asking
-  it. Claude Code's comes from the model's messages, not `init`, which names the one asked for, there or not;
+  the last event's moment), for a visible one from the activity track and its transcript. Its `context` is
+  read for either off the tail of the transcript or rollout, as the pane's meter reads it (`Context::of`). A
+  Codex helper's model comes from the rollout's `turn_context`, or for that turn from the `model rerouted` item
+  a reroute leaves in the stream, and only of a turn its model got to: the rollout names the model a turn is to
+  run on before asking it. Claude Code's comes from the model's messages, not `init`, which names the one asked for, there or not;
   where the rollout names none, the one asked for stands only once a model has answered (`Observed::answered`,
   saved). A visible Codex's is the last `turn_context` after which the thread's token total grew
   (`answered_model`): a count is written again unchanged when rate limits renew. A

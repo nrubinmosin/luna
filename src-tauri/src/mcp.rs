@@ -211,7 +211,7 @@ fn tools() -> Value {
     json!([
         {
             "name": "luna_list",
-            "description": "Your id (me), sessions you spawned (state, ask, turnsEnded, worktree, deletesInMin, turnStartedAt, lastActivityAt, resolvedModel, spend, leftRunning) and accounts you may use: models, a helper's defaults in your folder, usage (% per window, resets).",
+            "description": "Your id (me), sessions you spawned (state, ask, turnsEnded, worktree, deletesInMin, turnStartedAt, lastActivityAt, resolvedModel, context (% of window used), leftRunning) and accounts you may use: models, a helper's defaults in your folder, usage (% per window, resets).",
             "inputSchema": s(json!({}), &[]),
             "annotations": reads
         },

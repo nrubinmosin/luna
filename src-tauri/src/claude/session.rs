@@ -73,6 +73,12 @@ pub fn last_model(path: &Path) -> Option<String> {
     ending(path).model
 }
 
+/// The context the last answer in a transcript used, as (tokens, window): what
+/// the pane's meter shows, read with the rest of its `Ending`.
+pub fn last_context(path: &Path) -> Option<(f64, f64)> {
+    ending(path).context.map(|c| (c.tokens, c.window))
+}
+
 /// See `last_model`: the CLI's own stand-in for a message no model wrote
 /// reads `<synthetic>`.
 fn model_in(text: &str) -> Option<String> {
