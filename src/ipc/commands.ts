@@ -36,7 +36,8 @@ const CORE_CALL: ReadonlySet<string> = new Set([
   'orphan_sessions', 'session_meta', 'session_modes', 'dismiss_waiting', 'agent_spawned', 'agent_resumes', 'agent_spawns', 'chat_names', 'account_usage', 'power_state',
   'background_helpers', 'background_promote', 'background_promoted', 'background_kill', 'background_delete',
   'set_keep_awake', 'arm_power_off', 'disarm_power_off', 'rename_account', 'orphan_worktrees',
-  'remove_orphan_worktrees', 'sync_settings_now', 'recommendations', 'apply_recommendation', 'dismiss_recommendation'
+  'remove_orphan_worktrees', 'sync_settings_now', 'recommendations', 'apply_recommendation', 'dismiss_recommendation',
+  'apply_recommended', 'codex_folder_trusted', 'codex_trust_folder'
 ]);
 const CORE_SEND: ReadonlySet<string> = new Set(['write_session', 'resize_session']);
 

@@ -72,7 +72,7 @@ pub fn claude_folder_trusted(account_path: String, folder: String) -> Result<boo
 #[tauri::command]
 pub fn claude_trust_folder(account_path: String, folder: String) -> Result<(), String> {
     let path = config_file(&account_path)?;
-    let _editing = crate::account_settings::editing();
+    let _editing = crate::account_settings::editing()?;
     let mut cfg = read_config_for_write(&path)?;
 
     let projects = cfg

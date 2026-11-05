@@ -245,7 +245,6 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             account_settings::recommended_settings,
-            account_settings::apply_recommended,
             account_settings::settings_sync_state,
             account_settings::set_settings_parent,
             account_settings::set_settings_sync_on_start,
@@ -270,8 +269,6 @@ pub fn run() {
             codex::hooks::keep_codex_hooks,
             codex::limits::codex_limits,
             codex::models::codex_models,
-            codex::trust::codex_folder_trusted,
-            codex::trust::codex_trust_folder,
             codex::trust::codex_trusted_roots,
             codex::trust::set_codex_trusted_roots,
             library::library_overview,

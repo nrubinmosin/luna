@@ -97,10 +97,23 @@ struct Facts {
     claude_policy: Policy,
     codex_policy: Policy,
     claude_version: Option<String>,
+    /// What the machine's Codex defaults say of the hooks feature.
+    codex_default_hooks: Option<bool>,
     accounts: Vec<Account>,
 }
 
+/// What a check of one file goes by beside the file.
+#[derive(Clone, Copy)]
+struct Ctx<'a> {
+    claude_version: Option<&'a str>,
+    codex_default_hooks: Option<bool>,
+}
+
 impl Facts {
+    fn ctx(&self) -> Ctx<'_> {
+        Ctx { claude_version: self.claude_version.as_deref(), codex_default_hooks: self.codex_default_hooks }
+    }
+
     fn parent_name(&self, provider: Provider) -> Option<&str> {
         match provider {
             Provider::Claude => self.settings.settings_parents.claude.as_deref(),
@@ -170,13 +183,27 @@ fn claude_policy(dir: &Path) -> Policy {
     Policy { blocked_by, unreadable }
 }
 
-/// Where Codex 0.166 reads what an administrator enforces.
-fn codex_requirements_file() -> PathBuf {
+/// Where Codex 0.166 keeps a machine's own: `requirements.toml`, which an
+/// administrator enforces, and `config.toml`, defaults an account can override.
+fn codex_system_dir() -> PathBuf {
     if cfg!(windows) {
         let root = std::env::var("ProgramData").unwrap_or_else(|_| r"C:\ProgramData".into());
-        Path::new(&root).join("OpenAI").join("Codex").join("requirements.toml")
+        Path::new(&root).join("OpenAI").join("Codex")
     } else {
-        PathBuf::from("/etc/codex/requirements.toml")
+        PathBuf::from("/etc/codex")
+    }
+}
+
+/// What the machine's Codex defaults say of the hooks feature, and None with no
+/// file or no word in it. An account's own key goes over this.
+fn codex_system_hooks(path: &Path) -> Result<Option<bool>, String> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => {
+            let doc = text.parse::<toml_edit::DocumentMut>().map_err(|e| format!("{}: {e}", path.display()))?;
+            Ok(hooks_said(&Doc::Toml(doc)))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("{}: {e}", path.display())),
     }
 }
 
@@ -217,11 +244,17 @@ fn gather() -> Result<Facts, String> {
             Account { provider: a.provider, name: a.name, path: a.path, in_use, main, global }
         })
         .collect();
+    let mut codex_policy = codex_policy(&codex_system_dir().join("requirements.toml"));
+    let codex_default_hooks = codex_system_hooks(&codex_system_dir().join("config.toml")).unwrap_or_else(|e| {
+        codex_policy.unreadable.get_or_insert(e);
+        None
+    });
     Ok(Facts {
         settings,
         claude_policy: claude_policy(&crate::claude::defaults::managed_dir()),
-        codex_policy: codex_policy(&codex_requirements_file()),
+        codex_policy,
         claude_version: crate::cli::current_version(Provider::Claude),
+        codex_default_hooks,
         accounts,
     })
 }
@@ -236,10 +269,10 @@ struct Spec {
     title: &'static str,
     why: &'static str,
     action: &'static str,
-    target: &'static str,
-    /// What the file says, when that is the trouble.
-    off: fn(&Doc, Option<&str>) -> Option<String>,
-    edits: fn() -> Vec<Edit>,
+    target: fn(Ctx) -> &'static str,
+    /// What holds with this file in place, when that is the trouble.
+    off: fn(&Doc, Ctx) -> Option<String>,
+    edits: fn(Ctx) -> Vec<Edit>,
     /// Not to be written while a session of Luna's is on the account: the CLI
     /// rewrites this file from what it read.
     quiet: bool,
@@ -252,11 +285,11 @@ struct Spec {
 /// `hooks` and the older name Codex 0.166 still takes for it.
 const HOOK_FEATURES: [&str; 2] = ["hooks", "codex_hooks"];
 
-fn claude_hooks_off(doc: &Doc, _: Option<&str>) -> Option<String> {
+fn claude_hooks_off(doc: &Doc, _: Ctx) -> Option<String> {
     (doc.bool_at(&["disableAllHooks"]) == Some(true)).then(|| "disableAllHooks: true".to_string())
 }
 
-fn consent_off(doc: &Doc, _: Option<&str>) -> Option<String> {
+fn consent_off(doc: &Doc, _: Ctx) -> Option<String> {
     let path = ["skipDangerousModePermissionPrompt"];
     (doc.bool_at(&path) != Some(true)).then(|| doc.said(&path).unwrap_or_else(|| "not set".into()))
 }
@@ -264,19 +297,31 @@ fn consent_off(doc: &Doc, _: Option<&str>) -> Option<String> {
 /// Turned off after repeated failed starts. Claude Code keeps the mark per
 /// version and reads it only for its own, so one left by an older CLI is no
 /// trouble. With no CLI to ask, it counts.
-fn fullscreen_off(doc: &Doc, version: Option<&str>) -> Option<String> {
+fn fullscreen_off(doc: &Doc, ctx: Ctx) -> Option<String> {
     let path = ["fullscreenAutoDisabled", "version"];
     let said = doc.said(&["fullscreenAutoDisabled"])?;
     let of = doc.said(&path).map(|v| v.trim_matches('"').to_string());
-    match (of, version) {
+    match (of, ctx.claude_version) {
         (Some(of), Some(version)) if of != version => None,
         (Some(of), _) => Some(format!("turned off on {of}")),
         (None, _) => Some(said),
     }
 }
 
-fn codex_hooks_off(doc: &Doc, _: Option<&str>) -> Option<String> {
-    HOOK_FEATURES.iter().find(|f| doc.bool_at(&["features", f]) == Some(false)).map(|f| format!("features.{f} = false"))
+/// What one file says of the feature. Off under either name counts.
+fn hooks_said(doc: &Doc) -> Option<bool> {
+    let said: Vec<bool> = HOOK_FEATURES.iter().filter_map(|f| doc.bool_at(&["features", f])).collect();
+    said.iter().copied().find(|on| !on).or(said.first().copied())
+}
+
+/// The feature as Codex ends up with it: the account's word if it has one, the
+/// machine's defaults if not.
+fn codex_hooks_off(doc: &Doc, ctx: Ctx) -> Option<String> {
+    match hooks_said(doc).or(ctx.codex_default_hooks) {
+        Some(false) if hooks_said(doc).is_some() => HOOK_FEATURES.iter().find(|f| doc.bool_at(&["features", f]) == Some(false)).map(|f| format!("features.{f} = false")),
+        Some(false) => Some("off by this computer's Codex defaults".to_string()),
+        _ => None,
+    }
 }
 
 fn no_risk(_: &Facts) -> Option<String> {
@@ -297,9 +342,9 @@ fn specs() -> Vec<Spec> {
             why: "Claude Code runs no hook on this account, and Luna's are how it hears of a turn's end, a question and a subagent; \
                   the guard against endless waits goes with them.",
             action: "Turn hooks on",
-            target: "key removed",
+            target: |_| "key removed",
             off: claude_hooks_off,
-            edits: || vec![Edit::RemoveIf(&["disableAllHooks"], true)],
+            edits: |_| vec![Edit::RemoveIf(&["disableAllHooks"], true)],
             quiet: false,
             risk: |_| Some("Every hook of this account comes back, not only Luna's: any written in its settings that you have not reviewed runs at its next event.".into()),
             moot: never,
@@ -311,9 +356,9 @@ fn specs() -> Vec<Spec> {
             title: "Bypass is not accepted",
             why: "A chat in Bypass, which is how new chats start, stops on Claude Code's warning until someone answers it.",
             action: "Accept Bypass",
-            target: "true",
+            target: |_| "true",
             off: consent_off,
-            edits: || vec![Edit::Set(&["skipDangerousModePermissionPrompt"], json!(true))],
+            edits: |_| vec![Edit::Set(&["skipDangerousModePermissionPrompt"], json!(true))],
             quiet: false,
             risk: |_| Some("This records your acceptance of Claude Code's warning for this account: it will not ask again before running in Bypass.".into()),
             moot: never,
@@ -325,9 +370,9 @@ fn specs() -> Vec<Spec> {
             title: "Fullscreen was turned off",
             why: "Claude Code gave up on its fullscreen renderer here after launches that did not finish, so panes flicker and redraw badly on resize.",
             action: "Try fullscreen again",
-            target: "cleared",
+            target: |_| "cleared",
             off: fullscreen_off,
-            edits: || vec![Edit::Remove(&["fullscreenAutoDisabled"]), Edit::Remove(&["fullscreenBootStrikes"])],
+            edits: |_| vec![Edit::Remove(&["fullscreenAutoDisabled"]), Edit::Remove(&["fullscreenBootStrikes"])],
             quiet: true,
             risk: no_risk,
             // The classic renderer asked for by name.
@@ -340,9 +385,16 @@ fn specs() -> Vec<Spec> {
             title: "Hooks are switched off",
             why: "Codex runs no hook on this account, so Luna's guard against endless waits never does.",
             action: "Turn hooks on",
-            target: "key removed",
+            target: |ctx| if ctx.codex_default_hooks == Some(false) { "features.hooks = true" } else { "key removed" },
             off: codex_hooks_off,
-            edits: || HOOK_FEATURE_KEYS.into_iter().map(|path| Edit::RemoveIf(path, false)).collect(),
+            // Taking the key out would leave the machine's default standing.
+            edits: |ctx| {
+                let mut edits: Vec<Edit> = HOOK_FEATURE_KEYS.into_iter().map(|path| Edit::RemoveIf(path, false)).collect();
+                if ctx.codex_default_hooks == Some(false) {
+                    edits.push(Edit::Set(HOOK_FEATURE_KEYS[0], json!(true)));
+                }
+                edits
+            },
             quiet: true,
             risk: |f| {
                 Some(format!(
@@ -359,20 +411,19 @@ const HOOK_FEATURE_KEYS: [&[&str]; 2] = [&["features", "hooks"], &["features", "
 
 fn off_or_unknown(a: &Account, spec: &Spec, f: &Facts) -> bool {
     match a.doc(spec.file) {
-        Ok(doc) => (spec.off)(doc, f.claude_version.as_deref()).is_some(),
+        Ok(doc) => (spec.off)(doc, f.ctx()).is_some(),
         Err(_) => true,
     }
 }
 
-/// The accounts a fix has to write. A sync copies the parent's whole file, so
-/// a fix left off a parent that says the same would be undone by the next one.
-/// `.claude.json` does not travel.
-fn targets<'a>(f: &'a Facts, a: &'a Account, spec: &Spec) -> Vec<&'a Account> {
+/// The accounts a fix may have to write. A sync copies the parent's whole file,
+/// so a fix left off a parent that says the same would be undone by the next
+/// one; whether it does is for the moment of writing to say. `.claude.json`
+/// does not travel.
+fn candidates<'a>(f: &'a Facts, a: &'a Account, spec: &Spec) -> Vec<&'a Account> {
     let mut out = vec![a];
     if spec.file != KeyFile::ClaudeGlobal {
-        if let Some(parent) = f.parent_of(a).filter(|p| p.name != a.name && off_or_unknown(p, spec, f)) {
-            out.push(parent);
-        }
+        out.extend(f.parent_of(a).filter(|p| p.name != a.name));
     }
     out
 }
@@ -415,19 +466,19 @@ fn account_check(f: &Facts, a: &Account, spec: &Spec) -> Check {
             return c;
         }
     };
-    let Some(current) = (spec.off)(doc, f.claude_version.as_deref()).filter(|_| !(spec.moot)(a)) else {
+    let Some(current) = (spec.off)(doc, f.ctx()).filter(|_| !(spec.moot)(a)) else {
         return c;
     };
     c.status = Status::Off;
     c.current = Some(current);
-    c.target = Some(spec.target.into());
+    c.target = Some((spec.target)(f.ctx()).into());
     c.action = Some(spec.action.into());
     let parts: Vec<String> = [(spec.risk)(f), sync_effect(f, a, spec)].into_iter().flatten().collect();
     c.risk = (!parts.is_empty()).then(|| parts.join(" "));
     if spec.quiet {
         let name = if a.provider == Provider::Claude { "Claude Code" } else { "Codex" };
         c.note = Some(format!("Written only while no session of Luna's is on the account. A {name} running outside Luna can still race this write."));
-        if let Some(busy) = targets(f, a, spec).into_iter().find(|t| t.in_use) {
+        if let Some(busy) = candidates(f, a, spec).into_iter().find(|t| t.in_use) {
             c.refused = Some(format!("{} is in use. Stop its sessions; one closing counts until its process has exited.", busy.name));
         }
     }
@@ -607,12 +658,15 @@ fn apply(f: &Facts, id: &str, account: Option<&str>, confirmed: bool) -> Result<
     };
     let spec = specs().into_iter().find(|s| s.id == id).ok_or("No such recommendation")?;
     let a = f.accounts.iter().find(|a| a.label() == account).ok_or("No such account")?;
-    let paths: Vec<String> = targets(f, a, &spec).iter().map(|t| t.path.clone()).collect();
+    let candidates = candidates(f, a, &spec);
+    let paths: Vec<String> = candidates.iter().map(|t| t.path.clone()).collect();
+    // What the row told of, and so what the yes covers.
+    let shown: Vec<String> = candidates.iter().filter(|t| t.name == a.name || off_or_unknown(t, &spec, f)).map(|t| t.path.clone()).collect();
     // First the hold, then the file lock, as a sync takes them; `refused` above
     // only said what was so a moment ago.
     let held = if spec.quiet { Some(crate::account_use::quiet(&paths)?) } else { None };
-    let version = f.claude_version.as_deref();
-    let changed = edit_together(spec.file, &paths, &(spec.edits)(), &|doc| (spec.off)(doc, version).is_some())?;
+    let ctx = f.ctx();
+    let changed = edit_together(spec.file, &paths, &shown, &(spec.edits)(ctx), &|doc| (spec.off)(doc, ctx).is_some())?;
     drop(held);
     crate::log::info("settings", &format!("recommendation {id} on {account}: {changed} file(s), was {}", c.current.as_deref().unwrap_or("?")));
     Ok(())
@@ -673,6 +727,7 @@ mod tests {
             claude_policy: Policy::default(),
             codex_policy: Policy::default(),
             claude_version: Some("2.1.318".into()),
+            codex_default_hooks: None,
             accounts,
         }
     }
@@ -975,6 +1030,109 @@ mod tests {
         }
         let f = facts(vec![account(&root, Provider::Codex, "on", &[("config.toml", "[features]\nhooks = true\n")])]);
         assert_eq!(check(&evaluate(&f), "codex-hooks-feature", Some("codex/on")).status, Status::Ok);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_fix_then_a_sync_reaches_the_sibling_when_it_empties_the_parent() {
+        let root = dir("empty-parent");
+        let off = "[features]\nhooks = false\n";
+        let mut f = facts(vec![
+            account(&root, Provider::Codex, "dad", &[("config.toml", off)]),
+            account(&root, Provider::Codex, "kid", &[("config.toml", off)]),
+            account(&root, Provider::Codex, "sib", &[("config.toml", "model = \"mine\"\n[features]\nhooks = false\n[projects.'C:\\\\s']\ntrust_level = \"trusted\"\n")]),
+        ]);
+        f.settings.settings_parents.codex = Some("dad".into());
+        apply(&f, "codex-hooks-feature", Some("codex/kid"), true).unwrap();
+        assert_eq!(read(&f.accounts[0].path, "config.toml"), "", "the fix took the parent's only key");
+        crate::account_settings::sync_one(Provider::Codex, &f.accounts[0].path, &f.accounts[2].path).unwrap();
+        let sib: toml_edit::DocumentMut = read(&f.accounts[2].path, "config.toml").parse().unwrap();
+        assert!(sib.get("features").is_none() && sib.get("model").is_none(), "removals travel: {sib}");
+        assert!(sib.get("projects").is_some(), "its own folders stay: {sib}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_parent_changed_since_the_row_was_shown_is_seen_when_it_comes_to_writing() {
+        let root = dir("fresh-parent");
+        let off = r#"{"disableAllHooks":true}"#;
+        let mut f = facts(vec![
+            account(&root, Provider::Claude, "kid", &[("settings.json", off)]),
+            account(&root, Provider::Claude, "dad", &[("settings.json", "{}")]),
+        ]);
+        f.settings.settings_parents.claude = Some("dad".into());
+        assert!(!check(&evaluate(&f), "claude-hooks", Some("claude/kid")).risk.as_deref().unwrap().contains("dad"));
+        // The editor, after the page last looked.
+        std::fs::write(Path::new(&f.accounts[1].path).join("settings.json"), off).unwrap();
+        let e = apply(&f, "claude-hooks", Some("claude/kid"), true).unwrap_err();
+        assert!(e.contains("look again"), "{e}");
+        assert_eq!(read(&f.accounts[0].path, "settings.json"), off, "half a fix a sync would undo");
+        // Looked at afresh, the row says so and the yes covers both.
+        f.accounts[1].main = KeyFile::ClaudeSettings.read(&f.accounts[1].path);
+        assert!(check(&evaluate(&f), "claude-hooks", Some("claude/kid")).risk.as_deref().unwrap().contains("dad"));
+        apply(&f, "claude-hooks", Some("claude/kid"), true).unwrap();
+        for a in &f.accounts {
+            assert!(!read(&a.path, "settings.json").contains("disableAllHooks"));
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_parent_is_held_with_its_child_though_it_looks_healthy() {
+        let root = dir("held-parent");
+        let mut f = facts(vec![
+            account(&root, Provider::Codex, "kid", &[("config.toml", "[features]\nhooks = false\nx = 1\n")]),
+            account(&root, Provider::Codex, "dad", &[("config.toml", "x = 1\n")]),
+        ]);
+        f.settings.settings_parents.codex = Some("dad".into());
+        let on_parent = crate::account_use::running_on(&f.accounts[1].path);
+        let e = apply(&f, "codex-hooks-feature", Some("codex/kid"), true).unwrap_err();
+        assert!(e.contains("dad is in use"), "{e}");
+        drop(on_parent);
+        apply(&f, "codex-hooks-feature", Some("codex/kid"), true).unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_hooks_feature_is_judged_as_codex_ends_up_with_it_not_by_the_account_file_alone() {
+        let root = dir("system");
+        let system = root.join("config.toml");
+        assert_eq!(codex_system_hooks(&system).unwrap(), None);
+        std::fs::write(&system, "[features]\nhooks = false\n").unwrap();
+        assert_eq!(codex_system_hooks(&system).unwrap(), Some(false));
+        std::fs::write(&system, "x = [").unwrap();
+        assert!(codex_system_hooks(&system).is_err());
+
+        let row = |f: &Facts, name: &str| check(&evaluate(f), "codex-hooks-feature", Some(&format!("codex/{name}"))).clone();
+        // Nothing in the account, and the machine has it off.
+        let mut f = facts(vec![account(&root, Provider::Codex, "clean", &[("config.toml", "model = \"x\"\n")])]);
+        f.codex_default_hooks = Some(false);
+        let c = row(&f, "clean");
+        assert_eq!(c.status, Status::Off);
+        assert!(c.current.as_deref().unwrap().contains("defaults"), "the file is not what says so: {c:?}");
+        assert_eq!(c.target.as_deref(), Some("features.hooks = true"));
+        apply(&f, "codex-hooks-feature", Some("codex/clean"), true).unwrap();
+        assert_eq!(hooks_said(&KeyFile::CodexConfig.read(&f.accounts[0].path).unwrap()), Some(true));
+
+        // The account's word goes over the machine's, either way.
+        let mut f = facts(vec![account(&root, Provider::Codex, "own", &[("config.toml", "[features]\nhooks = true\n")])]);
+        f.codex_default_hooks = Some(false);
+        assert_eq!(row(&f, "own").status, Status::Ok);
+        let mut f = facts(vec![account(&root, Provider::Codex, "mine", &[("config.toml", "[features]\nhooks = false\n")])]);
+        f.codex_default_hooks = Some(true);
+        let c = row(&f, "mine");
+        assert_eq!((c.status, c.target.as_deref()), (Status::Off, Some("key removed")));
+        assert!(c.current.as_deref().unwrap().contains("features.hooks = false"));
+        apply(&f, "codex-hooks-feature", Some("codex/mine"), true).unwrap();
+        assert_eq!(read(&f.accounts[0].path, "config.toml"), "");
+
+        // Off in both: a key taken out alone would leave it off.
+        for (name, text) in [("both", "[features]\nhooks = false\n"), ("old", "[features]\ncodex_hooks = false\n"), ("inline", "features = { hooks = false }\n")] {
+            let mut f = facts(vec![account(&root, Provider::Codex, name, &[("config.toml", text)])]);
+            f.codex_default_hooks = Some(false);
+            apply(&f, "codex-hooks-feature", Some(&format!("codex/{name}")), true).unwrap();
+            assert_eq!(hooks_said(&KeyFile::CodexConfig.read(&f.accounts[0].path).unwrap()), Some(true), "{name}");
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 

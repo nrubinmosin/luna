@@ -1084,7 +1084,15 @@ src-tauri/src/
   `account_use::quiet`, which spawn and helper turns wait out, and `Running` lasts until the
   process has exited, not until it leaves the session map. An atomic rename only keeps a file
   whole; it protects no concurrent update, and a CLI outside Luna is not excluded, which the
-  row says.
+  row says. `editing()` fails closed: no shared lock, nothing written. Which accounts a fix writes
+  is decided under it from the files as they are, both candidates held first; a parent that came
+  to need the fix after the row was shown stops it, for the row to say so. Codex's hooks feature
+  is judged as Codex resolves it, the account over the machine's `config.toml`
+  (`/etc/codex`, `%ProgramData%\OpenAI\Codex`); off by that default it is set true on the account.
+  The comfort dialog's Codex and `.claude.json` keys and `codex_trust_folder` run in the core
+  under the same hold; with a Codex running on the account, trust goes to its sessions as a `-c`
+  override instead of into `config.toml`. A sync waits for processes only, not retained helpers,
+  and a blank Codex parent is a valid one: its children follow it.
 - **Recommended settings** (Accounts → per-account button). A tick means "the file will have this
   key": applied keys open ticked; unticking one removes the key — only if the file still says exactly the
   recommended value, and parent objects/tables left empty go too; "Tick recommended" adds the

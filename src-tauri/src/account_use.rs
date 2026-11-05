@@ -92,7 +92,7 @@ impl Drop for Held {
 
 /// Holds all the accounts or none: an error naming the one a process is on.
 /// Taken all at once, so two holds cannot wait on each other.
-fn hold(account_paths: &[String]) -> Result<Held, String> {
+pub fn hold(account_paths: &[String]) -> Result<Held, String> {
     let keys: Vec<String> = account_paths.iter().map(|p| key(p)).collect();
     let mut t = locked();
     while keys.iter().any(|k| t.held.contains(k)) {
