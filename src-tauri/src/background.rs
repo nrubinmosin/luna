@@ -3287,6 +3287,21 @@ mod tests {
         assert!(!leftovers_hold(&e, now), "idle past the hold: the core may go");
     }
 
+    #[test]
+    fn a_finished_helper_left_on_the_list_does_not_keep_a_sync_off_its_account() {
+        let path = "/accounts/finished-helper";
+        let mut e = entry(Provider::Codex);
+        e.spec.account_path = path.into();
+        lock().entries.insert("finished-helper".into(), e);
+        assert!(uses_account(path));
+        assert!(crate::account_settings::sync_gate(Provider::Codex, path).is_ok(), "it has no process to race");
+        assert!(crate::account_use::quiet(&[path.to_string()]).is_err(), "a recommendation still goes by the session");
+        let on_it = crate::account_use::running_on(path);
+        assert!(crate::account_settings::sync_gate(Provider::Codex, path).is_err(), "its next turn does");
+        drop(on_it);
+        lock().entries.remove("finished-helper");
+    }
+
     pub(super) fn entry(provider: Provider) -> Entry {
         Entry {
             spec: Spec {

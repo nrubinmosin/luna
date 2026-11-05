@@ -18,6 +18,10 @@
 //! the folders Settings lists as trusted on this machine. A trusted parent
 //! folder in `config.toml` would not do: Codex looks trust up by the
 //! checkout's exact path.
+//!
+//! Codex rewrites `config.toml` from what it read, so while one runs on the
+//! account the entry is not written: the account's sessions get the override
+//! for that folder instead, for as long as this core runs.
 
 use super::config;
 use toml_edit::{Item, Table};
@@ -54,9 +58,28 @@ fn trusted_in(doc: &toml_edit::DocumentMut, folder: &str) -> bool {
     })
 }
 
+/// The folders trusted for an account's sessions alone, by account and checkout.
+fn for_sessions() -> &'static std::sync::Mutex<std::collections::HashSet<(String, String)>> {
+    static S: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<(String, String)>>> = std::sync::OnceLock::new();
+    S.get_or_init(Default::default)
+}
+
+fn session_key(account_path: &str, folder: &str) -> (String, String) {
+    (crate::paths::path_key(account_path), crate::paths::path_key(&checkout_of(folder)))
+}
+
+fn trusted_for_sessions(account_path: &str, folder: &str) -> bool {
+    for_sessions().lock().unwrap_or_else(|e| e.into_inner()).contains(&session_key(account_path, folder))
+}
+
+/// `trust_override` when `folder` was trusted while its account was in use.
+pub fn session_override(account_path: &str, folder: &str) -> Option<[String; 2]> {
+    trusted_for_sessions(account_path, folder).then(|| trust_override(folder))
+}
+
 #[tauri::command]
 pub fn codex_folder_trusted(account_path: String, folder: String) -> Result<bool, String> {
-    if under_root(&folder, &crate::settings::get().codex_trusted_roots) {
+    if under_root(&folder, &crate::settings::get().codex_trusted_roots) || trusted_for_sessions(&account_path, &folder) {
         return Ok(true);
     }
     let doc = config::read_or_empty(&config::account_file(&account_path)?);
@@ -116,11 +139,18 @@ pub fn set_codex_trusted_roots(roots: Vec<String>) -> Result<Vec<String>, String
 }
 
 /// Marks the folder trusted for this account — the same entry Codex's own
-/// trust screen writes. Leaves every other key in the config untouched.
+/// trust screen writes. Leaves every other key in the config untouched. With a
+/// Codex running on the account, for its sessions instead (see the top).
 #[tauri::command]
 pub fn codex_trust_folder(account_path: String, folder: String) -> Result<(), String> {
     let path = config::account_file(&account_path)?;
-    let _editing = crate::account_settings::editing();
+    let Ok(_held) = crate::account_use::hold(std::slice::from_ref(&account_path)) else {
+        if !trusted_in(&config::read_or_empty(&path), &folder) {
+            for_sessions().lock().unwrap_or_else(|e| e.into_inner()).insert(session_key(&account_path, &folder));
+        }
+        return Ok(());
+    };
+    let _editing = crate::account_settings::editing()?;
     let mut doc = config::read(&path)?;
     if trusted_in(&doc, &folder) {
         return Ok(());
@@ -255,6 +285,35 @@ mod tests {
             "[projects]\n\"E:\\\\Projects\\\\App\" = { trust_level = \"trusted\" }\n".parse().unwrap();
         assert!(trusted_in(&doc, r"E:\Projects\App"));
         assert_eq!(trusted_in(&doc, r"e:\projects\app"), cfg!(windows), "case counts only off Windows");
+    }
+
+    #[test]
+    fn an_account_in_use_keeps_its_file_and_its_sessions_get_the_trust() {
+        let root = temp("in-use");
+        let (acc, other) = (root.join("acc"), root.join("other"));
+        let folder = root.join("proj");
+        for d in [&acc, &other, &folder] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let (a, o, f) = (acc.to_string_lossy().into_owned(), other.to_string_lossy().into_owned(), folder.to_string_lossy().into_owned());
+        std::fs::write(acc.join("config.toml"), "model = \"x\"\n").unwrap();
+
+        let running = crate::account_use::running_on(&a);
+        codex_trust_folder(a.clone(), f.clone()).unwrap();
+        assert_eq!(std::fs::read_to_string(acc.join("config.toml")).unwrap(), "model = \"x\"\n", "Codex rewrites this file");
+        assert!(codex_folder_trusted(a.clone(), f.clone()).unwrap(), "the new chat is not held up");
+        let [flag, value] = session_override(&a, &f).expect("the session's start says it instead");
+        assert!(flag == "-c" && value.contains("trusted"), "{value}");
+        assert!(session_override(&o, &f).is_none(), "for this account");
+        drop(running);
+
+        // Free again, it goes where it always went.
+        let later = root.join("later");
+        std::fs::create_dir_all(&later).unwrap();
+        codex_trust_folder(a.clone(), later.to_string_lossy().into_owned()).unwrap();
+        assert!(std::fs::read_to_string(acc.join("config.toml")).unwrap().contains("trust_level"));
+        assert!(session_override(&a, &later.to_string_lossy()).is_none());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

@@ -325,7 +325,21 @@ fn recommend(provider: Provider, account_path: &str) -> Result<Vec<Rec>, String>
 pub(crate) struct Editing {
     _here: std::sync::MutexGuard<'static, ()>,
     // Unlocked as it closes.
-    _everywhere: Option<std::fs::File>,
+    _everywhere: std::fs::File,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Where this test's lock is, in place of the data dir's.
+    static LOCK_AT: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+fn lock_path() -> PathBuf {
+    #[cfg(test)]
+    if let Some(path) = LOCK_AT.with(|p| p.borrow().clone()) {
+        return path;
+    }
+    crate::paths::data_dir().join("account-settings.lock")
 }
 
 /// One change of the accounts' config files at a time. Each reads its file,
@@ -333,19 +347,19 @@ pub(crate) struct Editing {
 /// that writes its folder's trust, a recommendation — would each write back
 /// what it read without the other's change. A read that decides a write
 /// belongs inside this. A file lock as well as a mutex: the window writes them
-/// and so does the core. The CLIs write them too, which nothing here can hold
-/// back; account_use.rs says what can be done about that.
-pub(crate) fn editing() -> Editing {
+/// and so does the core, and a lock that cannot be had is an error, as each
+/// going ahead under its own mutex would lose the other's change. The CLIs
+/// write them too, which nothing here can hold back; account_use.rs says what
+/// can be done about that.
+pub(crate) fn editing() -> Result<Editing, String> {
     static L: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let here = L.lock().unwrap_or_else(|e| e.into_inner());
-    // Without the file the mutex still holds for this process, and a config
-    // edit is not to fail for it.
-    let path = crate::paths::data_dir().join("account-settings.lock");
+    let path = lock_path();
     let file = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&path).and_then(|f| f.lock().map(|()| f));
-    if let Err(e) = &file {
-        crate::log::warn("settings", &format!("no lock on {}: {e}", path.display()));
+    match file {
+        Ok(file) => Ok(Editing { _here: here, _everywhere: file }),
+        Err(e) => Err(format!("Nothing written: no lock on {}: {e}", path.display())),
     }
-    Editing { _here: here, _everywhere: file.ok() }
 }
 
 // ----------------------------------------------------------- edits by key --
@@ -488,15 +502,20 @@ fn commit(changes: &[Change], mut write: impl FnMut(&Path, &str) -> Result<(), S
 /// so a file that does not read stops them all and a sync cannot come in
 /// between. `off` is asked again of the changed file: a form the edits could not
 /// reach, which would go on saying the same, is an error and not a success.
-/// How many files changed.
-pub(crate) fn edit_together(file: KeyFile, accounts: &[String], edits: &[Edit], off: &dyn Fn(&Doc) -> bool) -> Result<usize, String> {
-    let _editing = editing();
+/// Which of `accounts` it is for is decided here, from what they say under the
+/// lock; `shown` are the ones the user was told of, and another that turns out
+/// to need it stops the change, for them to be told. How many files changed.
+pub(crate) fn edit_together(file: KeyFile, accounts: &[String], shown: &[String], edits: &[Edit], off: &dyn Fn(&Doc) -> bool) -> Result<usize, String> {
+    let _editing = editing()?;
     let mut changes = Vec::new();
     for account in accounts {
         let path = file.path(account)?;
         let mut doc = file.read(account)?;
         if !off(&doc) {
             continue;
+        }
+        if !shown.contains(account) {
+            return Err(format!("{} changed after this was shown: nothing written, look again.", path.display()));
         }
         for edit in edits {
             doc.edit(edit);
@@ -522,7 +541,11 @@ fn apply(provider: Provider, account_path: &str, add: &[String], remove: &[Strin
     if add.is_empty() && remove.is_empty() {
         return Ok(());
     }
-    let _editing = editing();
+    // A Codex config and `.claude.json` are the CLI's to rewrite from what it
+    // read: first the account's hold, as for a recommendation.
+    let rewritten = provider == Provider::Codex || add.iter().chain(&remove).any(|s| s.global);
+    let _held = if rewritten { Some(crate::account_use::hold(std::slice::from_ref(&account_path.to_string()))?) } else { None };
+    let _editing = editing()?;
     match provider {
         Provider::Claude => {
             // `.claude.json` is the CLI's own: touched only for a key of its.
@@ -690,7 +713,7 @@ pub fn read_account_config(provider: Provider, account_path: String) -> Result<C
 pub fn write_account_config(provider: Provider, account_path: String, text: String) -> Result<(), String> {
     check_config(provider, &text)?;
     let path = config_file(provider, &account_path)?;
-    let editing = editing();
+    let editing = editing()?;
     write_text(&path, &text)?;
     drop(editing);
     crate::log::info("settings", &format!("{} edited by hand", path.display()));
@@ -708,19 +731,17 @@ fn parent_text(provider: Provider, parent: &str) -> Result<String, String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(format!("{} does not exist", path.display())),
         Err(e) => Err(format!("{}: {e}", path.display())),
     };
-    // A blank file is TOML all the same, and an editor saving one empties it
-    // first: looked at again, and one still blank is not spread onto every
-    // account as their settings.
+    // An editor saving a file may empty it first, so a blank one is looked at
+    // again. Still blank, that is what the parent says: a Codex config may
+    // hold nothing, as one does once a fix has taken its only key, and the
+    // others follow it. Blank is no JSON, which stops Claude Code's below.
     let mut text = read()?;
-    for _ in 0..2 {
+    for _ in 0..4 {
         if !text.trim().is_empty() {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::thread::sleep(std::time::Duration::from_millis(100));
         text = read()?;
-    }
-    if text.trim().is_empty() {
-        return Err(format!("{} is empty: nothing to copy from it", path.display()));
     }
     check_config(provider, &text).map_err(|e| format!("{}: {e}", path.display()))?;
     Ok(text)
@@ -754,7 +775,7 @@ fn codex_copy(parent: &str, child: &DocumentMut) -> Result<String, String> {
 /// Makes the child's file the parent's. Claude Code's `settings.json` holds no
 /// login or state and is copied as is; Codex's `config.toml` keeps the child's
 /// trusted folders. A file already the same is not written.
-fn sync_one(provider: Provider, parent: &str, child: &str) -> Result<(), String> {
+pub(crate) fn sync_one(provider: Provider, parent: &str, child: &str) -> Result<(), String> {
     sync_one_seeing(provider, parent, child, || ())
 }
 
@@ -762,7 +783,7 @@ fn sync_one(provider: Provider, parent: &str, child: &str) -> Result<(), String>
 /// from before that read: a parent read ahead of it could be written over the
 /// child after a change to both had gone through in between.
 fn sync_one_seeing(provider: Provider, parent: &str, child: &str, read: impl FnOnce()) -> Result<(), String> {
-    let _editing = editing();
+    let _editing = editing()?;
     let from = parent_text(provider, parent)?;
     read();
     let path = config_file(provider, child)?;
@@ -784,6 +805,17 @@ pub struct SyncReport {
     pub failed: Vec<String>,
 }
 
+/// What a sync of this account waits for. Codex rewrites config.toml from what
+/// it read, so an account with a Codex process on it keeps its file until it is
+/// free. A helper between turns or long finished has none, and its next turn
+/// waits out the hold: a retained entry is no reason to skip the account.
+pub(crate) fn sync_gate(provider: Provider, account: &str) -> Result<Option<crate::account_use::Held>, String> {
+    match provider {
+        Provider::Codex => crate::account_use::hold(std::slice::from_ref(&account.to_string())).map(Some),
+        Provider::Claude => Ok(None),
+    }
+}
+
 fn sync(provider: Provider) -> Result<SyncReport, String> {
     let s = crate::settings::get();
     let parent_name = match provider {
@@ -798,13 +830,7 @@ fn sync(provider: Provider) -> Result<SyncReport, String> {
         .ok_or_else(|| format!("The parent account \"{parent_name}\" is gone"))?;
     let mut report = SyncReport::default();
     for a in accounts.iter().filter(|a| a.name != parent.name) {
-        // Codex rewrites config.toml from what it read: an account it runs on
-        // keeps its file until it is free.
-        let quiet = match provider {
-            Provider::Codex => crate::account_use::quiet(std::slice::from_ref(&a.path)).map(Some),
-            Provider::Claude => Ok(None),
-        };
-        match quiet.and_then(|_held| sync_one(provider, &parent.path, &a.path)) {
+        match sync_gate(provider, &a.path).and_then(|_held| sync_one(provider, &parent.path, &a.path)) {
             Ok(()) => report.synced.push(a.name.clone()),
             Err(e) => report.failed.push(format!("{}: {e}", a.name)),
         }
@@ -1060,11 +1086,12 @@ a=\"x\"
         std::fs::write(parent.join("settings.json"), "{ not json").unwrap();
         assert!(sync_one(Provider::Claude, &p, &c).is_err());
         assert_eq!(std::fs::read_to_string(child.join("settings.json")).unwrap(), "{\"model\":\"opus\"}");
-        // A blank config.toml parses, as an editor's save leaves it for a moment.
         std::fs::write(child.join("config.toml"), "model = \"x\"\n").unwrap();
-        std::fs::write(parent.join("config.toml"), "\n").unwrap();
-        assert!(sync_one(Provider::Codex, &p, &c).is_err());
+        assert!(sync_one(Provider::Codex, &p, &c).is_err(), "no file to copy");
         assert_eq!(std::fs::read_to_string(child.join("config.toml")).unwrap(), "model = \"x\"\n");
+        // Blank is no JSON.
+        std::fs::write(parent.join("settings.json"), "\n").unwrap();
+        assert!(sync_one(Provider::Claude, &p, &c).is_err());
         let _ = std::fs::remove_dir_all(&parent);
         let _ = std::fs::remove_dir_all(&child);
     }
@@ -1116,7 +1143,7 @@ model = \"gpt-6\"   # keep
         sync_one_seeing(Provider::Claude, &p, &c, || {
             change = Some(std::thread::spawn(move || {
                 let off = |d: &Doc| d.bool_at(&["disableAllHooks"]) == Some(true);
-                let wrote = edit_together(KeyFile::ClaudeSettings, &accounts, &[Edit::Remove(&["disableAllHooks"])], &off);
+                let wrote = edit_together(KeyFile::ClaudeSettings, &accounts, &accounts, &[Edit::Remove(&["disableAllHooks"])], &off);
                 done.send(()).unwrap();
                 wrote
             }));
@@ -1143,7 +1170,8 @@ model = \"gpt-6\"   # keep
         // The second file does not read: the first is not written either.
         std::fs::write(one.join("settings.json"), r#"{"disableAllHooks":true}"#).unwrap();
         std::fs::write(two.join("settings.json"), "{ not json").unwrap();
-        assert!(edit_together(KeyFile::ClaudeSettings, &[a.clone(), b.clone()], &edits, &off).is_err());
+        let both = [a.clone(), b.clone()];
+        assert!(edit_together(KeyFile::ClaudeSettings, &both, &both, &edits, &off).is_err());
         assert_eq!(std::fs::read_to_string(one.join("settings.json")).unwrap(), r#"{"disableAllHooks":true}"#);
 
         // The last write fails: the first goes back, a new file goes again.
@@ -1167,7 +1195,7 @@ model = \"gpt-6\"   # keep
         std::fs::write(one.join("settings.json"), r#"{"disableAllHooks":true}"#).unwrap();
         let clean = "{ \"model\":   \"opus\" }";
         std::fs::write(two.join("settings.json"), clean).unwrap();
-        assert_eq!(edit_together(KeyFile::ClaudeSettings, &[a, b], &edits, &off).unwrap(), 1);
+        assert_eq!(edit_together(KeyFile::ClaudeSettings, &both, &both, &edits, &off).unwrap(), 1);
         assert_eq!(std::fs::read_to_string(two.join("settings.json")).unwrap(), clean);
         let _ = std::fs::remove_dir_all(&one);
         let _ = std::fs::remove_dir_all(&two);
@@ -1188,7 +1216,8 @@ model = \"gpt-6\"   # keep
             let d = dir(&format!("toml-{tag}"));
             let p = d.to_string_lossy().into_owned();
             std::fs::write(d.join("config.toml"), before).unwrap();
-            assert_eq!(edit_together(KeyFile::CodexConfig, std::slice::from_ref(&p), &edits, &off).unwrap(), 1, "{tag}");
+            let one = std::slice::from_ref(&p);
+            assert_eq!(edit_together(KeyFile::CodexConfig, one, one, &edits, &off).unwrap(), 1, "{tag}");
             let text = std::fs::read_to_string(d.join("config.toml")).unwrap();
             let doc: DocumentMut = text.parse().unwrap();
             assert!(!off(&Doc::Toml(doc)), "{tag}: {text}");
@@ -1202,7 +1231,8 @@ model = \"gpt-6\"   # keep
         let before = "features = { hooks = false }\n";
         std::fs::write(d.join("config.toml"), before).unwrap();
         let wrong = [Edit::Remove(&["elsewhere", "hooks"])];
-        let e = edit_together(KeyFile::CodexConfig, std::slice::from_ref(&p), &wrong, &off).unwrap_err();
+        let one = std::slice::from_ref(&p);
+        let e = edit_together(KeyFile::CodexConfig, one, one, &wrong, &off).unwrap_err();
         assert!(e.contains("cannot change"), "{e}");
         assert_eq!(std::fs::read_to_string(d.join("config.toml")).unwrap(), before);
         let _ = std::fs::remove_dir_all(&d);
@@ -1215,9 +1245,106 @@ model = \"gpt-6\"   # keep
         std::fs::write(d.join("settings.json"), r#"{"model":"opus"}"#).unwrap();
         let off = |d: &Doc| d.bool_at(&["skipDangerousModePermissionPrompt"]) != Some(true);
         let edits = [Edit::Set(&["skipDangerousModePermissionPrompt"], json!(true))];
-        edit_together(KeyFile::ClaudeSettings, std::slice::from_ref(&p), &edits, &off).unwrap();
+        let one = std::slice::from_ref(&p);
+        edit_together(KeyFile::ClaudeSettings, one, one, &edits, &off).unwrap();
         let v: Value = serde_json::from_str(&std::fs::read_to_string(d.join("settings.json")).unwrap()).unwrap();
         assert_eq!(v, json!({ "model": "opus", "skipDangerousModePermissionPrompt": true }));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn no_shared_lock_means_nothing_is_written() {
+        let d = dir("no-lock");
+        let p = d.to_string_lossy().into_owned();
+        std::fs::write(d.join("settings.json"), r#"{"disableAllHooks":true}"#).unwrap();
+        std::fs::write(d.join("config.toml"), "model = \"x\"\n").unwrap();
+        let parent = dir("no-lock-parent");
+        std::fs::write(parent.join("settings.json"), "{}").unwrap();
+        // A folder where the lock file should be: as good as one unwritable
+        // while the account files are not.
+        LOCK_AT.with(|l| *l.borrow_mut() = Some(d.clone()));
+        let off = |d: &Doc| d.bool_at(&["disableAllHooks"]) == Some(true);
+        let one = std::slice::from_ref(&p);
+        let e = edit_together(KeyFile::ClaudeSettings, one, one, &[Edit::Remove(&["disableAllHooks"])], &off).unwrap_err();
+        assert!(e.contains("no lock"), "{e}");
+        assert!(apply(Provider::Claude, &p, &["tui".into()], &[]).is_err());
+        assert!(write_account_config(Provider::Claude, p.clone(), "{}".into()).is_err());
+        assert!(sync_one(Provider::Claude, &parent.to_string_lossy(), &p).is_err());
+        assert!(crate::codex::config::seed(&p).is_err());
+        assert!(crate::codex::trust::codex_trust_folder(p.clone(), "/somewhere".into()).is_err());
+        assert!(crate::claude::trust::claude_trust_folder(p.clone(), "/somewhere".into()).is_err());
+        LOCK_AT.with(|l| *l.borrow_mut() = None);
+        assert_eq!(std::fs::read_to_string(d.join("settings.json")).unwrap(), r#"{"disableAllHooks":true}"#);
+        assert_eq!(std::fs::read_to_string(d.join("config.toml")).unwrap(), "model = \"x\"\n");
+        let _ = std::fs::remove_dir_all(&d);
+        let _ = std::fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn the_lock_keeps_out_whoever_holds_the_file_another_way() {
+        // What another process does: its own handle on the same file.
+        let d = dir("lock-held");
+        let path = d.join("account-settings.lock");
+        let theirs = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&path).unwrap();
+        theirs.lock().unwrap();
+        let (got, came) = std::sync::mpsc::channel();
+        let waiter = std::thread::spawn(move || {
+            LOCK_AT.with(|l| *l.borrow_mut() = Some(path));
+            let held = editing().map(|_| ());
+            got.send(()).unwrap();
+            held
+        });
+        assert!(came.recv_timeout(std::time::Duration::from_millis(150)).is_err(), "it went ahead under the other's lock");
+        drop(theirs);
+        came.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        waiter.join().unwrap().unwrap();
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_blank_codex_parent_empties_its_children_but_for_their_own_folders() {
+        let (parent, child) = (dir("blank-parent"), dir("blank-child"));
+        let (p, c) = (parent.to_string_lossy().into_owned(), child.to_string_lossy().into_owned());
+        std::fs::write(parent.join("config.toml"), "\n").unwrap();
+        std::fs::write(child.join("config.toml"), "model = \"x\"\n[features]\nhooks = false\n[projects.'C:\\\\c']\ntrust_level = \"trusted\"\n").unwrap();
+        sync_one(Provider::Codex, &p, &c).unwrap();
+        let doc: DocumentMut = std::fs::read_to_string(child.join("config.toml")).unwrap().parse().unwrap();
+        assert!(doc.get("model").is_none() && doc.get("features").is_none(), "{doc}");
+        assert!(doc.get("projects").is_some(), "{doc}");
+
+        // An editor's save caught half way: the look that follows gets what it wrote.
+        std::fs::write(parent.join("config.toml"), "").unwrap();
+        std::fs::write(child.join("config.toml"), "model = \"x\"\n").unwrap();
+        let path = parent.join("config.toml");
+        let saving = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(120));
+            std::fs::write(path, "model = \"saved\"\n").unwrap();
+        });
+        sync_one(Provider::Codex, &p, &c).unwrap();
+        saving.join().unwrap();
+        assert_eq!(std::fs::read_to_string(child.join("config.toml")).unwrap(), "model = \"saved\"\n");
+        let _ = std::fs::remove_dir_all(&parent);
+        let _ = std::fs::remove_dir_all(&child);
+    }
+
+    #[test]
+    fn a_comfort_key_a_cli_rewrites_waits_for_its_account_to_be_free() {
+        let d = dir("comfort");
+        let p = d.to_string_lossy().into_owned();
+        std::fs::write(d.join("config.toml"), "model = \"x\"\n").unwrap();
+        let on_it = crate::account_use::running_on(&p);
+        let e = apply_recommended(Provider::Codex, p.clone(), vec!["web_search".into()], vec![]).unwrap_err();
+        assert!(e.contains("in use"), "{e}");
+        assert_eq!(std::fs::read_to_string(d.join("config.toml")).unwrap(), "model = \"x\"\n");
+        assert!(apply_recommended(Provider::Claude, p.clone(), vec!["copyOnSelect".into()], vec![]).unwrap_err().contains("in use"));
+        assert!(!d.join(".claude.json").exists());
+        // `settings.json` is not rewritten that way, and a key that is no
+        // recommendation asks nothing of the account.
+        apply_recommended(Provider::Claude, p.clone(), vec!["tui".into()], vec![]).unwrap();
+        apply_recommended(Provider::Codex, p.clone(), vec!["no.such.key".into()], vec![]).unwrap();
+        drop(on_it);
+        apply_recommended(Provider::Codex, p.clone(), vec!["web_search".into()], vec![]).unwrap();
+        assert!(std::fs::read_to_string(d.join("config.toml")).unwrap().contains("web_search"));
         let _ = std::fs::remove_dir_all(&d);
     }
 
