@@ -604,8 +604,8 @@ The power field in the status bar opens the two rules the machine follows.
   again after the wake. Restart (Windows) closes the sessions the same way and has Windows start
   Luna once at the next sign-in, so someone has to sign in; if that cannot be set the log says so
   and the PC restarts all the same. **Start nothing new** drains: until the rule fires or is
-  disarmed, agents' `luna_spawn` and `luna_send` are refused and `luna_answer` takes only a pending
-  question or permission, so the rule converges; what you do yourself is never refused. While the rule is armed and something holds it up, `luna.log` says
+  disarmed, agents' `luna_spawn` and `luna_send` are refused and `luna_answer` takes only a structured
+  answer to a pending question or permission, so the rule converges; what you do yourself is never refused. While the rule is armed and something holds it up, `luna.log` says
   which session and why, so a morning with the PC still on can be read back. An agent asked
   to turn the PC off when done arms this same rule with `luna_power`.
 

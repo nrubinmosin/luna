@@ -504,7 +504,8 @@ src-tauri/src/
   mid-turn state, and `shutdown /r /t 0`; sleep/hibernate — `SetSuspendState`, sessions live on, arming stays,
   and the clock jump on wake resets the quiet window and the countdown. A drain (`Armed::drain`, "start
   nothing new") refuses `luna_spawn` and every `luna_send` in `mcp::run` alone, so nothing a person does is
-  touched, and narrows `luna_answer` to a pending ask; each such call is counted under the lock that arms
+  touched, and narrows `luna_answer` to a structured answer to a pending ask, keys and notes refused; firing
+  refuses new work as well, drain or not; each such call is counted under the lock that arms
   (`power::enter`), the arming waits for those already in (`settle`, bounded, and they hold the rule up until
   done), and firing ends the drain. The test build and unit tests never reach the OS (`power::dry`). An armed rule that
   does not fire is explained in `luna.log`: a line `armed, not firing: <chat> <why> [hook …,
@@ -885,9 +886,11 @@ src-tauri/src/
   not yet told, reads `Context::of` off the transcript or rollout, so both CLIs and visible and background
   helpers alike; the first reading past it stays as `budgetBreach`, as a compaction may take the helper
   back under before its parent can hear, and the line goes to the parent alone. It rides (`riders_go`)
-  and is told once it has gone in: typed, or into a turn. Left behind a background parent's turn it is
-  `budgetQueued`, the line itself being the mark to look for: gone from the queue a turn took it
-  (`budgetTold`), found undelivered after a core went it is taken out of there and told over. A rider's
+  and is told once it has gone in: typed, or for a background parent once its CLI's stdin took it. There it
+  is marked in the notice itself (`Queued::budget`), so the enqueue and what says a line is on its way are one
+  write to `helpers.json`, and `stdin_took` is the one receipt (`budgets_landed`): text dropped with a killed
+  turn's queue, or a turn gone before it read, leaves the line owed; found undelivered after a core went it is
+  taken out of there and told over, or goes on in a resuming turn. `reap` keeps a helper with a line owed. A rider's
   gate is not delivery: a draft holds a line past it, as any notice, and a power-off does not wait for that.
   A helper spawned with `resumeOnRestart` (the flag lives in `settings`, so in the ties, and `list`
   echoes it; `register` keeps it over the window's settings, and a chat's way is below) goes on by itself:
