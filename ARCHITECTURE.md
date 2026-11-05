@@ -447,6 +447,16 @@ src-tauri/src/
   an API error sends no Stop — it sends `StopFailure`, which Luna also subscribes to: end of turn
   plus the kind of error). A session waiting on a dialog after such an error (by `StopFailure` or by
   the last transcript line with `isApiErrorMessage`) is *stalled*: it does not count as `waiting`.
+  A subagent's hooks carry its `agent_id` and are never the turn's: a background agent works on after
+  the turn that started it has ended, firing a hook per tool, and Claude Code's registry says busy all
+  that while (`isLoading || delegatedActive`). So Luna keeps the subagents at work apart, from
+  `SubagentStart` (or a first tool) to `SubagentStop`: while any is, the registry's "busy" against a
+  hook's "idle" is theirs and the turn reads over at once — notices go in — yet the session holds
+  the machine like a job its turn left (`children_busy`, "N subagents" in the power chip), and a
+  subagent's own prompt reads `waiting`. An idle registry that has stood 15 s says none is left, for a
+  `SubagentStop` that never came. Claude Code takes an agent's result up in a turn of its own, which
+  opens with a `UserPromptSubmit` (its prompt the `<task-notification>`) like any other (seen with
+  2.1.318); after a `SubagentStop` the registry's "busy" is judged afresh all the same.
 - **A turn that ended on a question** (`asking.rs`) is waiting for the eye only: `session_meta` reads
   `waiting` (with the question, if given) for a user's chat, no helper's, whose turn is over and either
   called `luna_waiting` (kept in memory until the next prompt that is not a Luna notice: the

@@ -62,7 +62,7 @@ pub enum Turn {
 }
 
 /// What a Claude Code hook told us.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HookEvent {
     /// `UserPromptSubmit`, `PostToolUse`: the model is at work.
     Busy,
@@ -75,6 +75,14 @@ pub enum HookEvent {
     Failed(&'static str),
     /// `SessionEnd`.
     Gone,
+    /// A subagent of the session (the hook carries its `agent_id`) has
+    /// started or used a tool: its work, not the turn's. A background agent
+    /// works on long after the turn that started it is over.
+    AgentAtWork(String),
+    /// A subagent's own permission prompt or question is up.
+    AgentWaiting(String),
+    /// `SubagentStop`.
+    AgentDone(String),
 }
 
 /// Claude Code's word for why a turn failed, as a static string. Anything it
@@ -91,8 +99,25 @@ pub fn api_error_kind(s: &str) -> &'static str {
 impl HookEvent {
     pub fn parse(body: &str) -> Option<HookEvent> {
         let v: serde_json::Value = serde_json::from_str(body).ok()?;
+        let asks = |v: &serde_json::Value| match v["hook_event_name"].as_str() {
+            Some("PermissionRequest") => true,
+            Some("PreToolUse") => v["tool_name"] == "AskUserQuestion",
+            Some("Notification") => matches!(v["notification_type"].as_str(), Some("permission_prompt" | "elicitation_dialog")),
+            _ => false,
+        };
+        // Only a subagent's hooks carry its id, and none of them is the turn's:
+        // the turn that started a background agent may long be over.
+        if let Some(agent) = v["agent_id"].as_str().filter(|a| !a.is_empty()) {
+            let agent = agent.to_string();
+            return match v["hook_event_name"].as_str()? {
+                "SubagentStop" => Some(HookEvent::AgentDone(agent)),
+                _ if asks(&v) => Some(HookEvent::AgentWaiting(agent)),
+                "Notification" | "PreToolUse" => None,
+                _ => Some(HookEvent::AgentAtWork(agent)),
+            };
+        }
         match v["hook_event_name"].as_str()? {
-            "UserPromptSubmit" | "PostToolUse" | "PostToolUseFailure" | "SubagentStop" => Some(HookEvent::Busy),
+            "UserPromptSubmit" | "PostToolUse" | "PostToolUseFailure" => Some(HookEvent::Busy),
             "Stop" => Some(HookEvent::Idle),
             // A permission prompt is up, or a question the model put.
             "PermissionRequest" => Some(HookEvent::Waiting),
@@ -161,8 +186,12 @@ struct Track {
     /// The last verdict `busy` was computed from, for the transition above.
     was_busy: bool,
     /// The API error the last turn ended on, per `StopFailure`; cleared by
-    /// any other hook.
+    /// any other hook of the turn's own.
     failed: Option<&'static str>,
+    /// Its subagents at work, by id, each with whether a prompt of its own is
+    /// up: from `SubagentStart` (or its first tool) to `SubagentStop`, or until
+    /// the registry has said idle a while, which it does only with none left.
+    agents: HashMap<String, bool>,
 }
 
 /// What an agent's `wait`/`read` asks about a session.
@@ -172,7 +201,8 @@ pub struct TurnState {
     pub busy: bool,
     pub turns_ended: u32,
     /// Processes under the CLI are at work — moving, or started by a turn and
-    /// still alive: a job it left running in the background.
+    /// still alive — or a subagent of its own is: a job it left running in
+    /// the background.
     pub children_busy: bool,
 }
 
@@ -185,17 +215,24 @@ pub fn left_running(chat_id: &str) -> Vec<procs::Leftover> {
 
 /// Whether anything of a session's children still holds the machine: what moved
 /// at the last sample, or what its turns left that has not sat idle for
-/// LEFTOVER_HOLD_MS. `background::left_holds` for a session with a terminal.
+/// LEFTOVER_HOLD_MS, or a subagent at work. `background::left_holds` for a
+/// session with a terminal.
 pub fn children_hold(chat_id: &str) -> bool {
     let st = state().lock().unwrap_or_else(|e| e.into_inner());
     let now = now_ms();
     st.tracks.get(chat_id).is_some_and(|t| {
-        t.procs.as_ref().is_some_and(|b| !b.active.is_empty() || (t.left.is_empty() && !b.young.is_empty())) || t.left.iter().any(|l| l.holds(now))
+        !t.agents.is_empty()
+            || t.procs.as_ref().is_some_and(|b| !b.active.is_empty() || (t.left.is_empty() && !b.young.is_empty()))
+            || t.left.iter().any(|l| l.holds(now))
     })
 }
 
-/// `background::left_quiet` for a session the activity track follows.
+/// `background::left_quiet` for a session the activity track follows. None
+/// while a subagent of it works: no process tells whether it is stuck.
 pub fn left_quiet(chat_id: &str) -> Option<(u64, String)> {
+    if subagents(chat_id) > 0 {
+        return None;
+    }
     let left = left_running(chat_id);
     Some((procs::quiet_ms(&left, now_ms())?, procs::left_names(&left)))
 }
@@ -208,7 +245,12 @@ pub fn turn_state(chat_id: &str) -> Option<TurnState> {
     let st = state().lock().unwrap_or_else(|e| e.into_inner());
     let t = st.tracks.get(chat_id)?;
     let busy = st.summary.sessions.iter().find(|s| s.id == chat_id).map(|s| s.busy).unwrap_or(false);
-    Some(TurnState { turn: t.turn, busy, turns_ended: t.turns_ended, children_busy: t.procs.is_some() })
+    Some(TurnState { turn: t.turn, busy, turns_ended: t.turns_ended, children_busy: t.procs.is_some() || !t.agents.is_empty() })
+}
+
+/// How many subagents of a session are at work, as its hooks have it.
+pub fn subagents(chat_id: &str) -> usize {
+    state().lock().unwrap_or_else(|e| e.into_inner()).tracks.get(chat_id).map_or(0, |t| t.agents.len())
 }
 
 /// The API error a session's last turn ended on, per its `StopFailure` hook.
@@ -233,7 +275,8 @@ impl Default for Turn {
 pub struct SessionActivity {
     pub id: String,
     pub turn: Turn,
-    /// Children keeping it busy, by exe name, when any.
+    /// Children keeping it busy, by exe name, when any, and its subagents at
+    /// work, by count.
     pub procs: Vec<String>,
     pub output_fresh: bool,
     pub busy: bool,
@@ -422,6 +465,28 @@ pub fn on_hook(chat_id: &str, ev: HookEvent) {
     let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
     let st = &mut *st;
     let t = track(&mut st.tracks, &mut st.ended, chat_id);
+    // A subagent's word: the turn, its start and its end are not its to say.
+    match ev {
+        HookEvent::AgentAtWork(agent) => {
+            t.agents.insert(agent, false);
+            return;
+        }
+        HookEvent::AgentWaiting(agent) => {
+            t.agents.insert(agent, true);
+            return;
+        }
+        HookEvent::AgentDone(agent) => {
+            // The registry may go on saying busy: the turn Claude Code starts
+            // on the agent's result. Judged afresh from here (STALE_DISK_MS),
+            // not by a busy that was the agent's. Not for an agent never
+            // seen at work (one of the CLI's own): its busy was none of ours.
+            if t.agents.remove(&agent).is_some() {
+                t.disk_busy_since_ms = None;
+            }
+            return;
+        }
+        _ => {}
+    }
     t.failed = None;
     match ev {
         HookEvent::Busy => {
@@ -452,7 +517,9 @@ pub fn on_hook(chat_id: &str, ev: HookEvent) {
         HookEvent::Gone => {
             t.hook = Some(Turn::Idle);
             t.turn_started_ms = None;
+            t.agents.clear();
         }
+        HookEvent::AgentAtWork(_) | HookEvent::AgentWaiting(_) | HookEvent::AgentDone(_) => return,
     }
     t.hook_at_ms = now;
 }
@@ -550,6 +617,12 @@ fn combine(t: &mut Track, disk: Option<Turn>, now: u64) -> Turn {
         _ => t.disk_busy_since_ms = None,
     }
     let idle_for = t.disk_idle_since_ms.map(|s| now.saturating_sub(s)).unwrap_or(0);
+    // Claude Code calls itself busy while a subagent of it works, so an idle
+    // registry that has stood a while says none is left: a SubagentStop that
+    // never came must not keep the session at work for good.
+    if idle_for > STALE_HOOK_MS {
+        t.agents.clear();
+    }
     let hook = match t.hook {
         // A hook that says busy against a registry that has said idle for a
         // while has missed its Stop.
@@ -565,9 +638,11 @@ fn combine(t: &mut Track, disk: Option<Turn>, now: u64) -> Turn {
         }
         h => h,
     };
-    // The registry says busy, but the hook said the turn ended and nothing
-    // has spoken since: a registry left behind, not a turn.
+    // The registry says busy, but the hook said the turn ended: a subagent
+    // of it at work, or, with nothing spoken since, a registry left behind.
+    // Not a turn either way.
     let disk = match (hook, disk) {
+        (Some(Turn::Idle), Some(Turn::Busy)) if !t.agents.is_empty() => Some(Turn::Idle),
         (Some(Turn::Idle), Some(Turn::Busy)) => {
             let since = t.disk_busy_since_ms.unwrap_or(now).max(t.hook_at_ms);
             if now.saturating_sub(since) > STALE_DISK_MS {
@@ -579,8 +654,10 @@ fn combine(t: &mut Track, disk: Option<Turn>, now: u64) -> Turn {
         _ => disk,
     };
     match (hook, disk) {
-        // A permission prompt sits inside a turn the registry calls busy.
+        // A permission prompt sits inside a turn the registry calls busy, a
+        // subagent's too, whether or not the turn that started it is over.
         (Some(Turn::Waiting), _) => Turn::Waiting,
+        _ if t.agents.values().any(|asks| *asks) => Turn::Waiting,
         // The registry says a dialog is up, so the model is not working,
         // whatever the last hook said: a turn that died on an API error
         // before Claude Code fired `StopFailure` left its hook at busy.
@@ -623,6 +700,17 @@ fn children_at(t: &mut Track, children: Vec<ProcRead>, born_after: u64, name_of:
     (holding, gone_quiet)
 }
 
+/// Its subagents at work, for what holds the machine: they work in the CLI
+/// itself, with no process of their own to show, a job all the same. Not one
+/// on a prompt of its own, which waits for a person as a turn on one does.
+fn agents_at_work(t: &Track) -> Option<String> {
+    match t.agents.values().filter(|asks| !**asks).count() {
+        0 => None,
+        1 => Some("1 subagent".to_string()),
+        n => Some(format!("{n} subagents")),
+    }
+}
+
 /// One pass over every live session, plus the background helpers as they
 /// stand (`helpers`), which keep no track here. Called by the sampler thread;
 /// public so a test can drive it with probes of its own.
@@ -661,6 +749,7 @@ pub fn sample(probes: Vec<crate::pty::ActivityProbe>, helpers: Vec<SessionActivi
                 t.first_turn_ms = 0;
                 t.prev.clear();
                 t.left.clear();
+                t.agents.clear();
             }
 
             let (disk, disk_at) = disk_read.map_or((None, None), |(d, at)| (Some(d), at));
@@ -694,7 +783,8 @@ pub fn sample(probes: Vec<crate::pty::ActivityProbe>, helpers: Vec<SessionActivi
                 0 => 0,
                 first => first.max(p.spawned_at_ms as u64 + STARTUP_MS),
             };
-            let (holding, gone_quiet) = children_at(t, children, born_after, &name_of, now);
+            let (mut holding, gone_quiet) = children_at(t, children, born_after, &name_of, now);
+            holding.extend(agents_at_work(t));
             if !gone_quiet.is_empty() {
                 let_go.push((p.id.clone(), gone_quiet));
             }
@@ -872,6 +962,82 @@ mod tests {
         assert_eq!(HookEvent::parse("not json"), None);
         assert_eq!(ev("StopFailure", r#","error":"rate_limit""#), Some(HookEvent::Failed("rate_limit")));
         assert_eq!(ev("StopFailure", r#","error":"something_new""#), Some(HookEvent::Failed("unknown")));
+        // A subagent's hooks, by the id only they carry, are never the turn's.
+        let agent = |name: &str, extra: &str| ev(name, &format!(r#","agent_id":"a1"{extra}"#));
+        let a1 = || "a1".to_string();
+        assert_eq!(agent("SubagentStart", r#","agent_type":"general-purpose""#), Some(HookEvent::AgentAtWork(a1())));
+        assert_eq!(agent("PostToolUse", r#","tool_name":"Bash""#), Some(HookEvent::AgentAtWork(a1())));
+        assert_eq!(agent("PermissionRequest", r#","tool_name":"Bash""#), Some(HookEvent::AgentWaiting(a1())));
+        assert_eq!(agent("Notification", r#","notification_type":"permission_prompt""#), Some(HookEvent::AgentWaiting(a1())));
+        assert_eq!(agent("Notification", r#","notification_type":"idle_prompt""#), None);
+        assert_eq!(agent("SubagentStop", ""), Some(HookEvent::AgentDone(a1())));
+        assert_eq!(ev("SubagentStop", ""), None, "nobody's to count");
+    }
+
+    /// As on 2026-11-04: the turn ends having started a background agent,
+    /// whose tools then fire hooks for an hour while the registry says busy.
+    /// The turn is over, the session's job is not.
+    #[test]
+    fn a_background_agent_is_no_turn() {
+        let id = "bg-agent";
+        let hook = |body: &str| on_hook(id, HookEvent::parse(body).unwrap());
+        hook(r#"{"hook_event_name":"UserPromptSubmit","prompt":"review it"}"#);
+        hook(r#"{"hook_event_name":"SubagentStart","agent_id":"a1","agent_type":"general-purpose"}"#);
+        hook(r#"{"hook_event_name":"PostToolUse","tool_name":"Agent"}"#);
+        hook(r#"{"hook_event_name":"Stop"}"#);
+        hook(r#"{"hook_event_name":"PostToolUse","tool_name":"Bash","agent_id":"a1"}"#);
+        let mut st = state().lock().unwrap();
+        let t = st.tracks.get_mut(id).unwrap();
+        assert_eq!((t.hook, t.turns_ended, t.agents.len()), (Some(Turn::Idle), 1, 1), "its tool spoke for itself");
+        t.turn = combine(t, Some(Turn::Busy), now_ms());
+        assert_eq!(t.turn, Turn::Idle, "a busy registry is the agent's, not a turn");
+        assert_eq!(agents_at_work(t).as_deref(), Some("1 subagent"));
+        drop(st);
+        let ts = turn_state(id).unwrap();
+        assert!(ts.turn == Turn::Idle && ts.children_busy, "between turns, with a job at work");
+        assert!(children_hold(id), "which holds the machine");
+        assert_eq!(left_quiet(id), None, "and is not to be called idle");
+
+        // Its own prompt holds the session on it, turn or no turn.
+        hook(r#"{"hook_event_name":"PermissionRequest","tool_name":"Bash","agent_id":"a1"}"#);
+        let mut st = state().lock().unwrap();
+        let t = st.tracks.get_mut(id).unwrap();
+        assert_eq!(combine(t, Some(Turn::Busy), now_ms()), Turn::Waiting);
+        assert_eq!(agents_at_work(t), None, "waiting for a person keeps no machine awake");
+        drop(st);
+        hook(r#"{"hook_event_name":"PostToolUse","tool_name":"Bash","agent_id":"a1"}"#);
+
+        // One of the CLI's own agents, never seen at work, ends: nothing of
+        // the session's starts over for it.
+        let mut st = state().lock().unwrap();
+        st.tracks.get_mut(id).unwrap().disk_busy_since_ms = Some(1);
+        drop(st);
+        hook(r#"{"hook_event_name":"SubagentStop","agent_id":"internal"}"#);
+        assert_eq!(state().lock().unwrap().tracks[id].disk_busy_since_ms, Some(1));
+
+        // It ends; Claude Code takes its result up in a turn of its own,
+        // which the registry says before any hook may: busy, judged afresh.
+        hook(r#"{"hook_event_name":"SubagentStop","agent_id":"a1"}"#);
+        let mut st = state().lock().unwrap();
+        let t = st.tracks.get_mut(id).unwrap();
+        let at = now_ms();
+        assert_eq!(combine(t, Some(Turn::Busy), at), Turn::Busy);
+        assert_eq!(combine(t, Some(Turn::Busy), at + STALE_DISK_MS + 1), Turn::Idle, "no hook since: left behind");
+        drop(st);
+        assert!(!turn_state(id).unwrap().children_busy);
+        forget(id);
+    }
+
+    /// A SubagentStop that never came: the registry, idle a while, says no
+    /// agent is left.
+    #[test]
+    fn an_idle_registry_ends_lost_agents() {
+        let mut t = Track { hook: Some(Turn::Idle), ..Default::default() };
+        t.agents.insert("lost".into(), false);
+        assert_eq!(combine(&mut t, Some(Turn::Idle), 1_000), Turn::Idle);
+        assert_eq!(t.agents.len(), 1, "a registry just gone idle may not have caught up");
+        combine(&mut t, Some(Turn::Idle), 1_000 + STALE_HOOK_MS + 1);
+        assert!(t.agents.is_empty());
     }
 
     #[test]

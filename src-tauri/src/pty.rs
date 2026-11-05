@@ -601,6 +601,10 @@ pub(crate) fn claude_settings_file(chat_id: &str, hooks: bool, hidden: &[String]
                 // the call only once it is answered), the command up for leave.
                 "PreToolUse": [{ "matcher": "AskUserQuestion", "hooks": [{ "type": "command", "command": command, "timeout": 5 }] }],
                 "PermissionRequest": hook(5),
+                // A subagent's life, which a background agent lives past the
+                // turn that started it (activity.rs `HookEvent::AgentAtWork`).
+                "SubagentStart": hook(5),
+                "SubagentStop": hook(5),
             }),
         );
     }
