@@ -2,7 +2,8 @@
 //! post to. It is how Luna learns the exact moment a Claude Code turn starts,
 //! ends, or stops for a permission — without polling the registry and without
 //! a word reaching the model (the hook commands print nothing, and nothing
-//! silent costs context).
+//! silent costs context). One hook speaks: the guard's (`/guard`, guard.rs),
+//! which refuses a shell call that would wait forever, and says why.
 //!
 //! Loopback only, on a port picked at start; every request carries a secret
 //! minted for this run, so a stray local process cannot feed the activity
@@ -56,6 +57,14 @@ pub fn start() {
                             ),
                             None => req.respond(tiny_http::Response::empty(status)),
                         };
+                    } else if path.starts_with("/guard/") {
+                        let _ = match handle_guard(&mut req) {
+                            Ok(decision) => req.respond(
+                                tiny_http::Response::from_string(decision)
+                                    .with_header(tiny_http::Header::from_bytes("Content-Type", "application/json").unwrap()),
+                            ),
+                            Err(status) => req.respond(tiny_http::Response::empty(status)),
+                        };
                     } else {
                         let status = handle(&mut req);
                         let _ = req.respond(tiny_http::Response::empty(status));
@@ -70,6 +79,13 @@ pub fn start() {
 pub fn hook_url(chat_id: &str) -> Option<String> {
     let l = LISTENER.get()?;
     Some(format!("http://127.0.0.1:{}/hook/{}/{}", l.port, chat_id, l.secret))
+}
+
+/// The URL a session's guard hook posts a shell call to (guard.rs), or None
+/// while the listener is off.
+pub fn guard_url(chat_id: &str) -> Option<String> {
+    let l = LISTENER.get()?;
+    Some(format!("http://127.0.0.1:{}/guard/{}/{}", l.port, chat_id, l.secret))
 }
 
 /// The MCP endpoint, or None while the listener is off.
@@ -107,7 +123,7 @@ fn handle(req: &mut tiny_http::Request) -> u16 {
         return 405;
     }
     let path = req.url().to_string();
-    let Some((chat_id, secret)) = parse_hook_path(&path) else { return 404 };
+    let Some((chat_id, secret)) = parse_path(&path, "/hook/") else { return 404 };
     let Some(l) = LISTENER.get() else { return 503 };
     if secret != l.secret {
         return 403;
@@ -125,9 +141,28 @@ fn handle(req: &mut tiny_http::Request) -> u16 {
     }
 }
 
-/// `/hook/<chat id>/<secret>` → (chat id, secret).
-fn parse_hook_path(path: &str) -> Option<(&str, &str)> {
-    let rest = path.strip_prefix("/hook/")?;
+/// The guard's word on a shell call (guard.rs): Ok with the decision to print
+/// for one to refuse, Err with the status otherwise — 204, nothing printed,
+/// and the call goes ahead. Apart from `handle`: it asks nothing of the
+/// sessions' state, and no lock a hook waits on.
+fn handle_guard(req: &mut tiny_http::Request) -> Result<String, u16> {
+    if *req.method() != tiny_http::Method::Post {
+        return Err(405);
+    }
+    let path = req.url().to_string();
+    let (_, secret) = parse_path(&path, "/guard/").ok_or(404u16)?;
+    if secret != LISTENER.get().ok_or(503u16)?.secret {
+        return Err(403);
+    }
+    // Whole: a command cut short is no JSON, and would go ahead unread.
+    let mut body = String::new();
+    let _ = req.as_reader().take(4 * 1024 * 1024).read_to_string(&mut body);
+    crate::guard::decision(&body).ok_or(204)
+}
+
+/// `<prefix><chat id>/<secret>` → (chat id, secret).
+fn parse_path<'a>(path: &'a str, prefix: &str) -> Option<(&'a str, &'a str)> {
+    let rest = path.strip_prefix(prefix)?;
     let rest = rest.split('?').next()?;
     let (id, secret) = rest.split_once('/')?;
     (!id.is_empty() && !secret.is_empty() && !secret.contains('/')).then_some((id, secret))
@@ -156,11 +191,13 @@ mod tests {
 
     #[test]
     fn parses_hook_paths() {
-        assert_eq!(parse_hook_path("/hook/abc/s3cr3t"), Some(("abc", "s3cr3t")));
-        assert_eq!(parse_hook_path("/hook/abc/s3cr3t?x=1"), Some(("abc", "s3cr3t")));
-        assert_eq!(parse_hook_path("/hook/abc"), None);
-        assert_eq!(parse_hook_path("/hook//s"), None);
-        assert_eq!(parse_hook_path("/other/abc/s"), None);
+        assert_eq!(parse_path("/hook/abc/s3cr3t", "/hook/"), Some(("abc", "s3cr3t")));
+        assert_eq!(parse_path("/hook/abc/s3cr3t?x=1", "/hook/"), Some(("abc", "s3cr3t")));
+        assert_eq!(parse_path("/hook/abc", "/hook/"), None);
+        assert_eq!(parse_path("/hook//s", "/hook/"), None);
+        assert_eq!(parse_path("/other/abc/s", "/hook/"), None);
+        assert_eq!(parse_path("/guard/abc/s3cr3t", "/guard/"), Some(("abc", "s3cr3t")));
+        assert_eq!(parse_path("/guard/abc/s3cr3t", "/hook/"), None);
     }
 }
 

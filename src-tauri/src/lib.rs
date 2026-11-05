@@ -13,6 +13,7 @@ mod corecmd;
 mod corelink;
 mod coreproc;
 mod emit;
+mod guard;
 mod hub;
 mod ipc;
 #[cfg(unix)]

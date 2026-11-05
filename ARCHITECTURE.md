@@ -439,7 +439,18 @@ src-tauri/src/
   the job has outlived its tool and is left. A chat's CLI that quits when asked is gone by then: what is
   left of its group goes, and what it left elsewhere stays. In the core a live pid that is no child of the
   core is another program's and is left alone. Hooks print nothing: Claude Code adds the stdout of a hook exiting 0
-  to the context, and silence is free. Claude's registry beats an "idle" from a hook, a hook's
+  to the context, and silence is free. All but the guard (`guard.rs`): a PreToolUse hook on
+  `Bash|PowerShell|Monitor` for a chat with tools and for every helper (a background `claude -p` gets it
+  alone), and for Codex `-c hooks.PreToolUse=[…]` on its shell, which its hooks call `Bash`, where hooks run
+  unasked (untrusted, `exec` drops it and the TUI stops on a review screen). Codex runs a hook through the
+  user's shell, PowerShell on Windows, where a bare `@-` does not parse: the hook failed, and a failing hook
+  lets the call go ahead. Its command has `"@-"` quoted and curl by full path, as PowerShell, cmd and sh all
+  take it. It posts to
+  `/guard/<id>/<secret>`, apart from `/hook` and its locks, which answers a command that follows a file with no
+  `timeout N` in front of it (`tail -f`/`-F`/`--follow`, `Get-Content -Wait`; quotes, comments, heredoc bodies
+  and `bash -c` read as a shell would) with `permissionDecision: "deny"` and what to do instead, and
+  anything else with an empty 204. A tool's own `timeout` is no deadline: past it Claude Code moves the call
+  to the background. With the hub down the call goes ahead. Claude's registry beats an "idle" from a hook, a hook's
   "waiting" beats the registry's "busy" (a permission prompt is inside a turn). No mark is eternal:
   a hook's "busy" against the registry's "idle" goes stale in 15 s (a missed Stop), a hook's "waiting" — at
   once when the registry's idle is newer than the hook (its `statusUpdatedAt`: a prompt answered "No"

@@ -390,6 +390,12 @@ account of sessions, accounts, models and tools is `luna_guide`'s, read only whe
 asks for it. A chat without the box ticked knows nothing of Luna at all, and neither does a
 background helper spawned without tools.
 
+A chat with the box ticked, and every helper, also has its shell commands looked at before they
+run: one that follows a file (`tail -f`, `tail -F`, `Get-Content -Wait`, in Bash, PowerShell or a
+Monitor) with no `timeout N` in front of it is refused, with what to do instead. Such a wait
+outlives the tool that ran it and holds the PC awake all night. Codex sessions get this only
+where Codex hooks run unasked (Settings): Codex runs a hook Luna gives it only so.
+
 - A helper runs **in the background** unless the agent asks for `visible: true`: no row,
   no pane, no terminal — each turn is one run of the CLI's headless mode (`claude -p`,
   `codex exec`), and the next one resumes the conversation. It needs no open window, and it

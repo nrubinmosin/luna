@@ -172,6 +172,8 @@ can start other sessions and work with them.
   it). If a helper printed what it should not have, tell the user that path.
 
 ## Working with helpers
+- With tools, and in every helper, a shell command following a file (`tail -f`, `Get-Content -Wait`)
+  with no `timeout N` in front is refused (Codex: where its hooks run unasked).
 - A helper acts as you. Messages, posts, emails, pushes or writes elsewhere in the user's name
   go out only when the user asked for them, by you or by a helper you brief.
 - Relaying a report, keep its caveats ("possibly a false flag", "not tested live") with the
