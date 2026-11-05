@@ -1,97 +1,52 @@
 //! A chat whose turn ended on a question to its user: shown as waiting, like a
-//! permission prompt, though nothing holds the turn. Two ways to tell:
+//! permission prompt, though nothing holds the turn. Its last message ends on
+//! the marker the user set (`waiting_marker` in settings), a line their own
+//! reply format already writes.
 //!
-//! - the session said so with `luna_waiting` (mcp.rs), which stands until
-//!   the next prompt a person gives it — a Luna notice typed in is none;
-//! - its last message ends on the marker the user set (`waiting_marker` in
-//!   settings), a line their own reply format already writes.
+//! The user may clear it by hand (`dismiss_waiting`): it stays cleared for the
+//! words of that turn, and the next turn that ends on the marker shows again.
 //!
 //! Only for the user's own chats: a helper asks its parent, who has its own
 //! ways of hearing it (agents.rs). And only for the eye: for power.rs the turn
 //! is over, and an armed shutdown goes ahead — a question nobody is there to
 //! answer must not keep the PC on all night.
 
-use crate::throttle::now_ms;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
-/// The longest question kept: what a toast and a tooltip can show.
-const QUESTION_MAX: usize = 500;
-
-struct Declared {
-    question: String,
-    at_ms: u64,
+/// The last waiting shown per chat, by the ending it was shown on (`ending`),
+/// and whether the user cleared it.
+struct Shown {
+    on: u64,
+    cleared: bool,
 }
 
-fn declared() -> &'static Mutex<HashMap<String, Declared>> {
-    static D: OnceLock<Mutex<HashMap<String, Declared>>> = OnceLock::new();
-    D.get_or_init(Default::default)
+fn shown() -> &'static Mutex<HashMap<String, Shown>> {
+    static S: OnceLock<Mutex<HashMap<String, Shown>>> = OnceLock::new();
+    S.get_or_init(Default::default)
+}
+
+/// What a waiting is shown on: the words a turn ended on and when they were
+/// said, both from one read of the transcript or rollout. Either moving is a
+/// new question; the time alone tells the same words said again a turn later.
+fn ending(said: &str, at: Option<&str>) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (said, at).hash(&mut h);
+    h.finish()
 }
 
 /// Whether a session is the user's own chat rather than a helper. The dev
 /// caller's spawns come up as top-level chats (bridge.ts), with nobody above
 /// them to ask.
-pub fn for_user(chat_id: &str) -> bool {
+fn for_user(chat_id: &str) -> bool {
     crate::agents::parent_of(chat_id).is_none_or(|p| p == crate::agents::DEV_CALLER)
-}
-
-/// `luna_waiting`: the caller ends its turn on this question (None takes it
-/// back). Refused for a helper, whose questions go to its parent.
-pub fn declare(chat_id: &str, question: Option<&str>) -> Result<serde_json::Value, String> {
-    if !for_user(chat_id) {
-        return Err("only the user's own chats wait on them: your parent gets your reply as it is".into());
-    }
-    let mut d = declared().lock().unwrap_or_else(|e| e.into_inner());
-    match question.map(str::trim).filter(|q| !q.is_empty()) {
-        Some(q) => {
-            let question: String = q.chars().take(QUESTION_MAX).collect();
-            d.insert(chat_id.to_string(), Declared { question, at_ms: now_ms() });
-            Ok(serde_json::json!({ "waiting": true }))
-        }
-        None => {
-            d.remove(chat_id);
-            Ok(serde_json::json!({ "waiting": false }))
-        }
-    }
-}
-
-/// A prompt reached the chat at `at_ms`: a question put before it has had its
-/// answer, or been passed over, either way the user has spoken.
-pub fn prompted_at(chat_id: &str, at_ms: u64) {
-    let mut d = declared().lock().unwrap_or_else(|e| e.into_inner());
-    if d.get(chat_id).is_some_and(|q| q.at_ms <= at_ms) {
-        d.remove(chat_id);
-    }
-}
-
-/// Text Luna typed in on its own, not the user's answer.
-pub fn is_notice(text: &str) -> bool {
-    text.trim_start().starts_with(crate::agents::NOTICE_TAG)
-}
-
-/// A Claude Code hook (hub.rs): `UserPromptSubmit` is the next prompt. A body
-/// cut short by the hub's limit is a long prompt, and Luna's notices are short.
-pub fn on_hook(chat_id: &str, body: &str) {
-    match serde_json::from_str::<serde_json::Value>(body) {
-        Ok(v) if v["hook_event_name"] == "UserPromptSubmit" => {
-            if !is_notice(v["prompt"].as_str().unwrap_or("")) {
-                prompted_at(chat_id, now_ms());
-            }
-        }
-        Ok(_) => {}
-        Err(_) if body.contains("\"UserPromptSubmit\"") => prompted_at(chat_id, now_ms()),
-        Err(_) => {}
-    }
 }
 
 /// The chat is gone.
 pub fn forget(chat_id: &str) {
-    declared().lock().unwrap_or_else(|e| e.into_inner()).remove(chat_id);
-}
-
-fn question_of(chat_id: &str) -> Option<String> {
-    declared().lock().unwrap_or_else(|e| e.into_inner()).get(chat_id).map(|d| d.question.clone())
+    shown().lock().unwrap_or_else(|e| e.into_inner()).remove(chat_id);
 }
 
 /// Whether a message's last line holds the marker, when one is set.
@@ -100,22 +55,42 @@ fn marked_by(said: &str, marker: &str) -> bool {
     !marker.is_empty() && said.lines().rev().map(str::trim).find(|l| !l.is_empty()).is_some_and(|l| l.contains(marker))
 }
 
-/// A live chat's meta, as `session_meta` hands it on: a turn over and ended on
-/// a question reads `waiting`, with the question where one was given.
+/// A live chat's meta, as `session_meta` hands it on: a turn over that ended
+/// on the marker reads `waiting`, unless the user cleared it.
 pub fn overlay(chat_id: &str, meta: &mut crate::pty::SessionMeta) {
+    let s = crate::settings::get();
+    if s.waiting_marker_on {
+        overlay_marked(chat_id, meta, &s.waiting_marker);
+    }
+}
+
+/// `overlay` with the marker on and set to `marker`.
+fn overlay_marked(chat_id: &str, meta: &mut crate::pty::SessionMeta, marker: &str) {
     let idle = meta.status.as_deref().map_or(true, |s| crate::activity::turn_of(s) == crate::activity::Turn::Idle);
     let busy = crate::activity::turn_state(chat_id).is_some_and(|t| t.turn != crate::activity::Turn::Idle);
     if !idle || busy || !for_user(chat_id) {
         return;
     }
-    if let Some(q) = question_of(chat_id) {
-        meta.status = Some("waiting".into());
-        meta.question = Some(q);
+    let Some(said) = meta.last_said.as_deref().filter(|said| marked_by(said, marker)) else { return };
+    let on = ending(said, meta.last_said_at.as_deref());
+    let mut shown = shown().lock().unwrap_or_else(|e| e.into_inner());
+    if shown.get(chat_id).is_some_and(|s| s.cleared && s.on == on) {
         return;
     }
-    let s = crate::settings::get();
-    if s.waiting_marker_on && meta.last_said.as_deref().is_some_and(|said| marked_by(said, &s.waiting_marker)) {
-        meta.status = Some("waiting".into());
+    if shown.get(chat_id).is_none_or(|s| s.on != on) {
+        shown.insert(chat_id.to_string(), Shown { on, cleared: false });
+    }
+    meta.status = Some("waiting".into());
+    meta.marked = Some(format!("{on:x}"));
+}
+
+/// The user says the chat is not waiting on them: cleared until a turn ends
+/// on the marker again. Only the ending they saw (`key`, as `marked` gave it):
+/// one a later look found, still on its way to the window, stands.
+#[tauri::command]
+pub fn dismiss_waiting(id: String, key: String) {
+    if let Some(s) = shown().lock().unwrap_or_else(|e| e.into_inner()).get_mut(&id).filter(|s| format!("{:x}", s.on) == key) {
+        s.cleared = true;
     }
 }
 
@@ -146,29 +121,59 @@ pub fn set_waiting_marker(on: bool, text: String) -> Result<Marker, String> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_question_stands_until_the_user_speaks() {
-        let id = "ask-stands";
-        declared().lock().unwrap().insert(id.into(), Declared { question: "Which one?".into(), at_ms: 1_000 });
-        // The prompt that started the turn came before the question.
-        prompted_at(id, 900);
-        assert_eq!(question_of(id).as_deref(), Some("Which one?"));
-        // A notice typed in is no answer.
-        on_hook(id, &serde_json::json!({ "hook_event_name": "UserPromptSubmit", "prompt": format!("{} Your helper finished.", crate::agents::NOTICE_TAG) }).to_string());
-        assert!(question_of(id).is_some());
-        // Nor is the turn's own tool coming back.
-        on_hook(id, r#"{"hook_event_name":"PostToolUse","tool_name":"mcp__luna__luna_waiting"}"#);
-        assert!(question_of(id).is_some());
-        on_hook(id, r#"{"hook_event_name":"UserPromptSubmit","prompt":"the second"}"#);
-        assert!(question_of(id).is_none());
+    const MARKER: &str = "AWAITING OPERATOR";
+
+    /// The key a chat whose turn is over and ended on `said` at `at` reads
+    /// waiting by, if it does.
+    fn waits_at(chat_id: &str, said: &str, at: &str) -> Option<String> {
+        let mut meta = crate::pty::SessionMeta { status: Some("idle".into()), last_said: Some(said.into()), last_said_at: Some(at.into()), ..Default::default() };
+        overlay_marked(chat_id, &mut meta, MARKER);
+        assert_eq!(meta.marked.is_some(), meta.status.as_deref() == Some("waiting"));
+        meta.marked
+    }
+
+    fn waits(chat_id: &str, said: &str) -> bool {
+        waits_at(chat_id, said, "t1").is_some()
     }
 
     #[test]
-    fn a_prompt_too_long_for_the_hub_still_answers() {
-        let id = "ask-long";
-        declared().lock().unwrap().insert(id.into(), Declared { question: "Go?".into(), at_ms: 0 });
-        on_hook(id, r#"{"hook_event_name":"UserPromptSubmit","prompt":"a very long paste cut sh"#);
-        assert!(question_of(id).is_none());
+    fn a_cleared_waiting_stays_cleared_until_a_turn_ends_on_the_marker_again() {
+        let id = "ask-cleared";
+        let ship = "Ship it?\n\n`STATUS: AWAITING OPERATOR`";
+        let which = "Which one?\n\n`STATUS: AWAITING OPERATOR`";
+        let key = waits_at(id, ship, "t1").unwrap();
+        dismiss_waiting(id.into(), key);
+        assert!(waits_at(id, ship, "t1").is_none(), "the same words said at the same time");
+        assert!(waits_at(id, ship, "t1").is_none(), "and on every look after");
+        // The next turn ends on other words.
+        let key = waits_at(id, which, "t2").unwrap();
+        dismiss_waiting(id.into(), key.clone());
+        assert!(waits_at(id, which, "t2").is_none());
+        // Or on the same words, a turn later.
+        assert!(waits_at(id, which, "t3").is_some());
+        // A clear for what was shown before a later look found more clears
+        // nothing of the newer one.
+        dismiss_waiting(id.into(), key);
+        assert!(waits_at(id, which, "t3").is_some());
+        // Gone with the chat: nothing cleared stays behind.
+        let key = waits_at(id, which, "t3").unwrap();
+        dismiss_waiting(id.into(), key);
+        forget(id);
+        assert!(waits_at(id, which, "t3").is_some());
+        forget(id);
+    }
+
+    #[test]
+    fn only_the_users_own_chats_wait_on_them() {
+        let (parent, helper) = ("ask-parent", "ask-helper");
+        crate::agents::register(helper, crate::provider::Provider::Claude, "C:/p", "C:/acc/anthropic/one", Some(parent), false, serde_json::json!({}));
+        assert!(!waits(helper, "Go?\nAWAITING OPERATOR"), "a helper asks its parent");
+        // Nothing was shown, so there is nothing to clear.
+        dismiss_waiting(helper.into(), String::new());
+        assert!(!shown().lock().unwrap().contains_key(helper));
+        assert!(waits(parent, "Go?\nAWAITING OPERATOR"));
+        crate::agents::forget(helper);
+        forget(parent);
     }
 
     #[test]

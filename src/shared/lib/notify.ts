@@ -38,6 +38,6 @@ export async function notify(title: string, body: string, chatId?: string | null
   }
 }
 
-// Toast when a session flips to "waiting": what it asks, where it said.
-export const notifyWaiting = (chatId: string, chatName: string, who: string, question?: string | null): Promise<void> =>
-  notify(`${who} is waiting`, question ? `“${chatName}”: ${question}` : `“${chatName}” needs your input`, chatId);
+// Toast when a session flips to "waiting".
+export const notifyWaiting = (chatId: string, chatName: string, who: string): Promise<void> =>
+  notify(`${who} is waiting`, `“${chatName}” needs your input`, chatId);

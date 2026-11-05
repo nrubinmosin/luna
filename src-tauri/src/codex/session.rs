@@ -191,11 +191,11 @@ struct Scan {
     /// Why the last turn stopped short, if it did: `task_complete` carries the
     /// error it ended on (Codex 0.166), `turn_aborted` why it was cut off.
     failed: Option<String>,
-    /// When the user last said something, Luna's notices aside (asking.rs).
-    prompt_ms: Option<u64>,
     /// What the model last said, as the last turn's end has it; None while a
     /// turn is on.
     last_said: Option<String>,
+    /// When that end was written.
+    last_said_at: Option<String>,
 }
 
 fn turn_counts() -> &'static Mutex<HashMap<String, TurnCount>> {
@@ -252,9 +252,6 @@ fn tracked_at(live: &Live, path: PathBuf) -> Option<Scan> {
     } else {
         entry.offset = scan_rollout(&path, entry.offset, since, &mut entry.scan);
     }
-    if let Some(at) = entry.scan.prompt_ms {
-        crate::asking::prompted_at(live.chat_id, at);
-    }
     let mut scan = entry.scan.clone();
     scan.completed += entry.before.values().map(|(_, s)| s.completed).sum::<u32>();
     Some(scan)
@@ -302,9 +299,6 @@ fn scan_rollout(path: &Path, from: u64, since_ms: i64, scan: &mut Scan) -> u64 {
         let payload = &v["payload"];
         let at_ms = v["timestamp"].as_str().and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok()).map(|t| t.timestamp_millis());
         let new = at_ms.map_or(true, |t| t >= since_ms);
-        // When the user spoke, if they did: an answer to whatever the turn
-        // before ended asking.
-        let prompt_at = |said: &str| at_ms.filter(|_| !crate::asking::is_notice(said)).map(|at| at.max(0) as u64);
         match (v["type"].as_str(), payload["type"].as_str()) {
             (Some("event_msg"), Some("task_started" | "turn_started")) => {
                 // A turn an earlier process was on went with it, and Codex (0.166)
@@ -312,10 +306,12 @@ fn scan_rollout(path: &Path, from: u64, since_ms: i64, scan: &mut Scan) -> u64 {
                 scan.working = Some(new);
                 scan.failed = None;
                 scan.last_said = None;
+                scan.last_said_at = None;
             }
             (Some("event_msg"), Some(end @ ("task_complete" | "turn_complete" | "turn_aborted" | "task_aborted"))) => {
                 scan.working = Some(false);
                 scan.last_said = payload["last_agent_message"].as_str().map(str::to_owned);
+                scan.last_said_at = v["timestamp"].as_str().map(str::to_owned);
                 scan.failed = payload["error"]["message"].as_str().map(str::to_owned).or_else(|| {
                     end.ends_with("_aborted").then(|| match payload["reason"].as_str() {
                         Some(why) => format!("its turn was aborted ({why})"),
@@ -332,14 +328,8 @@ fn scan_rollout(path: &Path, from: u64, since_ms: i64, scan: &mut Scan) -> u64 {
             }
             // Whatever the user says next is the answer, typed or picked:
             // `user_message` before 0.163, a completed `UserMessage` item since.
-            (Some("event_msg"), Some("user_message")) => {
-                scan.ask = None;
-                scan.prompt_ms = scan.prompt_ms.max(prompt_at(payload["message"].as_str().unwrap_or("")));
-            }
-            (Some("event_msg"), Some("item_completed")) if payload["item"]["type"] == "UserMessage" => {
-                scan.ask = None;
-                scan.prompt_ms = scan.prompt_ms.max(prompt_at(&user_text(&payload["item"])));
-            }
+            (Some("event_msg"), Some("user_message")) => scan.ask = None,
+            (Some("event_msg"), Some("item_completed")) if payload["item"]["type"] == "UserMessage" => scan.ask = None,
             (Some("response_item"), Some("function_call")) => {
                 let blocking = match payload["name"].as_str() {
                     Some("request_user_input") => true,
@@ -379,15 +369,6 @@ fn ask_of(args: &Value, blocking: bool) -> Option<crate::agents::Ask> {
         })
         .collect();
     (!questions.is_empty()).then(|| crate::agents::Ask::question(questions, blocking))
-}
-
-/// What a completed `UserMessage` item says: its `text`, or its `content`
-/// blocks' as the TUI writes them.
-fn user_text(item: &Value) -> String {
-    if let Some(t) = item["text"].as_str() {
-        return t.to_string();
-    }
-    item["content"].as_array().into_iter().flatten().filter_map(|b| b["text"].as_str()).collect::<Vec<_>>().join("\n")
 }
 
 /// The rollouts a terminal session started at or after `since_ms` in this folder, or
@@ -826,6 +807,7 @@ pub fn meta(live: &Live) -> Option<SessionMeta> {
         session_id: Some(id),
         model: t.model,
         first_prompt: cached_first_prompt(&path).and_then(|s| sane_title(&s)),
+        last_said_at: scan.as_ref().and_then(|s| s.last_said_at.clone()),
         last_said: scan.and_then(|s| s.last_said),
         ..Default::default()
     };
@@ -1168,27 +1150,22 @@ mod format_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// What a turn ended saying, and when the user last spoke: a notice Luna
-    /// typed in is not them.
+    /// What a turn ended saying, until the next one starts.
     #[test]
-    fn reads_the_last_words_and_the_last_prompt() {
+    fn reads_the_last_words() {
         let dir = std::env::temp_dir().join(format!("luna-rollout-said-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("r.jsonl");
         let event = |at: &str, payload: Value| format!("{}\n", serde_json::json!({ "timestamp": at, "type": "event_msg", "payload": payload }));
-        let ms = |at: &str| chrono::DateTime::parse_from_rfc3339(at).unwrap().timestamp_millis() as u64;
-        let notice = format!("{} Your helper finished.", crate::agents::NOTICE_TAG);
         let lines = [
             event("2026-11-03T10:00:00.000Z", serde_json::json!({ "type": "task_started" })),
             event("2026-11-03T10:00:00.100Z", serde_json::json!({ "type": "user_message", "message": "which way?" })),
             event("2026-11-03T10:00:09.000Z", serde_json::json!({ "type": "task_complete", "last_agent_message": "A or B?\nSTATUS: AWAITING OPERATOR" })),
-            event("2026-11-03T10:05:00.000Z", serde_json::json!({ "type": "item_completed", "item": { "type": "UserMessage", "content": [{ "type": "text", "text": notice }] } })),
         ];
         std::fs::write(&path, lines.concat()).unwrap();
         let mut scan = Scan::default();
         scan_rollout(&path, 0, 0, &mut scan);
         assert_eq!(scan.last_said.as_deref(), Some("A or B?\nSTATUS: AWAITING OPERATOR"));
-        assert_eq!(scan.prompt_ms, Some(ms("2026-11-03T10:00:00.100Z")), "the notice is not the user");
         // The next turn is on: nothing said to it yet.
         let more = event("2026-11-03T10:06:00.000Z", serde_json::json!({ "type": "task_started" }));
         std::fs::write(&path, format!("{}{more}", lines.concat())).unwrap();

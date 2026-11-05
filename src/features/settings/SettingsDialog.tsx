@@ -575,10 +575,11 @@ function SettingsWindow({ onClose }: { onClose: () => void }) {
             <WaitingMarkerRow />
             <div style={{ fontSize: 'var(--fs-1)', color: 'var(--faint)', marginTop: 4 }}>
               A chat of yours whose turn is over and whose last message ends on a line holding this
-              text shows as waiting, as one on a permission prompt does, until you next write to it.
-              For a reply format that ends on a status line; a chat with Luna tools can also say so
-              itself, with <code>luna_waiting</code>. Helpers ask the chat that started them, not you.
-              A power-off armed for when all is done does not wait for such a chat.
+              text shows as waiting, as one on a permission prompt does, until you next write to it or
+              clear it by hand with the check on its title bar or row; the next turn that ends on it
+              waits again. For a reply format that ends on a status line. Helpers ask the chat that
+              started them, not you. A power-off armed for when all is done does not wait for such a
+              chat.
             </div>
           </Section>
           <Section label="Deleting chats">

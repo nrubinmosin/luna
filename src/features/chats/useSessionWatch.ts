@@ -6,6 +6,7 @@ import { accountOfChat, useAccounts } from '../accounts/accounts.store';
 import { ui } from '../providers';
 import { useChats } from './chats.store';
 import { useDrafts } from './drafts.store';
+import { useMarked } from './marked.store';
 
 const EVERY_MS = 4000;
 
@@ -58,6 +59,7 @@ export function useSessionWatch() {
           // other than resting would be a lie the sidebar keeps telling.
           if (fresh.status !== 'resting') store.setStatus(chat.id, 'resting');
           useDrafts.getState().set(chat.id, null);
+          useMarked.getState().set(chat.id, null);
           // A chat restored from an earlier run may still wear the opening
           // prompt it was named after; the CLI's title is on disk by now.
           if (fresh.sessionId && fresh.nameSource !== 'user' && !titleLooked.has(chat.id)) {
@@ -77,10 +79,11 @@ export function useSessionWatch() {
         else if (meta.firstPrompt) store.setName(chat.id, meta.firstPrompt, 'prompt');
 
         useDrafts.getState().set(chat.id, { draft: meta.draft, held: meta.held });
+        useMarked.getState().set(chat.id, meta.marked);
 
         const next = mapStatus(meta.status);
         if (next === 'waiting' && fresh.status !== 'waiting') {
-          void notifyWaiting(fresh.id, fresh.name, PROVIDER_LABEL[fresh.provider], meta.question);
+          void notifyWaiting(fresh.id, fresh.name, PROVIDER_LABEL[fresh.provider]);
         }
         if (next !== fresh.status) store.setStatus(chat.id, next);
 
