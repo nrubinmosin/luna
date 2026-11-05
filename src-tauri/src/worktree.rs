@@ -185,6 +185,101 @@ pub fn branch_of(folder: &str, worktree_path: &str) -> Option<String> {
     None
 }
 
+/// What a checkout has checked out: the branch, none on a detached HEAD, and
+/// its commit, short, none on a branch with no commit yet.
+#[derive(Debug, PartialEq, Default)]
+pub struct Head {
+    pub branch: Option<String>,
+    pub sha: Option<String>,
+}
+
+/// How many symbolic refs are followed from HEAD: as many as git does.
+const REF_HOPS: usize = 5;
+
+/// A short sha as `git log --oneline` gives one.
+const SHORT_SHA: usize = 7;
+
+/// `head_at` for the checkout a folder is in, wherever in it.
+pub fn head_of(dir: &str) -> Option<Head> {
+    let dir = Path::new(dir);
+    // One gone would be read as the repository around it.
+    if !dir.is_dir() {
+        return None;
+    }
+    head_at(&dir.ancestors().find(|d| d.join(".git").exists())?.to_string_lossy())
+}
+
+/// What the checkout at `root` has checked out, off its `.git` alone: `luna_list`
+/// asks this of every row of every call, and a git process per row is what it
+/// must not cost. As git resolves it: from HEAD through any symbolic refs, each
+/// loose or packed. None for what this does not read (reftable, whose HEAD names a
+/// ref that cannot exist) or does not lead to a commit (a cycle, a chain past
+/// REF_HOPS).
+pub fn head_at(root: &str) -> Option<Head> {
+    let (git_dir, common) = git_dirs(Path::new(root))?;
+    let mut value = std::fs::read_to_string(git_dir.join("HEAD")).ok()?;
+    let mut chain: Vec<String> = Vec::new();
+    // The last ref of a chain is the branch: `git worktree list` says that one.
+    let branch = |chain: &[String]| chain.last().and_then(|name| name.strip_prefix("refs/heads/")).map(str::to_owned);
+    loop {
+        let Some(name) = value.trim().strip_prefix("ref:").map(str::trim) else {
+            let id = value.trim();
+            return is_object_id(id).then(|| Head { branch: branch(&chain), sha: Some(id[..SHORT_SHA].to_string()) });
+        };
+        if chain.len() >= REF_HOPS || chain.iter().any(|seen| seen == name) || !is_ref_name(name) {
+            return None;
+        }
+        chain.push(name.to_string());
+        match read_ref(&git_dir, &common, name) {
+            Some(next) => value = next,
+            // Nothing on it yet.
+            None => return Some(Head { branch: branch(&chain), sha: None }),
+        }
+    }
+}
+
+/// A checkout's own git folder, where its HEAD is, and the one its refs are in:
+/// for a linked worktree, the repository's.
+fn git_dirs(root: &Path) -> Option<(PathBuf, PathBuf)> {
+    let dot_git = root.join(".git");
+    if dot_git.is_dir() {
+        return Some((dot_git.clone(), dot_git));
+    }
+    let text = std::fs::read_to_string(&dot_git).ok()?;
+    let git_dir = root.join(text.trim().strip_prefix("gitdir:")?.trim());
+    let common = match std::fs::read_to_string(git_dir.join("commondir")) {
+        Ok(text) => git_dir.join(text.trim()),
+        Err(_) => git_dir.clone(),
+    };
+    Some((git_dir, common))
+}
+
+/// A ref's value, loose or packed: an object id, or `ref: <name>`. These few are
+/// each worktree's own.
+fn read_ref(git_dir: &Path, common: &Path, name: &str) -> Option<String> {
+    let own = ["refs/bisect/", "refs/worktree/", "refs/rewritten/"].iter().any(|p| name.starts_with(p));
+    let dir = if own { git_dir } else { common };
+    if let Ok(value) = std::fs::read_to_string(dir.join(name)) {
+        return Some(value);
+    }
+    let packed = std::fs::read_to_string(common.join("packed-refs")).ok()?;
+    packed.lines().filter(|l| !l.starts_with(['#', '^'])).find_map(|l| {
+        let (id, packed_name) = l.split_once(' ')?;
+        (packed_name.trim() == name).then(|| id.to_string())
+    })
+}
+
+/// A ref as git would have it, so that what a file says is never a way out of
+/// the git folder: its parts start with no dot, as `.invalid` of a reftable does.
+fn is_ref_name(name: &str) -> bool {
+    name.starts_with("refs/") && !name.contains(['\\', ':']) && name.split('/').all(|part| !part.is_empty() && !part.starts_with('.'))
+}
+
+/// SHA-1 or SHA-256, in hex.
+fn is_object_id(id: &str) -> bool {
+    matches!(id.len(), 40 | 64) && id.chars().all(|c| c.is_ascii_hexdigit())
+}
+
 /// origin's default branch as this clone last heard of it (`origin/main`),
 /// if it has an origin that says.
 fn origin_default(folder: &str) -> Option<String> {
@@ -1201,6 +1296,132 @@ mod tests {
         assert!(!claims(&norm_in_use(&native(r"E:\p\.claude\worktrees\ab")), &wt));
         assert!(!claims(&norm_in_use(&native(r"E:\p")), &wt));
         assert_eq!(claims(&norm_in_use("e:/p/.claude/worktrees/a"), &norm_in_use(r"E:\p\.claude\worktrees\a")), cfg!(windows));
+    }
+
+    /// A throwaway checkout's `.git`, with these files in it.
+    fn git_folder(tag: &str, files: &[(&str, &str)]) -> (PathBuf, PathBuf) {
+        let root = std::env::temp_dir().join(format!("luna-head-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let git = root.join(".git");
+        std::fs::create_dir_all(&git).unwrap();
+        for (name, text) in files {
+            let file = git.join(name);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, text).unwrap();
+        }
+        (root, git)
+    }
+
+    const ID: &str = "0123456789abcdef0123456789abcdef01234567";
+
+    fn on(branch: Option<&str>, sha: Option<&str>) -> Option<Head> {
+        Some(Head { branch: branch.map(str::to_owned), sha: sha.map(str::to_owned) })
+    }
+
+    #[test]
+    fn a_checkouts_head_is_read_off_its_git_folder() {
+        let id = format!("{ID}\n");
+        let cases: Vec<(&str, Vec<(&str, &str)>, Option<Head>)> = vec![
+            ("loose", vec![("HEAD", "ref: refs/heads/main\n"), ("refs/heads/main", &id)], on(Some("main"), Some("0123456"))),
+            ("nested", vec![("HEAD", "ref: refs/heads/fix/a\n"), ("refs/heads/fix/a", &id)], on(Some("fix/a"), Some("0123456"))),
+            ("detached", vec![("HEAD", &id)], on(None, Some("0123456"))),
+            ("unborn", vec![("HEAD", "ref: refs/heads/new\n")], on(Some("new"), None)),
+            ("bad-id", vec![("HEAD", "ref: refs/heads/main\n"), ("refs/heads/main", "not an id\n")], None),
+            ("short-id", vec![("HEAD", "0123456\n")], None),
+            ("reftable", vec![("HEAD", "ref: refs/heads/.invalid\n"), ("refs/heads", "this repository uses the reftable format\n")], None),
+            ("way-out", vec![("HEAD", "ref: refs/../../../secret\n")], None),
+            ("no-ref", vec![("HEAD", "ref: HEAD\n")], None),
+        ];
+        for (tag, files, want) in cases {
+            let (root, _) = git_folder(tag, &files);
+            assert_eq!(head_at(&root.to_string_lossy()), want, "{tag}");
+            let _ = std::fs::remove_dir_all(&root);
+        }
+        let sha256 = "a".repeat(64);
+        let (root, _) = git_folder("sha256", &[("HEAD", &sha256)]);
+        assert_eq!(head_at(&root.to_string_lossy()), on(None, Some("aaaaaaa")));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_ref_is_loose_or_packed_at_every_step_of_its_chain() {
+        let packed = format!("# pack-refs with: peeled fully-peeled sorted\n{ID} refs/heads/main\n^{}\n", "f".repeat(40));
+        // HEAD -> loose alias -> packed branch: the branch is the last of the chain.
+        let (root, _) = git_folder("chain", &[("HEAD", "ref: refs/heads/alias\n"), ("refs/heads/alias", "ref: refs/heads/main\n"), ("packed-refs", &packed)]);
+        assert_eq!(head_at(&root.to_string_lossy()), on(Some("main"), Some("0123456")));
+        let _ = std::fs::remove_dir_all(&root);
+        // A loose ref over a packed one wins, as it is the newer.
+        let other = format!("{}\n", "b".repeat(40));
+        let (root, _) = git_folder("over", &[("HEAD", "ref: refs/heads/main\n"), ("refs/heads/main", &other), ("packed-refs", &packed)]);
+        assert_eq!(head_at(&root.to_string_lossy()), on(Some("main"), Some("bbbbbbb")));
+        let _ = std::fs::remove_dir_all(&root);
+        // A chain ending on nothing yet: an unborn branch, as HEAD alone would be.
+        let (root, _) = git_folder("dangling", &[("HEAD", "ref: refs/heads/alias\n"), ("refs/heads/alias", "ref: refs/heads/new\n")]);
+        assert_eq!(head_at(&root.to_string_lossy()), on(Some("new"), None));
+        let _ = std::fs::remove_dir_all(&root);
+        // Round and round, or on and on: no answer, and it ends.
+        let (root, _) = git_folder("cycle", &[("HEAD", "ref: refs/heads/a\n"), ("refs/heads/a", "ref: refs/heads/b\n"), ("refs/heads/b", "ref: refs/heads/a\n")]);
+        assert_eq!(head_at(&root.to_string_lossy()), None);
+        let _ = std::fs::remove_dir_all(&root);
+        let (root, _) = git_folder("self", &[("HEAD", "ref: refs/heads/a\n"), ("refs/heads/a", "ref: refs/heads/a\n")]);
+        assert_eq!(head_at(&root.to_string_lossy()), None);
+        let _ = std::fs::remove_dir_all(&root);
+        let mut long: Vec<(String, String)> = vec![("HEAD".into(), "ref: refs/heads/r0\n".into())];
+        for n in 0..=REF_HOPS {
+            long.push((format!("refs/heads/r{n}"), format!("ref: refs/heads/r{}\n", n + 1)));
+        }
+        long.push((format!("refs/heads/r{}", REF_HOPS + 1), format!("{ID}\n")));
+        let files: Vec<(&str, &str)> = long.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+        let (root, _) = git_folder("long", &files);
+        assert_eq!(head_at(&root.to_string_lossy()), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_linked_worktree_has_its_head_of_its_own_and_its_refs_from_the_repository() {
+        let id = format!("{ID}\n");
+        let (root, git) = git_folder("linked", &[
+            ("refs/heads/feature", &id),
+            ("worktrees/wt/HEAD", "ref: refs/heads/feature\n"),
+            ("worktrees/wt/commondir", "../..\n"),
+        ]);
+        let wt = root.join("wt");
+        std::fs::create_dir_all(wt.join("src")).unwrap();
+        std::fs::write(wt.join(".git"), format!("gitdir: {}\n", git.join("worktrees").join("wt").display())).unwrap();
+        assert_eq!(head_at(&wt.to_string_lossy()), on(Some("feature"), Some("0123456")));
+        // Anywhere in it; and one gone is no reason to read the repository around it.
+        assert_eq!(head_of(&wt.join("src").to_string_lossy()), on(Some("feature"), Some("0123456")));
+        assert_eq!(head_of(&wt.join("gone").to_string_lossy()), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// What it reads is what git says, where this runs with git.
+    #[test]
+    fn a_head_read_off_the_files_is_what_git_says() {
+        let root = std::env::temp_dir().join(format!("luna-head-real-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let repo = root.to_string_lossy().into_owned();
+        let run = |dir: &str, args: &[&str]| -> Option<String> {
+            let o = git(dir).args(["-c", "user.email=t@t", "-c", "user.name=t"]).args(args).output().ok()?;
+            o.status.success().then(|| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        };
+        if run(&repo, &["init", "-q"]).is_none() || run(&repo, &["commit", "-q", "--allow-empty", "-m", "i"]).is_none() {
+            let _ = std::fs::remove_dir_all(&root);
+            return;
+        }
+        let says = |dir: &str| on(run(dir, &["symbolic-ref", "--short", "-q", "HEAD"]).as_deref(), run(dir, &["rev-parse", "--short=7", "HEAD"]).as_deref());
+        assert_eq!(head_at(&repo), says(&repo));
+        let wt = root.join("wt").to_string_lossy().into_owned();
+        run(&repo, &["worktree", "add", "-q", "-b", "side", &wt]).unwrap();
+        assert_eq!(head_at(&wt), says(&wt));
+        // Packed, from the worktree too; then detached there.
+        run(&repo, &["pack-refs", "--all"]).unwrap();
+        assert_eq!(head_at(&wt), says(&wt));
+        run(&wt, &["checkout", "-q", "--detach"]).unwrap();
+        assert_eq!(head_at(&wt), says(&wt));
+        let _ = run(&repo, &["worktree", "remove", "--force", &wt]);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

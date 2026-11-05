@@ -16,6 +16,8 @@ can start other sessions and work with them.
   a chat between its turns. `visible: true` makes it a normal chat row instead, nested under
   yours, that the user can type into.
 - Each `luna_list` row also says:
+  - `branch`, `sha` (short; no branch: detached, as a Codex worktree is): what its folder or
+    worktree has checked out. `task`: the first line of its spawn's prompt.
   - `turnStartedAt`: when the turn on now began; null between turns. `lastActivityAt`: its
     last event (a visible session's last transcript write); a long command or think shows
     nothing until it ends, so quiet is not stuck. Times are UTC ISO, as in `luna_sessions`
@@ -31,8 +33,8 @@ can start other sessions and work with them.
     turn stops its CLI; what outlives that (on Windows a Git Bash command's own processes, a
     `run_in_background` job's) shows here after, for a second `luna_kill` to end.
 - `luna_list` with `ids: [..]` gives those rows alone, of any session, ids it does not know in
-  `unknown`, and no accounts unless `accounts: true`; `accounts: false` keeps a full list's out
-  (~3 KB a call). `ids: []` with `accounts: true`: accounts alone.
+  `unknown`, and no accounts unless `accounts: true`; `accounts: false` keeps a full list's out.
+  `ids: []` with `accounts: true`: accounts alone.
 - You kill and delete only sessions you spawned and theirs. Any other session you can read,
   wait on and send text to. A deleted parent's helper passes to its parent; with none, only
   the user can stop or delete it, and a background one goes once idle for 30 min.
@@ -111,8 +113,7 @@ can start other sessions and work with them.
   `transcriptMissing`: no transcript found, so a null `reply` says nothing. `job_done`: told
   it is not done, what it had running ended with no turn; `reply` is what it said since. A
   background helper does not exit between turns: `until: "exit"` returns once it is deleted.
-- `luna_wait` with `ids: [..]` waits on several: `mode: "any"` until the first gets there,
-  `"all"` until every one has or the time is up. It returns `outcome` (`finished` or
+- `luna_wait` with `ids: [..]` returns `outcome` (`finished` or
   `timeout`), `finished` (the ids that got there) and `results`, one per id in the shape a
   single wait returns, with `id`. Under `any` the others come back `pending`, or `timeout`,
   and are still owed. Their replies share one result: past 60,000 characters in all the

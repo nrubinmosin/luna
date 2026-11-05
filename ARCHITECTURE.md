@@ -616,6 +616,9 @@ src-tauri/src/
   reserved from the notice (`Reserved`) however long the others take; all are handed over together when the
   response is made, and a cancel crossing it undoes them together, except an answer a later call has delivered
   since (`receipts`): a core going or a cancel before that leaves the notice to bring them. `luna_list` adds
+  a `task` (the prompt's first line, `Registry::tasks`, kept in the ties as `agents.jsonl` is cut under a live
+  helper), `branch` and `sha` (`worktree::head_at`: off the `.git` files through any symbolic refs, no process
+  per row) and
   `Signs` per row: for a background helper from its event stream (`Observed`, saved in `helpers.json` but for
   the last event's moment), for a visible one from the activity track and its transcript. Its `context` is
   read for either off the tail of the transcript or rollout, as the pane's meter reads it (`Context::of`). A
