@@ -6,8 +6,14 @@ import { useChats, allChats } from '../chats/chats.store';
 import { usePower } from './power.store';
 import { doing } from './LiveSessions';
 
+// Refused elsewhere (power.rs). The demo's screenshots are taken on Linux.
+const canRestart = navigator.userAgent.includes('Windows') || import.meta.env.DEV;
+
 const ACTIONS: Array<{ value: PowerAction; label: string; note: string }> = [
   { value: 'shutdown', label: 'Shut down', note: 'closes every session first, then powers off' },
+  ...(canRestart
+    ? [{ value: 'restart' as const, label: 'Restart', note: 'closes every session first, then restarts; Luna starts again when you sign in' }]
+    : []),
   { value: 'hibernate', label: 'Hibernate', note: 'sessions stay; the rule applies again after the wake' },
   { value: 'sleep', label: 'Sleep', note: 'sessions stay; the rule applies again after the wake' }
 ];
@@ -31,6 +37,7 @@ export function PowerMenu({ onClose }: { onClose: () => void }) {
 
   const [action, setAction] = useState<PowerAction>(state.armed?.action ?? 'shutdown');
   const [quiet, setQuiet] = useState<number>(state.armed?.quietS ?? 120);
+  const [drain, setDrain] = useState(state.armed?.drain ?? false);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -123,6 +130,22 @@ export function PowerMenu({ onClose }: { onClose: () => void }) {
                 ))}
               </select>
             </div>
+            <div className="field-row" style={{ height: 'calc(var(--ui) * 1.6)', marginTop: 6 }}>
+              <input
+                type="checkbox"
+                id="power-drain"
+                checked={armed ? armed.drain : drain}
+                disabled={!!armed}
+                onChange={() => setDrain(!drain)}
+              />
+              <label htmlFor="power-drain" style={{ cursor: 'default' }}>
+                Start nothing new until then
+              </label>
+            </div>
+            <div style={fine}>
+              Agents can start no helper and send no message until it fires or you disarm; what
+              runs finishes, and what is asked can be answered. Your own chats are not touched.
+            </div>
             <div style={fine}>
               {ACTIONS.find(a => a.value === action)?.note}. Done means: no session mid-turn or
               waiting for you, nothing running under any of them, screens quiet — for the whole
@@ -153,7 +176,7 @@ export function PowerMenu({ onClose }: { onClose: () => void }) {
             {armed ? (
               <button onClick={() => void disarm()} className="danger">Disarm</button>
             ) : (
-              <button onClick={() => void arm(action, quiet)} className="primary">Arm</button>
+              <button onClick={() => void arm(action, quiet, drain)} className="primary">Arm</button>
             )}
             <button onClick={onClose}>Close</button>
           </div>

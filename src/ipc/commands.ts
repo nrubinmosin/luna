@@ -506,7 +506,7 @@ export const pickFolder = async (): Promise<string | null> => {
 // ----------------------------------------------------------------- power --
 
 export type Turn = 'busy' | 'waiting' | 'idle';
-export type PowerAction = 'shutdown' | 'hibernate' | 'sleep' | 'log';
+export type PowerAction = 'shutdown' | 'restart' | 'hibernate' | 'sleep' | 'log';
 
 export interface SessionActivityDto {
   id: string;
@@ -531,7 +531,7 @@ export interface PowerStateDto {
   keepAwake: boolean;
   /** The awake request is in force right now. */
   holding: boolean;
-  armed: { action: PowerAction; quietS: number; armedAtMs: number } | null;
+  armed: { action: PowerAction; quietS: number; armedAtMs: number; drain: boolean } | null;
   countdownEndsAtMs: number | null;
   summary: ActivitySummaryDto;
 }
@@ -546,8 +546,8 @@ export const IDLE_POWER: PowerStateDto = {
 
 export const powerState = () => call<PowerStateDto>('power_state', {}, IDLE_POWER);
 export const setKeepAwake = (on: boolean) => call<PowerStateDto>('set_keep_awake', { on }, IDLE_POWER);
-export const armPowerOff = (action: PowerAction, quietS: number) =>
-  call<PowerStateDto>('arm_power_off', { action, quietS }, IDLE_POWER);
+export const armPowerOff = (action: PowerAction, quietS: number, drain: boolean) =>
+  call<PowerStateDto>('arm_power_off', { action, quietS, drain }, IDLE_POWER);
 export const disarmPowerOff = () => call<PowerStateDto>('disarm_power_off', {}, IDLE_POWER);
 
 // ------------------------------------------------------------------ core --

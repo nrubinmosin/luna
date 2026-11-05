@@ -19,7 +19,7 @@ interface PowerState {
   init: () => Promise<void>;
   setOpen: (v: boolean) => void;
   keepAwake: (on: boolean) => Promise<void>;
-  arm: (action: PowerAction, quietS: number) => Promise<void>;
+  arm: (action: PowerAction, quietS: number, drain: boolean) => Promise<void>;
   disarm: () => Promise<void>;
 }
 
@@ -60,9 +60,9 @@ export const usePower = create<PowerState>(set => ({
     }
   },
 
-  arm: async (action, quietS) => {
+  arm: async (action, quietS, drain) => {
     try {
-      set({ state: await armPowerOff(action, quietS), open: false });
+      set({ state: await armPowerOff(action, quietS, drain), open: false });
     } catch (e) {
       logWarn('power', `arm: ${String(e)}`);
     }

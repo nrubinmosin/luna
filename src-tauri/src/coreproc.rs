@@ -56,7 +56,7 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// `luna --core --data-dir <dir> --log <path>`: runs as the
+/// `luna --core --data-dir <dir> --log <path> --window-exe <path>`: runs as the
 /// core and returns true, or false for an ordinary launch.
 pub fn from_args() -> bool {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -68,6 +68,9 @@ pub fn from_args() -> bool {
         return true;
     };
     crate::paths::set_data_dir(data);
+    if let Some(exe) = value("--window-exe") {
+        crate::power::set_window_exe(exe);
+    }
     crate::log::set_path(log);
     crate::log::set_role("core");
     crate::log::install_panic_hook();
@@ -197,10 +200,16 @@ fn write_discovery(d: &Discovery) -> io::Result<()> {
 fn leave(reason: &str) -> ! {
     crate::lifecycle::exiting(reason);
     let _ = std::fs::remove_file(ipc::discovery_file());
+    wind_down();
+    crate::lifecycle::end_process()
+}
+
+/// Stops every session so that the next core takes them up where they stood: what
+/// a core leaving does, and a restart of the PC. Returns how many chats were closed.
+pub fn wind_down() -> usize {
     crate::background::stop_all();
     crate::agents::freeze_chats();
-    crate::pty::manager().shut_down_all(crate::pty::GRACE);
-    crate::lifecycle::end_process()
+    crate::pty::manager().shut_down_all(crate::pty::GRACE)
 }
 
 fn leave_when_alone() {

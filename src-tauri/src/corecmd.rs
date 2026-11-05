@@ -79,7 +79,7 @@ pub fn dispatch(cmd: &str, args: Value) -> Result<Value, String> {
         "account_usage" => call!(ok args, agents::account_usage, usage: HashMap<String, Value>),
         "power_state" => call!(ok args, power::power_state),
         "set_keep_awake" => call!(res args, power::set_keep_awake, on: bool),
-        "arm_power_off" => call!(res args, power::arm_power_off, action: String, quiet_s: u64),
+        "arm_power_off" => call!(res args, power::arm_power_off, action: String, quiet_s: u64, drain: Option<bool>),
         "disarm_power_off" => call!(ok args, power::disarm_power_off),
         "rename_account" => call!(res args, accounts::rename_account, provider: Provider, name: String, to: String),
         "orphan_worktrees" => call!(wait res args, worktree::orphan_worktrees,

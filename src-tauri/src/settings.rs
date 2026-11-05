@@ -16,7 +16,7 @@ pub struct Settings {
     pub keep_awake: bool,
     /// How long everything has to be quiet before an armed power-off counts down.
     pub quiet_window_s: u64,
-    /// The last action armed, so the menu opens on it: shutdown | hibernate | sleep.
+    /// The last action armed, so the menu opens on it: shutdown | restart | hibernate | sleep.
     pub power_action: String,
     /// `provider/name` of accounts agents may not spawn on (agents.rs). Every
     /// account is available unless listed here.
