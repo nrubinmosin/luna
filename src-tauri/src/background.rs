@@ -373,6 +373,9 @@ struct Entry {
     /// its conversation: with nothing on disk to resume, that is all there is
     /// of a helper a core's going stops now.
     opening: Option<String>,
+    /// The id of the line that carried it, kept with it: taken up again it is the
+    /// same message, not a copy of whatever else holds it (`lone_opening`).
+    opening_id: Option<String>,
     /// The job every turn's process is put in, the first one's made for it:
     /// what a turn leaves running is still the helper's between turns, holds
     /// the machine as a chat's would, and is ended with the helper. Tied to
@@ -588,6 +591,7 @@ pub fn start(id: &str, spec: Spec, prompt: &str) -> Result<(), String> {
         resumable: false,
         unsure: false,
         opening: None,
+        opening_id: None,
         job: None,
         left_running: false,
         left: Vec::new(),
@@ -813,6 +817,12 @@ fn feed_stdin(mut stdin: impl Write, first: &str, lines: std::sync::mpsc::Receiv
             return;
         }
     }
+}
+
+/// What a turn starts on, for as long as no turn has named its conversation.
+fn note_opening(e: &mut Entry, prompt: &str, line: &str) {
+    e.opening = e.session.is_none().then(|| prompt.to_string());
+    e.opening_id = e.session.is_none().then(|| line.to_string());
 }
 
 /// It has passed to another parent, or with none stands alone (agents.rs
@@ -1123,12 +1133,13 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
             Some(e) if e.run.as_ref().is_some_and(|run| run.stopped) => Some(STOPPED),
             Some(e) => {
                 let claude = provider == Provider::Claude;
+                let opening_line = line.clone();
                 e.run = Some(Run { feed: claude.then_some(feed), line: claude.then_some(line), ..Run::claimed(pid, started_ms) });
                 e.observed.begin_turn();
                 e.error = None;
                 e.cut_short = false;
                 e.unsure = false;
-                e.opening = e.session.is_none().then(|| prompt.to_string());
+                note_opening(e, prompt, &opening_line);
                 note(e, &format!("› {}", one_line(prompt)));
                 None
             }
@@ -2279,6 +2290,9 @@ pub fn background_promoted(id: String, error: Option<String>) -> Result<(), Stri
         let queued = std::mem::take(&mut e.queue);
         e.undelivered.extend(queued);
         crate::agents::undelivered_left(&id, &e.undelivered);
+        // Its count goes on in the chat's track: what its callers are owed, and
+        // what they were told to wait past, go by it.
+        crate::activity::count_at_least(&id, e.turns_ended);
         crate::agents::promoted(&id);
         changed();
         // Or a core killed now would take it up beside the chat it has become.
@@ -2372,6 +2386,9 @@ struct Saved {
     /// conversation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     opening: Option<String>,
+    /// See `Entry::opening_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    opening_id: Option<String>,
     cut_short: bool,
     ties: crate::agents::Ties,
     #[serde(default)]
@@ -2436,6 +2453,7 @@ fn snapshot() -> Vec<Saved> {
             tied: e.tied,
             unsure: e.unsure,
             opening: e.opening.clone().filter(|_| e.session.is_none()),
+            opening_id: e.opening_id.clone().filter(|_| e.session.is_none()),
             cut_short: e.cut_short,
             observed: e.observed.clone(),
             ties: Default::default(),
@@ -2629,14 +2647,35 @@ fn settle_lines(s: &mut Saved, reached: &dyn Fn(&str) -> Option<bool>) {
     s.budgets_landed.extend(landed);
 }
 
+/// What a helper stopped with no conversation yet was started on, as a message,
+/// if nothing else holds it. A batch it was started on is kept already, with what
+/// is known of its fate, and a second copy of it would go out as new. It goes under
+/// the id it had. By its words in a file from before ids.
+fn lone_opening(s: &mut Saved, stopped: bool) -> Option<Queued> {
+    let text = s.opening.take().filter(|_| stopped && s.session.is_none())?;
+    let id = s.opening_id.take();
+    let kept = match &id {
+        Some(id) => [&s.in_flight, &s.fed, &s.undelivered].iter().any(|store| store.iter().any(|q| q.id == *id)),
+        None => !s.in_flight.is_empty() && joined(&s.in_flight) == text,
+    };
+    if kept {
+        return None;
+    }
+    let mut q = Queued::new(None, text, Vec::new());
+    if let Some(id) = id {
+        q.id = id;
+    }
+    Some(q)
+}
+
 /// A saved helper as a registry entry, between turns: a turn that ran went
 /// with the old core and counts as ended, and so does the text queued
 /// behind it, which never reached the CLI (as `stop` counts them) and is kept
 /// for its sender.
-fn taken_up(s: Saved) -> Entry {
+fn taken_up(mut s: Saved) -> Entry {
     let stopped = s.running || s.cut_short;
     let resumable = turn_known_over(&s);
-    let first: Vec<Queued> = s.opening.filter(|_| stopped && s.session.is_none()).map(|text| Queued::new(None, text, Vec::new())).into_iter().collect();
+    let first: Vec<Queued> = lone_opening(&mut s, stopped).into_iter().collect();
     let undelivered = [first, s.undelivered, s.in_flight, s.fed, s.queue].concat();
     let cwd = s.cwd.map(|c| home_of(&s.spec, c));
     let mut e = Entry {
@@ -2659,6 +2698,7 @@ fn taken_up(s: Saved) -> Entry {
         resumable,
         unsure: !resumable,
         opening: None,
+        opening_id: None,
         job: None,
         left_running: false,
         left: Vec::new(),
@@ -2858,6 +2898,7 @@ pub fn take_up_for_test(id: &str, folder: &str, turns_ended: u32, queue: &[&str]
         tied: true,
         unsure: false,
         opening: opening.map(str::to_owned),
+        opening_id: None,
         cut_short: false,
         observed: Default::default(),
         ties: Default::default(),
@@ -2967,6 +3008,7 @@ pub fn test_helper(id: &str, account_path: &str, session: Option<&str>, busy: bo
         resumable: false,
         unsure: false,
         opening: None,
+        opening_id: None,
         job: None,
         left_running: false,
         left: Vec::new(),
@@ -3279,6 +3321,7 @@ mod tests {
             resumable: false,
             unsure: false,
             opening: None,
+            opening_id: None,
             job: None,
             left_running: false,
             left: Vec::new(),
@@ -3658,6 +3701,7 @@ mod tests {
             tied: false,
             unsure: false,
             opening: None,
+            opening_id: None,
             cut_short: false,
             ties: Default::default(),
             observed: Default::default(),
@@ -3936,6 +3980,7 @@ mod tests {
                 tied: true,
                 unsure: false,
                 opening: Some("the prompt".into()),
+                opening_id: None,
                 cut_short: false,
                 observed: Default::default(),
                 ties: Default::default(),
@@ -4704,5 +4749,66 @@ mod tests {
         e.error = Some("it was stopped, by luna_kill or from the window".into());
         on_claude_event(&mut e, &done);
         assert!(e.error.is_some(), "not a result's to clear");
+    }
+
+    fn unnamed(opening: &str, id: Option<&str>) -> Saved {
+        let mut s = with_lines(true);
+        s.session = None;
+        s.opening = Some(opening.to_string());
+        s.opening_id = id.map(str::to_owned);
+        s
+    }
+
+    /// Started on a tracked batch with no conversation named yet, and the core goes:
+    /// one message, with what is known of it, and no sure copy for a resume to send.
+    #[test]
+    fn a_tracked_opening_is_not_rebuilt_as_a_fresh_copy() {
+        let mut s = unnamed("do A", Some("a-id"));
+        s.in_flight = vec![pending("a-id", "do A")];
+        settle_lines(&mut s, &|_| None);
+        let mut e = taken_up(s);
+        assert_eq!(e.undelivered, ["do A"]);
+        assert!(e.undelivered[0].maybe_reached, "the one there is says so");
+
+        e.resumable = true;
+        e.spec.folder = "C:\\luna-no-such-folder".into();
+        let before = e.turns_ended;
+        lock().entries.insert("one-copy".into(), e);
+        resume("one-copy");
+        let e = lock().entries.remove("one-copy").unwrap();
+        assert!(e.run.is_none() && e.turns_ended == before, "nothing sure to go on with: a turn tried would have counted");
+        assert_eq!(e.undelivered.len(), 1);
+
+        // The same when a stop has put it by.
+        let mut s = unnamed("do A", Some("a-id"));
+        s.undelivered = vec![pending("a-id", "do A")];
+        assert_eq!(taken_up(s).undelivered, ["do A"]);
+        // And in a file from before ids, by its words.
+        let mut s = unnamed("do A", None);
+        s.in_flight = vec!["do A".into()];
+        assert_eq!(taken_up(s).undelivered, ["do A"]);
+    }
+
+    #[test]
+    fn an_opening_nothing_holds_comes_back_under_the_id_it_had() {
+        let e = taken_up(unnamed("do A", Some("a-id")));
+        assert_eq!(e.undelivered, ["do A"]);
+        assert_eq!(e.undelivered[0].id, "a-id");
+        assert!(!e.undelivered[0].maybe_reached, "as ever: it goes on by itself");
+
+        // A batch claimed behind an opening that failed is another message.
+        let mut s = unnamed("do A", Some("a-id"));
+        s.in_flight = vec![pending("b-id", "then B")];
+        assert_eq!(taken_up(s).undelivered, ["do A", "then B"]);
+    }
+
+    #[test]
+    fn a_turn_notes_the_line_of_what_it_starts_on_while_nothing_names_it() {
+        let mut e = entry(Provider::Claude);
+        note_opening(&mut e, "do A", "a-id");
+        assert_eq!((e.opening.as_deref(), e.opening_id.as_deref()), (Some("do A"), Some("a-id")));
+        e.session = Some("sid".into());
+        note_opening(&mut e, "do B", "b-id");
+        assert_eq!((e.opening.as_deref(), e.opening_id.as_deref()), (None, None));
     }
 }

@@ -773,11 +773,15 @@ struct Owed {
     rev: u64,
 }
 
+fn next_rev() -> u64 {
+    static NEXT_REV: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT_REV.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 impl Owed {
     fn from(baseline: u32, cursor: u64) -> Owed {
-        static NEXT_REV: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         Owed {
-            rev: NEXT_REV.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            rev: next_rev(),
             baseline,
             told_waiting: false,
             told_ask: 0,
@@ -1009,7 +1013,9 @@ fn owe_from(caller: &str, id: &str, baseline: u32, cursor: u64) {
     // A new turn answers this one; that the last was cut short has yet to be
     // said all the same.
     let (cursor, resumed) = r.owed.get(&key).map_or((cursor, false), |o| (o.cursor.min(cursor), o.resumed || o.cut_short));
-    r.owed.insert(key, Owed { resumed, ..Owed::from(baseline, cursor) });
+    // Text can miss its turn before the send that placed it gets here (`retried`).
+    let floor = r.delivery_floors.get(&key).copied().unwrap_or(0);
+    r.owed.insert(key, Owed { resumed, ..Owed::from(baseline.max(floor), cursor) });
     drop(r);
     // A spawn's or a question's: a core killed now must not forget either.
     crate::background::save();
@@ -1350,7 +1356,9 @@ fn resumed_in(r: &mut Registry, id: &str, turns_ended: u32) {
 /// taking it in, and starts the next turn instead: the turn counted `turns_ended`
 /// did not answer `callers`, who heard it would. Their answer lies past that count,
 /// for the debt and for a wait, which may be going by an `afterTurn` from before
-/// this. Nothing else about the helper changed, so nothing else is said of it.
+/// this. Nothing else about the helper changed, so nothing else is said of it. A
+/// debt moved is a new one (`rev`): a notice looked up before this told of the turn
+/// that missed, and neither goes out nor settles anything.
 pub fn retried(id: &str, callers: &[String], turns_ended: u32) {
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
     for caller in callers {
@@ -1358,6 +1366,7 @@ pub fn retried(id: &str, callers: &[String], turns_ended: u32) {
         if let Some(o) = r.owed.get_mut(&key) {
             o.baseline = o.baseline.max(turns_ended);
             o.held = None;
+            o.rev = next_rev();
         }
         let floor = r.delivery_floors.entry(key).or_default();
         *floor = (*floor).max(turns_ended);
@@ -4979,6 +4988,16 @@ pub fn wait(
     wait_for(caller, id, until, timeout_s, after_turn, call, true).map(|(waited, _)| waited)
 }
 
+/// A session's turn state and the delivery floor that goes with it, on every look:
+/// text may miss its turn during a wait. In this order: `retried` has set the floor
+/// before a helper can read as anything but busy (`background::turn_over`), so a
+/// state past that turn is never paired with a floor from before it.
+fn state_then_floor(key: &(String, String), state: impl FnOnce() -> Option<crate::activity::TurnState>) -> (Option<crate::activity::TurnState>, u32) {
+    let ts = state();
+    let floor = reg().lock().unwrap_or_else(|e| e.into_inner()).delivery_floors.get(key).copied();
+    (ts, floor.unwrap_or(0))
+}
+
 /// The wait itself, and whether what it returns answers what was asked. With
 /// `alone` that answer is handed over here, the reply cut to fit a result; a
 /// `wait_many` hands over and cuts for all its sessions at once, when it has
@@ -5062,11 +5081,9 @@ fn wait_for(
         if lost() {
             return lost_answer(caller, id, call, alone);
         }
-        // Read again on every look: the text may miss its turn during this wait.
-        let floor = reg().lock().unwrap_or_else(|e| e.into_inner()).delivery_floors.get(&key).copied();
-        baseline = baseline.max(floor.unwrap_or(0));
         let alive = live(&pty, id);
-        let ts = crate::activity::turn_state(id);
+        let (ts, floor) = state_then_floor(&key, || crate::activity::turn_state(id));
+        baseline = baseline.max(floor);
         let turns_ended = ts.map(|t| t.turns_ended).unwrap_or(0);
         let turn = ts.map(|t| t.turn);
         let mut ended = turns_ended > baseline && turn != Some(crate::activity::Turn::Busy);
@@ -6444,8 +6461,11 @@ fn notice_line(
     // look or another's (`moved_to`), has it read from where it reads now.
     let mut o = o;
     transcript_path(pty, id);
-    if let Some(now) = reg().lock().unwrap_or_else(|e| e.into_inner()).owed.get(&(caller.to_string(), id.to_string())).filter(|now| now.rev == o.rev) {
-        o.cursor = now.cursor;
+    match reg().lock().unwrap_or_else(|e| e.into_inner()).owed.get(&(caller.to_string(), id.to_string())) {
+        // Another debt by now (`debts_moved`): the next look goes by that.
+        Some(now) if now.rev != o.rev => return None,
+        Some(now) => o.cursor = now.cursor,
+        None => {}
     }
     let ts = crate::activity::turn_state(id);
     let ended = ts.map(|t| t.turns_ended).unwrap_or(0);
@@ -7549,6 +7569,9 @@ fn notifier() {
                 reg().lock().unwrap_or_else(|e| e.into_inner()).notices_held.remove(&caller);
                 continue;
             }
+            if debts_moved(&caller, &settled) {
+                continue;
+            }
             // Typing it waits up to SEND_TIMEOUT for the turn to start, off this
             // loop: one caller stuck on that is no reason to hold back the rest.
             let Some(typing) = TypingInto::claim(&caller) else { continue };
@@ -7563,6 +7586,14 @@ fn notifier() {
             }
         }
     }
+}
+
+/// A debt a notice was put together on has become another since (`Owed::rev`), and
+/// what it says may no longer hold: nothing of it is typed, nothing is settled, and
+/// the next look starts over. A debt taken since is left to `settle_told`.
+fn debts_moved(caller: &str, told: &[(String, Settled, Owed)]) -> bool {
+    let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    told.iter().any(|(id, _, o)| r.owed.get(&(caller.to_string(), id.clone())).is_some_and(|now| now.rev != o.rev))
 }
 
 /// What the breaker counts, and all it silences: notices a turn's or a job's
@@ -9350,7 +9381,7 @@ mod tests {
         let line = |o: Owed| notice_line(&pty, "lj-c", "Your helper", "lj-s", &known, o);
         // Its first turn's end, with the tail just left: not done, and what runs is named.
         crate::background::left_for_test("lj-s", &[("tail.exe", 22104, 0)]);
-        let mut first = Owed::from(2, o.cursor);
+        let mut first = Owed { rev: o.rev, ..Owed::from(2, o.cursor) };
         first.held = Some((3, now_ms() - BACKGROUND_GRACE_MS));
         let Some((Some(text), Settled::Pending(3, _))) = line(first) else { panic!("not done yet") };
         assert!(text.contains("NOT done yet: a job it started still runs in the background (tail.exe (pid 22104))"), "{text}");
@@ -11576,6 +11607,80 @@ mod tests {
         forget(id);
         crate::background::gone_for_test(id);
         crate::background::gone_for_test(a);
+        forget(a);
+    }
+
+    /// A send can be held up after placing its text, for as long as a save takes:
+    /// the CLI goes meanwhile, and the debt comes in behind `retried`.
+    #[test]
+    fn a_debt_recorded_after_a_retry_lies_past_it() {
+        let (a, id) = ("rd-sender", "rd-helper");
+        register(a, Provider::Claude, "C:\\p", "C:\\acc\\one", None, true, serde_json::json!({}));
+        retried(id, &[a.to_string()], 1);
+        owe_from(a, id, 0, 7);
+        let key = (a.to_string(), id.to_string());
+        assert_eq!(reg().lock().unwrap().owed.get(&key).unwrap().baseline, 1);
+        forget(id);
+        forget(a);
+    }
+
+    /// A look taken before a retry reads the turn that missed as the answer.
+    #[test]
+    fn a_notice_looked_up_before_a_retry_neither_goes_out_nor_settles() {
+        let (a, id) = ("rn-sender", "rn-helper");
+        let none = serde_json::json!({});
+        register(a, Provider::Claude, "C:\\p", "C:\\acc\\one", None, true, none.clone());
+        register(id, Provider::Claude, "C:\\p", "C:\\acc\\one", Some(a), false, none);
+        crate::background::idle_for_test(id, Provider::Claude, 1, false);
+        owe_from(a, id, 0, 0);
+        let key = (a.to_string(), id.to_string());
+        let (looked_up, k) = {
+            let r = reg().lock().unwrap();
+            (r.owed.get(&key).copied().unwrap(), r.known.get(id).cloned().unwrap())
+        };
+        retried(id, &[a.to_string()], 1);
+        let told = [(id.to_string(), Settled::Answered, looked_up)];
+        assert!(debts_moved(a, &told), "caught before it is typed");
+        assert!(notice_line(&crate::pty::manager(), a, "Your helper", id, &k, looked_up).is_none(), "and before it is put together");
+        settle_told(&mut reg().lock().unwrap(), key.clone(), Settled::Answered, &looked_up);
+        assert_eq!(reg().lock().unwrap().owed.get(&key).map(|o| o.baseline), Some(1), "still owed, past the turn that missed");
+        crate::background::gone_for_test(id);
+        forget(id);
+        forget(a);
+    }
+
+    /// The retry lands in the middle of a wait's look: it stops on a permission at a
+    /// count past `afterTurn`, which reads as a turn done with a floor from before it.
+    #[test]
+    fn a_wait_pairs_a_turn_state_with_the_floor_of_that_moment() {
+        use crate::activity::{Turn, TurnState};
+        let (a, id) = ("rs-sender", "rs-helper");
+        let key = (a.to_string(), id.to_string());
+        let (ts, floor) = state_then_floor(&key, || {
+            retried(id, &[a.to_string()], 1);
+            Some(TurnState { turn: Turn::Waiting, busy: true, turns_ended: 1, children_busy: false })
+        });
+        assert_eq!(ts.map(|t| t.turns_ended), Some(1));
+        assert_eq!(floor, 1);
+        forget(id);
+    }
+
+    /// A chat counts on from the helper it was: a floor and a debt from then go by
+    /// the same count as the turns it has from now on.
+    #[test]
+    fn a_helper_opened_as_a_chat_keeps_its_turn_count() {
+        let (a, id) = ("pc-sender", "pc-helper");
+        let none = serde_json::json!({});
+        register(a, Provider::Claude, "C:\\p", "C:\\acc\\one", None, true, none.clone());
+        register(id, Provider::Claude, "C:\\p", "C:\\acc\\one", Some(a), false, none);
+        crate::background::idle_for_test(id, Provider::Claude, 9, false);
+        retried(id, &[a.to_string()], 9);
+        crate::background::background_promoted(id.to_string(), None).unwrap();
+        assert!(!crate::background::has(id));
+        assert_eq!(crate::activity::turns_counted(id), Some(9), "not 0, which a floor of 9 would wait past for nine turns");
+        crate::activity::between_turns_for_test(id);
+        assert_eq!(crate::activity::turn_state(id).map(|t| t.turns_ended), Some(9));
+        forget(id);
         forget(a);
     }
 }
