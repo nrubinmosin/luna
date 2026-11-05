@@ -189,9 +189,14 @@ struct Track {
     /// any other hook of the turn's own.
     failed: Option<&'static str>,
     /// Its subagents at work, by id, each with whether a prompt of its own is
-    /// up: from `SubagentStart` (or its first tool) to `SubagentStop`, or until
-    /// the registry has said idle a while, which it does only with none left.
+    /// up. Claude Code's from `SubagentStart` (or its first tool) to
+    /// `SubagentStop`, or until the registry has said idle a while, which it
+    /// does only with none left; Codex's as their rollouts have them at each
+    /// sample (`disk_subagents`).
     agents: HashMap<String, bool>,
+    /// `agents` is read off the disk whole at each sample (Codex), not kept
+    /// from hooks.
+    agents_on_disk: bool,
 }
 
 /// What an agent's `wait`/`read` asks about a session.
@@ -248,7 +253,8 @@ pub fn turn_state(chat_id: &str) -> Option<TurnState> {
     Some(TurnState { turn: t.turn, busy, turns_ended: t.turns_ended, children_busy: t.procs.is_some() || !t.agents.is_empty() })
 }
 
-/// How many subagents of a session are at work, as its hooks have it.
+/// How many subagents of a session are at work, as its hooks or rollouts have
+/// it.
 pub fn subagents(chat_id: &str) -> usize {
     state().lock().unwrap_or_else(|e| e.into_inner()).tracks.get(chat_id).map_or(0, |t| t.agents.len())
 }
@@ -543,22 +549,24 @@ pub fn reset_idle() {
     st.summary.idle_since_ms = None;
 }
 
+/// A Codex session as its rollouts are read.
+fn codex_live(p: &crate::pty::ActivityProbe) -> crate::codex::session::Live<'_> {
+    crate::codex::session::Live {
+        chat_id: &p.id,
+        cwd: &p.cwd,
+        spawned_at_ms: p.spawned_at_ms,
+        resume: p.resume.as_deref(),
+        account_path: &p.account_path,
+        last_output_ms: p.last_output_ms,
+    }
+}
+
 /// What the disk says about a session's turn right now, and when it last
 /// changed, where the CLI says (Claude Code's registry).
 fn disk_turn(p: &crate::pty::ActivityProbe) -> Option<(Turn, Option<u64>)> {
     let (raw, at) = match p.provider {
         Provider::Claude => crate::claude::session::status(p.pid, p.resume.as_deref(), &p.cwd, p.spawned_at_ms, &p.account_path)?,
-        Provider::Codex => (
-            crate::codex::session::status(&crate::codex::session::Live {
-                chat_id: &p.id,
-                cwd: &p.cwd,
-                spawned_at_ms: p.spawned_at_ms,
-                resume: p.resume.as_deref(),
-                account_path: &p.account_path,
-                last_output_ms: p.last_output_ms,
-            })?,
-            None,
-        ),
+        Provider::Codex => (crate::codex::session::status(&codex_live(p))?, None),
     };
     // Codex keeps no record of a pending approval; its screen says so.
     if p.asking && turn_of(&raw) == Turn::Busy {
@@ -581,14 +589,16 @@ fn disk_api_error(p: &crate::pty::ActivityProbe) -> Option<&'static str> {
 fn disk_turns_ended(p: &crate::pty::ActivityProbe) -> Option<u32> {
     match p.provider {
         Provider::Claude => None,
-        Provider::Codex => crate::codex::session::turns_completed(&crate::codex::session::Live {
-            chat_id: &p.id,
-            cwd: &p.cwd,
-            spawned_at_ms: p.spawned_at_ms,
-            resume: p.resume.as_deref(),
-            account_path: &p.account_path,
-            last_output_ms: p.last_output_ms,
-        }),
+        Provider::Codex => crate::codex::session::turns_completed(&codex_live(p)),
+    }
+}
+
+/// Its subagents at work, where the disk is what tells: Codex's, by their own
+/// rollouts. Claude Code's come by hook (`on_hook`).
+fn disk_subagents(p: &crate::pty::ActivityProbe) -> Option<Vec<String>> {
+    match p.provider {
+        Provider::Claude => None,
+        Provider::Codex => crate::codex::session::children_at_work(&codex_live(p)),
     }
 }
 
@@ -619,8 +629,9 @@ fn combine(t: &mut Track, disk: Option<Turn>, now: u64) -> Turn {
     let idle_for = t.disk_idle_since_ms.map(|s| now.saturating_sub(s)).unwrap_or(0);
     // Claude Code calls itself busy while a subagent of it works, so an idle
     // registry that has stood a while says none is left: a SubagentStop that
-    // never came must not keep the session at work for good.
-    if idle_for > STALE_HOOK_MS {
+    // never came must not keep the session at work for good. A Codex rollout
+    // says idle whatever its subagents do; theirs say what they do.
+    if idle_for > STALE_HOOK_MS && !t.agents_on_disk {
         t.agents.clear();
     }
     let hook = match t.hook {
@@ -722,10 +733,10 @@ fn agents_at_work(t: &Track) -> Option<String> {
 pub fn sample(probes: Vec<crate::pty::ActivityProbe>, helpers: Vec<SessionActivity>) -> Summary {
     let reads: Vec<_> = probes
         .iter()
-        .map(|p| (disk_turn(p), disk_turns_ended(p), procs::children(p.job.as_deref(), p.pid)))
+        .map(|p| (disk_turn(p), disk_turns_ended(p), procs::children(p.job.as_deref(), p.pid), disk_subagents(p)))
         .collect();
     // Every child's name, from one snapshot of the process table.
-    let named = procs::names(&reads.iter().flat_map(|(_, _, children)| children.iter().map(|r| r.pid)).collect::<Vec<_>>());
+    let named = procs::names(&reads.iter().flat_map(|(_, _, children, _)| children.iter().map(|r| r.pid)).collect::<Vec<_>>());
     let name_of = |pid: u32| named.iter().find(|(p, _)| *p == pid).map(|(_, n)| n.clone());
     let now = now_ms();
 
@@ -741,7 +752,7 @@ pub fn sample(probes: Vec<crate::pty::ActivityProbe>, helpers: Vec<SessionActivi
         let live: Vec<&str> = probes.iter().map(|p| p.id.as_str()).collect();
         drop_gone(&mut st.tracks, &mut st.ended, &live);
 
-        for (p, (disk_read, disk_turns, children)) in probes.iter().zip(reads) {
+        for (p, (disk_read, disk_turns, children, disk_agents)) in probes.iter().zip(reads) {
             let t = track(&mut st.tracks, &mut st.ended, &p.id);
             // A respawn (new settings, a resume) is a new CLI with servers of
             // its own: what counts as its turns' work starts over with it.
@@ -758,6 +769,12 @@ pub fn sample(probes: Vec<crate::pty::ActivityProbe>, helpers: Vec<SessionActivi
             // the hook said would otherwise stand for STALE_WAIT_MS.
             if disk == Some(Turn::Idle) && t.hook == Some(Turn::Waiting) && disk_at.is_some_and(|at| at > t.hook_at_ms) {
                 t.hook = Some(Turn::Idle);
+            }
+            // Codex's subagents are what their rollouts say at this sample, read
+            // whole each time. None of them is known to wait on a prompt.
+            if let Some(agents) = disk_agents {
+                t.agents = agents.into_iter().map(|id| (id, false)).collect();
+                t.agents_on_disk = true;
             }
             let turn = combine(t, disk, now);
             // Without a hook the start of a turn is seen at the sample after it
@@ -972,6 +989,22 @@ mod tests {
         assert_eq!(agent("Notification", r#","notification_type":"idle_prompt""#), None);
         assert_eq!(agent("SubagentStop", ""), Some(HookEvent::AgentDone(a1())));
         assert_eq!(ev("SubagentStop", ""), None, "nobody's to count");
+    }
+
+    /// A Codex chat's subagents come off their own rollouts at each sample: its
+    /// own rollout idle long past STALE_HOOK_MS says nothing of them, and they
+    /// stay its job until theirs say done. Claude Code's, kept from hooks, go
+    /// with its registry's long idle.
+    #[test]
+    fn a_codex_subagent_outlasts_its_chats_idle_rollout() {
+        let mut t = Track { agents: [("kid".to_string(), false)].into(), agents_on_disk: true, ..Default::default() };
+        assert_eq!(combine(&mut t, Some(Turn::Idle), 1_000), Turn::Idle);
+        let late = 1_000 + STALE_HOOK_MS + 5_000;
+        assert_eq!(combine(&mut t, Some(Turn::Idle), late), Turn::Idle, "its turn is over");
+        assert_eq!(agents_at_work(&t).as_deref(), Some("1 subagent"), "its job is not");
+        t.agents_on_disk = false;
+        combine(&mut t, Some(Turn::Idle), late + 5_000);
+        assert!(t.agents.is_empty());
     }
 
     /// As on 2026-11-04: the turn ends having started a background agent,

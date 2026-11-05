@@ -161,6 +161,9 @@ pub fn release(chat_id: &str) {
     if let Ok(mut m) = turn_counts().lock() {
         m.remove(chat_id);
     }
+    if let Ok(mut m) = children().lock() {
+        m.remove(chat_id);
+    }
 }
 
 /// What the turn tracker of each chat has read of its rollout, and where it
@@ -284,6 +287,96 @@ pub fn last_failure(chat_id: &str) -> Option<String> {
 /// the user next says something.
 pub fn pending_ask(live: &Live) -> Option<crate::agents::Ask> {
     tracked(live)?.ask.map(|(_, a)| a)
+}
+
+/// What a chat's subagents have shown of themselves (`children_at_work`).
+#[derive(Default)]
+struct Children {
+    /// Each rollout looked at, with the thread its first line says spawned it:
+    /// None for one that is no subagent's. A first line never changes.
+    parent_of: HashMap<PathBuf, Option<String>>,
+    /// A subagent's rollout as read so far, and where the read stopped.
+    read: HashMap<PathBuf, (u64, Scan)>,
+}
+
+fn children() -> &'static Mutex<HashMap<String, Children>> {
+    static C: OnceLock<Mutex<HashMap<String, Children>>> = OnceLock::new();
+    C.get_or_init(Default::default)
+}
+
+/// The thread a rollout's first line says spawned it, if it is a subagent's.
+fn spawned_by(meta: &Value) -> Option<String> {
+    meta["payload"]["source"]["subagent"]["thread_spawn"]["parent_thread_id"].as_str().map(str::to_owned)
+}
+
+/// A live session's subagents at work, by thread id. Codex (0.166) runs them
+/// in the session's own process and says nothing of them on its screen or in
+/// its own turns: each writes a rollout of its own beside the session's, whose
+/// first line names the thread that spawned it, and is at work while the last
+/// turn there has not ended. One done with its task stays open, asleep until it
+/// is written to, and is not at work; one it spawned in turn counts too. All of
+/// them go with the process. None until the session's own rollout is known.
+///
+/// Only threads begun since the process was spawned, so not one the session
+/// spawned in an earlier run and wakes now, nor the subagents of a thread it
+/// has left (`/new`, `/resume`), whatever becomes of those.
+pub fn children_at_work(live: &Live) -> Option<Vec<String>> {
+    let own = rollout_for(live)?;
+    let (_, thread) = parse_name(&own.file_name()?.to_string_lossy())?;
+    let spawned = Local.timestamp_millis_opt(live.spawned_at_ms as i64).single()?.naive_local();
+    // A subagent's thread is begun after the session's process, give or take
+    // the clocks, in the folder of the day it was begun: every day since the
+    // spawn, for a session days old whose subagent from its first day is
+    // woken now. A fortnight at most.
+    let not_before = spawned - chrono::Duration::seconds(5);
+    let today = Local::now().date_naive();
+    let days = (today - not_before.date()).num_days().clamp(0, 13) as usize + 1;
+    let files: Vec<(String, PathBuf)> = rollouts_on(live.account_path, days_back(today, days))
+        .into_iter()
+        .filter(|(ts, _, _)| *ts >= not_before)
+        .map(|(_, id, p)| (id, p))
+        .collect();
+    let listed: std::collections::HashSet<&PathBuf> = files.iter().map(|(_, p)| p).collect();
+    let mut all = children().lock().ok()?;
+    let seen = all.entry(live.chat_id.to_string()).or_default();
+    seen.parent_of.retain(|p, _| listed.contains(p));
+    seen.read.retain(|p, _| listed.contains(p));
+    for (_, path) in &files {
+        if !seen.parent_of.contains_key(path) {
+            // Not kept while its first line does not read yet: a file just
+            // begun may hold half of it.
+            if let Some(meta) = first_line(path) {
+                seen.parent_of.insert(path.clone(), spawned_by(&meta));
+            }
+        }
+    }
+    // The session's thread and every thread spawned under it, at any depth.
+    let mut family = std::collections::HashSet::from([thread]);
+    let mut kids: Vec<(String, PathBuf)> = Vec::new();
+    loop {
+        let found = files.iter().filter(|(id, path)| {
+            !family.contains(id) && seen.parent_of.get(path).and_then(Option::as_ref).is_some_and(|parent| family.contains(parent))
+        });
+        let found: Vec<(String, PathBuf)> = found.cloned().collect();
+        if found.is_empty() {
+            break;
+        }
+        family.extend(found.iter().map(|(id, _)| id.clone()));
+        kids.extend(found);
+    }
+    let since = live.spawned_at_ms as i64;
+    let mut at_work = Vec::new();
+    for (id, path) in kids {
+        let (offset, scan) = seen.read.entry(path.clone()).or_default();
+        if past_end(&path, *offset) {
+            (*offset, *scan) = (0, Scan::default());
+        }
+        *offset = scan_rollout(&path, *offset, since, scan);
+        if scan.working == Some(true) {
+            at_work.push(id);
+        }
+    }
+    Some(at_work)
 }
 
 /// Reads the complete lines from byte `from` on into `scan` and returns the
@@ -439,19 +532,29 @@ fn rollout_on(live: &Live, thread: Option<String>) -> Option<PathBuf> {
         if claimed.as_ref().is_some_and(of_it) {
             return claimed;
         }
-        let Some(found) = thread_file(live.account_path, &thread) else { return claimed };
-        crate::log::info(
-            "codex",
-            &format!(
-                "{} is on thread {thread}{}",
-                crate::agents::label(live.chat_id),
-                claimed.as_ref().map_or(String::new(), |p| format!(", no longer {}", p.display()))
-            ),
-        );
-        if let Ok(mut m) = claims().lock() {
-            m.insert(live.chat_id.to_string(), found.clone());
+        match thread_file(live.account_path, &thread) {
+            // Its TUI watching one of its subagents (`/subagents`) names that
+            // one's thread, which runs in the session but is not its own: the
+            // session stays on the rollout it was on. So it does while the
+            // file's first line does not read yet, half written: a claim
+            // made on it would stand once it read.
+            Some(found) if first_line(&found).is_none_or(|meta| spawned_by(&meta).is_some()) => {}
+            Some(found) => {
+                crate::log::info(
+                    "codex",
+                    &format!(
+                        "{} is on thread {thread}{}",
+                        crate::agents::label(live.chat_id),
+                        claimed.as_ref().map_or(String::new(), |p| format!(", no longer {}", p.display()))
+                    ),
+                );
+                if let Ok(mut m) = claims().lock() {
+                    m.insert(live.chat_id.to_string(), found.clone());
+                }
+                return Some(found);
+            }
+            None => return claimed,
         }
-        return Some(found);
     }
     if claimed.is_some() {
         return claimed;
@@ -1020,6 +1123,111 @@ mod tests {
         let name = format!("rollout-{}-{uuid}.jsonl", ts.format("%Y-%m-%dT%H-%M-%S"));
         let source = source.map(|s| format!(r#","source":{s}"#)).unwrap_or_default();
         std::fs::write(dir.join(name), format!(r#"{{"type":"session_meta","payload":{{"cwd":"E:\\p"{source}}}}}"#) + "\n").unwrap();
+    }
+
+    /// Where `write_rollout` puts the rollout of `uuid` begun at `at_ms`.
+    fn rollout_path(root: &Path, uuid: &str, at_ms: u64) -> PathBuf {
+        let ts = Local.timestamp_millis_opt(at_ms as i64).single().unwrap().naive_local();
+        day_dir(&root.to_string_lossy(), ts.date()).join(format!("rollout-{}-{uuid}.jsonl", ts.format("%Y-%m-%dT%H-%M-%S")))
+    }
+
+    /// One turn event, `task_started` or an end, written at `ms`.
+    fn turn_event(kind: &str, ms: u64) -> String {
+        let at = chrono::DateTime::from_timestamp_millis(ms as i64).unwrap().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        format!("{{\"timestamp\":\"{at}\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"{kind}\"}}}}\n")
+    }
+
+    fn append(path: PathBuf, text: String) {
+        use std::io::Write;
+        std::fs::OpenOptions::new().append(true).open(path).unwrap().write_all(text.as_bytes()).unwrap();
+    }
+
+    /// The `source` of a subagent's rollout spawned by `parent`, as JSON.
+    fn spawned_by_json(parent: &str) -> String {
+        format!(r#"{{"subagent":{{"thread_spawn":{{"parent_thread_id":"{parent}","depth":1}}}}}}"#)
+    }
+
+    /// A session's subagents, at any depth, are at work while the last turn
+    /// their own rollout opened has not ended. One done with its task sleeps
+    /// until it is written to again, and another session's are none of its.
+    #[test]
+    fn a_sessions_subagents_are_at_work_while_their_own_turn_is_open() {
+        let (root, t0) = rollout_bench("children");
+        let acct = root.to_string_lossy().into_owned();
+        let chat = format!("chat-children-{t0}");
+        let (own, kid, grandkid, stranger) = (format!("own{t0}"), format!("kid{t0}"), format!("grand{t0}"), format!("stranger{t0}"));
+        write_rollout(&root, t0 + 1_000, &own, Some(r#""cli""#));
+        let live = Live { chat_id: &chat, cwd: "E:\\p", spawned_at_ms: t0 as u128, resume: None, account_path: &acct, last_output_ms: 0 };
+        let at_work = || {
+            let mut kids = children_at_work(&live).unwrap();
+            kids.sort();
+            kids
+        };
+        assert!(at_work().is_empty());
+        write_rollout(&root, t0 + 2_000, &kid, Some(&spawned_by_json(&own)));
+        write_rollout(&root, t0 + 3_000, &grandkid, Some(&spawned_by_json(&kid)));
+        write_rollout(&root, t0 + 3_000, &stranger, Some(&spawned_by_json("someone-else")));
+        let (kid_file, grandkid_file) = (rollout_path(&root, &kid, t0 + 2_000), rollout_path(&root, &grandkid, t0 + 3_000));
+        assert!(at_work().is_empty(), "begun, with no turn yet");
+        append(kid_file.clone(), turn_event("task_started", t0 + 4_000));
+        append(grandkid_file.clone(), turn_event("task_started", t0 + 5_000));
+        append(rollout_path(&root, &stranger, t0 + 3_000), turn_event("task_started", t0 + 5_000));
+        assert_eq!(at_work(), vec![grandkid.clone(), kid.clone()], "its own, at any depth");
+        append(grandkid_file.clone(), turn_event("task_complete", t0 + 6_000));
+        assert_eq!(at_work(), vec![kid.clone()], "done with its task: asleep");
+        append(grandkid_file.clone(), turn_event("task_started", t0 + 7_000));
+        assert_eq!(at_work(), vec![grandkid.clone(), kid.clone()], "woken by a message");
+        append(kid_file, turn_event("turn_aborted", t0 + 8_000));
+        append(grandkid_file, turn_event("task_complete", t0 + 8_000));
+        assert!(at_work().is_empty());
+        release(&chat);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A session days old: a subagent begun on its first day, in that day's
+    /// folder, is still its own when woken now.
+    #[test]
+    fn a_subagent_from_an_earlier_day_of_the_session_is_found() {
+        let (root, now) = rollout_bench("old-kid");
+        let acct = root.to_string_lossy().into_owned();
+        let t0 = now - 3 * 86_400_000;
+        let chat = format!("chat-oldkid-{t0}");
+        let (own, kid) = (format!("ownold{t0}"), format!("kidold{t0}"));
+        write_rollout(&root, t0 + 1_000, &own, Some(r#""cli""#));
+        write_rollout(&root, t0 + 2_000, &kid, Some(&spawned_by_json(&own)));
+        append(rollout_path(&root, &kid, t0 + 2_000), turn_event("task_started", now));
+        let live = Live { chat_id: &chat, cwd: "E:\\p", spawned_at_ms: t0 as u128, resume: None, account_path: &acct, last_output_ms: 0 };
+        // On its own thread since its first day, as its TUI said then.
+        assert!(rollout_on(&live, Some(own.clone())).is_some());
+        assert_eq!(children_at_work(&live), Some(vec![kid.clone()]));
+        release(&chat);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `/subagents` in its TUI watching one of its subagents names that one's
+    /// thread in the title: the chat stays on its own rollout, also while the
+    /// subagent's first line is still half written, and goes on with its own
+    /// once the TUI is back.
+    #[test]
+    fn watching_a_subagent_keeps_the_chat_on_its_own_thread() {
+        let (root, t0) = rollout_bench("watch");
+        let acct = root.to_string_lossy().into_owned();
+        let chat = format!("chat-watch-{t0}");
+        let (own, kid, young) = (format!("ownwatch{t0}"), format!("kidwatch{t0}"), format!("youngwatch{t0}"));
+        write_rollout(&root, t0 + 1_000, &own, Some(r#""cli""#));
+        write_rollout(&root, t0 + 2_000, &kid, Some(&spawned_by_json(&own)));
+        let live = Live { chat_id: &chat, cwd: "E:\\p", spawned_at_ms: t0 as u128, resume: None, account_path: &acct, last_output_ms: 0 };
+        let on = |thread: &str| rollout_on(&live, Some(thread.to_string())).and_then(|p| parse_name(&p.file_name()?.to_string_lossy()).map(|(_, id)| id));
+        assert_eq!(on(&own).as_deref(), Some(own.as_str()));
+        assert_eq!(on(&kid).as_deref(), Some(own.as_str()), "watching its subagent");
+        let half = rollout_path(&root, &young, t0 + 3_000);
+        std::fs::write(&half, r#"{"type":"session_meta","payload":{"cwd":"E:\\p","sou"#).unwrap();
+        assert_eq!(on(&young).as_deref(), Some(own.as_str()), "its first line half written");
+        std::fs::write(&half, format!(r#"{{"type":"session_meta","payload":{{"cwd":"E:\\p","source":{}}}}}"#, spawned_by_json(&own)) + "\n").unwrap();
+        assert_eq!(on(&young).as_deref(), Some(own.as_str()), "and once it reads");
+        assert_eq!(on(&own).as_deref(), Some(own.as_str()));
+        release(&chat);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// A `/new` in its TUI, and a `/resume` back: the chat goes where it says it

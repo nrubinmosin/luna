@@ -288,7 +288,9 @@ src-tauri/src/
   `-c tui.terminal_title=["thread-id"]`, and the pty reads the window title (OSC 0/2) off the output, which no
   pane shows; 0.166 cuts the item to 29 characters, which leaves 25 hex digits of the uuid, matched against
   the start of the one in the name (two alike are no answer) — once written. That follows a `/new`, `/clear`, `/fork` or `/resume`
-  in the TUI, whose new thread keeps the file it was on until its own is written; the turn count goes on
+  in the TUI, whose new thread keeps the file it was on until its own is written, but not `/subagents`:
+  the title then names the subagent watched, whose rollout says `{"subagent":…}`, and the session stays on
+  its own (seen with 0.166: it moved onto the subagent's and counted its turns); the turn count goes on
   over every file the process has been on, each read once, and what agents are owed is read on from the
   start of a fresh transcript or the end of one gone back to (agents.rs `moved_to`, Claude Code's `/clear`
   and `/resume` too). Before the title has said: for a fresh session — the earliest of those that appeared
@@ -459,6 +461,17 @@ src-tauri/src/
   `SubagentStop` that never came. Claude Code takes an agent's result up in a turn of its own, which
   opens with a `UserPromptSubmit` (its prompt the `<task-notification>`) like any other (seen with
   2.1.318); after a `SubagentStop` the registry's "busy" is judged afresh all the same.
+  Codex (0.166) runs its subagents inside the session's own process and tells nothing of them on its
+  screen or in the session's rollout: each writes a rollout of its own, whose `session_meta.source`
+  names the thread that spawned it (`{"subagent":{"thread_spawn":{"parent_thread_id":…}}}`). At each
+  sample Luna reads those of a live chat's thread and of every thread spawned under it
+  (`codex::session::children_at_work`): one is at work while the last turn it opened has not ended,
+  and one done with its task stays open, asleep until it is written to, and is not. The set so read
+  replaces the last (`agents_on_disk`), holds the machine and counts as the chat's job as Claude Code's
+  do, and the 15 s rule, which is Claude Code's, takes none of it. Only threads begun since the process
+  was spawned are looked at, in every day's folder since (a fortnight at most): not one of an earlier run
+  woken again, nor the subagents of a thread the TUI has left (`/new`, `/resume`). Not a background
+  helper's: `codex exec` follows its own thread only, and its subagents go with it when that turn ends.
 - **A turn that ended on a question** (`asking.rs`) is waiting for the eye only: `session_meta` reads
   `waiting`, with `marked`, for a user's chat, no helper's, whose turn is over and whose last message (the
   transcript's tail, the rollout's `task_complete.last_agent_message`) ends on a line holding the marker

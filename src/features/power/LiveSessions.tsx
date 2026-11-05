@@ -16,10 +16,10 @@ export const doing = (s: SessionActivityDto): string => {
 /**
  * Every running session with what it is doing, for the dialogs whose confirm
  * stops them all — an update and Quit. The busy ones come first and stand
- * out: those are the ones that lose work. A Claude subagent left running in
- * the background after its turn ended is not a process of its own and reads
- * as idle here, which is why the dialogs speak of every session, not only of
- * the busy ones.
+ * out: those are the ones that lose work. A subagent left at work after its
+ * session's turn ended is no process of its own, and reads as running here
+ * ("1 subagent"): Claude Code's by its hooks, Codex's by its own rollout. The
+ * dialogs speak of every session all the same, not only of the busy ones.
  */
 export function LiveSessions() {
   const sessions = usePower(s => s.state.summary.sessions);
