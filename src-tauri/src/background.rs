@@ -211,12 +211,25 @@ pub struct Queued {
     #[serde(default)]
     pub from: Option<String>,
     pub text: String,
+    /// The budget lines in a notice, which go with it wherever it goes and are
+    /// saved with it: nothing else says a line is on its way, so a core going at
+    /// any moment can neither lose one nor have it told twice.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub budget: Vec<BudgetMark>,
+}
+
+/// A budget line in a notice: whose it is, and its words, to take back out of a
+/// notice that did not reach its parent.
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
+pub struct BudgetMark {
+    pub id: String,
+    pub line: String,
 }
 
 #[cfg(test)]
 impl From<&str> for Queued {
     fn from(text: &str) -> Queued {
-        Queued { from: None, text: text.to_string() }
+        Queued { from: None, text: text.to_string(), budget: Vec::new() }
     }
 }
 
@@ -271,6 +284,9 @@ struct Entry {
     /// reached the CLI. Kept, across cores too, until a caller has been told
     /// (agents.rs `undelivered_shown`) or a turn of `resume` has taken it.
     undelivered: Vec<Queued>,
+    /// The helpers whose budget lines its CLI's stdin has taken, until the agent
+    /// layer has noted it: the one word that a line arrived (`stdin_took`).
+    budgets_landed: Vec<String>,
     /// Its turn's processes are in a job tied to the core (procs.rs), so a core
     /// that dies takes them along. Saved: without it the next core cannot tell
     /// that a turn it did not stop is over.
@@ -490,6 +506,7 @@ pub fn start(id: &str, spec: Spec, prompt: &str) -> Result<(), String> {
         error: None,
         cut_short: false,
         undelivered: Vec::new(),
+        budgets_landed: Vec::new(),
         tied: false,
         resumable: false,
         unsure: false,
@@ -966,8 +983,7 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
         if let Err(e) = std::thread::Builder::new().spawn(move || {
             let wrote = stdin.write_all(prompt.as_bytes()).is_ok();
             drop(stdin);
-            // The turn has it now: not to be handed back as undelivered.
-            let landed = wrote && lock().entries.get_mut(&writer_id).is_some_and(|e| !std::mem::take(&mut e.in_flight).is_empty());
+            let landed = wrote && lock().entries.get_mut(&writer_id).is_some_and(stdin_took);
             if landed {
                 save();
             }
@@ -1313,66 +1329,109 @@ pub fn activity() -> Vec<crate::activity::SessionActivity> {
     out
 }
 
+/// The turn has what `in_flight` holds: not to be handed back as undelivered, and
+/// the budget lines in it have arrived. Whether there was any.
+fn stdin_took(e: &mut Entry) -> bool {
+    let batch = std::mem::take(&mut e.in_flight);
+    e.budgets_landed.extend(batch.iter().flat_map(|q| q.budget.iter().map(|m| m.id.clone())));
+    !batch.is_empty()
+}
+
+/// Puts text where it goes: behind the turn running, which returns true, or for the
+/// turn now claimed. One with budget lines is `in_flight` as queued text is by then,
+/// so they count as arrived when its stdin has it, not before.
+fn place(e: &mut Entry, q: Queued) -> bool {
+    if e.run.is_some() || e.ending_left || e.promoting {
+        note(e, &format!("queued: {}", one_line(&q.text)));
+        e.queue.push(q);
+        return true;
+    }
+    claim(e);
+    if !q.budget.is_empty() {
+        e.in_flight.push(q);
+    }
+    false
+}
+
 /// Text for the helper: the next turn now, or after the one running.
 /// Returns whether it was queued.
 pub fn send(id: &str, text: &str, from: Option<&str>) -> Result<bool, String> {
+    send_marked(id, text, from, Vec::new())
+}
+
+/// `send`, for a notice with budget lines in it.
+pub fn send_marked(id: &str, text: &str, from: Option<&str>, budget: Vec<BudgetMark>) -> Result<bool, String> {
+    let marked = !budget.is_empty();
     let queued = {
         let mut r = lock();
         let e = r.entries.get_mut(id).ok_or("no such helper")?;
         if !e.held.is_empty() {
             return Err(format!("helper {id} is waiting on a question or permission: answer it with luna_answer"));
         }
-        if e.run.is_some() || e.ending_left || e.promoting {
-            e.queue.push(Queued { from: from.map(str::to_owned), text: text.to_string() });
-            note(e, &format!("queued: {}", one_line(text)));
-            true
-        } else {
-            claim(e);
-            false
-        }
+        place(e, Queued { from: from.map(str::to_owned), text: text.to_string(), budget })
     };
-    if queued {
+    if queued || marked {
         // At once: a core that goes hard (power, a crash) writes nothing more.
         save();
-    } else {
-        run_turn(id, text)?;
+    }
+    if !queued {
+        if let Err(err) = run_turn(id, text) {
+            if let Some(e) = lock().entries.get_mut(id) {
+                e.in_flight.retain(|q| q.budget.is_empty());
+            }
+            return Err(err);
+        }
     }
     changed();
     Ok(queued)
 }
 
-/// Where text given to a helper stands (`text_stands`).
+/// Where a helper's budget line stands with a background parent.
 #[derive(Debug, PartialEq)]
-pub enum TextStands {
+pub enum MarkStands {
+    /// In none of what it holds: never given, or dropped with the rest of a queue.
+    Nothing,
     /// Queued, or with a turn starting on it.
     Coming,
-    /// Gone from all of that: a turn took it in.
-    Taken,
-    /// It will not reach the helper by itself.
+    /// Kept undelivered: it will not reach the parent by itself.
     Undelivered,
-    NoSuchHelper,
+    /// Its CLI's stdin took it.
+    Landed,
 }
 
-pub fn text_stands(id: &str, text: &str) -> TextStands {
+pub fn budget_mark(parent: &str, helper: &str) -> MarkStands {
     let r = lock();
-    let Some(e) = r.entries.get(id) else { return TextStands::NoSuchHelper };
-    let holds = |batch: &[Queued]| batch.iter().any(|q| q.text.contains(text));
-    if holds(&e.queue) || holds(&e.in_flight) {
-        TextStands::Coming
+    let Some(e) = r.entries.get(parent) else { return MarkStands::Nothing };
+    let holds = |batch: &[Queued]| batch.iter().any(|q| q.budget.iter().any(|m| m.id == helper));
+    if e.budgets_landed.iter().any(|h| h == helper) {
+        MarkStands::Landed
+    } else if holds(&e.queue) || holds(&e.in_flight) {
+        MarkStands::Coming
     } else if holds(&e.undelivered) {
-        TextStands::Undelivered
+        MarkStands::Undelivered
     } else {
-        TextStands::Taken
+        MarkStands::Nothing
     }
 }
 
-/// Takes `text` out of what is kept undelivered for `id`, and with it any message
-/// left with nothing but `opening`, the words such text comes after.
-pub fn drop_undelivered(id: &str, text: &str, opening: &str) {
+/// The agent layer has noted that the line landed.
+pub fn budget_mark_noted(parent: &str, helper: &str) {
+    if let Some(e) = lock().entries.get_mut(parent) {
+        e.budgets_landed.retain(|h| h != helper);
+    }
+}
+
+/// Takes a helper's line out of what is kept undelivered, as its next notice has it,
+/// and with it any message left with nothing but `opening`, the words notices open on.
+pub fn drop_undelivered_mark(parent: &str, helper: &str, opening: &str) {
     let mut r = lock();
-    let Some(e) = r.entries.get_mut(id) else { return };
+    let Some(e) = r.entries.get_mut(parent) else { return };
     for q in e.undelivered.iter_mut() {
-        q.text = q.text.replace(text, "");
+        let (gone, kept): (Vec<BudgetMark>, Vec<BudgetMark>) = std::mem::take(&mut q.budget).into_iter().partition(|m| m.id == helper);
+        q.budget = kept;
+        for m in gone {
+            q.text = q.text.replace(&m.line, "");
+        }
     }
     e.undelivered.retain(|q| {
         let left = q.text.trim();
@@ -1522,7 +1581,7 @@ pub fn interrupt(id: &str, text: &str, from: Option<&str>) -> Result<Interrupted
             claim(e);
         } else {
             note(e, "interrupted");
-            e.queue.push(Queued { from: from.map(str::to_owned), text: text.to_string() });
+            e.queue.push(Queued { from: from.map(str::to_owned), text: text.to_string(), budget: Vec::new() });
         }
         free
     };
@@ -2036,6 +2095,9 @@ struct Saved {
     /// See `Entry::in_flight`.
     #[serde(default)]
     in_flight: Vec<Queued>,
+    /// See `Entry::budgets_landed`.
+    #[serde(default)]
+    budgets_landed: Vec<String>,
     /// See `Entry::undelivered`.
     #[serde(default)]
     undelivered: Vec<Queued>,
@@ -2107,6 +2169,7 @@ fn snapshot() -> Vec<Saved> {
             queued: !e.queue.is_empty(),
             queue: e.queue.clone(),
             in_flight: e.in_flight.clone(),
+            budgets_landed: e.budgets_landed.clone(),
             undelivered: e.undelivered.clone(),
             tied: e.tied,
             unsure: e.unsure,
@@ -2265,7 +2328,7 @@ fn taken_up(s: Saved) -> Entry {
     let stopped = s.running || s.cut_short;
     // A turn no core stopped ended only if its tie saw to it (`Entry::tied`).
     let resumable = !s.unsure && (!s.running || s.cut_short || s.tied);
-    let first: Vec<Queued> = s.opening.filter(|_| stopped && s.session.is_none()).map(|text| Queued { from: None, text }).into_iter().collect();
+    let first: Vec<Queued> = s.opening.filter(|_| stopped && s.session.is_none()).map(|text| Queued { from: None, text, budget: Vec::new() }).into_iter().collect();
     let undelivered = [first, s.undelivered, s.in_flight, s.queue].concat();
     let cwd = s.cwd.map(|c| home_of(&s.spec, c));
     let mut e = Entry {
@@ -2282,6 +2345,7 @@ fn taken_up(s: Saved) -> Entry {
         error: None,
         cut_short: stopped,
         undelivered,
+        budgets_landed: s.budgets_landed,
         tied: false,
         resumable,
         unsure: !resumable,
@@ -2384,29 +2448,66 @@ pub fn put_back(id: &str, taken: Vec<Queued>) {
 }
 
 /// Text that never reached a helper, by whom, for the tests of who hears of it.
+/// A notice with `mark` in it, given to a helper as `send_marked` does, the part
+/// that starts a CLI aside. Returns whether it was queued.
 #[cfg(test)]
-pub fn queue_for_test(id: &str, text: &str) {
-    lock().entries.get_mut(id).unwrap().queue.push(text.into());
+pub fn place_for_test(id: &str, text: &str, mark: BudgetMark) -> bool {
+    place(lock().entries.get_mut(id).unwrap(), Queued { from: None, text: text.to_string(), budget: vec![mark] })
 }
 
-/// What a core's going does to what is queued (`taken_up`).
+/// A turn of its runs.
 #[cfg(test)]
-pub fn strand_for_test(id: &str) {
+pub fn set_running_for_test(id: &str) {
+    lock().entries.get_mut(id).unwrap().run = Some(Run { pid: None, started_ms: 0, stopped: false });
+}
+
+/// A turn begins on what is queued, as `turn_over` starts the next.
+#[cfg(test)]
+pub fn start_queued_for_test(id: &str) {
     let mut r = lock();
     let e = r.entries.get_mut(id).unwrap();
-    let queued = std::mem::take(&mut e.queue);
-    e.undelivered.extend(queued);
+    e.in_flight = std::mem::take(&mut e.queue);
 }
 
-/// A turn takes what is queued, and has it.
+/// Its CLI's stdin has taken what the turn was started on.
 #[cfg(test)]
-pub fn take_queue_for_test(id: &str) {
-    lock().entries.get_mut(id).unwrap().queue.clear();
+pub fn stdin_took_for_test(id: &str) {
+    assert!(stdin_took(lock().entries.get_mut(id).unwrap()));
+}
+
+/// Its turn ended without its stdin taking anything, as a CLI gone first leaves it.
+#[cfg(test)]
+pub fn turn_ended_for_test(id: &str) {
+    turn_over(id, Some(1));
+}
+
+/// `luna_kill`: what was queued is dropped.
+#[cfg(test)]
+pub fn killed_for_test(id: &str) {
+    stop(lock().entries.get_mut(id).unwrap());
+}
+
+/// What `helpers.json` keeps of it, written and read back as a core started later
+/// finds it.
+#[cfg(test)]
+pub fn across_a_core_for_test(id: &str) {
+    let bytes = serde_json::to_vec(&snapshot().into_iter().filter(|s| s.id == id).collect::<Vec<Saved>>()).unwrap();
+    let saved: Vec<Saved> = serde_json::from_slice(&bytes).unwrap();
+    let e = taken_up(saved.into_iter().next().unwrap());
+    lock().entries.insert(id.to_string(), e);
+}
+
+/// `resume`: what was kept undelivered goes on in a turn by itself.
+#[cfg(test)]
+pub fn resume_for_test(id: &str) {
+    let mut r = lock();
+    let e = r.entries.get_mut(id).unwrap();
+    e.in_flight = std::mem::take(&mut e.undelivered);
 }
 
 #[cfg(test)]
 pub fn lose_for_test(id: &str, from: &str, text: &str) {
-    lock().entries.get_mut(id).unwrap().undelivered.push(Queued { from: Some(from.to_string()), text: text.to_string() });
+    lock().entries.get_mut(id).unwrap().undelivered.push(Queued { from: Some(from.to_string()), text: text.to_string(), budget: Vec::new() });
 }
 
 /// A helper as a core takes it up, for the tests of what its caller is told.
@@ -2429,6 +2530,7 @@ pub fn take_up_for_test(id: &str, folder: &str, turns_ended: u32, queue: &[&str]
         queue: queue.iter().map(|t| Queued::from(*t)).collect(),
         in_flight: Vec::new(),
         undelivered: Vec::new(),
+        budgets_landed: Vec::new(),
         tied: true,
         unsure: false,
         opening: opening.map(str::to_owned),
@@ -2535,6 +2637,7 @@ pub fn test_helper(id: &str, account_path: &str, session: Option<&str>, busy: bo
         error: None,
         cut_short: false,
         undelivered: Vec::new(),
+        budgets_landed: Vec::new(),
         tied: false,
         resumable: false,
         unsure: false,
@@ -2601,33 +2704,6 @@ mod tests {
 
     /// How full the context is, off a transcript and a rollout as Claude Code
     /// 2.1.3xx and Codex 0.166.0 write them, cut to the fields read here.
-    #[test]
-    fn text_given_to_a_helper_is_followed_to_where_it_ends() {
-        lock().entries.insert("stands-1".into(), entry(Provider::Claude));
-        let stands = || text_stands("stands-1", "the line");
-        assert_eq!(stands(), TextStands::Taken, "never there, or gone in");
-        queue_for_test("stands-1", "[tag] the line");
-        assert_eq!(stands(), TextStands::Coming);
-        {
-            let mut r = lock();
-            let e = r.entries.get_mut("stands-1").unwrap();
-            e.in_flight = std::mem::take(&mut e.queue);
-        }
-        assert_eq!(stands(), TextStands::Coming, "a turn is starting on it, and may not");
-        {
-            let mut r = lock();
-            let e = r.entries.get_mut("stands-1").unwrap();
-            e.undelivered = std::mem::take(&mut e.in_flight);
-            e.undelivered.push("other".into());
-        }
-        assert_eq!(stands(), TextStands::Undelivered);
-        drop_undelivered("stands-1", "the line", "[tag]");
-        assert_eq!(stands(), TextStands::Taken);
-        assert_eq!(lock().entries.get("stands-1").unwrap().undelivered, vec!["other"], "what else there was stays");
-        assert_eq!(text_stands("stands-none", "x"), TextStands::NoSuchHelper);
-        lock().entries.remove("stands-1");
-    }
-
     #[test]
     fn context_is_what_the_last_answer_left_in_the_window() {
         let dir = std::env::temp_dir().join(format!("luna-context-{}", std::process::id()));
@@ -2872,6 +2948,7 @@ mod tests {
             error: None,
             cut_short: false,
             undelivered: Vec::new(),
+            budgets_landed: Vec::new(),
             tied: false,
             resumable: false,
             unsure: false,
@@ -3250,6 +3327,7 @@ mod tests {
             queue: if queued { vec!["first".into(), "second".into()] } else { Vec::new() },
             in_flight: Vec::new(),
             undelivered: Vec::new(),
+            budgets_landed: Vec::new(),
             tied: false,
             unsure: false,
             opening: None,
@@ -3526,6 +3604,7 @@ mod tests {
                 queue: Vec::new(),
                 in_flight: Vec::new(),
                 undelivered: Vec::new(),
+                budgets_landed: Vec::new(),
                 tied: true,
                 unsure: false,
                 opening: Some("the prompt".into()),

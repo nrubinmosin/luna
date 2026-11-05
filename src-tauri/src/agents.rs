@@ -22,6 +22,7 @@
 //! ago, so the notifier here types a one-line notice into the caller once it
 //! is idle: the helper answered, stopped on a prompt, or exited.
 
+use crate::background::MarkStands;
 use crate::provider::Provider;
 use crate::throttle::now_ms;
 use serde::{Deserialize, Serialize};
@@ -1318,7 +1319,7 @@ pub fn promoted(id: &str) {
 /// What a session's settings hold that no window sets: `register` keeps them across
 /// every start of its CLI, and ties across cores. `resumeOnRestart`, and a budget
 /// with where it stands (`budget_news`).
-const CORE_SETTINGS: [&str; 5] = ["resumeOnRestart", "budgetTokens", "budgetBreach", "budgetTold", "budgetQueued"];
+const CORE_SETTINGS: [&str; 4] = ["resumeOnRestart", "budgetTokens", "budgetBreach", "budgetTold"];
 
 /// Whether a helper was spawned with `resumeOnRestart`.
 pub fn resumes_on_restart(id: &str) -> bool {
@@ -4023,7 +4024,7 @@ fn resume_words(resuming: bool, opening: Option<String>, batch: &[crate::backgro
     if resuming {
         return Some(crate::background::resume_text(batch));
     }
-    let first = crate::background::Queued { from: None, text: opening? };
+    let first = crate::background::Queued { from: None, text: opening?, budget: Vec::new() };
     Some(crate::background::joined(&[std::slice::from_ref(&first), batch].concat()))
 }
 
@@ -4156,7 +4157,7 @@ fn resume_chat(pty: &crate::pty::PtyManager, id: &str) {
         let r = reg().lock().unwrap_or_else(|e| e.into_inner());
         let Some(res) = r.resumes.get(id) else { return };
         let batch: Vec<crate::background::Queued> =
-            r.held.iter().filter(|h| h.id == id).map(|h| crate::background::Queued { from: Some(h.caller.clone()), text: h.text.clone() }).collect();
+            r.held.iter().filter(|h| h.id == id).map(|h| crate::background::Queued { from: Some(h.caller.clone()), text: h.text.clone(), budget: Vec::new() }).collect();
         // As its first start would have had it: Codex has nowhere else to hear its note.
         let noted = r.known.get(id).filter(|k| k.provider == Provider::Codex).and_then(|k| k.parent.clone());
         let opening = res.opening.as_deref().map(|text| noted.as_deref().map_or(text.to_string(), |parent| crate::pty::codex_helper_prompt(parent, text)));
@@ -4471,16 +4472,24 @@ const ANSWER_SETTLE: std::time::Duration = std::time::Duration::from_millis(1500
 
 /// `luna_answer`: answers what the session waits on — a question or a
 /// permission (`ask_of`), or with `keys`, any dialog on its screen.
-/// Under a drain (power.rs) an answer goes only to what a session holds for one
-/// now, named where it has a name: keys or words to a session with nothing pending
-/// would start a turn. A dialog Luna cannot read waits for a person.
-fn drain_lets_answer(id: &str, ask: Option<&Ask>, ask_id: Option<&str>, keys: Option<&str>) -> Result<(), String> {
+/// Under a drain (power.rs) only a structured answer goes through, to what a session
+/// holds for one now, named where it has a name. Raw keys are refused outright: a
+/// permission's dialog takes `{enter}` and the rest is a new prompt. So is a note, which
+/// a refused permission's terminal takes as one, and a line break in an answer's own
+/// words, which would send what follows. A dialog Luna cannot read waits for a person.
+fn drain_lets_answer(id: &str, ask: Option<&Ask>, ask_id: Option<&str>, answers: &[String], note: Option<&str>, keys: Option<&str>) -> Result<(), String> {
+    if keys.is_some() {
+        return Err("Luna is draining: keys are refused; answer with answers or allow".into());
+    }
+    if note.is_some_and(|n| !n.trim().is_empty()) {
+        return Err("Luna is draining: a note is refused; answer with allow alone".into());
+    }
+    if answers.iter().any(|a| a.contains(['\r', '\n'])) {
+        return Err("Luna is draining: an answer is one line".into());
+    }
     let Some(ask) = ask else {
         return Err(format!("Luna is draining, and session {id} has no question or permission pending that Luna can read, so nothing goes to it"));
     };
-    if keys.is_some() && !ask.blocking {
-        return Err(format!("Luna is draining, and session {id} holds no dialog for keys: answer its question with answers"));
-    }
     if ask.id.is_some() && ask.id.as_deref() != ask_id {
         return Err(format!("Luna is draining: name the ask you answer, askId {:?}", ask.id.as_deref().unwrap_or("")));
     }
@@ -4514,7 +4523,7 @@ pub fn answer(
     let baseline = crate::activity::turn_state(id).map(|t| t.turns_ended).unwrap_or(0);
     let ask = ask_of(id);
     if draining {
-        drain_lets_answer(id, ask.as_ref(), ask_id, keys)?;
+        drain_lets_answer(id, ask.as_ref(), ask_id, answers, note, keys)?;
     }
     // What the session says on the answer starts right away, long before
     // the call returns.
@@ -5633,6 +5642,10 @@ pub fn notify(caller: &str, text: &str) -> Result<(), String> {
 /// theirs now and stays. Its worktree stays too, with whatever work is in it.
 fn reap(pty: &crate::pty::PtyManager) {
     let ids: Vec<String> = reg().lock().unwrap_or_else(|e| e.into_inner()).auto.keys().cloned().collect();
+    reap_these(pty, ids);
+}
+
+fn reap_these(pty: &crate::pty::PtyManager, ids: Vec<String>) {
     for id in ids {
         if pty.typed_ago_ms(&id).is_some() {
             reg().lock().unwrap_or_else(|e| e.into_inner()).auto.remove(&id);
@@ -5655,7 +5668,8 @@ fn reap(pty: &crate::pty::PtyManager) {
             let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
             let quiet = !helpers_there
                 && !r.owed.iter().any(|((c, s), o)| (*s == id && !(only_idle && o.told_pending)) || *c == id)
-                && !r.waits.keys().any(|(_, s)| *s == id);
+                && !r.waits.keys().any(|(_, s)| *s == id)
+                && !budget_owed(&r, &id);
             let known = r.known.get(&id).cloned();
             let Some(a) = r.auto.get_mut(&id) else { continue };
             if !(quiet && idle) {
@@ -6886,17 +6900,18 @@ struct Budgeted {
     provider: Provider,
     budget: u64,
     breach: Option<serde_json::Value>,
-    queued: Option<serde_json::Value>,
     parent: Option<String>,
     name: Option<String>,
 }
 
 /// What the parents of helpers with a budget are yet to hear, by parent. Where it
 /// stands is kept in the helper's settings, so a core started later goes on from
-/// there: `budgetBreach` once one is seen, `budgetQueued` while the line sits behind
-/// a background parent's turn, `budgetTold` once it has reached the parent. Told once:
-/// a helper told of is not watched again. A transcript is read only when `read`.
-fn budget_news(pty: &crate::pty::PtyManager, read: bool) -> HashMap<String, Vec<BudgetNews>> {
+/// there: `budgetBreach` once one is seen, `budgetTold` once the line has reached the
+/// parent. Between the two a background parent's own record says where the line is
+/// (`background::budget_mark`), it being marked in the text itself. Told once: a helper
+/// told of is not watched again. A transcript is read only when `read`. Also says
+/// whether where any stands moved, to be saved at once.
+fn budget_news(pty: &crate::pty::PtyManager, read: bool) -> (HashMap<String, Vec<BudgetNews>>, bool) {
     let watched: Vec<Budgeted> = {
         let r = reg().lock().unwrap_or_else(|e| e.into_inner());
         r.known
@@ -6907,7 +6922,7 @@ fn budget_news(pty: &crate::pty::PtyManager, read: bool) -> HashMap<String, Vec<
                 let parent = k.parent.clone().filter(|p| p != DEV_CALLER && r.known.contains_key(p));
                 let name = r.names.get(id).map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
                 let some = |key: &str| k.settings.get(key).filter(|v| !v.is_null()).cloned();
-                Some(Budgeted { id: id.clone(), provider: k.provider, budget, breach: some("budgetBreach"), queued: some("budgetQueued"), parent, name })
+                Some(Budgeted { id: id.clone(), provider: k.provider, budget, breach: some("budgetBreach"), parent, name })
             })
             .collect()
     };
@@ -6926,81 +6941,44 @@ fn budget_news(pty: &crate::pty::PtyManager, read: bool) -> HashMap<String, Vec<
             }
         }
         let Some(breach) = breach else { continue };
-        if let Some(q) = &w.queued {
-            match where_queued(q, w.parent.as_deref()) {
-                LineStands::OnItsWay => continue,
-                LineStands::Landed => {
-                    set_budget_state(&w.id, "budgetQueued", None);
-                    set_budget_state(&w.id, "budgetTold", Some(serde_json::json!(true)));
-                    moved = true;
-                    continue;
-                }
-                LineStands::Lost => {
-                    set_budget_state(&w.id, "budgetQueued", None);
-                    moved = true;
-                }
-            }
-        }
         let Some(parent) = w.parent else { continue };
+        match crate::background::budget_mark(&parent, &w.id) {
+            MarkStands::Coming => continue,
+            MarkStands::Landed => {
+                set_budget_state(&w.id, "budgetTold", Some(serde_json::json!(true)));
+                crate::background::budget_mark_noted(&parent, &w.id);
+                moved = true;
+                continue;
+            }
+            // Kept as undelivered it would be told of as well: this notice has it.
+            MarkStands::Undelivered => {
+                crate::background::drop_undelivered_mark(&parent, &w.id, NOTICE_TAG);
+                moved = true;
+            }
+            MarkStands::Nothing => {}
+        }
         let line = budget_line(&your_helper(&w.id, w.name.as_deref()), w.budget, &breach);
         news.entry(parent).or_default().push(BudgetNews { id: w.id, since: breach["at"].as_u64().unwrap_or(0), line });
     }
-    if moved {
-        crate::background::save();
-    }
-    news
-}
-
-/// What became of a line left in a background parent's queue (`budgetQueued`).
-#[derive(Debug, PartialEq)]
-enum LineStands {
-    OnItsWay,
-    /// A turn took it in.
-    Landed,
-    /// It will not reach that parent: to be told over, once.
-    Lost,
-}
-
-fn where_queued(queued: &serde_json::Value, parent: Option<&str>) -> LineStands {
-    let (Some(to), Some(line)) = (queued["to"].as_str(), queued["line"].as_str()) else { return LineStands::Lost };
-    if parent != Some(to) {
-        return LineStands::Lost;
-    }
-    match crate::background::text_stands(to, line) {
-        crate::background::TextStands::Coming => LineStands::OnItsWay,
-        crate::background::TextStands::Taken => LineStands::Landed,
-        // Kept as undelivered it would be told of as well: the next notice has it.
-        crate::background::TextStands::Undelivered => {
-            crate::background::drop_undelivered(to, line, NOTICE_TAG);
-            LineStands::Lost
-        }
-        crate::background::TextStands::NoSuchHelper => LineStands::Lost,
-    }
+    (news, moved)
 }
 
 fn set_budget_state(id: &str, key: &str, value: Option<serde_json::Value>) {
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-    let Some(k) = r.known.get_mut(id) else { return };
-    match value {
-        Some(v) => k.settings[key] = v,
-        None => {
-            if let Some(o) = k.settings.as_object_mut() {
-                o.remove(key);
-            }
-        }
+    if let (Some(k), Some(v)) = (r.known.get_mut(id), value) {
+        k.settings[key] = v;
     }
 }
 
-/// A notice with a budget line in it went in. Into a turn, or typed, the parent has
-/// it; left behind a background parent's turn it has not yet, and a core going
-/// would strand it there (`where_queued`).
-fn budget_went(r: &mut Registry, caller: &str, n: BudgetNews, behind_a_turn: bool) {
-    let Some(k) = r.known.get_mut(&n.id) else { return };
-    if behind_a_turn {
-        k.settings["budgetQueued"] = serde_json::json!({ "to": caller, "line": n.line });
-    } else {
-        k.settings["budgetTold"] = serde_json::json!(true);
-    }
+/// Whether a helper's parent is yet to hear it passed its budget, and is there to:
+/// the notice has no debt to it, so this is all that keeps `reap` from taking the
+/// breach with the helper.
+fn budget_owed(r: &Registry, id: &str) -> bool {
+    r.known.get(id).is_some_and(|k| {
+        k.settings["budgetBreach"].is_object()
+            && k.settings["budgetTold"] != true
+            && k.parent.as_deref().is_some_and(|p| p != DEV_CALLER && r.known.contains_key(p))
+    })
 }
 
 /// Whether a notice may go into `caller` now: its CLI is up and between turns
@@ -7412,7 +7390,10 @@ fn notifier() {
             by_caller.entry(caller.clone()).or_default();
         }
         looks_at_budgets = (looks_at_budgets + 1) % BUDGET_EVERY_LOOKS;
-        let mut budget = budget_news(&pty, looks_at_budgets == 0);
+        let (mut budget, budgets_moved) = budget_news(&pty, looks_at_budgets == 0);
+        if budgets_moved {
+            crate::background::save();
+        }
         for caller in budget.keys() {
             by_caller.entry(caller.clone()).or_default();
         }
@@ -7574,13 +7555,12 @@ fn deliver_notice(
     let baseline = before.map(|t| t.turns_ended).unwrap_or(0);
     // The turn it starts: the next, or for a background caller that has begun
     // one since the look, the one after that.
-    let mut behind_a_turn = false;
-    let (typed, turn) = if crate::background::has(caller) {
-        match crate::background::send(caller, text, None) {
-            Ok(queued) => {
-                behind_a_turn = queued;
-                (Ok(Some(true)), baseline + 1 + u32::from(queued))
-            }
+    let background = crate::background::has(caller);
+    let (typed, turn) = if background {
+        // A background parent's own record says when these have arrived (`budget_news`).
+        let marks = budget_lines.iter().map(|n| crate::background::BudgetMark { id: n.id.clone(), line: n.line.clone() }).collect();
+        match crate::background::send_marked(caller, text, None, marks) {
+            Ok(queued) => (Ok(Some(true)), baseline + 1 + u32::from(queued)),
             Err(e) => (Err(e), 0),
         }
     } else {
@@ -7656,9 +7636,11 @@ fn deliver_notice(
             for (request, _) in spawn_lines {
                 r.spawns.remove(&request);
             }
-            let told_budgets = !budget_lines.is_empty();
-            for n in budget_lines {
-                budget_went(&mut r, caller, n, behind_a_turn);
+            let told_budgets = !background && !budget_lines.is_empty();
+            for n in budget_lines.iter().filter(|_| !background) {
+                if let Some(k) = r.known.get_mut(&n.id) {
+                    k.settings["budgetTold"] = serde_json::json!(true);
+                }
             }
             drop(r);
             if told_quota {
@@ -8783,6 +8765,7 @@ mod tests {
 
     #[test]
     fn an_auto_delete_helper_counts_idle_only_once_its_answer_is_out() {
+        let _reaping = reaps_to_myself();
         let none = serde_json::json!({});
         register("ad-parent", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, none.clone());
         register("ad-child", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("ad-parent"), false, none);
@@ -8807,6 +8790,7 @@ mod tests {
     /// debt for its end settled by one line; a leftover at work still keeps it.
     #[test]
     fn an_auto_delete_helper_with_only_long_idle_leftovers_goes_and_says_so() {
+        let _reaping = reaps_to_myself();
         register("ai-top", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, serde_json::json!({}));
         register("ai-s", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("ai-top"), false, serde_json::json!({ "background": true }));
         crate::background::idle_for_test("ai-s", Provider::Claude, 1, false);
@@ -9111,6 +9095,7 @@ mod tests {
 
     #[test]
     fn a_helper_with_helpers_or_answers_to_come_is_not_auto_deleted() {
+        let _reaping = reaps_to_myself();
         let none = serde_json::json!({});
         register("rq-top", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, none.clone());
         register("rq-mid", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("rq-top"), true, none.clone());
@@ -9406,7 +9391,9 @@ mod tests {
         // Nothing past that has run: the spawn's own thread has long given up.
         let saved = chats_now();
         assert_eq!(saved.chats.iter().find(|c| c.id == "tl-helper").and_then(|c| c.ties.task.as_deref()), Some("Late to the window"));
-        let saved: SavedChats = serde_json::from_slice(&serde_json::to_vec(&saved).unwrap()).unwrap();
+        // Its own alone: the registry holds every other test's chats too.
+        let chats: Vec<SavedChat> = saved.chats.into_iter().filter(|c| c.id == "tl-helper").collect();
+        let saved: SavedChats = serde_json::from_slice(&serde_json::to_vec(&SavedChats { chats, ..Default::default() }).unwrap()).unwrap();
         forget("tl-helper");
         take_up_chats(saved);
         assert_eq!(reg().lock().unwrap().tasks["tl-helper"], "Late to the window", "across a core");
@@ -10295,7 +10282,7 @@ mod tests {
 
     #[test]
     fn a_chat_is_told_why_with_what_was_held_or_given_its_prompt_with_no_conversation() {
-        let batch = [crate::background::Queued { from: Some("x".into()), text: "the held text".into() }];
+        let batch = [crate::background::Queued { from: Some("x".into()), text: "the held text".into(), budget: Vec::new() }];
         let told = resume_words(true, Some("the prompt".into()), &batch).unwrap();
         assert!(told.starts_with(NOTICE_TAG) && told.contains("core restarted") && told.contains("Carry on") && told.contains("the held text"), "{told}");
         assert!(!told.contains("the prompt"), "its conversation has that");
@@ -11276,12 +11263,13 @@ mod tests {
 
     #[test]
     fn a_budget_breach_stays_owed_through_a_compaction_and_a_core_and_is_told_once() {
+        let _budgets = budgets_to_myself();
         let pty = crate::pty::manager();
         let dir = std::env::temp_dir().join(format!("luna-budget-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         for (parent, kid, provider) in [("bb-p1", "bb-kid1", Provider::Claude), ("bb-p2", "bb-kid2", Provider::Codex)] {
             tooled(parent);
-            let news_of = |read: bool| budget_news(&pty, read).remove(parent).unwrap_or_default();
+            let news_of = |read: bool| budget_news(&pty, read).0.remove(parent).unwrap_or_default();
             let path = dir.join(format!("{kid}.jsonl"));
             write_usage(&path, provider, 900);
             transcripts().lock().unwrap().insert(kid.to_string(), path.clone());
@@ -11311,10 +11299,8 @@ mod tests {
             tie_back(kid, provider, "C:\\p", "C:\\acc\\one", ties);
             assert_eq!(news_of(true)[0].line, first[0].line, "{kid}: after a core");
 
-            // Gone in: told, not watched, and a second crossing says nothing.
-            let mut r = reg().lock().unwrap();
-            budget_went(&mut r, parent, news_of_one(&first), false);
-            drop(r);
+            // Typed into its parent: told, not watched, and a second crossing says nothing.
+            set_budget_state(kid, "budgetTold", Some(serde_json::json!(true)));
             write_usage(&path, provider, 2000);
             assert!(news_of(true).is_empty(), "{kid}: told once");
             assert_eq!(settings_of(kid)["budgetTold"], true);
@@ -11324,70 +11310,161 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    fn news_of_one(news: &[BudgetNews]) -> BudgetNews {
-        BudgetNews { id: news[0].id.clone(), since: news[0].since, line: news[0].line.clone() }
-    }
-
     #[test]
     fn a_budget_with_no_parent_to_tell_is_kept_for_when_there_is_one() {
+        let _budgets = budgets_to_myself();
         let pty = crate::pty::manager();
         let breach = serde_json::json!({ "at": 1, "tokens": 5, "window": 10, "pct": 50 });
         let settings = serde_json::json!({ "budgetTokens": 1, "budgetBreach": breach });
         register("bn-kid", Provider::Claude, "C:\\p", "C:\\acc\\one", Some("bn-gone"), false, settings.clone());
-        assert!(!budget_news(&pty, false).values().flatten().any(|n| n.id == "bn-kid"));
+        assert!(!budget_news(&pty, false).0.values().flatten().any(|n| n.id == "bn-kid"));
         assert_eq!(settings_of("bn-kid")["budgetBreach"], breach);
         register("bn-dev", Provider::Claude, "C:\\p", "C:\\acc\\one", Some(DEV_CALLER), false, settings);
-        assert!(!budget_news(&pty, false).values().flatten().any(|n| n.id == "bn-dev"), "a dev caller takes no notices");
+        assert!(!budget_news(&pty, false).0.values().flatten().any(|n| n.id == "bn-dev"), "a dev caller takes no notices");
         forget("bn-kid");
         forget("bn-dev");
     }
 
-    #[test]
-    fn a_budget_line_behind_a_parents_turn_is_owed_until_a_turn_takes_it() {
-        let pty = crate::pty::manager();
-        let (parent, kid) = ("bq-parent", "bq-kid");
+    /// `reap` goes over every `autoDelete` helper there is, a test's or not, and in
+    /// Luna it has one caller: two at once would both delete one.
+    fn reaps_to_myself() -> std::sync::MutexGuard<'static, ()> {
+        static ONE: Mutex<()> = Mutex::new(());
+        ONE.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// `budget_news` goes over every helper there is, a test's or not.
+    fn budgets_to_myself() -> std::sync::MutexGuard<'static, ()> {
+        static ONE: Mutex<()> = Mutex::new(());
+        ONE.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// A background parent, its helper past a budget, and what `budget_news` has for it.
+    fn budget_pair(parent: &str, kid: &str) -> (String, crate::background::BudgetMark) {
         let breach = serde_json::json!({ "at": 1, "tokens": 5, "window": 10, "pct": 50 });
-        let settings = serde_json::json!({ "budgetTokens": 1, "budgetBreach": breach });
         crate::background::idle_for_test(parent, Provider::Claude, 1, false);
         tooled(parent);
-        register(kid, Provider::Claude, "C:\\p", "C:\\acc\\one", Some(parent), false, settings);
-        let news_now = || budget_news(&pty, false).remove(parent).unwrap_or_default();
-        let told = news_now();
-        assert_eq!(told.len(), 1);
-        let line = told[0].line.clone();
-        let notice = format!("{NOTICE_TAG} {line}");
+        register(kid, Provider::Claude, "C:\\p", "C:\\acc\\one", Some(parent), false, serde_json::json!({ "budgetTokens": 1, "budgetBreach": breach }));
+        let line = budget_now(parent).expect("a line").clone();
+        (format!("{NOTICE_TAG} {line}"), crate::background::BudgetMark { id: kid.to_string(), line })
+    }
 
-        // Behind a turn: on its way, so not said again, and not told yet.
-        crate::background::queue_for_test(parent, &notice);
-        let mut r = reg().lock().unwrap();
-        budget_went(&mut r, parent, news_of_one(&told), true);
-        drop(r);
-        assert!(news_now().is_empty(), "not typed twice");
-        assert_ne!(settings_of(kid)["budgetTold"], true);
+    fn budget_now(parent: &str) -> Option<String> {
+        budget_news(&crate::pty::manager(), false).0.remove(parent).unwrap_or_default().pop().map(|n| n.line)
+    }
 
-        // A core went and the queue is undelivered: told over, and only so.
-        crate::background::strand_for_test(parent);
-        assert!(crate::background::undelivered_for(parent, "x", true).iter().any(|t| t.contains(&line)));
-        let over = news_now();
-        assert_eq!(over.len(), 1, "owed again");
-        assert_eq!(over[0].line, line, "the same words, as read");
-        assert!(crate::background::undelivered_for(parent, "x", true).is_empty(), "and not told of as undelivered too");
-        assert!(settings_of(kid).get("budgetQueued").is_none());
-
-        // Queued again, and this time a turn takes it.
-        crate::background::queue_for_test(parent, &notice);
-        let mut r = reg().lock().unwrap();
-        budget_went(&mut r, parent, news_of_one(&over), true);
-        drop(r);
-        crate::background::take_queue_for_test(parent);
-        assert!(news_now().is_empty());
-        assert_eq!(settings_of(kid)["budgetTold"], true);
-        assert!(settings_of(kid).get("budgetQueued").is_none());
-
-        // A line queued into a parent since gone is told to the one after it.
-        assert_eq!(where_queued(&serde_json::json!({ "to": "someone", "line": "l" }), Some(parent)), LineStands::Lost);
-        assert_eq!(where_queued(&serde_json::json!({ "to": "bq-nobody", "line": "l" }), Some("bq-nobody")), LineStands::Lost);
+    fn budget_pair_gone(parent: &str, kid: &str) {
         forget(kid);
+        forget(parent);
+    }
+
+    #[test]
+    fn a_budget_line_to_an_idle_parent_counts_only_once_its_stdin_took_it() {
+        let _budgets = budgets_to_myself();
+        let (parent, kid) = ("bi-parent", "bi-kid");
+        let (notice, mark) = budget_pair(parent, kid);
+        assert!(!crate::background::place_for_test(parent, &notice, mark.clone()), "idle: a turn is claimed for it");
+        assert_eq!(budget_now(parent), None, "on its way, not said again");
+        assert_ne!(settings_of(kid)["budgetTold"], true, "and not told yet");
+        // The CLI went before it took anything: still owed.
+        crate::background::turn_ended_for_test(parent);
+        assert_eq!(budget_now(parent).as_deref(), Some(mark.line.as_str()));
+        assert_ne!(settings_of(kid)["budgetTold"], true);
+        // Its stdin took it.
+        assert!(!crate::background::place_for_test(parent, &notice, mark));
+        crate::background::stdin_took_for_test(parent);
+        assert_eq!(budget_now(parent), None);
+        assert_eq!(settings_of(kid)["budgetTold"], true);
+        budget_pair_gone(parent, kid);
+    }
+
+    #[test]
+    fn a_budget_line_behind_a_parents_turn_is_owed_until_a_turn_takes_it_in() {
+        let _budgets = budgets_to_myself();
+        let (parent, kid) = ("bq-parent", "bq-kid");
+        let (notice, mark) = budget_pair(parent, kid);
+        crate::background::set_running_for_test(parent);
+        assert!(crate::background::place_for_test(parent, &notice, mark.clone()), "behind its turn");
+        assert_eq!(budget_now(parent), None, "not typed twice");
+        // A turn started on it, not yet taken in.
+        crate::background::start_queued_for_test(parent);
+        assert_eq!(budget_now(parent), None);
+        assert_ne!(settings_of(kid)["budgetTold"], true);
+        crate::background::stdin_took_for_test(parent);
+        assert_eq!(budget_now(parent), None);
+        assert_eq!(settings_of(kid)["budgetTold"], true);
+        budget_pair_gone(parent, kid);
+    }
+
+    #[test]
+    fn a_parent_killed_with_a_budget_line_queued_has_not_heard_it() {
+        let _budgets = budgets_to_myself();
+        let (parent, kid) = ("bk-parent", "bk-kid");
+        let (notice, mark) = budget_pair(parent, kid);
+        crate::background::set_running_for_test(parent);
+        assert!(crate::background::place_for_test(parent, &notice, mark.clone()));
+        crate::background::killed_for_test(parent);
+        assert_eq!(budget_now(parent).as_deref(), Some(mark.line.as_str()), "owed, and told over");
+        assert_ne!(settings_of(kid)["budgetTold"], true);
+        budget_pair_gone(parent, kid);
+    }
+
+    #[test]
+    fn a_core_going_with_a_budget_line_queued_neither_repeats_it_nor_loses_it() {
+        let _budgets = budgets_to_myself();
+        // The enqueue and what says a line is on its way are one thing on disk.
+        let (parent, kid) = ("bc-parent", "bc-kid");
+        let (notice, mark) = budget_pair(parent, kid);
+        crate::background::set_running_for_test(parent);
+        assert!(crate::background::place_for_test(parent, &notice, mark.clone()));
+        crate::background::across_a_core_for_test(parent);
+        // A parent that goes on by itself takes the old text: nothing is said again.
+        crate::background::resume_for_test(parent);
+        assert_eq!(budget_now(parent), None, "resumed with it: not told twice");
+        crate::background::stdin_took_for_test(parent);
+        assert_eq!(budget_now(parent), None);
+        assert_eq!(settings_of(kid)["budgetTold"], true);
+        budget_pair_gone(parent, kid);
+
+        // One that does not has it taken back out, and told over, once.
+        let (parent, kid) = ("bd-parent", "bd-kid");
+        let (notice, mark) = budget_pair(parent, kid);
+        crate::background::set_running_for_test(parent);
+        assert!(crate::background::place_for_test(parent, &format!("{notice} And more."), mark.clone()));
+        crate::background::across_a_core_for_test(parent);
+        assert_eq!(budget_now(parent).as_deref(), Some(mark.line.as_str()));
+        let kept = crate::background::undelivered_for(parent, "x", true);
+        assert_eq!(kept.len(), 1, "what else it said stays");
+        assert!(!kept[0].contains(&mark.line), "{kept:?}");
+        assert_ne!(settings_of(kid)["budgetTold"], true);
+        budget_pair_gone(parent, kid);
+
+        // Landed before the core went: that stands.
+        let (parent, kid) = ("be-parent", "be-kid");
+        let (notice, mark) = budget_pair(parent, kid);
+        assert!(!crate::background::place_for_test(parent, &notice, mark));
+        crate::background::stdin_took_for_test(parent);
+        crate::background::across_a_core_for_test(parent);
+        assert_eq!(budget_now(parent), None);
+        assert_eq!(settings_of(kid)["budgetTold"], true);
+        budget_pair_gone(parent, kid);
+    }
+
+    #[test]
+    fn auto_delete_keeps_a_helper_until_its_parent_has_heard_of_its_budget() {
+        let pty = crate::pty::manager();
+        let (parent, kid) = ("br-parent", "br-kid");
+        tooled(parent);
+        let breach = serde_json::json!({ "at": 1, "tokens": 5, "window": 10, "pct": 50 });
+        register(kid, Provider::Claude, "C:\\p", "C:\\acc\\one", Some(parent), false, serde_json::json!({ "budgetTokens": 1, "budgetBreach": breach }));
+        let long_idle = || Auto { idle_since: Some(now_ms() - AUTO_DELETE_IDLE_MS - 1), deleting: false };
+        reg().lock().unwrap().auto.insert(kid.to_string(), long_idle());
+        reap_these(&pty, vec![kid.to_string()]);
+        assert!(reg().lock().unwrap().known.contains_key(kid), "the breach would go with it");
+        assert_eq!(reg().lock().unwrap().auto.get(kid).unwrap().idle_since, None);
+        set_budget_state(kid, "budgetTold", Some(serde_json::json!(true)));
+        reg().lock().unwrap().auto.insert(kid.to_string(), long_idle());
+        reap_these(&pty, vec![kid.to_string()]);
+        assert!(!reg().lock().unwrap().known.contains_key(kid), "told: it goes");
         forget(parent);
     }
 
@@ -11404,18 +11481,26 @@ mod tests {
     #[test]
     fn a_drain_lets_only_an_identified_ask_be_answered() {
         let ask = |id: Option<&str>, blocking: bool| Ask { id: id.map(str::to_owned), kind: "question", blocking, questions: Vec::new(), tool: None, detail: None };
+        let plain: &[String] = &[];
         let refused = |r: Result<(), String>| r.unwrap_err();
-        // Nothing pending: neither words nor keys.
-        assert!(refused(drain_lets_answer("s", None, None, None)).contains("no question or permission pending"));
-        assert!(refused(drain_lets_answer("s", None, None, Some("continue working{enter}"))).contains("no question or permission pending"));
-        // A dialog takes keys; a question beside its work holds none.
-        assert_eq!(drain_lets_answer("s", Some(&ask(None, true)), None, Some("{down}{enter}")), Ok(()));
-        assert!(refused(drain_lets_answer("s", Some(&ask(None, false)), None, Some("go on{enter}"))).contains("no dialog"));
-        assert_eq!(drain_lets_answer("s", Some(&ask(None, false)), None, None), Ok(()));
+        // Nothing pending.
+        assert!(refused(drain_lets_answer("s", None, None, plain, None, None)).contains("no question or permission pending"));
+        // Keys never, whatever is held: past a dialog they are a prompt.
+        let keys = Some("{enter}start another task{enter}");
+        for held in [None, Some(ask(None, true)), Some(ask(None, false)), Some(ask(Some("a1"), true))] {
+            assert!(refused(drain_lets_answer("s", held.as_ref(), Some("a1"), plain, None, keys)).contains("keys are refused"));
+        }
+        // A structured answer goes to what is held.
+        assert_eq!(drain_lets_answer("s", Some(&ask(None, true)), None, plain, None, None), Ok(()));
+        assert_eq!(drain_lets_answer("s", Some(&ask(None, false)), None, &["yes".to_string()], None, None), Ok(()));
+        // Not with what a terminal takes as a prompt in it.
+        assert!(refused(drain_lets_answer("s", Some(&ask(None, true)), None, plain, Some("do this instead"), None)).contains("a note"));
+        assert_eq!(drain_lets_answer("s", Some(&ask(None, true)), None, plain, Some("  "), None), Ok(()));
+        assert!(refused(drain_lets_answer("s", Some(&ask(None, true)), None, &["a\rnew prompt".to_string()], None, None)).contains("one line"));
         // A background helper's has an id, and it is to be named.
-        assert!(refused(drain_lets_answer("s", Some(&ask(Some("a1"), true)), None, None)).contains("a1"));
-        assert!(refused(drain_lets_answer("s", Some(&ask(Some("a1"), true)), Some("a0"), None)).contains("a1"));
-        assert_eq!(drain_lets_answer("s", Some(&ask(Some("a1"), true)), Some("a1"), None), Ok(()));
+        assert!(refused(drain_lets_answer("s", Some(&ask(Some("a1"), true)), None, plain, None, None)).contains("a1"));
+        assert!(refused(drain_lets_answer("s", Some(&ask(Some("a1"), true)), Some("a0"), plain, None, None)).contains("a1"));
+        assert_eq!(drain_lets_answer("s", Some(&ask(Some("a1"), true)), Some("a1"), plain, None, None), Ok(()));
     }
 
     fn tooled(id: &str) {

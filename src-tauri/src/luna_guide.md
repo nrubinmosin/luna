@@ -183,5 +183,5 @@ on one of the user's accounts.
 - Before anything that stops Luna's core or the PC: `luna_list` for helpers at work; they lose
   their turns. To turn the PC off use `luna_power`, not a `shutdown` command.
 - `luna_power` `drain`: till the rule fires or is cancelled agents' `luna_spawn` and `luna_send`
-  are refused, `luna_answer` takes only a pending ask (with its `askId`). After `restart` Luna
+  are refused, `luna_answer` takes only answers or allow to a pending ask. After `restart` Luna
   starts at the next sign-in; that takes a person.

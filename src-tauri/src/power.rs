@@ -124,8 +124,9 @@ struct State {
     /// The last state sent to the UI, to send only changes.
     last_sent: Option<PowerState>,
     firing: bool,
-    /// What a drain's rule is firing: agents stay refused until that is over.
-    fired_drain: Option<Action>,
+    /// What is firing: agents are refused until that is over, drain or not, as
+    /// what they start now the action would only take down with it.
+    fired: Option<Action>,
     /// Agents' calls under way that may start work (`Entered`).
     admitted: usize,
     /// The last "armed, not firing" line and when it went out.
@@ -228,10 +229,8 @@ fn advance(st: &mut State, keep_awake: bool, summary: &Summary, now: u64) -> Vec
             } else if now >= ends && !st.firing {
                 st.firing = true;
                 st.countdown_ends_at_ms = None;
+                st.fired = Some(armed.action);
                 // Its end is reached: what a wake brings is free to work.
-                if armed.drain {
-                    st.fired_drain = Some(armed.action);
-                }
                 if let Some(a) = st.armed.as_mut() {
                     a.drain = false;
                 }
@@ -293,7 +292,7 @@ pub fn tick(summary: &Summary) {
                     fire(a);
                     let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
                     st.firing = false;
-                    st.fired_drain = None;
+                    st.fired = None;
                 });
             }
         }
@@ -443,6 +442,31 @@ fn relaunch_line(asked: &Result<String, String>) -> String {
     }
 }
 
+/// Times `to_machine` went past `dry` in a test: it never may.
+#[cfg(test)]
+static PAST_DRY: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// The one way to the machine: `real`, or in a dry build `dry_answer`. A unit test
+/// goes no further than here whatever `dry` says.
+fn to_machine<T>(dry_answer: T, real: impl FnOnce() -> T) -> T {
+    if dry() || past_dry() {
+        dry_answer
+    } else {
+        real()
+    }
+}
+
+#[cfg(test)]
+fn past_dry() -> bool {
+    PAST_DRY.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    true
+}
+
+#[cfg(not(test))]
+fn past_dry() -> bool {
+    false
+}
+
 /// Off the sampler thread: quitting the CLIs takes seconds.
 fn fire(action: Action) {
     if dry() && action != Action::Log {
@@ -452,6 +476,10 @@ fn fire(action: Action) {
         if matches!(action, Action::Sleep | Action::Hibernate) {
             crate::activity::reset_idle();
         }
+        // As long as closing the CLIs would take: what is refused meanwhile can be tried.
+        if !cfg!(test) {
+            std::thread::sleep(crate::pty::GRACE);
+        }
         return;
     }
     crate::log::warn("power", &format!("firing: {}", action.as_str()));
@@ -459,14 +487,14 @@ fn fire(action: Action) {
         Action::Log => notify("Luna: log-only action fired", "All sessions were done; nothing was shut down."),
         Action::Sleep | Action::Hibernate => {
             crate::activity::reset_idle();
-            if !os::suspend(action == Action::Hibernate) {
+            if !to_machine(false, || os::suspend(action == Action::Hibernate)) {
                 crate::log::error("power", "SetSuspendState refused");
             }
         }
         Action::Shutdown => {
             let quit = crate::pty::manager().shut_down_all(crate::pty::GRACE);
             crate::log::warn("power", &format!("{quit} sessions closed; shutting down"));
-            if os::shutdown() {
+            if to_machine(false, os::shutdown) {
                 crate::lifecycle::exiting("shut-down-when-done turned the PC off");
                 // Windows ends the process from WM_ENDSESSION (sysmenu.rs);
                 // leaving now just makes it tidy.
@@ -478,11 +506,11 @@ fn fire(action: Action) {
             }
         }
         Action::Restart => {
-            let asked = relaunch_command().and_then(|command| os::run_once(&command).map(|()| command));
+            let asked = relaunch_command().and_then(|command| to_machine(Err("a dry run sets nothing".to_string()), || os::run_once(&command)).map(|()| command));
             crate::log::warn("power", &relaunch_line(&asked));
             let quit = crate::coreproc::wind_down();
             crate::log::warn("power", &format!("{quit} sessions closed; restarting"));
-            if os::restart() {
+            if to_machine(false, os::restart) {
                 crate::lifecycle::exiting("restart-when-done restarted the PC");
                 // As for a shutdown: Windows ends the process from WM_ENDSESSION.
                 std::thread::sleep(std::time::Duration::from_secs(2));
@@ -502,7 +530,10 @@ static ENTERED_ENDED: Condvar = Condvar::new();
 
 /// Why an agent is to start nothing now, if it is not to.
 fn refusal(st: &State) -> Option<String> {
-    let action = st.armed.as_ref().filter(|a| a.drain).map(|a| a.action).or(st.fired_drain)?;
+    if let Some(action) = st.fired {
+        return Some(format!("Luna's {} is under way, so nothing new starts. End your turn.", action.as_str()));
+    }
+    let action = st.armed.as_ref().filter(|a| a.drain).map(|a| a.action)?;
     Some(format!(
         "Luna is draining: a {} is armed for when all sessions are quiet, so nothing new starts. What runs may finish, and luna_answer (a pending ask only), luna_kill and luna_delete still work. End your turn.",
         action.as_str()
@@ -659,6 +690,12 @@ pub fn disarm_power_off() -> PowerState {
     snapshot(&st, &crate::activity::summary())
 }
 
+/// A rule as `luna_power` gives it: as it stands now, which is none if somebody
+/// disarmed it while a drain's arming waited.
+fn armed_as_told(armed: Option<&Armed>) -> serde_json::Value {
+    armed.map_or(serde_json::Value::Null, |a| serde_json::json!({ "action": a.action.as_str(), "quietS": a.quiet_s, "drain": a.drain }))
+}
+
 /// An agent's `luna_power`: the rule the power chip arms, so the PC goes down
 /// the way Luna takes it down — once every session is quiet, each CLI asked to
 /// quit first — rather than by a `shutdown` that takes the other chats' work
@@ -679,7 +716,7 @@ pub fn arm_for_agent(caller: &str, action: &str, quiet_s: Option<u64>, drain: Op
     let busy: Vec<String> = state.summary.sessions.iter().filter(|s| s.busy && s.id != caller).map(|s| name(&s.id)).collect();
     let (waiting, _) = parked(&state.summary);
     let mut out = serde_json::json!({
-        "armed": { "action": a.as_str(), "quietS": state.armed.as_ref().map_or(quiet_s, |x| x.quiet_s), "drain": state.armed.as_ref().is_some_and(|x| x.drain) },
+        "armed": armed_as_told(state.armed.as_ref()),
         "busy": busy,
         "waitingForAPerson": waiting,
     });
@@ -757,18 +794,12 @@ mod os {
     }
 
     pub fn suspend(hibernate: bool) -> bool {
-        if super::dry() {
-            return false;
-        }
         // SAFETY: no pointers; the call returns once the machine wakes.
         unsafe { SetSuspendState(hibernate, false, false) }
     }
 
     fn shutdown_with(flag: &str) -> bool {
         use std::os::windows::process::CommandExt;
-        if super::dry() {
-            return false;
-        }
         std::process::Command::new("shutdown")
             .args([flag, "/t", "0"])
             .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
@@ -791,9 +822,6 @@ mod os {
     pub fn run_once(command: &str) -> Result<(), String> {
         use windows::core::{w, HSTRING};
         use windows::Win32::System::Registry::{RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ};
-        if super::dry() {
-            return Err("a dry run sets nothing".into());
-        }
         let value = HSTRING::from(command);
         // The terminating zero counts, as REG_SZ wants it.
         let bytes = ((value.len() + 1) * 2) as u32;
@@ -882,6 +910,38 @@ mod tests {
     #[test]
     fn nothing_here_touches_the_machine_in_a_test() {
         assert!(dry());
+        let past = || PAST_DRY.load(std::sync::atomic::Ordering::SeqCst);
+        for action in [Action::Sleep, Action::Hibernate, Action::Shutdown, Action::Restart] {
+            fire(action);
+        }
+        assert_eq!(past(), 0, "fire stops short of the machine");
+        // Every way out, should `fire` ever not stop first.
+        assert!(!to_machine(false, || panic!("suspend")));
+        assert!(!to_machine(false, || panic!("shutdown")));
+        assert!(!to_machine(false, || panic!("restart")));
+        assert_eq!(to_machine(Err::<(), &str>("dry"), || panic!("RunOnce")), Err("dry"));
+        assert_eq!(past(), 0);
+    }
+
+    #[test]
+    fn a_firing_refuses_new_work_with_no_drain_too() {
+        for action in [Action::Restart, Action::Shutdown, Action::Sleep] {
+            let mut st = armed(action, 60);
+            st.holding = true;
+            assert_eq!(refusal(&st), None, "armed, not firing");
+            assert_eq!(fired(&mut st), vec![Effect::Fire(action)]);
+            assert!(refusal(&st).unwrap().contains("under way"), "{action:?}");
+            st.firing = false;
+            st.fired = None;
+            assert_eq!(refusal(&st), None);
+        }
+    }
+
+    #[test]
+    fn luna_power_gives_the_rule_as_it_stands_after_settling() {
+        assert_eq!(armed_as_told(None), serde_json::Value::Null, "disarmed while it waited");
+        let rule = Armed { action: Action::Restart, quiet_s: 60, armed_at_ms: 0, drain: true };
+        assert_eq!(armed_as_told(Some(&rule)), serde_json::json!({ "action": "restart", "quietS": 60, "drain": true }));
     }
 
     #[test]
@@ -925,7 +985,7 @@ mod tests {
             assert!(refusal(&st).is_some(), "still, while it fires");
             // What the firing thread does once it is over.
             st.firing = false;
-            st.fired_drain = None;
+            st.fired = None;
             assert_eq!(refusal(&st), None, "{action:?}");
             let kept = matches!(action, Action::Sleep | Action::Hibernate);
             assert_eq!(st.armed.is_some(), kept);
