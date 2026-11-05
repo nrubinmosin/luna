@@ -8,8 +8,8 @@ can start other sessions and work with them.
 - Every chat in Luna is a session: the user's own chats and the helpers sessions start. Each
   has an id, a name, a provider (`claude` = Claude Code, `codex` = Codex), an account, a
   project folder and a state: `working`, `waiting` (a permission prompt), `question`,
-  `idle`, `starting` (its CLI has not drawn yet), `background` (a job or helper of its still
-  runs), `exited`.
+  `idle`, `starting` (its CLI has not drawn yet), `background` (a job, a subagent its CLI
+  runs in the background, or a helper of its still runs), `exited`.
 - `luna_waiting` (the user's own chats): a turn that ends on a question the user must answer
   before you can go on shows as waiting for them, until they next write; a Luna notice does
   not end it, nor does it hold a power-off. Not for offers or "anything else?"; no question
@@ -94,9 +94,11 @@ can start other sessions and work with them.
   message; if all are short, the last) first, then the last message, then the rest in order.
   The notice quotes only the report's first line, cut to about 150 characters (`It begins:
   "…"`), and not of a turn that stopped on an error, which it says.
-  It comes when your chat is between turns and the user is not typing in it.
-- "NOT done yet": a job it started still runs (named), or its own helpers have yet to answer
-  it. Said once; the next notice comes when that is over or a turn of its own ends (all of it
+  It comes when your chat is between turns and the user is not typing in it; a subagent you
+  left working in the background does not hold it back.
+- "NOT done yet": a job it started still runs (named), a subagent of a visible one's CLI
+  works on in the background, or its own helpers have yet to answer it. Said once; the next
+  notice comes when that is over or a turn of its own ends (all of it
   idle 30 min: one more says so; it may be stuck or waiting), not one it only ran
   on a Luna notice: unless that was its own helper's last answer, or, to you its parent, one on
   its helpers' notices that wrote a message of 400+ characters. A background Claude Code

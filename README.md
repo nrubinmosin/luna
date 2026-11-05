@@ -505,7 +505,8 @@ background helper spawned without tools.
 - An agent that asked something and ended its turn without waiting is not left idle: once
   the answer comes — or the helper asks something, stops on a permission prompt, or exits — Luna types a
   one-line `[Luna notice, not typed by the user]` into the agent's chat, as soon as that
-  chat is between turns and you have not typed into it for 20 seconds. A draft you left in
+  chat is between turns and you have not typed into it for 20 seconds; a subagent it left
+  working in the background (Claude Code) does not hold the notice back. A draft you left in
   it is put aside for the notice the same way (Claude Code), or holds it (Codex; a minute's
   hold is announced on the desktop). A
   `luna_wait` still out for that answer — Claude Code moves a call past two minutes to the

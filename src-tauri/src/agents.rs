@@ -601,9 +601,11 @@ struct Registry {
     usage: HashMap<String, serde_json::Value>,
     /// When each caller last raised a desktop notification (`notify`).
     notified: HashMap<String, u64>,
-    /// The tool a Claude Code session's hooks last said is up for an answer
-    /// (`AskUserQuestion`, or one held for permission), with its input.
-    hook_asks: HashMap<String, (String, serde_json::Value)>,
+    /// The tools a Claude Code session's hooks say are up for an answer
+    /// (`AskUserQuestion`, or one held for permission), oldest first, each
+    /// with its input and the subagent that asks, if one does: subagents at
+    /// work side by side may each hold one.
+    hook_asks: HashMap<String, Vec<(String, serde_json::Value, Option<String>)>>,
     /// Text sent to visible sessions where a person was typing or had a
     /// draft Luna could not put aside, in the order it came: the notifier
     /// types each in once the way is clear (see `deliver_held`).
@@ -1745,22 +1747,31 @@ pub fn delete_by_user(id: &str, drop_worktree: bool) -> Result<(), String> {
 }
 
 /// A Claude Code hook (hub.rs): what it puts up for an answer, kept until
-/// the tool runs or the turn is over.
+/// the tool runs or the turn is over — the turn's own, or the subagent's that
+/// asks: a background agent's tool coming back answers nothing the turn put.
 pub fn on_hook(chat: &str, body: &str) {
     let Ok(v) = serde_json::from_str::<serde_json::Value>(body) else { return };
     let tool = v["tool_name"].as_str().unwrap_or("");
+    let agent = v["agent_id"].as_str().filter(|a| !a.is_empty()).map(str::to_string);
+    let event = v["hook_event_name"].as_str();
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-    match v["hook_event_name"].as_str() {
-        Some("PermissionRequest") => {
-            r.hook_asks.insert(chat.to_string(), (tool.to_string(), v["tool_input"].clone()));
-        }
-        Some("PreToolUse") if tool == "AskUserQuestion" => {
-            r.hook_asks.insert(chat.to_string(), (tool.to_string(), v["tool_input"].clone()));
-        }
-        Some("PostToolUse" | "PostToolUseFailure" | "Stop" | "StopFailure" | "UserPromptSubmit" | "SessionEnd") => {
-            r.hook_asks.remove(chat);
-        }
-        _ => {}
+    if event == Some("SessionEnd") {
+        r.hook_asks.remove(chat);
+        return;
+    }
+    let raises = event == Some("PermissionRequest") || (event == Some("PreToolUse") && tool == "AskUserQuestion");
+    let settles = matches!(event, Some("PostToolUse" | "PostToolUseFailure" | "Stop" | "StopFailure" | "UserPromptSubmit" | "SubagentStop"));
+    if !raises && !settles {
+        return;
+    }
+    // One held ask per asker: what it puts up next, or its tool coming back,
+    // is the end of the one it had.
+    let held = r.hook_asks.entry(chat.to_string()).or_default();
+    held.retain(|(_, _, asker)| *asker != agent);
+    if raises {
+        held.push((tool.to_string(), v["tool_input"].clone(), agent));
+    } else if held.is_empty() {
+        r.hook_asks.remove(chat);
     }
 }
 
@@ -1786,7 +1797,7 @@ pub fn ask_of(id: &str) -> Option<Ask> {
         Provider::Claude => {
             // The hooks say it whole; the transcript has a tool call held for
             // permission only sometimes, and a question not before its answer.
-            let hooked = reg().lock().unwrap_or_else(|e| e.into_inner()).hook_asks.get(id).cloned();
+            let hooked = reg().lock().unwrap_or_else(|e| e.into_inner()).hook_asks.get(id).and_then(|held| held.first()).map(|(name, input, _)| (name.clone(), input.clone()));
             let (name, input) = hooked
                 .filter(|_| turn.is_some_and(|t| t != crate::activity::Turn::Idle))
                 .or_else(|| waiting.then(|| crate::claude::session::pending_tool(&transcript_path(&pty, id)?)).flatten())?;
@@ -6340,8 +6351,11 @@ fn notice_line(
             // Said first and plainly: a weak model read "ended a turn" as
             // done and deleted the helper mid-job. Once per debt: a job can
             // run for days, and each notice costs the caller a turn.
+            let agents = crate::activity::subagents(id);
             let what = match &left {
                 Some((_, names)) if background => format!("a job it started still runs in the background ({names})"),
+                _ if background && agents == 1 => "a subagent its CLI started still works in the background".to_string(),
+                _ if background && agents > 1 => format!("{agents} subagents its CLI started still work in the background"),
                 _ if background => "a job it started still runs in the background".to_string(),
                 _ => "helpers of its own have yet to answer it".to_string(),
             };
@@ -7747,6 +7761,23 @@ mod tests {
         let mut with_report = replies.clone();
         with_report.insert(1, format!("Findings: {}", "a finding. ".repeat(40)));
         assert!(answer_text(&with_report).starts_with("Findings:"));
+    }
+
+    /// Two subagents on permission prompts at once: each answer settles its
+    /// own, the turn's tools settle none of theirs.
+    #[test]
+    fn subagents_hold_their_own_asks() {
+        let chat = "asks-two";
+        let ask = |agent: &str, cmd: &str| on_hook(chat, &serde_json::json!({ "hook_event_name": "PermissionRequest", "agent_id": agent, "tool_name": "Bash", "tool_input": { "command": cmd } }).to_string());
+        let held = || reg().lock().unwrap().hook_asks.get(chat).map(|h| h.iter().map(|(_, input, _)| input["command"].as_str().unwrap().to_string()).collect::<Vec<_>>());
+        ask("a", "rm a");
+        ask("b", "rm b");
+        on_hook(chat, r#"{"hook_event_name":"PostToolUse","tool_name":"Read"}"#);
+        assert_eq!(held(), Some(vec!["rm a".to_string(), "rm b".to_string()]), "the turn's own tool answers neither");
+        on_hook(chat, r#"{"hook_event_name":"PostToolUse","tool_name":"Bash","agent_id":"b"}"#);
+        assert_eq!(held(), Some(vec!["rm a".to_string()]));
+        on_hook(chat, r#"{"hook_event_name":"SubagentStop","agent_id":"a"}"#);
+        assert_eq!(held(), None);
     }
 
     #[test]
