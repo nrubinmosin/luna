@@ -579,6 +579,26 @@ mod tests {
         Summary { busy, waiting, stalled: 0, idle_since_ms, sessions: vec![] }
     }
 
+    /// A line held for a notice to ride with (agents.rs `riders_go`) keeps its
+    /// debt open, which is nothing to a power-off: whatever lets one start counting
+    /// lets the line out first, and the turn it starts cancels the count.
+    #[test]
+    fn a_power_off_does_not_go_ahead_of_a_line_held_back() {
+        let mut st = armed(Action::Shutdown, 0);
+        st.holding = true;
+        let now = 1_000_000;
+        let (fresh, rest_owed) = (now - 30_000, false);
+        // Someone at work: nothing fires, and the line may wait.
+        let at_work = board(1, 0, None);
+        assert!(!advance(&mut st, false, &at_work, now).iter().any(|e| matches!(e, Effect::Countdown { .. })));
+        assert!(!crate::agents::riders_go(false, rest_owed, fresh, now, at_work.busy));
+        // All quiet: the count starts, and the line is free to go.
+        let quiet = board(0, 0, Some(now - 1000));
+        assert!(advance(&mut st, false, &quiet, now).iter().any(|e| matches!(e, Effect::Countdown { .. })));
+        assert!(crate::agents::riders_go(false, rest_owed, fresh, now, quiet.busy));
+        assert_eq!(advance(&mut st, false, &at_work, now + 1000), vec![Effect::Cancelled], "and its caller's turn stops the count");
+    }
+
     fn armed(action: Action, quiet_s: u64) -> State {
         State { armed: Some(Armed { action, quiet_s, armed_at_ms: 0 }), ..Default::default() }
     }
