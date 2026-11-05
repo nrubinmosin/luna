@@ -873,6 +873,15 @@ src-tauri/src/
   in a file the log names (`undelivered_left`). `luna_kill` still drops the queue: that is the agent's
   own stop. A batch a turn was claimed for is saved as `Entry::in_flight` before the CLI gets it and
   cleared once stdin has it, so a core killed between neither forgets it nor hands back what ran.
+  A helper's `budgetTokens` lives there too (`CORE_SETTINGS`), with where it stands, and is a notice
+  and nothing else: `budget_news`, on every fifth look of the notifier and only for helpers with one
+  not yet told, reads `Context::of` off the transcript or rollout, so both CLIs and visible and background
+  helpers alike; the first reading past it stays as `budgetBreach`, as a compaction may take the helper
+  back under before its parent can hear, and the line goes to the parent alone. It rides (`riders_go`)
+  and is told once it has gone in: typed, or into a turn. Left behind a background parent's turn it is
+  `budgetQueued`, the line itself being the mark to look for: gone from the queue a turn took it
+  (`budgetTold`), found undelivered after a core went it is taken out of there and told over. A rider's
+  gate is not delivery: a draft holds a line past it, as any notice, and a power-off does not wait for that.
   A helper spawned with `resumeOnRestart` (the flag lives in `settings`, so in the ties, and `list`
   echoes it; `register` keeps it over the window's settings, and a chat's way is below) goes on by itself:
   `resume_stopped`, once the hub listens as its MCP config names the port, starts a turn on each that

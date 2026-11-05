@@ -581,7 +581,8 @@ mod tests {
 
     /// A line held for a notice to ride with (agents.rs `riders_go`) keeps its
     /// debt open, which is nothing to a power-off: whatever lets one start counting
-    /// lets the line out first, and the turn it starts cancels the count.
+    /// lets the line through that gate first, and the turn it starts cancels the
+    /// count. Only that gate: a line a draft holds back does not stop a count.
     #[test]
     fn a_power_off_does_not_go_ahead_of_a_line_held_back() {
         let mut st = armed(Action::Shutdown, 0);

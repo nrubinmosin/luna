@@ -1341,6 +1341,45 @@ pub fn send(id: &str, text: &str, from: Option<&str>) -> Result<bool, String> {
     Ok(queued)
 }
 
+/// Where text given to a helper stands (`text_stands`).
+#[derive(Debug, PartialEq)]
+pub enum TextStands {
+    /// Queued, or with a turn starting on it.
+    Coming,
+    /// Gone from all of that: a turn took it in.
+    Taken,
+    /// It will not reach the helper by itself.
+    Undelivered,
+    NoSuchHelper,
+}
+
+pub fn text_stands(id: &str, text: &str) -> TextStands {
+    let r = lock();
+    let Some(e) = r.entries.get(id) else { return TextStands::NoSuchHelper };
+    let holds = |batch: &[Queued]| batch.iter().any(|q| q.text.contains(text));
+    if holds(&e.queue) || holds(&e.in_flight) {
+        TextStands::Coming
+    } else if holds(&e.undelivered) {
+        TextStands::Undelivered
+    } else {
+        TextStands::Taken
+    }
+}
+
+/// Takes `text` out of what is kept undelivered for `id`, and with it any message
+/// left with nothing but `opening`, the words such text comes after.
+pub fn drop_undelivered(id: &str, text: &str, opening: &str) {
+    let mut r = lock();
+    let Some(e) = r.entries.get_mut(id) else { return };
+    for q in e.undelivered.iter_mut() {
+        q.text = q.text.replace(text, "");
+    }
+    e.undelivered.retain(|q| {
+        let left = q.text.trim();
+        !left.is_empty() && left != opening
+    });
+}
+
 /// Stops the turn in progress; the conversation stays for the next one. Between
 /// turns there is no turn to stop, and what its turns left running is what is
 /// left of it to stop: that is ended, and what went is returned by name.
@@ -2346,6 +2385,26 @@ pub fn put_back(id: &str, taken: Vec<Queued>) {
 
 /// Text that never reached a helper, by whom, for the tests of who hears of it.
 #[cfg(test)]
+pub fn queue_for_test(id: &str, text: &str) {
+    lock().entries.get_mut(id).unwrap().queue.push(text.into());
+}
+
+/// What a core's going does to what is queued (`taken_up`).
+#[cfg(test)]
+pub fn strand_for_test(id: &str) {
+    let mut r = lock();
+    let e = r.entries.get_mut(id).unwrap();
+    let queued = std::mem::take(&mut e.queue);
+    e.undelivered.extend(queued);
+}
+
+/// A turn takes what is queued, and has it.
+#[cfg(test)]
+pub fn take_queue_for_test(id: &str) {
+    lock().entries.get_mut(id).unwrap().queue.clear();
+}
+
+#[cfg(test)]
 pub fn lose_for_test(id: &str, from: &str, text: &str) {
     lock().entries.get_mut(id).unwrap().undelivered.push(Queued { from: Some(from.to_string()), text: text.to_string() });
 }
@@ -2542,6 +2601,33 @@ mod tests {
 
     /// How full the context is, off a transcript and a rollout as Claude Code
     /// 2.1.3xx and Codex 0.166.0 write them, cut to the fields read here.
+    #[test]
+    fn text_given_to_a_helper_is_followed_to_where_it_ends() {
+        lock().entries.insert("stands-1".into(), entry(Provider::Claude));
+        let stands = || text_stands("stands-1", "the line");
+        assert_eq!(stands(), TextStands::Taken, "never there, or gone in");
+        queue_for_test("stands-1", "[tag] the line");
+        assert_eq!(stands(), TextStands::Coming);
+        {
+            let mut r = lock();
+            let e = r.entries.get_mut("stands-1").unwrap();
+            e.in_flight = std::mem::take(&mut e.queue);
+        }
+        assert_eq!(stands(), TextStands::Coming, "a turn is starting on it, and may not");
+        {
+            let mut r = lock();
+            let e = r.entries.get_mut("stands-1").unwrap();
+            e.undelivered = std::mem::take(&mut e.in_flight);
+            e.undelivered.push("other".into());
+        }
+        assert_eq!(stands(), TextStands::Undelivered);
+        drop_undelivered("stands-1", "the line", "[tag]");
+        assert_eq!(stands(), TextStands::Taken);
+        assert_eq!(lock().entries.get("stands-1").unwrap().undelivered, vec!["other"], "what else there was stays");
+        assert_eq!(text_stands("stands-none", "x"), TextStands::NoSuchHelper);
+        lock().entries.remove("stands-1");
+    }
+
     #[test]
     fn context_is_what_the_last_answer_left_in_the_window() {
         let dir = std::env::temp_dir().join(format!("luna-context-{}", std::process::id()));

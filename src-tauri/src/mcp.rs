@@ -211,13 +211,13 @@ fn tools() -> Value {
     json!([
         {
             "name": "luna_list",
-            "description": "Your id (me), sessions you spawned (state, ask, turnsEnded, worktree, branch, sha, task, deletesInMin, turnStartedAt, lastActivityAt, resolvedModel, context (% of window used), leftRunning) and accounts you may use: models, a helper's defaults in your folder, usage (% per window, resets). ids: only these, any session; accounts then only if true.",
+            "description": "Your id (me), sessions you spawned (state, ask, turnsEnded, worktree, branch, sha, task, deletesInMin, turnStartedAt, lastActivityAt, resolvedModel, context, leftRunning) and accounts you may use: models, a helper's defaults in your folder, usage (% per window, resets). ids: only these, any session; accounts then only if true.",
             "inputSchema": s(json!({ "ids": { "type": "array", "items": { "type": "string" } }, "accounts": { "type": "boolean" } }), &[]),
             "annotations": reads
         },
         {
             "name": "luna_sessions",
-            "description": "Every session in Luna, the user's chats too: group (the user's window group, I=1), folders, transcript path, parent, you/yours, state. Filters: group (a number or \"mine\"), q (text in name/folder/account/id). history: true = past spawns instead, deleted too (with transcript, last message), newest first (q also searches prompts).",
+            "description": "Every session in Luna, the user's chats too: group (window group, I=1), folders, transcript path, parent, you/yours, state. Filters: group (a number or \"mine\"), q (text in name/folder/account/id). history: true = past spawns instead, deleted too (with transcript, last message), newest first (q also searches prompts).",
             "inputSchema": s(json!({ "group": { "type": "string" }, "q": { "type": "string" }, "history": { "type": "boolean" } }), &[]),
             "annotations": reads
         },
@@ -244,7 +244,8 @@ fn tools() -> Value {
                 "tools": { "type": "boolean", "description": "these tools too (one level)" },
                 "visible": { "type": "boolean", "description": "a chat the user sees and types in" },
                 "autoDelete": { "type": "boolean", "description": "deleted 30 min after its answer reached you; default: background true" },
-                "resumeOnRestart": { "type": "boolean", "description": "goes on by itself after a core restart" }
+                "resumeOnRestart": { "type": "boolean", "description": "goes on by itself after a core restart" },
+                "budgetTokens": { "type": "integer", "description": "context tokens; past them you hear once, it runs on" }
             }), &["prompt"]),
             "annotations": acts
         },
@@ -373,7 +374,7 @@ fn call(caller: &str, params: &Value, this: &Call) -> Value {
     }
     const STEERING: &[&str] = &[
         "provider", "account", "model", "effort", "permissionMode", "sandbox", "readOnly", "agent", "approval", "folder", "worktree", "visible",
-        "tools", "autoDelete", "name", "until", "timeoutS", "afterTurn", "since", "last", "screen", "interrupt", "dropWorktree",
+        "tools", "autoDelete", "budgetTokens", "name", "until", "timeoutS", "afterTurn", "since", "last", "screen", "interrupt", "dropWorktree",
         "group", "history", "allow", "ids", "mode", "resumeOnRestart", "force", "action", "quietS", "accounts",
     ];
     let set: Vec<String> = STEERING.iter().filter_map(|k| a.get(*k).filter(|v| !v.is_null()).map(|v| format!("{k}={v}"))).collect();
