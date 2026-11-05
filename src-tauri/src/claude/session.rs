@@ -811,16 +811,33 @@ pub fn transcript_of(pid: Option<u32>, resume: Option<&str>, cwd: &str, spawned_
 pub fn messages_from(path: &Path, from: u64, with_tools: bool) -> (Vec<crate::agents::Message>, u64) {
     let from = if std::fs::metadata(path).is_ok_and(|m| from > m.len()) { 0 } else { from };
     let mut out = Vec::new();
-    let read = crate::pty::complete_lines(path, from, |line| {
-        if let Some(m) = message_of(line, with_tools) {
+    // A prompt the CLI put in itself is left out, but what answers it opens a
+    // turn of its own (`Message::after_cli`).
+    let mut cli_prompt = false;
+    let read = crate::pty::complete_lines(path, from, |line| match message_of(line, with_tools) {
+        Some(Line::Said(mut m)) => {
+            if m.role == "assistant" {
+                m.after_cli = std::mem::take(&mut cli_prompt);
+            } else {
+                cli_prompt = false;
+            }
             out.push(m);
         }
+        Some(Line::Injected) => cli_prompt = true,
+        None => {}
     });
     (out, read)
 }
 
+/// A transcript line that is a turn of the conversation.
+enum Line {
+    Said(crate::agents::Message),
+    /// A prompt the CLI put in itself (`injected`).
+    Injected,
+}
+
 /// One transcript line as a turn of the conversation, if it is one.
-fn message_of(line: &str, with_tools: bool) -> Option<crate::agents::Message> {
+fn message_of(line: &str, with_tools: bool) -> Option<Line> {
     let v = serde_json::from_str::<serde_json::Value>(line).ok()?;
     if v["isSidechain"].as_bool().unwrap_or(false)
         || v["isMeta"].as_bool().unwrap_or(false)
@@ -864,10 +881,13 @@ fn message_of(line: &str, with_tools: bool) -> Option<crate::agents::Message> {
         }
     }
     let text = text.trim().to_string();
-    if text.is_empty() || text.starts_with("<local-command") || text.starts_with("<command-name") || (role == "user" && injected(&v, &text)) {
+    if text.is_empty() || text.starts_with("<local-command") || text.starts_with("<command-name") {
         return None;
     }
-    Some(crate::agents::Message { role: role.to_string(), text })
+    if role == "user" && injected(&v, &text) {
+        return Some(Line::Injected);
+    }
+    Some(Line::Said(crate::agents::Message { role: role.to_string(), text, after_cli: false }))
 }
 
 /// A user line Claude Code wrote itself, not one it was given: the end of a
@@ -1013,18 +1033,36 @@ mod reading_tests {
         let half = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"po"#;
         std::fs::write(&path, format!("{first}\n{half}")).unwrap();
         let (msgs, cursor) = messages_from(&path, 0, false);
-        assert_eq!(msgs, vec![crate::agents::Message { role: "user".into(), text: "ping".into() }]);
+        assert_eq!(msgs, vec![crate::agents::Message { role: "user".into(), text: "ping".into(), after_cli: false }]);
         assert_eq!(cursor, first.len() as u64 + 1, "the half line is not consumed");
         // Finished: the next read from the cursor has it whole.
         std::fs::write(&path, format!("{first}\n{half}ng\"}}]}}}}\n")).unwrap();
         let (msgs, next) = messages_from(&path, cursor, false);
-        assert_eq!(msgs, vec![crate::agents::Message { role: "assistant".into(), text: "pong".into() }]);
+        assert_eq!(msgs, vec![crate::agents::Message { role: "assistant".into(), text: "pong".into(), after_cli: false }]);
         assert_eq!(next, std::fs::metadata(&path).unwrap().len());
         // Written anew, shorter: a cursor past its end reads it from the top.
         std::fs::write(&path, format!("{first}\n")).unwrap();
         let (msgs, _) = messages_from(&path, next, false);
-        assert_eq!(msgs, vec![crate::agents::Message { role: "user".into(), text: "ping".into() }]);
+        assert_eq!(msgs, vec![crate::agents::Message { role: "user".into(), text: "ping".into(), after_cli: false }]);
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// A background task's end Claude Code takes up is left out, and what
+    /// answers it starts a turn of its own.
+    #[test]
+    fn what_answers_the_clis_own_prompt_opens_a_turn() {
+        let path = std::env::temp_dir().join(format!("luna-claude-after-cli-{}.jsonl", std::process::id()));
+        let lines = [
+            r#"{"type":"user","message":{"role":"user","content":"verify it"}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"The lane runs."}]}}"#,
+            r#"{"type":"user","origin":{"kind":"task-notification"},"message":{"role":"user","content":"<task-notification>\n<status>completed</status>\n</task-notification>"}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Green."}]}}"#,
+        ];
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let (msgs, _) = messages_from(&path, 0, false);
+        let _ = std::fs::remove_file(&path);
+        let seen: Vec<(&str, &str, bool)> = msgs.iter().map(|m| (m.role.as_str(), m.text.as_str(), m.after_cli)).collect();
+        assert_eq!(seen, [("user", "verify it", false), ("assistant", "The lane runs.", false), ("assistant", "Green.", true)]);
     }
 
     #[test]

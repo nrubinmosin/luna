@@ -589,7 +589,7 @@ fn message_of(v: &Value) -> Option<crate::agents::Message> {
     if text.is_empty() || (role == "user" && (text.starts_with('<') || text.starts_with("# AGENTS.md"))) {
         return None;
     }
-    Some(crate::agents::Message { role: role.to_string(), text })
+    Some(crate::agents::Message { role: role.to_string(), text, after_cli: false })
 }
 
 /// The thread's name, if it has one. Codex appends `{id, thread_name,
@@ -1217,7 +1217,7 @@ mod format_tests {
         assert_eq!(messages_from(&path, cursor), (vec![], cursor));
         std::fs::write(&path, format!("{whole}{reply}\n")).unwrap();
         let (more, _) = messages_from(&path, cursor);
-        assert_eq!(more, vec![crate::agents::Message { role: "assistant".into(), text: "DONE".into() }]);
+        assert_eq!(more, vec![crate::agents::Message { role: "assistant".into(), text: "DONE".into(), after_cli: false }]);
         std::fs::write(&path, &whole).unwrap();
 
         // Turn ends are counted off complete lines only, and incrementally.
