@@ -141,6 +141,9 @@ const MAX_WARNINGS: usize = 5;
 const NOTICE_QUOTE: usize = 150;
 /// The percentages of a usage window a caller hears of, once each per window.
 const QUOTA_LEVELS: [u8; 2] = [90, 95];
+/// How many of the notifier's looks go by between reads of the transcripts of
+/// helpers with a budget: finding a visible one's goes to the disk.
+const BUDGET_EVERY_LOOKS: u32 = 5;
 /// A window this far below the level it was told at has reset, whatever its
 /// reset time says; a point or two is rounding.
 const QUOTA_SLACK: f64 = 5.0;
@@ -308,6 +311,10 @@ pub struct SpawnParams {
     /// Luna's to act on, kept in the settings it runs with.
     #[serde(skip_serializing)]
     pub resume_on_restart: Option<bool>,
+    /// Context tokens past which its parent hears, once (`budget_news`). Luna's
+    /// to act on, kept in the settings it runs with.
+    #[serde(skip_serializing)]
+    pub budget_tokens: Option<u64>,
     /// A chat the user sees, run by the window. Without it the helper runs
     /// in the background (background.rs) and the frontend never hears of it.
     #[serde(skip_serializing)]
@@ -387,6 +394,8 @@ struct SpawnTaken {
     /// What `params` does not write, the window having no word on them.
     auto_delete: Option<bool>,
     resume_on_restart: bool,
+    #[serde(default)]
+    budget_tokens: Option<u64>,
     visible: bool,
     in_worktree: Option<String>,
     account_path: String,
@@ -437,6 +446,7 @@ impl SpawnUnderWay {
             params: params.clone(),
             auto_delete: params.auto_delete,
             resume_on_restart: params.resume_on_restart == Some(true),
+            budget_tokens: params.budget_tokens,
             visible: params.visible == Some(true),
             in_worktree: in_worktree.map(str::to_owned),
             account_path: account_path.to_string(),
@@ -1157,8 +1167,12 @@ pub fn register(
     // The window's settings are the flags it starts a CLI with: this one is the
     // core's, kept across every start.
     let mut settings = settings;
-    if previous.as_ref().is_some_and(|k| k.settings["resumeOnRestart"] == true) {
-        settings["resumeOnRestart"] = serde_json::json!(true);
+    if let Some(k) = &previous {
+        for key in CORE_SETTINGS {
+            if let Some(v) = k.settings.get(key) {
+                settings[key] = v.clone();
+            }
+        }
     }
     // A session running again: what the chats' ties say is news once more.
     CHATS_FROZEN.store(false, std::sync::atomic::Ordering::SeqCst);
@@ -1300,6 +1314,11 @@ pub fn promoted(id: &str) {
         }
     }
 }
+
+/// What a session's settings hold that no window sets: `register` keeps them across
+/// every start of its CLI, and ties across cores. `resumeOnRestart`, and a budget
+/// with where it stands (`budget_news`).
+const CORE_SETTINGS: [&str; 5] = ["resumeOnRestart", "budgetTokens", "budgetBreach", "budgetTold", "budgetQueued"];
 
 /// Whether a helper was spawned with `resumeOnRestart`.
 pub fn resumes_on_restart(id: &str) -> bool {
@@ -2827,6 +2846,9 @@ fn spawn_with(caller: &str, mut params: SpawnParams, replaces: Option<u64>, stil
     if params.prompt.trim().is_empty() {
         return Err("prompt is required".into());
     }
+    if params.budget_tokens == Some(0) {
+        return Err("budgetTokens must be above 0".into());
+    }
     // Off the registry lock: this reads the CLI's registry from disk. A
     // helper works where its caller does, worktree and all.
     let worktree = if params.folder.is_none() { caller_worktree(caller) } else { None };
@@ -3198,6 +3220,9 @@ fn spawn_background(caller: &str, params: SpawnParams, account_path: String, in_
     if params.resume_on_restart == Some(true) {
         settings["resumeOnRestart"] = serde_json::json!(true);
     }
+    if let Some(budget) = params.budget_tokens {
+        settings["budgetTokens"] = serde_json::json!(budget);
+    }
     let tools = spec.tools;
     let auto_delete = params.auto_delete.unwrap_or(true);
     let token = register(&id, provider, &run_in, &account_path, Some(caller), tools, settings.clone());
@@ -3312,6 +3337,7 @@ pub fn spawn_is(request: u64, id: &str) -> Result<(), String> {
         };
         s.helper = Some(id.to_string());
         let (resumes, borrowed, auto) = (s.resume_on_restart, s.in_worktree.is_some(), s.auto_delete == Some(true));
+        let budget = s.budget_tokens;
         // A background helper keeps its own (`Entry::opening`).
         let opening = s.visible.then(|| s.params.prompt.clone());
         let own_worktree = s.params.worktree == Some(true);
@@ -3329,6 +3355,9 @@ pub fn spawn_is(request: u64, id: &str) -> Result<(), String> {
             if let Some(k) = r.known.get_mut(id) {
                 k.settings["resumeOnRestart"] = serde_json::json!(true);
             }
+        }
+        if let (Some(budget), Some(k)) = (budget, r.known.get_mut(id)) {
+            k.settings["budgetTokens"] = serde_json::json!(budget);
         }
         if let Some(text) = opening {
             r.openings.insert(id.to_string(), Opening { text, floor: 0, lost: false, at_ms: now_ms() });
@@ -6800,6 +6829,159 @@ fn quota_news(pty: &crate::pty::PtyManager) -> HashMap<String, Vec<QuotaNews>> {
     news
 }
 
+/// `Your helper "name" (id)`: what a notice calls one to its parent.
+fn your_helper(id: &str, name: Option<&str>) -> String {
+    match name {
+        Some(n) => format!("Your helper \"{n}\" ({id})"),
+        None => format!("Your helper {id}"),
+    }
+}
+
+/// A budget passed that the helper's parent is yet to hear of.
+struct BudgetNews {
+    id: String,
+    /// When it was passed: the line rides from then (`riders_go`).
+    since: u64,
+    line: String,
+}
+
+/// The first reading past a budget, kept as read, as `budgetBreach`: a compaction
+/// may take the helper back under it before its parent can be told. At its budget
+/// it has not passed it.
+fn budget_breach(budget: u64, context: &crate::background::Context, now: u64) -> Option<serde_json::Value> {
+    (context.tokens > budget).then(|| serde_json::json!({ "at": now, "tokens": context.tokens, "window": context.window, "pct": context.pct }))
+}
+
+fn budget_line(who: &str, budget: u64, breach: &serde_json::Value) -> String {
+    format!(
+        "{who} has passed its budget of {budget} context tokens: {} of its {} window ({}%). Nothing was stopped.",
+        breach["tokens"], breach["window"], breach["pct"]
+    )
+}
+
+/// One watched helper, as `budget_news` takes it off the registry.
+struct Budgeted {
+    id: String,
+    provider: Provider,
+    budget: u64,
+    breach: Option<serde_json::Value>,
+    queued: Option<serde_json::Value>,
+    parent: Option<String>,
+    name: Option<String>,
+}
+
+/// What the parents of helpers with a budget are yet to hear, by parent. Where it
+/// stands is kept in the helper's settings, so a core started later goes on from
+/// there: `budgetBreach` once one is seen, `budgetQueued` while the line sits behind
+/// a background parent's turn, `budgetTold` once it has reached the parent. Told once:
+/// a helper told of is not watched again. A transcript is read only when `read`.
+fn budget_news(pty: &crate::pty::PtyManager, read: bool) -> HashMap<String, Vec<BudgetNews>> {
+    let watched: Vec<Budgeted> = {
+        let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+        r.known
+            .iter()
+            .filter(|(_, k)| k.settings["budgetTold"] != true)
+            .filter_map(|(id, k)| {
+                let budget = k.settings["budgetTokens"].as_u64()?;
+                let parent = k.parent.clone().filter(|p| p != DEV_CALLER && r.known.contains_key(p));
+                let name = r.names.get(id).map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
+                let some = |key: &str| k.settings.get(key).filter(|v| !v.is_null()).cloned();
+                Some(Budgeted { id: id.clone(), provider: k.provider, budget, breach: some("budgetBreach"), queued: some("budgetQueued"), parent, name })
+            })
+            .collect()
+    };
+    let mut news: HashMap<String, Vec<BudgetNews>> = HashMap::new();
+    let mut moved = false;
+    for w in watched {
+        let mut breach = w.breach;
+        if breach.is_none() && read {
+            // Off the registry lock: this reads the session's transcript.
+            let context = transcript_path(pty, &w.id).and_then(|path| crate::background::Context::of(&path, w.provider));
+            breach = context.and_then(|c| budget_breach(w.budget, &c, now_ms()));
+            if let Some(b) = &breach {
+                crate::log::warn("agents", &format!("{} has passed its budget of {} context tokens: {}", label(&w.id), w.budget, b["tokens"]));
+                set_budget_state(&w.id, "budgetBreach", Some(b.clone()));
+                moved = true;
+            }
+        }
+        let Some(breach) = breach else { continue };
+        if let Some(q) = &w.queued {
+            match where_queued(q, w.parent.as_deref()) {
+                LineStands::OnItsWay => continue,
+                LineStands::Landed => {
+                    set_budget_state(&w.id, "budgetQueued", None);
+                    set_budget_state(&w.id, "budgetTold", Some(serde_json::json!(true)));
+                    moved = true;
+                    continue;
+                }
+                LineStands::Lost => {
+                    set_budget_state(&w.id, "budgetQueued", None);
+                    moved = true;
+                }
+            }
+        }
+        let Some(parent) = w.parent else { continue };
+        let line = budget_line(&your_helper(&w.id, w.name.as_deref()), w.budget, &breach);
+        news.entry(parent).or_default().push(BudgetNews { id: w.id, since: breach["at"].as_u64().unwrap_or(0), line });
+    }
+    if moved {
+        crate::background::save();
+    }
+    news
+}
+
+/// What became of a line left in a background parent's queue (`budgetQueued`).
+#[derive(Debug, PartialEq)]
+enum LineStands {
+    OnItsWay,
+    /// A turn took it in.
+    Landed,
+    /// It will not reach that parent: to be told over, once.
+    Lost,
+}
+
+fn where_queued(queued: &serde_json::Value, parent: Option<&str>) -> LineStands {
+    let (Some(to), Some(line)) = (queued["to"].as_str(), queued["line"].as_str()) else { return LineStands::Lost };
+    if parent != Some(to) {
+        return LineStands::Lost;
+    }
+    match crate::background::text_stands(to, line) {
+        crate::background::TextStands::Coming => LineStands::OnItsWay,
+        crate::background::TextStands::Taken => LineStands::Landed,
+        // Kept as undelivered it would be told of as well: the next notice has it.
+        crate::background::TextStands::Undelivered => {
+            crate::background::drop_undelivered(to, line, NOTICE_TAG);
+            LineStands::Lost
+        }
+        crate::background::TextStands::NoSuchHelper => LineStands::Lost,
+    }
+}
+
+fn set_budget_state(id: &str, key: &str, value: Option<serde_json::Value>) {
+    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    let Some(k) = r.known.get_mut(id) else { return };
+    match value {
+        Some(v) => k.settings[key] = v,
+        None => {
+            if let Some(o) = k.settings.as_object_mut() {
+                o.remove(key);
+            }
+        }
+    }
+}
+
+/// A notice with a budget line in it went in. Into a turn, or typed, the parent has
+/// it; left behind a background parent's turn it has not yet, and a core going
+/// would strand it there (`where_queued`).
+fn budget_went(r: &mut Registry, caller: &str, n: BudgetNews, behind_a_turn: bool) {
+    let Some(k) = r.known.get_mut(&n.id) else { return };
+    if behind_a_turn {
+        k.settings["budgetQueued"] = serde_json::json!({ "to": caller, "line": n.line });
+    } else {
+        k.settings["budgetTold"] = serde_json::json!(true);
+    }
+}
+
 /// Whether a notice may go into `caller` now: its CLI is up and between turns
 /// and nobody is typing into it. A draft in its composer is `type_text`'s to
 /// put aside, or to keep the notice back for.
@@ -6993,6 +7175,7 @@ fn spawn_afresh(s: SpawnTaken) {
     params.visible = Some(s.visible);
     params.auto_delete = s.auto_delete;
     params.resume_on_restart = Some(true);
+    params.budget_tokens = s.budget_tokens;
     if let Some(worktree) = &s.in_worktree {
         params.folder = Some(worktree.clone());
     }
@@ -7141,9 +7324,12 @@ fn rides_since(how: &Settled) -> Option<u64> {
 /// getting anyway (`company`). Alone they go once all it is owed is such lines
 /// (`only_riders`), or with nothing anywhere at work (`busy` 0), so no notice is
 /// on its way: all that lets a power-off start counting (power.rs `advance`), which
-/// is not to go ahead of a line held here. Their debts stay open until then, for a
-/// `luna_wait` and against `reap`, and what happens to the session meanwhile
-/// replaces the line.
+/// is not to go ahead of a line held here. That is this gate's word only: a line
+/// past it can still be held back, as any notice can, by a draft in its caller's
+/// composer or a turn it is on, and a power-off does not wait for that. Their debts
+/// stay open until then, for a `luna_wait` and against `reap`, and what happens to
+/// the session meanwhile replaces the line. A budget line rides the same way, with
+/// no debt to it.
 pub(crate) fn riders_go(company: bool, only_riders: bool, oldest: u64, now: u64, busy: usize) -> bool {
     company || only_riders || busy == 0 || now.saturating_sub(oldest) >= RIDE_MAX_MS
 }
@@ -7159,6 +7345,7 @@ fn notifier() {
     // Callers whose notice a draft is holding back: since when, and whether
     // the desktop has been told.
     let mut drafts: HashMap<String, (u64, bool)> = HashMap::new();
+    let mut looks_at_budgets = 0;
     loop {
         std::thread::sleep(NOTIFY_EVERY);
         let pty = crate::pty::manager();
@@ -7187,8 +7374,7 @@ fn notifier() {
                 let parent = k.parent.as_deref() == Some(caller.as_str());
                 let name = names.get(id).map(|n| n.trim()).filter(|n| !n.is_empty());
                 let who = match (parent, name) {
-                    (true, Some(n)) => format!("Your helper \"{n}\" ({id})"),
-                    (true, None) => format!("Your helper {id}"),
+                    (true, _) => your_helper(id, name),
                     (false, Some(n)) => format!("Session \"{n}\" ({id}), which you wrote to,"),
                     (false, None) => format!("Session {id}, which you wrote to,"),
                 };
@@ -7202,6 +7388,11 @@ fn notifier() {
         // and of a spawn of its own that a core's going cut off.
         let mut quota = quota_news(&pty);
         for caller in quota.keys() {
+            by_caller.entry(caller.clone()).or_default();
+        }
+        looks_at_budgets = (looks_at_budgets + 1) % BUDGET_EVERY_LOOKS;
+        let mut budget = budget_news(&pty, looks_at_budgets == 0);
+        for caller in budget.keys() {
             by_caller.entry(caller.clone()).or_default();
         }
         settle_spawns(core_up_ms());
@@ -7304,12 +7495,16 @@ fn notifier() {
             lines.extend(news_lines.iter().cloned());
             let spawn_lines = spawns.remove(&caller).unwrap_or_default();
             lines.extend(spawn_lines.iter().map(|(_, line)| line.clone()));
-            if let Some(oldest) = riders.iter().filter_map(|(_, _, how, _)| rides_since(how)).min() {
+            let breaches = budget.remove(&caller).unwrap_or_default();
+            let mut budget_lines = Vec::new();
+            if let Some(oldest) = riders.iter().filter_map(|(_, _, how, _)| rides_since(how)).chain(breaches.iter().map(|n| n.since)).min() {
                 if riders_go(!lines.is_empty(), riders.len() == items.len(), oldest, now_ms(), crate::activity::summary().busy) {
                     for (line, id, how, o) in riders {
                         lines.push(line);
                         settled.push((id, how, o));
                     }
+                    lines.extend(breaches.iter().map(|n| n.line.clone()));
+                    budget_lines = breaches;
                 }
             }
             if lines.is_empty() {
@@ -7323,7 +7518,7 @@ fn notifier() {
             let text = format!("{NOTICE_TAG} {}", lines.join(" "));
             let typed = std::thread::Builder::new().name("luna-notice".into()).spawn(move || {
                 let _typing = typing;
-                deliver_notice(&crate::pty::manager(), &caller, &text, settled, quota_lines, spawn_lines, news_lines);
+                deliver_notice(&crate::pty::manager(), &caller, &text, settled, quota_lines, spawn_lines, news_lines, budget_lines);
             });
             if let Err(e) = typed {
                 crate::log::warn("agents", &format!("could not start typing a notice: {e}"));
@@ -7341,7 +7536,9 @@ fn counts_for_breaker(how: &Settled) -> bool {
 
 /// Types a notice into `caller` and settles what it said (`settled`: the
 /// session, what became of it, the debt as it was announced; `quota_lines`: the
-/// usage windows it told of; `spawn_lines`: the spawns cut off by a core going).
+/// usage windows it told of; `spawn_lines`: the spawns cut off by a core going;
+/// `budget_lines`: the budgets passed).
+#[allow(clippy::too_many_arguments)]
 fn deliver_notice(
     pty: &crate::pty::PtyManager,
     caller: &str,
@@ -7350,14 +7547,19 @@ fn deliver_notice(
     quota_lines: Vec<QuotaNews>,
     spawn_lines: Vec<(u64, String)>,
     news_lines: Vec<String>,
+    budget_lines: Vec<BudgetNews>,
 ) {
     let before = crate::activity::turn_state(caller);
     let baseline = before.map(|t| t.turns_ended).unwrap_or(0);
     // The turn it starts: the next, or for a background caller that has begun
     // one since the look, the one after that.
+    let mut behind_a_turn = false;
     let (typed, turn) = if crate::background::has(caller) {
         match crate::background::send(caller, text, None) {
-            Ok(queued) => (Ok(Some(true)), baseline + 1 + u32::from(queued)),
+            Ok(queued) => {
+                behind_a_turn = queued;
+                (Ok(Some(true)), baseline + 1 + u32::from(queued))
+            }
             Err(e) => (Err(e), 0),
         }
     } else {
@@ -7383,12 +7585,13 @@ fn deliver_notice(
         .chain(quota_lines.iter().map(|n| format!("{} at {}%", n.key.1, n.told.level)))
         .chain(spawn_lines.iter().map(|(request, _)| format!("spawn {request}")))
         .chain(news_lines.iter().map(|_| "an auto-delete".to_string()))
+        .chain(budget_lines.iter().map(|n| format!("the budget of {}", label(&n.id))))
         .collect::<Vec<_>>()
         .join(", ");
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
     match typed {
         Ok(None) => {
-            r.notices_held.insert(caller.to_string(), settled.len() + quota_lines.len() + spawn_lines.len() + news_lines.len());
+            r.notices_held.insert(caller.to_string(), settled.len() + quota_lines.len() + spawn_lines.len() + news_lines.len() + budget_lines.len());
         }
         _ => {
             r.notices_held.remove(caller);
@@ -7432,6 +7635,10 @@ fn deliver_notice(
             for (request, _) in spawn_lines {
                 r.spawns.remove(&request);
             }
+            let told_budgets = !budget_lines.is_empty();
+            for n in budget_lines {
+                budget_went(&mut r, caller, n, behind_a_turn);
+            }
             drop(r);
             if told_quota {
                 save_quota_told();
@@ -7439,7 +7646,7 @@ fn deliver_notice(
             for id in &told_lost {
                 take_undelivered(id, caller, parent_of(id).as_deref() == Some(caller));
             }
-            if !told_lost.is_empty() || !told_left.is_empty() || told_spawns {
+            if !told_lost.is_empty() || !told_left.is_empty() || told_spawns || told_budgets {
                 crate::background::save();
             }
             for id in stopped {
@@ -10112,6 +10319,7 @@ mod tests {
             params: serde_json::from_value(serde_json::json!({ "prompt": "the whole job, word for word", "name": "the job" })).unwrap(),
             auto_delete: None,
             resume_on_restart: resume,
+            budget_tokens: None,
             visible: true,
             in_worktree: None,
             account_path: "C:\\acc\\anthropic\\one".into(),
@@ -10992,5 +11200,187 @@ mod tests {
         assert_ne!(t1, t2);
         assert_eq!(caller_of(&t1), None);
         assert_eq!(caller_of(&t2).as_deref(), Some("r"));
+    }
+
+    fn context(tokens: u64) -> crate::background::Context {
+        crate::background::Context { pct: 21, tokens, window: 1_000_000 }
+    }
+
+    #[test]
+    fn a_budget_is_passed_only_past_it_and_its_line_says_so() {
+        assert_eq!(budget_breach(200_000, &context(200_000), 5), None, "at it, not past it");
+        let b = budget_breach(200_000, &context(200_001), 5).unwrap();
+        assert_eq!(b, serde_json::json!({ "at": 5, "tokens": 200_001, "window": 1_000_000, "pct": 21 }));
+        assert_eq!(
+            budget_line(&your_helper("kid", Some("Tests")), 200_000, &b),
+            "Your helper \"Tests\" (kid) has passed its budget of 200000 context tokens: 200001 of its 1000000 window (21%). Nothing was stopped."
+        );
+        assert!(budget_line(&your_helper("kid", None), 1, &b).starts_with("Your helper kid has passed"));
+    }
+
+    #[test]
+    fn a_budget_is_lunas_and_a_spawn_of_nothing_is_refused() {
+        let p: SpawnParams = serde_json::from_value(serde_json::json!({ "prompt": "go", "budgetTokens": 50000 })).unwrap();
+        assert_eq!(p.budget_tokens, Some(50000));
+        assert!(serde_json::to_value(&p).unwrap().get("budgetTokens").is_none(), "the window never hears of it");
+        let p: SpawnParams = serde_json::from_value(serde_json::json!({ "prompt": "go", "budgetTokens": 0 })).unwrap();
+        assert_eq!(spawn("nobody", p).err().unwrap(), "budgetTokens must be above 0");
+        // A spawn a core cut off is asked for again with its budget.
+        let s = SpawnTaken { budget_tokens: Some(9), ..spawn_taken(9001, "b-caller", None, true) };
+        let back: SpawnTaken = serde_json::from_slice(&serde_json::to_vec(&s).unwrap()).unwrap();
+        assert_eq!(back.budget_tokens, Some(9));
+    }
+
+    #[test]
+    fn where_a_budget_stands_outlives_every_start_of_its_cli() {
+        let settings = serde_json::json!({ "model": "m", "budgetTokens": 7, "budgetBreach": { "at": 1 }, "budgetTold": true });
+        register("bs-kid", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("bs-p"), false, settings);
+        // The window starts its CLI again, on flags that say nothing of it.
+        register("bs-kid", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("bs-p"), false, serde_json::json!({ "model": "m2" }));
+        let s = settings_of("bs-kid");
+        assert_eq!((&s["model"], &s["budgetTokens"], &s["budgetTold"]), (&serde_json::json!("m2"), &serde_json::json!(7), &serde_json::json!(true)));
+        assert_eq!(s["budgetBreach"]["at"], 1);
+        forget("bs-kid");
+    }
+
+    /// Writes a transcript or rollout whose last answer has `tokens` in the window.
+    fn write_usage(path: &std::path::Path, provider: Provider, tokens: u64) {
+        let line = match provider {
+            Provider::Claude => serde_json::json!({ "type": "assistant", "message": { "model": "claude-sonnet-5-5", "usage": { "input_tokens": tokens }, "content": [] } }),
+            Provider::Codex => serde_json::json!({ "timestamp": "t", "type": "event_msg", "payload": { "type": "token_count", "info": {
+                "total_token_usage": { "total_tokens": tokens }, "last_token_usage": { "input_tokens": tokens, "total_tokens": tokens }, "model_context_window": 258400 } } }),
+        };
+        std::fs::write(path, format!("{line}\n")).unwrap();
+    }
+
+    #[test]
+    fn a_budget_breach_stays_owed_through_a_compaction_and_a_core_and_is_told_once() {
+        let pty = crate::pty::manager();
+        let dir = std::env::temp_dir().join(format!("luna-budget-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (parent, kid, provider) in [("bb-p1", "bb-kid1", Provider::Claude), ("bb-p2", "bb-kid2", Provider::Codex)] {
+            tooled(parent);
+            let news_of = |read: bool| budget_news(&pty, read).remove(parent).unwrap_or_default();
+            let path = dir.join(format!("{kid}.jsonl"));
+            write_usage(&path, provider, 900);
+            transcripts().lock().unwrap().insert(kid.to_string(), path.clone());
+            let start = serde_json::json!({ "budgetTokens": 1000 });
+            register(kid, provider, "C:\\p", "C:\\acc\\one", Some(parent), false, start);
+            assert!(news_of(true).is_empty(), "{kid}: under it");
+            assert!(settings_of(kid).get("budgetBreach").is_none());
+            write_usage(&path, provider, 1500);
+            assert!(news_of(false).is_empty(), "{kid}: not a look that reads");
+            let first = news_of(true);
+            assert_eq!(first.len(), 1, "{kid}");
+            assert!(first[0].line.contains("has passed its budget of 1000 context tokens: 1500 of its"), "{}", first[0].line);
+            let breach = settings_of(kid)["budgetBreach"].clone();
+            assert_eq!(breach["tokens"], 1500);
+
+            // Its parent busy, the helper compacts: what was read stands.
+            write_usage(&path, provider, 100);
+            let again = news_of(true);
+            assert_eq!(again.len(), 1, "{kid}: still owed");
+            assert_eq!(again[0].line, first[0].line);
+            assert_eq!(again[0].since, first[0].since, "and its time");
+
+            // A core goes before the parent is told: its ties carry it over.
+            let ties = serde_json::to_vec(&ties_of(kid).unwrap()).unwrap();
+            reg().lock().unwrap().known.remove(kid);
+            let ties: Ties = serde_json::from_slice(&ties).unwrap();
+            tie_back(kid, provider, "C:\\p", "C:\\acc\\one", ties);
+            assert_eq!(news_of(true)[0].line, first[0].line, "{kid}: after a core");
+
+            // Gone in: told, not watched, and a second crossing says nothing.
+            let mut r = reg().lock().unwrap();
+            budget_went(&mut r, parent, news_of_one(&first), false);
+            drop(r);
+            write_usage(&path, provider, 2000);
+            assert!(news_of(true).is_empty(), "{kid}: told once");
+            assert_eq!(settings_of(kid)["budgetTold"], true);
+            forget(kid);
+            forget(parent);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn news_of_one(news: &[BudgetNews]) -> BudgetNews {
+        BudgetNews { id: news[0].id.clone(), since: news[0].since, line: news[0].line.clone() }
+    }
+
+    #[test]
+    fn a_budget_with_no_parent_to_tell_is_kept_for_when_there_is_one() {
+        let pty = crate::pty::manager();
+        let breach = serde_json::json!({ "at": 1, "tokens": 5, "window": 10, "pct": 50 });
+        let settings = serde_json::json!({ "budgetTokens": 1, "budgetBreach": breach });
+        register("bn-kid", Provider::Claude, "C:\\p", "C:\\acc\\one", Some("bn-gone"), false, settings.clone());
+        assert!(!budget_news(&pty, false).values().flatten().any(|n| n.id == "bn-kid"));
+        assert_eq!(settings_of("bn-kid")["budgetBreach"], breach);
+        register("bn-dev", Provider::Claude, "C:\\p", "C:\\acc\\one", Some(DEV_CALLER), false, settings);
+        assert!(!budget_news(&pty, false).values().flatten().any(|n| n.id == "bn-dev"), "a dev caller takes no notices");
+        forget("bn-kid");
+        forget("bn-dev");
+    }
+
+    #[test]
+    fn a_budget_line_behind_a_parents_turn_is_owed_until_a_turn_takes_it() {
+        let pty = crate::pty::manager();
+        let (parent, kid) = ("bq-parent", "bq-kid");
+        let breach = serde_json::json!({ "at": 1, "tokens": 5, "window": 10, "pct": 50 });
+        let settings = serde_json::json!({ "budgetTokens": 1, "budgetBreach": breach });
+        crate::background::idle_for_test(parent, Provider::Claude, 1, false);
+        tooled(parent);
+        register(kid, Provider::Claude, "C:\\p", "C:\\acc\\one", Some(parent), false, settings);
+        let news_now = || budget_news(&pty, false).remove(parent).unwrap_or_default();
+        let told = news_now();
+        assert_eq!(told.len(), 1);
+        let line = told[0].line.clone();
+        let notice = format!("{NOTICE_TAG} {line}");
+
+        // Behind a turn: on its way, so not said again, and not told yet.
+        crate::background::queue_for_test(parent, &notice);
+        let mut r = reg().lock().unwrap();
+        budget_went(&mut r, parent, news_of_one(&told), true);
+        drop(r);
+        assert!(news_now().is_empty(), "not typed twice");
+        assert_ne!(settings_of(kid)["budgetTold"], true);
+
+        // A core went and the queue is undelivered: told over, and only so.
+        crate::background::strand_for_test(parent);
+        assert!(crate::background::undelivered_for(parent, "x", true).iter().any(|t| t.contains(&line)));
+        let over = news_now();
+        assert_eq!(over.len(), 1, "owed again");
+        assert_eq!(over[0].line, line, "the same words, as read");
+        assert!(crate::background::undelivered_for(parent, "x", true).is_empty(), "and not told of as undelivered too");
+        assert!(settings_of(kid).get("budgetQueued").is_none());
+
+        // Queued again, and this time a turn takes it.
+        crate::background::queue_for_test(parent, &notice);
+        let mut r = reg().lock().unwrap();
+        budget_went(&mut r, parent, news_of_one(&over), true);
+        drop(r);
+        crate::background::take_queue_for_test(parent);
+        assert!(news_now().is_empty());
+        assert_eq!(settings_of(kid)["budgetTold"], true);
+        assert!(settings_of(kid).get("budgetQueued").is_none());
+
+        // A line queued into a parent since gone is told to the one after it.
+        assert_eq!(where_queued(&serde_json::json!({ "to": "someone", "line": "l" }), Some(parent)), LineStands::Lost);
+        assert_eq!(where_queued(&serde_json::json!({ "to": "bq-nobody", "line": "l" }), Some("bq-nobody")), LineStands::Lost);
+        forget(kid);
+        forget(parent);
+    }
+
+    #[test]
+    fn a_budget_line_rides_like_any_line_with_no_news_in_it() {
+        let now = 1_000_000;
+        let fresh = now - 1000;
+        assert!(!riders_go(false, false, fresh, now, 1), "owed another helper's answer, with work going on: it waits for that");
+        assert!(riders_go(false, true, fresh, now, 1), "owed nothing else");
+        assert!(riders_go(true, false, fresh, now, 1), "a notice is going in anyway");
+        assert!(riders_go(false, false, now - RIDE_MAX_MS, now, 1), "ten minutes at most");
+    }
+
+    fn tooled(id: &str) {
+        register(id, Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, serde_json::json!({}));
     }
 }

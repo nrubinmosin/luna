@@ -1,8 +1,7 @@
 # Luna: sessions, accounts and the luna_* tools
 
-Luna is the desktop app this session runs in. It runs Claude Code and Codex sessions side by
-side, each on one of the user's accounts, and through these tools any session that has them
-can start other sessions and work with them.
+Luna is the desktop app this session runs in: Claude Code and Codex sessions side by side, each
+on one of the user's accounts.
 
 ## Sessions
 - Every chat in Luna is a session: the user's own chats and the helpers sessions start. Each
@@ -20,10 +19,8 @@ can start other sessions and work with them.
     worktree has checked out. `task`: the first line of its spawn's prompt.
   - `turnStartedAt`: when the turn on now began; null between turns. `lastActivityAt`: its
     last event (a visible session's last transcript write); a long command or think shows
-    nothing until it ends, so quiet is not stuck. Times are UTC ISO, as in `luna_sessions`
-    history.
-  - `resolvedModel`: the full model id a model answered on; null until one has (Codex: what
-    its rollout says the turn ran on, or the `<to>` of a `model rerouted` message).
+    nothing until it ends, so quiet is not stuck. Times are UTC ISO.
+  - `resolvedModel`: the full model id a model answered on; null until one has.
   - `context`: how full its context window is after its last turn: `tokens` in the window
     (its input, cache included) against the model's `window`, and `pct` of it (0-100). Left
     out until a turn has run; during one, as of its latest step.
@@ -40,9 +37,8 @@ can start other sessions and work with them.
   the user can stop or delete it, and a background one goes once idle for 30 min.
 - At most eight helpers under one chat. A helper given `tools: true` gets these tools too,
   but its own helpers get none.
-- `LUNA_SESSION_ID` holds a session's id, `LUNA_PARENT_ID` a helper's parent's. A Claude Code
-  helper's system prompt says it is one; a background Codex helper's every prompt ends with
-  Luna's note saying so, a visible one's first (not after a `/command`).
+- `LUNA_SESSION_ID` holds a session's id, `LUNA_PARENT_ID` a helper's parent's. A helper is told it
+  is one: Claude Code in its system prompt, Codex in Luna's note on its prompts.
 
 ## Accounts and models
 - An account is a signed-in login of one provider: an Anthropic account runs Claude Code
@@ -51,8 +47,7 @@ can start other sessions and work with them.
   agents use.
 - `account` as a list, of one provider: the first signed in with every usage window under 95%
   or unknown, else the most room. `accountChoice` says which and why.
-- Accounts of one provider differ: personal or team plans, different organizations, their
-  own allowed models and their own quota. `defaults` in `luna_list` come from the account's
+- Accounts of one provider differ in plan, organization, allowed models and quota. `defaults` in `luna_list` come from the account's
   and the project's settings. A usage window near 100% means a helper there may stop on its
   limit. When an account your live helpers run on reaches 90%, then 95%, of a window, a
   notice says so, once each until it resets (by the figures Luna's window keeps: none open,
@@ -82,6 +77,9 @@ can start other sessions and work with them.
   names the worktree and branch, or `worktreePending` until the CLI has made it. `sameFolder`
   lists live sessions working in the same directory.
 - A prompt over 8,000 characters reaches a visible session as a file it is told to read.
+- `budgetTokens`: past that many `context` tokens (its own, not its subagents' or helpers') its
+  parent hears, once; nothing stops. The line rides like an idle one (see NOT done yet). `settings`
+  shows `budgetBreach` (first reading) and `budgetTold`.
 
 ## Getting the answer
 - After a spawn or a `luna_send` you can end your turn. Once that session answers, asks

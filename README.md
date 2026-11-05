@@ -384,7 +384,8 @@ follow-ups, answer what it asks, and delete it when done, worktree and its `work
 `luna_notify` lets it raise a desktop notification mid-turn, titled with its chat's name and
 opening that chat when clicked, at most one every 10 seconds. `luna_power`, for when the user
 asks for it, arms the same shut-down, hibernate or sleep "when done" as the power chip, which
-shows it and cancels it. The
+shows it and cancels it. A spawn may set `budgetTokens`: once that helper's context passes it,
+its parent hears so, once, and nothing is stopped. The
 tools and a short instruction cost about 2k tokens of context once per session; the full
 account of sessions, accounts, models and tools is `luna_guide`'s, read only when the model
 asks for it. A chat without the box ticked knows nothing of Luna at all, and neither does a
