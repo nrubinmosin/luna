@@ -576,9 +576,10 @@ fn command_for(e: &Entry, id: &str) -> (Vec<String>, String, Vec<(&'static str, 
             }
             // The skills the library gives sessions where it works and keeps
             // from them, on every turn: each is a process of its own
-            // (library.rs `session_args`). No hooks: its stream says it all.
+            // (library.rs `session_args`). No hooks: its stream says it all; but
+            // the guard against endless waits, a helper's as any (guard.rs).
             let skills = crate::library::session_args(Provider::Claude, &s.account_path, &dir);
-            if let Some(settings) = crate::pty::claude_settings_file(id, false, &skills.hidden) {
+            if let Some(settings) = crate::pty::claude_settings_file(id, false, s.tools || s.parent.is_some(), &skills.hidden) {
                 args.extend(["--settings".into(), settings.to_string_lossy().into_owned()]);
             }
             args.extend(skills.args);
@@ -613,6 +614,7 @@ fn command_for(e: &Entry, id: &str) -> (Vec<String>, String, Vec<(&'static str, 
             if s.hooks_unasked {
                 args.push(crate::pty::HOOKS_UNASKED.into());
             }
+            args.extend(crate::pty::codex_guard_args(id, s.tools || s.parent.is_some(), s.hooks_unasked));
             if s.auto_review {
                 args.push("--approve-for-me".into());
             } else {
