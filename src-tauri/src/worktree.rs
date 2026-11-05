@@ -213,8 +213,8 @@ pub fn head_of(dir: &str) -> Option<Head> {
 /// asks this of every row of every call, and a git process per row is what it
 /// must not cost. As git resolves it: from HEAD through any symbolic refs, each
 /// loose or packed. None for what this does not read (reftable, whose HEAD names a
-/// ref that cannot exist) or does not lead to a commit (a cycle, a chain past
-/// REF_HOPS).
+/// ref that cannot exist), cannot read (a file it may not open) or does not lead to
+/// a commit (a cycle, a chain past REF_HOPS).
 pub fn head_at(root: &str) -> Option<Head> {
     let (git_dir, common) = git_dirs(Path::new(root))?;
     let mut value = std::fs::read_to_string(git_dir.join("HEAD")).ok()?;
@@ -230,7 +230,7 @@ pub fn head_at(root: &str) -> Option<Head> {
             return None;
         }
         chain.push(name.to_string());
-        match read_ref(&git_dir, &common, name) {
+        match read_ref(&git_dir, &common, name).ok()? {
             Some(next) => value = next,
             // Nothing on it yet.
             None => return Some(Head { branch: branch(&chain), sha: None }),
@@ -239,34 +239,47 @@ pub fn head_at(root: &str) -> Option<Head> {
 }
 
 /// A checkout's own git folder, where its HEAD is, and the one its refs are in:
-/// for a linked worktree, the repository's.
+/// where its `commondir` says, as for a linked worktree, the repository's. `.git`
+/// may be that folder or a file naming it.
 fn git_dirs(root: &Path) -> Option<(PathBuf, PathBuf)> {
     let dot_git = root.join(".git");
-    if dot_git.is_dir() {
-        return Some((dot_git.clone(), dot_git));
-    }
-    let text = std::fs::read_to_string(&dot_git).ok()?;
-    let git_dir = root.join(text.trim().strip_prefix("gitdir:")?.trim());
+    let git_dir = if dot_git.is_dir() {
+        dot_git
+    } else {
+        let text = std::fs::read_to_string(&dot_git).ok()?;
+        root.join(text.trim().strip_prefix("gitdir:")?.trim())
+    };
     let common = match std::fs::read_to_string(git_dir.join("commondir")) {
         Ok(text) => git_dir.join(text.trim()),
-        Err(_) => git_dir.clone(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => git_dir.clone(),
+        Err(_) => return None,
     };
     Some((git_dir, common))
 }
 
-/// A ref's value, loose or packed: an object id, or `ref: <name>`. These few are
-/// each worktree's own.
-fn read_ref(git_dir: &Path, common: &Path, name: &str) -> Option<String> {
+/// A ref's value, loose or packed: an object id, or `ref: <name>`; Ok(None) with
+/// neither. These few are each worktree's own. Packed refs are older than a loose
+/// one, so only a ref that is not there falls back to them: a file that cannot be
+/// read is an error, not a stale commit.
+fn read_ref(git_dir: &Path, common: &Path, name: &str) -> std::io::Result<Option<String>> {
+    use std::io::ErrorKind::{NotADirectory, NotFound};
     let own = ["refs/bisect/", "refs/worktree/", "refs/rewritten/"].iter().any(|p| name.starts_with(p));
-    let dir = if own { git_dir } else { common };
-    if let Ok(value) = std::fs::read_to_string(dir.join(name)) {
-        return Some(value);
+    let loose = if own { git_dir } else { common }.join(name);
+    match std::fs::read_to_string(&loose) {
+        Ok(value) => return Ok(Some(value)),
+        // A folder: `a/b` is a loose ref, `a` a packed one. Windows calls that a denial.
+        Err(e) if matches!(e.kind(), NotFound | NotADirectory) || loose.is_dir() => {}
+        Err(e) => return Err(e),
     }
-    let packed = std::fs::read_to_string(common.join("packed-refs")).ok()?;
-    packed.lines().filter(|l| !l.starts_with(['#', '^'])).find_map(|l| {
+    let packed = match std::fs::read_to_string(common.join("packed-refs")) {
+        Ok(packed) => packed,
+        Err(e) if e.kind() == NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    Ok(packed.lines().filter(|l| !l.starts_with(['#', '^'])).find_map(|l| {
         let (id, packed_name) = l.split_once(' ')?;
         (packed_name.trim() == name).then(|| id.to_string())
-    })
+    }))
 }
 
 /// A ref as git would have it, so that what a file says is never a way out of
@@ -1374,6 +1387,54 @@ mod tests {
         let files: Vec<(&str, &str)> = long.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
         let (root, _) = git_folder("long", &files);
         assert_eq!(head_at(&root.to_string_lossy()), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A loose ref is newer than a packed one: unreadable, it does not fall back
+    /// to what may be an old commit. Bytes that are no text are a read error any
+    /// user gets, where a test run as root has no denied file to go by.
+    #[test]
+    fn a_ref_that_cannot_be_read_leaves_the_head_unknown() {
+        let packed = format!("{ID} refs/heads/main\n");
+        let (root, git) = git_folder("unreadable", &[("HEAD", "ref: refs/heads/main\n"), ("refs/heads/main", ""), ("packed-refs", &packed)]);
+        std::fs::write(git.join("refs/heads/main"), [0xff, 0xfe]).unwrap();
+        assert_eq!(head_at(&root.to_string_lossy()), None);
+        // Gone, it is the packed one's to say.
+        std::fs::remove_file(git.join("refs/heads/main")).unwrap();
+        assert_eq!(head_at(&root.to_string_lossy()), on(Some("main"), Some("0123456")));
+        // No packed-refs that can be read: no answer either, not a branch unborn.
+        std::fs::write(git.join("packed-refs"), [0xff, 0xfe]).unwrap();
+        assert_eq!(head_at(&root.to_string_lossy()), None);
+        let _ = std::fs::remove_dir_all(&root);
+        // And a commondir that cannot be read does not leave the wrong folder read.
+        let (root, git) = git_folder("commondir", &[("HEAD", &format!("{ID}\n")), ("commondir", "")]);
+        std::fs::write(git.join("commondir"), [0xff, 0xfe]).unwrap();
+        assert_eq!(head_at(&root.to_string_lossy()), None);
+        let _ = std::fs::remove_dir_all(&root);
+        // A folder where a ref's name would be, or a file where its folder would:
+        // not a read error, only no loose ref.
+        let id = format!("{ID}\n");
+        let packed = format!("{ID} refs/heads/fix\n{ID} refs/heads/main/old\n");
+        let (root, _) = git_folder("in-a-folder", &[("HEAD", "ref: refs/heads/fix\n"), ("refs/heads/fix/a", &id), ("packed-refs", &packed)]);
+        assert_eq!(head_at(&root.to_string_lossy()), on(Some("fix"), Some("0123456")));
+        let _ = std::fs::remove_dir_all(&root);
+        let (root, _) = git_folder("under-a-file", &[("HEAD", "ref: refs/heads/main/old\n"), ("refs/heads/main", &id), ("packed-refs", &packed)]);
+        assert_eq!(head_at(&root.to_string_lossy()), on(Some("main/old"), Some("0123456")));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `commondir` says where the refs are whether `.git` is a folder or a file.
+    #[test]
+    fn a_git_folder_with_a_commondir_has_its_refs_there() {
+        let shared = format!("{ID}\n");
+        let stale = format!("{}\n", "b".repeat(40));
+        let (root, git) = git_folder("common", &[("HEAD", "ref: refs/heads/main\n"), ("commondir", "../shared\n"), ("refs/heads/main", &stale)]);
+        let refs = root.join("shared").join("refs").join("heads");
+        std::fs::create_dir_all(&refs).unwrap();
+        std::fs::write(refs.join("main"), &shared).unwrap();
+        assert_eq!(head_at(&root.to_string_lossy()), on(Some("main"), Some("0123456")), "not the ref left in the folder itself");
+        std::fs::remove_file(git.join("refs/heads/main")).unwrap();
+        assert_eq!(head_at(&root.to_string_lossy()), on(Some("main"), Some("0123456")), "and not unborn with none there");
         let _ = std::fs::remove_dir_all(&root);
     }
 
