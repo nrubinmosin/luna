@@ -30,6 +30,9 @@ can start other sessions and work with them.
     on end. `luna_kill` ends a background helper's alone (the user's Stop too). Killing a
     turn stops its CLI; what outlives that (on Windows a Git Bash command's own processes, a
     `run_in_background` job's) shows here after, for a second `luna_kill` to end.
+- `luna_list` with `ids: [..]` gives those rows alone, of any session, ids it does not know in
+  `unknown`, and no accounts unless `accounts: true`; `accounts: false` keeps a full list's out
+  (~3 KB a call). `ids: []` with `accounts: true`: accounts alone.
 - You kill and delete only sessions you spawned and theirs. Any other session you can read,
   wait on and send text to. A deleted parent's helper passes to its parent; with none, only
   the user can stop or delete it, and a background one goes once idle for 30 min.
@@ -123,7 +126,7 @@ can start other sessions and work with them.
   or a long one. `luna_read` with `screen: true` tells which.
 - `luna_read` with `since` and `last` gives the last N after the cursor, which goes past all
   of them. `tools: true` is Claude Code only; `screen: true` gives a background helper's last
-  log lines. A message past 60,000 characters is cut; `luna_sessions`' transcript has it whole.
+  log lines. `luna_sessions`' transcript has a cut message whole.
 - A read of all a session said since you asked, whole, after it finished, collects the answer:
   no notice follows. Not one of only the last of several, or from a cursor taken since.
 - Asked again before an answer reached you, the next reply, read or notice covers all since the
@@ -179,5 +182,4 @@ can start other sessions and work with them.
 - Before ending a turn on "a notice will come", for anything long or overnight: a `luna_wait`
   with a timeout, or check `luna_list` when the user is back. "NOT done yet" comes once.
 - Before anything that stops Luna's core or the PC: `luna_list` for helpers at work; they lose
-  their turns. To turn the PC off when work is done use `luna_power`, not a `shutdown` command:
-  it waits for every session and closes the CLIs first.
+  their turns. To turn the PC off use `luna_power`, not a `shutdown` command.

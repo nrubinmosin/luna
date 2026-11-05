@@ -468,6 +468,9 @@ where Codex hooks run unasked (Settings): Codex runs a hook Luna gives it only s
   and gives each its models, the settings a helper would get there (model, effort, permission mode —
   read from the account's and the project's settings the way the new-chat dialog reads
   them) and its usage as the Accounts window shows it: percent per window and when it resets.
+  An agent that needs less asks for less, as each result lands in its context: `luna_list`
+  with `ids` gives those sessions' rows alone, any session's, and with `accounts: false` a full
+  list goes without the accounts; `luna_wait` with `screen: false` goes without the terminal.
 - `luna_spawn` says what the helper came up with that its settings cannot: warnings the CLI
   put on screen (a model the organization does not allow, swapped for another) and the other
   live sessions working in the same directory (`sameFolder`), whose files and git it shares —

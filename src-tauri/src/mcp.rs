@@ -211,8 +211,8 @@ fn tools() -> Value {
     json!([
         {
             "name": "luna_list",
-            "description": "Your id (me), sessions you spawned (state, ask, turnsEnded, worktree, deletesInMin, turnStartedAt, lastActivityAt, resolvedModel, context (% of window used), leftRunning) and accounts you may use: models, a helper's defaults in your folder, usage (% per window, resets).",
-            "inputSchema": s(json!({}), &[]),
+            "description": "Your id (me), sessions you spawned (state, ask, turnsEnded, worktree, deletesInMin, turnStartedAt, lastActivityAt, resolvedModel, context (% of window used), leftRunning) and accounts you may use: models, a helper's defaults in your folder, usage (% per window, resets). ids: only these, any session; accounts then only if true.",
+            "inputSchema": s(json!({ "ids": { "type": "array", "items": { "type": "string" } }, "accounts": { "type": "boolean" } }), &[]),
             "annotations": reads
         },
         {
@@ -285,14 +285,15 @@ fn tools() -> Value {
         },
         {
             "name": "luna_wait",
-            "description": "Block until a Luna session (not yours; no task id, not a timer) ends a turn (reply: all it said since you asked; failed: its error), stops on a question or permission, or exits. Timeout, waiting and no reply come with the screen. `afterTurn`: wait for a turn past this turnsEnded (default: the answer you are owed, else the last you were shown). `ids`: several, `mode` any (default) or all, no afterTurn. Or end your turn: a notice brings the answer.",
+            "description": "Block until a Luna session (not yours; no task id, not a timer) ends a turn (reply: all it said since you asked; failed: its error), stops on a question or permission, or exits. Timeout, waiting and no reply come with the screen (screen: false: never). `afterTurn`: wait for a turn past this turnsEnded (default: the answer you are owed, else the last you were shown). `ids`: several, `mode` any (default) or all, no afterTurn. Or end your turn: a notice brings the answer.",
             "inputSchema": s(json!({
                 "id": { "type": "string" },
                 "ids": { "type": "array", "items": { "type": "string" } },
                 "mode": { "type": "string", "enum": ["any", "all"] },
                 "until": { "type": "string", "enum": ["turn_done", "waiting", "exit"] },
                 "timeoutS": { "type": "integer", "description": "default 600, max 1800" },
-                "afterTurn": { "type": "integer" }
+                "afterTurn": { "type": "integer" },
+                "screen": { "type": "boolean" }
             }), &[]),
             "annotations": reads
         },
@@ -373,7 +374,7 @@ fn call(caller: &str, params: &Value, this: &Call) -> Value {
     const STEERING: &[&str] = &[
         "provider", "account", "model", "effort", "permissionMode", "sandbox", "readOnly", "agent", "approval", "folder", "worktree", "visible",
         "tools", "autoDelete", "name", "until", "timeoutS", "afterTurn", "since", "last", "screen", "interrupt", "dropWorktree",
-        "group", "history", "allow", "ids", "mode", "resumeOnRestart", "force", "action", "quietS",
+        "group", "history", "allow", "ids", "mode", "resumeOnRestart", "force", "action", "quietS", "accounts",
     ];
     let set: Vec<String> = STEERING.iter().filter_map(|k| a.get(*k).filter(|v| !v.is_null()).map(|v| format!("{k}={v}"))).collect();
     if !set.is_empty() {
@@ -416,7 +417,7 @@ fn run(caller: &str, params: &Value, this: &Call) -> Value {
         v.as_array().map(|a| a.iter().map(|x| x.as_str().map(str::to_owned).unwrap_or_else(|| x.to_string())).collect()).unwrap_or_default()
     };
     let out: Result<Value, String> = match name {
-        "luna_list" => Ok(json!(agents::list(caller))),
+        "luna_list" => listing(caller, a),
         "luna_guide" => return json!({ "content": [{ "type": "text", "text": GUIDE }] }),
         "luna_answer" => agents::answer(
             caller,
@@ -460,7 +461,7 @@ fn run(caller: &str, params: &Value, this: &Call) -> Value {
             this,
         )
         .map(|r| json!(r)),
-        "luna_wait" if !a["ids"].is_null() => wait_several(caller, a, this),
+        "luna_wait" if !a["ids"].is_null() => wait_several(caller, a, this).map(|w| screens_as_asked(w, a)),
         "luna_wait" => agents::wait(
             caller,
             &id,
@@ -469,7 +470,7 @@ fn run(caller: &str, params: &Value, this: &Call) -> Value {
             a["afterTurn"].as_u64().map(|n| n as u32),
             this,
         )
-        .map(|w| json!(w)),
+        .map(|w| screens_as_asked(json!(w), a)),
         "luna_kill" => agents::kill(caller, &id).map(|k| json!(k)),
         "luna_delete" => agents::delete(caller, &id, a["dropWorktree"].as_bool().unwrap_or(false), a["force"].as_bool().unwrap_or(false))
             .map(|r| json!(r)),
@@ -483,6 +484,39 @@ fn run(caller: &str, params: &Value, this: &Call) -> Value {
     }
 }
 
+/// `luna_list`: every row and the accounts, the costly part of it, unless told;
+/// a caller naming sessions wants those, and has not asked for accounts.
+fn listing(caller: &str, a: &Value) -> Result<Value, String> {
+    let ids = if a["ids"].is_null() { None } else { Some(id_list(&a["ids"])?) };
+    let accounts = a["accounts"].as_bool().unwrap_or(ids.is_none());
+    Ok(json!(agents::list(caller, ids.as_deref(), accounts)))
+}
+
+/// A tool's `ids`, whose each must be a session id.
+fn id_list(v: &Value) -> Result<Vec<String>, String> {
+    v.as_array()
+        .ok_or("ids is a list of session ids")?
+        .iter()
+        .map(|x| x.as_str().map(str::to_owned).ok_or("ids is a list of session ids".to_string()))
+        .collect()
+}
+
+/// A `luna_wait` told `screen: false` goes without, at whatever outcome: it goes
+/// after the wait, which has handed its answer over by now.
+fn screens_as_asked(mut v: Value, a: &Value) -> Value {
+    if a["screen"].as_bool() == Some(false) {
+        if let Some(o) = v.as_object_mut() {
+            o.remove("screen");
+        }
+        for r in v.get_mut("results").and_then(Value::as_array_mut).into_iter().flatten() {
+            if let Some(o) = r.as_object_mut() {
+                o.remove("screen");
+            }
+        }
+    }
+    v
+}
+
 /// `luna_wait` with `ids`. Each `afterTurn` is one session's count, so it has
 /// no place here: each waits for what its caller is owed, as one wait does
 /// when not told.
@@ -493,12 +527,7 @@ fn wait_several(caller: &str, a: &Value, this: &Call) -> Result<Value, String> {
     if !a["afterTurn"].is_null() {
         return Err("afterTurn goes with id; with ids each waits for what you are owed, else a turn past the last count you were shown".into());
     }
-    let ids: Vec<String> = a["ids"]
-        .as_array()
-        .ok_or("ids is a list of session ids")?
-        .iter()
-        .map(|x| x.as_str().map(str::to_owned).ok_or("ids is a list of session ids"))
-        .collect::<Result<_, _>>()?;
+    let ids = id_list(&a["ids"])?;
     let all = match a["mode"].as_str().unwrap_or("any") {
         "any" => false,
         "all" => true,
@@ -697,6 +726,60 @@ mod tests {
         assert_eq!(blocks.len(), 2);
         assert!(!blocks[0]["text"].as_str().unwrap().contains("screen"));
         assert_eq!(blocks[1]["text"], "screen of a:\nA\nB");
+    }
+
+    #[test]
+    fn a_wait_goes_without_its_screens_only_when_told() {
+        let single = json!({ "outcome": "timeout", "state": "working", "screen": "A\nB" });
+        let several = json!({ "outcome": "timeout", "results": [
+            { "id": "a", "outcome": "timeout", "screen": "A" },
+            { "id": "b", "outcome": "turn_done", "failed": "API error", "screen": "B" },
+            { "id": "c", "outcome": "pending" }
+        ] });
+        // Left to itself, or told true, it stays as it was.
+        for asked in [json!({}), json!({ "screen": true })] {
+            assert_eq!(screens_as_asked(single.clone(), &asked), single);
+            assert_eq!(screens_as_asked(several.clone(), &asked), several);
+        }
+        let off = json!({ "screen": false });
+        assert_eq!(screens_as_asked(single, &off), json!({ "outcome": "timeout", "state": "working" }));
+        let kept = screens_as_asked(several, &off);
+        assert!(!kept.to_string().contains("screen"), "{kept}");
+        assert_eq!(kept["results"][1]["failed"], "API error");
+        assert_eq!(content(kept).len(), 1);
+    }
+
+    #[test]
+    fn a_listing_is_as_narrow_as_it_was_asked() {
+        tooled("ls-me");
+        agents::register("ls-kid", crate::provider::Provider::Claude, "C:/p", "C:/acc/anthropic/one", Some("ls-me"), false, json!({}));
+        tooled("ls-other");
+        let list = |args: Value| {
+            let body = json!({ "jsonrpc": "2.0", "id": 14, "method": "tools/call", "params": { "name": "luna_list", "arguments": args } });
+            handle("ls-me", &body.to_string()).unwrap()["result"].clone()
+        };
+        let rows = |v: &Value| -> Vec<String> {
+            let text = v["content"][0]["text"].as_str().unwrap();
+            let v: Value = serde_json::from_str(text).unwrap();
+            v["sessions"].as_array().unwrap().iter().map(|s| s["id"].as_str().unwrap().to_string()).collect()
+        };
+        let body = |v: &Value| -> Value { serde_json::from_str(v["content"][0]["text"].as_str().unwrap()).unwrap() };
+        // A bare call is what it always was.
+        let all = list(json!({}));
+        assert_eq!(rows(&all), ["ls-kid"]);
+        assert!(body(&all)["accounts"].is_array());
+        assert!(body(&list(json!({ "accounts": false }))).get("accounts").is_none());
+        // Named: any session, itself too, no accounts unless asked, the rest said.
+        let named = list(json!({ "ids": ["ls-other", "ls-me", "ls-other", "ls-gone"] }));
+        assert_eq!(rows(&named), ["ls-other", "ls-me"]);
+        assert!(body(&named).get("accounts").is_none());
+        assert_eq!(body(&named)["unknown"], json!(["ls-gone"]));
+        assert!(body(&list(json!({ "ids": ["ls-kid"], "accounts": true })))["accounts"].is_array());
+        // Accounts alone.
+        let alone = list(json!({ "ids": [], "accounts": true }));
+        assert!(rows(&alone).is_empty() && body(&alone)["accounts"].is_array());
+        assert!(body(&alone).get("unknown").is_none());
+        assert_eq!(list(json!({ "ids": "ls-kid" }))["isError"], true);
     }
 
     #[test]

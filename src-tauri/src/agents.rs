@@ -2049,8 +2049,12 @@ pub struct SessionRow {
 #[serde(rename_all = "camelCase")]
 pub struct Listing {
     pub me: String,
-    pub accounts: Vec<AccountRow>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub accounts: Option<Vec<AccountRow>>,
     pub sessions: Vec<SessionRow>,
+    /// Of the sessions asked for by id, those Luna does not know.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub unknown: Vec<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -2149,10 +2153,31 @@ fn visible_signs(pty: &crate::pty::PtyManager, id: &str, provider: Provider) -> 
     crate::background::Signs { turn_started_at, last_activity_at, resolved_model, context, left_running }
 }
 
-pub fn list(caller: &str) -> Listing {
+/// The caller's own, or the sessions `ids` names, which may be any: what a row
+/// says is what `sessions` and `read` already show of them. `accounts` is the
+/// costly part of a listing, in time and in what it adds to the caller's context.
+pub fn list(caller: &str, ids: Option<&[String]>, accounts: bool) -> Listing {
+    let mut unknown = Vec::new();
     let rows: Vec<(String, Known, String, Option<u32>)> = {
         let r = reg().lock().unwrap_or_else(|e| e.into_inner());
-        descendants(&r, caller)
+        let wanted = match ids {
+            None => descendants(&r, caller),
+            Some(ids) => {
+                let mut wanted: Vec<String> = Vec::new();
+                for id in ids {
+                    if wanted.contains(id) || unknown.contains(id) {
+                        continue;
+                    }
+                    if r.known.contains_key(id) && (id != DEV_CALLER || caller == DEV_CALLER) {
+                        wanted.push(id.clone());
+                    } else {
+                        unknown.push(id.clone());
+                    }
+                }
+                wanted
+            }
+        };
+        wanted
             .into_iter()
             .filter_map(|id| {
                 let name = r.names.get(&id).cloned().unwrap_or_default();
@@ -2196,8 +2221,11 @@ pub fn list(caller: &str) -> Listing {
             }
         })
         .collect();
-    let folder = reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(caller).map(|k| k.folder.clone()).unwrap_or_default();
-    Listing { me: caller.to_string(), accounts: account_rows(&folder), sessions }
+    let accounts = accounts.then(|| {
+        let folder = reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(caller).map(|k| k.folder.clone()).unwrap_or_default();
+        account_rows(&folder)
+    });
+    Listing { me: caller.to_string(), accounts, sessions, unknown }
 }
 
 /// One row of `sessions`: any chat Luna has run a session for since it
