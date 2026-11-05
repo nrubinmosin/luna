@@ -788,6 +788,110 @@ fn pending_tool_in(text: &str) -> Option<(String, serde_json::Value)> {
     open.pop().map(|(_, name, input)| (name, input))
 }
 
+/// When the commands the conversation waits on are due, the latest of them, in
+/// ms since the epoch: a `Bash` or `PowerShell` call by its `timeout` (2 min
+/// without one), a `Monitor` by its `timeout_ms` (5 min) or the one its result
+/// says it got, from the line that made it. One in the foreground is waited on
+/// until its result. One with `run_in_background`, and a `Monitor`, come back at
+/// once and run on until a task notification with a status names them (a
+/// Monitor's events have none): `claude -p` holds its turn for them. A
+/// background job with no `timeout` of its own runs as long as the CLI's flags
+/// say, which is no deadline to read.
+pub fn due_ms(path: &Path) -> Option<u64> {
+    due_in(&crate::pty::tail(path, DUE_TAIL)?)
+}
+
+/// How far back the calls a quiet turn waits on are looked for: far enough to
+/// reach past the large tool results that may have come after a long job's
+/// start, and cheap, as it is read only once a turn has gone quiet.
+pub(crate) const DUE_TAIL: u64 = 4 * 1024 * 1024;
+
+fn due_in(text: &str) -> Option<u64> {
+    struct Call {
+        id: String,
+        background: bool,
+        /// The job a background call started, as its notifications name it.
+        task: Option<String>,
+        at: u64,
+        due: u64,
+    }
+    let ms = |v: &serde_json::Value| v.as_f64().filter(|t| *t > 0.0).map(|t| t as u64);
+    let mut open: Vec<Call> = Vec::new();
+    for line in text.lines() {
+        if !line.contains("\"assistant\"") && !line.contains("\"user\"") {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        if v["isSidechain"].as_bool() == Some(true) || v["isMeta"].as_bool() == Some(true) {
+            continue;
+        }
+        let content = &v["message"]["content"];
+        match v["type"].as_str() {
+            Some("assistant") => {
+                let Some(at) = v["timestamp"].as_str().and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok()) else { continue };
+                let at = at.timestamp_millis().max(0) as u64;
+                for b in content.as_array().into_iter().flatten().filter(|b| b["type"] == "tool_use") {
+                    let input = &b["input"];
+                    let (background, timeout) = match b["name"].as_str() {
+                        Some("Bash" | "PowerShell") if input["run_in_background"] == true => (true, ms(&input["timeout"])),
+                        Some("Bash" | "PowerShell") => (false, Some(ms(&input["timeout"]).unwrap_or(120_000))),
+                        Some("Monitor") if input["persistent"] != true => (true, Some(ms(&input["timeout_ms"]).unwrap_or(300_000))),
+                        _ => continue,
+                    };
+                    if let Some(timeout) = timeout {
+                        let id = b["id"].as_str().unwrap_or("").to_string();
+                        open.push(Call { id, background, task: None, at, due: at + timeout });
+                    }
+                }
+            }
+            Some("user") => {
+                let results: Vec<&str> = content
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|b| b["type"] == "tool_result")
+                    .filter_map(|b| b["tool_use_id"].as_str())
+                    .collect();
+                if !results.is_empty() {
+                    // A background call whose result names no job started none. A
+                    // Monitor's says the timeout it got, which a session may cap.
+                    let made = &v["toolUseResult"];
+                    let task = made["backgroundTaskId"].as_str().or(made["taskId"].as_str());
+                    open.retain_mut(|c| {
+                        if !results.contains(&c.id.as_str()) {
+                            return true;
+                        }
+                        // A foreground call moved to the background, by hand or
+                        // on its timeout, names its job too, and runs on as one.
+                        c.task = task.map(str::to_owned);
+                        c.background |= c.task.is_some();
+                        if let Some(timeout) = ms(&made["timeoutMs"]) {
+                            c.due = c.at + timeout;
+                        }
+                        c.task.is_some()
+                    });
+                    continue;
+                }
+                let said = content_text(content).unwrap_or_default();
+                if said.contains("<task-notification>") {
+                    if said.contains("<status>") {
+                        let named = |c: &Call| {
+                            said.contains(&format!("<tool-use-id>{}</tool-use-id>", c.id))
+                                || c.task.as_ref().is_some_and(|t| said.contains(&format!("<task-id>{t}</task-id>")))
+                        };
+                        open.retain(|c| !named(c));
+                    }
+                } else {
+                    // A new prompt: what ran in the foreground went with the turn.
+                    open.retain(|c| c.background);
+                }
+            }
+            _ => {}
+        }
+    }
+    open.iter().map(|c| c.due).max()
+}
+
 /// The transcript file of a live session, once the registry knows it.
 pub fn transcript_of(pid: Option<u32>, resume: Option<&str>, cwd: &str, spawned_at_ms: u128, account_path: &str) -> Option<PathBuf> {
     let dir = Path::new(account_path).join("sessions");
@@ -1024,6 +1128,59 @@ mod reading_tests {
         let prompt = r#"{"type":"user","message":{"role":"user","content":"never mind"}}"#;
         assert_eq!(pending_tool_in(&[ran, prompt].join("\n")), None);
         assert_eq!(pending_tool_in(ran).map(|(n, _)| n).as_deref(), Some("Bash"));
+    }
+
+    /// As Claude Code 2.1.318 writes its commands: a background one's result
+    /// names the job (`backgroundTaskId`, a Monitor's `taskId`), and the task
+    /// notification of its end has a status, a Monitor's events none.
+    #[test]
+    fn a_command_is_due_by_its_own_timeout() {
+        let at = "2026-11-04T15:10:00.000Z";
+        let start = chrono::DateTime::parse_from_rfc3339(at).unwrap().timestamp_millis() as u64;
+        let call = |id: &str, name: &str, input: &str| {
+            format!(r#"{{"type":"assistant","timestamp":"{at}","message":{{"content":[{{"type":"tool_use","id":"{id}","name":"{name}","input":{input}}}]}}}}"#)
+        };
+        let result = |id: &str, made: &str| format!(r#"{{"type":"user","message":{{"content":[{{"type":"tool_result","tool_use_id":"{id}","content":"…"}}]}},"toolUseResult":{made}}}"#);
+        let notice = |body: &str| {
+            let text = serde_json::to_string(&format!("<task-notification>\n{body}\n</task-notification>")).unwrap();
+            format!(r#"{{"type":"user","message":{{"role":"user","content":{text}}},"origin":{{"kind":"task-notification"}}}}"#)
+        };
+        let due = |lines: &[&str]| due_in(&lines.join("\n")).map(|d| d - start);
+        let min = 60_000;
+
+        let lane = call("t1", "Bash", r#"{"command":"./lane.sh","timeout":2400000}"#);
+        assert_eq!(due(&[&lane]), Some(40 * min));
+        assert_eq!(due(&[&lane, &result("t1", "{}")]), None, "its result ends it");
+        assert_eq!(due(&[&call("t1", "PowerShell", r#"{"command":"ls"}"#)]), Some(2 * min), "the CLI's own default");
+        let prompt = r#"{"type":"user","message":{"role":"user","content":"never mind"}}"#;
+        assert_eq!(due(&[&lane, prompt]), None, "it went with its turn");
+        assert_eq!(due(&[&call("t1", "mcp__x__run", r#"{"timeout":9000000}"#)]), None, "not a command of the CLI's");
+
+        let job = call("t2", "Bash", r#"{"command":"./lane.sh","run_in_background":true,"timeout":3000000}"#);
+        let started = result("t2", r#"{"stdout":"","backgroundTaskId":"b7"}"#);
+        assert_eq!(due(&[&lane, &job, &started]), Some(50 * min), "the latest; a job runs on past its result");
+        assert_eq!(due(&[&job, &started, prompt]), Some(50 * min), "and past its turn");
+        assert_eq!(due(&[&job, &result("t2", r#"{"stdout":"","stderr":"refused"}"#)]), None, "one refused never ran");
+        let ended = notice("<task-id>b7</task-id>\n<tool-use-id>t2</tool-use-id>\n<status>completed</status>");
+        assert_eq!(due(&[&job, &started, &ended]), None);
+        let open_ended = call("t2", "Bash", r#"{"command":"./lane.sh","run_in_background":true}"#);
+        assert_eq!(due(&[&open_ended]), None, "no deadline of its own to read");
+        // Moved to the background after it started: its result names a job,
+        // which runs on with the deadline it was given.
+        let moved = result("t1", r#"{"stdout":"","backgroundTaskId":"b9"}"#);
+        assert_eq!(due(&[&lane, &moved, prompt]), Some(40 * min));
+        let moved_over = notice("<task-id>b9</task-id>\n<status>completed</status>");
+        assert_eq!(due(&[&lane, &moved, &moved_over]), None);
+
+        let watch = call("t3", "Monitor", r#"{"command":"tail -f lane.log","timeout_ms":3600000}"#);
+        assert_eq!(due(&[&watch]), Some(60 * min));
+        let armed = result("t3", r#"{"taskId":"m4","timeoutMs":1800000,"persistent":false}"#);
+        assert_eq!(due(&[&watch, &armed]), Some(30 * min), "as capped");
+        let event = notice("<task-id>m4</task-id>\n<summary>Monitor event</summary>\n<event>STEP build exit=0</event>");
+        assert_eq!(due(&[&watch, &armed, &event]), Some(30 * min), "an event is no end");
+        let over = notice("<task-id>m4</task-id>\n<status>completed</status>");
+        assert_eq!(due(&[&watch, &armed, &event, &over]), None);
+        assert_eq!(due(&[&call("t3", "Monitor", r#"{"command":"tail -f x","persistent":true}"#)]), None);
     }
 
     #[test]

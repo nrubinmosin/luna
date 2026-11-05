@@ -546,7 +546,9 @@ background helper spawned without tools.
   — and how to end it; the notice of its end still comes, as doing nothing is no proof of one.
 - A turn that has written nothing for 30 minutes — no output from a background helper, no
   transcript line from a chat — gets the agent owed its answer one notice per turn: a command
-  in it may hang, or just take long. The usual notice still comes when the turn ends.
+  in it may hang, or just take long. A command the turn waits on that has a timeout of its own
+  (a test run given 50 minutes) holds that notice back until 5 minutes past it. The usual notice
+  still comes when the turn ends.
 - If a chat still gets more than 12 turn-end notices about one session in 15 minutes, Luna
   stops telling it of that session's turns and jobs, says so in the log and once on the desktop,
   and goes on when you type into either chat. Its prompts and questions still come: a helper is
