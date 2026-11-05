@@ -639,7 +639,13 @@ src-tauri/src/
   (`IDLE_JOB_MS`) the caller is told once (`Owed::told_idle`, `Settled::Idle`) that only idle processes are
   left, named, that they may be stuck or waiting, that `luna_kill` ends them, and that their end still comes:
   idleness is no end, so the debt stays open and `luna_wait` gives no `job_done` for it. Before that a helper
-  whose Monitor left a `tail -F` read "not done" for 14 h with no word to its caller. Turns on notices are
+  whose Monitor left a `tail -F` read "not done" for 14 h with no word to its caller. That line, and a job's end
+  with no word from the session, no error and no core gone with it (`Settled::NoNews`), are no reason for a wake
+  on their own, a full read of the caller's context: they ride with the next notice it gets (`riders_go`). Alone
+  they go once they are all it is owed, or nothing anywhere is busy (`Summary::busy`; all a power-off's count starts
+  on, and it knows no debts), or after `RIDE_MAX_MS`, as a caller may be waiting on that very job while another
+  runs for days. Their debts stay open meanwhile, so `luna_wait` and `reap` see them as ever, and news
+  replaces the line. Turns on notices are
   skipped over, the cursor staying put, so what they said comes with the next word. This is what ended a night of
   460 notices an hour: every notice started a turn, every such turn's end re-owed the answer at the new count, and any
   leftover process made `children_busy` true. A debt that was not told this cannot loop: a notice consumes it.

@@ -5705,8 +5705,12 @@ enum Settled {
     Asked(u64),
     /// A core's going stopped its turn and it went on by itself; told once.
     Resumed,
-    /// All its job left has sat idle for IDLE_JOB_MS; told once, and owed on.
-    Idle,
+    /// All its job left has sat idle for IDLE_JOB_MS, past that since this
+    /// moment; told once, and owed on. It rides (`riders_go`).
+    Idle(u64),
+    /// Its job's end, seen at this moment, with no word from it and nothing
+    /// else to tell: settles as `Answered`, and rides (`riders_go`).
+    NoNews(u64),
     /// Its turn at this count has gone quiet (QUIET_TURN_MS); told once per
     /// turn, and owed on.
     Quiet(u32),
@@ -6295,7 +6299,7 @@ fn notice_line(
                     "{who} has only idle processes left, which have done nothing for {} min: {names}. They may be stuck or waiting on something; luna_kill ends them. You will still hear when they end.",
                     quiet / 60_000
                 )),
-                Settled::Idle,
+                Settled::Idle(now_ms().saturating_sub(quiet - IDLE_JOB_MS)),
             ));
         }
     }
@@ -6307,6 +6311,8 @@ fn notice_line(
                 // Its turns on notices may have said something since.
                 let said = said_since(pty, id, k.provider, o.cursor);
                 let failed = failure_of(pty, id, k.provider);
+                // A core's going took the job: news, whatever was said.
+                let how = if said.is_empty() && failed.is_none() && !o.job_went { Settled::NoNews(at) } else { Settled::Answered };
                 let quoted = if failed.is_some() { String::new() } else { begins(&said) };
                 let said = match said.len() {
                     0 => "it has said nothing since your last notice. It does not take that up by itself; luna_send asks it how it went".to_string(),
@@ -6315,7 +6321,7 @@ fn notice_line(
                 };
                 let failed = failed.map_or(String::new(), |why| format!(" Its last turn stopped on an error: {}", sentence(&why)));
                 let since = if o.job_went { " that Luna's core has restarted" } else { "" };
-                Some((Some(format!("{who} has nothing left running now{since}, and {said}.{failed}")), Settled::Answered))
+                Some((Some(format!("{who} has nothing left running now{since}, and {said}.{failed}")), how))
             }
             Some((n, _)) if n == ended => None,
             _ => Some((None, Settled::Hold(ended))),
@@ -7039,6 +7045,31 @@ fn spawn_news(up_ms: u64) -> HashMap<String, Vec<(u64, String)>> {
     news
 }
 
+/// The longest a line with no news in it waits for a notice to ride with: a
+/// caller may be waiting on that very job while another helper runs for days.
+const RIDE_MAX_MS: u64 = 10 * 60 * 1000;
+
+/// Since when a line that is no reason to wake its caller (`Settled::NoNews`,
+/// `Settled::Idle`) has stood, if it is one.
+fn rides_since(how: &Settled) -> Option<u64> {
+    match how {
+        Settled::NoNews(since) | Settled::Idle(since) => Some(*since),
+        _ => None,
+    }
+}
+
+/// Whether such lines, the oldest standing since `oldest`, go out now. A wake
+/// costs a caller a read of its whole context, so they go with a notice it is
+/// getting anyway (`company`). Alone they go once all it is owed is such lines
+/// (`only_riders`), or with nothing anywhere at work (`busy` 0), so no notice is
+/// on its way: all that lets a power-off start counting (power.rs `advance`), which
+/// is not to go ahead of a line held here. Their debts stay open until then, for a
+/// `luna_wait` and against `reap`, and what happens to the session meanwhile
+/// replaces the line.
+pub(crate) fn riders_go(company: bool, only_riders: bool, oldest: u64, now: u64, busy: usize) -> bool {
+    company || only_riders || busy == 0 || now.saturating_sub(oldest) >= RIDE_MAX_MS
+}
+
 /// Runs for the life of the app: every few seconds, for each caller owed an
 /// answer, checks whether one came and tells the caller once it is idle; and
 /// deletes the `autoDelete` helpers that are done (see `reap`).
@@ -7142,6 +7173,7 @@ fn notifier() {
             }
             let mut lines = Vec::new();
             let mut settled = Vec::new();
+            let mut riders = Vec::new();
             for (id, k, o, who) in &items {
                 if held_for_wait(&pty, &caller, id, o) {
                     continue;
@@ -7159,8 +7191,12 @@ fn notifier() {
                                 BREAKER_WINDOW_MS / 60_000
                             ));
                         }
-                        lines.push(line);
-                        settled.push((id.clone(), how, *o));
+                        if rides_since(&how).is_some() {
+                            riders.push((line, id.clone(), how, *o));
+                        } else {
+                            lines.push(line);
+                            settled.push((id.clone(), how, *o));
+                        }
                     }
                     Some((None, Settled::Hold(ended))) => {
                         let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
@@ -7190,6 +7226,14 @@ fn notifier() {
             lines.extend(news_lines.iter().cloned());
             let spawn_lines = spawns.remove(&caller).unwrap_or_default();
             lines.extend(spawn_lines.iter().map(|(_, line)| line.clone()));
+            if let Some(oldest) = riders.iter().filter_map(|(_, _, how, _)| rides_since(how)).min() {
+                if riders_go(!lines.is_empty(), riders.len() == items.len(), oldest, now_ms(), crate::activity::summary().busy) {
+                    for (line, id, how, o) in riders {
+                        lines.push(line);
+                        settled.push((id, how, o));
+                    }
+                }
+            }
             if lines.is_empty() {
                 reg().lock().unwrap_or_else(|e| e.into_inner()).notices_held.remove(&caller);
                 continue;
@@ -7214,7 +7258,7 @@ fn notifier() {
 /// end brings. Not a prompt or a question, which hold until they are answered
 /// and cannot loop by themselves, and a busy helper may ask many.
 fn counts_for_breaker(how: &Settled) -> bool {
-    matches!(how, Settled::Answered | Settled::Pending(..))
+    matches!(how, Settled::Answered | Settled::NoNews(_) | Settled::Pending(..))
 }
 
 /// Types a notice into `caller` and settles what it said (`settled`: the
@@ -7282,7 +7326,7 @@ fn deliver_notice(
                 crate::log::warn("agents", &format!("notice to {} about {about} did not start a turn", label(caller)));
             }
             // Its words on what never reached them went with this notice.
-            let told_lost: Vec<String> = settled.iter().filter(|(_, how, _)| matches!(how, Settled::Answered | Settled::Exited)).map(|(id, _, _)| id.clone()).collect();
+            let told_lost: Vec<String> = settled.iter().filter(|(_, how, _)| matches!(how, Settled::Answered | Settled::NoNews(_) | Settled::Exited)).map(|(id, _, _)| id.clone()).collect();
             let told_left: Vec<String> = settled.iter().map(|(id, _, _)| id.clone()).filter(|id| parent_of(id).as_deref() == Some(caller)).collect();
             let mut stopped = Vec::new();
             let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
@@ -7337,7 +7381,7 @@ fn settle_told(r: &mut Registry, key: (String, String), how: Settled, told: &Owe
         return;
     }
     match how {
-        Settled::Answered | Settled::Exited => {
+        Settled::Answered | Settled::NoNews(_) | Settled::Exited => {
             r.owed.remove(&key);
         }
         Settled::Waiting => {
@@ -7358,7 +7402,7 @@ fn settle_told(r: &mut Registry, key: (String, String), how: Settled, told: &Owe
                 o.resumed = false;
             }
         }
-        Settled::Idle => {
+        Settled::Idle(_) => {
             if let Some(o) = r.owed.get_mut(&key) {
                 o.told_idle = true;
             }
@@ -8988,10 +9032,11 @@ mod tests {
         assert!(matches!(line(o), None | Some((None, _))));
         // Half an hour of nothing: said once, how to end it with it, and still owed.
         crate::background::left_for_test("lj-s", &[("tail.exe", 22104, IDLE_JOB_MS + 60_000)]);
-        let Some((Some(text), Settled::Idle)) = line(o) else { panic!("its idle job is news") };
+        let Some((Some(text), how @ Settled::Idle(_))) = line(o) else { panic!("its idle job is told of") };
+        assert!(rides_since(&how).is_some_and(|since| now_ms() - since < 2 * 60_000), "and rides, from when it passed the mark");
         assert!(text.contains("only idle processes left, which have done nothing for 31 min: tail.exe (pid 22104)"), "{text}");
         assert!(text.contains("luna_kill ends them") && text.contains("You will still hear when they end"), "{text}");
-        settle_told(&mut reg().lock().unwrap(), ("lj-c".to_string(), "lj-s".to_string()), Settled::Idle, &o);
+        settle_told(&mut reg().lock().unwrap(), ("lj-c".to_string(), "lj-s".to_string()), how, &o);
         let told = reg().lock().unwrap().owed.get(&("lj-c".to_string(), "lj-s".to_string())).copied().expect("the debt stays open");
         assert!(told.told_idle && told.told_pending);
         assert!(matches!(line(told), None | Some((None, _))), "said once");
@@ -9000,11 +9045,66 @@ mod tests {
         crate::background::left_for_test("lj-s", &[]);
         let mut ended = told;
         ended.held = Some((3, now_ms() - BACKGROUND_GRACE_MS));
-        let Some((Some(text), Settled::Answered)) = line(ended) else { panic!("the job's end") };
+        let Some((Some(text), Settled::NoNews(_))) = line(ended) else { panic!("the job's end") };
         assert!(text.contains("has nothing left running now"), "{text}");
         crate::background::gone_for_test("lj-s");
         forget("lj-s");
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// A job's end with no word from it, or an idle job, is told of with the
+    /// next notice; on its own only once nothing else can bring one.
+    #[test]
+    fn a_line_with_no_news_rides_with_the_next_notice() {
+        let now = 100 * RIDE_MAX_MS;
+        let fresh = now - 30_000;
+        assert!(!riders_go(false, false, fresh, now, 1), "another helper at work: it waits for that one's notice");
+        assert!(riders_go(true, false, fresh, now, 1), "a notice is going in anyway");
+        assert!(riders_go(false, true, fresh, now, 1), "nothing else owed: this is the last it will hear");
+        assert!(!riders_go(false, false, now - RIDE_MAX_MS + 1, now, 1));
+        assert!(riders_go(false, false, now - RIDE_MAX_MS, now, 1), "it may be waiting on this very job");
+        // An open debt that can bring nothing (a stopped pair, a chat at rest), and
+        // all is idle: nothing is coming.
+        assert!(riders_go(false, false, fresh, now, 0));
+        // The line settles a debt as it always did; only going out does.
+        let key = ("rd-c".to_string(), "rd-s".to_string());
+        let o = Owed::pending(3, 0);
+        reg().lock().unwrap().owed.insert(key.clone(), o);
+        assert!(counts_for_breaker(&Settled::NoNews(1)) && !counts_for_breaker(&Settled::Idle(1)));
+        settle_told(&mut reg().lock().unwrap(), key.clone(), Settled::Idle(1), &o);
+        assert!(reg().lock().unwrap().owed.get(&key).is_some_and(|o| o.told_idle), "owed on");
+        settle_told(&mut reg().lock().unwrap(), key.clone(), Settled::NoNews(1), &o);
+        assert!(!reg().lock().unwrap().owed.contains_key(&key), "settled");
+    }
+
+    /// News does not wait: words since the last notice, or a core that took the
+    /// job. And what happens to a held line's session replaces it.
+    #[test]
+    fn a_jobs_end_with_something_to_say_goes_at_once() {
+        let said = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"All green.\"}]}}\n";
+        let (known, o, path) = job_over_helper("nn-s", "nn-c", said);
+        let pty = crate::pty::manager();
+        let stood = Owed { held: Some((3, now_ms() - BACKGROUND_GRACE_MS)), ..o };
+        assert!(matches!(notice_line(&pty, "nn-c", "Your helper", "nn-s", &known, stood), Some((Some(_), Settled::Answered))), "it wrote");
+        let (known, o, path2) = job_over_helper("nn-q", "nn-c", "");
+        let stood = Owed { held: Some((3, now_ms() - BACKGROUND_GRACE_MS)), ..o };
+        assert!(matches!(notice_line(&pty, "nn-c", "Your helper", "nn-q", &known, stood), Some((Some(_), Settled::NoNews(_)))));
+        let went = Owed { job_went: true, ..stood };
+        let Some((Some(text), Settled::Answered)) = notice_line(&pty, "nn-c", "Your helper", "nn-q", &known, went) else { panic!("a core took it") };
+        assert!(text.contains("that Luna's core has restarted"), "{text}");
+        // Held past its grace, a wait still gets it: the debt is open, on the one clock.
+        let key = ("nn-c".to_string(), "nn-q".to_string());
+        reg().lock().unwrap().owed.insert(key.clone(), stood);
+        assert!(job_end_stood(&key, 3, true));
+        // At work again: no line, and its end counts from nothing.
+        crate::background::left_for_test("nn-q", &[("build.exe", 4242, 0)]);
+        assert!(matches!(notice_line(&pty, "nn-c", "Your helper", "nn-q", &known, stood), Some((None, Settled::Unhold))));
+        for id in ["nn-s", "nn-q"] {
+            crate::background::gone_for_test(id);
+            forget(id);
+        }
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&path2);
     }
 
     /// 2 November: a helper's pwsh hung for 25 minutes mid-turn on a process a
@@ -9158,7 +9258,7 @@ mod tests {
         drop(out);
         let stood = debt();
         assert!(!held_for_wait(&pty, "jw-c", "jw-s", &stood));
-        assert!(matches!(notice_line(&pty, "jw-c", "Your helper", "jw-s", &known, stood), Some((Some(_), Settled::Answered))));
+        assert!(matches!(notice_line(&pty, "jw-c", "Your helper", "jw-s", &known, stood), Some((Some(_), Settled::NoNews(_)))));
         // A job back at work starts it over.
         assert!(!job_end_stood(&key, 3, false));
         assert_eq!(debt().held, None);

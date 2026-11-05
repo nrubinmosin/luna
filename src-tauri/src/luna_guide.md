@@ -76,8 +76,6 @@ can start other sessions and work with them.
 - `worktree: true` shares no files or git with the sessions in that folder; the result
   names the worktree and branch, or `worktreePending` until the CLI has made it. `sameFolder`
   lists live sessions working in the same directory.
-- `started`: a background helper's process is up; a visible one was seen on its prompt within
-  30 s, else `screen` shows why (a dialog: `ask` too).
 - A prompt over 8,000 characters reaches a visible session as a file it is told to read.
 
 ## Getting the answer
@@ -96,7 +94,9 @@ can start other sessions and work with them.
   notice comes when that is over or a turn of its own ends (all of it
   idle 30 min: one more says so; it may be stuck or waiting), not one it only ran
   on a Luna notice: unless that was its own helper's last answer, or, to you its parent, one on
-  its helpers' notices that wrote a message of 400+ characters. A background Claude Code
+  its helpers' notices that wrote a message of 400+ characters. An end with no word from it, and
+  that idle line, wait for your next notice: alone once you are owed nothing else, nothing in
+  Luna is at work, or 10 min on. A background Claude Code
   helper's own `run_in_background` job keeps its turn going: `working` until it ends, one notice.
 - Past 12 turn-end notices about one session in 15 minutes Luna stops telling you of its turns
   and jobs (the last says so; its prompts and questions still come) until a person types into
@@ -121,8 +121,6 @@ can start other sessions and work with them.
 - A turn that has written nothing for 30 min is told of once ("mid-turn and has written
   nothing"), and not before 5 min past the timeout of a command it waits on: a hung command,
   or a long one. `luna_read` with `screen: true` tells which.
-- Without `afterTurn`, a wait is for the answer you are still owed, else for a turn past the
-  last count you were shown.
 - `luna_read` with `since` and `last` gives the last N after the cursor, which goes past all
   of them. `tools: true` is Claude Code only; `screen: true` gives a background helper's last
   log lines. A message past 60,000 characters is cut; `luna_sessions`' transcript has it whole.

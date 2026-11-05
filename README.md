@@ -528,6 +528,9 @@ where Codex hooks run unasked (Settings): Codex runs a hook Luna gives it only s
   hide the report before it, and a dozen "still running" lines do not hide the "DONE" after them. A `luna_read` collects the answer only when it returns all of
   it, uncut, and the helper is done: one while it is still at work, or one with only the
   last message of several, does not count, and the notice still comes.
+- A job's end the helper has nothing to say about, or a job gone idle, does not wake the agent
+  by itself: it rides with the next notice, and comes alone only once nothing else is owed,
+  nothing in Luna is at work, or after 10 minutes.
 - A turn that stopped on an error (a usage limit, an API error, a crash, a kill) is reported as
   that, with the reason, not as finished; `luna_wait` has it as `failed`. What the helper said
   before it stopped comes with it, as it does for a turn a restart of Luna's core cut short. A
