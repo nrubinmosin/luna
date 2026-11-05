@@ -555,6 +555,9 @@ struct Registry {
     resumes: HashMap<String, ChatResume>,
     /// What each visible helper was first asked, by id.
     openings: HashMap<String, Opening>,
+    /// What each helper was spawned to do, one line of it (`first_words`), by id.
+    /// Kept in its ties: `agents.jsonl` is cut, and a helper can outlive its line.
+    tasks: HashMap<String, String>,
     /// What Luna named the worktree of a visible Claude Code helper, by id: the one
     /// it knows to be that helper's, what a fresh start goes back into if it is still
     /// as made (`worktree_for_start`). A background helper's is in its `Spec`.
@@ -801,6 +804,7 @@ fn reg() -> &'static Mutex<Registry> {
             spawns: HashMap::new(),
             resumes: HashMap::new(),
             openings: HashMap::new(),
+            tasks: HashMap::new(),
             worktree_names: HashMap::new(),
             worktrees_before: HashMap::new(),
             worktrees_left: HashMap::new(),
@@ -1365,6 +1369,9 @@ pub struct Ties {
     /// See `Registry::worktrees_left`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub worktrees_left: Vec<String>,
+    /// See `Registry::tasks`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
 }
 
 pub fn ties_of(id: &str) -> Option<Ties> {
@@ -1391,6 +1398,7 @@ fn ties_in(r: &Registry, id: &str) -> Option<Ties> {
         told_pending: r.owed.iter().filter(|((_, s), o)| s == id && o.told_pending).map(|((c, _), _)| c.clone()).collect(),
         worktrees_before: r.worktrees_before.get(id).cloned(),
         worktrees_left: r.worktrees_left.get(id).cloned().unwrap_or_default(),
+        task: r.tasks.get(id).cloned(),
     })
 }
 
@@ -1433,6 +1441,9 @@ pub fn tie_back(id: &str, provider: Provider, folder: &str, account_path: &str, 
     }
     if !ties.worktrees_left.is_empty() {
         r.worktrees_left.insert(id.to_string(), ties.worktrees_left);
+    }
+    if let Some(task) = ties.task {
+        r.tasks.insert(id.to_string(), task);
     }
     token
 }
@@ -1655,6 +1666,9 @@ fn take_up_chats(saved: SavedChats) {
         }
         if let Some(before) = ties.worktrees_before {
             r.worktrees_before.insert(c.id.clone(), before);
+        }
+        if let Some(task) = ties.task {
+            r.tasks.insert(c.id.clone(), task);
         }
         if !ties.worktrees_left.is_empty() {
             r.worktrees_left.insert(c.id.clone(), ties.worktrees_left);
@@ -2037,6 +2051,9 @@ pub struct SessionRow {
     pub settings: serde_json::Value,
     #[serde(flatten)]
     pub worktree: Worktree,
+    /// The first line of its spawn's prompt: none for a session nobody spawned.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
     /// An `autoDelete` helper idle with nobody owed its answer: the minutes
     /// left before it goes, unless it is read or written to first.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2190,19 +2207,17 @@ pub fn list(caller: &str, ids: Option<&[String]>, accounts: bool) -> Listing {
     let sessions = rows
         .into_iter()
         .map(|(id, k, name, group)| {
-            let deletes_in_min = reg()
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .auto
-                .get(&id)
-                .and_then(|a| a.idle_since)
-                .map(|since| AUTO_DELETE_IDLE_MS.saturating_sub(now_ms().saturating_sub(since)).div_ceil(60_000));
+            let (deletes_in_min, task) = {
+                let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+                let left = r.auto.get(&id).and_then(|a| a.idle_since);
+                (left.map(|since| AUTO_DELETE_IDLE_MS.saturating_sub(now_ms().saturating_sub(since)).div_ceil(60_000)), r.tasks.get(&id).cloned())
+            };
             let ts = crate::activity::turn_state(&id);
             // A listing is not a reading: it does not move what the caller
             // is taken to have seen of a session's turns.
             let turns_ended = ts.map(|t| t.turns_ended).unwrap_or(0);
             let (state, ask) = state_of(&id);
-            let worktree = worktree_of(&pty, &id);
+            let worktree = checkout_of(&pty, &id, &k);
             let signs = crate::background::signs(&id).unwrap_or_else(|| visible_signs(&pty, &id, k.provider));
             SessionRow {
                 state,
@@ -2216,6 +2231,7 @@ pub fn list(caller: &str, ids: Option<&[String]>, accounts: bool) -> Listing {
                 parent: k.parent,
                 settings: k.settings,
                 worktree,
+                task,
                 deletes_in_min,
                 signs,
             }
@@ -2454,7 +2470,8 @@ pub struct SkippedAccount {
     pub why: String,
 }
 
-/// Where a session in a worktree works: the path, and the branch there.
+/// Where a session in a worktree works: the path, and the branch and commit
+/// there.
 #[derive(Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Worktree {
@@ -2462,21 +2479,40 @@ pub struct Worktree {
     pub path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sha: Option<String>,
+}
+
+/// Where a session's CLI works now, as far as Luna can say.
+fn working_dir_of(pty: &crate::pty::PtyManager, id: &str) -> Option<String> {
+    if crate::background::has(id) {
+        crate::background::made_worktree(id).or_else(|| crate::background::working_dir(id))
+    } else {
+        pty.probe(id).and_then(|p| p.working_dir())
+    }
 }
 
 /// The worktree a session works in — the one it made or the one it was
 /// handed — with its branch; nothing for one in a plain folder. Its root,
 /// wherever in it the CLI says it is now.
 fn worktree_of(pty: &crate::pty::PtyManager, id: &str) -> Worktree {
-    let dir = if crate::background::has(id) {
-        crate::background::made_worktree(id).or_else(|| crate::background::working_dir(id))
-    } else {
-        pty.probe(id).and_then(|p| p.working_dir())
-    };
-    let Some((dir, project)) = dir.and_then(|d| crate::worktree::root_of(&d)) else {
+    let Some((dir, _)) = working_dir_of(pty, id).and_then(|d| crate::worktree::root_of(&d)) else {
         return Worktree::default();
     };
-    Worktree { branch: crate::worktree::branch_of(&project, &dir), path: Some(dir) }
+    let head = crate::worktree::head_at(&dir).unwrap_or_default();
+    Worktree { branch: head.branch, sha: head.sha, path: Some(dir) }
+}
+
+/// `worktree_of`, and for a session in a plain folder the branch and commit there:
+/// what a caller running several needs to tell where each of them has got to.
+fn checkout_of(pty: &crate::pty::PtyManager, id: &str, k: &Known) -> Worktree {
+    let mut worktree = worktree_of(pty, id);
+    if worktree.path.is_none() {
+        let head = crate::worktree::head_of(&working_dir_of(pty, id).unwrap_or_else(|| k.folder.clone())).unwrap_or_default();
+        worktree.branch = head.branch;
+        worktree.sha = head.sha;
+    }
+    worktree
 }
 
 #[derive(Serialize)]
@@ -2971,6 +3007,7 @@ fn spawn_with(caller: &str, mut params: SpawnParams, replaces: Option<u64>, stil
     if auto_delete {
         reg().lock().unwrap_or_else(|e| e.into_inner()).auto.insert(id.clone(), Auto::default());
     }
+    note_task(&id, &prompt);
     crate::agentlog::spawned(&crate::agentlog::Spawn {
         id: &id,
         parent: caller,
@@ -3195,6 +3232,7 @@ fn spawn_background(caller: &str, params: SpawnParams, account_path: String, in_
         forget(&id);
         return Err(e);
     }
+    note_task(&id, &params.prompt);
     crate::agentlog::spawned(&crate::agentlog::Spawn {
         id: &id,
         parent: caller,
@@ -5645,6 +5683,7 @@ pub fn forget(id: &str) {
     r.spawns.retain(|_, s| s.caller != id);
     r.resumes.remove(id);
     r.openings.remove(id);
+    r.tasks.remove(id);
     r.worktree_names.remove(id);
     r.worktrees_before.remove(id);
     r.worktrees_left.remove(id);
@@ -6121,8 +6160,24 @@ fn report_of(replies: &Said) -> usize {
 /// A report's first line that says anything, on one line and short, without
 /// its markdown: the verdict, for a caller deciding whether to open the file.
 fn opening_line(report: &str) -> Option<String> {
+    first_words(report, NOTICE_QUOTE)
+}
+
+/// The most of a helper's task `luna_list` gives: it comes with every row.
+const TASK_CHARS: usize = 100;
+
+/// Keeps what a helper was spawned on for `luna_list`.
+fn note_task(id: &str, prompt: &str) {
+    if let Some(task) = first_words(crate::pty::without_note(prompt), TASK_CHARS) {
+        reg().lock().unwrap_or_else(|e| e.into_inner()).tasks.insert(id.to_string(), task);
+    }
+}
+
+/// The first line of `text` that says anything, as `opening_line` puts it, cut to
+/// `most` characters.
+fn first_words(text: &str, most: usize) -> Option<String> {
     let mut fenced = false;
-    for line in report.lines() {
+    for line in text.lines() {
         let line = line.trim();
         if line.starts_with("```") || line.starts_with("~~~") {
             fenced = !fenced;
@@ -6141,10 +6196,10 @@ fn opening_line(report: &str) -> Option<String> {
         if !flat.chars().any(char::is_alphanumeric) {
             continue;
         }
-        if flat.chars().count() <= NOTICE_QUOTE {
+        if flat.chars().count() <= most {
             return Some(flat);
         }
-        let head: String = flat.chars().take(NOTICE_QUOTE).collect();
+        let head: String = flat.chars().take(most).collect();
         return Some(format!("{}…", head.trim_end()));
     }
     None
@@ -8060,7 +8115,7 @@ mod tests {
         let pending = spawned(Worktree::default(), true);
         assert_eq!(pending["worktreePending"], true);
         assert!(pending.get("worktree").is_none());
-        let made = spawned(Worktree { path: Some("C:\\w".into()), branch: None }, false);
+        let made = spawned(Worktree { path: Some("C:\\w".into()), ..Default::default() }, false);
         assert_eq!(made["worktree"], "C:\\w");
         assert!(made.get("worktreePending").is_none());
     }
@@ -9078,6 +9133,40 @@ mod tests {
         crate::background::gone_for_test("lj-s");
         forget("lj-s");
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// What a helper was spawned on is kept with it, not with `agents.jsonl`,
+    /// which is cut with the helper still there.
+    #[test]
+    fn a_helpers_task_is_one_line_and_comes_back_with_it() {
+        assert_eq!(first_words("\n# Fix the **build**\n\nThen the rest.", TASK_CHARS).as_deref(), Some("Fix the build"));
+        let long = "word ".repeat(40);
+        let cut = first_words(&long, TASK_CHARS).unwrap();
+        assert!(cut.ends_with('…') && cut.chars().count() <= TASK_CHARS + 1, "{cut}");
+        let none = serde_json::json!({});
+        // A background helper, through helpers.json.
+        register("tk-h", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("tk-c"), false, none.clone());
+        note_task("tk-h", "Review the diff\nin detail");
+        let saved: Ties = serde_json::from_slice(&serde_json::to_vec(&ties_of("tk-h").unwrap()).unwrap()).unwrap();
+        assert_eq!(saved.task.as_deref(), Some("Review the diff"));
+        forget("tk-h");
+        assert!(ties_of("tk-h").is_none() && !reg().lock().unwrap().tasks.contains_key("tk-h"), "it goes with the helper");
+        tie_back("tk-h", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", saved);
+        assert_eq!(reg().lock().unwrap().tasks["tk-h"], "Review the diff");
+        forget("tk-h");
+        // A visible one, through chat-ties.json.
+        register("tk-v", Provider::Codex, "C:\\p", "C:\\acc\\openai\\one", Some("tk-c"), false, none);
+        note_task("tk-v", "Run the lane");
+        let ties = ties_of("tk-v").unwrap();
+        let chat = SavedChat { id: "tk-v".into(), provider: Provider::Codex, folder: "C:\\p".into(), account_path: "C:\\acc\\openai\\one".into(), turns_ended: 0, transcript: None, mid_turn: false, ties };
+        let saved: SavedChats = serde_json::from_slice(&serde_json::to_vec(&SavedChats { chats: vec![chat], ..Default::default() }).unwrap()).unwrap();
+        forget("tk-v");
+        take_up_chats(saved);
+        assert_eq!(reg().lock().unwrap().tasks["tk-v"], "Run the lane");
+        forget("tk-v");
+        // A file from before there were tasks reads as none.
+        let older: Ties = serde_json::from_value(serde_json::json!({ "parent": null, "name": null, "settings": {}, "tools": false, "borrowed": false, "autoDelete": false, "owed": [], "seen": [] })).unwrap();
+        assert_eq!(older.task, None);
     }
 
     /// A job's end with no word from it, or an idle job, is told of with the
