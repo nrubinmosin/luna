@@ -8,6 +8,7 @@ import { numberedChats, useChats } from './chats.store';
 import { currentLayout, currentSlots, usePanes } from '../panes/panes.store';
 import { DeleteChatDialog } from './DeleteChatDialog';
 import { draftTag, useDrafts } from './drafts.store';
+import { CLEAR_WAITING_TITLE, clearWaiting, useMarked } from './marked.store';
 import { BackgroundChip } from '../agents/BackgroundChip';
 
 export function ChatRow({
@@ -27,6 +28,7 @@ export function ChatRow({
 }) {
   const active = useChats(s => s.active === chat.id);
   const tag = draftTag(useDrafts(s => s.by[chat.id]));
+  const marked = useMarked(s => !!s.by[chat.id]);
   // An agent may spawn into any folder, so a parent missing from this one
   // is not necessarily gone.
   const parentName = useChats(s => (orphan ? s.findChat(chat.parentId ?? null)?.name ?? null : null));
@@ -192,6 +194,12 @@ export function ChatRow({
         </span>
       )}
       <span className="row-tools">
+        {/* Clearing the `waiting` tag sits here, as on the pane's title bar:
+            once the pointer is on the row, these cover the tag. Only for the
+            marker's waiting, not a CLI's prompt. */}
+        {chat.status === 'waiting' && marked && (
+          <ToolButton icon="check" size={22} title={CLEAR_WAITING_TITLE} onClick={() => clearWaiting(chat.id)} />
+        )}
         <ToolButton
           icon="pencil"
           size={22}

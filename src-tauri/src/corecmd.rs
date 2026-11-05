@@ -64,6 +64,7 @@ pub fn dispatch(cmd: &str, args: Value) -> Result<Value, String> {
         "orphan_sessions" => call!(wait res args, pty::orphan_sessions, known: Vec<String>),
         "session_meta" => call!(wait res args, pty::session_meta, id: String, account_path: String),
         "session_modes" => call!(ok args, pty::session_modes, id: String),
+        "dismiss_waiting" => call!(ok args, crate::asking::dismiss_waiting, id: String, key: String),
         "background_helpers" => call!(ok args, crate::background::background_helpers),
         "background_promote" => call!(res args, crate::background::background_promote, id: String),
         "background_promoted" => call!(res args, crate::background::background_promoted, id: String, error: Option<String>),

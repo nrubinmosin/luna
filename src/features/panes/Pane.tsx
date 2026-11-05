@@ -9,6 +9,7 @@ import { ACCENT, limitColor, shortSessionId, tail2, tint } from '../../shared/li
 import { useChats } from '../chats/chats.store';
 import { DeleteChatDialog } from '../chats/DeleteChatDialog';
 import { draftTag, useDrafts } from '../chats/drafts.store';
+import { CLEAR_WAITING_TITLE, clearWaiting, useMarked } from '../chats/marked.store';
 import { claude, codex } from '../providers';
 import { PROVIDER_LABEL, type Chat } from '../../shared/types';
 import { currentLayout, currentSlots, usePanes } from './panes.store';
@@ -109,6 +110,7 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
   const folder = useChats(s => (chatId ? s.folderOf(chatId) : null));
   const drafts = useDrafts(s => (chatId ? s.by[chatId] : undefined));
   const tag = draftTag(drafts);
+  const marked = useMarked(s => (chatId ? !!s.by[chatId] : false));
   const [confirming, setConfirming] = useState(false);
   const [editing, setEditing] = useState(false);
   const [picking, setPicking] = useState<HTMLElement | null>(null);
@@ -275,6 +277,20 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
                   aria-label="Take off the board"
                   title="Take this chat off the board — it keeps running and stays in the list"
                   onClick={() => closePane(index)}
+                />
+              )}
+              {/* Last, so that coming and going it moves none of the others
+                  from under the pointer. Only for the marker's waiting: a
+                  prompt of the CLI's is answered in the terminal. */}
+              {chat.status === 'waiting' && marked && (
+                <button
+                  data-glyph="check"
+                  aria-label="Not waiting"
+                  title={CLEAR_WAITING_TITLE}
+                  onClick={e => {
+                    e.stopPropagation();
+                    clearWaiting(chat.id);
+                  }}
                 />
               )}
             </span>

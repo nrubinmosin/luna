@@ -1258,7 +1258,7 @@ impl PtyManager {
         take_and_shut_down(self, id).await;
         // Everything else that kept count of it, so nothing keeps the chat on
         // after it is gone: the agent registry (luna_sessions, the helper
-        // limit, its token), the turn counters, the question it ended on, the
+        // limit, its token), the turn counters, a waiting cleared on it, the
         // Codex rollout it held.
         crate::agents::forget(id);
         crate::activity::forget(id);
@@ -1992,12 +1992,18 @@ pub struct SessionMeta {
     /// Text Luna holds for it until that draft is sent or cleared: sends
     /// from other sessions, notices to it (agents.rs `held_count`).
     pub held: usize,
-    /// What the turn ended asking the user, when it said (asking.rs).
-    pub question: Option<String>,
+    /// `waiting` comes from the marker its last message ends on (asking.rs),
+    /// not from a prompt of its CLI's: the user may clear it by hand, by this
+    /// key, which names the ending it was shown on.
+    pub marked: Option<String>,
     /// The model's last message of a turn that is over, for the waiting
     /// marker; not sent to the window.
     #[serde(skip)]
     pub last_said: Option<String>,
+    /// When it was said, as the same read of the transcript has it: the same
+    /// words a turn later are another ending.
+    #[serde(skip)]
+    pub last_said_at: Option<String>,
 }
 
 /// A session's title as its CLI has it, and whether the user typed it.

@@ -38,7 +38,9 @@ src/                          frontend (feature-sliced)
     chats/    sidebar: folders + chats (drag source, click = show), chats.store;
               worktrees.store + WorktreesDialog (stale worktrees, the title bar's Worktrees);
               drafts.store — a running chat's unsent draft and the messages Luna holds for it
-              (the row's and title bar's `draft` tag, the pane's balloon)
+              (the row's and title bar's `draft` tag, the pane's balloon);
+              marked.store — which waiting chats wait by the marker, and clearing one by hand
+              (a check on the pane's title bar and with the row's rename and delete)
     panes/    1/2/3/4 grid, Pane (drop target), Terminal (xterm), panes.store
               (auto-tiling lives there too: TILE_ORDER, board grows/shrinks by ±1 pane);
               peek — a sheet over the dimmed board, the same pane without remounting;
@@ -126,7 +128,7 @@ src-tauri/src/
                 POST /hook/<chat>/<secret> takes Claude Code hooks' stdin;
                 POST /mcp with the session's bearer token — MCP for agents; a thread per request
   mcp.rs        the MCP server's JSON-RPC: initialize (with instructions), tools/list, tools/call;
-                thirteen luna_* tools with short descriptions (~2k tokens), offered to sessions given
+                twelve luna_* tools with short descriptions (~2k tokens), offered to sessions given
                 them; luna_permission only to a background Claude Code helper's CLI
   agents.rs     registry of sessions with tools and those they spawned: tokens, kinship,
                 rights (kill/delete — descendants only; sessions, send, read, wait — all), spawn via the frontend
@@ -140,8 +142,8 @@ src-tauri/src/
   agentlog.rs   <data>/agents.jsonl: a line per spawn and per end, for luna_sessions(history: true)
   activity.rs   sampler every 5 s: turn (hooks + registry / rollout), descendants, output →
                 busy / waiting / idle per session and a summary
-  asking.rs     a user's chat whose turn ended on a question: luna_waiting or the marker
-                setting → `waiting` in session_meta, cleared by their next prompt
+  asking.rs     a user's chat whose turn ended on the marker setting → `waiting` in
+                session_meta until the next turn, or until cleared by hand (dismiss_waiting)
   power.rs      keep-awake (PowerSetRequest) and "shut down when everything is done":
                 arming, quiet window, countdown, action; commands and the power://state event
   claude/
@@ -458,11 +460,13 @@ src-tauri/src/
   opens with a `UserPromptSubmit` (its prompt the `<task-notification>`) like any other (seen with
   2.1.318); after a `SubagentStop` the registry's "busy" is judged afresh all the same.
 - **A turn that ended on a question** (`asking.rs`) is waiting for the eye only: `session_meta` reads
-  `waiting` (with the question, if given) for a user's chat, no helper's, whose turn is over and either
-  called `luna_waiting` (kept in memory until the next prompt that is not a Luna notice: the
-  `UserPromptSubmit` hook, a `user_message` in the rollout) or whose last message (the transcript's tail,
-  the rollout's `task_complete.last_agent_message`) ends on a line holding the marker from settings.
-  The activity tracker keeps the turn idle, so power counts it as done.
+  `waiting`, with `marked`, for a user's chat, no helper's, whose turn is over and whose last message (the
+  transcript's tail, the rollout's `task_complete.last_agent_message`) ends on a line holding the marker
+  from settings. The user may clear it by hand (`dismiss_waiting`, a core command: a check on the pane's
+  title bar and the row's, which pass the key of the ending they showed); it stays cleared, in memory, while
+  those words and the time they were said, from the same read of the transcript or rollout, are the ones it
+  was shown on, so the next turn ending on the marker shows again, the same words included. A CLI's own prompt is never `marked` and cannot be cleared. The activity tracker keeps
+  the turn idle, so power counts it as done.
 - **Power follows busyness** (`power.rs`). Keep-awake — `PowerSetRequest(SystemRequired)`
   with a reason visible in `powercfg /requests`, while busy > 0, released after 60 s of quiet;
   `waiting` does not keep the machine up (nobody is answering), but blocks shutdown (the work is not

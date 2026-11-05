@@ -314,6 +314,7 @@ pub fn meta(pid: Option<u32>, resume: Option<&str>, cwd: &str, spawned_at_ms: u1
         m.title = renamed.or(titles.ai);
         m.first_prompt = cached_first_prompt(account_path, &scwd, &sid);
         m.last_said = end.last_said;
+        m.last_said_at = end.last_said_at;
     }
     Some(m)
 }
@@ -326,6 +327,8 @@ pub fn meta(pid: Option<u32>, resume: Option<&str>, cwd: &str, spawned_at_ms: u1
 struct Ending {
     context: Option<ContextRead>,
     last_said: Option<String>,
+    /// When those words were written, by their line's timestamp.
+    last_said_at: Option<String>,
     model: Option<String>,
     api_error: Option<serde_json::Value>,
 }
@@ -359,7 +362,7 @@ fn ending(path: &Path) -> Ending {
         }
         if !said_known {
             if let Some(said) = last_said_in(&text) {
-                end.last_said = said;
+                (end.last_said, end.last_said_at) = said.map_or((None, None), |(said, at)| (Some(said), at));
                 said_known = true;
             }
         }
@@ -383,7 +386,7 @@ fn ending(path: &Path) -> Ending {
 
 /// See `Ending`: Some(what was said, if anything) once the text reaches
 /// back to the model's last words or to a prompt, None if it does not.
-fn last_said_in(text: &str) -> Option<Option<String>> {
+fn last_said_in(text: &str) -> Option<Option<(String, Option<String>)>> {
     for line in text.lines().rev() {
         if !line.contains("\"assistant\"") && !line.contains("\"user\"") {
             continue;
@@ -400,7 +403,7 @@ fn last_said_in(text: &str) -> Option<Option<String>> {
                 }
                 let said: Vec<&str> = content.as_array().into_iter().flatten().filter(|b| b["type"] == "text").filter_map(|b| b["text"].as_str()).collect();
                 if !said.is_empty() {
-                    return Some(Some(said.join("\n")));
+                    return Some(Some((said.join("\n"), v["timestamp"].as_str().map(str::to_owned))));
                 }
             }
             // A tool's result is the turn going on; anything else a prompt,
@@ -1028,13 +1031,14 @@ mod reading_tests {
     fn a_turn_ends_on_its_last_words() {
         let prompt = r#"{"type":"user","message":{"role":"user","content":"which one?"}}"#;
         let said = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Pick one.\nSTATUS: AWAITING OPERATOR"}]}}"#;
-        let tool = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"mcp__luna__luna_waiting","input":{}}]}}"#;
+        let tool = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"mcp__luna__luna_notify","input":{"text":"done"}}]}}"#;
         let result = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}"#;
         let title = r#"{"type":"ai-title","aiTitle":"x"}"#;
-        assert_eq!(last_said_in(&[prompt, said, tool, result, title].join("\n")), Some(Some("Pick one.\nSTATUS: AWAITING OPERATOR".into())));
-        assert_eq!(last_said_in(&[said, prompt].join("\n")), Some(None), "a new prompt: nothing said to it yet");
-        assert_eq!(last_said_in(&[prompt, said, API_ERROR].join("\n")), Some(None), "the API's words, not the model's");
-        assert_eq!(last_said_in(title), None, "not far enough back to tell");
+        let said_of = |text: &str| last_said_in(text).map(|said| said.map(|(said, _)| said));
+        assert_eq!(said_of(&[prompt, said, tool, result, title].join("\n")), Some(Some("Pick one.\nSTATUS: AWAITING OPERATOR".into())));
+        assert_eq!(said_of(&[said, prompt].join("\n")), Some(None), "a new prompt: nothing said to it yet");
+        assert_eq!(said_of(&[prompt, said, API_ERROR].join("\n")), Some(None), "the API's words, not the model's");
+        assert_eq!(said_of(title), None, "not far enough back to tell");
 
         // As Claude Code 2.1.3xx ends a turn: its system prompt, written after
         // the last words and the usage they came with, outgrows a short tail.

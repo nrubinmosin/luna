@@ -139,10 +139,10 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   raises a desktop notification, since the window may well be in the tray. It plays the
   system's notification sound unless Settings → Notifications says not to, and a click on
   it brings the window up with that chat on the peek sheet, the board left as it was.
-  A turn that ends asking you something in plain words is waiting too: when the agent says so
-  with `luna_waiting` (chats with Luna tools), or when its last message ends on a line holding
-  the text set in Settings → Waiting for you (`AWAITING OPERATOR` to begin with). It stays
-  waiting until you next write to it; a power-off armed for when all is done does not wait
+  A turn that ends asking you something in plain words is waiting too, when its last message
+  ends on a line holding the text set in Settings → Waiting for you (`AWAITING OPERATOR` to
+  begin with). It stays waiting until you next write to it or clear it by hand with the check
+  on its pane's title bar or its row; a power-off armed for when all is done does not wait
   for it.
 - Context use is read straight out of the session transcript against the model's real
   window (fetched from the Models API), so it costs nothing and cannot drift.

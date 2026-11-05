@@ -116,7 +116,6 @@ fn handle(req: &mut tiny_http::Request) -> u16 {
     let mut body = String::new();
     let _ = req.as_reader().take(64 * 1024).read_to_string(&mut body);
     crate::agents::on_hook(chat_id, &body);
-    crate::asking::on_hook(chat_id, &body);
     match crate::activity::HookEvent::parse(&body) {
         Some(ev) => {
             crate::activity::on_hook(chat_id, ev);

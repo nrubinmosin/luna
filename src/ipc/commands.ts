@@ -30,7 +30,7 @@ const SLOW_BUDGET_MS: Record<string, number> = {
 // answer, in the order they are made.
 const CORE_CALL: ReadonlySet<string> = new Set([
   'ensure_claude_session', 'ensure_codex_session', 'kill_session', 'delete_session', 'stop_all_sessions',
-  'orphan_sessions', 'session_meta', 'session_modes', 'agent_spawned', 'agent_resumes', 'agent_spawns', 'chat_names', 'account_usage', 'power_state',
+  'orphan_sessions', 'session_meta', 'session_modes', 'dismiss_waiting', 'agent_spawned', 'agent_resumes', 'agent_spawns', 'chat_names', 'account_usage', 'power_state',
   'background_helpers', 'background_promote', 'background_promoted', 'background_kill', 'background_delete',
   'set_keep_awake', 'arm_power_off', 'disarm_power_off', 'rename_account', 'orphan_worktrees',
   'remove_orphan_worktrees'
@@ -269,8 +269,10 @@ export interface SessionMetaDto {
   draft: boolean;
   /** Messages Luna holds for it until that draft is sent or cleared. */
   held: number;
-  /** What a turn that is over ended asking the user, when it said (asking.rs). */
-  question: string | null;
+  /** `waiting` comes from the marker its last message ends on (asking.rs),
+   *  not from a prompt of its CLI's: the user may clear it by hand, by this key
+   *  of the ending it was shown on. */
+  marked: string | null;
 }
 
 export interface CliTitleDto {
@@ -313,6 +315,9 @@ export interface WaitingMarker {
 export const waitingMarker = () => call<WaitingMarker>('waiting_marker', {}, { on: true, text: 'AWAITING OPERATOR' });
 export const setWaitingMarker = (on: boolean, text: string) =>
   call<WaitingMarker>('set_waiting_marker', { on, text }, { on, text });
+/** A chat waiting by the marker is not waiting on you: cleared until a turn
+ *  ends on the marker again. */
+export const dismissWaiting = (id: string, key: string) => call<void>('dismiss_waiting', { id, key });
 
 /** Whether Codex runs a folder's hooks without asking: the default in
  *  Settings and what was kept for the folder (codex/hooks.rs). */
