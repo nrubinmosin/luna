@@ -42,7 +42,7 @@ macro_rules! call {
 /// runs each on a thread of its own, keystrokes and the few that must keep
 /// their order excepted (`in_order`).
 pub fn dispatch(cmd: &str, args: Value) -> Result<Value, String> {
-    use crate::{accounts, agents, power, pty, worktree};
+    use crate::{account_settings, accounts, agents, checks, power, pty, worktree};
     // A command with no arguments may come with none at all.
     let args = if args.is_null() { Value::Object(Default::default()) } else { args };
     match cmd {
@@ -86,6 +86,10 @@ pub fn dispatch(cmd: &str, args: Value) -> Result<Value, String> {
             folder: String, in_use: Vec<String>, account_paths: Vec<String>),
         "remove_orphan_worktrees" => call!(wait res args, worktree::remove_orphan_worktrees,
             folder: String, in_use: Vec<String>, account_paths: Vec<String>, paths: Vec<String>),
+        "sync_settings_now" => call!(res args, account_settings::sync_settings_now, provider: Provider),
+        "recommendations" => call!(res args, checks::recommendations),
+        "apply_recommendation" => call!(res args, checks::apply_recommendation, id: String, account: Option<String>, confirmed: bool),
+        "dismiss_recommendation" => call!(res args, checks::dismiss_recommendation, id: String, account: Option<String>, dismissed: bool),
         other => Err(format!("the core has no command {other}")),
     }
 }

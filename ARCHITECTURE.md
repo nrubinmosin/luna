@@ -186,6 +186,11 @@ src-tauri/src/
     session.rs  rollout files sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl: which is ours,
                 status, model, context, first prompt, cwd (rollout_cwd — where a --worktree
                 session went); thread name from session_index.jsonl
+  checks.rs     what Luna's features rely on, as checks with a status and a fix (Settings →
+                Recommendations, chip in the status bar): Luna's settings, account files, the
+                machine's policy files. Answered by the core; a fix is asked for by id.
+  account_use.rs  which accounts have a CLI of Luna's on them until it has exited, and the
+                holds that keep new ones off while a file the CLI rewrites is changed.
   account_settings.rs  recommended settings (settings.json + .claude.json / config.toml, key by
                 key, platform-aware; apply_recommended adds and removes keys), sync from the
                 parent account, and hand editing of the file (check_account_config: problems
@@ -1068,6 +1073,18 @@ src-tauri/src/
   adopted an orphan or browsed to. A folder only an agent ran a helper in holds its row in the sidebar
   and is not offered; folders stored before the flag count as picked if they hold a top-level chat,
   keep a start of their own or are the dialog's last folder.
+- **Recommendations** (`checks.rs`, Settings). Each check reads the file or setting a feature
+  depends on and returns `status` (ok, off, blocked, unknown) with `action`, `risk`, `note` and
+  `refused`. `apply_recommendation(id, account, confirmed)` re-reads everything and refuses a
+  risky fix unconfirmed; nothing is applied unasked. A fix that a sync could undo also goes on
+  the parent when the parent says the same, as one change: every file is read and edited under
+  `editing()`, a file lock shared by window and core, before the first is written, and a change
+  that leaves the check off is an error. `sync` takes the same lock before it reads the parent.
+  `.claude.json` and a Codex `config.toml` are CLI-rewritten: they go through
+  `account_use::quiet`, which spawn and helper turns wait out, and `Running` lasts until the
+  process has exited, not until it leaves the session map. An atomic rename only keeps a file
+  whole; it protects no concurrent update, and a CLI outside Luna is not excluded, which the
+  row says.
 - **Recommended settings** (Accounts → per-account button). A tick means "the file will have this
   key": applied keys open ticked; unticking one removes the key — only if the file still says exactly the
   recommended value, and parent objects/tables left empty go too; "Tick recommended" adds the

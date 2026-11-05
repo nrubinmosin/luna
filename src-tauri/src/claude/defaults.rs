@@ -75,22 +75,17 @@ fn read_object(path: &Path) -> Option<Value> {
     value.is_object().then_some(value)
 }
 
-/// The machine-wide file an administrator can put down. Highest precedence in
-/// the CLI, so it is read last below.
-#[cfg(windows)]
-fn managed_file() -> PathBuf {
-    let root = std::env::var("PROGRAMDATA").unwrap_or_else(|_| r"C:\ProgramData".into());
-    PathBuf::from(root).join("ClaudeCode").join("managed-settings.json")
-}
-
-#[cfg(target_os = "macos")]
-fn managed_file() -> PathBuf {
-    PathBuf::from("/Library/Application Support/ClaudeCode/managed-settings.json")
-}
-
-#[cfg(all(unix, not(target_os = "macos")))]
-fn managed_file() -> PathBuf {
-    PathBuf::from("/etc/claude-code/managed-settings.json")
+/// The folder of the machine-wide files an administrator can put down, as
+/// Claude Code 2.1.318 has it: fixed paths, no environment involved. Highest
+/// precedence in the CLI, so its file is read last below.
+pub(crate) fn managed_dir() -> PathBuf {
+    PathBuf::from(if cfg!(windows) {
+        r"C:\Program Files\ClaudeCode"
+    } else if cfg!(target_os = "macos") {
+        "/Library/Application Support/ClaudeCode"
+    } else {
+        "/etc/claude-code"
+    })
 }
 
 fn take(source: &str, raw: Option<&Value>) -> Option<Setting> {
@@ -122,7 +117,7 @@ pub fn claude_defaults(account_path: String, folder: String) -> Defaults {
         files.push(("project", dot.join("settings.json")));
         files.push(("project-local", dot.join("settings.local.json")));
     }
-    files.push(("managed", managed_file()));
+    files.push(("managed", managed_dir().join("managed-settings.json")));
 
     let (mut model, mut effort, mut mode) = (None, None, None);
     for (source, path) in files {

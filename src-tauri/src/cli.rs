@@ -133,7 +133,7 @@ fn current_file(provider: Provider) -> PathBuf {
     root(provider).join("current")
 }
 
-fn current_version(provider: Provider) -> Option<String> {
+pub(crate) fn current_version(provider: Provider) -> Option<String> {
     let v = fs::read_to_string(current_file(provider)).ok()?;
     let v = v.trim().to_string();
     (!v.is_empty() && version_binary(provider, &v).is_file()).then_some(v)

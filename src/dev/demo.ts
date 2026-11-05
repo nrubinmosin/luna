@@ -20,6 +20,7 @@ import { useLibrary } from '../features/library/library.store';
 import { useBackground } from '../features/agents/background.store';
 import { useAccounts } from '../features/accounts/accounts.store';
 import { useAccountsWindow } from '../features/accounts/AccountsPanel';
+import { useSettings } from '../features/settings/SettingsDialog';
 import { useChats } from '../features/chats/chats.store';
 import { useDrafts } from '../features/chats/drafts.store';
 import { useWorktrees } from '../features/chats/worktrees.store';
@@ -31,9 +32,10 @@ import { usePower } from '../features/power/power.store';
 
 /** `?demo`, `?demo=dark`, `?demo=peek`, `?demo=newchat`, `?demo=codex` (the same on a Codex
  *  account), `?demo=settings`, `?demo=accounts`, `?demo=recommended`, `?demo=editor`, `?demo=worktrees`,
+ *  `?demo=checks` / `checks-dark` (the recommendations in Settings), `checks-bar` / `checks-bar-dark` (their chip),
  *  `?demo=library`, `?demo=power`. */
-export type Scene = 'main' | 'dark' | 'peek' | 'newchat' | 'codex' | 'settings' | 'accounts' | 'recommended' | 'editor' | 'worktrees' | 'library' | 'power';
-const SCENES: Scene[] = ['dark', 'peek', 'newchat', 'codex', 'settings', 'accounts', 'recommended', 'editor', 'worktrees', 'library', 'power'];
+export type Scene = 'main' | 'dark' | 'peek' | 'newchat' | 'codex' | 'settings' | 'accounts' | 'recommended' | 'editor' | 'worktrees' | 'library' | 'power' | 'checks' | 'checks-dark' | 'checks-bar' | 'checks-bar-dark';
+const SCENES: Scene[] = ['dark', 'peek', 'newchat', 'codex', 'settings', 'accounts', 'recommended', 'editor', 'worktrees', 'library', 'power', 'checks', 'checks-dark', 'checks-bar', 'checks-bar-dark'];
 
 const hoursFromNow = (h: number) => new Date(Date.now() + h * 3600_000).toISOString();
 
@@ -370,6 +372,40 @@ let seeded = false;
  * and a screenshot of it is a picture of blanks. Everything else keeps the
  * caller's own fallback, and outside `?demo` this does nothing at all.
  */
+/** Only the scenes about them show any: the README's shots have no such chip. */
+let SHOWS_CHECKS = false;
+const CHECK = {
+  account: null, status: 'off', current: null, target: null, risk: null, note: null, action: null, refused: null, dismissed: false
+};
+const CHECKS = [
+  {
+    ...CHECK, id: 'claude-policy-hooks', title: 'Hooks are limited by policy', status: 'blocked', current: 'allowManagedHooksOnly',
+    why: "A policy on this computer keeps Claude Code from running Luna's hooks, on every account.",
+    note: 'Set by your administrator: nothing in Luna or an account can change it.'
+  },
+  {
+    ...CHECK, id: 'codex-hooks-unasked', title: 'Codex hooks without asking is off', current: 'off', target: 'on', action: 'Turn on',
+    why: "Codex drops a hook it has not been told to trust, so Luna's guard against endless waits never reaches Codex chats and helpers.",
+    risk: "This runs every project's hooks without review in every Codex chat and helper, not only Luna's guard: a repository you open can run what it likes on this computer."
+  },
+  {
+    ...CHECK, id: 'claude-hooks', account: 'claude/personal', title: 'Hooks are switched off', current: 'disableAllHooks: true', target: 'key removed', action: 'Turn hooks on',
+    why: "Claude Code runs no hook on this account, and Luna's are how it hears of a turn's end, a question and a subagent; the guard against endless waits goes with them.",
+    risk: "Every hook of this account comes back, not only Luna's: any written in its settings that you have not reviewed runs at its next event. This is the accounts' settings parent. The next settings sync copies it to work."
+  },
+  {
+    ...CHECK, id: 'claude-fullscreen', account: 'claude/work', title: 'Fullscreen was turned off', current: 'turned off on 2.1.318', target: 'cleared', action: 'Try fullscreen again',
+    why: 'Claude Code gave up on its fullscreen renderer here after launches that did not finish, so panes flicker and redraw badly on resize.',
+    note: 'Written only while no session of Luna\'s is on the account. A Claude Code running outside Luna can still race this write.',
+    refused: 'work is in use. Stop its sessions; one closing counts until its process has exited.'
+  },
+  {
+    ...CHECK, id: 'keep-awake', title: 'Keep awake is off', current: 'off', target: 'on', action: 'Turn on', dismissed: true,
+    why: 'The PC can go to sleep under a running chat or helper, and the work stops with it.'
+  },
+  { ...CHECK, id: 'waiting-marker', title: 'Waiting for you', status: 'ok', why: '' }
+];
+
 const RECOMMENDED = [
   { key: 'tui', current: '"fullscreen"', recommended: '"fullscreen"', why: 'Draws on the alternate screen with its own scrollback.', defaultOn: true, applied: true },
   { key: 'spinnerTipsEnabled', current: null, recommended: 'false', why: 'No tips under the spinner.', defaultOn: true, applied: false },
@@ -504,6 +540,7 @@ export function answer<T>(cmd: string, args: Record<string, unknown>, fallback: 
     } as unknown as T;
   }
   if (cmd === 'recommended_settings') return RECOMMENDED as unknown as T;
+  if (cmd === 'recommendations') return (SHOWS_CHECKS ? CHECKS : []) as unknown as T;
   if (cmd === 'check_account_config') return null as unknown as T;
   if (cmd === 'settings_sync_state') return { claude: 'personal', codex: null, onStart: true } as unknown as T;
   return fallback;
@@ -534,9 +571,10 @@ const BACKGROUND: BackgroundHelperDto[] = [
 
 export function seedDemo(scene: Scene) {
   seeded = true;
+  SHOWS_CHECKS = scene.startsWith('checks');
   useBackground.setState({ helpers: BACKGROUND });
   // The shell store has read the theme by now; tell it, not localStorage.
-  useShell.setState({ theme: scene === 'dark' ? 'dark' : 'light', pinned: true });
+  useShell.setState({ theme: scene.endsWith('dark') ? 'dark' : 'light', pinned: true });
   // The version readout, which in a browser has no app to ask.
   useUpdates.setState({ current: '0.6.0', checkedAt: Date.now() - 12 * 60_000 });
 
@@ -575,6 +613,11 @@ export function seedDemo(scene: Scene) {
   if (scene === 'newchat' || scene === 'codex') useNewChat.getState().openDialog('C:\\src\\luna');
   if (scene === 'accounts' || scene === 'recommended' || scene === 'editor') useAccountsWindow.getState().setOpen(true);
   if (scene === 'worktrees') useWorktrees.getState().setOpen(true);
+  if (scene === 'checks' || scene === 'checks-dark') {
+    useSettings.getState().setOpen(true);
+    // The confirm a risky fix asks for, opened the way a click would.
+    setTimeout(() => document.querySelector<HTMLElement>('[data-confirms]')?.click(), 600);
+  }
   if (scene === 'power') {
     POWER = { ...POWER, armed: { action: 'restart', quietS: 120, armedAtMs: 0, drain: true } };
     usePower.setState({ state: POWER, open: true });

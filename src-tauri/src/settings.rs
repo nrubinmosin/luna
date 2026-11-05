@@ -44,6 +44,8 @@ pub struct Settings {
     /// for its user (asking.rs).
     pub waiting_marker_on: bool,
     pub waiting_marker: String,
+    /// Recommendations (checks.rs) left off on purpose: no chip for these.
+    pub recommendations_dismissed: Vec<String>,
 }
 
 /// Which accounts something goes into: `all`, a provider's every account
@@ -169,6 +171,7 @@ impl Default for Settings {
             browsers: Default::default(),
             waiting_marker_on: true,
             waiting_marker: "AWAITING OPERATOR".into(),
+            recommendations_dismissed: Vec::new(),
         }
     }
 }

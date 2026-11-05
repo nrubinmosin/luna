@@ -972,7 +972,7 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
     // writes every account's copies, and every helper's events wait on that
     // lock (library.rs `session_args`).
     crate::library::lay_out("before a helper's turn");
-    let (args, dir, envs, provider, on_stdin, line) = {
+    let (args, dir, envs, provider, on_stdin, line, account) = {
         let r = lock();
         if r.closed {
             return Err("Luna is stopping".into());
@@ -984,7 +984,7 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
         let (args, dir, envs) = command_for(e, id);
         // A batch's own, on disk by now; what no batch carries needs only to be a uuid.
         let line = e.in_flight.first().map_or_else(new_id, |q| q.id.clone());
-        (args, dir, envs, e.spec.provider, stdin_text(e, prompt), line)
+        (args, dir, envs, e.spec.provider, stdin_text(e, prompt), line, e.spec.account_path.clone())
     };
     if !std::path::Path::new(&dir).is_dir() {
         return Err(format!("{dir} does not exist"));
@@ -1017,14 +1017,14 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
     // that could not be made after it would leave the process running with
     // nobody to reap it or end its turn. It is handed the process once the
     // turn is recorded, and nothing if the turn does not start.
-    type Pipes = (std::process::Child, Option<std::process::ChildStdout>, Option<std::process::ChildStderr>);
+    type Pipes = (std::process::Child, Option<std::process::ChildStdout>, Option<std::process::ChildStderr>, crate::account_use::Running);
     let (hand, take) = std::sync::mpsc::channel::<Pipes>();
     {
         let id = id.to_string();
         std::thread::Builder::new()
             .name(format!("luna-bg-{id}"))
             .spawn(move || {
-                let Ok((mut child, stdout, stderr)) = take.recv() else { return };
+                let Ok((mut child, stdout, stderr, _on_account)) = take.recv() else { return };
                 // Each pipe on a thread of its own (see `OutReader`). Both are
                 // read to their end as bytes: `lines()` stops at the first line
                 // that is not UTF-8 — a hook's output in the console's code page
@@ -1062,6 +1062,9 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
             })
             .map_err(thread_err)?;
     }
+    // Held by the thread above until it has reaped the process; dropped here
+    // on the ways out where the turn does not start.
+    let on_account = crate::account_use::running_on(&account);
     // Ahead of the process: what it starts is born after this (`turn_over`).
     let started_ms = crate::throttle::now_ms();
     let mut child = cmd.spawn().map_err(|e| {
@@ -1153,7 +1156,7 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
     crate::log::info("background", &format!("{} turn started, pid {pid:?}: {} {}", crate::agents::label(id), provider.as_str(), args.join(" ")));
     // The reader waits on the other end; should it be gone, the turn still
     // ends here rather than with nobody to say so.
-    if let Err(std::sync::mpsc::SendError((child, _, _))) = hand.send((child, stdout, stderr)) {
+    if let Err(std::sync::mpsc::SendError((child, _, _, _))) = hand.send((child, stdout, stderr, on_account)) {
         abandon(child, pid);
         turn_over(id, None);
     }

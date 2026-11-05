@@ -234,6 +234,10 @@ async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, String>) -> R
         return Err("no account config dir for this chat".into());
     }
 
+    // Counted from here until the process has exited, however long a delete
+    // takes over it: the map lets go of a session before it is gone.
+    let on_account = crate::account_use::running_on(&account_path);
+
     let pty_system = native_pty_system();
     let pair = pty_system
         .openpty(PtySize {
@@ -472,6 +476,7 @@ async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, String>) -> R
                 .wait()
                 .ok()
                 .map(|st| st.exit_code());
+            drop(on_account);
             crate::log::info("pty", &format!("session {} exited, code {code:?}", crate::agents::label(&id)));
             let pm = manager();
             // The exit names only the chat. A session already spawned under
@@ -1217,8 +1222,11 @@ impl PtyManager {
     }
 
     /// Whether a running session or a background helper uses this account
-    /// folder.
+    /// folder, or a CLI of theirs has yet to exit.
     pub fn account_in_use(&self, account_path: &str) -> bool {
+        if crate::account_use::running(account_path) {
+            return true;
+        }
         let running = {
             let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
             sessions.values().any(|s| s.alive.load(Ordering::SeqCst) && same_dir(&s.account_path, account_path))

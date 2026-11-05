@@ -5,9 +5,14 @@
 #
 #   ./screenshots.ps1
 #   ./screenshots.ps1 -Size 1600,1000
+#   ./screenshots.ps1 -Out test-build/shots -Scenes checks,checks-dark
+#
+# -Scenes shoots those of src/dev/demo.ts, each to a file of its name, instead of
+# the three the README shows.
 param(
     [string]$Out = 'docs/screenshots',
-    [string]$Size = '1760,1040'
+    [string]$Size = '1760,1040',
+    [string[]]$Scenes = @()
 )
 $ErrorActionPreference = 'Stop'
 
@@ -52,15 +57,24 @@ shoot() {
   echo shot $1
 }
 mkdir -p $SHOT_OUT
-shoot panes main
-shoot new-chat newchat
-shoot dark dark
+if test ${#SHOT_SCENES} -gt 0; then
+  IFS=,
+  set -- $SHOT_SCENES
+  IFS=
+  for scene; do shoot $scene $scene; done
+else
+  shoot panes main
+  shoot new-chat newchat
+  shoot dark dark
+fi
 '@ -replace "`r`n", "`n"
 
+$sceneList = $Scenes -join ','
 docker run --rm `
   -e COREPACK_ENABLE_DOWNLOAD_PROMPT=0 `
   -e SHOT_SIZE=$Size `
   -e SHOT_OUT="/app/$Out" `
+  -e SHOT_SCENES=$sceneList `
   @fontArgs `
   -v "${PWD}:/app" `
   -v luna-node-modules:/app/node_modules `

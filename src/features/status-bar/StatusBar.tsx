@@ -15,6 +15,7 @@ import { PowerChip } from '../power/PowerChip';
 import { useShortcuts } from '../shortcuts/ShortcutsDialog';
 import { useSettings } from '../settings/SettingsDialog';
 import { useLibrary, waiting } from '../library/library.store';
+import { RecommendationsChip } from '../settings/RecommendationsChip';
 
 const chipStyle = (loud: boolean) => ({
   cursor: 'default',
@@ -281,6 +282,7 @@ export function StatusBar() {
 
       <UpdateChips />
       <LibraryChip />
+      <RecommendationsChip />
       <PowerChip />
       <div
         onClick={() => useSettings.getState().setOpen(true)}
