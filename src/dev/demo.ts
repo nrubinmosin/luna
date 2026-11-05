@@ -27,12 +27,13 @@ import { useNewChat } from '../features/new-chat/newchat.store';
 import { usePanes, type Group, type Layout, type Slots } from '../features/panes/panes.store';
 import { useUpdates } from '../features/updates/updates.store';
 import { useShell } from '../app/shell.store';
+import { usePower } from '../features/power/power.store';
 
 /** `?demo`, `?demo=dark`, `?demo=peek`, `?demo=newchat`, `?demo=codex` (the same on a Codex
  *  account), `?demo=settings`, `?demo=accounts`, `?demo=recommended`, `?demo=editor`, `?demo=worktrees`,
- *  `?demo=library`. */
-export type Scene = 'main' | 'dark' | 'peek' | 'newchat' | 'codex' | 'settings' | 'accounts' | 'recommended' | 'editor' | 'worktrees' | 'library';
-const SCENES: Scene[] = ['dark', 'peek', 'newchat', 'codex', 'settings', 'accounts', 'recommended', 'editor', 'worktrees', 'library'];
+ *  `?demo=library`, `?demo=power`. */
+export type Scene = 'main' | 'dark' | 'peek' | 'newchat' | 'codex' | 'settings' | 'accounts' | 'recommended' | 'editor' | 'worktrees' | 'library' | 'power';
+const SCENES: Scene[] = ['dark', 'peek', 'newchat', 'codex', 'settings', 'accounts', 'recommended', 'editor', 'worktrees', 'library', 'power'];
 
 const hoursFromNow = (h: number) => new Date(Date.now() + h * 3600_000).toISOString();
 
@@ -319,7 +320,7 @@ const CLI: Record<Provider, CliStatusDto> = {
 const ROOT: AccountsRootInfo = { path: 'C:\\src\\luna-accounts', isDefault: true };
 
 // The chip in the footer: two sessions at work, the machine held awake.
-const POWER: PowerStateDto = {
+let POWER: PowerStateDto = {
   keepAwake: true,
   holding: true,
   armed: null,
@@ -574,6 +575,10 @@ export function seedDemo(scene: Scene) {
   if (scene === 'newchat' || scene === 'codex') useNewChat.getState().openDialog('C:\\src\\luna');
   if (scene === 'accounts' || scene === 'recommended' || scene === 'editor') useAccountsWindow.getState().setOpen(true);
   if (scene === 'worktrees') useWorktrees.getState().setOpen(true);
+  if (scene === 'power') {
+    POWER = { ...POWER, armed: { action: 'restart', quietS: 120, armedAtMs: 0, drain: true } };
+    usePower.setState({ state: POWER, open: true });
+  }
   if (scene === 'library') {
     useLibrary.getState().setOpen(true);
     // The changed copy's differences, opened the way a click would.

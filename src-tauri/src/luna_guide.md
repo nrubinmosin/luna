@@ -52,7 +52,7 @@ on one of the user's accounts.
   limit. When an account your live helpers run on reaches 90%, then 95%, of a window, a
   notice says so, once each until it resets (by the figures Luna's window keeps: none open,
   no notice).
-- A model the organization does not allow, swapped by the CLI, is in the spawn's `warnings`.
+- A model the organization does not allow, swapped by the CLI, is in `warnings`.
 
 ## Spawning
 - Codex's `approval`: auto-review has a reviewer model answer what Codex would ask
@@ -78,8 +78,8 @@ on one of the user's accounts.
   lists live sessions working in the same directory.
 - A prompt over 8,000 characters reaches a visible session as a file it is told to read.
 - `budgetTokens`: past that many `context` tokens (its own, not its subagents' or helpers') its
-  parent hears, once; nothing stops. The line rides like an idle one (see NOT done yet). `settings`
-  shows `budgetBreach` (first reading) and `budgetTold`.
+  parent hears, once; nothing stops. The line rides like an idle one. `settings`
+  shows `budgetBreach`, `budgetTold`.
 
 ## Getting the answer
 - After a spawn or a `luna_send` you can end your turn. Once that session answers, asks
@@ -182,3 +182,6 @@ on one of the user's accounts.
   with a timeout, or check `luna_list` when the user is back. "NOT done yet" comes once.
 - Before anything that stops Luna's core or the PC: `luna_list` for helpers at work; they lose
   their turns. To turn the PC off use `luna_power`, not a `shutdown` command.
+- `luna_power` `drain`: till the rule fires or is cancelled agents' `luna_spawn` and `luna_send`
+  are refused, `luna_answer` takes only a pending ask (with its `askId`). After `restart` Luna
+  starts at the next sign-in; that takes a person.

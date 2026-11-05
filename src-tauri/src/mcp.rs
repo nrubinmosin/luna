@@ -242,10 +242,10 @@ fn tools() -> Value {
                 "worktree": { "type": "boolean", "description": "its own git worktree" },
                 "name": { "type": "string" },
                 "tools": { "type": "boolean", "description": "these tools too (one level)" },
-                "visible": { "type": "boolean", "description": "a chat the user sees and types in" },
+                "visible": { "type": "boolean", "description": "a chat the user sees" },
                 "autoDelete": { "type": "boolean", "description": "deleted 30 min after its answer reached you; default: background true" },
                 "resumeOnRestart": { "type": "boolean", "description": "goes on by itself after a core restart" },
-                "budgetTokens": { "type": "integer", "description": "context tokens; past them you hear once, it runs on" }
+                "budgetTokens": { "type": "integer", "description": "context tokens; past them you hear, once" }
             }), &["prompt"]),
             "annotations": acts
         },
@@ -279,8 +279,8 @@ fn tools() -> Value {
                 "id": { "type": "string" },
                 "since": { "type": "integer" },
                 "last": { "type": "integer" },
-                "tools": { "type": "boolean", "description": "one-line tool call markers" },
-                "screen": { "type": "boolean", "description": "what the terminal shows (dialogs, errors, prompts)" }
+                "tools": { "type": "boolean", "description": "tool call markers" },
+                "screen": { "type": "boolean", "description": "what the terminal shows" }
             }), &["id"]),
             "annotations": reads
         },
@@ -318,16 +318,17 @@ fn tools() -> Value {
         },
         {
             "name": "luna_notify",
-            "description": "Desktop notification to the user, titled with your chat. For a result or blocker they must see now, not progress; a turn ending on a question to them already notifies. One per 10 s.",
+            "description": "Desktop notification to the user. For a result or blocker they must see now, not progress; a turn ending on a question to them already notifies. One per 10 s.",
             "inputSchema": s(json!({ "text": { "type": "string" } }), &["text"]),
             "annotations": acts
         },
         {
             "name": "luna_power",
-            "description": "Only when the user asked: shut down, hibernate or sleep the PC once all Luna sessions are quiet for quietS (default: the user's), CLIs closed first; off cancels. Returns busy, waitingForAPerson: what holds it up.",
+            "description": "Only when the user asked: shut down, restart, hibernate or sleep the PC once all Luna sessions are quiet for quietS (default: the user's), CLIs closed first; off cancels. drain: till then agents' luna_spawn, luna_send are refused, luna_answer needs a pending ask. Returns busy, waitingForAPerson.",
             "inputSchema": s(json!({
-                "action": { "type": "string", "enum": ["shutdown", "hibernate", "sleep", "off"] },
-                "quietS": { "type": "integer" }
+                "action": { "type": "string", "enum": ["shutdown", "restart", "hibernate", "sleep", "off"] },
+                "quietS": { "type": "integer" },
+                "drain": { "type": "boolean" }
             }), &["action"]),
             "annotations": ends
         }
@@ -375,7 +376,7 @@ fn call(caller: &str, params: &Value, this: &Call) -> Value {
     const STEERING: &[&str] = &[
         "provider", "account", "model", "effort", "permissionMode", "sandbox", "readOnly", "agent", "approval", "folder", "worktree", "visible",
         "tools", "autoDelete", "budgetTokens", "name", "until", "timeoutS", "afterTurn", "since", "last", "screen", "interrupt", "dropWorktree",
-        "group", "history", "allow", "ids", "mode", "resumeOnRestart", "force", "action", "quietS", "accounts",
+        "group", "history", "allow", "ids", "mode", "resumeOnRestart", "force", "action", "quietS", "drain", "accounts",
     ];
     let set: Vec<String> = STEERING.iter().filter_map(|k| a.get(*k).filter(|v| !v.is_null()).map(|v| format!("{k}={v}"))).collect();
     if !set.is_empty() {
@@ -420,16 +421,20 @@ fn run(caller: &str, params: &Value, this: &Call) -> Value {
     let out: Result<Value, String> = match name {
         "luna_list" => listing(caller, a),
         "luna_guide" => return json!({ "content": [{ "type": "text", "text": GUIDE }] }),
-        "luna_answer" => agents::answer(
-            caller,
-            &id,
-            a["askId"].as_str().filter(|k| !k.is_empty()),
-            &strings(&a["answers"]),
-            a["allow"].as_bool(),
-            a["note"].as_str(),
-            a["keys"].as_str().filter(|k| !k.is_empty()),
-        )
-        .map(|r| json!(r)),
+        "luna_answer" => {
+            let entered = crate::power::enter();
+            agents::answer(
+                caller,
+                &id,
+                a["askId"].as_str().filter(|k| !k.is_empty()),
+                &strings(&a["answers"]),
+                a["allow"].as_bool(),
+                a["note"].as_str(),
+                a["keys"].as_str().filter(|k| !k.is_empty()),
+                entered.draining(),
+            )
+            .map(|r| json!(r))
+        }
         "luna_sessions" => serde_json::from_value::<agents::SessionFilter>(a.clone())
             .map_err(|e| format!("bad arguments: {e}"))
             .and_then(|f| match f.history {
@@ -446,9 +451,13 @@ fn run(caller: &str, params: &Value, this: &Call) -> Value {
             }),
         "luna_spawn" => serde_json::from_value::<agents::SpawnParams>(a.clone())
             .map_err(|e| format!("bad arguments: {e}"))
-            .and_then(|p| agents::spawn(caller, p))
+            .and_then(|p| {
+                let _admitted = crate::power::admit()?;
+                agents::spawn(caller, p)
+            })
             .map(|s| json!(s)),
-        "luna_send" => agents::send(caller, &id, a["text"].as_str().unwrap_or(""), a["interrupt"].as_bool().unwrap_or(false))
+        "luna_send" => crate::power::admit()
+            .and_then(|_admitted| agents::send(caller, &id, a["text"].as_str().unwrap_or(""), a["interrupt"].as_bool().unwrap_or(false)))
             .map(|s| json!(s)),
         "luna_read" => agents::read(
             caller,
@@ -476,7 +485,7 @@ fn run(caller: &str, params: &Value, this: &Call) -> Value {
         "luna_delete" => agents::delete(caller, &id, a["dropWorktree"].as_bool().unwrap_or(false), a["force"].as_bool().unwrap_or(false))
             .map(|r| json!(r)),
         "luna_notify" => agents::notify(caller, a["text"].as_str().unwrap_or("")).map(|()| json!({ "ok": true })),
-        "luna_power" => crate::power::arm_for_agent(caller, a["action"].as_str().unwrap_or(""), a["quietS"].as_u64()),
+        "luna_power" => crate::power::arm_for_agent(caller, a["action"].as_str().unwrap_or(""), a["quietS"].as_u64(), a["drain"].as_bool()),
         _ => Err(format!("unknown tool {name}")),
     };
     match out {

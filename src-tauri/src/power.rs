@@ -1,5 +1,6 @@
 //! What the machine does about the sessions: stays awake while they work,
-//! and — when asked — shuts down, hibernates or sleeps once they are all done.
+//! and — when asked — shuts down, restarts, hibernates or sleeps once they are
+//! all done.
 //!
 //! Both follow activity.rs. Keep-awake is a Windows power request
 //! (`powercfg /requests` lists it as Luna's) held while any session is busy
@@ -13,12 +14,24 @@
 //! arming with someone waiting says so in a notification — then counts down a minute with a notification, and
 //! any activity in that minute cancels the count and leaves the arm in place.
 //! Sleep and hibernate leave the sessions running and stay armed, so after a
-//! wake the same rule applies again; shutdown first asks each CLI to quit.
+//! wake the same rule applies again; shutdown first asks each CLI to quit, and
+//! restart winds Luna down as a core leaving does and asks Windows to start the
+//! window at the next sign-in, once.
+//!
+//! A rule may drain: until it fires, agents start nothing new, so it converges
+//! rather than wait on work that keeps making work. Only the tools are refused
+//! (`admit`, from mcp.rs); nothing a person does goes through there. A call let in
+//! before a drain counts as at work until it has ended (`Entered`), and the arming
+//! waits for it (`settle`). What a CLI starts by itself, a native subagent or a
+//! `/loop`, Luna has no say in.
+//!
+//! The test build and unit tests never touch the machine: see `dry`.
 
 use crate::activity::Summary;
 use crate::throttle::now_ms;
 use serde::{Deserialize, Serialize};
-use std::sync::{Mutex, OnceLock};
+use std::path::{Path, PathBuf};
+use std::sync::{Condvar, Mutex, MutexGuard, OnceLock};
 
 /// How long after the last busy sample the awake hold is let go.
 const HOLD_LINGER_MS: u64 = 60_000;
@@ -33,11 +46,17 @@ const BLOCKED_LOG_EVERY_MS: u64 = 10 * 60_000;
 /// set in the evening and still on in the morning said nothing more, and
 /// nobody could tell why the PC had stayed up.
 const HOLD_LOG_EVERY_MS: u64 = 60 * 60_000;
+/// How long a drain being armed waits for calls already let in: past a
+/// `luna_spawn`'s own timeout. Longer, the rule still does not fire ahead of them.
+const SETTLE_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
+/// RunOnce takes a command of no more than this many characters.
+const RUN_ONCE_MAX: usize = 260;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Action {
     Shutdown,
+    Restart,
     Hibernate,
     Sleep,
     /// Runs the whole automaton and only writes a log line at the end.
@@ -48,6 +67,7 @@ impl Action {
     pub fn parse(s: &str) -> Option<Action> {
         match s {
             "shutdown" => Some(Action::Shutdown),
+            "restart" => Some(Action::Restart),
             "hibernate" => Some(Action::Hibernate),
             "sleep" => Some(Action::Sleep),
             "log" => Some(Action::Log),
@@ -57,6 +77,7 @@ impl Action {
     fn as_str(self) -> &'static str {
         match self {
             Action::Shutdown => "shutdown",
+            Action::Restart => "restart",
             Action::Hibernate => "hibernate",
             Action::Sleep => "sleep",
             Action::Log => "log",
@@ -70,6 +91,8 @@ pub struct Armed {
     pub action: Action,
     pub quiet_s: u64,
     pub armed_at_ms: u64,
+    /// Agents start nothing new until it fires or is disarmed.
+    pub drain: bool,
 }
 
 /// What the UI draws: the chip, its tooltip, and the menu's current values.
@@ -101,9 +124,18 @@ struct State {
     /// The last state sent to the UI, to send only changes.
     last_sent: Option<PowerState>,
     firing: bool,
+    /// What a drain's rule is firing: agents stay refused until that is over.
+    fired_drain: Option<Action>,
+    /// Agents' calls under way that may start work (`Entered`).
+    admitted: usize,
     /// The last "armed, not firing" line and when it went out.
     blocked_why: String,
     blocked_logged_ms: u64,
+}
+
+/// Whether a rule is held up: by a session, or by a call that may yet start one.
+fn held_up(st: &State, summary: &Summary) -> bool {
+    summary.busy > 0 || summary.waiting > 0 || st.admitted > 0
 }
 
 /// One line naming every session that holds the machine, or "" when none does.
@@ -188,7 +220,7 @@ fn advance(st: &mut State, keep_awake: bool, summary: &Summary, now: u64) -> Vec
 
     // -- when done --------------------------------------------------------
     if let Some(armed) = st.armed.clone() {
-        let blocked = summary.busy > 0 || summary.waiting > 0;
+        let blocked = held_up(st, summary);
         if let Some(ends) = st.countdown_ends_at_ms {
             if blocked {
                 st.countdown_ends_at_ms = None;
@@ -196,9 +228,16 @@ fn advance(st: &mut State, keep_awake: bool, summary: &Summary, now: u64) -> Vec
             } else if now >= ends && !st.firing {
                 st.firing = true;
                 st.countdown_ends_at_ms = None;
+                // Its end is reached: what a wake brings is free to work.
+                if armed.drain {
+                    st.fired_drain = Some(armed.action);
+                }
+                if let Some(a) = st.armed.as_mut() {
+                    a.drain = false;
+                }
                 // Sleep and hibernate keep the arm: the rule applies again after
                 // the wake, over a fresh quiet window.
-                if matches!(armed.action, Action::Shutdown | Action::Log) {
+                if matches!(armed.action, Action::Shutdown | Action::Restart | Action::Log) {
                     st.armed = None;
                 }
                 out.push(Effect::Fire(armed.action));
@@ -252,7 +291,9 @@ pub fn tick(summary: &Summary) {
             Effect::Fire(a) => {
                 std::thread::spawn(move || {
                     fire(a);
-                    state().lock().unwrap_or_else(|e| e.into_inner()).firing = false;
+                    let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
+                    st.firing = false;
+                    st.fired_drain = None;
                 });
             }
         }
@@ -269,9 +310,8 @@ pub fn tick(summary: &Summary) {
 
     // -- say why an armed rule is not firing --------------------------------
     if st.armed.is_some() && st.countdown_ends_at_ms.is_none() && !st.firing {
-        let blocked = summary.busy > 0 || summary.waiting > 0;
-        if blocked {
-            let why = blockers(summary);
+        if held_up(&st, summary) {
+            let why = Some(blockers(summary)).filter(|w| !w.is_empty()).unwrap_or_else(|| "an agent's call may yet start work".to_string());
             // Changes are judged on who is holding and how, not on the full
             // line: that carries "printed 12s ago" and whichever grep or
             // sleep happened to be running, so it differed on every check
@@ -328,6 +368,7 @@ fn plural(n: usize) -> String {
 fn verb(a: Action) -> &'static str {
     match a {
         Action::Shutdown => "shut down",
+        Action::Restart => "restart",
         Action::Hibernate => "hibernate",
         Action::Sleep => "put to sleep",
         Action::Log => "log-only",
@@ -356,8 +397,63 @@ fn send(chat_id: Option<&str>, title: &str, body: &str) {
     crate::emit::to_ui("ui://notify", Notice { title, body, chat_id });
 }
 
+/// Whether this build leaves the machine alone, logging what it would have done:
+/// the test build, and unit tests. Asked everywhere the PC would be touched, and
+/// what arming logs and `luna_power` returns says it, from this same call.
+pub fn dry() -> bool {
+    cfg!(test) || crate::paths::is_test()
+}
+
+/// The window's exe, which the core is not: it runs from a copy (corelink.rs).
+static WINDOW_EXE: OnceLock<PathBuf> = OnceLock::new();
+
+pub fn set_window_exe(exe: PathBuf) {
+    let _ = WINDOW_EXE.set(exe);
+}
+
+/// The command RunOnce is to run: the exe, quoted as a path with spaces must be.
+fn run_once_command(exe: &Path) -> Result<String, String> {
+    let exe = exe.to_string_lossy();
+    if exe.contains('"') {
+        return Err(format!("{exe} has a quote in it"));
+    }
+    let command = format!("\"{exe}\"");
+    if command.chars().count() >= RUN_ONCE_MAX {
+        return Err(format!("{command} is too long for RunOnce"));
+    }
+    Ok(command)
+}
+
+/// The window's start command after a restart, checked as far as can be: Windows
+/// drops a RunOnce value before running it, so one that fails is not tried again.
+fn relaunch_command() -> Result<String, String> {
+    let exe = WINDOW_EXE.get().ok_or("this core was not told the window's exe")?;
+    if !exe.is_file() {
+        return Err(format!("{} is not there", exe.display()));
+    }
+    run_once_command(exe)
+}
+
+/// What the log says of the relaunch. A failure does not stop the restart: the PC
+/// comes back all the same, and Luna is then started by hand.
+fn relaunch_line(asked: &Result<String, String>) -> String {
+    match asked {
+        Ok(command) => format!("RunOnce set: {command} starts at the next sign-in"),
+        Err(e) => format!("could not set Luna to start at the next sign-in: {e}; restarting all the same, Luna stays down until started by hand"),
+    }
+}
+
 /// Off the sampler thread: quitting the CLIs takes seconds.
 fn fire(action: Action) {
+    if dry() && action != Action::Log {
+        let relaunch = (action == Action::Restart).then(|| format!("; RunOnce would be: {:?}", relaunch_command())).unwrap_or_default();
+        crate::log::warn("power", &format!("dry run: would {}; the sessions and the PC are left alone{relaunch}", action.as_str()));
+        notify("Luna: dry run", &format!("Would {} the PC now. Nothing was done.", verb(action)));
+        if matches!(action, Action::Sleep | Action::Hibernate) {
+            crate::activity::reset_idle();
+        }
+        return;
+    }
     crate::log::warn("power", &format!("firing: {}", action.as_str()));
     match action {
         Action::Log => notify("Luna: log-only action fired", "All sessions were done; nothing was shut down."),
@@ -381,7 +477,102 @@ fn fire(action: Action) {
                 notify("Luna could not shut down the PC", "The sessions were closed. See luna.log.");
             }
         }
+        Action::Restart => {
+            let asked = relaunch_command().and_then(|command| os::run_once(&command).map(|()| command));
+            crate::log::warn("power", &relaunch_line(&asked));
+            let quit = crate::coreproc::wind_down();
+            crate::log::warn("power", &format!("{quit} sessions closed; restarting"));
+            if os::restart() {
+                crate::lifecycle::exiting("restart-when-done restarted the PC");
+                // As for a shutdown: Windows ends the process from WM_ENDSESSION.
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                crate::lifecycle::end_process();
+            } else {
+                crate::log::error("power", "restart command failed; sessions are closed but the PC is up");
+                notify("Luna could not restart the PC", "The sessions were closed: quit Luna and start it again. See luna.log.");
+            }
+        }
     }
+}
+
+// --------------------------------------------------------------- admission --
+
+/// Told when a call that was let in has ended (`Entered`).
+static ENTERED_ENDED: Condvar = Condvar::new();
+
+/// Why an agent is to start nothing now, if it is not to.
+fn refusal(st: &State) -> Option<String> {
+    let action = st.armed.as_ref().filter(|a| a.drain).map(|a| a.action).or(st.fired_drain)?;
+    Some(format!(
+        "Luna is draining: a {} is armed for when all sessions are quiet, so nothing new starts. What runs may finish, and luna_answer (a pending ask only), luna_kill and luna_delete still work. End your turn.",
+        action.as_str()
+    ))
+}
+
+/// A tool call that may start work, for as long as it runs: counted under the lock
+/// that arms a drain, so it is either in before the drain, and waited for, or
+/// told it is draining.
+pub struct Entered<'a> {
+    state: &'a Mutex<State>,
+    ended: &'a Condvar,
+    refusal: Option<String>,
+}
+
+impl Entered<'_> {
+    pub fn draining(&self) -> bool {
+        self.refusal.is_some()
+    }
+}
+
+impl Drop for Entered<'_> {
+    fn drop(&mut self) {
+        let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        st.admitted = st.admitted.saturating_sub(1);
+        drop(st);
+        self.ended.notify_all();
+    }
+}
+
+fn enter_on<'a>(state: &'a Mutex<State>, ended: &'a Condvar) -> Entered<'a> {
+    let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
+    st.admitted += 1;
+    Entered { state, ended, refusal: refusal(&st) }
+}
+
+/// Held across a `luna_answer`, which a drain narrows (`agents::answer`). Not to be
+/// taken with the registry's lock held: `tick` takes the two the other way round.
+pub fn enter() -> Entered<'static> {
+    enter_on(state(), &ENTERED_ENDED)
+}
+
+/// Held across a `luna_spawn` or `luna_send`, which a drain refuses.
+pub fn admit() -> Result<Entered<'static>, String> {
+    let entered = enter();
+    match &entered.refusal {
+        Some(why) => Err(why.clone()),
+        None => Ok(entered),
+    }
+}
+
+/// Waits, for as long as `wait`, for the calls let in before a drain to end, new
+/// ones being refused by now. Returns how many are left, which still hold the rule.
+fn settle<'a>(mut st: MutexGuard<'a, State>, ended: &Condvar, wait: std::time::Duration) -> (MutexGuard<'a, State>, usize) {
+    let deadline = std::time::Instant::now() + wait;
+    while st.admitted > 0 {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            break;
+        }
+        st = ended.wait_timeout(st, left).unwrap_or_else(|e| e.into_inner()).0;
+    }
+    let left = st.admitted;
+    (st, left)
+}
+
+/// Why this machine cannot do `action`, for a rule to be refused before anything
+/// is closed for it.
+fn unsupported(action: Action, windows: bool) -> Option<String> {
+    (action == Action::Restart && !windows).then(|| "Luna can restart the PC on Windows only".to_string())
 }
 
 // ---------------------------------------------------------------- commands --
@@ -405,21 +596,32 @@ pub fn set_keep_awake(on: bool) -> Result<PowerState, String> {
 }
 
 #[tauri::command]
-pub fn arm_power_off(action: String, quiet_s: u64) -> Result<PowerState, String> {
+pub fn arm_power_off(action: String, quiet_s: u64, drain: Option<bool>) -> Result<PowerState, String> {
     let action = Action::parse(&action).ok_or_else(|| format!("unknown action {action}"))?;
+    if let Some(why) = unsupported(action, cfg!(windows)) {
+        return Err(why);
+    }
     let quiet_s = quiet_s.clamp(30, 6 * 3600);
     crate::settings::update(|s| {
         s.power_action = action.as_str().to_string();
         s.quiet_window_s = quiet_s;
     })?;
     let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
-    st.armed = Some(Armed { action, quiet_s, armed_at_ms: now_ms() });
+    // Left unsaid it stands: a second agent's arm does not lift a drain by the way.
+    let drain = drain.unwrap_or_else(|| st.armed.as_ref().is_some_and(|a| a.drain));
+    st.armed = Some(Armed { action, quiet_s, armed_at_ms: now_ms(), drain });
     st.countdown_ends_at_ms = None;
     st.blocked_why.clear();
     st.blocked_logged_ms = 0;
     let summary = crate::activity::summary();
     let (waiting, stalled) = parked(&summary);
     let mut line = format!("armed: {} after {quiet_s}s quiet", action.as_str());
+    if drain {
+        line.push_str(", draining");
+    }
+    if dry() {
+        line.push_str(" (dry run: this build only logs what it would do)");
+    }
     if !waiting.is_empty() {
         line.push_str(&format!("; waiting for a person: {}", waiting.join(", ")));
     }
@@ -436,6 +638,13 @@ pub fn arm_power_off(action: String, quiet_s: u64) -> Result<PowerState, String>
         );
     }
     publish(&mut st, &summary);
+    if drain {
+        let (held, left) = settle(st, &ENTERED_ENDED, SETTLE_WAIT);
+        st = held;
+        if left > 0 {
+            crate::log::warn("power", &format!("{left} call(s) let in before the drain still run; the rule waits for them"));
+        }
+    }
     Ok(snapshot(&st, &crate::activity::summary()))
 }
 
@@ -454,25 +663,30 @@ pub fn disarm_power_off() -> PowerState {
 /// the way Luna takes it down — once every session is quiet, each CLI asked to
 /// quit first — rather than by a `shutdown` that takes the other chats' work
 /// with it. "off" disarms. Says what still holds the rule up, the caller aside:
-/// its own turn ends once it has answered.
-pub fn arm_for_agent(caller: &str, action: &str, quiet_s: Option<u64>) -> Result<serde_json::Value, String> {
+/// its own turn ends once it has answered, and whether this is a dry run (`dry`),
+/// for a test to see before any countdown can end.
+pub fn arm_for_agent(caller: &str, action: &str, quiet_s: Option<u64>, drain: Option<bool>) -> Result<serde_json::Value, String> {
     if action == "off" {
         disarm_power_off();
         return Ok(serde_json::json!({ "armed": null }));
     }
     let Some(a) = Action::parse(action).filter(|a| *a != Action::Log) else {
-        return Err(format!("unknown action {action:?}; use shutdown, hibernate, sleep or off"));
+        return Err(format!("unknown action {action:?}; use shutdown, restart, hibernate, sleep or off"));
     };
     let quiet_s = quiet_s.unwrap_or(crate::settings::get().quiet_window_s);
-    let state = arm_power_off(a.as_str().to_string(), quiet_s)?;
+    let state = arm_power_off(a.as_str().to_string(), quiet_s, drain)?;
     let name = |id: &str| crate::agents::chat_name(id).unwrap_or_else(|| id.to_string());
     let busy: Vec<String> = state.summary.sessions.iter().filter(|s| s.busy && s.id != caller).map(|s| name(&s.id)).collect();
     let (waiting, _) = parked(&state.summary);
-    Ok(serde_json::json!({
-        "armed": { "action": a.as_str(), "quietS": state.armed.as_ref().map_or(quiet_s, |x| x.quiet_s) },
+    let mut out = serde_json::json!({
+        "armed": { "action": a.as_str(), "quietS": state.armed.as_ref().map_or(quiet_s, |x| x.quiet_s), "drain": state.armed.as_ref().is_some_and(|x| x.drain) },
         "busy": busy,
         "waitingForAPerson": waiting,
-    }))
+    });
+    if dry() {
+        out["dryRun"] = serde_json::json!(true);
+    }
+    Ok(out)
 }
 
 /// Let go of the awake request on the way out.
@@ -543,18 +757,59 @@ mod os {
     }
 
     pub fn suspend(hibernate: bool) -> bool {
+        if super::dry() {
+            return false;
+        }
         // SAFETY: no pointers; the call returns once the machine wakes.
         unsafe { SetSuspendState(hibernate, false, false) }
     }
 
-    pub fn shutdown() -> bool {
+    fn shutdown_with(flag: &str) -> bool {
         use std::os::windows::process::CommandExt;
+        if super::dry() {
+            return false;
+        }
         std::process::Command::new("shutdown")
-            .args(["/s", "/t", "0"])
+            .args([flag, "/t", "0"])
             .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
             .status()
             .map(|s| s.success())
             .unwrap_or(false)
+    }
+
+    pub fn shutdown() -> bool {
+        shutdown_with("/s")
+    }
+
+    pub fn restart() -> bool {
+        shutdown_with("/r")
+    }
+
+    /// Has Windows run `command` at the user's next sign-in, once. Outside Luna's
+    /// data folder because only the OS can do this: a value under RunOnce is the
+    /// one-shot it offers, and it removes the value itself.
+    pub fn run_once(command: &str) -> Result<(), String> {
+        use windows::core::{w, HSTRING};
+        use windows::Win32::System::Registry::{RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ};
+        if super::dry() {
+            return Err("a dry run sets nothing".into());
+        }
+        let value = HSTRING::from(command);
+        // The terminating zero counts, as REG_SZ wants it.
+        let bytes = ((value.len() + 1) * 2) as u32;
+        // SAFETY: both names are literals, and `value` outlives the call, which copies.
+        unsafe {
+            RegSetKeyValueW(
+                HKEY_CURRENT_USER,
+                w!("Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce"),
+                w!("Luna"),
+                REG_SZ.0,
+                Some(value.as_ptr() as *const core::ffi::c_void),
+                bytes,
+            )
+        }
+        .ok()
+        .map_err(|e| e.to_string())
     }
 }
 
@@ -568,6 +823,12 @@ mod os {
     }
     pub fn shutdown() -> bool {
         false
+    }
+    pub fn restart() -> bool {
+        false
+    }
+    pub fn run_once(_command: &str) -> Result<(), String> {
+        Err("only Windows has RunOnce".into())
     }
 }
 
@@ -601,7 +862,115 @@ mod tests {
     }
 
     fn armed(action: Action, quiet_s: u64) -> State {
-        State { armed: Some(Armed { action, quiet_s, armed_at_ms: 0 }), ..Default::default() }
+        State { armed: Some(Armed { action, quiet_s, armed_at_ms: 0, drain: false }), ..Default::default() }
+    }
+
+    fn draining(action: Action, quiet_s: u64) -> State {
+        let mut st = armed(action, quiet_s);
+        st.armed.as_mut().unwrap().drain = true;
+        st.holding = true;
+        st
+    }
+
+    /// Runs a rule, all quiet, to its firing.
+    fn fired(st: &mut State) -> Vec<Effect> {
+        let quiet = board(0, 0, Some(0));
+        advance(st, true, &quiet, 60_000);
+        advance(st, true, &quiet, 60_000 + COUNTDOWN_MS)
+    }
+
+    #[test]
+    fn nothing_here_touches_the_machine_in_a_test() {
+        assert!(dry());
+    }
+
+    #[test]
+    fn restart_fires_once_and_drops_the_arm_as_a_shutdown_does() {
+        assert_eq!(Action::parse("restart"), Some(Action::Restart));
+        let mut st = armed(Action::Restart, 60);
+        st.holding = true;
+        assert_eq!(fired(&mut st), vec![Effect::Fire(Action::Restart)]);
+        assert!(st.armed.is_none());
+    }
+
+    #[test]
+    fn restart_is_refused_before_anything_where_the_os_cannot() {
+        assert!(unsupported(Action::Restart, false).unwrap().contains("Windows only"));
+        assert_eq!(unsupported(Action::Restart, true), None);
+        assert_eq!(unsupported(Action::Shutdown, false), None);
+        if !cfg!(windows) {
+            let e = arm_for_agent("me", "restart", Some(60), Some(true)).unwrap_err();
+            assert!(e.contains("Windows only"), "{e}");
+        }
+    }
+
+    #[test]
+    fn the_relaunch_is_quoted_and_a_bad_one_does_not_stop_the_restart() {
+        let command = run_once_command(Path::new("C:\\Program Files\\Luna\\luna.exe")).unwrap();
+        assert_eq!(command, "\"C:\\Program Files\\Luna\\luna.exe\"");
+        assert!(relaunch_line(&Ok(command)).contains("next sign-in"));
+        assert!(run_once_command(Path::new("C:\\a\"b.exe")).is_err());
+        assert!(run_once_command(Path::new(&"x".repeat(RUN_ONCE_MAX))).is_err());
+        assert!(relaunch_line(&Err("no".into())).contains("restarting all the same"));
+    }
+
+    #[test]
+    fn a_drain_refuses_until_its_rule_has_fired_and_not_after() {
+        let plain = armed(Action::Shutdown, 60);
+        assert_eq!(refusal(&plain), None, "arming alone leaves agents free");
+        for action in [Action::Sleep, Action::Hibernate, Action::Restart, Action::Shutdown] {
+            let mut st = draining(action, 60);
+            assert!(refusal(&st).unwrap().contains(&format!("a {} is armed", action.as_str())));
+            assert_eq!(fired(&mut st), vec![Effect::Fire(action)]);
+            assert!(refusal(&st).is_some(), "still, while it fires");
+            // What the firing thread does once it is over.
+            st.firing = false;
+            st.fired_drain = None;
+            assert_eq!(refusal(&st), None, "{action:?}");
+            let kept = matches!(action, Action::Sleep | Action::Hibernate);
+            assert_eq!(st.armed.is_some(), kept);
+        }
+    }
+
+    #[test]
+    fn a_call_let_in_holds_the_rule_up_and_stops_its_count() {
+        let mut st = draining(Action::Restart, 60);
+        st.admitted = 1;
+        let quiet = board(0, 0, Some(0));
+        assert_eq!(advance(&mut st, true, &quiet, 120_000), vec![], "no count over a call that may start work");
+        st.admitted = 0;
+        assert_eq!(advance(&mut st, true, &quiet, 120_000), vec![Effect::Countdown { quiet_for_s: 120 }]);
+        st.admitted = 1;
+        assert_eq!(advance(&mut st, true, &quiet, 121_000), vec![Effect::Cancelled]);
+    }
+
+    #[test]
+    fn a_call_let_in_before_a_drain_is_waited_for_and_one_after_it_is_refused() {
+        let state = Mutex::new(State::default());
+        let ended = Condvar::new();
+        let early = enter_on(&state, &ended);
+        assert!(!early.draining());
+        std::thread::scope(|s| {
+            let arming = s.spawn(|| {
+                let mut st = state.lock().unwrap();
+                st.armed = Some(Armed { action: Action::Restart, quiet_s: 60, armed_at_ms: 0, drain: true });
+                settle(st, &ended, std::time::Duration::from_secs(30)).1
+            });
+            while state.lock().unwrap().armed.is_none() {
+                std::thread::yield_now();
+            }
+            assert!(enter_on(&state, &ended).draining(), "refused from the moment it is armed");
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            assert!(!arming.is_finished(), "the arming waits for the call let in");
+            drop(early);
+            assert_eq!(arming.join().unwrap(), 0);
+        });
+        assert_eq!(state.lock().unwrap().admitted, 0, "a refused call left nothing counted");
+        // One that outlasts the wait is said, and still holds the rule.
+        let late = enter_on(&state, &ended);
+        let st = state.lock().unwrap();
+        assert_eq!(settle(st, &ended, std::time::Duration::from_millis(10)).1, 1);
+        drop(late);
     }
 
     #[test]
@@ -709,8 +1078,8 @@ mod tests {
     #[test]
     fn an_agent_arms_only_what_the_chip_offers() {
         for bad in ["reboot", "log", ""] {
-            let e = arm_for_agent("me", bad, None).unwrap_err();
-            assert!(e.contains("use shutdown, hibernate, sleep or off"), "{e}");
+            let e = arm_for_agent("me", bad, None, None).unwrap_err();
+            assert!(e.contains("use shutdown, restart, hibernate, sleep or off"), "{e}");
         }
         assert!(state().lock().unwrap().armed.is_none(), "nothing armed on a refusal");
     }

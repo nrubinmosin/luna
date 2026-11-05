@@ -383,8 +383,8 @@ account, Codex instead of Claude — with an opening prompt, wait for its reply,
 follow-ups, answer what it asks, and delete it when done, worktree and its `worktree-*` branch included if it asked for one.
 `luna_notify` lets it raise a desktop notification mid-turn, titled with its chat's name and
 opening that chat when clicked, at most one every 10 seconds. `luna_power`, for when the user
-asks for it, arms the same shut-down, hibernate or sleep "when done" as the power chip, which
-shows it and cancels it. A spawn may set `budgetTokens`: once that helper's context passes it,
+asks for it, arms the same shut-down, restart, hibernate or sleep "when done" as the power chip,
+which shows it and cancels it. A spawn may set `budgetTokens`: once that helper's context passes it,
 its parent hears so, once, and nothing is stopped. The
 tools and a short instruction cost about 2k tokens of context once per session; the full
 account of sessions, accounts, models and tools is `luna_guide`'s, read only when the model
@@ -596,12 +596,16 @@ The power field in the status bar opens the two rules the machine follows.
   sleep timer for the request: if nobody has touched the PC for longer than that timer, it
   sleeps the moment the hold is let go. `luna.log` says when the hold was set and let go, and
   which session held it last, and every hour it is kept, which process keeps it.
-- **When every session is done: shut down, hibernate or sleep.** Armed for the run, not
+- **When every session is done: shut down, restart, hibernate or sleep.** Armed for the run, not
   saved. The chip shows what the rule is waiting on; once everything has been quiet for the
   chosen window it counts down a minute with a notification, and a click on the chip cancels.
   Any activity during the count cancels it too and leaves the rule armed. Shutdown asks each
   CLI to quit first; sleep and hibernate leave the sessions running, and the same rule applies
-  again after the wake. While the rule is armed and something holds it up, `luna.log` says
+  again after the wake. Restart (Windows) closes the sessions the same way and has Windows start
+  Luna once at the next sign-in, so someone has to sign in; if that cannot be set the log says so
+  and the PC restarts all the same. **Start nothing new** drains: until the rule fires or is
+  disarmed, agents' `luna_spawn` and `luna_send` are refused and `luna_answer` takes only a pending
+  question or permission, so the rule converges; what you do yourself is never refused. While the rule is armed and something holds it up, `luna.log` says
   which session and why, so a morning with the PC still on can be read back. An agent asked
   to turn the PC off when done arms this same rule with `luna_power`.
 

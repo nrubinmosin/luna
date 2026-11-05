@@ -314,6 +314,8 @@ fn launch() -> Result<(), String> {
         .arg(&data)
         .arg("--log")
         .arg(&log)
+        // Its own exe is a copy, and a restart of the PC starts this one again.
+        .args(std::env::current_exe().ok().map(|exe| [std::ffi::OsString::from("--window-exe"), exe.into()]).into_iter().flatten())
         // Not in any project folder, so it never holds one open.
         .current_dir(&data)
         .stdin(std::process::Stdio::null())

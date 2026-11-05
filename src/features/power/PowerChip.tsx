@@ -15,7 +15,7 @@ const chipStyle = (loud: boolean) => ({
   fontWeight: loud ? 700 : 400
 });
 
-const VERB = { shutdown: 'shutdown', hibernate: 'hibernate', sleep: 'sleep', log: 'log' } as const;
+const VERB = { shutdown: 'shutdown', restart: 'restart', hibernate: 'hibernate', sleep: 'sleep', log: 'log' } as const;
 
 /**
  * The footer's word about the machine: a power symbol to open the menu, and
@@ -78,11 +78,12 @@ export function PowerChip() {
   } else if (armed) {
     // Someone waiting for an answer holds the rule indefinitely: say so on
     // the chip itself, not only in its tooltip.
-    text = `${VERB[armed.action]} when done${summary.waiting ? ` · ${summary.waiting} waiting for you` : ''}`;
+    text = `${VERB[armed.action]} when done${armed.drain ? ' · draining' : ''}${summary.waiting ? ` · ${summary.waiting} waiting for you` : ''}`;
     title = blockers.length
       ? `Waiting on:\n${blockers.join('\n')}`
       : `All quiet — ${VERB[armed.action]} once it stays that way for ${armed.quietS / 60} min. Click to change or disarm.`;
     if (stalled.length) title += `\n\nCounted as done:\n${stalled.join('\n')}`;
+    if (armed.drain) title += '\n\nDraining: agents start nothing new until it fires or you disarm.';
     loud = true;
   } else {
     const busy = summary.sessions.filter(s => s.busy).length;

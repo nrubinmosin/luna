@@ -498,8 +498,15 @@ src-tauri/src/
   will move there. Arming with `waiting` > 0 sends a notification with the chat names at once. Arming lasts until Luna exits; while armed the hold is always kept, otherwise the PC would sleep in the
   quiet window. The automaton: busy = 0 and waiting = 0 continuously for quiet_s → a 60 s countdown with
   a notification → action. Shutdown closes sessions via `shut_down` with a 5 s grace (the CLIs'
-  exit hooks) and `shutdown /s /t 0`; sleep/hibernate — `SetSuspendState`, sessions live on, arming stays,
-  and the clock jump on wake resets the quiet window and the countdown. An armed rule that
+  exit hooks) and `shutdown /s /t 0`; restart (Windows only, refused at arming elsewhere) — a RunOnce value
+  with the window's quoted exe (`--window-exe`: the core runs from a copy; a failure is logged and the
+  restart goes on), `coreproc::wind_down` as a core leaving does, so a chat stalled on a limit keeps its
+  mid-turn state, and `shutdown /r /t 0`; sleep/hibernate — `SetSuspendState`, sessions live on, arming stays,
+  and the clock jump on wake resets the quiet window and the countdown. A drain (`Armed::drain`, "start
+  nothing new") refuses `luna_spawn` and every `luna_send` in `mcp::run` alone, so nothing a person does is
+  touched, and narrows `luna_answer` to a pending ask; each such call is counted under the lock that arms
+  (`power::enter`), the arming waits for those already in (`settle`, bounded, and they hold the rule up until
+  done), and firing ends the drain. The test build and unit tests never reach the OS (`power::dry`). An armed rule that
   does not fire is explained in `luna.log`: a line `armed, not firing: <chat> <why> [hook …,
   registry …]` when the reason changes (no more than once a minute) and every 10 minutes with no change;
   `luna.log` takes INFO too (log.rs): events only — session start/exit/delete, helper turns, one line per

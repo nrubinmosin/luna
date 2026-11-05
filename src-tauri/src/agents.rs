@@ -4471,6 +4471,23 @@ const ANSWER_SETTLE: std::time::Duration = std::time::Duration::from_millis(1500
 
 /// `luna_answer`: answers what the session waits on — a question or a
 /// permission (`ask_of`), or with `keys`, any dialog on its screen.
+/// Under a drain (power.rs) an answer goes only to what a session holds for one
+/// now, named where it has a name: keys or words to a session with nothing pending
+/// would start a turn. A dialog Luna cannot read waits for a person.
+fn drain_lets_answer(id: &str, ask: Option<&Ask>, ask_id: Option<&str>, keys: Option<&str>) -> Result<(), String> {
+    let Some(ask) = ask else {
+        return Err(format!("Luna is draining, and session {id} has no question or permission pending that Luna can read, so nothing goes to it"));
+    };
+    if keys.is_some() && !ask.blocking {
+        return Err(format!("Luna is draining, and session {id} holds no dialog for keys: answer its question with answers"));
+    }
+    if ask.id.is_some() && ask.id.as_deref() != ask_id {
+        return Err(format!("Luna is draining: name the ask you answer, askId {:?}", ask.id.as_deref().unwrap_or("")));
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn answer(
     caller: &str,
     id: &str,
@@ -4479,6 +4496,7 @@ pub fn answer(
     allow: Option<bool>,
     note: Option<&str>,
     keys: Option<&str>,
+    draining: bool,
 ) -> Result<Answered, String> {
     let known = authorize_send(caller, id)?;
     let pty = crate::pty::manager();
@@ -4495,6 +4513,9 @@ pub fn answer(
     };
     let baseline = crate::activity::turn_state(id).map(|t| t.turns_ended).unwrap_or(0);
     let ask = ask_of(id);
+    if draining {
+        drain_lets_answer(id, ask.as_ref(), ask_id, keys)?;
+    }
     // What the session says on the answer starts right away, long before
     // the call returns.
     let cursor = transcript_end(id);
@@ -11378,6 +11399,23 @@ mod tests {
         assert!(riders_go(false, true, fresh, now, 1), "owed nothing else");
         assert!(riders_go(true, false, fresh, now, 1), "a notice is going in anyway");
         assert!(riders_go(false, false, now - RIDE_MAX_MS, now, 1), "ten minutes at most");
+    }
+
+    #[test]
+    fn a_drain_lets_only_an_identified_ask_be_answered() {
+        let ask = |id: Option<&str>, blocking: bool| Ask { id: id.map(str::to_owned), kind: "question", blocking, questions: Vec::new(), tool: None, detail: None };
+        let refused = |r: Result<(), String>| r.unwrap_err();
+        // Nothing pending: neither words nor keys.
+        assert!(refused(drain_lets_answer("s", None, None, None)).contains("no question or permission pending"));
+        assert!(refused(drain_lets_answer("s", None, None, Some("continue working{enter}"))).contains("no question or permission pending"));
+        // A dialog takes keys; a question beside its work holds none.
+        assert_eq!(drain_lets_answer("s", Some(&ask(None, true)), None, Some("{down}{enter}")), Ok(()));
+        assert!(refused(drain_lets_answer("s", Some(&ask(None, false)), None, Some("go on{enter}"))).contains("no dialog"));
+        assert_eq!(drain_lets_answer("s", Some(&ask(None, false)), None, None), Ok(()));
+        // A background helper's has an id, and it is to be named.
+        assert!(refused(drain_lets_answer("s", Some(&ask(Some("a1"), true)), None, None)).contains("a1"));
+        assert!(refused(drain_lets_answer("s", Some(&ask(Some("a1"), true)), Some("a0"), None)).contains("a1"));
+        assert_eq!(drain_lets_answer("s", Some(&ask(Some("a1"), true)), Some("a1"), None), Ok(()));
     }
 
     fn tooled(id: &str) {
