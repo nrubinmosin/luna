@@ -16,6 +16,9 @@ const SLOW_BUDGET_MS: Record<string, number> = {
   saved_title: 5000,
   ensure_claude_session: 30_000,
   ensure_codex_session: 30_000,
+  // Reads every account's files, and looks twice at a blank one.
+  recommendations: 5000,
+  apply_recommendation: 5000,
   // Both give the CLI a moment to quit on its own before killing it; deleting
   // then waits for the worktree to come free.
   kill_session: 5000,
@@ -33,7 +36,7 @@ const CORE_CALL: ReadonlySet<string> = new Set([
   'orphan_sessions', 'session_meta', 'session_modes', 'dismiss_waiting', 'agent_spawned', 'agent_resumes', 'agent_spawns', 'chat_names', 'account_usage', 'power_state',
   'background_helpers', 'background_promote', 'background_promoted', 'background_kill', 'background_delete',
   'set_keep_awake', 'arm_power_off', 'disarm_power_off', 'rename_account', 'orphan_worktrees',
-  'remove_orphan_worktrees'
+  'remove_orphan_worktrees', 'sync_settings_now', 'recommendations', 'apply_recommendation', 'dismiss_recommendation'
 ]);
 const CORE_SEND: ReadonlySet<string> = new Set(['write_session', 'resize_session']);
 
@@ -716,6 +719,32 @@ export const recommendedSettings = (provider: Provider, accountPath: string) =>
 /** Sets the `add` keys and takes the `remove` ones out of the file. */
 export const applyRecommended = (provider: Provider, accountPath: string, add: string[], remove: string[]) =>
   call<void>('apply_recommended', { provider, accountPath, add, remove });
+
+/** One thing a feature of Luna's relies on, as checks.rs finds it. */
+export interface CheckDto {
+  id: string;
+  /** `provider/name`; null for what holds for the whole machine. */
+  account: string | null;
+  title: string;
+  why: string;
+  status: 'ok' | 'off' | 'blocked' | 'unknown';
+  current: string | null;
+  target: string | null;
+  /** To show and have confirmed before `action`. */
+  risk: string | null;
+  note: string | null;
+  action: string | null;
+  /** Why `action` cannot be pressed just now. */
+  refused: string | null;
+  dismissed: boolean;
+}
+
+export const recommendations = () => call<CheckDto[]>('recommendations', {}, []);
+/** Runs the check's fix and returns every check as it now stands. */
+export const applyRecommendation = (id: string, account: string | null, confirmed: boolean) =>
+  call<CheckDto[]>('apply_recommendation', { id, account, confirmed });
+export const dismissRecommendation = (id: string, account: string | null, dismissed: boolean) =>
+  call<CheckDto[]>('dismiss_recommendation', { id, account, dismissed });
 
 export interface SyncStateDto {
   claude: string | null;

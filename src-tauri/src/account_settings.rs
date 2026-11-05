@@ -321,15 +321,194 @@ fn recommend(provider: Provider, account_path: &str) -> Result<Vec<Rec>, String>
     Ok(out)
 }
 
-/// One change of an account's config files at a time in this process. Each
-/// reads its file, changes it and writes it back, and two at once — the start-up
-/// sync on its thread, a chat starting that writes its folder's trust — would
-/// each write back what it read without the other's change. Every writer of
-/// them is in the window's process; the CLIs write them too, which nothing here
-/// can hold back.
-pub(crate) fn editing() -> std::sync::MutexGuard<'static, ()> {
+/// `editing`'s hold, for as long as it lives.
+pub(crate) struct Editing {
+    _here: std::sync::MutexGuard<'static, ()>,
+    // Unlocked as it closes.
+    _everywhere: Option<std::fs::File>,
+}
+
+/// One change of the accounts' config files at a time. Each reads its file,
+/// changes it and writes it back, and two at once — a sync, a chat starting
+/// that writes its folder's trust, a recommendation — would each write back
+/// what it read without the other's change. A read that decides a write
+/// belongs inside this. A file lock as well as a mutex: the window writes them
+/// and so does the core. The CLIs write them too, which nothing here can hold
+/// back; account_use.rs says what can be done about that.
+pub(crate) fn editing() -> Editing {
     static L: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    L.lock().unwrap_or_else(|e| e.into_inner())
+    let here = L.lock().unwrap_or_else(|e| e.into_inner());
+    // Without the file the mutex still holds for this process, and a config
+    // edit is not to fail for it.
+    let path = crate::paths::data_dir().join("account-settings.lock");
+    let file = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&path).and_then(|f| f.lock().map(|()| f));
+    if let Err(e) = &file {
+        crate::log::warn("settings", &format!("no lock on {}: {e}", path.display()));
+    }
+    Editing { _here: here, _everywhere: file.ok() }
+}
+
+// ----------------------------------------------------------- edits by key --
+
+/// One of an account's files, as a fix changes it (checks.rs).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum KeyFile {
+    ClaudeSettings,
+    ClaudeGlobal,
+    CodexConfig,
+}
+
+/// A file's contents, its formatting kept as far as the format has any.
+pub(crate) enum Doc {
+    Json(Value),
+    Toml(DocumentMut),
+}
+
+/// A change to one key.
+pub(crate) enum Edit {
+    Set(&'static [&'static str], Value),
+    Remove(&'static [&'static str]),
+    /// Takes the key out only while it says this.
+    RemoveIf(&'static [&'static str], bool),
+}
+
+impl KeyFile {
+    fn path(self, account_path: &str) -> Result<PathBuf, String> {
+        match self {
+            KeyFile::ClaudeSettings => claude_spec_file(account_path, false),
+            KeyFile::ClaudeGlobal => claude_spec_file(account_path, true),
+            KeyFile::CodexConfig => crate::codex::config::account_file(account_path),
+        }
+    }
+
+    /// The file as it stands; an error for one that does not parse.
+    pub(crate) fn read(self, account_path: &str) -> Result<Doc, String> {
+        let path = self.path(account_path)?;
+        match self {
+            KeyFile::CodexConfig => crate::codex::config::read(&path).map(Doc::Toml),
+            _ => read_claude(&path).map(Doc::Json),
+        }
+    }
+}
+
+/// Takes the key out of tables and inline tables alike, and with it any it
+/// leaves empty.
+fn toml_take(table: &mut dyn toml_edit::TableLike, path: &[&str]) {
+    let Some((first, rest)) = path.split_first() else { return };
+    if rest.is_empty() {
+        table.remove(first);
+        return;
+    }
+    let emptied = match table.get_mut(first).and_then(|i| i.as_table_like_mut()) {
+        Some(child) => {
+            toml_take(child, rest);
+            child.is_empty()
+        }
+        None => false,
+    };
+    if emptied {
+        table.remove(first);
+    }
+}
+
+impl Doc {
+    pub(crate) fn bool_at(&self, path: &[&str]) -> Option<bool> {
+        match self {
+            Doc::Json(v) => json_at(v, path).and_then(Value::as_bool),
+            Doc::Toml(d) => toml_at(d, path).and_then(Item::as_bool),
+        }
+    }
+
+    /// The value at the key as the file writes it.
+    pub(crate) fn said(&self, path: &[&str]) -> Option<String> {
+        match self {
+            Doc::Json(v) => json_at(v, path).map(Value::to_string),
+            Doc::Toml(d) => toml_at(d, path).and_then(Item::as_value).map(plain),
+        }
+    }
+
+    fn edit(&mut self, edit: &Edit) {
+        match edit {
+            Edit::RemoveIf(path, value) => {
+                if self.bool_at(path) == Some(*value) {
+                    self.edit(&Edit::Remove(path));
+                }
+            }
+            Edit::Set(path, value) => match self {
+                Doc::Json(v) => json_set(v, path, value.clone()),
+                Doc::Toml(d) => {
+                    if let Some(value) = toml_value(value) {
+                        toml_set(d, path, value);
+                    }
+                }
+            },
+            Edit::Remove(path) => match self {
+                Doc::Json(v) => json_remove(v, path),
+                Doc::Toml(d) => toml_take(d.as_table_mut(), path),
+            },
+        }
+    }
+
+    fn text(&self) -> Result<String, String> {
+        match self {
+            Doc::Json(v) => Ok(serde_json::to_string_pretty(v).map_err(|e| e.to_string())? + "\n"),
+            Doc::Toml(d) => Ok(d.to_string()),
+        }
+    }
+}
+
+/// What is to be written to one file, and what to put back if another fails.
+struct Change {
+    path: PathBuf,
+    before: Option<String>,
+    text: String,
+}
+
+/// Writes them all, or puts back the ones written: nothing half done stays.
+fn commit(changes: &[Change], mut write: impl FnMut(&Path, &str) -> Result<(), String>) -> Result<(), String> {
+    for (at, c) in changes.iter().enumerate() {
+        if let Err(e) = write(&c.path, &c.text) {
+            for done in &changes[..at] {
+                let back = match &done.before {
+                    Some(text) => write_text(&done.path, text),
+                    None => std::fs::remove_file(&done.path).map_err(|e| e.to_string()),
+                };
+                if let Err(e) = back {
+                    crate::log::error("settings", &format!("could not put {} back: {e}", done.path.display()));
+                }
+            }
+            return Err(format!("{}: {e}", c.path.display()));
+        }
+    }
+    Ok(())
+}
+
+/// The edits on each account's file whose `off` still holds, as one change:
+/// every file is read and changed under the lock before the first is written,
+/// so a file that does not read stops them all and a sync cannot come in
+/// between. `off` is asked again of the changed file: a form the edits could not
+/// reach, which would go on saying the same, is an error and not a success.
+/// How many files changed.
+pub(crate) fn edit_together(file: KeyFile, accounts: &[String], edits: &[Edit], off: &dyn Fn(&Doc) -> bool) -> Result<usize, String> {
+    let _editing = editing();
+    let mut changes = Vec::new();
+    for account in accounts {
+        let path = file.path(account)?;
+        let mut doc = file.read(account)?;
+        if !off(&doc) {
+            continue;
+        }
+        for edit in edits {
+            doc.edit(edit);
+        }
+        if off(&doc) {
+            return Err(format!("{}: written in a form Luna cannot change. Change it by hand.", path.display()));
+        }
+        let before = std::fs::read_to_string(&path).ok();
+        changes.push(Change { path, before, text: doc.text()? });
+    }
+    commit(&changes, write_text)?;
+    Ok(changes.len())
 }
 
 /// Sets the `add` keys to their recommended values and takes the `remove`
@@ -576,9 +755,17 @@ fn codex_copy(parent: &str, child: &DocumentMut) -> Result<String, String> {
 /// login or state and is copied as is; Codex's `config.toml` keeps the child's
 /// trusted folders. A file already the same is not written.
 fn sync_one(provider: Provider, parent: &str, child: &str) -> Result<(), String> {
-    let from = parent_text(provider, parent)?;
-    let path = config_file(provider, child)?;
+    sync_one_seeing(provider, parent, child, || ())
+}
+
+/// `sync_one`, calling `read` once the parent has been read. Under the lock
+/// from before that read: a parent read ahead of it could be written over the
+/// child after a change to both had gone through in between.
+fn sync_one_seeing(provider: Provider, parent: &str, child: &str, read: impl FnOnce()) -> Result<(), String> {
     let _editing = editing();
+    let from = parent_text(provider, parent)?;
+    read();
+    let path = config_file(provider, child)?;
     let text = match provider {
         Provider::Claude => from,
         Provider::Codex => codex_copy(&from, &crate::codex::config::read(&path)?)?,
@@ -611,7 +798,13 @@ fn sync(provider: Provider) -> Result<SyncReport, String> {
         .ok_or_else(|| format!("The parent account \"{parent_name}\" is gone"))?;
     let mut report = SyncReport::default();
     for a in accounts.iter().filter(|a| a.name != parent.name) {
-        match sync_one(provider, &parent.path, &a.path) {
+        // Codex rewrites config.toml from what it read: an account it runs on
+        // keeps its file until it is free.
+        let quiet = match provider {
+            Provider::Codex => crate::account_use::quiet(std::slice::from_ref(&a.path)).map(Some),
+            Provider::Claude => Ok(None),
+        };
+        match quiet.and_then(|_held| sync_one(provider, &parent.path, &a.path)) {
             Ok(()) => report.synced.push(a.name.clone()),
             Err(e) => report.failed.push(format!("{}: {e}", a.name)),
         }
@@ -662,7 +855,8 @@ pub fn set_settings_sync_on_start(on: bool) -> Result<SyncState, String> {
 }
 
 /// Once per launch, off the startup path: a parent's settings onto the rest,
-/// for each provider that has a parent.
+/// for each provider that has a parent. Asked of the core, which alone knows
+/// which accounts are in use.
 pub fn sync_on_start() {
     if !crate::settings::get().settings_sync_on_start {
         return;
@@ -671,7 +865,7 @@ pub fn sync_on_start() {
         let s = crate::settings::get();
         for (provider, parent) in [(Provider::Claude, &s.settings_parents.claude), (Provider::Codex, &s.settings_parents.codex)] {
             if parent.is_some() {
-                if let Err(e) = sync(provider) {
+                if let Err(e) = crate::corelink::request("sync_settings_now".into(), json!({ "provider": provider })) {
                     crate::log::warn("settings", &format!("{} settings sync skipped: {e}", provider.as_str()));
                 }
             }
@@ -904,6 +1098,126 @@ model = \"gpt-6\"   # keep
         let p = d.to_string_lossy().into_owned();
         assert!(apply(Provider::Claude, &p, &["tui".into()], &[]).is_err());
         assert_eq!(std::fs::read_to_string(d.join("settings.json")).unwrap(), "{ not json");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_sync_under_way_is_not_overtaken_by_a_change_to_parent_and_child() {
+        let (parent, child) = (dir("stale-parent"), dir("stale-child"));
+        let (p, c) = (parent.to_string_lossy().into_owned(), child.to_string_lossy().into_owned());
+        std::fs::write(parent.join("settings.json"), r#"{"disableAllHooks":true}"#).unwrap();
+        std::fs::write(child.join("settings.json"), r#"{"disableAllHooks":true}"#).unwrap();
+
+        let (done, came) = std::sync::mpsc::channel();
+        let accounts = [p.clone(), c.clone()];
+        let mut change = None;
+        // The moment a stale read could go wrong: the parent read, the child
+        // not yet written, and a change to both on its way.
+        sync_one_seeing(Provider::Claude, &p, &c, || {
+            change = Some(std::thread::spawn(move || {
+                let off = |d: &Doc| d.bool_at(&["disableAllHooks"]) == Some(true);
+                let wrote = edit_together(KeyFile::ClaudeSettings, &accounts, &[Edit::Remove(&["disableAllHooks"])], &off);
+                done.send(()).unwrap();
+                wrote
+            }));
+            assert!(came.recv_timeout(std::time::Duration::from_millis(200)).is_err(), "it went through in the middle of the sync");
+        })
+        .unwrap();
+        // The sync has written what it read; the change comes after it, whole.
+        assert_eq!(change.unwrap().join().unwrap().unwrap(), 2);
+        for d in [&parent, &child] {
+            let v: Value = serde_json::from_str(&std::fs::read_to_string(d.join("settings.json")).unwrap()).unwrap();
+            assert_eq!(v, json!({}));
+        }
+        let _ = std::fs::remove_dir_all(&parent);
+        let _ = std::fs::remove_dir_all(&child);
+    }
+
+    #[test]
+    fn a_change_to_two_accounts_goes_in_whole_or_not_at_all() {
+        let (one, two) = (dir("together-one"), dir("together-two"));
+        let (a, b) = (one.to_string_lossy().into_owned(), two.to_string_lossy().into_owned());
+        let off = |d: &Doc| d.bool_at(&["disableAllHooks"]) == Some(true);
+        let edits = [Edit::Remove(&["disableAllHooks"])];
+
+        // The second file does not read: the first is not written either.
+        std::fs::write(one.join("settings.json"), r#"{"disableAllHooks":true}"#).unwrap();
+        std::fs::write(two.join("settings.json"), "{ not json").unwrap();
+        assert!(edit_together(KeyFile::ClaudeSettings, &[a.clone(), b.clone()], &edits, &off).is_err());
+        assert_eq!(std::fs::read_to_string(one.join("settings.json")).unwrap(), r#"{"disableAllHooks":true}"#);
+
+        // The last write fails: the first goes back, a new file goes again.
+        std::fs::write(one.join("settings.json"), "old").unwrap();
+        let changes = [
+            Change { path: one.join("settings.json"), before: Some("old".into()), text: "new".into() },
+            Change { path: two.join("fresh.json"), before: None, text: "new".into() },
+            Change { path: two.join("refused.json"), before: None, text: "new".into() },
+        ];
+        let failed = commit(&changes, |path, text| {
+            if path.ends_with("refused.json") {
+                return Err("refused".into());
+            }
+            write_text(path, text)
+        });
+        assert!(failed.unwrap_err().contains("refused"));
+        assert_eq!(std::fs::read_to_string(one.join("settings.json")).unwrap(), "old");
+        assert!(!two.join("fresh.json").exists());
+
+        // A file the fix has nothing to do for is left alone, to the byte.
+        std::fs::write(one.join("settings.json"), r#"{"disableAllHooks":true}"#).unwrap();
+        let clean = "{ \"model\":   \"opus\" }";
+        std::fs::write(two.join("settings.json"), clean).unwrap();
+        assert_eq!(edit_together(KeyFile::ClaudeSettings, &[a, b], &edits, &off).unwrap(), 1);
+        assert_eq!(std::fs::read_to_string(two.join("settings.json")).unwrap(), clean);
+        let _ = std::fs::remove_dir_all(&one);
+        let _ = std::fs::remove_dir_all(&two);
+    }
+
+    #[test]
+    fn a_key_goes_from_a_table_and_an_inline_table_alike_and_never_only_seems_to() {
+        let edits = [Edit::RemoveIf(&["features", "hooks"], false), Edit::RemoveIf(&["features", "codex_hooks"], false)];
+        let off = |d: &Doc| d.bool_at(&["features", "hooks"]) == Some(false) || d.bool_at(&["features", "codex_hooks"]) == Some(false);
+        for (tag, before, after) in [
+            ("table", "# mine\nmodel = \"x\"\n\n[features]\nhooks = false\nother = true\n", "# mine\nmodel = \"x\"\n\n[features]\nother = true\n"),
+            ("table-gone", "model = \"x\"\n\n[features]\nhooks = false\n", "model = \"x\"\n"),
+            ("dotted", "model = \"x\"\nfeatures.hooks = false\n", "model = \"x\"\n"),
+            ("alias", "[features]\ncodex_hooks = false\nother = true\n", "[features]\nother = true\n"),
+            ("inline", "features = { hooks = false, other = true }\nmodel = \"x\"\n", "features = { other = true }\nmodel = \"x\"\n"),
+            ("inline-gone", "features = { hooks = false }\nmodel = \"x\"\n", "model = \"x\"\n"),
+        ] {
+            let d = dir(&format!("toml-{tag}"));
+            let p = d.to_string_lossy().into_owned();
+            std::fs::write(d.join("config.toml"), before).unwrap();
+            assert_eq!(edit_together(KeyFile::CodexConfig, std::slice::from_ref(&p), &edits, &off).unwrap(), 1, "{tag}");
+            let text = std::fs::read_to_string(d.join("config.toml")).unwrap();
+            let doc: DocumentMut = text.parse().unwrap();
+            assert!(!off(&Doc::Toml(doc)), "{tag}: {text}");
+            assert_eq!(text, after, "{tag}");
+            let _ = std::fs::remove_dir_all(&d);
+        }
+
+        // Edits that leave it saying the same are an error, and nothing is written.
+        let d = dir("toml-stuck");
+        let p = d.to_string_lossy().into_owned();
+        let before = "features = { hooks = false }\n";
+        std::fs::write(d.join("config.toml"), before).unwrap();
+        let wrong = [Edit::Remove(&["elsewhere", "hooks"])];
+        let e = edit_together(KeyFile::CodexConfig, std::slice::from_ref(&p), &wrong, &off).unwrap_err();
+        assert!(e.contains("cannot change"), "{e}");
+        assert_eq!(std::fs::read_to_string(d.join("config.toml")).unwrap(), before);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_key_set_leaves_the_rest_of_the_file_as_it_was() {
+        let d = dir("edit-set");
+        let p = d.to_string_lossy().into_owned();
+        std::fs::write(d.join("settings.json"), r#"{"model":"opus"}"#).unwrap();
+        let off = |d: &Doc| d.bool_at(&["skipDangerousModePermissionPrompt"]) != Some(true);
+        let edits = [Edit::Set(&["skipDangerousModePermissionPrompt"], json!(true))];
+        edit_together(KeyFile::ClaudeSettings, std::slice::from_ref(&p), &edits, &off).unwrap();
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(d.join("settings.json")).unwrap()).unwrap();
+        assert_eq!(v, json!({ "model": "opus", "skipDangerousModePermissionPrompt": true }));
         let _ = std::fs::remove_dir_all(&d);
     }
 

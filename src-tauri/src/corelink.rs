@@ -267,7 +267,7 @@ fn stop(mut stream: TcpStream, pid: u32) {
 }
 
 /// Asks the core a command and waits for the answer.
-fn request(cmd: String, args: Value) -> Result<Value, String> {
+pub(crate) fn request(cmd: String, args: Value) -> Result<Value, String> {
     // The panes ask for their sessions as soon as the page is up, which can be
     // before the core is: while it is being found or started, they wait.
     let deadline = std::time::Instant::now() + START_WAIT * 2;

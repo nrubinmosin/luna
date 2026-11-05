@@ -1,4 +1,5 @@
 mod account_settings;
+mod account_use;
 mod accounts;
 mod activity;
 mod agentlog;
@@ -6,6 +7,7 @@ mod agents;
 mod asking;
 mod background;
 mod browsers;
+mod checks;
 mod claude;
 mod cli;
 mod codex;
@@ -247,7 +249,6 @@ pub fn run() {
             account_settings::settings_sync_state,
             account_settings::set_settings_parent,
             account_settings::set_settings_sync_on_start,
-            account_settings::sync_settings_now,
             account_settings::read_account_config,
             account_settings::check_account_config,
             account_settings::format_account_config,
