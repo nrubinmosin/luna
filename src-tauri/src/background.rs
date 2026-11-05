@@ -6,6 +6,11 @@
 //! what it said is the turn's last message. No screen to read, no keys to
 //! press, and no window needed to start one.
 //!
+//! Claude Code's stdin stays open until its first `result` (`feed_stdin`), so
+//! text sent meanwhile joins the turn: the CLI takes it in at the next tool
+//! boundary, and says so (`took`). `codex exec` reads its stdin once, to the
+//! end: text sent to a Codex helper waits for the next turn.
+//!
 //! A Claude Code helper is never left to ask the air: its permission prompts
 //! and `AskUserQuestion` come to Luna through `--permission-prompt-tool`
 //! (`luna_permission`), which holds the CLI's call until the agent that
@@ -200,6 +205,34 @@ struct Run {
     /// has no pid to kill, so `spawn_turn` does not start it, or kills what
     /// it just started.
     stopped: bool,
+    /// Claude Code's stdin, while it still takes text (`feed_stdin`).
+    feed: Option<std::sync::mpsc::Sender<String>>,
+    /// The uuid of the line this process was started on.
+    line: Option<String>,
+    /// A `result` of this process's said it failed: a later one that succeeds
+    /// clears what that one left in `Entry::error`.
+    result_failed: bool,
+}
+
+impl Run {
+    fn claimed(pid: Option<u32>, started_ms: u64) -> Run {
+        Run { pid, started_ms, stopped: false, feed: None, line: None, result_failed: false }
+    }
+}
+
+/// A fresh id in the shape Claude Code's stream-json wants of a message's uuid.
+/// Unique is all it has to be; no crate here makes them.
+fn new_id() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let word = |n: u64| {
+        let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+        h.write_u64(n);
+        h.finish()
+    };
+    let (a, b) = (word(SEQ.fetch_add(1, Ordering::Relaxed)), word(crate::throttle::now_ms()));
+    format!("{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}", a >> 32, (a >> 16) & 0xffff, a & 0xfff, 0x8000 | ((b >> 48) & 0x3fff), b & 0xffff_ffff_ffff)
 }
 
 /// Text sent to a helper, and by whom: what never reaches it goes back only to
@@ -216,6 +249,24 @@ pub struct Queued {
     /// any moment can neither lose one nor have it told twice.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub budget: Vec<BudgetMark>,
+    /// Its own id, the same on every try.
+    #[serde(default = "new_id")]
+    pub id: String,
+    /// The uuid of the stdin line that carries it: its own, or the first's of the
+    /// batch it went in. What the CLI's word and its transcript go by (`took`,
+    /// `settle_lines`). None once nothing can come of that line any more.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<String>,
+    /// A core went with it on stdin and nothing can tell whether the model got
+    /// it: its sender decides, and it is not sent again by itself.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub maybe_reached: bool,
+}
+
+impl Queued {
+    pub fn new(from: Option<String>, text: String, budget: Vec<BudgetMark>) -> Queued {
+        Queued { from, text, budget, id: new_id(), line: None, maybe_reached: false }
+    }
 }
 
 /// A budget line in a notice: whose it is, and its words, to take back out of a
@@ -229,7 +280,7 @@ pub struct BudgetMark {
 #[cfg(test)]
 impl From<&str> for Queued {
     fn from(text: &str) -> Queued {
-        Queued { from: None, text: text.to_string(), budget: Vec::new() }
+        Queued::new(None, text.to_string(), Vec::new())
     }
 }
 
@@ -243,6 +294,21 @@ impl PartialEq<&str> for Queued {
 /// A batch as one prompt, as the turn gets it.
 pub(crate) fn joined(batch: &[Queued]) -> String {
     batch.iter().map(|q| q.text.as_str()).collect::<Vec<_>>().join("\n\n")
+}
+
+/// A batch goes as one line of stdin, named for its first message.
+fn stamp(batch: &mut [Queued]) {
+    let line = batch.first().map(|q| q.id.clone());
+    for q in batch {
+        q.line = line.clone();
+    }
+}
+
+/// What is queued becomes the batch of the turn about to start.
+fn take_queue(e: &mut Entry) -> String {
+    e.in_flight = std::mem::take(&mut e.queue);
+    stamp(&mut e.in_flight);
+    joined(&e.in_flight)
 }
 
 /// A permission or question held for an answer.
@@ -269,8 +335,13 @@ struct Entry {
     queue: Vec<Queued>,
     /// The batch a turn was claimed for, from then until the CLI has it: saved,
     /// so that a core killed in between neither forgets it nor, reading an older
-    /// save, hands back what was processed.
+    /// save, hands back what was processed. Claude Code has it when it says so
+    /// (`took`), a pipe taking the bytes being no sign of that; Codex when its
+    /// stdin has taken it, all there is to go by.
     in_flight: Vec<Queued>,
+    /// Text that joined the running turn on stdin, until the CLI says it took
+    /// it in. One killed before that has not kept it, whatever the pipe took.
+    fed: Vec<Queued>,
     log: VecDeque<String>,
     /// What it is held on, oldest first: parallel subagents and tool calls ask
     /// at once, and the first still unanswered is the one shown.
@@ -467,6 +538,8 @@ fn stop_for_luna(e: &mut Entry) -> Option<u32> {
     e.cut_short |= e.run.is_some();
     let flying = std::mem::take(&mut e.in_flight);
     e.undelivered.extend(flying);
+    let fed = std::mem::take(&mut e.fed);
+    e.undelivered.extend(fed);
     let queued = e.queue.clone();
     e.undelivered.extend(queued);
     stop(e)
@@ -475,15 +548,18 @@ fn stop_for_luna(e: &mut Entry) -> Option<u32> {
 /// Takes a helper's turn off, under the lock: drops what was queued, counted
 /// as a turn that ended (whoever queued it waits on its end, which will not
 /// come now), lets a held question go, and marks a claimed turn with no
-/// process yet stopped. Returns the pid left to kill.
+/// process yet stopped. What joined the turn goes with it, its senders waiting
+/// on the end of this very turn. Returns the pid left to kill.
 fn stop(e: &mut Entry) -> Option<u32> {
     e.in_flight.clear();
+    e.fed.clear();
     if !e.queue.is_empty() {
         e.queue.clear();
         e.turns_ended += 1;
     }
     e.held.clear();
     let run = e.run.as_mut()?;
+    run.feed = None;
     if run.pid.is_none() {
         run.stopped = true;
     }
@@ -501,6 +577,7 @@ pub fn start(id: &str, spec: Spec, prompt: &str) -> Result<(), String> {
         turns_ended: 0,
         queue: Vec::new(),
         in_flight: Vec::new(),
+        fed: Vec::new(),
         log: VecDeque::new(),
         held: VecDeque::new(),
         error: None,
@@ -540,7 +617,7 @@ fn command_for(e: &Entry, id: &str) -> (Vec<String>, String, Vec<(&'static str, 
     let mut dir = s.folder.clone();
     match s.provider {
         Provider::Claude => {
-            args.extend(["-p", "--output-format", "stream-json", "--verbose"].map(String::from));
+            args.extend(["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--replay-user-messages"].map(String::from));
             if let Some(m) = &s.model {
                 args.extend(["--model".into(), m.clone()]);
             }
@@ -664,7 +741,7 @@ fn command_for(e: &Entry, id: &str) -> (Vec<String>, String, Vec<(&'static str, 
 /// found it free: text that arrives before the process is up queues behind
 /// it rather than starting a second process on the same conversation.
 fn claim(e: &mut Entry) {
-    e.run = Some(Run { pid: None, started_ms: crate::throttle::now_ms(), stopped: false });
+    e.run = Some(Run::claimed(None, crate::throttle::now_ms()));
 }
 
 /// Starts the next turn's process with `prompt` on its stdin, on a run
@@ -707,6 +784,34 @@ fn stdin_text(e: &Entry, prompt: &str) -> String {
     match (&e.spec.parent, e.spec.provider) {
         (Some(parent), Provider::Codex) => crate::pty::codex_helper_prompt(parent, prompt),
         _ => prompt.to_string(),
+    }
+}
+
+/// A message as a line of Claude Code's stream-json stdin. The uuid is what its
+/// replay of the line comes back under, and what its transcript keeps.
+fn user_line(uuid: &str, text: &str) -> String {
+    let line = json!({
+        "type": "user",
+        "message": { "role": "user", "content": text },
+        "parent_tool_use_id": null,
+        "session_id": "",
+        "uuid": uuid,
+    });
+    format!("{line}\n")
+}
+
+/// Claude Code's stdin for a turn: `first`, then whatever comes down `lines`,
+/// until they close, which is the end of its input. A thread of its own, as
+/// nothing says the CLI is reading: a full pipe holds this, and no lock.
+fn feed_stdin(mut stdin: impl Write, first: &str, lines: std::sync::mpsc::Receiver<String>) {
+    let mut put = |line: &str| stdin.write_all(line.as_bytes()).and_then(|()| stdin.flush());
+    if put(first).is_err() {
+        return;
+    }
+    for line in lines {
+        if put(&line).is_err() {
+            return;
+        }
     }
 }
 
@@ -813,15 +918,18 @@ fn take_event(id: &str, provider: Provider, reader: &OutReader, v: &Value) -> bo
     let Some(e) = r.entries.get_mut(id) else { return false };
     e.observed.event_ms = crate::throttle::now_ms();
     let unnamed = e.session.is_none();
-    match provider {
+    let landed = match provider {
         Provider::Claude => on_claude_event(e, v),
-        Provider::Codex => on_codex_event(e, v),
-    }
+        Provider::Codex => {
+            on_codex_event(e, v);
+            false
+        }
+    };
     let named = unnamed && e.session.is_some();
     drop(r);
     // At once: a core killed now would take it up as one that never got started,
-    // and start its work over.
-    if named {
+    // and start its work over; or hand back as undelivered what the model has.
+    if named || landed {
         save();
     }
     true
@@ -854,7 +962,7 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
     // writes every account's copies, and every helper's events wait on that
     // lock (library.rs `session_args`).
     crate::library::lay_out("before a helper's turn");
-    let (args, dir, envs, provider, on_stdin) = {
+    let (args, dir, envs, provider, on_stdin, line) = {
         let r = lock();
         if r.closed {
             return Err("Luna is stopping".into());
@@ -864,7 +972,9 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
             return Err(STOPPED.into());
         }
         let (args, dir, envs) = command_for(e, id);
-        (args, dir, envs, e.spec.provider, stdin_text(e, prompt))
+        // A batch's own, on disk by now; what no batch carries needs only to be a uuid.
+        let line = e.in_flight.first().map_or_else(new_id, |q| q.id.clone());
+        (args, dir, envs, e.spec.provider, stdin_text(e, prompt), line)
     };
     if !std::path::Path::new(&dir).is_dir() {
         return Err(format!("{dir} does not exist"));
@@ -976,18 +1086,28 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
     let stdin = child.stdin.take();
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
-    // Written whole and closed: the CLI reads its prompt to the end of input.
+    let (feed, lines) = std::sync::mpsc::channel::<String>();
     if let Some(mut stdin) = stdin {
         let prompt = on_stdin;
         let writer_id = id.to_string();
-        if let Err(e) = std::thread::Builder::new().spawn(move || {
-            let wrote = stdin.write_all(prompt.as_bytes()).is_ok();
-            drop(stdin);
-            let landed = wrote && lock().entries.get_mut(&writer_id).is_some_and(stdin_took);
-            if landed {
-                save();
+        let writer = std::thread::Builder::new();
+        let spawned = match provider {
+            // Open until its first `result` (`on_claude_event`), for what joins the turn.
+            Provider::Claude => {
+                let first = user_line(&line, &prompt);
+                writer.spawn(move || feed_stdin(stdin, &first, lines))
             }
-        }) {
+            // Written whole and closed: the CLI reads its prompt to the end of input.
+            Provider::Codex => writer.spawn(move || {
+                let wrote = stdin.write_all(prompt.as_bytes()).is_ok();
+                drop(stdin);
+                let landed = wrote && lock().entries.get_mut(&writer_id).is_some_and(stdin_took);
+                if landed {
+                    save();
+                }
+            }),
+        };
+        if let Err(e) = spawned {
             abandon(child, pid);
             return Err(thread_err(e));
         }
@@ -1002,7 +1122,8 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
             None => Some("the helper was deleted"),
             Some(e) if e.run.as_ref().is_some_and(|run| run.stopped) => Some(STOPPED),
             Some(e) => {
-                e.run = Some(Run { pid, started_ms, stopped: false });
+                let claude = provider == Provider::Claude;
+                e.run = Some(Run { feed: claude.then_some(feed), line: claude.then_some(line), ..Run::claimed(pid, started_ms) });
                 e.observed.begin_turn();
                 e.error = None;
                 e.cut_short = false;
@@ -1042,7 +1163,59 @@ fn abandon(mut child: std::process::Child, pid: Option<u32>) {
     let _ = child.wait();
 }
 
-fn on_claude_event(e: &mut Entry, v: &Value) {
+/// Claude Code has taken the line `uuid` in: what it carried is the model's now,
+/// wherever it was kept. Its word can come after a stop has put the text by.
+/// Whether it carried anything.
+fn took(e: &mut Entry, uuid: &str) -> bool {
+    let mut landed = Vec::new();
+    for store in [&mut e.in_flight, &mut e.fed, &mut e.undelivered] {
+        let (of_line, rest): (Vec<Queued>, Vec<Queued>) = std::mem::take(store).into_iter().partition(|q| q.line.as_deref() == Some(uuid));
+        *store = rest;
+        landed.extend(of_line);
+    }
+    e.budgets_landed.extend(landed.iter().flat_map(|q| q.budget.iter().map(|m| m.id.clone())));
+    for q in &landed {
+        note(e, &format!("took in: {}", one_line(&q.text)));
+    }
+    !landed.is_empty()
+}
+
+/// A background helper has nobody to answer the CLI's own requests on stdin (an
+/// MCP server's elicitation comes this way with stdin open), which would hold
+/// its turn for good. An error reads as the cancel it gets with stdin closed.
+fn refuse_request(e: &mut Entry, v: &Value) {
+    let Some(request) = v["request_id"].as_str() else { return };
+    let line = json!({
+        "type": "control_response",
+        "response": { "subtype": "error", "request_id": request, "error": "a background helper has nobody to ask" },
+    });
+    let Some(run) = e.run.as_ref() else { return };
+    let refused = run.feed.as_ref().is_some_and(|feed| feed.send(format!("{line}\n")).is_ok());
+    if refused {
+        note(e, &format!("refused the CLI's request: {}", v["request"]["subtype"].as_str().unwrap_or("?")));
+    }
+}
+
+/// What an event of a Claude Code turn says of the helper; whether a message of
+/// its has landed, which is to be saved.
+fn on_claude_event(e: &mut Entry, v: &Value) -> bool {
+    match (v["type"].as_str(), v["state"].as_str()) {
+        (Some("user"), _) if v["isReplay"] == true => return v["uuid"].as_str().is_some_and(|u| took(e, u)),
+        (Some("command_lifecycle"), Some("started")) => return v["command_uuid"].as_str().is_some_and(|u| took(e, u)),
+        // A line the CLI will not run gets no `result`: one its transcript has
+        // already is passed over, and a stdin left open would hold it for good.
+        (Some("command_lifecycle"), Some("completed" | "cancelled")) => {
+            if let Some(run) = e.run.as_mut().filter(|run| run.line.is_some() && run.line.as_deref() == v["command_uuid"].as_str()) {
+                run.feed = None;
+            }
+            return false;
+        }
+        (Some("control_request"), _) => {
+            refuse_request(e, v);
+            return false;
+        }
+        _ => {}
+    }
     if v["type"] == "assistant" {
         // The CLI's own stand-in for a message no model wrote reads `<synthetic>`.
         if v["message"]["model"].as_str().is_some_and(|m| !m.starts_with('<')) {
@@ -1080,8 +1253,18 @@ fn on_claude_event(e: &mut Entry, v: &Value) {
         (Some("result"), sub) => {
             let ok = sub == Some("success") && v["is_error"].as_bool() != Some(true);
             let secs = v["duration_ms"].as_f64().unwrap_or(0.0) / 1000.0;
+            // From here on text waits for the next process: stdin's end lets
+            // this one finish what it has and go, as it would have with stdin
+            // closed all along. What it has been given it still runs.
+            let earlier_failed = e.run.as_mut().is_some_and(|run| {
+                run.feed = None;
+                std::mem::replace(&mut run.result_failed, !ok)
+            });
             if ok {
                 note(e, &format!("turn done in {secs:.0}s"));
+                if earlier_failed {
+                    e.error = None;
+                }
             } else {
                 let why = v["result"].as_str().or(sub).unwrap_or("error").to_string();
                 note(e, &format!("turn failed: {}", one_line(&why)));
@@ -1090,6 +1273,7 @@ fn on_claude_event(e: &mut Entry, v: &Value) {
         }
         _ => {}
     }
+    false
 }
 
 /// The model Codex says it moved a turn to, from the one error item that is no
@@ -1147,6 +1331,30 @@ fn on_codex_event(e: &mut Entry, v: &Value) {
     }
 }
 
+/// The process of a Claude Code turn has gone and all it said has been read:
+/// what it never took in, it never will. What joined its turn gets one more try,
+/// as the start of the next and ahead of what was queued behind it, which came
+/// later; returned, for its senders. A batch it was started on and never took
+/// goes back to who sent it, with anything that joined behind it: a CLI that went
+/// before taking even that would most likely do the same again.
+fn sort_out_untaken(e: &mut Entry) -> Vec<Queued> {
+    if !e.in_flight.is_empty() {
+        let batch = std::mem::take(&mut e.in_flight);
+        e.undelivered.extend(batch);
+        let fed = std::mem::take(&mut e.fed);
+        e.undelivered.extend(fed);
+        note(e, "its CLI went before taking in what it was started on");
+        return Vec::new();
+    }
+    let retry = std::mem::take(&mut e.fed);
+    if !retry.is_empty() {
+        note(e, "its CLI went before taking in what joined the turn: it starts the next");
+        let behind = std::mem::take(&mut e.queue);
+        e.queue = [retry.clone(), behind].concat();
+    }
+    retry
+}
+
 /// The turn's process has exited: count the turn, let any held question go,
 /// and start the turn the queue has waiting.
 fn turn_over(id: &str, code: Option<i32>) {
@@ -1168,7 +1376,7 @@ fn turn_over(id: &str, code: Option<i32>) {
     // Before the turn reads as over: whoever is owed its answer must not hear
     // "finished" ahead of the job it left running.
     let left = job.map(|job| crate::procs::left_in(&job)).unwrap_or_default();
-    let (next, thread, generation, rerouted, acted) = {
+    let (next, thread, generation, rerouted, acted, retried, count) = {
         let mut r = lock();
         let Some(e) = r.entries.get_mut(id) else { return };
         e.run = None;
@@ -1193,18 +1401,25 @@ fn turn_over(id: &str, code: Option<i32>) {
                 e.cwd = crate::codex::session::thread_cwd(&e.spec.account_path, thread);
             }
         }
-        e.in_flight.clear();
-        let next = (!e.queue.is_empty()).then(|| {
-            e.in_flight = std::mem::take(&mut e.queue);
-            joined(&e.in_flight)
-        });
+        let retried = match e.spec.provider {
+            Provider::Claude => sort_out_untaken(e),
+            Provider::Codex => {
+                e.in_flight.clear();
+                Vec::new()
+            }
+        };
+        let next = (!e.queue.is_empty()).then(|| take_queue(e));
         if next.is_some() {
             claim(e);
         }
         let thread = e.session.clone().filter(|_| e.spec.provider == Provider::Codex).map(|t| (e.spec.account_path.clone(), t));
         e.observed.answered |= e.observed.acted;
-        (next, thread, e.observed.generation, std::mem::take(&mut e.observed.rerouted), e.observed.acted)
+        (next, thread, e.observed.generation, std::mem::take(&mut e.observed.rerouted), e.observed.acted, retried, e.turns_ended)
     };
+    // Ahead of anything that could be read as the answer: the helper reads as
+    // busy from the claim above until this has moved what its senders wait on.
+    let senders: Vec<String> = retried.iter().filter_map(|q| q.from.clone()).collect();
+    crate::agents::retried(id, &senders, count);
     reg().1.notify_all();
     crate::log::info("background", &format!("{} turn over, code {code:?}", crate::agents::label(id)));
     // Codex's events name no model but a reroute's, which stands for its turn;
@@ -1226,7 +1441,7 @@ fn turn_over(id: &str, code: Option<i32>) {
         if run_turn(id, &text).is_err() {
             if let Some(e) = lock().entries.get_mut(id) {
                 let batch = std::mem::take(&mut e.in_flight);
-                if e.cut_short {
+                if e.cut_short || !retried.is_empty() {
                     e.undelivered.extend(batch);
                 }
             }
@@ -1337,45 +1552,90 @@ fn stdin_took(e: &mut Entry) -> bool {
     !batch.is_empty()
 }
 
-/// Puts text where it goes: behind the turn running, which returns true, or for the
-/// turn now claimed. One with budget lines is `in_flight` as queued text is by then,
-/// so they count as arrived when its stdin has it, not before.
-fn place(e: &mut Entry, q: Queued) -> bool {
+/// Where text sent to a helper went.
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum Placed {
+    /// It starts a turn.
+    Started,
+    /// It waits for the turn after the one running.
+    Queued,
+    /// It is on the stdin of the turn running, which ends once that has answered
+    /// it (Claude Code, at its next tool boundary).
+    Joined,
+}
+
+/// Onto the stdin of the turn running, if that still takes text and nothing
+/// waits ahead of it: what came first goes first. `q` is back if it cannot go.
+fn join(e: &mut Entry, mut q: Queued) -> Result<(), Queued> {
+    if !e.queue.is_empty() {
+        return Err(q);
+    }
+    let Some(feed) = e.run.as_ref().and_then(|run| run.feed.as_ref()) else { return Err(q) };
+    q.line = Some(q.id.clone());
+    if feed.send(user_line(&q.id, &q.text)).is_err() {
+        q.line = None;
+        return Err(q);
+    }
+    note(e, &format!("joined the turn: {}", one_line(&q.text)));
+    e.fed.push(q);
+    Ok(())
+}
+
+/// Puts text where it goes: on the turn running if it may `join` that, behind it,
+/// or for the turn now claimed. One with budget lines is `in_flight` as queued text
+/// is by then, so they count as arrived when the CLI has it, not before.
+fn place(e: &mut Entry, q: Queued, may_join: bool) -> Placed {
     if e.run.is_some() || e.ending_left || e.promoting {
+        let q = if may_join {
+            match join(e, q) {
+                Ok(()) => return Placed::Joined,
+                Err(q) => q,
+            }
+        } else {
+            q
+        };
         note(e, &format!("queued: {}", one_line(&q.text)));
         e.queue.push(q);
-        return true;
+        return Placed::Queued;
     }
     claim(e);
     if !q.budget.is_empty() {
         e.in_flight.push(q);
+        stamp(&mut e.in_flight);
     }
-    false
+    Placed::Started
 }
 
-/// Text for the helper: the next turn now, or after the one running.
-/// Returns whether it was queued.
-pub fn send(id: &str, text: &str, from: Option<&str>) -> Result<bool, String> {
-    send_marked(id, text, from, Vec::new())
+/// Text for the helper: the next turn now, into the one running, or after it.
+pub fn send(id: &str, text: &str, from: Option<&str>) -> Result<Placed, String> {
+    send_as(id, Queued::new(from.map(str::to_owned), text.to_string(), Vec::new()), true)
 }
 
-/// `send`, for a notice with budget lines in it.
+/// A notice with budget lines in it, or none. It was aimed at a helper found
+/// idle, and if a turn has begun since, it waits for that turn's end: what it
+/// reports is what the next turn is to act on, and it starts one by itself.
+/// Whether it was queued.
 pub fn send_marked(id: &str, text: &str, from: Option<&str>, budget: Vec<BudgetMark>) -> Result<bool, String> {
-    let marked = !budget.is_empty();
-    let queued = {
+    send_as(id, Queued::new(from.map(str::to_owned), text.to_string(), budget), false).map(|placed| placed != Placed::Started)
+}
+
+fn send_as(id: &str, q: Queued, may_join: bool) -> Result<Placed, String> {
+    let marked = !q.budget.is_empty();
+    let text = q.text.clone();
+    let placed = {
         let mut r = lock();
         let e = r.entries.get_mut(id).ok_or("no such helper")?;
         if !e.held.is_empty() {
             return Err(format!("helper {id} is waiting on a question or permission: answer it with luna_answer"));
         }
-        place(e, Queued { from: from.map(str::to_owned), text: text.to_string(), budget })
+        place(e, q, may_join)
     };
-    if queued || marked {
+    if placed != Placed::Started || marked {
         // At once: a core that goes hard (power, a crash) writes nothing more.
         save();
     }
-    if !queued {
-        if let Err(err) = run_turn(id, text) {
+    if placed == Placed::Started {
+        if let Err(err) = run_turn(id, &text) {
             if let Some(e) = lock().entries.get_mut(id) {
                 e.in_flight.retain(|q| q.budget.is_empty());
             }
@@ -1383,7 +1643,7 @@ pub fn send_marked(id: &str, text: &str, from: Option<&str>, budget: Vec<BudgetM
         }
     }
     changed();
-    Ok(queued)
+    Ok(placed)
 }
 
 /// Where a helper's budget line stands with a background parent.
@@ -1483,9 +1743,8 @@ pub fn kill(id: &str) -> Vec<String> {
         e.left = leftovers(&e.left, still, crate::throttle::now_ms(), e.observed.turn_ended_ms);
         // What was sent meanwhile is the next turn's, as after any turn.
         (e.run.is_none() && !e.promoting && !e.queue.is_empty()).then(|| {
-            e.in_flight = std::mem::take(&mut e.queue);
             claim(e);
-            joined(&e.in_flight)
+            take_queue(e)
         })
     };
     if !ended.is_empty() {
@@ -1581,7 +1840,7 @@ pub fn interrupt(id: &str, text: &str, from: Option<&str>) -> Result<Interrupted
             claim(e);
         } else {
             note(e, "interrupted");
-            e.queue.push(Queued { from: from.map(str::to_owned), text: text.to_string(), budget: Vec::new() });
+            e.queue.push(Queued::new(from.map(str::to_owned), text.to_string(), Vec::new()));
         }
         free
     };
@@ -2032,9 +2291,8 @@ pub fn background_promoted(id: String, error: Option<String>) -> Result<(), Stri
         let Some(e) = r.entries.get_mut(&id) else { return Ok(()) };
         e.promoting = false;
         (e.run.is_none() && !e.ending_left && !e.queue.is_empty()).then(|| {
-            e.in_flight = std::mem::take(&mut e.queue);
             claim(e);
-            joined(&e.in_flight)
+            take_queue(e)
         })
     };
     match next {
@@ -2095,6 +2353,9 @@ struct Saved {
     /// See `Entry::in_flight`.
     #[serde(default)]
     in_flight: Vec<Queued>,
+    /// See `Entry::fed`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    fed: Vec<Queued>,
     /// See `Entry::budgets_landed`.
     #[serde(default)]
     budgets_landed: Vec<String>,
@@ -2169,6 +2430,7 @@ fn snapshot() -> Vec<Saved> {
             queued: !e.queue.is_empty(),
             queue: e.queue.clone(),
             in_flight: e.in_flight.clone(),
+            fed: e.fed.clone(),
             budgets_landed: e.budgets_landed.clone(),
             undelivered: e.undelivered.clone(),
             tied: e.tied,
@@ -2212,6 +2474,11 @@ pub fn restore() {
     for mut s in saved {
         s.tied = s.tied && last_ties.held(&s.id);
         s.unsure = s.unsure && !last_ties.confirmed(&s.id);
+        let (account, session) = (s.spec.account_path.clone(), s.session.clone());
+        settle_lines(&mut s, &|line| {
+            let path = crate::claude::session::find_transcript(&account, session.as_deref()?)?;
+            crate::claude::session::took_line(&path, line)
+        });
         let ties = std::mem::take(&mut s.ties);
         // The agent layer's record of whose it is (`Known::parent`) is the one.
         s.spec.parent = ties.parent.clone();
@@ -2267,14 +2534,19 @@ fn resume(id: &str) {
         // Something got there first. No conversation to go on with and no
         // words of its first turn (a file from an older core): nothing to run.
         let unnamed = e.session.is_none();
+        // What may have reached it stays with its sender to decide on.
+        let (doubtful, sure): (Vec<Queued>, Vec<Queued>) = std::mem::take(&mut e.undelivered).into_iter().partition(|q| q.maybe_reached);
         // Or a turn it was sent meanwhile has gone on already, and been told.
         // Or it is being opened as a chat, which takes the conversation up.
-        if e.run.is_some() || e.promoting || !e.cut_short || !e.resumable || (unnamed && e.undelivered.is_empty()) {
+        if e.run.is_some() || e.promoting || !e.cut_short || !e.resumable || (unnamed && sure.is_empty()) {
+            e.undelivered = [sure, doubtful].concat();
             return;
         }
         claim(e);
         // This batch only: whatever is put by after this goes on being kept.
-        e.in_flight = std::mem::take(&mut e.undelivered);
+        e.in_flight = sure;
+        e.undelivered = doubtful;
+        stamp(&mut e.in_flight);
         // Never started, it is started now, on what it was given as it was.
         let text = if unnamed { joined(&e.in_flight) } else { resume_text(&e.in_flight) };
         (text, e.turns_ended, e.in_flight.len())
@@ -2320,16 +2592,52 @@ pub(crate) fn resume_text(queued: &[Queued]) -> String {
     text
 }
 
+/// A turn no core stopped ended only if its tie saw to it (`Entry::tied`).
+fn turn_known_over(s: &Saved) -> bool {
+    !s.unsure && (!s.running || s.cut_short || s.tied)
+}
+
+/// What the last core had on a Claude Code helper's stdin and heard nothing more
+/// of, settled by what the conversation holds, before any of it is told of or
+/// sent again: `reached` says whether a line is there, None if that cannot be
+/// read. In it, the model has it, and it is off the books; not in it, with the
+/// turn known to be over, it never got there; otherwise nobody can say, and its
+/// sender is told that (`Queued::maybe_reached`) rather than it going out twice.
+fn settle_lines(s: &mut Saved, reached: &dyn Fn(&str) -> Option<bool>) {
+    if s.spec.provider != Provider::Claude {
+        return;
+    }
+    let over = turn_known_over(s);
+    let mut known: HashMap<String, Option<bool>> = HashMap::new();
+    let mut landed: Vec<String> = Vec::new();
+    for store in [&mut s.in_flight, &mut s.fed, &mut s.undelivered] {
+        store.retain_mut(|q| {
+            let Some(line) = q.line.take() else { return true };
+            match *known.entry(line).or_insert_with_key(|line| reached(line)) {
+                Some(true) => {
+                    landed.extend(q.budget.iter().map(|m| m.id.clone()));
+                    false
+                }
+                Some(false) if over => true,
+                _ => {
+                    q.maybe_reached = true;
+                    true
+                }
+            }
+        });
+    }
+    s.budgets_landed.extend(landed);
+}
+
 /// A saved helper as a registry entry, between turns: a turn that ran went
 /// with the old core and counts as ended, and so does the text queued
 /// behind it, which never reached the CLI (as `stop` counts them) and is kept
 /// for its sender.
 fn taken_up(s: Saved) -> Entry {
     let stopped = s.running || s.cut_short;
-    // A turn no core stopped ended only if its tie saw to it (`Entry::tied`).
-    let resumable = !s.unsure && (!s.running || s.cut_short || s.tied);
-    let first: Vec<Queued> = s.opening.filter(|_| stopped && s.session.is_none()).map(|text| Queued { from: None, text, budget: Vec::new() }).into_iter().collect();
-    let undelivered = [first, s.undelivered, s.in_flight, s.queue].concat();
+    let resumable = turn_known_over(&s);
+    let first: Vec<Queued> = s.opening.filter(|_| stopped && s.session.is_none()).map(|text| Queued::new(None, text, Vec::new())).into_iter().collect();
+    let undelivered = [first, s.undelivered, s.in_flight, s.fed, s.queue].concat();
     let cwd = s.cwd.map(|c| home_of(&s.spec, c));
     let mut e = Entry {
         spec: s.spec,
@@ -2340,6 +2648,7 @@ fn taken_up(s: Saved) -> Entry {
         turns_ended: s.turns_ended + u32::from(s.running) + u32::from(s.queued),
         queue: Vec::new(),
         in_flight: Vec::new(),
+        fed: Vec::new(),
         log: VecDeque::new(),
         held: VecDeque::new(),
         error: None,
@@ -2428,7 +2737,14 @@ pub fn settle_worktree(id: &str) {
 /// what it sent, and for its parent what no session did.
 pub fn undelivered_for(id: &str, caller: &str, parent: bool) -> Vec<String> {
     let mine = |q: &Queued| q.from.as_deref().map_or(parent, |f| f == caller);
-    lock().entries.get(id).map(|e| e.undelivered.iter().filter(|q| mine(q)).map(|q| q.text.clone()).collect()).unwrap_or_default()
+    let told = |q: &Queued| {
+        if q.maybe_reached {
+            format!("[This one MAY have reached it before Luna's core went: Luna cannot tell. Check what it did before sending it again.]\n\n{}", q.text)
+        } else {
+            q.text.clone()
+        }
+    };
+    lock().entries.get(id).map(|e| e.undelivered.iter().filter(|q| mine(q)).map(told).collect()).unwrap_or_default()
 }
 
 /// Takes it off, `caller` having been told: `put_back` undoes that.
@@ -2452,13 +2768,13 @@ pub fn put_back(id: &str, taken: Vec<Queued>) {
 /// that starts a CLI aside. Returns whether it was queued.
 #[cfg(test)]
 pub fn place_for_test(id: &str, text: &str, mark: BudgetMark) -> bool {
-    place(lock().entries.get_mut(id).unwrap(), Queued { from: None, text: text.to_string(), budget: vec![mark] })
+    place(lock().entries.get_mut(id).unwrap(), Queued::new(None, text.to_string(), vec![mark]), false) != Placed::Started
 }
 
 /// A turn of its runs.
 #[cfg(test)]
 pub fn set_running_for_test(id: &str) {
-    lock().entries.get_mut(id).unwrap().run = Some(Run { pid: None, started_ms: 0, stopped: false });
+    lock().entries.get_mut(id).unwrap().run = Some(Run::claimed(None, 0));
 }
 
 /// A turn begins on what is queued, as `turn_over` starts the next.
@@ -2479,6 +2795,13 @@ pub fn stdin_took_for_test(id: &str) {
 #[cfg(test)]
 pub fn turn_ended_for_test(id: &str) {
     turn_over(id, Some(1));
+}
+
+/// It stops on a permission, as a turn's `luna_permission` holds it.
+#[cfg(test)]
+pub fn hold_for_test(id: &str) {
+    let ask = Ask::from_claude_tool("Bash", &json!({ "command": "x" }));
+    lock().entries.get_mut(id).unwrap().held.push_back(Held { serial: 1, ask, input: Value::Null, answer: None });
 }
 
 /// `luna_kill`: what was queued is dropped.
@@ -2507,7 +2830,7 @@ pub fn resume_for_test(id: &str) {
 
 #[cfg(test)]
 pub fn lose_for_test(id: &str, from: &str, text: &str) {
-    lock().entries.get_mut(id).unwrap().undelivered.push(Queued { from: Some(from.to_string()), text: text.to_string(), budget: Vec::new() });
+    lock().entries.get_mut(id).unwrap().undelivered.push(Queued::new(Some(from.to_string()), text.to_string(), Vec::new()));
 }
 
 /// A helper as a core takes it up, for the tests of what its caller is told.
@@ -2529,6 +2852,7 @@ pub fn take_up_for_test(id: &str, folder: &str, turns_ended: u32, queue: &[&str]
         queued: !queue.is_empty(),
         queue: queue.iter().map(|t| Queued::from(*t)).collect(),
         in_flight: Vec::new(),
+        fed: Vec::new(),
         undelivered: Vec::new(),
         budgets_landed: Vec::new(),
         tied: true,
@@ -2628,10 +2952,11 @@ pub fn test_helper(id: &str, account_path: &str, session: Option<&str>, busy: bo
         started_ms: 0,
         session: session.map(str::to_owned),
         cwd: None,
-        run: busy.then(|| Run { pid: None, started_ms: 1, stopped: false }),
+        run: busy.then(|| Run::claimed(None, 1)),
         turns_ended: 0,
         queue: Vec::new(),
         in_flight: Vec::new(),
+        fed: Vec::new(),
         log: VecDeque::new(),
         held: VecDeque::new(),
         error: None,
@@ -2882,7 +3207,7 @@ mod tests {
         {
             let mut r = lock();
             let e = r.entries.get_mut("signs-1").unwrap();
-            e.run = Some(Run { pid: None, started_ms: 1_793_000_000_000, stopped: false });
+            e.run = Some(Run::claimed(None, 1_793_000_000_000));
             e.observed.event_ms = 1_793_000_060_000;
         }
         let s = signs("signs-1").unwrap();
@@ -2943,6 +3268,7 @@ mod tests {
             turns_ended: 0,
             queue: Vec::new(),
             in_flight: Vec::new(),
+            fed: Vec::new(),
             log: VecDeque::new(),
             held: VecDeque::new(),
             error: None,
@@ -3159,7 +3485,7 @@ mod tests {
         let _ = kids.0[1].wait();
         let mut e = entry(Provider::Claude);
         e.job = Some(job.clone());
-        e.run = Some(Run { pid: Some(cli), started_ms: since, stopped: false });
+        e.run = Some(Run::claimed(Some(cli), since));
         lock().entries.insert("strays".into(), e);
         turn_over("strays", Some(1));
         let alive = |pid: u32| crate::procs::children(Some(&*job), None).iter().any(|r| r.pid == pid);
@@ -3178,7 +3504,7 @@ mod tests {
         {
             let mut r = lock();
             let e = r.entries.get_mut("strays").unwrap();
-            e.run = Some(Run { pid: Some(cli), started_ms: since, stopped: false });
+            e.run = Some(Run::claimed(Some(cli), since));
             e.observed.acted = true;
         }
         turn_over("strays", Some(0));
@@ -3273,14 +3599,14 @@ mod tests {
         let mut e = entry(Provider::Claude);
         e.ending_left = true;
         lock().entries.insert("stopping".into(), e);
-        assert_eq!(send("stopping", "go on", None), Ok(true), "queued");
+        assert_eq!(send("stopping", "go on", None), Ok(Placed::Queued));
         assert!(lock().entries.get("stopping").unwrap().run.is_none(), "no turn started");
         assert_eq!(interrupt("stopping", "now", None).map(|i| i.queued), Ok(true));
         assert_eq!(lock().entries.get("stopping").unwrap().queue.len(), 2);
         // A second stop meanwhile has nothing to end and leaves the first's mark.
         assert!(kill("stopping").is_empty());
         assert!(lock().entries.get("stopping").unwrap().ending_left, "still the first stop's");
-        assert_eq!(send("stopping", "and this", None), Ok(true), "still queued");
+        assert_eq!(send("stopping", "and this", None), Ok(Placed::Queued), "still queued");
         lock().entries.remove("stopping");
     }
 
@@ -3304,7 +3630,7 @@ mod tests {
         lock().entries.insert("left-job".into(), e);
         let children_busy = || turn_state("left-job").unwrap().children_busy;
         assert!(children_busy(), "between turns, what its turn left is a job");
-        lock().entries.get_mut("left-job").unwrap().run = Some(Run { pid: Some(1), started_ms: 0, stopped: false });
+        lock().entries.get_mut("left-job").unwrap().run = Some(Run::claimed(Some(1), 0));
         assert!(!children_busy(), "in a turn it is simply working");
         lock().entries.remove("left-job");
     }
@@ -3326,6 +3652,7 @@ mod tests {
             queued,
             queue: if queued { vec!["first".into(), "second".into()] } else { Vec::new() },
             in_flight: Vec::new(),
+            fed: Vec::new(),
             undelivered: Vec::new(),
             budgets_landed: Vec::new(),
             tied: false,
@@ -3377,7 +3704,7 @@ mod tests {
     #[test]
     fn a_batch_on_its_way_is_kept_if_the_core_stops_it_and_goes_if_a_kill_does() {
         let mut e = entry(Provider::Codex);
-        e.run = Some(Run { pid: None, started_ms: 0, stopped: false });
+        e.run = Some(Run::claimed(None, 0));
         e.in_flight = vec!["flying".into()];
         e.queue = vec!["behind it".into()];
         stop_for_luna(&mut e);
@@ -3426,7 +3753,7 @@ mod tests {
     #[test]
     fn what_a_stopped_turn_had_queued_is_kept_and_counted() {
         let mut e = entry(Provider::Codex);
-        e.run = Some(Run { pid: None, started_ms: 0, stopped: false });
+        e.run = Some(Run::claimed(None, 0));
         e.queue = vec!["one".into(), "two".into()];
         stop_for_luna(&mut e);
         assert_eq!(e.undelivered, ["one", "two"]);
@@ -3437,7 +3764,7 @@ mod tests {
     #[test]
     fn a_kill_drops_what_was_queued_as_it_did() {
         let mut e = entry(Provider::Codex);
-        e.run = Some(Run { pid: None, started_ms: 0, stopped: false });
+        e.run = Some(Run::claimed(None, 0));
         e.queue = vec!["one".into()];
         assert_eq!(stop(&mut e), None);
         assert!(e.queue.is_empty() && e.undelivered.is_empty() && !e.cut_short, "the agent's own stop, not Luna's");
@@ -3522,7 +3849,7 @@ mod tests {
         let mut e = entry(Provider::Claude);
         on_claude_event(&mut e, &json!({ "type": "system", "subtype": "init", "session_id": "s-1", "cwd": "C:\\p" }));
         let (args, _, envs) = command_for(&e, "x");
-        assert_eq!(args[..2], ["-p", "--output-format"]);
+        assert_eq!(args[..3], ["-p", "--input-format", "stream-json"]);
         let at = args.iter().position(|a| a == "--resume").unwrap();
         assert_eq!(args[at + 1], "s-1");
         assert!(envs.iter().any(|(k, v)| *k == "CLAUDE_CONFIG_DIR" && v == "C:\\acc"));
@@ -3603,6 +3930,7 @@ mod tests {
                 queued: false,
                 queue: Vec::new(),
                 in_flight: Vec::new(),
+                fed: Vec::new(),
                 undelivered: Vec::new(),
                 budgets_landed: Vec::new(),
                 tied: true,
@@ -3913,7 +4241,7 @@ mod tests {
 
     #[test]
     fn a_turn_killed_or_crashed_ends_on_an_error() {
-        let run = |e: &mut Entry| e.run = Some(Run { pid: Some(1), started_ms: 0, stopped: false });
+        let run = |e: &mut Entry| e.run = Some(Run::claimed(Some(1), 0));
         for (id, code, why) in [
             ("end-crash", Some(1), "codex exited with code 1"),
             ("end-signal", None, "codex was killed"),
@@ -3962,5 +4290,419 @@ mod tests {
         let no = build_answer(&perm, &cmd, &[], Some(false), Some("not now")).unwrap();
         assert_eq!((no["behavior"].as_str(), no["message"].as_str()), (Some("deny"), Some("not now")));
         assert!(build_answer(&perm, &cmd, &[], None, None).is_err());
+    }
+
+    // ------------------------------------------- text joining a running turn --
+
+    /// A Claude Code turn with its stdin open: what goes down `feed` is at the
+    /// other end, and the process has no pid to kill.
+    fn feeding(e: &mut Entry) -> std::sync::mpsc::Receiver<String> {
+        let (feed, lines) = std::sync::mpsc::channel();
+        e.run = Some(Run { feed: Some(feed), line: Some("opening-line".into()), ..Run::claimed(None, 0) });
+        lines
+    }
+
+    #[test]
+    fn claude_helpers_keep_stdin_for_stream_json_and_codex_ones_do_not() {
+        let has = |args: &[String], flag: &str| args.iter().any(|a| a == flag);
+        let (args, _, _) = command_for(&entry(Provider::Claude), "x");
+        assert!(args.windows(2).any(|w| w == ["--input-format", "stream-json"]), "{args:?}");
+        assert!(has(&args, "--replay-user-messages"), "its word that a line was taken in");
+        let (args, _, _) = command_for(&entry(Provider::Codex), "x");
+        assert!(!has(&args, "--input-format") && !has(&args, "--replay-user-messages"));
+    }
+
+    #[test]
+    fn a_message_is_one_line_of_json_whatever_it_says() {
+        let text = "two\nlines, \"quotes\", a back\\slash and 🌧";
+        let line = user_line("the-uuid", text);
+        assert!(line.ends_with('\n') && line.matches('\n').count() == 1, "{line}");
+        let v: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!((v["type"].as_str(), v["uuid"].as_str(), v["message"]["role"].as_str()), (Some("user"), Some("the-uuid"), Some("user")));
+        assert_eq!(v["message"]["content"].as_str(), Some(text));
+        assert!(v["parent_tool_use_id"].is_null());
+    }
+
+    #[test]
+    fn ids_are_uuids_and_differ() {
+        let (a, b) = (new_id(), new_id());
+        assert_ne!(a, b);
+        let parts: Vec<&str> = a.split('-').collect();
+        assert_eq!(parts.iter().map(|p| p.len()).collect::<Vec<_>>(), [8, 4, 4, 4, 12], "{a}");
+        assert!(parts[2].starts_with('4') && "89ab".contains(&parts[3][..1]), "{a}");
+        assert!(a.chars().all(|c| c == '-' || c.is_ascii_hexdigit()));
+    }
+
+    /// A stdin that takes what `pass` lets through, one write at a time.
+    struct Stalled {
+        pass: std::sync::mpsc::Receiver<()>,
+        wrote: std::sync::Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl Write for Stalled {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.pass.recv().map_err(|_| std::io::ErrorKind::BrokenPipe)?;
+            self.wrote.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Nobody reading stdin holds the writer and nothing else; what got in stays
+    /// in order; its going ends the writer.
+    #[test]
+    fn a_stdin_nobody_reads_holds_up_nothing_but_its_writer() {
+        let (open, pass) = std::sync::mpsc::channel();
+        let wrote = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let stdin = Stalled { pass, wrote: wrote.clone() };
+        let (feed, lines) = std::sync::mpsc::channel();
+        let writer = std::thread::spawn(move || feed_stdin(stdin, "first\n", lines));
+        let started = std::time::Instant::now();
+        for n in 0..10_000 {
+            feed.send(format!("{n}\n")).unwrap();
+        }
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "a send does not wait for the pipe");
+        open.send(()).unwrap();
+        open.send(()).unwrap();
+        drop(feed);
+        // The pipe breaks: the writer goes with most of it unwritten.
+        drop(open);
+        writer.join().unwrap();
+        assert_eq!(String::from_utf8(wrote.lock().unwrap().clone()).unwrap(), "first\n0\n");
+    }
+
+    #[test]
+    fn stdin_ends_when_its_lines_do() {
+        let (feed, lines) = std::sync::mpsc::channel::<String>();
+        feed.send("second\n".into()).unwrap();
+        drop(feed);
+        let mut out = Vec::new();
+        feed_stdin(&mut out, "first\n", lines);
+        assert_eq!(out, b"first\nsecond\n");
+    }
+
+    #[test]
+    fn text_joins_a_turn_with_its_stdin_open_and_goes_first_come_first_served() {
+        let mut e = entry(Provider::Claude);
+        let lines = feeding(&mut e);
+        assert_eq!(place(&mut e, "stop at the next commit".into(), true), Placed::Joined);
+        let line: Value = serde_json::from_str(&lines.try_recv().unwrap()).unwrap();
+        assert_eq!(line["message"]["content"].as_str(), Some("stop at the next commit"));
+        assert_eq!(line["uuid"].as_str(), Some(e.fed[0].id.as_str()));
+        assert_eq!(e.fed[0].line.as_deref(), Some(e.fed[0].id.as_str()));
+        assert!(e.queue.is_empty());
+
+        // Something waits already: it goes behind that, not past it.
+        e.queue.push("cancel the commit".into());
+        assert_eq!(place(&mut e, "and this".into(), true), Placed::Queued);
+        assert_eq!(e.queue, ["cancel the commit", "and this"]);
+        assert!(lines.try_recv().is_err());
+    }
+
+    /// A turn claimed has no stdin yet: what comes then queues, and what comes
+    /// once it has one must not overtake that.
+    #[test]
+    fn what_comes_as_a_turn_starts_is_not_overtaken_once_it_has_started() {
+        let mut e = entry(Provider::Claude);
+        claim(&mut e);
+        assert_eq!(place(&mut e, "do A".into(), true), Placed::Queued, "no stdin yet");
+        let lines = feeding(&mut e);
+        assert_eq!(place(&mut e, "cancel A".into(), true), Placed::Queued);
+        assert_eq!(e.queue, ["do A", "cancel A"]);
+        assert!(lines.try_recv().is_err() && e.fed.is_empty());
+    }
+
+    #[test]
+    fn a_notice_a_codex_turn_and_a_closed_stdin_all_queue() {
+        let mut e = entry(Provider::Claude);
+        let _lines = feeding(&mut e);
+        assert_eq!(place(&mut e, "a notice".into(), false), Placed::Queued, "aimed at an idle helper");
+        let mut e = entry(Provider::Codex);
+        e.run = Some(Run::claimed(Some(1), 0));
+        assert_eq!(place(&mut e, "text".into(), true), Placed::Queued);
+        let mut e = entry(Provider::Claude);
+        let lines = feeding(&mut e);
+        drop(lines);
+        assert_eq!(place(&mut e, "its writer is gone".into(), true), Placed::Queued);
+        assert!(e.fed.is_empty() && e.queue[0].line.is_none());
+    }
+
+    #[test]
+    fn its_first_result_ends_stdin_and_text_then_waits_for_the_next_process() {
+        let mut e = entry(Provider::Claude);
+        let lines = feeding(&mut e);
+        on_claude_event(&mut e, &json!({ "type": "result", "subtype": "success", "duration_ms": 10 }));
+        assert!(matches!(lines.try_recv(), Err(std::sync::mpsc::TryRecvError::Disconnected)), "the end of its input");
+        assert!(e.run.is_some(), "the turn is over when its process is");
+        assert_eq!(place(&mut e, "too late for it".into(), true), Placed::Queued);
+    }
+
+    /// A line the CLI passes over has no `result`, which must not hold stdin open.
+    #[test]
+    fn the_end_of_the_line_it_started_on_ends_stdin_and_of_another_does_not() {
+        let mut e = entry(Provider::Claude);
+        let lines = feeding(&mut e);
+        let ended = |uuid: &str, state: &str| json!({ "type": "command_lifecycle", "command_uuid": uuid, "state": state });
+        on_claude_event(&mut e, &ended("a-joined-line", "completed"));
+        assert!(!matches!(lines.try_recv(), Err(std::sync::mpsc::TryRecvError::Disconnected)));
+        on_claude_event(&mut e, &ended("opening-line", "queued"));
+        assert!(e.run.as_ref().unwrap().feed.is_some());
+        on_claude_event(&mut e, &ended("opening-line", "completed"));
+        assert!(matches!(lines.try_recv(), Err(std::sync::mpsc::TryRecvError::Disconnected)));
+
+        let mut e = entry(Provider::Claude);
+        let _lines = feeding(&mut e);
+        on_claude_event(&mut e, &ended("opening-line", "cancelled"));
+        assert!(e.run.as_ref().unwrap().feed.is_none());
+    }
+
+    #[test]
+    fn the_clis_word_is_what_retires_a_message_not_the_pipe() {
+        let mut e = entry(Provider::Claude);
+        let _lines = feeding(&mut e);
+        assert_eq!(place(&mut e, "joined".into(), true), Placed::Joined);
+        let uuid = e.fed[0].id.clone();
+        assert!(!on_claude_event(&mut e, &json!({ "type": "user", "uuid": uuid, "message": {} })), "a tool result, say");
+        assert!(!on_claude_event(&mut e, &json!({ "type": "command_lifecycle", "command_uuid": uuid, "state": "queued" })), "queued is lost with a kill");
+        assert_eq!(e.fed.len(), 1);
+        assert!(!on_claude_event(&mut e, &json!({ "type": "user", "isReplay": true, "uuid": "another" })));
+        assert!(on_claude_event(&mut e, &json!({ "type": "user", "isReplay": true, "uuid": uuid })));
+        assert!(e.fed.is_empty());
+
+        // A batch goes as the line of its first, the opening one too.
+        let mark = BudgetMark { id: "kid".into(), line: "over budget".into() };
+        e.in_flight = vec![Queued::new(None, "one".into(), vec![mark]), "two".into()];
+        stamp(&mut e.in_flight);
+        let uuid = e.in_flight[0].id.clone();
+        assert!(on_claude_event(&mut e, &json!({ "type": "command_lifecycle", "command_uuid": uuid, "state": "started" })));
+        assert!(e.in_flight.is_empty());
+        assert_eq!(e.budgets_landed, ["kid"], "a budget line counts once the CLI has it");
+    }
+
+    /// A stop puts the text by a moment before the last of what the CLI said is read.
+    #[test]
+    fn its_word_arriving_after_a_stop_takes_the_text_back_off_the_undelivered() {
+        let mut e = entry(Provider::Claude);
+        let _lines = feeding(&mut e);
+        assert_eq!(place(&mut e, "joined".into(), true), Placed::Joined);
+        let uuid = e.fed[0].id.clone();
+        stop_for_luna(&mut e);
+        assert_eq!(e.undelivered, ["joined"]);
+        assert!(on_claude_event(&mut e, &json!({ "type": "user", "isReplay": true, "uuid": uuid })));
+        assert!(e.undelivered.is_empty());
+    }
+
+    #[test]
+    fn a_stop_for_lunas_sake_keeps_what_joined_and_counts_no_turn_for_it_and_a_kill_drops_it() {
+        let mut e = entry(Provider::Claude);
+        let _lines = feeding(&mut e);
+        assert_eq!(place(&mut e, "joined".into(), true), Placed::Joined);
+        e.queue.push("behind it".into());
+        e.turns_ended = 3;
+        stop_for_luna(&mut e);
+        assert_eq!(e.undelivered, ["joined", "behind it"]);
+        assert!(e.fed.is_empty() && e.run.as_ref().unwrap().feed.is_none());
+        assert_eq!(e.turns_ended, 4, "the one for what was queued, none for what joined");
+
+        let mut e = entry(Provider::Claude);
+        let _lines = feeding(&mut e);
+        assert_eq!(place(&mut e, "joined".into(), true), Placed::Joined);
+        e.turns_ended = 3;
+        stop(&mut e);
+        assert!(e.fed.is_empty() && e.undelivered.is_empty());
+        assert_eq!(e.turns_ended, 3, "its sender waits on this turn's end");
+    }
+
+    /// One try more, under the same id, and then back to who sent it: a CLI that
+    /// keeps going before it takes anything does not loop.
+    #[test]
+    fn what_a_cli_went_without_starts_the_next_turn_once() {
+        let mut e = entry(Provider::Claude);
+        let _lines = feeding(&mut e);
+        assert_eq!(place(&mut e, "joined".into(), true), Placed::Joined);
+        let uuid = e.fed[0].id.clone();
+        e.queue.push("behind it".into());
+        assert_eq!(sort_out_untaken(&mut e), ["joined"]);
+        assert_eq!(e.queue, ["joined", "behind it"], "in the order they came");
+        assert!(e.fed.is_empty() && e.undelivered.is_empty());
+
+        // The next process is started on it. Its pipe taking the line retires nothing.
+        assert_eq!(take_queue(&mut e), "joined\n\nbehind it");
+        assert_eq!(e.in_flight[0].id, uuid, "the id it had");
+        assert_eq!(e.in_flight[1].line.as_deref(), Some(uuid.as_str()), "the batch goes by the first's");
+
+        // That one goes too.
+        assert!(sort_out_untaken(&mut e).is_empty());
+        assert!(e.in_flight.is_empty() && e.queue.is_empty());
+        assert_eq!(e.undelivered, ["joined", "behind it"]);
+    }
+
+    #[test]
+    fn what_joined_behind_a_batch_never_taken_is_not_sent_past_it() {
+        let mut e = entry(Provider::Claude);
+        e.in_flight = vec!["the batch".into()];
+        stamp(&mut e.in_flight);
+        let _lines = feeding(&mut e);
+        assert_eq!(place(&mut e, "joined".into(), true), Placed::Joined);
+        assert!(sort_out_untaken(&mut e).is_empty());
+        assert_eq!(e.undelivered, ["the batch", "joined"]);
+        assert!(e.queue.is_empty());
+    }
+
+    #[test]
+    fn a_turn_over_takes_up_what_missed_it_and_what_the_cli_took_is_done() {
+        let mut e = entry(Provider::Claude);
+        let _lines = feeding(&mut e);
+        assert_eq!(place(&mut e, "joined".into(), true), Placed::Joined);
+        lock().entries.insert("missed".into(), e);
+        // No spawn gets far: the folder is not there.
+        lock().entries.get_mut("missed").unwrap().spec.folder = "C:\\luna-no-such-folder".into();
+        turn_over("missed", Some(1));
+        let e = lock().entries.remove("missed").unwrap();
+        assert_eq!(e.turns_ended, 2, "the turn, and the next that could not start");
+        assert_eq!(e.undelivered, ["joined"], "not dropped with the turn that could not start");
+    }
+
+    fn pending(uuid: &str, text: &str) -> Queued {
+        let mut q = Queued::new(Some("x".into()), text.to_string(), Vec::new());
+        q.id = uuid.to_string();
+        q.line = Some(uuid.to_string());
+        q
+    }
+
+    fn with_lines(tied: bool) -> Saved {
+        let spec = entry(Provider::Claude).spec;
+        let mut s: Saved = serde_json::from_value(json!({
+            "id": "s", "spec": serde_json::to_value(&spec).unwrap(), "startedMs": 0, "session": "sid", "cwd": null, "turnsEnded": 1,
+            "running": true, "queued": false, "cutShort": false, "ties": serde_json::to_value(crate::agents::Ties::default()).unwrap(),
+        }))
+        .unwrap();
+        s.tied = tied;
+        s
+    }
+
+    /// In the transcript it is the model's, whatever Luna had time to note: not
+    /// given back, not sent again.
+    #[test]
+    fn a_core_gone_before_noting_the_clis_word_goes_by_the_transcript() {
+        let mut s = with_lines(true);
+        let mark = BudgetMark { id: "kid".into(), line: "over budget".into() };
+        let mut flying = pending("batch", "started on");
+        flying.budget = vec![mark];
+        s.in_flight = vec![flying, Queued { line: Some("batch".into()), ..pending("second", "with it") }];
+        s.fed = vec![pending("folded", "taken in"), pending("missed", "not taken in")];
+        settle_lines(&mut s, &|line| Some(line != "missed"));
+        assert!(s.in_flight.is_empty(), "a batch goes by its line");
+        assert_eq!(s.fed, ["not taken in"]);
+        assert!(!s.fed[0].maybe_reached, "the turn is over and it is not there: it never got there");
+        assert!(s.fed[0].line.is_none());
+        assert_eq!(s.budgets_landed, ["kid"]);
+        let e = taken_up(s);
+        assert_eq!(e.undelivered, ["not taken in"]);
+    }
+
+    #[test]
+    fn what_cannot_be_established_is_said_so_and_not_sent_again() {
+        // The transcript cannot be read.
+        let mut s = with_lines(true);
+        s.fed = vec![pending("a", "joined")];
+        settle_lines(&mut s, &|_| None);
+        assert!(s.fed[0].maybe_reached);
+        // Or nothing says the turn is over, so the CLI may yet take it.
+        let mut s = with_lines(false);
+        s.in_flight = vec![pending("b", "flying")];
+        settle_lines(&mut s, &|_| Some(false));
+        assert!(s.in_flight[0].maybe_reached);
+
+        let mut e = taken_up(s);
+        e.resumable = true;
+        e.undelivered.push(Queued::new(Some("x".into()), "plainly lost".into(), Vec::new()));
+        e.session = Some("sid".into());
+        e.spec.folder = "C:\\luna-no-such-folder".into();
+        lock().entries.insert("doubt".into(), e);
+        let told = undelivered_for("doubt", "x", false);
+        assert!(told[0].contains("MAY have reached it") && told[0].ends_with("flying"), "{told:?}");
+        assert_eq!(told[1], "plainly lost");
+        resume("doubt");
+        let e = lock().entries.remove("doubt").unwrap();
+        assert_eq!(e.undelivered.iter().filter(|q| q.maybe_reached).count(), 1, "still its sender's to decide");
+        assert!(e.undelivered.iter().filter(|q| q.maybe_reached).all(|q| q.text == "flying"));
+    }
+
+    /// What a stop put by, and a core's save, go the same way.
+    #[test]
+    fn what_a_stop_put_by_on_stdin_is_settled_too_and_what_never_went_is_not() {
+        let mut s = with_lines(true);
+        s.running = false;
+        s.cut_short = true;
+        s.undelivered = vec![pending("told", "went in"), "never on stdin".into()];
+        settle_lines(&mut s, &|line| {
+            assert_eq!(line, "told");
+            Some(true)
+        });
+        assert_eq!(s.undelivered, ["never on stdin"]);
+    }
+
+    #[test]
+    fn a_codex_helpers_text_is_left_as_it_was() {
+        let mut s = with_lines(true);
+        s.spec.provider = Provider::Codex;
+        s.in_flight = vec![pending("a", "flying")];
+        settle_lines(&mut s, &|_| panic!("Codex has no such lines"));
+        assert!(!s.in_flight[0].maybe_reached);
+    }
+
+    #[test]
+    fn stable_ids_cross_a_core_and_an_older_file_gets_them() {
+        let mut e = entry(Provider::Claude);
+        let _lines = feeding(&mut e);
+        assert_eq!(place(&mut e, "joined".into(), true), Placed::Joined);
+        let uuid = e.fed[0].id.clone();
+        lock().entries.insert("carried".into(), e);
+        let bytes = serde_json::to_vec(&snapshot().into_iter().filter(|s| s.id == "carried").collect::<Vec<Saved>>()).unwrap();
+        lock().entries.remove("carried");
+        let saved: Vec<Saved> = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(saved[0].fed[0].id, uuid);
+        assert_eq!(saved[0].fed[0].line.as_deref(), Some(uuid.as_str()));
+        let e = taken_up(saved.into_iter().next().unwrap());
+        assert_eq!(e.undelivered, ["joined"]);
+        assert_eq!(e.turns_ended, 1, "the turn; none for what joined it");
+
+        let old: Queued = serde_json::from_value(json!({ "from": null, "text": "older" })).unwrap();
+        assert_eq!(old.id.len(), 36);
+        assert!(old.line.is_none() && !old.maybe_reached);
+    }
+
+    #[test]
+    fn the_clis_own_requests_are_refused_on_stdin_rather_than_left_to_hang() {
+        let mut e = entry(Provider::Claude);
+        let lines = feeding(&mut e);
+        let asked = json!({ "type": "control_request", "request_id": "r-1", "request": { "subtype": "elicitation", "message": "Pick" } });
+        assert!(!on_claude_event(&mut e, &asked));
+        let v: Value = serde_json::from_str(&lines.try_recv().unwrap()).unwrap();
+        assert_eq!(v["type"].as_str(), Some("control_response"));
+        assert_eq!((v["response"]["subtype"].as_str(), v["response"]["request_id"].as_str()), (Some("error"), Some("r-1")));
+        // Its stdin has ended: the CLI cancels that by itself.
+        e.run.as_mut().unwrap().feed = None;
+        on_claude_event(&mut e, &asked);
+        assert!(lines.try_recv().is_err());
+    }
+
+    #[test]
+    fn a_later_result_clears_what_an_earlier_one_of_the_process_left_and_nothing_else() {
+        let mut e = entry(Provider::Claude);
+        let failed = json!({ "type": "result", "subtype": "error_during_execution", "is_error": true, "result": "rate limited" });
+        let done = json!({ "type": "result", "subtype": "success", "duration_ms": 1 });
+        e.run = Some(Run::claimed(None, 0));
+        on_claude_event(&mut e, &failed);
+        assert_eq!(e.error.as_deref(), Some("rate limited"));
+        on_claude_event(&mut e, &done);
+        assert_eq!(e.error, None, "what was fed in behind it went through");
+
+        e.error = Some("it was stopped, by luna_kill or from the window".into());
+        on_claude_event(&mut e, &done);
+        assert!(e.error.is_some(), "not a result's to clear");
     }
 }

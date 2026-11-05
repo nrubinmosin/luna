@@ -156,13 +156,13 @@ on one of the user's accounts.
   question too, its options the only answers it takes; a spawn it kept back returns it as `ask`.
 - A background Claude Code helper's questions and permission prompts come to you this way, one
   at a time. A background Codex helper's are in its reply.
-- `luna_send` sent while a session works is `queued`: a visible session's CLI takes it into
-  the running turn or the next, a background helper always the next; `luna_wait` with the
+- `luna_send` to a working session is `queued`: a visible CLI takes it into the running turn
+  or the next; a background Claude helper at its next tool boundary (`joined`; a long tool
+  or subagent delays it); background Codex the next turn. `luna_wait` with the
   `turnsEnded` returned waits for whichever answers it. `interrupt: true` makes the text the
   next turn, behind any queued (`queued` if that turn would not stop). Where the user is
-  typing, or has left an unsent draft Luna cannot put aside (Claude Code's is put aside and
-  comes back; Codex's cannot be), the result says `held: true`: Luna types it in once they
-  are done, and a `luna_wait` waits for that first. Do not send it again.
+  typing, or left a draft Luna cannot put aside (Codex's), the result says `held: true`: Luna
+  types it in once they are done, and a `luna_wait` waits for that first. Do not send again.
 - `autoDelete`: Luna deletes the helper 30 minutes after its answer reached you, not while a
   job or helper of its runs (processes idle 2 h on end do not count: they go with it, and you
   hear so); a read or a send starts that over (`deletesInMin` counts down). The worktree stays. Off

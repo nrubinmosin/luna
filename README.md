@@ -487,6 +487,13 @@ where Codex hooks run unasked (Settings): Codex runs a hook Luna gives it only s
   `luna_kill` is never auto-deleted: a background one's conversation stays for `luna_send` to
   go on with, a visible one is not running until you resume it. One
   you have typed into is yours and stays; a worktree it made stays too, with its work.
+- `luna_send` to a background Claude Code helper in mid-turn joins that turn: its stdin stays
+  open until the turn's first result, and it takes the text in at its next tool boundary, so a
+  long tool or subagent delays it. Luna counts the text as delivered when the CLI says it took
+  it in, not when the pipe does. If the CLI goes first, the text starts the next turn; if that
+  fails too, it goes back to its sender. After a core crash Luna looks for it in the transcript
+  rather than sending it twice, and says so where it cannot tell. Codex's `exec` reads stdin
+  once, so text sent to a background Codex helper waits for the next turn.
 - `luna_send` with `interrupt: true` cuts short the turn the session is on, and any prompt it
   is stopped at — Esc in a terminal, the process stopped for a background helper — and the text
   becomes its next turn instead of waiting behind the current one.

@@ -580,6 +580,9 @@ struct Registry {
     /// What a helper began and is not going on in, by id, until its parent has heard
     /// (`worktrees_left_line`).
     worktrees_left: HashMap<String, Vec<String>>,
+    /// Past which turn count a helper's answer to a caller's text lies, the text
+    /// having missed the turn it joined (`retried`): above any count the caller holds.
+    delivery_floors: HashMap<(String, String), u32>,
     /// Helpers that run in a worktree they were handed rather than made:
     /// deleting one never drops that worktree, whose work is its caller's.
     borrowed: std::collections::HashSet<String>,
@@ -819,6 +822,7 @@ fn reg() -> &'static Mutex<Registry> {
             worktree_names: HashMap::new(),
             worktrees_before: HashMap::new(),
             worktrees_left: HashMap::new(),
+            delivery_floors: HashMap::new(),
             seen: HashMap::new(),
             names: HashMap::new(),
             groups: HashMap::new(),
@@ -1339,6 +1343,24 @@ fn resumed_in(r: &mut Registry, id: &str, turns_ended: u32) {
         o.baseline = o.baseline.max(turns_ended);
         o.resumed = true;
         o.cut_short = false;
+    }
+}
+
+/// Text that joined a background helper's turn missed it, its CLI going before
+/// taking it in, and starts the next turn instead: the turn counted `turns_ended`
+/// did not answer `callers`, who heard it would. Their answer lies past that count,
+/// for the debt and for a wait, which may be going by an `afterTurn` from before
+/// this. Nothing else about the helper changed, so nothing else is said of it.
+pub fn retried(id: &str, callers: &[String], turns_ended: u32) {
+    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    for caller in callers {
+        let key = (caller.clone(), id.to_string());
+        if let Some(o) = r.owed.get_mut(&key) {
+            o.baseline = o.baseline.max(turns_ended);
+            o.held = None;
+        }
+        let floor = r.delivery_floors.entry(key).or_default();
+        *floor = (*floor).max(turns_ended);
     }
 }
 
@@ -3609,10 +3631,14 @@ pub struct Sent {
     /// Where the session stood when the text went in (see `state_of`).
     pub state_before: &'static str,
     /// It was working: the text joins the turn in flight or is taken up
-    /// after it (a background helper: always after), and `started` says
+    /// after it (a background Codex helper: always after), and `started` says
     /// nothing yet.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub queued: bool,
+    /// Of `queued`, a background Claude Code helper's stdin has it: it takes it in
+    /// at its next tool boundary, and this turn's end is the answer.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub joined: bool,
     /// The turn it was working on was stopped for this text (`interrupt`).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub interrupted: bool,
@@ -3627,7 +3653,7 @@ pub struct Sent {
     pub started: bool,
     /// The `afterTurn` for the `wait` that collects the reply: turns over
     /// before the text went in, the one it is queued behind counted for a
-    /// background helper, whose queue holds the text until that turn ends.
+    /// background helper whose queue holds the text until that turn ends.
     pub turns_ended: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub screen: Option<String>,
@@ -3695,15 +3721,18 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool) -> Result<Sent,
         // Taken before the text goes in: a turn it starts may be over, and
         // written, by the time the call returns.
         let cursor = transcript_end(id);
-        let (queued, interrupted) = if interrupt {
+        use crate::background::Placed;
+        let (placed, interrupted) = if interrupt {
             let i = crate::background::interrupt(id, text, Some(caller))?;
-            (i.queued, i.stopped)
+            (if i.queued { Placed::Queued } else { Placed::Started }, i.stopped)
         } else {
             (crate::background::send(id, text, Some(caller))?, false)
         };
+        let (queued, joined) = (placed != Placed::Started, placed == Placed::Joined);
         // The turn it was on ends before the one this text starts, and is
-        // counted: the answer ends the turn after that.
-        if queued || interrupted {
+        // counted: the answer ends the turn after that. Text that joined that
+        // turn is answered by its end.
+        if placed == Placed::Queued || interrupted {
             baseline += 1;
         }
         seen(caller, id, baseline);
@@ -3712,6 +3741,7 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool) -> Result<Sent,
             ok: true,
             state_before,
             queued,
+            joined,
             interrupted,
             held: false,
             started: !queued,
@@ -3751,6 +3781,7 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool) -> Result<Sent,
             ok: true,
             state_before,
             queued: false,
+            joined: false,
             interrupted,
             held: true,
             started: false,
@@ -3800,6 +3831,7 @@ fn put_in(
         ok: true,
         state_before: "",
         queued,
+        joined: false,
         interrupted,
         held: false,
         started,
@@ -4024,7 +4056,7 @@ fn resume_words(resuming: bool, opening: Option<String>, batch: &[crate::backgro
     if resuming {
         return Some(crate::background::resume_text(batch));
     }
-    let first = crate::background::Queued { from: None, text: opening?, budget: Vec::new() };
+    let first = crate::background::Queued::new(None, opening?, Vec::new());
     Some(crate::background::joined(&[std::slice::from_ref(&first), batch].concat()))
 }
 
@@ -4157,7 +4189,7 @@ fn resume_chat(pty: &crate::pty::PtyManager, id: &str) {
         let r = reg().lock().unwrap_or_else(|e| e.into_inner());
         let Some(res) = r.resumes.get(id) else { return };
         let batch: Vec<crate::background::Queued> =
-            r.held.iter().filter(|h| h.id == id).map(|h| crate::background::Queued { from: Some(h.caller.clone()), text: h.text.clone(), budget: Vec::new() }).collect();
+            r.held.iter().filter(|h| h.id == id).map(|h| crate::background::Queued::new(Some(h.caller.clone()), h.text.clone(), Vec::new())).collect();
         // As its first start would have had it: Codex has nowhere else to hear its note.
         let noted = r.known.get(id).filter(|k| k.provider == Provider::Codex).and_then(|k| k.parent.clone());
         let opening = res.opening.as_deref().map(|text| noted.as_deref().map_or(text.to_string(), |parent| crate::pty::codex_helper_prompt(parent, text)));
@@ -5030,6 +5062,9 @@ fn wait_for(
         if lost() {
             return lost_answer(caller, id, call, alone);
         }
+        // Read again on every look: the text may miss its turn during this wait.
+        let floor = reg().lock().unwrap_or_else(|e| e.into_inner()).delivery_floors.get(&key).copied();
+        baseline = baseline.max(floor.unwrap_or(0));
         let alive = live(&pty, id);
         let ts = crate::activity::turn_state(id);
         let turns_ended = ts.map(|t| t.turns_ended).unwrap_or(0);
@@ -5743,6 +5778,7 @@ pub fn forget(id: &str) {
     let (handed, passed, moved) = pass_up(&mut r, id, gone.and_then(|k| k.parent));
     r.tokens.retain(|_, chat| chat != id);
     r.seen.retain(|(who, chat), _| who != id && chat != id);
+    r.delivery_floors.retain(|(who, chat), _| who != id && chat != id);
     r.owed.retain(|(who, chat), _| who != id && chat != id);
     r.answered.retain(|(who, chat), _| who != id && chat != id);
     r.abandoned.retain(|_, (caller, _)| caller != id);
@@ -6084,7 +6120,7 @@ fn put_undelivered_back(id: &str, taken: Undelivered) {
 /// it: labelled so that it is not read as anything the helper said.
 fn undelivered_text(lost: &[String]) -> String {
     let mut text = format!(
-        "NOT DELIVERED: {} meant for this helper when Luna's core stopped its turn. It never acted on them; send again what still matters. \
+        "NOT DELIVERED: {} meant for this helper when Luna's core stopped its turn or its CLI went. It never acted on them unless marked; send again what still matters. \
          Word for word, oldest first (the first is its opening prompt, if it never got started):",
         count_of(lost)
     );
@@ -10282,7 +10318,7 @@ mod tests {
 
     #[test]
     fn a_chat_is_told_why_with_what_was_held_or_given_its_prompt_with_no_conversation() {
-        let batch = [crate::background::Queued { from: Some("x".into()), text: "the held text".into(), budget: Vec::new() }];
+        let batch = [crate::background::Queued::new(Some("x".into()), "the held text".into(), Vec::new())];
         let told = resume_words(true, Some("the prompt".into()), &batch).unwrap();
         assert!(told.starts_with(NOTICE_TAG) && told.contains("core restarted") && told.contains("Carry on") && told.contains("the held text"), "{told}");
         assert!(!told.contains("the prompt"), "its conversation has that");
@@ -11505,5 +11541,41 @@ mod tests {
 
     fn tooled(id: &str) {
         register(id, Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, serde_json::json!({}));
+    }
+
+    /// Text that missed the turn it joined: its sender's answer lies past that
+    /// turn, for a wait going by an `afterTurn` from before that too, and it hears
+    /// nothing of a restart that did not happen.
+    #[test]
+    fn text_that_missed_its_turn_moves_its_senders_answer_and_only_that() {
+        let (a, b, id) = ("rt-sender", "rt-other", "rt-helper");
+        register(a, Provider::Claude, "C:\\p", "C:\\acc\\one", None, true, serde_json::json!({}));
+        crate::background::test_helper(a, "C:\\acc\\one", None, false);
+        crate::background::idle_for_test(id, Provider::Claude, 1, false);
+        register(id, Provider::Claude, "C:\\p", "C:\\acc\\one", Some(a), false, serde_json::json!({}));
+        owe_from(a, id, 0, 7);
+        owe_from(b, id, 0, 7);
+        retried(id, &[a.to_string()], 1);
+        let owed = |who: &str| reg().lock().unwrap().owed.get(&(who.to_string(), id.to_string())).copied().unwrap();
+        assert_eq!(owed(a).baseline, 1);
+        assert!(!owed(a).resumed && !owed(a).cut_short, "no core went");
+        assert_eq!(owed(a).cursor, 7, "all it says from where it was asked is the answer");
+        assert_eq!(owed(b).baseline, 0, "another's question stands as it was");
+
+        // It went on to stop on a permission: that is no end of the turn it asked about.
+        crate::background::in_turn_for_test(id);
+        crate::background::hold_for_test(id);
+        let w = wait(a, id, "turn_done", 2, Some(0), &crate::mcp::Call::new()).unwrap();
+        assert_eq!(w.outcome, "waiting", "not `turn_done`, though the count is past the 0 it asked for");
+        assert_eq!(owed(a).baseline, 1, "and still owed");
+
+        // The turn it did start ends, and that is the answer.
+        crate::background::turn_ended_for_test(id);
+        let w = wait(a, id, "turn_done", 2, Some(0), &crate::mcp::Call::new()).unwrap();
+        assert_eq!(w.outcome, "turn_done");
+        forget(id);
+        crate::background::gone_for_test(id);
+        crate::background::gone_for_test(a);
+        forget(a);
     }
 }
