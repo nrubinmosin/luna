@@ -561,7 +561,7 @@ src-tauri/src/
   After Enter, `send` waits up to 12 s for a turn to begin and also answers `started`/`screen`. `screen` is
   the pty scrollback run through a terminal emulator (`vt100`) at the pty's size: the last
   40 lines of what a person sees in the pane — a popup, an error, a question, which the transcript does
-  not have; `read(screen: true)` returns it on request, `wait` — on `timeout` and `waiting`. `list` and
+  not have; `read(screen: true)` returns it on request, `wait` — on `timeout` and `waiting`, unless told `screen: false`. `list` and
   `spawn` return `settings` — the flags the session actually runs with; for Codex `list`'s `flags` take
   the model catalogue from `models_known` (no CLI run). Rights: only
   the caller's descendants — except `sessions` (all sessions of this Luna launch: account and its folder,
@@ -740,7 +740,8 @@ src-tauri/src/
   organisation, and what replaced it: `settings` do not know that). `sameFolder` — live sessions
   whose cwd (per the CLI's registry) matches the helper's folder, except the caller itself; a helper in
   its own worktree does not get them.
-  **Accounts in `list`.** `defaults` — `claude::defaults::flags` / `codex::defaults::flags` for
+  **Accounts in `list`.** Only when asked: `ids` narrows `list` to those rows, of any session, and takes the
+  accounts off unless `accounts: true`, what a bare call pays for most. `defaults` — `claude::defaults::flags` / `codex::defaults::flags` for
   the caller's folder: the core does the normalisation and stock values (`source: stock`), the frontend
   only turns them into its labels, so the dialog, spawn and `list` say the same thing. `usage` —
   what the frontend shows in the Accounts window, sent as `account_usage` on every change:
