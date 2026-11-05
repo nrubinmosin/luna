@@ -561,9 +561,9 @@ background helper spawned without tools.
   as unknown. Without it, an answer is taken only when one is held.
 - `luna_wait` also takes several sessions (`ids`, `mode: "any"` or `"all"`) and says which
   finished. `luna_list` shows, for each helper, when its turn began, when it last did
-  anything, the full model id it ran on (none until a model has answered) and what it spent: tokens, plus the cost where the
-  CLI states it (Claude Code does, Codex does not). Visible sessions show less: Codex its
-  token total, Claude Code none. An agent also gets a notice when an account its helpers run
+  anything, the full model id it ran on (none until a model has answered) and how full its
+  context window is after its last turn (none until a turn has run), as the chat's meter reads
+  it. An agent also gets a notice when an account its helpers run
   on reaches 90% and then 95% of a usage window, once each until that window resets.
 
 ## Power

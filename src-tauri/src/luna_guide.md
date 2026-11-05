@@ -22,11 +22,9 @@ can start other sessions and work with them.
     history.
   - `resolvedModel`: the full model id a model answered on; null until one has (Codex: what
     its rollout says the turn ran on, or the `<to>` of a `model rerouted` message).
-  - `spend`: `session` and `lastTurn`, each `input` (no cache), `output`, `cacheRead`,
-    `cacheWrite`, and `costUsd`: Claude Code's estimate, not a bill; Codex states none. A turn
-    killed before it ended counts too, Claude Code's as tokens only; `lastTurn` is left out
-    when it cannot be told. Visible sessions: Codex gives `session` only, Claude Code none,
-    and a helper opened as a chat stops being counted.
+  - `context`: how full its context window is after its last turn: `tokens` in the window
+    (its input, cache included) against the model's `window`, and `pct` of it (0-100). Left
+    out until a turn has run; during one, as of its latest step.
   - `leftRunning`: what its turns left running, between turns: `exe`, `pid`, `startedAt`,
     `active` (CPU or I/O in the last 10 min), `quietMin`. It keeps the PC awake until idle 2 h
     on end. `luna_kill` ends a background helper's alone (the user's Stop too). Killing a
