@@ -121,7 +121,8 @@ can start other sessions and work with them.
   several: none of them), and the notice comes as usual. Claude Code hands a background one's
   result over HTML-escaped (`&lt;`, `&gt;`): take code from `luna_read`, not from that.
 - A turn that has written nothing for 30 min is told of once ("mid-turn and has written
-  nothing"): a hung command, or a long one. `luna_read` with `screen: true` tells which.
+  nothing"), and not before 5 min past the timeout of a command it waits on: a hung command,
+  or a long one. `luna_read` with `screen: true` tells which.
 - Without `afterTurn`, a wait is for the answer you are still owed, else for a turn past the
   last count you were shown.
 - `luna_read` with `since` and `last` gives the last N after the cursor, which goes past all

@@ -732,6 +732,57 @@ pub fn answered_model(path: &Path) -> Option<String> {
         .or_else(|| std::fs::read(path).ok().and_then(|b| answered_in(&String::from_utf8_lossy(&b), Some(0))))
 }
 
+/// When the calls the turn waits on are due, the latest of them, in ms since
+/// the epoch: each by the bound its own arguments set, from the line that made
+/// it until its output. In 0.166 `shell`, `shell_command` and a
+/// `local_shell_call` take `timeout_ms`; `exec_command` and `write_stdin` come
+/// back by `yield_time_ms` (or `timeout_ms`, run to completion); code mode's
+/// `exec` cell by the `yield_time_ms` of its `// @exec:` pragma, and `wait` on
+/// one by its own; `sleep` by `duration_ms`, `wait_agent` by `timeout_ms`. Their
+/// defaults, seconds long, are left out: next to half an hour they change nothing.
+pub fn due_ms(path: &Path) -> Option<u64> {
+    due_in(&tail(path, crate::claude::session::DUE_TAIL)?)
+}
+
+fn due_in(text: &str) -> Option<u64> {
+    let ms = |v: &Value| v.as_f64().filter(|t| *t > 0.0).map(|t| t as u64);
+    // A call is back by the first of its bounds.
+    let bound = |args: &Value| ["timeout_ms", "yield_time_ms", "duration_ms"].iter().filter_map(|k| ms(&args[*k])).min();
+    let mut open: Vec<(String, u64)> = Vec::new();
+    for line in text.lines() {
+        let turn = line.contains("\"task_started\"") || line.contains("\"turn_started\"");
+        if !turn && !line.contains("_call") {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        let payload = &v["payload"];
+        match (v["type"].as_str(), payload["type"].as_str()) {
+            // What an earlier turn left open is not what this one waits on.
+            (Some("event_msg"), Some("task_started" | "turn_started")) => open.clear(),
+            (Some("response_item"), Some(kind @ ("function_call" | "custom_tool_call" | "local_shell_call"))) => {
+                let by = match kind {
+                    "custom_tool_call" => payload["input"]
+                        .as_str()
+                        .and_then(|code| code.lines().next()?.trim().strip_prefix("// @exec:").map(str::to_owned))
+                        .and_then(|pragma| serde_json::from_str::<Value>(&pragma).ok())
+                        .and_then(|pragma| bound(&pragma)),
+                    "local_shell_call" => bound(&payload["action"]),
+                    _ => payload["arguments"].as_str().and_then(|a| serde_json::from_str::<Value>(a).ok()).and_then(|a| bound(&a)),
+                };
+                let at = v["timestamp"].as_str().and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok()).map(|t| t.timestamp_millis().max(0) as u64);
+                if let (Some(by), Some(at), Some(id)) = (by, at, payload["call_id"].as_str()) {
+                    open.push((id.to_string(), at + by));
+                }
+            }
+            (Some("response_item"), Some("function_call_output" | "custom_tool_call_output")) => {
+                open.retain(|(id, _)| payload["call_id"].as_str() != Some(id.as_str()));
+            }
+            _ => {}
+        }
+    }
+    open.iter().map(|(_, due)| *due).max()
+}
+
 pub fn last_total_usage(path: &Path) -> Option<Value> {
     let total_in = |text: &str| {
         text.lines().rev().filter(|l| l.contains("\"total_token_usage\"")).find_map(|line| {
@@ -1329,5 +1380,35 @@ mod format_tests {
         assert!(ask(&[started, blocking, done]).is_none(), "it goes with the turn");
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// As 0.166 writes its calls: code mode's `exec` cell with the pragma on its
+    /// first line, `wait` on it, and the function tools of a session without it.
+    #[test]
+    fn a_call_is_due_by_its_own_bound() {
+        let at = "2026-11-04T13:15:19.533Z";
+        let start = chrono::DateTime::parse_from_rfc3339(at).unwrap().timestamp_millis() as u64;
+        let item = |payload: Value| serde_json::json!({ "timestamp": at, "type": "response_item", "payload": payload }).to_string();
+        let call = |id: &str, name: &str, args: Value| item(serde_json::json!({ "type": "function_call", "name": name, "arguments": args.to_string(), "call_id": id }));
+        let cell = |id: &str, code: &str| item(serde_json::json!({ "type": "custom_tool_call", "status": "completed", "name": "exec", "input": code, "call_id": id }));
+        let output = |kind: &str, id: &str| item(serde_json::json!({ "type": kind, "call_id": id, "output": "Script completed" }));
+        let due = |lines: &[&str]| due_in(&lines.join("\n")).map(|d| d - start);
+        let min = 60_000;
+
+        let lane = cell("c1", "// @exec: {\"yield_time_ms\": 2400000, \"max_output_tokens\": 1000}\ntext(await tools.exec_command({cmd:\"./lane.sh\"}));\n");
+        assert_eq!(due(&[&lane]), Some(40 * min));
+        assert_eq!(due(&[&lane, &output("custom_tool_call_output", "c1")]), None, "its output ends it");
+        assert_eq!(due(&[&cell("c1", "text(await tools.exec_command({cmd:\"ls\"}));\n")]), None, "no pragma: the default");
+        let waits = call("c2", "wait", serde_json::json!({ "cell_id": "18", "yield_time_ms": 3000000 }));
+        assert_eq!(due(&[&lane, &waits]), Some(50 * min), "the latest");
+        assert_eq!(due(&[&waits, &output("function_call_output", "c2")]), None);
+        assert_eq!(due(&[&call("c3", "shell_command", serde_json::json!({ "command": "./lane.sh", "timeout_ms": 2400000 }))]), Some(40 * min));
+        assert_eq!(due(&[&call("c3", "sleep", serde_json::json!({ "duration_ms": 1800000 }))]), Some(30 * min));
+        let both = serde_json::json!({ "cmd": "./lane.sh", "yield_time_ms": 600000, "timeout_ms": 2400000 });
+        assert_eq!(due(&[&call("c3", "exec_command", both)]), Some(10 * min), "back by the first of its bounds");
+        let shell = item(serde_json::json!({ "type": "local_shell_call", "call_id": "c4", "status": "in_progress", "action": { "type": "exec", "command": ["./lane.sh"], "timeout_ms": 2400000 } }));
+        assert_eq!(due(&[&shell]), Some(40 * min));
+        let next = r#"{"timestamp":"t","type":"event_msg","payload":{"type":"task_started"}}"#;
+        assert_eq!(due(&[&lane, next]), None, "an earlier turn's call");
     }
 }

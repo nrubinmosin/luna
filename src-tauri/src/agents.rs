@@ -6420,7 +6420,13 @@ fn notice_line(
     }
     if turn == Some(crate::activity::Turn::Busy) && alive && o.told_quiet != Some(ended) {
         if let Some(quiet) = turn_quiet_ms(pty, id).filter(|q| *q >= QUIET_TURN_MS) {
-            return Some((Some(quiet_line(who, quiet)), Settled::Quiet(ended)));
+            // Looked for only once the turn is that quiet: a deadline holds the
+            // notice back, never brings it sooner.
+            let at = now_ms();
+            let due = due_ms(pty, id, k.provider);
+            if due.map_or(true, |due| at >= due.saturating_add(PAST_DUE_MS)) {
+                return Some((Some(quiet_line(who, quiet, due.map(|due| at - due))), Settled::Quiet(ended)));
+            }
         }
     }
     standing_line(pty, caller, who, id, k, o)
@@ -6433,11 +6439,51 @@ fn notice_line(
 /// hence once per turn and not its end.
 const QUIET_TURN_MS: u64 = 30 * 60 * 1000;
 
-fn quiet_line(who: &str, quiet_ms: u64) -> String {
-    format!(
-        "{who} is mid-turn and has written nothing for {} min. A command it runs may hang, or simply take long; luna_read with screen: true shows where it is, luna_kill stops the turn. Said once per turn; the usual notice comes when it ends.",
-        quiet_ms / 60_000
-    )
+/// A command its own timeout has yet to stop is no sign of a hang: a quiet turn
+/// that waits on one is told of only this long past that timeout, by when the
+/// CLI has ended the call and written so, or it hangs. Test lanes of 45 min
+/// under a timeout of their own each woke their caller for nothing.
+const PAST_DUE_MS: u64 = 5 * 60 * 1000;
+
+fn quiet_line(who: &str, quiet_ms: u64, past_due_ms: Option<u64>) -> String {
+    let quiet = quiet_ms / 60_000;
+    match past_due_ms {
+        Some(past) => format!(
+            "{who} is mid-turn and has written nothing for {quiet} min, and the command it waits on is {} min past its own timeout, so it may hang; luna_read with screen: true shows where it is, luna_kill stops the turn. Said once per turn; the usual notice comes when it ends.",
+            past / 60_000
+        ),
+        None => format!(
+            "{who} is mid-turn and has written nothing for {quiet} min. A command it runs may hang, or simply take long; luna_read with screen: true shows where it is, luna_kill stops the turn. Said once per turn; the usual notice comes when it ends."
+        ),
+    }
+}
+
+/// When the commands a session's turn waits on are due, the latest of them:
+/// read off its transcript (`claude::session::due_ms`) or rollout
+/// (`codex::session::due_ms`). Asked every few seconds while a quiet turn's
+/// notice waits on it, so a file is read again only once it has grown, which a
+/// quiet one does not.
+fn due_ms(pty: &crate::pty::PtyManager, id: &str, provider: Provider) -> Option<u64> {
+    static READ: OnceLock<Mutex<HashMap<std::path::PathBuf, (u64, Option<u64>)>>> = OnceLock::new();
+    let path = transcript_path(pty, id)?;
+    let len = std::fs::metadata(&path).ok()?.len();
+    let read = READ.get_or_init(Default::default);
+    if let Some((was, due)) = read.lock().unwrap_or_else(|e| e.into_inner()).get(&path).copied() {
+        if was == len {
+            return due;
+        }
+    }
+    let due = match provider {
+        Provider::Claude => crate::claude::session::due_ms(&path),
+        Provider::Codex => crate::codex::session::due_ms(&path),
+    };
+    let mut map = read.lock().unwrap_or_else(|e| e.into_inner());
+    // A file per quiet turn looked at: few, but the app runs for weeks.
+    if map.len() >= 64 {
+        map.clear();
+    }
+    map.insert(path, (len, due));
+    due
 }
 
 /// While a session's turn runs, how long nothing has come of it: a helper's
@@ -8995,6 +9041,57 @@ mod tests {
         assert!(!counts_for_breaker(&Settled::Quiet(3)), "no turn's end");
         crate::background::gone_for_test("qt-s");
         forget("qt-s");
+    }
+
+    /// 4 November: helpers ran test lanes of 45 minutes under a timeout of their
+    /// own, and their callers were woken by each as a turn gone quiet. One that
+    /// waits on a command hears of it 5 min past the command's own timeout,
+    /// Codex's as Claude Code's; a command that has finished holds nothing back.
+    #[test]
+    fn a_quiet_turn_waits_for_the_timeout_of_its_command() {
+        use serde_json::json;
+        let min = 60_000;
+        let pty = crate::pty::manager();
+        for provider in Provider::ALL {
+            let (caller, id) = (format!("dq-c-{}", provider.as_str()), format!("dq-s-{}", provider.as_str()));
+            register(&id, provider, "C:\\p", "C:\\acc\\one", Some(caller.as_str()), false, json!({}));
+            crate::background::idle_for_test(&id, provider, 3, false);
+            let o = Owed::from(3, 0);
+            reg().lock().unwrap().owed.insert((caller.clone(), id.clone()), o);
+            let known = reg().lock().unwrap().known.get(&id).cloned().unwrap();
+            // Quiet since a command with a timeout of 40 min started, which has
+            // since come back when `done`.
+            let quiet_on = |quiet: u64, done: bool| {
+                let at = crate::background::iso(now_ms() - quiet).unwrap();
+                let [call, back] = match provider {
+                    Provider::Claude => [
+                        json!({ "type": "assistant", "timestamp": at, "message": { "content": [{ "type": "tool_use", "id": "t1", "name": "Bash", "input": { "command": "./lane.sh", "timeout": 40 * min } }] } }),
+                        json!({ "type": "user", "message": { "content": [{ "type": "tool_result", "tool_use_id": "t1", "content": "ok" }] } }),
+                    ],
+                    Provider::Codex => [
+                        json!({ "timestamp": at, "type": "response_item", "payload": { "type": "custom_tool_call", "name": "exec", "call_id": "c1",
+                            "input": format!("// @exec: {{\"yield_time_ms\": {}}}\ntext(await tools.exec_command({{cmd:\"./lane.sh\"}}));\n", 40 * min) } }),
+                        json!({ "timestamp": at, "type": "response_item", "payload": { "type": "custom_tool_call_output", "call_id": "c1", "output": "Script completed" } }),
+                    ],
+                };
+                let text = if done { format!("{call}\n{back}\n") } else { format!("{call}\n") };
+                let path = std::env::temp_dir().join(format!("luna-{id}-{quiet}-{done}-{}.jsonl", std::process::id()));
+                std::fs::write(&path, text).unwrap();
+                transcripts().lock().unwrap().insert(id.clone(), path.clone());
+                crate::background::quiet_for_test(&id, quiet);
+                let said = notice_line(&pty, &caller, "Your helper", &id, &known, o);
+                let _ = std::fs::remove_file(&path);
+                said
+            };
+            // Half an hour of nothing, its command 9 min short of its timeout.
+            assert!(matches!(quiet_on(31 * min, false), None | Some((None, _))), "{id}: it is still within its time");
+            let Some((Some(text), Settled::Quiet(3))) = quiet_on(45 * min + 30_000, false) else { panic!("{id}: 5 min past its timeout is news") };
+            assert!(text.contains("written nothing for 45 min, and the command it waits on is 5 min past its own timeout"), "{text}");
+            let Some((Some(text), Settled::Quiet(3))) = quiet_on(31 * min, true) else { panic!("{id}: a finished command holds nothing back") };
+            assert!(text.contains("written nothing for 31 min. A command it runs may hang"), "{text}");
+            crate::background::gone_for_test(&id);
+            forget(&id);
+        }
     }
 
     #[test]
