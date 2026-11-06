@@ -833,9 +833,13 @@ fn account_copy_for(lib: &LibrarySettings, name: &str, a: &AccountInfo) -> bool 
 /// Whether a folder gives its sessions on the account a copy of the skill of
 /// their own: where it gives the skill to the account, unless the account
 /// has it as a whole already — twice over, Claude Code would list the second
-/// copy scoped to Luna's folder.
+/// copy scoped to Luna's folder — or a folder this one lies in gives it a
+/// copy: every session here lies in that one too, and would list both (Codex
+/// as `<outer>:<name>` and `<inner>:<name>`).
 fn folder_copy_for(lib: &LibrarySettings, f: &LibraryFolder, name: &str, a: &AccountInfo) -> bool {
-    f.skills.get(name).is_some_and(|reach| reaches(reach, a)) && !account_copy_for(lib, name, a)
+    let gives = |g: &LibraryFolder| g.skills.get(name).is_some_and(|reach| reaches(reach, a));
+    let outer = |g: &&LibraryFolder| ident(Path::new(&g.path)) != ident(Path::new(&f.path)) && within(Path::new(&f.path), Path::new(&g.path));
+    gives(f) && !account_copy_for(lib, name, a) && !lib.folders.iter().filter(outer).any(gives)
 }
 
 /// What the folders a session's work lies in say of a skill: the accounts
@@ -1037,17 +1041,14 @@ pub fn session_args(provider: Provider, account_path: &str, folder: &str) -> Ses
     }
 }
 
-/// The library's folders a session's work lies in: the folder it starts in,
-/// or the project a worktree of it belongs to.
+/// The library's folders a session's work lies in: those the folder it starts
+/// in lies in — in a worktree, the same folder of the project it belongs to
+/// (`<worktree>/src` is `<project>/src`), wherever the worktree itself lies.
 fn folders_of<'a>(lib: &'a LibrarySettings, folder: &str) -> Vec<(&'a LibraryFolder, String)> {
-    let project = crate::worktree::root_of(folder).map(|(_, project)| project);
-    folder_slugs(&lib.folders)
-        .into_iter()
-        .filter(|(f, _)| {
-            let here = |p: &str| within(Path::new(p), Path::new(&f.path));
-            here(folder) || project.as_deref().is_some_and(here)
-        })
-        .collect()
+    let work = crate::worktree::root_of(folder)
+        .and_then(|(root, project)| Path::new(folder).strip_prefix(&root).ok().map(|rel| Path::new(&project).join(rel)))
+        .unwrap_or_else(|| PathBuf::from(folder));
+    folder_slugs(&lib.folders).into_iter().filter(|(f, _)| within(&work, Path::new(&f.path))).collect()
 }
 
 fn folder_args(dirs: &Dirs, lib: &LibrarySettings, a: &AccountInfo, folder: &str) -> SessionSkills {
@@ -2868,6 +2869,50 @@ mod tests {
         assert_eq!(lib.folders[1].instructions.keys().collect::<Vec<_>>(), ["claude/personal"]);
         rename_account(&mut lib, "claude/personal", None);
         assert!(lib.folders[1].instructions.is_empty());
+    }
+
+    /// A folder inside a repository holds in that folder of each of its
+    /// worktrees, wherever the worktree lies.
+    #[test]
+    fn a_folder_inside_a_repository_holds_in_its_worktrees_too() {
+        let f = Fixture::new("folder-in-worktree");
+        f.skill("review", "v1");
+        let (repo, _) = repo_folder(&f, "repo", &[]);
+        let src = LibraryFolder { path: repo.join("src").to_string_lossy().into_owned(), skills: BTreeMap::from([("review".into(), Vec::new())]), ..Default::default() };
+        let lib = LibrarySettings { skills: skills(&["review"]), folders: vec![src], ..Default::default() };
+        f.run(&lib, &mut Ledger::default(), true);
+        // A Codex worktree of it, in the account's own folder.
+        let wt = f.account(1).join("worktrees/0a1b/repo");
+        write_file(&wt.join(".git"), format!("gitdir: {}\n", repo.join(".git").join("worktrees").join("repo").display()).as_bytes()).unwrap();
+        std::fs::create_dir_all(wt.join("src")).unwrap();
+        let hide = ["-c".to_string(), "skills.config=[{name=\"review\",enabled=false}]".to_string()];
+        assert_eq!(folder_args(&f.dirs, &lib, &f.accounts[1], &wt.join("src").to_string_lossy()).args, hide);
+        assert!(folder_args(&f.dirs, &lib, &f.accounts[1], &wt.to_string_lossy()).args.is_empty(), "the worktree's root is the repository's");
+    }
+
+    /// Where an outer folder and one inside it both give an account a skill,
+    /// the outer one's copy serves the sessions of both.
+    #[test]
+    fn folders_one_inside_another_give_an_account_one_copy() {
+        let f = Fixture::new("folder-nested-copy");
+        f.skill("review", "v1");
+        let (repo, outer) = repo_folder(&f, "repo", &["review"]);
+        std::fs::create_dir_all(repo.join("web")).unwrap();
+        let inner = LibraryFolder { path: repo.join("web").to_string_lossy().into_owned(), skills: given(&["review"]), ..Default::default() };
+        let mut lib = LibrarySettings { folders: vec![outer, inner], ..Default::default() };
+        f.run(&lib, &mut Ledger::default(), true);
+        codex_manifests(&lib, &f.accounts);
+        assert!(f.dirs.folders().join("repo/work/.claude/skills/review/SKILL.md").is_file());
+        assert!(!f.dirs.folders().join("web/work/.claude/skills/review").exists());
+        assert!(!f.account(1).join("plugins/cache/luna/web").exists());
+        let web = repo.join("web").to_string_lossy().into_owned();
+        assert_eq!(folder_args(&f.dirs, &lib, &f.accounts[1], &web).args, ["-c", "plugins.repo@luna.enabled=true"]);
+
+        // Kept from the account outside, given again inside: the inside's own.
+        lib.folders[0].skills.insert("review".into(), reach(&["codex"]));
+        f.run(&lib, &mut Ledger::default(), true);
+        assert!(f.dirs.folders().join("web/work/.claude/skills/review/SKILL.md").is_file());
+        assert!(folder_args(&f.dirs, &lib, &f.accounts[0], &web).hidden.is_empty());
     }
 
     #[test]

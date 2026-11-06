@@ -1954,7 +1954,10 @@ pub fn remove(id: &str) -> Option<String> {
     kill(id);
     let e = lock().entries.remove(id);
     reg().1.notify_all();
-    let _ = std::fs::remove_file(crate::paths::data_dir().join("mcp").join(format!("{id}.json")));
+    // What each of its turns was started with, as a chat's go when it is deleted.
+    for sub in ["hooks", "mcp"] {
+        let _ = std::fs::remove_file(crate::paths::data_dir().join(sub).join(format!("{id}.json")));
+    }
     crate::pty::claude_instructions_dir(id, None);
     changed();
     let e = e?;
