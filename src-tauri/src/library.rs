@@ -10,12 +10,13 @@
 //! `<data>/library-folders/<folder>/<account>/.claude/skills/<name>` for
 //! Claude Code, passed as `--add-dir`; for Codex a plugin in the account's
 //! own plugin cache, off until the session's `-c` turns it on — and
-//! `session_args` lays the library out and hands them out at every start. A skill reaches a folder's
-//! sessions on every account, or — `folders_only` — only on the accounts it
-//! is meant for, and then into none of them as a whole. A folder can keep a
-//! skill from its sessions too (`off`), one an account has as a whole or an
-//! outer folder gives: hidden by the CLI at the session's start, the copy
-//! staying where it is.
+//! `session_args` lays the library out and hands them out at every start. A
+//! skill goes into the accounts it is meant for as a whole; a folder can say
+//! which accounts' sessions there get it instead, the deepest folder that
+//! says anything of it deciding. One it gives to an account without the
+//! skill as a whole waits for that account's sessions there; one it keeps
+//! from an account that has it as a whole, or an outer folder gives, is
+//! hidden by the CLI at the session's start, the copy staying where it is.
 //!
 //! The library is the source and a destination holds a copy. Luna remembers
 //! what it wrote where (`<data>/library-state.json`, the bytes themselves in
@@ -194,9 +195,11 @@ fn chosen<'a>(lib: &'a LibrarySettings, have: impl Fn(&str) -> bool, a: &Account
 }
 
 /// An account renamed (`to`) or deleted (None), as `provider/name`: every
-/// reach that named it follows.
+/// reach that named it follows. A folder's reach left empty stays, keeping
+/// the skill from every account there, as it kept it from all but that one.
 pub fn rename_account(lib: &mut LibrarySettings, from: &str, to: Option<&str>) {
-    let reaches = lib.instructions.values_mut().chain(lib.skills.values_mut()).chain(std::iter::once(&mut lib.no_instructions));
+    let folders = lib.folders.iter_mut().flat_map(|f| f.skills.values_mut());
+    let reaches = lib.instructions.values_mut().chain(lib.skills.values_mut()).chain(std::iter::once(&mut lib.no_instructions)).chain(folders);
     for reach in reaches {
         match to {
             Some(to) => reach.iter_mut().filter(|r| *r == from).for_each(|r| *r = to.to_string()),
@@ -205,6 +208,13 @@ pub fn rename_account(lib: &mut LibrarySettings, from: &str, to: Option<&str>) {
     }
     lib.instructions.retain(|_, reach| !reach.is_empty());
     lib.skills.retain(|_, reach| !reach.is_empty());
+    for f in &mut lib.folders {
+        if let Some(choice) = f.instructions.remove(from) {
+            if let Some(to) = to {
+                f.instructions.insert(to.to_string(), choice);
+            }
+        }
+    }
 }
 
 // ----------------------------------------------------------------- places --
@@ -270,10 +280,8 @@ pub struct SkillInfo {
     pub description: String,
     /// Why it is laid out nowhere, while it is not fit to be.
     pub problem: Option<String>,
-    /// The accounts it goes into.
+    /// The accounts it goes into, wherever no folder says otherwise.
     pub accounts: Reach,
-    /// It goes only where its accounts and its folders meet.
-    pub folders_only: bool,
 }
 
 /// A name both CLIs take for a skill, and the only kind Luna makes a folder
@@ -381,7 +389,7 @@ fn read_skills(dirs: &Dirs) -> Result<Skills, String> {
             Err(e) => (String::new(), Some(e.clone())),
         };
         let files = checked.and(files);
-        out.insert(name.clone(), (SkillInfo { name, description, problem, accounts: Vec::new(), folders_only: false }, files));
+        out.insert(name.clone(), (SkillInfo { name, description, problem, accounts: Vec::new() }, files));
     }
     Ok(out)
 }
@@ -819,28 +827,55 @@ fn claude_shown_names(f: &LibraryFolder, a: &AccountInfo, ledger: &Ledger, going
 
 /// Whether the account has the skill as a whole, in its own `skills/`.
 fn account_copy_for(lib: &LibrarySettings, name: &str, a: &AccountInfo) -> bool {
-    !lib.folders_only.iter().any(|n| n == name) && lib.skills.get(name).is_some_and(|reach| reaches(reach, a))
+    lib.skills.get(name).is_some_and(|reach| reaches(reach, a))
 }
 
-/// Whether a folder that gives the skill gives its sessions on the account a
-/// copy of their own: on every account but one that has it as a whole
-/// already — twice over, Claude Code would list the second copy scoped to
-/// Luna's folder — and, folders only, on its accounts alone.
-fn folder_copy_for(lib: &LibrarySettings, name: &str, a: &AccountInfo) -> bool {
-    let meant = lib.skills.get(name).is_some_and(|reach| reaches(reach, a));
-    if lib.folders_only.iter().any(|n| n == name) { meant } else { !meant }
+/// Whether a folder gives its sessions on the account a copy of the skill of
+/// their own: where it gives the skill to the account, unless the account
+/// has it as a whole already — twice over, Claude Code would list the second
+/// copy scoped to Luna's folder.
+fn folder_copy_for(lib: &LibrarySettings, f: &LibraryFolder, name: &str, a: &AccountInfo) -> bool {
+    f.skills.get(name).is_some_and(|reach| reaches(reach, a)) && !account_copy_for(lib, name, a)
 }
 
-/// What the folders a session's work lies in say of a skill: given (true),
-/// kept from it (false), or nothing (None) — and then it goes by what the
-/// skill is meant for. The deepest of them that names it decides, so one
+/// What the folders a session's work lies in say of a skill: the accounts
+/// whose sessions get it there, or nothing (None) — and then it goes by what
+/// the skill is meant for. The deepest of them that names it decides, so one
 /// inside another can take back what the outer one says.
-fn deciding<'a>(lies_in: impl IntoIterator<Item = &'a LibraryFolder>, name: &str) -> Option<bool> {
+fn deciding<'a>(lies_in: impl IntoIterator<Item = &'a LibraryFolder>, name: &str) -> Option<&'a Reach> {
     lies_in
         .into_iter()
-        .filter(|f| f.skills.iter().chain(&f.off).any(|n| n == name))
+        .filter(|f| f.skills.contains_key(name))
         .max_by_key(|f| ident(Path::new(&f.path)).len())
-        .map(|f| !f.off.iter().any(|n| n == name))
+        .and_then(|f| f.skills.get(name))
+}
+
+/// What the folders a session's work lies in say of its account's
+/// instructions: other instructions by name, none (`Some(None)`), or nothing
+/// (None) — and then it has its account's. The deepest folder with an entry
+/// that takes the account in decides, by its closest entry.
+fn folder_instructions<'a>(lies_in: impl IntoIterator<Item = &'a LibraryFolder>, a: &AccountInfo) -> Option<Option<&'a str>> {
+    lies_in
+        .into_iter()
+        .filter_map(|f| {
+            let (_, choice) = f
+                .instructions
+                .iter()
+                .filter_map(|(entry, choice)| Some((closeness(std::slice::from_ref(entry), a)?, choice)))
+                .max_by_key(|(c, _)| *c)?;
+            Some((ident(Path::new(&f.path)).len(), choice.as_deref()))
+        })
+        .max_by_key(|(depth, _)| *depth)
+        .map(|(_, choice)| choice)
+}
+
+/// Whether the sessions on an account whose work lies in these folders get
+/// the skill.
+fn gets_in<'a>(lib: &LibrarySettings, lies_in: impl IntoIterator<Item = &'a LibraryFolder>, name: &str, a: &AccountInfo) -> bool {
+    match deciding(lies_in, name) {
+        Some(reach) => reaches(reach, a),
+        None => account_copy_for(lib, name, a),
+    }
 }
 
 /// The name each of `ours` goes by where `taken` has its own: `luna-<name>`,
@@ -964,6 +999,16 @@ pub struct SessionSkills {
     /// it is started with (pty.rs `claude_settings_file`), the one way to
     /// keep a skill from a session that its account has as a whole.
     pub hidden: Vec<String>,
+    /// Claude Code: the account's instructions file, where a folder the
+    /// session lies in gives it other instructions or none —
+    /// `claudeMdExcludes` in the same settings. Codex has no way to leave its
+    /// account's `AGENTS.md` out of one session, so a folder says nothing to
+    /// it of instructions.
+    pub excluded: Vec<String>,
+    /// Claude Code: the library's file of the other instructions, which its
+    /// caller gives the session as a `CLAUDE.md` of its own
+    /// (pty.rs `claude_instructions_dir`).
+    pub instructions: Option<PathBuf>,
 }
 
 /// What a session Luna starts gets of the library's folders, for each folder
@@ -1027,6 +1072,21 @@ fn folder_args(dirs: &Dirs, lib: &LibrarySettings, a: &AccountInfo, folder: &str
             }
         }
     }
+    if a.provider == Provider::Claude {
+        if let Some(choice) = folder_instructions(lies_in.iter().map(|(f, _)| *f), a) {
+            let own = Path::new(&a.path).join(instructions_name(a.provider));
+            // Instructions the library no longer has are none.
+            let text = choice.and_then(|n| std::fs::read(dirs.instructions_file(n)).ok());
+            // What the account's file holds already stays; anything else —
+            // none at all, or a copy of the account's changed there — leaves
+            // out whatever it holds, the library's or not.
+            let there = text.as_ref().is_some_and(|t| std::fs::read(&own).is_ok_and(|o| o == *t));
+            if !there {
+                out.excluded.push(own.to_string_lossy().replace('\\', "/"));
+                out.instructions = choice.filter(|_| text.as_ref().is_some_and(|t| !t.is_empty())).map(|n| dirs.instructions_file(n));
+            }
+        }
+    }
     let hidden = hidden_here(dirs, lib, a, &lies_in);
     match a.provider {
         Provider::Claude => out.hidden = hidden,
@@ -1045,29 +1105,29 @@ fn folder_args(dirs: &Dirs, lib: &LibrarySettings, a: &AccountInfo, folder: &str
 /// The skills a session on this account would see that the folders it lies
 /// in keep from it, by the names its CLI lists them under: the account's own
 /// copy by the skill's name; a copy an outer folder gives, where an inner one
-/// keeps it, by its Claude Code name (`luna-<name>` where it was renamed) or
-/// as Codex's `<folder>:<name>`. Both CLIs hide a skill by name, so one of
-/// the same name the repository has goes too.
+/// keeps it from this account, by its Claude Code name (`luna-<name>` where
+/// it was renamed) or as Codex's `<folder>:<name>`. Both CLIs hide a skill by
+/// name, so one of the same name the repository has goes too.
 fn hidden_here(dirs: &Dirs, lib: &LibrarySettings, a: &AccountInfo, lies_in: &[(&LibraryFolder, String)]) -> Vec<String> {
-    let named: BTreeSet<&String> = lib.skills.keys().chain(lies_in.iter().flat_map(|(f, _)| &f.skills)).collect();
+    let named: BTreeSet<&String> = lib.skills.keys().chain(lies_in.iter().flat_map(|(f, _)| f.skills.keys())).collect();
     let mut out = BTreeSet::new();
     // Read only for a Claude Code copy an outer folder gives, whose name the
     // layout may have changed.
     let mut ledger = None;
     for name in named {
-        if deciding(lies_in.iter().map(|(f, _)| *f), name) != Some(false) {
+        if gets_in(lib, lies_in.iter().map(|(f, _)| *f), name, a) {
             continue;
         }
         if account_copy_for(lib, name, a) {
             out.insert(name.clone());
         }
-        for (f, slug) in lies_in.iter().filter(|(f, _)| f.skills.contains(name) && folder_copy_for(lib, name, a)) {
+        for (f, slug) in lies_in.iter().filter(|(f, _)| folder_copy_for(lib, f, name, a)) {
             match a.provider {
                 Provider::Claude => {
                     let ledger = ledger.get_or_insert_with(|| Ledger::load(dirs));
                     // As `units` takes them: the skills the library has.
                     let going: Vec<&str> =
-                        f.skills.iter().filter(|n| folder_copy_for(lib, n, a) && dirs.skills().join(n).is_dir()).map(String::as_str).collect();
+                        f.skills.keys().filter(|n| folder_copy_for(lib, f, n, a) && dirs.skills().join(n).is_dir()).map(String::as_str).collect();
                     let shown = claude_shown_names(f, a, ledger, &going);
                     out.insert(shown.get(name.as_str()).cloned().unwrap_or_else(|| name.clone()));
                 }
@@ -1329,8 +1389,8 @@ fn units(
         for a in accounts {
             let going: Vec<(&String, Result<Files, String>)> = f
                 .skills
-                .iter()
-                .filter(|n| folder_copy_for(lib, n, a))
+                .keys()
+                .filter(|n| folder_copy_for(lib, f, n, a))
                 .filter_map(|n| Some((n, files_of(n)?)))
                 .collect();
             if going.is_empty() {
@@ -1431,34 +1491,26 @@ fn resolved(p: &Path) -> PathBuf {
 #[serde(rename_all = "camelCase")]
 pub struct FolderInfo {
     pub path: String,
-    pub skills: Vec<String>,
-    pub off: Vec<String>,
+    /// The accounts whose sessions here get a skill, by the skills it says
+    /// anything of.
+    pub skills: BTreeMap<String, Reach>,
+    /// The instructions its sessions get in place of their account's, by the
+    /// reach entry they are for; None: none at all.
+    pub instructions: BTreeMap<String, Option<String>>,
     pub found: bool,
-    /// What its sessions would get of each skill were the folder to say
-    /// nothing of it (`inherited`): `some` accounts' or `all` a tick here
-    /// would give it to; a skill no account's would get is not there.
-    pub inherited: BTreeMap<String, &'static str>,
+    /// The accounts, as `provider/name`, whose sessions here would get each
+    /// skill were the folder to say nothing of it (`inherited`); a skill no
+    /// account's would get is not there.
+    pub inherited: BTreeMap<String, Vec<String>>,
 }
 
-/// What the sessions in a folder would get of a skill were it to say nothing
-/// of it — by what the skill is meant for, or by the deepest folder it lies
-/// in that says something: `all` where every account a tick would give it
-/// to has it, `some` where only some, None where none.
-fn inherited(lib: &LibrarySettings, accounts: &[AccountInfo], f: &LibraryFolder, name: &str) -> Option<&'static str> {
-    let outer = lib.folders.iter().filter(|g| ident(Path::new(&g.path)) != ident(Path::new(&f.path)) && within(Path::new(&f.path), Path::new(&g.path)));
-    let decided = deciding(outer, name);
-    let ticked = |a: &AccountInfo| account_copy_for(lib, name, a) || folder_copy_for(lib, name, a);
-    let gets = |a: &AccountInfo| match decided {
-        Some(false) => false,
-        Some(true) => ticked(a),
-        None => account_copy_for(lib, name, a),
-    };
-    let could: Vec<&AccountInfo> = accounts.iter().filter(|a| ticked(a)).collect();
-    match could.iter().filter(|a| gets(a)).count() {
-        0 => None,
-        n if n == could.len() => Some("all"),
-        _ => Some("some"),
-    }
+/// The accounts whose sessions in a folder would get a skill were it to say
+/// nothing of it — by what the skill is meant for, or by the deepest folder
+/// it lies in that says something.
+fn inherited(lib: &LibrarySettings, accounts: &[AccountInfo], f: &LibraryFolder, name: &str) -> Vec<String> {
+    let outer: Vec<&LibraryFolder> =
+        lib.folders.iter().filter(|g| ident(Path::new(&g.path)) != ident(Path::new(&f.path)) && within(Path::new(&f.path), Path::new(&g.path))).collect();
+    accounts.iter().filter(|a| gets_in(lib, outer.iter().copied(), name, a)).map(|a| format!("{}/{}", a.provider.as_str(), a.name)).collect()
 }
 
 /// An account's instructions file Luna did not write, where no instructions of
@@ -1575,7 +1627,6 @@ fn overview_locked(act: bool) -> Result<Overview, String> {
         .into_values()
         .map(|(info, _)| SkillInfo {
             accounts: lib.skills.get(&info.name).cloned().unwrap_or_default(),
-            folders_only: lib.folders_only.contains(&info.name),
             ..info
         })
         .collect();
@@ -1584,10 +1635,14 @@ fn overview_locked(act: bool) -> Result<Overview, String> {
         .iter()
         .map(|f| FolderInfo {
             found: Path::new(&f.path).is_dir(),
-            inherited: skills.iter().filter_map(|s| Some((s.name.clone(), inherited(&lib, &accounts, f, &s.name)?))).collect(),
+            inherited: skills
+                .iter()
+                .map(|s| (s.name.clone(), inherited(&lib, &accounts, f, &s.name)))
+                .filter(|(_, gets)| !gets.is_empty())
+                .collect(),
             path: f.path.clone(),
             skills: f.skills.clone(),
-            off: f.off.clone(),
+            instructions: f.instructions.clone(),
         })
         .collect();
     let overridden = accounts
@@ -1681,51 +1736,70 @@ pub fn library_set_accounts(skill: String, accounts: Vec<String>) -> Result<Over
     })
 }
 
-/// Whether a skill goes only where its accounts and its folders meet.
+/// Lists a folder, saying nothing of any skill yet, or takes it off the list
+/// with all it says.
 #[tauri::command(async)]
-pub fn library_set_folders_only(skill: String, on: bool) -> Result<Overview, String> {
-    check_name(&skill)?;
-    change(|l| {
-        l.folders_only.retain(|n| *n != skill);
-        if on {
-            l.folders_only.push(skill);
-        }
-    })
-}
-
-/// The skills a folder's sessions get and those it keeps from them (`off`,
-/// None: as they are); `skills` None stops the folder saying anything of
-/// either. A skill in both is given.
-#[tauri::command(async)]
-pub fn library_set_folder(path: String, skills: Option<Vec<String>>, off: Option<Vec<String>>) -> Result<Overview, String> {
+pub fn library_set_folder(path: String, listed: bool) -> Result<Overview, String> {
     if !Path::new(&path).is_absolute() {
         return Err("A folder must be an absolute path".into());
     }
-    skills.iter().chain(&off).flatten().try_for_each(|n| check_name(n))?;
     let on_disk = slugs_on_disk(&Dirs::current());
     change(|l| {
         // Kept before any goes, so that none passes to another.
         settle_slugs(l);
         let at = l.folders.iter().position(|f| crate::pty::same_dir(&f.path, &path));
-        let Some(skills) = skills else {
-            if let Some(i) = at {
+        match (at, listed) {
+            (Some(i), false) => {
                 l.folders.remove(i);
             }
-            return;
-        };
-        let i = at.unwrap_or_else(|| {
-            let mut taken: BTreeSet<String> = l.folders.iter().map(|f| f.slug.clone()).collect();
-            taken.extend(on_disk);
-            let slug = fresh_slug(&path, &taken);
-            l.folders.push(LibraryFolder { path, slug, ..Default::default() });
-            l.folders.len() - 1
-        });
-        let f = &mut l.folders[i];
-        if let Some(off) = off {
-            f.off = off;
+            (None, true) => {
+                let mut taken: BTreeSet<String> = l.folders.iter().map(|f| f.slug.clone()).collect();
+                taken.extend(on_disk);
+                let slug = fresh_slug(&path, &taken);
+                l.folders.push(LibraryFolder { path, slug, ..Default::default() });
+            }
+            _ => {}
         }
-        f.off.retain(|n| !skills.contains(n));
-        f.skills = skills;
+    })
+}
+
+/// The accounts whose sessions in a listed folder get a skill (empty: none
+/// of them), or — None — the folder saying nothing of it, so that they go by
+/// what it is meant for and by the folders it lies in.
+#[tauri::command(async)]
+pub fn library_set_folder_skill(path: String, skill: String, accounts: Option<Vec<String>>) -> Result<Overview, String> {
+    check_name(&skill)?;
+    let reach = accounts.map(tidy_reach).transpose()?;
+    if crate::settings::get().library.folders.iter().all(|f| !crate::pty::same_dir(&f.path, &path)) {
+        return Err(format!("{path} is not one of the library's folders"));
+    }
+    change(|l| {
+        let Some(f) = l.folders.iter_mut().find(|f| crate::pty::same_dir(&f.path, &path)) else { return };
+        match reach {
+            Some(reach) => f.skills.insert(skill, reach),
+            None => f.skills.remove(&skill),
+        };
+    })
+}
+
+/// What sessions on an account (a reach entry: as a rule `provider/name`) in
+/// a listed folder get in place of its instructions: `name`'s, or none at all
+/// (None); `inherit`, what holds outside the folder.
+#[tauri::command(async)]
+pub fn library_set_folder_instructions(path: String, account: String, inherit: bool, name: Option<String>) -> Result<Overview, String> {
+    check_reach(std::slice::from_ref(&account))?;
+    if let Some(n) = &name {
+        check_name(n)?;
+    }
+    if crate::settings::get().library.folders.iter().all(|f| !crate::pty::same_dir(&f.path, &path)) {
+        return Err(format!("{path} is not one of the library's folders"));
+    }
+    change(|l| {
+        let Some(f) = l.folders.iter_mut().find(|f| crate::pty::same_dir(&f.path, &path)) else { return };
+        match inherit {
+            true => f.instructions.remove(&account),
+            false => f.instructions.insert(account, name),
+        };
     })
 }
 
@@ -1998,10 +2072,8 @@ pub fn library_delete_skill(name: String) -> Result<Overview, String> {
     }
     crate::settings::update(|s| {
         s.library.skills.remove(&name);
-        s.library.folders_only.retain(|n| *n != name);
         for f in &mut s.library.folders {
-            f.skills.retain(|n| *n != name);
-            f.off.retain(|n| *n != name);
+            f.skills.remove(&name);
         }
     })?;
     crate::log::info("library", &format!("skill {name} taken out of the library"));
@@ -2051,6 +2123,11 @@ pub fn library_rename_instructions(from: String, to: String) -> Result<Overview,
         if let Some(reach) = s.library.instructions.remove(&from) {
             s.library.instructions.insert(to.clone(), reach);
         }
+        for choice in s.library.folders.iter_mut().flat_map(|f| f.instructions.values_mut()) {
+            if choice.as_deref() == Some(from.as_str()) {
+                *choice = Some(to.clone());
+            }
+        }
     });
     if let Err(e) = moved {
         let _ = std::fs::rename(&new, &old);
@@ -2075,6 +2152,10 @@ pub fn library_delete_instructions(name: String) -> Result<Overview, String> {
     }
     crate::settings::update(|s| {
         s.library.instructions.remove(&name);
+        // A folder that gave them goes by what holds outside it again.
+        for f in &mut s.library.folders {
+            f.instructions.retain(|_, choice| choice.as_deref() != Some(name.as_str()));
+        }
     })?;
     crate::log::info("library", &format!("instructions {name} taken out of the library"));
     overview_locked(true)
@@ -2381,7 +2462,7 @@ mod tests {
         f.skill("review", "v1");
         let folder = f.base.join("deleted-repo/skills");
         let lib = LibrarySettings {
-            folders: vec![LibraryFolder { path: folder.to_string_lossy().into_owned(), skills: vec!["review".into()], ..Default::default() }],
+            folders: vec![LibraryFolder { path: folder.to_string_lossy().into_owned(), skills: given(&["review"]), ..Default::default() }],
             ..Default::default()
         };
         let p = f.run(&lib, &mut Ledger::default(), true);
@@ -2390,12 +2471,17 @@ mod tests {
         assert!(!f.dirs.folders().exists(), "nothing waits for a folder that is not there");
     }
 
+    /// These skills, each to every account's sessions in a folder.
+    fn given(names: &[&str]) -> BTreeMap<String, Reach> {
+        skills(names)
+    }
+
     /// A repository at `<base>/<name>`, and a folder of the library on it
-    /// giving it these skills.
+    /// giving these skills to every account's sessions there.
     fn repo_folder(f: &Fixture, name: &str, skills: &[&str]) -> (PathBuf, LibraryFolder) {
         let repo = f.base.join(name);
         std::fs::create_dir_all(repo.join(".git")).unwrap();
-        (repo.clone(), LibraryFolder { path: repo.to_string_lossy().into_owned(), skills: skills.iter().map(|s| s.to_string()).collect(), ..Default::default() })
+        (repo.clone(), LibraryFolder { path: repo.to_string_lossy().into_owned(), skills: given(skills), ..Default::default() })
     }
 
     #[test]
@@ -2422,8 +2508,10 @@ mod tests {
         assert_eq!(manifest["skills"], "./skills/");
         assert!(!repo.join("review").exists() && !repo.join(".claude").exists(), "nothing goes into the folder");
 
-        // Folders only: its own accounts, and only in the folder.
-        let lib = LibrarySettings { folders_only: vec!["review".into()], ..lib };
+        // Its accounts only in the folder: none as a whole.
+        let mut lib = lib;
+        lib.skills.clear();
+        lib.folders[0].skills = BTreeMap::from([("review".into(), reach(&["claude/work"]))]);
         let p = f.run(&lib, &mut ledger, true);
         codex_manifests(&lib, &f.accounts);
         assert!(p.kept.is_empty());
@@ -2622,9 +2710,13 @@ mod tests {
         // `work` gives notes and keeps review; `work/repo` inside it keeps notes.
         let outer = f.base.join("work");
         std::fs::create_dir_all(&outer).unwrap();
-        let outer_folder = LibraryFolder { path: outer.to_string_lossy().into_owned(), skills: vec!["notes".into()], off: vec!["review".into()], ..Default::default() };
+        let outer_folder = LibraryFolder {
+            path: outer.to_string_lossy().into_owned(),
+            skills: BTreeMap::from([("notes".into(), all()), ("review".into(), Vec::new())]),
+            ..Default::default()
+        };
         let (repo, mut inner) = repo_folder(&f, "work/repo", &[]);
-        inner.off = vec!["notes".into()];
+        inner.skills.insert("notes".into(), Vec::new());
         let lib = LibrarySettings {
             skills: BTreeMap::from([("review".into(), all()), ("notes".into(), reach(&["claude/work"]))]),
             folders: vec![outer_folder, inner],
@@ -2652,7 +2744,7 @@ mod tests {
 
         // Ticked in the repository again, the closer folder decides.
         let mut lib = lib;
-        lib.folders[1] = LibraryFolder { off: Vec::new(), skills: vec!["review".into(), "notes".into()], ..lib.folders[1].clone() };
+        lib.folders[1] = LibraryFolder { skills: given(&["review", "notes"]), ..lib.folders[1].clone() };
         f.run(&lib, &mut ledger, true);
         assert!(folder_args(&f.dirs, &lib, &f.accounts[2], &repo_s).hidden.is_empty());
         let elsewhere = f.base.join("elsewhere").to_string_lossy().into_owned();
@@ -2665,19 +2757,117 @@ mod tests {
         let outer = f.base.join("work").to_string_lossy().into_owned();
         let inner = f.base.join("work").join("repo").to_string_lossy().into_owned();
         let lib = LibrarySettings {
-            skills: BTreeMap::from([("review".into(), all()), ("notes".into(), reach(&["claude/work"])), ("tidy".into(), reach(&["claude/work"]))]),
-            folders_only: vec!["tidy".into()],
+            skills: BTreeMap::from([("review".into(), all()), ("notes".into(), reach(&["claude/work"]))]),
             folders: vec![
-                LibraryFolder { path: outer.clone(), off: vec!["review".into()], ..Default::default() },
+                LibraryFolder { path: outer.clone(), skills: BTreeMap::from([("review".into(), reach(&["codex"]))]), ..Default::default() },
                 LibraryFolder { path: inner.clone(), ..Default::default() },
             ],
             ..Default::default()
         };
         let (o, i) = (&lib.folders[0], &lib.folders[1]);
-        assert_eq!(inherited(&lib, &f.accounts, o, "review"), Some("all"), "every account has it as a whole");
-        assert_eq!(inherited(&lib, &f.accounts, i, "review"), None, "the folder it lies in keeps it");
-        assert_eq!(inherited(&lib, &f.accounts, o, "notes"), Some("some"), "one account of three a tick would give it to");
-        assert_eq!(inherited(&lib, &f.accounts, o, "tidy"), None, "folders only: ticked nowhere, nowhere");
+        assert_eq!(inherited(&lib, &f.accounts, o, "review"), ["claude/work", "codex/home", "claude/home"], "every account has it as a whole");
+        assert_eq!(inherited(&lib, &f.accounts, i, "review"), ["codex/home"], "the folder it lies in gives it to Codex alone");
+        assert_eq!(inherited(&lib, &f.accounts, o, "notes"), ["claude/work"]);
+        assert!(inherited(&lib, &f.accounts, o, "tidy").is_empty(), "meant for none, given nowhere");
+    }
+
+    /// One account everywhere, another only in one folder, and none of them
+    /// in another: what a reach of the folder's own says, account by account.
+    #[test]
+    fn a_folder_gives_a_skill_to_some_accounts_and_keeps_it_from_others() {
+        let f = Fixture::new("folder-reach");
+        f.skill("review", "v1");
+        let (app, mut app_folder) = repo_folder(&f, "app", &[]);
+        let (web, mut web_folder) = repo_folder(&f, "web", &[]);
+        // claude/work everywhere; claude/home and codex too, in app; in web,
+        // Codex alone.
+        app_folder.skills.insert("review".into(), reach(&["claude", "codex"]));
+        web_folder.skills.insert("review".into(), reach(&["codex"]));
+        let lib = LibrarySettings {
+            skills: BTreeMap::from([("review".into(), reach(&["claude/work"]))]),
+            folders: vec![app_folder, web_folder],
+            ..Default::default()
+        };
+        let mut ledger = Ledger::default();
+        f.run(&lib, &mut ledger, true);
+        codex_manifests(&lib, &f.accounts);
+        assert!(f.account(0).join("skills/review/SKILL.md").is_file());
+        assert!(!f.account(2).join("skills/review").exists());
+        assert!(f.dirs.folders().join("app/home/.claude/skills/review/SKILL.md").is_file());
+        assert!(!f.dirs.folders().join("app/work/.claude/skills/review").exists(), "work has it as a whole");
+        assert!(!f.dirs.folders().join("web/home/.claude/skills/review").exists());
+        assert!(f.account(1).join("plugins/cache/luna/app/local/skills/review/SKILL.md").is_file());
+        assert!(f.account(1).join("plugins/cache/luna/web/local/skills/review/SKILL.md").is_file());
+
+        let (app_s, web_s) = (app.to_string_lossy().into_owned(), web.to_string_lossy().into_owned());
+        assert!(folder_args(&f.dirs, &lib, &f.accounts[0], &app_s).hidden.is_empty());
+        assert!(folder_args(&f.dirs, &lib, &f.accounts[2], &app_s).hidden.is_empty());
+        // In web the account that has it as a whole does not get it; Codex does.
+        assert_eq!(folder_args(&f.dirs, &lib, &f.accounts[0], &web_s).hidden, ["review"]);
+        assert!(folder_args(&f.dirs, &lib, &f.accounts[2], &web_s).hidden.is_empty(), "nothing of it to hide");
+        assert_eq!(folder_args(&f.dirs, &lib, &f.accounts[1], &web_s).args, ["-c", "plugins.web@luna.enabled=true"]);
+    }
+
+    #[test]
+    fn a_folder_gives_its_claude_sessions_other_instructions_or_none() {
+        let f = Fixture::new("folder-instructions");
+        f.instructions("main", "# Main\n");
+        f.instructions("terse", "# Terse\n");
+        f.instructions("blank", "");
+        let (repo, mut folder) = repo_folder(&f, "repo", &[]);
+        // work: none; every other Claude Code account: terse; Codex: none,
+        // which it has no way to take.
+        folder.instructions = BTreeMap::from([("claude/work".into(), None), ("claude".into(), Some("terse".into())), ("codex/home".into(), None)]);
+        let mut lib = LibrarySettings { instructions: first(all()), folders: vec![folder], ..Default::default() };
+        let repo_s = repo.join("src").to_string_lossy().into_owned();
+        let claude_md = |i: usize| format!("{}/CLAUDE.md", f.account(i).to_string_lossy().replace('\\', "/"));
+        let appended = |s: &SessionSkills| s.instructions.clone();
+
+        let work = folder_args(&f.dirs, &lib, &f.accounts[0], &repo_s);
+        assert_eq!(work.excluded, [claude_md(0)]);
+        assert_eq!(appended(&work), None);
+        let home = folder_args(&f.dirs, &lib, &f.accounts[2], &repo_s);
+        assert_eq!(home.excluded, [claude_md(2)]);
+        assert_eq!(appended(&home), Some(f.dirs.instructions_file("terse")));
+        let codex = folder_args(&f.dirs, &lib, &f.accounts[1], &repo_s);
+        assert!(codex.excluded.is_empty() && codex.args.is_empty());
+        let elsewhere = f.base.join("elsewhere").to_string_lossy().into_owned();
+        assert!(folder_args(&f.dirs, &lib, &f.accounts[0], &elsewhere).excluded.is_empty());
+
+        // What the account's file holds already: nothing to change — but a
+        // copy changed there is no longer what was picked. Blank: none. Gone
+        // from the library: none.
+        lib.folders[0].instructions = BTreeMap::from([("claude/work".into(), Some("main".into())), ("claude/home".into(), Some("blank".into()))]);
+        f.run(&lib, &mut Ledger::default(), true);
+        assert_eq!(f.read(0, "CLAUDE.md"), "# Main\n");
+        assert_eq!(folder_args(&f.dirs, &lib, &f.accounts[0], &repo_s), SessionSkills { args: work.args.clone(), ..Default::default() });
+        std::fs::write(f.account(0).join("CLAUDE.md"), "# Main, changed here\n").unwrap();
+        let changed = folder_args(&f.dirs, &lib, &f.accounts[0], &repo_s);
+        assert_eq!((changed.excluded.clone(), appended(&changed)), (vec![claude_md(0)], Some(f.dirs.instructions_file("main"))));
+        let blank = folder_args(&f.dirs, &lib, &f.accounts[2], &repo_s);
+        assert_eq!((blank.excluded.len(), appended(&blank)), (1, None));
+        lib.folders[0].instructions = BTreeMap::from([("claude".into(), Some("gone".into()))]);
+        let gone = folder_args(&f.dirs, &lib, &f.accounts[2], &repo_s);
+        assert_eq!((gone.excluded.len(), appended(&gone)), (1, None));
+
+        // A folder inside it decides for the accounts it names; the outer one
+        // for the rest.
+        let inner = LibraryFolder {
+            path: repo.join("src").to_string_lossy().into_owned(),
+            instructions: BTreeMap::from([("claude/home".into(), Some("main".into()))]),
+            ..Default::default()
+        };
+        lib.folders[0].instructions = BTreeMap::from([("claude".into(), None)]);
+        lib.folders.push(inner);
+        std::fs::write(f.account(2).join("CLAUDE.md"), "# Main\n").unwrap();
+        assert!(folder_args(&f.dirs, &lib, &f.accounts[2], &repo_s).excluded.is_empty());
+        assert_eq!(folder_args(&f.dirs, &lib, &f.accounts[0], &repo_s).excluded, [claude_md(0)]);
+
+        // Renamed and deleted accounts take their entries along.
+        rename_account(&mut lib, "claude/home", Some("claude/personal"));
+        assert_eq!(lib.folders[1].instructions.keys().collect::<Vec<_>>(), ["claude/personal"]);
+        rename_account(&mut lib, "claude/personal", None);
+        assert!(lib.folders[1].instructions.is_empty());
     }
 
     #[test]

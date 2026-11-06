@@ -63,15 +63,12 @@ pub struct LibrarySettings {
     /// Accounts that get no instructions, even where another reach takes
     /// them in less closely.
     pub no_instructions: Reach,
-    /// The accounts each skill goes into, by the skill's name.
+    /// The accounts each skill goes into, by the skill's name: wherever no
+    /// folder says otherwise. One no account gets is not here.
     pub skills: std::collections::BTreeMap<String, Reach>,
-    /// Folders the user named, each with the skills that sessions working
-    /// in it get and those they do not.
+    /// Folders the user named, each saying for its sessions which accounts
+    /// get a skill there.
     pub folders: Vec<LibraryFolder>,
-    /// Skills that go only where their accounts and their folders meet:
-    /// into no account as a whole, and into a folder's sessions only on the
-    /// accounts their reach takes in.
-    pub folders_only: Vec<String>,
     /// Destinations left out on purpose, by path.
     pub skipped: Vec<String>,
 }
@@ -79,7 +76,10 @@ pub struct LibrarySettings {
 /// The library's settings as the file may hold them: before a reach, the
 /// instructions were on or off for every account and `everywhere` named the
 /// skills that went into every account; before there could be several
-/// instructions, the one file had a reach of its own — now `main`'s.
+/// instructions, the one file had a reach of its own — now `main`'s. Before
+/// a folder gave each skill a reach of its own, it ticked skills (`skills`)
+/// or turned them off (`off`), and `folders_only` named the skills a tick
+/// gave only to their own accounts — into none of them as a whole.
 #[derive(Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
 struct LibrarySettingsFile {
@@ -88,9 +88,26 @@ struct LibrarySettingsFile {
     no_instructions: Reach,
     skills: std::collections::BTreeMap<String, Reach>,
     everywhere: Vec<String>,
-    folders: Vec<LibraryFolder>,
+    folders: Vec<LibraryFolderFile>,
     folders_only: Vec<String>,
     skipped: Vec<String>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+struct LibraryFolderFile {
+    path: String,
+    skills: Option<FolderSkillsField>,
+    off: Vec<String>,
+    instructions: std::collections::BTreeMap<String, Option<String>>,
+    slug: String,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum FolderSkillsField {
+    Ticked(Vec<String>),
+    ByName(std::collections::BTreeMap<String, Reach>),
 }
 
 #[derive(Deserialize)]
@@ -112,6 +129,35 @@ impl From<LibrarySettingsFile> for LibrarySettings {
             skills.entry(name).or_insert_with(|| vec!["all".into()]);
         }
         let first = |reach: Reach| std::collections::BTreeMap::from([(FIRST_INSTRUCTIONS.to_string(), reach)]);
+        // A tick gave a skill to every account's sessions there, or — folders
+        // only — to its own accounts' alone, which then had it nowhere else;
+        // off kept it from all of them.
+        let folders: Vec<LibraryFolder> = f
+            .folders
+            .into_iter()
+            .map(|folder| {
+                // A folder of before that ticked nothing could leave its
+                // `skills` out and still turn some off.
+                let skills = match folder.skills.unwrap_or(FolderSkillsField::Ticked(Vec::new())) {
+                    FolderSkillsField::ByName(m) => m,
+                    FolderSkillsField::Ticked(ticked) => {
+                        let mut m: std::collections::BTreeMap<String, Reach> = folder.off.into_iter().map(|n| (n, Vec::new())).collect();
+                        for name in ticked {
+                            let reach = match f.folders_only.contains(&name) {
+                                true => skills.get(&name).cloned().unwrap_or_default(),
+                                false => vec!["all".into()],
+                            };
+                            m.insert(name, reach);
+                        }
+                        m
+                    }
+                };
+                LibraryFolder { path: folder.path, skills, instructions: folder.instructions, slug: folder.slug }
+            })
+            .collect();
+        for name in &f.folders_only {
+            skills.remove(name);
+        }
         LibrarySettings {
             source: f.source,
             instructions: match f.instructions {
@@ -123,22 +169,29 @@ impl From<LibrarySettingsFile> for LibrarySettings {
             },
             no_instructions: f.no_instructions,
             skills,
-            folders: f.folders,
-            folders_only: f.folders_only,
+            folders,
             skipped: f.skipped,
         }
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Default)]
-#[serde(rename_all = "camelCase", default)]
+#[derive(Serialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct LibraryFolder {
     pub path: String,
-    /// Given to its sessions.
-    pub skills: Vec<String>,
-    /// Kept from its sessions, though an account has it as a whole or a
-    /// folder this one lies in gives it (library.rs `deciding`).
-    pub off: Vec<String>,
+    /// The accounts whose sessions here get a skill, by its name, in place
+    /// of what it is meant for and of what a folder this one lies in says
+    /// (library.rs `deciding`); empty, no account's. A skill not named here
+    /// goes by those.
+    pub skills: std::collections::BTreeMap<String, Reach>,
+    /// The instructions its sessions get in place of their account's, by
+    /// the reach entry they are for (an account, as a rule): one of the
+    /// library's by name, or None for none at all. The closest entry decides
+    /// for an account, the deepest folder with one for it before that
+    /// (library.rs `folder_instructions`); an account none takes in goes by
+    /// its own.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub instructions: std::collections::BTreeMap<String, Option<String>>,
     /// The name its skills wait under (library.rs `folder_slugs`), given once
     /// and kept: one read off its place in the list would pass to another
     /// folder as an earlier one goes.
@@ -337,18 +390,53 @@ mod tests {
         assert_eq!(old.library.skipped, vec!["x".to_string()]);
         let off: Settings = serde_json::from_str(r#"{"library": {"instructions": false}}"#).unwrap();
         assert!(off.library.instructions.is_empty());
-        assert!(old.library.folders_only.is_empty(), "before the mode every skill is one of either");
 
         // Written back, it reads the same.
         let mut s = Settings::default();
         s.library.instructions.insert("main".into(), vec!["claude".into(), "codex/home".into()]);
         s.library.no_instructions = vec!["codex/work".into()];
         s.library.skills.insert("review".into(), vec!["claude/work".into()]);
-        s.library.folders_only = vec!["review".into()];
+        s.library.folders.push(LibraryFolder {
+            path: "/w/app".into(),
+            skills: [("review".to_string(), vec!["codex".to_string()]), ("deploy".to_string(), vec![])].into(),
+            instructions: [("claude/work".to_string(), None), ("claude".to_string(), Some("terse".to_string()))].into(),
+            slug: "app".into(),
+        });
         let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
         assert_eq!(back.library.instructions, s.library.instructions);
         assert_eq!(back.library.no_instructions, s.library.no_instructions);
         assert_eq!(back.library.skills, s.library.skills);
-        assert_eq!(back.library.folders_only, s.library.folders_only);
+        assert_eq!(back.library.folders[0].skills, s.library.folders[0].skills);
+        assert_eq!(back.library.folders[0].instructions, s.library.folders[0].instructions);
+        assert_eq!(back.library.folders[0].slug, "app");
+    }
+
+    #[test]
+    fn folders_that_ticked_skills_read_as_each_skills_accounts_there() {
+        let old: Settings = serde_json::from_str(
+            r#"{"library": {
+                "skills": {"review": ["claude"], "deploy": ["codex/work"], "lint": ["all"]},
+                "foldersOnly": ["deploy"],
+                "folders": [
+                    {"path": "/w/app", "skills": ["review", "deploy"], "off": ["lint"], "slug": "app"},
+                    {"path": "/w/app/web", "skills": ["lint"], "off": []},
+                    {"path": "/w/lib", "off": ["review"]}
+                ]
+            }}"#,
+        )
+        .unwrap();
+        let lib = &old.library;
+        // Or: its accounts everywhere, and every account's sessions where ticked.
+        assert_eq!(lib.skills["review"], vec!["claude".to_string()]);
+        assert_eq!(lib.folders[0].skills["review"], vec!["all".to_string()]);
+        // And: nowhere as a whole, and its own accounts' sessions where ticked.
+        assert!(!lib.skills.contains_key("deploy"));
+        assert_eq!(lib.folders[0].skills["deploy"], vec!["codex/work".to_string()]);
+        // Off: no account's sessions; a tick inside takes it back for all.
+        assert_eq!(lib.folders[0].skills["lint"], Vec::<String>::new());
+        assert_eq!(lib.folders[1].skills["lint"], vec!["all".to_string()]);
+        assert_eq!(lib.folders[0].slug, "app");
+        assert_eq!(lib.folders[1].slug, "");
+        assert_eq!(lib.folders[2].skills["review"], Vec::<String>::new(), "off with nothing ticked");
     }
 }

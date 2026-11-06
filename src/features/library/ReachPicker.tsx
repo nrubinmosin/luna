@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import type { Reach } from '../../ipc/commands';
 import { useDialogHost } from '../../shared/ui/dialogHost';
@@ -51,17 +51,24 @@ const tidy = (reach: Reach): Reach =>
 /**
  * Which accounts a skill or instructions go into — every account, every
  * account of one CLI, or accounts picked by name: a face that says which and,
- * under it, a popover of ticks that stays open while they are changed.
+ * under it, a popover of ticks that stays open while they are changed. A
+ * folder's picker (`inherit`) has one more line on top: no reach of its own,
+ * going by what holds outside it.
  */
-export function ReachPicker({ id, reach: saved, accounts, onChange }: {
+export function ReachPicker({ id, reach: saved, accounts, onChange, inherit, face: drawFace }: {
   id: string;
-  reach: Reach;
+  /** None of its own (null) only with `inherit`. */
+  reach: Reach | null;
   accounts: AccountRef[];
   /** Settles once the reach is saved or failed to, when the caller can say. */
-  onChange: (reach: Reach) => void | Promise<unknown>;
+  onChange: (reach: Reach | null) => void | Promise<unknown>;
+  /** The accounts, as `provider/name`, that get it without a reach of its own; their ticks stand for it then. */
+  inherit?: { label: string; gets: string[] };
+  /** Drawn in place of the face, opening the list when it calls `open`. */
+  face?: (open: () => void) => ReactNode;
 }) {
   const host = useDialogHost();
-  const face = useRef<HTMLButtonElement>(null);
+  const face = useRef<HTMLElement>(null);
   const list = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
@@ -69,12 +76,16 @@ export function ReachPicker({ id, reach: saved, accounts, onChange }: {
   // and one made before the last one's answer is in must build on it, not on
   // the reach that answer has yet to bring. Once every write has settled the
   // saved reach is the truth again, so one that failed shows as not made.
-  const [picked, setPicked] = useState<Reach | null>(null);
+  const [picked, setPicked] = useState<{ reach: Reach | null } | null>(null);
   const writes = useRef(0);
-  const reach = open && picked ? picked : saved;
-  const change = (next: Reach) => {
-    const tidied = tidy(next);
-    setPicked(tidied);
+  const own = open && picked ? picked.reach : saved;
+  const inherited = own === null;
+  // Without one of its own, the ticks say who gets it anyway; the first tick
+  // made starts from them.
+  const reach: Reach = own ?? inherit?.gets ?? [];
+  const send = (next: Reach | null) => {
+    const tidied = next && tidy(next);
+    setPicked({ reach: tidied });
     const done = onChange(tidied);
     if (!(done instanceof Promise)) return;
     writes.current += 1;
@@ -116,6 +127,7 @@ export function ReachPicker({ id, reach: saved, accounts, onChange }: {
     };
   }, [open]);
 
+  const change = (next: Reach) => send(next);
   const all = reach.includes(ALL);
   const without = (...keys: string[]) => reach.filter(r => !keys.includes(r));
   const providers = PROVIDERS.filter(p => accounts.some(a => a.provider === p) || reach.includes(p));
@@ -129,24 +141,34 @@ export function ReachPicker({ id, reach: saved, accounts, onChange }: {
     </div>
   );
 
+  const toggle = () => {
+    setPicked(null);
+    setOpen(o => !o);
+  };
   return (
-    <div className="picker" data-picker-open={open || undefined} style={{ display: 'inline-block', width: 170, verticalAlign: 'middle' }}>
-      <button
-        ref={face}
-        type="button"
-        className="picker-face"
-        title={describe(reach)}
-        onClick={() => {
-          setPicked(null);
-          setOpen(o => !o);
-        }}
-      >
-        <Summary reach={reach} />
-      </button>
+    <div
+      className="picker"
+      data-picker-open={open || undefined}
+      style={{ display: 'inline-block', width: drawFace ? undefined : 170, verticalAlign: 'middle' }}
+    >
+      {drawFace ? (
+        <span ref={face as RefObject<HTMLSpanElement>} style={{ display: 'inline-block' }}>
+          {drawFace(toggle)}
+        </span>
+      ) : (
+        <button ref={face as RefObject<HTMLButtonElement>} type="button" className="picker-face" title={describe(reach)} onClick={toggle}>
+          <Summary reach={reach} />
+        </button>
+      )}
       {open &&
         host &&
         createPortal(
           <div ref={list} className="popover" style={{ left: pos?.left ?? -9999, top: pos?.top ?? 0, minWidth: 200, padding: '6px 10px' }}>
+            {inherit && (
+              <div style={{ borderBottom: '1px solid var(--line)', marginBottom: 4, paddingBottom: 4 }}>
+                {tick('inherit', inherit.label, inherited, false, on => send(on ? null : reach))}
+              </div>
+            )}
             {tick(ALL, 'All accounts', all, false, on => change(on ? [ALL] : []))}
             {providers.map(p => {
               const wide = all || reach.includes(p);

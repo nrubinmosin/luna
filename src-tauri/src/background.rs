@@ -677,8 +677,12 @@ fn command_for(e: &Entry, id: &str) -> (Vec<String>, String, Vec<(&'static str, 
             // (library.rs `session_args`). No hooks: its stream says it all; but
             // the guard against endless waits, a helper's as any (guard.rs).
             let skills = crate::library::session_args(Provider::Claude, &s.account_path, &dir);
-            if let Some(settings) = crate::pty::claude_settings_file(id, false, s.tools || s.parent.is_some(), &skills.hidden) {
+            if let Some(settings) = crate::pty::claude_settings_file(id, false, s.tools || s.parent.is_some(), &skills) {
                 args.extend(["--settings".into(), settings.to_string_lossy().into_owned()]);
+            }
+            if let Some(dir) = crate::pty::claude_instructions_dir(id, skills.instructions.as_deref()) {
+                args.extend(["--add-dir".into(), dir.to_string_lossy().into_owned()]);
+                envs.push((crate::pty::CLAUDE_ADDED_DIR_MEMORY, "1".into()));
             }
             args.extend(skills.args);
             envs.push(("CLAUDE_CONFIG_DIR", s.account_path.clone()));
@@ -1951,6 +1955,7 @@ pub fn remove(id: &str) -> Option<String> {
     let e = lock().entries.remove(id);
     reg().1.notify_all();
     let _ = std::fs::remove_file(crate::paths::data_dir().join("mcp").join(format!("{id}.json")));
+    crate::pty::claude_instructions_dir(id, None);
     changed();
     let e = e?;
     crate::agents::undelivered_left(id, &e.undelivered);

@@ -798,9 +798,8 @@ export interface LibrarySkillDto {
   description: string;
   /** Why it is laid out nowhere, while it is not fit to be. */
   problem: string | null;
+  /** The accounts it goes into, wherever no folder says otherwise. */
   accounts: Reach;
-  /** Only where its accounts and its folders meet, and into no account as a whole. */
-  foldersOnly: boolean;
 }
 export interface LibraryInstructionsDto {
   name: string;
@@ -813,14 +812,15 @@ export interface LibraryInstructionsDto {
 }
 export interface LibraryFolderDto {
   path: string;
-  /** Given to its sessions. */
-  skills: string[];
-  /** Kept from its sessions, though an account has it as a whole or a folder this one lies in gives it. */
-  off: string[];
+  /** The accounts whose sessions here get a skill, by the skills it says anything of; empty: none. */
+  skills: Record<string, Reach>;
+  /** The instructions its sessions get in place of their account's, by the reach entry they are for (as a
+   *  rule `provider/name`); null: none at all. Absent: it goes by what holds outside it. */
+  instructions?: Record<string, string | null>;
   found: boolean;
-  /** What its sessions would get of each skill were the folder to say nothing of it: `some` accounts' or
-   *  `all` a tick would give it to; absent: none. */
-  inherited: Record<string, 'some' | 'all'>;
+  /** The accounts, as `provider/name`, whose sessions here would get each skill were the folder to say
+   *  nothing of it; absent: none. */
+  inherited: Record<string, string[]>;
 }
 export interface LibraryOverviewDto {
   root: string;
@@ -868,13 +868,15 @@ export const librarySetSource = (path: string) => call<LibraryOverviewDto>('libr
 export const librarySetInstructions = (name: string | null, accounts: Reach) =>
   call<LibraryOverviewDto>('library_set_instructions', { name, accounts });
 export const librarySetAccounts = (skill: string, accounts: Reach) => call<LibraryOverviewDto>('library_set_accounts', { skill, accounts });
-/** The skills a folder's sessions get and those it keeps from them (`off`, null: as they are); `skills` null
- *  stops the folder saying anything of either. */
-export const librarySetFolder = (path: string, skills: string[] | null, off: string[] | null = null) =>
-  call<LibraryOverviewDto>('library_set_folder', { path, skills, off });
-/** Whether a skill goes only where its accounts and its folders meet. */
-export const librarySetFoldersOnly = (skill: string, on: boolean) =>
-  call<LibraryOverviewDto>('library_set_folders_only', { skill, on });
+/** Lists a folder, saying nothing of any skill yet, or takes it off the list with all it says. */
+export const librarySetFolder = (path: string, listed: boolean) => call<LibraryOverviewDto>('library_set_folder', { path, listed });
+/** The accounts whose sessions in a folder get a skill (empty: none), or null: the folder says nothing of it. */
+export const librarySetFolderSkill = (path: string, skill: string, accounts: Reach | null) =>
+  call<LibraryOverviewDto>('library_set_folder_skill', { path, skill, accounts });
+/** What sessions on an account in a folder get in place of its instructions: `name`'s or none (null);
+ *  `inherit`: what holds outside the folder. */
+export const librarySetFolderInstructions = (path: string, account: string, inherit: boolean, name: string | null) =>
+  call<LibraryOverviewDto>('library_set_folder_instructions', { path, account, inherit, name });
 export const librarySkip = (dest: string, on: boolean) => call<LibraryOverviewDto>('library_skip', { dest, on });
 /** `take`: the copy there becomes the library's; otherwise the library's goes back there. */
 export const libraryResolve = (dest: string, take: boolean) => call<LibraryOverviewDto>('library_resolve', { dest, take });
