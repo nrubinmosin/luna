@@ -299,9 +299,10 @@ function CellDot({ places }: { places: PlaceDto[] }) {
 /** A select's value for none at all, which no instructions' name can be (library.rs `check_name`). */
 const NO_INSTRUCTIONS = ' none';
 
-/** A folder's entry that decides for an account, as library.rs `folder_instructions` picks it: its own, its CLI's, all. */
-function folderEntry(instructions: Record<string, string | null> | undefined, a: AccountRef): string | null | undefined {
-  for (const key of [accountKey(a), a.provider, 'all']) if (instructions && Object.hasOwn(instructions, key)) return instructions[key];
+/** A folder's entry that decides for an account, as library.rs `folder_instructions` picks it — its own, its
+ *  CLI's, all — with its key. */
+function folderEntry(instructions: Record<string, string | null> | undefined, a: AccountRef): { key: string; choice: string | null } | undefined {
+  for (const key of [accountKey(a), a.provider, 'all']) if (instructions && Object.hasOwn(instructions, key)) return { key, choice: instructions[key] };
   return undefined;
 }
 
@@ -317,9 +318,17 @@ function FolderInstructions({ folder, account, names, act }: {
   names: string[];
   act: (p: Promise<LibraryOverviewDto | null>) => Promise<boolean>;
 }) {
-  const entry = folderEntry(folder.instructions, account);
-  const value = entry === undefined ? '' : (entry ?? NO_INSTRUCTIONS);
+  const decides = folderEntry(folder.instructions, account);
+  const entry = decides?.choice;
+  const value = decides === undefined ? '' : (entry ?? NO_INSTRUCTIONS);
   const codex = account.provider === 'codex';
+  // An entry for every account, or every one of a CLI, comes only of settings
+  // edited by hand: a pick here names the account, and can override it but
+  // not take it back.
+  const wide =
+    decides && decides.key !== accountKey(account)
+      ? `\nSet ${decides.key === 'all' ? 'for every account' : `for every ${PROVIDER_LABEL[account.provider]} account`} in the settings file: picking here sets ${account.name}'s own, which "As outside" takes back to that`
+      : '';
   const title = codex
     ? `Codex reads ${account.name}'s AGENTS.md in every session and has no way to leave it out of one: a folder cannot change its instructions`
     : `Sessions on ${account.name} in ${folder.path}: ${
@@ -328,7 +337,7 @@ function FolderInstructions({ folder, account, names, act }: {
           : value === NO_INSTRUCTIONS
             ? 'no instructions — the account’s file is left out of them'
             : `${value} in place of the account’s`
-      }`;
+      }${wide}`;
   return (
     <select
       value={value}
