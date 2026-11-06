@@ -210,8 +210,8 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   any Codex session in a project under a folder listed in Settings → "Codex trusts on
   this computer". Codex itself matches trust by a project's exact path, so a parent folder
   in its config would not do.
-- **Recommendations**, at the top of Settings, with a chip in the status bar while any
-  is open: what Luna's features rely on and what stops working without it, in Luna's own
+- **Recommendations**, one window from a button always in the status bar, which counts
+  what is open. Its first part is what Luna's features rely on and what stops working without it, in Luna's own
   settings and the accounts' files — Codex hooks without asking (the guard against endless
   waits reaches Codex only with it), `disableAllHooks` or Codex's hooks feature off on an
   account, Bypass not accepted, a fullscreen renderer Claude Code gave up on, keep awake,
@@ -222,7 +222,8 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   your administrator shows as Blocked, with no button. A Codex file, and Claude Code's
   `.claude.json`, are written only while no session of Luna's is on the account, up to the
   moment its process has exited; a CLI running outside Luna can still race that write.
-- **Recommended settings**, per account in the Accounts window — its button says how
+- **Recommended settings**, per account: listed under Recommendations with what the
+  everyday set still lacks, and on the account's row in the Accounts window. Its button says how
   many of them the account's file has (`5/12`): what works well for the CLI inside Luna,
   each with what the file says now, what it would say and why — `tui: fullscreen`, no
   spinner tips or feedback prompts, no compacting while idle, no second Bypass confirmation, PowerShell for

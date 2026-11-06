@@ -4,6 +4,9 @@ import {
 } from '../../ipc/commands';
 
 interface State {
+  /** Whether the Recommendations window is up. */
+  open: boolean;
+  setOpen: (v: boolean) => void;
   checks: CheckDto[] | null;
   /** What the last fix came back with, by the check's key. */
   failed: Record<string, string>;
@@ -19,6 +22,8 @@ export const openChecks = (checks: CheckDto[] | null) =>
   (checks ?? []).filter(c => c.status !== 'ok' && !c.dismissed);
 
 export const useRecommendations = create<State>((set, get) => ({
+  open: false,
+  setOpen: v => set({ open: v }),
   checks: null,
   failed: {},
   refresh: async () => {

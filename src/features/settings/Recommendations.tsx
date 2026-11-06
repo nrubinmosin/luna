@@ -73,7 +73,7 @@ function Row({ check }: { check: CheckDto }) {
   );
 }
 
-/** The section in Settings: what is off, what each is for, and one click. */
+/** What Luna relies on, in the Recommendations window: what is off, what each is for, and one click. */
 export function Recommendations() {
   const checks = useRecommendations(s => s.checks);
   useEffect(() => {
