@@ -61,7 +61,8 @@ src/                          frontend (feature-sliced)
               names the account, not the project), branchPrefix (Claude `worktree-`,
               Codex null); index.ts — ui(provider) for the little that is shared
     accounts/ Accounts window (from the status bar): limits, sign-in, agents, add/remove;
-              RecommendedDialog (recommended settings, per-account button), ConfigEditor
+              RecommendedDialog (recommended settings, per-account button; recommended.ts
+              their counts), ConfigEditor
               (hand editor for settings.json / config.toml); accounts.store
     library/  Skills & instructions (from Accounts, or the status bar's chip while a copy needs a
               look): the library's folder, a grid of instructions against the accounts (a radio
@@ -186,8 +187,8 @@ src-tauri/src/
     session.rs  rollout files sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl: which is ours,
                 status, model, context, first prompt, cwd (rollout_cwd — where a --worktree
                 session went); thread name from session_index.jsonl
-  checks.rs     what Luna's features rely on, as checks with a status and a fix (Settings →
-                Recommendations, chip in the status bar): Luna's settings, account files, the
+  checks.rs     what Luna's features rely on, as checks with a status and a fix (the
+                Recommendations window, from its button in the status bar): Luna's settings, account files, the
                 machine's policy files. Answered by the core; a fix is asked for by id.
   account_use.rs  which accounts have a CLI of Luna's on them until it has exited, and the
                 holds that keep new ones off while a file the CLI rewrites is changed.
@@ -1073,7 +1074,8 @@ src-tauri/src/
   adopted an orphan or browsed to. A folder only an agent ran a helper in holds its row in the sidebar
   and is not offered; folders stored before the flag count as picked if they hold a top-level chat,
   keep a start of their own or are the dialog's last folder.
-- **Recommendations** (`checks.rs`, Settings). Each check reads the file or setting a feature
+- **Recommendations** (`checks.rs`, the window from the status bar's button, which also lists
+  each account's recommended settings; only the checks count on the button). Each check reads the file or setting a feature
   depends on and returns `status` (ok, off, blocked, unknown) with `action`, `risk`, `note` and
   `refused`. `apply_recommendation(id, account, confirmed)` re-reads everything and refuses a
   risky fix unconfirmed; nothing is applied unasked. A fix that a sync could undo also goes on
@@ -1093,7 +1095,7 @@ src-tauri/src/
   under the same hold; with a Codex running on the account, trust goes to its sessions as a `-c`
   override instead of into `config.toml`. A sync waits for processes only, not retained helpers,
   and a blank Codex parent is a valid one: its children follow it.
-- **Recommended settings** (Accounts → per-account button). A tick means "the file will have this
+- **Recommended settings** (Recommendations, or Accounts → per-account button). A tick means "the file will have this
   key": applied keys open ticked; unticking one removes the key — only if the file still says exactly the
   recommended value, and parent objects/tables left empty go too; "Tick recommended" adds the
   `defaultOn` set; Apply shows `+N / −M`; "Edit settings.json/config.toml…" opens the hand editor.

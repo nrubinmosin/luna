@@ -17,10 +17,10 @@ import type {
   FileDiffDto, LibraryOverviewDto, PlaceDto
 } from '../ipc/commands';
 import { useLibrary } from '../features/library/library.store';
+import { useRecommendations } from '../features/settings/recommendations.store';
 import { useBackground } from '../features/agents/background.store';
 import { useAccounts } from '../features/accounts/accounts.store';
 import { useAccountsWindow } from '../features/accounts/AccountsPanel';
-import { useSettings } from '../features/settings/SettingsDialog';
 import { useChats } from '../features/chats/chats.store';
 import { useDrafts } from '../features/chats/drafts.store';
 import { useWorktrees } from '../features/chats/worktrees.store';
@@ -32,7 +32,7 @@ import { usePower } from '../features/power/power.store';
 
 /** `?demo`, `?demo=dark`, `?demo=peek`, `?demo=newchat`, `?demo=codex` (the same on a Codex
  *  account), `?demo=settings`, `?demo=accounts`, `?demo=recommended`, `?demo=editor`, `?demo=worktrees`,
- *  `?demo=checks` / `checks-dark` (the recommendations in Settings), `checks-bar` / `checks-bar-dark` (their chip),
+ *  `?demo=checks` / `checks-dark` (the Recommendations window), `checks-bar` / `checks-bar-dark` (their chip),
  *  `?demo=library`, `?demo=power`. */
 export type Scene = 'main' | 'dark' | 'peek' | 'newchat' | 'codex' | 'settings' | 'accounts' | 'recommended' | 'editor' | 'worktrees' | 'library' | 'power' | 'checks' | 'checks-dark' | 'checks-bar' | 'checks-bar-dark';
 const SCENES: Scene[] = ['dark', 'peek', 'newchat', 'codex', 'settings', 'accounts', 'recommended', 'editor', 'worktrees', 'library', 'power', 'checks', 'checks-dark', 'checks-bar', 'checks-bar-dark'];
@@ -614,7 +614,7 @@ export function seedDemo(scene: Scene) {
   if (scene === 'accounts' || scene === 'recommended' || scene === 'editor') useAccountsWindow.getState().setOpen(true);
   if (scene === 'worktrees') useWorktrees.getState().setOpen(true);
   if (scene === 'checks' || scene === 'checks-dark') {
-    useSettings.getState().setOpen(true);
+    useRecommendations.getState().setOpen(true);
     // The confirm a risky fix asks for, opened the way a click would.
     setTimeout(() => document.querySelector<HTMLElement>('[data-confirms]')?.click(), 600);
   }

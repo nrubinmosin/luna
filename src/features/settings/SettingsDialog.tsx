@@ -20,12 +20,11 @@ import { usePanes } from '../panes/panes.store';
 import { useNotifyPrefs } from '../../shared/lib/notifyPrefs.store';
 import { useDialogHost } from '../../shared/ui/dialogHost';
 import { BrowserSection } from '../browsers/BrowserSection';
-import { Recommendations } from './Recommendations';
 
 const pct = (got: number, total: number | null) =>
   total ? Math.min(100, Math.round((got / total) * 100)) : null;
 
-function Section({ label, children }: { label: string; children: ReactNode }) {
+export function Section({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div style={{ marginBottom: 14 }}>
       <div
@@ -526,9 +525,6 @@ function SettingsWindow({ onClose }: { onClose: () => void }) {
           </div>
         </div>
         <div className="window-body" style={{ maxHeight: 'calc(100vh - 120px)', overflowY: 'auto' }}>
-          <Section label="Recommendations">
-            <Recommendations />
-          </Section>
           <Section label="Accounts folder">
             <AccountsFolder />
           </Section>

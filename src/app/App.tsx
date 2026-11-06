@@ -24,6 +24,7 @@ import { ShortcutsDialog } from '../features/shortcuts/ShortcutsDialog';
 import { SettingsDialog } from '../features/settings/SettingsDialog';
 import { LinkChooser } from '../features/browsers/LinkChooser';
 import { LibraryWindow } from '../features/library/LibraryWindow';
+import { RecommendationsDialog } from '../features/settings/RecommendationsWindow';
 import { useLibrary } from '../features/library/library.store';
 import { healScaleDrift } from './dpi';
 import { Icon } from '../shared/ui/icons';
@@ -251,6 +252,7 @@ export function App() {
       <UpdateConfirm />
       <ShortcutsDialog />
       <SettingsDialog />
+      <RecommendationsDialog />
       <LinkChooser />
       <WorktreesDialog />
       <LibraryWindow />
