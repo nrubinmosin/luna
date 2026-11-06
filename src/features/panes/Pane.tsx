@@ -6,6 +6,7 @@ import { Icon } from '../../shared/ui/icons';
 import { StatusDot } from '../../shared/ui/StatusDot';
 import { CHAT_COLORS, chatColorTheme } from '../../shared/ui/chatColors';
 import { ACCENT, limitColor, shortSessionId, tail2, tint } from '../../shared/lib/format';
+import { BackgroundChip } from '../agents/BackgroundChip';
 import { useChats } from '../chats/chats.store';
 import { DeleteChatDialog } from '../chats/DeleteChatDialog';
 import { draftTag, useDrafts } from '../chats/drafts.store';
@@ -335,6 +336,10 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
                   {t.leaf}
                 </span>
               )}
+
+              {/* Its background helpers, live state rather than a setting: by
+                  the name, so a narrow pane does not drop it with the chips. */}
+              {!editing && <BackgroundChip parentId={chat.id} />}
 
               {!editing && (
                 <span className="pane-chips">

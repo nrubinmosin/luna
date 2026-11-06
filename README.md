@@ -425,8 +425,8 @@ where Codex hooks run unasked (Settings): Codex runs a hook Luna gives it only s
   `codex exec`), and the next one resumes the conversation. It needs no open window, and it
   goes by itself once its answer has reached the agent and it has sat idle for 30 minutes
   with nobody reading it or writing to it (see `autoDelete` below). Its parent's row
-  shows how many there are, and the count glows for a few seconds when one is spawned; a
-  click lists them with what each is doing and for how long, its model, effort, account and
+  and the title bar of its pane show how many there are, and the count glows for a few
+  seconds when one is spawned; a click lists them with what each is doing and for how long, its model, effort, account and
   worktree, and opens one as a chat of its own (between its turns, once nothing they left
   runs), stops it or deletes it.
 - A visible helper is a normal chat row, nested under the one that made it and folded by
@@ -583,7 +583,7 @@ where Codex hooks run unasked (Settings): Codex runs a hook Luna gives it only s
 - What a session's turns left running past their end — a server, a watcher, a `tail -F` a
   tool forgot — is named: in its notice, and in `luna_list` as `leftRunning`, each process
   with its pid, when it started and whether it has used CPU or I/O in the last 10 minutes.
-  For a background helper `luna_kill`, or Stop in the helper's list on its chat's row, ends
+  For a background helper `luna_kill`, or Stop in the helper's list on its chat's row or title bar, ends
   it once the turn is over. When all of it has done nothing for 30 minutes, the agent owed
   the session's answer gets one notice saying so — it may be stuck, or waiting on something
   — and how to end it; the notice of its end still comes, as doing nothing is no proof of one.
