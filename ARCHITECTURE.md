@@ -1131,8 +1131,9 @@ src-tauri/src/
   `plugins/cache/luna/<slug>/local/` (manifest written and removed by Luna, outside the
   ledger), off until `-c plugins.<slug>@luna.enabled=true` turns it on, listed as
   `<slug>:<name>`. The slug is the folder's name in `[a-z0-9-]`, no dots: Codex splits a
-  `-c` key at each. `session_args` maps a session's folder (a worktree through
-  `worktree::root_of` to its project) onto the folders it lies in, at every start: a resume
+  `-c` key at each. `session_args` maps a session's folder (in a worktree, through
+  `worktree::root_of`, the same folder of its project: `<worktree>/src` is `<project>/src`)
+  onto the folders it lies in, at every start: a resume
   or helper turn without them keeps the skills named in its history, unanswerable. Each start
   lays the library out first (`lay_out`), so a skill another program changed on disk reaches
   the next session; the code that starts one calls it before taking any lock of its own (a
@@ -1147,8 +1148,9 @@ src-tauri/src/
   of before (`folders_only`, a folder's ticked `skills` and `off`) read as such reaches:
   a tick `all`, or the skill's reach for one folders only (and then none as a whole), off
   none. A folder copy goes to an account its reach takes in that does not have the skill as a
-  whole (twice over, Claude Code would list the second scoped to Luna's folder;
-  `folder_copy_for`). One an account has as a whole, or an outer folder gives, that the
+  whole (twice over, Claude Code would list the second scoped to Luna's folder) nor a copy
+  from a folder this one lies in, which every session here gets too (`folder_copy_for`).
+  One an account has as a whole, or an outer folder gives, that the
   deciding folder keeps from the account is hidden. Nothing moves at layout; at the start the session is told to hide it, the one
   way to keep from it what its account holds — Claude Code by `skillOverrides: {name: "off"}`
   in its `--settings` file (one flag only: `claude_settings_file` puts the hooks and the
