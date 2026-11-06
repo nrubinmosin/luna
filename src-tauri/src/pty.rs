@@ -577,17 +577,18 @@ async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, String>) -> R
 /// hook's stdout is added to the model's context, silence is free — while
 /// the listener is on. `guard`: a PreToolUse hook on its shell tools that
 /// refuses a command waiting forever (guard.rs), for a session with Luna's
-/// tools or a helper. `hidden`: the skills the library keeps from sessions
-/// in its folder (library.rs `SessionSkills`), off in `skillOverrides`, which
-/// settings of this source beat whatever the account's or the project's say.
+/// tools or a helper. `library`: what the library's folders keep from the
+/// session (library.rs `SessionSkills`) — skills off in `skillOverrides`,
+/// which settings of this source beat whatever the account's or the
+/// project's say, and the account's instructions in `claudeMdExcludes`.
 /// Written to a file under the data dir (`hooks/`, named for what it first
 /// held) rather than passed inline, so the command line stays readable and
 /// quoting is not a concern. None with nothing to say.
-pub(crate) fn claude_settings_file(chat_id: &str, hooks: bool, guard: bool, hidden: &[String]) -> Option<std::path::PathBuf> {
+pub(crate) fn claude_settings_file(chat_id: &str, hooks: bool, guard: bool, library: &crate::library::SessionSkills) -> Option<std::path::PathBuf> {
     let settings = claude_settings(
         crate::hub::hook_url(chat_id).filter(|_| hooks).as_deref(),
         crate::hub::guard_url(chat_id).filter(|_| guard).as_deref(),
-        hidden,
+        library,
     );
     if settings.is_empty() {
         return None;
@@ -599,6 +600,34 @@ pub(crate) fn claude_settings_file(chat_id: &str, hooks: bool, guard: bool, hidd
     Some(path)
 }
 
+/// The instructions a folder of the library gives a Claude Code session in
+/// place of its account's (library.rs `SessionSkills::instructions`), as the
+/// `CLAUDE.md` of a folder of its own (`hooks/<id>/`) for `--add-dir`, which
+/// Claude Code reads with `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD` set
+/// — those of every folder it is given then, Luna's own holding none.
+/// Memory, not `--append-system-prompt-file`: a resume keeps the system
+/// prompt its session started with, and reads memory again. Written at every
+/// start; with nothing to give, gone, and None.
+pub(crate) fn claude_instructions_dir(chat_id: &str, file: Option<&std::path::Path>) -> Option<std::path::PathBuf> {
+    let dir = crate::paths::data_dir().join("hooks").join(chat_id);
+    let Some(file) = file else {
+        let _ = std::fs::remove_dir_all(&dir);
+        return None;
+    };
+    let copied = std::fs::create_dir_all(&dir).and_then(|()| std::fs::copy(file, dir.join("CLAUDE.md")));
+    match copied {
+        Ok(_) => Some(dir),
+        Err(e) => {
+            crate::log::warn("library", &format!("could not give {chat_id} {}: {e}", file.display()));
+            None
+        }
+    }
+}
+
+/// What `claude_instructions_dir` asks of a session's start: the folder and
+/// the variable that has its `CLAUDE.md` read.
+pub(crate) const CLAUDE_ADDED_DIR_MEMORY: &str = "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD";
+
 /// A hook command posting its stdin to `url`. curl.exe by name on Windows:
 /// there `curl` in PowerShell is an alias for Invoke-WebRequest. Its stdin —
 /// the hook's JSON — goes up as the body; a 204 answer has no body, so nothing
@@ -609,8 +638,8 @@ fn hook_command(url: &str) -> String {
 }
 
 /// `claude_settings_file`'s settings: the session's hooks to `hook_url`, the
-/// guard's to `guard_url`, and the skills it does not get.
-fn claude_settings(hook_url: Option<&str>, guard_url: Option<&str>, hidden: &[String]) -> serde_json::Map<String, serde_json::Value> {
+/// guard's to `guard_url`, and the skills and instructions it does not get.
+fn claude_settings(hook_url: Option<&str>, guard_url: Option<&str>, library: &crate::library::SessionSkills) -> serde_json::Map<String, serde_json::Value> {
     let mut settings = serde_json::Map::new();
     let mut hooks = serde_json::Map::new();
     let mut pre_tool_use = Vec::new();
@@ -640,8 +669,11 @@ fn claude_settings(hook_url: Option<&str>, guard_url: Option<&str>, hidden: &[St
     if !hooks.is_empty() {
         settings.insert("hooks".into(), hooks.into());
     }
-    if !hidden.is_empty() {
-        settings.insert("skillOverrides".into(), hidden.iter().map(|n| (n.clone(), serde_json::json!("off"))).collect());
+    if !library.hidden.is_empty() {
+        settings.insert("skillOverrides".into(), library.hidden.iter().map(|n| (n.clone(), serde_json::json!("off"))).collect());
+    }
+    if !library.excluded.is_empty() {
+        settings.insert("claudeMdExcludes".into(), library.excluded.clone().into());
     }
     settings
 }
@@ -1351,6 +1383,7 @@ impl PtyManager {
         for sub in ["hooks", "mcp"] {
             let _ = std::fs::remove_file(crate::paths::data_dir().join(sub).join(format!("{id}.json")));
         }
+        claude_instructions_dir(id, None);
         crate::log::info("delete", &format!("chat {}, worktree {resolved:?}, dropping {drop_worktree}", crate::agents::label(id)));
 
         match &resolved {
@@ -1466,7 +1499,7 @@ pub async fn ensure_claude_session(
         // The guard against endless waits (guard.rs): a chat with Luna's tools
         // and a helper, which only such a chat starts.
         let guard = tools.unwrap_or(false) || parent.is_some();
-        if let Some(settings) = claude_settings_file(&id, true, guard, &skills.hidden) {
+        if let Some(settings) = claude_settings_file(&id, true, guard, &skills) {
             args.push("--settings".into());
             args.push(settings.to_string_lossy().into_owned());
         }
@@ -1522,6 +1555,11 @@ pub async fn ensure_claude_session(
                 args.push(notes.to_string_lossy().into_owned());
             }
         }
+        let instructions = if login { None } else { claude_instructions_dir(&id, skills.instructions.as_deref()) };
+        if let Some(dir) = &instructions {
+            args.push("--add-dir".into());
+            args.push(dir.to_string_lossy().into_owned());
+        }
         args.extend(skills.args);
         if let Some(p) = prompt.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
             // `--mcp-config` takes any number of files, and took the prompt
@@ -1535,6 +1573,9 @@ pub async fn ensure_claude_session(
             // second copy under the user profile that nothing here ever runs.
             ("DISABLE_AUTOUPDATER", "1".to_string()),
         ];
+        if instructions.is_some() {
+            envs.push((CLAUDE_ADDED_DIR_MEMORY, "1".to_string()));
+        }
         envs.extend(session_envs(&id, parent.as_deref()));
         Ok(Launch {
             provider: Provider::Claude,
@@ -2671,8 +2712,12 @@ mod tests {
     /// alone; nothing at all, none.
     #[test]
     fn the_guard_rides_with_the_hooks_or_alone() {
-        let hidden = vec!["deploy".to_string()];
-        let chat = claude_settings(Some("http://h/hook/c/s"), Some("http://h/guard/c/s"), &hidden);
+        let library = crate::library::SessionSkills {
+            hidden: vec!["deploy".to_string()],
+            excluded: vec!["E:/acc/work/CLAUDE.md".to_string()],
+            ..Default::default()
+        };
+        let chat = claude_settings(Some("http://h/hook/c/s"), Some("http://h/guard/c/s"), &library);
         let pre = chat["hooks"]["PreToolUse"].as_array().unwrap();
         assert_eq!(pre.len(), 2);
         assert_eq!(pre[0]["matcher"], "AskUserQuestion");
@@ -2680,12 +2725,14 @@ mod tests {
         assert!(pre[1]["hooks"][0]["command"].as_str().unwrap().ends_with("http://h/guard/c/s"));
         assert!(chat["hooks"]["Stop"].is_array() && chat["hooks"]["SubagentStop"].is_array());
         assert_eq!(chat["skillOverrides"]["deploy"], "off");
-        let unguarded = claude_settings(Some("http://h/hook/c/s"), None, &[]);
+        assert_eq!(chat["claudeMdExcludes"], serde_json::json!(["E:/acc/work/CLAUDE.md"]));
+        let none = crate::library::SessionSkills::default();
+        let unguarded = claude_settings(Some("http://h/hook/c/s"), None, &none);
         assert_eq!(unguarded["hooks"]["PreToolUse"].as_array().unwrap().len(), 1);
-        let helper = claude_settings(None, Some("http://h/guard/c/s"), &[]);
+        let helper = claude_settings(None, Some("http://h/guard/c/s"), &none);
         let hooks = helper["hooks"].as_object().unwrap();
         assert_eq!(hooks.keys().collect::<Vec<_>>(), ["PreToolUse"], "no hooks of its own: its stream says it all");
-        assert!(claude_settings(None, None, &[]).is_empty());
+        assert!(claude_settings(None, None, &none).is_empty());
         let guard = codex_guard_override("http://h/guard/c/s");
         assert!(guard.starts_with(r#"hooks.PreToolUse=[{matcher="Bash",hooks=[{type="command",command='"#), "{guard}");
         assert!(guard.ends_with(r#" -s -m 3 -X POST --data-binary "@-" http://h/guard/c/s',timeout=5}]}]"#), "{guard}");

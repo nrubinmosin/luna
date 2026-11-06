@@ -453,12 +453,12 @@ const LIBRARY: LibraryOverviewDto = {
   skills: [
     {
       name: 'luna-review', description: 'Hand a finished change to a model of the other CLI through Luna and fold its findings back in.',
-      problem: null, accounts: ['claude'], foldersOnly: false
+      problem: null, accounts: ['claude']
     },
-    { name: 'migrations', description: '', problem: 'The front matter has no description', accounts: ['claude'], foldersOnly: false },
+    { name: 'migrations', description: '', problem: 'The front matter has no description', accounts: ['claude'] },
     {
       name: 'release-notes', description: 'Write the release notes from the commits since the last tag, in the house style.',
-      problem: null, accounts: ['claude/work'], foldersOnly: true
+      problem: null, accounts: []
     }
   ],
   accounts: [
@@ -467,7 +467,15 @@ const LIBRARY: LibraryOverviewDto = {
     { provider: 'codex', name: 'personal' },
     { provider: 'codex', name: 'team' }
   ],
-  folders: [{ path: REPO, skills: ['luna-review', 'release-notes'], off: ['migrations'], found: true, inherited: { 'luna-review': 'some', migrations: 'some' } }],
+  folders: [
+    {
+      path: REPO,
+      skills: { 'luna-review': ['all'], 'release-notes': ['claude/work', 'codex/team'], migrations: [] },
+      instructions: { 'claude/work': null, 'claude/personal': 'work' },
+      found: true,
+      inherited: { 'luna-review': ['claude/personal', 'claude/work'], migrations: ['claude/personal', 'claude/work'] }
+    }
+  ],
   places: [
     place({ dest: `${accountsDir('anthropic', 'personal')}\\CLAUDE.md`, target: { kind: 'account', provider: 'claude', name: 'personal' }, instructions: 'main' }),
     place({ dest: `${accountsDir('anthropic', 'work')}\\CLAUDE.md`, target: { kind: 'account', provider: 'claude', name: 'work' }, instructions: 'work', status: 'changed' }),

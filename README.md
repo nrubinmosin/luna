@@ -275,26 +275,36 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   then the instructions) and whatever files it needs beside it. In each account picked for
   it, it goes into the account's `skills/`, for every session in every project.
 - A folder you add — a repository, say — is for what belongs to one project but not to
-  everyone who works on it. A skill ticked for it goes to the sessions Luna starts there,
-  its worktrees included (helpers, resumes and the CLIs' own subagents too), given to each
-  at its start: nothing is written into the folder, so nothing shows up in `git status` and
-  nothing is missing from a fresh worktree. Claude Code gets the skills through `--add-dir`
-  of a folder in Luna's data and lists them by their own names; one whose name the
-  repository or the account already has goes by `luna-<name>` there. Codex gets them as a
-  plugin in the account, switched on for the session, and lists them as
-  `<folder>:<name>`. Sessions started outside Luna do not see them.
-- Each skill takes its accounts and its folders one of two ways. **or**, the default: the
-  accounts picked get it everywhere, and every account's sessions get it in the folders it
-  is ticked for. **and**: only the accounts picked, and only in those folders — a skill for
-  one repository on every account but one, say.
-- A folder can also keep a skill from its sessions — a repository with a skill of its own
-  that does the same job, say. A faint tick is a skill the folder's sessions get anyway, from
-  the accounts it is meant for or a folder this one lies in; a click turns it off there, a
-  red cross, and the next back. Luna hides it from the session at its start
+  everyone who works on it. For each skill a folder can pick the accounts whose sessions
+  there get it, in place of the accounts it is meant for: every account, a CLI's, some by
+  name, or none. The sessions Luna starts there, its worktrees included (helpers, resumes
+  and the CLIs' own subagents too), get it at their start: nothing is written into the
+  folder, so nothing shows up in `git status` and nothing is missing from a fresh worktree.
+  Claude Code gets the skills through `--add-dir` of a folder in Luna's data and lists them
+  by their own names; one whose name the repository or the account already has goes by
+  `luna-<name>` there. Codex gets them as a plugin in the account, switched on for the
+  session, and lists them as `<folder>:<name>`. Sessions started outside Luna do not see
+  them.
+- So every combination holds: a skill on one account everywhere and on another only in one
+  repository; on every account but kept out of one folder; only in one folder and only on
+  Claude Code there. In the grid a tick is every account, a dash some, a red cross none; a
+  faint tick or dash is what the folder's sessions get with nothing picked there, from the
+  accounts the skill is meant for or a folder this one lies in. A click opens the accounts,
+  with "As outside this folder" to pick nothing.
+- A skill a folder keeps from an account that has it as a whole — a repository with a skill
+  of its own that does the same job, say — is hidden from the session at its start
   (`skillOverrides` in Claude Code's `--settings`, `skills.config` in Codex's `-c`); the
   account's copy stays, so a CLI started outside Luna there still has it. Both CLIs hide a
   skill by name, so one of the same name the repository has goes too. Where one folder lies
-  in another, the inner one decides — off in a parent folder, ticked again in one repository.
+  in another, the inner one decides — kept out of a parent folder, given again in one
+  repository.
+- A folder can also give the Claude Code sessions Luna starts there other instructions than
+  their account's, or none: the account's `CLAUDE.md` is left out of them at their start
+  (`claudeMdExcludes` in `--settings`) and the other instructions given as a `CLAUDE.md` of
+  their own (`--add-dir`), read again at every start, a resume's too — what the folder gives
+  now holds. Codex reads its account's `AGENTS.md` in every
+  session with no way to leave it out of one, so a folder does not change a Codex account's
+  instructions.
 - "Add a folder…" lists the folders the new-chat dialog offers, and any other through the
   picker: one holding several repositories gives its skills to each.
 - The library is the original and every place holds a copy. Luna remembers what it wrote
