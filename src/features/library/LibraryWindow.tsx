@@ -101,6 +101,10 @@ function NameCell({ name, onDoubleClick }: { name: string; onDoubleClick?: () =>
   );
 }
 
+/** The window's width with one folder, and what each further folder's column adds: the names keep their room. */
+const WINDOW_WIDTH = 760;
+const FOLDER_WIDTH = 130;
+
 const DOTS: [string, string][] = [[GREEN, 'in place'], ['var(--wait)', 'needs a look'], [RED, 'cannot be laid out'], ['var(--faint)', 'yet to be laid out']];
 
 /** What a cell's dot says, once above each table that has them (`CellDot`). */
@@ -538,7 +542,7 @@ function LibraryDialog({ onClose }: { onClose: () => void }) {
       <div
         onClick={e => e.stopPropagation()}
         className="window"
-        style={{ width: 760, maxWidth: 'calc(100vw - 32px)', boxShadow: 'var(--shadow), var(--border-window-outer), var(--border-window-inner)' }}
+        style={{ width: WINDOW_WIDTH + FOLDER_WIDTH * Math.max(0, (o?.folders.length ?? 0) - 1), maxWidth: 'calc(100vw - 32px)', boxShadow: 'var(--shadow), var(--border-window-outer), var(--border-window-inner)' }}
       >
         <div className="title-bar">
           <div className="title-bar-text">Skills &amp; instructions</div>
@@ -669,103 +673,106 @@ function LibraryDialog({ onClose }: { onClose: () => void }) {
                 }
               >
                 {o.skills.length > 0 && (
-                  <table className="library-grid">
-                    <thead>
-                      <tr>
-                        <th rowSpan={o.folders.length ? 2 : 1}>Skill</th>
-                        <th rowSpan={o.folders.length ? 2 : 1} title="The accounts each is meant for — every account, every one of a CLI, or those you name">
-                          Meant for
-                        </th>
-                        {o.folders.length > 0 && (
-                          <th
-                            colSpan={o.folders.length}
-                            className="group"
-                            title="The sessions Luna starts in these folders, their worktrees included, get the skills ticked under them, and not those turned off"
-                          >
-                            Sessions in
-                          </th>
-                        )}
-                        <th rowSpan={o.folders.length ? 2 : 1} />
-                      </tr>
-                      {o.folders.length > 0 && (
+                  // Where the screen cannot give the window the width, the grid scrolls sooner than squeeze the names.
+                  <div style={{ overflowX: 'auto' }}>
+                    <table className="library-grid">
+                      <thead>
                         <tr>
-                          {o.folders.map(f => (
-                            <th key={f.path} className="library-folder" title={f.found ? f.path : `${f.path}\nNot there`}>
-                              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
-                                <Icon name="folder" size={14} />
-                                <span style={{ color: f.found ? undefined : RED }}>{baseName(f.path)}</span>
-                                <ToolButton
-                                  icon="close"
-                                  size={18}
-                                  title={`Stop giving skills to sessions in ${f.path}\nWhat waits for them goes, those copies still as Luna wrote them`}
-                                  onClick={() => act(librarySetFolder(f.path, null))}
-                                />
-                              </span>
+                          <th rowSpan={o.folders.length ? 2 : 1}>Skill</th>
+                          <th rowSpan={o.folders.length ? 2 : 1} title="The accounts each is meant for — every account, every one of a CLI, or those you name">
+                            Meant for
+                          </th>
+                          {o.folders.length > 0 && (
+                            <th
+                              colSpan={o.folders.length}
+                              className="group"
+                              title="The sessions Luna starts in these folders, their worktrees included, get the skills ticked under them, and not those turned off"
+                            >
+                              Sessions in
                             </th>
-                          ))}
+                          )}
+                          <th rowSpan={o.folders.length ? 2 : 1} />
                         </tr>
-                      )}
-                    </thead>
-                    <tbody>
-                      {o.skills.map(s => {
-                        const mine = o.places.filter(p => p.skill === s.name);
-                        return (
-                          <tr key={s.name}>
-                            <td style={{ maxWidth: 0, width: '100%' }}>
-                              <NameCell name={s.name} />
-                              <div
-                                title={s.problem ?? s.description}
-                                style={{ fontSize: 'var(--fs-2)', color: s.problem ? RED : 'var(--faint)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-                              >
-                                {s.problem ?? s.description}
-                              </div>
-                            </td>
-                            <td className="cell">
-                              <ReachPicker
-                                id={`lib-${s.name}-accounts`}
-                                reach={s.accounts}
-                                accounts={o.accounts}
-                                onChange={r => act(librarySetAccounts(s.name, r))}
-                              />
-                              {o.folders.length > 0 && (
-                                <button
-                                  className="slim"
-                                  disabled={busy}
-                                  // Kept in place, unseen, while no folder has it: the pickers stay in line.
-                                  style={{
-                                    marginLeft: 4, minWidth: 34, padding: '0 4px',
-                                    visibility: o.folders.some(f => f.skills.includes(s.name)) ? undefined : 'hidden'
-                                  }}
-                                  title={
-                                    s.foldersOnly
-                                      ? 'And: only these accounts, and only in the folders it is ticked in — into none of them as a whole.\nClick for or.'
-                                      : 'Or: into these accounts everywhere, and into every account’s sessions in the folders it is ticked in.\nClick for and.'
-                                  }
-                                  onClick={() => act(librarySetFoldersOnly(s.name, !s.foldersOnly))}
-                                >
-                                  {s.foldersOnly ? 'and' : 'or'}
-                                </button>
-                              )}
-                              <CellDot places={mine.filter(p => p.target.kind === 'account')} />
-                            </td>
-                            {o.folders.map((f, i) => (
-                              <td key={f.path} className="cell">
-                                <FolderTick id={`lib-${s.name}-folder-${i}`} skill={s.name} folder={f} busy={busy} act={act} />
-                                <CellDot places={mine.filter(p => p.target.kind === 'folder' && p.target.path === f.path)} />
-                              </td>
+                        {o.folders.length > 0 && (
+                          <tr>
+                            {o.folders.map(f => (
+                              <th key={f.path} className="library-folder" title={f.found ? f.path : `${f.path}\nNot there`}>
+                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, maxWidth: FOLDER_WIDTH - 12 }}>
+                                  <Icon name="folder" size={14} />
+                                  <span style={{ color: f.found ? undefined : RED, overflow: 'hidden', textOverflow: 'ellipsis' }}>{baseName(f.path)}</span>
+                                  <ToolButton
+                                    icon="close"
+                                    size={18}
+                                    title={`Stop giving skills to sessions in ${f.path}\nWhat waits for them goes, those copies still as Luna wrote them`}
+                                    onClick={() => act(librarySetFolder(f.path, null))}
+                                  />
+                                </span>
+                              </th>
                             ))}
-                            <td className="cell">
-                              <span style={{ display: 'inline-flex', gap: 2 }}>
-                                <ToolButton icon="pencil" size={22} title={`Edit ${s.name}'s SKILL.md`} onClick={() => setEditing({ skill: s.name })} />
-                                <ToolButton icon="folder" size={22} title={`Open ${s.name}'s folder — for the files beside SKILL.md`} onClick={() => void libraryOpen(s.name)} />
-                                <ToolButton icon="trash" size={22} danger title={`Take ${s.name} out of the library — asks first`} onClick={() => setDeleting({ skill: s.name })} />
-                              </span>
-                            </td>
                           </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
+                        )}
+                      </thead>
+                      <tbody>
+                        {o.skills.map(s => {
+                          const mine = o.places.filter(p => p.skill === s.name);
+                          return (
+                            <tr key={s.name}>
+                              <td style={{ maxWidth: 0, minWidth: 200, width: '100%' }}>
+                                <NameCell name={s.name} />
+                                <div
+                                  title={s.problem ?? s.description}
+                                  style={{ fontSize: 'var(--fs-2)', color: s.problem ? RED : 'var(--faint)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                                >
+                                  {s.problem ?? s.description}
+                                </div>
+                              </td>
+                              <td className="cell">
+                                <ReachPicker
+                                  id={`lib-${s.name}-accounts`}
+                                  reach={s.accounts}
+                                  accounts={o.accounts}
+                                  onChange={r => act(librarySetAccounts(s.name, r))}
+                                />
+                                {o.folders.length > 0 && (
+                                  <button
+                                    className="slim"
+                                    disabled={busy}
+                                    // Kept in place, unseen, while no folder has it: the pickers stay in line.
+                                    style={{
+                                      marginLeft: 4, minWidth: 34, padding: '0 4px',
+                                      visibility: o.folders.some(f => f.skills.includes(s.name)) ? undefined : 'hidden'
+                                    }}
+                                    title={
+                                      s.foldersOnly
+                                        ? 'And: only these accounts, and only in the folders it is ticked in — into none of them as a whole.\nClick for or.'
+                                        : 'Or: into these accounts everywhere, and into every account’s sessions in the folders it is ticked in.\nClick for and.'
+                                    }
+                                    onClick={() => act(librarySetFoldersOnly(s.name, !s.foldersOnly))}
+                                  >
+                                    {s.foldersOnly ? 'and' : 'or'}
+                                  </button>
+                                )}
+                                <CellDot places={mine.filter(p => p.target.kind === 'account')} />
+                              </td>
+                              {o.folders.map((f, i) => (
+                                <td key={f.path} className="cell">
+                                  <FolderTick id={`lib-${s.name}-folder-${i}`} skill={s.name} folder={f} busy={busy} act={act} />
+                                  <CellDot places={mine.filter(p => p.target.kind === 'folder' && p.target.path === f.path)} />
+                                </td>
+                              ))}
+                              <td className="cell">
+                                <span style={{ display: 'inline-flex', gap: 2 }}>
+                                  <ToolButton icon="pencil" size={22} title={`Edit ${s.name}'s SKILL.md`} onClick={() => setEditing({ skill: s.name })} />
+                                  <ToolButton icon="folder" size={22} title={`Open ${s.name}'s folder — for the files beside SKILL.md`} onClick={() => void libraryOpen(s.name)} />
+                                  <ToolButton icon="trash" size={22} danger title={`Take ${s.name} out of the library — asks first`} onClick={() => setDeleting({ skill: s.name })} />
+                                </span>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
                 )}
                 <div style={{ display: 'flex', gap: 4, marginTop: 6 }}>
                   <input
