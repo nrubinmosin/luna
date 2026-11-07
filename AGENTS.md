@@ -52,7 +52,7 @@ Rules for anyone (person or agent) changing Luna.
 - Match the surrounding code: its comment density (comments say why), naming
   and idioms. Comments describe what is there now, not what used to be.
 - Cross-platform: Windows is home, but nothing may assume it — gate
-  Windows-only behaviour and defaults (e.g. `defaultShell: powershell`).
+  Windows-only behavior and defaults (e.g. `defaultShell: powershell`).
 - Everything in the repo is in US English: code, comments, UI strings, docs.
   Enforced by `pnpm check:text`.
 
@@ -60,7 +60,7 @@ Rules for anyone (person or agent) changing Luna.
 Luna runs Claude Code and Codex side by side, and what one CLI does to a
 session the other usually has its own way of doing.
 - A problem found, or an improvement made, for one CLI is checked for the
-  other: does it have the same behaviour (an exit dialog, a prompt, a cleanup,
+  other: does it have the same behavior (an exit dialog, a prompt, a cleanup,
   a flag it refuses), and does Luna handle it there too? Look at the other
   CLI's actual binary or docs, not at what it is assumed to do.
 - What the check finds goes into the plan (see "Plan first"): what each CLI

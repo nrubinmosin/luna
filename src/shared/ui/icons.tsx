@@ -3,7 +3,7 @@ import { useId, type CSSProperties, type ReactNode } from 'react';
 /**
  * Luna's toolbar icons, all drawn to one brief so they read as a set: a 16px
  * grid, a dark outline one shade below the fill, a top-lit gradient, and the
- * colour carrying the meaning the way XP's own icons did — green to make,
+ * color carrying the meaning the way XP's own icons did — green to make,
  * red to stop, blue to arrange, yellow to edit. Unicode glyphs (↺ ✕ ⚙ «) stood
  * here before and came out at four different sizes in four different fonts.
  *
@@ -313,7 +313,7 @@ function draw(name: IconName, p: string): ReactNode {
           opacity=".7"
         />
       );
-    // The provider marks are drawn in the colour of the text around them:
+    // The provider marks are drawn in the color of the text around them:
     // they say which CLI, and should not pull the eye any more than its name.
     case 'claude': {
       // Claude: a starburst.

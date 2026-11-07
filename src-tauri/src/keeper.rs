@@ -162,7 +162,7 @@ mod os {
 
     /// To that process and no other: a pidfd stays with a process whatever
     /// becomes of its number, so what is read after opening one is what will
-    /// be signalled.
+    /// be signaled.
     pub fn signal(p: &Proc, which: i32) {
         // SAFETY: plain system calls; the descriptor opened here is closed here,
         // and a null siginfo is what a plain signal takes.
@@ -443,7 +443,7 @@ fn tree(all: &[Proc], root: i32, me: i32, child_of: Option<i32>) -> Vec<&Proc> {
 /// Ends all that `look` finds. Each is stopped first, from the top down, and
 /// looked below again, as a process killed outright would leave what it forked
 /// that moment with another parent and out of the walk. Each signal goes to the
-/// process looked at and no other (`os::signal`), so no group is signalled by its
+/// process looked at and no other (`os::signal`), so no group is signaled by its
 /// number, which may be another's by the time it arrives. A signal sent is not a
 /// process stopped: one may yet finish the fork it is in the middle of, so a look
 /// that finds nothing new counts only if all were still by the time it began.

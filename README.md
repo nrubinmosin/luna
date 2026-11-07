@@ -27,7 +27,7 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   layouts, the window groups, Even out, Clear and the theme. A hidden sidebar takes
   no room at all: resting the pointer at the window's left edge slides it out over the
   board until the pointer leaves, and the title bar's button pins it back.
-- Only the pane you are working in wears its full colour; the others go pale, the way XP
+- Only the pane you are working in wears its full color; the others go pale, the way XP
   drew inactive windows. A chat waiting for you flashes its title bar orange like an XP
   taskbar button, and over a pane you are not in a balloon says so.
 - A grid of 1/2/3/4 panes with draggable splits (Ctrl+Shift+1..4 picks the layout).
@@ -74,7 +74,7 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   name and its fullest window. There is no clock — the taskbar has one.
 - Light / dark / system themes, toned for reading all day: no pure black or white and no
   blue cast in any surface, surfaces stepped apart by lightness, the terminal the deepest
-  of them, ANSI colours softened but at 4.5:1 or better. Light is XP's own warm beige
+  of them, ANSI colors softened but at 4.5:1 or better. Light is XP's own warm beige
   under its blue title bars, on warm paper; dark is neutral graphite.
 
 ![The dark theme, two panes](docs/screenshots/dark.png)
@@ -97,7 +97,7 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   - **Claude Code**: model (a drop-down), effort (`low/medium/high/xhigh/max/ultracode`)
     and permission mode. Isolation runs the session as `claude --worktree` in
     `<folder>/.claude/worktrees/<name>`, on a `worktree-<name>` branch.
-  - **Codex**: model — a drop-down off Codex's own catalogue, in Codex's order: the list
+  - **Codex**: model — a drop-down off Codex's own catalog, in Codex's order: the list
     it caches for the account (`models_cache.json`), another account's when this one has
     never run, or `codex debug models` asked directly — never a box to type a slug into.
     The model a chat gets when nothing is changed is named and marked "· default": the
@@ -124,13 +124,13 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
 - Ctrl+Shift+N skips the dialog: same folder and account as the chat on screen, the rest
   as the settings have it, the two checkboxes as the folder starts them. Either way the new chat lands in a pane you can see — a free
   one, or the pane you were last working in when the board is full.
-- A chat's pane title bar starts with the buttons to recolour, rename, delete, peek it or
+- A chat's pane title bar starts with the buttons to recolor, rename, delete, peek it or
   take it off the board — on the left, where the hand gets first — and then its name and,
   as separate chips, folder, account, model and effort, the permission mode (Claude Code)
   or approval and sandbox (Codex), the worktree flag, and how much of the context window
   is gone, as a meter and as a number. A narrow pane drops the chips one by one before
   the name and the buttons.
-- Colours: every new chat is dealt one of ten presets, worn by its pane's title bar and as
+- Colors: every new chat is dealt one of ten presets, worn by its pane's title bar and as
   a stripe on its sidebar row, so a glance links the two without reading either name.
 - Status per chat — working / waiting for you / resting — read from the CLI's own session
   registry, so it is right whether or not the chat has a pane. A chat turning to waiting
@@ -237,7 +237,7 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   and every chat on it, the agents' list and the settings parent follow — not while a
   chat or a background helper on it is running. Its settings file opens in an editor too (`settings.json` for
   Claude Code, `config.toml` for Codex; also from the recommended settings), with syntax
-  colours and line numbers. It is checked as it is typed — the line that breaks it is
+  colors and line numbers. It is checked as it is typed — the line that breaks it is
   marked — written only once it parses, and laid out on save the way the CLI writes it
   (JSON indented by two, TOML by taplo's rules), comments and key order kept; Ctrl+S
   saves.

@@ -26,7 +26,7 @@ import { useDialogHost } from '../../shared/ui/dialogHost';
 import { Icon } from '../../shared/ui/icons';
 import { PROVIDER_LABEL, type Account, type Provider } from '../../shared/types';
 
-/** Colours from the theme's tokens, so light and dark need nothing of their own. */
+/** Colors from the theme's tokens, so light and dark need nothing of their own. */
 export const highlight = HighlightStyle.define([
   { tag: [tags.propertyName, tags.definition(tags.propertyName), tags.variableName], color: 'var(--code-key)' },
   { tag: [tags.string, tags.special(tags.string)], color: 'var(--code-string)' },

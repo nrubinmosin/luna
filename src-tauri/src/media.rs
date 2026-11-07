@@ -66,7 +66,7 @@ pub fn save_media(chat_id: String, name: String, data: String) -> Result<String,
 /// both are needed: age catches the chat nobody ever deletes, size catches an
 /// afternoon of pasting full-screen grabs into one that is still open — a
 /// single 4K screenshot runs to a couple of megabytes, and the age limit would
-/// let a fortnight of them pile up untouched.
+/// let two weeks of them pile up untouched.
 const KEEP_DAYS: u64 = 14;
 const MAX_BYTES: u64 = 256 * 1024 * 1024;
 
@@ -148,8 +148,8 @@ pub fn prune_periodically() {
 }
 
 /// Attachments used to go under `LOCALAPPDATA\luna` whatever the data dir.
-/// The CLI read each one when its prompt went, and none lives past a
-/// fortnight, so the ones still there are removed rather than moved — along
+/// The CLI read each one when its prompt went, and none lives past two
+/// weeks, so the ones still there are removed rather than moved — along
 /// with the folder, if nothing else is in it. Not when that folder is the
 /// data dir itself, as it is for an installed Luna.
 fn drop_old_root() {

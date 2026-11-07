@@ -130,7 +130,7 @@ export function OrphanSessions() {
         <span style={{ color: 'var(--dim)', textDecoration: 'underline' }}>show</span>
       </div>
 
-      {/* Portalled: the sidebar slides away under the pointer, and a dialog
+      {/* Portaled: the sidebar slides away under the pointer, and a dialog
           left inside it would slide away too. */}
       {open &&
         host &&

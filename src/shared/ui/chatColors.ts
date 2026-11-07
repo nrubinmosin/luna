@@ -1,9 +1,9 @@
 /**
- * Preset accent colours a chat can be pinned to. The pane title bar wears the
- * colour as a Luna-style gloss and the sidebar row shows a stripe of it, so a
+ * Preset accent colors a chat can be pinned to. The pane title bar wears the
+ * color as a Luna-style gloss and the sidebar row shows a stripe of it, so a
  * glance links the two without reading either name.
  *
- * Muted on purpose — moss, olive, slate, clay rather than signal colours: a
+ * Muted on purpose — moss, olive, slate, clay rather than signal colors: a
  * title bar is looked at all day, and only the waiting flash should shout.
  * Hand-picked per preset, low in saturation and dark enough for white title
  * text on every one. The keys are what chats store, so they stay as they were.
@@ -30,8 +30,8 @@ export const CHAT_COLORS: ChatColor[] = [
 ];
 
 /**
- * A random colour for a newborn chat, dodging the ones already worn in its
- * group. Only once the whole palette is worn does chance run free; a colour
+ * A random color for a newborn chat, dodging the ones already worn in its
+ * group. Only once the whole palette is worn does chance run free; a color
  * freed by a deleted chat is simply back in the pool next time.
  */
 export const pickChatColor = (worn: Array<string | null | undefined>): string => {
@@ -43,7 +43,7 @@ export const pickChatColor = (worn: Array<string | null | undefined>): string =>
 };
 
 export interface ChatColorTheme {
-  /** The colour itself: the pane title bar mixes its gloss from it (theme.css),
+  /** The color itself: the pane title bar mixes its gloss from it (theme.css),
    *  the sidebar row wears it as a stripe, the picker as a swatch. */
   swatch: string;
 }

@@ -24,7 +24,7 @@ know the words "permission mode" and "Fable", Claude does not know "sandbox" and
 src/                          frontend (feature-sliced)
   app/        App (sidebar dock: pinned or slides out on hover), AppFrame + BoardTools
               (layouts, groups, Even out, Clear, theme — in the window title bar), shell.store
-              (theme, sidebar pin and width), theme.css (light/dark tokens, code colours
+              (theme, sidebar pin and width), theme.css (light/dark tokens, code colors
               --code-key/--code-string/--code-literal, and all controls),
               keymap: Ctrl+N / Ctrl+Shift+N, Ctrl+1..4 (focus pane), Alt+1..4 (peek),
               Ctrl+Shift+W (next waiting), Ctrl+Shift+B (sidebar), Ctrl+Tab (next group),
@@ -166,13 +166,13 @@ src-tauri/src/
     config.rs   config.toml via toml_edit (comments and formatting kept), seed; a read for a
                 write looks again at a file caught blank, cut short or held open, and one that
                 will not parse is an error, never an empty document written back
-    models.rs   model catalogue, sorted by priority, with per-level descriptions
+    models.rs   model catalog, sorted by priority, with per-level descriptions
                 (effort_hints): the account's models_cache.json → another Codex account's →
                 `codex debug models` → `codex debug models --bundled`; models_known — without
                 running the CLI, models_for — with the CLI fallbacks
     defaults.rs model / model_reasoning_effort / approval_policy / sandbox_mode from
                 the account's config.toml, then the project's .codex/config.toml (trusted only);
-                no model there = first model of the catalogue (source codex), no effort =
+                no model there = first model of the catalog (source codex), no effort =
                 that model's default_reasoning_level
     limits.rs   chatgpt.com/backend-api/wham/usage via auth.json; fallback — rate_limits
                 from the last token_count in the rollout
@@ -280,7 +280,7 @@ src-tauri/src/
   session — `claude/defaults.rs` and `codex/defaults.rs` read them themselves and put them into the dialog, so
   by default the flags match the files, and a divergence happens only where it was asked for
   by hand. Codex always gets `--model`: `codex_defaults` resolves it as config.toml's `model` or else
-  the first model of Codex's catalogue (sorted by `priority`; source `codex`), and the effort as
+  the first model of Codex's catalog (sorted by `priority`; source `codex`), and the effort as
   config.toml's `model_reasoning_effort` or else that model's `default_reasoning_level`. Picking
   another model in the dialog moves the effort to that model's default, unless the effort came from
   a settings file or was picked by hand (`draft.follow`). What Codex actually ran is read from the
@@ -324,7 +324,7 @@ src-tauri/src/
   with the first turn: a session sitting on the start-up popup has no file at all.
 - **Worktrees are the CLIs'.** Each CLI makes its own from `--worktree`; Luna never makes one, it
   only finds them again — to remove one with its chat, or sweep the ones no chat claims. Claude Code's
-  live under `<folder>/.claude/worktrees` on a `worktree-*` branch; Codex's are recognised by shape
+  live under `<folder>/.claude/worktrees` on a `worktree-*` branch; Codex's are recognized by shape
   `…/worktrees/<4 hex>/<name>` plus a `.git` file (`gitdir: <repo>/.git/worktrees/<id>`) pointing back at
   the folder (`worktree::is_worktree_of`, `project_of`); every destructive path is gated on this. `project_of` goes by that
   `.git` file for Claude Code's too, its path's shape saying only where to look: a folder under a worktree is of it if no
@@ -357,7 +357,7 @@ src-tauri/src/
   `codex/limits.rs` reads `tokens.access_token`/`account_id` from `<account>/auth.json` (email and
   plan — from the `id_token` claims) and calls `chatgpt.com/backend-api/wham/usage` — the same as
   `/status` inside Codex; the `primary`/`secondary` windows plus `additional_rate_limits` are returned as a
-  labelled list (300 min → "5 hours", 10080 → "week"). If there is no network or token — the last
+  labeled list (300 min → "5 hours", 10080 → "week"). If there is no network or token — the last
   `token_count.rate_limits` from the rollout. The frontend polls every 60s; ↻ in the account row asks at once,
   past the CLI's fresh cache and the cool-off. The cool-off after a 429 is shared (`throttle.rs`).
 - **Claude token refresh.** An access token lives ~8 h, and an account that has not been opened for a while
@@ -488,7 +488,7 @@ src-tauri/src/
   and one done with its task stays open, asleep until it is written to, and is not. The set so read
   replaces the last (`agents_on_disk`), holds the machine and counts as the chat's job as Claude Code's
   do, and the 15 s rule, which is Claude Code's, takes none of it. Only threads begun since the process
-  was spawned are looked at, in every day's folder since (a fortnight at most): not one of an earlier run
+  was spawned are looked at, in every day's folder since (two weeks at most): not one of an earlier run
   woken again, nor the subagents of a thread the TUI has left (`/new`, `/resume`). Not a background
   helper's: `codex exec` follows its own thread only, and its subagents go with it when that turn ends.
 - **A turn that ended on a question** (`asking.rs`) is waiting for the eye only: `session_meta` reads
@@ -555,7 +555,7 @@ src-tauri/src/
   `--` (Claude Code's `--mcp-config` takes any number of files and swallowed the prompt as one more),
   and answers `agent_spawned`; the core waits on a Condvar up to 90 s, and then up to 30 s more — until the
   session takes up the prompt (`started`); if it did not, the answer carries `screen`, and if the screen is still
-  empty — `starting`: before its first draw Claude Code syncs the organisation's skills/plugins and
+  empty — `starting`: before its first draw Claude Code syncs the organization's skills/plugins and
   makes the worktree, and that can take minutes; a chat's CLI started again after a restart is as blank, however far
   its count has gone (`still_starting` goes by this process's turns), and for its first minute a notice also waits for
   its prompt (`drawn_for_notice`). The prompt meanwhile sits in the CLI's arguments, and anything typed into the pty
@@ -579,7 +579,7 @@ src-tauri/src/
   40 lines of what a person sees in the pane — a popup, an error, a question, which the transcript does
   not have; `read(screen: true)` returns it on request, `wait` — on `timeout` and `waiting`, unless told `screen: false`. `list` and
   `spawn` return `settings` — the flags the session actually runs with; for Codex `list`'s `flags` take
-  the model catalogue from `models_known` (no CLI run). Rights: only
+  the model catalog from `models_known` (no CLI run). Rights: only
   the caller's descendants — except `sessions` (all sessions of this Luna launch: account and its folder,
   chat folder, cwd, the CLI's sessionId, path to the transcript/rollout, pid; the frontend sends chat names
   as `chat_names` on every change), `send`, which writes into any of them except its own, and
@@ -745,7 +745,7 @@ src-tauri/src/
   arrives as a task-notification. A notification for such a pair waits, and if the `wait` has still not delivered
   the answer 10 s after it appeared (the client dropped the call), it goes out by itself. A `wait` its
   caller lets go hands nothing over and leaves the debt for the notice: a `notifications/cancelled` for its
-  request (a cancelled request gets no response), the caller's session gone, or — a Codex caller, held
+  request (a canceled request gets no response), the caller's session gone, or — a Codex caller, held
   in the call for as long as it lasts — the turn that made the call over (an interrupt) with no other
   begun, for 8 s on end (`let_go`, `LET_GO_MS`: a sample published late shows the turn before over);
   while that is unsure nothing is handed over. Each tool call in flight has an `mcp::Call` whose fate
@@ -757,12 +757,12 @@ src-tauri/src/
   **What `spawn` says beyond the flags.** An unknown slash command: Claude Code writes `Unknown
   command: /x` and starts no turn — `await_start` sees the line on screen and answers `started:
   false` at once, not after 30 s. `warnings` — screen lines with ⚠ (a model forbidden by the
-  organisation, and what replaced it: `settings` do not know that). `sameFolder` — live sessions
+  organization, and what replaced it: `settings` do not know that). `sameFolder` — live sessions
   whose cwd (per the CLI's registry) matches the helper's folder, except the caller itself; a helper in
   its own worktree does not get them.
   **Accounts in `list`.** Only when asked: `ids` narrows `list` to those rows, of any session, and takes the
   accounts off unless `accounts: true`, what a bare call pays for most. `defaults` — `claude::defaults::flags` / `codex::defaults::flags` for
-  the caller's folder: the core does the normalisation and stock values (`source: stock`), the frontend
+  the caller's folder: the core does the normalization and stock values (`source: stock`), the frontend
   only turns them into its labels, so the dialog, spawn and `list` say the same thing. `usage` —
   what the frontend shows in the Accounts window, sent as `account_usage` on every change:
   the core does not go to the limits endpoints itself.
@@ -883,7 +883,7 @@ src-tauri/src/
   chat not opened by then gets no notice. The text queued behind a stopped turn stays with the helper,
   each piece with its sender (`Queued`, `Entry::undelivered`, saved too), never run: only that sender
   hears of it (what no session sent, its parent). Its notice counts it and the answer file ends on it,
-  labelled, word for word, or holds only it if there is no reply (`undelivered_text`); `read` and
+  labeled, word for word, or holds only it if there is no reply (`undelivered_text`); `read` and
   `wait` name it as `undelivered`, and taking it off is part of `hand_over`, so a cancel crossing the
   response puts it back with the debt. A helper deleted or opened as a chat first leaves what is left
   in a file the log names (`undelivered_left`). `luna_kill` still drops the queue: that is the agent's
@@ -1069,7 +1069,7 @@ src-tauri/src/
   top-level chats. `test-build.ps1 -Run -DevCaller` sets them itself.
 - **New-chat dialog.** The model is picked from a drop-down (`ModelSelect`, a native `<select>`) for
   both providers; the model the files (or the CLI) would pick is marked "· default". Codex's list is the
-  catalogue in `priority` order, its effort levels carry the catalogue's descriptions (`effort_hints`) as
+  catalog in `priority` order, its effort levels carry the catalog's descriptions (`effort_hints`) as
   tooltips. Codex's approval and sandbox are two radio columns; `auto-review` holds the sandbox at
   workspace-write. The pane title bar shows a `bypass` chip for never + danger-full-access and an
   `auto-review` one for that. Its folder list is the `picked` folders: where a person launched a chat,
@@ -1206,7 +1206,7 @@ src-tauri/src/
   instructions file serves both CLIs; a Codex account's `AGENTS.override.md`, which
   Codex reads instead of `AGENTS.md`, is reported.
 - **The hand editor** (`ConfigEditor.tsx`) is CodeMirror 6 — JSON via `@codemirror/lang-json`, TOML via
-  `@codemirror/legacy-modes` — with line numbers and colours from theme tokens
+  `@codemirror/legacy-modes` — with line numbers and colors from theme tokens
   (`--code-key/--code-string/--code-literal`). The core checks problems as you type
   (`check_account_config`, with line/column) and lays the file out on save and on the Format button
   (`format_account_config`: JSON pretty with 2 spaces, TOML via the `taplo` crate, comments and key

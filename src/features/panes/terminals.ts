@@ -61,7 +61,7 @@ export const safely = (fn: () => void) => {
 
 // A transparent background makes the webgl renderer blend every glyph against
 // the pane, which is what washed the text out. Paint an opaque background that
-// matches --term instead, and ship a full 16-colour ANSI ramp — without one
+// matches --term instead, and ship a full 16-color ANSI ramp — without one
 // xterm falls back to its stock palette. Both ramps are the same hues at one
 // lightness each, low in chroma: readable at 4.5:1 or better, never neon.
 export const themeFor = (isDark: boolean) =>
@@ -242,7 +242,7 @@ function create(spec: TermSpec): Entry {
     // including the CLI's own UI. Keep a buffer for those stretches; the
     // alternate screen is pinned to the bottom below.
     scrollback: 1000,
-    // Nudge unreadable theme-vs-content combinations without flattening colours.
+    // Nudge unreadable theme-vs-content combinations without flattening colors.
     minimumContrastRatio: 3,
     theme: themeFor(dark()),
     // The CLIs print OSC 8 links. xterm's stock handler asks `confirm()`

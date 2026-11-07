@@ -282,7 +282,7 @@ pub fn tick(summary: &Summary) {
                 }
             }
             Effect::Cancelled => {
-                crate::log::warn("power", &format!("countdown cancelled: {} busy, {} waiting", summary.busy, summary.waiting));
+                crate::log::warn("power", &format!("countdown canceled: {} busy, {} waiting", summary.busy, summary.waiting));
             }
             Effect::Countdown { quiet_for_s } => {
                 let a = action.unwrap_or(Action::Log);

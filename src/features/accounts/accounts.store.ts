@@ -24,7 +24,7 @@ interface AccountsState {
   /** One account, now, past the CLI's cache and any 429 cool-off — the
    *  refresh button. Renews an expired token on the way. */
   refreshAccount: (account: Account) => Promise<void>;
-  /** Refreshes now and keeps refreshing, honouring the backoff between rounds. */
+  /** Refreshes now and keeps refreshing, honoring the backoff between rounds. */
   startPolling: () => void;
   stopPolling: () => void;
   add: (provider: Provider, name: string) => Promise<void>;

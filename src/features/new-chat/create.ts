@@ -1,6 +1,6 @@
 /**
  * Making a chat, in one place: the dialog and the no-dialog shortcut both come
- * through here, so they cannot drift on trust, naming, colour or placement.
+ * through here, so they cannot drift on trust, naming, color or placement.
  */
 import { codexHooksStart } from '../../ipc/commands';
 import type { Account, Chat, ClaudeSettings, CodexSettings } from '../../shared/types';
@@ -53,7 +53,7 @@ export async function createChat(spec: ChatSpec): Promise<string> {
     await p.trustFolder(accountPath, spec.folder);
   }
 
-  // Both CLIs make their own worktree from `--worktree`; its path is learnt
+  // Both CLIs make their own worktree from `--worktree`; its path is learned
   // from the session once it runs (useSessionWatch).
   const worktreePath: string | null = spec.inWorktree ?? null;
 

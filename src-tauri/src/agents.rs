@@ -2152,7 +2152,7 @@ pub struct AccountRow {
     /// the caller's folder: the flags as `spawn` echoes them.
     pub defaults: serde_json::Value,
     /// The models a helper may ask for here: Claude Code's aliases (a full
-    /// id works too), Codex's catalogue with each model's name and levels.
+    /// id works too), Codex's catalog with each model's name and levels.
     pub models: Vec<serde_json::Value>,
     /// Its usage as the window last showed it (see `account_usage`); none
     /// before the window has said.
@@ -4934,10 +4934,10 @@ pub fn read(
     let undelivered = undelivered_note(caller, id);
     if undelivered.is_some() && lost_whole(pty, caller, id) {
         // No answer is to come: this was all of it, and no notice is to say it again.
-        // Cancelled first, it and the debt are put back together.
+        // Canceled first, it and the debt are put back together.
         call.commit(hand_over(caller, id, lost_count(caller, id), None));
     } else if settles || (undelivered.is_some() && owed.is_none()) {
-        // Cancelled first, it is put back; the response goes nowhere anyway.
+        // Canceled first, it is put back; the response goes nowhere anyway.
         call.commit(hand_over(caller, id, turns_ended, None));
     } else {
         seen(caller, id, turns_ended);
@@ -5047,7 +5047,7 @@ pub struct Waited {
 /// the turn stopped on a prompt, which nothing but an answer moves on, or,
 /// told it is not done, the job it left running ended, outcome `job_done`);
 /// `waiting` — it stopped for a permission; `exit` — the process ended.
-/// A wait its caller let go (`call` cancelled, or see `let_go`) returns an
+/// A wait its caller let go (`call` canceled, or see `let_go`) returns an
 /// error and hands nothing over: the answer stays owed, for the notice.
 pub fn wait(
     caller: &str,
@@ -6267,7 +6267,7 @@ fn put_undelivered_back(id: &str, taken: Undelivered) {
 }
 
 /// What never reached a helper (`undelivered_for`), as its answer file ends on
-/// it: labelled so that it is not read as anything the helper said.
+/// it: labeled so that it is not read as anything the helper said.
 fn undelivered_text(lost: &[String]) -> String {
     let mut text = format!(
         "NOT DELIVERED: {} meant for this helper when Luna's core stopped its turn or its CLI went. It never acted on them unless marked; send again what still matters. \
@@ -8843,7 +8843,7 @@ mod tests {
         call.cancel();
         assert!(owed_to(&caller, &done), "dropped unread: owed again");
 
-        // Another call collects it during the wait, which is then cancelled:
+        // Another call collects it during the wait, which is then canceled:
         // nothing comes back, as nothing was the wait's to take.
         let cancelled = std::sync::Arc::new(crate::mcp::Call::new());
         let waiting = {

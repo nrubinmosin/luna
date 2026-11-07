@@ -8,11 +8,11 @@
 //! The list is always Codex's own, from wherever it can be had soonest:
 //! 1. `<CODEX_HOME>/models_cache.json`, which the CLI keeps up to date
 //!    whenever it runs on the account;
-//! 2. the same file of another Codex account — the catalogue is the CLI's, not
+//! 2. the same file of another Codex account — the catalog is the CLI's, not
 //!    the account's — for an account that has never run;
-//! 3. `codex debug models` on the account, which fetches the catalogue and
+//! 3. `codex debug models` on the account, which fetches the catalog and
 //!    refreshes the cache file as it does;
-//! 4. `codex debug models --bundled`, the catalogue built into the binary,
+//! 4. `codex debug models --bundled`, the catalog built into the binary,
 //!    for when there is no network.
 
 use serde::Serialize;
@@ -35,7 +35,7 @@ pub struct CodexModel {
     pub effort_hints: BTreeMap<String, String>,
 }
 
-/// The catalogue JSON as both the cache file and `debug models` write it.
+/// The catalog JSON as both the cache file and `debug models` write it.
 fn parse(text: &str) -> Vec<CodexModel> {
     // `debug models` may print a warning ahead of the JSON.
     let Some(start) = text.find('{') else { return vec![] };
@@ -61,7 +61,7 @@ fn parse(text: &str) -> Vec<CodexModel> {
             Some((m["priority"].as_i64().unwrap_or(i64::MAX), model))
         })
         .collect();
-    // Stable, so models of equal priority keep the catalogue's order.
+    // Stable, so models of equal priority keep the catalog's order.
     listed.sort_by_key(|(priority, _)| *priority);
     listed.into_iter().map(|(_, m)| m).collect()
 }
@@ -148,7 +148,7 @@ pub fn models_known(account_path: &str) -> Vec<CodexModel> {
 
 /// One CLI ask at a time: the new-chat dialog wants the list for its model
 /// buttons and for its defaults at the same moment, and two `codex debug
-/// models` would fetch the same catalogue twice. The one that waited finds
+/// models` would fetch the same catalog twice. The one that waited finds
 /// the answer the first left behind.
 fn asking() -> &'static Mutex<()> {
     static A: OnceLock<Mutex<()>> = OnceLock::new();

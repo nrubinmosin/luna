@@ -4,7 +4,7 @@ The mark, the wordmark and every app icon the project ships or may ship, in
 source (SVG) and rendered form. Whatever a platform needs is taken from
 here; nothing under `src-tauri/icons` is hand-made.
 
-## Colours
+## Colors
 
 | Name      | Hex       | Where                                   |
 | --------- | --------- | --------------------------------------- |
