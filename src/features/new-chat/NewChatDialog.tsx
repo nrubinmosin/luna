@@ -9,7 +9,7 @@ import { startFor, useNewChat } from './newchat.store';
 import { createChat } from './create';
 import { useSettingsDraft, type Draft } from './draft';
 import { pickFolder } from '../../ipc/cli';
-import { codexHooksStart, keepCodexHooks, type CodexHooksStart } from '../../ipc/worktrees';
+import { codexHooksStart, keepCodexHooks, type CodexHooksStart } from '../../ipc/trust';
 import { Icon } from '../../shared/ui/icons';
 import { AccountPicker } from './AccountPicker';
 

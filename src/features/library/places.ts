@@ -1,18 +1,7 @@
 import type { PlaceDto, Reach } from '../../ipc/library';
 import { PROVIDER_LABEL, type Provider } from '../../shared/types';
 
-export const RED = 'oklch(.58 .2 25)';
-export const GREEN = 'oklch(.64 .18 145)';
-
-export const baseName = (path: string) =>
-  path
-    .replace(/[\\/]+$/, '')
-    .split(/[\\/]/)
-    .pop() || path;
-
-/** The window's width with one folder, and what each further folder's column adds: the names keep their room. */
-export const WINDOW_WIDTH = 760;
-export const FOLDER_WIDTH = 130;
+// Which accounts a reach takes in, and what a copy's place says of it.
 
 export const what = (p: PlaceDto) => p.skill ?? (p.instructions ? `${p.instructions} instructions` : 'Instructions');
 

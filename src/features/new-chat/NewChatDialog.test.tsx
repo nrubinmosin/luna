@@ -18,10 +18,7 @@ vi.mock('../../ipc/defaults', async importOriginal => ({
 vi.mock('../../ipc/trust', async importOriginal => ({
   ...(await importOriginal<typeof import('../../ipc/trust')>()),
   claudeFolderTrusted: vi.fn(() => Promise.resolve(true)),
-  codexFolderTrusted: vi.fn(() => Promise.resolve(true))
-}));
-vi.mock('../../ipc/worktrees', async importOriginal => ({
-  ...(await importOriginal<typeof import('../../ipc/worktrees')>()),
+  codexFolderTrusted: vi.fn(() => Promise.resolve(true)),
   codexHooksStart: vi.fn(() => Promise.resolve({ default: false, kept: null }))
 }));
 

@@ -2,7 +2,7 @@
  * Making a chat, in one place: the dialog and the no-dialog shortcut both come
  * through here, so they cannot drift on trust, naming, color or placement.
  */
-import { codexHooksStart } from '../../ipc/worktrees';
+import { codexHooksStart } from '../../ipc/trust';
 import type { Account, Chat, ClaudeSettings, CodexSettings } from '../../shared/types';
 import { pickChatColor } from '../../shared/ui/chatColors';
 import { newId, useChats, wornColors } from '../chats/chats.store';

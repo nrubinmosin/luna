@@ -1,7 +1,7 @@
 import { librarySetFolderSkill, type LibraryFolderDto, type LibraryOverviewDto } from '../../ipc/library';
 import { PROVIDER_LABEL, type Provider } from '../../shared/types';
 import { Tick } from './cells';
-import { accountKey, how, type AccountRef } from './common';
+import { accountKey, how, type AccountRef } from './places';
 import { ReachPicker } from './ReachPicker';
 
 /**

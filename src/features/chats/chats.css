@@ -234,22 +234,6 @@
 [data-app] .chat-row[data-active="yes"] .row-tag {
   color: #ffc27a;
 }
-/* An unsent draft in the chat's composer, and the messages Luna holds for it
-   (drafts.store.ts): on the pane's title bar, a pill the bar's color shows
-   through. */
-[data-app] .pane-tag {
-  flex: none;
-  margin-right: 6px;
-  padding: 0 5px;
-  border-radius: 3px;
-  background: rgba(0, 0, 0, 0.28);
-  color: #fff;
-  font-size: var(--fs-1);
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  white-space: nowrap;
-}
 /* The helpers a chat spawned: a count to unfold, shaped like the folders'
    own fold button. */
 [data-app] .chat-row .kids {
@@ -285,45 +269,9 @@
   border-color: rgba(255, 255, 255, 0.45);
   color: #fff;
 }
-/* The same count on the title bar of the chat's pane, in the bar's own chip
-   glass rather than the list's card. */
-[data-app] .pane-bar .kids {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  height: 18px;
-  padding: 0 7px 0 5px;
-  border-radius: 9px;
-  background: rgba(0, 0, 0, 0.24);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16);
-  color: #fff;
-  font: 700 var(--fs-2) var(--sans-serif);
-  font-variant-numeric: tabular-nums;
-  text-shadow: none;
-  cursor: default;
-}
-[data-app] .pane-bar .kids:hover {
-  background: rgba(0, 0, 0, 0.34);
-}
-[data-app] .pane-bar .kids[data-asking="yes"] {
-  box-shadow: inset 0 0 0 1.5px var(--wait);
-}
-[data-app][data-theme="dark"] .pane-bar .kids {
-  background: rgba(255, 255, 255, 0.07);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
-  color: var(--fg);
-}
-[data-app][data-theme="dark"] .pane-bar .kids:hover {
-  background: rgba(255, 255, 255, 0.14);
-}
-[data-app][data-theme="dark"] .pane-bar .kids[data-asking="yes"] {
-  box-shadow: inset 0 0 0 1.5px var(--wait);
-  color: var(--wait);
-}
-/* A helper just spawned: the chip glows a few times, so a start is seen. */
-[data-app] .chat-row .kids[data-new="yes"],
-[data-app] .pane-bar .kids[data-new="yes"] {
+/* A helper just spawned: the chip glows a few times, so a start is seen
+   (the pane's chip too, panes.css). */
+[data-app] .chat-row .kids[data-new="yes"] {
   animation: kids-new 1.2s ease-in-out 4;
 }
 @keyframes kids-new {

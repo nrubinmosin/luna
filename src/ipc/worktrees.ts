@@ -4,35 +4,6 @@ import { call } from './core';
 export const fetchBeforeWorktree = () => call<boolean>('fetch_before_worktree', {}, true);
 export const setFetchBeforeWorktree = (on: boolean) => call<boolean>('set_fetch_before_worktree', { on }, on);
 
-/** The text a last message ends on that makes its chat wait for the user. */
-export interface WaitingMarker {
-  on: boolean;
-  text: string;
-}
-export const waitingMarker = () => call<WaitingMarker>('waiting_marker', {}, { on: true, text: 'AWAITING OPERATOR' });
-export const setWaitingMarker = (on: boolean, text: string) =>
-  call<WaitingMarker>('set_waiting_marker', { on, text }, { on, text });
-/** A chat waiting by the marker is not waiting on you: cleared until a turn
- *  ends on the marker again. */
-export const dismissWaiting = (id: string, key: string) => call<void>('dismiss_waiting', { id, key });
-
-/** Whether Codex runs a folder's hooks without asking: the default in
- *  Settings and what was kept for the folder (codex/hooks.rs). */
-export interface CodexHooksStart {
-  default: boolean;
-  kept: boolean | null;
-}
-export const codexHooksStart = (folder: string) =>
-  call<CodexHooksStart>('codex_hooks_start', { folder }, { default: false, kept: null });
-export const setCodexHooksDefault = (on: boolean) => call<boolean>('set_codex_hooks_default', { on }, on);
-/** Folders whose projects Codex sessions start trusted on this machine
- *  (codex/trust.rs). */
-export const codexTrustedRoots = () => call<string[]>('codex_trusted_roots', {}, []);
-export const setCodexTrustedRoots = (roots: string[]) => call<string[]>('set_codex_trusted_roots', { roots }, roots);
-/** null hands the folder back to the default. */
-export const keepCodexHooks = (folder: string, on: boolean | null) =>
-  call<void>('keep_codex_hooks', { folder, on }, undefined);
-
 /**
  * Kills the session and cleans up after it in one call: the chat's attachments
  * always, its worktree and branch only when asked. Resolves the worktree

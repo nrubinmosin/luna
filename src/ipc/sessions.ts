@@ -157,3 +157,15 @@ export interface OrphanSessionDto {
 
 /** Sessions this app is running that no chat in the sidebar claims. */
 export const orphanSessions = (known: string[]) => call<OrphanSessionDto[]>('orphan_sessions', { known }, []);
+
+/** The text a last message ends on that makes its chat wait for the user. */
+export interface WaitingMarker {
+  on: boolean;
+  text: string;
+}
+export const waitingMarker = () => call<WaitingMarker>('waiting_marker', {}, { on: true, text: 'AWAITING OPERATOR' });
+export const setWaitingMarker = (on: boolean, text: string) =>
+  call<WaitingMarker>('set_waiting_marker', { on, text }, { on, text });
+/** A chat waiting by the marker is not waiting on you: cleared until a turn
+ *  ends on the marker again. */
+export const dismissWaiting = (id: string, key: string) => call<void>('dismiss_waiting', { id, key });

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { waitingMarker, setWaitingMarker, type WaitingMarker } from '../../../ipc/worktrees';
+import { waitingMarker, setWaitingMarker, type WaitingMarker } from '../../../ipc/sessions';
 import { Section } from '../../../shared/ui/Section';
 
 /** The text a chat's last message ends on when its turn waits for you, as a

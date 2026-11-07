@@ -2,7 +2,9 @@ import { useState, type ReactNode } from 'react';
 import type { LibraryTarget, PlaceDto } from '../../ipc/library';
 import { Icon, ToolButton } from '../../shared/ui/icons';
 import { PROVIDER_LABEL } from '../../shared/types';
-import { GREEN, RED, baseName, sayStatus } from './common';
+import { baseName } from './paths';
+import { sayStatus } from './places';
+import { GREEN, RED } from './presentation';
 import { needsLook } from './library.store';
 
 // The small pieces the library's rows and grids are built of.

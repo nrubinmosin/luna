@@ -10,7 +10,9 @@ import {
 import { Icon, ToolButton } from '../../shared/ui/icons';
 import { PROVIDERS, PROVIDER_LABEL } from '../../shared/types';
 import { CellDot, NameCell, Tick } from './cells';
-import { RED, accountKey, baseName, how, type AccountRef } from './common';
+import { baseName } from './paths';
+import { accountKey, how, type AccountRef } from './places';
+import { RED } from './presentation';
 import { ReachPicker } from './ReachPicker';
 
 /** A select's value for none at all, which no instructions' name can be (library.rs `check_name`). */

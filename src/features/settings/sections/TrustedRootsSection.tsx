@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { pickFolder } from '../../../ipc/cli';
-import { codexTrustedRoots, setCodexTrustedRoots } from '../../../ipc/worktrees';
+import { codexTrustedRoots, setCodexTrustedRoots } from '../../../ipc/trust';
 import { Section } from '../../../shared/ui/Section';
 
 /** The folders whose projects Codex sessions start trusted on this machine:

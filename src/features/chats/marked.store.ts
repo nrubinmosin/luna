@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { dismissWaiting } from '../../ipc/worktrees';
+import { dismissWaiting } from '../../ipc/sessions';
 import { useChats } from './chats.store';
 
 /**

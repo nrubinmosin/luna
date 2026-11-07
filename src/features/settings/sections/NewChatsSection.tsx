@@ -1,10 +1,6 @@
 import { useEffect, useState } from 'react';
-import {
-  fetchBeforeWorktree,
-  setFetchBeforeWorktree,
-  codexHooksStart,
-  setCodexHooksDefault
-} from '../../../ipc/worktrees';
+import { codexHooksStart, setCodexHooksDefault } from '../../../ipc/trust';
+import { fetchBeforeWorktree, setFetchBeforeWorktree } from '../../../ipc/worktrees';
 import { useNewChat } from '../../new-chat/newchat.store';
 import { Section } from '../../../shared/ui/Section';
 

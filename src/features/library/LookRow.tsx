@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { libraryResolve, librarySkip, type LibraryOverviewDto, type PlaceDto } from '../../ipc/library';
 import { TargetLabel } from './cells';
-import { RED, sayStatus, what } from './common';
+import { sayStatus, what } from './places';
+import { RED } from './presentation';
 import { DiffView } from './DiffView';
 
 /** One copy that waits on the user, with what can be done about it; `count`

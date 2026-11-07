@@ -7,7 +7,8 @@ import {
 } from '../../ipc/library';
 import { Icon, ToolButton } from '../../shared/ui/icons';
 import { CellDot, NameCell } from './cells';
-import { FOLDER_WIDTH, RED, baseName } from './common';
+import { baseName } from './paths';
+import { FOLDER_WIDTH, RED } from './presentation';
 import { FolderCell } from './FolderCell';
 import { ReachPicker } from './ReachPicker';
 
