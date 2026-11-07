@@ -89,9 +89,19 @@ pub enum HookEvent {
 /// adds later reads as `unknown` until it is listed here.
 pub fn api_error_kind(s: &str) -> &'static str {
     const KINDS: [&str; 13] = [
-        "authentication_failed", "oauth_org_not_allowed", "account_on_hold", "verification_required",
-        "billing_error", "rate_limit", "overloaded", "invalid_request", "model_not_found", "server_error",
-        "max_output_tokens", "cloud_credential_error", "unknown",
+        "authentication_failed",
+        "oauth_org_not_allowed",
+        "account_on_hold",
+        "verification_required",
+        "billing_error",
+        "rate_limit",
+        "overloaded",
+        "invalid_request",
+        "model_not_found",
+        "server_error",
+        "max_output_tokens",
+        "cloud_credential_error",
+        "unknown",
     ];
     KINDS.iter().copied().find(|k| *k == s).unwrap_or("unknown")
 }
@@ -386,9 +396,7 @@ fn state() -> &'static Mutex<State> {
 /// A session's track, made on first sight with the turn count it had when it
 /// last went away.
 fn track<'a>(tracks: &'a mut HashMap<String, Track>, ended: &mut HashMap<String, u32>, id: &str) -> &'a mut Track {
-    tracks
-        .entry(id.to_string())
-        .or_insert_with(|| Track { turns_ended: ended.remove(id).unwrap_or(0), ..Default::default() })
+    tracks.entry(id.to_string()).or_insert_with(|| Track { turns_ended: ended.remove(id).unwrap_or(0), ..Default::default() })
 }
 
 /// A session back between turns on the count it had, as the sampler has it once
@@ -689,7 +697,13 @@ fn combine(t: &mut Track, disk: Option<Turn>, now: u64) -> Turn {
 /// leftovers do (`procs::leftovers`): a loop's one busy sample is no work, and
 /// counted as moving it would start a power-off's quiet window over each time.
 /// One with no name has gone since the read.
-fn children_at(t: &mut Track, children: Vec<ProcRead>, born_after: u64, name_of: &dyn Fn(u32) -> Option<String>, now: u64) -> (Vec<String>, Vec<String>) {
+fn children_at(
+    t: &mut Track,
+    children: Vec<ProcRead>,
+    born_after: u64,
+    name_of: &dyn Fn(u32) -> Option<String>,
+    now: u64,
+) -> (Vec<String>, Vec<String>) {
     t.procs = procs::without_furniture(procs::judge(&t.prev, &children, born_after, MIN_CPU_MS, MIN_IO_BYTES));
     if let Some(b) = t.procs.as_mut() {
         let young = b.young.clone();
@@ -731,10 +745,8 @@ fn agents_at_work(t: &Track) -> Option<String> {
 /// Claude Code holds its turn until the hook's curl returns, so reads under
 /// the lock held up every busy session's next step for as long as they took.
 pub fn sample(probes: Vec<crate::pty::ActivityProbe>, helpers: Vec<SessionActivity>) -> Summary {
-    let reads: Vec<_> = probes
-        .iter()
-        .map(|p| (disk_turn(p), disk_turns_ended(p), procs::children(p.job.as_deref(), p.pid), disk_subagents(p)))
-        .collect();
+    let reads: Vec<_> =
+        probes.iter().map(|p| (disk_turn(p), disk_turns_ended(p), procs::children(p.job.as_deref(), p.pid), disk_subagents(p))).collect();
     // Every child's name, from one snapshot of the process table.
     let named = procs::names(&reads.iter().flat_map(|(_, _, children, _)| children.iter().map(|r| r.pid)).collect::<Vec<_>>());
     let name_of = |pid: u32| named.iter().find(|(p, _)| *p == pid).map(|(_, n)| n.clone());
@@ -842,7 +854,12 @@ pub fn sample(probes: Vec<crate::pty::ActivityProbe>, helpers: Vec<SessionActivi
     for (id, gone) in let_go {
         crate::log::warn(
             "power",
-            &format!("{}: no longer holds the PC by what its turns left, idle {} min on end: {}", crate::agents::label(&id), procs::LEFTOVER_HOLD_MS / 60_000, gone.join(", ")),
+            &format!(
+                "{}: no longer holds the PC by what its turns left, idle {} min on end: {}",
+                crate::agents::label(&id),
+                procs::LEFTOVER_HOLD_MS / 60_000,
+                gone.join(", ")
+            ),
         );
     }
     for ((s, p), ask) in sessions.iter_mut().zip(&probes).zip(later) {
@@ -964,9 +981,7 @@ mod tests {
 
     #[test]
     fn parses_hook_events() {
-        let ev = |name: &str, extra: &str| {
-            HookEvent::parse(&format!(r#"{{"session_id":"s","hook_event_name":"{name}"{extra}}}"#))
-        };
+        let ev = |name: &str, extra: &str| HookEvent::parse(&format!(r#"{{"session_id":"s","hook_event_name":"{name}"{extra}}}"#));
         assert_eq!(ev("UserPromptSubmit", ""), Some(HookEvent::Busy));
         assert_eq!(ev("PostToolUse", r#","tool_name":"Bash""#), Some(HookEvent::Busy));
         assert_eq!(ev("Stop", r#","stop_hook_active":false"#), Some(HookEvent::Idle));

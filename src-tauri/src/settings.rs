@@ -326,10 +326,7 @@ pub struct AccountsRootInfo {
 
 fn info() -> Result<AccountsRootInfo, String> {
     let s = get();
-    Ok(AccountsRootInfo {
-        path: crate::accounts::accounts_root()?.to_string_lossy().into_owned(),
-        is_default: s.accounts_root.is_none(),
-    })
+    Ok(AccountsRootInfo { path: crate::accounts::accounts_root()?.to_string_lossy().into_owned(), is_default: s.accounts_root.is_none() })
 }
 
 #[tauri::command]
@@ -384,7 +381,8 @@ mod tests {
 
     #[test]
     fn the_library_before_a_reach_reads_as_every_account() {
-        let old: Settings = serde_json::from_str(r#"{"library": {"instructions": true, "everywhere": ["review"], "skipped": ["x"]}}"#).unwrap();
+        let old: Settings =
+            serde_json::from_str(r#"{"library": {"instructions": true, "everywhere": ["review"], "skipped": ["x"]}}"#).unwrap();
         assert_eq!(old.library.instructions[FIRST_INSTRUCTIONS], vec!["all".to_string()]);
         assert_eq!(old.library.skills["review"], vec!["all".to_string()]);
         assert_eq!(old.library.skipped, vec!["x".to_string()]);

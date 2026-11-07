@@ -126,7 +126,12 @@ mod tests {
     /// The key a chat whose turn is over and ended on `said` at `at` reads
     /// waiting by, if it does.
     fn waits_at(chat_id: &str, said: &str, at: &str) -> Option<String> {
-        let mut meta = crate::pty::SessionMeta { status: Some("idle".into()), last_said: Some(said.into()), last_said_at: Some(at.into()), ..Default::default() };
+        let mut meta = crate::pty::SessionMeta {
+            status: Some("idle".into()),
+            last_said: Some(said.into()),
+            last_said_at: Some(at.into()),
+            ..Default::default()
+        };
         overlay_marked(chat_id, &mut meta, MARKER);
         assert_eq!(meta.marked.is_some(), meta.status.as_deref() == Some("waiting"));
         meta.marked
@@ -166,7 +171,15 @@ mod tests {
     #[test]
     fn only_the_users_own_chats_wait_on_them() {
         let (parent, helper) = ("ask-parent", "ask-helper");
-        crate::agents::register(helper, crate::provider::Provider::Claude, "C:/p", "C:/acc/anthropic/one", Some(parent), false, serde_json::json!({}));
+        crate::agents::register(
+            helper,
+            crate::provider::Provider::Claude,
+            "C:/p",
+            "C:/acc/anthropic/one",
+            Some(parent),
+            false,
+            serde_json::json!({}),
+        );
         assert!(!waits(helper, "Go?\nAWAITING OPERATOR"), "a helper asks its parent");
         // Nothing was shown, so there is nothing to clear.
         dismiss_waiting(helper.into(), String::new());

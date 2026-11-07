@@ -16,13 +16,7 @@ const MAX_NAME: usize = 120;
 fn sanitize(raw: &str) -> String {
     let cleaned: String = raw
         .chars()
-        .map(|c| {
-            if c.is_control() || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') {
-                '_'
-            } else {
-                c
-            }
-        })
+        .map(|c| if c.is_control() || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') { '_' } else { c })
         .collect();
     let trimmed = cleaned.trim().trim_matches('.').to_string();
     if trimmed.is_empty() {
@@ -52,10 +46,7 @@ pub fn save_media(chat_id: String, name: String, data: String) -> Result<String,
     let dir = media_root(&chat_id);
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
+    let stamp = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
     let file = sanitize(&name);
 
     // Collisions only happen within the same millisecond; walk a suffix.
@@ -140,10 +131,7 @@ fn sweep() -> Result<usize, String> {
     }
 
     if removed > 0 {
-        crate::log::info(
-            "media",
-            &format!("pruned {removed} attachment(s), {}KB freed", freed / 1024),
-        );
+        crate::log::info("media", &format!("pruned {removed} attachment(s), {}KB freed", freed / 1024));
     }
     Ok(removed)
 }

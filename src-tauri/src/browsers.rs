@@ -81,10 +81,7 @@ pub struct Context {
 
 /// The browser's id for a link clicked in `ctx`, most particular first.
 fn choose(s: &BrowserSettings, ctx: &Context) -> String {
-    let folder = ctx
-        .folder
-        .as_deref()
-        .and_then(|f| s.folders.iter().find(|(k, _)| crate::pty::same_dir(k, f)).map(|(_, v)| v.clone()));
+    let folder = ctx.folder.as_deref().and_then(|f| s.folders.iter().find(|(k, _)| crate::pty::same_dir(k, f)).map(|(_, v)| v.clone()));
     ctx.browser
         .clone()
         .or_else(|| ctx.account.as_ref().and_then(|a| s.accounts.get(a).cloned()))
@@ -288,11 +285,8 @@ mod imp {
 
     /// What `https` links open with: the user's choice's command line.
     pub fn system_command() -> Option<String> {
-        let prog = string(
-            HKEY_CURRENT_USER,
-            r"Software\Microsoft\Windows\Shell\Associations\UrlAssociations\https\UserChoice",
-            Some("ProgId"),
-        )?;
+        let prog =
+            string(HKEY_CURRENT_USER, r"Software\Microsoft\Windows\Shell\Associations\UrlAssociations\https\UserChoice", Some("ProgId"))?;
         let path = format!(r"Software\Classes\{prog}\shell\open\command");
         string(HKEY_CURRENT_USER, &path, None).or_else(|| string(HKEY_LOCAL_MACHINE, &path, None))
     }
@@ -380,8 +374,7 @@ mod tests {
     fn a_chromium_browser_gets_an_entry_per_profile() {
         let read = |_: &std::path::Path| Some(r#"{"profile":{"info_cache":{"Profile 1":{"name":"Work"}}}}"#.to_string());
         // In the platform's own separators: the browser is known by the exe's name.
-        let (brave, opera) =
-            if cfg!(windows) { (r"C:\B\brave.exe", r"C:\O\opera.exe") } else { ("/B/brave.exe", "/O/opera.exe") };
+        let (brave, opera) = if cfg!(windows) { (r"C:\B\brave.exe", r"C:\O\opera.exe") } else { ("/B/brave.exe", "/O/opera.exe") };
         let e = entries_for(brave, "Brave", &read);
         assert_eq!(e.len(), 1);
         assert_eq!(e[0].name, "Brave — Work");

@@ -61,10 +61,7 @@ static ANSWERED: AtomicU64 = AtomicU64::new(0);
 static PINGING: AtomicBool = AtomicBool::new(false);
 
 fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
 fn clock(ms: u64) -> String {
@@ -360,7 +357,11 @@ pub fn watch_from_args() -> bool {
 
 /// What the watcher calls the process it watched.
 fn who() -> &'static str {
-    if is_core() { "luna core" } else { "luna" }
+    if is_core() {
+        "luna core"
+    } else {
+        "luna"
+    }
 }
 
 #[cfg(windows)]
@@ -397,10 +398,7 @@ mod watcher {
                 .creation_flags(flags)
                 .spawn()
         };
-        if start(DETACHED_PROCESS.0 | CREATE_BREAKAWAY_FROM_JOB.0)
-            .or_else(|_| start(DETACHED_PROCESS.0))
-            .is_err()
-        {
+        if start(DETACHED_PROCESS.0 | CREATE_BREAKAWAY_FROM_JOB.0).or_else(|_| start(DETACHED_PROCESS.0)).is_err() {
             crate::log::warn("app", "could not start the exit watcher");
         }
     }

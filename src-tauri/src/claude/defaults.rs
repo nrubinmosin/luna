@@ -93,10 +93,7 @@ fn take(source: &str, raw: Option<&Value>) -> Option<Setting> {
     if value.is_empty() {
         return None;
     }
-    Some(Setting {
-        value: value.to_owned(),
-        source: source.to_owned(),
-    })
+    Some(Setting { value: value.to_owned(), source: source.to_owned() })
 }
 
 /// Model, effort and permission mode as the CLI would resolve them for this
@@ -164,15 +161,9 @@ mod tests {
             r#"{ "model": "opus", "effortLevel": "xhigh",
                  "permissions": { "defaultMode": "bypassPermissions" } }"#,
         );
-        write(
-            &folder.join(".claude").join("settings.json"),
-            r#"{ "model": "sonnet" }"#,
-        );
+        write(&folder.join(".claude").join("settings.json"), r#"{ "model": "sonnet" }"#);
 
-        let d = claude_defaults(
-            account.to_string_lossy().into_owned(),
-            folder.to_string_lossy().into_owned(),
-        );
+        let d = claude_defaults(account.to_string_lossy().into_owned(), folder.to_string_lossy().into_owned());
         assert_eq!(d.model.value, "sonnet");
         assert_eq!(d.model.source, "project");
         // Untouched by the project file, so the account still answers for them.

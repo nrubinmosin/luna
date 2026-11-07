@@ -68,10 +68,7 @@ fn first_line(path: &Path) -> Option<Value> {
 }
 
 fn day_dir(account_path: &str, day: NaiveDate) -> PathBuf {
-    sessions_dir(account_path)
-        .join(day.year().to_string())
-        .join(format!("{:02}", day.month()))
-        .join(format!("{:02}", day.day()))
+    sessions_dir(account_path).join(day.year().to_string()).join(format!("{:02}", day.month())).join(format!("{:02}", day.day()))
 }
 
 /// Rollout files written on the given days, newest first.
@@ -220,9 +217,12 @@ fn tracked(live: &Live) -> Option<Scan> {
 /// `tracked`, the chat on the rollout at `path` now.
 fn tracked_at(live: &Live, path: PathBuf) -> Option<Scan> {
     let mut counts = turn_counts().lock().ok()?;
-    let entry = counts
-        .entry(live.chat_id.to_string())
-        .or_insert_with(|| TurnCount { path: path.clone(), offset: 0, scan: Scan::default(), before: HashMap::new() });
+    let entry = counts.entry(live.chat_id.to_string()).or_insert_with(|| TurnCount {
+        path: path.clone(),
+        offset: 0,
+        scan: Scan::default(),
+        before: HashMap::new(),
+    });
     let since = live.spawned_at_ms as i64;
     if entry.path != path {
         // What the one it leaves wrote since the last look counts first: a turn
@@ -469,13 +469,18 @@ fn ask_of(args: &Value, blocking: bool) -> Option<crate::agents::Ask> {
 pub fn rollouts_since(account_path: &str, folder: &str, since_ms: u64) -> Vec<PathBuf> {
     let Some(since) = Local.timestamp_millis_opt(since_ms as i64).single().map(|t| t.naive_local()) else { return Vec::new() };
     let want = norm_path(folder);
-    let ours = |cwd: &str| norm_path(cwd) == want || (crate::worktree::codex_shaped(cwd) && crate::worktree::project_of(cwd).is_some_and(|p| norm_path(&p) == want));
+    let ours = |cwd: &str| {
+        norm_path(cwd) == want
+            || (crate::worktree::codex_shaped(cwd) && crate::worktree::project_of(cwd).is_some_and(|p| norm_path(&p) == want))
+    };
     // Its name has it to the second, and the clocks may differ by a few.
     let not_before = since - chrono::Duration::seconds(5);
     rollouts_on(account_path, days_back(Local::now().date_naive(), 2))
         .into_iter()
         .filter(|(ts, _, _)| *ts >= not_before)
-        .filter(|(_, _, p)| first_line(p).is_some_and(|v| v["payload"]["source"] == "cli" && v["payload"]["cwd"].as_str().is_some_and(&ours)))
+        .filter(|(_, _, p)| {
+            first_line(p).is_some_and(|v| v["payload"]["source"] == "cli" && v["payload"]["cwd"].as_str().is_some_and(&ours))
+        })
         .map(|(_, _, p)| p)
         .collect()
 }
@@ -496,7 +501,8 @@ fn thread_file(account_path: &str, thread: &str) -> Option<PathBuf> {
     if let Some(p) = found.lock().ok()?.get(&key).filter(|p| p.is_file()) {
         return Some(p.clone());
     }
-    let mut recent = rollouts_on(account_path, days_back(Local::now().date_naive(), 2)).into_iter().filter(|(_, id, _)| id.starts_with(thread));
+    let mut recent =
+        rollouts_on(account_path, days_back(Local::now().date_naive(), 2)).into_iter().filter(|(_, id, _)| id.starts_with(thread));
     if let Some((_, _, p)) = recent.next() {
         return recent.next().is_none().then_some(p);
     }
@@ -528,7 +534,8 @@ pub fn rollout_for(live: &Live) -> Option<PathBuf> {
 fn rollout_on(live: &Live, thread: Option<String>) -> Option<PathBuf> {
     let claimed = claims().lock().ok().and_then(|m| m.get(live.chat_id).cloned()).filter(|p| p.is_file());
     if let Some(thread) = thread {
-        let of_it = |p: &PathBuf| p.file_name().and_then(|n| parse_name(&n.to_string_lossy())).is_some_and(|(_, id)| id.starts_with(&thread));
+        let of_it =
+            |p: &PathBuf| p.file_name().and_then(|n| parse_name(&n.to_string_lossy())).is_some_and(|(_, id)| id.starts_with(&thread));
         if claimed.as_ref().is_some_and(of_it) {
             return claimed;
         }
@@ -569,24 +576,18 @@ fn rollout_on(live: &Live, thread: Option<String>) -> Option<PathBuf> {
         return Some(found);
     }
 
-    let spawned = Local
-        .timestamp_millis_opt(live.spawned_at_ms as i64)
-        .single()
-        .map(|t| t.naive_local())?;
+    let spawned = Local.timestamp_millis_opt(live.spawned_at_ms as i64).single().map(|t| t.naive_local())?;
     // Codex writes the file right after start; allow the clock to disagree
     // by a few seconds either way.
     let not_before = spawned - chrono::Duration::seconds(5);
-    let taken: Vec<PathBuf> = claims()
-        .lock()
-        .map(|m| m.iter().filter(|(k, _)| *k != live.chat_id).map(|(_, v)| v.clone()).collect())
-        .unwrap_or_default();
+    let taken: Vec<PathBuf> =
+        claims().lock().map(|m| m.iter().filter(|(k, _)| *k != live.chat_id).map(|(_, v)| v.clone()).collect()).unwrap_or_default();
     let want = norm_path(live.cwd);
     // Under `--worktree` the rollout names the checkout Codex made, which
     // points back at the folder the session was started in.
     let ours = |cwd: &str| {
         norm_path(cwd) == want
-            || (crate::worktree::codex_shaped(cwd)
-                && crate::worktree::project_of(cwd).is_some_and(|p| norm_path(&p) == want))
+            || (crate::worktree::codex_shaped(cwd) && crate::worktree::project_of(cwd).is_some_and(|p| norm_path(&p) == want))
     };
     // Only what a terminal session writes can be this one's. A background
     // helper's `codex exec` says `exec`, and the subagents either kind starts
@@ -757,10 +758,7 @@ pub fn read_tail(path: &Path) -> Tail {
                         }
                     }
                     if out.rate_limits.is_none() && payload["rate_limits"].is_object() {
-                        out.rate_limits = Some((
-                            payload["rate_limits"].clone(),
-                            v["timestamp"].as_str().unwrap_or("").to_string(),
-                        ));
+                        out.rate_limits = Some((payload["rate_limits"].clone(), v["timestamp"].as_str().unwrap_or("").to_string()));
                     }
                 }
                 _ => {}
@@ -865,7 +863,10 @@ fn due_in(text: &str) -> Option<u64> {
                     "local_shell_call" => bound(&payload["action"]),
                     _ => payload["arguments"].as_str().and_then(|a| serde_json::from_str::<Value>(a).ok()).and_then(|a| bound(&a)),
                 };
-                let at = v["timestamp"].as_str().and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok()).map(|t| t.timestamp_millis().max(0) as u64);
+                let at = v["timestamp"]
+                    .as_str()
+                    .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+                    .map(|t| t.timestamp_millis().max(0) as u64);
                 if let (Some(by), Some(at), Some(id)) = (by, at, payload["call_id"].as_str()) {
                     open.push((id.to_string(), at + by));
                 }
@@ -933,9 +934,7 @@ pub fn meta(live: &Live) -> Option<SessionMeta> {
 
     let mut m = SessionMeta {
         status: status.map(str::to_owned),
-        cwd: first_line(&path)
-            .and_then(|v| v["payload"]["cwd"].as_str().map(str::to_owned))
-            .or_else(|| Some(live.cwd.to_string())),
+        cwd: first_line(&path).and_then(|v| v["payload"]["cwd"].as_str().map(str::to_owned)).or_else(|| Some(live.cwd.to_string())),
         title_renamed: named.as_ref().is_some_and(|n| n.renamed),
         title: named.map(|n| n.title),
         session_id: Some(id),
@@ -994,10 +993,14 @@ mod tests {
         // last `token_count` is the one that counts; a later one with no
         // `info` (rate limits alone) changes nothing.
         let head = concat!(
-            r#"{"timestamp":"t","type":"turn_context","payload":{"model":"gpt-6.1-sol","effort":"low"}}"#, "\n",
-            r#"{"timestamp":"t","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":15515,"cached_input_tokens":12416,"output_tokens":5},"last_token_usage":{"total_tokens":15520}}}}"#, "\n",
-            r#"{"timestamp":"t","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":32377,"cached_input_tokens":27776,"output_tokens":10},"last_token_usage":{"total_tokens":16867}}}}"#, "\n",
-            r#"{"timestamp":"t","type":"event_msg","payload":{"type":"token_count","info":null,"rate_limits":{"primary":null}}}"#, "\n",
+            r#"{"timestamp":"t","type":"turn_context","payload":{"model":"gpt-6.1-sol","effort":"low"}}"#,
+            "\n",
+            r#"{"timestamp":"t","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":15515,"cached_input_tokens":12416,"output_tokens":5},"last_token_usage":{"total_tokens":15520}}}}"#,
+            "\n",
+            r#"{"timestamp":"t","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":32377,"cached_input_tokens":27776,"output_tokens":10},"last_token_usage":{"total_tokens":16867}}}}"#,
+            "\n",
+            r#"{"timestamp":"t","type":"event_msg","payload":{"type":"token_count","info":null,"rate_limits":{"primary":null}}}"#,
+            "\n",
         );
         std::fs::write(&path, head).unwrap();
         assert_eq!(last_model(&path).as_deref(), Some("gpt-6.1-sol"));
@@ -1026,7 +1029,11 @@ mod tests {
         let rerouted = r#"{"timestamp":"t","type":"event_msg","payload":{"type":"model_reroute","from_model":"gpt-6.1-sol","to_model":"gpt-other","reason":"x"}}"#;
         std::fs::write(&path, format!("{head}{rerouted}\n")).unwrap();
         assert_eq!(last_model(&path).as_deref(), Some("gpt-other"));
-        std::fs::write(&path, format!("{head}{rerouted}\n{}\n", r#"{"timestamp":"t","type":"turn_context","payload":{"model":"gpt-6.1-sol"}}"#)).unwrap();
+        std::fs::write(
+            &path,
+            format!("{head}{rerouted}\n{}\n", r#"{"timestamp":"t","type":"turn_context","payload":{"model":"gpt-6.1-sol"}}"#),
+        )
+        .unwrap();
         assert_eq!(last_model(&path).as_deref(), Some("gpt-6.1-sol"));
         let _ = std::fs::remove_file(&path);
     }
@@ -1093,8 +1100,15 @@ mod tests {
         write(t0 + 3_000, "bbbb");
         let (a, b, c) = (format!("claim-a-{t0}"), format!("claim-b-{t0}"), format!("claim-c-{t0}"));
         let live = |chat: &str, at_ms: u64| {
-            rollout_for(&Live { chat_id: chat, cwd: "E:\\p", spawned_at_ms: at_ms as u128, resume: None, account_path: &acct, last_output_ms: 0 })
-                .and_then(|p| parse_name(&p.file_name()?.to_string_lossy()).map(|(_, id)| id))
+            rollout_for(&Live {
+                chat_id: chat,
+                cwd: "E:\\p",
+                spawned_at_ms: at_ms as u128,
+                resume: None,
+                account_path: &acct,
+                last_output_ms: 0,
+            })
+            .and_then(|p| parse_name(&p.file_name()?.to_string_lossy()).map(|(_, id)| id))
         };
         // b looks first: the file of the chat started just before it is not b's.
         assert_eq!(live(b.as_str(), t0 + 2_000).as_deref(), Some("bbbb"));
@@ -1217,13 +1231,19 @@ mod tests {
         write_rollout(&root, t0 + 1_000, &own, Some(r#""cli""#));
         write_rollout(&root, t0 + 2_000, &kid, Some(&spawned_by_json(&own)));
         let live = Live { chat_id: &chat, cwd: "E:\\p", spawned_at_ms: t0 as u128, resume: None, account_path: &acct, last_output_ms: 0 };
-        let on = |thread: &str| rollout_on(&live, Some(thread.to_string())).and_then(|p| parse_name(&p.file_name()?.to_string_lossy()).map(|(_, id)| id));
+        let on = |thread: &str| {
+            rollout_on(&live, Some(thread.to_string())).and_then(|p| parse_name(&p.file_name()?.to_string_lossy()).map(|(_, id)| id))
+        };
         assert_eq!(on(&own).as_deref(), Some(own.as_str()));
         assert_eq!(on(&kid).as_deref(), Some(own.as_str()), "watching its subagent");
         let half = rollout_path(&root, &young, t0 + 3_000);
         std::fs::write(&half, r#"{"type":"session_meta","payload":{"cwd":"E:\\p","sou"#).unwrap();
         assert_eq!(on(&young).as_deref(), Some(own.as_str()), "its first line half written");
-        std::fs::write(&half, format!(r#"{{"type":"session_meta","payload":{{"cwd":"E:\\p","source":{}}}}}"#, spawned_by_json(&own)) + "\n").unwrap();
+        std::fs::write(
+            &half,
+            format!(r#"{{"type":"session_meta","payload":{{"cwd":"E:\\p","source":{}}}}}"#, spawned_by_json(&own)) + "\n",
+        )
+        .unwrap();
         assert_eq!(on(&young).as_deref(), Some(own.as_str()), "and once it reads");
         assert_eq!(on(&own).as_deref(), Some(own.as_str()));
         release(&chat);
@@ -1240,7 +1260,8 @@ mod tests {
         let chat = format!("chat-follow-{t0}");
         let (a, b) = (format!("aaaa{t0}"), format!("bbbb{t0}"));
         let at = |ms: u64| chrono::DateTime::from_timestamp_millis(ms as i64).unwrap().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-        let turn = |ms: u64| format!("{{\"timestamp\":\"{}\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"task_complete\"}}}}\n", at(ms));
+        let turn =
+            |ms: u64| format!("{{\"timestamp\":\"{}\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"task_complete\"}}}}\n", at(ms));
         let file = |uuid: &str, ms: u64| {
             let ts = Local.timestamp_millis_opt(ms as i64).single().unwrap().naive_local();
             day_dir(&acct, ts.date()).join(format!("rollout-{}-{uuid}.jsonl", ts.format("%Y-%m-%dT%H-%M-%S")))
@@ -1273,8 +1294,15 @@ mod tests {
     }
 
     fn takes(root: &Path, chat: &str, at_ms: u64, resume: Option<&str>) -> Option<String> {
-        rollout_for(&Live { chat_id: chat, cwd: "E:\\p", spawned_at_ms: at_ms as u128, resume, account_path: &root.to_string_lossy(), last_output_ms: 0 })
-            .and_then(|p| parse_name(&p.file_name()?.to_string_lossy()).map(|(_, id)| id))
+        rollout_for(&Live {
+            chat_id: chat,
+            cwd: "E:\\p",
+            spawned_at_ms: at_ms as u128,
+            resume,
+            account_path: &root.to_string_lossy(),
+            last_output_ms: 0,
+        })
+        .and_then(|p| parse_name(&p.file_name()?.to_string_lossy()).map(|(_, id)| id))
     }
 
     #[test]
@@ -1325,9 +1353,12 @@ mod tests {
         std::fs::write(
             root.join("session_index.jsonl"),
             concat!(
-                r#"{"id":"abc","thread_name":"First name","updated_at":"2026-09-17T10:00:00Z"}"#, "\n",
-                r#"{"id":"other","thread_name":"Not ours","updated_at":"2026-09-17T10:01:00Z"}"#, "\n",
-                r#"{"id":"abc","thread_name":"Renamed","updated_at":"2026-09-17T10:02:00Z"}"#, "\n",
+                r#"{"id":"abc","thread_name":"First name","updated_at":"2026-09-17T10:00:00Z"}"#,
+                "\n",
+                r#"{"id":"other","thread_name":"Not ours","updated_at":"2026-09-17T10:01:00Z"}"#,
+                "\n",
+                r#"{"id":"abc","thread_name":"Renamed","updated_at":"2026-09-17T10:02:00Z"}"#,
+                "\n",
             ),
         )
         .unwrap();
@@ -1371,7 +1402,8 @@ mod format_tests {
         let dir = std::env::temp_dir().join(format!("luna-rollout-resumed-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("r.jsonl");
-        let line = |at: &str, kind: &str| format!("{{\"timestamp\":\"{at}\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"{kind}\"}}}}\n");
+        let line =
+            |at: &str, kind: &str| format!("{{\"timestamp\":\"{at}\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"{kind}\"}}}}\n");
         std::fs::write(&path, line("2026-11-01T08:00:00.000Z", "task_started")).unwrap();
         let since = chrono::DateTime::parse_from_rfc3339("2026-11-01T09:00:00.000Z").unwrap().timestamp_millis();
         let mut scan = Scan::default();
@@ -1391,11 +1423,15 @@ mod format_tests {
         let dir = std::env::temp_dir().join(format!("luna-rollout-said-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("r.jsonl");
-        let event = |at: &str, payload: Value| format!("{}\n", serde_json::json!({ "timestamp": at, "type": "event_msg", "payload": payload }));
+        let event =
+            |at: &str, payload: Value| format!("{}\n", serde_json::json!({ "timestamp": at, "type": "event_msg", "payload": payload }));
         let lines = [
             event("2026-11-03T10:00:00.000Z", serde_json::json!({ "type": "task_started" })),
             event("2026-11-03T10:00:00.100Z", serde_json::json!({ "type": "user_message", "message": "which way?" })),
-            event("2026-11-03T10:00:09.000Z", serde_json::json!({ "type": "task_complete", "last_agent_message": "A or B?\nSTATUS: AWAITING OPERATOR" })),
+            event(
+                "2026-11-03T10:00:09.000Z",
+                serde_json::json!({ "type": "task_complete", "last_agent_message": "A or B?\nSTATUS: AWAITING OPERATOR" }),
+            ),
         ];
         std::fs::write(&path, lines.concat()).unwrap();
         let mut scan = Scan::default();
@@ -1441,7 +1477,11 @@ mod format_tests {
 
         let (msgs, cursor) = messages_from(&path, 0);
         let got: Vec<(&str, &str)> = msgs.iter().map(|m| (m.role.as_str(), m.text.as_str())).collect();
-        assert_eq!(got, vec![("user", "Reply with the single word READY."), ("assistant", "READY"), ("user", "And now?")], "as asked, without Luna's note");
+        assert_eq!(
+            got,
+            vec![("user", "Reply with the single word READY."), ("assistant", "READY"), ("user", "And now?")],
+            "as asked, without Luna's note"
+        );
         assert_eq!(cursor, std::fs::metadata(&path).unwrap().len());
         let (more, _) = messages_from(&path, cursor);
         assert!(more.is_empty(), "nothing new after the cursor");
@@ -1573,24 +1613,36 @@ mod format_tests {
         let at = "2026-11-04T13:15:19.533Z";
         let start = chrono::DateTime::parse_from_rfc3339(at).unwrap().timestamp_millis() as u64;
         let item = |payload: Value| serde_json::json!({ "timestamp": at, "type": "response_item", "payload": payload }).to_string();
-        let call = |id: &str, name: &str, args: Value| item(serde_json::json!({ "type": "function_call", "name": name, "arguments": args.to_string(), "call_id": id }));
-        let cell = |id: &str, code: &str| item(serde_json::json!({ "type": "custom_tool_call", "status": "completed", "name": "exec", "input": code, "call_id": id }));
+        let call = |id: &str, name: &str, args: Value| {
+            item(serde_json::json!({ "type": "function_call", "name": name, "arguments": args.to_string(), "call_id": id }))
+        };
+        let cell = |id: &str, code: &str| {
+            item(serde_json::json!({ "type": "custom_tool_call", "status": "completed", "name": "exec", "input": code, "call_id": id }))
+        };
         let output = |kind: &str, id: &str| item(serde_json::json!({ "type": kind, "call_id": id, "output": "Script completed" }));
         let due = |lines: &[&str]| due_in(&lines.join("\n")).map(|d| d - start);
         let min = 60_000;
 
-        let lane = cell("c1", "// @exec: {\"yield_time_ms\": 2400000, \"max_output_tokens\": 1000}\ntext(await tools.exec_command({cmd:\"./lane.sh\"}));\n");
+        let lane = cell(
+            "c1",
+            "// @exec: {\"yield_time_ms\": 2400000, \"max_output_tokens\": 1000}\ntext(await tools.exec_command({cmd:\"./lane.sh\"}));\n",
+        );
         assert_eq!(due(&[&lane]), Some(40 * min));
         assert_eq!(due(&[&lane, &output("custom_tool_call_output", "c1")]), None, "its output ends it");
         assert_eq!(due(&[&cell("c1", "text(await tools.exec_command({cmd:\"ls\"}));\n")]), None, "no pragma: the default");
         let waits = call("c2", "wait", serde_json::json!({ "cell_id": "18", "yield_time_ms": 3000000 }));
         assert_eq!(due(&[&lane, &waits]), Some(50 * min), "the latest");
         assert_eq!(due(&[&waits, &output("function_call_output", "c2")]), None);
-        assert_eq!(due(&[&call("c3", "shell_command", serde_json::json!({ "command": "./lane.sh", "timeout_ms": 2400000 }))]), Some(40 * min));
+        assert_eq!(
+            due(&[&call("c3", "shell_command", serde_json::json!({ "command": "./lane.sh", "timeout_ms": 2400000 }))]),
+            Some(40 * min)
+        );
         assert_eq!(due(&[&call("c3", "sleep", serde_json::json!({ "duration_ms": 1800000 }))]), Some(30 * min));
         let both = serde_json::json!({ "cmd": "./lane.sh", "yield_time_ms": 600000, "timeout_ms": 2400000 });
         assert_eq!(due(&[&call("c3", "exec_command", both)]), Some(10 * min), "back by the first of its bounds");
-        let shell = item(serde_json::json!({ "type": "local_shell_call", "call_id": "c4", "status": "in_progress", "action": { "type": "exec", "command": ["./lane.sh"], "timeout_ms": 2400000 } }));
+        let shell = item(
+            serde_json::json!({ "type": "local_shell_call", "call_id": "c4", "status": "in_progress", "action": { "type": "exec", "command": ["./lane.sh"], "timeout_ms": 2400000 } }),
+        );
         assert_eq!(due(&[&shell]), Some(40 * min));
         let next = r#"{"timestamp":"t","type":"event_msg","payload":{"type":"task_started"}}"#;
         assert_eq!(due(&[&lane, next]), None, "an earlier turn's call");

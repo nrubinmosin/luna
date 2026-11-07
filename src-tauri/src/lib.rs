@@ -181,12 +181,7 @@ pub fn run() {
             // a restart. The build stamp as well as the version: test builds
             // between two releases share a version, and only the commit tells
             // them apart.
-            log::start(&format!(
-                "starting luna {} build {} core {}",
-                env!("CARGO_PKG_VERSION"),
-                env!("LUNA_BUILD"),
-                env!("LUNA_CORE_FP")
-            ));
+            log::start(&format!("starting luna {} build {} core {}", env!("CARGO_PKG_VERSION"), env!("LUNA_BUILD"), env!("LUNA_CORE_FP")));
             // The previous run's end is reported before anything new is logged.
             lifecycle::start(app.handle().clone());
             // The sessions, the hooks' listener, the agents, activity and power
@@ -223,12 +218,7 @@ pub fn run() {
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
-                    if let TrayIconEvent::Click {
-                        button: MouseButton::Left,
-                        button_state: MouseButtonState::Up,
-                        ..
-                    } = event
-                    {
+                    if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
                         show_main(tray.app_handle());
                     }
                 })
@@ -331,10 +321,7 @@ pub fn run() {
                 // Every way out that names itself has done so by now.
                 lifecycle::exiting("the event loop ended");
             }
-            if matches!(
-                event,
-                tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
-            ) {
+            if matches!(event, tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit) {
                 emit::stop();
                 power::clear();
             }

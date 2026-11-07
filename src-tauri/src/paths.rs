@@ -42,15 +42,16 @@ pub fn set_data_dir(dir: PathBuf) {
 /// bundle, which an update replaces whole. Decided once: a directory that
 /// flips between the two mid-run would lose track of its own files.
 pub fn data_dir() -> PathBuf {
-    DATA_DIR.get_or_init(|| {
-        if let Some(dir) = exe_dir() {
-            if is_test() || (!cfg!(target_os = "macos") && writable(&dir)) {
-                return dir;
+    DATA_DIR
+        .get_or_init(|| {
+            if let Some(dir) = exe_dir() {
+                if is_test() || (!cfg!(target_os = "macos") && writable(&dir)) {
+                    return dir;
+                }
             }
-        }
-        local_dir().unwrap_or_else(|| std::env::temp_dir().join(APP_DIR))
-    })
-    .clone()
+            local_dir().unwrap_or_else(|| std::env::temp_dir().join(APP_DIR))
+        })
+        .clone()
 }
 
 fn writable(dir: &Path) -> bool {

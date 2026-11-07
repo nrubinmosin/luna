@@ -50,27 +50,44 @@ fn spec(path: &'static [&'static str], value: Value, why: &'static str, default_
     Spec { path, value, why, default_on, windows_only: false, global: false }
 }
 
-const COPY_ON_SELECT_WHY: &str =
-    "Selecting in a pane copies nothing until Ctrl+C, so the clipboard keeps what you put there.";
+const COPY_ON_SELECT_WHY: &str = "Selecting in a pane copies nothing until Ctrl+C, so the clipboard keeps what you put there.";
 
 /// Claude Code 2.1, every key checked against the CLI's own settings schema.
 fn claude_specs() -> Vec<Spec> {
     vec![
-        spec(&["tui"], json!("fullscreen"),
-            "Draws on the alternate screen with its own scrollback: no flicker, and a pane resize redraws cleanly.", true),
+        spec(
+            &["tui"],
+            json!("fullscreen"),
+            "Draws on the alternate screen with its own scrollback: no flicker, and a pane resize redraws cleanly.",
+            true,
+        ),
         spec(&["spinnerTipsEnabled"], json!(false), "No tips under the spinner.", true),
         spec(&["feedbackDrafts"], json!("off"), "No feedback drafts queued by the model.", true),
         spec(&["env", "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY"], json!("1"), "No feedback survey mid-session.", true),
-        spec(&["idleCompaction"], json!(false),
-            "No compacting a long session while it sits idle: its context stays whole until it fills the window.", true),
-        spec(&["skipDangerousModePermissionPrompt"], json!(true),
-            "Bypass is a choice made in Luna's new-chat dialog; the CLI need not ask again.", true),
-        Spec { windows_only: true, ..spec(&["defaultShell"], json!("powershell"),
-            "`!` commands in the input box run in PowerShell instead of bash.", true) },
+        spec(
+            &["idleCompaction"],
+            json!(false),
+            "No compacting a long session while it sits idle: its context stays whole until it fills the window.",
+            true,
+        ),
+        spec(
+            &["skipDangerousModePermissionPrompt"],
+            json!(true),
+            "Bypass is a choice made in Luna's new-chat dialog; the CLI need not ask again.",
+            true,
+        ),
+        Spec {
+            windows_only: true,
+            ..spec(&["defaultShell"], json!("powershell"), "`!` commands in the input box run in PowerShell instead of bash.", true)
+        },
         Spec { global: true, ..spec(&["copyOnSelect"], json!(false), COPY_ON_SELECT_WHY, true) },
         spec(&["cleanupPeriodDays"], json!(14), "Transcripts older than two weeks are cleaned up (default 30).", false),
-        spec(&["attribution"], json!({ "commit": "", "pr": "", "sessionUrl": false }),
-            "No Co-Authored-By or session links in commits and PRs.", false),
+        spec(
+            &["attribution"],
+            json!({ "commit": "", "pr": "", "sessionUrl": false }),
+            "No Co-Authored-By or session links in commits and PRs.",
+            false,
+        ),
         spec(&["disableRemoteControl"], json!(true), "No Remote Control for sessions on this account.", false),
         spec(&["permissions", "defaultMode"], json!("bypassPermissions"), "New sessions start in Bypass.", false),
     ]
@@ -82,8 +99,12 @@ fn codex_specs() -> Vec<Spec> {
     vec![
         spec(&["check_for_update_on_startup"], json!(false), "Luna keeps Codex up to date itself.", true),
         spec(&["tui", "show_tooltips"], json!(false), "No tips in the composer.", true),
-        spec(&["tui", "notifications"], json!(false),
-            "No desktop notifications from Codex: Luna says when a chat is waiting for you.", true),
+        spec(
+            &["tui", "notifications"],
+            json!(false),
+            "No desktop notifications from Codex: Luna says when a chat is waiting for you.",
+            true,
+        ),
         spec(&["tui", "copy_on_select"], json!("never"), COPY_ON_SELECT_WHY, true),
         spec(&["analytics", "enabled"], json!(false), "No usage analytics.", true),
         spec(&["feedback", "enabled"], json!(false), "No feedback prompts.", true),
@@ -284,10 +305,7 @@ fn recommend(provider: Provider, account_path: &str) -> Result<Vec<Rec>, String>
     let mut out = vec![];
     match provider {
         Provider::Claude => {
-            let docs = [
-                read_claude(&claude_spec_file(account_path, false)?)?,
-                read_claude(&claude_spec_file(account_path, true)?)?,
-            ];
+            let docs = [read_claude(&claude_spec_file(account_path, false)?)?, read_claude(&claude_spec_file(account_path, true)?)?];
             for s in specs(provider) {
                 let current = json_at(&docs[s.global as usize], s.path);
                 out.push(Rec {
@@ -505,7 +523,13 @@ fn commit(changes: &[Change], mut write: impl FnMut(&Path, &str) -> Result<(), S
 /// Which of `accounts` it is for is decided here, from what they say under the
 /// lock; `shown` are the ones the user was told of, and another that turns out
 /// to need it stops the change, for them to be told. How many files changed.
-pub(crate) fn edit_together(file: KeyFile, accounts: &[String], shown: &[String], edits: &[Edit], off: &dyn Fn(&Doc) -> bool) -> Result<usize, String> {
+pub(crate) fn edit_together(
+    file: KeyFile,
+    accounts: &[String],
+    shown: &[String],
+    edits: &[Edit],
+    off: &dyn Fn(&Doc) -> bool,
+) -> Result<usize, String> {
     let _editing = editing()?;
     let mut changes = Vec::new();
     for account in accounts {
@@ -534,9 +558,7 @@ pub(crate) fn edit_together(file: KeyFile, accounts: &[String], shown: &[String]
 /// ones out — only where the file still says exactly what was recommended:
 /// a value the user wrote themselves is theirs, not a recommendation to undo.
 fn apply(provider: Provider, account_path: &str, add: &[String], remove: &[String]) -> Result<(), String> {
-    let named = |keys: &[String]| -> Vec<Spec> {
-        specs(provider).into_iter().filter(|s| keys.contains(&s.path.join("."))).collect()
-    };
+    let named = |keys: &[String]| -> Vec<Spec> { specs(provider).into_iter().filter(|s| keys.contains(&s.path.join("."))).collect() };
     let (add, remove) = (named(add), named(remove));
     if add.is_empty() && remove.is_empty() {
         return Ok(());
@@ -596,10 +618,7 @@ pub fn recommended_settings(provider: Provider, account_path: String) -> Result<
 #[tauri::command]
 pub fn apply_recommended(provider: Provider, account_path: String, add: Vec<String>, remove: Vec<String>) -> Result<(), String> {
     apply(provider, &account_path, &add, &remove)?;
-    crate::log::info(
-        "settings",
-        &format!("recommended settings on {account_path}: {} added, {} taken out", add.len(), remove.len()),
-    );
+    crate::log::info("settings", &format!("recommended settings on {account_path}: {} added, {} taken out", add.len(), remove.len()));
     Ok(())
 }
 
@@ -686,9 +705,7 @@ pub fn format_account_config(provider: Provider, text: String) -> Result<String,
             let v: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
             Ok(serde_json::to_string_pretty(&v).map_err(|e| e.to_string())? + "\n")
         }
-        Provider::Codex => {
-            Ok(taplo::formatter::format(&text, Default::default()))
-        }
+        Provider::Codex => Ok(taplo::formatter::format(&text, Default::default())),
     }
 }
 
@@ -697,11 +714,17 @@ pub fn read_account_config(provider: Provider, account_path: String) -> Result<C
     let path = config_file(provider, &account_path)?;
     let (text, exists) = match std::fs::read_to_string(&path) {
         Ok(t) => (t, true),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            (if provider == Provider::Claude { "{
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (
+            if provider == Provider::Claude {
+                "{
 }
-".to_string() } else { String::new() }, false)
-        }
+"
+                .to_string()
+            } else {
+                String::new()
+            },
+            false,
+        ),
         Err(e) => return Err(format!("{}: {e}", path.display())),
     };
     Ok(ConfigFile { path: path.to_string_lossy().into_owned(), text, exists })
@@ -824,10 +847,7 @@ fn sync(provider: Provider) -> Result<SyncReport, String> {
     }
     .ok_or("No parent account chosen")?;
     let accounts: Vec<_> = crate::accounts::list_accounts()?.into_iter().filter(|a| a.provider == provider).collect();
-    let parent = accounts
-        .iter()
-        .find(|a| a.name == parent_name)
-        .ok_or_else(|| format!("The parent account \"{parent_name}\" is gone"))?;
+    let parent = accounts.iter().find(|a| a.name == parent_name).ok_or_else(|| format!("The parent account \"{parent_name}\" is gone"))?;
     let mut report = SyncReport::default();
     for a in accounts.iter().filter(|a| a.name != parent.name) {
         match sync_gate(provider, &a.path).and_then(|_held| sync_one(provider, &parent.path, &a.path)) {
@@ -842,7 +862,11 @@ fn sync(provider: Provider) -> Result<SyncReport, String> {
         report.synced.len(),
         if report.failed.is_empty() { String::new() } else { format!("; failed: {}", report.failed.join(", ")) }
     );
-    if report.failed.is_empty() { crate::log::info("settings", &msg) } else { crate::log::warn("settings", &msg) }
+    if report.failed.is_empty() {
+        crate::log::info("settings", &msg)
+    } else {
+        crate::log::warn("settings", &msg)
+    }
     Ok(report)
 }
 
@@ -952,14 +976,20 @@ mod tests {
     #[test]
     fn taking_a_recommendation_out_leaves_no_empty_parents_and_spares_the_users_own() {
         let d = dir("remove");
-        std::fs::write(d.join("settings.json"), r#"{"model":"opus","env":{"CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY":"1"},"tui":"fullscreen","cleanupPeriodDays":60}"#).unwrap();
+        std::fs::write(
+            d.join("settings.json"),
+            r#"{"model":"opus","env":{"CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY":"1"},"tui":"fullscreen","cleanupPeriodDays":60}"#,
+        )
+        .unwrap();
         let p = d.to_string_lossy().into_owned();
         let out = ["env.CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY".to_string(), "tui".into(), "cleanupPeriodDays".into()];
         apply(Provider::Claude, &p, &[], &out).unwrap();
         let v: Value = serde_json::from_str(&std::fs::read_to_string(d.join("settings.json")).unwrap()).unwrap();
         assert_eq!(v, json!({ "model": "opus", "cleanupPeriodDays": 60 }), "60 is the user's, not the recommendation");
 
-        std::fs::write(d.join("config.toml"), "# mine
+        std::fs::write(
+            d.join("config.toml"),
+            "# mine
 web_search = \"live\"
 
 [tui]
@@ -968,7 +998,9 @@ show_tooltips = false
 [feedback]
 enabled = false
 other = 1
-").unwrap();
+",
+        )
+        .unwrap();
         let out = ["web_search".to_string(), "tui.show_tooltips".into(), "feedback.enabled".into()];
         apply(Provider::Codex, &p, &[], &out).unwrap();
         let text = std::fs::read_to_string(d.join("config.toml")).unwrap();
@@ -981,28 +1013,51 @@ other = 1
 
     #[test]
     fn the_editor_checks_and_lays_out_both_files() {
-        let bad = check_account_config(Provider::Codex, "a = 1
+        let bad = check_account_config(
+            Provider::Codex,
+            "a = 1
 b = [
-".into()).unwrap();
+"
+            .into(),
+        )
+        .unwrap();
         assert!(bad.line.is_some(), "{}", bad.message);
-        assert!(check_account_config(Provider::Codex, "a = 1
-".into()).is_none());
-        let bad = check_account_config(Provider::Claude, "{
+        assert!(check_account_config(
+            Provider::Codex,
+            "a = 1
+"
+            .into()
+        )
+        .is_none());
+        let bad = check_account_config(
+            Provider::Claude,
+            "{
   \"a\": ,
-}".into()).unwrap();
+}"
+            .into(),
+        )
+        .unwrap();
         assert_eq!(bad.line, Some(2));
         let laid = format_account_config(Provider::Claude, r#"{"b":1,"a":{"c":true}}"#.into()).unwrap();
-        assert_eq!(laid, "{
+        assert_eq!(
+            laid,
+            "{
   \"b\": 1,
   \"a\": {
     \"c\": true
   }
 }
-");
-        let laid = format_account_config(Provider::Codex, "# keep
+"
+        );
+        let laid = format_account_config(
+            Provider::Codex,
+            "# keep
 z   =  1
 a=\"x\"
-".into()).unwrap();
+"
+            .into(),
+        )
+        .unwrap();
         assert!(laid.contains("# keep") && laid.find("z = 1") < laid.find("a = \"x\""), "{laid}");
         assert!(format_account_config(Provider::Codex, "a = [".into()).is_err());
     }
@@ -1016,7 +1071,11 @@ a=\"x\"
     #[test]
     fn codex_apply_keeps_comments_and_writes_tables() {
         let d = dir("codex");
-        std::fs::write(d.join("config.toml"), "# mine\nmodel = \"gpt-6\" # keep\n# searching\nweb_search = \"off\"\n\n[tui]\ntheme = \"dark\"\n").unwrap();
+        std::fs::write(
+            d.join("config.toml"),
+            "# mine\nmodel = \"gpt-6\" # keep\n# searching\nweb_search = \"off\"\n\n[tui]\ntheme = \"dark\"\n",
+        )
+        .unwrap();
         let p = d.to_string_lossy().into_owned();
         apply(Provider::Codex, &p, &["tui.show_tooltips".into(), "analytics.enabled".into(), "web_search".into()], &[]).unwrap();
         let text = std::fs::read_to_string(d.join("config.toml")).unwrap();
@@ -1054,8 +1113,16 @@ a=\"x\"
 
         // Codex: the parent's config with its comments, the child's trusted
         // folders in place of the parent's, auth untouched.
-        std::fs::write(parent.join("config.toml"), "# parent\nmodel_reasoning_effort = \"high\"\n[projects.'C:\\\\p']\ntrust_level = \"trusted\"\n[tui]\nshow_tooltips = false\n").unwrap();
-        std::fs::write(child.join("config.toml"), "# mine\nmodel_reasoning_effort = \"low\"\nmine = 1\n[projects.'C:\\\\c']\ntrust_level = \"trusted\"\n").unwrap();
+        std::fs::write(
+            parent.join("config.toml"),
+            "# parent\nmodel_reasoning_effort = \"high\"\n[projects.'C:\\\\p']\ntrust_level = \"trusted\"\n[tui]\nshow_tooltips = false\n",
+        )
+        .unwrap();
+        std::fs::write(
+            child.join("config.toml"),
+            "# mine\nmodel_reasoning_effort = \"low\"\nmine = 1\n[projects.'C:\\\\c']\ntrust_level = \"trusted\"\n",
+        )
+        .unwrap();
         std::fs::write(child.join("auth.json"), "child-auth").unwrap();
         sync_one(Provider::Codex, &p, &c).unwrap();
         let text = std::fs::read_to_string(child.join("config.toml")).unwrap();
@@ -1071,7 +1138,10 @@ a=\"x\"
         // A child with no trusted folders gets the parent's file minus its own.
         std::fs::write(child.join("config.toml"), "").unwrap();
         sync_one(Provider::Codex, &p, &c).unwrap();
-        assert_eq!(std::fs::read_to_string(child.join("config.toml")).unwrap(), "# parent\nmodel_reasoning_effort = \"high\"\n[tui]\nshow_tooltips = false\n");
+        assert_eq!(
+            std::fs::read_to_string(child.join("config.toml")).unwrap(),
+            "# parent\nmodel_reasoning_effort = \"high\"\n[tui]\nshow_tooltips = false\n"
+        );
         let _ = std::fs::remove_dir_all(&parent);
         let _ = std::fs::remove_dir_all(&child);
     }
@@ -1206,7 +1276,11 @@ model = \"gpt-6\"   # keep
         let edits = [Edit::RemoveIf(&["features", "hooks"], false), Edit::RemoveIf(&["features", "codex_hooks"], false)];
         let off = |d: &Doc| d.bool_at(&["features", "hooks"]) == Some(false) || d.bool_at(&["features", "codex_hooks"]) == Some(false);
         for (tag, before, after) in [
-            ("table", "# mine\nmodel = \"x\"\n\n[features]\nhooks = false\nother = true\n", "# mine\nmodel = \"x\"\n\n[features]\nother = true\n"),
+            (
+                "table",
+                "# mine\nmodel = \"x\"\n\n[features]\nhooks = false\nother = true\n",
+                "# mine\nmodel = \"x\"\n\n[features]\nother = true\n",
+            ),
             ("table-gone", "model = \"x\"\n\n[features]\nhooks = false\n", "model = \"x\"\n"),
             ("dotted", "model = \"x\"\nfeatures.hooks = false\n", "model = \"x\"\n"),
             ("alias", "[features]\ncodex_hooks = false\nother = true\n", "[features]\nother = true\n"),
@@ -1306,7 +1380,11 @@ model = \"gpt-6\"   # keep
         let (parent, child) = (dir("blank-parent"), dir("blank-child"));
         let (p, c) = (parent.to_string_lossy().into_owned(), child.to_string_lossy().into_owned());
         std::fs::write(parent.join("config.toml"), "\n").unwrap();
-        std::fs::write(child.join("config.toml"), "model = \"x\"\n[features]\nhooks = false\n[projects.'C:\\\\c']\ntrust_level = \"trusted\"\n").unwrap();
+        std::fs::write(
+            child.join("config.toml"),
+            "model = \"x\"\n[features]\nhooks = false\n[projects.'C:\\\\c']\ntrust_level = \"trusted\"\n",
+        )
+        .unwrap();
         sync_one(Provider::Codex, &p, &c).unwrap();
         let doc: DocumentMut = std::fs::read_to_string(child.join("config.toml")).unwrap().parse().unwrap();
         assert!(doc.get("model").is_none() && doc.get("features").is_none(), "{doc}");
@@ -1347,5 +1425,4 @@ model = \"gpt-6\"   # keep
         assert!(std::fs::read_to_string(d.join("config.toml")).unwrap().contains("web_search"));
         let _ = std::fs::remove_dir_all(&d);
     }
-
 }

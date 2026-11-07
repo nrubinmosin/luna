@@ -128,7 +128,11 @@ fn unbounded_in(words: &[String]) -> bool {
                 w == "-command" || (w.starts_with('-') && !w.starts_with("--") && w.ends_with('c') && w.len() <= 4)
             };
             let Some(at) = args.iter().position(|w| flag(w)) else { return false };
-            let inner = if shell.starts_with("pw") || shell == "powershell" { args[at + 1..].join(" ") } else { args.get(at + 1).cloned().unwrap_or_default() };
+            let inner = if shell.starts_with("pw") || shell == "powershell" {
+                args[at + 1..].join(" ")
+            } else {
+                args.get(at + 1).cloned().unwrap_or_default()
+            };
             follows_unbounded(&inner)
         }
         _ => false,
@@ -188,7 +192,10 @@ fn simple_commands(line: &str) -> Vec<Vec<String>> {
         if let Some(q) = quote {
             if c == q {
                 quote = None;
-            } else if q == '"' && (c == '\\' && chars.get(i + 1).is_some_and(|n| ESCAPED_IN_QUOTES.contains(*n)) || c == '`' && chars.get(i + 1) == Some(&'"')) {
+            } else if q == '"'
+                && (c == '\\' && chars.get(i + 1).is_some_and(|n| ESCAPED_IN_QUOTES.contains(*n))
+                    || c == '`' && chars.get(i + 1) == Some(&'"'))
+            {
                 // `\"` for bash, `` `" `` for PowerShell: a quote that does not end it.
                 i += 1;
                 word.push(chars[i]);
@@ -396,7 +403,10 @@ mod tests {
     #[test]
     fn the_decision_is_a_deny_for_both_clis() {
         let call = |tool: &str, command: &str| {
-            decision(&serde_json::json!({ "hook_event_name": "PreToolUse", "tool_name": tool, "tool_input": { "command": command } }).to_string())
+            decision(
+                &serde_json::json!({ "hook_event_name": "PreToolUse", "tool_name": tool, "tool_input": { "command": command } })
+                    .to_string(),
+            )
         };
         let deny = call("Bash", "tail -f x.log").expect("refused");
         let v: serde_json::Value = serde_json::from_str(&deny).unwrap();

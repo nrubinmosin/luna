@@ -109,8 +109,7 @@ pub struct Discovery {
 impl Discovery {
     /// Whether the core this names is still the process running under its pid.
     pub fn running(&self) -> bool {
-        crate::procs::alive(self.pid)
-            && (self.created_ms == 0 || crate::procs::created_ms(self.pid).is_none_or(|c| c == self.created_ms))
+        crate::procs::alive(self.pid) && (self.created_ms == 0 || crate::procs::created_ms(self.pid).is_none_or(|c| c == self.created_ms))
     }
 }
 
@@ -174,10 +173,7 @@ pub fn mint_token() -> String {
         k.write_u64(i);
         h.update(k.finish().to_le_bytes());
     }
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
     h.update(nanos.to_le_bytes());
     h.update(std::process::id().to_le_bytes());
     h.finalize().iter().map(|b| format!("{b:02x}")).collect()

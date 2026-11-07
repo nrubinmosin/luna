@@ -26,13 +26,7 @@ const BIN_REL: &str = "bin/codex.exe";
 #[cfg(not(windows))]
 const BIN_REL: &str = "bin/codex";
 
-pub static SOURCE: Source = Source {
-    root_name: "codex-cli",
-    bin_rel: BIN_REL,
-    path_fallback: "codex",
-    latest,
-    fetch,
-};
+pub static SOURCE: Source = Source { root_name: "codex-cli", bin_rel: BIN_REL, path_fallback: "codex", latest, fetch };
 
 fn target() -> &'static str {
     match (std::env::consts::OS, std::env::consts::ARCH) {
@@ -59,9 +53,7 @@ fn latest(agent: &ureq::Agent) -> Result<String, String> {
         .into_json()
         .map_err(|e| format!("release lookup: {e}"))?;
     let tag = rel["tag_name"].as_str().ok_or("release lookup: no tag_name")?;
-    let ver = tag
-        .strip_prefix(TAG_PREFIX)
-        .ok_or_else(|| format!("unexpected tag {tag:?}"))?;
+    let ver = tag.strip_prefix(TAG_PREFIX).ok_or_else(|| format!("unexpected tag {tag:?}"))?;
     sane_version(ver, "github")
 }
 
@@ -77,9 +69,7 @@ pub fn checksum_from_sums(sums: &str, asset: &str) -> Option<String> {
 }
 
 fn expected_checksum(agent: &ureq::Agent, version: &str) -> Result<String, String> {
-    let url = format!(
-        "https://github.com/{REPO}/releases/download/{TAG_PREFIX}{version}/codex-package_SHA256SUMS"
-    );
+    let url = format!("https://github.com/{REPO}/releases/download/{TAG_PREFIX}{version}/codex-package_SHA256SUMS");
     let text = agent
         .get(&url)
         .set("User-Agent", "luna")
@@ -87,16 +77,10 @@ fn expected_checksum(agent: &ureq::Agent, version: &str) -> Result<String, Strin
         .map_err(|e| format!("checksums: {e}"))?
         .into_string()
         .map_err(|e| format!("checksums: {e}"))?;
-    checksum_from_sums(&text, &asset_name())
-        .ok_or_else(|| format!("{} not in SHA256SUMS for {version}", asset_name()))
+    checksum_from_sums(&text, &asset_name()).ok_or_else(|| format!("{} not in SHA256SUMS for {version}", asset_name()))
 }
 
-fn fetch(
-    agent: &ureq::Agent,
-    version: &str,
-    dir: &Path,
-    progress: &mut dyn FnMut(u64, Option<u64>),
-) -> Result<(), String> {
+fn fetch(agent: &ureq::Agent, version: &str, dir: &Path, progress: &mut dyn FnMut(u64, Option<u64>)) -> Result<(), String> {
     let checksum = expected_checksum(agent, version)?;
     let asset = asset_name();
     let part = dir.join(format!("{asset}.part"));

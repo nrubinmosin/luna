@@ -26,10 +26,7 @@ fn map() -> &'static Mutex<HashMap<String, Throttle>> {
 }
 
 pub fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
 /// Seconds left of a hold on this key, if one is in force.
@@ -49,8 +46,7 @@ pub fn clear(key: &str) {
 pub fn hit(tag: &str, key: &str, retry_after_secs: u64) -> u64 {
     let mut m = map().lock().unwrap();
     let previous = m.get(key).map(|t| t.cool_ms);
-    let cool_ms =
-        retry_after_secs.saturating_mul(1000).max(previous.map_or(COOLOFF_MS, |c| c.saturating_mul(2).min(MAX_MS)));
+    let cool_ms = retry_after_secs.saturating_mul(1000).max(previous.map_or(COOLOFF_MS, |c| c.saturating_mul(2).min(MAX_MS)));
     m.insert(key.to_string(), Throttle { until_ms: now_ms().saturating_add(cool_ms), cool_ms });
     drop(m);
     // A single 429 is routine — the UI shows the hold and keeps the last

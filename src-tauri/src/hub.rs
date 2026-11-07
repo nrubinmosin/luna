@@ -173,10 +173,7 @@ fn parse_path<'a>(path: &'a str, prefix: &str) -> Option<(&'a str, &'a str)> {
 fn mint_secret() -> String {
     use sha2::{Digest, Sha256};
     let slot = 0u8;
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
     let mut h = Sha256::new();
     h.update(std::process::id().to_le_bytes());
     h.update(nanos.to_le_bytes());

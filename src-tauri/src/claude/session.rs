@@ -13,9 +13,7 @@ use std::sync::Mutex;
 // Claude Code encodes a project cwd into a transcript folder name by replacing
 // every non-alphanumeric character with '-'.
 fn encode_project_dir(p: &str) -> String {
-    p.chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect()
+    p.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -25,10 +23,7 @@ struct ContextRead {
 }
 
 fn transcript_path(account_path: &str, cwd: &str, session_id: &str) -> PathBuf {
-    Path::new(account_path)
-        .join("projects")
-        .join(encode_project_dir(cwd))
-        .join(format!("{session_id}.jsonl"))
+    Path::new(account_path).join("projects").join(encode_project_dir(cwd)).join(format!("{session_id}.jsonl"))
 }
 
 // Free context reading: the last assistant message in the session transcript
@@ -56,10 +51,7 @@ fn context_in(text: &str) -> Option<ContextRead> {
                 + u["cache_creation_input_tokens"].as_f64().unwrap_or(0.0);
             if total > 0.0 {
                 let model = v["message"]["model"].as_str().unwrap_or("");
-                return Some(ContextRead {
-                    tokens: total,
-                    window: super::models::context_window(model),
-                });
+                return Some(ContextRead { tokens: total, window: super::models::context_window(model) });
             }
         }
     }
@@ -128,10 +120,7 @@ fn titles_in(text: &str) -> Titles {
             Some("agent-name") => handles.extend(v["agentName"].as_str().map(str::to_owned)),
             Some("custom-title") if t.custom.is_none() => t.custom = v["customTitle"].as_str().and_then(sane_title),
             Some("ai-title") if t.ai.is_none() => {
-                t.ai = v["aiTitle"]
-                    .as_str()
-                    .and_then(sane_title)
-                    .filter(|s| !is_handle(s) && !handles.contains(s))
+                t.ai = v["aiTitle"].as_str().and_then(sane_title).filter(|s| !is_handle(s) && !handles.contains(s))
             }
             _ => {}
         }
@@ -151,11 +140,7 @@ fn title_cache() -> &'static Mutex<HashMap<String, Titles>> {
 /// the opening prompt would take the chat's name until one came round again.
 fn titles_of(session_id: &str, path: &Path, tail: Option<&str>) -> Titles {
     let first_look = !title_cache().lock().unwrap().contains_key(session_id);
-    let seen = if first_look {
-        std::fs::read_to_string(path).ok().map(|s| titles_in(&s))
-    } else {
-        tail.map(titles_in)
-    };
+    let seen = if first_look { std::fs::read_to_string(path).ok().map(|s| titles_in(&s)) } else { tail.map(titles_in) };
     remembered_titles(session_id, seen.unwrap_or_default())
 }
 
@@ -206,11 +191,7 @@ pub fn find_transcript(account_path: &str, session_id: &str) -> Option<PathBuf> 
         return None;
     }
     let file = format!("{session_id}.jsonl");
-    std::fs::read_dir(Path::new(account_path).join("projects"))
-        .ok()?
-        .flatten()
-        .map(|e| e.path().join(&file))
-        .find(|p| p.is_file())
+    std::fs::read_dir(Path::new(account_path).join("projects")).ok()?.flatten().map(|e| e.path().join(&file)).find(|p| p.is_file())
 }
 
 /// Text of a transcript content field, which is either a bare string or an
@@ -233,8 +214,7 @@ fn content_text(content: &serde_json::Value) -> Option<String> {
 /// The opening prompt of a session never changes, but session_meta asks for it
 /// every few seconds per pane — so read the file once and remember the answer.
 fn cached_first_prompt(account_path: &str, cwd: &str, session_id: &str) -> Option<String> {
-    static CACHE: std::sync::OnceLock<Mutex<HashMap<String, Option<String>>>> =
-        std::sync::OnceLock::new();
+    static CACHE: std::sync::OnceLock<Mutex<HashMap<String, Option<String>>>> = std::sync::OnceLock::new();
     let cache = CACHE.get_or_init(Default::default);
 
     if let Ok(map) = cache.lock() {
@@ -268,10 +248,7 @@ fn read_first_prompt(account_path: &str, cwd: &str, session_id: &str) -> Option<
         // `isMeta` marks a turn the CLI injected rather than one the user
         // typed — a hook's instructions, a resumed-session preamble. One of
         // those titled a chat "A session-scoped Stop hook is now active…".
-        if v["type"] != "user"
-            || v["isSidechain"].as_bool().unwrap_or(false)
-            || v["isMeta"].as_bool().unwrap_or(false)
-        {
+        if v["type"] != "user" || v["isSidechain"].as_bool().unwrap_or(false) || v["isMeta"].as_bool().unwrap_or(false) {
             continue;
         }
         let Some(text) = content_text(&v["message"]["content"]) else { continue };
@@ -313,9 +290,7 @@ pub fn meta(pid: Option<u32>, resume: Option<&str>, cwd: &str, spawned_at_ms: u1
         // The registry name is the cwd folder when `derived` — a worktree's
         // random codename — and a kebab-case handle when `auto`, neither of
         // them a title; a rename there is as good as one in the transcript.
-        let renamed = titles
-            .custom
-            .or_else(|| m.name.clone().filter(|_| m.name_source.as_deref() == Some("user")));
+        let renamed = titles.custom.or_else(|| m.name.clone().filter(|_| m.name_source.as_deref() == Some("user")));
         m.title_renamed = renamed.is_some();
         m.title = renamed.or(titles.ai);
         m.first_prompt = cached_first_prompt(account_path, &scwd, &sid);
@@ -407,7 +382,8 @@ fn last_said_in(text: &str) -> Option<Option<(String, Option<String>)>> {
                 if v["isApiErrorMessage"].as_bool() == Some(true) || v["message"]["model"] == "<synthetic>" {
                     return Some(None);
                 }
-                let said: Vec<&str> = content.as_array().into_iter().flatten().filter(|b| b["type"] == "text").filter_map(|b| b["text"].as_str()).collect();
+                let said: Vec<&str> =
+                    content.as_array().into_iter().flatten().filter(|b| b["type"] == "text").filter_map(|b| b["text"].as_str()).collect();
                 if !said.is_empty() {
                     return Some(Some((said.join("\n"), v["timestamp"].as_str().map(str::to_owned))));
                 }
@@ -443,11 +419,7 @@ pub fn session_cwd(pid: Option<u32>, resume: Option<&str>, cwd: &str, spawned_at
 pub fn live_cwds(account_path: &str) -> Vec<String> {
     let dir = Path::new(account_path).join("sessions");
     let Ok(entries) = std::fs::read_dir(&dir) else { return vec![] };
-    entries
-        .flatten()
-        .filter_map(|e| parse_session_file(&e.path()))
-        .filter_map(|v| v["cwd"].as_str().map(str::to_owned))
-        .collect()
+    entries.flatten().filter_map(|e| parse_session_file(&e.path())).filter_map(|v| v["cwd"].as_str().map(str::to_owned)).collect()
 }
 
 /// `live_cwds`, of the entries whose process is still there: one killed leaves its
@@ -483,13 +455,7 @@ pub fn transcripts_since(account_path: &str, cwds: &[String], since_ms: u64) -> 
 /// this chat: only a terminal session counts, as `entrypoint` says. `claude -p`,
 /// a background helper, says `sdk-cli` (its `kind` is "interactive" all the
 /// same); the SDKs `sdk-ts` and `sdk-py`, an editor's its own.
-fn registry_entry(
-    dir: &Path,
-    pid: Option<u32>,
-    resume: Option<&str>,
-    cwd: &str,
-    spawned_at_ms: u128,
-) -> Option<serde_json::Value> {
+fn registry_entry(dir: &Path, pid: Option<u32>, resume: Option<&str>, cwd: &str, spawned_at_ms: u128) -> Option<serde_json::Value> {
     if let Some(pid) = pid {
         if let Some(v) = parse_session_file(&dir.join(format!("{pid}.json"))) {
             return Some(v);
@@ -542,7 +508,9 @@ mod tests {
             registry_entry(&dir, Some(pid), resume, "E:\\p", 1000).map(|v| v["sessionId"].as_str().unwrap_or("").to_string())
         };
         // Each newer than any chat's, so each would win going by the time.
-        for (pid, entrypoint) in [(101, Some("sdk-cli")), (102, Some("sdk-py")), (103, Some("sdk-ts")), (104, Some("claude-vscode")), (105, None)] {
+        for (pid, entrypoint) in
+            [(101, Some("sdk-cli")), (102, Some("sdk-py")), (103, Some("sdk-ts")), (104, Some("claude-vscode")), (105, None)]
+        {
             entry(pid, &format!("other-{pid}"), entrypoint, 9000);
         }
         assert_eq!(found(999, None), None, "none of them is this chat, whose entry is yet to come");
@@ -566,11 +534,16 @@ mod tests {
         std::fs::write(
             &path,
             concat!(
-                r#"{"type":"assistant","message":{"model":"claude-opus-5-5","content":[]}}"#, "\n",
-                r#"{"type":"assistant","message":{"model":"claude-haiku-5-5","content":[]}}"#, "\n",
-                r#"{"type":"assistant","isSidechain":true,"message":{"model":"claude-sonnet-5-5","content":[]}}"#, "\n",
-                r#"{"type":"assistant","message":{"model":"<synthetic>","content":[]}}"#, "\n",
-                r#"{"type":"user","message":{"content":"the word \"model\" in passing"}}"#, "\n",
+                r#"{"type":"assistant","message":{"model":"claude-opus-5-5","content":[]}}"#,
+                "\n",
+                r#"{"type":"assistant","message":{"model":"claude-haiku-5-5","content":[]}}"#,
+                "\n",
+                r#"{"type":"assistant","isSidechain":true,"message":{"model":"claude-sonnet-5-5","content":[]}}"#,
+                "\n",
+                r#"{"type":"assistant","message":{"model":"<synthetic>","content":[]}}"#,
+                "\n",
+                r#"{"type":"user","message":{"content":"the word \"model\" in passing"}}"#,
+                "\n",
             ),
         )
         .unwrap();
@@ -582,9 +555,12 @@ mod tests {
     #[test]
     fn a_turn_that_ended_on_a_usage_limit() {
         let limited = concat!(
-            r#"{"type":"user","message":{"role":"user","content":"go on"}}"#, "\n",
-            r#"{"type":"assistant","isApiErrorMessage":true,"error":"rate_limit","message":{"content":[{"type":"text","text":"You've hit your session limit"}]}}"#, "\n",
-            r#"{"type":"system","subtype":"turn_duration"}"#, "\n",
+            r#"{"type":"user","message":{"role":"user","content":"go on"}}"#,
+            "\n",
+            r#"{"type":"assistant","isApiErrorMessage":true,"error":"rate_limit","message":{"content":[{"type":"text","text":"You've hit your session limit"}]}}"#,
+            "\n",
+            r#"{"type":"system","subtype":"turn_duration"}"#,
+            "\n",
         );
         assert_eq!(api_error_in(limited), Some("rate_limit"));
         // A prompt typed after the error is a new turn, not the stall.
@@ -598,10 +574,14 @@ mod tests {
     #[test]
     fn reads_the_latest_titles_from_the_tail() {
         let text = concat!(
-            r#"{"type":"ai-title","aiTitle":"First guess","sessionId":"s"}"#, "\n",
-            r#"{"type":"user","message":{"role":"user","content":"mention \"type\":\"ai-title\" in passing"}}"#, "\n",
-            r#"{"type":"ai-title","aiTitle":"Token refresh and chat titles","sessionId":"s"}"#, "\n",
-            r#"{"type":"last-prompt","lastPrompt":"…","sessionId":"s"}"#, "\n",
+            r#"{"type":"ai-title","aiTitle":"First guess","sessionId":"s"}"#,
+            "\n",
+            r#"{"type":"user","message":{"role":"user","content":"mention \"type\":\"ai-title\" in passing"}}"#,
+            "\n",
+            r#"{"type":"ai-title","aiTitle":"Token refresh and chat titles","sessionId":"s"}"#,
+            "\n",
+            r#"{"type":"last-prompt","lastPrompt":"…","sessionId":"s"}"#,
+            "\n",
         );
         let t = titles_in(text);
         assert_eq!(t.ai.as_deref(), Some("Token refresh and chat titles"));
@@ -617,10 +597,14 @@ mod tests {
     fn a_plan_handle_is_not_a_title() {
         // As a transcript has it after a plan is accepted.
         let text = concat!(
-            r#"{"type":"ai-title","aiTitle":"Issue #5244","sessionId":"s"}"#, "\n",
-            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"ExitPlanMode"}]}}"#, "\n",
-            r#"{"type":"ai-title","aiTitle":"fix-connector-logging-and-model-picker","sessionId":"s"}"#, "\n",
-            r#"{"type":"agent-name","agentName":"fix-connector-logging-and-model-picker","sessionId":"s"}"#, "\n",
+            r#"{"type":"ai-title","aiTitle":"Issue #5244","sessionId":"s"}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"ExitPlanMode"}]}}"#,
+            "\n",
+            r#"{"type":"ai-title","aiTitle":"fix-connector-logging-and-model-picker","sessionId":"s"}"#,
+            "\n",
+            r#"{"type":"agent-name","agentName":"fix-connector-logging-and-model-picker","sessionId":"s"}"#,
+            "\n",
         );
         assert_eq!(titles_in(text).ai.as_deref(), Some("Issue #5244"));
         // The first title already out of the tail: nothing beats the handle.
@@ -952,7 +936,8 @@ pub fn took_line(path: &Path, uuid: &str) -> Option<bool> {
         }
         let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { return };
         let attached = &v["attachment"];
-        found = (v["type"] == "user" && v["uuid"] == uuid) || (v["type"] == "attachment" && attached["type"] == "queued_command" && attached["source_uuid"] == uuid);
+        found = (v["type"] == "user" && v["uuid"] == uuid)
+            || (v["type"] == "attachment" && attached["type"] == "queued_command" && attached["source_uuid"] == uuid);
     });
     Some(found)
 }
@@ -1029,7 +1014,10 @@ fn message_of(line: &str, with_tools: bool) -> Option<Line> {
 /// line: those go by the text.
 fn injected(v: &serde_json::Value, text: &str) -> bool {
     const OWN: [&str; 5] = ["scheduled", "task_notification", "auto_continuation", "host_synthetic", "system"];
-    if v["isCompactSummary"].as_bool() == Some(true) || v["isVisibleInTranscriptOnly"].as_bool() == Some(true) || v["origin"]["kind"] == "task-notification" {
+    if v["isCompactSummary"].as_bool() == Some(true)
+        || v["isVisibleInTranscriptOnly"].as_bool() == Some(true)
+        || v["origin"]["kind"] == "task-notification"
+    {
         return true;
     }
     if let Some(origin) = v["turnOrigin"].as_str() {
@@ -1162,9 +1150,15 @@ mod reading_tests {
         let at = "2026-11-04T15:10:00.000Z";
         let start = chrono::DateTime::parse_from_rfc3339(at).unwrap().timestamp_millis() as u64;
         let call = |id: &str, name: &str, input: &str| {
-            format!(r#"{{"type":"assistant","timestamp":"{at}","message":{{"content":[{{"type":"tool_use","id":"{id}","name":"{name}","input":{input}}}]}}}}"#)
+            format!(
+                r#"{{"type":"assistant","timestamp":"{at}","message":{{"content":[{{"type":"tool_use","id":"{id}","name":"{name}","input":{input}}}]}}}}"#
+            )
         };
-        let result = |id: &str, made: &str| format!(r#"{{"type":"user","message":{{"content":[{{"type":"tool_result","tool_use_id":"{id}","content":"…"}}]}},"toolUseResult":{made}}}"#);
+        let result = |id: &str, made: &str| {
+            format!(
+                r#"{{"type":"user","message":{{"content":[{{"type":"tool_result","tool_use_id":"{id}","content":"…"}}]}},"toolUseResult":{made}}}"#
+            )
+        };
         let notice = |body: &str| {
             let text = serde_json::to_string(&format!("<task-notification>\n{body}\n</task-notification>")).unwrap();
             format!(r#"{{"type":"user","message":{{"role":"user","content":{text}}},"origin":{{"kind":"task-notification"}}}}"#)
@@ -1263,7 +1257,8 @@ mod reading_tests {
         // the last words and the usage they came with, outgrows a short tail.
         let path = std::env::temp_dir().join(format!("luna-claude-last-said-{}.jsonl", std::process::id()));
         let answer = r#"{"type":"assistant","message":{"model":"claude-sonnet-5-5","usage":{"input_tokens":10,"cache_read_input_tokens":20000},"content":[{"type":"text","text":"Pick one.\nSTATUS: AWAITING OPERATOR"}]}}"#;
-        let snapshot = format!(r#"{{"type":"attachment","attachment":{{"type":"prompt_snapshot","systemPrompt":["{}"]}}}}"#, "x".repeat(300 * 1024));
+        let snapshot =
+            format!(r#"{{"type":"attachment","attachment":{{"type":"prompt_snapshot","systemPrompt":["{}"]}}}}"#, "x".repeat(300 * 1024));
         std::fs::write(&path, [prompt, answer, &snapshot, title].join("\n") + "\n").unwrap();
         let end = ending(&path);
         assert_eq!(end.last_said.as_deref(), Some("Pick one.\nSTATUS: AWAITING OPERATOR"));

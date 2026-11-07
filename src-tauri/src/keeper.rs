@@ -147,7 +147,9 @@ mod os {
         threads.flatten().all(|thread| {
             std::fs::read(thread.path().join("stat")).map_or(true, |stat| {
                 let stat = String::from_utf8_lossy(&stat);
-                stat.rsplit_once(')').and_then(|(_, rest)| rest.split_ascii_whitespace().next()).is_none_or(|state| matches!(state, "T" | "t" | "Z" | "X" | "x"))
+                stat.rsplit_once(')')
+                    .and_then(|(_, rest)| rest.split_ascii_whitespace().next())
+                    .is_none_or(|state| matches!(state, "T" | "t" | "Z" | "X" | "x"))
             })
         })
     }
@@ -234,7 +236,9 @@ mod os {
         if info.pbi_status == ZOMBIE {
             return None;
         }
-        let text = |name: &[c_char]| String::from_utf8_lossy(&name.iter().take_while(|c| **c != 0).map(|c| *c as u8).collect::<Vec<u8>>()).into_owned();
+        let text = |name: &[c_char]| {
+            String::from_utf8_lossy(&name.iter().take_while(|c| **c != 0).map(|c| *c as u8).collect::<Vec<u8>>()).into_owned()
+        };
         let name = Some(text(&info.pbi_name)).filter(|n| !n.is_empty()).unwrap_or_else(|| text(&info.pbi_comm));
         Some(Proc {
             pid,
@@ -488,7 +492,11 @@ pub fn end_tree(root: u32) {
     let child_of = crate::lifecycle::is_core().then_some(me);
     let keeper = format!("{MARK}={KEEPER}");
     freeze_and_end(|all| {
-        tree(all, root, me, child_of).into_iter().filter(|p| !os::environment(p.pid).is_some_and(|env| holds(&env, &keeper))).cloned().collect()
+        tree(all, root, me, child_of)
+            .into_iter()
+            .filter(|p| !os::environment(p.pid).is_some_and(|env| holds(&env, &keeper)))
+            .cloned()
+            .collect()
     });
 }
 
@@ -518,7 +526,9 @@ fn end_job(job: &Record, by_thread: &HashSet<(i32, u64)>, within: Duration) -> (
     let deadline = Instant::now() + within;
     let mut ended: Vec<String> = Vec::new();
     loop {
-        let Some(found) = freeze_and_end(|all| members(all, &job.leaders, me, marked).into_iter().cloned().collect()) else { return (false, ended) };
+        let Some(found) = freeze_and_end(|all| members(all, &job.leaders, me, marked).into_iter().cloned().collect()) else {
+            return (false, ended);
+        };
         if found.is_empty() {
             return (true, ended);
         }
@@ -737,7 +747,11 @@ fn start_keeper(ties: &mut Ties) -> bool {
     };
     let Some(mut pipe) = child.stdin.take() else { return false };
     let core = leader(std::process::id()).map(Word::Core);
-    if !core.iter().chain(&ties.records.values().map(|job| Word::Tie(job.clone())).collect::<Vec<_>>()).all(|word| say(&mut pipe, word).is_ok()) {
+    if !core
+        .iter()
+        .chain(&ties.records.values().map(|job| Word::Tie(job.clone())).collect::<Vec<_>>())
+        .all(|word| say(&mut pipe, word).is_ok())
+    {
         crate::log::warn("tie", "the keeper went as it started");
         let _ = child.kill();
         let _ = child.wait();
@@ -814,7 +828,14 @@ struct JobState {
 
 impl JobState {
     fn record(&self, id: &str) -> Record {
-        Record { id: id.to_string(), mark: mark_of(id), boot: os::boot_id(), also: self.also.clone(), since: self.since, leaders: self.leaders.clone() }
+        Record {
+            id: id.to_string(),
+            mark: mark_of(id),
+            boot: os::boot_id(),
+            also: self.also.clone(),
+            since: self.since,
+            leaders: self.leaders.clone(),
+        }
     }
 }
 
@@ -834,7 +855,12 @@ impl Drop for Job {
 /// runs and nothing is told until `tie`: a chat's job is never tied.
 pub fn adopt(pid: u32) -> Option<Job> {
     let first = leader(pid);
-    Some(Job(Mutex::new(JobState { leaders: first.into_iter().collect(), since: first.map_or(0, |l| l.started), also: None, tied_for: None })))
+    Some(Job(Mutex::new(JobState {
+        leaders: first.into_iter().collect(),
+        since: first.map_or(0, |l| l.started),
+        also: None,
+        tied_for: None,
+    })))
 }
 
 /// For straight after a `spawn`, before `tie` or `join` and with nothing held, as
@@ -1008,14 +1034,14 @@ mod tests {
     fn a_job_is_its_leader_its_group_its_mark_and_all_below_them() {
         let all = [
             p(1, 0, 1, 1),
-            p(100, 1, 100, 500), // the core
+            p(100, 1, 100, 500),   // the core
             p(200, 100, 200, 600), // the turn's CLI
             p(201, 200, 200, 610), // in its group
             p(210, 200, 210, 620), // a tool in a session of its own
             p(211, 210, 210, 630), // what that started
-            p(300, 1, 300, 640), // left behind, re-parented: only the mark says
+            p(300, 1, 300, 640),   // left behind, re-parented: only the mark says
             p(301, 300, 300, 650), // and below that
-            p(400, 1, 400, 660), // someone else's
+            p(400, 1, 400, 660),   // someone else's
         ];
         let leaders = [Leader { pid: 200, started: 600 }];
         let found = members(&all, &leaders, 999, |p| p.pid == 300);
@@ -1045,13 +1071,13 @@ mod tests {
         vec![
             p(100, 1, 100, 500),
             p(200, 100, 200, 600),
-            p(201, 200, 200, 610),                     // in its group
-            in_session(210, p(210, 200, 210, 620)),    // a tool in a session of its own
-            in_session(210, p(211, 210, 211, 630)),    // a job its shell gave a group of its own
-            in_session(210, p(212, 1, 213, 640)),      // parent gone, in the live tool's session
-            in_session(210, p(214, 1, 210, 650)),      // parent gone, in the live tool's group
-            in_session(300, p(301, 1, 300, 660)),      // outlived a tool that has exited
-            p(400, 1, 400, 670),                       // someone else's
+            p(201, 200, 200, 610),                  // in its group
+            in_session(210, p(210, 200, 210, 620)), // a tool in a session of its own
+            in_session(210, p(211, 210, 211, 630)), // a job its shell gave a group of its own
+            in_session(210, p(212, 1, 213, 640)),   // parent gone, in the live tool's session
+            in_session(210, p(214, 1, 210, 650)),   // parent gone, in the live tool's group
+            in_session(300, p(301, 1, 300, 660)),   // outlived a tool that has exited
+            p(400, 1, 400, 670),                    // someone else's
         ]
     }
 
@@ -1095,13 +1121,23 @@ mod tests {
     #[test]
     fn a_stat_line_is_read_past_a_name_of_any_shape() {
         let stat = "123 (a) b (c)) S 45 67 68 0 -1 4194560 1 0 0 0 0 0 0 0 20 0 1 0 8910 1000 1 2";
-        assert_eq!(os::parse_stat(123, stat), Some(Proc { pid: 123, parent: 45, group: 67, session: 68, started: 8910, name: "a) b (c)".into() }));
+        assert_eq!(
+            os::parse_stat(123, stat),
+            Some(Proc { pid: 123, parent: 45, group: 67, session: 68, started: 8910, name: "a) b (c)".into() })
+        );
         assert_eq!(os::parse_stat(123, &stat.replace(" S ", " Z ")), None, "exited, nothing to end");
     }
 
     #[test]
     fn a_word_to_the_keeper_is_one_line() {
-        let word = Word::Tie(Record { id: "c 1".into(), mark: "m".into(), boot: None, also: None, since: 0, leaders: vec![Leader { pid: 2, started: 3 }] });
+        let word = Word::Tie(Record {
+            id: "c 1".into(),
+            mark: "m".into(),
+            boot: None,
+            also: None,
+            since: 0,
+            leaders: vec![Leader { pid: 2, started: 3 }],
+        });
         let mut out = Vec::new();
         say(&mut out, &word).unwrap();
         assert_eq!(out.iter().filter(|b| **b == b'\n').count(), 1);
@@ -1114,9 +1150,8 @@ mod tests {
     /// tool that has since exited left: a new session, a new parent.
     fn a_turn(mark: &str) -> (Child, Vec<i32>) {
         const SETSID: &str = "perl -e 'use POSIX; POSIX::setsid(); exec @ARGV'";
-        let script = format!(
-            "sleep 60 &\necho $!\n(unset {MARK}; exec {SETSID} sleep 60) &\necho $!\n{SETSID} sh -c 'sleep 60 & echo $!'\nwait\n"
-        );
+        let script =
+            format!("sleep 60 &\necho $!\n(unset {MARK}; exec {SETSID} sleep 60) &\necho $!\n{SETSID} sh -c 'sleep 60 & echo $!'\nwait\n");
         let mut child = Command::new("sh")
             .args(["-c", &script])
             .env(MARK, mark)
@@ -1136,7 +1171,14 @@ mod tests {
     }
 
     fn record_of(child: &Child, mark: &str) -> Record {
-        Record { id: format!("id-{mark}"), mark: mark.to_string(), boot: None, also: None, since: 0, leaders: leader(child.id()).into_iter().collect() }
+        Record {
+            id: format!("id-{mark}"),
+            mark: mark.to_string(),
+            boot: None,
+            also: None,
+            since: 0,
+            leaders: leader(child.id()).into_iter().collect(),
+        }
     }
 
     /// A folder of the test's own, under the data dir that the test build keeps
@@ -1260,7 +1302,14 @@ mod tests {
     fn a_record_of_another_boot_names_nothing_now() {
         let mut other = Command::new("sleep").arg("60").process_group(0).spawn().unwrap();
         // The very pid and start time a process of the last boot had.
-        let job = Record { id: "rebooted".into(), mark: "rebooted".into(), boot: Some("then".into()), also: None, since: 0, leaders: vec![leader(other.id()).unwrap()] };
+        let job = Record {
+            id: "rebooted".into(),
+            mark: "rebooted".into(),
+            boot: Some("then".into()),
+            also: None,
+            since: 0,
+            leaders: vec![leader(other.id()).unwrap()],
+        };
         let dir = scratch("rebooted");
         write_record(&dir, &job);
         let last = end_records(&dir, ENDING_TAKES, Some("now"));
@@ -1406,7 +1455,14 @@ mod tests {
         std::thread::sleep(Duration::from_millis(30));
         let mine = start("thread-a");
         let someone_elses = start("thread-b");
-        let job = Record { id: "second".into(), mark: "second-mark".into(), boot: None, also: Some("CODEX_THREAD_ID=thread-a".into()), since, leaders: vec![] };
+        let job = Record {
+            id: "second".into(),
+            mark: "second-mark".into(),
+            boot: None,
+            also: Some("CODEX_THREAD_ID=thread-a".into()),
+            since,
+            leaders: vec![],
+        };
         let by_thread = thread_marked(&job);
         // Born once the core was seen gone: a later core's turn on the same thread.
         let later = start("thread-a");
@@ -1471,7 +1527,14 @@ mod tests {
     fn a_pid_since_reused_is_left_alone_by_the_next_core() {
         let mut other = Command::new("sleep").arg("60").process_group(0).spawn().unwrap();
         let was = leader(other.id()).unwrap();
-        let job = Record { id: "reused".into(), mark: "reused-no-such-mark".into(), boot: None, also: None, since: 0, leaders: vec![Leader { pid: was.pid, started: was.started + 1 }] };
+        let job = Record {
+            id: "reused".into(),
+            mark: "reused-no-such-mark".into(),
+            boot: None,
+            also: None,
+            since: 0,
+            leaders: vec![Leader { pid: was.pid, started: was.started + 1 }],
+        };
         let dir = scratch("reused");
         write_record(&dir, &job);
         assert!(end_records(&dir, ENDING_TAKES, None).held("reused"), "nothing of that job is there");
@@ -1596,7 +1659,8 @@ mod tests {
     fn a_tie_is_written_down_until_let_go_and_a_job_dropped_lets_go() {
         let mark = mark_of("written");
         let turn = || Command::new("sleep").arg("60").env(MARK, mark_of("written")).process_group(0).spawn().unwrap();
-        let on_disk = || -> Record { serde_json::from_slice(&std::fs::read(record_file(&records_dir(), &mark_of("written"))).unwrap()).unwrap() };
+        let on_disk =
+            || -> Record { serde_json::from_slice(&std::fs::read(record_file(&records_dir(), &mark_of("written"))).unwrap()).unwrap() };
         let mut first = turn();
         await_environment(first.id());
         let job = adopt(first.id()).unwrap();

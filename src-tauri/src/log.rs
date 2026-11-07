@@ -110,10 +110,7 @@ pub fn append_log(level: String, source: String, message: String) {
 pub fn install_panic_hook() {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let where_ = info
-            .location()
-            .map(|l| format!("{}:{}", l.file(), l.line()))
-            .unwrap_or_else(|| "unknown".into());
+        let where_ = info.location().map(|l| format!("{}:{}", l.file(), l.line())).unwrap_or_else(|| "unknown".into());
         error("panic", &format!("{info} at {where_}"));
         previous(info);
     }));

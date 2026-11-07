@@ -103,10 +103,7 @@ pub fn dispatch(cmd: &str, args: Value) -> Result<Value, String> {
 /// (a reattach reads the modes after the session it ensured), and each takes
 /// no time.
 pub fn in_order(cmd: &str) -> bool {
-    matches!(
-        cmd,
-        "write_session" | "resize_session" | "session_modes" | "chat_names" | "account_usage" | "agent_spawned" | "power_state"
-    )
+    matches!(cmd, "write_session" | "resize_session" | "session_modes" | "chat_names" | "account_usage" | "agent_spawned" | "power_state")
 }
 
 #[cfg(test)]

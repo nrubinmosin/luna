@@ -222,8 +222,10 @@ impl Ask {
             .iter()
             .filter_map(|q| {
                 let text = q["question"].as_str()?.trim().to_string();
-                let options =
-                    q["options"].as_array().map(|o| o.iter().filter_map(|o| o["label"].as_str().map(str::to_owned)).collect()).unwrap_or_default();
+                let options = q["options"]
+                    .as_array()
+                    .map(|o| o.iter().filter_map(|o| o["label"].as_str().map(str::to_owned)).collect())
+                    .unwrap_or_default();
                 Some(AskQuestion { text, options, multi: q["multiSelect"].as_bool().unwrap_or(false), list_at: None })
             })
             .collect();
@@ -436,7 +438,13 @@ impl SpawnUnderWay {
     /// asks for again, gone in the same hold, as two would start two after a restart.
     /// Refused past the cap, counted in that same hold (`under_cap`): two spawns at
     /// once cannot both take the last place.
-    fn begin(caller: &str, params: &SpawnParams, account_path: &str, in_worktree: Option<&str>, replaces: Option<u64>) -> Result<SpawnUnderWay, String> {
+    fn begin(
+        caller: &str,
+        params: &SpawnParams,
+        account_path: &str,
+        in_worktree: Option<&str>,
+        replaces: Option<u64>,
+    ) -> Result<SpawnUnderWay, String> {
         let worktrees_before = match (params.worktree, params.folder.as_deref()) {
             (Some(true), Some(folder)) => crate::worktree::made_for(folder, account_path),
             _ => Vec::new(),
@@ -1563,8 +1571,11 @@ pub fn freeze_chats() {
 fn chats_now() -> SavedChats {
     let (mut chats, sends, mut spawns, floors) = {
         let r = reg().lock().unwrap_or_else(|e| e.into_inner());
-        let sends: Vec<SavedSend> =
-            r.held.iter().map(|h| SavedSend { caller: h.caller.clone(), id: h.id.clone(), text: h.text.clone(), going_in: h.going_in.clone() }).collect();
+        let sends: Vec<SavedSend> = r
+            .held
+            .iter()
+            .map(|h| SavedSend { caller: h.caller.clone(), id: h.id.clone(), text: h.text.clone(), going_in: h.going_in.clone() })
+            .collect();
         let chats: Vec<SavedChat> = r
             .known
             .iter()
@@ -1604,7 +1615,8 @@ fn chats_now() -> SavedChats {
             transcript_path(&pty, &c.id);
         }
         c.transcript = transcripts().lock().unwrap_or_else(|e| e.into_inner()).get(&c.id).cloned();
-        c.mid_turn |= crate::activity::turn_state(&c.id).is_some_and(|t| matches!(t.turn, crate::activity::Turn::Busy | crate::activity::Turn::Waiting));
+        c.mid_turn |= crate::activity::turn_state(&c.id)
+            .is_some_and(|t| matches!(t.turn, crate::activity::Turn::Busy | crate::activity::Turn::Waiting));
         if !first_turn && floors.contains_key(&c.id) {
             c.ties.opening = None;
             c.ties.worktrees_before = None;
@@ -1830,7 +1842,8 @@ pub fn on_hook(chat: &str, body: &str) {
         return;
     }
     let raises = event == Some("PermissionRequest") || (event == Some("PreToolUse") && tool == "AskUserQuestion");
-    let settles = matches!(event, Some("PostToolUse" | "PostToolUseFailure" | "Stop" | "StopFailure" | "UserPromptSubmit" | "SubagentStop"));
+    let settles =
+        matches!(event, Some("PostToolUse" | "PostToolUseFailure" | "Stop" | "StopFailure" | "UserPromptSubmit" | "SubagentStop"));
     if !raises && !settles {
         return;
     }
@@ -1867,7 +1880,13 @@ pub fn ask_of(id: &str) -> Option<Ask> {
         Provider::Claude => {
             // The hooks say it whole; the transcript has a tool call held for
             // permission only sometimes, and a question not before its answer.
-            let hooked = reg().lock().unwrap_or_else(|e| e.into_inner()).hook_asks.get(id).and_then(|held| held.first()).map(|(name, input, _)| (name.clone(), input.clone()));
+            let hooked = reg()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .hook_asks
+                .get(id)
+                .and_then(|held| held.first())
+                .map(|(name, input, _)| (name.clone(), input.clone()));
             let (name, input) = hooked
                 .filter(|_| turn.is_some_and(|t| t != crate::activity::Turn::Idle))
                 .or_else(|| waiting.then(|| crate::claude::session::pending_tool(&transcript_path(&pty, id)?)).flatten())?;
@@ -1944,8 +1963,7 @@ fn codex_list_on(screen: &str) -> Option<Ask> {
     let at = found.iter().position(|o| o.1).unwrap_or(0);
     let options = found.into_iter().map(|o| o.2).collect();
     // The paragraph right above the options.
-    let mut text: Vec<&str> =
-        lines[..first].iter().rev().skip_while(|l| l.is_empty()).take_while(|l| !l.is_empty()).copied().collect();
+    let mut text: Vec<&str> = lines[..first].iter().rev().skip_while(|l| l.is_empty()).take_while(|l| !l.is_empty()).copied().collect();
     text.reverse();
     let text = if text.is_empty() { "Codex asks".to_string() } else { text.join(" ") };
     Some(Ask::question(vec![AskQuestion { text, options, multi: false, list_at: Some(at) }], true))
@@ -2190,9 +2208,9 @@ fn signed_in(provider: Provider, account_path: &str) -> bool {
     };
     match provider {
         Provider::Claude => read(".credentials.json").is_some_and(|v| v["claudeAiOauth"]["refreshToken"].is_string()),
-        Provider::Codex => read("auth.json").is_some_and(|v| {
-            v["tokens"].is_object() || v["OPENAI_API_KEY"].as_str().is_some_and(|k| !k.is_empty())
-        }),
+        Provider::Codex => {
+            read("auth.json").is_some_and(|v| v["tokens"].is_object() || v["OPENAI_API_KEY"].as_str().is_some_and(|k| !k.is_empty()))
+        }
     }
 }
 
@@ -2261,7 +2279,10 @@ pub fn list(caller: &str, ids: Option<&[String]>, accounts: bool) -> Listing {
             let (deletes_in_min, task) = {
                 let r = reg().lock().unwrap_or_else(|e| e.into_inner());
                 let left = r.auto.get(&id).and_then(|a| a.idle_since);
-                (left.map(|since| AUTO_DELETE_IDLE_MS.saturating_sub(now_ms().saturating_sub(since)).div_ceil(60_000)), r.tasks.get(&id).cloned())
+                (
+                    left.map(|since| AUTO_DELETE_IDLE_MS.saturating_sub(now_ms().saturating_sub(since)).div_ceil(60_000)),
+                    r.tasks.get(&id).cloned(),
+                )
             };
             let ts = crate::activity::turn_state(&id);
             // A listing is not a reading: it does not move what the caller
@@ -2655,9 +2676,7 @@ fn has_started(id: &str, after_turn: u32) -> bool {
     use crate::activity::Turn;
     // A permission prompt is inside a turn: one that comes up before the
     // first sample has seen the session busy is still a start.
-    crate::activity::turn_state(id)
-        .map(|t| matches!(t.turn, Turn::Busy | Turn::Waiting) || t.turns_ended > after_turn)
-        .unwrap_or(false)
+    crate::activity::turn_state(id).map(|t| matches!(t.turn, Turn::Busy | Turn::Waiting) || t.turns_ended > after_turn).unwrap_or(false)
 }
 
 /// True while the CLI has not drawn anything yet: alive, no turn begun or
@@ -2681,13 +2700,7 @@ fn still_starting(pty: &crate::pty::PtyManager, id: &str) -> bool {
 /// Polls until the session starts working on `text` (see `has_started`),
 /// turns it down as an unknown command, exits, or `timeout` passes. Returns
 /// whether it started.
-fn await_start(
-    pty: &crate::pty::PtyManager,
-    id: &str,
-    text: &str,
-    after_turn: u32,
-    timeout: std::time::Duration,
-) -> bool {
+fn await_start(pty: &crate::pty::PtyManager, id: &str, text: &str, after_turn: u32, timeout: std::time::Duration) -> bool {
     let deadline = std::time::Instant::now() + timeout;
     loop {
         if has_started(id, after_turn) {
@@ -2751,13 +2764,10 @@ fn list_provider(
     let known: Vec<&String> = names.iter().filter(|n| allowed.iter().any(|a| a.name == **n)).collect();
     let other = if mine == Provider::Claude { Provider::Codex } else { Provider::Claude };
     let order = asked.map_or(vec![mine, other], |p| vec![p]);
-    order
-        .into_iter()
-        .find(|p| known.iter().all(|n| allowed.iter().any(|a| a.provider == *p && a.name == **n)))
-        .ok_or_else(|| match asked {
-            Some(p) => format!("the accounts in the list must all be {} accounts", p.as_str()),
-            None => "the accounts in the list must all be of one provider".to_string(),
-        })
+    order.into_iter().find(|p| known.iter().all(|n| allowed.iter().any(|a| a.provider == *p && a.name == **n))).ok_or_else(|| match asked {
+        Some(p) => format!("the accounts in the list must all be {} accounts", p.as_str()),
+        None => "the accounts in the list must all be of one provider".to_string(),
+    })
 }
 
 /// The first account of the list that is there, signed in and has room in all
@@ -2855,9 +2865,7 @@ fn settle_role(params: &mut SpawnParams, provider: Provider) -> Result<(), Strin
                 None => params.sandbox = Some("read-only".into()),
                 Some("read-only") | Some(READ_ONLY_NET) => {}
                 Some(s) => {
-                    return Err(format!(
-                        "readOnly contradicts sandbox \"{s}\"; leave sandbox out, or use read-only or {READ_ONLY_NET}"
-                    ))
+                    return Err(format!("readOnly contradicts sandbox \"{s}\"; leave sandbox out, or use read-only or {READ_ONLY_NET}"))
                 }
             }
         }
@@ -2959,10 +2967,9 @@ fn spawn_with(caller: &str, mut params: SpawnParams, replaces: Option<u64>, stil
         };
         let Some(account) = pick.cloned() else {
             return Err(match one.as_deref() {
-                Some(name) => format!(
-                    "no {} account named {name:?} is available to agents; luna_list shows the ones that are",
-                    provider.as_str()
-                ),
+                Some(name) => {
+                    format!("no {} account named {name:?} is available to agents; luna_list shows the ones that are", provider.as_str())
+                }
                 None => format!("no {} account is available to agents", provider.as_str()),
             });
         };
@@ -3045,19 +3052,14 @@ fn spawn_with(caller: &str, mut params: SpawnParams, replaces: Option<u64>, stil
                  and Luna will tell you when it answers, so check luna_list before spawning again. Helpers are made by \
                  Luna's window: if it is closed, they start once the user opens it",
                 SPAWN_TIMEOUT.as_secs()
-            ))
+            ));
         }
     };
     // The frontend has registered the session by now (ensure_* ran before it
     // answered), so its settings are known; whether it took the prompt is
     // what the wait below finds out.
-    let settings = reg()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .known
-        .get(&id)
-        .map(|k| k.settings.clone())
-        .unwrap_or(serde_json::Value::Null);
+    let settings =
+        reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(&id).map(|k| k.settings.clone()).unwrap_or(serde_json::Value::Null);
     if auto_delete {
         reg().lock().unwrap_or_else(|e| e.into_inner()).auto.insert(id.clone(), Auto::default());
     }
@@ -3079,11 +3081,20 @@ fn spawn_with(caller: &str, mut params: SpawnParams, replaces: Option<u64>, stil
     let started = await_start(&pty, &id, &prompt, 0, START_TIMEOUT);
     let starting = !started && still_starting(&pty, &id);
     if starting {
-        crate::log::info("agents", &format!("session {} spawned by {} has drawn nothing within {START_TIMEOUT:?}; still starting", label(&id), label(caller)));
+        crate::log::info(
+            "agents",
+            &format!("session {} spawned by {} has drawn nothing within {START_TIMEOUT:?}; still starting", label(&id), label(caller)),
+        );
     } else if !started && unknown_command(&pty, &id, &prompt) {
-        crate::log::info("agents", &format!("session {} spawned by {} does not know the command its prompt opens with", label(&id), label(caller)));
+        crate::log::info(
+            "agents",
+            &format!("session {} spawned by {} does not know the command its prompt opens with", label(&id), label(caller)),
+        );
     } else if !started {
-        crate::log::warn("agents", &format!("session {} spawned by {} did not start on its prompt within {START_TIMEOUT:?}", label(&id), label(caller)));
+        crate::log::warn(
+            "agents",
+            &format!("session {} spawned by {} did not start on its prompt within {START_TIMEOUT:?}", label(&id), label(caller)),
+        );
     }
     let screen = (!started && !starting).then(|| screen_of(&pty, &id)).flatten();
     let ask = screen.is_some().then(|| ask_of(&id)).flatten();
@@ -3094,7 +3105,20 @@ fn spawn_with(caller: &str, mut params: SpawnParams, replaces: Option<u64>, stil
     owe_from(caller, &id, 0, 0);
     let worktree = worktree_of(&pty, &id);
     let worktree_pending = own_worktree && worktree.path.is_none();
-    Ok(Spawned { id, turns_ended: 0, settings, started, screen, ask, starting, warnings, same_folder, worktree, worktree_pending, account_choice })
+    Ok(Spawned {
+        id,
+        turns_ended: 0,
+        settings,
+        started,
+        screen,
+        ask,
+        starting,
+        warnings,
+        same_folder,
+        worktree,
+        worktree_pending,
+        account_choice,
+    })
 }
 
 /// Claude Code's model aliases, as the new-chat dialog lists them.
@@ -3179,7 +3203,9 @@ fn background_spec(params: &SpawnParams, provider: Provider, account_path: &str,
                     return Err(format!("{AUTO_REVIEW} runs in {AUTO_REVIEW_SANDBOX} only; leave sandbox out"))
                 }
                 Some(s) if ["read-only", crate::pty::READ_ONLY_NET, "workspace-write", "danger-full-access"].contains(&s) => s.to_string(),
-                Some(s) => return Err(format!("unknown sandbox \"{s}\"; use read-only, read-only-net, workspace-write, danger-full-access")),
+                Some(s) => {
+                    return Err(format!("unknown sandbox \"{s}\"; use read-only, read-only-net, workspace-write, danger-full-access"))
+                }
                 None if auto_review => AUTO_REVIEW_SANDBOX.to_string(),
                 None => d["sandbox"].as_str().unwrap_or("read-only").to_string(),
             };
@@ -3196,7 +3222,9 @@ fn background_spec(params: &SpawnParams, provider: Provider, account_path: &str,
                     return Err(format!("{} takes effort {}, not \"{e}\"", l.slug, l.efforts.join(", ")))
                 }
                 (Some(e), _) => e.to_string(),
-                (None, Some(l)) if asked(&params.model).is_some() && l.default_effort.is_some() => l.default_effort.clone().unwrap_or_default(),
+                (None, Some(l)) if asked(&params.model).is_some() && l.default_effort.is_some() => {
+                    l.default_effort.clone().unwrap_or_default()
+                }
                 (None, _) => d["effort"].as_str().unwrap_or("medium").to_string(),
             };
             Ok(crate::background::Spec {
@@ -3222,7 +3250,13 @@ fn background_spec(params: &SpawnParams, provider: Provider, account_path: &str,
 
 /// `spawn` for a helper with no row: started here, in the core, on the
 /// settings `background_spec` works out.
-fn spawn_background(caller: &str, params: SpawnParams, account_path: String, in_worktree: Option<String>, request: u64) -> Result<Spawned, String> {
+fn spawn_background(
+    caller: &str,
+    params: SpawnParams,
+    account_path: String,
+    in_worktree: Option<String>,
+    request: u64,
+) -> Result<Spawned, String> {
     let provider = if params.provider.as_deref() == Some("codex") { Provider::Codex } else { Provider::Claude };
     let project = params.folder.clone().unwrap_or_default();
     let own_worktree = params.worktree.unwrap_or(false);
@@ -3320,7 +3354,20 @@ fn spawn_background(caller: &str, params: SpawnParams, account_path: String, in_
         }
     }
     let worktree_pending = own_worktree && worktree.path.is_none();
-    Ok(Spawned { id, turns_ended: 0, settings, started: true, screen: None, ask: None, starting: false, warnings: Vec::new(), same_folder, worktree, worktree_pending, account_choice: None })
+    Ok(Spawned {
+        id,
+        turns_ended: 0,
+        settings,
+        started: true,
+        screen: None,
+        ask: None,
+        starting: false,
+        warnings: Vec::new(),
+        same_folder,
+        worktree,
+        worktree_pending,
+        account_choice: None,
+    })
 }
 
 /// Past this many characters a prompt or message goes to a visible session
@@ -3421,7 +3468,6 @@ pub fn chat_starting(id: &str, conversation: bool) {
         o.lost = true;
     }
 }
-
 
 /// What Luna names the worktree of a Claude Code helper it spawns, and so knows to be
 /// that helper's: nothing else goes by this name, where a worktree merely new since the
@@ -3570,7 +3616,8 @@ fn conversation_on_disk(id: &str, provider: Provider, folder: &str, account_path
 #[tauri::command]
 pub fn agent_spawns() -> Vec<SpawnRequest> {
     let r = reg().lock().unwrap_or_else(|e| e.into_inner());
-    let mut asked: Vec<SpawnRequest> = r.spawns.values().filter(|s| s.helper.is_none() && !s.settled).filter_map(|s| s.asked.clone()).collect();
+    let mut asked: Vec<SpawnRequest> =
+        r.spawns.values().filter(|s| s.helper.is_none() && !s.settled).filter_map(|s| s.asked.clone()).collect();
     asked.sort_by_key(|s| s.request_id);
     asked
 }
@@ -3836,17 +3883,7 @@ fn put_in(
             o.queued = true;
         }
     }
-    Ok(Some(Sent {
-        ok: true,
-        state_before: "",
-        queued,
-        joined: false,
-        interrupted,
-        held: false,
-        started,
-        turns_ended: baseline,
-        screen,
-    }))
+    Ok(Some(Sent { ok: true, state_before: "", queued, joined: false, interrupted, held: false, started, turns_ended: baseline, screen }))
 }
 
 /// Types text in as a prompt (`type_in`) — around a person's draft where
@@ -3949,14 +3986,17 @@ fn stash_and_type(
     drop(hold);
     // A turn as `type_in` judges one, without its second Enter: that one
     // would send the draft.
-    let started = turn_before == Some(crate::activity::Turn::Busy)
-        || await_start(pty, id, text, baseline, SEND_TIMEOUT.saturating_sub(ENTER_RETRY));
+    let started =
+        turn_before == Some(crate::activity::Turn::Busy) || await_start(pty, id, text, baseline, SEND_TIMEOUT.saturating_sub(ENTER_RETRY));
     Ok(Some(started))
 }
 
 /// Puts a caller's text by for the notifier to type in (`deliver_held`).
 fn hold(caller: &str, id: &str, text: &str) {
-    crate::log::info("agents", &format!("send from {} to {} held: the user is typing or has a draft, or other text is going in", label(caller), label(id)));
+    crate::log::info(
+        "agents",
+        &format!("send from {} to {} held: the user is typing or has a draft, or other text is going in", label(caller), label(id)),
+    );
     reg().lock().unwrap_or_else(|e| e.into_inner()).held.push(Held {
         caller: caller.to_string(),
         id: id.to_string(),
@@ -4197,11 +4237,18 @@ fn resume_chat(pty: &crate::pty::PtyManager, id: &str) {
     let (opening, batch) = {
         let r = reg().lock().unwrap_or_else(|e| e.into_inner());
         let Some(res) = r.resumes.get(id) else { return };
-        let batch: Vec<crate::background::Queued> =
-            r.held.iter().filter(|h| h.id == id).map(|h| crate::background::Queued::new(Some(h.caller.clone()), h.text.clone(), Vec::new())).collect();
+        let batch: Vec<crate::background::Queued> = r
+            .held
+            .iter()
+            .filter(|h| h.id == id)
+            .map(|h| crate::background::Queued::new(Some(h.caller.clone()), h.text.clone(), Vec::new()))
+            .collect();
         // As its first start would have had it: Codex has nowhere else to hear its note.
         let noted = r.known.get(id).filter(|k| k.provider == Provider::Codex).and_then(|k| k.parent.clone());
-        let opening = res.opening.as_deref().map(|text| noted.as_deref().map_or(text.to_string(), |parent| crate::pty::codex_helper_prompt(parent, text)));
+        let opening = res
+            .opening
+            .as_deref()
+            .map(|text| noted.as_deref().map_or(text.to_string(), |parent| crate::pty::codex_helper_prompt(parent, text)));
         (opening, batch)
     };
     let Some(text) = resume_words(resuming, opening, &batch) else {
@@ -4255,7 +4302,10 @@ fn resume_chat(pty: &crate::pty::PtyManager, id: &str) {
     drop(typing);
     crate::background::save();
     if started {
-        crate::log::warn("agents", &format!("{}: carried on by itself after a core stopped its turn, {} held message(s) with it", label(id), batch.len()));
+        crate::log::warn(
+            "agents",
+            &format!("{}: carried on by itself after a core stopped its turn, {} held message(s) with it", label(id), batch.len()),
+        );
     } else {
         crate::log::warn("agents", &format!("{}: Luna typed in what carries it on and no turn began", label(id)));
     }
@@ -4289,7 +4339,9 @@ fn deliver_held(pty: &crate::pty::PtyManager) {
         // Its parent gets it back with what it first asked (`undelivered_for`), the
         // two being no use apart: typed in, this would start it on the wrong foot. Not
         // once that parent has sent it something that went in: it has started on that.
-        if still_all_lost(pty, &caller, &id) && reg().lock().unwrap_or_else(|e| e.into_inner()).owed.contains_key(&(caller.clone(), id.clone())) {
+        if still_all_lost(pty, &caller, &id)
+            && reg().lock().unwrap_or_else(|e| e.into_inner()).owed.contains_key(&(caller.clone(), id.clone()))
+        {
             continue;
         }
         if !live(pty, &id) {
@@ -4349,7 +4401,9 @@ fn deliver_held(pty: &crate::pty::PtyManager) {
             Ok(None) => {
                 stuck.insert(id.clone());
                 if !told && pty.has_draft(&id) && now_ms().saturating_sub(since) >= DRAFT_ALERT_MS {
-                    if let Some(h) = reg().lock().unwrap_or_else(|e| e.into_inner()).held.iter_mut().find(|h| h.id == id && h.since == since) {
+                    if let Some(h) =
+                        reg().lock().unwrap_or_else(|e| e.into_inner()).held.iter_mut().find(|h| h.id == id && h.since == since)
+                    {
                         h.told = true;
                     }
                     let chat = chat_name(&id).unwrap_or_else(|| id.clone());
@@ -4357,7 +4411,9 @@ fn deliver_held(pty: &crate::pty::PtyManager) {
                     crate::power::notify_chat(
                         &id,
                         "A message is waiting",
-                        &format!("\"{chat}\" has an unsent draft, so Luna is holding a message from \"{from}\" until you send or clear it."),
+                        &format!(
+                            "\"{chat}\" has an unsent draft, so Luna is holding a message from \"{from}\" until you send or clear it."
+                        ),
                     );
                 }
             }
@@ -4462,9 +4518,10 @@ fn presses_for(provider: Provider, ask: &Ask, answers: &[String], allow: Option<
     for (q, a) in ask.questions.iter().zip(answers) {
         let picked = resolve_option(q, a);
         if let Some(at) = q.list_at {
-            let i = q.options.iter().position(|o| *o == picked).ok_or_else(|| {
-                format!("pick one of the options of \"{}\", by number or label; it takes no words of one's own", q.text)
-            })?;
+            let i =
+                q.options.iter().position(|o| *o == picked).ok_or_else(|| {
+                    format!("pick one of the options of \"{}\", by number or label; it takes no words of one's own", q.text)
+                })?;
             let (key, n) = if i >= at { ("\x1b[B", i - at) } else { ("\x1b[A", at - i) };
             keys.extend(std::iter::repeat_with(|| Key::Seq(key)).take(n));
             keys.push(Key::Seq("\r"));
@@ -4518,7 +4575,14 @@ const ANSWER_SETTLE: std::time::Duration = std::time::Duration::from_millis(1500
 /// permission's dialog takes `{enter}` and the rest is a new prompt. So is a note, which
 /// a refused permission's terminal takes as one, and a line break in an answer's own
 /// words, which would send what follows. A dialog Luna cannot read waits for a person.
-fn drain_lets_answer(id: &str, ask: Option<&Ask>, ask_id: Option<&str>, answers: &[String], note: Option<&str>, keys: Option<&str>) -> Result<(), String> {
+fn drain_lets_answer(
+    id: &str,
+    ask: Option<&Ask>,
+    ask_id: Option<&str>,
+    answers: &[String],
+    note: Option<&str>,
+    keys: Option<&str>,
+) -> Result<(), String> {
     if keys.is_some() {
         return Err("Luna is draining: keys are refused; answer with answers or allow".into());
     }
@@ -4529,7 +4593,9 @@ fn drain_lets_answer(id: &str, ask: Option<&Ask>, ask_id: Option<&str>, answers:
         return Err("Luna is draining: an answer is one line".into());
     }
     let Some(ask) = ask else {
-        return Err(format!("Luna is draining, and session {id} has no question or permission pending that Luna can read, so nothing goes to it"));
+        return Err(format!(
+            "Luna is draining, and session {id} has no question or permission pending that Luna can read, so nothing goes to it"
+        ));
     };
     if ask.id.is_some() && ask.id.as_deref() != ask_id {
         return Err(format!("Luna is draining: name the ask you answer, askId {:?}", ask.id.as_deref().unwrap_or("")));
@@ -4559,7 +4625,10 @@ pub fn answer(
     let terminal = if crate::background::has(id) {
         None
     } else {
-        Some(TypingInto::wait_for(id, TYPING_WAIT).ok_or_else(|| format!("Luna is still typing into session {id}; try again in a little while"))?)
+        Some(
+            TypingInto::wait_for(id, TYPING_WAIT)
+                .ok_or_else(|| format!("Luna is still typing into session {id}; try again in a little while"))?,
+        )
     };
     let baseline = crate::activity::turn_state(id).map(|t| t.turns_ended).unwrap_or(0);
     let ask = ask_of(id);
@@ -4687,7 +4756,10 @@ fn moved_to(id: &str, was: &std::path::Path, now: &std::path::Path) -> u64 {
         }
     }
     drop(r);
-    crate::log::info("agents", &format!("{} goes on in {} (was {}): {moved} owed answer(s) read from {from}", label(id), now.display(), was.display()));
+    crate::log::info(
+        "agents",
+        &format!("{} goes on in {} (was {}): {moved} owed answer(s) read from {from}", label(id), now.display(), was.display()),
+    );
     from
 }
 
@@ -4992,7 +5064,10 @@ pub fn wait(
 /// text may miss its turn during a wait. In this order: `retried` has set the floor
 /// before a helper can read as anything but busy (`background::turn_over`), so a
 /// state past that turn is never paired with a floor from before it.
-fn state_then_floor(key: &(String, String), state: impl FnOnce() -> Option<crate::activity::TurnState>) -> (Option<crate::activity::TurnState>, u32) {
+fn state_then_floor(
+    key: &(String, String),
+    state: impl FnOnce() -> Option<crate::activity::TurnState>,
+) -> (Option<crate::activity::TurnState>, u32) {
     let ts = state();
     let floor = reg().lock().unwrap_or_else(|e| e.into_inner()).delivery_floors.get(key).copied();
     (ts, floor.unwrap_or(0))
@@ -5040,7 +5115,21 @@ fn wait_for(
             let (state, ask) = state_of(id);
             let turns_ended = crate::activity::turn_state(id).map_or(0, |t| t.turns_ended);
             let screen = screen_of(&pty, id);
-            return Ok((Waited { outcome: "timeout", state, ask, turns_ended, reply: None, failed: None, transcript_missing: false, screen, undelivered: None, job_debt: None }, false));
+            return Ok((
+                Waited {
+                    outcome: "timeout",
+                    state,
+                    ask,
+                    turns_ended,
+                    reply: None,
+                    failed: None,
+                    transcript_missing: false,
+                    screen,
+                    undelivered: None,
+                    job_debt: None,
+                },
+                false,
+            ));
         }
         std::thread::sleep(POLL);
     }
@@ -5097,7 +5186,13 @@ fn wait_for(
                 let cursor = reg().lock().unwrap_or_else(|e| e.into_inner()).owed.get(&key).map(|o| o.cursor);
                 turn != Some(crate::activity::Turn::Busy) && cursor.is_some_and(|at| news_for_parent(&pty, caller, id, &known, at))
             };
-            let now = verdict(&Owed::pending(baseline, 0), turns_ended, turn, job, real_turn_past(id, caller, baseline, turns_ended, waits, upward));
+            let now = verdict(
+                &Owed::pending(baseline, 0),
+                turns_ended,
+                turn,
+                job,
+                real_turn_past(id, caller, baseline, turns_ended, waits, upward),
+            );
             if now == Verdict::OnlyNotices {
                 baseline = turns_ended;
             }
@@ -5197,7 +5292,10 @@ fn wait_for(
                 return gone_err();
             }
             let (state, ask) = state_of(id);
-            return Ok((Waited { outcome, state, ask, turns_ended, reply, failed, transcript_missing, screen, undelivered, job_debt }, answers));
+            return Ok((
+                Waited { outcome, state, ask, turns_ended, reply, failed, transcript_missing, screen, undelivered, job_debt },
+                answers,
+            ));
         }
         if std::time::Instant::now() >= deadline {
             let screen = screen_of(&pty, id);
@@ -5205,7 +5303,21 @@ fn wait_for(
             // next wait still waits for it.
             looked(id);
             let (state, ask) = state_of(id);
-            return Ok((Waited { outcome: "timeout", state, ask, turns_ended, reply: None, failed: None, transcript_missing: false, screen, undelivered: None, job_debt: None }, false));
+            return Ok((
+                Waited {
+                    outcome: "timeout",
+                    state,
+                    ask,
+                    turns_ended,
+                    reply: None,
+                    failed: None,
+                    transcript_missing: false,
+                    screen,
+                    undelivered: None,
+                    job_debt: None,
+                },
+                false,
+            ));
         }
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
@@ -5273,11 +5385,9 @@ pub fn wait_many(
         let (tx, rx) = std::sync::mpsc::channel();
         for (i, id) in unique.iter().copied().enumerate() {
             let (tx, one) = (tx.clone(), &calls[i]);
-            let thread = std::thread::Builder::new()
-                .name(format!("luna-wait-{id}"))
-                .spawn_scoped(scope, move || {
-                    let _ = tx.send((i, wait_for(caller, id, until, timeout_s, None, one, false)));
-                });
+            let thread = std::thread::Builder::new().name(format!("luna-wait-{id}")).spawn_scoped(scope, move || {
+                let _ = tx.send((i, wait_for(caller, id, until, timeout_s, None, one, false)));
+            });
             if let Err(e) = thread {
                 no_thread = Some(e.to_string());
             }
@@ -5387,7 +5497,10 @@ fn share_replies(results: &mut [WaitedOne]) {
         let r = &mut results[i];
         if let Some(whole) = r.waited.reply.take() {
             let head: String = whole.chars().take(share).collect();
-            r.waited.reply = Some(format!("{head}\n\n[cut at {share} characters, several sessions sharing this result; {}]", answer_file(&r.id, &Said::one_turn(vec![whole]))));
+            r.waited.reply = Some(format!(
+                "{head}\n\n[cut at {share} characters, several sessions sharing this result; {}]",
+                answer_file(&r.id, &Said::one_turn(vec![whole]))
+            ));
         }
     }
 }
@@ -6064,7 +6177,13 @@ fn still_all_lost(pty: &crate::pty::PtyManager, caller: &str, id: &str) -> bool 
 /// such debt, and still waits for its turn.
 fn lost_count(caller: &str, id: &str) -> u32 {
     let count = crate::activity::turn_state(id).map(|t| t.turns_ended).or_else(|| crate::activity::turns_counted(id)).unwrap_or(0);
-    let cut = reg().lock().unwrap_or_else(|e| e.into_inner()).owed.get(&(caller.to_string(), id.to_string())).filter(|o| o.cut_short).map(|o| o.baseline.saturating_add(1));
+    let cut = reg()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .owed
+        .get(&(caller.to_string(), id.to_string()))
+        .filter(|o| o.cut_short)
+        .map(|o| o.baseline.saturating_add(1));
     count.max(cut.unwrap_or(0))
 }
 
@@ -6079,7 +6198,21 @@ fn lost_answer(caller: &str, id: &str, call: &crate::mcp::Call, alone: bool) -> 
     let outcome = if live(&crate::pty::manager(), id) { "turn_done" } else { "exit" };
     let (state, ask) = state_of(id);
     let failed = Some("it never got started: Luna's core restarted before its first turn got anywhere".to_string());
-    Ok((Waited { outcome, state, ask, turns_ended, reply: None, failed, transcript_missing: false, screen: None, undelivered, job_debt: None }, true))
+    Ok((
+        Waited {
+            outcome,
+            state,
+            ask,
+            turns_ended,
+            reply: None,
+            failed,
+            transcript_missing: false,
+            screen: None,
+            undelivered,
+            job_debt: None,
+        },
+        true,
+    ))
 }
 
 /// What never reached `id` that `caller` is to hear of: what a background helper
@@ -6193,7 +6326,10 @@ fn undelivered_note(caller: &str, id: &str) -> Option<String> {
     let whole = lost_whole(&crate::pty::manager(), caller, id);
     Some(match note_file(id, &text) {
         Some(path) if whole => {
-            format!("It never got started: Luna's core restarted before its first turn got anywhere; {}. Send again what still matters.{left}", never_started_what(&lost, Some(&path)))
+            format!(
+                "It never got started: Luna's core restarted before its first turn got anywhere; {}. Send again what still matters.{left}",
+                never_started_what(&lost, Some(&path))
+            )
         }
         Some(path) => format!("{}{left}", undelivered_line(&lost, false, Some(&path)).trim_start()),
         None => format!("{}{left}", text.chars().take(MAX_TEXT).collect::<String>()),
@@ -6205,7 +6341,9 @@ fn never_started_what(lost: &[String], file: Option<&std::path::Path>) -> String
     match (lost.len(), file) {
         (_, None) => "its prompt was not kept".to_string(),
         (1, Some(path)) => format!("its prompt is in {}", path.display()),
-        (n, Some(path)) => format!("its prompt and {} are in {}", count_of(&lost[1.min(n)..]).replace("message", "queued message"), path.display()),
+        (n, Some(path)) => {
+            format!("its prompt and {} are in {}", count_of(&lost[1.min(n)..]).replace("message", "queued message"), path.display())
+        }
     }
 }
 
@@ -6234,7 +6372,12 @@ pub fn undelivered_left(id: &str, lost: &[crate::background::Queued]) {
     let file = note_file(id, &undelivered_text(lost));
     crate::log::warn(
         "agents",
-        &format!("{} went with {} nobody was told of: {}", label(id), count_of(lost), file.map_or("not written".into(), |p| p.display().to_string())),
+        &format!(
+            "{} went with {} nobody was told of: {}",
+            label(id),
+            count_of(lost),
+            file.map_or("not written".into(), |p| p.display().to_string())
+        ),
     );
 }
 
@@ -6426,9 +6569,9 @@ fn count_notice(r: &mut Registry, caller: &str, id: &str, now: u64) -> bool {
 /// through, for it to say so.
 fn last_notice(caller: &str, id: &str, now: u64) -> bool {
     let r = reg().lock().unwrap_or_else(|e| e.into_inner());
-    r.notice_times.get(&(caller.to_string(), id.to_string())).is_some_and(|times| {
-        times.iter().filter(|at| now.saturating_sub(**at) < BREAKER_WINDOW_MS).count() + 1 >= BREAKER_NOTICES
-    })
+    r.notice_times
+        .get(&(caller.to_string(), id.to_string()))
+        .is_some_and(|times| times.iter().filter(|at| now.saturating_sub(**at) < BREAKER_WINDOW_MS).count() + 1 >= BREAKER_NOTICES)
 }
 
 /// Whether Luna has stopped telling `caller` of `id`'s turns and jobs. A person
@@ -6449,14 +6592,7 @@ fn pair_stopped(pty: &crate::pty::PtyManager, caller: &str, id: &str) -> bool {
 }
 
 /// The notice for one session, or None while nothing has happened to it.
-fn notice_line(
-    pty: &crate::pty::PtyManager,
-    caller: &str,
-    who: &str,
-    id: &str,
-    k: &Known,
-    o: Owed,
-) -> Option<(Option<String>, Settled)> {
+fn notice_line(pty: &crate::pty::PtyManager, caller: &str, who: &str, id: &str, k: &Known, o: Owed) -> Option<(Option<String>, Settled)> {
     // A move to another transcript since the debt was looked at, seen to by this
     // look or another's (`moved_to`), has it read from where it reads now.
     let mut o = o;
@@ -6479,7 +6615,8 @@ fn notice_line(
     let background = ts.is_some_and(|t| t.children_busy) && alive;
     let waits = waits_on_helpers(id, caller);
     let between_turns = turn != Some(crate::activity::Turn::Busy);
-    let real_turn = o.told_pending && real_turn_past(id, caller, o.baseline, ended, waits, || between_turns && news_for_parent(pty, caller, id, k, o.cursor));
+    let real_turn = o.told_pending
+        && real_turn_past(id, caller, o.baseline, ended, waits, || between_turns && news_for_parent(pty, caller, id, k, o.cursor));
     let now = verdict(&o, ended, turn, background || waits, real_turn);
     if now == Verdict::OnlyNotices {
         return Some((None, Settled::Skip(ended)));
@@ -6513,7 +6650,8 @@ fn notice_line(
                 let how = if said.is_empty() && failed.is_none() && !o.job_went { Settled::NoNews(at) } else { Settled::Answered };
                 let quoted = if failed.is_some() { String::new() } else { begins(&said) };
                 let said = match said.len() {
-                    0 => "it has said nothing since your last notice. It does not take that up by itself; luna_send asks it how it went".to_string(),
+                    0 => "it has said nothing since your last notice. It does not take that up by itself; luna_send asks it how it went"
+                        .to_string(),
                     1 => format!("it wrote 1 message since your last notice; {}{quoted}", answer_file(id, &said)),
                     n => format!("it wrote {n} messages since your last notice; {}{quoted}", answer_file(id, &said)),
                 };
@@ -6559,7 +6697,8 @@ fn notice_line(
         };
         let reply = match replies.len() {
             0 if !transcript_found(pty, id) => {
-                ", but Luna cannot find its transcript, so whether it replied is unknown (luna_read with screen: true shows what there is)".to_string()
+                ", but Luna cannot find its transcript, so whether it replied is unknown (luna_read with screen: true shows what there is)"
+                    .to_string()
             }
             0 => " without a reply (luna_read with screen: true shows why, if anything does)".to_string(),
             1 => format!(" with 1 message since you asked; {}", answer_where(file.as_deref())),
@@ -6589,7 +6728,10 @@ fn notice_line(
         // Whatever else is going on: this turn did not get to its end.
         if let Some(why) = failed {
             let said = if replies.is_empty() { String::new() } else { format!(" It ended{reply}.") };
-            return Some((Some(format!("{who} stopped on an error: {}{said}{lost} luna_send has it carry on.", sentence(&why))), Settled::Answered));
+            return Some((
+                Some(format!("{who} stopped on an error: {}{said}{lost} luna_send has it carry on.", sentence(&why))),
+                Settled::Answered,
+            ));
         }
         let reply = format!("{reply}{}", begins(&replies));
         if background || waits {
@@ -6770,10 +6912,7 @@ fn standing_line(pty: &crate::pty::PtyManager, caller: &str, who: &str, id: &str
             h.finish()
         };
         if o.told_ask != key {
-            return Some((
-                Some(format!("{who} {} It works on meanwhile; luna_answer answers it.", a.line())),
-                Settled::Asked(key),
-            ));
+            return Some((Some(format!("{who} {} It works on meanwhile; luna_answer answers it.", a.line())), Settled::Asked(key)));
         }
     }
     None
@@ -6940,7 +7079,8 @@ struct BudgetNews {
 /// may take the helper back under it before its parent can be told. At its budget
 /// it has not passed it.
 fn budget_breach(budget: u64, context: &crate::background::Context, now: u64) -> Option<serde_json::Value> {
-    (context.tokens > budget).then(|| serde_json::json!({ "at": now, "tokens": context.tokens, "window": context.window, "pct": context.pct }))
+    (context.tokens > budget)
+        .then(|| serde_json::json!({ "at": now, "tokens": context.tokens, "window": context.window, "pct": context.pct }))
 }
 
 fn budget_line(who: &str, budget: u64, breach: &serde_json::Value) -> String {
@@ -6991,7 +7131,10 @@ fn budget_news(pty: &crate::pty::PtyManager, read: bool) -> (HashMap<String, Vec
             let context = transcript_path(pty, &w.id).and_then(|path| crate::background::Context::of(&path, w.provider));
             breach = context.and_then(|c| budget_breach(w.budget, &c, now_ms()));
             if let Some(b) = &breach {
-                crate::log::warn("agents", &format!("{} has passed its budget of {} context tokens: {}", label(&w.id), w.budget, b["tokens"]));
+                crate::log::warn(
+                    "agents",
+                    &format!("{} has passed its budget of {} context tokens: {}", label(&w.id), w.budget, b["tokens"]),
+                );
                 set_budget_state(&w.id, "budgetBreach", Some(b.clone()));
                 moved = true;
             }
@@ -7065,10 +7208,7 @@ fn anything_to_say(pty: &crate::pty::PtyManager, items: &[(String, Known, Owed, 
     items.iter().any(|(id, _, o, _)| {
         let ts = crate::activity::turn_state(id);
         let ended = ts.map(|t| t.turns_ended).unwrap_or(0);
-        o.resumed
-            || (ended > o.baseline && ts.map(|t| t.turn) != Some(crate::activity::Turn::Busy))
-            || job_over(o, ts)
-            || !live(pty, id)
+        o.resumed || (ended > o.baseline && ts.map(|t| t.turn) != Some(crate::activity::Turn::Busy)) || job_over(o, ts) || !live(pty, id)
     })
 }
 
@@ -7150,9 +7290,8 @@ fn held_for_wait(pty: &crate::pty::PtyManager, caller: &str, id: &str, o: &Owed)
     let alive = live(pty, id);
     let ended = ts.map_or(0, |t| t.turns_ended);
     // A prompt it stopped on is news too: `wait(turn_done)` hands that back.
-    let other_news = (ended > o.baseline && turn != Some(crate::activity::Turn::Busy))
-        || turn == Some(crate::activity::Turn::Waiting)
-        || !alive;
+    let other_news =
+        (ended > o.baseline && turn != Some(crate::activity::Turn::Busy)) || turn == Some(crate::activity::Turn::Waiting) || !alive;
     let job_ended = alive && job_over(o, ts) && !waits_on_helpers(id, caller);
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
     let Some(owed) = r.owed.get_mut(&key) else { return true };
@@ -7205,7 +7344,11 @@ fn spawn_called(s: &SpawnTaken) -> String {
 /// reads the same; it is only named.
 fn worktrees_left(s: &SpawnTaken) -> String {
     let (Some(true), Some(folder)) = (s.params.worktree, s.params.folder.as_deref()) else { return String::new() };
-    left_words(&crate::worktree::left_since(crate::worktree::made_for(folder, &s.account_path), &s.worktrees_before, &crate::pty::live_cwds()))
+    left_words(&crate::worktree::left_since(
+        crate::worktree::made_for(folder, &s.account_path),
+        &s.worktrees_before,
+        &crate::pty::live_cwds(),
+    ))
 }
 
 /// The notice of a spawn nothing came of. It says why the call itself failed: the
@@ -7240,7 +7383,10 @@ fn spawn_afresh(s: SpawnTaken) {
     let made = spawn_with(&s.caller, params, Some(s.request), &mut still_coming);
     let told = match &made {
         Ok(made) => {
-            crate::log::warn("agents", &format!("{}'s spawn {} started afresh as {} after a core cut it off", label(&s.caller), s.request, label(&made.id)));
+            crate::log::warn(
+                "agents",
+                &format!("{}'s spawn {} started afresh as {} after a core cut it off", label(&s.caller), s.request, label(&made.id)),
+            );
             format!(
                 "Your luna_spawn {} was cut off when Luna's core restarted, which is also why that call ended in an error or with no answer. As it asked with resumeOnRestart, Luna started it afresh as {}: do not spawn it again, and its answer comes as a notice.{left}",
                 spawn_called(&s),
@@ -7257,7 +7403,10 @@ fn spawn_afresh(s: SpawnTaken) {
             )
         }
         Err(why) => {
-            crate::log::warn("agents", &format!("{}'s spawn {} could not start afresh after a core cut it off: {why}", label(&s.caller), s.request));
+            crate::log::warn(
+                "agents",
+                &format!("{}'s spawn {} could not start afresh after a core cut it off: {why}", label(&s.caller), s.request),
+            );
             never_completed(&s, Some(why), &left)
         }
     };
@@ -7321,7 +7470,10 @@ fn settle_spawns(up_ms: u64) {
     };
     for (s, made) in due {
         if made {
-            crate::log::info("agents", &format!("{}'s spawn {} had come to {} when a core went", label(&s.caller), s.request, s.helper.as_deref().unwrap_or("")));
+            crate::log::info(
+                "agents",
+                &format!("{}'s spawn {} had come to {} when a core went", label(&s.caller), s.request, s.helper.as_deref().unwrap_or("")),
+            );
             crate::background::save();
         } else if s.resume_on_restart {
             let _ = std::thread::Builder::new().name("luna-spawn-again".into()).spawn(move || spawn_afresh(s));
@@ -7437,7 +7589,14 @@ fn notifier() {
             }
         }
         for (caller, id) in gave_up {
-            crate::log::warn("agents", &format!("{caller} is owed the answer of {} but has not come back in {} min; no notice will go", label(&id), CALLER_RETURN_MS / 60_000));
+            crate::log::warn(
+                "agents",
+                &format!(
+                    "{caller} is owed the answer of {} but has not come back in {} min; no notice will go",
+                    label(&id),
+                    CALLER_RETURN_MS / 60_000
+                ),
+            );
         }
         // A caller owed nothing still hears of the quota its helpers run on,
         // and of a spawn of its own that a core's going cut off.
@@ -7505,7 +7664,11 @@ fn notifier() {
                 if held_for_wait(&pty, &caller, id, o) {
                     continue;
                 }
-                let said = if pair_stopped(&pty, &caller, id) { standing_line(&pty, &caller, who, id, k, *o) } else { notice_line(&pty, &caller, who, id, k, *o) };
+                let said = if pair_stopped(&pty, &caller, id) {
+                    standing_line(&pty, &caller, who, id, k, *o)
+                } else {
+                    notice_line(&pty, &caller, who, id, k, *o)
+                };
                 match said {
                     Some((Some(mut line), how)) => {
                         // Told once, with whatever is told first.
@@ -7555,7 +7718,8 @@ fn notifier() {
             lines.extend(spawn_lines.iter().map(|(_, line)| line.clone()));
             let breaches = budget.remove(&caller).unwrap_or_default();
             let mut budget_lines = Vec::new();
-            if let Some(oldest) = riders.iter().filter_map(|(_, _, how, _)| rides_since(how)).chain(breaches.iter().map(|n| n.since)).min() {
+            if let Some(oldest) = riders.iter().filter_map(|(_, _, how, _)| rides_since(how)).chain(breaches.iter().map(|n| n.since)).min()
+            {
                 if riders_go(!lines.is_empty(), riders.len() == items.len(), oldest, now_ms(), crate::activity::summary().busy) {
                     for (line, id, how, o) in riders {
                         lines.push(line);
@@ -7641,7 +7805,10 @@ fn deliver_notice(
     // text a dialog took: settled, as ever.
     let stuck = matches!(typed, Ok(Some(false))) && pty.composer(caller).is_some_and(|c| !c.text.trim().is_empty());
     let typed = if stuck {
-        crate::log::warn("agents", &format!("notice to {} sits in its composer, no turn begun: kept as a draft, still owed", label(caller)));
+        crate::log::warn(
+            "agents",
+            &format!("notice to {} sits in its composer, no turn begun: kept as a draft, still owed", label(caller)),
+        );
         pty.set_draft(caller, text.chars().count() as u64);
         Ok(None)
     } else {
@@ -7659,7 +7826,8 @@ fn deliver_notice(
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
     match typed {
         Ok(None) => {
-            r.notices_held.insert(caller.to_string(), settled.len() + quota_lines.len() + spawn_lines.len() + news_lines.len() + budget_lines.len());
+            r.notices_held
+                .insert(caller.to_string(), settled.len() + quota_lines.len() + spawn_lines.len() + news_lines.len() + budget_lines.len());
         }
         _ => {
             r.notices_held.remove(caller);
@@ -7675,8 +7843,13 @@ fn deliver_notice(
                 crate::log::warn("agents", &format!("notice to {} about {about} did not start a turn", label(caller)));
             }
             // Its words on what never reached them went with this notice.
-            let told_lost: Vec<String> = settled.iter().filter(|(_, how, _)| matches!(how, Settled::Answered | Settled::NoNews(_) | Settled::Exited)).map(|(id, _, _)| id.clone()).collect();
-            let told_left: Vec<String> = settled.iter().map(|(id, _, _)| id.clone()).filter(|id| parent_of(id).as_deref() == Some(caller)).collect();
+            let told_lost: Vec<String> = settled
+                .iter()
+                .filter(|(_, how, _)| matches!(how, Settled::Answered | Settled::NoNews(_) | Settled::Exited))
+                .map(|(id, _, _)| id.clone())
+                .collect();
+            let told_left: Vec<String> =
+                settled.iter().map(|(id, _, _)| id.clone()).filter(|id| parent_of(id).as_deref() == Some(caller)).collect();
             let mut stopped = Vec::new();
             let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
             for id in &told_left {
@@ -7940,7 +8113,12 @@ mod tests {
 
     #[test]
     fn a_list_is_of_one_provider() {
-        let allowed = [account(Provider::Claude, "c"), account(Provider::Codex, "x"), account(Provider::Claude, "both"), account(Provider::Codex, "both")];
+        let allowed = [
+            account(Provider::Claude, "c"),
+            account(Provider::Codex, "x"),
+            account(Provider::Claude, "both"),
+            account(Provider::Codex, "both"),
+        ];
         let of = |list: &[&str], asked| list_provider(&names(list), &allowed, asked, Provider::Claude);
         assert_eq!(of(&["c", "both"], None), Ok(Provider::Claude));
         assert_eq!(of(&["x", "both"], None), Ok(Provider::Codex), "the names bring their provider");
@@ -7953,14 +8131,20 @@ mod tests {
 
     #[test]
     fn account_comes_as_a_name_or_a_list_and_goes_out_as_a_name() {
-        let p: SpawnParams = serde_json::from_value(serde_json::json!({ "prompt": "x", "account": "a", "readOnly": true, "agent": "checker" })).unwrap();
+        let p: SpawnParams =
+            serde_json::from_value(serde_json::json!({ "prompt": "x", "account": "a", "readOnly": true, "agent": "checker" })).unwrap();
         assert_eq!(p.account_name(), Some("a"));
         assert_eq!(p.read_only, Some(true));
         assert_eq!(p.agent.as_deref(), Some("checker"));
         let p: SpawnParams = serde_json::from_value(serde_json::json!({ "prompt": "x", "account": ["a", "b"] })).unwrap();
         assert!(matches!(p.account, Some(AccountAsk::List(ref l)) if l.len() == 2));
         assert_eq!(p.account_name(), None, "not settled yet");
-        let p = SpawnParams { account: Some(AccountAsk::One("a".into())), read_only: Some(true), agent: Some("checker".into()), ..Default::default() };
+        let p = SpawnParams {
+            account: Some(AccountAsk::One("a".into())),
+            read_only: Some(true),
+            agent: Some("checker".into()),
+            ..Default::default()
+        };
         let out = serde_json::to_value(&p).unwrap();
         assert_eq!(out["account"], "a", "the frontend reads a string");
         assert_eq!(out["readOnly"], true);
@@ -8039,13 +8223,13 @@ mod tests {
         // whole list, which would let go of every other test's waiting chat.
         {
             let mut r = reg().lock().unwrap();
-            r.names.extend([("grp-me", "builder"), ("grp-peer", "Tester"), ("grp-far", "docs")].map(|(k, v)| (k.to_string(), v.to_string())));
+            r.names
+                .extend([("grp-me", "builder"), ("grp-peer", "Tester"), ("grp-far", "docs")].map(|(k, v)| (k.to_string(), v.to_string())));
             r.groups.extend([("grp-me", 1), ("grp-peer", 1), ("grp-far", 0)].map(|(k, v)| (k.to_string(), v)));
         }
 
         let ids = |caller: &str, f: SessionFilter| -> Vec<String> {
-            let mut v: Vec<String> =
-                sessions(caller, &f).unwrap().into_iter().map(|s| s.id).filter(|id| id.starts_with("grp-")).collect();
+            let mut v: Vec<String> = sessions(caller, &f).unwrap().into_iter().map(|s| s.id).filter(|id| id.starts_with("grp-")).collect();
             v.sort();
             v
         };
@@ -8059,7 +8243,10 @@ mod tests {
         let q = |text: &str| SessionFilter { group: None, q: Some(text.into()), history: None };
         assert_eq!(ids("grp-me", q("tester")), ["grp-peer"], "name, any case");
         assert_eq!(ids("grp-me", q("asuri")), ["grp-peer"], "folder");
-        assert_eq!(ids("grp-me", SessionFilter { group: Some(serde_json::json!("mine")), q: Some("build".into()), history: None }), ["grp-me"]);
+        assert_eq!(
+            ids("grp-me", SessionFilter { group: Some(serde_json::json!("mine")), q: Some("build".into()), history: None }),
+            ["grp-me"]
+        );
     }
 
     #[test]
@@ -8278,7 +8465,10 @@ mod tests {
         assert!(last < older, "the last word, then the earlier turn among the rest");
         // A last turn of short lines only: its last line leads, not the
         // earlier turn's long report.
-        let said = own_words(vec![m("assistant", first.clone()), m("user", "Status?".into()), m("assistant", "Still green at 5ce3b92d2.".into())], false);
+        let said = own_words(
+            vec![m("assistant", first.clone()), m("user", "Status?".into()), m("assistant", "Still green at 5ce3b92d2.".into())],
+            false,
+        );
         assert_eq!(said[report_of(&said)], "Still green at 5ce3b92d2.");
         // Stopped on its prompt, with nothing said to it: the turn before stands.
         let said = own_words(vec![m("assistant", first.clone()), m("user", "And now?".into())], true);
@@ -8296,8 +8486,17 @@ mod tests {
     #[test]
     fn subagents_hold_their_own_asks() {
         let chat = "asks-two";
-        let ask = |agent: &str, cmd: &str| on_hook(chat, &serde_json::json!({ "hook_event_name": "PermissionRequest", "agent_id": agent, "tool_name": "Bash", "tool_input": { "command": cmd } }).to_string());
-        let held = || reg().lock().unwrap().hook_asks.get(chat).map(|h| h.iter().map(|(_, input, _)| input["command"].as_str().unwrap().to_string()).collect::<Vec<_>>());
+        let ask = |agent: &str, cmd: &str| {
+            on_hook(chat, &serde_json::json!({ "hook_event_name": "PermissionRequest", "agent_id": agent, "tool_name": "Bash", "tool_input": { "command": cmd } }).to_string())
+        };
+        let held = || {
+            reg()
+                .lock()
+                .unwrap()
+                .hook_asks
+                .get(chat)
+                .map(|h| h.iter().map(|(_, input, _)| input["command"].as_str().unwrap().to_string()).collect::<Vec<_>>())
+        };
         ask("a", "rm a");
         ask("b", "rm b");
         on_hook(chat, r#"{"hook_event_name":"PostToolUse","tool_name":"Read"}"#);
@@ -8310,7 +8509,12 @@ mod tests {
 
     #[test]
     fn the_same_answer_is_the_same_file() {
-        let path = |replies: &[String]| answer_file("same", &Said::one_turn(replies.to_vec())).trim_start_matches("the answer is in ").trim_end_matches(", its report first").to_string();
+        let path = |replies: &[String]| {
+            answer_file("same", &Said::one_turn(replies.to_vec()))
+                .trim_start_matches("the answer is in ")
+                .trim_end_matches(", its report first")
+                .to_string()
+        };
         let replies = vec!["The report.".to_string()];
         let (first, again) = (path(&replies), path(&replies));
         assert_eq!(first, again, "a notice a draft holds back writes no new file at every look");
@@ -8660,7 +8864,11 @@ mod tests {
         let account = dir.to_string_lossy().into_owned();
         let long = "z".repeat(MAX_TEXT + 500);
         let path = crate::claude::session::transcript_file(&account, &account, "sid-done");
-        std::fs::write(&path, format!("{}\n", serde_json::json!({ "type": "assistant", "message": { "content": [{ "type": "text", "text": long }] } }))).unwrap();
+        std::fs::write(
+            &path,
+            format!("{}\n", serde_json::json!({ "type": "assistant", "message": { "content": [{ "type": "text", "text": long }] } })),
+        )
+        .unwrap();
         crate::background::test_turn_ended(&busy);
         let call = crate::mcp::Call::new();
         let w = wait_many(&caller, &[done.clone()], false, "turn_done", 20, &call).unwrap();
@@ -8716,7 +8924,18 @@ mod tests {
     fn several_long_replies_share_one_result() {
         let one = |id: &str, reply: Option<String>| WaitedOne {
             id: id.into(),
-            waited: Waited { outcome: "turn_done", state: "idle", ask: None, turns_ended: 1, reply, failed: None, transcript_missing: false, screen: None, undelivered: None, job_debt: None },
+            waited: Waited {
+                outcome: "turn_done",
+                state: "idle",
+                ask: None,
+                turns_ended: 1,
+                reply,
+                failed: None,
+                transcript_missing: false,
+                screen: None,
+                undelivered: None,
+                job_debt: None,
+            },
         };
         let mut results = [
             one("s-short", Some("short".into())),
@@ -8746,7 +8965,11 @@ mod tests {
     fn a_failed_turn_quotes_nothing_as_its_verdict() {
         use crate::activity::{on_hook, HookEvent};
         let path = std::env::temp_dir().join(format!("luna-verdict-{}.jsonl", std::process::id()));
-        std::fs::write(&path, "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"All done and fixed.\"}]}}\n").unwrap();
+        std::fs::write(
+            &path,
+            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"All done and fixed.\"}]}}\n",
+        )
+        .unwrap();
         for (id, failed) in [("vd-fine", false), ("vd-failed", true)] {
             register(id, Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, false, serde_json::json!({}));
             transcripts().lock().unwrap().insert(id.into(), path.clone());
@@ -8859,7 +9082,15 @@ mod tests {
     fn an_auto_delete_helper_with_only_long_idle_leftovers_goes_and_says_so() {
         let _reaping = reaps_to_myself();
         register("ai-top", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, serde_json::json!({}));
-        register("ai-s", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("ai-top"), false, serde_json::json!({ "background": true }));
+        register(
+            "ai-s",
+            Provider::Claude,
+            "C:\\p",
+            "C:\\acc\\anthropic\\one",
+            Some("ai-top"),
+            false,
+            serde_json::json!({ "background": true }),
+        );
         crate::background::idle_for_test("ai-s", Provider::Claude, 1, false);
         reg().lock().unwrap().auto.insert("ai-s".into(), Auto::default());
         let key = ("ai-top".to_string(), "ai-s".to_string());
@@ -9018,7 +9249,11 @@ mod tests {
         notice_turn(&mut reg().lock().unwrap(), "tr-mid", 2, &["tr-low".into()]);
         let waits = waits_on_helpers("tr-mid", "tr-top");
         assert!(waits);
-        assert_eq!(verdict(&told, 2, Some(Idle), waits, real_turn_past("tr-mid", "tr-top", 1, 2, waits, || false)), Verdict::OnlyNotices, "quiet while one is out");
+        assert_eq!(
+            verdict(&told, 2, Some(Idle), waits, real_turn_past("tr-mid", "tr-top", 1, 2, waits, || false)),
+            Verdict::OnlyNotices,
+            "quiet while one is out"
+        );
         assert_eq!(
             verdict(&told, 2, Some(Idle), waits, real_turn_past("tr-mid", "tr-top", 1, 2, waits, || true)),
             Verdict::TurnOver,
@@ -9030,7 +9265,11 @@ mod tests {
         let waits = waits_on_helpers("tr-mid", "tr-top");
         assert!(!waits);
         let told = Owed::pending(2, 0);
-        assert_eq!(verdict(&told, 3, Some(Idle), waits, real_turn_past("tr-mid", "tr-top", 2, 3, waits, || false)), Verdict::TurnOver, "it reaches the top");
+        assert_eq!(
+            verdict(&told, 3, Some(Idle), waits, real_turn_past("tr-mid", "tr-top", 2, 3, waits, || false)),
+            Verdict::TurnOver,
+            "it reaches the top"
+        );
         // A notice about something else, or about the caller itself, does not count.
         notice_turn(&mut reg().lock().unwrap(), "tr-mid", 4, &["tr-stranger".into()]);
         assert!(!real_turn_past("tr-mid", "tr-top", 3, 4, false, || false));
@@ -9054,14 +9293,27 @@ mod tests {
     fn a_report_made_on_its_own_helpers_news_reaches_its_parent_once() {
         let none = serde_json::json!({});
         register("ir-top", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, none.clone());
-        register("ir-mid", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("ir-top"), true, serde_json::json!({ "background": true }));
+        register(
+            "ir-mid",
+            Provider::Claude,
+            "C:\\p",
+            "C:\\acc\\anthropic\\one",
+            Some("ir-top"),
+            true,
+            serde_json::json!({ "background": true }),
+        );
         register("ir-low", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("ir-mid"), false, none.clone());
         register("ir-low2", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("ir-mid"), false, none.clone());
         register("ir-peer", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, none);
         crate::background::idle_for_test("ir-mid", Provider::Claude, 2, false);
         owe_from("ir-mid", "ir-low2", 0, 0);
-        let said = |t: &str| format!("{}\n", serde_json::json!({ "type": "assistant", "message": { "content": [{ "type": "text", "text": t }] } }));
-        let notice = format!("{}\n", serde_json::json!({ "type": "user", "message": { "role": "user", "content": format!("{NOTICE_TAG} Your helper ir-low finished its turn.") } }));
+        let said = |t: &str| {
+            format!("{}\n", serde_json::json!({ "type": "assistant", "message": { "content": [{ "type": "text", "text": t }] } }))
+        };
+        let notice = format!(
+            "{}\n",
+            serde_json::json!({ "type": "user", "message": { "role": "user", "content": format!("{NOTICE_TAG} Your helper ir-low finished its turn.") } })
+        );
         let before = said("Started both helpers.");
         let path = std::env::temp_dir().join(format!("luna-ir-mid-{}.jsonl", std::process::id()));
         transcripts().lock().unwrap().insert("ir-mid".into(), path.clone());
@@ -9075,7 +9327,9 @@ mod tests {
         };
         let report = format!("Phase 1 is in: kill the core before 12:35 UTC. {}", "Evidence. ".repeat(45));
 
-        let Some((Some(text), Settled::Pending(2, cursor))) = line("ir-top", &format!("{notice}{}", said(&report))) else { panic!("its parent hears") };
+        let Some((Some(text), Settled::Pending(2, cursor))) = line("ir-top", &format!("{notice}{}", said(&report))) else {
+            panic!("its parent hears")
+        };
         assert!(text.contains("ended another turn") && text.contains("helpers of its own have yet to answer it"), "{text}");
         assert!(text.contains("It begins: \"Phase 1 is in"), "{text}");
         assert_eq!(cursor, std::fs::metadata(&path).unwrap().len(), "and what follows is what it hears next");
@@ -9118,7 +9372,13 @@ mod tests {
                 let ended = turns[id];
                 // Always news, wherever its parent is the one to hear it.
                 let upward = || parent_of(id).as_deref() == Some(caller);
-                let v = verdict(&o, ended, Some(Turn::Idle), true, o.told_pending && real_turn_past(id, caller, o.baseline, ended, false, upward));
+                let v = verdict(
+                    &o,
+                    ended,
+                    Some(Turn::Idle),
+                    true,
+                    o.told_pending && real_turn_past(id, caller, o.baseline, ended, false, upward),
+                );
                 match v {
                     Verdict::OnlyNotices => reg().lock().unwrap().owed.get_mut(&key(caller, id)).unwrap().baseline = ended,
                     Verdict::TurnOver => {
@@ -9433,8 +9693,18 @@ mod tests {
         register("tk-v", Provider::Codex, "C:\\p", "C:\\acc\\openai\\one", Some("tk-c"), false, none);
         reg().lock().unwrap().tasks.insert("tk-v".into(), "Run the lane".into());
         let ties = ties_of("tk-v").unwrap();
-        let chat = SavedChat { id: "tk-v".into(), provider: Provider::Codex, folder: "C:\\p".into(), account_path: "C:\\acc\\openai\\one".into(), turns_ended: 0, transcript: None, mid_turn: false, ties };
-        let saved: SavedChats = serde_json::from_slice(&serde_json::to_vec(&SavedChats { chats: vec![chat], ..Default::default() }).unwrap()).unwrap();
+        let chat = SavedChat {
+            id: "tk-v".into(),
+            provider: Provider::Codex,
+            folder: "C:\\p".into(),
+            account_path: "C:\\acc\\openai\\one".into(),
+            turns_ended: 0,
+            transcript: None,
+            mid_turn: false,
+            ties,
+        };
+        let saved: SavedChats =
+            serde_json::from_slice(&serde_json::to_vec(&SavedChats { chats: vec![chat], ..Default::default() }).unwrap()).unwrap();
         forget("tk-v");
         take_up_chats(saved);
         assert_eq!(reg().lock().unwrap().tasks["tk-v"], "Run the lane");
@@ -9450,7 +9720,8 @@ mod tests {
     #[test]
     fn a_spawn_has_its_task_as_soon_as_a_session_comes_of_it() {
         let _one = spawns_to_myself();
-        let params: SpawnParams = serde_json::from_value(serde_json::json!({ "prompt": "# Late to the window\n\nThe rest.", "visible": true })).unwrap();
+        let params: SpawnParams =
+            serde_json::from_value(serde_json::json!({ "prompt": "# Late to the window\n\nThe rest.", "visible": true })).unwrap();
         let under_way = SpawnUnderWay::begin("tl-caller", &params, "C:\\acc\\anthropic\\one", None, None).unwrap();
         let request = under_way.0;
         register("tl-helper", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("tl-caller"), false, serde_json::json!({}));
@@ -9512,7 +9783,9 @@ mod tests {
         let stood = Owed { held: Some((3, now_ms() - BACKGROUND_GRACE_MS)), ..o };
         assert!(matches!(notice_line(&pty, "nn-c", "Your helper", "nn-q", &known, stood), Some((Some(_), Settled::NoNews(_)))));
         let went = Owed { job_went: true, ..stood };
-        let Some((Some(text), Settled::Answered)) = notice_line(&pty, "nn-c", "Your helper", "nn-q", &known, went) else { panic!("a core took it") };
+        let Some((Some(text), Settled::Answered)) = notice_line(&pty, "nn-c", "Your helper", "nn-q", &known, went) else {
+            panic!("a core took it")
+        };
         assert!(text.contains("that Luna's core has restarted"), "{text}");
         // Held past its grace, a wait still gets it: the debt is open, on the one clock.
         let key = ("nn-c".to_string(), "nn-q".to_string());
@@ -9600,9 +9873,13 @@ mod tests {
             };
             // Half an hour of nothing, its command 9 min short of its timeout.
             assert!(matches!(quiet_on(31 * min, false), None | Some((None, _))), "{id}: it is still within its time");
-            let Some((Some(text), Settled::Quiet(3))) = quiet_on(45 * min + 30_000, false) else { panic!("{id}: 5 min past its timeout is news") };
+            let Some((Some(text), Settled::Quiet(3))) = quiet_on(45 * min + 30_000, false) else {
+                panic!("{id}: 5 min past its timeout is news")
+            };
             assert!(text.contains("written nothing for 45 min, and the command it waits on is 5 min past its own timeout"), "{text}");
-            let Some((Some(text), Settled::Quiet(3))) = quiet_on(31 * min, true) else { panic!("{id}: a finished command holds nothing back") };
+            let Some((Some(text), Settled::Quiet(3))) = quiet_on(31 * min, true) else {
+                panic!("{id}: a finished command holds nothing back")
+            };
             assert!(text.contains("written nothing for 31 min. A command it runs may hang"), "{text}");
             crate::background::gone_for_test(&id);
             forget(&id);
@@ -9613,7 +9890,15 @@ mod tests {
     fn a_stop_between_turns_ends_what_is_left_and_leaves_it_to_go_by_itself() {
         let none = serde_json::json!({});
         register("ks-c", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, none.clone());
-        register("ks-s", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("ks-c"), false, serde_json::json!({ "background": true }));
+        register(
+            "ks-s",
+            Provider::Claude,
+            "C:\\p",
+            "C:\\acc\\anthropic\\one",
+            Some("ks-c"),
+            false,
+            serde_json::json!({ "background": true }),
+        );
         crate::background::idle_for_test("ks-s", Provider::Claude, 1, false);
         reg().lock().unwrap().auto.insert("ks-s".into(), Auto::default());
         let k = kill("ks-c", "ks-s").unwrap();
@@ -9634,11 +9919,16 @@ mod tests {
         let (known, o, path) = job_over_helper("jr-s", "jr-c", &format!("{prompt}{result}"));
         let pty = crate::pty::manager();
         // As `wait` puts it for `job_done`.
-        assert_eq!(reply_text("jr-s", &said_since(&pty, "jr-s", Provider::Claude, o.cursor), true).as_deref(), Some("Here are the real results."));
+        assert_eq!(
+            reply_text("jr-s", &said_since(&pty, "jr-s", Provider::Claude, o.cursor), true).as_deref(),
+            Some("Here are the real results.")
+        );
         // The same as the notice brings: nothing is settled without its report.
         let mut stood = o;
         stood.held = Some((3, now_ms() - BACKGROUND_GRACE_MS));
-        let Some((Some(line), Settled::Answered)) = notice_line(&pty, "jr-c", "Your helper", "jr-s", &known, stood) else { panic!("the job's end is news") };
+        let Some((Some(line), Settled::Answered)) = notice_line(&pty, "jr-c", "Your helper", "jr-s", &known, stood) else {
+            panic!("the job's end is news")
+        };
         assert!(line.contains("it wrote 1 message since your last notice"), "{line}");
         // Nothing since: nothing to hand over, not an old message.
         let (_, o2, path2) = job_over_helper("jr-q", "jr-c", "");
@@ -9725,14 +10015,18 @@ mod tests {
         assert!(standing_line(&pty, "bp-c", "Your helper", "bp-s", &known, o).is_none());
         // Held on a prompt, it is told, or the helper sits there until it times out.
         crate::background::in_turn_for_test("bp-s");
-        let asks = std::thread::spawn(|| crate::background::permission("bp-s", &serde_json::json!({ "tool_name": "Bash", "input": { "command": "ls" } })));
+        let asks = std::thread::spawn(|| {
+            crate::background::permission("bp-s", &serde_json::json!({ "tool_name": "Bash", "input": { "command": "ls" } }))
+        });
         for _ in 0..200 {
             if ask_of("bp-s").is_some() {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        let Some((Some(line), Settled::Waiting)) = standing_line(&pty, "bp-c", "Your helper", "bp-s", &known, o) else { panic!("a prompt goes through") };
+        let Some((Some(line), Settled::Waiting)) = standing_line(&pty, "bp-c", "Your helper", "bp-s", &known, o) else {
+            panic!("a prompt goes through")
+        };
         assert!(line.contains("asks for permission to run Bash: ls") && line.contains("askId"), "{line}");
         crate::background::kill("bp-s");
         let _ = asks.join();
@@ -9809,7 +10103,9 @@ mod tests {
     fn what_a_turn_said_comes_with_its_notice_whatever_came_after() {
         use crate::activity::{on_hook, HookEvent};
         let user = |t: &str| format!("{}\n", serde_json::json!({ "type": "user", "message": { "role": "user", "content": t } }));
-        let said = |t: &str| format!("{}\n", serde_json::json!({ "type": "assistant", "message": { "content": [{ "type": "text", "text": t }] } }));
+        let said = |t: &str| {
+            format!("{}\n", serde_json::json!({ "type": "assistant", "message": { "content": [{ "type": "text", "text": t }] } }))
+        };
         let task = format!(
             "{}\n",
             serde_json::json!({ "type": "user", "message": { "role": "user", "content": "<task-notification>\n<task-id>b1</task-id>\n</task-notification>" },
@@ -9825,7 +10121,9 @@ mod tests {
             let mut o = Owed::from(0, 0);
             o.cut_short = cut;
             o.held = Some((1, now_ms() - REPLY_GRACE_MS));
-            let Some((Some(line), Settled::Answered)) = notice_line(&pty, "ws-caller", "Your helper", id, &known, o) else { panic!("its turn is over") };
+            let Some((Some(line), Settled::Answered)) = notice_line(&pty, "ws-caller", "Your helper", id, &known, o) else {
+                panic!("its turn is over")
+            };
             let _ = std::fs::remove_file(&path);
             line
         };
@@ -9881,7 +10179,11 @@ mod tests {
             _ => format!("{}\n", serde_json::json!({ "type": "assistant", "message": { "content": [{ "type": "text", "text": t }] } })),
         };
         let path = dir.join("wc-helper.jsonl");
-        std::fs::write(&path, format!("{}{}{}", line("user", "fix it"), line("assistant", "Half the fix is in."), line("user", "then the tests"))).unwrap();
+        std::fs::write(
+            &path,
+            format!("{}{}{}", line("user", "fix it"), line("assistant", "Half the fix is in."), line("user", "then the tests")),
+        )
+        .unwrap();
         transcripts().lock().unwrap().insert("wc-helper".into(), path);
         owe_from("wc-caller", "wc-helper", 0, 0);
         crate::background::test_turn_ended("wc-helper");
@@ -10053,7 +10355,10 @@ mod tests {
         let (line, how) = notice_for("ns-parent", "ns-child", 2);
         let line = line.unwrap();
         assert!(matches!(how, Settled::Answered));
-        assert!(line.contains("never got started") && line.contains("its prompt was lost") && line.contains("luna_send starts it afresh"), "{line}");
+        assert!(
+            line.contains("never got started") && line.contains("its prompt was lost") && line.contains("luna_send starts it afresh"),
+            "{line}"
+        );
         assert!(line.contains("its prompt and 1 queued message are in "), "{line}");
         let file = line.split(" are in ").nth(1).and_then(|l| l.split(". luna_send").next()).unwrap();
         let held = std::fs::read_to_string(file).unwrap();
@@ -10146,13 +10451,37 @@ mod tests {
 
         // The turn it counted as ended stays one that did not finish, core after core.
         let again = ties_of("tc-chat").unwrap();
-        let again = SavedChat { id: "tc-second".into(), provider: Provider::Codex, folder: "C:\\p".into(), account_path: "C:\\acc\\openai\\two".into(), turns_ended: 9, transcript: None, mid_turn: false, ties: again };
+        let again = SavedChat {
+            id: "tc-second".into(),
+            provider: Provider::Codex,
+            folder: "C:\\p".into(),
+            account_path: "C:\\acc\\openai\\two".into(),
+            turns_ended: 9,
+            transcript: None,
+            mid_turn: false,
+            ties: again,
+        };
         take_up_chats(SavedChats { chats: vec![again], ..Default::default() });
-        assert!(reg().lock().unwrap().owed[&("tc-parent".to_string(), "tc-second".to_string())].cut_short == false, "this debt was answered");
+        assert!(
+            reg().lock().unwrap().owed[&("tc-parent".to_string(), "tc-second".to_string())].cut_short == false,
+            "this debt was answered"
+        );
         let cut: Ties = Ties { owed: vec![("tc-peer".into(), 5, 20)], cut_short: vec!["tc-peer".into()], ..Default::default() };
-        let cut = SavedChat { id: "tc-third".into(), provider: Provider::Codex, folder: "C:\\p".into(), account_path: "C:\\acc\\openai\\two".into(), turns_ended: 6, transcript: None, mid_turn: false, ties: cut };
+        let cut = SavedChat {
+            id: "tc-third".into(),
+            provider: Provider::Codex,
+            folder: "C:\\p".into(),
+            account_path: "C:\\acc\\openai\\two".into(),
+            turns_ended: 6,
+            transcript: None,
+            mid_turn: false,
+            ties: cut,
+        };
         take_up_chats(SavedChats { chats: vec![cut], ..Default::default() });
-        assert!(reg().lock().unwrap().owed[&("tc-peer".to_string(), "tc-third".to_string())].cut_short, "6 > 5 reads as answered but for the mark");
+        assert!(
+            reg().lock().unwrap().owed[&("tc-peer".to_string(), "tc-third".to_string())].cut_short,
+            "6 > 5 reads as answered but for the mark"
+        );
         forget("tc-second");
         forget("tc-third");
 
@@ -10173,7 +10502,15 @@ mod tests {
     fn a_chat_with_nothing_to_keep_or_a_helper_is_not_saved_as_one() {
         let none = serde_json::json!({});
         register("sv-plain", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, false, none.clone());
-        register("sv-bg", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("sv-plain"), false, serde_json::json!({ "background": true }));
+        register(
+            "sv-bg",
+            Provider::Claude,
+            "C:\\p",
+            "C:\\acc\\anthropic\\one",
+            Some("sv-plain"),
+            false,
+            serde_json::json!({ "background": true }),
+        );
         register("sv-child", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("sv-plain"), false, none);
         let ids: Vec<String> = chats_now().chats.into_iter().map(|c| c.id).filter(|id| id.starts_with("sv-")).collect();
         assert_eq!(ids, ["sv-child"], "helpers.json has the background one");
@@ -10221,7 +10558,10 @@ mod tests {
             mid_turn: false,
             ties: Ties { parent: parent.map(str::to_owned), orphan, ..Default::default() },
         };
-        take_up_chats(SavedChats { chats: vec![saved("rp-kid", Some("rp-grand"), false), saved("rp-orphan", None, true)], ..Default::default() });
+        take_up_chats(SavedChats {
+            chats: vec![saved("rp-kid", Some("rp-grand"), false), saved("rp-orphan", None, true)],
+            ..Default::default()
+        });
         // The window starts each under the parent it last heard of.
         register("rp-kid", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("rp-gone"), false, serde_json::json!({}));
         assert_eq!(parent_of("rp-kid").as_deref(), Some("rp-grand"), "the core's record stands");
@@ -10239,7 +10579,8 @@ mod tests {
 
     #[test]
     fn a_visible_helper_may_resume_on_restart_and_the_window_never_hears_of_it() {
-        let p: SpawnParams = serde_json::from_value(serde_json::json!({ "prompt": "go", "visible": true, "resumeOnRestart": true })).unwrap();
+        let p: SpawnParams =
+            serde_json::from_value(serde_json::json!({ "prompt": "go", "visible": true, "resumeOnRestart": true })).unwrap();
         assert!(spawn("nobody", p).err().unwrap().contains("not a registered session"));
         let p: SpawnParams = serde_json::from_value(serde_json::json!({ "prompt": "go", "resumeOnRestart": true })).unwrap();
         assert_eq!(p.resume_on_restart, Some(true));
@@ -10288,7 +10629,15 @@ mod tests {
         let pty = crate::pty::manager();
         assert!(notice_line(&pty, "vr-parent", "Your helper", "vr-chat", &k, Owed { held: Some((4, 0)), ..o }).is_none());
         // Told to start, it is no longer the window's to start, and keeps its flag.
-        register("vr-chat", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("vr-parent"), false, serde_json::json!({ "model": "sonnet" }));
+        register(
+            "vr-chat",
+            Provider::Claude,
+            "C:\\p",
+            "C:\\acc\\anthropic\\one",
+            Some("vr-parent"),
+            false,
+            serde_json::json!({ "model": "sonnet" }),
+        );
         assert!(!agent_resumes().contains(&"vr-chat".to_string()));
         assert!(resumes_on_restart("vr-chat"), "the window's settings do not carry it");
         // Typed in: both notices are owed, the first now.
@@ -10351,9 +10700,16 @@ mod tests {
     fn a_chat_is_told_why_with_what_was_held_or_given_its_prompt_with_no_conversation() {
         let batch = [crate::background::Queued::new(Some("x".into()), "the held text".into(), Vec::new())];
         let told = resume_words(true, Some("the prompt".into()), &batch).unwrap();
-        assert!(told.starts_with(NOTICE_TAG) && told.contains("core restarted") && told.contains("Carry on") && told.contains("the held text"), "{told}");
+        assert!(
+            told.starts_with(NOTICE_TAG) && told.contains("core restarted") && told.contains("Carry on") && told.contains("the held text"),
+            "{told}"
+        );
         assert!(!told.contains("the prompt"), "its conversation has that");
-        assert_eq!(resume_words(false, Some("the prompt".into()), &batch).unwrap(), "the prompt\n\nthe held text", "a first turn, on what it was given");
+        assert_eq!(
+            resume_words(false, Some("the prompt".into()), &batch).unwrap(),
+            "the prompt\n\nthe held text",
+            "a first turn, on what it was given"
+        );
         assert_eq!(resume_words(false, None, &batch), None, "nothing to go on from");
     }
 
@@ -10363,7 +10719,11 @@ mod tests {
         chat.turns_ended = 0;
         chat.ties.owed = vec![("ho-parent".into(), 0, 0)];
         chat.ties.opening = Some("do it".into());
-        take_up(vec![chat], vec![SavedSend { caller: "ho-parent".into(), id: "ho-chat".into(), text: "and this".into(), going_in: None }], Vec::new());
+        take_up(
+            vec![chat],
+            vec![SavedSend { caller: "ho-parent".into(), id: "ho-chat".into(), text: "and this".into(), going_in: None }],
+            Vec::new(),
+        );
         assert_eq!(reg().lock().unwrap().resumes["ho-chat"].opening.as_deref(), Some("do it"));
         assert_eq!(crate::activity::turns_counted("ho-chat"), Some(1), "its turn counts as gone with the core");
         let saved = || chats_now().chats.into_iter().find(|c| c.id == "ho-chat").unwrap().ties.opening;
@@ -10411,7 +10771,9 @@ mod tests {
 
     #[test]
     fn a_spawn_is_on_disk_for_as_long_as_it_is_under_way() {
-        let params: SpawnParams = serde_json::from_value(serde_json::json!({ "prompt": "go", "visible": true, "resumeOnRestart": true, "autoDelete": true })).unwrap();
+        let params: SpawnParams =
+            serde_json::from_value(serde_json::json!({ "prompt": "go", "visible": true, "resumeOnRestart": true, "autoDelete": true }))
+                .unwrap();
         let saved = |request: u64| chats_now().spawns.into_iter().find(|s| s.request == request);
         let under_way = SpawnUnderWay::begin("uw-caller", &params, "C:\\acc\\anthropic\\one", Some("C:\\p\\wt"), None).unwrap();
         let request = under_way.0;
@@ -10437,10 +10799,17 @@ mod tests {
     #[test]
     fn what_the_window_was_asked_stays_there_to_ask_for_until_a_session_comes_of_it() {
         let _one = spawns_to_myself();
-        let pending = || agent_spawns().into_iter().map(|s| s.request_id).filter(|r| (9_000_500..9_000_600).contains(r)).collect::<Vec<u64>>();
+        let pending =
+            || agent_spawns().into_iter().map(|s| s.request_id).filter(|r| (9_000_500..9_000_600).contains(r)).collect::<Vec<u64>>();
         let put = |request: u64| {
             let mut s = spawn_taken(request, "as-caller", None, false);
-            s.asked = Some(SpawnRequest { request_id: request, parent_id: "as-caller".into(), in_worktree: None, hooks_unasked: false, params: s.params.clone() });
+            s.asked = Some(SpawnRequest {
+                request_id: request,
+                parent_id: "as-caller".into(),
+                in_worktree: None,
+                hooks_unasked: false,
+                params: s.params.clone(),
+            });
             reg().lock().unwrap().spawns.insert(request, s);
         };
         put(9_000_502);
@@ -10449,7 +10818,11 @@ mod tests {
         reg().lock().unwrap().spawns.insert(9_000_503, spawn_taken(9_000_503, "as-caller", None, false));
         assert_eq!(pending(), [9_000_501, 9_000_502], "in the order they were asked");
         let wire = serde_json::to_value(&agent_spawns().into_iter().find(|s| s.request_id == 9_000_501).unwrap()).unwrap();
-        assert_eq!((wire["requestId"].as_u64(), wire["parentId"].as_str(), wire["prompt"].as_str()), (Some(9_000_501), Some("as-caller"), Some("the whole job, word for word")), "as the event carries it");
+        assert_eq!(
+            (wire["requestId"].as_u64(), wire["parentId"].as_str(), wire["prompt"].as_str()),
+            (Some(9_000_501), Some("as-caller"), Some("the whole job, word for word")),
+            "as the event carries it"
+        );
 
         // Its session registers: the window has it, whatever comes of the page.
         register("as-helper", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("as-caller"), false, serde_json::json!({}));
@@ -10513,12 +10886,18 @@ mod tests {
             ties_in(&r, id).unwrap()
         };
         // Claude Code's worktree goes by a name Luna gave it.
-        let ties = spawned(serde_json::json!({ "prompt": "go", "visible": true, "worktree": true, "folder": "C:\\no\\such\\folder" }), "ka-visible");
+        let ties = spawned(
+            serde_json::json!({ "prompt": "go", "visible": true, "worktree": true, "folder": "C:\\no\\such\\folder" }),
+            "ka-visible",
+        );
         assert_eq!(ties.opening.as_deref(), Some("go"));
         assert_eq!(ties.worktree_name.as_deref(), Some("luna-ka-visible"));
         assert_eq!(ties.worktrees_before, None);
         // Codex takes no name: what is new since is all that says what it began.
-        let ties = spawned(serde_json::json!({ "prompt": "go", "visible": true, "worktree": true, "provider": "codex", "folder": "C:\\no\\such\\folder" }), "ka-codex");
+        let ties = spawned(
+            serde_json::json!({ "prompt": "go", "visible": true, "worktree": true, "provider": "codex", "folder": "C:\\no\\such\\folder" }),
+            "ka-codex",
+        );
         assert_eq!(ties.worktree_name, None);
         assert_eq!(ties.worktrees_before, Some(Vec::new()), "none yet is a word too: all that come after may be its");
         let ties = spawned(serde_json::json!({ "prompt": "go", "worktree": true, "folder": "C:\\no\\such\\folder" }), "ka-background");
@@ -10538,7 +10917,8 @@ mod tests {
         chat.ties.owed = vec![(parent.into(), 0, 0)];
         chat.ties.seen = Vec::new();
         chat.ties.opening = Some(opening.into());
-        let sends = held.iter().map(|text| SavedSend { caller: parent.into(), id: id.into(), text: (*text).into(), going_in: None }).collect();
+        let sends =
+            held.iter().map(|text| SavedSend { caller: parent.into(), id: id.into(), text: (*text).into(), going_in: None }).collect();
         take_up(vec![chat], sends, Vec::new());
     }
 
@@ -10571,7 +10951,10 @@ mod tests {
             let (line, how) = notice_for("fs-parent", id, 1);
             let line = line.unwrap();
             assert!(matches!(how, Settled::Answered));
-            assert!(line.contains("never got started") && line.contains("luna_send starts it afresh") && !line.contains("did NOT finish"), "{line}");
+            assert!(
+                line.contains("never got started") && line.contains("luna_send starts it afresh") && !line.contains("did NOT finish"),
+                "{line}"
+            );
             let held = file_after(&line, "its prompt and 1 queued message are in ");
             assert!(held.find("the whole job\nword for word").unwrap() < held.find("and a follow-up").unwrap(), "{held}");
             assert!(!held.contains("A note from Luna"), "what it asked, not what Luna added: {held}");
@@ -10600,7 +10983,11 @@ mod tests {
         // A person typed into it, and a turn on that ended: the job is no nearer.
         crate::activity::keep_count("fl-chat", 5);
         assert!(first_turn_lost(&crate::pty::manager(), "fl-chat"));
-        assert_eq!(chats_now().chats.into_iter().find(|c| c.id == "fl-chat").unwrap().ties.opening.as_deref(), Some("the job"), "a count does not settle this");
+        assert_eq!(
+            chats_now().chats.into_iter().find(|c| c.id == "fl-chat").unwrap().ties.opening.as_deref(),
+            Some("the job"),
+            "a count does not settle this"
+        );
         // A core going before its parent hears.
         let saved = chats_now().chats.into_iter().find(|c| c.id == "fl-chat").unwrap();
         assert!(saved.ties.opening_lost);
@@ -10621,7 +11008,10 @@ mod tests {
         crate::activity::between_turns_for_test("fc-chat");
         assert!(!first_turn_lost(&crate::pty::manager(), "fc-chat"));
         let line = notice_for("fc-parent", "fc-chat", 1).0.unwrap();
-        assert!(line.contains("did NOT finish") && line.contains("luna_send has it carry on") && !line.contains("never got started"), "{line}");
+        assert!(
+            line.contains("did NOT finish") && line.contains("luna_send has it carry on") && !line.contains("never got started"),
+            "{line}"
+        );
         assert!(undelivered_note("fc-parent", "fc-chat").is_none(), "its conversation holds it");
         forget("fc-chat");
         let _ = std::fs::remove_file(&path);
@@ -10720,7 +11110,10 @@ mod tests {
         named_helper("rw-b", &repo, "luna-b");
         assert_eq!(start("rw-b").as_deref(), Some("luna-b-2"));
         let said = worktrees_left_line("rw-b");
-        assert!(said.contains("worktreeLeft") && said.contains(b.as_str()) && !said.contains(elses.as_str()) && !said.contains(a.as_str()), "{said}");
+        assert!(
+            said.contains("worktreeLeft") && said.contains(b.as_str()) && !said.contains(elses.as_str()) && !said.contains(a.as_str()),
+            "{said}"
+        );
         assert_eq!(reg().lock().unwrap().worktree_names["rw-b"], "luna-b-2");
         assert_eq!(start("rw-b").as_deref(), Some("luna-b-2"));
         assert_eq!(worktrees_left_line("rw-b"), said, "the one it left is not told of twice");
@@ -10827,7 +11220,11 @@ mod tests {
         on_disk("rc-codex", Provider::Codex, &account);
         assert_eq!(conversation_of("rc-codex", Provider::Codex, &folder, &account), None);
         let now = chrono::Local::now();
-        let dir = std::path::Path::new(&account).join("sessions").join(now.format("%Y").to_string()).join(now.format("%m").to_string()).join(now.format("%d").to_string());
+        let dir = std::path::Path::new(&account)
+            .join("sessions")
+            .join(now.format("%Y").to_string())
+            .join(now.format("%m").to_string())
+            .join(now.format("%d").to_string());
         std::fs::create_dir_all(&dir).unwrap();
         let rollout = |source: &str, cwd: &str, said: &str, thread: &str| {
             let file = dir.join(format!("rollout-{}-{thread}.jsonl", now.format("%Y-%m-%dT%H-%M-%S")));
@@ -10840,7 +11237,11 @@ mod tests {
         rollout("cli", &folder, "another job", "aaaa0000-else");
         assert_eq!(conversation_of("rc-codex", Provider::Codex, &folder, &account), None, "a helper's, another folder's, another's job");
         rollout("cli", &folder, &crate::pty::codex_helper_prompt("rc-parent", "the whole job"), "aaaa0000-mine");
-        assert_eq!(conversation_of("rc-codex", Provider::Codex, &folder, &account).as_deref(), Some("aaaa0000-mine"), "with its note on it");
+        assert_eq!(
+            conversation_of("rc-codex", Provider::Codex, &folder, &account).as_deref(),
+            Some("aaaa0000-mine"),
+            "with its note on it"
+        );
         forget("rc-codex");
         transcripts().lock().unwrap().retain(|k, _| !k.starts_with("rc-"));
         let _ = std::fs::remove_dir_all(&root);
@@ -10897,7 +11298,10 @@ mod tests {
         assert!(still_all_lost(&crate::pty::manager(), "lw-parent", "lw-sent"));
         owe_from("lw-parent", "lw-sent", 1, 0);
         assert!(!still_all_lost(&crate::pty::manager(), "lw-parent", "lw-sent"));
-        assert!(first_turn_lost(&crate::pty::manager(), "lw-sent"), "what it was first asked is lost all the same, and told of with that answer");
+        assert!(
+            first_turn_lost(&crate::pty::manager(), "lw-sent"),
+            "what it was first asked is lost all the same, and told of with that answer"
+        );
         assert!(undelivered_for("lw-sent", "lw-parent", true).iter().any(|t| t == "the whole job"));
         reg().lock().unwrap().held.retain(|h| h.id != "lw-chat" && h.id != "lw-sent");
         forget("lw-sent");
@@ -11011,7 +11415,11 @@ mod tests {
     fn the_window_finishing_a_spawn_with_the_next_core_owes_its_caller() {
         let _one = spawns_to_myself();
         register("wf-caller", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, serde_json::json!({}));
-        take_up(Vec::new(), Vec::new(), vec![spawn_taken(9_000_200, "wf-caller", None, false), spawn_taken(9_000_201, "wf-caller", None, false)]);
+        take_up(
+            Vec::new(),
+            Vec::new(),
+            vec![spawn_taken(9_000_200, "wf-caller", None, false), spawn_taken(9_000_201, "wf-caller", None, false)],
+        );
         register("wf-helper", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("wf-caller"), false, serde_json::json!({}));
         agent_spawned(9_000_200, Some("wf-helper".into()), Some("named".into()), None);
         {
@@ -11030,7 +11438,11 @@ mod tests {
     fn a_session_starting_for_a_spawn_given_up_on_is_refused_so_what_was_said_stays_true() {
         let _one = spawns_to_myself();
         register("gu-caller", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, serde_json::json!({}));
-        take_up(Vec::new(), Vec::new(), vec![spawn_taken(9_000_400, "gu-caller", None, false), spawn_taken(9_000_401, "gu-caller", None, false)]);
+        take_up(
+            Vec::new(),
+            Vec::new(),
+            vec![spawn_taken(9_000_400, "gu-caller", None, false), spawn_taken(9_000_401, "gu-caller", None, false)],
+        );
         // Started as it is given up on: decided under one lock, whichever comes first.
         register("gu-first", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("gu-caller"), false, serde_json::json!({}));
         spawn_is(9_000_400, "gu-first").unwrap();
@@ -11051,7 +11463,12 @@ mod tests {
     fn a_retry_still_coming_is_not_saved_beside_its_own_request_and_a_late_failure_is_told() {
         let _one = spawns_to_myself();
         register("rc-caller", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, serde_json::json!({}));
-        let word = SpawnTaken { news: Some("asked again".into()), settled: true, retried: true, ..spawn_taken(9_000_500, "rc-caller", None, true) };
+        let word = SpawnTaken {
+            news: Some("asked again".into()),
+            settled: true,
+            retried: true,
+            ..spawn_taken(9_000_500, "rc-caller", None, true)
+        };
         reg().lock().unwrap().spawns.insert(9_000_500, word);
         assert!(!chats_now().spawns.iter().any(|s| s.request == 9_000_500), "two on disk would start two");
         assert!(spawn_news(1000)["rc-caller"].iter().any(|(request, _)| *request == 9_000_500), "its word is still said");
@@ -11125,7 +11542,14 @@ mod tests {
 
     #[test]
     fn a_held_text_on_its_way_in_comes_back_marked_and_only_it_is_marked() {
-        let held = |caller: &str, text: &str, since| Held { caller: caller.into(), id: "gi-chat".into(), text: text.into(), since, told: false, going_in: None };
+        let held = |caller: &str, text: &str, since| Held {
+            caller: caller.into(),
+            id: "gi-chat".into(),
+            text: text.into(),
+            since,
+            told: false,
+            going_in: None,
+        };
         reg().lock().unwrap().held.extend([held("gi-a", "first", 1), held("gi-b", "second", 2)]);
         mark_going_in("gi-chat", "first", 77, Some(("gi-a", 1)));
         let marks = || chats_now().sends.into_iter().filter(|s| s.id == "gi-chat").map(|s| s.going_in).collect::<Vec<_>>();
@@ -11133,7 +11557,9 @@ mod tests {
         mark_going_in("gi-chat", "carry on with first and second", 80, None);
         assert!(marks().iter().all(|m| m.as_ref().is_some_and(|g| g.cursor == 80)), "a resume's batch");
         // As a file written so reads back under the next core.
-        let saved: SavedSend = serde_json::from_str(&serde_json::to_string(&chats_now().sends.into_iter().find(|s| s.id == "gi-chat").unwrap()).unwrap()).unwrap();
+        let saved: SavedSend =
+            serde_json::from_str(&serde_json::to_string(&chats_now().sends.into_iter().find(|s| s.id == "gi-chat").unwrap()).unwrap())
+                .unwrap();
         assert_eq!(saved.going_in.as_ref().map(|g| g.needle.as_str()), Some("first"));
         unmark_going_in("gi-chat");
         assert_eq!(marks(), [None, None]);
@@ -11205,10 +11631,7 @@ mod tests {
 
     #[test]
     fn keys_read_as_presses() {
-        assert_eq!(
-            parse_keys("2{enter}").unwrap(),
-            [Key::Text("2".into()), Key::Seq("\r")]
-        );
+        assert_eq!(parse_keys("2{enter}").unwrap(), [Key::Text("2".into()), Key::Seq("\r")]);
         assert_eq!(parse_keys("{Down}{down}{ENTER}").unwrap(), [Key::Seq("\x1b[B"), Key::Seq("\x1b[B"), Key::Seq("\r")]);
         assert!(parse_keys("{f13}").is_err());
         assert!(parse_keys("{enter").is_err());
@@ -11237,7 +11660,8 @@ mod tests {
             [Key::Seq("\x1b"), Key::Text("use dir".into()), Key::Seq("\r")]
         );
         assert_eq!(perm.line(), "asks for permission to run Bash: ls");
-        let codex = "  Would you like to run the following command?\n\n  $ Set-Content -LiteralPath made.txt -Value hi\n\n› 1. Yes, proceed (y)";
+        let codex =
+            "  Would you like to run the following command?\n\n  $ Set-Content -LiteralPath made.txt -Value hi\n\n› 1. Yes, proceed (y)";
         assert_eq!(codex_command_on(codex).as_deref(), Some("Set-Content -LiteralPath made.txt -Value hi"));
     }
 
@@ -11313,7 +11737,10 @@ mod tests {
         // The window starts its CLI again, on flags that say nothing of it.
         register("bs-kid", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("bs-p"), false, serde_json::json!({ "model": "m2" }));
         let s = settings_of("bs-kid");
-        assert_eq!((&s["model"], &s["budgetTokens"], &s["budgetTold"]), (&serde_json::json!("m2"), &serde_json::json!(7), &serde_json::json!(true)));
+        assert_eq!(
+            (&s["model"], &s["budgetTokens"], &s["budgetTold"]),
+            (&serde_json::json!("m2"), &serde_json::json!(7), &serde_json::json!(true))
+        );
         assert_eq!(s["budgetBreach"]["at"], 1);
         forget("bs-kid");
     }
@@ -11321,7 +11748,9 @@ mod tests {
     /// Writes a transcript or rollout whose last answer has `tokens` in the window.
     fn write_usage(path: &std::path::Path, provider: Provider, tokens: u64) {
         let line = match provider {
-            Provider::Claude => serde_json::json!({ "type": "assistant", "message": { "model": "claude-sonnet-5-5", "usage": { "input_tokens": tokens }, "content": [] } }),
+            Provider::Claude => {
+                serde_json::json!({ "type": "assistant", "message": { "model": "claude-sonnet-5-5", "usage": { "input_tokens": tokens }, "content": [] } })
+            }
             Provider::Codex => serde_json::json!({ "timestamp": "t", "type": "event_msg", "payload": { "type": "token_count", "info": {
                 "total_token_usage": { "total_tokens": tokens }, "last_token_usage": { "input_tokens": tokens, "total_tokens": tokens }, "model_context_window": 258400 } } }),
         };
@@ -11410,7 +11839,15 @@ mod tests {
         let breach = serde_json::json!({ "at": 1, "tokens": 5, "window": 10, "pct": 50 });
         crate::background::idle_for_test(parent, Provider::Claude, 1, false);
         tooled(parent);
-        register(kid, Provider::Claude, "C:\\p", "C:\\acc\\one", Some(parent), false, serde_json::json!({ "budgetTokens": 1, "budgetBreach": breach }));
+        register(
+            kid,
+            Provider::Claude,
+            "C:\\p",
+            "C:\\acc\\one",
+            Some(parent),
+            false,
+            serde_json::json!({ "budgetTokens": 1, "budgetBreach": breach }),
+        );
         let line = budget_now(parent).expect("a line").clone();
         (format!("{NOTICE_TAG} {line}"), crate::background::BudgetMark { id: kid.to_string(), line })
     }
@@ -11522,7 +11959,15 @@ mod tests {
         let (parent, kid) = ("br-parent", "br-kid");
         tooled(parent);
         let breach = serde_json::json!({ "at": 1, "tokens": 5, "window": 10, "pct": 50 });
-        register(kid, Provider::Claude, "C:\\p", "C:\\acc\\one", Some(parent), false, serde_json::json!({ "budgetTokens": 1, "budgetBreach": breach }));
+        register(
+            kid,
+            Provider::Claude,
+            "C:\\p",
+            "C:\\acc\\one",
+            Some(parent),
+            false,
+            serde_json::json!({ "budgetTokens": 1, "budgetBreach": breach }),
+        );
         let long_idle = || Auto { idle_since: Some(now_ms() - AUTO_DELETE_IDLE_MS - 1), deleting: false };
         reg().lock().unwrap().auto.insert(kid.to_string(), long_idle());
         reap_these(&pty, vec![kid.to_string()]);
@@ -11547,7 +11992,14 @@ mod tests {
 
     #[test]
     fn a_drain_lets_only_an_identified_ask_be_answered() {
-        let ask = |id: Option<&str>, blocking: bool| Ask { id: id.map(str::to_owned), kind: "question", blocking, questions: Vec::new(), tool: None, detail: None };
+        let ask = |id: Option<&str>, blocking: bool| Ask {
+            id: id.map(str::to_owned),
+            kind: "question",
+            blocking,
+            questions: Vec::new(),
+            tool: None,
+            detail: None,
+        };
         let plain: &[String] = &[];
         let refused = |r: Result<(), String>| r.unwrap_err();
         // Nothing pending.
@@ -11563,7 +12015,9 @@ mod tests {
         // Not with what a terminal takes as a prompt in it.
         assert!(refused(drain_lets_answer("s", Some(&ask(None, true)), None, plain, Some("do this instead"), None)).contains("a note"));
         assert_eq!(drain_lets_answer("s", Some(&ask(None, true)), None, plain, Some("  "), None), Ok(()));
-        assert!(refused(drain_lets_answer("s", Some(&ask(None, true)), None, &["a\rnew prompt".to_string()], None, None)).contains("one line"));
+        assert!(
+            refused(drain_lets_answer("s", Some(&ask(None, true)), None, &["a\rnew prompt".to_string()], None, None)).contains("one line")
+        );
         // A background helper's has an id, and it is to be named.
         assert!(refused(drain_lets_answer("s", Some(&ask(Some("a1"), true)), None, plain, None, None)).contains("a1"));
         assert!(refused(drain_lets_answer("s", Some(&ask(Some("a1"), true)), Some("a0"), plain, None, None)).contains("a1"));

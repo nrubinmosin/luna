@@ -30,18 +30,17 @@
 mod imp {
     use windows::Win32::Foundation::{CloseHandle, ERROR_ACCESS_DENIED, FILETIME, HANDLE};
     use windows::Win32::System::Diagnostics::ToolHelp::{
-        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, Thread32First, Thread32Next, PROCESSENTRY32W,
-        TH32CS_SNAPPROCESS, TH32CS_SNAPTHREAD, THREADENTRY32,
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, Thread32First, Thread32Next, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+        TH32CS_SNAPTHREAD, THREADENTRY32,
     };
     use windows::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicProcessIdList, JobObjectExtendedLimitInformation,
-        QueryInformationJobObject, SetInformationJobObject, JOBOBJECT_BASIC_PROCESS_ID_LIST,
-        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        QueryInformationJobObject, SetInformationJobObject, JOBOBJECT_BASIC_PROCESS_ID_LIST, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
     use windows::Win32::System::Threading::{
-        GetExitCodeProcess, GetProcessIoCounters, GetProcessTimes, OpenProcess, OpenThread, ResumeThread,
-        TerminateProcess, IO_COUNTERS, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
-        THREAD_SUSPEND_RESUME,
+        GetExitCodeProcess, GetProcessIoCounters, GetProcessTimes, OpenProcess, OpenThread, ResumeThread, TerminateProcess, IO_COUNTERS,
+        PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA, PROCESS_TERMINATE, THREAD_SUSPEND_RESUME,
     };
     use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, GetWindowThreadProcessId, IsWindowVisible};
 
@@ -298,13 +297,7 @@ mod imp {
             // SAFETY: the buffer is at least a header long and outlives the call;
             // the header is read only after the call filled it.
             let (ok, assigned, listed) = unsafe {
-                let r = QueryInformationJobObject(
-                    Some(job.0),
-                    JobObjectBasicProcessIdList,
-                    buf.as_mut_ptr() as *mut _,
-                    bytes as u32,
-                    None,
-                );
+                let r = QueryInformationJobObject(Some(job.0), JobObjectBasicProcessIdList, buf.as_mut_ptr() as *mut _, bytes as u32, None);
                 let head = &*(buf.as_ptr() as *const JOBOBJECT_BASIC_PROCESS_ID_LIST);
                 (r.is_ok(), head.NumberOfAssignedProcesses as usize, head.NumberOfProcessIdsInList as usize)
             };
@@ -330,8 +323,8 @@ mod imp {
     /// that could not be put in a job.
     pub fn descendants(root: u32) -> Vec<u32> {
         let mut edges: Vec<(u32, u32)> = Vec::new(); // (pid, parent)
-        // SAFETY: a snapshot handle owned and closed here; the entry struct is
-        // sized before the first call as the API requires.
+                                                     // SAFETY: a snapshot handle owned and closed here; the entry struct is
+                                                     // sized before the first call as the API requires.
         unsafe {
             let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else { return vec![root] };
             let mut e = PROCESSENTRY32W::default();
@@ -489,9 +482,9 @@ mod imp {
     }
 }
 
-pub use imp::{adopt, alive, also_marked, await_environment, end_last_ties, join, keeper_from_args, let_go, pin, tie, Job, Pin};
 #[cfg(windows)]
 pub use imp::resume;
+pub use imp::{adopt, alive, also_marked, await_environment, end_last_ties, join, keeper_from_args, let_go, pin, tie, Job, Pin};
 
 /// When a process was created, epoch ms, where the platform says.
 pub fn created_ms(pid: u32) -> Option<u64> {
@@ -659,7 +652,9 @@ pub const LEFTOVER_HOLD_MS: u64 = 2 * 60 * 60 * 1000;
 /// starts a `sleep 60` every minute stays as idle as it is.
 pub fn leftovers(old: &[Leftover], now: Vec<(ProcRead, String)>, at: u64, last_work: u64) -> Vec<Leftover> {
     let quiet_since = old.iter().map(|o| o.moved_ms).max().unwrap_or(0).max(last_work);
-    let working = |cpu: u64, io: u64, ms: u64| cpu.saturating_mul(1000) >= LEFTOVER_CPU_MS_PER_S * ms || io.saturating_mul(1000) >= LEFTOVER_IO_PER_S * ms;
+    let working = |cpu: u64, io: u64, ms: u64| {
+        cpu.saturating_mul(1000) >= LEFTOVER_CPU_MS_PER_S * ms || io.saturating_mul(1000) >= LEFTOVER_IO_PER_S * ms
+    };
     now.into_iter()
         .map(|(r, exe)| {
             let lived = at.saturating_sub(r.started_ms);
@@ -667,12 +662,25 @@ pub fn leftovers(old: &[Leftover], now: Vec<(ProcRead, String)>, at: u64, last_w
                 Some(o) if at.saturating_sub(o.read_ms) < LEFTOVER_WINDOW_MS => return Leftover { exe, seen_ms: at, ..o.clone() },
                 Some(o) => {
                     let ms = at.saturating_sub(o.read_ms).max(1);
-                    if working(r.cpu_ms.saturating_sub(o.cpu_ms), r.io_bytes.saturating_sub(o.io_bytes), ms) { at } else { o.moved_ms }
+                    if working(r.cpu_ms.saturating_sub(o.cpu_ms), r.io_bytes.saturating_sub(o.io_bytes), ms) {
+                        at
+                    } else {
+                        o.moved_ms
+                    }
                 }
                 None if working(r.cpu_ms, 0, lived.max(NEWBORN_WINDOW_MS)) => at,
                 None => quiet_since,
             };
-            Leftover { pid: r.pid, exe, started_ms: r.started_ms, cpu_ms: r.cpu_ms, io_bytes: r.io_bytes, read_ms: at, seen_ms: at, moved_ms }
+            Leftover {
+                pid: r.pid,
+                exe,
+                started_ms: r.started_ms,
+                cpu_ms: r.cpu_ms,
+                io_bytes: r.io_bytes,
+                read_ms: at,
+                seen_ms: at,
+                moved_ms,
+            }
         })
         .collect()
 }
@@ -980,7 +988,10 @@ mod tests {
         let later = t + LEFTOVER_HOLD_MS;
         let after = leftovers(&next, vec![read(3, 30_000, 0)], later, 900);
         assert_eq!(gone_quiet(&next, &after, later), ["p3 (pid 3)"]);
-        assert!(gone_quiet(&after, &leftovers(&after, vec![read(3, 30_000, 0)], later + 5_000, 900), later + 5_000).is_empty(), "said once");
+        assert!(
+            gone_quiet(&after, &leftovers(&after, vec![read(3, 30_000, 0)], later + 5_000, 900), later + 5_000).is_empty(),
+            "said once"
+        );
         assert_eq!(quiet_ms(&after, later), Some(LEFTOVER_HOLD_MS));
     }
 
@@ -1023,7 +1034,8 @@ mod tests {
         use windows::Win32::System::Threading::IO_COUNTERS;
         let polling = IO_COUNTERS { OtherOperationCount: 1_417, OtherTransferCount: 56_680, ..Default::default() };
         assert_eq!(imp::io_bytes(&polling), 0);
-        let download = IO_COUNTERS { WriteOperationCount: 2_067, WriteTransferCount: 16_826_368, OtherTransferCount: 256, ..Default::default() };
+        let download =
+            IO_COUNTERS { WriteOperationCount: 2_067, WriteTransferCount: 16_826_368, OtherTransferCount: 256, ..Default::default() };
         assert_eq!(imp::io_bytes(&download), 16_826_368);
     }
 

@@ -81,13 +81,10 @@ struct Token {
 }
 
 fn read_token(account_path: &str) -> Result<Token, String> {
-    let v = read_json(&Path::new(account_path).join(".credentials.json"))
-        .ok_or_else(|| "not logged in (no .credentials.json)".to_string())?;
+    let v =
+        read_json(&Path::new(account_path).join(".credentials.json")).ok_or_else(|| "not logged in (no .credentials.json)".to_string())?;
     let oauth = &v["claudeAiOauth"];
-    let access = oauth["accessToken"]
-        .as_str()
-        .map(str::to_owned)
-        .ok_or_else(|| "no access token in credentials".to_string())?;
+    let access = oauth["accessToken"].as_str().map(str::to_owned).ok_or_else(|| "no access token in credentials".to_string())?;
     let expired = oauth["expiresAt"].as_u64().map(|ms| now_ms() >= ms).unwrap_or(false);
     Ok(Token { access, expired })
 }
@@ -98,8 +95,7 @@ fn signed_in(account_path: &str) -> bool {
     read_json(&Path::new(account_path).join(".credentials.json"))
         .map(|v| {
             let o = &v["claudeAiOauth"];
-            o["refreshToken"].is_string()
-                && o["refreshTokenExpiresAt"].as_u64().map(|ms| now_ms() < ms).unwrap_or(true)
+            o["refreshToken"].is_string() && o["refreshTokenExpiresAt"].as_u64().map(|ms| now_ms() < ms).unwrap_or(true)
         })
         .unwrap_or(false)
 }
@@ -164,10 +160,9 @@ fn get_json(url: &str, token: &str) -> Result<Value, String> {
             ureq::Error::Status(401, _) => RATE_401.to_string(),
             // Polling usage too eagerly gets the endpoint throttled; the caller
             // turns this into a backoff rather than another immediate retry.
-            ureq::Error::Status(429, r) => format!(
-                "{RATE_429}:{}",
-                r.header("retry-after").and_then(|h| h.trim().parse::<u64>().ok()).unwrap_or(0)
-            ),
+            ureq::Error::Status(429, r) => {
+                format!("{RATE_429}:{}", r.header("retry-after").and_then(|h| h.trim().parse::<u64>().ok()).unwrap_or(0))
+            }
             ureq::Error::Transport(t) => format!("{OFFLINE}: {t}"),
             other => other.to_string(),
         })?;
@@ -179,16 +174,11 @@ fn get_json(url: &str, token: &str) -> Result<Value, String> {
 #[tauri::command]
 pub async fn account_limits(account_path: String, force: Option<bool>) -> Result<AccountLimits, String> {
     let force = force.unwrap_or(false);
-    tauri::async_runtime::spawn_blocking(move || fetch_limits(&account_path, force))
-        .await
-        .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || fetch_limits(&account_path, force)).await.map_err(|e| e.to_string())?
 }
 
 fn fetch_limits(account_path: &str, force: bool) -> Result<AccountLimits, String> {
-    let mut out = AccountLimits {
-        signed_in: signed_in(account_path),
-        ..Default::default()
-    };
+    let mut out = AccountLimits { signed_in: signed_in(account_path), ..Default::default() };
 
     // Identity and plan come from the config the CLI wrote at login: no
     // request, and still correct when the network is unavailable.

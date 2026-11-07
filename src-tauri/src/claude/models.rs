@@ -19,10 +19,7 @@ fn cache() -> &'static Mutex<Cache> {
 }
 
 fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
 /// Window for a model id as recorded in a transcript, e.g. `claude-opus-5`.
@@ -44,9 +41,8 @@ pub fn context_window(model: &str) -> f64 {
 /// other tail is another model: `claude-opus-5` is not `claude-opus-5-5`.
 fn same_model(a: &str, b: &str) -> bool {
     let (short, long) = if a.len() <= b.len() { (a, b) } else { (b, a) };
-    long.strip_prefix(short).is_some_and(|rest| {
-        rest.is_empty() || (rest.len() == 9 && rest.starts_with('-') && rest[1..].bytes().all(|c| c.is_ascii_digit()))
-    })
+    long.strip_prefix(short)
+        .is_some_and(|rest| rest.is_empty() || (rest.len() == 9 && rest.starts_with('-') && rest[1..].bytes().all(|c| c.is_ascii_digit())))
 }
 
 /// Used until the first fetch lands, and if the endpoint is unreachable.
