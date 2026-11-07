@@ -12,8 +12,20 @@
 ; name in any language is involved. Luna checks the same as its core starts
 ; (paths.rs `protect_data_dir`), for a copy installed before this hook.
 !macro NSIS_HOOK_PREINSTALL
+  ; The template includes this file before it defines MAINBINARYNAME, so a
+  ; Function here, compiled where it stands, cannot name it; a macro is
+  ; expanded where it is inserted, after the defines.
+  StrCpy $LunaExeName "${MAINBINARYNAME}.exe"
   Call LunaClaimInstallDir
 !macroend
+
+Var LunaExeName
+
+; A define or variable that does not resolve in Luna's own steps fails the
+; build (warning 6000, "unknown variable/constant"), rather than leave the
+; text as it is: that once made the existence check below never match.
+!pragma warning push
+!pragma warning error 6000
 
 ; Stops the installation with `$R9` said.
 !macro LunaRefuse
@@ -85,7 +97,7 @@ Function LunaClaimInstallDir
   ${Loop}
   FindClose $R5
   ${If} $R4 = 1
-    ${IfNot} ${FileExists} "$INSTDIR\${MAINBINARYNAME}.exe"
+    ${IfNot} ${FileExists} "$INSTDIR\$LunaExeName"
     ${OrIfNot} ${FileExists} "$INSTDIR\uninstall.exe"
       StrCpy $R9 "$INSTDIR already holds files that are not Luna's. Choose an empty folder for Luna."
       !insertmacro LunaRefuse
@@ -144,6 +156,7 @@ Function LunaClaimInstallDir
   Pop $R1
   Pop $R0
 FunctionEnd
+!pragma warning pop
 
 !macro NSIS_HOOK_PREUNINSTALL
   ; The sessions run in Luna's core, a process started from a copy of the exe
