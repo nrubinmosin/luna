@@ -4407,15 +4407,15 @@ mod tests {
 
     #[test]
     fn an_answer_is_shaped_as_the_cli_takes_it() {
-        let input = json!({ "questions": [{ "question": "Which colour?", "options": [{ "label": "Red" }, { "label": "Blue" }] }] });
+        let input = json!({ "questions": [{ "question": "Which color?", "options": [{ "label": "Red" }, { "label": "Blue" }] }] });
         let ask = Ask::from_claude_questions(&input).unwrap();
         let a = build_answer(&ask, &input, &["2".into()], None, None).unwrap();
         assert_eq!(a["behavior"], "allow");
-        assert_eq!(a["updatedInput"]["answers"]["Which colour?"], "Blue");
+        assert_eq!(a["updatedInput"]["answers"]["Which color?"], "Blue");
         assert_eq!(a["updatedInput"]["questions"], input["questions"], "the input goes back with the answers added");
         assert!(build_answer(&ask, &input, &[], None, None).is_err(), "one answer per question");
         let own = build_answer(&ask, &input, &["green, actually".into()], None, None).unwrap();
-        assert_eq!(own["updatedInput"]["answers"]["Which colour?"], "green, actually");
+        assert_eq!(own["updatedInput"]["answers"]["Which color?"], "green, actually");
 
         let cmd = json!({ "command": "rm -rf build" });
         let perm = Ask::from_claude_tool("Bash", &cmd);

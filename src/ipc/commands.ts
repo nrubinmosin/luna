@@ -417,7 +417,7 @@ export const removeOrphanWorktrees = (folder: string, inUse: string[], accountPa
 /** Where a resolved default came from, for the line under the control;
  *  `stock` is Luna's own choice where no file said anything usable. */
 export type ClaudeDefaultSource = 'account' | 'project' | 'project-local' | 'managed' | 'stock';
-/** `codex`: what Codex itself would pick — the first model of its catalogue,
+/** `codex`: what Codex itself would pick — the first model of its catalog,
  *  at that model's own reasoning level. */
 export type CodexDefaultSource = 'account' | 'project' | 'codex' | 'stock';
 

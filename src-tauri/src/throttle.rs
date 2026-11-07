@@ -1,7 +1,7 @@
 //! Per-account cool-off after a usage endpoint answers 429.
 //!
 //! Both providers' usage endpoints throttle an eager poller, and neither says
-//! for how long (Anthropic sends retry-after 0). Observed behaviour is that
+//! for how long (Anthropic sends retry-after 0). Observed behavior is that
 //! coming back a few minutes later just earns the next 429, so a throttled
 //! account sits out a full cool-off without a request; each 429 in a row
 //! doubles the wait up to a cap, which is both gentler on the endpoint and
@@ -41,7 +41,7 @@ pub fn clear(key: &str) {
     map().lock().unwrap().remove(key);
 }
 
-/// Records a 429. Honours a real retry-after if one ever appears, but never
+/// Records a 429. Honors a real retry-after if one ever appears, but never
 /// comes back sooner than the cool-off. Returns the hold in seconds.
 pub fn hit(tag: &str, key: &str, retry_after_secs: u64) -> u64 {
     let mut m = map().lock().unwrap();

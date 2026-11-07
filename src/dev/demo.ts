@@ -320,7 +320,7 @@ const SCREENS: Record<string, string> = {
     `  ${dim('$ git log --oneline 0.2.16..HEAD')}\r\n` +
     '\r\n' +
     `  ${bold('Luna 0.3')}\r\n` +
-    '  • Chats keep their own colour across panes and the sidebar\r\n' +
+    '  • Chats keep their own color across panes and the sidebar\r\n' +
     '  • Window groups I–IV, each with its own four boards\r\n' +
     '  • The app ships and updates its own copies of both CLIs\r\n' +
     '\r\n' +

@@ -1126,14 +1126,14 @@ mod reading_tests {
 
     #[test]
     fn the_pending_tool_is_the_last_one_without_a_result() {
-        let ask = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":"AskUserQuestion","input":{"questions":[{"question":"Which colour?","options":[{"label":"Red"},{"label":"Blue"}],"multiSelect":false}]}}]}}"#;
+        let ask = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":"AskUserQuestion","input":{"questions":[{"question":"Which color?","options":[{"label":"Red"},{"label":"Blue"}],"multiSelect":false}]}}]}}"#;
         let ran = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}}]}}"#;
         let ran_done = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"a"}]}}"#;
         let text = [ran, ran_done, ask].join("\n");
         let (name, input) = pending_tool_in(&text).unwrap();
         assert_eq!(name, "AskUserQuestion");
         let a = crate::agents::Ask::from_claude_questions(&input).unwrap();
-        assert_eq!((a.questions[0].text.as_str(), a.questions[0].options.len()), ("Which colour?", 2));
+        assert_eq!((a.questions[0].text.as_str(), a.questions[0].options.len()), ("Which color?", 2));
         let answered = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t2","content":"Blue"}]}}"#;
         assert_eq!(pending_tool_in(&[text.as_str(), answered].join("\n")), None);
         // A prompt typed after it: the turn it stood in is over.

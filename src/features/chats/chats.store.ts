@@ -77,7 +77,7 @@ export const numberedChats = (folders: Folder[], group: GroupId): Chat[] =>
  *  working out which running sessions nothing claims. */
 export const allChats = (folders: Folder[]): Chat[] => folders.flatMap(f => f.chats);
 
-/** The colours worn in one group, for dealing a new chat one of its own. */
+/** The colors worn in one group, for dealing a new chat one of its own. */
 export const wornColors = (folders: Folder[], group: GroupId): Array<string | null | undefined> =>
   allChats(folders)
     .filter(c => c.group === group)

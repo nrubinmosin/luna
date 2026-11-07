@@ -327,7 +327,7 @@ pub fn children_at_work(live: &Live) -> Option<Vec<String>> {
     // A subagent's thread is begun after the session's process, give or take
     // the clocks, in the folder of the day it was begun: every day since the
     // spawn, for a session days old whose subagent from its first day is
-    // woken now. A fortnight at most.
+    // woken now. Two weeks at most.
     let not_before = spawned - chrono::Duration::seconds(5);
     let today = Local::now().date_naive();
     let days = (today - not_before.date()).num_days().clamp(0, 13) as usize + 1;
@@ -1594,7 +1594,7 @@ mod format_tests {
         let plain = r#"{"timestamp":"t","type":"response_item","payload":{"type":"function_call","name":"request_user_input_async","arguments":"{\"questions\":[{\"title\":\"Size?\",\"options\":[\"Small\",\"Large\"]}]}","call_id":"c"}}"#;
         assert_eq!(ask(&[started, plain]).unwrap().questions[0].options, ["Small", "Large"], "options as bare strings");
 
-        let blocking = r#"{"timestamp":"t","type":"response_item","payload":{"type":"function_call","name":"request_user_input","arguments":"{\"questions\":[{\"id\":\"colour\",\"header\":\"Colour\",\"question\":\"Which colour?\",\"options\":[{\"label\":\"Red (Recommended)\",\"description\":\"\"},{\"label\":\"Blue\",\"description\":\"\"}]}]}","call_id":"call_b"}}"#;
+        let blocking = r#"{"timestamp":"t","type":"response_item","payload":{"type":"function_call","name":"request_user_input","arguments":"{\"questions\":[{\"id\":\"color\",\"header\":\"Color\",\"question\":\"Which color?\",\"options\":[{\"label\":\"Red (Recommended)\",\"description\":\"\"},{\"label\":\"Blue\",\"description\":\"\"}]}]}","call_id":"call_b"}}"#;
         let answered = r#"{"timestamp":"t","type":"response_item","payload":{"type":"function_call_output","call_id":"call_b","output":"{\"answers\":{}}"}}"#;
         let a = ask(&[started, blocking]).expect("a blocking question");
         assert!(a.blocking);

@@ -12,8 +12,8 @@ async function appWindow() {
 
 /**
  * The window's own XP chrome. The native decorations are off, so this strip is
- * the title bar: `data-tauri-drag-region` moves the window (and maximises it on
- * a double-click, which is the platform's own behaviour, not ours). The board's
+ * the title bar: `data-tauri-drag-region` moves the window (and maximizes it on
+ * a double-click, which is the platform's own behavior, not ours). The board's
  * controls sit on it between the name and the window's three buttons, whose
  * glyphs theme.css draws.
  *
@@ -21,7 +21,7 @@ async function appWindow() {
  * close request, so this only has to ask for it.
  */
 export function AppFrame({ children }: { children: ReactNode }) {
-  // Starts true because the window is configured maximised; a wrong first guess
+  // Starts true because the window is configured maximized; a wrong first guess
   // would show a restore glyph for the one frame before the real state lands.
   const [maximized, setMaximized] = useState(true);
 

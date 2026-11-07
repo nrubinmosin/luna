@@ -16,7 +16,7 @@ import { currentLayout, currentSlots, usePanes } from './panes.store';
 import { Terminal } from './Terminal';
 
 /**
- * The chat's colour, picked from a popover under the swatch button. Portalled
+ * The chat's color, picked from a popover under the swatch button. Portaled
  * and placed by the button's own rect, clamped to the window: drawn inside
  * the pane it was cut off by the pane's edge, or ran off the window's.
  */
@@ -70,7 +70,7 @@ function ColorPicker({ chat, anchor, onClose }: { chat: Chat; anchor: HTMLElemen
         className="swatch"
         data-on={!chat.color ? 'yes' : 'no'}
         onClick={() => set(null)}
-        title="No colour — stock Luna blue"
+        title="No color — stock Luna blue"
         style={{ background: 'var(--chip)' }}
       >
         <Icon name="close" size={12} />
@@ -104,7 +104,7 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
   const { setOver, dropChat, closePane, setDragPane, swapPanes, setPeek, setPeekChat, setActivePane } =
     usePanes.getState();
   const peeked = usePanes(s => (soloChat ? true : s.peek === index));
-  // The pane you are working in wears its colour; the rest go pale, the way
+  // The pane you are working in wears its color; the rest go pale, the way
   // XP drew every window but the active one. One pane, or a sheet, is always
   // the one you are in.
   const focused = usePanes(s => !!soloChat || peeked || currentLayout(s) === 1 || s.activePane === index);
@@ -245,8 +245,8 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
             <span className="title-bar-controls">
               <button
                 data-glyph="swatch"
-                aria-label="Chat colour"
-                title="Chat colour — tints this title bar and the chat's row in the list"
+                aria-label="Chat color"
+                title="Chat color — tints this title bar and the chat's row in the list"
                 onClick={e => {
                   e.stopPropagation();
                   const at = e.currentTarget;

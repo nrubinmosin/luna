@@ -5,7 +5,7 @@ src-tauri/
 # Lockfiles belong to their package manager.
 pnpm-lock.yaml
 
-# Build output and the test flavour's folder.
+# Build output and the test flavor's folder.
 dist/
 test-build/
 

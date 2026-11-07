@@ -9,7 +9,7 @@
 //! its config. Nothing is lost by that: the sessions live on this side, and the
 //! new page reattaches to them as it would after a reload.
 //!
-//! Only a window that is on screen is judged. A hidden or minimised page has
+//! Only a window that is on screen is judged. A hidden or minimized page has
 //! its timers throttled to a beat a minute or less, and coming back from the
 //! tray must not read as a dead page; the clock starts when the window does.
 

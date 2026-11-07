@@ -9,7 +9,7 @@ body {
 /* The terminal face, shipped with the app. Fetched from Google Fonts it needed
    the network on every start, and without it xterm measured its cells on
    whatever monospace it found first. Regular and Bold are the two weights
-   xterm asks for. Files under public/fonts, licence alongside. */
+   xterm asks for. Files under public/fonts, license alongside. */
 @font-face {
   font-family: "JetBrains Mono";
   font-style: normal;
@@ -32,7 +32,7 @@ body {
    a bluish ground is what read as haze. Surfaces step in lightness alone
    (OKLCH, chroma 0 in the dark theme, a little warmth in the light one); the
    terminal is the deepest well in either, the chrome a step or two out of it.
-   xp.css's compiled dist bakes its controls to literal colours, so every
+   xp.css's compiled dist bakes its controls to literal colors, so every
    control the app shows is restyled below from these tokens.
    ------------------------------------------------------------------------ */
 [data-app] {
@@ -97,15 +97,15 @@ body {
   --row-sel: #316ac5;
   --row-sel-ink: #ffffff;
 
-  /* Luna blue, toned down, for a chat with no colour of its own. */
+  /* Luna blue, toned down, for a chat with no color of its own. */
   --luna-blue: hsl(218 40% 42%);
-  /* XP's flashing taskbar button: the one colour reserved for "your turn". */
+  /* XP's flashing taskbar button: the one color reserved for "your turn". */
   --wait: #c46a10;
   --balloon: #fffbe0;
   --balloon-ink: #26211a;
   --scroll-thumb: #c9c1b4;
   --scroll-thumb-hover: #aaa192;
-  /* The settings editor's syntax colours. */
+  /* The settings editor's syntax colors. */
   --code-key: #2a62c9;
   --code-string: #2f7a3a;
   --code-literal: #a3501c;
@@ -180,7 +180,7 @@ body {
   }
 }
 
-/* Thin rounded scrollbars in the theme's own greys, in place of XP's blue
+/* Thin rounded scrollbars in the theme's own grays, in place of XP's blue
    bitmaps — which, in the dark theme, were the brightest thing on screen. */
 [data-app] ::-webkit-scrollbar {
   width: 10px;
@@ -317,7 +317,7 @@ body {
   padding: 0 8px;
 }
 
-/* The one button that matters wears a colour, the way XP's Start button and
+/* The one button that matters wears a color, the way XP's Start button and
    default dialog buttons stood out: green to go ahead, red to destroy. */
 [data-app] button.primary,
 [data-app] button.danger {
@@ -567,7 +567,7 @@ body {
 
 /* The app's own title bar over the window's native edge: no frame of its
    own drawn round it, so Windows keeps the border, the rounded corners and
-   the shadow it gives every window, maximised or not. */
+   the shadow it gives every window, maximized or not. */
 .app-frame {
   height: 100vh;
   display: flex;
@@ -590,7 +590,7 @@ body {
   display: flex;
 }
 /* The window's buttons answer up to the bar's top edge, and Close to its
-   right edge too: thrown into the corner of a maximised window, the pointer
+   right edge too: thrown into the corner of a maximized window, the pointer
    lands on Close, as on Windows' own title bar. The reach is generous so the
    press shrinking the button does not pull it out from under the pointer. */
 .app-frame > .title-bar > .title-bar-controls {
@@ -795,7 +795,7 @@ body {
   --glyph: var(--g-trash);
   --face: var(--ctl-red);
 }
-/* The colour button wears the chat's colour instead of a glyph. */
+/* The color button wears the chat's color instead of a glyph. */
 [data-app] .title-bar-controls button[data-glyph="swatch"] {
   background:
     linear-gradient(var(--swatch, transparent), var(--swatch, transparent)) center / 10px 10px no-repeat,
@@ -812,7 +812,7 @@ body {
 }
 
 /* ------------------------------------------------------------------------
-   Pane title bar. The chat's colour arrives as --c, set inline, and the Luna
+   Pane title bar. The chat's color arrives as --c, set inline, and the Luna
    gloss is mixed from it here. Controls sit on the left, where the hand
    reaches first; the name and the chat's details on the right.
    ------------------------------------------------------------------------ */
@@ -948,7 +948,7 @@ body {
   height: 12px;
 }
 
-/* An inactive XP window is pale, not grey: the hue survives, the shout goes. */
+/* An inactive XP window is pale, not gray: the hue survives, the shout goes. */
 [data-app] .pane[data-focus="no"] .pane-bar {
   border-color: color-mix(in oklab, var(--c) 50%, #a89c8a);
   background: linear-gradient(
@@ -1363,7 +1363,7 @@ body {
   color: #ffc27a;
 }
 /* An unsent draft in the chat's composer, and the messages Luna holds for it
-   (drafts.store.ts): on the pane's title bar, a pill the bar's colour shows
+   (drafts.store.ts): on the pane's title bar, a pill the bar's color shows
    through. */
 [data-app] .pane-tag {
   flex: none;
@@ -1788,7 +1788,7 @@ body {
   color: var(--row-sel-ink);
 }
 
-/* Popovers (the colour picker): an XP menu, rising from where it was asked for. */
+/* Popovers (the color picker): an XP menu, rising from where it was asked for. */
 [data-app] .popover {
   position: fixed;
   z-index: 90;

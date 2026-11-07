@@ -86,7 +86,7 @@ pub fn path_key(p: &str) -> String {
 
 /// `path_key` for where it is missing a likeness that would be the mistake: a
 /// live session not seen in a worktree leaves that worktree to be deleted under
-/// it, and a session not recognised as a chat's leaves the chat without it. On
+/// it, and a session not recognized as a chat's leaves the chat without it. On
 /// macOS the spelling a chat was given and the one its CLI reports differ only
 /// where the volume does not care, as it usually does not.
 pub fn path_key_loose(p: &str) -> String {

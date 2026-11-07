@@ -11,7 +11,7 @@
 //! cannot pass on reads as nothing said, and nothing said is Luna's stock
 //! choice (`source: stock`) — except the model and its effort, where nothing
 //! said is what Codex itself would pick (`source: codex`): the first model of
-//! its catalogue (codex/models.rs) at that model's default level. Naming it
+//! its catalog (codex/models.rs) at that model's default level. Naming it
 //! is what lets the dialog show the model a chat really runs on, and the flag
 //! carry it, instead of a "default" nobody can see.
 
@@ -96,7 +96,7 @@ fn apply(out: &mut Said, source: &str, doc: &toml_edit::DocumentMut) {
     }
 }
 
-/// Async and off to a blocking thread: with no catalogue on disk the model
+/// Async and off to a blocking thread: with no catalog on disk the model
 /// list comes from the CLI, which takes seconds.
 #[tauri::command]
 pub async fn codex_defaults(account_path: String, folder: String) -> CodexDefaults {

@@ -182,6 +182,6 @@ on one of the user's accounts.
   with a timeout, or check `luna_list` when the user is back. "NOT done yet" comes once.
 - Before anything that stops Luna's core or the PC: `luna_list` for helpers at work; they lose
   their turns. To turn the PC off use `luna_power`, not a `shutdown` command.
-- `luna_power` `drain`: till the rule fires or is cancelled agents' `luna_spawn` and `luna_send`
+- `luna_power` `drain`: till the rule fires or is canceled agents' `luna_spawn` and `luna_send`
   are refused, `luna_answer` takes only answers or allow to a pending ask. After `restart` Luna
   starts at the next sign-in; that takes a person.

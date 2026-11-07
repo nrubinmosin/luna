@@ -14,7 +14,7 @@ fn config_file(account_path: &str) -> Result<PathBuf, String> {
     Ok(Path::new(account_path).join(".claude.json"))
 }
 
-/// Normalises a Windows path the way the CLI stores it: forward slashes,
+/// Normalizes a Windows path the way the CLI stores it: forward slashes,
 /// upper-case drive letter, no trailing separator.
 fn project_key(folder: &str) -> String {
     let mut s = folder.replace('\\', "/");

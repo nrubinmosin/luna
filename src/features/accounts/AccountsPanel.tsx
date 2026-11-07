@@ -104,7 +104,7 @@ function AccountsPanel() {
   // `window.confirm` is what stood here, and in a webview that is the dialog
   // plugin's `confirm` command — which this app's ACL does not allow. It threw
   // into an unhandled rejection and returned nothing, so the guard read as
-  // "cancelled" and an account in use simply could not be deleted.
+  // "canceled" and an account in use simply could not be deleted.
   const [deleting, setDeleting] = useState<Account | null>(null);
   const [recommending, setRecommending] = useState<Account | null>(null);
   const [editing, setEditing] = useState<Account | null>(null);

@@ -48,7 +48,7 @@ const CANCELLED: u8 = 2;
 pub(crate) const LATE_CANCEL: Duration = Duration::from_secs(10);
 
 /// One tool call's fate, decided once: committed to its response (a `wait`
-/// or `read` has handed an owed answer over in it) or cancelled (no
+/// or `read` has handed an owed answer over in it) or canceled (no
 /// response). A cancel that comes after the commit undoes the hand-over
 /// instead, so the answer is owed again and the notice brings it.
 pub struct Call {
@@ -137,7 +137,7 @@ impl Drop for InFlight {
 }
 
 /// One JSON-RPC message in, at most one out: None for a notification, a
-/// response from the client, or a request it cancelled.
+/// response from the client, or a request it canceled.
 pub fn handle(caller: &str, body: &str) -> Option<Value> {
     let req: Value = match serde_json::from_str(body) {
         Ok(v) => v,
@@ -181,7 +181,7 @@ pub fn handle(caller: &str, body: &str) -> Option<Value> {
         "tools/call" => {
             let call_out = InFlight::start(caller, &id);
             let r = call(caller, &params, &call_out.call);
-            // A cancelled request gets no response.
+            // A canceled request gets no response.
             if call_out.call.cancelled() {
                 return None;
             }
@@ -414,7 +414,7 @@ fn call(caller: &str, params: &Value, this: &Call) -> Value {
     }
     let ms = started.elapsed().as_millis();
     if this.cancelled() {
-        crate::log::info("mcp", &format!("{line} cancelled by the client after {ms}ms"));
+        crate::log::info("mcp", &format!("{line} canceled by the client after {ms}ms"));
     } else if out["isError"] == true {
         let e = out["content"][0]["text"].as_str().unwrap_or("");
         let e: String = e.chars().take(300).collect();
@@ -692,7 +692,7 @@ mod tests {
                 u.fetch_add(1, Ordering::SeqCst);
             }
         };
-        // Cancelled first: the commit fails and undoes it itself.
+        // Canceled first: the commit fails and undoes it itself.
         let first = Call::new();
         first.cancel();
         assert!(!first.commit(undo()));

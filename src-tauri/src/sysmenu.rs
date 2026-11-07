@@ -75,7 +75,7 @@ pub fn exit_with_session() {
     const ID: usize = 2;
 
     unsafe extern "system" fn proc_(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM, _id: usize, _data: usize) -> LRESULT {
-        // wParam FALSE is a shutdown cancelled after WM_QUERYENDSESSION, which
+        // wParam FALSE is a shutdown canceled after WM_QUERYENDSESSION, which
         // nothing here acted on.
         if msg == WM_ENDSESSION && wparam.0 != 0 {
             // From a shutdown, Windows ends the process once this returns; from

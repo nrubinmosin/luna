@@ -94,10 +94,10 @@ export function ChatRow({
       data-waiting={chat.status === 'waiting' ? 'yes' : 'no'}
       style={{ paddingLeft: 5 + depth * 14, opacity: dragging ? 0.45 : 1 }}
     >
-      {/* The chat's colour, so a row and the pane wearing the same tint link up
+      {/* The chat's color, so a row and the pane wearing the same tint link up
           by eye. In flow whether set or not. */}
       <span
-        title={chat.color ? 'Chat colour — set from the pane title bar' : undefined}
+        title={chat.color ? 'Chat color — set from the pane title bar' : undefined}
         style={{
           width: 4,
           height: 17,
