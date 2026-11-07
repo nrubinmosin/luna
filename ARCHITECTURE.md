@@ -1240,8 +1240,10 @@ src-tauri/src/
   jobs, and the windows group plus the Windows test build on Linux, whose executables a Windows runner
   then runs. Actions are pinned by commit; Dependabot (`.github/dependabot.yml`) moves them, the
   crates, the npm packages and the images weekly.
-- Toolchains — Rust in `src-tauri/rust-toolchain.toml` and the images' `FROM rust:<version>` (the gate
-  checks they agree), Node in `.node-version`, cargo-xwin in its Dockerfile. Images are tagged by a
+- Toolchains — Rust in `src-tauri/rust-toolchain.toml` and the images' `FROM rust:<version>`, Node in
+  `.node-version` and the images' `FROM node:<version>` (the gate checks they agree), cargo-xwin in its
+  Dockerfile. Every `FROM` names its image by tag and digest, and the gate's frontend steps run in the
+  Windows image's Node stage, so one pin serves both. Images are tagged by a
   hash of what they are built from (`scripts/lib.ps1`), so checkouts with different Dockerfiles never
   run in each other's. The scripts' shared plumbing (the one-build-at-a-time mutex, the build stamp,
   the docker runs) lives in `scripts/lib.ps1`.

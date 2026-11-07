@@ -1,23 +1,20 @@
-# check=skip=InvalidDefaultArgInFrom
 # Toolchain image for cross-compiling the Windows build from Linux.
-# Build:  scripts/lib.ps1 Build-Image, or docker build -t luna-winbuild --build-arg NODE_VERSION=<.node-version>
+# Build:  scripts/lib.ps1 Build-Image, or docker build -t luna-winbuild
 #           -f docker/windows-build.Dockerfile docker
-# Usage:  see scripts/build-windows.ps1 (scripts/lib.ps1 Build-Image passes the arg)
+# Usage:  see scripts/build-windows.ps1
 #
-# Every version is pinned: Rust here and in src-tauri/rust-toolchain.toml, Node in
-# the repo's .node-version, cargo-xwin below. The gate checks that the first two
-# agree (scripts/gate.ps1).
+# Every version is pinned: Rust here and in src-tauri/rust-toolchain.toml, Node
+# here and in the repo's .node-version, cargo-xwin below. The gate checks that
+# the pins agree (scripts/gate.ps1), and the digests hold each tag to one build.
 
 # Node comes from the official image of the exact version, not from a distro or
-# NodeSource channel that moves under the same name.
-# No default, on purpose (hence the check= line at the top): a build without
-# the argument fails rather than picking some other Node.
-ARG NODE_VERSION
-FROM node:${NODE_VERSION}-trixie-slim AS node
+# NodeSource channel that moves under the same name. The gate's frontend steps
+# run in this same image (scripts/lib.ps1 Get-NodeImage).
+FROM node:24.22.2-trixie-slim@sha256:0820eaa85e07d0490446dd01d14707e17e6108a36988cf374899cd057eb3812d AS node
 
 # Trixie for NSIS 3.11: the tauri 2.12 installer script includes
 # Win\RestartManager.nsh, which bookworm's NSIS 3.08 does not ship.
-FROM rust:1.99.1-trixie
+FROM rust:1.99.1-trixie@sha256:8a4e90c7946b74626488b1446f712c0fe0ed1a596cbd3d871684bc9c5433ae07
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     nsis lld llvm clang curl ca-certificates \

@@ -1,8 +1,9 @@
 # Weekly, one pull request per ecosystem: each goes through the whole gate in CI.
-# Two pins stay manual, as Dependabot does not read them: the Rust toolchain
-# (src-tauri/rust-toolchain.toml with the FROM lines in docker/) and Node
-# (.node-version). A Docker bump of the rust image alone fails the gate's pin
-# check, which names the file to bump with it.
+# The FROM lines in docker/ name each image by tag and digest; Dependabot moves
+# both, a rebuilt tag included. Two pins stay manual, as Dependabot does not
+# read them: the Rust toolchain (src-tauri/rust-toolchain.toml) and Node
+# (.node-version). A Docker bump of the rust or node image alone fails the
+# gate's pin check, which names the file to bump with it.
 version: 2
 updates:
   - package-ecosystem: cargo
