@@ -101,7 +101,7 @@ struct Locked {
 fn lock() -> Locked {
     let threads = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let path = Dirs::current().ledger().with_extension("json.lock");
-    let file = crate::secret::open_private(&path, std::fs::OpenOptions::new().write(true)).and_then(|f| f.lock().map(|()| f));
+    let file = crate::secret::open_private(&path).and_then(|f| f.lock().map(|()| f));
     // Without it a pass still runs, as one did before passes came from two
     // processes.
     if let Err(e) = &file {
@@ -169,6 +169,16 @@ impl Dirs {
     }
     fn backups(&self) -> PathBuf {
         self.data.join("library-backups")
+    }
+    /// An edit of the library: private in the data dir's own `library/`
+    /// (`write_file`), as that folder has it in a source of the user's
+    /// choosing (`write_copy`), which is theirs, not Luna's to lock down.
+    fn write(&self, path: &Path, bytes: &[u8]) -> Result<(), String> {
+        if self.root.starts_with(&self.data) {
+            write_file(path, bytes)
+        } else {
+            write_copy(path, bytes)
+        }
     }
 }
 

@@ -268,7 +268,7 @@ pub(super) fn codex_manifests(lib: &LibrarySettings, accounts: &[AccountInfo]) {
                 });
                 let text = serde_json::to_string_pretty(&manifest_json).unwrap_or_default() + "\n";
                 if std::fs::read(&manifest).ok().as_deref() != Some(text.as_bytes()) {
-                    if let Err(e) = write_file(&manifest, text.as_bytes()) {
+                    if let Err(e) = write_copy(&manifest, text.as_bytes()) {
                         crate::log::warn("library", &format!("could not write {}: {e}", manifest.display()));
                     }
                 }

@@ -107,7 +107,7 @@ fn append(path: &Path, line: Value) {
             }
         }
     }
-    let written = crate::secret::open_private(path, std::fs::OpenOptions::new().append(true)).and_then(|mut f| writeln!(f, "{line}"));
+    let written = crate::secret::append_private(path).and_then(|mut f| writeln!(f, "{line}"));
     if let Err(e) = written {
         crate::log::warn("agents", &format!("could not write {}: {e}", path.display()));
     }

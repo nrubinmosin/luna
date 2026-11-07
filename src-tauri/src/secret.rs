@@ -97,8 +97,17 @@ fn sddl_aces(sddl: &str) -> Option<(&str, Vec<Vec<&str>>)> {
 #[cfg_attr(not(windows), allow(dead_code))]
 pub fn sddl_is_private(sddl: &str, user: &str) -> bool {
     let Some((flags, aces)) = sddl_aces(sddl) else { return false };
-    flags.contains('P')
-        && !aces.is_empty()
+    flags.contains('P') && !aces.is_empty() && sddl_allows_only(sddl, user)
+}
+
+/// Whether `sddl` lets nobody in but `user`, SYSTEM and Administrators,
+/// protected or not: a file in a private folder inherits just those, and
+/// one made by `create_private` has them of its own. No DACL at all
+/// (`NO_ACCESS_CONTROL`) lets everyone in.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn sddl_allows_only(sddl: &str, user: &str) -> bool {
+    let Some((flags, aces)) = sddl_aces(sddl) else { return false };
+    !flags.contains("NO_ACCESS_CONTROL")
         && aces.iter().all(|ace| match ace.as_slice() {
             ["D", ..] => true,
             ["A", _, _, _, _, who] => *who == user || MACHINE_TRUSTEES.contains(who),
@@ -128,9 +137,9 @@ pub mod acl {
         ConvertStringSidToSidW, GetNamedSecurityInfoW, SetNamedSecurityInfoW, SDDL_REVISION_1, SE_FILE_OBJECT,
     };
     use windows::Win32::Security::{
-        GetSecurityDescriptorDacl, GetTokenInformation, TokenUser, ACL, DACL_SECURITY_INFORMATION, OBJECT_SECURITY_INFORMATION,
-        OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, TOKEN_QUERY, TOKEN_USER,
-        UNPROTECTED_DACL_SECURITY_INFORMATION,
+        GetSecurityDescriptorDacl, GetTokenInformation, TokenOwner, TokenUser, ACL, DACL_SECURITY_INFORMATION, OBJECT_SECURITY_INFORMATION,
+        OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, TOKEN_INFORMATION_CLASS, TOKEN_OWNER,
+        TOKEN_QUERY, TOKEN_USER, UNPROTECTED_DACL_SECURITY_INFORMATION,
     };
     use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
@@ -310,18 +319,34 @@ pub mod acl {
 
     /// The SID of the user this process runs as.
     pub fn user_sid() -> io::Result<String> {
+        // SAFETY: TokenUser fills the buffer with a TOKEN_USER, its SID in it.
+        token_sid(TokenUser, |buf| unsafe { (*buf.cast::<TOKEN_USER>()).User.Sid })
+    }
+
+    /// The SID that owns what this process makes, the token's default owner:
+    /// this user, or Administrators where Windows gives an elevated admin's
+    /// new files to the group, as it does for the built-in Administrator
+    /// that GitHub's Windows runners run as.
+    pub fn maker_sid() -> io::Result<String> {
+        // SAFETY: TokenOwner fills the buffer with a TOKEN_OWNER, its SID in it.
+        token_sid(TokenOwner, |buf| unsafe { (*buf.cast::<TOKEN_OWNER>()).Owner })
+    }
+
+    /// A SID of this process's token: `class` read, `sid` picked from it.
+    fn token_sid(class: TOKEN_INFORMATION_CLASS, sid: impl FnOnce(*const u64) -> PSID) -> io::Result<String> {
         let mut token = HANDLE::default();
         // SAFETY: the token is opened for query only, read into a buffer of
-        // the size it asks for (u64s, aligned for TOKEN_USER), and closed.
+        // the size it asks for (u64s, aligned for the struct it holds), and
+        // closed; the SID points into the buffer and is read while it lives.
         unsafe {
             OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token)?;
             let mut len = 0u32;
-            let _ = GetTokenInformation(token, TokenUser, None, 0, &mut len);
+            let _ = GetTokenInformation(token, class, None, 0, &mut len);
             let mut buf = vec![0u64; (len as usize).div_ceil(8)];
-            let got = GetTokenInformation(token, TokenUser, Some(buf.as_mut_ptr().cast()), len, &mut len);
+            let got = GetTokenInformation(token, class, Some(buf.as_mut_ptr().cast()), len, &mut len);
             let _ = CloseHandle(token);
             got?;
-            sid_text((*buf.as_ptr().cast::<TOKEN_USER>()).User.Sid)
+            sid_text(sid(buf.as_ptr()))
         }
     }
 
@@ -448,16 +473,27 @@ pub mod acl {
         }
     }
 
-    /// A new file at `path` (`CREATE_NEW`), open for writing, made with a
-    /// protected DACL for this user, SYSTEM and Administrators: set as it is
-    /// created, never a moment open to what the folder hands down. A rename
-    /// in the same volume keeps it.
-    pub fn create_new(path: &Path) -> io::Result<std::fs::File> {
+    /// The rights a file of `open_private`'s is opened with: std's own for
+    /// `write` or `append`, `FILE_READ_ATTRIBUTES` for what `found` reads
+    /// through the handle (its owner and DACL take `READ_CONTROL`, which
+    /// `FILE_GENERIC_WRITE` holds), and `WRITE_DAC` for `tighten`, which an
+    /// owner always has.
+    pub fn write_access(append: bool) -> u32 {
+        use windows::Win32::Storage::FileSystem::{FILE_GENERIC_WRITE, FILE_READ_ATTRIBUTES, FILE_WRITE_DATA, WRITE_DAC};
+        let write = if append { FILE_GENERIC_WRITE.0 & !FILE_WRITE_DATA.0 } else { FILE_GENERIC_WRITE.0 };
+        write | FILE_READ_ATTRIBUTES.0 | WRITE_DAC.0
+    }
+
+    /// A new file at `path` (`CREATE_NEW`), open with `access`
+    /// (`write_access`), made with a protected DACL for this user, SYSTEM
+    /// and Administrators: set as it is created, never a moment open to what
+    /// the folder hands down. A rename in the same volume keeps it.
+    pub fn create_new(path: &Path, access: u32) -> io::Result<std::fs::File> {
         use std::os::windows::io::{FromRawHandle, RawHandle};
-        use windows::Win32::Foundation::GENERIC_WRITE;
         use windows::Win32::Security::SECURITY_ATTRIBUTES;
         use windows::Win32::Storage::FileSystem::{
-            CreateFileW, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+            CreateFileW, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ,
+            FILE_SHARE_WRITE,
         };
         let user = user_sid()?;
         // A file has nothing to hand down: the folder's ACEs without OICI.
@@ -475,13 +511,14 @@ pub mod acl {
                 bInheritHandle: BOOL(0),
             };
             // The share modes std opens with, so others' reads go on as before.
+            // A link at `path` is a name taken like any other, never followed.
             let made = CreateFileW(
                 PCWSTR(name.as_ptr()),
-                GENERIC_WRITE.0,
+                access,
                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                 Some(&attrs),
                 CREATE_NEW,
-                FILE_ATTRIBUTE_NORMAL,
+                FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
                 None,
             );
             let _ = LocalFree(Some(HLOCAL(sd.0)));
@@ -492,6 +529,105 @@ pub mod acl {
                 _ => io::Error::from(e),
             })?;
             Ok(std::fs::File::from_raw_handle(made.0 as RawHandle))
+        }
+    }
+
+    /// What the file open on `file` is, read through the handle so nothing
+    /// can be swapped in between (`super::Found`): foreign if it is a link or
+    /// junction (opened as itself, `FILE_FLAG_OPEN_REPARSE_POINT`), a folder,
+    /// a second name (a hard link to a file elsewhere) or owned by someone
+    /// `owner_ok` does not name; loose if its DACL lets anyone else in, and
+    /// foreign then too unless this process could have made it (`judge`).
+    pub fn found(file: &std::fs::File) -> io::Result<super::Found> {
+        use super::Found;
+        use std::os::windows::io::AsRawHandle;
+        use windows::Win32::Security::Authorization::GetSecurityInfo;
+        use windows::Win32::Storage::FileSystem::{
+            FileAttributeTagInfo, GetFileInformationByHandle, GetFileInformationByHandleEx, BY_HANDLE_FILE_INFORMATION,
+            FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO,
+        };
+        let handle = HANDLE(file.as_raw_handle());
+        let user = user_sid()?;
+        // SAFETY: the handle is the File's, open through the calls; each
+        // buffer is of the size the call is told; `owner` points into `sd`,
+        // which is read before it is freed once.
+        unsafe {
+            let mut tag = FILE_ATTRIBUTE_TAG_INFO::default();
+            GetFileInformationByHandleEx(handle, FileAttributeTagInfo, (&raw mut tag).cast(), size_of::<FILE_ATTRIBUTE_TAG_INFO>() as u32)?;
+            if tag.FileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT.0 | FILE_ATTRIBUTE_DIRECTORY.0) != 0 {
+                return Ok(Found::Foreign("a link, junction or folder".into()));
+            }
+            let mut info = BY_HANDLE_FILE_INFORMATION::default();
+            GetFileInformationByHandle(handle, &mut info)?;
+            if info.nNumberOfLinks != 1 {
+                return Ok(Found::Foreign(format!("{} names (hard links)", info.nNumberOfLinks)));
+            }
+            let (mut owner, mut sd) = (PSID::default(), PSECURITY_DESCRIPTOR::default());
+            GetSecurityInfo(
+                handle,
+                SE_FILE_OBJECT,
+                OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+                Some(&mut owner),
+                None,
+                None,
+                None,
+                Some(&mut sd),
+            )
+            .ok()?;
+            let read = sid_text(owner).and_then(|owner| sd_text(sd).map(|sddl| (owner, sddl)));
+            let _ = LocalFree(Some(HLOCAL(sd.0)));
+            let (owner, sddl) = read?;
+            judge(&owner, &sddl, &user, &maker_sid()?)
+        }
+    }
+
+    /// `found`'s verdict on a plain file of one name owned by `owner`, with
+    /// the DACL `sddl`, for this user `user`, whose process gives what it
+    /// makes to `maker` (`maker_sid`). Administrators, SYSTEM and
+    /// TrustedInstaller may own a private file of Luna's, but one open to
+    /// others is taken back only if this process could have made it: owned
+    /// by this user or by `maker`. An elevated run's maker may be
+    /// Administrators, whose files only an elevated admin or SYSTEM can
+    /// make, and either can read whatever Luna writes anyway; a run that is
+    /// not elevated still moves such a file aside.
+    pub(super) fn judge(owner: &str, sddl: &str, user: &str, maker: &str) -> io::Result<super::Found> {
+        use super::Found;
+        if !owner_ok(owner, user) {
+            return Ok(Found::Foreign(format!("owned by {owner}")));
+        }
+        if super::sddl_allows_only(sddl, &trustee(user)?) {
+            return Ok(Found::Private);
+        }
+        let why = format!("open to others ({sddl})");
+        Ok(if owner == user || owner == maker { Found::Loose(why) } else { Found::Foreign(format!("owned by {owner}, {why}")) })
+    }
+
+    /// Gives the file open on `file` the protected DACL `create_new` makes
+    /// files with, through the handle (`WRITE_DAC`, in `write_access`).
+    pub fn tighten(file: &std::fs::File) -> io::Result<()> {
+        use std::os::windows::io::AsRawHandle;
+        use windows::Win32::Security::Authorization::SetSecurityInfo;
+        let sddl: Vec<u16> = format!("D:P(A;;FA;;;{})(A;;FA;;;SY)(A;;FA;;;BA)", user_sid()?).encode_utf16().chain(Some(0)).collect();
+        let mut sd = PSECURITY_DESCRIPTOR::default();
+        // SAFETY: as in `set_dacl`, on the File's handle, open through the call.
+        unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(PCWSTR(sddl.as_ptr()), SDDL_REVISION_1, &mut sd, None)?;
+            let (mut present, mut defaulted, mut dacl) = (BOOL::default(), BOOL::default(), std::ptr::null_mut::<ACL>());
+            let set = GetSecurityDescriptorDacl(sd, &mut present, &mut dacl, &mut defaulted).map_err(io::Error::from).and_then(|()| {
+                SetSecurityInfo(
+                    HANDLE(file.as_raw_handle()),
+                    SE_FILE_OBJECT,
+                    DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                    None,
+                    None,
+                    Some(dacl.cast_const()),
+                    None,
+                )
+                .ok()
+                .map_err(io::Error::from)
+            });
+            let _ = LocalFree(Some(HLOCAL(sd.0)));
+            set
         }
     }
 
@@ -546,14 +682,24 @@ pub fn claim_private(dir: &Path, uid: u32) -> Result<(), String> {
 /// ACL. Fails if `path` is there already, so a file planted ahead of it is
 /// never written into.
 pub fn create_private(path: &Path) -> io::Result<std::fs::File> {
+    create(path, false)
+}
+
+/// `create_private`, open for appending where `append` says so.
+fn create(path: &Path, append: bool) -> io::Result<std::fs::File> {
     #[cfg(windows)]
     {
-        acl::create_new(path)
+        acl::create_new(path, acl::write_access(append))
     }
     #[cfg(not(windows))]
     {
         let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
+        if append {
+            options.append(true);
+        } else {
+            options.write(true);
+        }
+        options.create_new(true);
         #[cfg(unix)]
         {
             use std::os::unix::fs::OpenOptionsExt;
@@ -563,23 +709,184 @@ pub fn create_private(path: &Path) -> io::Result<std::fs::File> {
     }
 }
 
-/// `path` opened with `options`, made first through `create_private` where
-/// it is not there: for a file appended to or held as a lock, which is
-/// written in place rather than replaced. One there already keeps what it
-/// has; the data dir's pass at start sees to Luna's own (paths.rs).
-/// `options` must not create: what is not there is made here.
-pub fn open_private(path: &Path, options: &std::fs::OpenOptions) -> io::Result<std::fs::File> {
-    match options.open(path) {
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-        opened => return opened,
+/// `path` open for writing in place, for a file held as a lock: one there
+/// already is used only if it is this user's alone, else it is moved aside
+/// and a private one made (`open_or_make`).
+pub fn open_private(path: &Path) -> io::Result<std::fs::File> {
+    open_or_make(path, false)
+}
+
+/// `path` open for appending (a log), as `open_private` opens it.
+pub fn append_private(path: &Path) -> io::Result<std::fs::File> {
+    open_or_make(path, true)
+}
+
+/// How often a file that is not this user's alone is moved aside before
+/// `open_or_make` gives up: someone putting one back each time is not
+/// outlasted, only refused.
+const ASIDE_TRIES: usize = 3;
+
+/// A file written in place in a folder others may write to (a data dir that
+/// is not Luna's alone, paths.rs `scope`), where one may be there before Luna
+/// makes it, or put there between a log's rotation and its next line. What
+/// is open is read through the handle (`found`): a plain file of one name,
+/// this user's, which nobody else may open, is used as it is; one this user
+/// owns that others may open (as an older Luna left its files) is made
+/// private through the same handle and used, since nobody else can make a
+/// file this user owns, so what is in it is Luna's (on Windows, nor one owned
+/// as this process makes its files, `acl::judge`). Anything else is moved
+/// aside under a name of its own (`set_aside`), as anyone who could make it
+/// could keep a handle and read every later line, and a new one made with
+/// `create`, whose handle is the one returned, never reopened by name: the
+/// data stays where it was moved for whoever looks, and Luna goes on writing.
+fn open_or_make(path: &Path, append: bool) -> io::Result<std::fs::File> {
+    for _ in 0..ASIDE_TRIES {
+        let why = match open_existing(path, append) {
+            Ok(file) => match found(&file)? {
+                Found::Private => return Ok(file),
+                Found::Loose(why) => {
+                    tighten(&file)
+                        .map_err(|e| io::Error::new(e.kind(), format!("{} ({why}) could not be made private: {e}", path.display())))?;
+                    note(format!("{} was open to others ({why}): made private", path.display()));
+                    return Ok(file);
+                }
+                Found::Foreign(why) => why,
+            },
+            Err(e) if e.kind() == io::ErrorKind::NotFound => match create(path, append) {
+                // Made by someone else in between: looked at like any other.
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+                made => return made,
+            },
+            Err(e) if in_the_way(&e) => e.to_string(),
+            Err(e) => return Err(e),
+        };
+        set_aside(path, &why)?;
     }
-    match create_private(path) {
-        Ok(_) => {}
-        // Another process (or thread) made it in between: as good.
-        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
-        Err(e) => return Err(e),
+    Err(io::Error::other(format!("{} was put back each time it was moved aside", path.display())))
+}
+
+/// `path` as it is, opened without following a link at it: on Windows the
+/// link itself (`FILE_FLAG_OPEN_REPARSE_POINT`), which `found` sees for
+/// what it is; on Unix `O_NOFOLLOW` refuses one (`in_the_way`), and
+/// `O_NONBLOCK` keeps a FIFO from holding the open until someone reads it.
+fn open_existing(path: &Path, append: bool) -> io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    if append {
+        options.append(true);
+    } else {
+        options.write(true);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
+        options.access_mode(acl::write_access(append)).custom_flags(FILE_FLAG_OPEN_REPARSE_POINT.0);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
     }
     options.open(path)
+}
+
+/// An open refused for what is at the path rather than for the folder or
+/// the disk: a file someone else's that this user may not write, a link
+/// (Unix's `O_NOFOLLOW`), a FIFO nobody reads. Moved aside like any other
+/// untrusted file (a folder is not, `set_aside`).
+fn in_the_way(e: &io::Error) -> bool {
+    #[cfg(unix)]
+    {
+        if matches!(e.raw_os_error(), Some(libc::ELOOP | libc::ENXIO)) {
+            return true;
+        }
+    }
+    e.kind() == io::ErrorKind::PermissionDenied
+}
+
+/// What a file open in place turned out to be (`open_or_make`).
+pub enum Found {
+    /// A plain file of one name, of a trusted owner, nobody else may open.
+    Private,
+    /// The same, of this user's own making, but open to others: made private.
+    Loose(String),
+    /// Anything else: moved aside.
+    Foreign(String),
+}
+
+/// What the file open on `file` is, read through its handle.
+fn found(file: &std::fs::File) -> io::Result<Found> {
+    #[cfg(windows)]
+    {
+        acl::found(file)
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let meta = file.metadata()?;
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        let uid = unsafe { libc::geteuid() };
+        Ok(if !meta.file_type().is_file() {
+            Found::Foreign("not a plain file".into())
+        } else if meta.uid() != uid {
+            Found::Foreign(format!("owned by uid {}", meta.uid()))
+        } else if meta.nlink() != 1 {
+            Found::Foreign(format!("{} names (hard links)", meta.nlink()))
+        } else if meta.mode() & 0o077 != 0 {
+            Found::Loose(format!("mode {:o}", meta.mode() & 0o777))
+        } else {
+            Found::Private
+        })
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = file;
+        Ok(Found::Private)
+    }
+}
+
+/// Makes the file open on `file` this user's alone, through its handle:
+/// 0600 on Unix (`fchmod`), the protected DACL on Windows.
+fn tighten(file: &std::fs::File) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        acl::tighten(file)
+    }
+    #[cfg(not(windows))]
+    {
+        restrict(file)
+    }
+}
+
+/// Moves what is at `path` to `<name>.untrusted-<random>` beside it, said
+/// in the log (`take_notes`). A rename moves a link, never what it points at.
+/// A folder there is refused instead: nothing written can go into one, and
+/// whatever it holds is not Luna's to move.
+fn set_aside(path: &Path, why: &str) -> io::Result<()> {
+    if std::fs::symlink_metadata(path).is_ok_and(|m| m.is_dir()) {
+        return Err(io::Error::other(format!("{} is a folder", path.display())));
+    }
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let aside = path.with_file_name(format!("{name}.untrusted-{}", random_hex(8)));
+    std::fs::rename(path, &aside).map_err(|e| {
+        io::Error::new(e.kind(), format!("{} is not this user's alone ({why}) and could not be moved aside: {e}", path.display()))
+    })?;
+    note(format!("{} was not this user's alone ({why}): moved to {}, a new one made", path.display(), aside.display()));
+    Ok(())
+}
+
+/// What `open_or_make` moved aside or made private, until the log takes it:
+/// the log's own file is opened through `append_private`, so it cannot be
+/// logged as it happens.
+static NOTES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+fn note(what: String) {
+    NOTES.lock().unwrap_or_else(|e| e.into_inner()).push(what);
+}
+
+/// The notes `open_or_make` left since the last call, for the log (log.rs).
+pub fn take_notes() -> Vec<String> {
+    std::mem::take(&mut *NOTES.lock().unwrap_or_else(|e| e.into_inner()))
 }
 
 /// Makes an open file the owner's alone on Unix (0600), for one written in
@@ -604,8 +911,14 @@ pub fn restrict(file: &std::fs::File) -> io::Result<()> {
 /// are written so, or through `open_private`. The temporary file's name is
 /// random, so nobody can have one ready for it.
 pub fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    write_private_as(path, bytes, ".tmp")
+}
+
+/// `write_private` with a temporary name that ends in `suffix`, for a folder
+/// whose reader knows its writer's temps by their end (library/files.rs).
+pub fn write_private_as(path: &Path, bytes: &[u8], suffix: &str) -> io::Result<()> {
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    write_through(path, &path.with_file_name(format!("{name}.{}.tmp", random_hex(8))), bytes)
+    write_through(path, &path.with_file_name(format!("{name}.{}{suffix}", random_hex(8))), bytes)
 }
 
 /// `write_private` through `tmp`. What is left of a failed write is removed
@@ -697,11 +1010,11 @@ mod tests {
         write_private(&helpers, b"[{}]").unwrap();
         let log = dir.join("agents.jsonl");
         for line in ["one", "two"] {
-            writeln!(open_private(&log, std::fs::OpenOptions::new().append(true)).unwrap(), "{line}").unwrap();
+            writeln!(append_private(&log).unwrap(), "{line}").unwrap();
         }
         assert_eq!(std::fs::read_to_string(&log).unwrap(), "one\ntwo\n");
         let lock = dir.join("settings.json.lock");
-        open_private(&lock, std::fs::OpenOptions::new().write(true)).unwrap().lock().unwrap();
+        open_private(&lock).unwrap().lock().unwrap();
         for p in [&helpers, &log, &lock] {
             #[cfg(windows)]
             {
@@ -713,6 +1026,145 @@ mod tests {
                 use std::os::unix::fs::PermissionsExt;
                 assert_eq!(std::fs::metadata(p).unwrap().permissions().mode() & 0o777, 0o600, "{}", p.display());
             }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// What `set_aside` moved `name` in `dir` to.
+    fn moved_aside(dir: &Path, name: &str) -> Vec<std::path::PathBuf> {
+        let prefix = format!("{name}.untrusted-");
+        std::fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with(&prefix))
+            .map(|e| e.path())
+            .collect()
+    }
+
+    /// A file written in place that someone else could open, there before
+    /// Luna makes it or put back after a log's rotation, in a data dir open
+    /// to others (under `test-build/`, which inherits Authenticated Users'
+    /// Modify here): this user's own is made private and kept; a second name
+    /// or a junction is moved aside, never written into, and a private one
+    /// made in its place. Another user's file cannot be made here (Linux's
+    /// run as root covers it).
+    #[cfg(windows)]
+    #[test]
+    fn a_file_planted_where_one_is_written_in_place_is_moved_aside() {
+        use std::io::Write;
+        let icacls = |p: &Path, args: &[&str]| {
+            let out = std::process::Command::new("icacls").arg(p).args(args).output().unwrap();
+            assert!(out.status.success(), "icacls {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        let dir = crate::paths::data_dir().join(format!("plant-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        icacls(&dir, &["/grant", "*S-1-5-11:(OI)(CI)M"]);
+
+        let log = dir.join("luna.log");
+        for line in ["one", "two"] {
+            writeln!(append_private(&log).unwrap(), "{line}").unwrap();
+        }
+        assert_eq!(std::fs::read_to_string(&log).unwrap(), "one\ntwo\n", "Luna's own is used as it is");
+        assert!(moved_aside(&dir, "luna.log").is_empty());
+        // Rotated, and one of this user's own open to others in its place, as
+        // an older Luna left its files: inherited Modify for Authenticated
+        // Users and a grant of its own. Made private and kept.
+        std::fs::rename(&log, dir.join("luna.log.1")).unwrap();
+        std::fs::write(&log, "older\n").unwrap();
+        icacls(&log, &["/grant", "*S-1-5-11:M"]);
+        assert!(!acl::is_private(&log).unwrap());
+        writeln!(append_private(&log).unwrap(), "three").unwrap();
+        assert_eq!(std::fs::read_to_string(&log).unwrap(), "older\nthree\n");
+        assert!(acl::is_private(&log).unwrap(), "{}", acl::dacl_sddl(&log).unwrap());
+        assert!(moved_aside(&dir, "luna.log").is_empty());
+
+        // A second name of a private file elsewhere: that file is never written.
+        let elsewhere = dir.join("elsewhere.json");
+        write_private(&elsewhere, b"secret").unwrap();
+        let lock = dir.join("settings.json.lock");
+        std::fs::hard_link(&elsewhere, &lock).unwrap();
+        writeln!(open_private(&lock).unwrap(), "lock").unwrap();
+        assert_eq!(std::fs::read(&elsewhere).unwrap(), b"secret");
+        assert_eq!(moved_aside(&dir, "settings.json.lock").len(), 1);
+        assert!(acl::is_private(&lock).unwrap());
+
+        // A junction where the file should be: moved, never gone into.
+        let target = dir.join("target");
+        std::fs::create_dir(&target).unwrap();
+        let jsonl = dir.join("agents.jsonl");
+        let made = std::process::Command::new("cmd").args(["/d", "/c", "mklink", "/J"]).arg(&jsonl).arg(&target).output().unwrap();
+        assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
+        writeln!(append_private(&jsonl).unwrap(), "x").unwrap();
+        assert!(std::fs::symlink_metadata(&jsonl).unwrap().is_file());
+        assert_eq!(std::fs::read_dir(&target).unwrap().count(), 0);
+        assert_eq!(moved_aside(&dir, "agents.jsonl").len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `a_file_planted_where_one_is_written_in_place_is_moved_aside` on Unix:
+    /// this user's own left 0644 kept and tightened; a link, a second name, a
+    /// FIFO and, as root in the container, another user's moved aside.
+    #[cfg(unix)]
+    #[test]
+    fn a_file_planted_where_one_is_written_in_place_is_moved_aside() {
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| std::fs::symlink_metadata(p).unwrap().permissions().mode() & 0o777;
+        let dir = scratch("plant");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let log = dir.join("luna.log");
+        for line in ["one", "two"] {
+            writeln!(append_private(&log).unwrap(), "{line}").unwrap();
+        }
+        assert_eq!(std::fs::read_to_string(&log).unwrap(), "one\ntwo\n", "Luna's own is used as it is");
+        assert!(moved_aside(&dir, "luna.log").is_empty());
+        // One of this user's own left 0644 by an older Luna: made private, kept.
+        std::fs::rename(&log, dir.join("luna.log.1")).unwrap();
+        std::fs::write(&log, "older\n").unwrap();
+        std::fs::set_permissions(&log, std::fs::Permissions::from_mode(0o644)).unwrap();
+        writeln!(append_private(&log).unwrap(), "three").unwrap();
+        assert_eq!(std::fs::read_to_string(&log).unwrap(), "older\nthree\n");
+        assert_eq!(mode(&log), 0o600);
+        assert!(moved_aside(&dir, "luna.log").is_empty());
+
+        // A link: moved, what it points at untouched.
+        let target = dir.join("target.txt");
+        std::fs::write(&target, "keep").unwrap();
+        let lock = dir.join("settings.json.lock");
+        std::os::unix::fs::symlink(&target, &lock).unwrap();
+        writeln!(open_private(&lock).unwrap(), "lock").unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"keep");
+        assert!(std::fs::symlink_metadata(&lock).unwrap().is_file());
+        assert_eq!(moved_aside(&dir, "settings.json.lock").len(), 1);
+
+        // A second name of a private file elsewhere.
+        let elsewhere = dir.join("elsewhere.json");
+        write_private(&elsewhere, b"secret").unwrap();
+        let jsonl = dir.join("agents.jsonl");
+        std::fs::hard_link(&elsewhere, &jsonl).unwrap();
+        writeln!(append_private(&jsonl).unwrap(), "x").unwrap();
+        assert_eq!(std::fs::read(&elsewhere).unwrap(), b"secret");
+        assert_eq!(moved_aside(&dir, "agents.jsonl").len(), 1);
+
+        // A FIFO nobody reads: no open held up, moved like the rest.
+        let fifo = dir.join("library-state.json.lock");
+        let name = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: the name is a NUL-terminated path that lives through the call.
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        open_private(&fifo).unwrap();
+        assert!(std::fs::symlink_metadata(&fifo).unwrap().is_file());
+        assert_eq!(moved_aside(&dir, "library-state.json.lock").len(), 1);
+
+        // SAFETY: geteuid has no preconditions.
+        if unsafe { libc::geteuid() } == 0 {
+            let foreign = dir.join("account-settings.lock");
+            std::fs::write(&foreign, "").unwrap();
+            std::fs::set_permissions(&foreign, std::fs::Permissions::from_mode(0o600)).unwrap();
+            std::os::unix::fs::chown(&foreign, Some(65534), None).unwrap();
+            open_private(&foreign).unwrap();
+            assert_eq!(moved_aside(&dir, "account-settings.lock").len(), 1);
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -925,6 +1377,26 @@ mod tests {
         assert!(sddl_is_private(&written, &acl::trustee(&admin).unwrap()), "{written}");
         // Anyone else keeps the SID.
         assert_eq!(acl::trustee("S-1-5-21-1-2-3-1001").unwrap(), "S-1-5-21-1-2-3-1001");
+    }
+
+    /// A file open to others is taken back only if this process could have
+    /// made it: an elevated run whose files Windows gives to Administrators
+    /// (GitHub's runners, as the built-in Administrator) takes back one owned
+    /// by Administrators, as it does its user's own; a run that makes files
+    /// as its user moves that one aside.
+    #[cfg(windows)]
+    #[test]
+    fn an_open_file_is_taken_back_only_if_this_process_could_have_made_it() {
+        let (user, admins, other) = ("S-1-5-21-1-2-3-1001", "S-1-5-32-544", "S-1-5-21-1-2-3-1002");
+        let open = format!("D:(A;;FA;;;{user})(A;;0x1301bf;;;AU)");
+        let loose = |owner: &str, maker: &str| matches!(acl::judge(owner, &open, user, maker).unwrap(), Found::Loose(_));
+        assert!(loose(admins, admins), "an elevated run's own");
+        assert!(loose(user, admins) && loose(user, user), "the user's own, elevated or not");
+        assert!(!loose(admins, user), "an admin's, for a run that is not elevated");
+        assert!(!loose("S-1-5-18", admins), "SYSTEM's");
+        assert!(matches!(acl::judge(other, &open, user, other).unwrap(), Found::Foreign(_)), "nobody else's, whoever makes it");
+        let private = private_sddl(user);
+        assert!(matches!(acl::judge(admins, &private, user, user).unwrap(), Found::Private), "a private one is used by any trusted owner");
     }
 
     #[test]

@@ -300,8 +300,7 @@ pub fn update(f: impl FnOnce(&mut Settings)) -> Result<(), String> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
-    let lock = crate::secret::open_private(&path.with_extension("json.lock"), std::fs::OpenOptions::new().write(true))
-        .map_err(|e| format!("settings lock: {e}"))?;
+    let lock = crate::secret::open_private(&path.with_extension("json.lock")).map_err(|e| format!("settings lock: {e}"))?;
     lock.lock().map_err(|e| format!("settings lock: {e}"))?;
 
     let mut s = read(&path)?;

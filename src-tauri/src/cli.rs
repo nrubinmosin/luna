@@ -309,11 +309,11 @@ fn update_inner(provider: Provider) -> Result<(), String> {
     // pointing at a binary that is known to be complete.
     // Through a temp file: the core reads `current` for every spawn, and a
     // read between a plain write's truncate and its bytes would find no
-    // version and spawn whatever is on PATH.
+    // version and spawn whatever is on PATH. Private as it is made, under a
+    // random name (`secret::write_private`): in a data dir open to others a
+    // `current` of theirs would pick the binary every session runs.
     fs::create_dir_all(root(provider)).map_err(|e| e.to_string())?;
-    let tmp = root(provider).join("current.tmp");
-    fs::write(&tmp, &latest).map_err(|e| format!("write current: {e}"))?;
-    fs::rename(&tmp, current_file(provider)).map_err(|e| format!("write current: {e}"))?;
+    crate::secret::write_private(&current_file(provider), latest.as_bytes()).map_err(|e| format!("write current: {e}"))?;
     crate::log::info("cli", &format!("{} {latest} is now current", provider.as_str()));
     prune(provider);
     Ok(())

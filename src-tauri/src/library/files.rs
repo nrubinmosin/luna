@@ -49,22 +49,36 @@ pub(super) fn read_dir_files(dir: &Path) -> Result<Files, String> {
 /// a write beside it, and one left by a write that died taken for the skill's.
 const TMP_SUFFIX: &str = ".luna-tmp";
 
-/// Through a temp file beside it, so a reader never sees half. The temp name
-/// is this write's own (process and count), so two writers never share one.
+/// One of Luna's own files (the library, its blobs and backups), through a
+/// temp file beside it, so a reader never sees half, made private as it is
+/// made under a random name nobody can have ready
+/// (`secret::write_private_as`): they sit in the data dir, which may be open
+/// to others.
 pub(super) fn write_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     }
-    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    crate::secret::write_private_as(path, bytes, TMP_SUFFIX).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// A copy in a CLI's folder or a repo's, through a temp file beside it as
+/// `write_file`'s, which takes the folder's ACL like everything else there:
+/// the folder is the CLI's or the repo's, not Luna's to lock down. The temp
+/// name is random and made new (`create_new`), so one planted ahead of it is
+/// never written into, nor removed.
+pub(super) fn write_copy(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
     let mut tmp = path.as_os_str().to_owned();
-    tmp.push(format!(".{}-{n}{TMP_SUFFIX}", std::process::id()));
+    tmp.push(format!(".{}{TMP_SUFFIX}", crate::secret::random_hex(8)));
     let tmp = PathBuf::from(tmp);
-    std::fs::write(&tmp, bytes).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
-        format!("{}: {e}", path.display())
-    })?;
-    std::fs::rename(&tmp, path).map_err(|e| {
+    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp).map_err(|e| format!("{}: {e}", path.display()))?;
+    let wrote = file.write_all(bytes);
+    // Closed before the rename, which Windows refuses for a file held open.
+    drop(file);
+    wrote.and_then(|()| std::fs::rename(&tmp, path)).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
         format!("{}: {e}", path.display())
     })
@@ -107,7 +121,7 @@ pub(super) fn read_at(dest: &Path, file: bool) -> Result<Option<Files>, String> 
 /// Luna's own copy, or with the user's word and a backup taken.
 pub(super) fn write_at(dest: &Path, file: bool, files: &Files) -> Result<(), String> {
     if file {
-        return write_file(dest, files.get("").map(Vec::as_slice).unwrap_or_default());
+        return write_copy(dest, files.get("").map(Vec::as_slice).unwrap_or_default());
     }
     std::fs::create_dir_all(dest).map_err(|e| format!("{}: {e}", dest.display()))?;
     let old = read_dir_files(dest)?;
@@ -121,7 +135,7 @@ pub(super) fn write_at(dest: &Path, file: bool, files: &Files) -> Result<(), Str
     prune_empty(dest);
     for (rel, bytes) in files {
         if old.get(rel) != Some(bytes) {
-            write_file(&join_rel(dest, rel), bytes)?;
+            write_copy(&join_rel(dest, rel), bytes)?;
         }
     }
     Ok(())

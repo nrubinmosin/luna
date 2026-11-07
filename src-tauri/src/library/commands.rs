@@ -362,8 +362,9 @@ pub fn library_read(entry: Entry) -> Result<LibraryFile, String> {
 #[tauri::command(async)]
 pub fn library_write(entry: Entry, text: String) -> Result<Overview, String> {
     let _guard = lock();
-    let path = library_path(&Dirs::current(), &entry)?;
-    write_file(&path, text.as_bytes())?;
+    let dirs = Dirs::current();
+    let path = library_path(&dirs, &entry)?;
+    dirs.write(&path, text.as_bytes())?;
     overview_locked(true)
 }
 
@@ -386,7 +387,7 @@ pub fn library_new_skill(name: String) -> Result<Overview, String> {
     let text = format!(
         "---\nname: {name}\ndescription: What this skill does and when to use it. The model reads only this line until it decides to.\n---\n\n# {name}\n\nThe steps, rules and examples to follow.\n"
     );
-    write_file(&dir.join(SKILL_FILE), text.as_bytes())?;
+    dirs.write(&dir.join(SKILL_FILE), text.as_bytes())?;
     overview_locked(false)
 }
 
@@ -425,7 +426,7 @@ pub fn library_new_instructions(name: String) -> Result<Overview, String> {
     if std::fs::symlink_metadata(&path).is_ok() {
         return Err(format!("The library already has instructions named {name}"));
     }
-    write_file(&path, b"")?;
+    dirs.write(&path, b"")?;
     crate::settings::update(|s| {
         s.library.instructions.remove(&name);
     })?;

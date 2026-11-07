@@ -1,4 +1,3 @@
-use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -55,9 +54,11 @@ pub fn write(level: &str, source: &str, message: &str) {
     // Other processes of this Luna (its exit watcher) write here too: the
     // rotation and the append happen under a lock file, so no line is lost to
     // a rename in the middle of it.
-    // Each file made private as it is made (`secret::open_private`): the data
-    // dir's pass at start covers only what is there by then.
-    let file_lock = crate::secret::open_private(&p.with_extension("log.lock"), OpenOptions::new().write(true));
+    // Each file made private as it is made, and one there that is not this
+    // user's alone moved aside (`secret::open_private`): the data dir's pass
+    // at start covers only what is there by then, and a luna.log put in its
+    // place after a rotation would have every later line.
+    let file_lock = crate::secret::open_private(&p.with_extension("log.lock"));
     let _file_guard = file_lock.as_ref().ok().filter(|f| f.lock().is_ok());
 
     // Keep one generation around so a long session cannot fill the disk.
@@ -65,16 +66,24 @@ pub fn write(level: &str, source: &str, message: &str) {
         let _ = std::fs::rename(p, p.with_extension("log.1"));
     }
 
-    if let Ok(mut f) = crate::secret::open_private(p, OpenOptions::new().append(true)) {
-        let one_line = message.replace('\n', " ⏎ ");
-        // One write for the whole line: appends from two processes interleave
+    if let Ok(mut f) = crate::secret::append_private(p) {
+        // One write for each line: appends from two processes interleave
         // between writes, never inside one.
-        let source = match ROLE.get() {
-            Some(role) => format!("{role}/{source}"),
-            None => source.to_string(),
+        let mut put = |level: &str, source: &str, message: &str| {
+            let one_line = message.replace('\n', " ⏎ ");
+            let source = match ROLE.get() {
+                Some(role) => format!("{role}/{source}"),
+                None => source.to_string(),
+            };
+            let line = format!("{} {} {:<5} [{}] {}\n", stamp(), env!("CARGO_PKG_VERSION"), level, source, one_line);
+            let _ = f.write_all(line.as_bytes());
         };
-        let line = format!("{} {} {:<5} [{}] {}\n", stamp(), env!("CARGO_PKG_VERSION"), level, source, one_line);
-        let _ = f.write_all(line.as_bytes());
+        put(level, source, message);
+        // What was moved aside, this file included, said here and not as it
+        // happened: the log's own file is opened the same way.
+        for note in crate::secret::take_notes() {
+            put("WARN", "app", &note);
+        }
     }
 }
 

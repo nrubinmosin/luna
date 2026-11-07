@@ -1271,7 +1271,7 @@ src-tauri/src/
   any case), so an account renamed in case only keeps its copies and ledger entries. A
   destination inside the library's `skills/` (a library pointed at an account folder) or one
   holding the library is `failed`: it is the source itself, never
-  written, adopted or removed. Luna writes through temp files `<file>.<pid>-<n>.luna-tmp`,
+  written, adopted or removed. Luna writes through temp files `<file>.<random>.luna-tmp`,
   which are no part of a skill or a copy. A link at a destination, or inside it, is never followed or written over.
   Passes run when the window starts, after every change made in the window and on Sync now,
   one at a time under a lock; the window reads the overview (no writes) on every focus. An
