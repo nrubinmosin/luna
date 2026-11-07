@@ -2,6 +2,8 @@
 name = "luna"
 version = "0.9.10"
 description = "Thin desktop UI over Claude Code and Codex CLI sessions"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/nrubinmosin/luna"
 edition = "2021"
 # The toolchain in rust-toolchain.toml, the only one the crate is built with.
 rust-version = "1.99.1"
