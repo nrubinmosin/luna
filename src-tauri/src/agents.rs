@@ -11059,6 +11059,8 @@ mod tests {
         let root = std::env::temp_dir().join(format!("luna-rw-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).ok()?;
+        // As a user's temp folder may be: git's own say of it is in long names.
+        let root = crate::worktree::short_spelling(&root);
         let repo = root.to_string_lossy().into_owned();
         let git = |dir: &str, args: &[&str]| {
             let mut c = std::process::Command::new("git");
