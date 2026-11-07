@@ -44,7 +44,7 @@ find_offence() {
     done
 }
 
-refuse() { # $1 = what was checked, $2 = the offence, $3 = the fix
+refuse() { # $1 = what was checked, $2 = the offense, $3 = the fix
     {
         echo "commit message refused ($1): no AI attribution in commits."
         echo "$2"
