@@ -164,6 +164,11 @@ Function LunaClaimInstallDir
     !insertmacro LunaRefuse
   ${EndIf}
 
+  ; Luna's note that a pass made its folder private (paths.rs
+  ; `verified_marker`) is never taken from a folder that was open: the next
+  ; start makes and verifies its own.
+  Delete "$INSTDIR\core\private-verified"
+
   ; Its own explicit entries go, then what it inherits, and these three are
   ; all it has; the folder is the installing user's too, so no one else keeps
   ; an owner's say over it. /L: a link inside is changed itself, never what it

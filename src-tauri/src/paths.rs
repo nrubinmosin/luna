@@ -205,10 +205,9 @@ static LAST_PROTECT: std::sync::Mutex<Option<Result<Vec<String>, String>>> = std
 /// on a second drive commonly lets every signed-in user read the sessions'
 /// history and replace the exe. The installer protects a folder before it
 /// puts anything in (windows/hooks.nsh); this is for a copy installed before
-/// that, and for whatever has changed since. Done once: `verified_marker`,
-/// written only after a pass `acl::verify` found nothing wrong with, and the
-/// targets' own DACLs say so at the next start; a pass that failed leaves
-/// neither, and the next start goes through it again. Run as the core starts,
+/// that, and for whatever has changed since. Verified at every start, the
+/// pass made only where the walk finds something or `verified_marker` is
+/// missing (`make_private`). Run as the core starts,
 /// and from Settings' row. Elsewhere nothing to do: Unix has
 /// `secret::private_dir`'s folders, and the data dir in the user's home.
 pub fn protect_data_dir() -> Result<(), String> {
@@ -219,32 +218,75 @@ pub fn protect_data_dir() -> Result<(), String> {
             Scope::Whole => (vec![dir.clone()], "whole".to_string()),
             Scope::Own(items, why) => (items, format!("own: {why}")),
         };
-        if done_before(&targets, &label) {
-            return Ok(());
-        }
-        let _ = std::fs::remove_file(verified_marker());
-        let done = protect_and_verify(&targets);
+        let done = make_private(&targets, &label, &verified_marker());
         match &done {
-            Ok(odd) => {
+            Ok(Pass::Held) => {}
+            Ok(Pass::Done(odd)) => {
                 crate::log::info("app", &format!("made {} private to this user, SYSTEM and Administrators ({label})", dir.display()));
                 for what in odd {
                     crate::log::warn("app", &format!("data folder: {what}"));
-                }
-                let marker = verified_marker();
-                let written = crate::secret::private_dir(marker.parent().unwrap_or(&dir))
-                    .and_then(|()| crate::secret::write_private(&marker, label.as_bytes()));
-                if let Err(e) = written {
-                    crate::log::warn("app", &format!("could not note the data folder as private: {e}"));
                 }
             }
             Err(e) => crate::log::warn("app", e),
         }
         let result = done.as_ref().map(|_| ()).map_err(String::clone);
-        *LAST_PROTECT.lock().unwrap_or_else(|e| e.into_inner()) = Some(done);
+        let kept = done.map(|pass| match pass {
+            Pass::Held => Vec::new(),
+            Pass::Done(odd) => odd,
+        });
+        *LAST_PROTECT.lock().unwrap_or_else(|e| e.into_inner()) = Some(kept);
         result
     }
     #[cfg(not(windows))]
     Ok(())
+}
+
+/// What `make_private` came to: it held as the last pass left it, or a pass
+/// was made now, with what it found odd.
+#[cfg(windows)]
+enum Pass {
+    Held,
+    Done(Vec<String>),
+}
+
+/// Verifies `targets` down to the last file, every time: the marker only
+/// saves the pass that changes things, never the look. A marker can be
+/// planted while the folder is open and made the user's by the installer's
+/// takeover, and a junction beside it is never gone into by that takeover;
+/// only the walk sees it. Where the marker says a pass for `label` held and
+/// the walk finds nothing, that is all; otherwise the marker goes, a pass is
+/// made (`protect_and_verify`), and the marker is written only after it.
+#[cfg(windows)]
+fn make_private(targets: &[PathBuf], label: &str, marker: &Path) -> Result<Pass, String> {
+    let marked =
+        std::fs::read_to_string(marker).is_ok_and(|said| said == label) && crate::secret::acl::owner_trusted(marker).unwrap_or(false);
+    if marked {
+        match verify_all(targets) {
+            Ok(open) if open.is_empty() => return Ok(Pass::Held),
+            Ok(open) => {
+                crate::log::warn("app", &format!("data folder was marked private, but: {}; making it private again", open.join("; ")))
+            }
+            Err(e) => crate::log::warn("app", &format!("{e}; making the data folder private again")),
+        }
+    }
+    let _ = std::fs::remove_file(marker);
+    let odd = protect_and_verify(targets)?;
+    if let Some(parent) = marker.parent() {
+        crate::secret::private_dir(parent)
+            .and_then(|()| crate::secret::write_private(marker, label.as_bytes()))
+            .map_err(|e| format!("could not note the data folder as private: {e}"))?;
+    }
+    Ok(Pass::Done(odd))
+}
+
+/// What keeps any target from being private, `acl::verify` over each.
+#[cfg(windows)]
+fn verify_all(targets: &[PathBuf]) -> Result<Vec<String>, String> {
+    let mut open = Vec::new();
+    for t in targets {
+        open.extend(crate::secret::acl::verify(t).map_err(|e| format!("could not check {}: {e}", t.display()))?);
+    }
+    Ok(open)
 }
 
 /// Every target protected, then every one verified: what was odd, or what
@@ -255,10 +297,7 @@ fn protect_and_verify(targets: &[PathBuf]) -> Result<Vec<String>, String> {
     for t in targets {
         odd.extend(crate::secret::acl::protect_tree(t).map_err(|e| format!("could not make {} private: {e}", t.display()))?);
     }
-    let mut open = Vec::new();
-    for t in targets {
-        open.extend(crate::secret::acl::verify(t).map_err(|e| format!("could not check {}: {e}", t.display()))?);
-    }
+    let open = verify_all(targets)?;
     if open.is_empty() {
         Ok(odd)
     } else {
@@ -266,32 +305,20 @@ fn protect_and_verify(targets: &[PathBuf]) -> Result<Vec<String>, String> {
     }
 }
 
-/// Whether a full pass for these targets and this scope has been verified:
-/// the marker, this user's (or Administrators'), says so, and each target's
-/// own DACL is still the private one.
-#[cfg(windows)]
-fn done_before(targets: &[PathBuf], label: &str) -> bool {
-    let marker = verified_marker();
-    std::fs::read_to_string(&marker).is_ok_and(|said| said == label)
-        && crate::secret::acl::owner_trusted(&marker).unwrap_or(false)
-        && targets.iter().all(|t| crate::secret::acl::is_private(t).unwrap_or(false))
-}
-
-/// The data dir's privacy as it is now, for Settings' checks: None where
-/// there is nothing to check (off Windows).
+/// The data dir's privacy, for Settings' checks: private only once this run's
+/// `protect_data_dir` has verified it (red until then), None where there is
+/// nothing to check (off Windows).
 pub fn data_dir_privacy() -> Option<Privacy> {
     #[cfg(windows)]
     {
         let dir = data_dir();
-        let (targets, label, own) = match scope(&dir) {
-            Scope::Whole => (vec![dir.clone()], "whole".to_string(), None),
-            Scope::Own(items, why) => {
-                let note = format!("Only Luna's own folders and files are made private: {why}.");
-                (items, format!("own: {why}"), Some(note))
-            }
+        let (label, own) = match scope(&dir) {
+            Scope::Whole => ("whole".to_string(), None),
+            Scope::Own(_, why) => (format!("own: {why}"), Some(format!("Only Luna's own folders and files are made private: {why}."))),
         };
-        let private = done_before(&targets, &label);
-        let last = match &*LAST_PROTECT.lock().unwrap_or_else(|e| e.into_inner()) {
+        let last = LAST_PROTECT.lock().unwrap_or_else(|e| e.into_inner());
+        let private = matches!(&*last, Some(Ok(_))) && std::fs::read_to_string(verified_marker()).is_ok_and(|said| said == label);
+        let last = match &*last {
             Some(Err(e)) => Some(e.clone()),
             Some(Ok(odd)) if !odd.is_empty() => Some(format!(
                 "Found when it was made private, see the log: {}. A file someone else owned may have been changed by them; the next update reinstalls Luna's own.",
@@ -455,6 +482,59 @@ mod tests {
         std::fs::remove_dir(&link).unwrap();
         assert!(matches!(scope(Path::new("C:\\")), Scope::Own(_, why) if why.contains("root of a drive")));
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A marker planted while the folder was open, made the user's (as the
+    /// installer's takeover would), beside a junction out: the walk still
+    /// runs, finds the junction, and the pass made again fails on it, the
+    /// marker gone. Without the junction the pass holds, and the next start
+    /// only looks. Under `test-build/`, with the walk timed on a tree twice
+    /// the real data dir's size (about 1,300 entries, most in the WebView's
+    /// profile).
+    #[cfg(windows)]
+    #[test]
+    fn a_planted_marker_does_not_keep_the_walk_from_running() {
+        let root = data_dir().join(format!("marker-test-{}", std::process::id()));
+        let outside = data_dir().join(format!("marker-out-{}", std::process::id()));
+        for d in [&root, &outside] {
+            let _ = std::fs::remove_dir_all(d);
+        }
+        std::fs::create_dir_all(root.join("core")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let marker = root.join("core").join("private-verified");
+        std::fs::write(&marker, "whole").unwrap();
+        let link = root.join("webview");
+        assert!(std::process::Command::new("cmd")
+            .args(["/d", "/c", "mklink", "/J"])
+            .arg(&link)
+            .arg(&outside)
+            .output()
+            .unwrap()
+            .status
+            .success());
+        let targets = [root.clone()];
+
+        let failed = make_private(&targets, "whole", &marker).err().expect("the junction keeps it from being private");
+        assert!(failed.contains("webview") && failed.contains("link"), "{failed}");
+        assert!(!marker.exists(), "no marker without a pass that held");
+        assert!(make_private(&targets, "whole", &marker).is_err(), "and the next start tries again");
+
+        std::fs::remove_dir(&link).unwrap();
+        for d in 0..300 {
+            let sub = root.join("webview").join(format!("d{}", d / 30)).join(format!("e{d}"));
+            std::fs::create_dir_all(&sub).unwrap();
+            for f in 0..9 {
+                std::fs::write(sub.join(format!("f{f}")), "x").unwrap();
+            }
+        }
+        assert!(matches!(make_private(&targets, "whole", &marker), Ok(Pass::Done(_))));
+        assert!(marker.is_file());
+        let started = std::time::Instant::now();
+        assert!(matches!(make_private(&targets, "whole", &marker), Ok(Pass::Held)), "verified, nothing to do");
+        println!("verify of {} entries: {:?}", 300 * 10 + 12, started.elapsed());
+        for d in [&root, &outside] {
+            let _ = std::fs::remove_dir_all(d);
+        }
     }
 
     #[test]
