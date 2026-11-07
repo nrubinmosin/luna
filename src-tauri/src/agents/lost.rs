@@ -4,11 +4,11 @@
 use crate::agents::ask::{live, state_of};
 use crate::agents::delivery::Held;
 use crate::agents::owed::hand_over;
+use crate::agents::persist::{conversation_on_disk, Opening};
 use crate::agents::read::MAX_TEXT;
 use crate::agents::registry::{label, parent_of, reg};
 use crate::agents::said::note_file;
 use crate::agents::wait::{Waited, LET_GO};
-use crate::agents::{conversation_on_disk, Opening};
 
 /// Whether a visible helper has nothing to carry on from, as one
 /// `background::never_started` says so of has not: its first turn went with a core,
@@ -265,12 +265,13 @@ mod tests {
     use super::*;
     use crate::agents::delivery::{deliver_held, is_held};
     use crate::agents::owed::{hand_over, owe_from};
+    use crate::agents::persist::{chats_now, conversation_of, Opening};
     use crate::agents::read::transcripts;
     use crate::agents::registry::{reg, register};
     use crate::agents::teardown::forget;
     use crate::agents::tests::{back, first_turn_cut, lost_helper, notice_for, take_up};
     use crate::agents::wait::wait;
-    use crate::agents::{chat_starting, chats_now, conversation_of, Opening, Settled};
+    use crate::agents::{chat_starting, Settled};
     use crate::provider::Provider;
     use crate::throttle::now_ms;
 

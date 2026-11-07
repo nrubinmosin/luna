@@ -4,9 +4,10 @@
 
 use crate::agents::delivery::Held;
 use crate::agents::owed::{Owed, Receipt};
+use crate::agents::persist::{Opening, CHATS_FROZEN};
 use crate::agents::resume::ChatResume;
 use crate::agents::teardown::{forget, Auto, Reparented};
-use crate::agents::{NoticeTurn, Opening, Pending, QuotaTold, SpawnTaken, CHATS_FROZEN};
+use crate::agents::{NoticeTurn, Pending, QuotaTold, SpawnTaken};
 use crate::provider::Provider;
 use crate::throttle::now_ms;
 use std::collections::HashMap;

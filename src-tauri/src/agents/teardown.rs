@@ -454,9 +454,10 @@ fn pass_up(r: &mut Registry, id: &str, up: Option<String>) -> (bool, Vec<Reparen
 mod tests {
     use super::*;
     use crate::agents::owed::{owe_from, Owed};
+    use crate::agents::persist::{ties_of, Ties};
     use crate::agents::registry::{authorize, authorize_view, descendants, parent_of, reg, register};
+    use crate::agents::set_budget_state;
     use crate::agents::tests::tooled;
-    use crate::agents::{set_budget_state, ties_of, Ties};
     use crate::provider::Provider;
     use std::sync::Mutex;
 
