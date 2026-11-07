@@ -2143,6 +2143,7 @@ pub fn render_screen(bytes: &[u8], rows: u16, cols: u16) -> String {
 /// win32-input-mode key events (ConPTY is opened with WIN32_INPUT_MODE), every
 /// character arrives as itself whatever the layout. Ctrl+<letter> is the same
 /// story: ConPTY hands Codex the control byte and Codex asks the layout which
+// lang-check: allow
 /// letter that key is, so on a Russian one Ctrl+C came in as Ctrl+С — no
 /// shortcut of its: a selection was dropped instead of copied. Sent as the
 /// Latin letter with Ctrl held, it is Ctrl+C on any layout. The control bytes
@@ -2762,6 +2763,7 @@ mod tests {
         // Outside the basic plane: both halves of the surrogate pair, pressed.
         let down = |u: u32| format!("\x1b[0;0;{u};1;0;1_");
         assert_eq!(String::from_utf8(as_key_events("😀".as_bytes())).unwrap(), format!("{}{}", down(0xD83D), down(0xDE00)));
+        // lang-check: allow
         assert_eq!(String::from_utf8(as_key_events("a\rя".as_bytes())).unwrap(), format!("{}\r{}", k(97), k(0x44F)));
         // Ctrl+C and Ctrl+T by their Latin letters, whatever the layout.
         let ctrl = |vk: u32, u: u32| format!("\x1b[{vk};0;{u};1;8;1_\x1b[{vk};0;{u};0;8;1_");
@@ -2853,6 +2855,7 @@ mod tests {
         assert_eq!(draft_after(0, "\x1b[200~hi\x1b[201~"), 2, "a paste is text");
         assert_eq!(draft_after(5, "\x03"), 0);
         assert_eq!(draft_after(5, "\x15"), 0);
+        // lang-check: allow
         assert_eq!(draft_after(0, "привет"), 6);
         assert_eq!(draft_after(1, "\x7f\x7f\x7f"), 0);
         // A backslash and Enter, one key per write: a second line, not a send.
