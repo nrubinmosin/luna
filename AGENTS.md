@@ -43,7 +43,8 @@ Rules for anyone (person or agent) changing Luna.
 - Anything that writes into account folders (settings, sync, helpers run end to
   end) is tried on throwaway accounts under `test-build/accounts`, not on real
   ones, and never through a junction or symlink to one: `test-build.ps1 -Run`
-  refuses links there.
+  refuses links there, and a `-DevAccount` outside it. The test build's
+  default accounts root is that folder.
 - Before stopping a Luna core or the PC (a restart test, a kill), check
   `luna_list` and `luna_sessions` for work in progress: it loses its turn.
 

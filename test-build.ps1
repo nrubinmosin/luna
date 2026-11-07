@@ -8,7 +8,7 @@
 #   ./test-build.ps1 -Run -NoBuild   start the last build
 #   ./test-build.ps1 -Test           also build the Rust unit tests in Docker and
 #                                    run them here (they are Windows binaries)
-#   ./test-build.ps1 -Run -DevCaller -DevFolder C:\src\x -DevAccount E:\...\anthropic\team
+#   ./test-build.ps1 -Run -DevCaller -DevFolder C:\src\x -DevAccount test-build\accounts\anthropic\dev
 #       also registers a scripted MCP caller (agents.rs register_dev_caller);
 #       the token is printed and the MCP url is in test-build\luna.log
 #
@@ -109,6 +109,13 @@ if ($Run) {
     }
     if ($DevCaller) {
         if (-not $DevFolder -or -not $DevAccount) { throw '-DevCaller needs -DevFolder and -DevAccount' }
+        # The scripted caller spends its account's quota and writes into it:
+        # only a throwaway account under test-build\accounts will do.
+        $accountsFull = [IO.Path]::GetFullPath($accounts).TrimEnd('\') + '\'
+        $devFull = [IO.Path]::GetFullPath($DevAccount, (Get-Location).Path)
+        if (-not $devFull.StartsWith($accountsFull, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "-DevAccount must be an account under $accountsFull, not $devFull"
+        }
         $token = [guid]::NewGuid().ToString('N')
         $env:LUNA_DEV_TOKEN = $token
         $env:LUNA_DEV_FOLDER = $DevFolder

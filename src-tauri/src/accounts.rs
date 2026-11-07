@@ -6,7 +6,7 @@
 use crate::provider::Provider;
 use serde::Serialize;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -16,12 +16,22 @@ pub struct AccountInfo {
     pub path: String,
 }
 
-/// The folder the user picked in settings, or `Documents/luna-accounts`.
+/// The folder the user picked in settings, or the default (`default_root`).
 pub fn accounts_root() -> Result<PathBuf, String> {
     if let Some(p) = crate::settings::get().accounts_root {
         return Ok(PathBuf::from(p));
     }
-    let docs = dirs::document_dir().ok_or("Documents directory not found")?;
+    default_root(crate::paths::is_test(), &crate::paths::data_dir(), dirs::document_dir())
+}
+
+/// `Documents/luna-accounts`, or for the test build `accounts` in its own data
+/// dir (`test-build/accounts`): a test build left on its default must never
+/// reach the real accounts, whose credentials and quota its helpers would spend.
+fn default_root(test: bool, data_dir: &Path, documents: Option<PathBuf>) -> Result<PathBuf, String> {
+    if test {
+        return Ok(data_dir.join("accounts"));
+    }
+    let docs = documents.ok_or("Documents directory not found")?;
     Ok(docs.join("luna-accounts"))
 }
 
@@ -160,6 +170,17 @@ fn rename_in(root: &std::path::Path, name: &str, to: &str) -> Result<PathBuf, St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_test_build_defaults_to_accounts_of_its_own() {
+        let data = Path::new("/x/test-build");
+        let docs = Some(PathBuf::from("/home/me/Documents"));
+        assert_eq!(default_root(true, data, docs.clone()).unwrap(), data.join("accounts"));
+        // Even with no Documents folder to fall back on.
+        assert_eq!(default_root(true, data, None).unwrap(), data.join("accounts"));
+        assert_eq!(default_root(false, data, docs).unwrap(), PathBuf::from("/home/me/Documents").join("luna-accounts"));
+        assert!(default_root(false, data, None).is_err());
+    }
 
     #[test]
     fn a_rename_moves_the_folder_and_refuses_what_it_should() {
