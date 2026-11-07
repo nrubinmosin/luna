@@ -334,9 +334,10 @@ pub(super) fn queue_settled(key: &(String, String), o: Owed, turns_ended: u32) -
 mod tests {
     use super::*;
     use crate::agents::registry::{reg, register, resumes_on_restart, DEV_CALLER};
+    use crate::agents::teardown::forget;
     use crate::agents::tests::notice_for;
     use crate::agents::wait::wait;
-    use crate::agents::{forget, settle_told, Settled};
+    use crate::agents::{settle_told, Settled};
     use crate::provider::Provider;
 
     #[test]

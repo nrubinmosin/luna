@@ -725,9 +725,9 @@ pub(super) fn is_held(caller: &str, id: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agents::forget;
     use crate::agents::privilege::command_reach_now;
     use crate::agents::registry::register;
+    use crate::agents::teardown::forget;
 
     #[test]
     fn one_at_a_time_is_typed_into_a_session() {

@@ -668,7 +668,8 @@ mod tests {
     use crate::agents::owed::{hand_over, last_shown, owe_from, retried, shown, Owed};
     use crate::agents::read::{transcripts, MAX_TEXT};
     use crate::agents::registry::{reg, register};
-    use crate::agents::{forget, held_for_wait, ties_of, BACKGROUND_GRACE_MS, WAIT_HOLD_MS};
+    use crate::agents::teardown::forget;
+    use crate::agents::{held_for_wait, ties_of, BACKGROUND_GRACE_MS, WAIT_HOLD_MS};
 
     /// A caller and two background helpers of its, one whose answer is on
     /// disk and owed, the other in the middle of a turn.

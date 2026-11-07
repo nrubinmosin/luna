@@ -337,9 +337,9 @@ fn cursor_after(path: &std::path::Path, from: u64, end: u64, found: usize, keep:
 mod tests {
     use super::*;
     use crate::agents::delivery::is_held;
-    use crate::agents::forget;
     use crate::agents::owed::owe_from;
     use crate::agents::registry::{reg, register, session_exited};
+    use crate::agents::teardown::forget;
     use crate::agents::tests::lost_helper;
 
     #[test]

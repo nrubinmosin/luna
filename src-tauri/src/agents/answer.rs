@@ -382,9 +382,9 @@ pub fn answer(
 mod tests {
     use super::*;
     use crate::agents::ask::{codex_command_on, codex_list_on, resolve_option, Ask, AskQuestion};
-    use crate::agents::forget;
     use crate::agents::privilege::{Privilege, Reach};
     use crate::agents::registry::register;
+    use crate::agents::teardown::forget;
 
     #[test]
     fn keys_read_as_presses() {

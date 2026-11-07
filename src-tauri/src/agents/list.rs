@@ -4,7 +4,8 @@
 use crate::agents::ask::{state_of, Ask};
 use crate::agents::read::transcript_path;
 use crate::agents::registry::{descendants, is_descendant, reg, Known, DEV_CALLER};
-use crate::agents::{allowed_account_dirs, checkout_of, Worktree, AUTO_DELETE_IDLE_MS, CLAUDE_MODELS};
+use crate::agents::teardown::AUTO_DELETE_IDLE_MS;
+use crate::agents::{allowed_account_dirs, checkout_of, Worktree, CLAUDE_MODELS};
 use crate::provider::Provider;
 use crate::throttle::now_ms;
 use serde::{Deserialize, Serialize};

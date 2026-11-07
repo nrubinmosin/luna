@@ -330,8 +330,9 @@ mod tests {
     use crate::agents::owed::{resumed, Owed};
     use crate::agents::read::Message;
     use crate::agents::registry::{reg, register, resumes_on_restart};
+    use crate::agents::teardown::forget;
     use crate::agents::tests::{cut_short_chat, notice_for, take_up};
-    use crate::agents::{chats_now, forget, notice_line, ties_in, SavedSend, Settled, CALLER_RETURN_MS, NOTICE_TAG, SESSION_RETURN_MS};
+    use crate::agents::{chats_now, notice_line, ties_in, SavedSend, Settled, CALLER_RETURN_MS, NOTICE_TAG, SESSION_RETURN_MS};
 
     #[test]
     fn a_visible_helper_cut_short_with_the_flag_waits_to_go_on_and_says_nothing_yet() {

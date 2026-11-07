@@ -267,9 +267,10 @@ mod tests {
     use crate::agents::owed::{hand_over, owe_from};
     use crate::agents::read::transcripts;
     use crate::agents::registry::{reg, register};
+    use crate::agents::teardown::forget;
     use crate::agents::tests::{back, first_turn_cut, lost_helper, notice_for, take_up};
     use crate::agents::wait::wait;
-    use crate::agents::{chat_starting, chats_now, conversation_of, forget, Opening, Settled};
+    use crate::agents::{chat_starting, chats_now, conversation_of, Opening, Settled};
     use crate::provider::Provider;
     use crate::throttle::now_ms;
 
