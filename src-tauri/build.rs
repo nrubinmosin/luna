@@ -90,8 +90,35 @@ fn core_fingerprint() -> String {
     h.finalize().iter().take(8).map(|b| format!("{b:02x}")).collect()
 }
 
+/// Leaves the fingerprint in `core-fingerprint.txt` beside the exe, in the
+/// profile folder (`target/<triple>/release/`), where the release scripts read
+/// it for `latest.json` (scripts/release-bundle.ps1): the exe is a Windows
+/// binary built on Linux, and a release runner cannot ask it. The file is
+/// written from the same value the binary is stamped with, so the two cannot
+/// differ; a test holds `--core-fingerprint` to it (coreproc.rs).
+///
+/// Cargo gives a build script only OUT_DIR, `<profile>/build/luna-<hash>/out`,
+/// and asks it to keep its writes there; the profile folder is the one place a
+/// script outside cargo can find without cargo's JSON, which `tauri build` does
+/// not pass on. A layout of another shape gets a warning and no file, and the
+/// release then stops on the missing file rather than publishing a guess.
+fn leave_core_fingerprint(fp: &str) {
+    let Some(out) = std::env::var_os("OUT_DIR").map(std::path::PathBuf::from) else { return };
+    let mut up = out.ancestors().skip(2);
+    match (up.next(), up.next()) {
+        (Some(build), Some(profile)) if build.file_name().is_some_and(|n| n == "build") => {
+            if let Err(e) = std::fs::write(profile.join("core-fingerprint.txt"), fp) {
+                println!("cargo:warning=cannot write {}: {e}", profile.join("core-fingerprint.txt").display());
+            }
+        }
+        _ => println!("cargo:warning=OUT_DIR {} is not <profile>/build/<pkg>/out; no core-fingerprint.txt", out.display()),
+    }
+}
+
 fn main() {
-    println!("cargo:rustc-env=LUNA_CORE_FP={}", core_fingerprint());
+    let fp = core_fingerprint();
+    leave_core_fingerprint(&fp);
+    println!("cargo:rustc-env=LUNA_CORE_FP={fp}");
     println!("cargo:rerun-if-changed=src");
     println!("cargo:rerun-if-changed=Cargo.toml");
     println!("cargo:rerun-if-changed=Cargo.lock");

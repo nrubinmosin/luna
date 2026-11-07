@@ -1314,6 +1314,13 @@ src-tauri/src/
   jobs, and the windows group plus the Windows test build on Linux, whose executables a Windows runner
   then runs. Actions are pinned by commit; Dependabot (`.github/dependabot.yml`) moves them, the
   crates, the npm packages and the images weekly.
+- Release — `.github/workflows/release.yml`, on a `v*` tag that `scripts/release.ps1` makes: verify
+  (versions, tag, CI green on the commit; `release-verify.ps1`), build and sign in the `release`
+  environment (`build-windows.ps1`, `release-bundle.ps1`), SBOMs (`sbom.ps1`), attestations, and a
+  draft GitHub Release. latest.json's `core_fingerprint` comes from `core-fingerprint.txt`, which
+  `build.rs` leaves beside the exe, so no runner has to run the Windows binary. The release logic
+  shared by these scripts is `scripts/release-lib.ps1`, tested in the gate; docs/releasing.md has the
+  rest.
 - Toolchains — Rust in `src-tauri/rust-toolchain.toml` and the images' `FROM rust:<version>`, Node in
   `.node-version` and the images' `FROM node:<version>` (the gate checks they agree), cargo-xwin in its
   Dockerfile. Every `FROM` names its image by tag and digest, and the gate's frontend steps run in the

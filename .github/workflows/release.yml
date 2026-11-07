@@ -1,0 +1,210 @@
+# Releases from a v* tag on GitHub's runners: verified, built and signed,
+# attested, and drafted as a GitHub Release for the maintainer to publish.
+# scripts/release.ps1 makes the tag; docs/releasing.md walks through the flow,
+# the secrets and environment it needs, and how to check what it published.
+#
+#   verify ─┬─ build (the signing key, in the `release` environment) ─┬─ attest ── publish (draft)
+#           └─ sbom ──────────────────────────────────────────────────┘
+#
+# A manual run is a dry run unless told otherwise: everything short of the
+# attestations and the release. Off a tag it signs, as the release would; off
+# a branch it builds unsigned, as the key is only ever handed to a v* tag.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: Build and check only; attest and publish nothing
+        type: boolean
+        default: true
+
+# Each job asks for what it uses.
+permissions: {}
+
+# One run per tag (or branch) at a time, and none canceled halfway: a release
+# stopped between its attestations and its draft would leave half a release.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  # The version files agree with each other and with the tag, the tag is
+  # annotated and on the default branch, and CI has passed on the commit
+  # (scripts/release-verify.ps1). Nothing is built, and no secret is in
+  # reach, until this has passed.
+  verify:
+    runs-on: ubuntu-24.04
+    # Mostly waiting for CI, when the tag was pushed with its commit.
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read # the runs of ci.yml on the commit
+    outputs:
+      version: ${{ steps.verify.outputs.version }}
+      tag: ${{ steps.verify.outputs.tag }}
+      signed: ${{ steps.verify.outputs.signed }}
+      publish: ${{ steps.verify.outputs.publish }}
+      notes: ${{ steps.verify.outputs.notes }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: verify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry-run }}
+        run: >-
+          ./scripts/release-verify.ps1 -Ref $env:GITHUB_REF -Sha $env:GITHUB_SHA
+          -Repo $env:GITHUB_REPOSITORY -DefaultBranch $env:DEFAULT_BRANCH
+          -DryRun:($env:DRY_RUN -eq 'true')
+
+  # The installer, its updater signature and latest.json, built by the same
+  # script and Docker image as on the maintainer's machine.
+  build:
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    # The signing key is a secret of this environment alone, which hands it to
+    # v* tags only and only once a reviewer has approved the run. A dry run off
+    # a branch names no environment, and gets no key.
+    environment: ${{ needs.verify.outputs.signed == 'true' && 'release' || '' }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The key goes to this step alone, and build-windows.ps1 keeps it from
+      # the package install inside.
+      - name: Build the installer
+        env:
+          SIGNED: ${{ needs.verify.outputs.signed }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ needs.verify.outputs.signed == 'true' && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ needs.verify.outputs.signed == 'true' && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
+        run: ./scripts/build-windows.ps1 -Installer -Unsigned:($env:SIGNED -ne 'true')
+      - name: Gather the installer, its signature and latest.json
+        env:
+          SIGNED: ${{ needs.verify.outputs.signed }}
+          NOTES: ${{ needs.verify.outputs.notes }}
+        run: >-
+          ./scripts/release-bundle.ps1 -Out "$env:RUNNER_TEMP/assets" -Notes $env:NOTES
+          -Unsigned:($env:SIGNED -ne 'true')
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: assets
+          path: ${{ runner.temp }}/assets/
+          if-no-files-found: error
+          retention-days: 7
+
+  # CycloneDX SBOMs of the crates and the npm packages that go into the build.
+  sbom:
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: ./scripts/sbom.ps1 -Out "$env:RUNNER_TEMP/sbom"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sbom
+          path: ${{ runner.temp }}/sbom/
+          if-no-files-found: error
+          retention-days: 7
+
+  # SHA256SUMS over every asset, and for a release, a build provenance
+  # attestation of each and the SBOMs attested against the installer, signed
+  # through Sigstore with this run's identity. A job of its own, so the build,
+  # which runs every dependency's build code, never holds the OIDC token.
+  attest:
+    needs: [verify, build, sbom]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write # the Sigstore certificate for this run's identity
+      attestations: write # to keep the attestations with the repo
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: assets
+          path: assets
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: sbom
+          path: assets
+      - name: SHA256SUMS
+        shell: bash
+        working-directory: assets
+        env:
+          LC_ALL: C
+        run: |
+          sha256sum -- * > "$RUNNER_TEMP/SHA256SUMS"
+          mv "$RUNNER_TEMP/SHA256SUMS" SHA256SUMS
+          cat SHA256SUMS
+      # Dry runs attest nothing: an attestation is a lasting public record of
+      # a build, and theirs are never published.
+      - if: needs.verify.outputs.publish == 'true'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-checksums: assets/SHA256SUMS
+      - if: needs.verify.outputs.publish == 'true'
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        with:
+          subject-path: assets/*-setup.exe
+          sbom-path: assets/luna-${{ needs.verify.outputs.version }}-cargo.cdx.json
+      - if: needs.verify.outputs.publish == 'true'
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        with:
+          subject-path: assets/*-setup.exe
+          sbom-path: assets/luna-${{ needs.verify.outputs.version }}-npm.cdx.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-${{ needs.verify.outputs.tag }}
+          path: assets/
+          if-no-files-found: error
+          retention-days: 14
+
+  # A draft, not a release: installed copies poll the latest published
+  # release's latest.json, so nothing reaches them until the maintainer has
+  # looked the draft over and published it.
+  publish:
+    needs: [verify, attest]
+    if: needs.verify.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-${{ needs.verify.outputs.tag }}
+          path: assets
+      - name: Draft the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.verify.outputs.tag }}
+          VERSION: ${{ needs.verify.outputs.version }}
+          NOTES: ${{ needs.verify.outputs.notes }}
+        run: |
+          # Drafts show only to a token that can push, as this one can: a
+          # release of the tag, a draft left by an earlier run included, is
+          # deleted by hand or kept, never replaced here.
+          $existing = gh api --paginate "repos/$env:GH_REPO/releases" --jq '.[] | select(.tag_name == $ENV.TAG) | .html_url'
+          if ($LASTEXITCODE) { throw "listing the releases failed (exit $LASTEXITCODE)" }
+          if ($existing) { throw "$env:TAG already has a release: $existing" }
+          $assets = (Get-ChildItem assets -File).FullName
+          gh release create $env:TAG @assets --draft --verify-tag --title "Luna $env:VERSION" --notes $env:NOTES
+          if ($LASTEXITCODE) { throw "gh release create failed (exit $LASTEXITCODE)" }

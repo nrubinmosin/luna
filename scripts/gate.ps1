@@ -87,6 +87,16 @@ $steps = @(
         }
     }
     New-ScriptStep 'test:scripts'
+    @{
+        # The release scripts' logic (release-lib.ps1) is PowerShell, run on
+        # the host like the scripts themselves; a pwsh of its own keeps the
+        # tests' state out of the gate's.
+        Name  = 'release-lib tests'
+        Group = 'frontend'
+        Run   = {
+            Invoke-Checked 'release-lib tests' { pwsh -NoProfile -File (Join-Path $RepoRoot 'scripts/release-lib.test.ps1') }
+        }
+    }
     New-ScriptStep 'test'
     New-ScriptStep 'build'
     @{

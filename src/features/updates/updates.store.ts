@@ -23,8 +23,8 @@ interface UpdatesState {
   /** The release on offer, once there is one. */
   next: string | null;
   notes: string | null;
-  /** The core fingerprint the release on offer was built with (scripts/release.ps1),
-   *  if it says. */
+  /** The core fingerprint the release on offer was built with (latest.json, written by
+   *  scripts/release-bundle.ps1), if it says. */
   nextCore: string | null;
   /** Bytes in, and the total — only when the server declared a length. */
   got: number;

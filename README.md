@@ -722,20 +722,24 @@ repeat builds are fast.
 ## Releases
 
 ```powershell
-./scripts/release.ps1              # release the version in tauri.conf.json
-./scripts/release.ps1 -Notes "..." # with your own release notes
-./scripts/release.ps1 -DryRun      # build and compose the manifest, upload nothing
+./scripts/release.ps1 -Bump 1.2.3   # write the version into its four files; commit and push
+./scripts/release.ps1               # check the pushed HEAD, tag it v<version> (annotated)
+git push origin v1.2.3              # starts .github/workflows/release.yml
 ```
 
-Bumping the version means editing `src-tauri/tauri.conf.json` and `package.json` together;
-the script refuses to run if they disagree, if the tree is dirty, if HEAD is ahead of
-`origin/master`, or if the tag already exists — a release has to be reproducible from a
-pushed commit, and the build stamp in the binary is only worth anything if it is.
+GitHub Actions builds, signs and attests the release from the tag and leaves it as a draft
+to publish; [docs/releasing.md](docs/releasing.md) has the whole flow, the secrets and the
+`release` environment it needs, key rotation, and how to verify a release. The script
+refuses to tag if the version files disagree, the tree is dirty, HEAD is ahead of
+`origin/master`, or the tag exists; the workflow refuses a commit CI has not passed. A
+release has to be reproducible from a pushed commit, and the build stamp in the binary is
+only worth anything if it is.
 
-It builds the signed installer, writes the `latest.json` the updater reads, and uploads
-the setup, its `.sig` and the manifest to a `v<version>` release. No bare exe goes up: the
-updater installs a release into the folder Luna was installed in, so a copy run from
-anywhere else would update into a second Luna with none of its data.
+A release carries the setup, its `.sig`, the `latest.json` the updater reads, CycloneDX
+SBOMs and `SHA256SUMS`. No bare exe goes up: the updater installs a release into the folder
+Luna was installed in, so a copy run from anywhere else would update into a second Luna
+with none of its data. `./scripts/release.ps1 -Local` still cuts a release on this machine,
+for when the workflow cannot.
 
 ## Updates and signing
 
@@ -760,13 +764,13 @@ anywhere else would update into a second Luna with none of its data.
 - All three versions live in Settings (the gear in the status bar), each with its "checked …
   ago" and a check-now button; the status bar itself only speaks up while there is news —
   an update on offer, a download running, or a failure worth a retry.
-- The updater's signing key is a private, passwordless minisign key kept outside the
-  repo; its `.pub` half is already baked into the config. Only the installer is signed:
-  `./scripts/build-windows.ps1 -Installer` (and `./scripts/release.ps1`) takes the key's
-  path from `-UpdaterKey <path>` or the `LUNA_UPDATER_KEY` environment variable and stops
-  with an error when neither names one. The script mounts that file into the build and
-  hands it to Tauri as `TAURI_SIGNING_PRIVATE_KEY` — `.sig` files then appear next to the
-  bundle, and those plus `latest.json` are what goes up to the Release. A build without
-  `-Installer` is unsigned and needs no key.
+- The updater's signing key is a private minisign key kept outside the repo; its `.pub`
+  half is already baked into the config. Only the installer is signed:
+  `./scripts/build-windows.ps1 -Installer` takes the key from the file `-UpdaterKey <path>`
+  or `LUNA_UPDATER_KEY` names, or else from `TAURI_SIGNING_PRIVATE_KEY` itself, as the
+  release workflow has it from the `release` environment's secrets, and stops with an
+  error when there is none (`-Unsigned` builds the setup without its `.sig`). The key
+  reaches Tauri for the build and bundle alone, never the package install, and the `.sig`
+  appears next to the bundle. A build without `-Installer` is unsigned and needs no key.
 - Authenticode-signing the exe (so SmartScreen stops complaining) needs a certificate.
   When there is one, add it under `tauri.conf.json` → `bundle.windows.signCommand`.
