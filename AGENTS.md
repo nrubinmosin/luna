@@ -99,6 +99,11 @@ one CLI only.
   committed with it. macOS and Linux check symlinks out as they are; on
   Windows it takes Developer Mode and `git config --global core.symlinks
   true`, or the link arrives as a text file Claude Code does not see.
+- The skills there are the processes too long for a line here: `live-test`
+  (the live suite on throwaway accounts), `release` (a version from bump to
+  published draft), `cli-upgrade` (a new Claude Code or Codex version),
+  `security-review` (a change to a trust boundary, against the threat model)
+  and `ui-check` (gate, screenshots and test-build smoke for a UI change).
 - Once per clone, `git config core.hooksPath .githooks`: its pre-commit hook
   refuses a commit with anything under `.claude/skills/` that is not a symlink.
 - No attribution trailers in commits (`Co-Authored-By:`, the robot emoji,
