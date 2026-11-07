@@ -3157,6 +3157,8 @@ fn spawn_with(caller: &str, mut params: SpawnParams, replaces: Option<u64>, stil
     if params.prompt.trim().is_empty() {
         return Err("prompt is required".into());
     }
+    // A prompt kept for a resume is typed in later (`resume_words`).
+    plain_text(&params.prompt)?;
     if params.budget_tokens == Some(0) {
         return Err("budgetTokens must be above 0".into());
     }
@@ -4009,6 +4011,9 @@ fn type_in(
     baseline: u32,
     hold: crate::pty::KeyHold,
 ) -> Result<bool, String> {
+    // Every text Luna types goes through here or `stash_and_type`: none of it
+    // as keys, whoever wrote it and whenever it was kept.
+    plain_text(text)?;
     let keys_at = pty.typed_at_ms(id);
     pty.paste(id, text)?;
     std::thread::sleep(ENTER_GAP);
@@ -4230,6 +4235,7 @@ fn stash_and_type(
     baseline: u32,
     hold: crate::pty::KeyHold,
 ) -> Result<Option<bool>, String> {
+    plain_text(text)?;
     if !pty.composer(id).is_some_and(|c| !c.text.is_empty() && !c.stashed) {
         return Ok(None);
     }
@@ -4551,6 +4557,10 @@ fn resume_chat(pty: &crate::pty::PtyManager, id: &str) {
     // Counted once `reconcile_held` has had its say.
     let count = crate::activity::turn_state(id).map_or(0, |t| t.turns_ended);
     let cursor = transcript_end(id);
+    // Kept on disk across cores: read back, it is checked as it was when taken.
+    if plain_text(&text).is_err() {
+        return call_off_resume(id, "its kept text holds control characters, which would go in as keys");
+    }
     let typed = spill(&text);
     mark_going_in(id, &typed, cursor, None);
     let started = match type_held(pty, id, &typed, before.map(|t| t.turn), count, hold) {
@@ -4903,10 +4913,11 @@ fn drain_lets_answer(
 /// approvals and hook trust read as one, `codex_list_on`) are its owner's and
 /// the user's to settle — they decide what the session may do.
 ///
-/// On its own helper, a caller says yes to a permission (allow true, or keys
-/// while one is up) only where it would itself run that tool unasked
-/// (`approval_needs`), and never from read-only or asking modes: a helper is
-/// no back door past the person its caller would have asked. `approver`: the
+/// On its own helper, a caller says yes to a permission (allow true) only where
+/// it would itself run that tool unasked (`approval_needs`), and never from
+/// read-only or asking modes: a helper is no back door past the person its
+/// caller would have asked. Raw keys and a CLI's own lists take full access.
+/// `approver`: the
 /// caller's privilege, None where the user lets helpers go above their caller.
 fn answer_reach(
     own: bool,
@@ -4917,8 +4928,34 @@ fn answer_reach(
     keys: Option<&str>,
 ) -> Result<(), String> {
     if own {
-        let (Some(has), Some(a)) = (approver, ask.filter(|a| a.kind == "permission")) else { return Ok(()) };
-        if allow != Some(true) && keys.is_none() {
+        let Some(has) = approver else { return Ok(()) };
+        let full = Privilege { reach: Reach::Full, net: true };
+        // Keys reach whatever the terminal shows, detected or not, and the
+        // CLI's own switches with it (shift+tab changes Claude Code's mode):
+        // a caller at full access gives up nothing by them.
+        if keys.is_some() && !has.covers(full) {
+            return Err(format!(
+                "raw keys reach any dialog of the CLI and its mode switches, so they are for callers at full access; \
+                 you run at {}. Answer with answers or allow",
+                has.label()
+            ));
+        }
+        let Some(a) = ask else { return Ok(()) };
+        // A list the CLI holds its own screen on (hook trust, its approvals)
+        // decides what runs, in ways Luna does not weigh: any answer is a yes
+        // at full access.
+        if a.questions.iter().any(|q| q.list_at.is_some()) {
+            if has.covers(full) {
+                return Ok(());
+            }
+            return Err(format!(
+                "\"{}\" is the CLI's own and may widen what runs: it goes to the user in Luna's window, unless you \
+                 run at full access (you run at {})",
+                a.questions.first().map_or("", |q| q.text.as_str()),
+                has.label()
+            ));
+        }
+        if a.kind != "permission" || allow != Some(true) {
             return Ok(());
         }
         let needs = approval_needs(provider, a);
@@ -12706,5 +12743,44 @@ mod tests {
         for bad in ["\x1b[201~y\r", "\x1b", "a\x03", "\x7f", "\u{9b}2~", "\x00"] {
             assert!(plain_text(bad).unwrap_err().contains("control character"), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn raw_keys_and_a_clis_own_lists_take_full_access_even_on_ones_own_helper() {
+        let at = |reach, net| Some(Privilege { reach, net });
+        let q = |text: &str, list_at| AskQuestion {
+            text: text.into(),
+            options: vec!["Trust all and continue".into(), "Quit".into()],
+            multi: false,
+            list_at,
+        };
+        let question = Ask::question(vec![q("Which?", None)], true);
+        let hooks = Ask::question(vec![q("Hooks need review", Some(0))], true);
+        for has in [
+            at(Reach::ReadOnly, false),
+            at(Reach::Asks, false),
+            at(Reach::Edits, false),
+            at(Reach::Commands, false),
+            at(Reach::Reviewed, true),
+        ] {
+            // Shift+Tab switches Claude Code's mode: no dialog is detected for it.
+            for held in [None, Some(&question)] {
+                let e = answer_reach(true, has, Provider::Claude, held, None, Some("{shift+tab}")).unwrap_err();
+                assert!(e.contains("full access"), "{e}");
+            }
+            assert!(answer_reach(true, has, Provider::Codex, Some(&hooks), None, None).unwrap_err().contains("Hooks need review"));
+            assert!(answer_reach(true, has, Provider::Codex, Some(&hooks), Some(true), None).is_err(), "as luna_send's interrupt asks");
+            assert_eq!(answer_reach(true, has, Provider::Claude, Some(&question), None, None), Ok(()), "a model's question stays open");
+        }
+        let full = at(Reach::Full, true);
+        assert_eq!(answer_reach(true, full, Provider::Claude, None, None, Some("{shift+tab}")), Ok(()));
+        assert_eq!(answer_reach(true, full, Provider::Codex, Some(&hooks), None, None), Ok(()));
+        assert_eq!(answer_reach(true, None, Provider::Claude, None, None, Some("{shift+tab}")), Ok(()), "the user's setting");
+    }
+
+    #[test]
+    fn a_spawns_prompt_is_plain_text_before_anything_else() {
+        let p = SpawnParams { prompt: "go\x1b[201~\ry".into(), ..Default::default() };
+        assert!(spawn("nobody", p).err().unwrap().contains("control character"));
     }
 }
