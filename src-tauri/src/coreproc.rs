@@ -113,7 +113,8 @@ pub fn stop_from_args() -> bool {
 
 fn run() {
     let dir = ipc::core_dir();
-    if let Err(e) = std::fs::create_dir_all(&dir) {
+    // Owner-only: `core.json` in it is the key to the whole core.
+    if let Err(e) = crate::secret::private_dir(&dir) {
         crate::log::error("core", &format!("cannot create {}: {e}", dir.display()));
         return;
     }
@@ -195,12 +196,10 @@ fn run() {
     drop(lock);
 }
 
-/// Through a temporary file, so a window never reads half of it.
+/// Through a temporary file, so a window never reads half of it, and the
+/// owner's alone: it holds the token.
 fn write_discovery(d: &Discovery) -> io::Result<()> {
-    let path = ipc::discovery_file();
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_vec(d)?)?;
-    std::fs::rename(&tmp, &path)
+    crate::secret::write_private(&ipc::discovery_file(), &serde_json::to_vec(d)?)
 }
 
 /// Leaves, taking `core.json` along so no window tries the dead port. Every
