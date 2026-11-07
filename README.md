@@ -1,7 +1,5 @@
 # Luna
 
-*[Русская версия](README.ru.md)*
-
 A thin desktop shell (Rust + Tauri) around the Claude Code and Codex CLIs: several
 sessions side by side in panes, project folders, and accounts with isolated configs —
 an Anthropic subscription and a ChatGPT one in the same window. It carries its own copies

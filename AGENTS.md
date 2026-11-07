@@ -53,9 +53,8 @@ Rules for anyone (person or agent) changing Luna.
   and idioms. Comments describe what is there now, not what used to be.
 - Cross-platform: Windows is home, but nothing may assume it — gate
   Windows-only behaviour and defaults (e.g. `defaultShell: powershell`).
-- Everything in the repo is in English: code, comments, docs. The one
-  exception is `README.ru.md`, the Russian twin of `README.md`; change both
-  together.
+- Everything in the repo is in US English: code, comments, UI strings, docs.
+  Enforced by `pnpm check:text`.
 
 ## Both providers
 Luna runs Claude Code and Codex side by side, and what one CLI does to a
