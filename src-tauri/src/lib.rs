@@ -118,14 +118,13 @@ fn with_dot(base: &tauri::image::Image<'_>) -> tauri::image::Image<'static> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // The exit watcher, the keeper, the core and the installer's errands are
-    // this same exe; none may become a second Luna window.
+    // The exit watcher, the keeper and the core are this same exe; none may
+    // become a second Luna window.
     if lifecycle::watch_from_args()
         || procs::keeper_from_args()
         || coreproc::from_args()
         || coreproc::fingerprint_from_args()
         || coreproc::stop_from_args()
-        || paths::protect_install_from_args()
     {
         return;
     }

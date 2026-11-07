@@ -79,42 +79,74 @@ fn last_resort_dir() -> PathBuf {
     std::env::temp_dir().join(APP_DIR)
 }
 
-/// `luna --protect-install-dir`: gives the folder the exe is in a DACL of
-/// its own (secret.rs `acl::claim`: this user, SYSTEM and Administrators in
-/// full, everyone else read and execute) and returns true. For the installer
-/// (windows/hooks.nsh), after every install and so after every update, which
-/// runs the installer too: a folder that inherits "Authenticated Users:
-/// Modify", as one on a second drive commonly does, would let any other user
-/// of the machine replace the exe or plant a DLL beside it, and read the data
-/// kept there. Run by the exe the installer just put there, which knows the
-/// installing user's SID and writes it by SID rather than by name. What
-/// `install_dir_to_protect` passes over keeps its ACL. A failure changes
-/// nothing, and the installer goes on: no console to say it to.
-pub fn protect_install_from_args() -> bool {
-    if std::env::args().nth(1).as_deref() != Some("--protect-install-dir") {
-        return false;
-    }
-    #[cfg(windows)]
-    if let Some(dir) = exe_dir() {
-        let program_files: Vec<String> =
-            ["ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"].iter().filter_map(|v| std::env::var(v).ok()).collect();
-        if install_dir_to_protect(&dir, &program_files) {
-            let _ = crate::secret::acl::claim(&dir, true);
-        }
-    }
-    true
+/// What Settings' checks say of the data dir's DACL (checks.rs).
+#[cfg_attr(not(windows), allow(dead_code))]
+pub struct Privacy {
+    /// Its DACL is `secret::sddl_is_private`.
+    pub private: bool,
+    /// What the last `protect_data_dir` found or failed on, for the row.
+    pub note: Option<String>,
 }
 
-/// Whether the install folder gets a DACL of its own: not under Program
-/// Files, which is protected already, and named for Luna, as the installer's
-/// default folder is (NSIS appends that name to a folder picked with Browse).
-/// A folder that holds other programs as well keeps its ACL: it is theirs as
-/// much as Luna's, and a protected DACL would take others' access to them away.
-#[cfg_attr(not(windows), allow(dead_code))]
-fn install_dir_to_protect(dir: &Path, program_files: &[String]) -> bool {
-    let key = path_key(&dir.to_string_lossy());
-    let under = |root: &String| key.strip_prefix(&path_key(root)).is_some_and(|rest| rest.starts_with(KEY_SEP));
-    dir.file_name().is_some_and(|n| n.eq_ignore_ascii_case("luna")) && !program_files.iter().any(under)
+/// What the last `protect_data_dir` of this run came to: what it found odd,
+/// or why it failed.
+#[cfg(windows)]
+static LAST_PROTECT: std::sync::Mutex<Option<Result<Vec<String>, String>>> = std::sync::Mutex::new(None);
+
+/// Windows: gives the data dir the private DACL (secret.rs
+/// `acl::protect_tree`) if it does not have it yet, logging what it did. A
+/// per-user install keeps everything there, beside the exe, and an install
+/// folder outside Program Files takes the ACL of the folder it is in, which
+/// on a second drive commonly lets every signed-in user read the sessions'
+/// history and replace the exe. The installer protects a folder before it
+/// puts anything in (windows/hooks.nsh); this is for a copy installed before
+/// that, and for whatever has changed since. Run as the core starts, and from
+/// Settings' row. Elsewhere nothing to do: Unix has `secret::private_dir`'s
+/// folders, and the data dir in the user's home.
+pub fn protect_data_dir() -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let dir = data_dir();
+        if crate::secret::acl::is_private(&dir).unwrap_or(false) {
+            return Ok(());
+        }
+        let done = crate::secret::acl::protect_tree(&dir).map_err(|e| format!("could not make {} private: {e}", dir.display()));
+        match &done {
+            Ok(odd) => {
+                crate::log::info("app", &format!("made {} private to this user, SYSTEM and Administrators", dir.display()));
+                for what in odd {
+                    crate::log::warn("app", &format!("data folder: {what}"));
+                }
+            }
+            Err(e) => crate::log::warn("app", e),
+        }
+        let result = done.as_ref().map(|_| ()).map_err(String::clone);
+        *LAST_PROTECT.lock().unwrap_or_else(|e| e.into_inner()) = Some(done);
+        result
+    }
+    #[cfg(not(windows))]
+    Ok(())
+}
+
+/// The data dir's privacy as it is now, for Settings' checks: None where
+/// there is nothing to check (off Windows).
+pub fn data_dir_privacy() -> Option<Privacy> {
+    #[cfg(windows)]
+    {
+        let private = crate::secret::acl::is_private(&data_dir());
+        let note = match (&private, &*LAST_PROTECT.lock().unwrap_or_else(|e| e.into_inner())) {
+            (Err(e), _) => Some(format!("Its access list would not read: {e}")),
+            (_, Some(Err(e))) => Some(e.clone()),
+            (_, Some(Ok(odd))) if !odd.is_empty() => Some(format!(
+                "Found when it was made private, see the log: {}. A file someone else owned may have been changed by them; the next update reinstalls Luna's own.",
+                odd.join("; ")
+            )),
+            _ => None,
+        };
+        Some(Privacy { private: private.unwrap_or(false), note })
+    }
+    #[cfg(not(windows))]
+    None
 }
 
 fn writable(dir: &Path) -> bool {
@@ -218,28 +250,6 @@ mod tests {
         assert_eq!(path_key("/p/Foo") == path_key("/p/foo"), cfg!(windows));
         assert_eq!(path_key(r"/p\foo") == path_key("/p/foo"), cfg!(windows));
         assert_eq!(path_key("/p/foo/"), path_key("/p/foo"), "a trailing separator says nothing");
-    }
-
-    #[test]
-    fn only_a_folder_of_lunas_own_outside_program_files_is_protected_at_install() {
-        let pf = [native(r"C:\Program Files"), native(r"C:\Program Files (x86)")];
-        let protects = |dir: &str| install_dir_to_protect(Path::new(&native(dir)), &pf);
-        assert!(protects(r"E:\Programs\Luna"));
-        assert!(protects(r"D:\luna"));
-        assert!(!protects(r"C:\Program Files\Luna"), "protected already");
-        assert!(!protects(r"C:\Program Files (x86)\Luna"));
-        assert!(!protects(r"E:\Tools"), "a folder others' programs are in too");
-        assert!(!protects(r"E:\Luna-old\bin"));
-        assert!(protects(r"C:\Program Files Extra\Luna"), "a prefix of the name is not the folder");
-    }
-
-    /// `E:\p\x` as this platform writes it (`/E/p/x` off Windows).
-    fn native(path: &str) -> String {
-        if cfg!(windows) {
-            path.to_string()
-        } else {
-            format!("/{}", path.replace(':', "").replace('\\', "/"))
-        }
     }
 
     #[test]

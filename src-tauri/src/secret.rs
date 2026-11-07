@@ -58,14 +58,64 @@ pub fn private_dir(dir: &Path) -> io::Result<()> {
     #[cfg(windows)]
     {
         std::fs::create_dir_all(dir)?;
-        acl::claim(dir, false)
+        acl::claim(dir)
     }
     #[cfg(not(any(unix, windows)))]
     std::fs::create_dir_all(dir)
 }
 
-/// Windows' side of `private_dir`, and of the install folder's protection
-/// (paths.rs `protect_install_from_args`).
+/// The DACL, as SDDL, of a folder that is this user's, SYSTEM's and
+/// Administrators' alone: full control for each, by SID, inherited by what
+/// is in it, and nothing from above (`P`). No BUILTIN\Users: the data dir
+/// holds what the sessions were told and answered (agents.jsonl), the log,
+/// settings, attachments and the WebView's profile, and is the install
+/// folder too where the exe's own is writable.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn private_sddl(user: &str) -> String {
+    format!("D:P(A;OICI;FA;;;{user})(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)")
+}
+
+/// SYSTEM and Administrators as Windows writes them back, by alias or SID.
+#[cfg_attr(not(windows), allow(dead_code))]
+const MACHINE_TRUSTEES: [&str; 4] = ["SY", "S-1-5-18", "BA", "S-1-5-32-544"];
+
+/// The ACEs of a DACL in SDDL (`D:<flags>(ace)(ace)…`), each split into its
+/// fields (type; flags; rights; object; inherited object; trustee), and the
+/// DACL's own flags. None for what is no DACL.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn sddl_aces(sddl: &str) -> Option<(&str, Vec<Vec<&str>>)> {
+    let rest = sddl.strip_prefix("D:")?;
+    let at = rest.find('(').unwrap_or(rest.len());
+    let (flags, aces) = rest.split_at(at);
+    let aces =
+        aces.strip_prefix('(').and_then(|a| a.strip_suffix(')')).map(|a| a.split(")(").map(|ace| ace.split(';').collect()).collect());
+    Some((flags, aces.unwrap_or_default()))
+}
+
+/// Whether `sddl` is protected and lets nobody in but `user`, SYSTEM and
+/// Administrators: any allow of another kind or for anyone else, and it is not.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn sddl_is_private(sddl: &str, user: &str) -> bool {
+    let Some((flags, aces)) = sddl_aces(sddl) else { return false };
+    flags.contains('P')
+        && !aces.is_empty()
+        && aces.iter().all(|ace| match ace.as_slice() {
+            ["D", ..] => true,
+            ["A", _, _, _, _, who] => *who == user || MACHINE_TRUSTEES.contains(who),
+            _ => false,
+        })
+}
+
+/// Whether `sddl` takes everything from its parent: not protected, and every
+/// ACE inherited (`ID`). What is not gets reset by `acl::protect_tree`, since
+/// an explicit ACE outlives any change to the folder above it.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn sddl_inherits_only(sddl: &str) -> bool {
+    sddl_aces(sddl).is_some_and(|(flags, aces)| !flags.contains('P') && aces.iter().all(|ace| ace.get(1).is_some_and(|f| f.contains("ID"))))
+}
+
+/// Windows' side of `private_dir`, and of the data dir's protection
+/// (paths.rs `protect_data_dir`).
 #[cfg(windows)]
 pub mod acl {
     use std::io;
@@ -74,39 +124,90 @@ pub mod acl {
     use windows::core::{BOOL, PCWSTR, PWSTR};
     use windows::Win32::Foundation::{CloseHandle, LocalFree, HANDLE, HLOCAL};
     use windows::Win32::Security::Authorization::{
-        ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, GetNamedSecurityInfoW, SetNamedSecurityInfoW,
-        SDDL_REVISION_1, SE_FILE_OBJECT,
+        ConvertSecurityDescriptorToStringSecurityDescriptorW, ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
+        ConvertStringSidToSidW, GetNamedSecurityInfoW, SetNamedSecurityInfoW, SDDL_REVISION_1, SE_FILE_OBJECT,
     };
     use windows::Win32::Security::{
-        GetSecurityDescriptorDacl, GetTokenInformation, TokenUser, ACL, DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION,
-        PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, TOKEN_QUERY, TOKEN_USER,
+        GetSecurityDescriptorDacl, GetTokenInformation, TokenUser, ACL, DACL_SECURITY_INFORMATION, OBJECT_SECURITY_INFORMATION,
+        OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, TOKEN_QUERY, TOKEN_USER,
+        UNPROTECTED_DACL_SECURITY_INFORMATION,
     };
     use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
-    /// BUILTIN\Administrators, the owner of what an elevated process makes.
-    const ADMINISTRATORS: &str = "S-1-5-32-544";
+    /// Who may own what is in a private folder: this user, Administrators (an
+    /// elevated run's), SYSTEM and TrustedInstaller. Anyone else who owns a
+    /// file may rewrite its DACL at will, whatever the folder says.
+    fn owner_ok(owner: &str, user: &str) -> bool {
+        const TRUSTED_INSTALLER: &str = "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
+        owner == user || ["S-1-5-32-544", "S-1-5-18", TRUSTED_INSTALLER].contains(&owner)
+    }
 
-    /// Gives `dir` a protected DACL — full control for this user, SYSTEM and
-    /// Administrators, inherited by what is in it, nothing from above — and
-    /// with `readable_by_users` read and execute for BUILTIN\Users as well,
-    /// as Program Files grants. Written by well-known SIDs, so no account
-    /// name in any language is involved. Refused first: a link or junction,
-    /// which the DACL would be written through to wherever it points, and a
-    /// folder owned by anyone but this user (or Administrators, for an
-    /// elevated run): its owner may rewrite any DACL on it at will.
-    pub fn claim(dir: &Path, readable_by_users: bool) -> io::Result<()> {
+    /// Gives `dir` the protected DACL of `super::private_sddl`. Refused first:
+    /// a link or junction, which the DACL would be written through to wherever
+    /// it points, and a folder owned by anyone `owner_ok` does not name.
+    pub fn claim(dir: &Path) -> io::Result<()> {
         let meta = std::fs::symlink_metadata(dir)?;
         if !meta.is_dir() {
             return Err(io::Error::other(format!("{} is not a folder (a link or a file is there)", dir.display())));
         }
         let user = user_sid()?;
         let owner = owner_sid(dir)?;
-        if owner != user && owner != ADMINISTRATORS {
+        if !owner_ok(&owner, &user) {
             return Err(io::Error::other(format!("{} belongs to someone else ({owner})", dir.display())));
         }
-        // 0x1200a9: FILE_GENERIC_READ | FILE_GENERIC_EXECUTE.
-        let users = if readable_by_users { "(A;OICI;0x1200a9;;;BU)" } else { "" };
-        set_dacl(dir, &format!("D:P(A;OICI;FA;;;{user})(A;OICI;FA;;;SY)(A;OICI;FA;;;BA){users}"))
+        set_dacl(dir, &super::private_sddl(&user), PROTECTED_DACL_SECURITY_INFORMATION)
+    }
+
+    /// Whether `dir`'s DACL is `super::sddl_is_private`.
+    pub fn is_private(dir: &Path) -> io::Result<bool> {
+        Ok(super::sddl_is_private(&dacl_sddl(dir)?, &user_sid()?))
+    }
+
+    /// `claim` for `root`, then everything in it reset to inherit from it:
+    /// an explicit ACE (or a protected DACL) below would outlive the change to
+    /// the root. Links and junctions are left alone and not gone into, and a
+    /// file owned by someone `owner_ok` does not name is taken over, since its
+    /// owner could open it again. Each of those is returned, for the log and
+    /// Settings' checks: one taken over may have been changed by its owner.
+    pub fn protect_tree(root: &Path) -> io::Result<Vec<String>> {
+        claim(root)?;
+        let user = user_sid()?;
+        let mut odd = Vec::new();
+        reset_below(root, &user, &mut odd)?;
+        Ok(odd)
+    }
+
+    fn reset_below(dir: &Path, user: &str, odd: &mut Vec<String>) -> io::Result<()> {
+        for entry in std::fs::read_dir(dir)? {
+            let path = entry?.path();
+            match reset(&path, user, odd) {
+                // Gone meanwhile: a running WebView comes and goes with files.
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                done => done.map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", path.display())))?,
+            }
+        }
+        Ok(())
+    }
+
+    fn reset(path: &Path, user: &str, odd: &mut Vec<String>) -> io::Result<()> {
+        let meta = std::fs::symlink_metadata(path)?;
+        if meta.file_type().is_symlink() {
+            odd.push(format!("{}: a link or junction, left alone", path.display()));
+            return Ok(());
+        }
+        let owner = owner_sid(path)?;
+        if !owner_ok(&owner, user) {
+            set_owner(path, user)?;
+            odd.push(format!("{}: was owned by {owner}, taken over", path.display()));
+        }
+        if !super::sddl_inherits_only(&dacl_sddl(path)?) {
+            // An empty DACL, unprotected: what is left is what it inherits.
+            set_dacl(path, "D:", UNPROTECTED_DACL_SECURITY_INFORMATION)?;
+        }
+        if meta.is_dir() {
+            reset_below(path, user, odd)?;
+        }
+        Ok(())
     }
 
     fn wide(s: &std::ffi::OsStr) -> Vec<u16> {
@@ -166,8 +267,28 @@ pub mod acl {
         }
     }
 
-    /// Writes `sddl`'s DACL on `path`, protected from what is above it.
-    fn set_dacl(path: &Path, sddl: &str) -> io::Result<()> {
+    /// Makes `sid` (text) the owner of `path`: this user may, holding full
+    /// control of it through the folder.
+    fn set_owner(path: &Path, sid: &str) -> io::Result<()> {
+        let name = wide(path.as_os_str());
+        let text: Vec<u16> = sid.encode_utf16().chain(Some(0)).collect();
+        let mut psid = PSID::default();
+        // SAFETY: the SID is made from the string, handed on while it lives,
+        // and freed once.
+        unsafe {
+            ConvertStringSidToSidW(PCWSTR(text.as_ptr()), &mut psid)?;
+            let set =
+                SetNamedSecurityInfoW(PCWSTR(name.as_ptr()), SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION, Some(psid), None, None, None)
+                    .ok()
+                    .map_err(io::Error::from);
+            let _ = LocalFree(Some(HLOCAL(psid.0)));
+            set
+        }
+    }
+
+    /// Writes `sddl`'s DACL on `path`, `inherit` saying whether it is
+    /// protected from what is above it or takes that in as well.
+    fn set_dacl(path: &Path, sddl: &str, inherit: OBJECT_SECURITY_INFORMATION) -> io::Result<()> {
         let name = wide(path.as_os_str());
         let text: Vec<u16> = sddl.encode_utf16().chain(Some(0)).collect();
         let mut sd = PSECURITY_DESCRIPTOR::default();
@@ -177,20 +298,25 @@ pub mod acl {
             ConvertStringSecurityDescriptorToSecurityDescriptorW(PCWSTR(text.as_ptr()), SDDL_REVISION_1, &mut sd, None)?;
             let (mut present, mut defaulted, mut dacl) = (BOOL::default(), BOOL::default(), std::ptr::null_mut::<ACL>());
             let set = GetSecurityDescriptorDacl(sd, &mut present, &mut dacl, &mut defaulted).map_err(io::Error::from).and_then(|()| {
-                let info = DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION;
-                SetNamedSecurityInfoW(PCWSTR(name.as_ptr()), SE_FILE_OBJECT, info, None, None, Some(dacl.cast_const()), None)
-                    .ok()
-                    .map_err(io::Error::from)
+                SetNamedSecurityInfoW(
+                    PCWSTR(name.as_ptr()),
+                    SE_FILE_OBJECT,
+                    DACL_SECURITY_INFORMATION | inherit,
+                    None,
+                    None,
+                    Some(dacl.cast_const()),
+                    None,
+                )
+                .ok()
+                .map_err(io::Error::from)
             });
             let _ = LocalFree(Some(HLOCAL(sd.0)));
             set
         }
     }
 
-    /// `path`'s DACL as SDDL, to check what `claim` left.
-    #[cfg(test)]
+    /// `path`'s DACL as SDDL.
     pub fn dacl_sddl(path: &Path) -> io::Result<String> {
-        use windows::Win32::Security::Authorization::ConvertSecurityDescriptorToStringSecurityDescriptorW;
         let name = wide(path.as_os_str());
         let mut sd = PSECURITY_DESCRIPTOR::default();
         // SAFETY: as in `owner_sid`; the string is freed once it is read.
@@ -442,11 +568,78 @@ mod tests {
         assert!(private_dir(&link).unwrap_err().to_string().contains("not a folder"));
         assert_eq!(acl::dacl_sddl(&target).unwrap(), before);
 
-        // As the install folder gets it: everyone on the machine may read and run.
-        acl::claim(&base, true).unwrap();
-        let sddl = acl::dacl_sddl(&base).unwrap();
-        assert!(sddl.contains(";;;BU)") && !sddl.contains("FA;;;BU)") && !sddl.contains(";AU)"), "{sddl}");
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A data dir as an install on a second drive leaves it, under
+    /// `test-build/` (which inherits Authenticated Users' Modify here): an
+    /// explicit grant on a file, a protected folder of its own, a junction out.
+    #[cfg(windows)]
+    #[test]
+    fn the_data_dir_is_made_private_down_to_what_is_in_it() {
+        let icacls = |p: &Path, args: &[&str]| {
+            let out = std::process::Command::new("icacls").arg(p).args(args).output().unwrap();
+            assert!(out.status.success(), "icacls {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8_lossy(&out.stdout).into_owned()
+        };
+        let root = crate::paths::data_dir().join(format!("tree-test-{}", std::process::id()));
+        let outside = crate::paths::data_dir().join(format!("tree-out-{}", std::process::id()));
+        for d in [&root, &outside] {
+            let _ = std::fs::remove_dir_all(d);
+        }
+        std::fs::create_dir_all(root.join("webview").join("Default")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(root.join("luna.exe"), "exe").unwrap();
+        std::fs::write(root.join("agents.jsonl"), "{}").unwrap();
+        std::fs::write(root.join("webview").join("Default").join("Local State"), "{}").unwrap();
+        icacls(&root.join("luna.exe"), &["/grant", "*S-1-5-11:M"]);
+        icacls(&root.join("webview"), &["/inheritance:d"]);
+        let link = root.join("elsewhere");
+        let made = std::process::Command::new("cmd").args(["/d", "/c", "mklink", "/J"]).arg(&link).arg(&outside).output().unwrap();
+        assert!(made.status.success());
+        let outside_before = acl::dacl_sddl(&outside).unwrap();
+        println!("before, root:\n{}before, luna.exe:\n{}", icacls(&root, &[]), icacls(&root.join("luna.exe"), &[]));
+        assert!(!acl::is_private(&root).unwrap());
+
+        let odd = acl::protect_tree(&root).unwrap();
+        println!("after, root:\n{}after, luna.exe:\n{}", icacls(&root, &[]), icacls(&root.join("luna.exe"), &[]));
+        assert!(acl::is_private(&root).unwrap());
+        assert_eq!(odd.len(), 1, "{odd:?}");
+        assert!(odd[0].contains("elsewhere") && odd[0].contains("link"), "{odd:?}");
+        for p in [
+            root.join("luna.exe"),
+            root.join("agents.jsonl"),
+            root.join("webview"),
+            root.join("webview").join("Default").join("Local State"),
+        ] {
+            let sddl = acl::dacl_sddl(&p).unwrap();
+            assert!(sddl_inherits_only(&sddl) && !sddl.contains(";AU)") && !sddl.contains(";BU)"), "{}: {sddl}", p.display());
+        }
+        assert_eq!(acl::dacl_sddl(&outside).unwrap(), outside_before, "nothing done through the junction");
+        let _ = std::fs::remove_dir(&link);
+        for d in [&root, &outside] {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    #[test]
+    fn a_dacl_is_private_only_when_protected_and_for_the_user_and_the_machine_alone() {
+        let user = "S-1-5-21-1-2-3-1001";
+        assert!(sddl_is_private(&private_sddl(user), user));
+        // As Windows writes it back, inherited flags and all.
+        assert!(sddl_is_private("D:PAI(A;OICI;FA;;;S-1-5-21-1-2-3-1001)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)", user));
+        assert!(!sddl_is_private("D:AI(A;OICI;FA;;;S-1-5-21-1-2-3-1001)(A;OICI;FA;;;SY)", user), "not protected");
+        assert!(!sddl_is_private("D:P(A;OICI;FA;;;S-1-5-21-1-2-3-1001)(A;OICI;0x1200a9;;;BU)", user), "Users may read");
+        assert!(!sddl_is_private("D:P(A;OICI;FA;;;S-1-5-21-1-2-3-1002)", user), "another user");
+        assert!(!sddl_is_private("D:P(A;ID;0x1301bf;;;AU)", user));
+        assert!(!sddl_is_private("D:P", user), "no one at all");
+        assert!(!sddl_is_private("O:SYD:P(A;;FA;;;SY)", user), "not a DACL on its own");
+        assert!(sddl_is_private("D:P(D;;FA;;;WD)(A;;FA;;;SY)", user), "a deny takes nothing away from privacy");
+
+        assert!(sddl_inherits_only("D:AI(A;ID;FA;;;SY)(A;OICIID;FA;;;BA)"));
+        assert!(!sddl_inherits_only("D:AI(A;;0x1301bf;;;AU)(A;ID;FA;;;SY)"), "an explicit grant");
+        assert!(!sddl_inherits_only("D:PAI(A;ID;FA;;;SY)"), "protected");
+        assert!(sddl_inherits_only("D:AI"), "nothing but what is inherited, which is nothing");
     }
 
     #[test]
