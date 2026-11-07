@@ -4,6 +4,7 @@
 
 pub(crate) mod account;
 pub(super) mod background;
+pub(super) mod settle;
 pub(super) mod worktree;
 
 use crate::agents::ask::{ask_of, Ask};
@@ -15,8 +16,8 @@ use crate::agents::registry::{chat_name, depth_of, descendants, is_descendant, l
 use crate::agents::said::{first_words, TASK_CHARS};
 use crate::agents::spawn::account::{allowed_account_dirs, list_provider, pick_from_list, signed_in, AccountChoice};
 use crate::agents::spawn::background::spawn_background;
+use crate::agents::spawn::settle::spawn_failed_late;
 use crate::agents::spawn::worktree::{caller_worktree, helper_worktree_name, neighbors_in, worktree_of, Neighbor, Worktree};
-use crate::agents::spawn_failed_late;
 use crate::agents::teardown::Auto;
 use crate::provider::Provider;
 use crate::throttle::now_ms;
@@ -743,9 +744,9 @@ mod tests {
     use super::*;
     use crate::agents::persist::{chats_now, ties_in, SESSION_RETURN_MS};
     use crate::agents::registry::{reg, register, resumes_on_restart};
+    use crate::agents::spawn::settle::{settle_spawns, spawn_news};
     use crate::agents::teardown::forget;
     use crate::agents::tests::{spawn_taken, spawns_to_myself, take_up};
-    use crate::agents::{settle_spawns, spawn_news};
 
     #[test]
     fn account_comes_as_a_name_or_a_list_and_goes_out_as_a_name() {
