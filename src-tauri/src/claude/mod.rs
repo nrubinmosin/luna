@@ -1,9 +1,10 @@
-//! Everything that knows Claude Code: its release channel, settings files,
-//! trust bit, OAuth usage endpoint and token refresh, and the registry +
-//! transcript a session leaves behind.
+//! Everything that knows Claude Code: how a session is started, its release
+//! channel, settings files, trust bit, OAuth usage endpoint and token
+//! refresh, and the registry + transcript a session leaves behind.
 
 pub mod cli;
 pub mod defaults;
+pub mod launch;
 pub mod limits;
 pub mod models;
 pub mod oauth;

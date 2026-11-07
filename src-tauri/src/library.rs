@@ -1007,7 +1007,7 @@ pub struct SessionSkills {
     pub args: Vec<String>,
     /// Claude Code: the skills it would list that its folders keep from it,
     /// by the names it lists them under — `skillOverrides` in the settings
-    /// it is started with (pty.rs `claude_settings_file`), the one way to
+    /// it is started with (pty/start.rs `claude_settings_file`), the one way to
     /// keep a skill from a session that its account has as a whole.
     pub hidden: Vec<String>,
     /// Claude Code: the account's instructions file, where a folder the
@@ -1018,7 +1018,7 @@ pub struct SessionSkills {
     pub excluded: Vec<String>,
     /// Claude Code: the library's file of the other instructions, which its
     /// caller gives the session as a `CLAUDE.md` of its own
-    /// (pty.rs `claude_instructions_dir`).
+    /// (pty/start.rs `claude_instructions_dir`).
     pub instructions: Option<PathBuf>,
 }
 

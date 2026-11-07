@@ -1,0 +1,910 @@
+//! Starting a chat's CLI in a pane: what each provider's start settles under
+//! the chat's spawn gate (see `spawn`) — its MCP token, the settings, MCP
+//! and instructions files it reads at start, its worktree, its place in the
+//! agents' registry — before the arguments are laid out by `claude::launch`
+//! and `codex::launch` and the process is run.
+
+use super::same_dir;
+use super::spawn::{spawn, Launch};
+use crate::claude::launch::{self as claude_launch, claude_settings, with_role, CLAUDE_MCP_TOKEN_ENV};
+use crate::codex::launch::{self as codex_launch, AUTO_REVIEW, AUTO_REVIEW_SANDBOX};
+use crate::provider::Provider;
+
+/// The settings a Claude Code session is started with, as its `--settings`
+/// (one only: a second takes the first's place). `hooks`: each event posts
+/// its stdin to Luna's loopback listener (hub.rs) and prints nothing — a
+/// hook's stdout is added to the model's context, silence is free — while
+/// the listener is on. `guard`: a PreToolUse hook on its shell tools that
+/// refuses a command waiting forever (guard.rs), for a session with Luna's
+/// tools or a helper. `library`: what the library's folders keep from the
+/// session (library.rs `SessionSkills`) — skills off in `skillOverrides`,
+/// which settings of this source beat whatever the account's or the
+/// project's say, and the account's instructions in `claudeMdExcludes`.
+/// Written to a file under the data dir (`hooks/`, named for what it first
+/// held) rather than passed inline, so the command line stays readable and
+/// quoting is not a concern. None with nothing to say.
+pub(crate) fn claude_settings_file(
+    chat_id: &str,
+    hooks: bool,
+    guard: bool,
+    library: &crate::library::SessionSkills,
+) -> Option<std::path::PathBuf> {
+    let settings = claude_settings(
+        crate::hub::hook_url(chat_id).filter(|_| hooks).as_deref(),
+        crate::hub::guard_url(chat_id).filter(|_| guard).as_deref(),
+        library,
+    );
+    if settings.is_empty() {
+        return None;
+    }
+    // Owner-only: the hook URLs in it carry the hub's secret.
+    let dir = crate::paths::data_dir().join("hooks");
+    crate::secret::private_dir(&dir).ok()?;
+    let path = dir.join(format!("{chat_id}.json"));
+    crate::secret::write_private(&path, serde_json::to_string_pretty(&settings).ok()?.as_bytes()).ok()?;
+    Some(path)
+}
+
+/// The instructions a folder of the library gives a Claude Code session in
+/// place of its account's (library.rs `SessionSkills::instructions`), as the
+/// `CLAUDE.md` of a folder of its own (`hooks/<id>/`) for `--add-dir`, which
+/// Claude Code reads with `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD` set
+/// — those of every folder it is given then, Luna's own holding none.
+/// Memory, not `--append-system-prompt-file`: a resume keeps the system
+/// prompt its session started with, and reads memory again. Written at every
+/// start; with nothing to give, gone, and None.
+pub(crate) fn claude_instructions_dir(chat_id: &str, file: Option<&std::path::Path>) -> Option<std::path::PathBuf> {
+    let dir = crate::paths::data_dir().join("hooks").join(chat_id);
+    let Some(file) = file else {
+        let _ = std::fs::remove_dir_all(&dir);
+        return None;
+    };
+    // `hooks/` made owner-only first, if this is what makes it: the settings
+    // files beside this folder carry the hub's secret.
+    let hooks = dir.parent().map_or(Ok(()), crate::secret::private_dir);
+    let copied = hooks.and_then(|()| std::fs::create_dir_all(&dir)).and_then(|()| std::fs::copy(file, dir.join("CLAUDE.md")));
+    match copied {
+        Ok(_) => Some(dir),
+        Err(e) => {
+            crate::log::warn("library", &format!("could not give {chat_id} {}: {e}", file.display()));
+            None
+        }
+    }
+}
+
+/// The MCP config a tooled Claude Code session starts with: Luna's server on
+/// the hub listener, the bearer token in the header as `${LUNA_MCP_TOKEN}`,
+/// which Claude Code expands from its environment as it connects (seen on
+/// 2.1.319, `--mcp-config` included). A file per chat under the data dir,
+/// like the hooks.
+pub(crate) fn claude_mcp_file(chat_id: &str) -> Option<std::path::PathBuf> {
+    let url = crate::hub::mcp_url()?;
+    let config = serde_json::json!({
+        "mcpServers": {
+            "luna": {
+                "type": "http",
+                "url": url,
+                "headers": { "Authorization": format!("Bearer ${{{CLAUDE_MCP_TOKEN_ENV}}}") },
+                // Claude Code drops an HTTP tool call that has sent nothing
+                // for 5 min, and the server's `timeout` is what raises that
+                // (as well as the hard limit per call). A `wait` answers
+                // with one plain JSON body at the end, nothing before it.
+                "timeout": MCP_TOOL_TIMEOUT_MS,
+                // Not behind tool search: a model that has spawned a helper
+                // found the tools to talk to it deferred, and had to look each
+                // one up first. All eight are what the box was ticked for.
+                "alwaysLoad": true
+            }
+        }
+    });
+    let dir = crate::paths::data_dir().join("mcp");
+    crate::secret::private_dir(&dir).ok()?;
+    let path = dir.join(format!("{chat_id}.json"));
+    crate::secret::write_private(&path, serde_json::to_string_pretty(&config).ok()?.as_bytes()).ok()?;
+    Some(path)
+}
+
+/// How long a Luna tool call may take, in ms, as both CLIs are told: `wait`
+/// holds its request for up to 30 min, `spawn` for up to two.
+pub(crate) const MCP_TOOL_TIMEOUT_MS: u64 = 1_900_000;
+
+/// What tells a session which one it is, for what it runs: every session its
+/// own id, a helper the session that started it too.
+pub(crate) fn session_envs(id: &str, parent: Option<&str>) -> Vec<(&'static str, String)> {
+    let mut envs = vec![("LUNA_SESSION_ID", id.to_string())];
+    if let Some(parent) = parent {
+        envs.push(("LUNA_PARENT_ID", parent.to_string()));
+    }
+    envs
+}
+
+/// What a helper is told it is: instructions written for the chat a person
+/// talks to (say, to agree a plan with them first) would otherwise hold it up
+/// with nobody there to answer. Its language too: told to speak the user's
+/// language to them, a helper went on in it to the agent that asked in English,
+/// progress notes and all.
+pub(crate) fn helper_line(parent: &str) -> String {
+    format!(
+        "You are a helper session started through Luna by session {parent}, not a chat with a person: your answers go to \
+         that session. Instructions meant only for the session a person talks to do not apply to you. Write in the \
+         language of the task you were given, progress notes included."
+    )
+}
+
+/// A Codex helper's opening prompt, with `helper_line` as a note after it.
+/// Codex can only replace `developer_instructions`, not add to them, and what
+/// they come to depends on its whole stack of config files: working that out
+/// here to pass it on would be Codex's resolution done twice, and a long one
+/// would not fit on a command line. After the prompt, not before: the opening
+/// words are what names the chat, and a slash command has to come first. One
+/// that does goes without the note, which would land in its arguments.
+pub(crate) fn codex_helper_prompt(parent: &str, prompt: &str) -> String {
+    if prompt.trim_start().starts_with('/') {
+        return prompt.to_string();
+    }
+    format!("{prompt}{HELPER_NOTE}{}]", helper_line(parent))
+}
+
+/// Where the note starts: what comes before it is the prompt as it was asked.
+const HELPER_NOTE: &str = "\n\n[A note from Luna, not part of the task: ";
+
+/// A prompt as it was asked, with no note on it.
+pub(crate) fn without_note(text: &str) -> &str {
+    text.split(HELPER_NOTE).next().unwrap_or(text)
+}
+
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+pub async fn ensure_claude_session(
+    id: String,
+    folder: String,
+    account_path: String,
+    model: String,
+    effort: String,
+    permission_mode: String,
+    worktree: bool,
+    // With `worktree`: an existing one to go into by name, which Claude Code
+    // makes again, same name and branch, if it has been removed meanwhile.
+    worktree_name: Option<String>,
+    resume: Option<String>,
+    // Luna's MCP tools (agents.rs): off unless the chat asked.
+    tools: Option<bool>,
+    // The chat that spawned this one, if an agent did.
+    parent: Option<String>,
+    // An opening prompt, for a chat an agent starts.
+    prompt: Option<String>,
+    // Without the edit tools (`CLAUDE_EDIT_TOOLS`).
+    read_only: Option<bool>,
+    // The agent it runs as: `--agent`.
+    agent: Option<String>,
+    // The spawn this is the session of, if an agent's (agents.rs `spawn_is`).
+    spawn_request: Option<u64>,
+) -> Result<String, String> {
+    // Built only if no process is running (see `spawn`).
+    spawn(id.clone(), move || {
+        let parent = crate::agents::parent_on_start(&id, parent);
+        // `--resume` of a session with no transcript fails with "No
+        // conversation found" and leaves the pane at a dead CLI: a chat that
+        // was opened and never typed into starts afresh instead.
+        let resume = resume.filter(|sid| crate::claude::session::find_transcript(&account_path, sid).is_some());
+        let asked_nothing = spawn_request.is_none() && prompt.is_none();
+        // A conversation a core went in the middle of and the window never heard of.
+        let resume = resume
+            .or_else(|| asked_nothing.then(|| crate::agents::conversation_of(&id, Provider::Claude, &folder, &account_path)).flatten());
+        // A helper's is named by Luna (`agents::helper_worktree_name`), so that this
+        // start knows which is its own: in a conversation that one, afresh that one if
+        // still as made, else another.
+        let worktree_name = match worktree_name {
+            Some(name) => Some(name),
+            None if !worktree => None,
+            None if spawn_request.is_some() => Some(crate::agents::helper_worktree_name(&id)),
+            None => crate::agents::worktree_for_start(&id, &folder, &account_path, resume.is_some()),
+        };
+        // A new worktree is about to branch off origin; a resumed session
+        // already has its worktree, and this one its name. Here, under the spawn gate,
+        // so a pane asking for the session meanwhile waits for this spawn — the one
+        // with the opening prompt — instead of starting its own without it.
+        let there = worktree_name.as_deref().is_some_and(|name| std::path::Path::new(&crate::worktree::named_path(&folder, name)).exists());
+        if worktree && resume.is_none() && !there {
+            crate::worktree::fetch_origin(&folder);
+        }
+        // The skills the library gives sessions in this folder and keeps from
+        // them, at every start (library.rs `session_args`); not to a login
+        // session.
+        let login = same_dir(&folder, &account_path);
+        let skills = if login {
+            crate::library::SessionSkills::default()
+        } else {
+            crate::library::lay_out("before a session starts");
+            crate::library::session_args(Provider::Claude, &account_path, &folder)
+        };
+        // Rewritten at every spawn: the listener's port is new with every Luna run.
+        // The guard against endless waits (guard.rs): a chat with Luna's tools
+        // and a helper, which only such a chat starts.
+        let guard = tools.unwrap_or(false) || parent.is_some();
+        let settings_file = claude_settings_file(&id, true, guard, &skills);
+        let tools = tools.unwrap_or(false);
+        let read_only = read_only.unwrap_or(false);
+        let agent = agent.filter(|a| !a.is_empty());
+        let settings = with_role(
+            serde_json::json!({
+                "model": model, "effort": effort, "permissionMode": permission_mode, "worktree": worktree,
+            }),
+            read_only,
+            agent.as_deref(),
+        );
+        // A login session runs in the account folder itself (the providers'
+        // `loginSession`): not a chat, so not one agents may see or write to.
+        let token = if login {
+            None
+        } else {
+            crate::agents::register(&id, Provider::Claude, &folder, &account_path, parent.as_deref(), tools, settings)
+        };
+        match spawn_request {
+            Some(request) => crate::agents::spawn_is(request, &id)?,
+            None if prompt.is_none() => crate::agents::chat_starting(&id, resume.is_some()),
+            None => {}
+        }
+        let mcp = token.and_then(|t| Some((claude_mcp_file(&id)?, t)));
+        let notes = (parent.is_some() || tools).then(crate::agents::notes_dir).filter(|notes| std::fs::create_dir_all(notes).is_ok());
+        let instructions = if login { None } else { claude_instructions_dir(&id, skills.instructions.as_deref()) };
+        let (args, envs) = claude_launch::chat_args(&claude_launch::ChatStart {
+            id: &id,
+            account_path: &account_path,
+            model: &model,
+            effort: &effort,
+            permission_mode: &permission_mode,
+            resume: resume.as_deref(),
+            worktree: worktree.then_some(worktree_name.as_deref()),
+            settings_file: settings_file.as_deref(),
+            agent: agent.as_deref(),
+            read_only,
+            parent: parent.as_deref(),
+            mcp: mcp.as_ref().map(|(file, token)| (file.as_path(), token.as_str())),
+            notes_dir: notes.as_deref(),
+            instructions_dir: instructions.as_deref(),
+            skill_args: &skills.args,
+            prompt: prompt.as_deref(),
+        });
+        Ok(Launch {
+            provider: Provider::Claude,
+            cwd: folder,
+            account_path,
+            args,
+            envs,
+            resume,
+            describe: format!("model {model} perm {permission_mode} worktree {worktree}"),
+        })
+    })
+    .await
+}
+
+/// A Codex session. `folder` is where it runs: the project, which `worktree`
+/// has Codex leave for a checkout of its own (`--worktree`), or a worktree it
+/// made earlier, to resume in. `login` runs `codex login` instead of a chat.
+/// `hooks_unasked` runs the project's hooks without their trust prompt
+/// (codex/hooks.rs).
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+pub async fn ensure_codex_session(
+    id: String,
+    folder: String,
+    account_path: String,
+    model: Option<String>,
+    effort: String,
+    approval: String,
+    sandbox: String,
+    worktree: Option<bool>,
+    resume: Option<String>,
+    login: bool,
+    tools: Option<bool>,
+    hooks_unasked: Option<bool>,
+    parent: Option<String>,
+    prompt: Option<String>,
+    spawn_request: Option<u64>,
+) -> Result<String, String> {
+    // Built only if no process is running (see `spawn`).
+    spawn(id.clone(), move || {
+        let parent = crate::agents::parent_on_start(&id, parent);
+        let asked_nothing = !login && spawn_request.is_none() && prompt.is_none();
+        // A conversation a core went in the middle of and the window never heard of,
+        // resumed where it works, as Codex refuses `--worktree` on a resume.
+        let recovered = if asked_nothing && resume.is_none() {
+            crate::agents::conversation_of(&id, Provider::Codex, &folder, &account_path)
+        } else {
+            None
+        };
+        let folder = recovered.as_deref().and_then(|thread| crate::codex::session::thread_cwd(&account_path, thread)).unwrap_or(folder);
+        let resume = resume.or(recovered);
+        // Afresh, it makes a new worktree: Codex takes no name to go back into one
+        // by. What it may have begun is told of, ahead of what this one makes.
+        if asked_nothing && resume.is_none() && worktree.unwrap_or(false) {
+            crate::agents::report_codex_worktrees(&id, &folder, &account_path);
+        }
+        if login {
+            let envs = vec![("CODEX_HOME", account_path.clone())];
+            let args = vec!["login".to_string()];
+            return Ok(Launch { provider: Provider::Codex, cwd: folder, account_path, args, envs, resume: None, describe: "login".into() });
+        }
+        // A project under a folder trusted on this machine starts trusted
+        // without an entry in the account's config, and so does one
+        // trusted while the account was in use (codex/trust.rs).
+        let trust = crate::codex::trust::root_override(&folder).or_else(|| crate::codex::trust::session_override(&account_path, &folder));
+        let chosen_model = model.as_deref().map(str::trim).filter(|m| !m.is_empty());
+        let sandbox: &str = if approval == AUTO_REVIEW { AUTO_REVIEW_SANDBOX } else { &sandbox };
+        let hooks_unasked = hooks_unasked.unwrap_or(false);
+        let guard = tools.unwrap_or(false) || parent.is_some();
+        let tools = tools.unwrap_or(false);
+        let settings = serde_json::json!({
+            "model": chosen_model,
+            "effort": effort, "approval": approval, "sandbox": sandbox, "hooksUnasked": hooks_unasked,
+        });
+        let token = crate::agents::register(&id, Provider::Codex, &folder, &account_path, parent.as_deref(), tools, settings);
+        match spawn_request {
+            Some(request) => crate::agents::spawn_is(request, &id)?,
+            None if prompt.is_none() => crate::agents::chat_starting(&id, resume.is_some()),
+            None => {}
+        }
+        let token = token.filter(|_| crate::hub::mcp_url().is_some());
+        // The skills the library gives sessions in this folder and keeps
+        // from them, at every start (library.rs `session_args`).
+        crate::library::lay_out("before a session starts");
+        let skills = crate::library::session_args(Provider::Codex, &account_path, &folder);
+        let (args, envs) = codex_launch::chat_args(&codex_launch::ChatStart {
+            id: &id,
+            folder: &folder,
+            account_path: &account_path,
+            resume: resume.as_deref(),
+            trust,
+            worktree: worktree.unwrap_or(false),
+            model: chosen_model,
+            effort: &effort,
+            approval: &approval,
+            sandbox,
+            hooks_unasked,
+            guard,
+            parent: parent.as_deref(),
+            token: token.as_deref(),
+            skill_args: &skills.args,
+            prompt: prompt.as_deref(),
+        });
+        let describe = format!("model {} effort {effort} approval {approval} sandbox {sandbox}", model.as_deref().unwrap_or("default"));
+        Ok(Launch { provider: Provider::Codex, cwd: folder, account_path, args, envs, resume, describe })
+    })
+    .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::screen::title_from_prompt;
+    use super::super::spawn::{capture, INHERITED_SESSION_VARS};
+    use super::*;
+    use crate::claude::launch::claude_helper_args;
+
+    #[test]
+    fn a_session_is_told_its_id_and_a_helper_its_parent() {
+        assert_eq!(session_envs("c1", None), [("LUNA_SESSION_ID", "c1".to_string())]);
+        assert_eq!(session_envs("c1", Some("p1")), [("LUNA_SESSION_ID", "c1".to_string()), ("LUNA_PARENT_ID", "p1".to_string())]);
+        for k in ["LUNA_SESSION_ID", "LUNA_PARENT_ID"] {
+            assert!(INHERITED_SESSION_VARS.contains(&k), "{k} must not reach a session of another Luna");
+        }
+    }
+
+    #[test]
+    fn a_helper_is_told_by_its_system_prompt_on_claude_and_a_note_on_codex() {
+        let claude = claude_helper_args("p1");
+        assert_eq!(claude[0], "--append-system-prompt");
+        assert!(claude[1].contains("session p1"));
+        assert!(claude[1].contains("language of the task"), "not the language a person's chat is told to speak");
+        let codex = codex_helper_prompt("p1", "Fix the build.");
+        assert!(codex.starts_with("Fix the build.\n\n"), "the opening words name the chat: {codex}");
+        assert!(codex.contains(&claude[1]));
+        assert_eq!(title_from_prompt(&codex).as_deref(), Some("Fix the build."), "the note is no part of its name");
+        for command in ["/review the diff", "  /compact"] {
+            assert_eq!(codex_helper_prompt("p1", command), command, "its arguments are not the place for it");
+        }
+    }
+
+    // Golden tests of what a session in a pane is started with: the arguments
+    // and environment of each kind of start, word for word, as they stand.
+    // Built through the commands themselves, side effects and all, and caught
+    // before anything runs (`capture`).
+
+    use crate::golden::{self, pairs, strings, Redact};
+
+    const FOLDER: &str = "/golden/project";
+    const PARENT: &str = "golden-parent";
+    const PROMPT: &str = "Fix the build.";
+
+    /// A start as `spawn` would have run it, placeholders in, with the
+    /// settings and MCP files it was given read back (and removed).
+    struct Started {
+        args: Vec<String>,
+        envs: Vec<(String, String)>,
+        cwd: String,
+        resume: Option<String>,
+        describe: String,
+        settings: Option<serde_json::Value>,
+        mcp: Option<serde_json::Value>,
+    }
+
+    fn started(id: &str, r: &Redact, start: impl std::future::Future<Output = Result<String, String>>) -> Started {
+        capture::expect(id);
+        let built = tauri::async_runtime::block_on(start);
+        let launch = capture::take(id);
+        crate::agents::forget(id);
+        assert_eq!(built, Ok(String::new()));
+        let l = launch.expect("the start was caught");
+        let args = r.args(&l.args);
+        let data = crate::paths::data_dir();
+        let read = |sub: &str, placeholder: &str| {
+            let path = data.join(sub).join(format!("{id}.json"));
+            let v = args.iter().any(|a| a == placeholder).then(|| r.file(&path.to_string_lossy()));
+            let _ = std::fs::remove_file(&path);
+            v
+        };
+        let (settings, mcp) = (read("hooks", "<settings-file>"), read("mcp", "<mcp-file>"));
+        Started { envs: r.envs(&l.envs), cwd: r.text(&l.cwd), resume: l.resume, describe: l.describe, settings, mcp, args }
+    }
+
+    /// The window's ask for a Claude Code chat; each case changes what it is about.
+    struct ClaudeAsk {
+        folder: String,
+        account: String,
+        model: &'static str,
+        effort: &'static str,
+        mode: &'static str,
+        worktree: bool,
+        worktree_name: Option<&'static str>,
+        resume: Option<String>,
+        tools: Option<bool>,
+        parent: Option<&'static str>,
+        prompt: Option<&'static str>,
+        read_only: Option<bool>,
+        agent: Option<&'static str>,
+    }
+
+    impl ClaudeAsk {
+        fn chat() -> Self {
+            ClaudeAsk {
+                folder: FOLDER.into(),
+                account: "/golden/acc-claude".into(),
+                model: "opus",
+                effort: "high",
+                mode: "default",
+                worktree: false,
+                worktree_name: None,
+                resume: None,
+                tools: None,
+                parent: None,
+                prompt: None,
+                read_only: None,
+                agent: None,
+            }
+        }
+
+        fn start(self, id: &str, r: &Redact) -> Started {
+            let s = |v: Option<&str>| v.map(str::to_owned);
+            started(
+                id,
+                r,
+                ensure_claude_session(
+                    id.into(),
+                    self.folder,
+                    self.account,
+                    self.model.into(),
+                    self.effort.into(),
+                    self.mode.into(),
+                    self.worktree,
+                    s(self.worktree_name),
+                    self.resume,
+                    self.tools,
+                    s(self.parent),
+                    s(self.prompt),
+                    self.read_only,
+                    s(self.agent),
+                    None,
+                ),
+            )
+        }
+    }
+
+    fn claude_envs(id: &str, account: &str) -> Vec<(String, String)> {
+        pairs(&[("CLAUDE_CONFIG_DIR", account), ("DISABLE_AUTOUPDATER", "1"), ("LUNA_SESSION_ID", id)])
+    }
+
+    #[test]
+    fn golden_claude_chat_starts_with_its_flags_and_hooks() {
+        const ID: &str = "golden-claude-chat";
+        let r = Redact::for_chat(ID);
+        let s = ClaudeAsk::chat().start(ID, &r);
+        assert_eq!(
+            s.args,
+            strings(&["--model", "opus", "--effort", "high", "--permission-mode", "default", "--settings", "<settings-file>"])
+        );
+        assert_eq!(s.envs, claude_envs(ID, "/golden/acc-claude"));
+        assert_eq!(s.settings, Some(golden::claude_chat_settings(false)));
+        assert_eq!(s.mcp, None);
+        assert_eq!((s.cwd.as_str(), s.resume), (FOLDER, None));
+        assert_eq!(s.describe, "model opus perm default worktree false");
+    }
+
+    #[test]
+    fn golden_claude_permission_modes_pass_through_as_given() {
+        for mode in ["acceptEdits", "plan", "bypassPermissions", "auto"] {
+            let id = format!("golden-claude-mode-{mode}");
+            let r = Redact::for_chat(&id);
+            let s = ClaudeAsk { mode, ..ClaudeAsk::chat() }.start(&id, &r);
+            assert_eq!(
+                s.args,
+                strings(&["--model", "opus", "--effort", "high", "--permission-mode", mode, "--settings", "<settings-file>"])
+            );
+        }
+    }
+
+    #[test]
+    fn golden_claude_resumes_a_conversation_that_has_a_transcript_and_only_then() {
+        const ID: &str = "golden-claude-resume";
+        const SID: &str = "0a1b2c3d-0000-4000-8000-00000000c1a0";
+        let account = std::env::temp_dir().join(format!("luna-golden-resume-{}", std::process::id()));
+        let projects = account.join("projects").join("golden");
+        std::fs::create_dir_all(&projects).unwrap();
+        std::fs::write(projects.join(format!("{SID}.jsonl")), "{}\n").unwrap();
+        let acc = account.to_string_lossy().into_owned();
+        let r = Redact::for_chat(ID).with(acc.clone(), "<acc>");
+        let s = ClaudeAsk { account: acc.clone(), mode: "acceptEdits", resume: Some(SID.into()), ..ClaudeAsk::chat() }.start(ID, &r);
+        assert_eq!(
+            s.args,
+            strings(&[
+                "--model",
+                "opus",
+                "--effort",
+                "high",
+                "--permission-mode",
+                "acceptEdits",
+                "--resume",
+                SID,
+                "--settings",
+                "<settings-file>"
+            ])
+        );
+        assert_eq!(s.envs, claude_envs(ID, "<acc>"));
+        assert_eq!(s.resume.as_deref(), Some(SID));
+
+        // No transcript: `--resume` would fail, and it starts afresh.
+        let s = ClaudeAsk { account: acc, resume: Some("0a1b2c3d-0000-4000-8000-00000000dead".into()), ..ClaudeAsk::chat() }.start(ID, &r);
+        assert_eq!(
+            s.args,
+            strings(&["--model", "opus", "--effort", "high", "--permission-mode", "default", "--settings", "<settings-file>"])
+        );
+        assert_eq!(s.resume, None);
+        let _ = std::fs::remove_dir_all(&account);
+    }
+
+    #[test]
+    fn golden_claude_worktree_goes_by_its_name_or_the_clis() {
+        const ID: &str = "golden-claude-worktree";
+        let r = Redact::for_chat(ID);
+        let s = ClaudeAsk { worktree: true, worktree_name: Some("feature-x"), ..ClaudeAsk::chat() }.start(ID, &r);
+        assert_eq!(
+            s.args,
+            strings(&[
+                "--model",
+                "opus",
+                "--effort",
+                "high",
+                "--permission-mode",
+                "default",
+                "--worktree=feature-x",
+                "--settings",
+                "<settings-file>"
+            ])
+        );
+        assert_eq!(s.describe, "model opus perm default worktree true");
+        assert_eq!(s.cwd, FOLDER, "it starts in the project and moves itself");
+        // No name of Luna's: the CLI names it.
+        let s = ClaudeAsk { worktree: true, ..ClaudeAsk::chat() }.start(ID, &r);
+        assert_eq!(
+            s.args,
+            strings(&[
+                "--model",
+                "opus",
+                "--effort",
+                "high",
+                "--permission-mode",
+                "default",
+                "--worktree",
+                "--settings",
+                "<settings-file>"
+            ])
+        );
+    }
+
+    #[test]
+    fn golden_claude_login_runs_in_its_account_with_nothing_of_a_chat() {
+        const ID: &str = "golden-claude-login";
+        const ACC: &str = "/golden/acc-claude-login";
+        let r = Redact::for_chat(ID);
+        let s = ClaudeAsk { folder: ACC.into(), account: ACC.into(), tools: Some(true), ..ClaudeAsk::chat() }.start(ID, &r);
+        assert_eq!(
+            s.args,
+            strings(&[
+                "--model",
+                "opus",
+                "--effort",
+                "high",
+                "--permission-mode",
+                "default",
+                "--settings",
+                "<settings-file>",
+                "--add-dir",
+                "<notes-dir>",
+            ])
+        );
+        assert_eq!(s.envs, claude_envs(ID, ACC), "no token: not a chat agents may reach");
+        assert_eq!(s.settings, Some(golden::claude_chat_settings(true)));
+        assert_eq!(s.mcp, None);
+        assert_eq!(s.cwd, ACC);
+    }
+
+    #[test]
+    fn golden_claude_helper_with_tools_gets_the_guard_luna_mcp_and_its_role() {
+        const ID: &str = "golden-claude-helper";
+        let r = Redact::for_chat(ID);
+        let s = ClaudeAsk {
+            model: "sonnet",
+            effort: "medium",
+            mode: "bypassPermissions",
+            tools: Some(true),
+            parent: Some(PARENT),
+            prompt: Some(PROMPT),
+            read_only: Some(true),
+            agent: Some("reviewer"),
+            ..ClaudeAsk::chat()
+        }
+        .start(ID, &r);
+        let line = golden::helper_line(PARENT);
+        assert_eq!(
+            s.args,
+            strings(&[
+                "--model",
+                "sonnet",
+                "--effort",
+                "medium",
+                "--permission-mode",
+                "bypassPermissions",
+                "--settings",
+                "<settings-file>",
+                "--agent",
+                "reviewer",
+                "--disallowedTools",
+                "Edit,Write,NotebookEdit",
+                "--append-system-prompt",
+                &line,
+                "--allowedTools",
+                "mcp__luna",
+                "--mcp-config",
+                "<mcp-file>",
+                "--add-dir",
+                "<notes-dir>",
+                "--",
+                PROMPT,
+            ])
+        );
+        assert_eq!(
+            s.envs,
+            pairs(&[
+                ("CLAUDE_CONFIG_DIR", "/golden/acc-claude"),
+                ("DISABLE_AUTOUPDATER", "1"),
+                ("LUNA_MCP_TOKEN", "<token>"),
+                ("LUNA_SESSION_ID", ID),
+                ("LUNA_PARENT_ID", PARENT),
+            ])
+        );
+        assert_eq!(s.settings, Some(golden::claude_chat_settings(true)));
+        assert_eq!(s.mcp, Some(golden::claude_mcp_config()), "the token stays in the environment");
+        assert_eq!(s.describe, "model sonnet perm bypassPermissions worktree false");
+    }
+
+    /// The window's ask for a Codex chat; each case changes what it is about.
+    struct CodexAsk {
+        model: Option<&'static str>,
+        effort: &'static str,
+        approval: &'static str,
+        sandbox: &'static str,
+        worktree: Option<bool>,
+        resume: Option<&'static str>,
+        login: bool,
+        tools: Option<bool>,
+        hooks_unasked: Option<bool>,
+        parent: Option<&'static str>,
+        prompt: Option<&'static str>,
+    }
+
+    const CODEX_ACC: &str = "/golden/acc-codex";
+
+    impl CodexAsk {
+        fn chat() -> Self {
+            CodexAsk {
+                model: Some("gpt-5.5"),
+                effort: "medium",
+                approval: "on-request",
+                sandbox: "workspace-write",
+                worktree: None,
+                resume: None,
+                login: false,
+                tools: None,
+                hooks_unasked: None,
+                parent: None,
+                prompt: None,
+            }
+        }
+
+        fn start(self, id: &str, r: &Redact) -> Started {
+            let s = |v: Option<&str>| v.map(str::to_owned);
+            started(
+                id,
+                r,
+                ensure_codex_session(
+                    id.into(),
+                    FOLDER.into(),
+                    CODEX_ACC.into(),
+                    s(self.model),
+                    self.effort.into(),
+                    self.approval.into(),
+                    self.sandbox.into(),
+                    self.worktree,
+                    s(self.resume),
+                    self.login,
+                    self.tools,
+                    self.hooks_unasked,
+                    s(self.parent),
+                    s(self.prompt),
+                    None,
+                ),
+            )
+        }
+    }
+
+    /// A Codex chat's arguments in FOLDER: `head` before `-C`, its own flags,
+    /// the title, then `tail`.
+    fn codex_args(head: &[&str], flags: Vec<String>, tail: Vec<String>) -> Vec<String> {
+        let mut args = strings(head);
+        args.extend(strings(&["-C", FOLDER, "--no-daemon"]));
+        args.extend(flags);
+        args.extend(strings(&["-c", "tui.terminal_title=[\"thread-id\"]"]));
+        args.extend(tail);
+        args
+    }
+
+    /// The model and effort a chat asks for, then `--ask-for-approval` with a
+    /// person answering, and the sandbox as a flag.
+    fn codex_flags(model: Option<&str>, effort: &str, approval: &str, sandbox: &str) -> Vec<String> {
+        let mut args = model.map_or_else(Vec::new, |m| strings(&["--model", m]));
+        args.extend(strings(&["-c", &format!("model_reasoning_effort=\"{effort}\"")]));
+        args.extend(codex_asks(approval, sandbox));
+        args
+    }
+
+    fn codex_asks(approval: &str, sandbox: &str) -> Vec<String> {
+        let mut args = strings(&["--ask-for-approval", approval, "-c", "approvals_reviewer=\"user\"", "--sandbox", sandbox]);
+        if sandbox != "danger-full-access" {
+            args.extend(golden::codex_windows_sandbox());
+        }
+        args
+    }
+
+    fn codex_envs(id: &str, sandboxed: bool) -> Vec<(String, String)> {
+        let mut envs = pairs(&[("CODEX_HOME", CODEX_ACC)]);
+        if sandboxed {
+            envs.extend(golden::codex_sandbox_path());
+        }
+        envs.extend(pairs(&[("LUNA_SESSION_ID", id)]));
+        envs
+    }
+
+    #[test]
+    fn golden_codex_chat_starts_in_its_folder_with_a_person_answering() {
+        const ID: &str = "golden-codex-chat";
+        let r = Redact::for_chat(ID);
+        let s = CodexAsk::chat().start(ID, &r);
+        assert_eq!(s.args, codex_args(&[], codex_flags(Some("gpt-5.5"), "medium", "on-request", "workspace-write"), Vec::new()));
+        assert_eq!(s.envs, codex_envs(ID, true));
+        assert_eq!((s.cwd.as_str(), s.resume), (FOLDER, None));
+        assert_eq!(s.describe, "model gpt-5.5 effort medium approval on-request sandbox workspace-write");
+    }
+
+    #[test]
+    fn golden_codex_resume_names_its_thread_and_never_a_worktree() {
+        const ID: &str = "golden-codex-resume";
+        const THREAD: &str = "019a0000-0000-7000-8000-000000000c0d";
+        let r = Redact::for_chat(ID);
+        let s = CodexAsk { resume: Some(THREAD), worktree: Some(true), ..CodexAsk::chat() }.start(ID, &r);
+        let flags = codex_flags(Some("gpt-5.5"), "medium", "on-request", "workspace-write");
+        assert_eq!(s.args, codex_args(&["resume", THREAD], flags, Vec::new()));
+        assert_eq!(s.envs, codex_envs(ID, true));
+        assert_eq!(s.resume.as_deref(), Some(THREAD));
+    }
+
+    #[test]
+    fn golden_codex_worktree_is_codexs_own_to_make() {
+        const ID: &str = "golden-codex-worktree";
+        let r = Redact::for_chat(ID);
+        let s = CodexAsk { worktree: Some(true), model: None, ..CodexAsk::chat() }.start(ID, &r);
+        let mut flags = strings(&["--worktree"]);
+        flags.extend(codex_flags(None, "medium", "on-request", "workspace-write"));
+        assert_eq!(s.args, codex_args(&[], flags, Vec::new()));
+        assert_eq!(s.cwd, FOLDER, "it starts in the project and moves itself");
+        assert_eq!(s.describe, "model default effort medium approval on-request sandbox workspace-write");
+    }
+
+    #[test]
+    fn golden_codex_login_is_the_bare_command() {
+        const ID: &str = "golden-codex-login";
+        let r = Redact::for_chat(ID);
+        let s = CodexAsk { login: true, resume: Some("019a0000-0000-7000-8000-00000000dead"), tools: Some(true), ..CodexAsk::chat() }
+            .start(ID, &r);
+        assert_eq!(s.args, ["login"]);
+        assert_eq!(s.envs, pairs(&[("CODEX_HOME", CODEX_ACC)]));
+        assert_eq!((s.resume, s.describe.as_str()), (None, "login"));
+    }
+
+    #[test]
+    fn golden_codex_helper_with_tools_gets_the_guard_and_luna_mcp() {
+        const ID: &str = "golden-codex-helper";
+        let r = Redact::for_chat(ID);
+        let s = CodexAsk {
+            model: None,
+            effort: "high",
+            approval: "never",
+            tools: Some(true),
+            hooks_unasked: Some(true),
+            parent: Some(PARENT),
+            prompt: Some(PROMPT),
+            ..CodexAsk::chat()
+        }
+        .start(ID, &r);
+        let mut flags = codex_flags(None, "high", "never", "workspace-write");
+        flags.extend(strings(&["--dangerously-bypass-hook-trust", "-c", &golden::codex_guard()]));
+        let mut tail = golden::codex_mcp();
+        tail.extend(strings(&["--", PROMPT]));
+        assert_eq!(s.args, codex_args(&[], flags, tail));
+        let mut envs = codex_envs(ID, true);
+        envs.extend(pairs(&[("LUNA_PARENT_ID", PARENT), ("LUNA_MCP_TOKEN", "<token>")]));
+        assert_eq!(s.envs, envs);
+        assert_eq!(s.describe, "model default effort high approval never sandbox workspace-write");
+
+        // Hooks' trust asked for: Codex would drop the guard, and it is given none.
+        let s = CodexAsk { tools: Some(true), ..CodexAsk::chat() }.start(ID, &r);
+        assert_eq!(s.args, codex_args(&[], codex_flags(Some("gpt-5.5"), "medium", "on-request", "workspace-write"), golden::codex_mcp()));
+    }
+
+    #[test]
+    fn golden_codex_approval_and_sandbox_pairs() {
+        let with_windows = |mut a: Vec<String>| {
+            a.extend(golden::codex_windows_sandbox());
+            a
+        };
+        let mut read_only_net = strings(&["--ask-for-approval", "on-request", "-c", "approvals_reviewer=\"user\""]);
+        read_only_net.extend(golden::codex_read_only_net());
+        // (approval, sandbox, the flags for them, PATH cut for the sandbox, the sandbox it runs in)
+        let cases: [(&str, &str, Vec<String>, bool, &str); 5] = [
+            ("never", "danger-full-access", strings(&["--dangerously-bypass-approvals-and-sandbox"]), false, "danger-full-access"),
+            ("on-request", "danger-full-access", codex_asks("on-request", "danger-full-access"), false, "danger-full-access"),
+            ("untrusted", "read-only", codex_asks("untrusted", "read-only"), true, "read-only"),
+            ("on-request", "read-only-net", with_windows(read_only_net), true, "read-only-net"),
+            // The reviewer model takes the sandbox it runs in, whatever was asked.
+            ("auto-review", "read-only", with_windows(strings(&["--approve-for-me"])), true, "workspace-write"),
+        ];
+        for (approval, sandbox, asks, sandboxed, runs_in) in cases {
+            let id = format!("golden-codex-{approval}-{sandbox}");
+            let r = Redact::for_chat(&id);
+            let s = CodexAsk { approval, sandbox, ..CodexAsk::chat() }.start(&id, &r);
+            let mut flags = strings(&["--model", "gpt-5.5", "-c", "model_reasoning_effort=\"medium\""]);
+            flags.extend(asks);
+            assert_eq!(s.args, codex_args(&[], flags, Vec::new()), "{approval} {sandbox}");
+            assert_eq!(s.envs, codex_envs(&id, sandboxed), "{approval} {sandbox}");
+            assert_eq!(s.describe, format!("model gpt-5.5 effort medium approval {approval} sandbox {runs_in}"));
+        }
+    }
+}

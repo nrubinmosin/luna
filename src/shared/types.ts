@@ -47,7 +47,7 @@ export type CodexEffort = string;
  *  reviewer model instead, always in `workspace-write`. */
 export type CodexApproval = 'on-request' | 'never' | 'auto-review';
 /** `read-only-net` is Luna's own: read-only with the network on, passed to
- *  Codex as a permission profile (pty.rs). */
+ *  Codex as a permission profile (codex/launch.rs). */
 export type CodexSandbox = 'read-only' | 'read-only-net' | 'workspace-write' | 'danger-full-access';
 
 /** What Codex's `config.toml` can say and Luna passes as flags. The model is

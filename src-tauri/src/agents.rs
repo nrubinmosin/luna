@@ -2834,7 +2834,7 @@ fn agent_name_ok(name: &str) -> bool {
 /// `readOnly` and `agent` checked, for a helper however it starts: what cannot
 /// hold together is refused, and a read-only Codex gets its sandbox here.
 fn settle_role(params: &mut SpawnParams, provider: Provider) -> Result<(), String> {
-    use crate::pty::{AUTO_REVIEW, AUTO_REVIEW_SANDBOX, READ_ONLY_NET};
+    use crate::codex::launch::{AUTO_REVIEW, AUTO_REVIEW_SANDBOX, READ_ONLY_NET};
     params.agent = asked(&params.agent).map(str::to_owned);
     if let Some(agent) = params.agent.as_deref() {
         if provider == Provider::Codex {
@@ -2908,15 +2908,15 @@ struct Privilege {
 }
 
 /// What Luna starts helpers in, spelled exactly as the CLIs take them.
-const CODEX_SANDBOXES: [&str; 4] = ["read-only", crate::pty::READ_ONLY_NET, "workspace-write", "danger-full-access"];
-const CODEX_APPROVALS: [&str; 3] = ["never", "on-request", crate::pty::AUTO_REVIEW];
+const CODEX_SANDBOXES: [&str; 4] = ["read-only", crate::codex::launch::READ_ONLY_NET, "workspace-write", "danger-full-access"];
+const CODEX_APPROVALS: [&str; 3] = ["never", "on-request", crate::codex::launch::AUTO_REVIEW];
 
 impl Privilege {
     const LEAST: Privilege = Privilege { reach: Reach::ReadOnly, net: false };
 
     /// None for a mode Luna does not know.
     fn of(provider: Provider, mode: &str, approval: Option<&str>) -> Option<Privilege> {
-        use crate::pty::{AUTO_REVIEW, READ_ONLY_NET};
+        use crate::codex::launch::{AUTO_REVIEW, READ_ONLY_NET};
         let at = |reach, net| Some(Privilege { reach, net });
         match provider {
             Provider::Claude => match mode {
@@ -2981,7 +2981,7 @@ fn mode_label(provider: Provider, mode: &str, approval: Option<&str>) -> String 
 /// (sandbox, Some(approval)). A background Codex never asks, unless it has a
 /// reviewer.
 fn effective_mode(params: &SpawnParams, provider: Provider, account_path: &str, folder: &str) -> (String, Option<String>) {
-    use crate::pty::{AUTO_REVIEW, AUTO_REVIEW_SANDBOX};
+    use crate::codex::launch::{AUTO_REVIEW, AUTO_REVIEW_SANDBOX};
     match provider {
         Provider::Claude => {
             let mode = asked(&params.permission_mode).map(str::to_owned).unwrap_or_else(|| {
@@ -3010,7 +3010,7 @@ fn effective_mode(params: &SpawnParams, provider: Provider, account_path: &str, 
 /// setting more loosely (in any case), so what is compared here has to be
 /// what runs.
 fn canonical_mode(provider: Provider, mode: &str, approval: Option<&str>, defaulted: bool) -> Result<(), String> {
-    use crate::pty::{AUTO_REVIEW, AUTO_REVIEW_SANDBOX};
+    use crate::codex::launch::{AUTO_REVIEW, AUTO_REVIEW_SANDBOX};
     let whence = if defaulted { " (the account's or project's default; pass one)" } else { "" };
     match provider {
         Provider::Claude if !CLAUDE_MODES.contains(&mode) => {
@@ -3104,7 +3104,7 @@ fn settle_mode(
 fn approval_needs(provider: Provider, ask: &Ask) -> Privilege {
     let at = |reach, net| Privilege { reach, net };
     match (provider, ask.tool.as_deref()) {
-        (Provider::Claude, Some(t)) if crate::pty::CLAUDE_EDIT_TOOLS.contains(&t) || t == "MultiEdit" => at(Reach::Edits, false),
+        (Provider::Claude, Some(t)) if crate::claude::launch::CLAUDE_EDIT_TOOLS.contains(&t) || t == "MultiEdit" => at(Reach::Edits, false),
         (Provider::Claude, Some("Read" | "Glob" | "Grep" | "LS")) => at(Reach::ReadOnly, false),
         (Provider::Claude, Some("WebFetch" | "WebSearch")) => at(Reach::ReadOnly, true),
         _ => at(Reach::Full, true),
@@ -3468,7 +3468,7 @@ fn background_spec(params: &SpawnParams, provider: Provider, account_path: &str,
             })
         }
         Provider::Codex => {
-            use crate::pty::{AUTO_REVIEW, AUTO_REVIEW_SANDBOX};
+            use crate::codex::launch::{AUTO_REVIEW, AUTO_REVIEW_SANDBOX};
             if asked(&params.permission_mode).is_some() {
                 return Err("permissionMode is a Claude setting; Codex takes approval and sandbox".into());
             }
@@ -3488,7 +3488,9 @@ fn background_spec(params: &SpawnParams, provider: Provider, account_path: &str,
                 Some(s) if auto_review && s != AUTO_REVIEW_SANDBOX => {
                     return Err(format!("{AUTO_REVIEW} runs in {AUTO_REVIEW_SANDBOX} only; leave sandbox out"))
                 }
-                Some(s) if ["read-only", crate::pty::READ_ONLY_NET, "workspace-write", "danger-full-access"].contains(&s) => s.to_string(),
+                Some(s) if ["read-only", crate::codex::launch::READ_ONLY_NET, "workspace-write", "danger-full-access"].contains(&s) => {
+                    s.to_string()
+                }
                 Some(s) => {
                     return Err(format!("unknown sandbox \"{s}\"; use read-only, read-only-net, workspace-write, danger-full-access"))
                 }
@@ -3556,7 +3558,7 @@ fn spawn_background(
     let id = crate::background::mint_id();
     spec.worktree_name = (own_worktree && provider == Provider::Claude).then(|| helper_worktree_name(&id));
     let mut settings = match provider {
-        Provider::Claude => crate::pty::with_role(
+        Provider::Claude => crate::claude::launch::with_role(
             serde_json::json!({
                 "model": spec.model, "effort": spec.effort, "permissionMode": spec.mode, "worktree": own_worktree, "background": true,
             }),
@@ -3565,7 +3567,7 @@ fn spawn_background(
         ),
         Provider::Codex => serde_json::json!({
             "model": spec.model, "effort": spec.effort,
-            "approval": if spec.auto_review { crate::pty::AUTO_REVIEW } else { "never" }, "sandbox": spec.mode,
+            "approval": if spec.auto_review { crate::codex::launch::AUTO_REVIEW } else { "never" }, "sandbox": spec.mode,
             "hooksUnasked": spec.hooks_unasked, "background": true,
         }),
     };

@@ -1,4 +1,4 @@
-//! What the launch golden tests share (pty.rs for the sessions in a pane,
+//! What the launch golden tests share (pty/start.rs for the sessions in a pane,
 //! background.rs for the helpers without one): a start's arguments and
 //! environment with what changes from run to run — the hub's port and
 //! secrets, a session's MCP token, the files under the data dir, a profile's
@@ -53,7 +53,7 @@ impl Redact {
 
     /// The environment, the MCP token as `<token>` and a sandbox's PATH as
     /// `<sandbox-path>` (checked for what it leaves out). `GIT_CONFIG_*` is
-    /// built on the host's own (pty.rs `git_ssl_backend_envs`), so it is left
+    /// built on the host's own (codex/launch.rs `git_ssl_backend_envs`), so it is left
     /// out, and only Windows may have it.
     pub(crate) fn envs(&self, envs: &[(&'static str, String)]) -> Vec<(String, String)> {
         assert!(cfg!(windows) || !envs.iter().any(|(k, _)| k.starts_with("GIT_CONFIG_")), "{envs:?}");

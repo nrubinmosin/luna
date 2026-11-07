@@ -491,7 +491,7 @@ pub fn rollouts_since(account_path: &str, folder: &str, since_ms: u64) -> Vec<Pa
 }
 
 /// The rollout of a thread a live session's TUI says it is on, by the start of
-/// its id that the title holds (pty.rs `thread_in_title`): looked for where a
+/// its id that the title holds (pty/screen.rs `thread_in_title`): looked for where a
 /// thread of now is written, the last two days, and once in all the rest, for a
 /// thread `/resume` went back to. One not written yet (Codex writes it at the
 /// thread's first turn) costs only the first look after that. Two of now that
@@ -528,7 +528,7 @@ fn thread_file(account_path: &str, thread: &str) -> Option<PathBuf> {
 }
 
 /// The rollout file this live session writes to, once it exists. Codex says
-/// which thread its TUI is on (pty.rs `CODEX_TITLE`), and that settles it: its
+/// which thread its TUI is on (codex/launch.rs `CODEX_TITLE`), and that settles it: its
 /// file once written, a `/new`, `/resume` or `/fork` in it followed, and until a
 /// new thread's file is written the one it was on, never a guess.
 pub fn rollout_for(live: &Live) -> Option<PathBuf> {

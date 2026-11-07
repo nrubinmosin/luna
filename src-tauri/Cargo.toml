@@ -48,7 +48,7 @@ taplo = { version = "0.14", default-features = false }
 flate2 = "1"
 tar = "0.4"
 # A terminal emulator in memory, for showing an agent what its helper's
-# screen says (src/pty.rs `screen`): the scrollback replayed into a grid.
+# screen says (src/pty/screen.rs `screen`): the scrollback replayed into a grid.
 vt100 = "0.16"
 
 # Subclassing the windows — the Alt menu and WM_ENDSESSION (src/sysmenu.rs);

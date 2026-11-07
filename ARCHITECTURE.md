@@ -116,11 +116,18 @@ src-tauri/src/
   cli.rs        shared mechanics of Luna's own CLI copies: versions/<ver>/, current, sha256,
                 progress, prune, auto-update every 6h; where to get a version from — the
                 provider's Source
-  pty.rs        session manager: shared spawn in a pty, scrollback buffer, pty://output
-                and pty://exit events, write/resize/kill; ensure_claude_session / ensure_codex_session
-                build the command line; session_meta dispatches by provider;
-                ActivityProbe::working_dir() — where a session actually works (Claude
-                registry / Codex rollout)
+  pty/          session manager (mod.rs: the session map, PtyManager, manager())
+    start.rs    ensure_claude_session / ensure_codex_session: what a start settles under the
+                chat's spawn gate (token, settings/MCP/instructions files, worktree), then the
+                command line from claude/launch.rs or codex/launch.rs
+    spawn.rs    the shared spawn in a pty, scrollback buffer, pty://output and pty://exit
+                events, cursor queries answered
+    control.rs  write/resize/keys/kill, quitting the way a person would, delete, orphans
+    screen.rs   the screen replayed (vt100), composer and draft, terminal modes and title,
+                Codex's key events on Windows; SessionMeta
+    probe.rs    ActivityProbe::working_dir() — where a session actually works (Claude
+                registry / Codex rollout); session_meta dispatches by provider; tails; the
+                sweep of hook and MCP files
   worktree.rs   finds the worktrees both CLIs make: Claude's under <folder>/.claude/worktrees
                 (branch worktree-*), Codex's by shape …/worktrees/<4 hex>/<name> plus a .git
                 file pointing back at the folder; removal, orphan sweep (including each
@@ -164,6 +171,8 @@ src-tauri/src/
   power.rs      keep-awake (PowerSetRequest) and "shut down when everything is done":
                 arming, quiet window, countdown, action; commands and the power://state event
   claude/
+    launch.rs   a session's arguments and environment (chat_args), its settings file's hooks
+                and guard, the helper's system prompt line; pure, nothing written
     cli.rs      Source: downloads.claude.ai, latest + manifest.json, bare exe
     defaults.rs model/effortLevel/permissions.defaultMode from Claude Code's settings in its
                 order: the account's settings.json → the project's .claude/settings.json →
@@ -176,6 +185,9 @@ src-tauri/src/
     session.rs  registry <config>/sessions/<pid>.json + transcript projects/<cwd>/<sid>.jsonl:
                 context, CLI title (custom-title / ai-title), first prompt
   codex/
+    launch.rs   a session's arguments and environment (chat_args), and what a helper's
+                `codex exec` shares with it: approval and sandbox overrides, read-only-net,
+                the guard, Luna's MCP server; pure, nothing written
     cli.rs      Source: GitHub Releases openai/codex, rust-v<ver>, package tarball + SHA256SUMS
     config.rs   config.toml via toml_edit (comments and formatting kept), seed; a read for a
                 write looks again at a file caught blank, cut short or held open, and one that
@@ -221,7 +233,7 @@ src-tauri/src/
                 accounts each is meant for — a reach of `all`, `claude`/`codex` or `provider/name`
                 entries (`CLAUDE.md` / `AGENTS.md`, one instructions file per account, the closest
                 reach winning; `skills/<name>`) — and skills for the sessions in folders the user
-                names, handed out (or kept from them) at every start by `session_args` (pty.rs,
+                names, handed out (or kept from them) at every start by `session_args` (pty/start.rs,
                 background.rs); a ledger
                 of what Luna wrote where (`<data>/library-state.json`, bytes in `library-blobs/` by
                 hash) so only its own copies are touched — see Key decisions

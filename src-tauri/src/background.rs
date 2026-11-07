@@ -35,7 +35,7 @@ const LOG_LINES: usize = 200;
 const LOG_CHARS: usize = 300;
 /// How long a held permission or question waits for `luna_answer` before the
 /// CLI is told nobody answered. Under the MCP call timeout the CLIs are given
-/// (pty.rs `MCP_TOOL_TIMEOUT_MS`).
+/// (pty/start.rs `MCP_TOOL_TIMEOUT_MS`).
 const ASK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 
 /// What a helper is started with, every turn the same.
@@ -792,10 +792,10 @@ fn command_for(e: &Entry, id: &str) -> (Vec<String>, String, Vec<(&'static str, 
             if let Some(agent) = &s.agent {
                 args.extend(["--agent".into(), agent.clone()]);
             }
-            let mut denied: Vec<&str> = if s.read_only { crate::pty::CLAUDE_EDIT_TOOLS.to_vec() } else { Vec::new() };
+            let mut denied: Vec<&str> = if s.read_only { crate::claude::launch::CLAUDE_EDIT_TOOLS.to_vec() } else { Vec::new() };
             if let Some((mcp, token)) = s.token.clone().and_then(|t| Some((crate::pty::claude_mcp_file(id)?, t))) {
                 args.extend(["--mcp-config".into(), mcp.to_string_lossy().into_owned()]);
-                envs.push((crate::pty::CLAUDE_MCP_TOKEN_ENV, token));
+                envs.push((crate::claude::launch::CLAUDE_MCP_TOKEN_ENV, token));
                 args.extend(["--permission-prompt-tool".into(), "mcp__luna__luna_permission".into()]);
                 // The CLI's to call, not the model's: hidden from its tools,
                 // and the prompts still come through.
@@ -808,7 +808,7 @@ fn command_for(e: &Entry, id: &str) -> (Vec<String>, String, Vec<(&'static str, 
                 args.extend(["--disallowedTools".into(), denied.join(",")]);
             }
             if let Some(parent) = &s.parent {
-                args.extend(crate::pty::claude_helper_args(parent));
+                args.extend(crate::claude::launch::claude_helper_args(parent));
             }
             // A helper with tools has helpers of its own to hear from: what a
             // notice names is a file there, to read without asking.
@@ -828,7 +828,7 @@ fn command_for(e: &Entry, id: &str) -> (Vec<String>, String, Vec<(&'static str, 
             }
             if let Some(dir) = crate::pty::claude_instructions_dir(id, skills.instructions.as_deref()) {
                 args.extend(["--add-dir".into(), dir.to_string_lossy().into_owned()]);
-                envs.push((crate::pty::CLAUDE_ADDED_DIR_MEMORY, "1".into()));
+                envs.push((crate::claude::launch::CLAUDE_ADDED_DIR_MEMORY, "1".into()));
             }
             args.extend(skills.args);
             envs.push(("CLAUDE_CONFIG_DIR", s.account_path.clone()));
@@ -860,28 +860,28 @@ fn command_for(e: &Entry, id: &str) -> (Vec<String>, String, Vec<(&'static str, 
             }
             args.extend(["-c".into(), format!("model_reasoning_effort=\"{}\"", s.effort)]);
             if s.hooks_unasked {
-                args.push(crate::pty::HOOKS_UNASKED.into());
+                args.push(crate::codex::launch::HOOKS_UNASKED.into());
             }
-            args.extend(crate::pty::codex_guard_args(id, s.tools || s.parent.is_some(), s.hooks_unasked));
+            args.extend(crate::codex::launch::codex_guard_args(id, s.tools || s.parent.is_some(), s.hooks_unasked));
             if s.auto_review {
                 args.push("--approve-for-me".into());
             } else {
                 // `exec` asks nobody: the sandbox is what holds it.
                 args.extend(["-c".into(), "approval_policy=\"never\"".into()]);
-                args.extend(["-c".into(), crate::pty::CODEX_PERSON_REVIEWS.into()]);
-                args.extend(crate::pty::codex_sandbox_args(&s.mode));
+                args.extend(["-c".into(), crate::codex::launch::CODEX_PERSON_REVIEWS.into()]);
+                args.extend(crate::codex::launch::codex_sandbox_args(&s.mode));
             }
-            if let Some(sb) = crate::pty::codex_windows_sandbox(&s.mode) {
+            if let Some(sb) = crate::codex::launch::codex_windows_sandbox(&s.mode) {
                 args.extend(["-c".into(), sb]);
             }
-            if let Some(path) = crate::pty::codex_sandbox_path(&s.mode) {
+            if let Some(path) = crate::codex::launch::codex_sandbox_path(&s.mode) {
                 envs.push(("PATH", path));
             }
             if let Some(token) = s.token.clone().filter(|_| s.tools) {
-                args.extend(crate::pty::codex_mcp_args());
+                args.extend(crate::codex::launch::codex_mcp_args());
                 envs.push(("LUNA_MCP_TOKEN", token));
             }
-            envs.extend(crate::pty::codex_git_envs(&s.mode));
+            envs.extend(crate::codex::launch::codex_git_envs(&s.mode));
             envs.push(("CODEX_HOME", s.account_path.clone()));
             args.extend(crate::library::session_args(Provider::Codex, &s.account_path, &dir).args);
             // The prompt comes on stdin; Claude Code reads it there unasked.
@@ -4240,7 +4240,7 @@ mod tests {
         claude.spec.agent = Some("checker".into());
         claude.spec.parent = Some("p-1".into());
         let mut codex = entry(Provider::Codex);
-        codex.spec.mode = crate::pty::READ_ONLY_NET.into();
+        codex.spec.mode = crate::codex::launch::READ_ONLY_NET.into();
         codex.spec.parent = Some("p-1".into());
         // One that goes on and one that never got started alike.
         for session in [Some("s-1"), None] {
@@ -4308,7 +4308,7 @@ mod tests {
     #[test]
     fn read_only_net_goes_to_codex_as_a_profile_on_every_turn() {
         let mut e = entry(Provider::Codex);
-        e.spec.mode = crate::pty::READ_ONLY_NET.into();
+        e.spec.mode = crate::codex::launch::READ_ONLY_NET.into();
         for session in [None, Some("t-1".to_string())] {
             e.session = session;
             let (args, _, envs) = command_for(&e, "x");
@@ -4317,7 +4317,7 @@ mod tests {
             assert!(!args.iter().any(|a| a.starts_with("sandbox_mode=")), "Codex's docs say not to set both");
             assert_eq!(envs.iter().any(|(k, _)| *k == "GIT_CONFIG_COUNT"), cfg!(windows), "git https, which schannel cannot do there");
             assert!(args.contains(&"approval_policy=\"never\"".to_string()));
-            assert!(args.contains(&crate::pty::CODEX_PERSON_REVIEWS.to_string()), "no reviewer model from a config");
+            assert!(args.contains(&crate::codex::launch::CODEX_PERSON_REVIEWS.to_string()), "no reviewer model from a config");
         }
     }
 
@@ -4404,12 +4404,12 @@ mod tests {
     fn hooks_run_unasked_only_when_the_folder_says_so() {
         let mut e = entry(Provider::Codex);
         let (args, _, _) = command_for(&e, "x");
-        assert!(!args.contains(&crate::pty::HOOKS_UNASKED.to_string()));
+        assert!(!args.contains(&crate::codex::launch::HOOKS_UNASKED.to_string()));
         e.spec.hooks_unasked = true;
         on_codex_event(&mut e, &json!({ "type": "thread.started", "thread_id": "t-1" }));
         let (args, _, _) = command_for(&e, "x");
         assert_eq!(args[..3], ["exec", "resume", "t-1"]);
-        assert!(args.contains(&crate::pty::HOOKS_UNASKED.to_string()), "every turn, resumes too");
+        assert!(args.contains(&crate::codex::launch::HOOKS_UNASKED.to_string()), "every turn, resumes too");
         assert!(args.iter().any(|a| a.starts_with("projects={") && a.contains("trust_level")), "trusted for the run");
     }
 
