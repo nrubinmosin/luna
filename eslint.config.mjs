@@ -23,9 +23,9 @@ export default defineConfig(
       '@typescript-eslint/no-unused-vars': ['error', { ignoreRestSiblings: true }]
     }
   },
-  // The config files themselves: Node modules outside the app's tsconfig.
+  // The config files and repo scripts: Node modules outside the app's tsconfig.
   {
-    files: ['*.{js,mjs,ts}'],
+    files: ['*.{js,mjs,ts}', 'scripts/**/*.mjs'],
     extends: [js.configs.recommended, tseslint.configs.recommended],
     languageOptions: { globals: globals.node }
   }

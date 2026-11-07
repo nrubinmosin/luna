@@ -1237,6 +1237,7 @@ fn on_claude_event(e: &mut Entry, v: &Value) -> bool {
         (Some("command_lifecycle"), Some("started")) => return v["command_uuid"].as_str().is_some_and(|u| took(e, u)),
         // A line the CLI will not run gets no `result`: one its transcript has
         // already is passed over, and a stdin left open would hold it for good.
+        // lang-check: allow
         (Some("command_lifecycle"), Some("completed" | "cancelled")) => {
             if let Some(run) = e.run.as_mut().filter(|run| run.line.is_some() && run.line.as_deref() == v["command_uuid"].as_str()) {
                 run.feed = None;
@@ -4587,6 +4588,7 @@ mod tests {
 
         let mut e = entry(Provider::Claude);
         let _lines = feeding(&mut e);
+        // lang-check: allow
         on_claude_event(&mut e, &ended("opening-line", "cancelled"));
         assert!(e.run.as_ref().unwrap().feed.is_none());
     }

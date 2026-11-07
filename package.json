@@ -11,6 +11,8 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "check:text": "node scripts/check-text.mjs",
+    "test:scripts": "node --test scripts/*.test.mjs",
     "preview": "vite preview",
     "tauri": "tauri"
   },

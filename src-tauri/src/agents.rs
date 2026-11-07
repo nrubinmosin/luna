@@ -2510,6 +2510,7 @@ pub struct Spawned {
     /// Other live sessions working in the same directory, the caller aside:
     /// they share its files and its git index, commits and all.
     #[serde(skip_serializing_if = "Vec::is_empty")]
+    // lang-check: allow
     pub same_folder: Vec<Neighbour>,
     /// The worktree it works in and its branch, once the CLI has made it.
     #[serde(flatten)]
@@ -2589,6 +2590,7 @@ fn checkout_of(pty: &crate::pty::PtyManager, id: &str, k: &Known) -> Worktree {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+// lang-check: allow
 pub struct Neighbour {
     pub id: String,
     pub name: String,
@@ -2626,6 +2628,7 @@ fn warnings_in(screen: &str) -> Vec<String> {
 /// Live sessions other than `skip` that run in `dir`, by what the CLI says
 /// its cwd is: the project folder for a chat in it, the worktree for one in
 /// a worktree.
+// lang-check: allow
 fn neighbours_in(dir: &str, skip: &[&str]) -> Vec<Neighbour> {
     let ids: Vec<String> = reg().lock().unwrap_or_else(|e| e.into_inner()).known.keys().cloned().collect();
     let pty = crate::pty::manager();
@@ -2637,6 +2640,7 @@ fn neighbours_in(dir: &str, skip: &[&str]) -> Vec<Neighbour> {
             (None, None) => continue,
         };
         if crate::pty::same_dir(&cwd, dir) {
+            // lang-check: allow
             out.push(Neighbour {
                 busy: crate::activity::turn_state(&id).is_some_and(|t| t.busy),
                 name: chat_name(&id).unwrap_or_default(),
@@ -5093,6 +5097,7 @@ fn wait_for(
     let _out = WaitOut::start(caller, id);
     let key = (caller.to_string(), id.to_string());
     let holding = let_go(caller);
+    // lang-check: allow
     let gone = || call.cancelled() || holding() == Holding::No;
     let gone_err = || -> Result<(Waited, bool), String> { Err(LET_GO.into()) };
     let pty = crate::pty::manager();
@@ -5413,6 +5418,7 @@ pub fn wait_many(
                 first_at = Some(std::time::Instant::now());
             }
             let enough = first_at.is_some_and(|at| at.elapsed() >= SAME_LOOK);
+            // lang-check: allow
             if !stopped && (enough || let_go_seen || call.cancelled()) {
                 stopped = true;
                 calls.iter().for_each(|c| c.cancel());
@@ -5422,6 +5428,7 @@ pub fn wait_many(
     if let Some(e) = no_thread {
         return Err(e);
     }
+    // lang-check: allow
     if let_go_seen || call.cancelled() {
         return Err(LET_GO.into());
     }
@@ -8824,12 +8831,16 @@ mod tests {
         let (caller, done, busy, dir) = several("cxl");
         let ids = [done.clone(), busy.clone()];
         let call = std::sync::Arc::new(crate::mcp::Call::new());
+        // lang-check: allow
         let canceller = call.clone();
+        // lang-check: allow
         let cancelling = std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(1500));
+            // lang-check: allow
             canceller.cancel();
         });
         assert!(wait_many(&caller, &ids, true, "turn_done", 20, &call).is_err());
+        // lang-check: allow
         cancelling.join().unwrap();
         assert!(owed_to(&caller, &done), "still owed, for the notice");
         assert!(owed_to(&caller, &busy));
@@ -8845,13 +8856,16 @@ mod tests {
 
         // Another call collects it during the wait, which is then canceled:
         // nothing comes back, as nothing was the wait's to take.
+        // lang-check: allow
         let cancelled = std::sync::Arc::new(crate::mcp::Call::new());
         let waiting = {
+            // lang-check: allow
             let (caller, ids, call) = (caller.clone(), ids.clone(), cancelled.clone());
             std::thread::spawn(move || wait_many(&caller, &ids, true, "turn_done", 20, &call).is_err())
         };
         std::thread::sleep(std::time::Duration::from_millis(1200));
         let _read = hand_over(&caller, &done, 1, None);
+        // lang-check: allow
         cancelled.cancel();
         assert!(waiting.join().unwrap());
         assert!(!owed_to(&caller, &done), "the read delivered it");

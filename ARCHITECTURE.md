@@ -744,13 +744,13 @@ src-tauri/src/
   `wait` delivers the answer: Claude Code moves an MCP call longer than 120 s to the background, but keeps the request, and the result
   arrives as a task-notification. A notification for such a pair waits, and if the `wait` has still not delivered
   the answer 10 s after it appeared (the client dropped the call), it goes out by itself. A `wait` its
-  caller lets go hands nothing over and leaves the debt for the notice: a `notifications/cancelled` for its
+  caller lets go hands nothing over and leaves the debt for the notice: a `notifications/cancelled` for its <!-- lang-check: allow -->
   request (a canceled request gets no response), the caller's session gone, or — a Codex caller, held
   in the call for as long as it lasts — the turn that made the call over (an interrupt) with no other
   begun, for 8 s on end (`let_go`, `LET_GO_MS`: a sample published late shows the turn before over);
   while that is unsure nothing is handed over. Each tool call in flight has an `mcp::Call` whose fate
   is decided once by `compare_exchange`: Running→Committed when a `wait` or `read` hands the answer
-  over (`hand_over` settles the debt and returns an undo), Running→Cancelled on the cancel. A cancel
+  over (`hand_over` settles the debt and returns an undo), Running→Cancelled on the cancel. A cancel <!-- lang-check: allow -->
   that crosses the response finds the call committed — an answered one stays findable for 10 s
   (`LATE_CANCEL`) — and runs the undo: the debt (merged with any question since) and the count seen
   come back. A cancel never loses the answer; at worst it arrives twice.
@@ -789,7 +789,7 @@ src-tauri/src/
   sequences (`ESC[0;0;<utf16>;1;0;1_` and the release; halves of a surrogate pair —
   press only). Ctrl with a letter goes the same way, as the Latin letter with Ctrl held
   (`ESC[67;0;99;1;8;1_` for Ctrl+C): from the bare control byte Codex asks the layout which
-  letter the key is, and on Russian Ctrl+C was Ctrl+С, which neither copied Codex's own
+  letter the key is, and on Russian Ctrl+C was Ctrl+С, which neither copied Codex's own <!-- lang-check: allow -->
   selection nor interrupted. Backspace, Tab, Ctrl+J, Enter and escape sequences go as is.
   Claude Code reads text and does not need this.
   **`read-only-net`** is Luna's value for what `sandbox_mode` cannot say: `-c default_permissions=

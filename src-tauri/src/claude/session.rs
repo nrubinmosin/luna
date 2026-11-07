@@ -611,6 +611,7 @@ mod tests {
         let tail = text.lines().skip(1).collect::<Vec<_>>().join("\n");
         assert_eq!(titles_in(&tail).ai, None);
         assert!(!is_handle("Fix login-flow"));
+        // lang-check: allow
         assert!(!is_handle("Онборд нового юзера"));
     }
 
@@ -641,12 +642,14 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("28c18d5b-64d5-40a8-a1ec-fb55573139d9.jsonl"),
+            // lang-check: allow
             r#"{"type":"ai-title","aiTitle":"Онборд нового юзера","sessionId":"28c18d5b-64d5-40a8-a1ec-fb55573139d9"}"#,
         )
         .unwrap();
         let acct = root.to_string_lossy();
         assert_eq!(
             saved_title(&acct, "28c18d5b-64d5-40a8-a1ec-fb55573139d9"),
+            // lang-check: allow
             Some(CliTitle { title: "Онборд нового юзера".into(), renamed: false })
         );
         assert_eq!(saved_title(&acct, "../../etc"), None);

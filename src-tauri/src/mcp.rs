@@ -41,6 +41,7 @@ const HISTORY_LAST: usize = 400;
 
 const RUNNING: u8 = 0;
 const COMMITTED: u8 = 1;
+// lang-check: allow
 const CANCELLED: u8 = 2;
 
 /// How long a call that has been answered stays where a cancel finds it: a
@@ -61,7 +62,9 @@ impl Call {
         Call { state: AtomicU8::new(RUNNING), undo: Mutex::new(None) }
     }
 
+    // lang-check: allow
     pub fn cancelled(&self) -> bool {
+        // lang-check: allow
         self.state.load(Ordering::SeqCst) == CANCELLED
     }
 
@@ -82,6 +85,7 @@ impl Call {
     }
 
     pub(crate) fn cancel(&self) {
+        // lang-check: allow
         if self.state.compare_exchange(RUNNING, CANCELLED, Ordering::SeqCst, Ordering::SeqCst).is_err()
             && self.state.load(Ordering::SeqCst) == COMMITTED
         {
@@ -93,6 +97,7 @@ impl Call {
     }
 }
 
+// lang-check: allow
 /// Tool calls by caller and JSON-RPC id, for a `notifications/cancelled` to
 /// find: those in flight, and those answered within LATE_CANCEL (when).
 fn in_flight() -> &'static Mutex<HashMap<(String, String), (Arc<Call>, Option<Instant>)>> {
@@ -151,6 +156,7 @@ pub fn handle(caller: &str, body: &str) -> Option<Value> {
     let params = req.get("params").cloned().unwrap_or(json!({}));
     // A `luna_wait` held open is the call this matters for: let go, it must
     // not take the answer it was waiting for with it.
+    // lang-check: allow
     if method == "notifications/cancelled" {
         let key = (caller.to_string(), params["requestId"].to_string());
         let call = in_flight().lock().unwrap_or_else(|e| e.into_inner()).get(&key).map(|(c, _)| c.clone());
@@ -182,6 +188,7 @@ pub fn handle(caller: &str, body: &str) -> Option<Value> {
             let call_out = InFlight::start(caller, &id);
             let r = call(caller, &params, &call_out.call);
             // A canceled request gets no response.
+            // lang-check: allow
             if call_out.call.cancelled() {
                 return None;
             }
@@ -413,6 +420,7 @@ fn call(caller: &str, params: &Value, this: &Call) -> Value {
         line.push_str(&format!(" ({})", set.join(" ")));
     }
     let ms = started.elapsed().as_millis();
+    // lang-check: allow
     if this.cancelled() {
         crate::log::info("mcp", &format!("{line} canceled by the client after {ms}ms"));
     } else if out["isError"] == true {
@@ -676,8 +684,11 @@ mod tests {
     fn a_cancel_reaches_the_call_it_names() {
         let call = InFlight::start("cancel-test", &json!(7));
         let other = InFlight::start("cancel-test", &json!("7"));
+        // lang-check: allow
         assert!(handle("cancel-test", r#"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":7}}"#).is_none());
+        // lang-check: allow
         assert!(call.call.cancelled());
+        // lang-check: allow
         assert!(!other.call.cancelled(), "a string id is another call");
         drop(call);
         assert!(!in_flight().lock().unwrap().contains_key(&("cancel-test".to_string(), "7".to_string())));
@@ -701,8 +712,10 @@ mod tests {
         // even once the call has ended, puts the answer back, once.
         let late = InFlight::start("late-cancel", &json!(3));
         assert!(late.call.commit(undo()));
+        // lang-check: allow
         assert!(!late.call.cancelled());
         drop(late);
+        // lang-check: allow
         let cancel = r#"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":3}}"#;
         assert!(handle("late-cancel", cancel).is_none());
         assert!(handle("late-cancel", cancel).is_none());
