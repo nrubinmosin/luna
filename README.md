@@ -743,10 +743,13 @@ anywhere else would update into a second Luna with none of its data.
 - All three versions live in Settings (the gear in the status bar), each with its "checked …
   ago" and a check-now button; the status bar itself only speaks up while there is news —
   an update on offer, a download running, or a failure worth a retry.
-- The update signing key is `C:\Users\Nikita\.ssh\luna-updater.key` — private and
-  passwordless, so keep it safe; its `.pub` half is already baked into the config. For a
-  signed build, set `TAURI_SIGNING_PRIVATE_KEY_PATH` in the build environment (which is
-  what `scripts/build-windows.ps1` mounts) — `.sig` files then appear next to the bundle, and
-  those plus `latest.json` are what you upload to the Release.
+- The updater's signing key is a private, passwordless minisign key kept outside the
+  repo; its `.pub` half is already baked into the config. Only the installer is signed:
+  `./scripts/build-windows.ps1 -Installer` (and `./scripts/release.ps1`) takes the key's
+  path from `-UpdaterKey <path>` or the `LUNA_UPDATER_KEY` environment variable and stops
+  with an error when neither names one. The script mounts that file into the build and
+  hands it to Tauri as `TAURI_SIGNING_PRIVATE_KEY` — `.sig` files then appear next to the
+  bundle, and those plus `latest.json` are what goes up to the Release. A build without
+  `-Installer` is unsigned and needs no key.
 - Authenticode-signing the exe (so SmartScreen stops complaining) needs a certificate.
   When there is one, add it under `tauri.conf.json` → `bundle.windows.signCommand`.
