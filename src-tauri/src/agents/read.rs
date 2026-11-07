@@ -2,9 +2,10 @@
 //! `luna_read`, which hands them over from a cursor on.
 
 use crate::agents::ask::{state_of, Ask};
+use crate::agents::lost::{lost_count, lost_whole, undelivered_note};
 use crate::agents::owed::{hand_over, queue_settled, seen};
 use crate::agents::registry::{authorize_view, label, reg};
-use crate::agents::{lost_count, lost_whole, resume_pending, screen_of, undelivered_note};
+use crate::agents::{resume_pending, screen_of};
 use crate::provider::Provider;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

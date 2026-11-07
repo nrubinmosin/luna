@@ -2,9 +2,9 @@
 //! turn that answers it (`Owed`), until a tool response shows it one past the
 //! question (`shown`, `hand_over`) or a notice tells it.
 
+use crate::agents::lost::{put_undelivered_back, take_undelivered};
 use crate::agents::read::transcript_end;
 use crate::agents::registry::{parent_of, reg, waits_on_helpers_in, Registry, DEV_CALLER};
-use crate::agents::{put_undelivered_back, take_undelivered};
 use crate::throttle::now_ms;
 
 /// Text typed into a visible session mid-turn is the CLI's to place: into
