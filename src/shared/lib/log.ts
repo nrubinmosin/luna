@@ -56,4 +56,11 @@ export function installGlobalErrorLog() {
   window.addEventListener('unhandledrejection', e => {
     logError('promise', String((e.reason as Error)?.stack ?? e.reason));
   });
+  // The CSP (tauri.conf.json) blocks quietly: a style, font or script it
+  // refuses just goes missing. Logging each refusal makes a policy that is
+  // too tight, or something injected into the page, show up in the log.
+  document.addEventListener('securitypolicyviolation', e => {
+    const where = e.sourceFile ? ` at ${e.sourceFile}:${e.lineNumber}` : '';
+    logWarn('csp', `${e.effectiveDirective} blocked ${e.blockedURI || '(inline)'}${where}`);
+  });
 }

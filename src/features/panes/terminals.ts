@@ -407,8 +407,10 @@ function create(spec: TermSpec): Entry {
       nudgeRepaint();
     });
     term.loadAddon(webgl);
-  } catch {
-    webgl = null; // canvas/DOM renderer fallback
+  } catch (e) {
+    // Slower, and otherwise invisible: the terminal still draws.
+    logWarn('terminal', `webgl renderer unavailable, using the DOM renderer: ${(e as Error)?.message ?? String(e)}`);
+    webgl = null;
   }
 
   const mo = new MutationObserver(() => {
