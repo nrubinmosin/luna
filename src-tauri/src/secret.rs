@@ -176,7 +176,7 @@ pub mod acl {
     /// a quick look for the tests; `verify` is the whole of it.
     #[cfg(test)]
     pub fn is_private(path: &Path) -> io::Result<bool> {
-        Ok(super::sddl_is_private(&dacl_sddl(path)?, &user_sid()?))
+        Ok(super::sddl_is_private(&dacl_sddl(path)?, &trustee(&user_sid()?)?))
     }
 
     /// Makes `root` (a folder or a file) and everything in it private:
@@ -204,6 +204,7 @@ pub mod acl {
     /// be no link or junction.
     pub fn verify(root: &Path) -> io::Result<Vec<String>> {
         let user = user_sid()?;
+        let named = trustee(&user)?;
         let mut problems = Vec::new();
         let meta = std::fs::symlink_metadata(root)?;
         if meta.file_type().is_symlink() {
@@ -214,19 +215,21 @@ pub mod acl {
         if !owner_ok(&owner, &user) {
             problems.push(format!("{}: owned by {owner}", root.display()));
         }
-        if !super::sddl_is_private(&dacl_sddl(root)?, &user) {
+        if !super::sddl_is_private(&dacl_sddl(root)?, &named) {
             problems.push(format!("{}: open to others", root.display()));
         }
         if meta.is_dir() {
-            verify_below(root, &user, &mut problems)?;
+            verify_below(root, &user, &named, &mut problems)?;
         }
         Ok(problems)
     }
 
-    fn verify_below(dir: &Path, user: &str, problems: &mut Vec<String>) -> io::Result<()> {
+    /// `user` is this user's SID, for owners; `named` is the same user as a
+    /// DACL's SDDL names them (`trustee`).
+    fn verify_below(dir: &Path, user: &str, named: &str, problems: &mut Vec<String>) -> io::Result<()> {
         for entry in std::fs::read_dir(dir)? {
             let path = entry?.path();
-            match verify_one(&path, user, problems) {
+            match verify_one(&path, user, named, problems) {
                 // Gone meanwhile: a running WebView comes and goes with files.
                 Err(e) if e.kind() == io::ErrorKind::NotFound => {}
                 done => done.map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", path.display())))?,
@@ -235,7 +238,7 @@ pub mod acl {
         Ok(())
     }
 
-    fn verify_one(path: &Path, user: &str, problems: &mut Vec<String>) -> io::Result<()> {
+    fn verify_one(path: &Path, user: &str, named: &str, problems: &mut Vec<String>) -> io::Result<()> {
         let meta = std::fs::symlink_metadata(path)?;
         if meta.file_type().is_symlink() {
             problems.push(format!("{}: a link or junction", path.display()));
@@ -247,11 +250,11 @@ pub mod acl {
         }
         // A token folder keeps the private DACL of its own (`private_dir`).
         let sddl = dacl_sddl(path)?;
-        if !super::sddl_inherits_only(&sddl) && !super::sddl_is_private(&sddl, user) {
+        if !super::sddl_inherits_only(&sddl) && !super::sddl_is_private(&sddl, named) {
             problems.push(format!("{}: has access entries of its own", path.display()));
         }
         if meta.is_dir() {
-            verify_below(path, user, problems)?;
+            verify_below(path, user, named, problems)?;
         }
         Ok(())
     }
@@ -319,6 +322,58 @@ pub mod acl {
             let _ = CloseHandle(token);
             got?;
             sid_text((*buf.as_ptr().cast::<TOKEN_USER>()).User.Sid)
+        }
+    }
+
+    /// `sid` as a DACL's SDDL names it. Windows writes a SID it has an alias
+    /// for by the alias: the machine's built-in Administrator account (RID
+    /// 500), which an admin may well run as and GitHub's Windows runners do,
+    /// reads back as `LA`, not as the SID `user_sid` gives. A DACL read back
+    /// is matched against this, or a private one would never look private.
+    pub fn trustee(sid: &str) -> io::Result<String> {
+        let written = as_written(&format!("D:(A;;FA;;;{sid})"))?;
+        super::sddl_aces(&written)
+            .and_then(|(_, aces)| aces.first().and_then(|ace| ace.get(5)).map(|who| who.to_string()))
+            .ok_or_else(|| io::Error::other(format!("no trustee in {written}")))
+    }
+
+    /// `sddl` (a DACL) as Windows writes it back once it is set.
+    pub(super) fn as_written(sddl: &str) -> io::Result<String> {
+        let text: Vec<u16> = sddl.encode_utf16().chain(Some(0)).collect();
+        let mut sd = PSECURITY_DESCRIPTOR::default();
+        // SAFETY: the descriptor is made from the string, read and freed once.
+        unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(PCWSTR(text.as_ptr()), SDDL_REVISION_1, &mut sd, None)?;
+            let out = sd_text(sd);
+            let _ = LocalFree(Some(HLOCAL(sd.0)));
+            out
+        }
+    }
+
+    /// The DACL of `sd` as SDDL, for a descriptor the caller keeps alive.
+    fn sd_text(sd: PSECURITY_DESCRIPTOR) -> io::Result<String> {
+        let mut text = PWSTR::null();
+        // SAFETY: `sd` is valid for the call; the string it makes is
+        // LocalAlloc'd, read here and freed once.
+        unsafe {
+            ConvertSecurityDescriptorToStringSecurityDescriptorW(sd, SDDL_REVISION_1, DACL_SECURITY_INFORMATION, &mut text, None)?;
+            let out = text.to_string();
+            let _ = LocalFree(Some(HLOCAL(text.0.cast())));
+            out.map_err(io::Error::other)
+        }
+    }
+
+    /// The SID, as text, that an SDDL alias (`LA`, `BA`…) stands for here.
+    #[cfg(test)]
+    pub fn sid_of(alias: &str) -> io::Result<String> {
+        let text: Vec<u16> = alias.encode_utf16().chain(Some(0)).collect();
+        let mut psid = PSID::default();
+        // SAFETY: the SID is made from the string, read and freed once.
+        unsafe {
+            ConvertStringSidToSidW(PCWSTR(text.as_ptr()), &mut psid)?;
+            let out = sid_text(psid);
+            let _ = LocalFree(Some(HLOCAL(psid.0)));
+            out
         }
     }
 
@@ -401,14 +456,9 @@ pub mod acl {
         unsafe {
             GetNamedSecurityInfoW(PCWSTR(name.as_ptr()), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, None, None, None, None, &mut sd)
                 .ok()?;
-            let mut text = PWSTR::null();
-            let made =
-                ConvertSecurityDescriptorToStringSecurityDescriptorW(sd, SDDL_REVISION_1, DACL_SECURITY_INFORMATION, &mut text, None);
+            let out = sd_text(sd);
             let _ = LocalFree(Some(HLOCAL(sd.0)));
-            made?;
-            let out = text.to_string();
-            let _ = LocalFree(Some(HLOCAL(text.0.cast())));
-            out.map_err(io::Error::other)
+            out
         }
     }
 }
@@ -625,7 +675,7 @@ mod tests {
         println!("before:\n{}", icacls(&dir, &[]));
         private_dir(&dir).unwrap();
         println!("after:\n{}", icacls(&dir, &[]));
-        let user = acl::user_sid().unwrap();
+        let user = acl::trustee(&acl::user_sid().unwrap()).unwrap();
         let broad = [";AU)", ";S-1-5-11)", ";BU)", ";WD)", ";IU)"];
         for p in [dir.clone(), dir.join("core.json")] {
             let sddl = acl::dacl_sddl(&p).unwrap();
@@ -728,6 +778,22 @@ mod tests {
         assert!(!acl::is_private(&root).unwrap(), "the root is done last");
         assert!(!acl::verify(&root).unwrap().is_empty());
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The built-in Administrator's SID reads back from a DACL as `LA`: what
+    /// a DACL says is matched against that, so a folder made private for an
+    /// admin running as that account is private (GitHub's runners do).
+    #[cfg(windows)]
+    #[test]
+    fn a_user_windows_names_by_an_alias_is_matched_by_it() {
+        let admin = acl::sid_of("LA").unwrap();
+        assert!(admin.starts_with("S-1-5-21-") && admin.ends_with("-500"), "{admin}");
+        assert_eq!(acl::trustee(&admin).unwrap(), "LA");
+        let written = acl::as_written(&private_sddl(&admin)).unwrap();
+        assert!(!sddl_is_private(&written, &admin), "by its SID it is not there: {written}");
+        assert!(sddl_is_private(&written, &acl::trustee(&admin).unwrap()), "{written}");
+        // Anyone else keeps the SID.
+        assert_eq!(acl::trustee("S-1-5-21-1-2-3-1001").unwrap(), "S-1-5-21-1-2-3-1001");
     }
 
     #[test]

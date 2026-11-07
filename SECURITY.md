@@ -52,21 +52,24 @@ Out of scope:
 - what an agent does within the permission mode or sandbox the user chose for
   it, and prompt injection that stays inside one session's granted
   permissions;
-- what a session does through Luna's tools within the authority they grant:
-  enabling Luna's tools for a session grants it orchestration authority
-  bounded by its own privileges (see "Trust contract" in the threat model). A
-  way for a session to exceed its caller's permission mode or sandbox, or to
-  answer permission prompts outside its own helpers, breaks that contract and
-  is in scope; two such gaps are already known and planned for a fix (F1,
-  F2);
+- what a session does through Luna's tools within the authority they grant.
+  Enabling Luna's tools for a session grants it orchestration authority
+  bounded by its own privilege; escalation happens only through an explicit
+  user setting (`helpersAboveCaller`). See "Trust contract" and "Limits of the
+  least-privilege layer" in the threat model. A way for a session to start a
+  helper above its own permission mode or sandbox with that setting off, to
+  approve a permission prompt or type keys outside its own helpers, or
+  otherwise to break that contract, is in scope;
 - attacks that need unsandboxed code already running as the same OS user,
   unless Luna hands that code more than it already has;
-- the risks the threat model lists as accepted (R1-R7); its open findings
+- the risks the threat model lists as accepted (R1-R7) and the documented
+  limits of the least-privilege layer; its residual findings (F3, F9, F10)
   are not out of scope;
 - denial of service that needs local access and only affects the attacker's
   own sessions.
 
 ## Threat model
 
-The assets, trust boundaries, mitigations and accepted risks are documented in
+The assets, trust boundaries, the status of every finding and the accepted
+risks are documented in
 [docs/security/threat-model.md](docs/security/threat-model.md).
