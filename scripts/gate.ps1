@@ -30,6 +30,7 @@ $nodeImage = Get-NodeImage
 # digest: the frontend needs nothing else. pnpm itself is the one packageManager names,
 # through corepack, whose downloads stay in a volume of their own.
 function Invoke-Frontend([string]$What, [string]$Script) {
+    Initialize-HostDirs 'test-build', 'node_modules'
     Invoke-Checked $What {
         docker run --rm `
           -e COREPACK_ENABLE_DOWNLOAD_PROMPT=0 `
