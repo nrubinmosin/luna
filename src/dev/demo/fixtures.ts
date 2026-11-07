@@ -1,77 +1,14 @@
-/**
- * The fixture behind the README screenshots.
- *
- * Shooting the real app means shooting whatever is open in it — someone's
- * folders, chat titles, account emails and half a client's codebase. This
- * stands the same UI up on invented data instead: `pnpm dev` with `?demo` in
- * the URL, no Tauri and no sessions, so the shots can be retaken from a clean
- * slate whenever the UI moves on. See `scripts/screenshots.ps1`.
- *
- * Dev-only by construction: every entry point is behind `import.meta.env.DEV`,
- * so none of this is in a release build.
- */
-import type { Terminal as XTerm } from '@xterm/xterm';
-import type { Account, Chat, ClaudeChat, CodexChat, Folder, Provider } from '../shared/types';
-import type { AccountsRootInfo } from '../ipc/accounts';
-import type { BackgroundHelperDto } from '../ipc/agents';
-import type { CliStatusDto } from '../ipc/cli';
-import type { CoreStateDto } from '../ipc/coreProcess';
-import type { ClaudeDefaultsDto, CodexDefaultsDto, CodexModelDto } from '../ipc/defaults';
-import type { FileDiffDto, LibraryOverviewDto, PlaceDto } from '../ipc/library';
-import type { PowerStateDto } from '../ipc/power';
-import type { WorktreeInfoDto } from '../ipc/worktrees';
-import { useLibrary } from '../features/library/library.store';
-import { useRecommendations } from '../features/settings/recommendations.store';
-import { useBackground } from '../features/agents/background.store';
-import { useAccounts } from '../features/accounts/accounts.store';
-import { useAccountsWindow } from '../features/accounts/AccountsPanel';
-import { useChats } from '../features/chats/chats.store';
-import { useDrafts } from '../features/chats/drafts.store';
-import { useWorktrees } from '../features/chats/worktrees.store';
-import { useNewChat } from '../features/new-chat/newchat.store';
-import { usePanes, type Group, type Layout, type Slots } from '../features/panes/panes.store';
-import { useUpdates } from '../features/updates/updates.store';
-import { useShell } from '../app/shell.store';
-import { usePower } from '../features/power/power.store';
-
-/** `?demo`, `?demo=dark`, `?demo=peek`, `?demo=newchat`, `?demo=codex` (the same on a Codex
- *  account), `?demo=settings`, `?demo=accounts`, `?demo=recommended`, `?demo=editor`, `?demo=worktrees`,
- *  `?demo=checks` / `checks-dark` (the Recommendations window), `checks-bar` / `checks-bar-dark` (their chip),
- *  `?demo=library`, `?demo=power`. */
-export type Scene =
-  | 'main'
-  | 'dark'
-  | 'peek'
-  | 'newchat'
-  | 'codex'
-  | 'settings'
-  | 'accounts'
-  | 'recommended'
-  | 'editor'
-  | 'worktrees'
-  | 'library'
-  | 'power'
-  | 'checks'
-  | 'checks-dark'
-  | 'checks-bar'
-  | 'checks-bar-dark';
-const SCENES: Scene[] = [
-  'dark',
-  'peek',
-  'newchat',
-  'codex',
-  'settings',
-  'accounts',
-  'recommended',
-  'editor',
-  'worktrees',
-  'library',
-  'power',
-  'checks',
-  'checks-dark',
-  'checks-bar',
-  'checks-bar-dark'
-];
+// The invented chats, accounts and answers the demo scenes stand on.
+import type { Account, Chat, ClaudeChat, CodexChat, Folder, Provider } from '../../shared/types';
+import type { AccountsRootInfo } from '../../ipc/accounts';
+import type { BackgroundHelperDto } from '../../ipc/agents';
+import type { CliStatusDto } from '../../ipc/cli';
+import type { CoreStateDto } from '../../ipc/coreProcess';
+import type { ClaudeDefaultsDto, CodexDefaultsDto, CodexModelDto } from '../../ipc/defaults';
+import type { FileDiffDto, LibraryOverviewDto, PlaceDto } from '../../ipc/library';
+import type { PowerStateDto } from '../../ipc/power';
+import type { WorktreeInfoDto } from '../../ipc/worktrees';
+import type { Group, Layout, Slots } from '../../features/panes/panes.store';
 
 const hoursFromNow = (h: number) => new Date(Date.now() + h * 3600_000).toISOString();
 
@@ -149,7 +86,7 @@ const CHATS: Chat[] = [
   })
 ];
 
-const FOLDERS: Folder[] = [
+export const FOLDERS: Folder[] = [
   { id: 'f-1', path: 'C:\\src\\luna', open: true, picked: true, chats: CHATS.slice(0, 3) },
   { id: 'f-2', path: 'C:\\src\\notes', open: true, picked: true, chats: CHATS.slice(3) }
 ];
@@ -175,7 +112,7 @@ const account = (a: Partial<Account> & Pick<Account, 'name'>): Account => ({
   ...a
 });
 
-const ACCOUNTS: Account[] = [
+export const ACCOUNTS: Account[] = [
   account({ name: 'personal' }),
   account({
     name: 'work',
@@ -208,7 +145,7 @@ const slots = (...ids: Array<string | null>): Slots => [0, 1, 2, 3].map(i => ids
 
 const SPLITS = { col: 0.5, rowL: 0.5, rowR: 0.5 };
 
-const filled = (layout: Layout): Group => ({
+export const filled = (layout: Layout): Group => ({
   layout,
   boards: {
     1: slots('demo-1'),
@@ -219,117 +156,13 @@ const filled = (layout: Layout): Group => ({
   splitsByLayout: { 1: { ...SPLITS }, 2: { ...SPLITS }, 3: { ...SPLITS, col: 0.54 }, 4: { ...SPLITS } }
 });
 
-const parked = (): Group => ({
+export const parked = (): Group => ({
   layout: 1,
   boards: { 1: slots(), 2: slots(), 3: slots(), 4: slots() },
   splitsByLayout: { 1: { ...SPLITS }, 2: { ...SPLITS }, 3: { ...SPLITS }, 4: { ...SPLITS } }
 });
 
-// -------------------------------------------------------------- terminals --
-
-const E = '\u001b[';
-const dim = (s: string) => `${E}2m${s}${E}0m`;
-const c = (n: number, s: string) => `${E}${n}m${s}${E}0m`;
-const bold = (s: string) => `${E}1m${s}${E}0m`;
-
-const header = (model: string, effort: string, cwd: string) =>
-  [
-    `${c(35, '  ▄▀▄▀▄  ')}${bold('Claude Code')} ${dim('v2.1.252')}`,
-    `${c(35, '  █ ▄ █  ')}${model} with ${effort} effort ${dim('·')} Claude Max`,
-    `${c(35, '  ▀▄▄▄▀  ')}${dim(cwd)}`,
-    ''
-  ].join('\r\n');
-
-const codexHeader = (model: string, effort: string, cwd: string) =>
-  [
-    `${c(36, '>_')} ${bold('OpenAI Codex')} ${dim('(v0.154.0)')}`,
-    '',
-    `${dim('model:')}     ${model} ${dim(`(${effort})`)}`,
-    `${dim('directory:')} ${cwd}`,
-    `${dim('approval:')}  on-request ${dim('·')} ${dim('sandbox:')} workspace-write`,
-    ''
-  ].join('\r\n');
-
-const user = (s: string) => `${c(36, '›')} ${s}\r\n`;
-const bullet = (s: string) => `${c(35, '●')} ${s}\r\n`;
-const step = (s: string) => `  ${dim('└')} ${dim(s)}\r\n`;
-
-/** One invented session per pane, close enough to the real thing to read as one. */
-const SCREENS: Record<string, string> = {
-  'demo-1':
-    header('Opus 5', 'max', 'C:\\src\\luna') +
-    '\r\n' +
-    user('the 0.2.0 update shipped the 0.1.0 setup — find out why\r\n') +
-    '\r\n' +
-    bullet('The bundle directory keeps every installer ever built, and') +
-    '  release.ps1 took the first one alphabetically.\r\n' +
-    step('Read release.ps1, listed bundle/nsis (7 files)') +
-    '\r\n' +
-    bullet('Picking by version instead:') +
-    '\r\n' +
-    `  ${c(31, '- $setup = Get-ChildItem $dir | Select-Object -First 1')}\r\n` +
-    `  ${c(32, '+ $setup = Get-ChildItem $dir -Filter "*_$($version)_*-setup.exe"')}\r\n` +
-    '\r\n' +
-    `${c(33, '✻')} Running the release dry run… ${dim('(42s · ↓ 8.1k tokens)')}\r\n`,
-
-  'demo-2':
-    header('Fable 5', 'high', 'C:\\src\\luna') +
-    '\r\n' +
-    user('move the limits polling into the store\r\n') +
-    '\r\n' +
-    bullet('Moved the cadence into accounts.store: one timer for every') +
-    '  account, backoff shared, no per-row intervals.\r\n' +
-    step('Edited accounts.store.ts +48 −31, AccountsPanel.tsx +6 −22') +
-    '\r\n' +
-    `${c(33, '?')} ${bold('Delete the old useLimits hook?')} Nothing imports it any more.\r\n` +
-    '\r\n' +
-    `  ${c(32, '❯ 1. Yes, delete it')}\r\n` +
-    `    2. Keep it for now\r\n` +
-    '\r\n' +
-    dim('  esc to interrupt · ← for agents') +
-    '\r\n',
-
-  'demo-3':
-    header('Sonnet 5', 'medium', 'C:\\src\\notes') +
-    '\r\n' +
-    user('why does the tray icon vanish when the pc wakes up?\r\n') +
-    '\r\n' +
-    bullet('Explorer restarts its shell on resume and the icon goes with') +
-    '  it — Windows only re-adds icons for apps that listen for\r\n' +
-    '  TaskbarCreated and register again.\r\n' +
-    step('Searched 3 files, read lib.rs') +
-    '\r\n' +
-    bullet('Nothing here listens for it yet, so the icon is gone until') +
-    '  the app restarts. Want me to add the handler?\r\n' +
-    '\r\n' +
-    dim('  ready') +
-    '\r\n',
-
-  'demo-4':
-    codexHeader('gpt-5.4-codex', 'medium', 'C:\\src\\notes') +
-    '\r\n' +
-    `${c(36, '›')} draft release notes for 0.3 from the log since 0.2.16\r\n` +
-    '\r\n' +
-    `${c(35, '•')} ${bold('Reading 41 commits')}\r\n` +
-    `  ${dim('$ git log --oneline 0.2.16..HEAD')}\r\n` +
-    '\r\n' +
-    `  ${bold('Luna 0.3')}\r\n` +
-    '  • Chats keep their own color across panes and the sidebar\r\n' +
-    '  • Window groups I–IV, each with its own four boards\r\n' +
-    '  • The app ships and updates its own copies of both CLIs\r\n' +
-    '\r\n' +
-    `${c(33, '•')} Working ${dim('(8s · 1.2k tokens used)')}\r\n`
-};
-
-/** Paints one pane's invented session. Called from Terminal only in dev. */
-export function paint(term: XTerm, chatId: string) {
-  const screen = SCREENS[chatId];
-  if (screen) term.write(screen);
-}
-
-// ------------------------------------------------------------- ipc stand-in --
-
-const CLI: Record<Provider, CliStatusDto> = {
+export const CLI: Record<Provider, CliStatusDto> = {
   claude: {
     provider: 'claude',
     phase: 'idle',
@@ -354,10 +187,10 @@ const CLI: Record<Provider, CliStatusDto> = {
   }
 };
 
-const ROOT: AccountsRootInfo = { path: 'C:\\src\\luna-accounts', isDefault: true };
+export const ROOT: AccountsRootInfo = { path: 'C:\\src\\luna-accounts', isDefault: true };
 
 // The chip in the footer: two sessions at work, the machine held awake.
-let POWER: PowerStateDto = {
+export const POWER: PowerStateDto = {
   keepAwake: true,
   holding: true,
   armed: null,
@@ -368,7 +201,7 @@ let POWER: PowerStateDto = {
 // What the new-chat dialog opens on. Left unanswered it would show every
 // control sitting on Luna's own fallback, which is the one state the shot is
 // least likely to be taken in and says nothing about where defaults come from.
-const DEFAULTS: ClaudeDefaultsDto = {
+export const DEFAULTS: ClaudeDefaultsDto = {
   model: { value: 'opus', source: 'account' },
   effort: { value: 'xhigh', source: 'account' },
   permissionMode: { value: 'bypassPermissions', source: 'project' }
@@ -388,7 +221,7 @@ const codexModel = (slug: string, displayName: string, defaultEffort: string): C
   efforts: Object.keys(LEVELS),
   effortHints: LEVELS
 });
-const CODEX_MODELS: CodexModelDto[] = [
+export const CODEX_MODELS: CodexModelDto[] = [
   codexModel('gpt-6.1-sol', 'GPT-6.1-Sol', 'low'),
   codexModel('gpt-6-astra', 'GPT-6-Astra', 'medium'),
   codexModel('gpt-6-sol', 'GPT-6-Sol', 'medium'),
@@ -396,23 +229,13 @@ const CODEX_MODELS: CodexModelDto[] = [
   codexModel('gpt-5.6-terra', 'GPT-5.6-Terra', 'medium')
 ];
 
-const CODEX_DEFAULTS: CodexDefaultsDto = {
+export const CODEX_DEFAULTS: CodexDefaultsDto = {
   model: { value: 'gpt-6.1-sol', source: 'codex' },
   effort: { value: 'low', source: 'codex' },
   approval: { value: 'never', source: 'stock' },
   sandbox: { value: 'workspace-write', source: 'project' }
 };
 
-let seeded = false;
-
-/**
- * Answers the few commands whose emptiness would show. Without this the
- * settings dialog draws no CLI version and no accounts folder in a browser,
- * and a screenshot of it is a picture of blanks. Everything else keeps the
- * caller's own fallback, and outside `?demo` this does nothing at all.
- */
-/** Only the scenes about them show any: the README's shots have no such chip. */
-let SHOWS_CHECKS = false;
 const CHECK = {
   account: null,
   status: 'off',
@@ -424,7 +247,7 @@ const CHECK = {
   refused: null,
   dismissed: false
 };
-const CHECKS = [
+export const CHECKS = [
   {
     ...CHECK,
     id: 'claude-policy-hooks',
@@ -480,7 +303,7 @@ const CHECKS = [
   { ...CHECK, id: 'waiting-marker', title: 'Waiting for you', status: 'ok', why: '' }
 ];
 
-const RECOMMENDED = [
+export const RECOMMENDED = [
   {
     key: 'tui',
     current: '"fullscreen"',
@@ -518,7 +341,7 @@ const RECOMMENDED = [
 
 // Worktrees left behind with no chat in them, for the Worktrees window: one
 // clean and one holding work under each CLI, and one more in the second folder.
-const STALE: Record<string, WorktreeInfoDto[]> = {
+export const STALE: Record<string, WorktreeInfoDto[]> = {
   'C:\\src\\luna': [
     {
       path: 'C:\\src\\luna\\.claude\\worktrees\\merry-coalescing-cosmos',
@@ -575,7 +398,7 @@ const place = (p: Partial<PlaceDto> & Pick<PlaceDto, 'dest' | 'target'>): PlaceD
   problem: null,
   ...p
 });
-const LIBRARY: LibraryOverviewDto = {
+export const LIBRARY: LibraryOverviewDto = {
   root: 'C:\\Users\\me\\AppData\\Local\\luna\\library',
   isDefault: true,
   found: true,
@@ -678,7 +501,7 @@ const LIBRARY: LibraryOverviewDto = {
   overridden: [],
   kept: []
 };
-const LIBRARY_DIFF: FileDiffDto[] = [
+export const LIBRARY_DIFF: FileDiffDto[] = [
   {
     path: 'CLAUDE.md',
     base: '# Working with me\n\n- Answer in the language I write in.\n- Run the tests before saying done.\n- Commit only when asked.\n',
@@ -692,49 +515,15 @@ const LIBRARY_DIFF: FileDiffDto[] = [
 
 // A browser has no core to ask, and no answer reads as one that stopped: the
 // banner saying so would be across the top of every shot.
-const CORE: CoreStateDto = {
+export const CORE: CoreStateDto = {
   state: 'up',
   core: { pid: 1, version: '0.6.0', build: 'demo', fingerprint: 'demo', started: 0, sessions: 4 },
   error: null
 };
 
-export function answer<T>(cmd: string, args: Record<string, unknown>, fallback: T): T {
-  if (!seeded) return fallback;
-  if (cmd === 'core_state') return CORE as unknown as T;
-  if (cmd === 'library_overview' || cmd === 'library_sync') return LIBRARY as unknown as T;
-  if (cmd === 'library_diff') return LIBRARY_DIFF as unknown as T;
-  if (cmd === 'orphan_worktrees') return (STALE[args.folder as string] ?? []).map(w => w.path) as unknown as T;
-  if (cmd === 'inspect_worktrees') return (STALE[args.folder as string] ?? []) as unknown as T;
-  if (cmd === 'cli_status') return (CLI[args.provider as Provider] ?? CLI.claude) as unknown as T;
-  if (cmd === 'get_accounts_root') return ROOT as unknown as T;
-  if (cmd === 'claude_defaults') return DEFAULTS as unknown as T;
-  if (cmd === 'codex_defaults') return CODEX_DEFAULTS as unknown as T;
-  if (cmd === 'codex_models') return CODEX_MODELS as unknown as T;
-  if (cmd === 'power_state') return POWER as unknown as T;
-  if (cmd === 'background_helpers') return BACKGROUND as unknown as T;
-  // The Accounts window's own dialogs, so they can be looked at too.
-  if (cmd === 'read_account_config') {
-    const claudeSide = args.provider === 'claude';
-    return {
-      path: `${String(args.accountPath)}\\${claudeSide ? 'settings.json' : 'config.toml'}`,
-      text: claudeSide
-        ? '{\n  "tui": "fullscreen",\n  "spinnerTipsEnabled": false,\n  "env": {\n    "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY": "1"\n  }\n}\n'
-        : '# Luna updates Codex itself\ncheck_for_update_on_startup = false\n\n[tui]\nshow_tooltips = false\n',
-      exists: true
-    } as unknown as T;
-  }
-  if (cmd === 'recommended_settings') return RECOMMENDED as unknown as T;
-  if (cmd === 'recommendations') return (SHOWS_CHECKS ? CHECKS : []) as unknown as T;
-  if (cmd === 'check_account_config') return null as unknown as T;
-  if (cmd === 'settings_sync_state') return { claude: 'personal', codex: null, onStart: true } as unknown as T;
-  return fallback;
-}
-
-// ------------------------------------------------------------------ seed --
-
 // Two helpers the first chat's agent runs in the background, one of them
 // waiting on an answer: the chip on its row.
-const BACKGROUND: BackgroundHelperDto[] = [
+export const BACKGROUND: BackgroundHelperDto[] = [
   {
     id: 'demo-bg-1',
     parent: 'demo-1',
@@ -780,79 +569,3 @@ const BACKGROUND: BackgroundHelperDto[] = [
     turnStartedMs: null
   }
 ];
-
-export function seedDemo(scene: Scene) {
-  seeded = true;
-  SHOWS_CHECKS = scene.startsWith('checks');
-  useBackground.setState({ helpers: BACKGROUND });
-  // The shell store has read the theme by now; tell it, not localStorage.
-  useShell.setState({ theme: scene.endsWith('dark') ? 'dark' : 'light', pinned: true });
-  // The version readout, which in a browser has no app to ask.
-  useUpdates.setState({ current: '0.6.0', checkedAt: Date.now() - 12 * 60_000 });
-
-  // The app polls for the account list and for each chat's status on a timer, and
-  // in a browser both come back empty — which wiped the fixture a second after
-  // it landed, leaving four panes saying the account was not on disk. Silence
-  // the writers rather than the pollers: less to keep in step with.
-  useChats.setState({
-    folders: FOLDERS,
-    active: 'demo-1',
-    setStatus: () => {},
-    setName: () => {},
-    setContext: () => {}
-  });
-  // A draft left in the first chat, and a message from another session it
-  // holds up: the tag and the balloon both show.
-  useDrafts.setState({ by: { 'demo-1': { draft: true, held: 1 } }, set: () => {} });
-  useAccounts.setState({
-    accounts: ACCOUNTS,
-    loaded: true,
-    refresh: async () => {},
-    startPolling: () => {},
-    stopPolling: () => {}
-  });
-  // The dark shot is a two-pane board, so the two arrangements the app is
-  // actually used in both end up in the README.
-  usePanes.setState({
-    group: 0,
-    groups: [filled(scene === 'dark' ? 2 : scene === 'peek' ? 3 : 4), parked(), parked(), parked()],
-    // The peek scene is that sheet and nothing else: the second pane of three,
-    // held up over a board that is still there behind it.
-    peek: scene === 'peek' ? 1 : null
-  });
-
-  if (scene === 'codex') useNewChat.setState({ lastAccount: { provider: 'codex', name: 'personal' } });
-  if (scene === 'newchat' || scene === 'codex') useNewChat.getState().openDialog('C:\\src\\luna');
-  if (scene === 'accounts' || scene === 'recommended' || scene === 'editor') useAccountsWindow.getState().setOpen(true);
-  if (scene === 'worktrees') useWorktrees.getState().setOpen(true);
-  if (scene === 'checks' || scene === 'checks-dark') {
-    useRecommendations.getState().setOpen(true);
-    // The confirm a risky fix asks for, opened the way a click would.
-    setTimeout(() => document.querySelector<HTMLElement>('[data-confirms]')?.click(), 600);
-  }
-  if (scene === 'power') {
-    POWER = { ...POWER, armed: { action: 'restart', quietS: 120, armedAtMs: 0, drain: true } };
-    usePower.setState({ state: POWER, open: true });
-  }
-  if (scene === 'library') {
-    useLibrary.getState().setOpen(true);
-    // The changed copy's differences, opened the way a click would.
-    setTimeout(
-      () =>
-        [...document.querySelectorAll<HTMLButtonElement>('button')].find(b => b.textContent === 'Differences')?.click(),
-      600
-    );
-  }
-  // The two dialogs belong to an account row; open them the way a click would.
-  const button = scene === 'recommended' ? 'Recommended settings' : scene === 'editor' ? 'Edit settings.json' : null;
-  if (button) {
-    setTimeout(() => document.querySelector<HTMLElement>(`button[aria-label^="${button}"]`)?.click(), 300);
-  }
-}
-
-/** `?demo` / `?demo=dark` — which fixture the URL is asking for, if any. */
-export function sceneFromUrl(search: string): Scene | null {
-  const value = new URLSearchParams(search).get('demo');
-  if (value === null) return null;
-  return SCENES.find(s => s === value) ?? 'main';
-}

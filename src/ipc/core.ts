@@ -84,7 +84,7 @@ export async function call<T>(cmd: string, args?: Record<string, unknown>, fallb
     // The README fixture answers the handful of commands whose emptiness would
     // show in a screenshot; without `?demo` it hands back the same fallback as
     // ever. Compiled out of a release build along with the module.
-    if (import.meta.env.DEV) return (await import('../dev/demo')).answer(cmd, args ?? {}, fallback as T);
+    if (import.meta.env.DEV) return (await import('../dev/demo/ipc')).answer(cmd, args ?? {}, fallback as T);
     return fallback as T;
   }
   // Timed because a sync Tauri command runs on the main thread: a slow one is

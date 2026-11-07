@@ -45,7 +45,7 @@ Rules for anyone (person or agent) changing Luna.
   - `./scripts/linux-check.ps1` — the crate built for Linux and all its unit tests run
     there, the Unix code included.
   - `./scripts/screenshots.ps1 -Out test-build/shots` — headless shots of the UI on
-    the demo data in `src/dev/demo.ts`.
+    the demo data in `src/dev/demo/`.
 - Test only on the test build, never on the Luna in use. It has its own
   identifier and keeps its log, attachments, settings and downloaded CLIs
   beside its exe in `test-build/` (ignored by git), so it runs alongside the

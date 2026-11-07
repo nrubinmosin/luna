@@ -271,7 +271,7 @@ function create(spec: TermSpec): Entry {
       pty.resize(term.cols, term.rows);
       // Nothing spawns a session in a browser, so the README fixture paints
       // its own. Dropped from a release build along with the module.
-      if (import.meta.env.DEV) void import('../../dev/demo').then(m => m.paint(term, chatId));
+      if (import.meta.env.DEV) void import('../../dev/demo/terminal').then(m => m.paint(term, chatId));
       return;
     }
 

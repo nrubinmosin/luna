@@ -685,7 +685,7 @@ a Windows runner.
 ```
 
 Rewrites `docs/screenshots/*.png` in Docker: the frontend alone, standing on the invented
-chats and accounts in `src/dev/demo.ts` (`pnpm dev` + `?demo`), photographed by a headless
+chats and accounts in `src/dev/demo/` (`pnpm dev` + `?demo`), photographed by a headless
 Chromium. Shooting a running Luna would mean shooting whatever is open in it, and the
 fixture is also the only way to retake all three shots from the same state.
 

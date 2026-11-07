@@ -50,7 +50,7 @@ const termFont = Promise.race([
 // is how the README screenshots are taken without anyone's real data in them.
 // The whole branch goes away in a release build.
 if (import.meta.env.DEV && new URLSearchParams(location.search).has('demo')) {
-  void Promise.all([import('./dev/demo'), termFont]).then(([m]) => {
+  void Promise.all([import('./dev/demo/scenes'), termFont]).then(([m]) => {
     m.seedDemo(m.sceneFromUrl(location.search) ?? 'main');
     boot();
   });

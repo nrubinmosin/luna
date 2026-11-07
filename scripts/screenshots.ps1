@@ -2,13 +2,13 @@
 # Retakes the README screenshots, in Docker, without going near a running Luna.
 # Shooting the real app means shooting whatever is open in it; this runs the
 # frontend alone (Tauri commands are no-ops) on the invented data in
-# src/dev/demo.ts and photographs that.
+# src/dev/demo/ and photographs that.
 #
 #   ./scripts/screenshots.ps1
 #   ./scripts/screenshots.ps1 -Size 1600,1000
 #   ./scripts/screenshots.ps1 -Out test-build/shots -Scenes checks,checks-dark
 #
-# -Out is relative to the repo root. -Scenes shoots those of src/dev/demo.ts,
+# -Out is relative to the repo root. -Scenes shoots those of src/dev/demo/scenes.ts,
 # each to a file of its name, instead of the three the README shows.
 param(
     [string]$Out = 'docs/screenshots',
