@@ -42,27 +42,13 @@ $bundleArg = if ($Installer) { '--bundles nsis' } else { '--no-bundle' }
 $build = Get-BuildStamp
 Write-Host "build stamp: $build"
 
-# A failed image build would otherwise go on to build the app in whatever image
-# was left from last time.
-$image = Build-Image luna-winbuild windows-build.Dockerfile
-
-$cmd = ConvertTo-BashScript @"
-set -e
+Use-BuildLock {
+    # A failed image build throws, rather than going on to build the app in
+    # whatever image was left from last time.
+    $image = Build-Image luna-winbuild windows-build.Dockerfile
+    Invoke-WinBuild 'app build' $build $image @"
 $signStep
 pnpm install --frozen-lockfile
 pnpm tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc $bundleArg -- --locked
-"@
-
-Use-BuildLock {
-    Invoke-Checked 'app build' {
-        docker run --rm `
-          -e COREPACK_ENABLE_DOWNLOAD_PROMPT=0 `
-          -e LUNA_BUILD=$build `
-          @keyArgs `
-          -v "${RepoRoot}:/app" `
-          @WinBuildVolumes `
-          -w /app `
-          $image `
-          bash -c $cmd
-    }
+"@ $keyArgs
 }

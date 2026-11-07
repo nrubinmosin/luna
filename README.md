@@ -662,6 +662,20 @@ pnpm dev          # frontend only, in a browser (tauri commands are no-ops)
 pnpm tauri dev    # the whole app (needs a Rust toolchain)
 ```
 
+## Checks
+
+```powershell
+./scripts/gate.ps1                    # rustfmt, clippy, Linux tests, lint, format, types, tests, build
+./scripts/gate.ps1 -Windows           # and clippy over the Windows build
+./scripts/windows-tests.ps1 -Build -Run   # the unit tests as Windows executables, run here
+```
+
+The gate runs every check in Docker on the pinned toolchains (Rust in
+`src-tauri/rust-toolchain.toml`, Node in `.node-version`), stops at the first failure and
+ends on a summary. CI (`.github/workflows/ci.yml`) runs the same scripts on every push to
+`master` and every pull request; the Windows tests are cross-built on Linux there and run on
+a Windows runner.
+
 ## Screenshots
 
 ```powershell

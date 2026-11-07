@@ -1227,5 +1227,21 @@ src-tauri/src/
   the Rust tests and runs them on the host. The rules are in AGENTS.md — the one instructions file for
   both CLIs (Claude Code reads it when there is no CLAUDE.md).
 - Linux check — `scripts/linux-check.ps1` (also Docker): builds the crate for Linux and runs its unit tests
-  there, which is the only thing in the repo that compiles and runs the Unix code (`keeper.rs` and
-  the like). Its own image and volumes; the checkout goes in read-only.
+  there, the only place the Unix code (`keeper.rs` and the like) compiles and runs. Its own image and
+  volumes; the checkout goes in read-only.
+- Gate — `scripts/gate.ps1`: rustfmt, clippy with `-D warnings`, the Linux tests (linux-check's image,
+  volumes and lock), and the frontend's install, lint, format check, typecheck, text check, script
+  tests, Vitest suite and build in the official Node image; `-Windows` adds clippy over the Windows build. It stops
+  at the first failure and ends on a summary.
+- Windows tests — `scripts/windows-tests.ps1`: the unit tests cross-built in the Windows image, their
+  files named by cargo's JSON messages, then copied to a folder of their own and run there on a
+  Windows host. `scripts/test-build.ps1 -Test` is this.
+- CI — `.github/workflows/ci.yml` runs the same scripts: the gate's frontend and rust groups as two
+  jobs, and the windows group plus the Windows test build on Linux, whose executables a Windows runner
+  then runs. Actions are pinned by commit; Dependabot (`.github/dependabot.yml`) moves them, the
+  crates, the npm packages and the images weekly.
+- Toolchains — Rust in `src-tauri/rust-toolchain.toml` and the images' `FROM rust:<version>` (the gate
+  checks they agree), Node in `.node-version`, cargo-xwin in its Dockerfile. Images are tagged by a
+  hash of what they are built from (`scripts/lib.ps1`), so checkouts with different Dockerfiles never
+  run in each other's. The scripts' shared plumbing (the one-build-at-a-time mutex, the build stamp,
+  the docker runs) lives in `scripts/lib.ps1`.
