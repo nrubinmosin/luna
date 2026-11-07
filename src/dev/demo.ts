@@ -722,7 +722,7 @@ export function answer<T>(cmd: string, args: Record<string, unknown>, fallback: 
   if (cmd === 'read_account_config') {
     const claudeSide = args.provider === 'claude';
     return {
-      path: `${args.accountPath}\\${claudeSide ? 'settings.json' : 'config.toml'}`,
+      path: `${String(args.accountPath)}\\${claudeSide ? 'settings.json' : 'config.toml'}`,
       text: claudeSide
         ? '{\n  "tui": "fullscreen",\n  "spinnerTipsEnabled": false,\n  "env": {\n    "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY": "1"\n  }\n}\n'
         : '# Luna updates Codex itself\ncheck_for_update_on_startup = false\n\n[tui]\nshow_tooltips = false\n',

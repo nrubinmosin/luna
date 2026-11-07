@@ -58,7 +58,7 @@ export function LimitBars({ account }: { account: Account }) {
             {w.label}
           </span>,
           <span key={`${w.id}-b`} className="meter" style={{ height: 14 }}>
-            {known && <i style={{ width: `${pct}%`, ['--m' as string]: limitColor(w.used) } as CSSProperties} />}
+            {known && <i style={{ width: `${pct}%`, ['--m' as string]: limitColor(w.used) }} />}
           </span>,
           <span key={`${w.id}-p`} style={{ ...small, color: 'var(--fg)', minWidth: 32, textAlign: 'right' }}>
             {known ? `${pct}%` : '—'}

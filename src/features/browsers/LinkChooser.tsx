@@ -19,6 +19,7 @@ export function LinkChooser() {
 
   useEffect(() => {
     if (!at) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- each opening (a new `at`) starts with the box unticked
     setRemember(false);
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') useLinkChooser.getState().hide();

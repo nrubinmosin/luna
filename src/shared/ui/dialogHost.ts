@@ -9,6 +9,7 @@ import { useEffect, useState } from 'react';
 export function useDialogHost(): Element | null {
   const [host, setHost] = useState<Element | null>(() => document.querySelector('[data-app]'));
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- the app's root exists only once the first render has committed
     if (!host) setHost(document.querySelector('[data-app]') ?? document.body);
   }, [host]);
   return host;

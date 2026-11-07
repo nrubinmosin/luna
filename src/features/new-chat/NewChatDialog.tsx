@@ -135,6 +135,7 @@ export function NewChatDialog() {
   useEffect(() => {
     let stale = false;
     if (!folder || !accountPath) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- with nothing to ask about the answer is known at once
       setTrusted(true);
       return;
     }

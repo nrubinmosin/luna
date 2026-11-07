@@ -1,5 +1,4 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import type { CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import { useDialogHost } from '../../shared/ui/dialogHost';
 import { Icon } from '../../shared/ui/icons';
@@ -142,6 +141,7 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
   // The slot can be handed a different chat while a rename or a delete prompt
   // is open; neither belongs to the newcomer.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- a chat new to the slot drops the open prompts of the one before
     setEditing(false);
     setConfirming(false);
     setPicking(null);
@@ -238,7 +238,7 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
               setOver(-1);
             }}
             className="title-bar pane-bar"
-            style={{ ['--c' as string]: colorTheme?.swatch ?? 'var(--luna-blue)' } as CSSProperties}
+            style={{ ['--c' as string]: colorTheme?.swatch ?? 'var(--luna-blue)' }}
           >
             {/* Controls first: the hand reaches the left of a bar before its
                 right, and the name reads as well from either end. */}
@@ -252,7 +252,7 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
                   const at = e.currentTarget;
                   setPicking(p => (p ? null : at));
                 }}
-                style={{ ['--swatch' as string]: colorTheme?.swatch } as CSSProperties}
+                style={{ ['--swatch' as string]: colorTheme?.swatch }}
               />
               <button
                 data-glyph="pencil"
@@ -389,7 +389,7 @@ ${chat.worktreePath}`
 
               <span title={ctxTitle} className="ctx-meter">
                 <span className="track meter">
-                  <i style={{ width: `${ctx}%`, ['--m' as string]: limitColor(chat.context ?? 0) } as CSSProperties} />
+                  <i style={{ width: `${ctx}%`, ['--m' as string]: limitColor(chat.context ?? 0) }} />
                 </span>
                 {window != null || (chat.context ?? 0) > 0 ? `${ctx}%` : '—'}
               </span>
