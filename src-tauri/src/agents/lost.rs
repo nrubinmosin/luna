@@ -7,7 +7,8 @@ use crate::agents::owed::hand_over;
 use crate::agents::read::MAX_TEXT;
 use crate::agents::registry::{label, parent_of, reg};
 use crate::agents::said::note_file;
-use crate::agents::{conversation_on_disk, Opening, Waited, LET_GO};
+use crate::agents::wait::{Waited, LET_GO};
+use crate::agents::{conversation_on_disk, Opening};
 
 /// Whether a visible helper has nothing to carry on from, as one
 /// `background::never_started` says so of has not: its first turn went with a core,
@@ -267,7 +268,8 @@ mod tests {
     use crate::agents::read::transcripts;
     use crate::agents::registry::{reg, register};
     use crate::agents::tests::{back, first_turn_cut, lost_helper, notice_for, take_up};
-    use crate::agents::{chat_starting, chats_now, conversation_of, forget, wait, Opening, Settled};
+    use crate::agents::wait::wait;
+    use crate::agents::{chat_starting, chats_now, conversation_of, forget, Opening, Settled};
     use crate::provider::Provider;
     use crate::throttle::now_ms;
 

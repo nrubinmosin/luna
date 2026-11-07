@@ -335,7 +335,8 @@ mod tests {
     use super::*;
     use crate::agents::registry::{reg, register, resumes_on_restart, DEV_CALLER};
     use crate::agents::tests::notice_for;
-    use crate::agents::{forget, settle_told, wait, Settled};
+    use crate::agents::wait::wait;
+    use crate::agents::{forget, settle_told, Settled};
     use crate::provider::Provider;
 
     #[test]
