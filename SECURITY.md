@@ -42,6 +42,7 @@ In scope: the Luna app built from this repository, including
   worktrees it creates and removes;
 - how Luna launches the CLIs (arguments, environment, hook commands);
 - the updater and the release signing chain;
+- how Luna downloads, verifies, installs and selects the CLI binaries it runs;
 - the WebView UI and its Tauri commands.
 
 Out of scope:
@@ -51,9 +52,17 @@ Out of scope:
 - what an agent does within the permission mode or sandbox the user chose for
   it, and prompt injection that stays inside one session's granted
   permissions;
-- attacks that need code already running as the same OS user, unless Luna
-  hands that code more than it already has;
-- the behaviors listed as accepted in the threat model;
+- what a session does through Luna's tools within the authority they grant:
+  enabling Luna's tools for a session grants it orchestration authority
+  bounded by its own privileges (see "Trust contract" in the threat model). A
+  way for a session to exceed its caller's permission mode or sandbox, or to
+  answer permission prompts outside its own helpers, breaks that contract and
+  is in scope; two such gaps are already known and planned for a fix (F1,
+  F2);
+- attacks that need unsandboxed code already running as the same OS user,
+  unless Luna hands that code more than it already has;
+- the risks the threat model lists as accepted (R1-R7); its open findings
+  are not out of scope;
 - denial of service that needs local access and only affects the attacker's
   own sessions.
 
