@@ -185,23 +185,31 @@ fn renewed(oauth: &Value, resp: &Value) -> Option<Value> {
 /// refresh token has rotated away, and it tightens the file first or writes
 /// nothing.
 fn write(account_path: &str, text: &str) -> Result<(), String> {
-    use std::io::Write;
     let path = creds_path(account_path);
-    let tmp = path.with_extension(format!("json.{}.luna-tmp", crate::secret::random_hex(8)));
-    if let Err(e) = crate::secret::create_private(&tmp).and_then(|mut f| f.write_all(text.as_bytes())) {
-        let _ = std::fs::remove_file(&tmp);
+    write_via(&path, &path.with_extension(format!("json.{}.luna-tmp", crate::secret::random_hex(8))), text)
+}
+
+/// `write` through `tmp`, which is removed on a failure only once this call
+/// has made it: a file someone else has there is not ours to delete.
+fn write_via(path: &Path, tmp: &Path, text: &str) -> Result<(), String> {
+    use std::io::Write;
+    let mut file = crate::secret::create_private(tmp).map_err(|e| e.to_string())?;
+    let wrote = file.write_all(text.as_bytes());
+    drop(file);
+    if let Err(e) = wrote {
+        let _ = std::fs::remove_file(tmp);
         return Err(e.to_string());
     }
     for attempt in 0..3 {
         if attempt > 0 {
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
-        if std::fs::rename(&tmp, &path).is_ok() {
+        if std::fs::rename(tmp, path).is_ok() {
             return Ok(());
         }
     }
-    let _ = std::fs::remove_file(&tmp);
-    let mut file = std::fs::OpenOptions::new().write(true).open(&path).map_err(|e| e.to_string())?;
+    let _ = std::fs::remove_file(tmp);
+    let mut file = std::fs::OpenOptions::new().write(true).open(path).map_err(|e| e.to_string())?;
     crate::secret::restrict(&file).map_err(|e| e.to_string())?;
     file.set_len(0).and_then(|()| file.write_all(text.as_bytes())).map_err(|e| e.to_string())
 }
@@ -328,6 +336,12 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
         }
+        // A temp name someone else holds: refused, their file and ours untouched.
+        let theirs = root.join("planted.luna-tmp");
+        std::fs::write(&theirs, "theirs").unwrap();
+        assert!(write_via(&path, &theirs, "newer").is_err());
+        assert_eq!(std::fs::read_to_string(&theirs).unwrap(), "theirs");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new");
         let _ = std::fs::remove_dir_all(&root);
     }
 

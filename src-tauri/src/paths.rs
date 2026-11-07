@@ -69,7 +69,7 @@ fn last_resort_dir() -> PathBuf {
         // SAFETY: geteuid has no preconditions and cannot fail.
         let uid = unsafe { libc::geteuid() };
         let dir = std::env::temp_dir().join(format!("{APP_DIR}-{uid}"));
-        if let Err(why) = claim_private(&dir, uid) {
+        if let Err(why) = crate::secret::claim_private(&dir, uid) {
             eprintln!("luna: no data folder: {why}");
             std::process::exit(1);
         }
@@ -77,31 +77,6 @@ fn last_resort_dir() -> PathBuf {
     }
     #[cfg(not(unix))]
     std::env::temp_dir().join(APP_DIR)
-}
-
-/// Makes `dir` `0700` if it is not there, and checks that it is a folder
-/// (not a link) owned by `uid` with no access for anyone else: one this user
-/// made before is tightened, one someone else made is refused.
-#[cfg(unix)]
-fn claim_private(dir: &Path, uid: u32) -> Result<(), String> {
-    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
-    match std::fs::DirBuilder::new().mode(0o700).create(dir) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-        Err(e) => return Err(format!("cannot create {}: {e}", dir.display())),
-    }
-    let meta = std::fs::symlink_metadata(dir).map_err(|e| format!("cannot read {}: {e}", dir.display()))?;
-    if !meta.file_type().is_dir() {
-        return Err(format!("{} is not a folder (a link or a file is there)", dir.display()));
-    }
-    if meta.uid() != uid {
-        return Err(format!("{} belongs to another user (uid {})", dir.display(), meta.uid()));
-    }
-    if meta.mode() & 0o077 != 0 {
-        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
-            .map_err(|e| format!("cannot make {} private: {e}", dir.display()))?;
-    }
-    Ok(())
 }
 
 fn writable(dir: &Path) -> bool {
@@ -205,37 +180,6 @@ mod tests {
         assert_eq!(path_key("/p/Foo") == path_key("/p/foo"), cfg!(windows));
         assert_eq!(path_key(r"/p\foo") == path_key("/p/foo"), cfg!(windows));
         assert_eq!(path_key("/p/foo/"), path_key("/p/foo"), "a trailing separator says nothing");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn the_temp_fallback_is_this_users_alone_or_refused() {
-        use std::os::unix::fs::PermissionsExt;
-        let base = std::env::temp_dir().join(format!("luna-paths-claim-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
-        std::fs::create_dir_all(&base).unwrap();
-        // SAFETY: geteuid has no preconditions.
-        let uid = unsafe { libc::geteuid() };
-        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
-
-        let fresh = base.join("fresh");
-        claim_private(&fresh, uid).unwrap();
-        assert_eq!(mode(&fresh), 0o700);
-        let open = base.join("open");
-        std::fs::create_dir(&open).unwrap();
-        std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o777)).unwrap();
-        claim_private(&open, uid).unwrap();
-        assert_eq!(mode(&open), 0o700, "one of this user's own is tightened");
-
-        // Another user's, as a folder made first by someone else reads.
-        assert!(claim_private(&fresh, uid.wrapping_add(1)).unwrap_err().contains("another user"));
-        let link = base.join("link");
-        std::os::unix::fs::symlink(&fresh, &link).unwrap();
-        assert!(claim_private(&link, uid).unwrap_err().contains("not a folder"));
-        let file = base.join("file");
-        std::fs::write(&file, "").unwrap();
-        assert!(claim_private(&file, uid).is_err());
-        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
