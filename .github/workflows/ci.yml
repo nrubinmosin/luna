@@ -4,16 +4,19 @@
 # the repo (src-tauri/rust-toolchain.toml, .node-version, docker/).
 name: CI
 
+# Branch pushes give feedback without opening a PR; master and pull requests
+# are the gate. A PR and its branch push may both run, each in its own group.
 on:
   push:
-    branches: [master]
+    branches: ['**']
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 # A newer push to a pull request makes its running checks moot; on master every
-# commit keeps its own run.
+# commit (and every branch push or manual run) keeps its own run.
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
