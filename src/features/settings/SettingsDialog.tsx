@@ -10,6 +10,8 @@ import {
   cliUpdateNow,
   fetchBeforeWorktree,
   setFetchBeforeWorktree,
+  helpersAboveCaller,
+  setHelpersAboveCaller,
   codexHooksStart,
   setCodexHooksDefault,
   codexTrustedRoots,
@@ -263,6 +265,29 @@ function FetchRow() {
       />
       <label htmlFor="fetch-toggle" style={{ cursor: 'default', fontSize: 'var(--fs-4)' }}>
         Fetch origin before Claude Code makes a worktree
+      </label>
+    </div>
+  );
+}
+
+/** Whether a helper may run with more privilege than the session spawning it.
+ *  Kept by the Rust side, which holds every spawn to it (agents.rs `cap`). */
+function HelpersAboveRow() {
+  const [on, setOn] = useState<boolean | null>(null);
+  useEffect(() => {
+    void helpersAboveCaller().then(setOn);
+  }, []);
+  return (
+    <div className="field-row" style={{ padding: '3px 0' }}>
+      <input
+        type="checkbox"
+        id="helpers-above"
+        checked={on ?? false}
+        disabled={on === null}
+        onChange={e => void setHelpersAboveCaller(e.target.checked).then(setOn)}
+      />
+      <label htmlFor="helpers-above" style={{ cursor: 'default', fontSize: 'var(--fs-4)' }}>
+        Let helpers run with more privilege than the chat that spawns them
       </label>
     </div>
   );
@@ -601,6 +626,15 @@ function SettingsWindow({ onClose }: { onClose: () => void }) {
               once a day. With this on, Luna runs <code>git fetch</code> first — ten seconds at most, never asking for a
               password. Only origin’s branches move; nothing you have checked out is touched. Codex starts its worktree
               from the commit you have checked out, which no fetch changes.
+            </div>
+          </Section>
+          <Section label="Helpers">
+            <HelpersAboveRow />
+            <div style={{ fontSize: 'var(--fs-1)', color: 'var(--faint)', marginTop: 4 }}>
+              Off, a chat’s helpers do no more without asking than it does: a Plan-only chat cannot spawn one that
+              edits, an Ask chat none that bypasses permissions, and the same for Codex’s sandbox. On, any chat with
+              Luna tools may spawn helpers that bypass permissions or run with full access, whatever it runs in
+              itself. Chats you make yourself are not affected either way.
             </div>
           </Section>
           <Section label="Links">

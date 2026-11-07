@@ -247,6 +247,8 @@ pub fn run() {
             accounts::delete_account,
             agents::agent_blocked_accounts,
             agents::set_agent_account,
+            agents::helpers_above_caller,
+            agents::set_helpers_above_caller,
             cli::cli_status,
             cli::cli_update_now,
             claude::defaults::claude_defaults,
