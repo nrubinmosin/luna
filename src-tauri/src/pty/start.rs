@@ -1,14 +1,18 @@
 //! Starting a chat's CLI in a pane: what each provider's start settles under
 //! the chat's spawn gate (see `spawn`) — its MCP token, the settings, MCP
 //! and instructions files it reads at start, its worktree, its place in the
-//! agents' registry — before the arguments are laid out by `claude::launch`
-//! and `codex::launch` and the process is run.
+//! agents' registry, what its sandbox and guard take from this machine —
+//! before the arguments are laid out by `claude::launch` and `codex::launch`,
+//! which only lay out what they are handed, and the process is run. A
+//! helper's turn (background/command.rs) settles the same through the
+//! functions here.
 
 use super::same_dir;
 use super::spawn::{spawn, Launch};
 use crate::claude::launch::{self as claude_launch, claude_settings, with_role, CLAUDE_MCP_TOKEN_ENV};
-use crate::codex::launch::{self as codex_launch, AUTO_REVIEW, AUTO_REVIEW_SANDBOX};
+use crate::codex::launch::{self as codex_launch, AUTO_REVIEW, AUTO_REVIEW_SANDBOX, READ_ONLY_NET};
 use crate::provider::Provider;
+use std::sync::Mutex;
 
 /// The settings a Claude Code session is started with, as its `--settings`
 /// (one only: a second takes the first's place). `hooks`: each event posts
@@ -107,6 +111,95 @@ pub(crate) fn claude_mcp_file(chat_id: &str) -> Option<std::path::PathBuf> {
 /// How long a Luna tool call may take, in ms, as both CLIs are told: `wait`
 /// holds its request for up to 30 min, `spawn` for up to two.
 pub(crate) const MCP_TOOL_TIMEOUT_MS: u64 = 1_900_000;
+
+/// The guard (guard.rs) for a Codex session, as `-c` overrides: a PreToolUse
+/// hook on its shell, which its hooks call `Bash`. Codex runs a hook given so
+/// only with its trust bypassed (`HOOKS_UNASKED`): untrusted, `exec` drops it
+/// and the TUI stops on a review screen. Without that, none, and a line in the
+/// log says why.
+pub(crate) fn codex_guard_args(chat_id: &str, guard: bool, hooks_unasked: bool) -> Vec<String> {
+    if !guard {
+        return Vec::new();
+    }
+    if !hooks_unasked {
+        // Once per session: a helper's `codex exec` starts at every turn.
+        static TOLD: std::sync::OnceLock<Mutex<std::collections::HashSet<String>>> = std::sync::OnceLock::new();
+        if TOLD.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner()).insert(chat_id.to_string()) {
+            crate::log::info(
+                "guard",
+                &format!(
+                    "{}: no guard against endless waits, as Codex runs a hook Luna gives it only with hooks' trust bypassed (Settings, Codex hooks)",
+                    crate::agents::label(chat_id)
+                ),
+            );
+        }
+        return Vec::new();
+    }
+    crate::hub::guard_url(chat_id).map_or_else(Vec::new, |url| vec!["-c".into(), codex_launch::guard_override(&url, &curl_program())])
+}
+
+/// curl by its full path where Windows keeps it, else by name: Codex runs a
+/// hook with an environment of its own (codex/launch.rs `hook_command`).
+pub(crate) fn curl_program() -> String {
+    #[cfg(windows)]
+    if let Some(root) = std::env::var("SystemRoot").ok().filter(|r| !r.is_empty() && !r.contains([' ', '\'', '"'])) {
+        let full = format!(r"{root}\System32\curl.exe");
+        if std::path::Path::new(&full).is_file() {
+            return full;
+        }
+    }
+    if cfg!(windows) { "curl.exe" } else { "curl" }.to_string()
+}
+
+/// A name for a `read-only-net` profile, new on every start, that no config
+/// can have rules ready for (codex/launch.rs `read_only_net_args`).
+fn codex_profile() -> String {
+    format!("luna-{}", &crate::agents::mint()[..16])
+}
+
+/// A sandbox as `-c` overrides, for `codex exec`, which asks nobody; a
+/// `read-only-net` one under a profile named afresh.
+pub(crate) fn codex_sandbox_args(sandbox: &str) -> Vec<String> {
+    let profile = (sandbox == READ_ONLY_NET).then(codex_profile);
+    codex_launch::sandbox_args(sandbox, profile.as_deref())
+}
+
+/// codex/launch.rs `git_ssl_backend_envs` for a session in that sandbox.
+/// Worked out once: the environment they build on is this process's, which
+/// stays as it started, and the names are made only the once for their
+/// `'static` lifetime.
+pub(crate) fn codex_git_envs(sandbox: &str) -> Vec<(&'static str, String)> {
+    static ENVS: std::sync::OnceLock<Vec<(&'static str, String)>> = std::sync::OnceLock::new();
+    if !cfg!(windows) || sandbox != READ_ONLY_NET {
+        return Vec::new();
+    }
+    ENVS.get_or_init(|| {
+        let count = std::env::var("GIT_CONFIG_COUNT").ok();
+        codex_launch::git_ssl_backend_envs(count.as_deref(), |i| std::env::var(format!("GIT_CONFIG_KEY_{i}")).ok())
+            .into_iter()
+            .map(|(k, v)| {
+                let k: &'static str = Box::leak(k.into_boxed_str());
+                (k, v)
+            })
+            .collect()
+    })
+    .clone()
+}
+
+/// PATH for a Codex session in that sandbox, where it has a Windows one: this
+/// process's, without the Store's app aliases (codex/launch.rs
+/// `without_windows_apps`).
+pub(crate) fn codex_sandbox_path(sandbox: &str) -> Option<String> {
+    codex_launch::codex_windows_sandbox(sandbox)?;
+    let path = std::env::var("PATH").ok()?;
+    Some(codex_launch::without_windows_apps(&path))
+}
+
+/// Luna's MCP server as Codex's `-c` overrides (codex/launch.rs `mcp_args`),
+/// while it is up.
+pub(crate) fn codex_mcp_args() -> Vec<String> {
+    crate::hub::mcp_url().map_or_else(Vec::new, |url| codex_launch::mcp_args(&url))
+}
 
 /// What tells a session which one it is, for what it runs: every session its
 /// own id, a helper the session that started it too.
@@ -333,7 +426,14 @@ pub async fn ensure_codex_session(
         let chosen_model = model.as_deref().map(str::trim).filter(|m| !m.is_empty());
         let sandbox: &str = if approval == AUTO_REVIEW { AUTO_REVIEW_SANDBOX } else { &sandbox };
         let hooks_unasked = hooks_unasked.unwrap_or(false);
-        let guard = tools.unwrap_or(false) || parent.is_some();
+        // What the sandbox and the guard take from this machine, ahead of the
+        // registration: the profile's new name, PATH and git's entries (each
+        // nothing in a sandbox that takes none), and the guard's hook — or
+        // the log's word that Codex would drop it.
+        let profile = (sandbox == READ_ONLY_NET).then(codex_profile);
+        let sandbox_path = codex_sandbox_path(sandbox);
+        let git_envs = codex_git_envs(sandbox);
+        let guard = codex_guard_args(&id, tools.unwrap_or(false) || parent.is_some(), hooks_unasked);
         let tools = tools.unwrap_or(false);
         let settings = serde_json::json!({
             "model": chosen_model,
@@ -345,7 +445,7 @@ pub async fn ensure_codex_session(
             None if prompt.is_none() => crate::agents::chat_starting(&id, resume.is_some()),
             None => {}
         }
-        let token = token.filter(|_| crate::hub::mcp_url().is_some());
+        let mcp = token.and_then(|t| Some((crate::hub::mcp_url()?, t)));
         // The skills the library gives sessions in this folder and keeps
         // from them, at every start (library/folders.rs `session_args`).
         crate::library::lay_out("before a session starts");
@@ -361,10 +461,13 @@ pub async fn ensure_codex_session(
             effort: &effort,
             approval: &approval,
             sandbox,
+            profile: profile.as_deref(),
+            sandbox_path: sandbox_path.as_deref(),
+            git_envs: &git_envs,
             hooks_unasked,
-            guard,
+            guard: &guard,
             parent: parent.as_deref(),
-            token: token.as_deref(),
+            mcp: mcp.as_ref().map(|(url, token)| (url.as_str(), token.as_str())),
             skill_args: &skills.args,
             prompt: prompt.as_deref(),
         });
@@ -417,7 +520,8 @@ mod tests {
     const PROMPT: &str = "Fix the build.";
 
     /// A start as `spawn` would have run it, placeholders in, with the
-    /// settings and MCP files it was given read back (and removed).
+    /// settings, MCP and instructions files it was given read back (and
+    /// removed).
     struct Started {
         args: Vec<String>,
         envs: Vec<(String, String)>,
@@ -426,15 +530,19 @@ mod tests {
         describe: String,
         settings: Option<serde_json::Value>,
         mcp: Option<serde_json::Value>,
+        instructions: Option<String>,
     }
 
     fn started(id: &str, r: &Redact, start: impl std::future::Future<Output = Result<String, String>>) -> Started {
         capture::expect(id);
         let built = tauri::async_runtime::block_on(start);
         let launch = capture::take(id);
+        // The environment read while the session is still registered: its
+        // token has to be the one Luna knows it by.
+        let envs = launch.as_ref().map(|l| r.envs(&l.envs));
         crate::agents::forget(id);
         assert_eq!(built, Ok(String::new()));
-        let l = launch.expect("the start was caught");
+        let (l, envs) = (launch.expect("the start was caught"), envs.unwrap());
         let args = r.args(&l.args);
         let data = crate::paths::data_dir();
         let read = |sub: &str, placeholder: &str| {
@@ -444,7 +552,8 @@ mod tests {
             v
         };
         let (settings, mcp) = (read("hooks", "<settings-file>"), read("mcp", "<mcp-file>"));
-        Started { envs: r.envs(&l.envs), cwd: r.text(&l.cwd), resume: l.resume, describe: l.describe, settings, mcp, args }
+        let instructions = golden::instructions(id, &args);
+        Started { envs, cwd: r.text(&l.cwd), resume: l.resume, describe: l.describe, settings, mcp, instructions, args }
     }
 
     /// The window's ask for a Claude Code chat; each case changes what it is about.
@@ -706,8 +815,62 @@ mod tests {
         assert_eq!(s.describe, "model sonnet perm bypassPermissions worktree false");
     }
 
+    /// The placeholders for a start in a library's folder on `account`.
+    fn library_redact(id: &str, lib: &crate::library::GoldenLibrary, account: &str) -> Redact {
+        Redact::for_chat(id)
+            .with(lib.claude_skills(), "<library-dir>")
+            .with(lib.folder.clone(), "<project>")
+            .with(account, "<acc>")
+            // As `claudeMdExcludes` names a file, on every OS.
+            .with(account.replace('\\', "/"), "<acc>")
+    }
+
+    #[test]
+    fn golden_claude_chat_in_a_library_folder_gets_its_skills_and_instructions() {
+        const ID: &str = "golden-claude-library";
+        let lib = crate::library::GoldenLibrary::new("pane-claude");
+        let r = library_redact(ID, &lib, &lib.claude());
+        let s = ClaudeAsk { folder: lib.folder.clone(), account: lib.claude(), prompt: Some(PROMPT), ..ClaudeAsk::chat() }.start(ID, &r);
+        assert_eq!(
+            s.args,
+            strings(&[
+                "--model",
+                "opus",
+                "--effort",
+                "high",
+                "--permission-mode",
+                "default",
+                "--settings",
+                "<settings-file>",
+                "--add-dir",
+                "<instructions-dir>",
+                "--add-dir",
+                "<library-dir>",
+                "--",
+                PROMPT,
+            ])
+        );
+        assert_eq!(
+            s.envs,
+            pairs(&[
+                ("CLAUDE_CONFIG_DIR", "<acc>"),
+                ("DISABLE_AUTOUPDATER", "1"),
+                ("CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD", "1"),
+                ("LUNA_SESSION_ID", ID),
+            ])
+        );
+        let mut settings = golden::claude_chat_settings(false);
+        settings["skillOverrides"] = serde_json::json!({ "review": "off" });
+        settings["claudeMdExcludes"] = serde_json::json!(["<acc>/CLAUDE.md"]);
+        assert_eq!(s.settings, Some(settings), "the folder keeps review and the account's instructions from it");
+        assert_eq!(s.instructions.as_deref(), Some(crate::library::GoldenLibrary::INSTRUCTIONS), "the library's, word for word");
+        assert_eq!(s.cwd, "<project>");
+    }
+
     /// The window's ask for a Codex chat; each case changes what it is about.
     struct CodexAsk {
+        folder: String,
+        account: String,
         model: Option<&'static str>,
         effort: &'static str,
         approval: &'static str,
@@ -726,6 +889,8 @@ mod tests {
     impl CodexAsk {
         fn chat() -> Self {
             CodexAsk {
+                folder: FOLDER.into(),
+                account: CODEX_ACC.into(),
                 model: Some("gpt-5.5"),
                 effort: "medium",
                 approval: "on-request",
@@ -747,8 +912,8 @@ mod tests {
                 r,
                 ensure_codex_session(
                     id.into(),
-                    FOLDER.into(),
-                    CODEX_ACC.into(),
+                    self.folder,
+                    self.account,
                     s(self.model),
                     self.effort.into(),
                     self.approval.into(),
@@ -903,8 +1068,41 @@ mod tests {
             let mut flags = strings(&["--model", "gpt-5.5", "-c", "model_reasoning_effort=\"medium\""]);
             flags.extend(asks);
             assert_eq!(s.args, codex_args(&[], flags, Vec::new()), "{approval} {sandbox}");
-            assert_eq!(s.envs, codex_envs(&id, sandboxed), "{approval} {sandbox}");
+            let mut envs = codex_envs(&id, sandboxed);
+            if sandbox == READ_ONLY_NET {
+                // git's https, which schannel cannot do there: after the
+                // home and the sandbox's PATH.
+                envs.splice(2..2, golden::codex_git_ssl());
+            }
+            assert_eq!(s.envs, envs, "{approval} {sandbox}");
             assert_eq!(s.describe, format!("model gpt-5.5 effort medium approval {approval} sandbox {runs_in}"));
         }
+    }
+
+    #[test]
+    fn golden_codex_chat_in_a_library_folder_gets_its_plugin_and_keeps_its_skills_off() {
+        const ID: &str = "golden-codex-library";
+        let lib = crate::library::GoldenLibrary::new("pane-codex");
+        let r = library_redact(ID, &lib, &lib.codex());
+        let s = CodexAsk { folder: lib.folder.clone(), account: lib.codex(), prompt: Some(PROMPT), ..CodexAsk::chat() }.start(ID, &r);
+        let mut want = strings(&["-C", "<project>", "--no-daemon"]);
+        want.extend(codex_flags(Some("gpt-5.5"), "medium", "on-request", "workspace-write"));
+        want.extend(strings(&[
+            "-c",
+            "tui.terminal_title=[\"thread-id\"]",
+            "-c",
+            &format!("plugins.{}@luna.enabled=true", crate::library::GoldenLibrary::SLUG),
+            "-c",
+            "skills.config=[{name=\"review\",enabled=false}]",
+            "--",
+            PROMPT,
+        ]));
+        assert_eq!(s.args, want);
+        let mut envs = pairs(&[("CODEX_HOME", "<acc>")]);
+        envs.extend(golden::codex_sandbox_path());
+        envs.extend(pairs(&[("LUNA_SESSION_ID", ID)]));
+        assert_eq!(s.envs, envs);
+        assert_eq!(s.instructions, None, "Codex has no way to take other instructions");
+        assert_eq!(s.cwd, "<project>");
     }
 }

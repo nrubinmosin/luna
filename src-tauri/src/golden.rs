@@ -2,13 +2,18 @@
 //! background/command.rs for the helpers without one): a start's arguments and
 //! environment with what changes from run to run — the hub's port and
 //! secrets, a session's MCP token, the files under the data dir, a profile's
-//! random name — put as stable placeholders, so the rest can be compared
-//! whole.
+//! random name, what the sandbox takes from this machine's environment — put
+//! as stable placeholders, each checked first for being what it stands in
+//! for, so the rest can be compared whole.
 
 use std::path::PathBuf;
 
-/// The placeholders, each for the text it stands in for.
-pub(crate) struct Redact(Vec<(String, String)>);
+/// The placeholders, each for the text it stands in for, for the start of
+/// chat `id`.
+pub(crate) struct Redact {
+    id: String,
+    texts: Vec<(String, String)>,
+}
 
 impl Redact {
     /// What any start of chat `id` may carry. Starts the hub, so the hooks,
@@ -17,7 +22,7 @@ impl Redact {
         crate::hub::start();
         let data = crate::paths::data_dir();
         let path = |p: PathBuf| p.to_string_lossy().into_owned();
-        let mut r = Redact(Vec::new());
+        let mut r = Redact { id: id.to_string(), texts: Vec::new() };
         for (url, to) in
             [(crate::hub::hook_url(id), "<hook-url>"), (crate::hub::guard_url(id), "<guard-url>"), (crate::hub::mcp_url(), "<mcp-url>")]
         {
@@ -30,14 +35,14 @@ impl Redact {
     }
 
     pub(crate) fn with(mut self, from: impl Into<String>, to: &str) -> Self {
-        self.0.push((from.into(), to.to_string()));
+        self.texts.push((from.into(), to.to_string()));
         // Longest first: a path is not to lose its head to a folder it is in.
-        self.0.sort_by_key(|(from, _)| std::cmp::Reverse(from.len()));
+        self.texts.sort_by_key(|(from, _)| std::cmp::Reverse(from.len()));
         self
     }
 
     pub(crate) fn text(&self, s: &str) -> String {
-        self.0.iter().fold(s.to_string(), |s, (from, to)| s.replace(from.as_str(), to))
+        self.texts.iter().fold(s.to_string(), |s, (from, to)| s.replace(from.as_str(), to))
     }
 
     /// The arguments, a `read-only-net` profile's new name on every start
@@ -51,35 +56,105 @@ impl Redact {
         }
     }
 
-    /// The environment, the MCP token as `<token>` and a sandbox's PATH as
-    /// `<sandbox-path>` (checked for what it leaves out). `GIT_CONFIG_*` is
-    /// built on the host's own (codex/launch.rs `git_ssl_backend_envs`), so it is left
-    /// out, and only Windows may have it.
+    /// The environment, with what is built on this process's own put as one
+    /// placeholder each, once it has been checked to be exactly that: the MCP
+    /// token as `<token>`, which has to be the one Luna knows this session by;
+    /// a sandbox's PATH as `<sandbox-path>`, this process's but for the
+    /// Store's app aliases; and the `GIT_CONFIG_*` entries for git's TLS
+    /// backend, Windows only, as one `GIT_CONFIG_*` entry, `<git-ssl-backend>`,
+    /// where the first of them stood.
     pub(crate) fn envs(&self, envs: &[(&'static str, String)]) -> Vec<(String, String)> {
-        assert!(cfg!(windows) || !envs.iter().any(|(k, _)| k.starts_with("GIT_CONFIG_")), "{envs:?}");
-        envs.iter()
-            .filter(|(k, _)| !k.starts_with("GIT_CONFIG_"))
-            .map(|(k, v)| {
-                let v = match *k {
-                    "LUNA_MCP_TOKEN" => {
-                        assert!(!v.is_empty(), "a token");
-                        "<token>".to_string()
+        let git: Vec<(String, String)> =
+            envs.iter().filter(|(k, _)| k.starts_with("GIT_CONFIG_")).map(|(k, v)| (k.to_string(), v.clone())).collect();
+        if !git.is_empty() {
+            assert_eq!(git, git_ssl_backend(), "git's entries: those this process has, then the backend");
+        }
+        let mut out = Vec::new();
+        for (k, v) in envs {
+            let v = match *k {
+                "LUNA_MCP_TOKEN" => {
+                    assert_eq!(crate::agents::caller_of(v).as_deref(), Some(self.id.as_str()), "the token is this session's");
+                    "<token>".to_string()
+                }
+                "PATH" => {
+                    assert_eq!(*v, sandbox_path(), "this process's PATH, the Store's app aliases left out");
+                    "<sandbox-path>".to_string()
+                }
+                k if k.starts_with("GIT_CONFIG_") => {
+                    if !out.iter().any(|(k, _)| k == GIT_ENTRIES) {
+                        out.push((GIT_ENTRIES.to_string(), "<git-ssl-backend>".to_string()));
                     }
-                    "PATH" => {
-                        assert!(!v.to_lowercase().contains("windowsapps"), "{v}");
-                        "<sandbox-path>".to_string()
-                    }
-                    _ => self.text(v),
-                };
-                (k.to_string(), v)
-            })
-            .collect()
+                    continue;
+                }
+                _ => self.text(v),
+            };
+            out.push((k.to_string(), v));
+        }
+        out
     }
 
     /// A JSON file a start wrote, placeholders in.
     pub(crate) fn file(&self, path: &str) -> serde_json::Value {
         let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{path}: {e}"));
         serde_json::from_str(&self.text(&text)).unwrap()
+    }
+}
+
+/// The `CLAUDE.md` a start of chat `id` copied into its instructions folder,
+/// where its arguments (placeholders in) name that folder; the folder removed.
+pub(crate) fn instructions(id: &str, args: &[String]) -> Option<String> {
+    let dir = crate::paths::data_dir().join("hooks").join(id);
+    let text = args.iter().any(|a| a == "<instructions-dir>").then(|| {
+        let file = dir.join("CLAUDE.md");
+        std::fs::read_to_string(&file).unwrap_or_else(|e| panic!("{}: {e}", file.display()))
+    });
+    let _ = std::fs::remove_dir_all(&dir);
+    text
+}
+
+/// What `Redact::envs` puts git's entries as.
+const GIT_ENTRIES: &str = "GIT_CONFIG_*";
+
+/// This process's PATH without the Store's app aliases
+/// (`…\Microsoft\WindowsApps`), every other entry kept in its order: what a
+/// Codex session in a Windows sandbox is to get.
+fn sandbox_path() -> String {
+    let path = std::env::var("PATH").unwrap_or_default();
+    path.split(';').filter(|p| !p.to_lowercase().replace('/', "\\").contains(r"\microsoft\windowsapps")).collect::<Vec<_>>().join(";")
+}
+
+/// The `GIT_CONFIG_*` entries a `read-only-net` Codex session is to get on
+/// Windows: this process's own counted one further, the last choosing
+/// openssl for git's https. None where its own choose a backend already, or
+/// count in a way git refuses, and none elsewhere.
+fn git_ssl_backend() -> Vec<(String, String)> {
+    if !cfg!(windows) {
+        return Vec::new();
+    }
+    let n = match std::env::var("GIT_CONFIG_COUNT") {
+        Err(_) => 0,
+        Ok(c) => match c.trim().parse::<usize>() {
+            Ok(n) => n,
+            Err(_) => return Vec::new(),
+        },
+    };
+    if (0..n).any(|i| std::env::var(format!("GIT_CONFIG_KEY_{i}")).is_ok_and(|k| k.eq_ignore_ascii_case("http.sslBackend"))) {
+        return Vec::new();
+    }
+    vec![
+        ("GIT_CONFIG_COUNT".into(), (n + 1).to_string()),
+        (format!("GIT_CONFIG_KEY_{n}"), "http.sslBackend".into()),
+        (format!("GIT_CONFIG_VALUE_{n}"), "openssl".into()),
+    ]
+}
+
+/// `<git-ssl-backend>` as a `read-only-net` Codex session has it: on Windows,
+/// unless this process's own entries choose a backend already.
+pub(crate) fn codex_git_ssl() -> Vec<(String, String)> {
+    if git_ssl_backend().is_empty() {
+        Vec::new()
+    } else {
+        pairs(&[(GIT_ENTRIES, "<git-ssl-backend>")])
     }
 }
 

@@ -118,8 +118,9 @@ src-tauri/src/
                 provider's Source
   pty/          session manager (mod.rs: the session map, PtyManager, manager())
     start.rs    ensure_claude_session / ensure_codex_session: what a start settles under the
-                chat's spawn gate (token, settings/MCP/instructions files, worktree), then the
-                command line from claude/launch.rs or codex/launch.rs
+                chat's spawn gate (token, settings/MCP/instructions files, worktree, what Codex's
+                sandbox and guard take from this machine), then the command line from
+                claude/launch.rs or codex/launch.rs
     spawn.rs    the shared spawn in a pty, scrollback buffer, pty://output and pty://exit
                 events, cursor queries answered
     control.rs  write/resize/keys/kill, quitting the way a person would, delete, orphans
@@ -199,7 +200,8 @@ src-tauri/src/
                 in; commands.rs the commands and luna_power's; testkit.rs its tests' boards
   claude/
     launch.rs   a session's arguments and environment (chat_args), its settings file's hooks
-                and guard, the helper's system prompt line; pure, nothing written
+                and guard, the helper's system prompt line; pure: nothing read, written,
+                logged or minted
     cli.rs      Source: downloads.claude.ai, latest + manifest.json, bare exe
     defaults.rs model/effortLevel/permissions.defaultMode from Claude Code's settings in its
                 order: the account's settings.json → the project's .claude/settings.json →
@@ -217,7 +219,7 @@ src-tauri/src/
   codex/
     launch.rs   a session's arguments and environment (chat_args), and what a helper's
                 `codex exec` shares with it: approval and sandbox overrides, read-only-net,
-                the guard, Luna's MCP server; pure, nothing written
+                the guard, Luna's MCP server; pure: nothing read, written, logged or minted
     cli.rs      Source: GitHub Releases openai/codex, rust-v<ver>, package tarball + SHA256SUMS
     config.rs   config.toml via toml_edit (comments and formatting kept), seed; a read for a
                 write looks again at a file caught blank, cut short or held open, and one that

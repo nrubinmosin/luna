@@ -113,26 +113,26 @@ pub(super) fn command_for(e: &Entry, id: &str) -> (Vec<String>, String, Vec<(&'s
             if s.hooks_unasked {
                 args.push(crate::codex::launch::HOOKS_UNASKED.into());
             }
-            args.extend(crate::codex::launch::codex_guard_args(id, s.tools || s.parent.is_some(), s.hooks_unasked));
+            args.extend(crate::pty::codex_guard_args(id, s.tools || s.parent.is_some(), s.hooks_unasked));
             if s.auto_review {
                 args.push("--approve-for-me".into());
             } else {
                 // `exec` asks nobody: the sandbox is what holds it.
                 args.extend(["-c".into(), "approval_policy=\"never\"".into()]);
                 args.extend(["-c".into(), crate::codex::launch::CODEX_PERSON_REVIEWS.into()]);
-                args.extend(crate::codex::launch::codex_sandbox_args(&s.mode));
+                args.extend(crate::pty::codex_sandbox_args(&s.mode));
             }
             if let Some(sb) = crate::codex::launch::codex_windows_sandbox(&s.mode) {
                 args.extend(["-c".into(), sb]);
             }
-            if let Some(path) = crate::codex::launch::codex_sandbox_path(&s.mode) {
+            if let Some(path) = crate::pty::codex_sandbox_path(&s.mode) {
                 envs.push(("PATH", path));
             }
             if let Some(token) = s.token.clone().filter(|_| s.tools) {
-                args.extend(crate::codex::launch::codex_mcp_args());
+                args.extend(crate::pty::codex_mcp_args());
                 envs.push(("LUNA_MCP_TOKEN", token));
             }
-            envs.extend(crate::codex::launch::codex_git_envs(&s.mode));
+            envs.extend(crate::pty::codex_git_envs(&s.mode));
             envs.push(("CODEX_HOME", s.account_path.clone()));
             args.extend(crate::library::session_args(Provider::Codex, &s.account_path, &dir).args);
             // The prompt comes on stdin; Claude Code reads it there unasked.
@@ -423,14 +423,15 @@ mod tests {
 
     use crate::golden::{self, pairs, strings, Redact};
 
-    /// A turn's command for `e`, placeholders in, with the settings and MCP
-    /// files it was given read back (and removed).
+    /// A turn's command for `e`, placeholders in, with the settings, MCP and
+    /// instructions files it was given read back (and removed).
     struct Turn {
         args: Vec<String>,
         dir: String,
         envs: Vec<(String, String)>,
         settings: Option<Value>,
         mcp: Option<Value>,
+        instructions: Option<String>,
     }
 
     fn turn(e: &Entry, id: &str, r: &Redact) -> Turn {
@@ -444,7 +445,8 @@ mod tests {
             v
         };
         let (settings, mcp) = (read("hooks", "<settings-file>"), read("mcp", "<mcp-file>"));
-        Turn { dir: r.text(&dir), envs: r.envs(&envs), settings, mcp, args }
+        let instructions = golden::instructions(id, &args);
+        Turn { dir: r.text(&dir), envs: r.envs(&envs), settings, mcp, instructions, args }
     }
 
     /// A Claude Code turn's arguments up to where a conversation is named.
@@ -468,6 +470,29 @@ mod tests {
 
     fn claude_turn_envs(id: &str) -> Vec<(String, String)> {
         pairs(&[("CLAUDE_CONFIG_DIR", "C:\\acc"), ("DISABLE_AUTOUPDATER", "1"), ("LUNA_SESSION_ID", id)])
+    }
+
+    /// A helper's token as its spawn has it (agents/spawn/background.rs):
+    /// the one Luna knows it by, until the test forgets it.
+    fn helper_token(id: &str, e: &Entry) -> Option<String> {
+        let s = &e.spec;
+        crate::agents::register(id, s.provider, &s.folder, &s.account_path, s.parent.as_deref(), true, json!({}))
+    }
+
+    /// A helper of `provider` sent to a library's folder, on its account
+    /// there, and the placeholders for its turns.
+    fn library_entry(id: &str, lib: &crate::library::GoldenLibrary, provider: Provider) -> (Entry, Redact) {
+        let account = if provider == Provider::Claude { lib.claude() } else { lib.codex() };
+        let mut e = entry(provider);
+        e.spec.account_path = account.clone();
+        e.spec.folder = lib.folder.clone();
+        let r = Redact::for_chat(id)
+            .with(lib.claude_skills(), "<library-dir>")
+            .with(lib.folder.clone(), "<project>")
+            .with(account.clone(), "<acc>")
+            // As `claudeMdExcludes` names a file, on every OS.
+            .with(account.replace('\\', "/"), "<acc>");
+        (e, r)
     }
 
     #[test]
@@ -525,7 +550,7 @@ mod tests {
         let mut e = entry(Provider::Claude);
         e.spec.mode = "default".into();
         e.spec.tools = true;
-        e.spec.token = Some("the-helpers-token".into());
+        e.spec.token = helper_token(ID, &e);
         e.spec.parent = Some("golden-parent".into());
         e.spec.read_only = true;
         e.spec.agent = Some("reviewer".into());
@@ -574,6 +599,7 @@ mod tests {
         ]));
         assert_eq!(t.args, want);
         assert_eq!(t.settings, None, "neither tools nor a parent: no guard");
+        crate::agents::forget(ID);
     }
 
     /// A Codex turn's arguments from the folder's trust to the effort.
@@ -666,7 +692,13 @@ mod tests {
             want.extend(held);
             want.push("-".into());
             assert_eq!(t.args, want, "{mode} {auto_review}");
-            assert_eq!(t.envs, codex_turn_envs(&id, sandboxed), "{mode} {auto_review}");
+            let mut envs = codex_turn_envs(&id, sandboxed);
+            if mode == crate::codex::launch::READ_ONLY_NET {
+                // git's https, which schannel cannot do there: after the
+                // sandbox's PATH.
+                envs.splice(1..1, golden::codex_git_ssl());
+            }
+            assert_eq!(t.envs, envs, "{mode} {auto_review}");
         }
     }
 
@@ -677,7 +709,7 @@ mod tests {
         let mut e = entry(Provider::Codex);
         e.spec.mode = "workspace-write".into();
         e.spec.tools = true;
-        e.spec.token = Some("the-helpers-token".into());
+        e.spec.token = helper_token(ID, &e);
         e.spec.hooks_unasked = true;
         e.spec.parent = Some("golden-parent".into());
         let t = turn(&e, ID, &r);
@@ -702,5 +734,56 @@ mod tests {
         let t = turn(&e, ID, &r);
         assert!(!t.args.iter().any(|a| a.starts_with("mcp_servers.")), "{:?}", t.args);
         assert!(!t.envs.iter().any(|(k, _)| k == "LUNA_MCP_TOKEN"));
+        crate::agents::forget(ID);
+    }
+
+    #[test]
+    fn golden_headless_claude_turn_in_a_library_folder_gets_its_skills_and_instructions() {
+        const ID: &str = "golden-bg-claude-library";
+        let lib = crate::library::GoldenLibrary::new("bg-claude");
+        let (mut e, r) = library_entry(ID, &lib, Provider::Claude);
+        e.spec.mode = "default".into();
+        let t = turn(&e, ID, &r);
+        let mut want = claude_turn("default");
+        want.extend(strings(&["--settings", "<settings-file>", "--add-dir", "<instructions-dir>", "--add-dir", "<library-dir>"]));
+        assert_eq!(t.args, want);
+        assert_eq!(t.dir, "<project>");
+        assert_eq!(
+            t.envs,
+            pairs(&[
+                ("CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD", "1"),
+                ("CLAUDE_CONFIG_DIR", "<acc>"),
+                ("DISABLE_AUTOUPDATER", "1"),
+                ("LUNA_SESSION_ID", ID),
+            ])
+        );
+        let settings = json!({ "skillOverrides": { "review": "off" }, "claudeMdExcludes": ["<acc>/CLAUDE.md"] });
+        assert_eq!(t.settings, Some(settings), "no hooks, no guard: what the folder keeps from it alone");
+        assert_eq!(t.instructions.as_deref(), Some(crate::library::GoldenLibrary::INSTRUCTIONS), "the library's, word for word");
+    }
+
+    #[test]
+    fn golden_headless_codex_turn_in_a_library_folder_gets_its_plugin_and_keeps_its_skills_off() {
+        const ID: &str = "golden-bg-codex-library";
+        let lib = crate::library::GoldenLibrary::new("bg-codex");
+        let (e, r) = library_entry(ID, &lib, Provider::Codex);
+        let t = turn(&e, ID, &r);
+        let mut want = strings(&["exec", "-C", "<project>", "--json", "--skip-git-repo-check"]);
+        want.extend(crate::codex::trust::trust_override(&lib.folder).iter().map(|a| r.text(a)));
+        want.extend(strings(&["--model", "haiku", "-c", "model_reasoning_effort=\"low\""]));
+        want.extend(codex_held(strings(&["-c", "sandbox_mode=\"read-only\""]), true));
+        want.extend(strings(&[
+            "-c",
+            &format!("plugins.{}@luna.enabled=true", crate::library::GoldenLibrary::SLUG),
+            "-c",
+            "skills.config=[{name=\"review\",enabled=false}]",
+            "-",
+        ]));
+        assert_eq!(t.args, want);
+        assert_eq!(t.dir, "<project>");
+        let mut envs = golden::codex_sandbox_path();
+        envs.extend(pairs(&[("CODEX_HOME", "<acc>"), ("LUNA_SESSION_ID", ID)]));
+        assert_eq!(t.envs, envs);
+        assert_eq!((t.settings, t.instructions), (None, None), "Codex has no way to take other instructions");
     }
 }

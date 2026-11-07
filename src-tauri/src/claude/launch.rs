@@ -1,7 +1,8 @@
 //! How a Claude Code session in a pane is started: its arguments and
-//! environment, laid out from what the start has already settled. Nothing
-//! here writes, registers or mints anything; that happens under the chat's
-//! spawn gate (pty/start.rs), which hands the results in.
+//! environment, laid out from what the start has already settled. Pure:
+//! nothing here reads the environment, the disk or Luna's state, logs,
+//! writes, registers or mints. The start does that under the chat's spawn
+//! gate (pty/start.rs) and hands the results in.
 
 use std::path::Path;
 

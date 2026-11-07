@@ -75,3 +75,75 @@ pub(super) fn first(reach: Reach) -> BTreeMap<String, Reach> {
 pub(super) fn reach(r: &[&str]) -> Reach {
     r.iter().map(|s| s.to_string()).collect()
 }
+
+/// A library with one folder in it, for the launch golden tests (pty/start.rs,
+/// background/command.rs): a repository whose sessions get `notes` from it and
+/// not `review`, which their accounts have as a whole, and on Claude Code its
+/// `terse` instructions in place of the account's. While it is held,
+/// `session_args` reads it for its accounts (`held`).
+pub(crate) struct GoldenLibrary {
+    f: Fixture,
+    /// The repository.
+    pub(crate) folder: String,
+}
+
+/// The libraries tests hold, with the accounts each has.
+static HELD: Mutex<Vec<(Dirs, LibrarySettings, Vec<AccountInfo>)>> = Mutex::new(Vec::new());
+
+impl GoldenLibrary {
+    /// What its `terse` instructions say.
+    pub(crate) const INSTRUCTIONS: &'static str = "# Terse\n\nSay less.\n";
+    /// The name its folder's skills wait under.
+    pub(crate) const SLUG: &'static str = "golden";
+
+    pub(crate) fn new(tag: &str) -> Self {
+        let f = Fixture::new(&format!("golden-{tag}"));
+        f.skill("review", "v1");
+        f.skill("notes", "v1");
+        f.instructions("terse", Self::INSTRUCTIONS);
+        let repo = f.base.join("repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        let folder = LibraryFolder {
+            path: repo.to_string_lossy().into_owned(),
+            skills: BTreeMap::from([("notes".into(), all()), ("review".into(), Vec::new())]),
+            instructions: BTreeMap::from([("claude".into(), Some("terse".into()))]),
+            slug: Self::SLUG.into(),
+        };
+        let lib = LibrarySettings { skills: skills(&["review"]), folders: vec![folder], ..Default::default() };
+        f.run(&lib, &mut Ledger::default(), true);
+        codex_manifests(&lib, &f.accounts);
+        let dirs = Dirs { root: f.dirs.root.clone(), data: f.dirs.data.clone() };
+        HELD.lock().unwrap_or_else(|e| e.into_inner()).push((dirs, lib, f.accounts.clone()));
+        GoldenLibrary { folder: repo.to_string_lossy().into_owned(), f }
+    }
+
+    /// Its Claude Code account, `claude/work`.
+    pub(crate) fn claude(&self) -> String {
+        self.f.accounts[0].path.clone()
+    }
+
+    /// Its Codex account.
+    pub(crate) fn codex(&self) -> String {
+        self.f.accounts[1].path.clone()
+    }
+
+    /// Where the folder's skills wait for the Claude Code account's sessions.
+    pub(crate) fn claude_skills(&self) -> String {
+        claude_folder_dir(&self.f.dirs, Self::SLUG, &self.f.accounts[0]).to_string_lossy().into_owned()
+    }
+}
+
+impl Drop for GoldenLibrary {
+    fn drop(&mut self) {
+        HELD.lock().unwrap_or_else(|e| e.into_inner()).retain(|(dirs, _, _)| dirs.root != self.f.dirs.root);
+    }
+}
+
+/// The library a test holds for this account, if one does.
+pub(super) fn held(provider: Provider, account_path: &str) -> Option<(Dirs, LibrarySettings, AccountInfo)> {
+    let held = HELD.lock().unwrap_or_else(|e| e.into_inner());
+    held.iter().find_map(|(dirs, lib, accounts)| {
+        let a = accounts.iter().find(|a| a.provider == provider && a.path == account_path)?;
+        Some((Dirs { root: dirs.root.clone(), data: dirs.data.clone() }, lib.clone(), a.clone()))
+    })
+}

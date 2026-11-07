@@ -3,7 +3,8 @@
 //! map; the rest is split by what it does with a session:
 //!
 //! - `start`: the commands that start a chat's CLI, and what each start
-//!   settles under the chat's spawn gate (its token, the files it reads).
+//!   settles under the chat's spawn gate (its token, the files it reads,
+//!   what its sandbox and guard take from this machine).
 //! - `spawn`: the process in its pty, and the threads that write to it, read
 //!   it and notice it has gone.
 //! - `control`: keys, resizes, quitting and killing, deleting a chat.
@@ -27,9 +28,12 @@ pub(crate) use control::{
 pub(crate) use probe::{complete_lines, live_cwds, prune_session_files_periodically, session_meta, tail, ActivityProbe};
 pub(crate) use screen::{sane_title, session_modes, title_from_prompt, CliTitle, Composer, SessionMeta};
 pub(crate) use spawn::clean_env;
+#[cfg(test)]
+pub(crate) use start::curl_program;
 pub(crate) use start::{
-    claude_instructions_dir, claude_mcp_file, claude_settings_file, codex_helper_prompt, ensure_claude_session, ensure_codex_session,
-    helper_line, session_envs, without_note, MCP_TOOL_TIMEOUT_MS,
+    claude_instructions_dir, claude_mcp_file, claude_settings_file, codex_git_envs, codex_guard_args, codex_helper_prompt, codex_mcp_args,
+    codex_sandbox_args, codex_sandbox_path, ensure_claude_session, ensure_codex_session, helper_line, session_envs, without_note,
+    MCP_TOOL_TIMEOUT_MS,
 };
 
 use crate::provider::Provider;
