@@ -4,7 +4,8 @@
 
 use crate::agents::delivery::Held;
 use crate::agents::owed::{Owed, Receipt};
-use crate::agents::{forget, Auto, ChatResume, NoticeTurn, Opening, Pending, QuotaTold, Reparented, SpawnTaken, CHATS_FROZEN};
+use crate::agents::resume::ChatResume;
+use crate::agents::{forget, Auto, NoticeTurn, Opening, Pending, QuotaTold, Reparented, SpawnTaken, CHATS_FROZEN};
 use crate::provider::Provider;
 use crate::throttle::now_ms;
 use std::collections::HashMap;

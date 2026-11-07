@@ -8,10 +8,8 @@ use crate::agents::owed::{owe_from, seen, Owed};
 use crate::agents::privilege::{answerer, command_reach_now, plain_text};
 use crate::agents::read::transcript_end;
 use crate::agents::registry::{authorize_send, chat_name, label, reg, Registry, DEV_CALLER};
-use crate::agents::{
-    answer_reach, call_off_resume, core_up_ms, mark_going_in, press, reconcile_held, resume_chats, resume_pending, returning,
-    unmark_going_in, Key, INTERRUPT_SETTLE, NOTIFY_EVERY,
-};
+use crate::agents::resume::{call_off_resume, mark_going_in, reconcile_held, resume_chats, resume_pending, unmark_going_in};
+use crate::agents::{answer_reach, core_up_ms, press, returning, Key, INTERRUPT_SETTLE, NOTIFY_EVERY};
 use crate::provider::Provider;
 use crate::throttle::now_ms;
 use serde::{Deserialize, Serialize};

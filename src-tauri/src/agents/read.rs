@@ -6,7 +6,7 @@ use crate::agents::delivery::screen_of;
 use crate::agents::lost::{lost_count, lost_whole, undelivered_note};
 use crate::agents::owed::{hand_over, queue_settled, seen};
 use crate::agents::registry::{authorize_view, label, reg};
-use crate::agents::resume_pending;
+use crate::agents::resume::resume_pending;
 use crate::provider::Provider;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
