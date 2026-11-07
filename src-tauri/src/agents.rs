@@ -5050,7 +5050,7 @@ fn command_reach(text: &str, dev: bool, own: bool, approver: Option<Privilege>) 
 
 /// `command_reach` for a caller and a target as they stand now: checked when
 /// text is taken and again when it is typed, held text and resumes included.
-fn command_reach_now(caller: &str, id: &str, text: &str) -> Result<(), String> {
+pub(crate) fn command_reach_now(caller: &str, id: &str, text: &str) -> Result<(), String> {
     if command_prefix(text).is_none() {
         return Ok(());
     }
