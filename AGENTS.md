@@ -93,5 +93,8 @@ one CLI only.
   true`, or the link arrives as a text file Claude Code does not see.
 - Once per clone, `git config core.hooksPath .githooks`: its pre-commit hook
   refuses a commit with anything under `.claude/skills/` that is not a symlink.
+- No attribution trailers in commits (`Co-Authored-By:`, the robot emoji,
+  "Generated with ..."): authorship is git's author field only. Enforced by
+  the commit-msg hook and, over every pushed commit, by CI.
 - A setting only one CLI understands goes in that CLI's project file:
   `.claude/settings.json` or `.codex/config.toml`.
