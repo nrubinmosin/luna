@@ -83,7 +83,7 @@ fn rollouts_on(account_path: &str, days: impl Iterator<Item = NaiveDate>) -> Vec
             }
         }
     }
-    out.sort_by(|a, b| b.0.cmp(&a.0));
+    out.sort_by_key(|e| std::cmp::Reverse(e.0));
     out
 }
 
@@ -391,7 +391,7 @@ fn scan_rollout(path: &Path, from: u64, since_ms: i64, scan: &mut Scan) -> u64 {
         let Ok(v) = serde_json::from_str::<Value>(line) else { return };
         let payload = &v["payload"];
         let at_ms = v["timestamp"].as_str().and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok()).map(|t| t.timestamp_millis());
-        let new = at_ms.map_or(true, |t| t >= since_ms);
+        let new = at_ms.is_none_or(|t| t >= since_ms);
         match (v["type"].as_str(), payload["type"].as_str()) {
             (Some("event_msg"), Some("task_started" | "turn_started")) => {
                 // A turn an earlier process was on went with it, and Codex (0.166)
@@ -479,7 +479,7 @@ pub fn rollouts_since(account_path: &str, folder: &str, since_ms: u64) -> Vec<Pa
         .into_iter()
         .filter(|(ts, _, _)| *ts >= not_before)
         .filter(|(_, _, p)| {
-            first_line(p).is_some_and(|v| v["payload"]["source"] == "cli" && v["payload"]["cwd"].as_str().is_some_and(&ours))
+            first_line(p).is_some_and(|v| v["payload"]["source"] == "cli" && v["payload"]["cwd"].as_str().is_some_and(ours))
         })
         .map(|(_, _, p)| p)
         .collect()
@@ -594,7 +594,7 @@ fn rollout_on(live: &Live, thread: Option<String>) -> Option<PathBuf> {
     // say `{"subagent":…}`, all in this folder and on this account, and any
     // moment now: told apart by the file, they stay told apart after a helper
     // is deleted or the core restarts, and with no list of ids to keep.
-    let meta_fits = |v: &Value| v["payload"]["source"] == "cli" && v["payload"]["cwd"].as_str().is_some_and(|cwd| ours(cwd));
+    let meta_fits = |v: &Value| v["payload"]["source"] == "cli" && v["payload"]["cwd"].as_str().is_some_and(ours);
     let today = Local::now().date_naive();
     let mut candidates: Vec<(NaiveDateTime, PathBuf)> = rollouts_on(live.account_path, days_back(today, 2))
         .into_iter()
@@ -742,8 +742,8 @@ pub fn read_tail(path: &Path) -> Tail {
                     out.model = payload["model"].as_str().map(str::to_owned);
                 }
             }
-            Some("event_msg") => match payload["type"].as_str() {
-                Some("token_count") => {
+            Some("event_msg") => {
+                if let Some("token_count") = payload["type"].as_str() {
                     if out.context_tokens.is_none() {
                         let info = &payload["info"];
                         if info.is_object() {
@@ -761,8 +761,7 @@ pub fn read_tail(path: &Path) -> Tail {
                         out.rate_limits = Some((payload["rate_limits"].clone(), v["timestamp"].as_str().unwrap_or("").to_string()));
                     }
                 }
-                _ => {}
-            },
+            }
             _ => {}
         }
         if out.model.is_some() && out.context_tokens.is_some() && out.rate_limits.is_some() {
@@ -967,7 +966,7 @@ pub fn latest_rate_limits(account_path: &str) -> Option<(Value, String)> {
         .into_iter()
         .map(|(_, _, p)| (std::fs::metadata(&p).and_then(|m| m.modified()).map_or(0, ms), p))
         .collect();
-    files.sort_by(|a, b| b.0.cmp(&a.0));
+    files.sort_by_key(|e| std::cmp::Reverse(e.0));
     let mut best: Option<(i64, (Value, String))> = None;
     for (modified, path) in files {
         if best.as_ref().is_some_and(|(at, _)| *at >= modified) {
@@ -975,7 +974,7 @@ pub fn latest_rate_limits(account_path: &str) -> Option<(Value, String)> {
         }
         let Some(hit) = read_tail(&path).rate_limits else { continue };
         let at = chrono::DateTime::parse_from_rfc3339(&hit.1).map_or(i64::MIN, |t| t.timestamp_millis());
-        if best.as_ref().map_or(true, |(b, _)| at > *b) {
+        if best.as_ref().is_none_or(|(b, _)| at > *b) {
             best = Some((at, hit));
         }
     }
@@ -1531,7 +1530,7 @@ mod format_tests {
             r#"{{"timestamp":"t","type":"response_item","payload":{{"type":"function_call_output","call_id":"c","output":"{}"}}}}"#,
             "x".repeat(4096)
         );
-        let long: Vec<String> = lines[..2].iter().map(|l| l.to_string()).chain(std::iter::repeat(filler).take(300)).collect();
+        let long: Vec<String> = lines[..2].iter().map(|l| l.to_string()).chain(std::iter::repeat_n(filler, 300)).collect();
         std::fs::write(&path, long.join("\n") + "\n").unwrap();
         let mut s = Scan::default();
         scan_rollout(&path, 0, 0, &mut s);

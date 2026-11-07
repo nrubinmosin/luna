@@ -116,8 +116,8 @@ fn read_auth(account_path: &str) -> Option<Auth> {
 
 pub fn window_label(minutes: Option<i64>) -> String {
     match minutes {
-        Some(m) if m == 300 => "5 hours".into(),
-        Some(m) if m == 10080 => "week".into(),
+        Some(300) => "5 hours".into(),
+        Some(10080) => "week".into(),
         Some(m) if m > 0 && m % 1440 == 0 => format!("{} days", m / 1440),
         Some(m) if m > 0 && m % 60 == 0 => format!("{} hours", m / 60),
         Some(m) if m > 0 => format!("{m} min"),

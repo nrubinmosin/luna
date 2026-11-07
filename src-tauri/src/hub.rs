@@ -208,6 +208,8 @@ mod live {
     fn a_posted_hook_reaches_the_tracker() {
         start();
         let url = hook_url("chat-hub-test").expect("listener up");
+        // ureq's own error, large as it is, only ever unwrapped here.
+        #[allow(clippy::result_large_err)]
         let post = |body: &str| ureq::post(&url).send_string(body).map(|r| r.status());
 
         assert_eq!(post(r#"{"hook_event_name":"UserPromptSubmit","session_id":"s"}"#).unwrap(), 204);

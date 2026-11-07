@@ -123,7 +123,7 @@ pub fn rename_account(provider: Provider, name: String, to: String) -> Result<Ac
     // Settings that cannot be written leave the chats on the old name: the
     // folder goes back under it rather than leave them pointing at nothing.
     if let Err(e) = moved {
-        if let Err(back) = std::fs::rename(&dest, root.join(&name)) {
+        if let Err(back) = fs::rename(&dest, root.join(&name)) {
             crate::log::warn("accounts", &format!("could not move {} back to {name}: {back}", dest.display()));
         }
         return Err(e);
@@ -133,7 +133,7 @@ pub fn rename_account(provider: Provider, name: String, to: String) -> Result<Ac
 }
 
 /// The folder part of a rename, under one provider's root.
-fn rename_in(root: &std::path::Path, name: &str, to: &str) -> Result<PathBuf, String> {
+fn rename_in(root: &Path, name: &str, to: &str) -> Result<PathBuf, String> {
     validate_name(name)?;
     validate_name(to)?;
     let from = root.join(name);

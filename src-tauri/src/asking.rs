@@ -66,7 +66,7 @@ pub fn overlay(chat_id: &str, meta: &mut crate::pty::SessionMeta) {
 
 /// `overlay` with the marker on and set to `marker`.
 fn overlay_marked(chat_id: &str, meta: &mut crate::pty::SessionMeta, marker: &str) {
-    let idle = meta.status.as_deref().map_or(true, |s| crate::activity::turn_of(s) == crate::activity::Turn::Idle);
+    let idle = meta.status.as_deref().is_none_or(|s| crate::activity::turn_of(s) == crate::activity::Turn::Idle);
     let busy = crate::activity::turn_state(chat_id).is_some_and(|t| t.turn != crate::activity::Turn::Idle);
     if !idle || busy || !for_user(chat_id) {
         return;

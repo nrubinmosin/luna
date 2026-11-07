@@ -69,7 +69,7 @@ mod imp {
                 job.0,
                 JobObjectExtendedLimitInformation,
                 &info as *const _ as *const std::ffi::c_void,
-                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
             )
         }
     }
@@ -185,7 +185,7 @@ mod imp {
         // entry is a plain stack struct of the size it says.
         unsafe {
             let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) else { return false };
-            let mut t = THREADENTRY32 { dwSize: std::mem::size_of::<THREADENTRY32>() as u32, ..Default::default() };
+            let mut t = THREADENTRY32 { dwSize: size_of::<THREADENTRY32>() as u32, ..Default::default() };
             if Thread32First(snap, &mut t).is_ok() {
                 loop {
                     if t.th32OwnerProcessID == pid {
@@ -272,8 +272,7 @@ mod imp {
         // SAFETY: as in `descendants`.
         unsafe {
             let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else { return edges };
-            let mut e = PROCESSENTRY32W::default();
-            e.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+            let mut e = PROCESSENTRY32W { dwSize: size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
             if Process32FirstW(snap, &mut e).is_ok() {
                 loop {
                     edges.push((e.th32ProcessID, e.th32ParentProcessID));
@@ -292,7 +291,7 @@ mod imp {
         let mut cap: usize = 256;
         loop {
             // Header (two u32) followed by `cap` usize pids.
-            let bytes = std::mem::size_of::<JOBOBJECT_BASIC_PROCESS_ID_LIST>() + cap * std::mem::size_of::<usize>();
+            let bytes = size_of::<JOBOBJECT_BASIC_PROCESS_ID_LIST>() + cap * size_of::<usize>();
             let mut buf = vec![0u8; bytes];
             // SAFETY: the buffer is at least a header long and outlives the call;
             // the header is read only after the call filled it.
@@ -327,8 +326,7 @@ mod imp {
                                                      // sized before the first call as the API requires.
         unsafe {
             let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else { return vec![root] };
-            let mut e = PROCESSENTRY32W::default();
-            e.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+            let mut e = PROCESSENTRY32W { dwSize: size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
             if Process32FirstW(snap, &mut e).is_ok() {
                 loop {
                     edges.push((e.th32ProcessID, e.th32ParentProcessID));
@@ -420,8 +418,7 @@ mod imp {
         // SAFETY: as in `descendants`.
         unsafe {
             let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else { return out };
-            let mut e = PROCESSENTRY32W::default();
-            e.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+            let mut e = PROCESSENTRY32W { dwSize: size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
             if Process32FirstW(snap, &mut e).is_ok() {
                 loop {
                     if pids.contains(&e.th32ProcessID) {

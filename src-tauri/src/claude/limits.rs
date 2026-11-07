@@ -206,7 +206,7 @@ fn fetch_limits(account_path: &str, force: bool) -> Result<AccountLimits, String
     // Luna's own last answer, when it is newer than what the CLI cached.
     let remembered = last_answer().lock().ok().and_then(|m| m.get(account_path).cloned());
     if let Some((at, limits)) = remembered {
-        if out.fetched_at_ms.map_or(true, |cached| (at as f64) > cached) {
+        if out.fetched_at_ms.is_none_or(|cached| (at as f64) > cached) {
             apply_limits(&mut out, &limits);
             out.source = Some("network".into());
             out.fetched_at_ms = Some(at as f64);

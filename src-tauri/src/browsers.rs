@@ -160,6 +160,7 @@ pub fn split(command: &str) -> Vec<String> {
 }
 
 /// A Chromium browser's profiles, `(directory, name)`, off its `Local State`.
+#[cfg(any(windows, test))]
 fn chromium_profiles(local_state: &str) -> Vec<(String, String)> {
     let Ok(v) = serde_json::from_str::<serde_json::Value>(local_state) else { return Vec::new() };
     let Some(cache) = v["profile"]["info_cache"].as_object() else { return Vec::new() };
@@ -171,6 +172,7 @@ fn chromium_profiles(local_state: &str) -> Vec<(String, String)> {
 }
 
 /// Firefox's profiles by name, off its `profiles.ini`.
+#[cfg(any(windows, test))]
 fn firefox_profiles(ini: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut in_profile = false;
@@ -186,6 +188,7 @@ fn firefox_profiles(ini: &str) -> Vec<String> {
 
 /// Where each Chromium browser keeps its profiles, by its exe, under
 /// `%LOCALAPPDATA%`.
+#[cfg(any(windows, test))]
 const CHROMIUM: &[(&str, &str)] = &[
     ("chrome.exe", "Google\\Chrome\\User Data"),
     ("msedge.exe", "Microsoft\\Edge\\User Data"),
@@ -196,6 +199,7 @@ const CHROMIUM: &[(&str, &str)] = &[
 
 /// The entries for one browser installed at `exe`, called `label`: one per
 /// profile where it has them.
+#[cfg(any(windows, test))]
 fn entries_for(exe: &str, label: &str, read: &dyn Fn(&std::path::Path) -> Option<String>) -> Vec<Browser> {
     let file = std::path::Path::new(exe).file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
     let stem = file.trim_end_matches(".exe").to_string();

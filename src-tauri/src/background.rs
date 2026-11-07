@@ -1608,6 +1608,9 @@ pub enum Placed {
 
 /// Onto the stdin of the turn running, if that still takes text and nothing
 /// waits ahead of it: what came first goes first. `q` is back if it cannot go.
+// The error is the caller's own message handed back whole, to be queued
+// instead; boxing it would only move it to the heap and out again.
+#[allow(clippy::result_large_err)]
 fn join(e: &mut Entry, mut q: Queued) -> Result<(), Queued> {
     if !e.queue.is_empty() {
         return Err(q);
@@ -3510,12 +3513,12 @@ mod tests {
         in_claimed_turn("id-ask");
         let held = std::thread::spawn(|| permission("id-ask", &json!({ "tool_name": "Bash", "input": { "command": "ls" } })));
         for _ in 0..200 {
-            if super::ask("id-ask").is_some() {
+            if ask("id-ask").is_some() {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        let shown = serde_json::to_value(super::ask("id-ask").unwrap()).unwrap();
+        let shown = serde_json::to_value(ask("id-ask").unwrap()).unwrap();
         assert!(shown["id"].as_str().is_some_and(|i| !i.is_empty()), "{shown}");
         kill("id-ask");
         let _ = held.join();

@@ -82,7 +82,7 @@ fn from_other_accounts(account_path: &str) -> Vec<CodexModel> {
             Some((modified, a.path))
         })
         .collect();
-    caches.sort_by(|a, b| b.0.cmp(&a.0));
+    caches.sort_by_key(|e| std::cmp::Reverse(e.0));
     caches.into_iter().map(|(_, p)| read_models(&p)).find(|m| !m.is_empty()).unwrap_or_default()
 }
 
@@ -214,7 +214,7 @@ mod tests {
         assert_eq!(m[0].default_effort.as_deref(), Some("medium"));
         assert_eq!(m[0].efforts, vec!["low", "high", "ultra"]);
         assert_eq!(m[0].effort_hints.get("low").map(String::as_str), Some("Fast"));
-        assert!(m[0].effort_hints.get("high").is_none());
+        assert!(!m[0].effort_hints.contains_key("high"));
         let _ = std::fs::remove_dir_all(&root);
     }
 

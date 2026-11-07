@@ -39,7 +39,8 @@ pub fn silence(window: &tauri::WebviewWindow) {
                 return LRESULT(0);
             }
         }
-        DefSubclassProc(hwnd, msg, wparam, lparam)
+        // SAFETY: passes on, unchanged, a message Windows handed this subclass.
+        unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
     }
 
     let hwnd = match window.hwnd() {
@@ -94,12 +95,17 @@ pub fn exit_with_session() {
             crate::lifecycle::exiting(why);
             std::process::exit(0);
         }
-        DefSubclassProc(hwnd, msg, wparam, lparam)
+        // SAFETY: passes on, unchanged, a message Windows handed this subclass.
+        unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
     }
 
     unsafe extern "system" fn hook(hwnd: HWND, count: LPARAM) -> BOOL {
-        if SetWindowSubclass(hwnd, Some(proc_), ID, 0).as_bool() {
-            *(count.0 as *mut usize) += 1;
+        // SAFETY: called back from the EnumThreadWindows below, on the thread
+        // that owns `hwnd`, with `count` pointing at its `hooked`.
+        unsafe {
+            if SetWindowSubclass(hwnd, Some(proc_), ID, 0).as_bool() {
+                *(count.0 as *mut usize) += 1;
+            }
         }
         BOOL(1) // keep enumerating
     }

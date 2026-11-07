@@ -376,9 +376,9 @@ fn read_skills(dirs: &Dirs) -> Result<Skills, String> {
         Err(e) => return Err(failed(e)),
     };
     for entry in entries {
-        let entry = entry.map_err(&failed)?;
+        let entry = entry.map_err(failed)?;
         let name = entry.file_name().to_string_lossy().into_owned();
-        if name.starts_with('.') || !entry.file_type().map_err(&failed)?.is_dir() {
+        if name.starts_with('.') || !entry.file_type().map_err(failed)?.is_dir() {
             continue;
         }
         let files = read_dir_files(&entry.path());
@@ -428,10 +428,10 @@ fn read_instructions(dirs: &Dirs) -> Result<Instructions, String> {
         Err(e) => return Err(failed(e)),
     };
     for entry in entries {
-        let entry = entry.map_err(&failed)?;
+        let entry = entry.map_err(failed)?;
         let file = entry.file_name().to_string_lossy().into_owned();
         let Some(name) = file.strip_suffix(".md") else { continue };
-        if name.starts_with('.') || entry.file_type().map_err(&failed)?.is_dir() {
+        if name.starts_with('.') || entry.file_type().map_err(failed)?.is_dir() {
             continue;
         }
         let text = check_name(name).and_then(|()| std::fs::read(entry.path()).map_err(|e| format!("{}: {e}", entry.path().display())));
@@ -1692,7 +1692,7 @@ fn overview_locked(act: bool) -> Result<Overview, String> {
 }
 
 /// A settings change, then a pass to lay it out.
-fn change(f: impl FnOnce(&mut crate::settings::LibrarySettings)) -> Result<Overview, String> {
+fn change(f: impl FnOnce(&mut LibrarySettings)) -> Result<Overview, String> {
     crate::settings::update(|s| f(&mut s.library))?;
     overview(true)
 }

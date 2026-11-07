@@ -356,6 +356,7 @@ pub fn watch_from_args() -> bool {
 }
 
 /// What the watcher calls the process it watched.
+#[cfg(windows)]
 fn who() -> &'static str {
     if is_core() {
         "luna core"
@@ -472,7 +473,7 @@ mod watcher {
         // sized as the API requires before the first call.
         unsafe {
             let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else { return found };
-            let mut e = PROCESSENTRY32W { dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
+            let mut e = PROCESSENTRY32W { dwSize: size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
             let mut ok = Process32FirstW(snap, &mut e).is_ok();
             while ok {
                 let len = e.szExeFile.iter().position(|&c| c == 0).unwrap_or(e.szExeFile.len());

@@ -3,9 +3,6 @@ use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, PtySize};
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
-// The kill path shells out to taskkill; anywhere else it has no use for this
-// and would warn about it on every build.
-#[cfg(windows)]
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -720,7 +717,7 @@ fn curl_program() -> String {
 }
 
 /// The same clean-up for a process started without a pty (background.rs).
-pub(crate) fn clean_env(cmd: &mut std::process::Command) {
+pub(crate) fn clean_env(cmd: &mut Command) {
     for k in INHERITED_SESSION_VARS {
         cmd.env_remove(k);
     }
@@ -1616,10 +1613,10 @@ pub async fn ensure_codex_session(
         }
         let mut args: Vec<String> = vec![];
         let mut envs = vec![("CODEX_HOME", account_path.clone())];
-        let describe;
-        if login {
+
+        let describe = if login {
             args.push("login".into());
-            describe = "login".to_string();
+            "login".to_string()
         } else {
             if let Some(session_id) = &resume {
                 args.push("resume".into());
@@ -1709,8 +1706,8 @@ pub async fn ensure_codex_session(
                 args.push("--".into());
                 args.push(p.to_string());
             }
-            describe = format!("model {} effort {effort} approval {approval} sandbox {sandbox}", model.as_deref().unwrap_or("default"));
-        }
+            format!("model {} effort {effort} approval {approval} sandbox {sandbox}", model.as_deref().unwrap_or("default"))
+        };
         Ok(Launch { provider: Provider::Codex, cwd: folder, account_path, args, envs, resume: if login { None } else { resume }, describe })
     })
     .await
@@ -2252,7 +2249,7 @@ pub fn read_composer(bytes: &[u8], rows: u16, cols: u16, provider: Provider) -> 
     let (cursor, _) = screen.cursor_position();
     let first = |r: u16| screen.cell(r, 0).map_or("", |c| c.contents());
     let rule = |r: u16| first(r) == "─";
-    let blank = |r: u16| (0..cols).all(|c| screen.cell(r, c).map_or(true, |x| x.contents().trim().is_empty()));
+    let blank = |r: u16| (0..cols).all(|c| screen.cell(r, c).is_none_or(|x| x.contents().trim().is_empty()));
     let mark = match provider {
         Provider::Claude => "❯",
         Provider::Codex => "›",

@@ -1079,7 +1079,7 @@ impl Drop for TypingInto {
 
 /// How far the session's transcript goes now, 0 before it has one.
 fn transcript_end(id: &str) -> u64 {
-    transcript_path(&crate::pty::manager(), id).and_then(|p| std::fs::metadata(p).ok()).map_or(0, |m| m.len())
+    transcript_path(crate::pty::manager(), id).and_then(|p| std::fs::metadata(p).ok()).map_or(0, |m| m.len())
 }
 
 /// A `wait` by `caller` on a session, counted for as long as it runs.
@@ -1612,7 +1612,7 @@ fn chats_now() -> SavedChats {
         // Where its conversation is, while it may be its first: a core after this
         // goes by that as to whether it has one to come back to (`first_turn_lost`).
         if first_turn {
-            transcript_path(&pty, &c.id);
+            transcript_path(pty, &c.id);
         }
         c.transcript = transcripts().lock().unwrap_or_else(|e| e.into_inner()).get(&c.id).cloned();
         c.mid_turn |= crate::activity::turn_state(&c.id)
@@ -1889,7 +1889,7 @@ pub fn ask_of(id: &str) -> Option<Ask> {
                 .map(|(name, input, _)| (name.clone(), input.clone()));
             let (name, input) = hooked
                 .filter(|_| turn.is_some_and(|t| t != crate::activity::Turn::Idle))
-                .or_else(|| waiting.then(|| crate::claude::session::pending_tool(&transcript_path(&pty, id)?)).flatten())?;
+                .or_else(|| waiting.then(|| crate::claude::session::pending_tool(&transcript_path(pty, id)?)).flatten())?;
             if name == "AskUserQuestion" {
                 Ask::from_claude_questions(&input)
             } else {
@@ -1976,10 +1976,10 @@ fn codex_list_on(screen: &str) -> Option<Ask> {
 pub fn state_of(id: &str) -> (&'static str, Option<Ask>) {
     use crate::activity::Turn;
     let pty = crate::pty::manager();
-    if !live(&pty, id) {
+    if !live(pty, id) {
         return ("exited", None);
     }
-    if still_starting(&pty, id) {
+    if still_starting(pty, id) {
         return ("starting", None);
     }
     let ask = ask_of(id);
@@ -2289,8 +2289,8 @@ pub fn list(caller: &str, ids: Option<&[String]>, accounts: bool) -> Listing {
             // is taken to have seen of a session's turns.
             let turns_ended = ts.map(|t| t.turns_ended).unwrap_or(0);
             let (state, ask) = state_of(&id);
-            let worktree = checkout_of(&pty, &id, &k);
-            let signs = crate::background::signs(&id).unwrap_or_else(|| visible_signs(&pty, &id, k.provider));
+            let worktree = checkout_of(pty, &id, &k);
+            let signs = crate::background::signs(&id).unwrap_or_else(|| visible_signs(pty, &id, k.provider));
             SessionRow {
                 state,
                 ask,
@@ -2948,7 +2948,7 @@ fn spawn_with(caller: &str, mut params: SpawnParams, replaces: Option<u64>, stil
             Some(names) => {
                 // A copy, and off the lock: choosing reads login files.
                 let usage = reg().lock().unwrap_or_else(|e| e.into_inner()).usage.clone();
-                Some(pick_from_list(names, provider, &allowed, &usage, |a| signed_in(provider, &a.path), crate::throttle::now_ms())?)
+                Some(pick_from_list(names, provider, &allowed, &usage, |a| signed_in(provider, &a.path), now_ms())?)
             }
             None => None,
         };
@@ -3078,14 +3078,14 @@ fn spawn_with(caller: &str, mut params: SpawnParams, replaces: Option<u64>, stil
         background: false,
     });
     let pty = crate::pty::manager();
-    let started = await_start(&pty, &id, &prompt, 0, START_TIMEOUT);
-    let starting = !started && still_starting(&pty, &id);
+    let started = await_start(pty, &id, &prompt, 0, START_TIMEOUT);
+    let starting = !started && still_starting(pty, &id);
     if starting {
         crate::log::info(
             "agents",
             &format!("session {} spawned by {} has drawn nothing within {START_TIMEOUT:?}; still starting", label(&id), label(caller)),
         );
-    } else if !started && unknown_command(&pty, &id, &prompt) {
+    } else if !started && unknown_command(pty, &id, &prompt) {
         crate::log::info(
             "agents",
             &format!("session {} spawned by {} does not know the command its prompt opens with", label(&id), label(caller)),
@@ -3096,14 +3096,14 @@ fn spawn_with(caller: &str, mut params: SpawnParams, replaces: Option<u64>, stil
             &format!("session {} spawned by {} did not start on its prompt within {START_TIMEOUT:?}", label(&id), label(caller)),
         );
     }
-    let screen = (!started && !starting).then(|| screen_of(&pty, &id)).flatten();
+    let screen = (!started && !starting).then(|| screen_of(pty, &id)).flatten();
     let ask = screen.is_some().then(|| ask_of(&id)).flatten();
     // A screen handed over says it all already.
-    let warnings = if screen.is_none() { warnings_of(&pty, &id) } else { Vec::new() };
+    let warnings = if screen.is_none() { warnings_of(pty, &id) } else { Vec::new() };
     let same_folder = run_dir.map(|dir| neighbours_in(&dir, &[caller, &id])).unwrap_or_default();
     shown(caller, &id, 0);
     owe_from(caller, &id, 0, 0);
-    let worktree = worktree_of(&pty, &id);
+    let worktree = worktree_of(pty, &id);
     let worktree_pending = own_worktree && worktree.path.is_none();
     Ok(Spawned {
         id,
@@ -3346,7 +3346,7 @@ fn spawn_background(
     if own_worktree {
         let deadline = std::time::Instant::now() + WORKTREE_WAIT;
         loop {
-            worktree = worktree_of(&pty, &id);
+            worktree = worktree_of(pty, &id);
             if worktree.path.is_some() || std::time::Instant::now() >= deadline {
                 break;
             }
@@ -3756,7 +3756,7 @@ fn type_in(
 pub fn send(caller: &str, id: &str, text: &str, interrupt: bool) -> Result<Sent, String> {
     authorize_send(caller, id)?;
     let pty = crate::pty::manager();
-    if !live(&pty, id) {
+    if !live(pty, id) {
         return Err(format!("session {id} is not running"));
     }
     // Before anything is read of it: what is going in now may be a notice, and
@@ -3810,7 +3810,7 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool) -> Result<Sent,
     };
     let interrupted = interrupt && busy(before) && terminal.is_some();
     if interrupted {
-        press(&pty, id, &[Key::Seq("\x1b")])?;
+        press(pty, id, &[Key::Seq("\x1b")])?;
         let deadline = std::time::Instant::now() + INTERRUPT_SETTLE;
         while busy(crate::activity::turn_state(id)) && std::time::Instant::now() < deadline {
             std::thread::sleep(POLL);
@@ -3818,7 +3818,7 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool) -> Result<Sent,
         before = crate::activity::turn_state(id);
         baseline = before.map(|t| t.turns_ended).unwrap_or(0);
     }
-    if still_starting(&pty, id) {
+    if still_starting(pty, id) {
         return Err(format!(
             "session {id} has not come up yet (its terminal is still blank), so typed text would be lost; \
              an opening prompt from luna_spawn is held and runs once it is up — luna_wait(turn_done) for the reply"
@@ -3866,12 +3866,12 @@ fn put_in(
     // Before the text goes in: `type_in` waits for the turn to start, and a
     // short one is over, and written, by then.
     let cursor = transcript_end(id);
-    let Some(started) = type_text(&pty, id, text, turn_before, baseline)? else { return Ok(None) };
+    let Some(started) = type_text(pty, id, text, turn_before, baseline)? else { return Ok(None) };
     let started = started && !queued;
     if turn_before == Some(crate::activity::Turn::Waiting) {
         reg().lock().unwrap_or_else(|e| e.into_inner()).answered.insert((caller.to_string(), id.to_string()), now_ms());
     }
-    let screen = (!started && !queued).then(|| screen_of(&pty, id)).flatten();
+    let screen = (!started && !queued).then(|| screen_of(pty, id)).flatten();
     // The count before the text went in: the reply to it ends the next
     // turn, which the caller has not seen even if it is already over. Typed
     // mid-turn, that is the turn running now or the one the CLI starts on
@@ -4022,8 +4022,8 @@ fn held_sender() {
     loop {
         std::thread::sleep(NOTIFY_EVERY);
         let pty = crate::pty::manager();
-        resume_chats(&pty);
-        deliver_held(&pty);
+        resume_chats(pty);
+        deliver_held(pty);
     }
 }
 
@@ -4075,7 +4075,7 @@ fn resume_look(waiting: bool, up_ms: u64, alive: bool, typed: bool, ready: bool)
 fn resume_chats(pty: &crate::pty::PtyManager) {
     let ids: Vec<String> = reg().lock().unwrap_or_else(|e| e.into_inner()).resumes.keys().cloned().collect();
     for id in ids {
-        let waiting = reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(&id).map_or(true, |k| k.waiting);
+        let waiting = reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(&id).is_none_or(|k| k.waiting);
         let alive = pty.alive(&id);
         let ready = alive
             && crate::activity::turn_state(&id).is_some_and(|t| t.turn == crate::activity::Turn::Idle)
@@ -4349,7 +4349,7 @@ fn deliver_held(pty: &crate::pty::PtyManager) {
             if reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(&id).is_some_and(|k| returning(k, core_up_ms())) {
                 continue;
             }
-            drop_it(&mut *reg().lock().unwrap_or_else(|e| e.into_inner()));
+            drop_it(&mut reg().lock().unwrap_or_else(|e| e.into_inner()));
             if caller != DEV_CALLER {
                 let ended = crate::activity::turn_state(&id).map_or(0, |t| t.turns_ended);
                 let mut o = Owed::from(ended, transcript_end(&id));
@@ -4386,7 +4386,7 @@ fn deliver_held(pty: &crate::pty::PtyManager) {
         match typed {
             Ok(Some(sent)) => {
                 let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-                drop_it(&mut *r);
+                drop_it(&mut r);
                 if let Some(o) = r.owed.get_mut(&(caller.clone(), id.clone())) {
                     o.late = true;
                 }
@@ -4616,7 +4616,7 @@ pub fn answer(
 ) -> Result<Answered, String> {
     let known = authorize_send(caller, id)?;
     let pty = crate::pty::manager();
-    if !live(&pty, id) {
+    if !live(pty, id) {
         return Err(format!("session {id} is not running"));
     }
     // Keys in the middle of a notice's paste would land in it: its turn first,
@@ -4652,7 +4652,7 @@ pub fn answer(
             return Err(format!("the user is typing in session {id}; try again in a little while"));
         }
         match (keys, &ask) {
-            (Some(k), _) => press(&pty, id, &parse_keys(k)?)?,
+            (Some(k), _) => press(pty, id, &parse_keys(k)?)?,
             // An async question holds no dialog: the answer is a message.
             (None, Some(a)) if !a.blocking => {
                 let text: Vec<String> =
@@ -4661,9 +4661,9 @@ pub fn answer(
                     return Err("give one answer per question".into());
                 }
                 let before = crate::activity::turn_state(id);
-                type_in(&pty, id, &format!("Answers to your question: {}", text.join("; ")), before.map(|t| t.turn), baseline, hold)?;
+                type_in(pty, id, &format!("Answers to your question: {}", text.join("; ")), before.map(|t| t.turn), baseline, hold)?;
             }
-            (None, Some(a)) => press(&pty, id, &presses_for(known.provider, a, answers, allow, note)?)?,
+            (None, Some(a)) => press(pty, id, &presses_for(known.provider, a, answers, allow, note)?)?,
             (None, None) => {
                 return Err(format!(
                     "session {id} is not on a question or permission Luna can read; luna_read with screen: true shows its \
@@ -4678,7 +4678,7 @@ pub fn answer(
     seen(caller, id, baseline);
     owe_from(caller, id, baseline, cursor);
     let (state, ask) = state_of(id);
-    let screen = (!crate::background::has(id)).then(|| screen_of(&pty, id)).flatten();
+    let screen = (!crate::background::has(id)).then(|| screen_of(pty, id)).flatten();
     Ok(Answered { ok: true, state, ask, turns_ended: baseline, screen })
 }
 
@@ -4836,7 +4836,7 @@ pub fn read(
 ) -> Result<Reading, String> {
     let known = authorize_view(caller, id)?;
     let pty = crate::pty::manager();
-    let path = transcript_path(&pty, id);
+    let path = transcript_path(pty, id);
     // Taken before the transcript is read: a turn over by now has its words
     // in what is read.
     let ts = crate::activity::turn_state(id);
@@ -4924,7 +4924,7 @@ pub fn read(
     });
     // And the session was done with it before the read: a read while it
     // works on has seen a turn on the way, and the answer is still to come.
-    let done = ts.map_or(true, |t| t.turn == crate::activity::Turn::Idle && !t.children_busy);
+    let done = ts.is_none_or(|t| t.turn == crate::activity::Turn::Idle && !t.children_busy);
     let settles = whole
         && done
         && !resume_pending(id)
@@ -4932,7 +4932,7 @@ pub fn read(
     // Ahead of the hand-over, which takes it off. With an answer still to come
     // it stays for the notice; with none owed this read is all that tells it.
     let undelivered = undelivered_note(caller, id);
-    if undelivered.is_some() && lost_whole(&pty, caller, id) {
+    if undelivered.is_some() && lost_whole(pty, caller, id) {
         // No answer is to come: this was all of it, and no notice is to say it again.
         // Cancelled first, it and the debt are put back together.
         call.commit(hand_over(caller, id, lost_count(caller, id), None));
@@ -4943,14 +4943,14 @@ pub fn read(
         seen(caller, id, turns_ended);
     }
     Ok(Reading {
-        transcript_missing: messages.is_empty() && !transcript_found(&pty, id),
+        transcript_missing: messages.is_empty() && !transcript_found(pty, id),
         messages,
         cursor,
         left_out,
         state,
         ask,
         turns_ended,
-        screen: with_screen.then(|| screen_of(&pty, id)).flatten(),
+        screen: with_screen.then(|| screen_of(pty, id)).flatten(),
         undelivered,
     })
 }
@@ -5100,7 +5100,7 @@ fn wait_for(
     // A first turn lost is all there is to wait for, and what Luna holds of the
     // caller's stays for it (`deliver_held`), so nothing below would ever see it through.
     // An `exit` waits for the session itself.
-    let lost = || (until == "turn_done" || !live(&pty, id)) && still_all_lost(&pty, caller, id) && holding() != Holding::Unsure;
+    let lost = || (until == "turn_done" || !live(pty, id)) && still_all_lost(pty, caller, id) && holding() != Holding::Unsure;
     // Text Luna holds for a person's draft goes in first; the turn to wait
     // for is the one it starts, past whatever the person sent meanwhile. So does
     // what carries it on after a core stopped its turn.
@@ -5114,7 +5114,7 @@ fn wait_for(
         if std::time::Instant::now() >= deadline {
             let (state, ask) = state_of(id);
             let turns_ended = crate::activity::turn_state(id).map_or(0, |t| t.turns_ended);
-            let screen = screen_of(&pty, id);
+            let screen = screen_of(pty, id);
             return Ok((
                 Waited {
                     outcome: "timeout",
@@ -5170,7 +5170,7 @@ fn wait_for(
         if lost() {
             return lost_answer(caller, id, call, alone);
         }
-        let alive = live(&pty, id);
+        let alive = live(pty, id);
         let (ts, floor) = state_then_floor(&key, || crate::activity::turn_state(id));
         baseline = baseline.max(floor);
         let turns_ended = ts.map(|t| t.turns_ended).unwrap_or(0);
@@ -5184,7 +5184,7 @@ fn wait_for(
             // What it has said since the caller last heard, as a notice would go by.
             let upward = || {
                 let cursor = reg().lock().unwrap_or_else(|e| e.into_inner()).owed.get(&key).map(|o| o.cursor);
-                turn != Some(crate::activity::Turn::Busy) && cursor.is_some_and(|at| news_for_parent(&pty, caller, id, &known, at))
+                turn != Some(crate::activity::Turn::Busy) && cursor.is_some_and(|at| news_for_parent(pty, caller, id, &known, at))
             };
             let now = verdict(
                 &Owed::pending(baseline, 0),
@@ -5220,7 +5220,7 @@ fn wait_for(
         // hands it back too, unless it is the prompt the caller has just
         // answered and the sampler has not caught up with yet.
         let asking = (turn == Some(crate::activity::Turn::Waiting) || question)
-            && answered_at.map_or(true, |at| now_ms().saturating_sub(at) >= ANSWERED_MS);
+            && answered_at.is_none_or(|at| now_ms().saturating_sub(at) >= ANSWERED_MS);
         let done = match until {
             "exit" => !alive,
             "waiting" => turn == Some(crate::activity::Turn::Waiting) || question || !alive,
@@ -5243,7 +5243,7 @@ fn wait_for(
             let answers = says || outcome == "job_done";
             // Read from where the caller's question found the transcript, once
             // a move to another is seen to (`moved_to`).
-            transcript_path(&pty, id);
+            transcript_path(pty, id);
             let (asked_at, debt_cut) = {
                 let r = reg().lock().unwrap_or_else(|e| e.into_inner());
                 r.owed.get(&key).map_or((None, false), |o| (Some(o.cursor), o.cut_short))
@@ -5253,15 +5253,15 @@ fn wait_for(
             let cut = says && (crate::background::cut_short(id) || debt_cut);
             let failure = || {
                 (answers || outcome == "exit")
-                    .then(|| failure_of(&pty, id, known.provider))
+                    .then(|| failure_of(pty, id, known.provider))
                     .flatten()
                     .or_else(|| cut.then(|| "it did NOT finish its turn: Luna's core restarted while it worked and stopped it".to_string()))
             };
             let mut failed = failure();
             // A turn that stopped on an error has said all it will.
-            let reply_now = |stopped: bool| reply_of(&pty, id, known.provider, asked_at, alone, stopped);
+            let reply_now = |stopped: bool| reply_of(pty, id, known.provider, asked_at, alone, stopped);
             let mut reply = if outcome == "job_done" {
-                asked_at.and_then(|at| reply_text(id, &said_since(&pty, id, known.provider, at), alone))
+                asked_at.and_then(|at| reply_text(id, &said_since(pty, id, known.provider, at), alone))
             } else if says {
                 reply_now(failed.is_some())
             } else {
@@ -5278,9 +5278,9 @@ fn wait_for(
                 return gone_err();
             }
             let failed = failed.or_else(failure);
-            let transcript_missing = says && reply.is_none() && !transcript_found(&pty, id);
+            let transcript_missing = says && reply.is_none() && !transcript_found(pty, id);
             let bare = outcome == "turn_done" && (reply.is_none() || failed.is_some());
-            let screen = (outcome == "waiting" || bare).then(|| screen_of(&pty, id)).flatten();
+            let screen = (outcome == "waiting" || bare).then(|| screen_of(pty, id)).flatten();
             // Ahead of the hand-over, which takes it off.
             let undelivered = if answers { undelivered_note(caller, id) } else { None };
             let job_debt = told_debt.filter(|_| outcome == "job_done");
@@ -5298,7 +5298,7 @@ fn wait_for(
             ));
         }
         if std::time::Instant::now() >= deadline {
-            let screen = screen_of(&pty, id);
+            let screen = screen_of(pty, id);
             // Nothing was handed over: whatever is owed stays owed, and the
             // next wait still waits for it.
             looked(id);
@@ -5524,7 +5524,7 @@ fn let_go(caller: &str) -> impl Fn() -> Holding {
         if caller == DEV_CALLER {
             return Holding::Yes;
         }
-        if !live(&crate::pty::manager(), &caller) {
+        if !live(crate::pty::manager(), &caller) {
             return Holding::No;
         }
         let over = codex
@@ -5712,12 +5712,12 @@ fn remove(id: &str, known: Known, drop_worktree: bool, worktree: Option<String>)
     let pty = crate::pty::manager();
     // What `luna_sessions` history has left to go on once it is gone.
     if known.parent.is_some() || known.orphan {
-        let transcript = transcript_path(&pty, id);
-        let last = transcript.as_ref().and_then(|_| replies_since(&pty, id, known.provider, 0, false).texts.pop());
+        let transcript = transcript_path(pty, id);
+        let last = transcript.as_ref().and_then(|_| replies_since(pty, id, known.provider, 0, false).texts.pop());
         crate::agentlog::left(
             id,
             transcript.map(|p| p.to_string_lossy().into_owned()).as_deref(),
-            worktree_of(&pty, id).path.as_deref(),
+            worktree_of(pty, id).path.as_deref(),
             last.as_deref(),
         );
     }
@@ -6079,7 +6079,7 @@ impl std::ops::Deref for Said {
 /// over. What the CLI put in itself (a background task's end it takes up) is no
 /// prompt, and its transcript reader leaves it out.
 fn own_words(messages: Vec<Message>, stopped: bool) -> Said {
-    if !stopped && messages.last().map_or(true, |m| m.role != "assistant") {
+    if !stopped && messages.last().is_none_or(|m| m.role != "assistant") {
         return Said::default();
     }
     let mut said = Said::default();
@@ -6154,7 +6154,7 @@ fn first_turn_lost(pty: &crate::pty::PtyManager, id: &str) -> bool {
     if pty.alive(id) {
         return false;
     }
-    known.map_or(true, |k| conversation_on_disk(id, k.provider, &k.folder, &k.account_path).is_none())
+    known.is_none_or(|k| conversation_on_disk(id, k.provider, &k.folder, &k.account_path).is_none())
 }
 
 /// Whether what `caller` is to hear of `id` is all there will be: it was asked, a core
@@ -6168,7 +6168,7 @@ fn lost_whole(pty: &crate::pty::PtyManager, caller: &str, id: &str) -> bool {
 /// the turn a core went with and no other. Asked since, a text that went in has started
 /// it, and what it says to that is still to come, though what it was first asked is lost.
 fn still_all_lost(pty: &crate::pty::PtyManager, caller: &str, id: &str) -> bool {
-    let cut = reg().lock().unwrap_or_else(|e| e.into_inner()).owed.get(&(caller.to_string(), id.to_string())).map_or(true, |o| o.cut_short);
+    let cut = reg().lock().unwrap_or_else(|e| e.into_inner()).owed.get(&(caller.to_string(), id.to_string())).is_none_or(|o| o.cut_short);
     cut && parent_of(id).as_deref() == Some(caller) && first_turn_lost(pty, id)
 }
 
@@ -6195,7 +6195,7 @@ fn lost_answer(caller: &str, id: &str, call: &crate::mcp::Call, alone: bool) -> 
     if alone && !call.commit(hand_over(caller, id, turns_ended, None)) {
         return Err(LET_GO.into());
     }
-    let outcome = if live(&crate::pty::manager(), id) { "turn_done" } else { "exit" };
+    let outcome = if live(crate::pty::manager(), id) { "turn_done" } else { "exit" };
     let (state, ask) = state_of(id);
     let failed = Some("it never got started: Luna's core restarted before its first turn got anywhere".to_string());
     Ok((
@@ -6220,7 +6220,7 @@ fn lost_answer(caller: &str, id: &str, call: &crate::mcp::Call, alone: bool) -> 
 /// that has lost its first turn, what it first asked and what Luna holds of its.
 fn undelivered_for(id: &str, caller: &str, parent: bool) -> Vec<String> {
     let mut lost = crate::background::undelivered_for(id, caller, parent);
-    if parent && first_turn_lost(&crate::pty::manager(), id) {
+    if parent && first_turn_lost(crate::pty::manager(), id) {
         let r = reg().lock().unwrap_or_else(|e| e.into_inner());
         lost.extend(r.openings.get(id).map(|o| o.text.clone()));
         lost.extend(r.held.iter().filter(|h| h.id == id && h.caller == caller).map(|h| h.text.clone()));
@@ -6240,7 +6240,7 @@ struct Undelivered {
 /// with it, `caller` having been told.
 fn take_undelivered(id: &str, caller: &str, parent: bool) -> Undelivered {
     let queued = crate::background::take_undelivered_for(id, caller, parent);
-    let lost = parent && first_turn_lost(&crate::pty::manager(), id);
+    let lost = parent && first_turn_lost(crate::pty::manager(), id);
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
     let opening = if lost { r.openings.remove(id) } else { None };
     let mut held = Vec::new();
@@ -6323,7 +6323,7 @@ fn undelivered_note(caller: &str, id: &str) -> Option<String> {
         return (!left.is_empty()).then(|| left.trim_start().to_string());
     }
     let text = undelivered_text(&lost);
-    let whole = lost_whole(&crate::pty::manager(), caller, id);
+    let whole = lost_whole(crate::pty::manager(), caller, id);
     Some(match note_file(id, &text) {
         Some(path) if whole => {
             format!(
@@ -6763,7 +6763,7 @@ fn notice_line(pty: &crate::pty::PtyManager, caller: &str, who: &str, id: &str, 
             // notice back, never brings it sooner.
             let at = now_ms();
             let due = due_ms(pty, id, k.provider);
-            if due.map_or(true, |due| at >= due.saturating_add(PAST_DUE_MS)) {
+            if due.is_none_or(|due| at >= due.saturating_add(PAST_DUE_MS)) {
                 return Some((Some(quiet_line(who, quiet, due.map(|due| at - due))), Settled::Quiet(ended)));
             }
         }
@@ -7191,7 +7191,7 @@ fn ready_for_notice(pty: &crate::pty::PtyManager, caller: &str) -> bool {
     pty.alive(caller)
         && crate::activity::turn_state(caller).is_some_and(|t| t.turn == crate::activity::Turn::Idle)
         && !still_starting(pty, caller)
-        && pty.typed_ago_ms(caller).map_or(true, |ms| ms >= TYPING_QUIET_MS)
+        && pty.typed_ago_ms(caller).is_none_or(|ms| ms >= TYPING_QUIET_MS)
         && drawn_for_notice(pty, caller)
 }
 
@@ -7199,7 +7199,7 @@ fn ready_for_notice(pty: &crate::pty::PtyManager, caller: &str) -> bool {
 /// prompt says it is. For its first minute only: a prompt Luna cannot read (a mode
 /// with a mark of its own, a CLI that draws it differently) must not silence notices.
 fn drawn_for_notice(pty: &crate::pty::PtyManager, id: &str) -> bool {
-    let long_up = pty.probe(id).map_or(true, |p| (now_ms() as u128).saturating_sub(p.spawned_at_ms) >= SESSION_RETURN_MS as u128);
+    let long_up = pty.probe(id).is_none_or(|p| (now_ms() as u128).saturating_sub(p.spawned_at_ms) >= SESSION_RETURN_MS as u128);
     long_up || pty.at_prompt(id) || pty.has_draft(id)
 }
 
@@ -7556,7 +7556,7 @@ fn notifier() {
     loop {
         std::thread::sleep(NOTIFY_EVERY);
         let pty = crate::pty::manager();
-        reap(&pty);
+        reap(pty);
         // Owed by caller, each session with what is known of it; anything a
         // delete has made unknown is dropped on the way, and a caller yet to
         // come back has nothing to be told in.
@@ -7575,7 +7575,7 @@ fn notifier() {
             });
             for ((caller, id), o) in owed.iter() {
                 let Some(k) = known.get(id) else { continue };
-                if known.get(caller).map_or(true, |k| k.waiting) {
+                if known.get(caller).is_none_or(|k| k.waiting) {
                     continue;
                 }
                 let parent = k.parent.as_deref() == Some(caller.as_str());
@@ -7600,12 +7600,12 @@ fn notifier() {
         }
         // A caller owed nothing still hears of the quota its helpers run on,
         // and of a spawn of its own that a core's going cut off.
-        let mut quota = quota_news(&pty);
+        let mut quota = quota_news(pty);
         for caller in quota.keys() {
             by_caller.entry(caller.clone()).or_default();
         }
         looks_at_budgets = (looks_at_budgets + 1) % BUDGET_EVERY_LOOKS;
-        let (mut budget, budgets_moved) = budget_news(&pty, looks_at_budgets == 0);
+        let (mut budget, budgets_moved) = budget_news(pty, looks_at_budgets == 0);
         if budgets_moved {
             crate::background::save();
         }
@@ -7638,7 +7638,7 @@ fn notifier() {
                 idle_looks.insert(caller, 0);
                 continue;
             }
-            if pty.has_draft(&caller) && pty.alive(&caller) && anything_to_say(&pty, &items) {
+            if pty.has_draft(&caller) && pty.alive(&caller) && anything_to_say(pty, &items) {
                 let (since, told) = drafts.entry(caller.clone()).or_insert((now_ms(), false));
                 if !*told && now_ms().saturating_sub(*since) >= DRAFT_ALERT_MS {
                     *told = true;
@@ -7653,7 +7653,7 @@ fn notifier() {
                 drafts.remove(&caller);
             }
             let looks = idle_looks.entry(caller.clone()).or_default();
-            *looks = if ready_for_notice(&pty, &caller) { *looks + 1 } else { 0 };
+            *looks = if ready_for_notice(pty, &caller) { *looks + 1 } else { 0 };
             if *looks < NOTIFY_IDLE_LOOKS {
                 continue;
             }
@@ -7661,13 +7661,13 @@ fn notifier() {
             let mut settled = Vec::new();
             let mut riders = Vec::new();
             for (id, k, o, who) in &items {
-                if held_for_wait(&pty, &caller, id, o) {
+                if held_for_wait(pty, &caller, id, o) {
                     continue;
                 }
-                let said = if pair_stopped(&pty, &caller, id) {
-                    standing_line(&pty, &caller, who, id, k, *o)
+                let said = if pair_stopped(pty, &caller, id) {
+                    standing_line(pty, &caller, who, id, k, *o)
                 } else {
-                    notice_line(&pty, &caller, who, id, k, *o)
+                    notice_line(pty, &caller, who, id, k, *o)
                 };
                 match said {
                     Some((Some(mut line), how)) => {
@@ -7743,7 +7743,7 @@ fn notifier() {
             let text = format!("{NOTICE_TAG} {}", lines.join(" "));
             let typed = std::thread::Builder::new().name("luna-notice".into()).spawn(move || {
                 let _typing = typing;
-                deliver_notice(&crate::pty::manager(), &caller, &text, settled, quota_lines, spawn_lines, news_lines, budget_lines);
+                deliver_notice(crate::pty::manager(), &caller, &text, settled, quota_lines, spawn_lines, news_lines, budget_lines);
             });
             if let Err(e) = typed {
                 crate::log::warn("agents", &format!("could not start typing a notice: {e}"));
@@ -8287,7 +8287,7 @@ mod tests {
         shown("o-parent", "o-child", 2);
         assert_eq!(owed(), None, "a wait or read past it settles the answer");
         owe_from(DEV_CALLER, "o-child", 0, 0);
-        assert!(reg().lock().unwrap().owed.get(&(DEV_CALLER.to_string(), "o-child".to_string())).is_none());
+        assert!(!reg().lock().unwrap().owed.contains_key(&(DEV_CALLER.to_string(), "o-child".to_string())));
     }
 
     #[test]
@@ -8308,7 +8308,7 @@ mod tests {
         owe_from("h-parent", "h-child", 1, 40);
         seen("h-parent", "h-child", 1);
         let undo = hand_over("h-parent", "h-child", 2, None);
-        assert!(reg().lock().unwrap().owed.get(&key).is_none(), "handed over");
+        assert!(!reg().lock().unwrap().owed.contains_key(&key), "handed over");
         assert_eq!(last_shown("h-parent", "h-child"), Some(2));
         undo();
         assert_eq!(reg().lock().unwrap().owed.get(&key).map(|o| (o.baseline, o.cursor)), Some((1, 40)));
@@ -8329,7 +8329,7 @@ mod tests {
         let dropped = hand_over("hr-parent", "hr-child", 2, None);
         let read = hand_over("hr-parent", "hr-child", 2, None);
         dropped();
-        assert!(reg().lock().unwrap().owed.get(&key).is_none(), "the later read delivered it");
+        assert!(!reg().lock().unwrap().owed.contains_key(&key), "the later read delivered it");
         assert_eq!(last_shown("hr-parent", "hr-child"), Some(2));
         read();
         forget("hr-parent");
@@ -8664,7 +8664,7 @@ mod tests {
             r.usage.insert("claude/qn-idle".into(), limits(99));
         };
         set(92);
-        let news = quota_news(&pty);
+        let news = quota_news(pty);
         for caller in ["qn-top", "qn-mid"] {
             let lines = &news[caller];
             let hot: Vec<&QuotaNews> = lines.iter().filter(|n| n.key.1 == "claude/qn-hot").collect();
@@ -8675,13 +8675,13 @@ mod tests {
         assert!(!news.contains_key("qn-low"), "a session does not hear of its own account");
 
         // Not told until the notice has gone in: asked again until it has.
-        assert!(quota_news(&pty).contains_key("qn-top"));
+        assert!(quota_news(pty).contains_key("qn-top"));
         for n in news.into_values().flatten() {
             reg().lock().unwrap().quota_told.insert(n.key, n.told);
         }
-        assert!(!quota_news(&pty).contains_key("qn-top"), "once");
+        assert!(!quota_news(pty).contains_key("qn-top"), "once");
         set(96);
-        assert_eq!(quota_news(&pty)["qn-top"][0].told.level, 95, "the next level");
+        assert_eq!(quota_news(pty)["qn-top"][0].told.level, 95, "the next level");
         forget("qn-top");
         forget("qn-mid");
         assert!(!reg().lock().unwrap().quota_told.keys().any(|(c, _, _)| c == "qn-top" || c == "qn-mid"));
@@ -8733,7 +8733,7 @@ mod tests {
         let call = crate::mcp::Call::new();
         let w = wait_many(&caller, &[done.clone(), busy.clone(), done.clone()], false, "turn_done", 20, &call).unwrap();
         assert_eq!(w.outcome, "finished");
-        assert_eq!(w.finished, [done.clone()]);
+        assert_eq!(w.finished, std::slice::from_ref(&done));
         assert_eq!(w.results.len(), 2, "an id asked for twice is one");
         assert_eq!(w.results[0].waited.outcome, "turn_done");
         assert_eq!(w.results[0].waited.reply.as_deref(), Some("answer of sid-done"));
@@ -8777,7 +8777,7 @@ mod tests {
         assert!(last_shown(&caller, &done) != Some(1), "not seen yet either");
         let o = reg().lock().unwrap().owed.get(&(caller.clone(), done.clone())).copied().unwrap();
         reg().lock().unwrap().owed.get_mut(&(caller.clone(), done.clone())).unwrap().ready_at = Some(now_ms() - WAIT_HOLD_MS - 1);
-        assert!(held_for_wait(&crate::pty::manager(), &caller, &done, &o), "past the hold of a wait on one");
+        assert!(held_for_wait(crate::pty::manager(), &caller, &done, &o), "past the hold of a wait on one");
         assert!(waiting.join().unwrap());
         assert!(!owed_to(&caller, &done), "handed over with the response");
         reg().lock().unwrap().seen.remove(&(caller.clone(), done.clone()));
@@ -8790,7 +8790,7 @@ mod tests {
         let call = crate::mcp::Call::new();
         let w = wait_many(&caller, &ids, true, "turn_done", 1, &call).unwrap();
         assert_eq!(w.outcome, "timeout");
-        assert_eq!(w.finished, [done.clone()]);
+        assert_eq!(w.finished, std::slice::from_ref(&done));
         assert_eq!(w.results[0].waited.reply.as_deref(), Some("answer of sid-done"));
         assert_eq!(w.results[1].waited.outcome, "timeout");
         assert!(!owed_to(&caller, &done));
@@ -8838,7 +8838,7 @@ mod tests {
         // Crossing the response: the same, after it has been handed over.
         let call = crate::mcp::Call::new();
         let w = wait_many(&caller, &ids, false, "turn_done", 20, &call).unwrap();
-        assert_eq!(w.finished, [done.clone()]);
+        assert_eq!(w.finished, std::slice::from_ref(&done));
         assert!(!owed_to(&caller, &done));
         call.cancel();
         assert!(owed_to(&caller, &done), "dropped unread: owed again");
@@ -8871,7 +8871,7 @@ mod tests {
         .unwrap();
         crate::background::test_turn_ended(&busy);
         let call = crate::mcp::Call::new();
-        let w = wait_many(&caller, &[done.clone()], false, "turn_done", 20, &call).unwrap();
+        let w = wait_many(&caller, std::slice::from_ref(&done), false, "turn_done", 20, &call).unwrap();
         let reply = w.results[0].waited.reply.as_ref().unwrap();
         assert_eq!(reply.matches("[cut at").count(), 1, "once");
         let file = reply.rsplit("the answer is in ").next().unwrap().trim_end_matches(", its report first]");
@@ -9008,7 +9008,7 @@ mod tests {
         }
         let call = crate::mcp::Call::new();
         let w = wait_many(&caller, &[done.clone(), busy.clone()], false, "turn_done", 20, &call).unwrap();
-        assert_eq!(w.finished, [done.clone()]);
+        assert_eq!(w.finished, std::slice::from_ref(&done));
         let one = &w.results[0].waited;
         assert_eq!(one.outcome, "job_done");
         assert_eq!(one.reply.as_deref(), Some("The real results."), "what it said since, not an old message");
@@ -9036,21 +9036,21 @@ mod tests {
         let pty = crate::pty::manager();
         let key = ("w-parent".to_string(), "w-child".to_string());
         let o = || reg().lock().unwrap().owed.get(&key).copied().unwrap();
-        assert!(!held_for_wait(&pty, "w-parent", "w-child", &o()), "no wait out, nothing held");
+        assert!(!held_for_wait(pty, "w-parent", "w-child", &o()), "no wait out, nothing held");
         {
             let _out = WaitOut::start("w-parent", "w-child");
             // Not running, so there is news: the wait has WAIT_HOLD_MS to say it.
-            assert!(held_for_wait(&pty, "w-parent", "w-child", &o()));
+            assert!(held_for_wait(pty, "w-parent", "w-child", &o()));
             reg().lock().unwrap().owed.get_mut(&key).unwrap().ready_at = Some(now_ms() - WAIT_HOLD_MS - 1);
-            assert!(!held_for_wait(&pty, "w-parent", "w-child", &o()), "a wait that sat on news is let go");
+            assert!(!held_for_wait(pty, "w-parent", "w-child", &o()), "a wait that sat on news is let go");
         }
         assert!(!reg().lock().unwrap().waits.contains_key(&key), "the count goes with the call");
         {
             // A wait on several holds it however long the others take.
             let _reserved = Reserved::start("w-parent", "w-child");
-            assert!(held_for_wait(&pty, "w-parent", "w-child", &o()));
+            assert!(held_for_wait(pty, "w-parent", "w-child", &o()));
         }
-        assert!(!held_for_wait(&pty, "w-parent", "w-child", &o()), "and no longer");
+        assert!(!held_for_wait(pty, "w-parent", "w-child", &o()), "and no longer");
     }
 
     #[test]
@@ -9063,13 +9063,13 @@ mod tests {
         let since = || reg().lock().unwrap().auto.get("ad-child").and_then(|a| a.idle_since);
         let pty = crate::pty::manager();
         owe_from("ad-parent", "ad-child", 0, 0);
-        reap(&pty);
+        reap(pty);
         assert_eq!(since(), None, "its answer is still owed");
         reg().lock().unwrap().owed.remove(&("ad-parent".to_string(), "ad-child".to_string()));
-        reap(&pty);
+        reap(pty);
         assert!(since().is_some(), "exited and nobody owed: the clock runs");
         owe_from("ad-parent", "ad-child", 1, 0);
-        reap(&pty);
+        reap(pty);
         assert_eq!(since(), None, "a follow-up starts it over");
         reg().lock().unwrap().auto.remove("ad-child");
     }
@@ -9101,22 +9101,22 @@ mod tests {
         let pty = crate::pty::manager();
         let left = |quiet_ms: u64| crate::background::left_for_test("ai-s", &[("tail.exe", 22104, quiet_ms)]);
         left(0);
-        reap(&pty);
+        reap(pty);
         assert_eq!(since(), None, "a leftover at work keeps it");
         left(crate::procs::LEFTOVER_HOLD_MS - 60_000);
-        reap(&pty);
+        reap(pty);
         assert_eq!(since(), None, "idle, but still within its grace: the job may be waiting on something");
         left(crate::procs::LEFTOVER_HOLD_MS + 60_000);
-        reap(&pty);
+        reap(pty);
         assert!(since().is_some(), "past its grace: the clock runs as for any idle helper, its open debt no bar");
         left(0);
-        reap(&pty);
+        reap(pty);
         assert_eq!(since(), None, "at work again: it starts over");
         // Its time come: it goes, and whoever was owed its job's end hears so.
         left(crate::procs::LEFTOVER_HOLD_MS + 60_000);
-        reap(&pty);
+        reap(pty);
         reg().lock().unwrap().auto.get_mut("ai-s").unwrap().idle_since = Some(now_ms() - AUTO_DELETE_IDLE_MS - 1);
-        reap(&pty);
+        reap(pty);
         assert!(!crate::background::has("ai-s"), "auto-deleted");
         let r = reg().lock().unwrap();
         assert!(!r.owed.contains_key(&key), "owed nothing more");
@@ -9189,8 +9189,8 @@ mod tests {
             notices += pass(false, &mut turns);
         }
         assert_eq!(notices, 4, "the job's end is news, once per debt");
-        assert!(reg().lock().unwrap().owed.get(&key(a, b)).is_none());
-        assert!(reg().lock().unwrap().owed.get(&key(b, a)).is_none());
+        assert!(!reg().lock().unwrap().owed.contains_key(&key(a, b)));
+        assert!(!reg().lock().unwrap().owed.contains_key(&key(b, a)));
         forget(a);
         forget(b);
     }
@@ -9323,7 +9323,7 @@ mod tests {
         let pty = crate::pty::manager();
         let line = |caller: &str, transcript: &str| {
             std::fs::write(&path, format!("{before}{transcript}")).unwrap();
-            notice_line(&pty, caller, "Your helper", "ir-mid", &known, Owed::pending(1, before.len() as u64))
+            notice_line(pty, caller, "Your helper", "ir-mid", &known, Owed::pending(1, before.len() as u64))
         };
         let report = format!("Phase 1 is in: kill the core before 12:35 UTC. {}", "Evidence. ".repeat(45));
 
@@ -9414,7 +9414,7 @@ mod tests {
         // With no helper out, a turn past the question settles it, as ever.
         reg().lock().unwrap().owed.remove(&("cw-mid".to_string(), "cw-low".to_string()));
         shown("cw-top", "cw-mid", 2);
-        assert!(reg().lock().unwrap().owed.get(&key).is_none());
+        assert!(!reg().lock().unwrap().owed.contains_key(&key));
         for id in ["cw-low", "cw-mid", "cw-top"] {
             forget(id);
         }
@@ -9431,10 +9431,10 @@ mod tests {
         let since = || reg().lock().unwrap().auto.get("rq-mid").and_then(|a| a.idle_since);
         let pty = crate::pty::manager();
         owe_from("rq-mid", "rq-low", 0, 0);
-        reap(&pty);
+        reap(pty);
         assert_eq!(since(), None, "an answer is still owed to it");
         reg().lock().unwrap().owed.remove(&("rq-mid".to_string(), "rq-low".to_string()));
-        reap(&pty);
+        reap(pty);
         assert!(since().is_some(), "nothing owed, and its helper has gone: the clock runs");
         for id in ["rq-low", "rq-mid", "rq-top"] {
             forget(id);
@@ -9477,7 +9477,7 @@ mod tests {
         assert_eq!(parent_of("og-low").as_deref(), Some("og-top"));
         assert!(authorize("og-top", "og-low").is_ok(), "kill and delete still reach it");
         assert!(list_ids("og-top").contains(&"og-low".to_string()), "and the list shows it");
-        assert!(reg().lock().unwrap().auto.get("og-low").is_none(), "its parent's to delete, as it says");
+        assert!(!reg().lock().unwrap().auto.contains_key("og-low"), "its parent's to delete, as it says");
 
         // The top chat goes: nobody is left above them.
         forget("og-top");
@@ -9573,7 +9573,7 @@ mod tests {
         owe_from("tk-top", "tk-mid", 0, 0);
         let goes_on = take_debt(&mut reg().lock().unwrap(), &key, 1, None);
         assert!(goes_on, "its own helper has yet to answer it");
-        assert!(reg().lock().unwrap().owed.get(&key).is_none(), "taken in the one hold of the lock");
+        assert!(!reg().lock().unwrap().owed.contains_key(&key), "taken in the one hold of the lock");
         // A question between the taking and the owing on is the debt from here.
         owe_from("tk-top", "tk-mid", 1, 50);
         let asked = reg().lock().unwrap().owed.get(&key).copied().unwrap();
@@ -9638,7 +9638,7 @@ mod tests {
     fn what_a_turn_left_is_named_and_an_idle_one_is_told_of_once() {
         let (known, o, path) = job_over_helper("lj-s", "lj-c", "");
         let pty = crate::pty::manager();
-        let line = |o: Owed| notice_line(&pty, "lj-c", "Your helper", "lj-s", &known, o);
+        let line = |o: Owed| notice_line(pty, "lj-c", "Your helper", "lj-s", &known, o);
         // Its first turn's end, with the tail just left: not done, and what runs is named.
         crate::background::left_for_test("lj-s", &[("tail.exe", 22104, 0)]);
         let mut first = Owed { rev: o.rev, ..Owed::from(2, o.cursor) };
@@ -9778,12 +9778,12 @@ mod tests {
         let (known, o, path) = job_over_helper("nn-s", "nn-c", said);
         let pty = crate::pty::manager();
         let stood = Owed { held: Some((3, now_ms() - BACKGROUND_GRACE_MS)), ..o };
-        assert!(matches!(notice_line(&pty, "nn-c", "Your helper", "nn-s", &known, stood), Some((Some(_), Settled::Answered))), "it wrote");
+        assert!(matches!(notice_line(pty, "nn-c", "Your helper", "nn-s", &known, stood), Some((Some(_), Settled::Answered))), "it wrote");
         let (known, o, path2) = job_over_helper("nn-q", "nn-c", "");
         let stood = Owed { held: Some((3, now_ms() - BACKGROUND_GRACE_MS)), ..o };
-        assert!(matches!(notice_line(&pty, "nn-c", "Your helper", "nn-q", &known, stood), Some((Some(_), Settled::NoNews(_)))));
+        assert!(matches!(notice_line(pty, "nn-c", "Your helper", "nn-q", &known, stood), Some((Some(_), Settled::NoNews(_)))));
         let went = Owed { job_went: true, ..stood };
-        let Some((Some(text), Settled::Answered)) = notice_line(&pty, "nn-c", "Your helper", "nn-q", &known, went) else {
+        let Some((Some(text), Settled::Answered)) = notice_line(pty, "nn-c", "Your helper", "nn-q", &known, went) else {
             panic!("a core took it")
         };
         assert!(text.contains("that Luna's core has restarted"), "{text}");
@@ -9793,7 +9793,7 @@ mod tests {
         assert!(job_end_stood(&key, 3, true));
         // At work again: no line, and its end counts from nothing.
         crate::background::left_for_test("nn-q", &[("build.exe", 4242, 0)]);
-        assert!(matches!(notice_line(&pty, "nn-c", "Your helper", "nn-q", &known, stood), Some((None, Settled::Unhold))));
+        assert!(matches!(notice_line(pty, "nn-c", "Your helper", "nn-q", &known, stood), Some((None, Settled::Unhold))));
         for id in ["nn-s", "nn-q"] {
             crate::background::gone_for_test(id);
             forget(id);
@@ -9814,7 +9814,7 @@ mod tests {
         reg().lock().unwrap().owed.insert(("qt-c".to_string(), "qt-s".to_string()), o);
         let known = reg().lock().unwrap().known.get("qt-s").cloned().unwrap();
         let pty = crate::pty::manager();
-        let line = |o: Owed| notice_line(&pty, "qt-c", "Your helper", "qt-s", &known, o);
+        let line = |o: Owed| notice_line(pty, "qt-c", "Your helper", "qt-s", &known, o);
         // At work and writing: nothing to say.
         crate::background::quiet_for_test("qt-s", QUIET_TURN_MS - 60_000);
         assert!(matches!(line(o), None | Some((None, _))));
@@ -9867,7 +9867,7 @@ mod tests {
                 std::fs::write(&path, text).unwrap();
                 transcripts().lock().unwrap().insert(id.clone(), path.clone());
                 crate::background::quiet_for_test(&id, quiet);
-                let said = notice_line(&pty, &caller, "Your helper", &id, &known, o);
+                let said = notice_line(pty, &caller, "Your helper", &id, &known, o);
                 let _ = std::fs::remove_file(&path);
                 said
             };
@@ -9920,19 +9920,19 @@ mod tests {
         let pty = crate::pty::manager();
         // As `wait` puts it for `job_done`.
         assert_eq!(
-            reply_text("jr-s", &said_since(&pty, "jr-s", Provider::Claude, o.cursor), true).as_deref(),
+            reply_text("jr-s", &said_since(pty, "jr-s", Provider::Claude, o.cursor), true).as_deref(),
             Some("Here are the real results.")
         );
         // The same as the notice brings: nothing is settled without its report.
         let mut stood = o;
         stood.held = Some((3, now_ms() - BACKGROUND_GRACE_MS));
-        let Some((Some(line), Settled::Answered)) = notice_line(&pty, "jr-c", "Your helper", "jr-s", &known, stood) else {
+        let Some((Some(line), Settled::Answered)) = notice_line(pty, "jr-c", "Your helper", "jr-s", &known, stood) else {
             panic!("the job's end is news")
         };
         assert!(line.contains("it wrote 1 message since your last notice"), "{line}");
         // Nothing since: nothing to hand over, not an old message.
         let (_, o2, path2) = job_over_helper("jr-q", "jr-c", "");
-        assert_eq!(reply_text("jr-q", &said_since(&pty, "jr-q", Provider::Claude, o2.cursor), true), None);
+        assert_eq!(reply_text("jr-q", &said_since(pty, "jr-q", Provider::Claude, o2.cursor), true), None);
         for id in ["jr-s", "jr-q"] {
             crate::background::gone_for_test(id);
             forget(id);
@@ -9949,28 +9949,28 @@ mod tests {
         let debt = || reg().lock().unwrap().owed.get(&key).copied().unwrap();
         let out = WaitOut::start("jw-c", "jw-s");
         // The one clock: whoever looks first starts it, the other reads it.
-        assert!(held_for_wait(&pty, "jw-c", "jw-s", &o), "the wait has it reserved");
+        assert!(held_for_wait(pty, "jw-c", "jw-s", &o), "the wait has it reserved");
         let started = debt().held.expect("the hold starts the clock");
         assert!(!job_end_stood(&key, 3, true), "the wait goes by the same clock");
         assert_eq!(debt().held, Some(started), "and does not start its own");
         assert_eq!(debt().ready_at, None, "not news yet");
         // Past where a notice used to give up on the wait, still reserved.
         reg().lock().unwrap().owed.get_mut(&key).unwrap().held = Some((3, now_ms() - BACKGROUND_GRACE_MS + 5_000));
-        assert!(held_for_wait(&pty, "jw-c", "jw-s", &debt()), "through the whole grace");
+        assert!(held_for_wait(pty, "jw-c", "jw-s", &debt()), "through the whole grace");
         assert!(!job_end_stood(&key, 3, true));
         // The grace is over: the wait hands it over now, with its hold to do it in.
         reg().lock().unwrap().owed.get_mut(&key).unwrap().held = Some((3, now_ms() - BACKGROUND_GRACE_MS));
         assert!(job_end_stood(&key, 3, true), "the wait's moment");
-        assert!(held_for_wait(&pty, "jw-c", "jw-s", &debt()), "and the notice still holds for it");
+        assert!(held_for_wait(pty, "jw-c", "jw-s", &debt()), "and the notice still holds for it");
         assert!(debt().ready_at.is_some(), "from here on it is WAIT_HOLD_MS");
         // A wait that sat on it past that has been let go: the notice is free.
         reg().lock().unwrap().owed.get_mut(&key).unwrap().ready_at = Some(now_ms() - WAIT_HOLD_MS - 1);
-        assert!(!held_for_wait(&pty, "jw-c", "jw-s", &debt()));
+        assert!(!held_for_wait(pty, "jw-c", "jw-s", &debt()));
         // With the wait gone the notice goes by the clock the wait left running.
         drop(out);
         let stood = debt();
-        assert!(!held_for_wait(&pty, "jw-c", "jw-s", &stood));
-        assert!(matches!(notice_line(&pty, "jw-c", "Your helper", "jw-s", &known, stood), Some((Some(_), Settled::NoNews(_)))));
+        assert!(!held_for_wait(pty, "jw-c", "jw-s", &stood));
+        assert!(matches!(notice_line(pty, "jw-c", "Your helper", "jw-s", &known, stood), Some((Some(_), Settled::NoNews(_)))));
         // A job back at work starts it over.
         assert!(!job_end_stood(&key, 3, false));
         assert_eq!(debt().held, None);
@@ -9989,16 +9989,16 @@ mod tests {
         let pty = crate::pty::manager();
         let t0 = now_ms();
         for i in 0..BREAKER_NOTICES - 1 {
-            assert!(!pair_stopped(&pty, caller, id));
+            assert!(!pair_stopped(pty, caller, id));
             assert!(!last_notice(caller, id, t0));
             assert!(!count_notice(&mut reg().lock().unwrap(), caller, id, t0), "notice {i}");
         }
         assert!(last_notice(caller, id, t0), "it says so as it goes");
         assert!(count_notice(&mut reg().lock().unwrap(), caller, id, t0));
-        assert!(pair_stopped(&pty, caller, id), "nothing more for this pair");
-        assert!(!pair_stopped(&pty, id, caller), "the other way round is a pair of its own");
+        assert!(pair_stopped(pty, caller, id), "nothing more for this pair");
+        assert!(!pair_stopped(pty, id, caller), "the other way round is a pair of its own");
         forget(caller);
-        assert!(!pair_stopped(&pty, caller, id), "gone with the chat");
+        assert!(!pair_stopped(pty, caller, id), "gone with the chat");
     }
 
     #[test]
@@ -10009,10 +10009,10 @@ mod tests {
         for _ in 0..BREAKER_NOTICES {
             count_notice(&mut reg().lock().unwrap(), "bp-c", "bp-s", t0);
         }
-        assert!(pair_stopped(&pty, "bp-c", "bp-s"));
+        assert!(pair_stopped(pty, "bp-c", "bp-s"));
         // A job's end or a turn's, which is all the notifier would have for a
         // stopped pair: nothing.
-        assert!(standing_line(&pty, "bp-c", "Your helper", "bp-s", &known, o).is_none());
+        assert!(standing_line(pty, "bp-c", "Your helper", "bp-s", &known, o).is_none());
         // Held on a prompt, it is told, or the helper sits there until it times out.
         crate::background::in_turn_for_test("bp-s");
         let asks = std::thread::spawn(|| {
@@ -10024,7 +10024,7 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        let Some((Some(line), Settled::Waiting)) = standing_line(&pty, "bp-c", "Your helper", "bp-s", &known, o) else {
+        let Some((Some(line), Settled::Waiting)) = standing_line(pty, "bp-c", "Your helper", "bp-s", &known, o) else {
             panic!("a prompt goes through")
         };
         assert!(line.contains("asks for permission to run Bash: ls") && line.contains("askId"), "{line}");
@@ -10032,7 +10032,7 @@ mod tests {
         let _ = asks.join();
         // And gone is gone.
         crate::background::gone_for_test("bp-s");
-        assert!(matches!(standing_line(&pty, "bp-c", "Your helper", "bp-s", &known, o), Some((Some(_), Settled::Exited))));
+        assert!(matches!(standing_line(pty, "bp-c", "Your helper", "bp-s", &known, o), Some((Some(_), Settled::Exited))));
         forget("bp-s");
         let _ = std::fs::remove_file(&path);
     }
@@ -10067,7 +10067,7 @@ mod tests {
         let known = reg().lock().unwrap().known.get(id).cloned().unwrap();
         let mut o = Owed::from(0, 0);
         o.held = Some((1, now_ms() - REPLY_GRACE_MS));
-        match notice_line(&pty, "its-caller", "Your helper", id, &known, o) {
+        match notice_line(pty, "its-caller", "Your helper", id, &known, o) {
             Some((Some(line), Settled::Answered)) => line,
             _ => panic!("a turn is over: there is something to say"),
         }
@@ -10121,7 +10121,7 @@ mod tests {
             let mut o = Owed::from(0, 0);
             o.cut_short = cut;
             o.held = Some((1, now_ms() - REPLY_GRACE_MS));
-            let Some((Some(line), Settled::Answered)) = notice_line(&pty, "ws-caller", "Your helper", id, &known, o) else {
+            let Some((Some(line), Settled::Answered)) = notice_line(pty, "ws-caller", "Your helper", id, &known, o) else {
                 panic!("its turn is over")
             };
             let _ = std::fs::remove_file(&path);
@@ -10221,14 +10221,14 @@ mod tests {
         let none = serde_json::json!({});
         register("ex-bad", Provider::Codex, "C:\\p", "C:\\acc\\openai\\one", None, false, none.clone());
         let pty = crate::pty::manager();
-        assert_eq!(failure_of(&pty, "ex-bad", Provider::Codex), None);
+        assert_eq!(failure_of(pty, "ex-bad", Provider::Codex), None);
         session_exited("ex-bad", Some(3));
-        assert_eq!(failure_of(&pty, "ex-bad", Provider::Codex).as_deref(), Some("its CLI exited with code 3"));
+        assert_eq!(failure_of(pty, "ex-bad", Provider::Codex).as_deref(), Some("its CLI exited with code 3"));
         session_exited("ex-bad", Some(0));
-        assert_eq!(failure_of(&pty, "ex-bad", Provider::Codex), None, "a clean exit is no error");
+        assert_eq!(failure_of(pty, "ex-bad", Provider::Codex), None, "a clean exit is no error");
         session_exited("ex-bad", Some(3));
         register("ex-bad", Provider::Codex, "C:\\p", "C:\\acc\\openai\\one", None, false, none);
-        assert_eq!(failure_of(&pty, "ex-bad", Provider::Codex), None, "running again, that is behind it");
+        assert_eq!(failure_of(pty, "ex-bad", Provider::Codex), None, "running again, that is behind it");
         forget("ex-bad");
     }
 
@@ -10268,7 +10268,7 @@ mod tests {
             (r.known.get(id).cloned().unwrap(), r.owed.get(&(caller.to_string(), id.to_string())).copied().unwrap())
         };
         o.held = Some((turns_ended, now_ms() - REPLY_GRACE_MS));
-        notice_line(&crate::pty::manager(), caller, "Your helper", id, &k, o).unwrap()
+        notice_line(crate::pty::manager(), caller, "Your helper", id, &k, o).unwrap()
     }
 
     #[test]
@@ -10421,10 +10421,10 @@ mod tests {
         assert!(!returning(&k, SESSION_RETURN_MS), "it has had its chance");
         // Held off while it may come back; then the caller hears.
         let o = reg().lock().unwrap().owed[&key("tc-peer")];
-        assert!(notice_line(&crate::pty::manager(), "tc-peer", "Session", "tc-chat", &k, o).is_none(), "the window has yet to start it");
+        assert!(notice_line(crate::pty::manager(), "tc-peer", "Session", "tc-chat", &k, o).is_none(), "the window has yet to start it");
         let mut gone = k.clone();
         gone.waiting = false;
-        let (said, how) = notice_line(&crate::pty::manager(), "tc-peer", "Session", "tc-chat", &gone, o).unwrap();
+        let (said, how) = notice_line(crate::pty::manager(), "tc-peer", "Session", "tc-chat", &gone, o).unwrap();
         assert!(matches!(how, Settled::Exited));
         assert!(said.unwrap().contains("has not started again"));
 
@@ -10462,10 +10462,7 @@ mod tests {
             ties: again,
         };
         take_up_chats(SavedChats { chats: vec![again], ..Default::default() });
-        assert!(
-            reg().lock().unwrap().owed[&("tc-parent".to_string(), "tc-second".to_string())].cut_short == false,
-            "this debt was answered"
-        );
+        assert!(!reg().lock().unwrap().owed[&("tc-parent".to_string(), "tc-second".to_string())].cut_short, "this debt was answered");
         let cut: Ties = Ties { owed: vec![("tc-peer".into(), 5, 20)], cut_short: vec!["tc-peer".into()], ..Default::default() };
         let cut = SavedChat {
             id: "tc-third".into(),
@@ -10627,7 +10624,7 @@ mod tests {
         assert!(o.cut_short);
         assert_eq!(crate::activity::turns_counted("vr-chat"), Some(4));
         let pty = crate::pty::manager();
-        assert!(notice_line(&pty, "vr-parent", "Your helper", "vr-chat", &k, Owed { held: Some((4, 0)), ..o }).is_none());
+        assert!(notice_line(pty, "vr-parent", "Your helper", "vr-chat", &k, Owed { held: Some((4, 0)), ..o }).is_none());
         // Told to start, it is no longer the window's to start, and keeps its flag.
         register(
             "vr-chat",
@@ -10733,7 +10730,7 @@ mod tests {
         assert!(is_held("ho-parent", "ho-chat"));
         // `deliver_held` looks and leaves it (`resume_pending`), the session not
         // running here and so the same in either case while it may yet return.
-        deliver_held(&crate::pty::manager());
+        deliver_held(crate::pty::manager());
         assert!(is_held("ho-parent", "ho-chat"));
         reg().lock().unwrap().held.retain(|h| h.id != "ho-chat");
         forget("ho-chat");
@@ -10817,7 +10814,7 @@ mod tests {
         // A background spawn asks the window nothing.
         reg().lock().unwrap().spawns.insert(9_000_503, spawn_taken(9_000_503, "as-caller", None, false));
         assert_eq!(pending(), [9_000_501, 9_000_502], "in the order they were asked");
-        let wire = serde_json::to_value(&agent_spawns().into_iter().find(|s| s.request_id == 9_000_501).unwrap()).unwrap();
+        let wire = serde_json::to_value(agent_spawns().into_iter().find(|s| s.request_id == 9_000_501).unwrap()).unwrap();
         assert_eq!(
             (wire["requestId"].as_u64(), wire["parentId"].as_str(), wire["prompt"].as_str()),
             (Some(9_000_501), Some("as-caller"), Some("the whole job, word for word")),
@@ -10966,7 +10963,7 @@ mod tests {
             assert!(note.contains("never got started") && note.contains("its prompt and 1 queued message are in "), "{note}");
             let undo = hand_over("fs-parent", id, 1, None);
             assert!(undelivered_note("fs-parent", id).is_none() && !is_held("fs-parent", id));
-            assert!(!first_turn_lost(&crate::pty::manager(), id), "told: from here on it is as any other");
+            assert!(!first_turn_lost(crate::pty::manager(), id), "told: from here on it is as any other");
             undo();
             assert!(undelivered_note("fs-parent", id).is_some() && is_held("fs-parent", id));
 
@@ -10982,7 +10979,7 @@ mod tests {
         chat_starting("fl-chat", false);
         // A person typed into it, and a turn on that ended: the job is no nearer.
         crate::activity::keep_count("fl-chat", 5);
-        assert!(first_turn_lost(&crate::pty::manager(), "fl-chat"));
+        assert!(first_turn_lost(crate::pty::manager(), "fl-chat"));
         assert_eq!(
             chats_now().chats.into_iter().find(|c| c.id == "fl-chat").unwrap().ties.opening.as_deref(),
             Some("the job"),
@@ -11006,7 +11003,7 @@ mod tests {
         back("fc-chat", "fc-parent", Provider::Claude);
         chat_starting("fc-chat", true);
         crate::activity::between_turns_for_test("fc-chat");
-        assert!(!first_turn_lost(&crate::pty::manager(), "fc-chat"));
+        assert!(!first_turn_lost(crate::pty::manager(), "fc-chat"));
         let line = notice_for("fc-parent", "fc-chat", 1).0.unwrap();
         assert!(
             line.contains("did NOT finish") && line.contains("luna_send has it carry on") && !line.contains("never got started"),
@@ -11021,7 +11018,7 @@ mod tests {
         register("fc-first", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("fc-parent"), false, serde_json::json!({}));
         reg().lock().unwrap().openings.insert("fc-first".into(), Opening { text: "go".into(), floor: 0, lost: false, at_ms: 0 });
         chat_starting("fc-first", false);
-        assert!(!first_turn_lost(&crate::pty::manager(), "fc-first"));
+        assert!(!first_turn_lost(crate::pty::manager(), "fc-first"));
         forget("fc-first");
     }
 
@@ -11031,7 +11028,7 @@ mod tests {
         // lost to a session that went (`deliver_held`).
         first_turn_cut("fb-none", "fb-parent", Provider::Codex, "the whole job", &["and a follow-up"]);
         back("fb-none", "fb-parent", Provider::Codex);
-        deliver_held(&crate::pty::manager());
+        deliver_held(crate::pty::manager());
         assert!(is_held("fb-parent", "fb-none"));
         reg().lock().unwrap().worktrees_before.insert("fb-none".into(), Vec::new());
         let (line, how) = notice_for("fb-parent", "fb-none", 1);
@@ -11138,7 +11135,7 @@ mod tests {
             let r = reg().lock().unwrap();
             ties_in(&r, "rw-b").unwrap()
         };
-        assert_eq!(ties.worktrees_left, [b.clone()]);
+        assert_eq!(ties.worktrees_left, std::slice::from_ref(b));
         assert_eq!(ties.worktree_name.as_deref(), Some("luna-b-2"));
         let mut chat = cut_short_chat("rw-back", "rw-parent", false, true, false);
         chat.ties.worktree_name = Some("luna-back".into());
@@ -11184,13 +11181,13 @@ mod tests {
         first_turn_cut("rc-claude", "rc-parent", Provider::Claude, "the whole job", &[]);
         on_disk("rc-claude", Provider::Claude, &account);
         assert_eq!(conversation_of("rc-claude", Provider::Claude, &folder, &account), None, "nothing there yet");
-        assert!(first_turn_lost(&crate::pty::manager(), "rc-claude"));
+        assert!(first_turn_lost(crate::pty::manager(), "rc-claude"));
         let path = crate::claude::session::transcript_file(&account, &folder, "11111111-aaaa");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, user_line("some other job")).unwrap();
         assert_eq!(conversation_of("rc-claude", Provider::Claude, &folder, &account), None, "not what it was asked: another session's");
         std::fs::write(&path, user_line("the  whole\njob")).unwrap();
-        assert!(!first_turn_lost(&crate::pty::manager(), "rc-claude"), "not back, with a conversation to come back to");
+        assert!(!first_turn_lost(crate::pty::manager(), "rc-claude"), "not back, with a conversation to come back to");
         let line = notice_for("rc-parent", "rc-claude", 1).0.unwrap();
         assert!(line.contains("did NOT finish") && !line.contains("never got started"), "{line}");
         reg().lock().unwrap().openings.get_mut("rc-claude").unwrap().at_ms = now_ms() + 3_600_000;
@@ -11275,11 +11272,11 @@ mod tests {
         assert!(held.find("the whole job").unwrap() < held.find("and a follow-up").unwrap(), "{held}");
         // Handed over with the debt, so no notice says it again.
         assert!(!reg().lock().unwrap().owed.contains_key(&key));
-        assert!(!is_held("lw-parent", "lw-chat") && !first_turn_lost(&crate::pty::manager(), "lw-chat"));
+        assert!(!is_held("lw-parent", "lw-chat") && !first_turn_lost(crate::pty::manager(), "lw-chat"));
         // A cancel crossing the response brings back both, together.
         call.cancel();
         assert!(reg().lock().unwrap().owed.contains_key(&key) && is_held("lw-parent", "lw-chat"));
-        assert!(first_turn_lost(&crate::pty::manager(), "lw-chat"));
+        assert!(first_turn_lost(crate::pty::manager(), "lw-chat"));
         // A cancel first hands over nothing.
         let call = crate::mcp::Call::new();
         call.cancel();
@@ -11288,18 +11285,18 @@ mod tests {
         // Not running, it is all there is to wait for, whatever the wait was for.
         let w = wait("lw-parent", "lw-chat", "waiting", 1, None, &crate::mcp::Call::new()).unwrap();
         assert!(w.undelivered.is_some());
-        assert!(!still_all_lost(&crate::pty::manager(), "lw-nobody", "lw-chat"), "only its parent's to have");
+        assert!(!still_all_lost(crate::pty::manager(), "lw-nobody", "lw-chat"), "only its parent's to have");
 
         // Asked something since that went in, it has started on that: the wait is for
         // its answer, and text held since goes in as any does.
         first_turn_cut("lw-sent", "lw-parent", Provider::Claude, "the whole job", &["a later one"]);
         back("lw-sent", "lw-parent", Provider::Claude);
         chat_starting("lw-sent", false);
-        assert!(still_all_lost(&crate::pty::manager(), "lw-parent", "lw-sent"));
+        assert!(still_all_lost(crate::pty::manager(), "lw-parent", "lw-sent"));
         owe_from("lw-parent", "lw-sent", 1, 0);
-        assert!(!still_all_lost(&crate::pty::manager(), "lw-parent", "lw-sent"));
+        assert!(!still_all_lost(crate::pty::manager(), "lw-parent", "lw-sent"));
         assert!(
-            first_turn_lost(&crate::pty::manager(), "lw-sent"),
+            first_turn_lost(crate::pty::manager(), "lw-sent"),
             "what it was first asked is lost all the same, and told of with that answer"
         );
         assert!(undelivered_for("lw-sent", "lw-parent", true).iter().any(|t| t == "the whole job"));
@@ -11606,7 +11603,7 @@ mod tests {
         assert_eq!(verdict(&o, 3, Some(crate::activity::Turn::Idle), false, false), Verdict::JobOver);
         let (k, pty) = (reg().lock().unwrap().known["tp-helper"].clone(), crate::pty::manager());
         let held = Owed { held: Some((3, now_ms() - BACKGROUND_GRACE_MS)), ..o };
-        let (line, how) = notice_line(&pty, "tp-caller", "Your helper", "tp-helper", &k, held).unwrap();
+        let (line, how) = notice_line(pty, "tp-caller", "Your helper", "tp-helper", &k, held).unwrap();
         let line = line.unwrap();
         assert!(matches!(how, Settled::Answered));
         assert!(line.contains("has nothing left running now that Luna's core has restarted"), "{line}");
@@ -11765,7 +11762,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         for (parent, kid, provider) in [("bb-p1", "bb-kid1", Provider::Claude), ("bb-p2", "bb-kid2", Provider::Codex)] {
             tooled(parent);
-            let news_of = |read: bool| budget_news(&pty, read).0.remove(parent).unwrap_or_default();
+            let news_of = |read: bool| budget_news(pty, read).0.remove(parent).unwrap_or_default();
             let path = dir.join(format!("{kid}.jsonl"));
             write_usage(&path, provider, 900);
             transcripts().lock().unwrap().insert(kid.to_string(), path.clone());
@@ -11813,10 +11810,10 @@ mod tests {
         let breach = serde_json::json!({ "at": 1, "tokens": 5, "window": 10, "pct": 50 });
         let settings = serde_json::json!({ "budgetTokens": 1, "budgetBreach": breach });
         register("bn-kid", Provider::Claude, "C:\\p", "C:\\acc\\one", Some("bn-gone"), false, settings.clone());
-        assert!(!budget_news(&pty, false).0.values().flatten().any(|n| n.id == "bn-kid"));
+        assert!(!budget_news(pty, false).0.values().flatten().any(|n| n.id == "bn-kid"));
         assert_eq!(settings_of("bn-kid")["budgetBreach"], breach);
         register("bn-dev", Provider::Claude, "C:\\p", "C:\\acc\\one", Some(DEV_CALLER), false, settings);
-        assert!(!budget_news(&pty, false).0.values().flatten().any(|n| n.id == "bn-dev"), "a dev caller takes no notices");
+        assert!(!budget_news(pty, false).0.values().flatten().any(|n| n.id == "bn-dev"), "a dev caller takes no notices");
         forget("bn-kid");
         forget("bn-dev");
     }
@@ -11853,7 +11850,7 @@ mod tests {
     }
 
     fn budget_now(parent: &str) -> Option<String> {
-        budget_news(&crate::pty::manager(), false).0.remove(parent).unwrap_or_default().pop().map(|n| n.line)
+        budget_news(crate::pty::manager(), false).0.remove(parent).unwrap_or_default().pop().map(|n| n.line)
     }
 
     fn budget_pair_gone(parent: &str, kid: &str) {
@@ -11970,12 +11967,12 @@ mod tests {
         );
         let long_idle = || Auto { idle_since: Some(now_ms() - AUTO_DELETE_IDLE_MS - 1), deleting: false };
         reg().lock().unwrap().auto.insert(kid.to_string(), long_idle());
-        reap_these(&pty, vec![kid.to_string()]);
+        reap_these(pty, vec![kid.to_string()]);
         assert!(reg().lock().unwrap().known.contains_key(kid), "the breach would go with it");
         assert_eq!(reg().lock().unwrap().auto.get(kid).unwrap().idle_since, None);
         set_budget_state(kid, "budgetTold", Some(serde_json::json!(true)));
         reg().lock().unwrap().auto.insert(kid.to_string(), long_idle());
-        reap_these(&pty, vec![kid.to_string()]);
+        reap_these(pty, vec![kid.to_string()]);
         assert!(!reg().lock().unwrap().known.contains_key(kid), "told: it goes");
         forget(parent);
     }
@@ -12095,7 +12092,7 @@ mod tests {
         retried(id, &[a.to_string()], 1);
         let told = [(id.to_string(), Settled::Answered, looked_up)];
         assert!(debts_moved(a, &told), "caught before it is typed");
-        assert!(notice_line(&crate::pty::manager(), a, "Your helper", id, &k, looked_up).is_none(), "and before it is put together");
+        assert!(notice_line(crate::pty::manager(), a, "Your helper", id, &k, looked_up).is_none(), "and before it is put together");
         settle_told(&mut reg().lock().unwrap(), key.clone(), Settled::Answered, &looked_up);
         assert_eq!(reg().lock().unwrap().owed.get(&key).map(|o| o.baseline), Some(1), "still owed, past the turn that missed");
         crate::background::gone_for_test(id);
