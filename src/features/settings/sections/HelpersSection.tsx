@@ -3,7 +3,7 @@ import { helpersAboveCaller, setHelpersAboveCaller } from '../../../ipc/agents';
 import { Section } from '../../../shared/ui/Section';
 
 /** Whether a helper may run with more privilege than the session spawning it.
- *  Kept by the Rust side, which holds every spawn to it (agents.rs `cap`). */
+ *  Kept by the Rust side, which holds every spawn to it (agents/privilege.rs `cap`). */
 function HelpersAboveRow() {
   const [on, setOn] = useState<boolean | null>(null);
   useEffect(() => {

@@ -1,5 +1,5 @@
 //! The secrets Luna mints for this run and the checks against them: the MCP
-//! bearer tokens (agents.rs), the hook URLs' secrets (hub.rs) and the core's
+//! bearer tokens (agents/), the hook URLs' secrets (hub.rs) and the core's
 //! token (coreproc.rs, `core.json`). Each one is all that keeps another local
 //! process off a door on loopback, so it comes from the OS's CSPRNG, never
 //! from anything a process on the same machine could reconstruct (time, pid,

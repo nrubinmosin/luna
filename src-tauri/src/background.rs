@@ -360,7 +360,7 @@ struct Batch {
 }
 
 /// Asks, with no lock held, whether each sender of text a CLI would read as a
-/// command may still send it (agents.rs `command_reach_now`): it may have been
+/// command may still send it (agents/privilege.rs `command_reach_now`): it may have been
 /// deleted, run lower or lost the user's setting since it was taken. Then,
 /// with the reservation still standing, drops what is refused and gives the
 /// batch that is left; with none left, the next queued batch is asked about
@@ -493,7 +493,7 @@ struct Entry {
     cut_short: bool,
     /// Text that was queued behind a turn the core's going stopped: it never
     /// reached the CLI. Kept, across cores too, until a caller has been told
-    /// (agents.rs `undelivered_shown`) or a turn of `resume` has taken it.
+    /// (agents/ `undelivered_shown`) or a turn of `resume` has taken it.
     undelivered: Vec<Queued>,
     /// The helpers whose budget lines its CLI's stdin has taken, until the agent
     /// layer has noted it: the one word that a line arrived (`stdin_took`).
@@ -976,7 +976,7 @@ fn note_opening(e: &mut Entry, prompt: &str, line: &str) {
     e.opening_id = e.session.is_none().then(|| line.to_string());
 }
 
-/// It has passed to another parent, or with none stands alone (agents.rs
+/// It has passed to another parent, or with none stands alone (agents/teardown.rs
 /// `pass_up`): what its next turn is told. One running now has its environment
 /// and system prompt already.
 pub fn set_parent(id: &str, parent: Option<String>) {
@@ -2240,7 +2240,7 @@ pub fn permission(id: &str, args: &Value) -> Value {
 /// nothing says it was written on the first.
 ///
 /// `may`: whether the caller may give this answer to the ask it lands on
-/// (agents.rs `answer_reach`), asked of that very ask under the lock it is
+/// (agents/answer.rs `answer_reach`), asked of that very ask under the lock it is
 /// recorded under, so that one looked at before is never the one let through.
 pub fn answer(
     id: &str,

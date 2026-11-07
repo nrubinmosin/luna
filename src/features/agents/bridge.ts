@@ -1,5 +1,5 @@
 /**
- * The frontend's half of the agent layer (agents.rs). The core owns the
+ * The frontend's half of the agent layer (agents/). The core owns the
  * sessions and the lineage, the frontend owns the chat list — so a spawn
  * an agent asks for arrives here as `agent://spawn`, becomes a chat row and
  * a running session, and is answered with `agent_spawned`. A delete the
@@ -147,7 +147,7 @@ const accountsLoaded = () =>
 async function spawn(req: AgentSpawnRequest): Promise<void> {
   await accountsLoaded();
   const chats = useChats.getState();
-  // A caller without a row of its own — the dev caller of agents.rs, or a
+  // A caller without a row of its own — the dev caller of agents/, or a
   // chat whose row was dropped while its session lived on — gets a top-level
   // chat in the folder it asked for.
   const parent = chats.findChat(req.parentId);
@@ -421,7 +421,7 @@ export function useAgentBridge() {
     });
     offs.push(onCoreUp(askForSpawns));
     void onAgentDeleted(({ id }) => {
-      // The session, attachments and worktree are already gone (agents.rs);
+      // The session, attachments and worktree are already gone (agents/);
       // only the row is left to drop.
       if (useChats.getState().findChat(id)) useChats.getState().deleteChat(id);
     }).then(off => (dead ? off() : offs.push(off)));

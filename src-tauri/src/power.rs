@@ -880,7 +880,7 @@ mod tests {
         Summary { busy, waiting, stalled: 0, idle_since_ms, sessions: vec![] }
     }
 
-    /// A line held for a notice to ride with (agents.rs `riders_go`) keeps its
+    /// A line held for a notice to ride with (agents/notifier/mod.rs `riders_go`) keeps its
     /// debt open, which is nothing to a power-off: whatever lets one start counting
     /// lets the line through that gate first, and the turn it starts cancels the
     /// count. Only that gate: a line a draft holds back does not stop a count.

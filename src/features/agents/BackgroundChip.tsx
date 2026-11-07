@@ -68,7 +68,7 @@ export function BackgroundChip({ parentId }: { parentId: string }) {
  * The helpers no chat answers for: the one that started them was deleted, and
  * there is no row of theirs to get at them by. No agent reaches them either,
  * so this is the only way to stop or delete one; left alone, each goes by
- * itself half an hour after it is done (agents.rs `forget`).
+ * itself half an hour after it is done (agents/teardown.rs `forget`).
  */
 export function LooseHelpers() {
   const chats = useChats(s => s.folders);

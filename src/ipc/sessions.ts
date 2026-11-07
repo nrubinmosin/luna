@@ -23,7 +23,7 @@ export interface ClaudeSessionSpec {
   readOnly?: boolean;
   /** The agent it runs as (`--agent`). */
   agent?: string | null;
-  /** The agent's spawn this is the session of (agents.rs `spawn_is`). */
+  /** The agent's spawn this is the session of (agents/spawn/mod.rs `spawn_is`). */
   spawnRequest?: number | null;
 }
 
@@ -70,7 +70,7 @@ export interface CodexSessionSpec {
   hooksUnasked?: boolean;
   parent?: string | null;
   prompt?: string | null;
-  /** The agent's spawn this is the session of (agents.rs `spawn_is`). */
+  /** The agent's spawn this is the session of (agents/spawn/mod.rs `spawn_is`). */
   spawnRequest?: number | null;
 }
 

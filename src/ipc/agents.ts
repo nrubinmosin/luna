@@ -1,7 +1,7 @@
 import { call } from './core';
 import type { Provider } from '../shared/types';
 
-/** What an agent asked for (agents.rs SpawnParams), as `agent://spawn` carries it. */
+/** What an agent asked for (agents/spawn/mod.rs SpawnParams), as `agent://spawn` carries it. */
 export interface AgentSpawnRequest {
   requestId: number;
   parentId: string;
@@ -27,7 +27,7 @@ export interface AgentSpawnRequest {
   hooksUnasked: boolean;
 }
 
-/** What a session waits on a person for (agents.rs `Ask`). */
+/** What a session waits on a person for (agents/ask.rs `Ask`). */
 export interface AskDto {
   kind: 'question' | 'permission';
   blocking: boolean;
@@ -42,7 +42,7 @@ export interface BackgroundHelperDto {
   parent: string | null;
   name: string;
   provider: Provider;
-  /** agents.rs `state_of`: working, waiting, question, idle… */
+  /** agents/ask.rs `state_of`: working, waiting, question, idle… */
   state: string;
   ask?: AskDto | null;
   /** The account folder's name. */
@@ -92,13 +92,13 @@ export const backgroundDelete = (id: string, dropWorktree = true) =>
 export const agentSpawned = (requestId: number, chatId: string | null, name: string | null, error: string | null) =>
   call<void>('agent_spawned', { requestId, chatId, name, error });
 
-/** The chats the core wants started to go on by themselves (agents.rs `resume_chats`). */
+/** The chats the core wants started to go on by themselves (agents/resume.rs `resume_chats`). */
 export const agentResumes = () => call<string[]>('agent_resumes');
 /** What the window has been asked to start and nothing has come of yet: an event
  *  reaches only a page that is listening. */
 export const agentSpawns = () => call<AgentSpawnRequest[]>('agent_spawns', {}, []);
 
-/** Every chat's name by id, for `luna_sessions` (agents.rs). */
+/** Every chat's name by id, for `luna_sessions` (agents/). */
 export const chatNames = (names: Record<string, string>, groups: Record<string, number>) =>
   call<void>('chat_names', { names, groups });
 
@@ -112,7 +112,7 @@ export interface AccountUsageDto {
   takenAt: string | null;
 }
 
-/** Every account's usage by `provider/name`, for `luna_list` (agents.rs). */
+/** Every account's usage by `provider/name`, for `luna_list` (agents/). */
 export const accountUsage = (usage: Record<string, AccountUsageDto>) => call<void>('account_usage', { usage });
 
 /** `provider/name` keys of accounts agents may not use. */
@@ -121,7 +121,7 @@ export const setAgentAccount = (provider: Provider, name: string, allowed: boole
   call<string[]>('set_agent_account', { provider, name, allowed }, []);
 
 /** Whether helpers may run with more privilege than the session spawning them
- *  (Settings; agents.rs `cap`). */
+ *  (Settings; agents/privilege.rs `cap`). */
 export const helpersAboveCaller = () => call<boolean>('helpers_above_caller', {}, false);
 export const setHelpersAboveCaller = (on: boolean) => call<boolean>('set_helpers_above_caller', { on }, on);
 

@@ -20,7 +20,7 @@ flowchart LR
   subgraph host["One OS user session"]
     UI["WebView UI<br/>(src/, bundled assets)"]
     W["Window process<br/>Tauri commands, corelink.rs"]
-    C["Core process<br/>coreproc.rs, corecmd.rs, agents.rs"]
+    C["Core process<br/>coreproc.rs, corecmd.rs, agents/"]
     H["Hub: loopback HTTP<br/>hub.rs (hooks, /guard, /mcp)"]
     S["CLI child processes<br/>claude / codex<br/>pty.rs, background.rs"]
     D[("Luna data dir<br/>core/core.json, hooks/, mcp/,<br/>settings, logs, agents.jsonl,<br/>managed CLI binaries")]
@@ -54,11 +54,11 @@ flowchart LR
 | CLI credentials (OAuth tokens, API keys) | account folders, e.g. `.credentials.json` (`claude/oauth.rs`) | account takeover, spend |
 | Core token (256 bits, `ipc.rs:171`) | `core/core.json` in the data dir (`coreproc.rs:204`) | full control of the core: spawn any session in any mode |
 | Hub run key (256 bits, `hub.rs:380`) and the per-chat secrets derived from it (`hub.rs:115`) | key in core memory only; a chat's secret in its Claude `--settings` file under `hooks/` (`pty.rs:563`) or its Codex `-c` hook arguments | forge that chat's hook and guard events |
-| Per-session MCP bearer tokens (160 bits, `agents.rs:1282`) | the `LUNA_MCP_TOKEN` environment of each tooled session (`pty.rs:924`, `pty.rs:958`, `pty.rs:1576`); never on disk | act as that session through Luna's tools |
+| Per-session MCP bearer tokens (160 bits, `agents/registry.rs:334`) | the `LUNA_MCP_TOKEN` environment of each tooled session (`pty.rs:924`, `pty.rs:958`, `pty.rs:1576`); never on disk | act as that session through Luna's tools |
 | Source code and git state of the user's projects | project folders, worktrees | integrity, confidentiality |
 | Prompts, transcripts, agent history | CLI transcript dirs; `agents.jsonl` (`agentlog.rs`) | may hold pasted secrets |
 | Integrity of the Luna binary | install dir, updater | code execution as the user |
-| Availability of the PC and sessions | `power.rs`, `agents.rs` kill/delete | lost work, forced shutdown |
+| Availability of the PC and sessions | `power.rs`, `agents/` kill/delete | lost work, forced shutdown |
 
 ## 3. Actors
 
@@ -113,18 +113,18 @@ in section 6.
 
 | STRIDE | Threat | Status |
 | --- | --- | --- |
-| S | A local process or web page posts forged hook events or MCP calls | mitigated: loopback only (`hub.rs:80`); hook and guard URLs carry their chat's secret (`hub.rs:238`, F7); MCP needs a per-session bearer token, looked up by its SHA-256 (`agents.rs:1289`, H1); a browser cannot set `Authorization` cross-origin without a preflight the hub never answers |
+| S | A local process or web page posts forged hook events or MCP calls | mitigated: loopback only (`hub.rs:80`); hook and guard URLs carry their chat's secret (`hub.rs:238`, F7); MCP needs a per-session bearer token, looked up by its SHA-256 (`agents/registry.rs:341`, H1); a browser cannot set `Authorization` cross-origin without a preflight the hub never answers |
 | S | One session posts hook or guard events as another chat | fixed (F7) |
 | E | Session A acts on session B through MCP | see the authorization matrix (section 5) |
 | T | Request smuggling or parser confusion | mitigated (H2): head parsed by `httparse` in its strict default; body framed by `Content-Length` only, digits only, repeats equal; any `Transfer-Encoding` is answered 400 and closed (`hub.rs:297-312`) |
-| D | Thread or memory exhaustion | fixed (H2): 64 connections still sending their head (16 KiB, 5 s), then separate lanes of 32 for hooks and the guard and 128 for MCP; bodies 64 KiB (hooks) or 4 MiB within 30 s; 503 past a cap, 413 past a body cap (`hub.rs:42-75`, `admit.rs`). Spawns capped per caller (`agents.rs:514`) |
+| D | Thread or memory exhaustion | fixed (H2): 64 connections still sending their head (16 KiB, 5 s), then separate lanes of 32 for hooks and the guard and 128 for MCP; bodies 64 KiB (hooks) or 4 MiB within 30 s; 503 past a cap, 413 past a body cap (`hub.rs:42-75`, `admit.rs`). Spawns capped per caller (`agents/spawn/mod.rs:241`) |
 | R | Who did what through MCP | every tool call is logged with caller, target and steering arguments, never prompt text (`mcp.rs:419-443`); spawns and exits go to `agents.jsonl` |
 
 ### B4. Core to CLI child processes (`pty.rs`, `background.rs`)
 
 | STRIDE | Threat | Status |
 | --- | --- | --- |
-| T, E | Shell or argument injection through spawn parameters | mitigated: children start from an argv vector, never a shell (`pty.rs:242`); modes, efforts, models and sandboxes are checked against fixed lists, spelled exactly (`agents.rs:3079`); text Luna types is refused if it holds control characters (`agents.rs:5063`) |
+| T, E | Shell or argument injection through spawn parameters | mitigated: children start from an argv vector, never a shell (`pty.rs:242`); modes, efforts, models and sandboxes are checked against fixed lists, spelled exactly (`agents/privilege.rs:264`); text Luna types is refused if it holds control characters (`agents/privilege.rs:387`) |
 | E | A tooled session spawns a helper with more privilege than itself | fixed (F1) |
 | E | A config's `auto_review` answers for a person | mitigated: Codex sessions Luna starts without auto-review pin `approvals_reviewer="user"` (`pty.rs:741`, `pty.rs:1682`, `background.rs:871`) |
 | I | A session inherits Luna's or a parent session's identity variables | mitigated: inherited CLI session variables are removed (`pty.rs:253`, `pty.rs:726`) |
@@ -162,16 +162,16 @@ signature, only a sha256 from the same origin as the artifact.
 
 Callers are sessions holding a Luna MCP token. A session without Luna's tools
 can call `luna_permission` only, and only as a background helper
-(`mcp.rs:454-462`). A helper's helper never gets tools (`agents.rs:37`); a
-caller has at most 8 descendants (`agents.rs:35`).
+(`mcp.rs:454-462`). A helper's helper never gets tools (`agents/spawn/mod.rs:34`); a
+caller has at most 8 descendants (`agents/spawn/mod.rs:31`).
 
 | Tool | May target | Check | Tested |
 | --- | --- | --- | --- |
-| `luna_kill`, `luna_delete` | own descendants | `authorize` (`agents.rs:2060`) | yes |
-| `luna_send`; `luna_answer` to a question a model asked | any session but itself, the user's chats included; `/`- or `!`-led text only from full access into its own helper, checked again where queued or kept text is typed (`agents.rs:5037`, `agents.rs:5052`, `background.rs:384`) | `authorize_send` (`agents.rs:2082`), `command_reach` | yes |
-| `luna_answer` with `allow`, `keys`, or on a CLI's own list | own descendants; `allow` only where the caller would run the tool unasked and never from read-only or asking modes; `keys` and CLI lists only from full access (`agents.rs:4941`, call sites `agents.rs:5112-5149`) | `answer_reach` | yes |
-| `luna_read`, `luna_wait` | any session but itself | `authorize_view` (`agents.rs:2071`) | yes |
-| `luna_spawn` | a new helper in any account not on the denylist `agent_blocked_accounts` (empty by default, `agents.rs:2191`), in any folder except Luna's data dir and what holds it (`agents.rs:3120`, `agents.rs:3195`), at no more privilege than the caller (`agents.rs:3042`, `agents.rs:3257`) | `cap`, `reaches_luna`, spawn cap | yes |
+| `luna_kill`, `luna_delete` | own descendants | `authorize` (`agents/registry.rs:440`) | yes |
+| `luna_send`; `luna_answer` to a question a model asked | any session but itself, the user's chats included; `/`- or `!`-led text only from full access into its own helper, checked again where queued or kept text is typed (`agents/privilege.rs:361`, `agents/privilege.rs:376`, `background.rs:384`) | `authorize_send` (`agents/registry.rs:462`), `command_reach` | yes |
+| `luna_answer` with `allow`, `keys`, or on a CLI's own list | own descendants; `allow` only where the caller would run the tool unasked and never from read-only or asking modes; `keys` and CLI lists only from full access (`agents/answer.rs:202`, call sites `agents/answer.rs:306-343`) | `answer_reach` | yes |
+| `luna_read`, `luna_wait` | any session but itself | `authorize_view` (`agents/registry.rs:451`) | yes |
+| `luna_spawn` | a new helper in any account not on the denylist `agent_blocked_accounts` (empty by default, `agents/spawn/account.rs:12`), in any folder except Luna's data dir and what holds it (`agents/privilege.rs:305`, `agents/spawn/mod.rs:385`), at no more privilege than the caller (`agents/privilege.rs:227`, `agents/spawn/mod.rs:447`) | `cap`, `reaches_luna`, spawn cap | yes |
 | `luna_power` | the whole PC (shutdown, restart, sleep; or disarm the user's) | tools only (`power.rs:709`) | no authorization test (R4) |
 | `luna_sessions`, `luna_list`, `luna_notify`, `luna_guide` | read-only, or notify the user | tools only | yes |
 
@@ -182,12 +182,12 @@ not cover:
 
 | Limit | Consequence |
 | --- | --- |
-| Recorded modes approximate effective authority | Luna compares the mode, sandbox, approval and network flag it started a session with (`Privilege`, `agents.rs:2891-2962`). It does not evaluate allow rules, skills, hooks, extra writable roots or a Codex config's network settings, so two sessions on the same rung can differ in what they may actually do |
+| Recorded modes approximate effective authority | Luna compares the mode, sandbox, approval and network flag it started a session with (`Privilege`, `agents/privilege.rs:75-147`). It does not evaluate allow rules, skills, hooks, extra writable roots or a Codex config's network settings, so two sessions on the same rung can differ in what they may actually do |
 | Helpers may be rooted in any folder except Luna's data dir | a helper is refused only in, inside or above the data dir (`reaches_luna`); the cap limits its mode, not what that folder lets the mode reach (another project, an account folder) |
 | Same-user processes can read files and impersonate tokens | anything running as the user, an agent with a shell included, can read `core.json` or another process's environment and act as the UI or as that session. The layer is no OS isolation (R3, F3) |
 | A weaker session can still ask a stronger one in plain words | plain text to any session stays open (R1); the stronger session's own mode, and its person, decide what it does with it |
-| Screen detection depends on CLI versions | permission dialogs and the lists a CLI holds its screen on are recognized from the terminal (`agents.rs:1912`, `agents.rs:1921`) as Claude Code 2.1.318+ and Codex 0.167.0 draw them. The answer checks apply to what Luna recognized. A dialog another version draws differently is not recognized: `allow` and answers to it are refused, and only raw `keys` reach it, which need full access whatever is detected |
-| Two explicit relaxations | `helpersAboveCaller` (`settings.rs:26`) lifts the cap for spawns, answers and command text; the dev caller (`LUNA_DEV_TOKEN`, `agents.rs:1236`, test builds) stands in for the user and is exempt |
+| Screen detection depends on CLI versions | permission dialogs and the lists a CLI holds its screen on are recognized from the terminal (`agents/ask.rs:195`, `agents/ask.rs:204`) as Claude Code 2.1.318+ and Codex 0.167.0 draw them. The answer checks apply to what Luna recognized. A dialog another version draws differently is not recognized: `allow` and answers to it are refused, and only raw `keys` reach it, which need full access whatever is detected |
+| Two explicit relaxations | `helpersAboveCaller` (`settings.rs:26`) lifts the cap for spawns, answers and command text; the dev caller (`LUNA_DEV_TOKEN`, `agents/registry.rs:288`, test builds) stands in for the user and is exempt |
 
 ## 7. Findings and phase 1 status
 
@@ -196,8 +196,8 @@ on `refactor/phase-1`; "residual" names what is left and why.
 
 | ID | Severity | Finding | Status |
 | --- | --- | --- | --- |
-| F1 | High | `luna_spawn` let a tooled session start a helper in `bypassPermissions` or `danger-full-access` whatever its own mode | **fixed** (7c2203e, cb5d05a): one privilege scale for both CLIs (`Reach` × network, `agents.rs:2891`); the spawn's mode, the account's default when left out, is resolved, checked for its exact spelling and capped at the caller's on every path before the helper is made, then pinned (`cap`, `settle_mode`, `agents.rs:3042`, `agents.rs:3079`); unknown modes are refused; no helper in or above Luna's data dir, where it could edit the setting that lifts the cap. Residual: section 6 |
-| F2 | High | `luna_answer` with `allow` or `keys` reached any session, so a tooled session could approve another chat's permission prompt | **fixed** (7c2203e, cb5d05a, a6fc733, 5f4fef7): `answer_reach` (`agents.rs:4941`) limits `allow`, `keys` and CLI lists to the caller's descendants and to what the caller could run unasked; a background helper is checked against the very ask an answer lands on. Related: `/`- and `!`-led text is held to the same reach, also for background helpers and queued text (a489ea4, e379b77, b8ec193) |
+| F1 | High | `luna_spawn` let a tooled session start a helper in `bypassPermissions` or `danger-full-access` whatever its own mode | **fixed** (7c2203e, cb5d05a): one privilege scale for both CLIs (`Reach` × network, `agents/privilege.rs:75`); the spawn's mode, the account's default when left out, is resolved, checked for its exact spelling and capped at the caller's on every path before the helper is made, then pinned (`cap`, `settle_mode`, `agents/privilege.rs:227`, `agents/privilege.rs:264`); unknown modes are refused; no helper in or above Luna's data dir, where it could edit the setting that lifts the cap. Residual: section 6 |
+| F2 | High | `luna_answer` with `allow` or `keys` reached any session, so a tooled session could approve another chat's permission prompt | **fixed** (7c2203e, cb5d05a, a6fc733, 5f4fef7): `answer_reach` (`agents/answer.rs:202`) limits `allow`, `keys` and CLI lists to the caller's descendants and to what the caller could run unasked; a background helper is checked against the very ask an answer lands on. Related: `/`- and `!`-led text is held to the same reach, also for background helpers and queued text (a489ea4, e379b77, b8ec193) |
 | F3 | Medium; High where a sandboxed session can read `core.json` | Claude sessions' MCP tokens were in plain text in `mcp/<chat>.json`, and the core token is in `core.json` | **MCP part fixed** (3d65909): the file holds `Bearer ${LUNA_MCP_TOKEN}`, which Claude Code expands from its environment (verified live on 2.1.319); the token goes in the session's environment, as Codex's `bearer_token_env_var` already did (`pty.rs:924`, `pty.rs:958`), and is removed from what nested sessions inherit. **`core.json` part residual**: every same-user process can read it (R3). Whether the CLIs' sandboxes keep a session from reading it and reaching loopback is unverified; it needs an end-to-end test per CLI and sandbox, then keeping `core/` outside session-readable roots or in the CLIs' read deny lists |
 | F4 | High where the prerequisites hold | Token files were created with the default mode; on Windows the data dir (often the install folder) inherited its parent's ACL, e.g. Authenticated Users Modify on a second drive, down to `core.json`, `agents.jsonl` and `luna.exe` | **fixed** (983e250, 5872a6b, cf4886a, f1b3f60, b2384b3, 233990a, 6a740b5). Unix: `core/`, `hooks/`, `mcp/` are `0700` (a link or another user's folder is refused), token files `0600` from creation, `O_EXCL` under a random temp name, renamed into place (`secret.rs:48`, `secret.rs:422-477`). Windows: those folders get a protected DACL (user, SYSTEM, Administrators; `secret.rs:148`); the installer protects the install folder before any file goes in (section 7.1); the core verifies the data dir at every start (`coreproc.rs:117`, `paths.rs:213`): the whole folder where it is Luna's alone, else Luna's own entries only (`paths.rs:154`); everything below is reset to inherit, untrusted owners are taken over, links are refused, and the root's DACL is set last; the full walk runs every start, a marker only spares the changing pass, and the installer deletes any marker. A failing walk keeps the Settings check `data-folder-private` red (`checks.rs:639`). Residuals: files written while the folder was open cannot be checked for integrity (no reference; the next update reinstalls Luna's binaries); a copy run from a shared folder keeps that folder open: Luna's state files written there after the start are private from creation (a protected DACL given by `CreateFileW`, `secret::create_private`; settings, logs, `agents.jsonl`, `helpers.json`, `chat-ties.json`, notes, attachments), but a folder of Luna's first made after the start, and the managed CLI binaries, take that folder's ACL until the next start; ancestor checks catch links, not renames under an ancestor writable by others; sandboxed Codex commands under the new DACL are not yet verified end to end |
 | F5 | Low-Medium (Unix) | The OAuth temp file was written before `chmod 0600`, and the fallback kept the old file's permissions | **fixed** (64c06aa): temp file created `0600` (`secret::create_private`, random name, `O_EXCL`); the in-place fallback tightens the open file first or fails (`claude/oauth.rs:194`) |
@@ -261,7 +261,7 @@ Residuals:
 
 - **R1. Broad agent read/send access (by design).** Any tooled session may read
   and wait on every session and send plain text to any other, the user's chats
-  included (`agents.rs:2071-2097`). A prompt-injected session can put text in
+  included (`agents/registry.rs:451-477`). A prompt-injected session can put text in
   front of a more privileged one; what that session does stays within its own
   mode, and its permission prompts are answered by a person or its own caller
   (F2).

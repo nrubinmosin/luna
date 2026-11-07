@@ -9,7 +9,7 @@
 //! core leaves by itself.
 //!
 //! Everything that runs the sessions runs here: the ptys (pty.rs), the hooks'
-//! listener and the agents' MCP server (hub.rs, agents.rs), the activity
+//! listener and the agents' MCP server (hub.rs, agents/), the activity
 //! sampler and power (activity.rs, power.rs). What they send the page goes to
 //! every connected window; what the page asks of them comes in by name
 //! (corecmd.rs).

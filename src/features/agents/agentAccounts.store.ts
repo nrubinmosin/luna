@@ -4,7 +4,7 @@ import type { Provider } from '../../shared/types';
 
 /**
  * Which accounts agents may spawn on: all of them, minus the ones switched
- * off in the account row. The list lives in Rust's settings.json (agents.rs
+ * off in the account row. The list lives in Rust's settings.json (agents/
  * checks it at spawn); this store mirrors it for the row's toggle.
  */
 interface AgentAccounts {

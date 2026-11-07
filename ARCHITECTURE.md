@@ -146,12 +146,25 @@ src-tauri/src/
   mcp.rs        the MCP server's JSON-RPC: initialize (with instructions), tools/list, tools/call;
                 twelve luna_* tools with short descriptions (~2k tokens), offered to sessions given
                 them; luna_permission only to a background Claude Code helper's CLI
-  agents.rs     registry of sessions with tools and those they spawned: tokens, kinship,
+  agents/       registry of sessions with tools and those they spawned: tokens, kinship,
                 rights (kill/delete, answer's allow/keys — descendants only; sessions, send, read, wait — all),
                 a helper capped at its caller's privilege (docs/security/threat-model.md), spawn via the frontend
                 (agent://spawn ↔ agent_spawned), send into the pty, read from the transcript, wait on activity, kill, delete (+worktree);
                 notifier: an uncollected helper answer is typed to the caller when it is free;
-                autoDelete helpers are deleted once they have served
+                autoDelete helpers are deleted once they have served; one Registry behind one lock, its files:
+    registry.rs   the Registry and reg(), Known, tokens, names, lineage and authorize*
+    owed.rs       answers owed, hand_over and its undo, seen counts
+    ask.rs        Ask: hooks' asks, Codex screens, state_of
+    read.rs       transcripts, luna_read          said.rs   what a session said, answer files
+    lost.rs       text that never reached a session, a first turn lost
+    privilege.rs  least privilege: settle_mode, reaches_luna, command_reach
+    delivery.rs   typing into terminals, luna_send, held sends
+    resume.rs     resumeOnRestart chats, text going in as a core went
+    answer.rs     luna_answer                     wait.rs   luna_wait, one or several
+    list.rs       luna_list, luna_sessions        teardown.rs  kill, delete, reap, forget
+    persist.rs    ties and chat-ties.json across cores
+    spawn/        luna_spawn (mod.rs); account.rs, background.rs, worktree.rs, settle.rs
+    notifier/     the notifier loop (mod.rs); lines.rs what a notice says, usage.rs quota and budget
   background.rs helpers with no row (luna_spawn without visible): a turn is one run of
                 `claude -p --output-format stream-json` or `codex exec --json`, prompt on stdin,
                 events on stdout, the next turn a resume; a held permission / question
@@ -199,7 +212,7 @@ src-tauri/src/
                 the default and per-folder choices in Luna's settings.json, where the core reads them
                 for helpers — background ones (`codex exec` leaves untrusted hooks out silently) and
                 visible ones (the spawn request carries it) alike. A visible Codex stopped on a list
-                of its own ("Hooks need review") is an `ask` (agents.rs `codex_list_on`)
+                of its own ("Hooks need review") is an `ask` (agents/ask.rs `codex_list_on`)
     session.rs  rollout files sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl: which is ours,
                 status, model, context, first prompt, cwd (rollout_cwd — where a --worktree
                 session went); thread name from session_index.jsonl
@@ -315,7 +328,7 @@ src-tauri/src/
   the title then names the subagent watched, whose rollout says `{"subagent":…}`, and the session stays on
   its own (seen with 0.166: it moved onto the subagent's and counted its turns); the turn count goes on
   over every file the process has been on, each read once, and what agents are owed is read on from the
-  start of a fresh transcript or the end of one gone back to (agents.rs `moved_to`, Claude Code's `/clear`
+  start of a fresh transcript or the end of one gone back to (agents/read.rs `moved_to`, Claude Code's `/clear`
   and `/resume` too). Before the title has said: for a fresh session — the earliest of those that appeared
   after the spawn whose `session_meta` cwd is the folder, or a Codex worktree pointing back at it; for a
   resumed one — by the uuid in the name; the answer is remembered per chat, so two chats in one folder
@@ -1127,7 +1140,7 @@ src-tauri/src/
   them rather than to any repository (a repository's skills reach everyone who clones it, and
   Luna's MCP instructions every model that connects). Each skill, and each instructions file
   (`instructions/<name>.md`), has a reach in settings.json — `all`, a provider's every account,
-  or `provider/name`, the key agents.rs uses too — that account renames and deletions carry
+  or `provider/name`, the key agents/ uses too — that account renames and deletions carry
   along; an account a reach stops taking in loses Luna's copy like a skill unticked. An account
   has one instructions file, so where instructions' reaches meet the closest decides (`chosen`):
   named beats a provider beats `all`, and `library.noInstructions` names accounts that get none.

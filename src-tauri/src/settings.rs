@@ -18,11 +18,11 @@ pub struct Settings {
     pub quiet_window_s: u64,
     /// The last action armed, so the menu opens on it: shutdown | restart | hibernate | sleep.
     pub power_action: String,
-    /// `provider/name` of accounts agents may not spawn on (agents.rs). Every
+    /// `provider/name` of accounts agents may not spawn on (agents/). Every
     /// account is available unless listed here.
     pub agent_blocked_accounts: Vec<String>,
     /// Helpers may run with more privilege than the session spawning them
-    /// (agents.rs `cap`). Off: a helper is held to its caller's.
+    /// (agents/privilege.rs `cap`). Off: a helper is held to its caller's.
     pub helpers_above_caller: bool,
     /// Per provider, the account whose settings file the others copy
     /// (account_settings.rs), by name.

@@ -10,7 +10,7 @@
 #   ./scripts/test-build.ps1 -Test           also build the Rust unit tests in Docker and
 #                                            run them here (windows-tests.ps1)
 #   ./scripts/test-build.ps1 -Run -DevCaller -DevFolder C:\src\x -DevAccount test-build\accounts\anthropic\dev
-#       also registers a scripted MCP caller (agents.rs register_dev_caller);
+#       also registers a scripted MCP caller (agents/registry.rs register_dev_caller);
 #       the token is printed and the MCP url is in test-build\luna.log
 #   ./scripts/test-build.ps1 -Run -Background
 #       the window off screen, unfocused and off the taskbar (LUNA_TEST_WINDOW,
@@ -40,7 +40,7 @@ $out = Join-Path $root 'test-build'
 New-Item -ItemType Directory -Force $out | Out-Null
 
 # test-build\ is the test build's data folder, and Luna refuses a helper folder
-# inside its data folder or above it (the repo itself; agents.rs
+# inside its data folder or above it (the repo itself; agents/privilege.rs
 # `reaches_luna`): said before a build rather than by the dev caller's first
 # spawn.
 if ($DevFolder) {

@@ -649,7 +649,7 @@ pub fn made_for(folder: &str, account_path: &str) -> Vec<String> {
 }
 
 /// Those of `now` not in `before` and with no session in them: what a spawn cut
-/// off by a core going had begun (agents.rs `worktrees_left`).
+/// off by a core going had begun (agents/spawn/settle.rs `worktrees_left`).
 pub fn left_since(now: Vec<String>, before: &[String], live_cwds: &[String]) -> Vec<String> {
     let claimed: Vec<String> = live_cwds.iter().map(|p| norm_in_use(p)).collect();
     now.into_iter()
