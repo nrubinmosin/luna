@@ -2873,50 +2873,78 @@ fn settle_role(params: &mut SpawnParams, provider: Provider) -> Result<(), Strin
     Ok(())
 }
 
-/// How much a session does without a person saying yes, on one scale for both
+/// How far a session acts without a person saying yes, on one scale for both
 /// CLIs, so a helper of either provider can be held to its caller's. Each step
-/// pairs what the two let through unasked:
-/// - `ReadOnly`: Claude Code's `plan` (and `dontAsk`, which refuses what is not
-///   allowed already); Codex's `read-only` or `read-only-net` with approval
-///   `never`. Network reads count as reading: Claude Code fetches in plan mode.
-/// - `Asks`: `default`; Codex read-only with approval asked of a person.
-/// - `Edits`: `acceptEdits`; Codex `workspace-write` (commands run in the
-///   sandbox, writes stay in the workspace).
-/// - `Reviewed`: Codex `auto-review` (a reviewer model, not a person, answers
-///   what would leave the sandbox); Claude Code's `auto`.
-/// - `Full`: `bypassPermissions`; Codex `danger-full-access`, whatever its
-///   approval.
+/// pairs what the two let through unasked; network is a dimension of its own
+/// (`Privilege::net`). Approximations, all leaning to refuse:
+/// - `ReadOnly`: Claude Code's `plan`; Codex's `read-only` or `read-only-net`
+///   with approval `never`.
+/// - `Asks`: `default` and `dontAsk` (which runs what the allow rules let
+///   through and refuses the rest, as `default` runs those and asks for the
+///   rest; the rules themselves Luna does not weigh); Codex read-only with
+///   approval asked of a person.
+/// - `Edits`: `acceptEdits`, file edits only.
+/// - `Commands`: Codex `workspace-write`: any command, held in the sandbox.
+/// - `Reviewed`: Codex `auto-review`, Claude Code's `auto`: a model, not a
+///   person, answers what would go further.
+/// - `Full`: `bypassPermissions`; Codex `danger-full-access`.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
-enum Privilege {
+enum Reach {
     ReadOnly,
     Asks,
     Edits,
+    Commands,
     Reviewed,
     Full,
 }
 
+/// `Reach`, and whether the network is open without asking: Codex's
+/// `read-only-net`, `auto-review` and `danger-full-access`, Claude Code's
+/// `auto` and `bypassPermissions`. Claude Code asks before a fetch in the
+/// others; Codex's `workspace-write` has none unless its config opens it,
+/// which Luna does not read.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct Privilege {
+    reach: Reach,
+    net: bool,
+}
+
+/// What Luna starts helpers in, spelled exactly as the CLIs take them.
+const CODEX_SANDBOXES: [&str; 4] = ["read-only", crate::pty::READ_ONLY_NET, "workspace-write", "danger-full-access"];
+const CODEX_APPROVALS: [&str; 3] = ["never", "on-request", crate::pty::AUTO_REVIEW];
+
 impl Privilege {
+    const LEAST: Privilege = Privilege { reach: Reach::ReadOnly, net: false };
+
     /// None for a mode Luna does not know.
     fn of(provider: Provider, mode: &str, approval: Option<&str>) -> Option<Privilege> {
         use crate::pty::{AUTO_REVIEW, READ_ONLY_NET};
-        Some(match provider {
+        let at = |reach, net| Some(Privilege { reach, net });
+        match provider {
             Provider::Claude => match mode {
-                "plan" | "dontAsk" => Privilege::ReadOnly,
-                "default" => Privilege::Asks,
-                "acceptEdits" => Privilege::Edits,
-                "auto" => Privilege::Reviewed,
-                "bypassPermissions" => Privilege::Full,
-                _ => return None,
+                "plan" => at(Reach::ReadOnly, false),
+                "default" | "dontAsk" => at(Reach::Asks, false),
+                "acceptEdits" => at(Reach::Edits, false),
+                "auto" => at(Reach::Reviewed, true),
+                "bypassPermissions" => at(Reach::Full, true),
+                _ => None,
             },
-            Provider::Codex => match (mode, approval.unwrap_or("never")) {
-                (_, AUTO_REVIEW) => Privilege::Reviewed,
-                ("danger-full-access", _) => Privilege::Full,
-                ("workspace-write", _) => Privilege::Edits,
-                ("read-only" | READ_ONLY_NET, "never") => Privilege::ReadOnly,
-                ("read-only" | READ_ONLY_NET, _) => Privilege::Asks,
-                _ => return None,
-            },
-        })
+            Provider::Codex => {
+                let asks = match approval.unwrap_or("never") {
+                    AUTO_REVIEW => return at(Reach::Reviewed, true),
+                    "never" => false,
+                    // Codex's own policies a user's chat may run in.
+                    "on-request" | "untrusted" | "on-failure" => true,
+                    _ => return None,
+                };
+                match mode {
+                    "danger-full-access" => at(Reach::Full, true),
+                    "workspace-write" => at(Reach::Commands, false),
+                    "read-only" | READ_ONLY_NET => at(if asks { Reach::Asks } else { Reach::ReadOnly }, mode == READ_ONLY_NET),
+                    _ => None,
+                }
+            }
+        }
     }
 
     /// A running session's, from the settings it was started with.
@@ -2925,6 +2953,19 @@ impl Privilege {
             Provider::Claude => Privilege::of(provider, settings["permissionMode"].as_str()?, None),
             Provider::Codex => Privilege::of(provider, settings["sandbox"].as_str()?, settings["approval"].as_str()),
         }
+    }
+
+    /// A caller's: what Luna cannot read counts as the least.
+    fn of_caller(provider: Provider, settings: &serde_json::Value) -> Privilege {
+        Privilege::of_session(provider, settings).unwrap_or(Privilege::LEAST)
+    }
+
+    fn covers(self, other: Privilege) -> bool {
+        other.reach <= self.reach && (self.net || !other.net)
+    }
+
+    fn label(self) -> String {
+        format!("{:?}{}", self.reach, if self.net { " with network" } else { "" })
     }
 }
 
@@ -2967,12 +3008,38 @@ fn effective_mode(params: &SpawnParams, provider: Provider, account_path: &str, 
     }
 }
 
+/// A helper's mode as Luna starts one, spelled exactly: the window reads a
+/// setting more loosely (in any case), so what is compared here has to be
+/// what runs.
+fn canonical_mode(provider: Provider, mode: &str, approval: Option<&str>, defaulted: bool) -> Result<(), String> {
+    use crate::pty::{AUTO_REVIEW, AUTO_REVIEW_SANDBOX};
+    let whence = if defaulted { " (the account's or project's default; pass one)" } else { "" };
+    match provider {
+        Provider::Claude if !CLAUDE_MODES.contains(&mode) => {
+            Err(format!("unknown permission mode \"{mode}\"{whence}; use {}, spelled so", CLAUDE_MODES.join(", ")))
+        }
+        Provider::Claude => Ok(()),
+        Provider::Codex => {
+            let approval = approval.unwrap_or("never");
+            if !CODEX_SANDBOXES.contains(&mode) {
+                return Err(format!("unknown sandbox \"{mode}\"{whence}; use {}, spelled so", CODEX_SANDBOXES.join(", ")));
+            }
+            if !CODEX_APPROVALS.contains(&approval) {
+                return Err(format!("unknown approval \"{approval}\"{whence}; use {}, spelled so", CODEX_APPROVALS.join(", ")));
+            }
+            if approval == AUTO_REVIEW && mode != AUTO_REVIEW_SANDBOX {
+                return Err(format!("{AUTO_REVIEW} runs in {AUTO_REVIEW_SANDBOX} only; leave sandbox out"));
+            }
+            Ok(())
+        }
+    }
+}
+
 /// A helper may do no more unasked than the session that spawns it (see
 /// `Privilege`), unless the user has let helpers go above their caller
 /// (`helpers_above_caller`). A caller whose own mode Luna cannot read counts
-/// as read-only; a mode asked for that Luna does not know is left to the
-/// checks that refuse it by name. `defaulted`: the mode came from the
-/// account's or project's defaults, not the request.
+/// as the least. `defaulted`: the mode came from the account's or project's
+/// defaults, not the request.
 fn cap(
     caller: (Provider, &serde_json::Value),
     helper: (Provider, &str, Option<&str>),
@@ -2980,9 +3047,10 @@ fn cap(
     above_allowed: bool,
 ) -> Result<(), String> {
     let (provider, mode, approval) = helper;
-    let Some(wants) = Privilege::of(provider, mode, approval) else { return Ok(()) };
-    let has = Privilege::of_session(caller.0, caller.1).unwrap_or(Privilege::ReadOnly);
-    if above_allowed || wants <= has {
+    let wants = Privilege::of(provider, mode, approval)
+        .ok_or_else(|| format!("{} is not a mode Luna knows", mode_label(provider, mode, approval)))?;
+    let has = Privilege::of_caller(caller.0, caller.1);
+    if above_allowed || has.covers(wants) {
         return Ok(());
     }
     let yours = match caller.0 {
@@ -2996,11 +3064,72 @@ fn cap(
         Provider::Codex => "pass a lower sandbox or approval",
     };
     Err(format!(
-        "a helper may not run with more privilege than its caller: you run in {yours} ({has:?}), the helper would run in \
-         {}{whence} ({wants:?}). {lower}, at most your own. Only the user can let helpers go above their caller, in \
+        "a helper may not run with more privilege than its caller: you run in {yours} ({}), the helper would run in \
+         {}{whence} ({}). {lower}, at most your own. Only the user can let helpers go above their caller, in \
          Luna's settings",
-        mode_label(provider, mode, approval)
+        has.label(),
+        mode_label(provider, mode, approval),
+        wants.label()
     ))
+}
+
+/// A spawn's mode settled before anything is made, on every path: resolved
+/// over the defaults, checked for its exact spelling, held to the caller's
+/// (unless `above_allowed`), then pinned in the request so the helper starts
+/// in what was checked, not in what the window reads from the defaults later.
+fn settle_mode(
+    params: &mut SpawnParams,
+    provider: Provider,
+    caller: (Provider, &serde_json::Value),
+    account_path: &str,
+    folder: &str,
+    above_allowed: bool,
+) -> Result<(), String> {
+    let (mode, approval) = effective_mode(params, provider, account_path, folder);
+    let defaulted = match provider {
+        Provider::Claude => asked(&params.permission_mode).is_none(),
+        Provider::Codex => asked(&params.sandbox).is_none() || asked(&params.approval).is_none(),
+    };
+    canonical_mode(provider, &mode, approval.as_deref(), defaulted)?;
+    cap(caller, (provider, &mode, approval.as_deref()), defaulted, above_allowed)?;
+    match provider {
+        Provider::Claude => params.permission_mode = Some(mode),
+        Provider::Codex => (params.sandbox, params.approval) = (Some(mode), approval),
+    }
+    Ok(())
+}
+
+/// What answering a permission yes amounts to: the tool run unasked, at the
+/// reach that runs it. Claude Code's edit tools are edits, its reading tools
+/// reading, its fetches the network; anything else (Bash, an MCP tool) and
+/// every Codex approval, which lets a command out of its sandbox, is full.
+fn approval_needs(provider: Provider, ask: &Ask) -> Privilege {
+    let at = |reach, net| Privilege { reach, net };
+    match (provider, ask.tool.as_deref()) {
+        (Provider::Claude, Some(t)) if crate::pty::CLAUDE_EDIT_TOOLS.contains(&t) || t == "MultiEdit" => at(Reach::Edits, false),
+        (Provider::Claude, Some("Read" | "Glob" | "Grep" | "LS")) => at(Reach::ReadOnly, false),
+        (Provider::Claude, Some("WebFetch" | "WebSearch")) => at(Reach::ReadOnly, true),
+        _ => at(Reach::Full, true),
+    }
+}
+
+/// A folder that is Luna's data folder, inside it or above it: a helper there
+/// could edit Luna's settings, `helpersAboveCaller` among them, and lift the
+/// cap it is held to. The cap limits the mode a helper runs in, not what its
+/// folder lets that mode reach. Compared resolved (links followed) as far as
+/// the path exists, the rest put back on, as `library::resolved` has it.
+fn reaches_luna(folder: &str) -> bool {
+    let resolve = |p: &std::path::Path| crate::paths::path_key(&crate::library::resolved(p).to_string_lossy());
+    within_or_above(&resolve(std::path::Path::new(folder)), &resolve(&crate::paths::data_dir()))
+}
+
+/// Two `path_key`s: one is the other or inside it.
+fn within_or_above(a: &str, b: &str) -> bool {
+    let sep = std::path::MAIN_SEPARATOR;
+    // A Unix root's key is empty, and holds everything.
+    let under =
+        |inner: &str, outer: &str| outer.is_empty() || inner == outer || inner.strip_prefix(outer).is_some_and(|r| r.starts_with(sep));
+    under(a, b) || under(b, a)
 }
 
 /// The user lets helpers run with more privilege than the session spawning them.
@@ -3061,6 +3190,13 @@ fn spawn_with(caller: &str, mut params: SpawnParams, replaces: Option<u64>, stil
                 in_worktree = wt;
             }
         }
+        for dir in params.folder.iter().chain(in_worktree.iter()).filter(|d| !d.trim().is_empty()) {
+            if reaches_luna(dir) {
+                return Err(format!(
+                    "{dir} holds or is inside Luna's own folder (its settings, logs and the CLIs it runs): no helper works there"
+                ));
+            }
+        }
         let allowed = allowed_account_dirs();
         let (one, list) = match params.account.take() {
             Some(AccountAsk::One(name)) => (Some(name), None),
@@ -3117,21 +3253,9 @@ fn spawn_with(caller: &str, mut params: SpawnParams, replaces: Option<u64>, stil
         };
         params.account = Some(AccountAsk::One(account.name.clone()));
         // The dev caller stands in for the user (`register_dev_caller`): no cap.
-        if caller != DEV_CALLER && !crate::settings::get().helpers_above_caller {
-            let run_in = in_worktree.clone().or_else(|| params.folder.clone()).unwrap_or_default();
-            let (mode, approval) = effective_mode(&params, provider, &account.path, &run_in);
-            let defaulted = match provider {
-                Provider::Claude => asked(&params.permission_mode).is_none(),
-                Provider::Codex => asked(&params.sandbox).is_none() || asked(&params.approval).is_none(),
-            };
-            cap((me.provider, &me.settings), (provider, &mode, approval.as_deref()), defaulted, false)?;
-            // Pinned, so the helper starts in the mode checked here and not in
-            // one the window reads from the defaults later.
-            match provider {
-                Provider::Claude => params.permission_mode = Some(mode),
-                Provider::Codex => (params.sandbox, params.approval) = (Some(mode), approval),
-            }
-        }
+        let above = caller == DEV_CALLER || crate::settings::get().helpers_above_caller;
+        let run_in = in_worktree.clone().or_else(|| params.folder.clone()).unwrap_or_default();
+        settle_mode(&mut params, provider, (me.provider, &me.settings), &account.path, &run_in, above)?;
         let account_choice = picked.map(|(_, choice)| choice);
         let taken = SpawnUnderWay::begin(caller, &params, &account.path, in_worktree.as_deref(), replaces)?;
         if !params.visible.unwrap_or(false) {
@@ -3912,7 +4036,7 @@ fn type_in(
 /// stopped on, is cut short first (Esc; a background helper's process
 /// stopped), and the text is the next turn rather than one queued after it.
 pub fn send(caller: &str, id: &str, text: &str, interrupt: bool) -> Result<Sent, String> {
-    authorize_send(caller, id)?;
+    let known = authorize_send(caller, id)?;
     let pty = crate::pty::manager();
     if !live(pty, id) {
         return Err(format!("session {id} is not running"));
@@ -3921,6 +4045,7 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool) -> Result<Sent,
     // the session busy on it by the time this text's turn comes. Not there in
     // time, the text is held like any other (`hold`), and goes in when it can.
     // A background helper has no terminal: its queue takes turns by itself.
+    plain_text(text)?;
     let terminal = if crate::background::has(id) { None } else { TypingInto::wait_for(id, TYPING_WAIT) };
     let (state_before, ask) = state_of(id);
     if let Some(a) = ask.as_ref().filter(|a| a.blocking && !interrupt) {
@@ -3928,6 +4053,17 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool) -> Result<Sent,
             "session {id} is on a {}: typed text would land in its dialog. Answer it with luna_answer, or send with interrupt: true to dismiss it",
             a.kind
         ));
+    }
+    // Esc is to dismiss a dialog before the text goes in, but text that comes
+    // while it is still up lands in it: past a permission or a CLI's own list,
+    // only a caller whose yes it could be (`answer_reach`). A background helper
+    // takes text as a message, never as keys.
+    if let Some(a) = ask.as_ref().filter(|a| a.blocking && terminal.is_some()) {
+        if a.kind == "permission" || a.questions.iter().any(|q| q.list_at.is_some()) {
+            let (own, approver) = answerer(caller, id);
+            answer_reach(own, approver, known.provider, Some(a), Some(true), None)
+                .map_err(|e| format!("session {id} is on a {}, which text sent with interrupt could land in. {e}", a.kind))?;
+        }
     }
     let mut before = crate::activity::turn_state(id);
     let mut baseline = before.map(|t| t.turns_ended).unwrap_or(0);
@@ -4766,9 +4902,36 @@ fn drain_lets_answer(
 /// permission, raw keys, and a list a CLI holds its own screen on (Codex's
 /// approvals and hook trust read as one, `codex_list_on`) are its owner's and
 /// the user's to settle — they decide what the session may do.
-fn answer_reach(own: bool, ask: Option<&Ask>, allow: Option<bool>, keys: Option<&str>) -> Result<(), String> {
+///
+/// On its own helper, a caller says yes to a permission (allow true, or keys
+/// while one is up) only where it would itself run that tool unasked
+/// (`approval_needs`), and never from read-only or asking modes: a helper is
+/// no back door past the person its caller would have asked. `approver`: the
+/// caller's privilege, None where the user lets helpers go above their caller.
+fn answer_reach(
+    own: bool,
+    approver: Option<Privilege>,
+    provider: Provider,
+    ask: Option<&Ask>,
+    allow: Option<bool>,
+    keys: Option<&str>,
+) -> Result<(), String> {
     if own {
-        return Ok(());
+        let (Some(has), Some(a)) = (approver, ask.filter(|a| a.kind == "permission")) else { return Ok(()) };
+        if allow != Some(true) && keys.is_none() {
+            return Ok(());
+        }
+        let needs = approval_needs(provider, a);
+        if has.reach >= Reach::Edits && has.covers(needs) {
+            return Ok(());
+        }
+        return Err(format!(
+            "approving {} would run it at {}, above what you run unasked ({}): it goes to the user in Luna's window. \
+             You may refuse it, with allow false",
+            a.tool.as_deref().unwrap_or("this"),
+            needs.label(),
+            has.label()
+        ));
     }
     let what = if keys.is_some() {
         "keys"
@@ -4785,6 +4948,33 @@ fn answer_reach(own: bool, ask: Option<&Ask>, allow: Option<bool>, keys: Option<
     ))
 }
 
+/// Whether `id` is one of the caller's helpers, and the caller's privilege for
+/// `answer_reach`: None where the user lets helpers go above their caller, or
+/// for the dev caller, which stands in for the user (`register_dev_caller`).
+fn answerer(caller: &str, id: &str) -> (bool, Option<Privilege>) {
+    let (own, me) = {
+        let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+        (is_descendant(&r, caller, id), r.known.get(caller).map(|k| (k.provider, k.settings.clone())))
+    };
+    let approver = (caller != DEV_CALLER && !crate::settings::get().helpers_above_caller)
+        .then(|| me.map_or(Privilege::LEAST, |(p, s)| Privilege::of_caller(p, &s)));
+    (own, approver)
+}
+
+/// Text an agent sends, refused if it holds what a terminal takes as keys:
+/// Esc (and so any escape sequence, the end of a bracketed paste among them),
+/// other C0 and C1 controls, DEL. Line breaks and tabs are text.
+fn plain_text(text: &str) -> Result<(), String> {
+    match text.chars().find(|&c| c.is_control() && !matches!(c, '\n' | '\r' | '\t')) {
+        Some(c) => Err(format!(
+            "the text holds control character U+{:04X}, which a terminal takes as a key; send plain text (luna_answer's keys \
+             press keys in your own helpers)",
+            c as u32
+        )),
+        None => Ok(()),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn answer(
     caller: &str,
@@ -4797,8 +4987,12 @@ pub fn answer(
     draining: bool,
 ) -> Result<Answered, String> {
     let known = authorize_send(caller, id)?;
-    let own = is_descendant(&reg().lock().unwrap_or_else(|e| e.into_inner()), caller, id);
-    answer_reach(own, None, allow, keys)?;
+    // Typed in as keys: what is not plain text would be keys of its own.
+    for t in answers.iter().map(String::as_str).chain(note) {
+        plain_text(t)?;
+    }
+    let (own, approver) = answerer(caller, id);
+    answer_reach(own, approver, known.provider, None, allow, keys)?;
     let pty = crate::pty::manager();
     if !live(pty, id) {
         return Err(format!("session {id} is not running"));
@@ -4816,7 +5010,7 @@ pub fn answer(
     };
     let baseline = crate::activity::turn_state(id).map(|t| t.turns_ended).unwrap_or(0);
     let ask = ask_of(id);
-    answer_reach(own, ask.as_ref(), allow, keys)?;
+    answer_reach(own, approver, known.provider, ask.as_ref(), allow, keys)?;
     if draining {
         drain_lets_answer(id, ask.as_ref(), ask_id, answers, note, keys)?;
     }
@@ -12325,47 +12519,50 @@ mod tests {
         use serde_json::json;
         let claude = |mode: &str| (Provider::Claude, json!({ "permissionMode": mode }));
         let codex = |sandbox: &str, approval: &str| (Provider::Codex, json!({ "sandbox": sandbox, "approval": approval }));
-        // From least to most, one row per step: what a caller runs in, and
-        // what a helper of either CLI may be asked for at that step.
-        type Helper = (Provider, &'static str, Option<&'static str>);
-        let steps: [(Vec<(Provider, serde_json::Value)>, Vec<Helper>); 5] = [
-            (
-                vec![claude("plan"), codex("read-only", "never"), codex("read-only-net", "never")],
-                vec![
-                    (Provider::Claude, "plan", None),
-                    (Provider::Codex, "read-only", Some("never")),
-                    (Provider::Codex, "read-only-net", Some("never")),
-                ],
-            ),
-            (
-                vec![claude("default"), codex("read-only", "on-request")],
-                vec![(Provider::Claude, "default", None), (Provider::Codex, "read-only-net", Some("on-request"))],
-            ),
-            (
-                vec![claude("acceptEdits"), codex("workspace-write", "never"), codex("workspace-write", "on-request")],
-                vec![(Provider::Claude, "acceptEdits", None), (Provider::Codex, "workspace-write", Some("on-request"))],
-            ),
-            (vec![codex("workspace-write", "auto-review")], vec![(Provider::Codex, "workspace-write", Some("auto-review"))]),
-            (
-                vec![claude("bypassPermissions"), codex("danger-full-access", "never"), codex("danger-full-access", "on-request")],
-                vec![(Provider::Claude, "bypassPermissions", None), (Provider::Codex, "danger-full-access", Some("never"))],
-            ),
+        let callers = [
+            ("plan", claude("plan")),
+            ("ro", codex("read-only", "never")),
+            ("ro-net", codex("read-only-net", "never")),
+            ("default", claude("default")),
+            ("dontAsk", claude("dontAsk")),
+            ("ro-ask", codex("read-only", "on-request")),
+            ("acceptEdits", claude("acceptEdits")),
+            ("ww", codex("workspace-write", "on-request")),
+            ("review", codex("workspace-write", "auto-review")),
+            ("bypass", claude("bypassPermissions")),
+            ("full", codex("danger-full-access", "never")),
         ];
-        for (i, (callers, _)) in steps.iter().enumerate() {
-            for (j, (_, helpers)) in steps.iter().enumerate() {
-                for (cp, cs) in callers {
-                    for &(hp, mode, approval) in helpers {
-                        let r = cap((*cp, cs), (hp, mode, approval), false, false);
-                        assert_eq!(r.is_ok(), j <= i, "{cs} spawning {hp:?} {mode} {approval:?}: {r:?}");
-                        if let Err(e) = r {
-                            assert!(e.contains(&mode_label(hp, mode, approval)), "names the helper's: {e}");
-                            let yours = cs["permissionMode"].as_str().or(cs["sandbox"].as_str()).unwrap();
-                            assert!(e.contains(yours), "names the caller's: {e}");
-                        }
-                        // The user's setting lets every one through.
-                        assert_eq!(cap((*cp, cs), (hp, mode, approval), false, true), Ok(()));
-                    }
+        // Each helper mode, and the callers that may spawn it.
+        let helpers: [((Provider, &str, Option<&str>), &[&str]); 9] = [
+            (
+                (Provider::Claude, "plan", None),
+                &["plan", "ro", "ro-net", "default", "dontAsk", "ro-ask", "acceptEdits", "ww", "review", "bypass", "full"],
+            ),
+            (
+                (Provider::Codex, "read-only", Some("never")),
+                &["plan", "ro", "ro-net", "default", "dontAsk", "ro-ask", "acceptEdits", "ww", "review", "bypass", "full"],
+            ),
+            // The network is an escalation of its own.
+            ((Provider::Codex, "read-only-net", Some("never")), &["ro-net", "review", "bypass", "full"]),
+            ((Provider::Claude, "default", None), &["default", "dontAsk", "ro-ask", "acceptEdits", "ww", "review", "bypass", "full"]),
+            ((Provider::Claude, "acceptEdits", None), &["acceptEdits", "ww", "review", "bypass", "full"]),
+            // Commands in a sandbox go further than edits.
+            ((Provider::Codex, "workspace-write", Some("never")), &["ww", "review", "bypass", "full"]),
+            ((Provider::Codex, "workspace-write", Some("auto-review")), &["review", "bypass", "full"]),
+            ((Provider::Claude, "bypassPermissions", None), &["bypass", "full"]),
+            ((Provider::Codex, "danger-full-access", Some("on-request")), &["bypass", "full"]),
+        ];
+        for ((hp, mode, approval), allowed) in helpers {
+            for (name, (cp, cs)) in &callers {
+                let r = cap((*cp, cs), (hp, mode, approval), false, false);
+                assert_eq!(r.is_ok(), allowed.contains(name), "{name} spawning {hp:?} {mode} {approval:?}: {r:?}");
+                if let Err(e) = r {
+                    assert!(e.contains(&mode_label(hp, mode, approval)), "names the helper's: {e}");
+                    let yours = cs["permissionMode"].as_str().or(cs["sandbox"].as_str()).unwrap();
+                    assert!(e.contains(yours), "names the caller's: {e}");
                 }
+                // The user's setting lets every one through.
+                assert_eq!(cap((*cp, cs), (hp, mode, approval), false, true), Ok(()));
             }
         }
         // Left to the defaults, the refusal says so and how to go lower.
@@ -12375,28 +12572,53 @@ mod tests {
         assert!(e.contains("default, as you left it out") && e.contains("lower permissionMode"), "{e}");
         let e = cap((Provider::Claude, &plan), (Provider::Codex, "workspace-write", Some("never")), true, false).unwrap_err();
         assert!(e.contains("lower sandbox or approval"), "{e}");
-        // A caller whose mode is not known counts as read-only; a mode Luna
-        // does not know is refused by name elsewhere.
+        // A caller whose mode is not known counts as the least; a mode Luna
+        // does not know is refused, whatever the caller.
         let unknown = json!({});
         assert!(cap((Provider::Claude, &unknown), (Provider::Claude, "default", None), false, false).unwrap_err().contains("cannot read"));
         assert_eq!(cap((Provider::Claude, &unknown), (Provider::Claude, "plan", None), false, false), Ok(()));
-        assert_eq!(cap((Provider::Codex, &unknown), (Provider::Codex, "nonsense", Some("never")), false, false), Ok(()));
+        let full = json!({ "permissionMode": "bypassPermissions" });
+        assert!(cap((Provider::Claude, &full), (Provider::Codex, "nonsense", Some("never")), false, true).is_err());
     }
 
     #[test]
-    fn a_helpers_mode_left_out_is_the_one_it_would_start_in() {
-        let p = |f: fn(&mut SpawnParams)| {
-            let mut p = SpawnParams::default();
+    fn a_spawns_mode_is_spelled_exactly_checked_and_pinned_on_every_path() {
+        use serde_json::json;
+        let ro = json!({ "sandbox": "read-only", "approval": "never" });
+        let full = json!({ "sandbox": "danger-full-access", "approval": "never" });
+        let visible = |f: fn(&mut SpawnParams)| {
+            let mut p = SpawnParams { visible: Some(true), ..Default::default() };
             f(&mut p);
             p
         };
-        // Asked for: taken as asked.
-        assert_eq!(effective_mode(&p(|p| p.permission_mode = Some("plan".into())), Provider::Claude, "", ""), ("plan".into(), None));
-        // A background Codex never asks, unless a reviewer answers; its sandbox is then fixed.
-        let (_, approval) = effective_mode(&p(|p| p.sandbox = Some("read-only".into())), Provider::Codex, "", "");
-        assert_eq!(approval.as_deref(), Some("never"));
-        let (sandbox, approval) = effective_mode(&p(|p| p.approval = Some("auto-review".into())), Provider::Codex, "", "");
-        assert_eq!((sandbox.as_str(), approval.as_deref()), ("workspace-write", Some("auto-review")));
+        // What the window would read in any case is refused here, before any
+        // comparison, the setting on or not.
+        for above in [false, true] {
+            let mut p = visible(|p| (p.sandbox, p.approval) = (Some("DANGER-FULL-ACCESS".into()), Some("never".into())));
+            let e = settle_mode(&mut p, Provider::Codex, (Provider::Codex, &ro), "", "", above).unwrap_err();
+            assert!(e.contains("unknown sandbox \"DANGER-FULL-ACCESS\""), "{e}");
+            let mut p = visible(|p| p.permission_mode = Some("BypassPermissions".into()));
+            assert!(settle_mode(&mut p, Provider::Claude, (Provider::Codex, &full), "", "", above)
+                .unwrap_err()
+                .contains("unknown permission mode"));
+            let mut p = visible(|p| (p.sandbox, p.approval) = (Some("read-only".into()), Some("Never".into())));
+            assert!(settle_mode(&mut p, Provider::Codex, (Provider::Codex, &full), "", "", above)
+                .unwrap_err()
+                .contains("unknown approval"));
+        }
+        // Spelled right, it is held to the caller's and pinned as checked.
+        let mut p = visible(|p| (p.sandbox, p.approval) = (Some("danger-full-access".into()), Some("never".into())));
+        assert!(settle_mode(&mut p, Provider::Codex, (Provider::Codex, &ro), "", "", false).unwrap_err().contains("more privilege"));
+        let mut p = visible(|p| (p.sandbox, p.approval) = (Some(" read-only ".into()), Some("never".into())));
+        settle_mode(&mut p, Provider::Codex, (Provider::Codex, &ro), "", "", false).unwrap();
+        assert_eq!((p.sandbox.as_deref(), p.approval.as_deref()), (Some("read-only"), Some("never")));
+        // A background Codex never asks unless a reviewer answers; its sandbox is then fixed.
+        let mut p = SpawnParams { approval: Some("auto-review".into()), ..Default::default() };
+        settle_mode(&mut p, Provider::Codex, (Provider::Codex, &full), "", "", false).unwrap();
+        assert_eq!((p.sandbox.as_deref(), p.approval.as_deref()), (Some("workspace-write"), Some("auto-review")));
+        let mut p = SpawnParams { sandbox: Some("read-only".into()), ..Default::default() };
+        settle_mode(&mut p, Provider::Codex, (Provider::Codex, &ro), "", "", false).unwrap();
+        assert_eq!(p.approval.as_deref(), Some("never"));
     }
 
     #[test]
@@ -12410,10 +12632,11 @@ mod tests {
             detail: None,
         };
         let (question, permission, dialog) = (ask("question", None), ask("permission", None), ask("question", Some(0)));
+        let full = Some(Privilege { reach: Reach::Full, net: true });
         for own in [true, false] {
             // Answers to a question its model asked: anyone's.
-            assert_eq!(answer_reach(own, Some(&question), None, None), Ok(()));
-            assert_eq!(answer_reach(own, None, None, None), Ok(()), "nothing known pending yet");
+            assert_eq!(answer_reach(own, full, Provider::Claude, Some(&question), None, None), Ok(()));
+            assert_eq!(answer_reach(own, full, Provider::Claude, None, None, None), Ok(()), "nothing known pending yet");
             for (held, allow, keys) in [
                 (Some(&permission), Some(true), None),
                 (Some(&permission), Some(false), None),
@@ -12423,12 +12646,65 @@ mod tests {
                 (Some(&question), None, Some("{down}{enter}")),
                 (Some(&dialog), None, None),
             ] {
-                let r = answer_reach(own, held, allow, keys);
+                let r = answer_reach(own, full, Provider::Codex, held, allow, keys);
                 assert_eq!(r.is_ok(), own, "{:?} allow {allow:?} keys {keys:?}: {r:?}", held.map(|a| a.kind));
                 if let Err(e) = r {
                     assert!(e.contains("only to sessions you spawned"), "{e}");
                 }
             }
+        }
+    }
+
+    #[test]
+    fn a_caller_approves_its_helpers_permission_only_where_it_would_run_it_unasked() {
+        let permission = |tool: &str| Ask::permission(Some(tool.into()), None);
+        let at = |reach, net| Some(Privilege { reach, net });
+        let (bash, edit, fetch) = (permission("Bash"), permission("Edit"), permission("WebFetch"));
+        // Read-only and asking callers never say yes: it goes to a person.
+        for has in [at(Reach::ReadOnly, false), at(Reach::Asks, false), at(Reach::ReadOnly, true)] {
+            for p in [&bash, &edit, &fetch] {
+                assert!(answer_reach(true, has, Provider::Claude, Some(p), Some(true), None).unwrap_err().contains("goes to the user"));
+                assert!(answer_reach(true, has, Provider::Claude, Some(p), None, Some("{enter}")).is_err(), "keys are a yes too");
+                assert_eq!(answer_reach(true, has, Provider::Claude, Some(p), Some(false), None), Ok(()), "a no is always theirs");
+            }
+        }
+        // acceptEdits may pass an edit, not a command or a fetch.
+        let edits = at(Reach::Edits, false);
+        assert_eq!(answer_reach(true, edits, Provider::Claude, Some(&edit), Some(true), None), Ok(()));
+        assert!(answer_reach(true, edits, Provider::Claude, Some(&bash), Some(true), None).is_err());
+        assert!(answer_reach(true, edits, Provider::Claude, Some(&fetch), Some(true), None).is_err());
+        // A Codex approval lets a command out of its sandbox: full only.
+        let codex = Ask::permission(None, Some("rm -rf build".into()));
+        assert!(answer_reach(true, at(Reach::Commands, false), Provider::Codex, Some(&codex), Some(true), None).is_err());
+        assert!(answer_reach(true, at(Reach::Reviewed, true), Provider::Codex, Some(&codex), Some(true), None).is_err());
+        let full = at(Reach::Full, true);
+        for (provider, p) in [(Provider::Codex, &codex), (Provider::Claude, &bash), (Provider::Claude, &fetch)] {
+            assert_eq!(answer_reach(true, full, provider, Some(p), Some(true), None), Ok(()));
+        }
+        // The user's setting lifts it (no approver to hold to).
+        assert_eq!(answer_reach(true, None, Provider::Claude, Some(&bash), Some(true), None), Ok(()));
+    }
+
+    #[test]
+    fn no_helper_works_in_lunas_own_folder_or_above_it() {
+        let sep = std::path::MAIN_SEPARATOR;
+        let k = |p: &str| crate::paths::path_key(&p.replace('/', &sep.to_string()));
+        let data = k("/apps/luna");
+        assert!(within_or_above(&data, &data));
+        assert!(within_or_above(&k("/apps/luna/accounts/x"), &data), "inside");
+        assert!(within_or_above(&k("/apps"), &data), "above: it holds Luna's folder");
+        assert!(within_or_above(&k("/"), &data), "the root holds everything");
+        assert!(!within_or_above(&k("/apps/luna-test"), &data), "a sibling whose name starts the same");
+        assert!(!within_or_above(&k("/projects/x"), &data));
+        assert!(reaches_luna(&crate::paths::data_dir().join("sub").to_string_lossy()));
+        assert!(!reaches_luna(&std::env::temp_dir().join("luna-some-project").to_string_lossy()));
+    }
+
+    #[test]
+    fn sent_text_holds_no_keys() {
+        assert_eq!(plain_text("two lines\r\nand\ta tab, \u{fc}nicode, \u{65e5}\u{672c}"), Ok(()));
+        for bad in ["\x1b[201~y\r", "\x1b", "a\x03", "\x7f", "\u{9b}2~", "\x00"] {
+            assert!(plain_text(bad).unwrap_err().contains("control character"), "{bad:?}");
         }
     }
 }

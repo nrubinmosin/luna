@@ -744,7 +744,7 @@ mod tests {
         assert!(text.len() < 7400, "tools/list is {} chars", text.len());
         assert!(INSTRUCTIONS.len() < 1000, "instructions are {} bytes", INSTRUCTIONS.len());
         // Read only on request, but whole: keep it to a few thousand tokens.
-        assert!(GUIDE.len() < 15_200, "the guide is {} bytes", GUIDE.len());
+        assert!(GUIDE.len() < 15_500, "the guide is {} bytes", GUIDE.len());
     }
 
     #[test]

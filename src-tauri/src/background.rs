@@ -734,6 +734,7 @@ fn command_for(e: &Entry, id: &str) -> (Vec<String>, String, Vec<(&'static str, 
             } else {
                 // `exec` asks nobody: the sandbox is what holds it.
                 args.extend(["-c".into(), "approval_policy=\"never\"".into()]);
+                args.extend(["-c".into(), crate::pty::CODEX_PERSON_REVIEWS.into()]);
                 args.extend(crate::pty::codex_sandbox_args(&s.mode));
             }
             if let Some(sb) = crate::pty::codex_windows_sandbox(&s.mode) {
@@ -4154,6 +4155,7 @@ mod tests {
             assert!(!args.iter().any(|a| a.starts_with("sandbox_mode=")), "Codex's docs say not to set both");
             assert_eq!(envs.iter().any(|(k, _)| *k == "GIT_CONFIG_COUNT"), cfg!(windows), "git https, which schannel cannot do there");
             assert!(args.contains(&"approval_policy=\"never\"".to_string()));
+            assert!(args.contains(&crate::pty::CODEX_PERSON_REVIEWS.to_string()), "no reviewer model from a config");
         }
     }
 
@@ -4232,6 +4234,7 @@ mod tests {
         e.spec.auto_review = true;
         let (args, _, _) = command_for(&e, "x");
         assert!(args.contains(&"--approve-for-me".to_string()));
+        assert!(!args.iter().any(|a| a.starts_with("approvals_reviewer=")), "its own flag says who reviews");
         assert!(!args.iter().any(|a| a.starts_with("approval_policy=") || a.starts_with("sandbox_mode=")), "Codex refuses them beside it");
     }
 
