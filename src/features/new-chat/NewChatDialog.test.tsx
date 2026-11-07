@@ -9,14 +9,20 @@ import { useNewChat } from './newchat.store';
 
 // What the dialog asks the core as it opens: no settings files say anything,
 // every folder is trusted, and Codex has no models listed yet.
-vi.mock('../../ipc/commands', async importOriginal => ({
-  ...(await importOriginal<typeof import('../../ipc/commands')>()),
+vi.mock('../../ipc/defaults', async importOriginal => ({
+  ...(await importOriginal<typeof import('../../ipc/defaults')>()),
   claudeDefaults: vi.fn(() => Promise.resolve({ model: null, effort: null, permissionMode: null })),
   codexDefaults: vi.fn(() => Promise.resolve({ model: null, effort: null, approval: null, sandbox: null })),
-  claudeFolderTrusted: vi.fn(() => Promise.resolve(true)),
-  codexFolderTrusted: vi.fn(() => Promise.resolve(true)),
-  codexHooksStart: vi.fn(() => Promise.resolve({ default: false, kept: null })),
   codexModels: vi.fn(() => Promise.resolve([]))
+}));
+vi.mock('../../ipc/trust', async importOriginal => ({
+  ...(await importOriginal<typeof import('../../ipc/trust')>()),
+  claudeFolderTrusted: vi.fn(() => Promise.resolve(true)),
+  codexFolderTrusted: vi.fn(() => Promise.resolve(true))
+}));
+vi.mock('../../ipc/worktrees', async importOriginal => ({
+  ...(await importOriginal<typeof import('../../ipc/worktrees')>()),
+  codexHooksStart: vi.fn(() => Promise.resolve({ default: false, kept: null }))
 }));
 
 // xterm cannot run in jsdom.

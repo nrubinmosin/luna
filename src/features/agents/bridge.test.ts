@@ -1,7 +1,11 @@
 import { act, renderHook } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import * as ipc from '../../ipc/commands';
-import type { AgentSpawnRequest, CodexModelDto, PromotedDto } from '../../ipc/commands';
+import * as agents from '../../ipc/agents';
+import * as defaults from '../../ipc/defaults';
+import * as sessions from '../../ipc/sessions';
+import * as worktrees from '../../ipc/worktrees';
+import type { AgentSpawnRequest, PromotedDto } from '../../ipc/agents';
+import type { CodexModelDto } from '../../ipc/defaults';
 import type { Account, Chat } from '../../shared/types';
 import { useAccounts } from '../accounts/accounts.store';
 import { useChats } from '../chats/chats.store';
@@ -33,13 +37,24 @@ vi.mock('../../ipc/events', () => ({
 
 // The commands a spawn sends to the core, and the settings and trust it reads
 // on the way: no settings files say anything, and every folder is trusted.
-vi.mock('../../ipc/commands', async importOriginal => ({
-  ...(await importOriginal<typeof import('../../ipc/commands')>()),
+vi.mock('../../ipc/defaults', async importOriginal => ({
+  ...(await importOriginal<typeof import('../../ipc/defaults')>()),
   claudeDefaults: vi.fn(() => Promise.resolve({ model: null, effort: null, permissionMode: null })),
   codexDefaults: vi.fn(() => Promise.resolve({ model: null, effort: null, approval: null, sandbox: null })),
+  codexModels: vi.fn(() => Promise.resolve([]))
+}));
+vi.mock('../../ipc/trust', async importOriginal => ({
+  ...(await importOriginal<typeof import('../../ipc/trust')>()),
   claudeFolderTrusted: vi.fn(() => Promise.resolve(true)),
-  codexFolderTrusted: vi.fn(() => Promise.resolve(true)),
+  codexFolderTrusted: vi.fn(() => Promise.resolve(true))
+}));
+vi.mock('../../ipc/worktrees', async importOriginal => ({
+  ...(await importOriginal<typeof import('../../ipc/worktrees')>()),
   codexHooksStart: vi.fn(() => Promise.resolve({ default: false, kept: null })),
+  deleteSession: vi.fn(() => Promise.resolve())
+}));
+vi.mock('../../ipc/agents', async importOriginal => ({
+  ...(await importOriginal<typeof import('../../ipc/agents')>()),
   agentSpawned: vi.fn(() => Promise.resolve()),
   agentSpawns: vi.fn(() => Promise.resolve([])),
   agentResumes: vi.fn(() => Promise.resolve([])),
@@ -47,9 +62,10 @@ vi.mock('../../ipc/commands', async importOriginal => ({
   backgroundPromote: vi.fn(),
   backgroundPromoted: vi.fn(() => Promise.resolve()),
   chatNames: vi.fn(() => Promise.resolve()),
-  accountUsage: vi.fn(() => Promise.resolve()),
-  codexModels: vi.fn(() => Promise.resolve([])),
-  deleteSession: vi.fn(() => Promise.resolve()),
+  accountUsage: vi.fn(() => Promise.resolve())
+}));
+vi.mock('../../ipc/sessions', async importOriginal => ({
+  ...(await importOriginal<typeof import('../../ipc/sessions')>()),
   ensureClaudeSession: vi.fn(() => Promise.resolve('session')),
   ensureCodexSession: vi.fn(() => Promise.resolve('session'))
 }));
@@ -62,7 +78,7 @@ vi.mock('../panes/terminals', () => ({
   forgetAll: vi.fn()
 }));
 
-const mocked = vi.mocked(ipc);
+const mocked = vi.mocked({ ...agents, ...defaults, ...sessions, ...worktrees });
 
 const account = (provider: Account['provider'], name: string): Account => ({
   provider,

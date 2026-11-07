@@ -1,27 +1,34 @@
 import { clearMocks, mockIPC } from '@tauri-apps/api/mocks';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+/**
+ * The command modules, loaded fresh: call() in core.ts decides once, as it
+ * loads, whether it runs inside Tauri, so a mock has to be in place first.
+ */
+async function load() {
+  vi.resetModules();
+  return { ...(await import('./accounts')), ...(await import('./sessions')), ...(await import('./trust')) };
+}
+
 type Handler = (cmd: string, args: Record<string, unknown>) => unknown;
 
 /** What the window asked of Rust, in order. */
 let asked: Array<{ cmd: string; args: Record<string, unknown> }> = [];
 
 /**
- * The commands module as it loads inside Tauri. It decides once, as it loads,
- * whether it runs there (and falls back to the demo when not), so the mock
- * goes in first and the module is loaded fresh after it.
+ * The command modules as they load inside Tauri: the mock goes in first, then
+ * the modules (and call() under them) are loaded fresh.
  */
 async function inTauri(answer: Handler) {
   asked = [];
   mockIPC((cmd, args) => {
     const a = (args ?? {}) as Record<string, unknown>;
     asked.push({ cmd, args: a });
-    // The log line the module writes for a failure goes to Rust too.
+    // The log line call() writes for a failure goes to Rust too.
     if (cmd === 'append_log') return undefined;
     return answer(cmd, a);
   });
-  vi.resetModules();
-  return import('./commands');
+  return load();
 }
 
 /** A command that fails the way Tauri's do: with the Rust error as a plain string. */
@@ -40,12 +47,12 @@ beforeEach(() => {
 afterEach(() => {
   clearMocks();
   // clearMocks empties the internals but leaves them there, and their being
-  // there is what makes the module think it runs inside Tauri.
+  // there is what makes call() think it runs inside Tauri.
   delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   vi.restoreAllMocks();
 });
 
-describe('ipc commands inside Tauri', () => {
+describe('call() inside Tauri', () => {
   it('returns what the command answers', async () => {
     const account = { provider: 'claude', name: 'work', path: '/acc/work' };
     const ipc = await inTauri(cmd => (cmd === 'list_accounts' ? [account] : null));
@@ -100,10 +107,9 @@ describe('ipc commands inside Tauri', () => {
   });
 });
 
-describe('ipc commands outside Tauri', () => {
+describe('call() outside Tauri', () => {
   it('hands back each command’s empty answer, so the UI still works in a plain browser', async () => {
-    vi.resetModules();
-    const ipc = await import('./commands');
+    const ipc = await load();
     await expect(ipc.listAccounts()).resolves.toEqual([]);
     await expect(ipc.accountLimits('/acc/work')).resolves.toBeNull();
     await expect(ipc.claudeFolderTrusted('/acc/work', '/repo')).resolves.toBe(true);

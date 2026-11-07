@@ -1,14 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { AccountInfo, AccountLimitsDto, CodexLimitsDto } from '../../ipc/commands';
+import type { AccountInfo, AccountLimitsDto, CodexLimitsDto } from '../../ipc/accounts';
 
-vi.mock('../../ipc/commands', async importOriginal => ({
-  ...(await importOriginal<typeof import('../../ipc/commands')>()),
+vi.mock('../../ipc/accounts', async importOriginal => ({
+  ...(await importOriginal<typeof import('../../ipc/accounts')>()),
   listAccounts: vi.fn(),
   accountLimits: vi.fn(),
   codexLimits: vi.fn(),
   createAccount: vi.fn(),
   deleteAccount: vi.fn(),
-  renameAccount: vi.fn(),
+  renameAccount: vi.fn()
+}));
+vi.mock('../../ipc/agents', async importOriginal => ({
+  ...(await importOriginal<typeof import('../../ipc/agents')>()),
   agentBlockedAccounts: vi.fn(() => Promise.resolve([]))
 }));
 
@@ -60,7 +63,7 @@ const codexLimits = (over: Partial<CodexLimitsDto> = {}): CodexLimitsDto => ({
  */
 async function load() {
   vi.resetModules();
-  const ipc = vi.mocked(await import('../../ipc/commands'));
+  const ipc = vi.mocked(await import('../../ipc/accounts'));
   const { useAccounts } = await import('./accounts.store');
   const { useChats } = await import('../chats/chats.store');
   const { useNewChat } = await import('../new-chat/newchat.store');

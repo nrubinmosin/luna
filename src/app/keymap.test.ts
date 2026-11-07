@@ -63,7 +63,8 @@ describe('keymap: new chats', () => {
 
   it('takes Ctrl+N by its physical key on a Cyrillic layout', () => {
     const { openNewChat } = mount();
-    ctrl('т', 'KeyN');
+    // What the N key types on a Russian layout, the Cyrillic te.
+    ctrl(String.fromCharCode(0x442), 'KeyN');
     expect(openNewChat).toHaveBeenCalledOnce();
   });
 
