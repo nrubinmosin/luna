@@ -3,6 +3,7 @@
 //! under way is on disk until a helper comes of it (`SpawnUnderWay`).
 
 pub(crate) mod account;
+pub(super) mod background;
 
 use crate::agents::ask::{ask_of, Ask};
 use crate::agents::delivery::{await_start, screen_of, spill, still_starting, unknown_command};
@@ -12,10 +13,9 @@ use crate::agents::privilege::{command_reach, plain_text, reaches_luna, settle_m
 use crate::agents::registry::{chat_name, depth_of, descendants, is_descendant, label, reg, set_name, top_of, Registry, DEV_CALLER};
 use crate::agents::said::{first_words, TASK_CHARS};
 use crate::agents::spawn::account::{allowed_account_dirs, list_provider, pick_from_list, signed_in, AccountChoice};
+use crate::agents::spawn::background::spawn_background;
 use crate::agents::teardown::Auto;
-use crate::agents::{
-    caller_worktree, helper_worktree_name, neighbors_in, spawn_background, spawn_failed_late, worktree_of, Neighbor, Worktree,
-};
+use crate::agents::{caller_worktree, helper_worktree_name, neighbors_in, spawn_failed_late, worktree_of, Neighbor, Worktree};
 use crate::provider::Provider;
 use crate::throttle::now_ms;
 use serde::{Deserialize, Serialize};

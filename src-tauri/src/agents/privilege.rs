@@ -5,8 +5,8 @@
 
 use crate::agents::ask::Ask;
 use crate::agents::registry::{is_descendant, reg, DEV_CALLER};
+use crate::agents::spawn::background::{asked, CLAUDE_MODES};
 use crate::agents::spawn::SpawnParams;
-use crate::agents::{asked, CLAUDE_MODES};
 use crate::provider::Provider;
 
 /// An agent's name as Claude Code takes one, a plugin's `plugin:name` too, and
