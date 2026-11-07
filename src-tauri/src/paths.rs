@@ -79,6 +79,44 @@ fn last_resort_dir() -> PathBuf {
     std::env::temp_dir().join(APP_DIR)
 }
 
+/// `luna --protect-install-dir`: gives the folder the exe is in a DACL of
+/// its own (secret.rs `acl::claim`: this user, SYSTEM and Administrators in
+/// full, everyone else read and execute) and returns true. For the installer
+/// (windows/hooks.nsh), after every install and so after every update, which
+/// runs the installer too: a folder that inherits "Authenticated Users:
+/// Modify", as one on a second drive commonly does, would let any other user
+/// of the machine replace the exe or plant a DLL beside it, and read the data
+/// kept there. Run by the exe the installer just put there, which knows the
+/// installing user's SID and writes it by SID rather than by name. What
+/// `install_dir_to_protect` passes over keeps its ACL. A failure changes
+/// nothing, and the installer goes on: no console to say it to.
+pub fn protect_install_from_args() -> bool {
+    if std::env::args().nth(1).as_deref() != Some("--protect-install-dir") {
+        return false;
+    }
+    #[cfg(windows)]
+    if let Some(dir) = exe_dir() {
+        let program_files: Vec<String> =
+            ["ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"].iter().filter_map(|v| std::env::var(v).ok()).collect();
+        if install_dir_to_protect(&dir, &program_files) {
+            let _ = crate::secret::acl::claim(&dir, true);
+        }
+    }
+    true
+}
+
+/// Whether the install folder gets a DACL of its own: not under Program
+/// Files, which is protected already, and named for Luna, as the installer's
+/// default folder is (NSIS appends that name to a folder picked with Browse).
+/// A folder that holds other programs as well keeps its ACL: it is theirs as
+/// much as Luna's, and a protected DACL would take others' access to them away.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn install_dir_to_protect(dir: &Path, program_files: &[String]) -> bool {
+    let key = path_key(&dir.to_string_lossy());
+    let under = |root: &String| key.strip_prefix(&path_key(root)).is_some_and(|rest| rest.starts_with(KEY_SEP));
+    dir.file_name().is_some_and(|n| n.eq_ignore_ascii_case("luna")) && !program_files.iter().any(under)
+}
+
 fn writable(dir: &Path) -> bool {
     let probe = dir.join(format!(".luna-write-probe-{}", std::process::id()));
     let ok = std::fs::write(&probe, b"").is_ok();
@@ -180,6 +218,28 @@ mod tests {
         assert_eq!(path_key("/p/Foo") == path_key("/p/foo"), cfg!(windows));
         assert_eq!(path_key(r"/p\foo") == path_key("/p/foo"), cfg!(windows));
         assert_eq!(path_key("/p/foo/"), path_key("/p/foo"), "a trailing separator says nothing");
+    }
+
+    #[test]
+    fn only_a_folder_of_lunas_own_outside_program_files_is_protected_at_install() {
+        let pf = [native(r"C:\Program Files"), native(r"C:\Program Files (x86)")];
+        let protects = |dir: &str| install_dir_to_protect(Path::new(&native(dir)), &pf);
+        assert!(protects(r"E:\Programs\Luna"));
+        assert!(protects(r"D:\luna"));
+        assert!(!protects(r"C:\Program Files\Luna"), "protected already");
+        assert!(!protects(r"C:\Program Files (x86)\Luna"));
+        assert!(!protects(r"E:\Tools"), "a folder others' programs are in too");
+        assert!(!protects(r"E:\Luna-old\bin"));
+        assert!(protects(r"C:\Program Files Extra\Luna"), "a prefix of the name is not the folder");
+    }
+
+    /// `E:\p\x` as this platform writes it (`/E/p/x` off Windows).
+    fn native(path: &str) -> String {
+        if cfg!(windows) {
+            path.to_string()
+        } else {
+            format!("/{}", path.replace(':', "").replace('\\', "/"))
+        }
     }
 
     #[test]

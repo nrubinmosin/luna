@@ -39,13 +39,12 @@ pub fn hmac_hex(key: &[u8], msg: &[u8]) -> String {
 }
 
 /// Makes `dir` (and its parents) for files that hold a secret, and leaves it
-/// readable by its owner alone on Unix (0700), whatever mode an older Luna
-/// made it with: with umask 022 and a traversable data dir, another OS user
-/// could otherwise list it and read what is in it. Elsewhere only made: on
-/// Windows the data dir is in the user's profile (`LOCALAPPDATA`), whose ACL
-/// grants the user, SYSTEM and Administrators alone and is inherited, or
-/// beside the exe where the user chose to install, which inherits that
-/// folder's ACL (threat-model.md, F4).
+/// readable by its owner alone, whatever an older Luna made it with. On Unix
+/// that is 0700: with umask 022 and a traversable data dir, another OS user
+/// could otherwise list it and read what is in it. On Windows it is a DACL of
+/// its own, not inherited: the data dir is often the install folder, which
+/// takes the ACL of wherever the user put it, and on a second drive that
+/// commonly lets every signed-in user change anything (`acl::claim`).
 pub fn private_dir(dir: &Path) -> io::Result<()> {
     #[cfg(unix)]
     {
@@ -56,8 +55,158 @@ pub fn private_dir(dir: &Path) -> io::Result<()> {
         // SAFETY: geteuid has no preconditions and cannot fail.
         claim_private(dir, unsafe { libc::geteuid() }).map_err(io::Error::other)
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        std::fs::create_dir_all(dir)?;
+        acl::claim(dir, false)
+    }
+    #[cfg(not(any(unix, windows)))]
     std::fs::create_dir_all(dir)
+}
+
+/// Windows' side of `private_dir`, and of the install folder's protection
+/// (paths.rs `protect_install_from_args`).
+#[cfg(windows)]
+pub mod acl {
+    use std::io;
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::Path;
+    use windows::core::{BOOL, PCWSTR, PWSTR};
+    use windows::Win32::Foundation::{CloseHandle, LocalFree, HANDLE, HLOCAL};
+    use windows::Win32::Security::Authorization::{
+        ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, GetNamedSecurityInfoW, SetNamedSecurityInfoW,
+        SDDL_REVISION_1, SE_FILE_OBJECT,
+    };
+    use windows::Win32::Security::{
+        GetSecurityDescriptorDacl, GetTokenInformation, TokenUser, ACL, DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION,
+        PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, TOKEN_QUERY, TOKEN_USER,
+    };
+    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    /// BUILTIN\Administrators, the owner of what an elevated process makes.
+    const ADMINISTRATORS: &str = "S-1-5-32-544";
+
+    /// Gives `dir` a protected DACL — full control for this user, SYSTEM and
+    /// Administrators, inherited by what is in it, nothing from above — and
+    /// with `readable_by_users` read and execute for BUILTIN\Users as well,
+    /// as Program Files grants. Written by well-known SIDs, so no account
+    /// name in any language is involved. Refused first: a link or junction,
+    /// which the DACL would be written through to wherever it points, and a
+    /// folder owned by anyone but this user (or Administrators, for an
+    /// elevated run): its owner may rewrite any DACL on it at will.
+    pub fn claim(dir: &Path, readable_by_users: bool) -> io::Result<()> {
+        let meta = std::fs::symlink_metadata(dir)?;
+        if !meta.is_dir() {
+            return Err(io::Error::other(format!("{} is not a folder (a link or a file is there)", dir.display())));
+        }
+        let user = user_sid()?;
+        let owner = owner_sid(dir)?;
+        if owner != user && owner != ADMINISTRATORS {
+            return Err(io::Error::other(format!("{} belongs to someone else ({owner})", dir.display())));
+        }
+        // 0x1200a9: FILE_GENERIC_READ | FILE_GENERIC_EXECUTE.
+        let users = if readable_by_users { "(A;OICI;0x1200a9;;;BU)" } else { "" };
+        set_dacl(dir, &format!("D:P(A;OICI;FA;;;{user})(A;OICI;FA;;;SY)(A;OICI;FA;;;BA){users}"))
+    }
+
+    fn wide(s: &std::ffi::OsStr) -> Vec<u16> {
+        s.encode_wide().chain(Some(0)).collect()
+    }
+
+    /// The SID as text (`S-1-5-…`), for a SID the caller keeps alive.
+    fn sid_text(sid: PSID) -> io::Result<String> {
+        let mut text = PWSTR::null();
+        // SAFETY: `sid` is valid for the call; the string it makes is
+        // LocalAlloc'd, read here and freed once.
+        unsafe {
+            ConvertSidToStringSidW(sid, &mut text)?;
+            let out = text.to_string();
+            let _ = LocalFree(Some(HLOCAL(text.0.cast())));
+            out.map_err(io::Error::other)
+        }
+    }
+
+    /// The SID of the user this process runs as.
+    pub fn user_sid() -> io::Result<String> {
+        let mut token = HANDLE::default();
+        // SAFETY: the token is opened for query only, read into a buffer of
+        // the size it asks for (u64s, aligned for TOKEN_USER), and closed.
+        unsafe {
+            OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token)?;
+            let mut len = 0u32;
+            let _ = GetTokenInformation(token, TokenUser, None, 0, &mut len);
+            let mut buf = vec![0u64; (len as usize).div_ceil(8)];
+            let got = GetTokenInformation(token, TokenUser, Some(buf.as_mut_ptr().cast()), len, &mut len);
+            let _ = CloseHandle(token);
+            got?;
+            sid_text((*buf.as_ptr().cast::<TOKEN_USER>()).User.Sid)
+        }
+    }
+
+    /// The SID of the owner of `path`.
+    fn owner_sid(path: &Path) -> io::Result<String> {
+        let name = wide(path.as_os_str());
+        let (mut owner, mut sd) = (PSID::default(), PSECURITY_DESCRIPTOR::default());
+        // SAFETY: `owner` points into `sd`, which is read before it is freed.
+        unsafe {
+            GetNamedSecurityInfoW(
+                PCWSTR(name.as_ptr()),
+                SE_FILE_OBJECT,
+                OWNER_SECURITY_INFORMATION,
+                Some(&mut owner),
+                None,
+                None,
+                None,
+                &mut sd,
+            )
+            .ok()?;
+            let text = sid_text(owner);
+            let _ = LocalFree(Some(HLOCAL(sd.0)));
+            text
+        }
+    }
+
+    /// Writes `sddl`'s DACL on `path`, protected from what is above it.
+    fn set_dacl(path: &Path, sddl: &str) -> io::Result<()> {
+        let name = wide(path.as_os_str());
+        let text: Vec<u16> = sddl.encode_utf16().chain(Some(0)).collect();
+        let mut sd = PSECURITY_DESCRIPTOR::default();
+        // SAFETY: the descriptor is made from the string, its DACL read out of
+        // it and handed on while it lives, and freed once.
+        unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(PCWSTR(text.as_ptr()), SDDL_REVISION_1, &mut sd, None)?;
+            let (mut present, mut defaulted, mut dacl) = (BOOL::default(), BOOL::default(), std::ptr::null_mut::<ACL>());
+            let set = GetSecurityDescriptorDacl(sd, &mut present, &mut dacl, &mut defaulted).map_err(io::Error::from).and_then(|()| {
+                let info = DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION;
+                SetNamedSecurityInfoW(PCWSTR(name.as_ptr()), SE_FILE_OBJECT, info, None, None, Some(dacl.cast_const()), None)
+                    .ok()
+                    .map_err(io::Error::from)
+            });
+            let _ = LocalFree(Some(HLOCAL(sd.0)));
+            set
+        }
+    }
+
+    /// `path`'s DACL as SDDL, to check what `claim` left.
+    #[cfg(test)]
+    pub fn dacl_sddl(path: &Path) -> io::Result<String> {
+        use windows::Win32::Security::Authorization::ConvertSecurityDescriptorToStringSecurityDescriptorW;
+        let name = wide(path.as_os_str());
+        let mut sd = PSECURITY_DESCRIPTOR::default();
+        // SAFETY: as in `owner_sid`; the string is freed once it is read.
+        unsafe {
+            GetNamedSecurityInfoW(PCWSTR(name.as_ptr()), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, None, None, None, None, &mut sd)
+                .ok()?;
+            let mut text = PWSTR::null();
+            let made =
+                ConvertSecurityDescriptorToStringSecurityDescriptorW(sd, SDDL_REVISION_1, DACL_SECURITY_INFORMATION, &mut text, None);
+            let _ = LocalFree(Some(HLOCAL(sd.0)));
+            made?;
+            let out = text.to_string();
+            let _ = LocalFree(Some(HLOCAL(text.0.cast())));
+            out.map_err(io::Error::other)
+        }
+    }
 }
 
 /// Makes `dir` `0700` if it is not there, and checks that it is a folder
@@ -102,7 +251,8 @@ pub fn create_private(path: &Path) -> io::Result<std::fs::File> {
 }
 
 /// Makes an open file the owner's alone on Unix (0600), for one written in
-/// place rather than made anew. Nothing to do elsewhere: see `private_dir`.
+/// place rather than made anew. Elsewhere it keeps the ACL it has: the one
+/// file written so is the CLI's own, in its account folder (claude/oauth.rs).
 pub fn restrict(file: &std::fs::File) -> io::Result<()> {
     #[cfg(unix)]
     {
@@ -248,6 +398,55 @@ mod tests {
         written.unwrap();
         assert_eq!(mode(&file), 0o600);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// In the test executables' own folder, under `test-build/`: on this
+    /// machine it inherits Authenticated Users' Modify, as an install folder
+    /// on a second drive does. icacls's view is printed for the record.
+    #[cfg(windows)]
+    #[test]
+    fn a_secret_folder_on_windows_is_the_users_systems_and_administrators_alone() {
+        let icacls = |p: &Path, args: &[&str]| {
+            let out = std::process::Command::new("icacls").arg(p).args(args).output().unwrap();
+            assert!(out.status.success(), "icacls {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8_lossy(&out.stdout).into_owned()
+        };
+        let base = crate::paths::data_dir().join(format!("acl-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let dir = base.join("core");
+        std::fs::create_dir_all(&dir).unwrap();
+        // Granted outright too, whatever the folder above gives.
+        icacls(&dir, &["/grant", "*S-1-5-11:(OI)(CI)M"]);
+        std::fs::write(dir.join("core.json"), "token").unwrap();
+        println!("before:\n{}", icacls(&dir, &[]));
+        private_dir(&dir).unwrap();
+        println!("after:\n{}", icacls(&dir, &[]));
+        let user = acl::user_sid().unwrap();
+        let broad = [";AU)", ";S-1-5-11)", ";BU)", ";WD)", ";IU)"];
+        for p in [dir.clone(), dir.join("core.json")] {
+            let sddl = acl::dacl_sddl(&p).unwrap();
+            assert!(!broad.iter().any(|b| sddl.contains(b)), "{}: {sddl}", p.display());
+            assert!(sddl.contains(&user) && sddl.contains(";SY)") && sddl.contains(";BA)"), "{sddl}");
+        }
+        assert!(acl::dacl_sddl(&dir).unwrap().starts_with("D:P"), "inherits nothing from above");
+        private_dir(&dir).unwrap();
+        assert!(dir.join("core.json").is_file(), "claimed again, nothing lost");
+
+        // A junction where the folder should be: refused, its target untouched.
+        let target = base.join("target");
+        std::fs::create_dir(&target).unwrap();
+        let before = acl::dacl_sddl(&target).unwrap();
+        let link = base.join("hooks");
+        let made = std::process::Command::new("cmd").args(["/d", "/c", "mklink", "/J"]).arg(&link).arg(&target).output().unwrap();
+        assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
+        assert!(private_dir(&link).unwrap_err().to_string().contains("not a folder"));
+        assert_eq!(acl::dacl_sddl(&target).unwrap(), before);
+
+        // As the install folder gets it: everyone on the machine may read and run.
+        acl::claim(&base, true).unwrap();
+        let sddl = acl::dacl_sddl(&base).unwrap();
+        assert!(sddl.contains(";;;BU)") && !sddl.contains("FA;;;BU)") && !sddl.contains(";AU)"), "{sddl}");
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
