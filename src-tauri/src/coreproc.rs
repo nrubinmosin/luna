@@ -112,6 +112,9 @@ pub fn stop_from_args() -> bool {
 }
 
 fn run() {
+    // Before anything is written there. A failure is logged and shown in
+    // Settings' checks; the token folders below are made private regardless.
+    let _ = crate::paths::protect_data_dir();
     let dir = ipc::core_dir();
     // Owner-only: `core.json` in it is the key to the whole core.
     if let Err(e) = crate::secret::private_dir(&dir) {
