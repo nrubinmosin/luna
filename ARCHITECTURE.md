@@ -239,14 +239,17 @@ src-tauri/src/
                 machine's policy files. Answered by the core; a fix is asked for by id.
   account_use.rs  which accounts have a CLI of Luna's on them until it has exited, and the
                 holds that keep new ones off while a file the CLI rewrites is changed.
-  account_settings.rs  recommended settings (settings.json + .claude.json / config.toml, key by
+  account_settings/  recommended settings (settings.json + .claude.json / config.toml, key by
                 key, platform-aware; apply_recommended adds and removes keys), sync from the
                 parent account, and hand editing of the file (check_account_config: problems
                 with line/column; format_account_config: JSON pretty with 2 spaces, TOML via
                 taplo, comments and key order kept; only what parses is written). settings.json
                 and .claude.json, which the CLI rewrites in place, are read again when caught
                 half-written or held open; one that still will not parse is an error, not an
-                empty object written back
+                empty object written back. mod.rs the lock every change goes under;
+                specs.rs what is recommended; files.rs the files and keys in them; edit.rs
+                changes key by key; editor.rs hand editing; sync.rs the parent's copy;
+                testkit.rs its tests' account folder
   library/      the user's skills and instructions: a library folder (`<data>/library` or one of
                 the user's) with `instructions/<name>.md` and `skills/<name>/SKILL.md`, laid out into the
                 accounts each is meant for — a reach of `all`, `claude`/`codex` or `provider/name`

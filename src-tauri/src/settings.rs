@@ -25,7 +25,7 @@ pub struct Settings {
     /// (agents.rs `cap`). Off: a helper is held to its caller's.
     pub helpers_above_caller: bool,
     /// Per provider, the account whose settings file the others copy
-    /// (account_settings.rs), by name.
+    /// (account_settings/sync.rs), by name.
     pub settings_parents: SettingsParents,
     /// Copy them once at every launch.
     pub settings_sync_on_start: bool,

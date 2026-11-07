@@ -43,7 +43,7 @@ hmac = "=0.12.1"
 # The hub's request heads (src/hub.rs), parsed strictly.
 httparse = "1.10.1"
 toml_edit = "0.22"
-# Lays out a config.toml edited by hand, comments kept (account_settings.rs).
+# Lays out a config.toml edited by hand, comments kept (account_settings/editor.rs).
 taplo = { version = "0.14", default-features = false }
 flate2 = "1"
 tar = "0.4"
