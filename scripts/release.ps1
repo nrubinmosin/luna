@@ -8,8 +8,12 @@
 #   ./scripts/release.ps1 -DryRun         # build and compose, upload nothing
 #   ./scripts/release.ps1 -SkipBuild      # upload what the last build of this commit
 #                                         # left behind, e.g. after a failed upload
+#
+# The build signs the installer for the updater: -UpdaterKey, or LUNA_UPDATER_KEY,
+# names the private key (build-windows.ps1).
 param(
     [string]$Notes,
+    [string]$UpdaterKey = $env:LUNA_UPDATER_KEY,
     [switch]$DryRun,
     [switch]$SkipBuild
 )
@@ -38,7 +42,7 @@ try {
     # that matters is checked by hand (build-windows.ps1 checks its own): a failed
     # build would otherwise go on to upload whatever the previous build left behind.
     if (-not $SkipBuild) {
-        & "$PSScriptRoot/build-windows.ps1" -Installer
+        & "$PSScriptRoot/build-windows.ps1" -Installer -UpdaterKey $UpdaterKey
     }
 
     $release = 'src-tauri/target/x86_64-pc-windows-msvc/release'
