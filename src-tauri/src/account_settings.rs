@@ -1356,12 +1356,10 @@ model = \"gpt-6\"   # keep
 
     #[test]
     fn the_lock_keeps_out_whoever_holds_the_file_another_way() {
-        // What another process of Luna's does: its own handle on the same
-        // file, made as Luna makes it (one that is not private is moved
-        // aside, `secret::open_private`).
+        // What another process does: its own handle on the same file.
         let d = dir("lock-held");
         let path = d.join("account-settings.lock");
-        let theirs = crate::secret::create_private(&path).unwrap();
+        let theirs = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&path).unwrap();
         theirs.lock().unwrap();
         let (got, came) = std::sync::mpsc::channel();
         let waiter = std::thread::spawn(move || {
