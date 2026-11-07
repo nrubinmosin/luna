@@ -137,9 +137,9 @@ pub mod acl {
         ConvertStringSidToSidW, GetNamedSecurityInfoW, SetNamedSecurityInfoW, SDDL_REVISION_1, SE_FILE_OBJECT,
     };
     use windows::Win32::Security::{
-        GetSecurityDescriptorDacl, GetTokenInformation, TokenUser, ACL, DACL_SECURITY_INFORMATION, OBJECT_SECURITY_INFORMATION,
-        OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, TOKEN_QUERY, TOKEN_USER,
-        UNPROTECTED_DACL_SECURITY_INFORMATION,
+        GetSecurityDescriptorDacl, GetTokenInformation, TokenOwner, TokenUser, ACL, DACL_SECURITY_INFORMATION, OBJECT_SECURITY_INFORMATION,
+        OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, TOKEN_INFORMATION_CLASS, TOKEN_OWNER,
+        TOKEN_QUERY, TOKEN_USER, UNPROTECTED_DACL_SECURITY_INFORMATION,
     };
     use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
@@ -319,18 +319,34 @@ pub mod acl {
 
     /// The SID of the user this process runs as.
     pub fn user_sid() -> io::Result<String> {
+        // SAFETY: TokenUser fills the buffer with a TOKEN_USER, its SID in it.
+        token_sid(TokenUser, |buf| unsafe { (*buf.cast::<TOKEN_USER>()).User.Sid })
+    }
+
+    /// The SID that owns what this process makes, the token's default owner:
+    /// this user, or Administrators where Windows gives an elevated admin's
+    /// new files to the group, as it does for the built-in Administrator
+    /// that GitHub's Windows runners run as.
+    pub fn maker_sid() -> io::Result<String> {
+        // SAFETY: TokenOwner fills the buffer with a TOKEN_OWNER, its SID in it.
+        token_sid(TokenOwner, |buf| unsafe { (*buf.cast::<TOKEN_OWNER>()).Owner })
+    }
+
+    /// A SID of this process's token: `class` read, `sid` picked from it.
+    fn token_sid(class: TOKEN_INFORMATION_CLASS, sid: impl FnOnce(*const u64) -> PSID) -> io::Result<String> {
         let mut token = HANDLE::default();
         // SAFETY: the token is opened for query only, read into a buffer of
-        // the size it asks for (u64s, aligned for TOKEN_USER), and closed.
+        // the size it asks for (u64s, aligned for the struct it holds), and
+        // closed; the SID points into the buffer and is read while it lives.
         unsafe {
             OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token)?;
             let mut len = 0u32;
-            let _ = GetTokenInformation(token, TokenUser, None, 0, &mut len);
+            let _ = GetTokenInformation(token, class, None, 0, &mut len);
             let mut buf = vec![0u64; (len as usize).div_ceil(8)];
-            let got = GetTokenInformation(token, TokenUser, Some(buf.as_mut_ptr().cast()), len, &mut len);
+            let got = GetTokenInformation(token, class, Some(buf.as_mut_ptr().cast()), len, &mut len);
             let _ = CloseHandle(token);
             got?;
-            sid_text((*buf.as_ptr().cast::<TOKEN_USER>()).User.Sid)
+            sid_text(sid(buf.as_ptr()))
         }
     }
 
@@ -521,7 +537,7 @@ pub mod acl {
     /// junction (opened as itself, `FILE_FLAG_OPEN_REPARSE_POINT`), a folder,
     /// a second name (a hard link to a file elsewhere) or owned by someone
     /// `owner_ok` does not name; loose if its DACL lets anyone else in, and
-    /// foreign then too unless this user owns it.
+    /// foreign then too unless this process could have made it (`judge`).
     pub fn found(file: &std::fs::File) -> io::Result<super::Found> {
         use super::Found;
         use std::os::windows::io::AsRawHandle;
@@ -561,17 +577,29 @@ pub mod acl {
             let read = sid_text(owner).and_then(|owner| sd_text(sd).map(|sddl| (owner, sddl)));
             let _ = LocalFree(Some(HLOCAL(sd.0)));
             let (owner, sddl) = read?;
-            if !owner_ok(&owner, &user) {
-                return Ok(Found::Foreign(format!("owned by {owner}")));
-            }
-            if super::sddl_allows_only(&sddl, &trustee(&user)?) {
-                return Ok(Found::Private);
-            }
-            let why = format!("open to others ({sddl})");
-            // Administrators, SYSTEM and TrustedInstaller may own a private
-            // file of Luna's, but only this user's own is taken back.
-            Ok(if owner == user { Found::Loose(why) } else { Found::Foreign(format!("owned by {owner}, {why}")) })
+            judge(&owner, &sddl, &user, &maker_sid()?)
         }
+    }
+
+    /// `found`'s verdict on a plain file of one name owned by `owner`, with
+    /// the DACL `sddl`, for this user `user`, whose process gives what it
+    /// makes to `maker` (`maker_sid`). Administrators, SYSTEM and
+    /// TrustedInstaller may own a private file of Luna's, but one open to
+    /// others is taken back only if this process could have made it: owned
+    /// by this user or by `maker`. An elevated run's maker may be
+    /// Administrators, whose files only an elevated admin or SYSTEM can
+    /// make, and either can read whatever Luna writes anyway; a run that is
+    /// not elevated still moves such a file aside.
+    pub(super) fn judge(owner: &str, sddl: &str, user: &str, maker: &str) -> io::Result<super::Found> {
+        use super::Found;
+        if !owner_ok(owner, user) {
+            return Ok(Found::Foreign(format!("owned by {owner}")));
+        }
+        if super::sddl_allows_only(sddl, &trustee(user)?) {
+            return Ok(Found::Private);
+        }
+        let why = format!("open to others ({sddl})");
+        Ok(if owner == user || owner == maker { Found::Loose(why) } else { Found::Foreign(format!("owned by {owner}, {why}")) })
     }
 
     /// Gives the file open on `file` the protected DACL `create_new` makes
@@ -705,7 +733,8 @@ const ASIDE_TRIES: usize = 3;
 /// this user's, which nobody else may open, is used as it is; one this user
 /// owns that others may open (as an older Luna left its files) is made
 /// private through the same handle and used, since nobody else can make a
-/// file this user owns, so what is in it is Luna's. Anything else is moved
+/// file this user owns, so what is in it is Luna's (on Windows, nor one owned
+/// as this process makes its files, `acl::judge`). Anything else is moved
 /// aside under a name of its own (`set_aside`), as anyone who could make it
 /// could keep a handle and read every later line, and a new one made with
 /// `create`, whose handle is the one returned, never reopened by name: the
@@ -779,7 +808,7 @@ fn in_the_way(e: &io::Error) -> bool {
 pub enum Found {
     /// A plain file of one name, of a trusted owner, nobody else may open.
     Private,
-    /// The same, owned by this user, but open to others: made private.
+    /// The same, of this user's own making, but open to others: made private.
     Loose(String),
     /// Anything else: moved aside.
     Foreign(String),
@@ -1348,6 +1377,26 @@ mod tests {
         assert!(sddl_is_private(&written, &acl::trustee(&admin).unwrap()), "{written}");
         // Anyone else keeps the SID.
         assert_eq!(acl::trustee("S-1-5-21-1-2-3-1001").unwrap(), "S-1-5-21-1-2-3-1001");
+    }
+
+    /// A file open to others is taken back only if this process could have
+    /// made it: an elevated run whose files Windows gives to Administrators
+    /// (GitHub's runners, as the built-in Administrator) takes back one owned
+    /// by Administrators, as it does its user's own; a run that makes files
+    /// as its user moves that one aside.
+    #[cfg(windows)]
+    #[test]
+    fn an_open_file_is_taken_back_only_if_this_process_could_have_made_it() {
+        let (user, admins, other) = ("S-1-5-21-1-2-3-1001", "S-1-5-32-544", "S-1-5-21-1-2-3-1002");
+        let open = format!("D:(A;;FA;;;{user})(A;;0x1301bf;;;AU)");
+        let loose = |owner: &str, maker: &str| matches!(acl::judge(owner, &open, user, maker).unwrap(), Found::Loose(_));
+        assert!(loose(admins, admins), "an elevated run's own");
+        assert!(loose(user, admins) && loose(user, user), "the user's own, elevated or not");
+        assert!(!loose(admins, user), "an admin's, for a run that is not elevated");
+        assert!(!loose("S-1-5-18", admins), "SYSTEM's");
+        assert!(matches!(acl::judge(other, &open, user, other).unwrap(), Found::Foreign(_)), "nobody else's, whoever makes it");
+        let private = private_sddl(user);
+        assert!(matches!(acl::judge(admins, &private, user, user).unwrap(), Found::Private), "a private one is used by any trusted owner");
     }
 
     #[test]
