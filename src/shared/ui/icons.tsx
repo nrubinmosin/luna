@@ -1,4 +1,4 @@
-import type { CSSProperties, ReactNode } from 'react';
+import { useId, type CSSProperties, type ReactNode } from 'react';
 
 /**
  * Luna's toolbar icons, all drawn to one brief so they read as a set: a 16px
@@ -427,11 +427,11 @@ function draw(name: IconName, p: string): ReactNode {
   }
 }
 
-let seq = 0;
-
 export function Icon({ name, size = 16, style }: { name: IconName; size?: number; style?: CSSProperties }) {
-  // A per-instance prefix keeps gradient ids unique across the document.
-  const p = `i${(seq = (seq + 1) % 1e6)}`;
+  // A per-instance prefix keeps gradient ids unique across the document;
+  // React's id is stable for the instance, kept to characters a `url(#…)`
+  // reference takes as they are.
+  const p = `i${useId().replace(/[^\w-]/g, '')}`;
   return (
     <svg
       width={size}

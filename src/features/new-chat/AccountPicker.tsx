@@ -33,6 +33,7 @@ export function AccountPicker({
 
   useEffect(() => {
     if (!open) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- opening puts the highlight on the current account
     setHot(at);
     const away = (e: MouseEvent) => {
       if (!box.current?.contains(e.target as Node)) setOpen(false);

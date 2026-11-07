@@ -339,7 +339,7 @@ async function promote(p: PromotedDto): Promise<void> {
     .accounts.find(a => a.provider === p.provider && samePath(a.path, p.accountPath));
   if (!account) throw new Error(`no ${p.provider} account at ${p.accountPath}`);
   const s = p.settings as Record<string, string | null | undefined>;
-  const word = (k: string) => (typeof s[k] === 'string' ? (s[k] as string) : '');
+  const word = (k: string) => (typeof s[k] === 'string' ? s[k] : '');
   const defaults = (await (p.provider === 'claude' ? claude : codex).settingsDefaults(account.path, p.folder)).values;
   const spec =
     p.provider === 'claude'

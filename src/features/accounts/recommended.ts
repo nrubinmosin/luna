@@ -21,7 +21,7 @@ export function useRecommended(accounts: Account[], paused: boolean) {
       accounts.map(a =>
         recommendedSettings(a.provider, a.path)
           .then(list => [accountKey(a.provider, a.name), list] as const)
-          .catch(() => [accountKey(a.provider, a.name), []] as const)
+          .catch(() => [accountKey(a.provider, a.name), [] as RecommendationDto[]] as const)
       )
     ).then(pairs => !stale && setLists(Object.fromEntries(pairs)));
     return () => {

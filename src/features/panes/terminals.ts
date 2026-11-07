@@ -169,6 +169,7 @@ export function startSession(chat: Chat, folderPath: string, accountPath: string
  * the escape byte left their parameters behind as text, which is how a chat
  * came to be titled `[1;1R[O[O[<35;1;14M…` — so take the whole sequence out.
  */
+// eslint-disable-next-line no-control-regex -- matching the escape byte is the point
 const typedOnly = (d: string) => d.replace(/\x1b(?:\[[\d;<>?]*[ -/]*[@-~]|O.|.)?/g, '');
 
 export interface TermSpec {
@@ -488,6 +489,7 @@ function create(spec: TermSpec): Entry {
       typed += enter < 0 ? clean : clean.slice(0, enter);
       if (typed.length > 400) typed = typed.slice(-400);
       if (enter >= 0) {
+        // eslint-disable-next-line no-control-regex -- control characters are what it strips
         const line = typed.replace(/[\x00-\x1f\x7f]/g, '').trim();
         typed = '';
         // A slash command is the CLI's business, not a title.

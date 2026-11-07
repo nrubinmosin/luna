@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import type { Reach } from '../../ipc/commands';
 import { useDialogHost } from '../../shared/ui/dialogHost';
@@ -53,6 +53,32 @@ const tidy = (reach: Reach): Reach =>
     ? [ALL]
     : reach.filter((r, i) => reach.indexOf(r) === i && !(r.includes('/') && reach.includes(r.split('/')[0])));
 
+/** One line of the list: a checkbox and what it stands for. */
+function Tick({
+  id,
+  label,
+  checked,
+  disabled,
+  onTick,
+  indent = 0
+}: {
+  id: string;
+  label: ReactNode;
+  checked: boolean;
+  disabled: boolean;
+  onTick: (on: boolean) => void;
+  indent?: number;
+}) {
+  return (
+    <div className="field-row" style={{ margin: 0, paddingLeft: indent, minHeight: 24 }}>
+      <input type="checkbox" id={id} checked={checked} disabled={disabled} onChange={e => onTick(e.target.checked)} />
+      <label htmlFor={id} style={{ cursor: 'default', whiteSpace: 'nowrap' }}>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>{label}</span>
+      </label>
+    </div>
+  );
+}
+
 /**
  * Which accounts a skill or instructions go into — every account, every
  * account of one CLI, or accounts picked by name: a face that says which and,
@@ -94,7 +120,8 @@ export function ReachPicker({
   const inherited = own === null;
   // Without one of its own, the ticks say who gets it anyway; the first tick
   // made starts from them.
-  const reach: Reach = own ?? inherit?.gets ?? [];
+  const inheritGets = inherit?.gets;
+  const reach: Reach = useMemo(() => own ?? inheritGets ?? [], [own, inheritGets]);
   const send = (next: Reach | null) => {
     const tidied = next && tidy(next);
     setPicked({ reach: tidied });
@@ -144,28 +171,6 @@ export function ReachPicker({
   const without = (...keys: string[]) => reach.filter(r => !keys.includes(r));
   const providers = PROVIDERS.filter(p => accounts.some(a => a.provider === p) || reach.includes(p));
 
-  const tick = (
-    key: string,
-    label: ReactNode,
-    checked: boolean,
-    disabled: boolean,
-    onTick: (on: boolean) => void,
-    indent = 0
-  ) => (
-    <div className="field-row" key={key} style={{ margin: 0, paddingLeft: indent, minHeight: 24 }}>
-      <input
-        type="checkbox"
-        id={`${id}-${key}`}
-        checked={checked}
-        disabled={disabled}
-        onChange={e => onTick(e.target.checked)}
-      />
-      <label htmlFor={`${id}-${key}`} style={{ cursor: 'default', whiteSpace: 'nowrap' }}>
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>{label}</span>
-      </label>
-    </div>
-  );
-
   const toggle = () => {
     setPicked(null);
     setOpen(o => !o);
@@ -177,7 +182,7 @@ export function ReachPicker({
       style={{ display: 'inline-block', width: drawFace ? undefined : 170, verticalAlign: 'middle' }}
     >
       {drawFace ? (
-        <span ref={face as RefObject<HTMLSpanElement>} style={{ display: 'inline-block' }}>
+        <span ref={face} style={{ display: 'inline-block' }}>
           {drawFace(toggle)}
         </span>
       ) : (
@@ -201,35 +206,52 @@ export function ReachPicker({
           >
             {inherit && (
               <div style={{ borderBottom: '1px solid var(--line)', marginBottom: 4, paddingBottom: 4 }}>
-                {tick('inherit', inherit.label, inherited, false, on => send(on ? null : reach))}
+                <Tick
+                  id={`${id}-inherit`}
+                  label={inherit.label}
+                  checked={inherited}
+                  disabled={false}
+                  onTick={on => send(on ? null : reach)}
+                />
               </div>
             )}
-            {tick(ALL, 'All accounts', all, false, on => change(on ? [ALL] : []))}
+            <Tick
+              id={`${id}-${ALL}`}
+              label="All accounts"
+              checked={all}
+              disabled={false}
+              onTick={on => change(on ? [ALL] : [])}
+            />
             {providers.map(p => {
               const wide = all || reach.includes(p);
               return (
                 <div key={p} style={{ borderTop: '1px solid var(--line)', marginTop: 4, paddingTop: 4 }}>
-                  {tick(
-                    p,
-                    <>
-                      <Icon name={p} size={14} />
-                      Every {PROVIDER_LABEL[p]} account
-                    </>,
-                    wide,
-                    all,
-                    on => change(on ? [...without(p), p] : without(p))
-                  )}
+                  <Tick
+                    id={`${id}-${p}`}
+                    label={
+                      <>
+                        <Icon name={p} size={14} />
+                        Every {PROVIDER_LABEL[p]} account
+                      </>
+                    }
+                    checked={wide}
+                    disabled={all}
+                    onTick={on => change(on ? [...without(p), p] : without(p))}
+                  />
                   {accounts
                     .filter(a => a.provider === p)
                     .map(a => {
                       const key = `${p}/${a.name}`;
-                      return tick(
-                        key,
-                        a.name,
-                        wide || reach.includes(key),
-                        wide,
-                        on => change(on ? [...without(key), key] : without(key)),
-                        22
+                      return (
+                        <Tick
+                          key={key}
+                          id={`${id}-${key}`}
+                          label={a.name}
+                          checked={wide || reach.includes(key)}
+                          disabled={wide}
+                          onTick={on => change(on ? [...without(key), key] : without(key))}
+                          indent={22}
+                        />
                       );
                     })}
                 </div>

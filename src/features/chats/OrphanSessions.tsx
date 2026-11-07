@@ -55,6 +55,7 @@ export function OrphanSessions() {
   // Nothing to adopt closes the dialog: the last row can go away because the
   // session exited on its own.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- closing follows the rows emptying, not their being empty: they can fill again
     if (!found.length) setOpen(false);
   }, [found.length]);
 

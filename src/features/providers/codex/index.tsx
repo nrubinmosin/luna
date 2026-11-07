@@ -5,14 +5,7 @@
  * windows as the usage endpoint names them.
  */
 import { useEffect, useState, type CSSProperties, type ReactNode } from 'react';
-import type {
-  Account,
-  CodexApproval,
-  CodexChat,
-  CodexEffort,
-  CodexSandbox,
-  CodexSettings
-} from '../../../shared/types';
+import type { Account, CodexApproval, CodexChat, CodexEffort, CodexSettings } from '../../../shared/types';
 import {
   AUTO_REVIEW_SANDBOX,
   CODEX_APPROVAL_HINTS,
@@ -157,6 +150,7 @@ export function Fields({
   const [models, setModels] = useState<CodexModelDto[] | null>(null);
   useEffect(() => {
     let stale = false;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- another account's list goes while this one's loads
     setModels(null);
     void codexModels(accountPath)
       .then(m => !stale && setModels(m))
@@ -266,7 +260,7 @@ export function Fields({
                     name="codex-sandbox"
                     checked={settings.sandbox === s}
                     disabled={autoReview}
-                    onChange={() => pick('sandbox', s as CodexSandbox)}
+                    onChange={() => pick('sandbox', s)}
                   />
                   <label htmlFor={id} style={{ fontWeight: 600, whiteSpace: 'nowrap', cursor: 'default' }}>
                     {s}

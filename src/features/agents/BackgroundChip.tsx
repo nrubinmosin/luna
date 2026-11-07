@@ -107,6 +107,7 @@ function HelperChip({ helpers, what }: { helpers: BackgroundHelperDto[]; what: s
     // Also when the newest helper went inside its glow: the cleanup took the
     // timer that would have put the glow out.
     if (left <= 0) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- the glow runs on the clock, outside React: it is set as the timer is armed or skipped
       setFresh(false);
       return;
     }
@@ -119,6 +120,7 @@ function HelperChip({ helpers, what }: { helpers: BackgroundHelperDto[]; what: s
   const working = helpers.filter(h => h.state === 'working').length;
   const title = [
     `${helpers.length} background helper${helpers.length > 1 ? 's' : ''} ${what} — click to see`,
+    // eslint-disable-next-line react-hooks/purity -- the tooltip gives ages as of this render, which comes with every poll
     ...helpers.map(h => `• ${h.name || h.id}: ${stateLine(h, Date.now())} (${setupLine(h)})`)
   ].join('\n');
   return (
@@ -130,7 +132,7 @@ function HelperChip({ helpers, what }: { helpers: BackgroundHelperDto[]; what: s
       title={title}
       onClick={e => {
         e.stopPropagation();
-        setAnchor(anchor ? null : (e.currentTarget as HTMLElement));
+        setAnchor(anchor ? null : e.currentTarget);
       }}
     >
       <Icon name="agents" size={12} />

@@ -818,7 +818,7 @@ function LibraryDialog({ onClose }: { onClose: () => void }) {
                     spin={busy}
                     disabled={busy}
                     title="Lay the library out now — everything that needs no asking"
-                    onClick={() => act(librarySync())}
+                    onClick={() => void act(librarySync())}
                   />
                 }
               >
@@ -861,7 +861,7 @@ function LibraryDialog({ onClose }: { onClose: () => void }) {
                     className="slim"
                     disabled={o.isDefault}
                     title="Back to the library in Luna's own folder"
-                    onClick={() => act(librarySetSource(''))}
+                    onClick={() => void act(librarySetSource(''))}
                   >
                     Default
                   </button>
@@ -881,7 +881,7 @@ function LibraryDialog({ onClose }: { onClose: () => void }) {
               {look.length > 0 && (
                 <Section label={`Needs a look — ${look.length}`}>
                   {look.map(({ place, count }) => (
-                    <LookRow key={place.dest} place={place} count={count} act={act} />
+                    <LookRow key={place.dest} place={place} count={count} act={p => void act(p)} />
                   ))}
                   <Note>
                     A copy changed where it lies is never replaced unasked. Whichever side is replaced is kept in Luna’s
@@ -938,7 +938,7 @@ function LibraryDialog({ onClose }: { onClose: () => void }) {
                         key={f.dest}
                         className="slim"
                         title={`${f.dest}\nBecomes instructions named after the account, meant for it alone`}
-                        onClick={() => act(libraryResolve(f.dest, true))}
+                        onClick={() => void act(libraryResolve(f.dest, true))}
                       >
                         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                           <TargetLabel target={f.target} />— take into library
@@ -1058,7 +1058,7 @@ function LibraryDialog({ onClose }: { onClose: () => void }) {
                                     icon="close"
                                     size={18}
                                     title={`Stop giving skills to sessions in ${f.path}\nWhat waits for them goes, those copies still as Luna wrote them`}
-                                    onClick={() => act(librarySetFolder(f.path, false))}
+                                    onClick={() => void act(librarySetFolder(f.path, false))}
                                   />
                                 </span>
                               </th>
@@ -1183,7 +1183,7 @@ function LibraryDialog({ onClose }: { onClose: () => void }) {
                       <TargetLabel target={p.target} />
                       <b>{what(p)}</b>
                       <span style={{ flex: 1 }} />
-                      <button className="slim" onClick={() => act(librarySkip(p.dest, false))}>
+                      <button className="slim" onClick={() => void act(librarySkip(p.dest, false))}>
                         Take back in
                       </button>
                     </div>
@@ -1216,7 +1216,7 @@ function LibraryDialog({ onClose }: { onClose: () => void }) {
           confirmLabel="Take out"
           onCancel={() => setDeleting(null)}
           onConfirm={() => {
-            act(libraryDeleteSkill(deleting.skill));
+            void act(libraryDeleteSkill(deleting.skill));
             setDeleting(null);
           }}
         />
@@ -1234,7 +1234,7 @@ function LibraryDialog({ onClose }: { onClose: () => void }) {
           confirmLabel="Take out"
           onCancel={() => setDeleting(null)}
           onConfirm={() => {
-            act(libraryDeleteInstructions(deleting.instructions));
+            void act(libraryDeleteInstructions(deleting.instructions));
             setDeleting(null);
           }}
         />

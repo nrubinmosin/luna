@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import { ACCENT, fmtReset, limitColor } from '../../shared/lib/format';
 import { STATUS } from '../../shared/ui/status';
 import { Icon } from '../../shared/ui/icons';
@@ -201,11 +201,7 @@ function AccountGlance({ account, fit, now }: { account: Account; fit: Fit; now:
             <span className="sb-key">{w.short}</span>
             {fit < 2 && (
               <span className="sb-mini meter">
-                <i
-                  style={
-                    { width: `${Math.round(w.used * 100)}%`, ['--m' as string]: limitColor(w.used) } as CSSProperties
-                  }
-                />
+                <i style={{ width: `${Math.round(w.used * 100)}%`, ['--m' as string]: limitColor(w.used) }} />
               </span>
             )}
             <span style={fit >= 2 ? { color: limitColor(w.used) } : undefined}>{Math.round(w.used * 100)}%</span>
