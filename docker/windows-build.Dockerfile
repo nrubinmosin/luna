@@ -1,6 +1,6 @@
 # Toolchain image for cross-compiling the Windows build from Linux.
 # Build:  docker build -t luna-winbuild -f docker/windows-build.Dockerfile docker
-# Usage:  see build-windows.ps1
+# Usage:  see scripts/build-windows.ps1
 # Trixie for NSIS 3.11: the tauri 2.12 installer script includes
 # Win\RestartManager.nsh, which bookworm's NSIS 3.08 does not ship.
 FROM rust:1-trixie

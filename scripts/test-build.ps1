@@ -1,14 +1,14 @@
-# Builds the test flavour of Luna into test-build\ (ignored by git) and,
+# Builds the test flavor of Luna into test-build\ (ignored by git) and,
 # with -Run, starts it. It runs beside the Luna in use without touching it:
 # its own identifier (single-instance lock, webview storage), and its log,
 # attachments, settings and downloaded CLIs all live next to its exe.
 #
-#   ./test-build.ps1                 build test-build\luna-test.exe
-#   ./test-build.ps1 -Run            build, then start it
-#   ./test-build.ps1 -Run -NoBuild   start the last build
-#   ./test-build.ps1 -Test           also build the Rust unit tests in Docker and
-#                                    run them here (they are Windows binaries)
-#   ./test-build.ps1 -Run -DevCaller -DevFolder C:\src\x -DevAccount test-build\accounts\anthropic\dev
+#   ./scripts/test-build.ps1                 build test-build\luna-test.exe
+#   ./scripts/test-build.ps1 -Run            build, then start it
+#   ./scripts/test-build.ps1 -Run -NoBuild   start the last build
+#   ./scripts/test-build.ps1 -Test           also build the Rust unit tests in Docker and
+#                                            run them here (they are Windows binaries)
+#   ./scripts/test-build.ps1 -Run -DevCaller -DevFolder C:\src\x -DevAccount test-build\accounts\anthropic\dev
 #       also registers a scripted MCP caller (agents.rs register_dev_caller);
 #       the token is printed and the MCP url is in test-build\luna.log
 #
@@ -26,60 +26,39 @@ param(
     [string]$DevFolder = '',
     [string]$DevAccount = ''
 )
-$ErrorActionPreference = 'Stop'
+. "$PSScriptRoot/lib.ps1"
 
-$root = $PSScriptRoot
+$root = $RepoRoot
 $out = Join-Path $root 'test-build'
 New-Item -ItemType Directory -Force $out | Out-Null
 
 if (-not $NoBuild) {
-    $build = (git -C $root rev-parse --short HEAD).Trim()
-    if (git -C $root status --porcelain) { $build = "$build+" }
+    $build = Get-BuildStamp
     Write-Host "test build stamp: $build"
 
-    docker build -t luna-winbuild -f "$root/docker/windows-build.Dockerfile" "$root/docker"
-    if ($LASTEXITCODE) { throw "docker build failed (exit $LASTEXITCODE)" }
+    Build-Image luna-winbuild windows-build.Dockerfile
 
-    $cmd = @"
+    $cmd = ConvertTo-BashScript @"
 set -e
 pnpm install --frozen-lockfile
 pnpm tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --no-bundle --config src-tauri/tauri.test.conf.json
 $(if ($Test) { 'cd src-tauri && cargo xwin test --release --no-run --target x86_64-pc-windows-msvc' })
-"@ -replace "`r`n", "`n"
+"@
 
-    # One build at a time on this machine, from any checkout: the named
-    # volumes are shared, and builds in parallel break each other
-    # (build-windows.ps1 says how, and takes the same mutex).
-    $lock = [System.Threading.Mutex]::new($false, 'Global\luna-docker-build')
-    $held = $false
-    try {
-        try {
-            if (-not $lock.WaitOne(0)) {
-                Write-Host 'another Luna build is running; waiting for it'
-                [void]$lock.WaitOne()
-            }
-        } catch [System.Threading.AbandonedMutexException] {
-            # A build that died holding it: the mutex is ours now.
+    Use-BuildLock {
+        Invoke-Checked 'test build' {
+            docker run --rm `
+              -e COREPACK_ENABLE_DOWNLOAD_PROMPT=0 `
+              -e LUNA_BUILD=$build `
+              -e LUNA_FLAVOR=test `
+              -e VITE_LUNA_FLAVOR=test `
+              -e CARGO_TARGET_DIR=/app/test-build/target `
+              -v "${root}:/app" `
+              @WinBuildVolumes `
+              -w /app `
+              luna-winbuild `
+              bash -c $cmd
         }
-        $held = $true
-        docker run --rm `
-          -e COREPACK_ENABLE_DOWNLOAD_PROMPT=0 `
-          -e LUNA_BUILD=$build `
-          -e LUNA_FLAVOR=test `
-          -e VITE_LUNA_FLAVOR=test `
-          -e CARGO_TARGET_DIR=/app/test-build/target `
-          -v "${root}:/app" `
-          -v luna-node-modules:/app/node_modules `
-          -v luna-xwin-cache:/xwin-cache `
-          -v luna-cargo-registry:/usr/local/cargo/registry `
-          -v luna-tauri-cache:/root/.cache/tauri `
-          -w /app `
-          luna-winbuild `
-          bash -c $cmd
-        if ($LASTEXITCODE) { throw "test build failed (exit $LASTEXITCODE)" }
-    } finally {
-        if ($held) { $lock.ReleaseMutex() }
-        $lock.Dispose()
     }
 
     Copy-Item -Force (Join-Path $out 'target/x86_64-pc-windows-msvc/release/luna.exe') (Join-Path $out 'luna-test.exe')

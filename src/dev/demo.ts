@@ -5,7 +5,7 @@
  * folders, chat titles, account emails and half a client's codebase. This
  * stands the same UI up on invented data instead: `pnpm dev` with `?demo` in
  * the URL, no Tauri and no sessions, so the shots can be retaken from a clean
- * slate whenever the UI moves on. See `screenshots.ps1`.
+ * slate whenever the UI moves on. See `scripts/screenshots.ps1`.
  *
  * Dev-only by construction: every entry point is behind `import.meta.env.DEV`,
  * so none of this is in a release build.

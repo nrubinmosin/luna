@@ -5,7 +5,7 @@ use std::process::Command;
 /// between logs the same startup line and cannot be told apart.
 ///
 /// Release builds run in Docker, where the repo's `.git` is a worktree pointer
-/// at a host path that does not exist inside the container — build-windows.ps1
+/// at a host path that does not exist inside the container — scripts/build-windows.ps1
 /// resolves the commit on the host and passes it in as LUNA_BUILD. The git call
 /// here is the fallback for building on the host directly.
 fn build_stamp() -> String {
@@ -97,7 +97,7 @@ fn main() {
     println!("cargo:rerun-if-changed=Cargo.lock");
     println!("cargo:rustc-env=LUNA_BUILD={}", build_stamp());
     println!("cargo:rerun-if-env-changed=LUNA_BUILD");
-    // "test" for the build test-build.ps1 makes (paths.rs); empty otherwise.
+    // "test" for the build scripts/test-build.ps1 makes (paths.rs); empty otherwise.
     println!("cargo:rustc-env=LUNA_FLAVOR={}", std::env::var("LUNA_FLAVOR").unwrap_or_default().trim());
     println!("cargo:rerun-if-env-changed=LUNA_FLAVOR");
     tauri_build::build()

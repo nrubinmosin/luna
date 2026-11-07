@@ -3,27 +3,28 @@
 # frontend alone (Tauri commands are no-ops) on the invented data in
 # src/dev/demo.ts and photographs that.
 #
-#   ./screenshots.ps1
-#   ./screenshots.ps1 -Size 1600,1000
-#   ./screenshots.ps1 -Out test-build/shots -Scenes checks,checks-dark
+#   ./scripts/screenshots.ps1
+#   ./scripts/screenshots.ps1 -Size 1600,1000
+#   ./scripts/screenshots.ps1 -Out test-build/shots -Scenes checks,checks-dark
 #
-# -Scenes shoots those of src/dev/demo.ts, each to a file of its name, instead of
-# the three the README shows.
+# -Out is relative to the repo root. -Scenes shoots those of src/dev/demo.ts,
+# each to a file of its name, instead of the three the README shows.
 param(
     [string]$Out = 'docs/screenshots',
     [string]$Size = '1760,1040',
     [string[]]$Scenes = @()
 )
-$ErrorActionPreference = 'Stop'
+. "$PSScriptRoot/lib.ps1"
 
 # `-Size 1760,1040` without quotes is two arguments to PowerShell, which joins
 # them with a space on the way into a [string] — and Chromium then quietly
 # shoots at some default size instead.
 $Size = ($Size -replace '\s+', ',')
 
-docker build -t luna-shots -f docker/screenshots.Dockerfile docker
+Build-Image luna-shots screenshots.Dockerfile
 
-New-Item -ItemType Directory -Force $Out | Out-Null
+$outDir = Join-Path $RepoRoot $Out
+New-Item -ItemType Directory -Force $outDir | Out-Null
 
 # The UI is Segoe UI with Tahoma behind it, and title bars and the New chat
 # button are Trebuchet MS, as on XP. Without the real faces every shot comes
@@ -37,10 +38,9 @@ foreach ($f in $faces) {
 }
 if (-not $fontArgs) { Write-Warning 'no Windows fonts found — the shots will fall back to other faces' }
 
-# Single-quoted: the container's shell owns every $ in here. No double quotes:
-# Windows PowerShell breaks up a native argument with one in it. With IFS empty
+# Single-quoted: the container's shell owns every $ in here. With IFS empty
 # nothing past that line is split, so a -Out with a space in it needs none.
-$cmd = @'
+$cmd = ConvertTo-BashScript @'
 set -e
 fc-cache -f >/dev/null
 pnpm install --frozen-lockfile
@@ -67,7 +67,7 @@ else
   shoot new-chat newchat
   shoot dark dark
 fi
-'@ -replace "`r`n", "`n"
+'@
 
 $sceneList = $Scenes -join ','
 docker run --rm `
@@ -76,10 +76,10 @@ docker run --rm `
   -e SHOT_OUT="/app/$Out" `
   -e SHOT_SCENES=$sceneList `
   @fontArgs `
-  -v "${PWD}:/app" `
+  -v "${RepoRoot}:/app" `
   -v luna-node-modules:/app/node_modules `
   -w /app `
   luna-shots `
   bash -c $cmd
 
-Get-ChildItem $Out -Filter *.png | ForEach-Object { "{0} ({1:N0} KB)" -f $_.Name, ($_.Length / 1KB) }
+Get-ChildItem $outDir -Filter *.png | ForEach-Object { "{0} ({1:N0} KB)" -f $_.Name, ($_.Length / 1KB) }

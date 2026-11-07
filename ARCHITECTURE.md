@@ -1066,7 +1066,7 @@ src-tauri/src/
   above it gets it as an `--add-dir`, as a notice's answer file is there too; Codex's sandboxes read anywhere), swept after a week.
   To test a build without a second Luna as the parent: `LUNA_DEV_TOKEN` (+ `LUNA_DEV_FOLDER`,
   `LUNA_DEV_ACCOUNT`) registers a caller `dev` with that bearer token; its spawns are
-  top-level chats. `test-build.ps1 -Run -DevCaller` sets them itself.
+  top-level chats. `scripts/test-build.ps1 -Run -DevCaller` sets them itself.
 - **New-chat dialog.** The model is picked from a drop-down (`ModelSelect`, a native `<select>`) for
   both providers; the model the files (or the CLI) would pick is marked "· default". Codex's list is the
   catalog in `priority` order, its effort levels carry the catalog's descriptions (`effort_hints`) as
@@ -1222,10 +1222,10 @@ src-tauri/src/
 
 - Locally: `pnpm install`, `pnpm build` (frontend), `pnpm tauri dev` (needs a Rust toolchain).
 - Production build — in Docker, see README.
-- Test build — `test-build.ps1` (also Docker): `test-build/luna-test.exe` with its own
+- Test build — `scripts/test-build.ps1` (also Docker): `test-build/luna-test.exe` with its own
   identifier (`tauri.test.conf.json`), no updater, everything of its own next to the exe; `-Test` builds
   the Rust tests and runs them on the host. The rules are in AGENTS.md — the one instructions file for
   both CLIs (Claude Code reads it when there is no CLAUDE.md).
-- Linux check — `linux-check.ps1` (also Docker): builds the crate for Linux and runs its unit tests
+- Linux check — `scripts/linux-check.ps1` (also Docker): builds the crate for Linux and runs its unit tests
   there, which is the only thing in the repo that compiles and runs the Unix code (`keeper.rs` and
   the like). Its own image and volumes; the checkout goes in read-only.
