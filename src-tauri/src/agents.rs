@@ -5023,7 +5023,7 @@ fn answerer(caller: &str, id: &str) -> (bool, Option<Privilege>) {
 /// sandbox with no dialog) and `!` (shell mode: the command runs as the user,
 /// outside the model and its sandbox), in both CLIs. Claude Code 2.1.318 has
 /// no `#` shortcut (its hints: `!`, `/`, `@` for file paths, `?` for help).
-fn command_prefix(text: &str) -> Option<char> {
+pub(crate) fn command_prefix(text: &str) -> Option<char> {
     text.trim_start().chars().next().filter(|c| matches!(c, '/' | '!'))
 }
 
@@ -6360,6 +6360,41 @@ fn reap_these(pty: &crate::pty::PtyManager, ids: Vec<String>) {
             }
         }
     }
+}
+
+/// Text queued for background helper `id` was dropped when its turn came, as
+/// its sender (`from`, with why) may no longer send it there (background.rs
+/// `settle_batch`): the sender hears so in its next notice, having been told
+/// the text was taken; with the sender gone, the helper's parent, without the
+/// text, which was not its own.
+pub fn queued_refused(id: &str, refused: &[(String, String)]) {
+    if refused.is_empty() {
+        return;
+    }
+    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    let parent = r.known.get(id).and_then(|k| k.parent.clone());
+    for (from, why) in refused {
+        let told = if r.known.contains_key(from) {
+            (from.clone(), format!("Text you sent to helper {id} did not go in when its turn came, and will not: {why}"))
+        } else if let Some(parent) = &parent {
+            (
+                parent.clone(),
+                format!(
+                    "Text that {from}, since gone, had queued for your helper {id} did not go in when its turn came, and \
+                     will not: it started with a command to the CLI, which {from} may no longer send there."
+                ),
+            )
+        } else {
+            continue;
+        };
+        r.news.push(told);
+    }
+}
+
+/// The lines waiting for a caller's next notice.
+#[cfg(test)]
+pub fn news_for(caller: &str) -> Vec<String> {
+    reg().lock().unwrap_or_else(|e| e.into_inner()).news.iter().filter(|(c, _)| c == caller).map(|(_, l)| l.clone()).collect()
 }
 
 /// An `autoDelete` helper went with only idle leftovers: whoever was owed the

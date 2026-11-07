@@ -311,29 +311,109 @@ fn stamp(batch: &mut [Queued]) {
     }
 }
 
-/// Text that a CLI would read as a command (`/`, `!`) goes in only if its
-/// sender may still send it here, as when it was taken: the sender may have
-/// been deleted, run lower or lost the user's setting meanwhile. Luna's own
-/// (no sender) was checked when it was made. Dropped, not kept as
-/// undelivered, which a resume would type in.
-fn still_may_send(id: &str, q: &Queued) -> bool {
-    let Some(from) = q.from.as_deref() else { return true };
-    match crate::agents::command_reach_now(from, id, &q.text) {
-        Ok(()) => true,
-        Err(why) => {
-            crate::log::warn("background", &format!("{id}: dropped queued text from {from}: {why}"));
-            false
-        }
-    }
+/// A batch claimed for the next turn, its senders still to be asked
+/// (`settle_batch`): what it holds, by id, and the text in it a CLI would read
+/// as a command (`/`, `!`), by (id, sender, text). The claim, a run with no
+/// process yet, and these ids in `in_flight` are what keep it: whatever moves
+/// either meanwhile has taken the batch over.
+pub(crate) struct Reservation {
+    ids: Vec<String>,
+    screen: Vec<(String, String, String)>,
+    /// A `resume`'s batch, which runs as `resume_text` has it even with none
+    /// of its text left; `Some(true)`: a helper that never named its
+    /// conversation, which runs on its text alone.
+    resume: Option<bool>,
 }
 
-/// What is queued becomes the batch of the turn about to start, less any
-/// text its sender may no longer send (`still_may_send`).
-fn take_queue(id: &str, e: &mut Entry) -> String {
-    e.queue.retain(|q| still_may_send(id, q));
+fn reservation_of(e: &Entry, resume: Option<bool>) -> Reservation {
+    let ids = e.in_flight.iter().map(|q| q.id.clone()).collect();
+    let screen = e
+        .in_flight
+        .iter()
+        .filter(|q| crate::agents::command_prefix(&q.text).is_some())
+        .filter_map(|q| Some((q.id.clone(), q.from.clone()?, q.text.clone())))
+        .collect();
+    Reservation { ids, screen, resume }
+}
+
+/// What is queued becomes the batch of the turn about to start, on a run the
+/// caller has claimed; on disk as `in_flight` while its senders are asked.
+fn reserve(e: &mut Entry) -> Reservation {
     e.in_flight = std::mem::take(&mut e.queue);
     stamp(&mut e.in_flight);
-    joined(&e.in_flight)
+    reservation_of(e, None)
+}
+
+/// The turn a settled batch starts.
+struct Batch {
+    text: String,
+    turns_ended: u32,
+    carried: usize,
+}
+
+/// Asks, with no lock held, whether each sender of text a CLI would read as a
+/// command may still send it (agents.rs `command_reach_now`): it may have been
+/// deleted, run lower or lost the user's setting since it was taken. Then,
+/// with the reservation still standing, drops what is refused and gives the
+/// batch that is left; with none left, the next queued batch is asked about
+/// the same way, or the claim is given back and no turn starts. A refusal is
+/// told to its sender, or the helper's parent if the sender is gone, by a
+/// notice; it is not kept as undelivered, which a resume would type in.
+/// Luna's own text (no sender) was checked when it was made.
+fn settle_batch(id: &str, mut res: Reservation) -> Option<Batch> {
+    enum Step {
+        Run(Batch),
+        Again(Reservation),
+        Idle,
+        Lost,
+    }
+    loop {
+        let refused: Vec<(String, String, String)> = res
+            .screen
+            .iter()
+            .filter_map(|(qid, from, text)| {
+                crate::agents::command_reach_now(from, id, text).err().map(|why| (qid.clone(), from.clone(), why))
+            })
+            .collect();
+        let step = {
+            let mut r = lock();
+            match r.entries.get_mut(id) {
+                Some(e) if e.run.as_ref().is_some_and(|run| run.pid.is_none()) && e.in_flight.iter().map(|q| &q.id).eq(res.ids.iter()) => {
+                    e.in_flight.retain(|q| !refused.iter().any(|(qid, _, _)| *qid == q.id));
+                    stamp(&mut e.in_flight);
+                    let carried = e.in_flight.len();
+                    match res.resume {
+                        Some(false) => Step::Run(Batch { text: resume_text(&e.in_flight), turns_ended: e.turns_ended, carried }),
+                        _ if carried > 0 => Step::Run(Batch { text: joined(&e.in_flight), turns_ended: e.turns_ended, carried }),
+                        _ if !e.queue.is_empty() => Step::Again(reserve(e)),
+                        _ => {
+                            e.run = None;
+                            Step::Idle
+                        }
+                    }
+                }
+                _ => Step::Lost,
+            }
+        };
+        // Taken over meanwhile: nothing of it was dropped here.
+        if !matches!(step, Step::Lost) {
+            for (_, from, why) in &refused {
+                crate::log::warn("background", &format!("{}: dropped text queued by {from}: {why}", crate::agents::label(id)));
+            }
+            let told: Vec<(String, String)> = refused.into_iter().map(|(_, from, why)| (from, why)).collect();
+            crate::agents::queued_refused(id, &told);
+        }
+        match step {
+            Step::Run(batch) => return Some(batch),
+            Step::Again(next) => res = next,
+            Step::Idle => {
+                reg().1.notify_all();
+                changed();
+                return None;
+            }
+            Step::Lost => return None,
+        }
+    }
 }
 
 /// A permission or question held for an answer.
@@ -1468,10 +1548,10 @@ fn turn_over(id: &str, code: Option<i32>) {
                 Vec::new()
             }
         };
-        let next = (!e.queue.is_empty()).then(|| take_queue(id, e));
-        if next.is_some() {
+        let next = (!e.queue.is_empty()).then(|| {
             claim(e);
-        }
+            reserve(e)
+        });
         let thread = e.session.clone().filter(|_| e.spec.provider == Provider::Codex).map(|t| (e.spec.account_path.clone(), t));
         e.observed.answered |= e.observed.acted;
         (next, thread, e.observed.generation, std::mem::take(&mut e.observed.rerouted), e.observed.acted, retried, e.turns_ended)
@@ -1495,7 +1575,7 @@ fn turn_over(id: &str, code: Option<i32>) {
     }
     // One that cannot start is recorded as ended by `run_turn`. Stopped for
     // the core's sake as it started, its text is kept as if still queued.
-    if let Some(text) = next {
+    if let Some(Batch { text, .. }) = next.and_then(|res| settle_batch(id, res)) {
         // On disk before the CLI has it (`Entry::in_flight`).
         save();
         if run_turn(id, &text).is_err() {
@@ -1809,9 +1889,10 @@ pub fn kill(id: &str) -> Vec<String> {
         // What was sent meanwhile is the next turn's, as after any turn.
         (e.run.is_none() && !e.promoting && !e.queue.is_empty()).then(|| {
             claim(e);
-            take_queue(id, e)
+            reserve(e)
         })
     };
+    let next = next.and_then(|res| settle_batch(id, res)).map(|b| b.text);
     if !ended.is_empty() {
         crate::log::info(
             "background",
@@ -2365,9 +2446,10 @@ pub fn background_promoted(id: String, error: Option<String>) -> Result<(), Stri
         e.promoting = false;
         (e.run.is_none() && !e.ending_left && !e.queue.is_empty()).then(|| {
             claim(e);
-            take_queue(&id, e)
+            reserve(e)
         })
     };
+    let next = next.and_then(|res| settle_batch(&id, res)).map(|b| b.text);
     match next {
         Some(text) => {
             save();
@@ -2612,7 +2694,7 @@ pub fn resume_stopped() {
 /// with its text kept: the caller's notice is then the one for a helper that
 /// did not go on.
 fn resume(id: &str) {
-    let (text, count, carried) = {
+    let reserved = {
         let mut r = lock();
         let Some(e) = r.entries.get_mut(id) else { return };
         // Something got there first. No conversation to go on with and no
@@ -2632,9 +2714,10 @@ fn resume(id: &str) {
         e.undelivered = doubtful;
         stamp(&mut e.in_flight);
         // Never started, it is started now, on what it was given as it was.
-        let text = if unnamed { joined(&e.in_flight) } else { resume_text(&e.in_flight) };
-        (text, e.turns_ended, e.in_flight.len())
+        reservation_of(e, Some(unnamed))
     };
+    // Its senders asked again, as for any batch (`settle_batch`).
+    let Some(Batch { text, turns_ended: count, carried }) = settle_batch(id, reserved) else { return };
     save();
     crate::agents::resumed(id, count);
     match run_turn(id, &text) {
@@ -4688,7 +4771,8 @@ mod tests {
         assert!(e.fed.is_empty() && e.undelivered.is_empty());
 
         // The next process is started on it. Its pipe taking the line retires nothing.
-        assert_eq!(take_queue("x", &mut e), "joined\n\nbehind it");
+        reserve(&mut e);
+        assert_eq!(joined(&e.in_flight), "joined\n\nbehind it");
         assert_eq!(e.in_flight[0].id, uuid, "the id it had");
         assert_eq!(e.in_flight[1].line.as_deref(), Some(uuid.as_str()), "the batch goes by the first's");
 
@@ -4927,24 +5011,64 @@ mod tests {
     }
 
     #[test]
-    fn queued_text_a_cli_reads_as_a_command_is_checked_again_against_its_sender() {
-        use crate::agents::{forget, register};
+    fn queued_text_a_cli_reads_as_a_command_is_asked_about_again_when_its_turn_comes() {
+        use crate::agents::{forget, news_for, register};
         let mode = |m: &str| serde_json::json!({ "permissionMode": m });
-        register("bq-full", Provider::Claude, "C:/p", "C:/acc/one", None, true, mode("bypassPermissions"));
+        register("bq-top", Provider::Claude, "C:/p", "C:/acc/one", None, true, mode("bypassPermissions"));
+        register("bq-full", Provider::Claude, "C:/p", "C:/acc/one", Some("bq-top"), true, mode("bypassPermissions"));
         register("bq-kid", Provider::Claude, "C:/p", "C:/acc/one", Some("bq-full"), false, mode("default"));
         let queued = |from: &str, text: &str| Queued::new(Some(from.to_string()), text.to_string(), Vec::new());
-        let mut e = entry(Provider::Claude);
-        // Taken while its sender was at full access: it would go in now.
-        e.queue.push(queued("bq-full", "/project-command"));
-        assert_eq!(take_queue("bq-kid", &mut e), "/project-command");
-        // The sender runs lower by the time the turn starts: dropped; plain text still goes.
-        register("bq-full", Provider::Claude, "C:/p", "C:/acc/one", None, true, mode("default"));
-        e.queue.extend([queued("bq-full", "/project-command"), queued("bq-full", "plain words")]);
-        assert_eq!(take_queue("bq-kid", &mut e), "plain words");
-        // Its sender gone: dropped too. Luna's own (no sender) goes.
+        lock().entries.insert("bq-kid".into(), entry(Provider::Claude));
+        // As a turn's end has it: claimed and reserved under the lock, its
+        // senders asked with the lock let go.
+        let reserved = |items: Vec<Queued>| {
+            let mut r = lock();
+            let e = r.entries.get_mut("bq-kid").unwrap();
+            e.run = None;
+            e.queue.extend(items);
+            claim(e);
+            reserve(e)
+        };
+        let take = |items: Vec<Queued>| settle_batch("bq-kid", reserved(items)).map(|b| b.text);
+
+        // Taken while its sender was at full access, and still so: it goes.
+        assert_eq!(take(vec![queued("bq-full", "/project-command")]), Some("/project-command".into()));
+        assert!(news_for("bq-full").is_empty());
+
+        // The sender runs lower by the time the turn starts: all of it refused,
+        // no turn, the claim given back, nothing kept for a resume to type in.
+        register("bq-full", Provider::Claude, "C:/p", "C:/acc/one", Some("bq-top"), true, mode("default"));
+        assert_eq!(take(vec![queued("bq-full", "/project-command"), queued("bq-full", "! make")]), None);
+        {
+            let r = lock();
+            let e = &r.entries["bq-kid"];
+            assert!(e.run.is_none() && e.in_flight.is_empty() && e.queue.is_empty() && e.undelivered.is_empty());
+        }
+        // The sender hears of each, as it was told the text was taken.
+        let told = news_for("bq-full");
+        assert_eq!(told.len(), 2, "{told:?}");
+        assert!(told.iter().all(|l| l.contains("Text you sent to helper bq-kid did not go in")), "{told:?}");
+
+        // Mixed: only what may go goes.
+        assert_eq!(take(vec![queued("bq-full", "/project-command"), queued("bq-full", "plain words")]), Some("plain words".into()));
+
+        // Its sender gone: the helper's parent now hears, without the text. Luna's own goes.
         forget("bq-full");
-        e.queue.extend([queued("bq-full", "! whoami"), Queued::new(None, "a notice".into(), Vec::new())]);
-        assert_eq!(take_queue("bq-kid", &mut e), "a notice");
+        assert_eq!(take(vec![queued("bq-full", "! whoami"), Queued::new(None, "a notice".into(), Vec::new())]), Some("a notice".into()));
+        let top = news_for("bq-top");
+        assert_eq!(top.len(), 1, "{top:?}");
+        assert!(top[0].contains("bq-full, since gone") && !top[0].contains("whoami"), "{top:?}");
+
+        // Taken over while its senders were asked (a stop moved the batch): left
+        // as it is, no turn, nobody told of a drop that did not happen.
+        let res = reserved(vec![queued("bq-gone", "/x")]);
+        lock().entries.get_mut("bq-kid").unwrap().in_flight.clear();
+        assert!(settle_batch("bq-kid", res).is_none());
+        assert!(lock().entries["bq-kid"].run.is_some(), "the claim is whoever took it over's");
+        assert_eq!(news_for("bq-top").len(), 1);
+
+        lock().entries.remove("bq-kid");
         forget("bq-kid");
+        forget("bq-top");
     }
 }
