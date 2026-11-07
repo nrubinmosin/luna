@@ -140,7 +140,7 @@ fn in_checkout(root: &str, rest: &str) -> bool {
 /// (a `.git` file, `git worktree list`) has its long names, and a folder may come
 /// spelled in 8.3 short ones (`C:\Users\RUNNER~1\…`, as a temp folder under a long
 /// user name is): only the file system can tell those are one.
-fn same_place(a: &str, b: &str) -> bool {
+pub fn same_place(a: &str, b: &str) -> bool {
     norm(a) == norm(b) || matches!((std::fs::canonicalize(a), std::fs::canonicalize(b)), (Ok(x), Ok(y)) if x == y)
 }
 
