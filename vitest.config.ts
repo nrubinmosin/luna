@@ -9,7 +9,16 @@ export default mergeConfig(
     test: {
       environment: 'jsdom',
       include: ['src/**/*.test.{ts,tsx}'],
-      setupFiles: ['src/test/setup.ts']
+      setupFiles: ['src/test/setup.ts'],
+      // `pnpm test:coverage`, for reading locally: no threshold, and the
+      // report goes where the test build's files do, which git ignores.
+      coverage: {
+        provider: 'v8',
+        include: ['src/**/*.{ts,tsx}'],
+        exclude: ['src/**/*.test.{ts,tsx}', 'src/test/**', 'src/dev/**'],
+        reportsDirectory: 'test-build/coverage',
+        reporter: ['text', 'html']
+      }
     }
   })
 );
