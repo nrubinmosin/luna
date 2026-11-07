@@ -113,15 +113,34 @@ $TestBuildEnv = @(
     '-e', 'CARGO_TARGET_DIR=/app/test-build/target'
 )
 
+# The directories a container run mounts into, or makes inside, the checkout.
+# The containers run as root (the toolchain images keep their caches under root's
+# cargo and home), so on a Linux host whatever the container creates there is
+# root-owned, and the host user could then neither write into it nor clear it:
+# a CI runner failed on test-build/ exactly so. Docker Desktop maps ownership and
+# never shows it. Making them first, as the invoking user, leaves root free to
+# write in them and the user free to as well. Running the containers as the host
+# user instead would need every cache volume and /usr/local/cargo to be theirs.
+function Initialize-HostDirs([string[]]$Names = @('test-build', 'dist', 'node_modules', 'src-tauri/target')) {
+    foreach ($name in $Names) {
+        New-Item -ItemType Directory -Force (Join-Path $RepoRoot $name) | Out-Null
+    }
+}
+
+# LNK4099 is lld-link saying the MSVC CRT import libraries ship without debug
+# info; it comes by the hundred and means nothing for us. Only that warning is
+# ignored, and only for the MSVC target, which is the one these builds make.
 # Runs a bash script at the repo root in a Windows toolchain image, the checkout
 # mounted at /app with the shared caches. $DockerArgs are extra `docker run`
 # arguments (environment, mounts). Call it inside Use-BuildLock.
 function Invoke-WinBuild([string]$What, [string]$Build, [string]$Image, [string]$Script, [string[]]$DockerArgs = @()) {
     $cmd = ConvertTo-BashScript "set -e`n$Script"
+    Initialize-HostDirs
     Invoke-Checked $What {
         docker run --rm `
           -e COREPACK_ENABLE_DOWNLOAD_PROMPT=0 `
           -e LUNA_BUILD=$Build `
+          -e CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS="-C link-arg=/IGNORE:4099" `
           @DockerArgs `
           -v "${RepoRoot}:/app" `
           @WinBuildVolumes `

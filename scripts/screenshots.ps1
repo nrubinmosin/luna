@@ -24,6 +24,7 @@ $Size = ($Size -replace '\s+', ',')
 
 $image = Build-Image luna-shots screenshots.Dockerfile
 
+Initialize-HostDirs 'node_modules'
 $outDir = Join-Path $RepoRoot $Out
 New-Item -ItemType Directory -Force $outDir | Out-Null
 
