@@ -940,17 +940,25 @@ pub(crate) fn codex_mcp_args() -> Vec<String> {
 /// holds its request for up to 30 min, `spawn` for up to two.
 const MCP_TOOL_TIMEOUT_MS: u64 = 1_900_000;
 
+/// What a Claude Code session's MCP header takes its bearer token from, as
+/// Codex's `bearer_token_env_var` does: set in the session's environment
+/// (`CLAUDE_MCP_TOKEN_ENV`), never written to the config file, where any
+/// other session of the user's could read it and act as this one.
+pub(crate) const CLAUDE_MCP_TOKEN_ENV: &str = "LUNA_MCP_TOKEN";
+
 /// The MCP config a tooled Claude Code session starts with: Luna's server on
-/// the hub listener, the session's own bearer token in the header. A file
-/// per chat under the data dir, like the hooks.
-pub(crate) fn claude_mcp_file(chat_id: &str, token: &str) -> Option<std::path::PathBuf> {
+/// the hub listener, the bearer token in the header as `${LUNA_MCP_TOKEN}`,
+/// which Claude Code expands from its environment as it connects (seen on
+/// 2.1.319, `--mcp-config` included). A file per chat under the data dir,
+/// like the hooks.
+pub(crate) fn claude_mcp_file(chat_id: &str) -> Option<std::path::PathBuf> {
     let url = crate::hub::mcp_url()?;
     let config = serde_json::json!({
         "mcpServers": {
             "luna": {
                 "type": "http",
                 "url": url,
-                "headers": { "Authorization": format!("Bearer {token}") },
+                "headers": { "Authorization": format!("Bearer ${{{CLAUDE_MCP_TOKEN_ENV}}}") },
                 // Claude Code drops an HTTP tool call that has sent nothing
                 // for 5 min, and the server's `timeout` is what raises that
                 // (as well as the hard limit per call). A `wait` answers
@@ -1519,7 +1527,8 @@ pub async fn ensure_claude_session(
             None if prompt.is_none() => crate::agents::chat_starting(&id, resume.is_some()),
             None => {}
         }
-        if let Some(mcp) = token.as_deref().and_then(|t| claude_mcp_file(&id, t)) {
+        let mcp = token.and_then(|t| Some((claude_mcp_file(&id)?, t)));
+        if let Some((mcp, _)) = &mcp {
             // Luna's tools without a permission prompt in every mode: the
             // user ticked the box that gives them. Variadic like
             // `--mcp-config`, so it goes where a flag follows it.
@@ -1558,6 +1567,9 @@ pub async fn ensure_claude_session(
         ];
         if instructions.is_some() {
             envs.push((CLAUDE_ADDED_DIR_MEMORY, "1".to_string()));
+        }
+        if let Some((_, token)) = mcp {
+            envs.push((CLAUDE_MCP_TOKEN_ENV, token));
         }
         envs.extend(session_envs(&id, parent.as_deref()));
         Ok(Launch {

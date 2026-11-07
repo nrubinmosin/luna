@@ -660,8 +660,9 @@ fn command_for(e: &Entry, id: &str) -> (Vec<String>, String, Vec<(&'static str, 
                 args.extend(["--agent".into(), agent.clone()]);
             }
             let mut denied: Vec<&str> = if s.read_only { crate::pty::CLAUDE_EDIT_TOOLS.to_vec() } else { Vec::new() };
-            if let Some(mcp) = s.token.as_deref().and_then(|t| crate::pty::claude_mcp_file(id, t)) {
+            if let Some((mcp, token)) = s.token.clone().and_then(|t| Some((crate::pty::claude_mcp_file(id)?, t))) {
                 args.extend(["--mcp-config".into(), mcp.to_string_lossy().into_owned()]);
+                envs.push((crate::pty::CLAUDE_MCP_TOKEN_ENV, token));
                 args.extend(["--permission-prompt-tool".into(), "mcp__luna__luna_permission".into()]);
                 // The CLI's to call, not the model's: hidden from its tools,
                 // and the prompts still come through.
@@ -3983,6 +3984,20 @@ mod tests {
         let at = args.iter().position(|a| a == "--resume").unwrap();
         assert_eq!(args[at + 1], "s-1");
         assert!(envs.iter().any(|(k, v)| *k == "CLAUDE_CONFIG_DIR" && v == "C:\\acc"));
+    }
+
+    #[test]
+    fn a_claude_helpers_mcp_token_goes_by_its_environment_and_never_into_its_config_file() {
+        crate::hub::start();
+        let mut e = entry(Provider::Claude);
+        e.spec.token = Some("the-helpers-token".into());
+        let (args, _, envs) = command_for(&e, "bg-mcp-token");
+        let at = args.iter().position(|a| a == "--mcp-config").expect("Luna's server");
+        let config = std::fs::read_to_string(&args[at + 1]).unwrap();
+        assert!(!config.contains("the-helpers-token"), "{config}");
+        assert!(config.contains("Bearer ${LUNA_MCP_TOKEN}"), "{config}");
+        assert!(envs.iter().any(|(k, v)| *k == "LUNA_MCP_TOKEN" && v == "the-helpers-token"));
+        let _ = std::fs::remove_file(&args[at + 1]);
     }
 
     #[test]
