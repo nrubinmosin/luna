@@ -13,7 +13,7 @@ import { cliUpdateNow } from '../../ipc/cli';
 import { PROVIDER_LABEL, PROVIDERS, accountKey, type Account } from '../../shared/types';
 import { PowerChip } from '../power/PowerChip';
 import { useShortcuts } from '../shortcuts/ShortcutsDialog';
-import { useSettings } from '../settings/SettingsDialog';
+import { useSettings } from '../settings/settings.store';
 import { useLibrary, waiting } from '../library/library.store';
 import { RecommendationsChip } from '../settings/RecommendationsChip';
 import './status-bar.css';
