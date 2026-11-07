@@ -4,7 +4,7 @@
 //! fixed number of them, a deadline for what it must send and a cap on its
 //! size; one past the slots is turned away at once rather than queued.
 
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::net::TcpStream;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -51,8 +51,9 @@ impl Slots {
     }
 }
 
-/// Reads from a socket until a deadline for all of it, not for each read: a
-/// peer trickling a byte at a time cannot hold the connection open past it.
+/// Reads from or writes to a socket until a deadline for all of it, not for
+/// each call: a peer trickling a byte at a time, or reading one, cannot hold
+/// the connection open past it.
 pub struct Deadline<'a> {
     stream: &'a TcpStream,
     until: Instant,
@@ -79,6 +80,23 @@ impl Read for Deadline<'_> {
         self.stream.set_read_timeout(Some(left))?;
         let mut s = self.stream;
         s.read(buf)
+    }
+}
+
+impl Write for Deadline<'_> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let left = self.until.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(io::Error::new(io::ErrorKind::TimedOut, "deadline passed"));
+        }
+        self.stream.set_write_timeout(Some(left))?;
+        let mut s = self.stream;
+        s.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        let mut s = self.stream;
+        s.flush()
     }
 }
 
