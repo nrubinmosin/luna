@@ -173,7 +173,8 @@ pub mod acl {
     }
 
     /// Whether `path`'s own DACL is `super::sddl_is_private`: the root alone,
-    /// a quick look. `verify` is the whole of it.
+    /// a quick look for the tests; `verify` is the whole of it.
+    #[cfg(test)]
     pub fn is_private(path: &Path) -> io::Result<bool> {
         Ok(super::sddl_is_private(&dacl_sddl(path)?, &user_sid()?))
     }
