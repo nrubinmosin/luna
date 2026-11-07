@@ -1,5 +1,5 @@
 ---
-name: security-review
+name: luna-security-review
 description: Security checklist for a Luna change, built from docs/security/threat-model.md — which trust boundary (B1–B7) it crosses, which STRIDE rows and MCP authorization rows it touches, which negative test it needs, when the threat model itself must change — plus an independent adversarial review. Use it whenever a change touches the hub or its listeners (hub.rs, admit.rs, coreproc.rs, ipc.rs), MCP tools or their authorization (mcp.rs, agents/registry.rs, agents/privilege.rs, agents/answer.rs, agents/spawn/), the least-privilege layer, Tauri IPC commands, capabilities or the CSP, how a CLI process is launched, private files and ACLs (secret.rs, paths.rs), worktree or account-folder writes, the updater or the installer (hooks.nsh) — before calling such a change done, or when someone asks "is this safe?" or for a security review of Luna code.
 ---
 

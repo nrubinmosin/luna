@@ -75,9 +75,8 @@ first"). Then:
 
 ## 5. Record and prove
 
-- `docs/cli-compatibility.md`: the version checked, the date, what changed and
-  what Luna did. If the file does not exist yet, create it with that first row
-  and a line saying what it is for.
+- Update `docs/cli-compatibility.md`: each observation under its CLI with the
+  version it was seen on, what Luna does about it, and the version now checked.
 - `./scripts/gate.ps1`, then `./scripts/windows-tests.ps1 -Build -Run`.
 - The live suite on the new version (`live-test` skill): it is the only level
   that sees a CLI's real stream, MCP client and flags.

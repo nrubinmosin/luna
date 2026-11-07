@@ -70,7 +70,9 @@ windows:
 - **WebDriver / DevTools on its WebView** (preferred for UI): start it with
   `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=<port>` in the
   environment of that launch, then drive and screenshot the page over that
-  port (msedgedriver or the DevTools protocol).
+  port (msedgedriver or the DevTools protocol). Untested with Luna so far:
+  the switch is WebView2's own, but nothing in the repo uses it yet, so say
+  whether it worked.
 - **The dev caller** for sessions and Luna's tools: the token
   `-DevCaller` prints and the MCP URL in `test-build/luna.log`; call the tools
   over HTTP.
