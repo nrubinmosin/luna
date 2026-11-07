@@ -25,8 +25,7 @@ const chipStyle = (loud: boolean) => ({
   fontWeight: loud ? 700 : 400
 });
 
-const pct = (got: number, total: number | null) =>
-  total ? Math.min(100, Math.round((got / total) * 100)) : null;
+const pct = (got: number, total: number | null) => (total ? Math.min(100, Math.round((got / total) * 100)) : null);
 
 /**
  * The bar's only word about updates, and only while there is news: a release
@@ -158,13 +157,14 @@ type Fit = 0 | 1 | 2 | 3;
  */
 function AccountGlance({ account, fit, now }: { account: Account; fit: Fit; now: number }) {
   const worst = worstLimit(account);
-  const dot = account.sync === 'loading' && !account.haveUsage
-    ? 'var(--faint)'
-    : !account.signedIn || worst >= 0.85
-    ? 'oklch(.63 .19 25)'
-    : account.haveUsage
-      ? 'oklch(.64 .18 145)'
-      : 'var(--faint)';
+  const dot =
+    account.sync === 'loading' && !account.haveUsage
+      ? 'var(--faint)'
+      : !account.signedIn || worst >= 0.85
+        ? 'oklch(.63 .19 25)'
+        : account.haveUsage
+          ? 'oklch(.64 .18 145)'
+          : 'var(--faint)';
   const windows = account.haveUsage ? account.limits : [];
   const shown = fit === 3 ? windows.filter(w => w.used === worst).slice(0, 1) : windows;
 
@@ -175,7 +175,12 @@ function AccountGlance({ account, fit, now }: { account: Account; fit: Fit; now:
         `${account.name} — ${PROVIDER_LABEL[account.provider]}${account.plan ? `, ${account.plan}` : ''}\n` +
         (account.signedIn
           ? windows.length
-            ? windows.map(w => `${w.label}: ${Math.round(w.used * 100)}%${w.resetAt ? `, resets in ${fmtReset(w.resetAt, now)}` : ''}`).join('\n')
+            ? windows
+                .map(
+                  w =>
+                    `${w.label}: ${Math.round(w.used * 100)}%${w.resetAt ? `, resets in ${fmtReset(w.resetAt, now)}` : ''}`
+                )
+                .join('\n')
             : 'no usage data yet'
           : 'signed out')
       }
@@ -196,7 +201,11 @@ function AccountGlance({ account, fit, now }: { account: Account; fit: Fit; now:
             <span className="sb-key">{w.short}</span>
             {fit < 2 && (
               <span className="sb-mini meter">
-                <i style={{ width: `${Math.round(w.used * 100)}%`, ['--m' as string]: limitColor(w.used) } as CSSProperties} />
+                <i
+                  style={
+                    { width: `${Math.round(w.used * 100)}%`, ['--m' as string]: limitColor(w.used) } as CSSProperties
+                  }
+                />
               </span>
             )}
             <span style={fit >= 2 ? { color: limitColor(w.used) } : undefined}>{Math.round(w.used * 100)}%</span>
@@ -245,11 +254,12 @@ export function StatusBar() {
   const waiting = all.filter(c => c.status === 'waiting');
   const openAccounts = () => useAccountsWindow.getState().setOpen(true);
 
-
-
   return (
     <div className="app-status">
-      <div className={`sb-field${working ? ' loud' : ''}`} title={`${working} session${working === 1 ? '' : 's'} working`}>
+      <div
+        className={`sb-field${working ? ' loud' : ''}`}
+        title={`${working} session${working === 1 ? '' : 's'} working`}
+      >
         <span className="sb-dot" style={{ background: working ? STATUS.working.color : 'var(--faint)' }} />
         {working} working
       </div>

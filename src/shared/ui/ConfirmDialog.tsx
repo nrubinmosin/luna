@@ -51,8 +51,13 @@ export function ConfirmDialog({
       }}
       className="scrim"
       style={{
-        position: 'fixed', inset: 0, background: 'rgba(0,0,0,.35)', backdropFilter: 'blur(1px)',
-        display: 'grid', placeItems: 'center', zIndex: 80
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(0,0,0,.35)',
+        backdropFilter: 'blur(1px)',
+        display: 'grid',
+        placeItems: 'center',
+        zIndex: 80
       }}
     >
       <div

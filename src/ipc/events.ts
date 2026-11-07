@@ -19,7 +19,7 @@ export const onPtyOutput = (cb: (p: PtyOutput) => void): Promise<UnlistenFn> =>
 export const onCliStatus = (cb: (s: CliStatusDto) => void): Promise<UnlistenFn> =>
   tauriAvailable ? listen<CliStatusDto>('cli://status', e => cb(e.payload)) : Promise.resolve(() => {});
 
-export const onPtyExit =(cb: (p: PtyExit) => void): Promise<UnlistenFn> =>
+export const onPtyExit = (cb: (p: PtyExit) => void): Promise<UnlistenFn> =>
   tauriAvailable ? listen<PtyExit>('pty://exit', e => cb(e.payload)) : Promise.resolve(() => {});
 
 export const onPowerState = (cb: (s: PowerStateDto) => void): Promise<UnlistenFn> =>
@@ -51,9 +51,11 @@ export const onOpenChat = (cb: (p: { chatId: string }) => void): Promise<Unliste
 export const onBackgroundHelpers = (cb: (rows: BackgroundHelperDto[]) => void): Promise<UnlistenFn> =>
   tauriAvailable ? listen<BackgroundHelperDto[]>('agent://background', e => cb(e.payload)) : Promise.resolve(() => {});
 
-export const onAgentDeleted =(cb: (p: { id: string }) => void): Promise<UnlistenFn> =>
+export const onAgentDeleted = (cb: (p: { id: string }) => void): Promise<UnlistenFn> =>
   tauriAvailable ? listen<{ id: string }>('agent://deleted', e => cb(e.payload)) : Promise.resolve(() => {});
 
 /** A chat's parent was deleted, and it passed to that one's parent (agents.rs `forget`). */
 export const onAgentReparent = (cb: (p: { id: string; parent: string }) => void): Promise<UnlistenFn> =>
-  tauriAvailable ? listen<{ id: string; parent: string }>('agent://reparent', e => cb(e.payload)) : Promise.resolve(() => {});
+  tauriAvailable
+    ? listen<{ id: string; parent: string }>('agent://reparent', e => cb(e.payload))
+    : Promise.resolve(() => {});

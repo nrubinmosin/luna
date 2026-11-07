@@ -60,8 +60,13 @@ export const useWorktrees = create<WorktreesState>(set => ({
  * when one is most likely to have just been made or let go.
  */
 export function useWorktreeScan() {
-  const key = useChats(s =>
-    s.folders.map(f => f.path).join('|') + '#' + allChats(s.folders).map(c => c.worktreePath ?? '').join('|')
+  const key = useChats(
+    s =>
+      s.folders.map(f => f.path).join('|') +
+      '#' +
+      allChats(s.folders)
+        .map(c => c.worktreePath ?? '')
+        .join('|')
   );
   useEffect(() => {
     const rescan = () => void useWorktrees.getState().rescan();

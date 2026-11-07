@@ -13,8 +13,18 @@
 import type { Terminal as XTerm } from '@xterm/xterm';
 import type { Account, Chat, ClaudeChat, CodexChat, Folder, Provider } from '../shared/types';
 import type {
-  AccountsRootInfo, BackgroundHelperDto, WorktreeInfoDto, ClaudeDefaultsDto, CliStatusDto, CodexDefaultsDto, CodexModelDto, CoreStateDto, PowerStateDto,
-  FileDiffDto, LibraryOverviewDto, PlaceDto
+  AccountsRootInfo,
+  BackgroundHelperDto,
+  WorktreeInfoDto,
+  ClaudeDefaultsDto,
+  CliStatusDto,
+  CodexDefaultsDto,
+  CodexModelDto,
+  CoreStateDto,
+  PowerStateDto,
+  FileDiffDto,
+  LibraryOverviewDto,
+  PlaceDto
 } from '../ipc/commands';
 import { useLibrary } from '../features/library/library.store';
 import { useRecommendations } from '../features/settings/recommendations.store';
@@ -34,8 +44,40 @@ import { usePower } from '../features/power/power.store';
  *  account), `?demo=settings`, `?demo=accounts`, `?demo=recommended`, `?demo=editor`, `?demo=worktrees`,
  *  `?demo=checks` / `checks-dark` (the Recommendations window), `checks-bar` / `checks-bar-dark` (their chip),
  *  `?demo=library`, `?demo=power`. */
-export type Scene = 'main' | 'dark' | 'peek' | 'newchat' | 'codex' | 'settings' | 'accounts' | 'recommended' | 'editor' | 'worktrees' | 'library' | 'power' | 'checks' | 'checks-dark' | 'checks-bar' | 'checks-bar-dark';
-const SCENES: Scene[] = ['dark', 'peek', 'newchat', 'codex', 'settings', 'accounts', 'recommended', 'editor', 'worktrees', 'library', 'power', 'checks', 'checks-dark', 'checks-bar', 'checks-bar-dark'];
+export type Scene =
+  | 'main'
+  | 'dark'
+  | 'peek'
+  | 'newchat'
+  | 'codex'
+  | 'settings'
+  | 'accounts'
+  | 'recommended'
+  | 'editor'
+  | 'worktrees'
+  | 'library'
+  | 'power'
+  | 'checks'
+  | 'checks-dark'
+  | 'checks-bar'
+  | 'checks-bar-dark';
+const SCENES: Scene[] = [
+  'dark',
+  'peek',
+  'newchat',
+  'codex',
+  'settings',
+  'accounts',
+  'recommended',
+  'editor',
+  'worktrees',
+  'library',
+  'power',
+  'checks',
+  'checks-dark',
+  'checks-bar',
+  'checks-bar-dark'
+];
 
 const hoursFromNow = (h: number) => new Date(Date.now() + h * 3600_000).toISOString();
 
@@ -168,8 +210,7 @@ const ACCOUNTS: Account[] = [
   })
 ];
 
-const slots = (...ids: Array<string | null>): Slots =>
-  [0, 1, 2, 3].map(i => ids[i] ?? null);
+const slots = (...ids: Array<string | null>): Slots => [0, 1, 2, 3].map(i => ids[i] ?? null);
 
 const SPLITS = { col: 0.5, rowL: 0.5, rowR: 0.5 };
 
@@ -347,7 +388,11 @@ const LEVELS: Record<string, string> = {
   max: 'Maximum reasoning depth for the hardest problems'
 };
 const codexModel = (slug: string, displayName: string, defaultEffort: string): CodexModelDto => ({
-  slug, displayName, defaultEffort, efforts: Object.keys(LEVELS), effortHints: LEVELS
+  slug,
+  displayName,
+  defaultEffort,
+  efforts: Object.keys(LEVELS),
+  effortHints: LEVELS
 });
 const CODEX_MODELS: CodexModelDto[] = [
   codexModel('gpt-6.1-sol', 'GPT-6.1-Sol', 'low'),
@@ -375,54 +420,146 @@ let seeded = false;
 /** Only the scenes about them show any: the README's shots have no such chip. */
 let SHOWS_CHECKS = false;
 const CHECK = {
-  account: null, status: 'off', current: null, target: null, risk: null, note: null, action: null, refused: null, dismissed: false
+  account: null,
+  status: 'off',
+  current: null,
+  target: null,
+  risk: null,
+  note: null,
+  action: null,
+  refused: null,
+  dismissed: false
 };
 const CHECKS = [
   {
-    ...CHECK, id: 'claude-policy-hooks', title: 'Hooks are limited by policy', status: 'blocked', current: 'allowManagedHooksOnly',
+    ...CHECK,
+    id: 'claude-policy-hooks',
+    title: 'Hooks are limited by policy',
+    status: 'blocked',
+    current: 'allowManagedHooksOnly',
     why: "A policy on this computer keeps Claude Code from running Luna's hooks, on every account.",
     note: 'Set by your administrator: nothing in Luna or an account can change it.'
   },
   {
-    ...CHECK, id: 'codex-hooks-unasked', title: 'Codex hooks without asking is off', current: 'off', target: 'on', action: 'Turn on',
+    ...CHECK,
+    id: 'codex-hooks-unasked',
+    title: 'Codex hooks without asking is off',
+    current: 'off',
+    target: 'on',
+    action: 'Turn on',
     why: "Codex drops a hook it has not been told to trust, so Luna's guard against endless waits never reaches Codex chats and helpers.",
     risk: "This runs every project's hooks without review in every Codex chat and helper, not only Luna's guard: a repository you open can run what it likes on this computer."
   },
   {
-    ...CHECK, id: 'claude-hooks', account: 'claude/personal', title: 'Hooks are switched off', current: 'disableAllHooks: true', target: 'key removed', action: 'Turn hooks on',
+    ...CHECK,
+    id: 'claude-hooks',
+    account: 'claude/personal',
+    title: 'Hooks are switched off',
+    current: 'disableAllHooks: true',
+    target: 'key removed',
+    action: 'Turn hooks on',
     why: "Claude Code runs no hook on this account, and Luna's are how it hears of a turn's end, a question and a subagent; the guard against endless waits goes with them.",
     risk: "Every hook of this account comes back, not only Luna's: any written in its settings that you have not reviewed runs at its next event. This is the accounts' settings parent. The next settings sync copies it to work."
   },
   {
-    ...CHECK, id: 'claude-fullscreen', account: 'claude/work', title: 'Fullscreen was turned off', current: 'turned off on 2.1.318', target: 'cleared', action: 'Try fullscreen again',
+    ...CHECK,
+    id: 'claude-fullscreen',
+    account: 'claude/work',
+    title: 'Fullscreen was turned off',
+    current: 'turned off on 2.1.318',
+    target: 'cleared',
+    action: 'Try fullscreen again',
     why: 'Claude Code gave up on its fullscreen renderer here after launches that did not finish, so panes flicker and redraw badly on resize.',
-    note: 'Written only while no session of Luna\'s is on the account. A Claude Code running outside Luna can still race this write.',
+    note: "Written only while no session of Luna's is on the account. A Claude Code running outside Luna can still race this write.",
     refused: 'work is in use. Stop its sessions; one closing counts until its process has exited.'
   },
   {
-    ...CHECK, id: 'keep-awake', title: 'Keep awake is off', current: 'off', target: 'on', action: 'Turn on', dismissed: true,
+    ...CHECK,
+    id: 'keep-awake',
+    title: 'Keep awake is off',
+    current: 'off',
+    target: 'on',
+    action: 'Turn on',
+    dismissed: true,
     why: 'The PC can go to sleep under a running chat or helper, and the work stops with it.'
   },
   { ...CHECK, id: 'waiting-marker', title: 'Waiting for you', status: 'ok', why: '' }
 ];
 
 const RECOMMENDED = [
-  { key: 'tui', current: '"fullscreen"', recommended: '"fullscreen"', why: 'Draws on the alternate screen with its own scrollback.', defaultOn: true, applied: true },
-  { key: 'spinnerTipsEnabled', current: null, recommended: 'false', why: 'No tips under the spinner.', defaultOn: true, applied: false },
-  { key: 'copyOnSelect', current: null, recommended: 'false', why: 'Selecting in a pane copies nothing until Ctrl+C, so the clipboard keeps what you put there.', defaultOn: true, applied: false, file: '.claude.json' },
-  { key: 'attribution', current: null, recommended: '{"commit":"","pr":"","sessionUrl":false}', why: 'No Co-Authored-By or session links in commits and PRs.', defaultOn: false, applied: false }
+  {
+    key: 'tui',
+    current: '"fullscreen"',
+    recommended: '"fullscreen"',
+    why: 'Draws on the alternate screen with its own scrollback.',
+    defaultOn: true,
+    applied: true
+  },
+  {
+    key: 'spinnerTipsEnabled',
+    current: null,
+    recommended: 'false',
+    why: 'No tips under the spinner.',
+    defaultOn: true,
+    applied: false
+  },
+  {
+    key: 'copyOnSelect',
+    current: null,
+    recommended: 'false',
+    why: 'Selecting in a pane copies nothing until Ctrl+C, so the clipboard keeps what you put there.',
+    defaultOn: true,
+    applied: false,
+    file: '.claude.json'
+  },
+  {
+    key: 'attribution',
+    current: null,
+    recommended: '{"commit":"","pr":"","sessionUrl":false}',
+    why: 'No Co-Authored-By or session links in commits and PRs.',
+    defaultOn: false,
+    applied: false
+  }
 ];
 
 // Worktrees left behind with no chat in them, for the Worktrees window: one
 // clean and one holding work under each CLI, and one more in the second folder.
 const STALE: Record<string, WorktreeInfoDto[]> = {
   'C:\\src\\luna': [
-    { path: 'C:\\src\\luna\\.claude\\worktrees\\merry-coalescing-cosmos', branch: 'worktree-merry-coalescing-cosmos', uncommitted: 0, uniqueCommits: 0, touchedMs: Date.now() - 3 * 86_400_000, broken: false },
-    { path: 'C:\\src\\luna\\.claude\\worktrees\\piped-squishing-blum', branch: 'fix-updater', uncommitted: 3, uniqueCommits: 2, touchedMs: Date.now() - 5 * 3_600_000, broken: false },
-    { path: 'C:\\src\\luna-accounts\\openai\\personal\\worktrees\\d6ff\\luna', branch: null, uncommitted: 0, uniqueCommits: 0, touchedMs: Date.now() - 9 * 86_400_000, broken: false }
+    {
+      path: 'C:\\src\\luna\\.claude\\worktrees\\merry-coalescing-cosmos',
+      branch: 'worktree-merry-coalescing-cosmos',
+      uncommitted: 0,
+      uniqueCommits: 0,
+      touchedMs: Date.now() - 3 * 86_400_000,
+      broken: false
+    },
+    {
+      path: 'C:\\src\\luna\\.claude\\worktrees\\piped-squishing-blum',
+      branch: 'fix-updater',
+      uncommitted: 3,
+      uniqueCommits: 2,
+      touchedMs: Date.now() - 5 * 3_600_000,
+      broken: false
+    },
+    {
+      path: 'C:\\src\\luna-accounts\\openai\\personal\\worktrees\\d6ff\\luna',
+      branch: null,
+      uncommitted: 0,
+      uniqueCommits: 0,
+      touchedMs: Date.now() - 9 * 86_400_000,
+      broken: false
+    }
   ],
   'C:\\src\\notes': [
-    { path: 'C:\\src\\luna-accounts\\openai\\personal\\worktrees\\0a1b\\notes', branch: null, uncommitted: 1, uniqueCommits: 0, touchedMs: Date.now() - 40 * 60_000, broken: false }
+    {
+      path: 'C:\\src\\luna-accounts\\openai\\personal\\worktrees\\0a1b\\notes',
+      branch: null,
+      uncommitted: 1,
+      uniqueCommits: 0,
+      touchedMs: Date.now() - 40 * 60_000,
+      broken: false
+    }
   ]
 };
 
@@ -436,7 +573,13 @@ const REPO = 'C:\\src\\asuri-app';
 const WAITING = 'C:\\Users\\me\\AppData\\Local\\luna\\library-folders\\asuri-app';
 const accountsDir = (vendor: string, name: string) => `C:\\Users\\me\\Documents\\luna-accounts\\${vendor}\\${name}`;
 const place = (p: Partial<PlaceDto> & Pick<PlaceDto, 'dest' | 'target'>): PlaceDto => ({
-  skill: null, instructions: null, shownAs: null, status: 'current', both: false, problem: null, ...p
+  skill: null,
+  instructions: null,
+  shownAs: null,
+  status: 'current',
+  both: false,
+  problem: null,
+  ...p
 });
 const LIBRARY: LibraryOverviewDto = {
   root: 'C:\\Users\\me\\AppData\\Local\\luna\\library',
@@ -445,20 +588,29 @@ const LIBRARY: LibraryOverviewDto = {
   instructions: [
     { name: 'main', description: 'Working with me', problem: null, accounts: ['all'] },
     { name: 'terse', description: '', problem: 'Blank: laid out nowhere until it has something in it', accounts: [] },
-    { name: 'work', description: 'At work: the monorepo, its CI and who reviews what', problem: null, accounts: ['claude/work'] }
+    {
+      name: 'work',
+      description: 'At work: the monorepo, its CI and who reviews what',
+      problem: null,
+      accounts: ['claude/work']
+    }
   ],
   noInstructions: ['codex/team'],
   instructionsFor: { 'claude/personal': 'main', 'claude/work': 'work', 'codex/personal': 'main' },
   oldInstructions: null,
   skills: [
     {
-      name: 'luna-review', description: 'Hand a finished change to a model of the other CLI through Luna and fold its findings back in.',
-      problem: null, accounts: ['claude']
+      name: 'luna-review',
+      description: 'Hand a finished change to a model of the other CLI through Luna and fold its findings back in.',
+      problem: null,
+      accounts: ['claude']
     },
     { name: 'migrations', description: '', problem: 'The front matter has no description', accounts: ['claude'] },
     {
-      name: 'release-notes', description: 'Write the release notes from the commits since the last tag, in the house style.',
-      problem: null, accounts: []
+      name: 'release-notes',
+      description: 'Write the release notes from the commits since the last tag, in the house style.',
+      problem: null,
+      accounts: []
     }
   ],
   accounts: [
@@ -477,30 +629,58 @@ const LIBRARY: LibraryOverviewDto = {
     }
   ],
   places: [
-    place({ dest: `${accountsDir('anthropic', 'personal')}\\CLAUDE.md`, target: { kind: 'account', provider: 'claude', name: 'personal' }, instructions: 'main' }),
-    place({ dest: `${accountsDir('anthropic', 'work')}\\CLAUDE.md`, target: { kind: 'account', provider: 'claude', name: 'work' }, instructions: 'work', status: 'changed' }),
-    place({ dest: `${accountsDir('openai', 'personal')}\\AGENTS.md`, target: { kind: 'account', provider: 'codex', name: 'personal' }, instructions: 'main' }),
+    place({
+      dest: `${accountsDir('anthropic', 'personal')}\\CLAUDE.md`,
+      target: { kind: 'account', provider: 'claude', name: 'personal' },
+      instructions: 'main'
+    }),
+    place({
+      dest: `${accountsDir('anthropic', 'work')}\\CLAUDE.md`,
+      target: { kind: 'account', provider: 'claude', name: 'work' },
+      instructions: 'work',
+      status: 'changed'
+    }),
+    place({
+      dest: `${accountsDir('openai', 'personal')}\\AGENTS.md`,
+      target: { kind: 'account', provider: 'codex', name: 'personal' },
+      instructions: 'main'
+    }),
     ...['personal', 'work'].map(n =>
-      place({ dest: `${accountsDir('anthropic', n)}\\skills\\luna-review`, target: { kind: 'account', provider: 'claude', name: n }, skill: 'luna-review' })
+      place({
+        dest: `${accountsDir('anthropic', n)}\\skills\\luna-review`,
+        target: { kind: 'account', provider: 'claude', name: n },
+        skill: 'luna-review'
+      })
     ),
     ...['personal', 'work'].map(n =>
       place({
-        dest: `${accountsDir('anthropic', n)}\\skills\\migrations`, target: { kind: 'account', provider: 'claude', name: n },
-        skill: 'migrations', status: 'failed', problem: 'The front matter has no description'
+        dest: `${accountsDir('anthropic', n)}\\skills\\migrations`,
+        target: { kind: 'account', provider: 'claude', name: n },
+        skill: 'migrations',
+        status: 'failed',
+        problem: 'The front matter has no description'
       })
     ),
     ...['personal', 'team'].map(n =>
       place({
         dest: `${accountsDir('openai', n)}\\plugins\\cache\\luna\\asuri-app\\local\\skills\\luna-review`,
-        target: { kind: 'folder', path: REPO, provider: 'codex', name: n }, skill: 'luna-review'
+        target: { kind: 'folder', path: REPO, provider: 'codex', name: n },
+        skill: 'luna-review'
       })
     ),
     place({
-      dest: `${WAITING}\\work\\.claude\\skills\\luna-release-notes`, target: { kind: 'folder', path: REPO, provider: 'claude', name: 'work' },
-      skill: 'release-notes', shownAs: 'luna-release-notes'
+      dest: `${WAITING}\\work\\.claude\\skills\\luna-release-notes`,
+      target: { kind: 'folder', path: REPO, provider: 'claude', name: 'work' },
+      skill: 'release-notes',
+      shownAs: 'luna-release-notes'
     })
   ],
-  foundInstructions: [{ dest: `${accountsDir('openai', 'team')}\\AGENTS.md`, target: { kind: 'account', provider: 'codex', name: 'team' } }],
+  foundInstructions: [
+    {
+      dest: `${accountsDir('openai', 'team')}\\AGENTS.md`,
+      target: { kind: 'account', provider: 'codex', name: 'team' }
+    }
+  ],
   overridden: [],
   kept: []
 };
@@ -508,8 +688,10 @@ const LIBRARY_DIFF: FileDiffDto[] = [
   {
     path: 'CLAUDE.md',
     base: '# Working with me\n\n- Answer in the language I write in.\n- Run the tests before saying done.\n- Commit only when asked.\n',
-    library: '# Working with me\n\n- Answer in the language I write in.\n- Run the tests before saying done.\n- Commit only when asked.\n',
-    there: '# Working with me\n\n- Answer in the language I write in.\n- Run the tests before saying done, and say which.\n- Commit only when asked.\n- Never push to master.\n',
+    library:
+      '# Working with me\n\n- Answer in the language I write in.\n- Run the tests before saying done.\n- Commit only when asked.\n',
+    there:
+      '# Working with me\n\n- Answer in the language I write in.\n- Run the tests before saying done, and say which.\n- Commit only when asked.\n- Never push to master.\n',
     binary: false
   }
 ];
@@ -560,20 +742,48 @@ export function answer<T>(cmd: string, args: Record<string, unknown>, fallback: 
 // waiting on an answer: the chip on its row.
 const BACKGROUND: BackgroundHelperDto[] = [
   {
-    id: 'demo-bg-1', parent: 'demo-1', name: 'Review the release plan', provider: 'codex', state: 'working',
-    account: 'work', model: 'gpt-5.5', effort: 'high', worktree: true,
-    startedMs: Date.now() - 14 * 60_000, turnStartedMs: Date.now() - 4 * 60_000
+    id: 'demo-bg-1',
+    parent: 'demo-1',
+    name: 'Review the release plan',
+    provider: 'codex',
+    state: 'working',
+    account: 'work',
+    model: 'gpt-5.5',
+    effort: 'high',
+    worktree: true,
+    startedMs: Date.now() - 14 * 60_000,
+    turnStartedMs: Date.now() - 4 * 60_000
   },
   {
-    id: 'demo-bg-2', parent: 'demo-1', name: 'Check the changelog', provider: 'claude', state: 'question',
-    account: 'team', model: 'sonnet', effort: 'medium', worktree: false,
-    startedMs: Date.now() - 6 * 60_000, turnStartedMs: Date.now() - 60_000,
-    ask: { kind: 'question', blocking: true, questions: [{ text: 'Ship tonight or tomorrow?', options: ['Tonight', 'Tomorrow'] }] }
+    id: 'demo-bg-2',
+    parent: 'demo-1',
+    name: 'Check the changelog',
+    provider: 'claude',
+    state: 'question',
+    account: 'team',
+    model: 'sonnet',
+    effort: 'medium',
+    worktree: false,
+    startedMs: Date.now() - 6 * 60_000,
+    turnStartedMs: Date.now() - 60_000,
+    ask: {
+      kind: 'question',
+      blocking: true,
+      questions: [{ text: 'Ship tonight or tomorrow?', options: ['Tonight', 'Tomorrow'] }]
+    }
   },
   {
-    id: 'demo-bg-3', parent: null, name: 'Sweep old branches', provider: 'claude', state: 'idle',
-    account: 'team', model: 'haiku', effort: 'low', worktree: false,
-    startedMs: Date.now() - 40 * 60_000, turnStartedMs: null
+    id: 'demo-bg-3',
+    parent: null,
+    name: 'Sweep old branches',
+    provider: 'claude',
+    state: 'idle',
+    account: 'team',
+    model: 'haiku',
+    effort: 'low',
+    worktree: false,
+    startedMs: Date.now() - 40 * 60_000,
+    turnStartedMs: null
   }
 ];
 
@@ -633,7 +843,11 @@ export function seedDemo(scene: Scene) {
   if (scene === 'library') {
     useLibrary.getState().setOpen(true);
     // The changed copy's differences, opened the way a click would.
-    setTimeout(() => [...document.querySelectorAll<HTMLButtonElement>('button')].find(b => b.textContent === 'Differences')?.click(), 600);
+    setTimeout(
+      () =>
+        [...document.querySelectorAll<HTMLButtonElement>('button')].find(b => b.textContent === 'Differences')?.click(),
+      600
+    );
   }
   // The two dialogs belong to an account row; open them the way a click would.
   const button = scene === 'recommended' ? 'Recommended settings' : scene === 'editor' ? 'Edit settings.json' : null;

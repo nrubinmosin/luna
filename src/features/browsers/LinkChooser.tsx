@@ -13,7 +13,7 @@ import { choices, linkContext, useBrowsers, useLinkChooser } from './browsers.st
 export function LinkChooser() {
   const at = useLinkChooser(s => s.at);
   const data = useBrowsers(s => s.data);
-  const remembered = useChats(s => (at ? s.findChat(at.chatId)?.browser ?? null : null));
+  const remembered = useChats(s => (at ? (s.findChat(at.chatId)?.browser ?? null) : null));
   const [remember, setRemember] = useState(false);
   const host = useDialogHost();
 
@@ -43,11 +43,25 @@ export function LinkChooser() {
         onClick={e => e.stopPropagation()}
         className="window"
         style={{
-          position: 'fixed', left: Math.min(at.x, window.innerWidth - 300), top: Math.min(at.y, window.innerHeight - 260),
-          minWidth: 240, maxWidth: 360, padding: '4px 0', boxShadow: 'var(--shadow)'
+          position: 'fixed',
+          left: Math.min(at.x, window.innerWidth - 300),
+          top: Math.min(at.y, window.innerHeight - 260),
+          minWidth: 240,
+          maxWidth: 360,
+          padding: '4px 0',
+          boxShadow: 'var(--shadow)'
         }}
       >
-        <div style={{ ...row, color: 'var(--faint)', fontSize: 'var(--fs-1)', overflow: 'hidden', textOverflow: 'ellipsis' }} title={at.url}>
+        <div
+          style={{
+            ...row,
+            color: 'var(--faint)',
+            fontSize: 'var(--fs-1)',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis'
+          }}
+          title={at.url}
+        >
           {at.url}
         </div>
         {choices(data).map(b => (
@@ -58,7 +72,9 @@ export function LinkChooser() {
         ))}
         <div className="field-row" style={{ ...row, borderTop: '1px solid var(--line)', marginTop: 4, paddingTop: 5 }}>
           <input type="checkbox" id="link-remember" checked={remember} onChange={e => setRemember(e.target.checked)} />
-          <label htmlFor="link-remember" style={{ cursor: 'default' }}>Remember for this chat</label>
+          <label htmlFor="link-remember" style={{ cursor: 'default' }}>
+            Remember for this chat
+          </label>
         </div>
         {remembered && (
           <div

@@ -24,7 +24,14 @@ import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 import { logWarn } from '../../shared/lib/log';
 import type { Chat } from '../../shared/types';
-import { ensureClaudeSession, ensureCodexSession, openLink, resizeSession, sessionModes, writeSession } from '../../ipc/commands';
+import {
+  ensureClaudeSession,
+  ensureCodexSession,
+  openLink,
+  resizeSession,
+  sessionModes,
+  writeSession
+} from '../../ipc/commands';
 import { linkContext, useLinkChooser } from '../browsers/browsers.store';
 import { onPtyExit, onPtyOutput } from '../../ipc/events';
 import { useChats } from '../chats/chats.store';
@@ -62,21 +69,53 @@ export const themeFor = (isDark: boolean) =>
     ? {
         // Neutral graphite, no blue in it: a blue-black ground is what read
         // as haze. Text at ~13:1 rather than pure white's 19:1, which blooms.
-        background: '#101010', foreground: '#d7d7d7', cursor: '#d9b56a',
-        cursorAccent: '#101010', selectionBackground: '#494137', selectionForeground: '#f0f0f0',
-        black: '#2a2a2a', red: '#e29d93', green: '#8fc090', yellow: '#caad71',
-        blue: '#88b6e6', magenta: '#c9a0d3', cyan: '#6bc3bd', white: '#c8c8c8',
-        brightBlack: '#8c8c8c', brightRed: '#f8b9af', brightGreen: '#add8ad', brightYellow: '#e1c792',
-        brightBlue: '#a6cffa', brightMagenta: '#e1bbe9', brightCyan: '#90dbd5', brightWhite: '#ececec'
+        background: '#101010',
+        foreground: '#d7d7d7',
+        cursor: '#d9b56a',
+        cursorAccent: '#101010',
+        selectionBackground: '#494137',
+        selectionForeground: '#f0f0f0',
+        black: '#2a2a2a',
+        red: '#e29d93',
+        green: '#8fc090',
+        yellow: '#caad71',
+        blue: '#88b6e6',
+        magenta: '#c9a0d3',
+        cyan: '#6bc3bd',
+        white: '#c8c8c8',
+        brightBlack: '#8c8c8c',
+        brightRed: '#f8b9af',
+        brightGreen: '#add8ad',
+        brightYellow: '#e1c792',
+        brightBlue: '#a6cffa',
+        brightMagenta: '#e1bbe9',
+        brightCyan: '#90dbd5',
+        brightWhite: '#ececec'
       }
     : {
         // Warm paper. Matches --term in theme.css.
-        background: '#fdf2e2', foreground: '#26211a', cursor: '#8a5a14',
-        cursorAccent: '#fdf2e2', selectionBackground: '#ddcfbc', selectionForeground: '#1c1812',
-        black: '#26211a', red: '#9c443b', green: '#2f7434', yellow: '#825c00',
-        blue: '#2266a4', magenta: '#814a8d', cyan: '#007872', white: '#d3cdc4',
-        brightBlack: '#68625b', brightRed: '#862721', brightGreen: '#045e17', brightYellow: '#6d4400',
-        brightBlue: '#004e90', brightMagenta: '#6b3078', brightCyan: '#00615d', brightWhite: '#1c1812'
+        background: '#fdf2e2',
+        foreground: '#26211a',
+        cursor: '#8a5a14',
+        cursorAccent: '#fdf2e2',
+        selectionBackground: '#ddcfbc',
+        selectionForeground: '#1c1812',
+        black: '#26211a',
+        red: '#9c443b',
+        green: '#2f7434',
+        yellow: '#825c00',
+        blue: '#2266a4',
+        magenta: '#814a8d',
+        cyan: '#007872',
+        white: '#d3cdc4',
+        brightBlack: '#68625b',
+        brightRed: '#862721',
+        brightGreen: '#045e17',
+        brightYellow: '#6d4400',
+        brightBlue: '#004e90',
+        brightMagenta: '#6b3078',
+        brightCyan: '#00615d',
+        brightWhite: '#1c1812'
       };
 
 /**
@@ -466,7 +505,10 @@ function create(spec: TermSpec): Entry {
     if (disposed) return;
     sendResize(cols, rows);
   });
-  unlisteners.push(() => dataSub.dispose(), () => resizeSub.dispose());
+  unlisteners.push(
+    () => dataSub.dispose(),
+    () => resizeSub.dispose()
+  );
 
   void (async () => {
     const un1 = await onPtyOutput(p => {
@@ -538,11 +580,13 @@ function create(spec: TermSpec): Entry {
     term.write(backlog, () => {
       if (disposed) return;
       term.reset();
-      void sessionModes(chatId).catch(() => '').then(modes => {
-        if (disposed) return;
-        if (modes) term.write(modes);
-        nudgeRepaint();
-      });
+      void sessionModes(chatId)
+        .catch(() => '')
+        .then(modes => {
+          if (disposed) return;
+          if (modes) term.write(modes);
+          nudgeRepaint();
+        });
     });
   })();
 
@@ -551,9 +595,7 @@ function create(spec: TermSpec): Entry {
 
 /** Disposes the terminals nobody is showing, oldest put-down first. */
 function sweep() {
-  const idle = [...live.values()]
-    .filter(e => e.idleAt != null)
-    .sort((a, b) => (a.idleAt ?? 0) - (b.idleAt ?? 0));
+  const idle = [...live.values()].filter(e => e.idleAt != null).sort((a, b) => (a.idleAt ?? 0) - (b.idleAt ?? 0));
   for (const e of idle.slice(0, Math.max(0, idle.length - WARM))) {
     live.delete(e.chatId);
     e.dispose();

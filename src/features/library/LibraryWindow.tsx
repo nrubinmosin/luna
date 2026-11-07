@@ -1,10 +1,29 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  libraryDeleteInstructions, libraryDeleteSkill, libraryNewInstructions, libraryNewSkill, libraryOpen,
-  libraryRenameInstructions, libraryResolve, librarySetAccounts, librarySetFolder, librarySetFolderSkill,
-  librarySetFolderInstructions, librarySetInstructions, librarySetSource, librarySkip, librarySync, pickFolder,
-  type LibraryEntry, type LibraryFolderDto, type LibraryInstructionsDto, type LibraryOverviewDto, type LibraryTarget, type PlaceDto, type Reach
+  libraryDeleteInstructions,
+  libraryDeleteSkill,
+  libraryNewInstructions,
+  libraryNewSkill,
+  libraryOpen,
+  libraryRenameInstructions,
+  libraryResolve,
+  librarySetAccounts,
+  librarySetFolder,
+  librarySetFolderSkill,
+  librarySetFolderInstructions,
+  librarySetInstructions,
+  librarySetSource,
+  librarySkip,
+  librarySync,
+  pickFolder,
+  type LibraryEntry,
+  type LibraryFolderDto,
+  type LibraryInstructionsDto,
+  type LibraryOverviewDto,
+  type LibraryTarget,
+  type PlaceDto,
+  type Reach
 } from '../../ipc/commands';
 import { useDialogHost } from '../../shared/ui/dialogHost';
 import { ConfirmDialog } from '../../shared/ui/ConfirmDialog';
@@ -19,13 +38,25 @@ import { ReachPicker } from './ReachPicker';
 const RED = 'oklch(.58 .2 25)';
 const GREEN = 'oklch(.64 .18 145)';
 
-const baseName = (path: string) => path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || path;
+const baseName = (path: string) =>
+  path
+    .replace(/[\\/]+$/, '')
+    .split(/[\\/]/)
+    .pop() || path;
 
 function Section({ label, aside, children }: { label: string; aside?: ReactNode; children: ReactNode }) {
   return (
     <div style={{ marginBottom: 14 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
-        <span style={{ fontSize: 'var(--fs-1)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: 'var(--faint)' }}>
+        <span
+          style={{
+            fontSize: 'var(--fs-1)',
+            fontWeight: 700,
+            textTransform: 'uppercase',
+            letterSpacing: '.04em',
+            color: 'var(--faint)'
+          }}
+        >
           {label}
         </span>
         <span style={{ flex: 1 }} />
@@ -50,7 +81,10 @@ function TargetLabel({ target }: { target: LibraryTarget }) {
     </>
   );
   return target.kind === 'account' ? (
-    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }} title={`${PROVIDER_LABEL[target.provider]} account`}>
+    <span
+      style={{ display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }}
+      title={`${PROVIDER_LABEL[target.provider]} account`}
+    >
       {account}
     </span>
   ) : (
@@ -105,12 +139,19 @@ function NameCell({ name, onDoubleClick }: { name: string; onDoubleClick?: () =>
 const WINDOW_WIDTH = 760;
 const FOLDER_WIDTH = 130;
 
-const DOTS: [string, string][] = [[GREEN, 'in place'], ['var(--wait)', 'needs a look'], [RED, 'cannot be laid out'], ['var(--faint)', 'yet to be laid out']];
+const DOTS: [string, string][] = [
+  [GREEN, 'in place'],
+  ['var(--wait)', 'needs a look'],
+  [RED, 'cannot be laid out'],
+  ['var(--faint)', 'yet to be laid out']
+];
 
 /** What a cell's dot says, once above each table that has them (`CellDot`). */
 function DotLegend() {
   return (
-    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-1)', color: 'var(--faint)' }}>
+    <span
+      style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-1)', color: 'var(--faint)' }}
+    >
       {DOTS.map(([color, says]) => (
         <span key={says} style={{ display: 'inline-flex', alignItems: 'center', gap: 3, whiteSpace: 'nowrap' }}>
           <span style={{ width: 8, height: 8, borderRadius: '50%', background: color, display: 'inline-block' }} />
@@ -121,7 +162,7 @@ function DotLegend() {
   );
 }
 
-const what = (p: PlaceDto) =>p.skill ?? (p.instructions ? `${p.instructions} instructions` : 'Instructions');
+const what = (p: PlaceDto) => p.skill ?? (p.instructions ? `${p.instructions} instructions` : 'Instructions');
 
 type AccountRef = { provider: Provider; name: string };
 const accountKey = (a: AccountRef) => `${a.provider}/${a.name}`;
@@ -137,7 +178,9 @@ function how(reach: Reach, a: AccountRef): string | null {
 function sayStatus(p: PlaceDto): string {
   switch (p.status) {
     case 'changed':
-      return p.both ? 'changed there, and in the library too, since Luna wrote it' : 'changed there since Luna wrote it';
+      return p.both
+        ? 'changed there, and in the library too, since Luna wrote it'
+        : 'changed there since Luna wrote it';
     case 'gone':
       return 'deleted there';
     case 'taken':
@@ -151,16 +194,33 @@ function sayStatus(p: PlaceDto): string {
 
 /** One copy that waits on the user, with what can be done about it; `count`
  *  copies when they fail for one reason, which is fixed in the library. */
-function LookRow({ place, count, act }: { place: PlaceDto; count: number; act: (p: Promise<LibraryOverviewDto>) => void }) {
+function LookRow({
+  place,
+  count,
+  act
+}: {
+  place: PlaceDto;
+  count: number;
+  act: (p: Promise<LibraryOverviewDto>) => void;
+}) {
   const [showDiff, setShowDiff] = useState(false);
   const differs = place.status === 'changed' || place.status === 'taken';
   return (
     <div style={{ borderTop: '1px solid var(--line)', padding: '6px 0' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-        {count > 1 ? <span style={{ whiteSpace: 'nowrap' }}>{count} places</span> : <TargetLabel target={place.target} />}
+        {count > 1 ? (
+          <span style={{ whiteSpace: 'nowrap' }}>{count} places</span>
+        ) : (
+          <TargetLabel target={place.target} />
+        )}
         <b>{what(place)}</b>
         <span
-          style={{ flex: 1, minWidth: 160, fontSize: 'var(--fs-2)', color: place.status === 'failed' ? RED : 'var(--dim)' }}
+          style={{
+            flex: 1,
+            minWidth: 160,
+            fontSize: 'var(--fs-2)',
+            color: place.status === 'failed' ? RED : 'var(--dim)'
+          }}
           title={place.dest}
         >
           {sayStatus(place)}
@@ -171,7 +231,11 @@ function LookRow({ place, count, act }: { place: PlaceDto; count: number; act: (
           </button>
         )}
         {differs && (
-          <button className="slim" title="This copy becomes the library's, and so every other copy's" onClick={() => act(libraryResolve(place.dest, true))}>
+          <button
+            className="slim"
+            title="This copy becomes the library's, and so every other copy's"
+            onClick={() => act(libraryResolve(place.dest, true))}
+          >
             Take into library
           </button>
         )}
@@ -185,7 +249,11 @@ function LookRow({ place, count, act }: { place: PlaceDto; count: number; act: (
           </button>
         )}
         {count === 1 && (
-          <button className="slim" title="Stop laying it out there; whatever is there stays as it is" onClick={() => act(librarySkip(place.dest, true))}>
+          <button
+            className="slim"
+            title="Stop laying it out there; whatever is there stays as it is"
+            onClick={() => act(librarySkip(place.dest, true))}
+          >
             Leave out
           </button>
         )}
@@ -196,7 +264,15 @@ function LookRow({ place, count, act }: { place: PlaceDto; count: number; act: (
 }
 
 /** A checkbox, or one of a column's radios, with no words beside it: the theme draws the box on a label. */
-function Tick({ id, radio, checked, mark, disabled, title, onChange }: {
+function Tick({
+  id,
+  radio,
+  checked,
+  mark,
+  disabled,
+  title,
+  onChange
+}: {
   id: string;
   /** The group a radio belongs to. */
   radio?: string;
@@ -218,7 +294,11 @@ function Tick({ id, radio, checked, mark, disabled, title, onChange }: {
         disabled={disabled}
         onChange={e => onChange(e.target.checked)}
       />
-      <label htmlFor={id} title={title} style={{ display: 'inline-block', width: 0, height: 16, marginLeft: 18, verticalAlign: 'middle' }} />
+      <label
+        htmlFor={id}
+        title={title}
+        style={{ display: 'inline-block', width: 0, height: 16, marginLeft: 18, verticalAlign: 'middle' }}
+      />
     </>
   );
 }
@@ -229,7 +309,13 @@ function Tick({ id, radio, checked, mark, disabled, title, onChange }: {
  * do, a cross where none does — or, as the folder says nothing of it, by what
  * they get anyway, drawn faint. A click opens the accounts to pick from.
  */
-function FolderCell({ id, skill, folder, accounts, act }: {
+function FolderCell({
+  id,
+  skill,
+  folder,
+  accounts,
+  act
+}: {
   id: string;
   skill: string;
   folder: LibraryFolderDto;
@@ -293,7 +379,12 @@ function CellDot({ places }: { places: PlaceDto[] }) {
   const title = places
     .map(p => `${p.target.name}${p.shownAs ? ` (as ${p.shownAs})` : ''}: ${needsLook(p) ? sayStatus(p) : p.status}`)
     .join('\n');
-  return <span title={title} style={{ width: 8, height: 8, borderRadius: '50%', background: color, display: 'inline-block', marginLeft: 4 }} />;
+  return (
+    <span
+      title={title}
+      style={{ width: 8, height: 8, borderRadius: '50%', background: color, display: 'inline-block', marginLeft: 4 }}
+    />
+  );
 }
 
 /** A select's value for none at all, which no instructions' name can be (library.rs `check_name`). */
@@ -301,8 +392,12 @@ const NO_INSTRUCTIONS = ' none';
 
 /** A folder's entry that decides for an account, as library.rs `folder_instructions` picks it — its own, its
  *  CLI's, all — with its key. */
-function folderEntry(instructions: Record<string, string | null> | undefined, a: AccountRef): { key: string; choice: string | null } | undefined {
-  for (const key of [accountKey(a), a.provider, 'all']) if (instructions && Object.hasOwn(instructions, key)) return { key, choice: instructions[key] };
+function folderEntry(
+  instructions: Record<string, string | null> | undefined,
+  a: AccountRef
+): { key: string; choice: string | null } | undefined {
+  for (const key of [accountKey(a), a.provider, 'all'])
+    if (instructions && Object.hasOwn(instructions, key)) return { key, choice: instructions[key] };
   return undefined;
 }
 
@@ -312,7 +407,12 @@ function folderEntry(instructions: Record<string, string | null> | undefined, a:
  * Codex reads its account's AGENTS.md in every session and has no way to
  * leave it out of one, so its accounts' boxes stay as they are.
  */
-function FolderInstructions({ folder, account, names, act }: {
+function FolderInstructions({
+  folder,
+  account,
+  names,
+  act
+}: {
   folder: LibraryFolderDto;
   account: AccountRef;
   names: string[];
@@ -346,7 +446,14 @@ function FolderInstructions({ folder, account, names, act }: {
       style={{ maxWidth: 104, color: value === '' ? 'var(--faint)' : undefined }}
       onChange={e => {
         const v = e.target.value;
-        void act(librarySetFolderInstructions(folder.path, accountKey(account), v === '', v === '' || v === NO_INSTRUCTIONS ? null : v));
+        void act(
+          librarySetFolderInstructions(
+            folder.path,
+            accountKey(account),
+            v === '',
+            v === '' || v === NO_INSTRUCTIONS ? null : v
+          )
+        );
       }}
     >
       <option value="">As outside</option>
@@ -367,7 +474,13 @@ function FolderInstructions({ folder, account, names, act }: {
  * other row named it; the reach picker keeps the wider ways in, every account
  * or every one of a CLI, which a closer reach of another row beats.
  */
-function InstructionsGrid({ o, busy, act, edit, remove }: {
+function InstructionsGrid({
+  o,
+  busy,
+  act,
+  edit,
+  remove
+}: {
   o: LibraryOverviewDto;
   busy: boolean;
   act: (p: Promise<LibraryOverviewDto | null>) => Promise<boolean>;
@@ -384,7 +497,13 @@ function InstructionsGrid({ o, busy, act, edit, remove }: {
   // accounts of one name, one in each CLI, are told apart by it.
   const cols = PROVIDERS.flatMap(provider => o.accounts.filter(a => a.provider === provider));
   const copies = (i: string, a: AccountRef) =>
-    o.places.filter(p => p.instructions === i && p.target.kind === 'account' && p.target.provider === a.provider && p.target.name === a.name);
+    o.places.filter(
+      p =>
+        p.instructions === i &&
+        p.target.kind === 'account' &&
+        p.target.provider === a.provider &&
+        p.target.name === a.name
+    );
 
   const row = (i: LibraryInstructionsDto) => (
     <tr key={i.name}>
@@ -411,13 +530,24 @@ function InstructionsGrid({ o, busy, act, edit, remove }: {
         )}
         <div
           title={i.problem ?? i.description}
-          style={{ fontSize: 'var(--fs-2)', color: i.problem ? 'var(--wait)' : 'var(--faint)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+          style={{
+            fontSize: 'var(--fs-2)',
+            color: i.problem ? 'var(--wait)' : 'var(--faint)',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap'
+          }}
         >
           {i.problem ?? i.description}
         </div>
       </td>
       <td className="cell">
-        <ReachPicker id={`lib-ins-${i.name}`} reach={i.accounts} accounts={o.accounts} onChange={r => act(librarySetInstructions(i.name, r ?? []))} />
+        <ReachPicker
+          id={`lib-ins-${i.name}`}
+          reach={i.accounts}
+          accounts={o.accounts}
+          onChange={r => act(librarySetInstructions(i.name, r ?? []))}
+        />
       </td>
       {cols.map(a => {
         const key = accountKey(a);
@@ -448,7 +578,13 @@ function InstructionsGrid({ o, busy, act, edit, remove }: {
       <td className="cell">
         <span style={{ display: 'inline-flex', gap: 2 }}>
           <ToolButton icon="pencil" size={22} title={`Edit ${i.name}`} onClick={() => edit(i.name)} />
-          <ToolButton icon="trash" size={22} danger title={`Take ${i.name} out of the library — asks first`} onClick={() => remove(i.name)} />
+          <ToolButton
+            icon="trash"
+            size={22}
+            danger
+            title={`Take ${i.name} out of the library — asks first`}
+            onClick={() => remove(i.name)}
+          />
         </span>
       </td>
     </tr>
@@ -465,7 +601,12 @@ function InstructionsGrid({ o, busy, act, edit, remove }: {
           {PROVIDERS.map(provider => {
             const span = cols.filter(a => a.provider === provider).length;
             return span ? (
-              <th key={provider} colSpan={span} className="group" title={`Which instructions each ${PROVIDER_LABEL[provider]} account gets — one at most`}>
+              <th
+                key={provider}
+                colSpan={span}
+                className="group"
+                title={`Which instructions each ${PROVIDER_LABEL[provider]} account gets — one at most`}
+              >
                 <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
                   <Icon name={provider} size={14} />
                   {PROVIDER_LABEL[provider]} gets
@@ -490,7 +631,13 @@ function InstructionsGrid({ o, busy, act, edit, remove }: {
             <div style={{ fontWeight: 700, color: 'var(--dim)' }}>None</div>
             <div
               title="Nothing from the library; the account’s own file, if any, is left alone"
-              style={{ fontSize: 'var(--fs-2)', color: 'var(--faint)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+              style={{
+                fontSize: 'var(--fs-2)',
+                color: 'var(--faint)',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap'
+              }}
             >
               Nothing from the library; the account’s own file, if any, is left alone
             </div>
@@ -520,9 +667,26 @@ function InstructionsGrid({ o, busy, act, edit, remove }: {
             <td style={{ maxWidth: 0, width: '100%' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontWeight: 700 }} title={f.path}>
                 <Icon name="folder" size={14} />
-                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: f.found ? undefined : RED }}>{baseName(f.path)}</span>
+                <span
+                  style={{
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                    color: f.found ? undefined : RED
+                  }}
+                >
+                  {baseName(f.path)}
+                </span>
               </div>
-              <div style={{ fontSize: 'var(--fs-2)', color: 'var(--faint)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              <div
+                style={{
+                  fontSize: 'var(--fs-2)',
+                  color: 'var(--faint)',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap'
+                }}
+              >
                 The sessions Luna starts there, in place of the account’s
               </div>
             </td>
@@ -576,7 +740,10 @@ function LibraryDialog({ onClose }: { onClose: () => void }) {
 
   const act = (p: Promise<LibraryOverviewDto | null>) => {
     setPending(n => n + 1);
-    return useLibrary.getState().run(p).finally(() => setPending(n => n - 1));
+    return useLibrary
+      .getState()
+      .run(p)
+      .finally(() => setPending(n => n - 1));
   };
 
   if (!host) return null;
@@ -611,14 +778,23 @@ function LibraryDialog({ onClose }: { onClose: () => void }) {
         onClose();
       }}
       style={{
-        position: 'fixed', inset: 0, background: 'rgba(0,0,0,.35)', backdropFilter: 'blur(1px)',
-        display: 'grid', placeItems: 'center', zIndex: 68
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(0,0,0,.35)',
+        backdropFilter: 'blur(1px)',
+        display: 'grid',
+        placeItems: 'center',
+        zIndex: 68
       }}
     >
       <div
         onClick={e => e.stopPropagation()}
         className="window"
-        style={{ width: WINDOW_WIDTH + FOLDER_WIDTH * Math.max(0, (o?.folders.length ?? 0) - 1), maxWidth: 'calc(100vw - 32px)', boxShadow: 'var(--shadow), var(--border-window-outer), var(--border-window-inner)' }}
+        style={{
+          width: WINDOW_WIDTH + FOLDER_WIDTH * Math.max(0, (o?.folders.length ?? 0) - 1),
+          maxWidth: 'calc(100vw - 32px)',
+          boxShadow: 'var(--shadow), var(--border-window-outer), var(--border-window-inner)'
+        }}
       >
         <div className="title-bar">
           <div className="title-bar-text">Skills &amp; instructions</div>
@@ -628,39 +804,77 @@ function LibraryDialog({ onClose }: { onClose: () => void }) {
         </div>
         <div className="window-body" style={{ maxHeight: 'calc(100vh - 120px)', overflowY: 'auto' }}>
           {!o ? (
-            <div style={{ fontSize: 'var(--fs-3)', color: error ? RED : 'var(--faint)' }}>{error ?? 'Reading the library…'}</div>
+            <div style={{ fontSize: 'var(--fs-3)', color: error ? RED : 'var(--faint)' }}>
+              {error ?? 'Reading the library…'}
+            </div>
           ) : (
             <>
               <Section
                 label="Library"
                 aside={
-                  <ToolButton icon="sync" label="Sync now" spin={busy} disabled={busy} title="Lay the library out now — everything that needs no asking" onClick={() => act(librarySync())} />
+                  <ToolButton
+                    icon="sync"
+                    label="Sync now"
+                    spin={busy}
+                    disabled={busy}
+                    title="Lay the library out now — everything that needs no asking"
+                    onClick={() => act(librarySync())}
+                  />
                 }
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                   <Icon name="library" />
                   <div
                     title={o.root}
-                    style={{ flex: 1, minWidth: 0, fontSize: 'var(--fs-3)', color: 'var(--dim)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', direction: 'rtl', textAlign: 'left' }}
+                    style={{
+                      flex: 1,
+                      minWidth: 0,
+                      fontSize: 'var(--fs-3)',
+                      color: 'var(--dim)',
+                      whiteSpace: 'nowrap',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      direction: 'rtl',
+                      textAlign: 'left'
+                    }}
                   >
                     <bdi>{o.root}</bdi>
                   </div>
-                  <button className="slim" onClick={() => void libraryOpen(null)} title="Open the library's folder — for files beside a skill's SKILL.md">
+                  <button
+                    className="slim"
+                    onClick={() => void libraryOpen(null)}
+                    title="Open the library's folder — for files beside a skill's SKILL.md"
+                  >
                     Open
                   </button>
-                  <button className="slim" onClick={() => void pickFolder().then(p => { if (p) void act(librarySetSource(p)); })}>
+                  <button
+                    className="slim"
+                    onClick={() =>
+                      void pickFolder().then(p => {
+                        if (p) void act(librarySetSource(p));
+                      })
+                    }
+                  >
                     Change…
                   </button>
-                  <button className="slim" disabled={o.isDefault} title="Back to the library in Luna's own folder" onClick={() => act(librarySetSource(''))}>
+                  <button
+                    className="slim"
+                    disabled={o.isDefault}
+                    title="Back to the library in Luna's own folder"
+                    onClick={() => act(librarySetSource(''))}
+                  >
                     Default
                   </button>
                 </div>
-                {!o.found && <Note>The folder is not there yet: nothing is laid out, and nothing taken out, until it is. Writing instructions or a new skill makes it.</Note>}
+                {!o.found && (
+                  <Note>
+                    The folder is not there yet: nothing is laid out, and nothing taken out, until it is. Writing
+                    instructions or a new skill makes it.
+                  </Note>
+                )}
                 {error && <div style={{ fontSize: 'var(--fs-2)', color: RED, marginTop: 4 }}>{error}</div>}
                 {o.kept.length > 0 && (
-                  <Note>
-                    Left in place, no longer wanted but changed since Luna wrote them: {o.kept.join(', ')}
-                  </Note>
+                  <Note>Left in place, no longer wanted but changed since Luna wrote them: {o.kept.join(', ')}</Note>
                 )}
               </Section>
 
@@ -686,7 +900,10 @@ function LibraryDialog({ onClose }: { onClose: () => void }) {
                     remove={name => setDeleting({ instructions: name })}
                   />
                 ) : (
-                  <Note>The library has no instructions yet — name some below{o.foundInstructions.length > 0 ? ', or start from an account’s own.' : '.'}</Note>
+                  <Note>
+                    The library has no instructions yet — name some below
+                    {o.foundInstructions.length > 0 ? ', or start from an account’s own.' : '.'}
+                  </Note>
                 )}
                 <div style={{ display: 'flex', gap: 4, marginTop: 6 }}>
                   <input
@@ -704,10 +921,25 @@ function LibraryDialog({ onClose }: { onClose: () => void }) {
                   </button>
                 </div>
                 {o.foundInstructions.length > 0 && (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginTop: 6, fontSize: 'var(--fs-2)', color: 'var(--dim)' }}>
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      flexWrap: 'wrap',
+                      marginTop: 6,
+                      fontSize: 'var(--fs-2)',
+                      color: 'var(--dim)'
+                    }}
+                  >
                     Has a file of its own, not from the library:
                     {o.foundInstructions.map(f => (
-                      <button key={f.dest} className="slim" title={`${f.dest}\nBecomes instructions named after the account, meant for it alone`} onClick={() => act(libraryResolve(f.dest, true))}>
+                      <button
+                        key={f.dest}
+                        className="slim"
+                        title={`${f.dest}\nBecomes instructions named after the account, meant for it alone`}
+                        onClick={() => act(libraryResolve(f.dest, true))}
+                      >
                         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                           <TargetLabel target={f.target} />— take into library
                         </span>
@@ -716,30 +948,50 @@ function LibraryDialog({ onClose }: { onClose: () => void }) {
                   </div>
                 )}
                 {o.oldInstructions && (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-2)', color: 'var(--dim)', marginTop: 6 }} title={o.oldInstructions}>
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      fontSize: 'var(--fs-2)',
+                      color: 'var(--dim)',
+                      marginTop: 6
+                    }}
+                    title={o.oldInstructions}
+                  >
                     <Icon name="warn" size={14} />
                     <span>
                       The library still has the <code>instructions.md</code> of before there could be several, beside{' '}
-                      <code>instructions/main.md</code>: nothing is laid out from it. Move what you need into instructions here and delete it.
+                      <code>instructions/main.md</code>: nothing is laid out from it. Move what you need into
+                      instructions here and delete it.
                     </span>
                   </div>
                 )}
                 {o.overridden.length > 0 && (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-2)', color: 'var(--dim)', marginTop: 6 }}>
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      fontSize: 'var(--fs-2)',
+                      color: 'var(--dim)',
+                      marginTop: 6
+                    }}
+                  >
                     <Icon name="warn" size={14} />
-                    Codex reads <code>AGENTS.override.md</code> instead of <code>AGENTS.md</code> in {o.overridden.join(', ')}: the
-                    library’s instructions do not reach it there.
+                    Codex reads <code>AGENTS.override.md</code> instead of <code>AGENTS.md</code> in{' '}
+                    {o.overridden.join(', ')}: the library’s instructions do not reach it there.
                   </div>
                 )}
                 <Note>
                   Read by both CLIs at the start of every session — as <code>CLAUDE.md</code> in Claude Code,{' '}
-                  <code>AGENTS.md</code> in Codex: the place for rules that always hold. An account gets one at most: where
-                  several are meant for it, one that names it beats one for its CLI, which beats one for all. A radio gives an
-                  account that one. Its own file is replaced only once you say so under Needs a look. A folder of the
-                  library can give the Claude Code sessions Luna starts in it other instructions, or none: the account’s
-                  file is left out of them at every start (<code>claudeMdExcludes</code>), the other ones given as a{' '}
-                  <code>CLAUDE.md</code> of their own. Codex reads its account’s <code>AGENTS.md</code> in every session, with no way to leave
-                  it out of one.
+                  <code>AGENTS.md</code> in Codex: the place for rules that always hold. An account gets one at most:
+                  where several are meant for it, one that names it beats one for its CLI, which beats one for all. A
+                  radio gives an account that one. Its own file is replaced only once you say so under Needs a look. A
+                  folder of the library can give the Claude Code sessions Luna starts in it other instructions, or none:
+                  the account’s file is left out of them at every start (<code>claudeMdExcludes</code>), the other ones
+                  given as a <code>CLAUDE.md</code> of their own. Codex reads its account’s <code>AGENTS.md</code> in
+                  every session, with no way to leave it out of one.
                 </Note>
               </Section>
 
@@ -759,7 +1011,10 @@ function LibraryDialog({ onClose }: { onClose: () => void }) {
                       <thead>
                         <tr>
                           <th rowSpan={o.folders.length ? 2 : 1}>Skill</th>
-                          <th rowSpan={o.folders.length ? 2 : 1} title="The accounts each is meant for — every account, every one of a CLI, or those you name">
+                          <th
+                            rowSpan={o.folders.length ? 2 : 1}
+                            title="The accounts each is meant for — every account, every one of a CLI, or those you name"
+                          >
                             Meant for
                           </th>
                           {o.folders.length > 0 && (
@@ -776,10 +1031,29 @@ function LibraryDialog({ onClose }: { onClose: () => void }) {
                         {o.folders.length > 0 && (
                           <tr>
                             {o.folders.map(f => (
-                              <th key={f.path} className="library-folder" title={f.found ? f.path : `${f.path}\nNot there`}>
-                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, maxWidth: FOLDER_WIDTH - 12 }}>
+                              <th
+                                key={f.path}
+                                className="library-folder"
+                                title={f.found ? f.path : `${f.path}\nNot there`}
+                              >
+                                <span
+                                  style={{
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: 3,
+                                    maxWidth: FOLDER_WIDTH - 12
+                                  }}
+                                >
                                   <Icon name="folder" size={14} />
-                                  <span style={{ color: f.found ? undefined : RED, overflow: 'hidden', textOverflow: 'ellipsis' }}>{baseName(f.path)}</span>
+                                  <span
+                                    style={{
+                                      color: f.found ? undefined : RED,
+                                      overflow: 'hidden',
+                                      textOverflow: 'ellipsis'
+                                    }}
+                                  >
+                                    {baseName(f.path)}
+                                  </span>
                                   <ToolButton
                                     icon="close"
                                     size={18}
@@ -801,7 +1075,13 @@ function LibraryDialog({ onClose }: { onClose: () => void }) {
                                 <NameCell name={s.name} />
                                 <div
                                   title={s.problem ?? s.description}
-                                  style={{ fontSize: 'var(--fs-2)', color: s.problem ? RED : 'var(--faint)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                                  style={{
+                                    fontSize: 'var(--fs-2)',
+                                    color: s.problem ? RED : 'var(--faint)',
+                                    overflow: 'hidden',
+                                    textOverflow: 'ellipsis',
+                                    whiteSpace: 'nowrap'
+                                  }}
                                 >
                                   {s.problem ?? s.description}
                                 </div>
@@ -817,15 +1097,39 @@ function LibraryDialog({ onClose }: { onClose: () => void }) {
                               </td>
                               {o.folders.map((f, i) => (
                                 <td key={f.path} className="cell">
-                                  <FolderCell id={`lib-${s.name}-folder-${i}`} skill={s.name} folder={f} accounts={o.accounts} act={act} />
-                                  <CellDot places={mine.filter(p => p.target.kind === 'folder' && p.target.path === f.path)} />
+                                  <FolderCell
+                                    id={`lib-${s.name}-folder-${i}`}
+                                    skill={s.name}
+                                    folder={f}
+                                    accounts={o.accounts}
+                                    act={act}
+                                  />
+                                  <CellDot
+                                    places={mine.filter(p => p.target.kind === 'folder' && p.target.path === f.path)}
+                                  />
                                 </td>
                               ))}
                               <td className="cell">
                                 <span style={{ display: 'inline-flex', gap: 2 }}>
-                                  <ToolButton icon="pencil" size={22} title={`Edit ${s.name}'s SKILL.md`} onClick={() => setEditing({ skill: s.name })} />
-                                  <ToolButton icon="folder" size={22} title={`Open ${s.name}'s folder — for the files beside SKILL.md`} onClick={() => void libraryOpen(s.name)} />
-                                  <ToolButton icon="trash" size={22} danger title={`Take ${s.name} out of the library — asks first`} onClick={() => setDeleting({ skill: s.name })} />
+                                  <ToolButton
+                                    icon="pencil"
+                                    size={22}
+                                    title={`Edit ${s.name}'s SKILL.md`}
+                                    onClick={() => setEditing({ skill: s.name })}
+                                  />
+                                  <ToolButton
+                                    icon="folder"
+                                    size={22}
+                                    title={`Open ${s.name}'s folder — for the files beside SKILL.md`}
+                                    onClick={() => void libraryOpen(s.name)}
+                                  />
+                                  <ToolButton
+                                    icon="trash"
+                                    size={22}
+                                    danger
+                                    title={`Take ${s.name} out of the library — asks first`}
+                                    onClick={() => setDeleting({ skill: s.name })}
+                                  />
                                 </span>
                               </td>
                             </tr>
@@ -851,22 +1155,31 @@ function LibraryDialog({ onClose }: { onClose: () => void }) {
                   </button>
                 </div>
                 <Note>
-                  A skill is a folder with a <code>SKILL.md</code>, whose description is all the model sees until it opens it:
-                  the place for procedures and recipes. It goes into the <code>skills/</code> of each account it is meant for.
-                  A folder can pick other accounts for the sessions Luna starts in it, worktrees included: a tick is every
-                  account, a dash some, a cross none; faint, it picks nothing and goes by what holds outside it. Given at
-                  their start, nothing written into the folder; kept from them, hidden at their start, so a CLI started
-                  outside Luna there still has an account’s copy. In a folder inside another, the inner one decides. Codex
-                  lists a folder's skills as{' '}
-                  <code>&lt;folder&gt;:&lt;name&gt;</code>; for Claude Code a copy whose name a skill there already has goes by{' '}
-                  <code>luna-&lt;name&gt;</code>.
+                  A skill is a folder with a <code>SKILL.md</code>, whose description is all the model sees until it
+                  opens it: the place for procedures and recipes. It goes into the <code>skills/</code> of each account
+                  it is meant for. A folder can pick other accounts for the sessions Luna starts in it, worktrees
+                  included: a tick is every account, a dash some, a cross none; faint, it picks nothing and goes by what
+                  holds outside it. Given at their start, nothing written into the folder; kept from them, hidden at
+                  their start, so a CLI started outside Luna there still has an account’s copy. In a folder inside
+                  another, the inner one decides. Codex lists a folder's skills as{' '}
+                  <code>&lt;folder&gt;:&lt;name&gt;</code>; for Claude Code a copy whose name a skill there already has
+                  goes by <code>luna-&lt;name&gt;</code>.
                 </Note>
               </Section>
 
               {left.length > 0 && (
                 <Section label="Left out">
                   {left.map(p => (
-                    <div key={p.dest} style={{ display: 'flex', alignItems: 'center', gap: 8, borderTop: '1px solid var(--line)', padding: '5px 0' }}>
+                    <div
+                      key={p.dest}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 8,
+                        borderTop: '1px solid var(--line)',
+                        padding: '5px 0'
+                      }}
+                    >
                       <TargetLabel target={p.target} />
                       <b>{what(p)}</b>
                       <span style={{ flex: 1 }} />
@@ -896,8 +1209,8 @@ function LibraryDialog({ onClose }: { onClose: () => void }) {
           title="Take the skill out"
           body={
             <>
-              Moves <b>{deleting.skill}</b> out of the library into Luna’s backups, and takes its copies out wherever they are
-              still exactly as Luna wrote them. A copy changed since stays where it is.
+              Moves <b>{deleting.skill}</b> out of the library into Luna’s backups, and takes its copies out wherever
+              they are still exactly as Luna wrote them. A copy changed since stays where it is.
             </>
           }
           confirmLabel="Take out"

@@ -30,10 +30,9 @@ const boot = () =>
 // in hand before anything opens costs a few milliseconds. The timer covers a
 // font store that never answers — a late font is a nuisance, a blank app is not.
 const termFont = Promise.race([
-  Promise.all([
-    document.fonts.load("14px 'JetBrains Mono'"),
-    document.fonts.load("bold 14px 'JetBrains Mono'")
-  ]).catch(() => {}),
+  Promise.all([document.fonts.load("14px 'JetBrains Mono'"), document.fonts.load("bold 14px 'JetBrains Mono'")]).catch(
+    () => {}
+  ),
   new Promise(resolve => setTimeout(resolve, 1000))
 ]);
 

@@ -30,7 +30,10 @@ export function BrowserSection() {
   const nameOf = (id: string) => all.find(b => b.id === id)?.name ?? `${id} (gone; the system default stands in)`;
   const save = (next: BrowserSettingsDto) => {
     setError(null);
-    void useBrowsers.getState().save(next).catch(e => setError(String(e)));
+    void useBrowsers
+      .getState()
+      .save(next)
+      .catch(e => setError(String(e)));
   };
 
   const pickBrowser = (value: string, onChange: (id: string) => void) => (
@@ -44,7 +47,10 @@ export function BrowserSection() {
     </select>
   );
 
-  const accountKeys = accounts.map(a => ({ key: `${a.provider}/${a.name}`, label: `${PROVIDER_LABEL[a.provider]} · ${a.name}` }));
+  const accountKeys = accounts.map(a => ({
+    key: `${a.provider}/${a.name}`,
+    label: `${PROVIDER_LABEL[a.provider]} · ${a.name}`
+  }));
   const folderKeys = folders.map(f => ({ key: f.path, label: f.path }));
 
   const overrides = (
@@ -59,7 +65,10 @@ export function BrowserSection() {
         <div style={{ fontSize: 'var(--fs-3)', color: 'var(--dim)', fontWeight: 600 }}>{title}</div>
         {Object.entries(map).map(([key, id]) => (
           <div key={key} style={rowStyle}>
-            <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={key}>
+            <span
+              style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+              title={key}
+            >
               {keys.find(k => k.key === key)?.label ?? key}
             </span>
             {pickBrowser(id, v => put({ ...map, [key]: v }))}
@@ -78,7 +87,11 @@ export function BrowserSection() {
         ))}
         {free.length > 0 && (
           <div style={rowStyle}>
-            <select value="" onChange={e => e.target.value && put({ ...map, [e.target.value]: settings.default ?? SYSTEM_BROWSER })} style={{ flex: 1, minWidth: 0 }}>
+            <select
+              value=""
+              onChange={e => e.target.value && put({ ...map, [e.target.value]: settings.default ?? SYSTEM_BROWSER })}
+              style={{ flex: 1, minWidth: 0 }}
+            >
               <option value="">Add…</option>
               {free.map(k => (
                 <option key={k.key} value={k.key}>
@@ -96,17 +109,27 @@ export function BrowserSection() {
     <div>
       <div style={rowStyle}>
         <span style={{ fontSize: 'var(--fs-4)' }}>Open links in</span>
-        {pickBrowser(settings.default ?? SYSTEM_BROWSER, v => save({ ...settings, default: v === SYSTEM_BROWSER ? null : v }))}
+        {pickBrowser(settings.default ?? SYSTEM_BROWSER, v =>
+          save({ ...settings, default: v === SYSTEM_BROWSER ? null : v })
+        )}
       </div>
-      {overrides('For an account', settings.accounts, accountKeys, accountsMap => save({ ...settings, accounts: accountsMap }))}
-      {overrides('For a project folder', settings.folders, folderKeys, foldersMap => save({ ...settings, folders: foldersMap }))}
+      {overrides('For an account', settings.accounts, accountKeys, accountsMap =>
+        save({ ...settings, accounts: accountsMap })
+      )}
+      {overrides('For a project folder', settings.folders, folderKeys, foldersMap =>
+        save({ ...settings, folders: foldersMap })
+      )}
 
       <div style={{ marginTop: 8 }}>
         <div style={{ fontSize: 'var(--fs-3)', color: 'var(--dim)', fontWeight: 600 }}>Browsers</div>
         {[{ id: SYSTEM_BROWSER, name: 'System default', command: data.system ?? '' }, ...data.found].map(b => (
           <div key={b.id} style={{ padding: '2px 0' }}>
             <div style={{ fontSize: 'var(--fs-4)' }}>{b.name}</div>
-            {b.command && <div style={{ ...fine, marginTop: 0, wordBreak: 'break-all' }}><code>{b.command}</code></div>}
+            {b.command && (
+              <div style={{ ...fine, marginTop: 0, wordBreak: 'break-all' }}>
+                <code>{b.command}</code>
+              </div>
+            )}
           </div>
         ))}
         {settings.custom.map((b, i) => (
@@ -127,7 +150,13 @@ export function BrowserSection() {
           onClick={() => {
             const base = all.find(b => b.id === (settings.default ?? SYSTEM_BROWSER));
             const id = `custom:${Date.now().toString(36)}`;
-            save({ ...settings, custom: [...settings.custom, { id, name: 'My browser', command: base?.command || '"C:\\path\\browser.exe" %1' }] });
+            save({
+              ...settings,
+              custom: [
+                ...settings.custom,
+                { id, name: 'My browser', command: base?.command || '"C:\\path\\browser.exe" %1' }
+              ]
+            });
           }}
         >
           Add a browser
@@ -135,26 +164,40 @@ export function BrowserSection() {
       </div>
       {error && <div style={{ ...fine, color: 'var(--danger, #c33)' }}>{error}</div>}
       <div style={fine}>
-        A chat’s links open in the browser it was told to remember (Shift+click on a link to pick one, and
-        tick “Remember for this chat”), else its account’s, else its folder’s, else the one above. A
-        browser is a command line with <code>%1</code> where the link goes, so a browser profile is a flag:
-        Chrome, Edge and Brave take <code>--profile-directory="Profile 1"</code>, Firefox{' '}
-        <code>-P name</code>. The link is passed as one argument of its own, never through a shell.
+        A chat’s links open in the browser it was told to remember (Shift+click on a link to pick one, and tick
+        “Remember for this chat”), else its account’s, else its folder’s, else the one above. A browser is a command
+        line with <code>%1</code> where the link goes, so a browser profile is a flag: Chrome, Edge and Brave take{' '}
+        <code>--profile-directory="Profile 1"</code>, Firefox <code>-P name</code>. The link is passed as one argument
+        of its own, never through a shell.
       </div>
     </div>
   );
 }
 
 /** One of the user's own browsers: its name and command, kept on Save. */
-function CustomRow(props: { name: string; command: string; onSave: (name: string, command: string) => void; onRemove: () => void }) {
+function CustomRow(props: {
+  name: string;
+  command: string;
+  onSave: (name: string, command: string) => void;
+  onRemove: () => void;
+}) {
   const [name, setName] = useState(props.name);
   const [command, setCommand] = useState(props.command);
   const changed = name !== props.name || command !== props.command;
   return (
     <div style={{ padding: '3px 0' }}>
       <div style={rowStyle}>
-        <input type="text" value={name} onChange={e => setName(e.target.value)} style={{ flex: 1, minWidth: 0 }} aria-label="Name" />
-        <button disabled={!changed || !name.trim() || !command.trim()} onClick={() => props.onSave(name.trim(), command.trim())}>
+        <input
+          type="text"
+          value={name}
+          onChange={e => setName(e.target.value)}
+          style={{ flex: 1, minWidth: 0 }}
+          aria-label="Name"
+        />
+        <button
+          disabled={!changed || !name.trim() || !command.trim()}
+          onClick={() => props.onSave(name.trim(), command.trim())}
+        >
           Save
         </button>
         <button aria-label="Remove" title="Remove this browser" onClick={props.onRemove}>

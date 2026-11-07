@@ -28,7 +28,10 @@ export function OrphanSessions() {
   const host = useDialogHost();
   const [killing, setKilling] = useState<OrphanSessionDto | null>(null);
 
-  const knownKey = folders.flatMap(f => f.chats.map(c => c.id)).sort().join('|');
+  const knownKey = folders
+    .flatMap(f => f.chats.map(c => c.id))
+    .sort()
+    .join('|');
 
   // Only the latest scan may answer. One asked before a chat was adopted
   // still counts that session as nobody's, and coming back after the scan
@@ -92,7 +95,9 @@ export function OrphanSessions() {
     setKilling(null);
     // .finally alone still rejects through, and a session that beat us to
     // exiting is exactly the case the rescan handles anyway.
-    killSession(o.id).catch(() => {}).finally(rescan);
+    killSession(o.id)
+      .catch(() => {})
+      .finally(rescan);
   };
 
   if (!found.length) return null;
@@ -104,8 +109,16 @@ export function OrphanSessions() {
         title="Sessions still running with no chat to reach them through"
         className="hover-bg"
         style={{
-          flex: 'none', padding: '5px 8px', display: 'flex', alignItems: 'center', gap: 7, borderRadius: 4,
-          fontSize: 'var(--fs-3)', color: 'var(--balloon-ink)', background: 'var(--balloon)', cursor: 'default',
+          flex: 'none',
+          padding: '5px 8px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 7,
+          borderRadius: 4,
+          fontSize: 'var(--fs-3)',
+          color: 'var(--balloon-ink)',
+          background: 'var(--balloon)',
+          cursor: 'default',
           border: '1px solid color-mix(in oklab, var(--wait) 45%, transparent)'
         }}
       >
@@ -118,61 +131,93 @@ export function OrphanSessions() {
 
       {/* Portalled: the sidebar slides away under the pointer, and a dialog
           left inside it would slide away too. */}
-      {open && host && createPortal(
-        <div className="scrim" style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.32)', display: 'grid', placeItems: 'center', zIndex: 75 }}>
-          <div className="window" style={{ width: 560, boxShadow: 'var(--shadow), var(--border-window-outer), var(--border-window-inner)' }}>
-            <div className="title-bar">
-              <div className="title-bar-text">Sessions with no chat</div>
-              <div className="title-bar-controls">
-                <button aria-label="Close" onClick={() => setOpen(false)} />
+      {open &&
+        host &&
+        createPortal(
+          <div
+            className="scrim"
+            style={{
+              position: 'fixed',
+              inset: 0,
+              background: 'rgba(0,0,0,.32)',
+              display: 'grid',
+              placeItems: 'center',
+              zIndex: 75
+            }}
+          >
+            <div
+              className="window"
+              style={{ width: 560, boxShadow: 'var(--shadow), var(--border-window-outer), var(--border-window-inner)' }}
+            >
+              <div className="title-bar">
+                <div className="title-bar-text">Sessions with no chat</div>
+                <div className="title-bar-controls">
+                  <button aria-label="Close" onClick={() => setOpen(false)} />
+                </div>
               </div>
-            </div>
-            <div className="window-body">
-              <div style={{ fontSize: 'var(--fs-3)', color: 'var(--dim)', marginBottom: 10, lineHeight: 1.45 }}>
-                These are running right now and answering to nobody. Adopting one puts it back in
-                the list with its scrollback; killing one ends it, and its transcript stays on disk
-                either way.
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 320, overflowY: 'auto' }}>
-                {found.map(o => {
-                  const t = tail2(o.cwd);
-                  return (
-                    <div
-                      key={o.id}
-                      style={{
-                        display: 'flex', alignItems: 'center', gap: 8, padding: '6px 8px',
-                        background: 'var(--bg)', boxShadow: 'var(--border-sunken-outer)'
-                      }}
-                    >
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 'var(--fs-4)', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          {o.title || `session ${o.id.slice(-6)}`}
+              <div className="window-body">
+                <div style={{ fontSize: 'var(--fs-3)', color: 'var(--dim)', marginBottom: 10, lineHeight: 1.45 }}>
+                  These are running right now and answering to nobody. Adopting one puts it back in the list with its
+                  scrollback; killing one ends it, and its transcript stays on disk either way.
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 320, overflowY: 'auto' }}>
+                  {found.map(o => {
+                    const t = tail2(o.cwd);
+                    return (
+                      <div
+                        key={o.id}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 8,
+                          padding: '6px 8px',
+                          background: 'var(--bg)',
+                          boxShadow: 'var(--border-sunken-outer)'
+                        }}
+                      >
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div
+                            style={{
+                              fontSize: 'var(--fs-4)',
+                              fontWeight: 600,
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap'
+                            }}
+                          >
+                            {o.title || `session ${o.id.slice(-6)}`}
+                          </div>
+                          <div
+                            title={o.cwd}
+                            style={{
+                              fontSize: 'var(--fs-1)',
+                              color: 'var(--faint)',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap'
+                            }}
+                          >
+                            {t.parent} / {t.leaf}
+                            {` · ${PROVIDER_LABEL[o.provider]}`}
+                            {o.status ? ` · ${o.status}` : ''}
+                            {o.pid ? ` · pid ${o.pid}` : ''}
+                          </div>
                         </div>
-                        <div
-                          title={o.cwd}
-                          style={{ fontSize: 'var(--fs-1)', color: 'var(--faint)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-                        >
-                          {t.parent} / {t.leaf}
-                          {` · ${PROVIDER_LABEL[o.provider]}`}
-                          {o.status ? ` · ${o.status}` : ''}
-                          {o.pid ? ` · pid ${o.pid}` : ''}
-                        </div>
+                        <button className="slim primary" onClick={() => adopt(o)}>
+                          Adopt
+                        </button>
+                        <button className="slim" onClick={() => setKilling(o)}>
+                          Kill
+                        </button>
                       </div>
-                      <button className="slim primary" onClick={() => adopt(o)}>
-                        Adopt
-                      </button>
-                      <button className="slim" onClick={() => setKilling(o)}>
-                        Kill
-                      </button>
-                    </div>
-                  );
-                })}
+                    );
+                  })}
+                </div>
               </div>
             </div>
-          </div>
-        </div>,
-        host
-      )}
+          </div>,
+          host
+        )}
 
       {killing && (
         <ConfirmDialog
@@ -180,8 +225,8 @@ export function OrphanSessions() {
           confirmLabel="Kill"
           body={
             <>
-              <b>{killing.title || killing.id}</b> is running right now, and may be part-way through
-              something. Its transcript stays on disk, so it can be resumed from the CLI later.
+              <b>{killing.title || killing.id}</b> is running right now, and may be part-way through something. Its
+              transcript stays on disk, so it can be resumed from the CLI later.
             </>
           }
           onConfirm={() => kill(killing)}

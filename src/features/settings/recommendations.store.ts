@@ -1,7 +1,5 @@
 import { create } from 'zustand';
-import {
-  applyRecommendation, dismissRecommendation, recommendations, type CheckDto
-} from '../../ipc/commands';
+import { applyRecommendation, dismissRecommendation, recommendations, type CheckDto } from '../../ipc/commands';
 
 interface State {
   /** Whether the Recommendations window is up. */
@@ -18,8 +16,7 @@ interface State {
 export const checkKey = (c: CheckDto) => `${c.id}@${c.account ?? ''}`;
 
 /** What the chip counts: something wrong that was not left so on purpose. */
-export const openChecks = (checks: CheckDto[] | null) =>
-  (checks ?? []).filter(c => c.status !== 'ok' && !c.dismissed);
+export const openChecks = (checks: CheckDto[] | null) => (checks ?? []).filter(c => c.status !== 'ok' && !c.dismissed);
 
 export const useRecommendations = create<State>((set, get) => ({
   open: false,

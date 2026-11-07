@@ -4,7 +4,14 @@ import { create } from 'zustand';
 import { Icon, ToolButton } from '../../shared/ui/icons';
 import { useDialogHost } from '../../shared/ui/dialogHost';
 import { ConfirmDialog } from '../../shared/ui/ConfirmDialog';
-import { PROVIDER_LABEL, PROVIDER_VENDOR, PROVIDERS, accountKey, type Account, type Provider } from '../../shared/types';
+import {
+  PROVIDER_LABEL,
+  PROVIDER_VENDOR,
+  PROVIDERS,
+  accountKey,
+  type Account,
+  type Provider
+} from '../../shared/types';
 import { useAccounts } from './accounts.store';
 import { useChats } from '../chats/chats.store';
 import { useSettings } from '../settings/SettingsDialog';
@@ -53,14 +60,23 @@ export function AccountsWindow() {
         close();
       }}
       style={{
-        position: 'fixed', inset: 0, background: 'rgba(0,0,0,.35)', backdropFilter: 'blur(1px)',
-        display: 'grid', placeItems: 'center', zIndex: 65
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(0,0,0,.35)',
+        backdropFilter: 'blur(1px)',
+        display: 'grid',
+        placeItems: 'center',
+        zIndex: 65
       }}
     >
       <div
         onClick={e => e.stopPropagation()}
         className="window"
-        style={{ width: 640, maxWidth: 'calc(100vw - 32px)', boxShadow: 'var(--shadow), var(--border-window-outer), var(--border-window-inner)' }}
+        style={{
+          width: 640,
+          maxWidth: 'calc(100vw - 32px)',
+          boxShadow: 'var(--shadow), var(--border-window-outer), var(--border-window-inner)'
+        }}
       >
         <div className="title-bar">
           <div className="title-bar-text">Accounts</div>
@@ -147,7 +163,6 @@ function AccountsPanel() {
         />
       </div>
 
-
       {adding && (
         <div style={{ display: 'flex', gap: 4, marginBottom: 8 }}>
           <select
@@ -157,7 +172,9 @@ function AccountsPanel() {
             style={{ flex: 'none', width: 92 }}
           >
             {PROVIDERS.map(p => (
-              <option key={p} value={p}>{PROVIDER_LABEL[p]}</option>
+              <option key={p} value={p}>
+                {PROVIDER_LABEL[p]}
+              </option>
             ))}
           </select>
           <input
@@ -197,11 +214,7 @@ function AccountsPanel() {
             : worstLimit(acc) >= 0.85
               ? 'oklch(.63 .19 25)'
               : 'oklch(.64 .18 145)';
-        const note = !acc.signedIn
-          ? 'signed out'
-          : acc.sync === 'loading' && !acc.haveUsage
-            ? 'loading…'
-            : acc.plan;
+        const note = !acc.signedIn ? 'signed out' : acc.sync === 'loading' && !acc.haveUsage ? 'loading…' : acc.plan;
         // Usage can lag behind sign-in; say so beside the bars, not instead of
         // the plan, so a throttled endpoint never reads as a broken account.
         const usageNote = !acc.haveUsage
@@ -217,10 +230,16 @@ function AccountsPanel() {
           : acc.usageAge;
         const busy = refreshing.includes(acc.path);
         return (
-          <div key={accountKey(acc.provider, acc.name)} style={{ padding: '9px 0 8px', borderTop: '1px solid var(--line)', animation: 'pop-in .2s ease-out' }}>
+          <div
+            key={accountKey(acc.provider, acc.name)}
+            style={{ padding: '9px 0 8px', borderTop: '1px solid var(--line)', animation: 'pop-in .2s ease-out' }}
+          >
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
               <span style={{ width: 8, height: 8, borderRadius: '50%', flex: 'none', background: dot }} />
-              <span title={`${PROVIDER_LABEL[acc.provider]} — a ${PROVIDER_VENDOR[acc.provider]} subscription`} style={{ flex: 'none', display: 'flex' }}>
+              <span
+                title={`${PROVIDER_LABEL[acc.provider]} — a ${PROVIDER_VENDOR[acc.provider]} subscription`}
+                style={{ flex: 'none', display: 'flex' }}
+              >
                 <Icon name={acc.provider} />
               </span>
               {renaming?.key === accountKey(acc.provider, acc.name) ? (
@@ -241,8 +260,16 @@ function AccountsPanel() {
                 />
               ) : (
                 <span
-                  onDoubleClick={() => setRenaming({ key: accountKey(acc.provider, acc.name), to: acc.name, error: null })}
-                  style={{ fontSize: 'var(--fs-5)', fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+                  onDoubleClick={() =>
+                    setRenaming({ key: accountKey(acc.provider, acc.name), to: acc.name, error: null })
+                  }
+                  style={{
+                    fontSize: 'var(--fs-5)',
+                    fontWeight: 700,
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis'
+                  }}
                   title={[acc.email, acc.path].filter(Boolean).join('\n')}
                 >
                   {acc.name}
@@ -256,16 +283,24 @@ function AccountsPanel() {
               />
               <span style={{ flex: 1 }} />
               <span
-                title={acc.signedIn ? 'Signed in' : acc.refreshError ?? 'No usable credentials — sign in'}
+                title={acc.signedIn ? 'Signed in' : (acc.refreshError ?? 'No usable credentials — sign in')}
                 style={{
-                  fontSize: 'var(--fs-3)', whiteSpace: 'nowrap', marginRight: 4,
+                  fontSize: 'var(--fs-3)',
+                  whiteSpace: 'nowrap',
+                  marginRight: 4,
                   color: acc.signedIn ? 'var(--faint)' : 'oklch(.58 .2 25)'
                 }}
               >
                 {note}
               </span>
               {!acc.signedIn && (
-                <ToolButton icon="key" size={24} label="Sign in" title="Sign in this account" onClick={() => setLoginFor(acc)} />
+                <ToolButton
+                  icon="key"
+                  size={24}
+                  label="Sign in"
+                  title="Sign in this account"
+                  onClick={() => setLoginFor(acc)}
+                />
               )}
               <ToolButton
                 icon="recommend"
@@ -310,14 +345,25 @@ function AccountsPanel() {
                 }
                 onClick={() => void refreshAccount(acc)}
               />
-              <ToolButton icon="trash" size={24} danger title="Delete account folder — asks first" onClick={() => setDeleting(acc)} />
+              <ToolButton
+                icon="trash"
+                size={24}
+                danger
+                title="Delete account folder — asks first"
+                onClick={() => setDeleting(acc)}
+              />
             </div>
             {renaming?.key === accountKey(acc.provider, acc.name) && renaming.error && (
-              <div style={{ fontSize: 'var(--fs-2)', color: 'oklch(.58 .2 25)', marginBottom: 6 }}>{renaming.error}</div>
+              <div style={{ fontSize: 'var(--fs-2)', color: 'oklch(.58 .2 25)', marginBottom: 6 }}>
+                {renaming.error}
+              </div>
             )}
             <LimitBars account={acc} />
             {usageNote && (
-              <div title={acc.refreshError ?? undefined} style={{ fontSize: 'var(--fs-1)', color: 'var(--faint)', marginTop: 4, textAlign: 'right' }}>
+              <div
+                title={acc.refreshError ?? undefined}
+                style={{ fontSize: 'var(--fs-1)', color: 'var(--faint)', marginTop: 4, textAlign: 'right' }}
+              >
                 {usageNote}
               </div>
             )}
@@ -342,12 +388,11 @@ function AccountsPanel() {
           title="Delete account"
           body={
             <>
-              Deletes the folder <b>{deleting.path}</b> and the login stored in it. Nothing
-              signs you out anywhere else, and nothing here can bring it back.
+              Deletes the folder <b>{deleting.path}</b> and the login stored in it. Nothing signs you out anywhere else,
+              and nothing here can bring it back.
               {inUse(deleting) && (
                 <div style={{ marginTop: 8 }}>
-                  Chats are still set to this account — they have nowhere to spawn until you
-                  point them somewhere else.
+                  Chats are still set to this account — they have nowhere to spawn until you point them somewhere else.
                 </div>
               )}
             </>

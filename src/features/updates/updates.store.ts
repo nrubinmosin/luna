@@ -120,7 +120,9 @@ export const useUpdates = create<UpdatesState>(set => ({
       }
       // Said before, because the install never returns on Windows; taken back
       // below if it fails.
-      await noteExit(`installing the update to ${pending.version}${keep ? '; the sessions keep running in the core' : ''}`);
+      await noteExit(
+        `installing the update to ${pending.version}${keep ? '; the sessions keep running in the core' : ''}`
+      );
       await pending.install();
       // Unreachable on Windows: the plugin hands the installer to the shell and
       // ends the process itself with exit(0), because NSIS cannot replace the

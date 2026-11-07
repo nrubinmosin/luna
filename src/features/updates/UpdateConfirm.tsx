@@ -28,9 +28,8 @@ export function UpdateConfirm() {
       danger={false}
       body={
         <>
-          The installer is downloaded and checked against this build's signing key, and then
-          Luna <b>closes itself</b> — an installer cannot replace the exe of a running app.
-          It starts Luna again when it is done.
+          The installer is downloaded and checked against this build's signing key, and then Luna <b>closes itself</b> —
+          an installer cannot replace the exe of a running app. It starts Luna again when it is done.
           {live > 0 && keep ? (
             <div style={{ marginTop: 8 }}>
               This update leaves Luna&apos;s core as it is, so only the window restarts:{' '}
@@ -39,10 +38,13 @@ export function UpdateConfirm() {
             </div>
           ) : live > 0 ? (
             <div style={{ marginTop: 8 }}>
-              Once the download is through, <b>all {live} running session{live === 1 ? '' : 's'}</b>{' '}
-              {live === 1 ? 'is' : 'are'} asked to quit, the way deleting a chat does — whatever is
-              mid-turn or running in the background stops with {live === 1 ? 'it' : 'them'}. The
-              chats resume from their transcripts when Luna is back.
+              Once the download is through,{' '}
+              <b>
+                all {live} running session{live === 1 ? '' : 's'}
+              </b>{' '}
+              {live === 1 ? 'is' : 'are'} asked to quit, the way deleting a chat does — whatever is mid-turn or running
+              in the background stops with {live === 1 ? 'it' : 'them'}. The chats resume from their transcripts when
+              Luna is back.
               <LiveSessions />
             </div>
           ) : (
@@ -51,8 +53,14 @@ export function UpdateConfirm() {
           {notes && (
             <div
               style={{
-                marginTop: 8, padding: '5px 7px', borderRadius: 2, background: 'var(--chip)',
-                fontSize: 'var(--fs-3)', color: 'var(--dim)', maxHeight: 140, overflowY: 'auto',
+                marginTop: 8,
+                padding: '5px 7px',
+                borderRadius: 2,
+                background: 'var(--chip)',
+                fontSize: 'var(--fs-3)',
+                color: 'var(--dim)',
+                maxHeight: 140,
+                overflowY: 'auto',
                 whiteSpace: 'pre-wrap'
               }}
             >

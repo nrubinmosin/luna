@@ -17,7 +17,10 @@ function Changes({ label, from, to }: { label: string; from: string; to: string 
             </div>
           ) : (
             h.lines.map((l, j) => (
-              <div key={`${i}-${j}`} style={{ background: l.kind === '+' ? ADDED : l.kind === '-' ? TAKEN : undefined, padding: '0 8px' }}>
+              <div
+                key={`${i}-${j}`}
+                style={{ background: l.kind === '+' ? ADDED : l.kind === '-' ? TAKEN : undefined, padding: '0 8px' }}
+              >
                 <span style={{ color: 'var(--faint)', userSelect: 'none' }}>{l.kind} </span>
                 {l.text || ' '}
               </div>
@@ -31,7 +34,9 @@ function Changes({ label, from, to }: { label: string; from: string; to: string 
 
 /** One file: what changed where, against what Luna wrote last when it knows that. */
 function FileChanges({ f }: { f: FileDiffDto }) {
-  const say = (text: string) => <div style={{ fontSize: 'var(--fs-2)', color: 'var(--dim)', marginTop: 4 }}>{text}</div>;
+  const say = (text: string) => (
+    <div style={{ fontSize: 'var(--fs-2)', color: 'var(--dim)', marginTop: 4 }}>{text}</div>
+  );
   let body;
   if (f.binary) body = say('Not a text file — it differs, line by line cannot be shown.');
   else if (f.base !== null) {
@@ -61,11 +66,14 @@ export function DiffView({ dest }: { dest: string }) {
   const [files, setFiles] = useState<FileDiffDto[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
-    void libraryDiff(dest).then(setFiles).catch(e => setError(String(e)));
+    void libraryDiff(dest)
+      .then(setFiles)
+      .catch(e => setError(String(e)));
   }, [dest]);
   if (error) return <div style={{ fontSize: 'var(--fs-2)', color: 'oklch(.58 .2 25)' }}>{error}</div>;
   if (!files) return <div style={{ fontSize: 'var(--fs-2)', color: 'var(--faint)' }}>Reading…</div>;
-  if (!files.length) return <div style={{ fontSize: 'var(--fs-2)', color: 'var(--faint)' }}>No differences any more.</div>;
+  if (!files.length)
+    return <div style={{ fontSize: 'var(--fs-2)', color: 'var(--faint)' }}>No differences any more.</div>;
   return (
     <div style={{ padding: '2px 0 6px' }}>
       {files.map(f => (

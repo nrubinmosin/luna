@@ -12,23 +12,52 @@ import { useRecommendations } from './recommendations.store';
 import { Section } from './SettingsDialog';
 
 /** One account's recommended settings: how many it has, what the everyday set still lacks, and the way in. */
-function AccountRow({ account, count, missing, onOpen }: {
+function AccountRow({
+  account,
+  count,
+  missing,
+  onOpen
+}: {
   account: Account;
   count: string;
   missing: number;
   onOpen: () => void;
 }) {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 0', borderBottom: '1px solid var(--line)', fontSize: 'var(--fs-3)' }}>
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 6,
+        padding: '4px 0',
+        borderBottom: '1px solid var(--line)',
+        fontSize: 'var(--fs-3)'
+      }}
+    >
       <span title={PROVIDER_LABEL[account.provider]} style={{ flex: 'none', display: 'flex' }}>
         <Icon name={account.provider} />
       </span>
-      <span style={{ fontWeight: 700, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{account.name}</span>
-      <span style={{ flex: 1, fontSize: 'var(--fs-1)', color: 'var(--faint)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+      <span
+        style={{ fontWeight: 700, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+      >
+        {account.name}
+      </span>
+      <span
+        style={{
+          flex: 1,
+          fontSize: 'var(--fs-1)',
+          color: 'var(--faint)',
+          whiteSpace: 'nowrap',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis'
+        }}
+      >
         {count}
         {missing > 0 && ` · ${missing} recommended not set`}
       </span>
-      <button className="slim" onClick={onOpen}>Settings…</button>
+      <button className="slim" onClick={onOpen}>
+        Settings…
+      </button>
     </div>
   );
 }
@@ -58,14 +87,23 @@ function RecommendationsWindow({ onClose }: { onClose: () => void }) {
         onClose();
       }}
       style={{
-        position: 'fixed', inset: 0, background: 'rgba(0,0,0,.35)', backdropFilter: 'blur(1px)',
-        display: 'grid', placeItems: 'center', zIndex: 70
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(0,0,0,.35)',
+        backdropFilter: 'blur(1px)',
+        display: 'grid',
+        placeItems: 'center',
+        zIndex: 70
       }}
     >
       <div
         onClick={e => e.stopPropagation()}
         className="window"
-        style={{ width: 560, maxWidth: 'calc(100vw - 32px)', boxShadow: 'var(--shadow), var(--border-window-outer), var(--border-window-inner)' }}
+        style={{
+          width: 560,
+          maxWidth: 'calc(100vw - 32px)',
+          boxShadow: 'var(--shadow), var(--border-window-outer), var(--border-window-inner)'
+        }}
       >
         <div className="title-bar">
           <div className="title-bar-text">Recommendations</div>
@@ -78,7 +116,9 @@ function RecommendationsWindow({ onClose }: { onClose: () => void }) {
             <Recommendations />
           </Section>
           <Section label="Settings worth having, by account">
-            {accounts.length === 0 && <div style={{ fontSize: 'var(--fs-3)', color: 'var(--faint)' }}>No accounts yet.</div>}
+            {accounts.length === 0 && (
+              <div style={{ fontSize: 'var(--fs-3)', color: 'var(--faint)' }}>No accounts yet.</div>
+            )}
             {accounts.map(a => {
               const list = lists[accountKey(a.provider, a.name)];
               return (
@@ -92,7 +132,8 @@ function RecommendationsWindow({ onClose }: { onClose: () => void }) {
               );
             })}
             <div style={{ fontSize: 'var(--fs-1)', color: 'var(--faint)', marginTop: 6 }}>
-              What works well for each CLI inside Luna. These are yours to take or leave, so the status bar does not count them.
+              What works well for each CLI inside Luna. These are yours to take or leave, so the status bar does not
+              count them.
             </div>
           </Section>
         </div>

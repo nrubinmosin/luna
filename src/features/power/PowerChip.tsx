@@ -48,20 +48,26 @@ export function PowerChip() {
   const blockers = summary.sessions
     .filter(s => s.busy || (s.turn === 'waiting' && !s.stalled))
     .map(s => {
-      const why = s.turn === 'waiting' && !s.busy
-        ? 'waiting for you'
-        : [
-            s.turn === 'busy' ? 'mid-turn' : '',
-            s.procs.length ? `running ${s.procs.join(', ')}` : '',
-            s.outputFresh && s.turn !== 'busy' ? 'printing' : ''
-          ].filter(Boolean).join(', ');
+      const why =
+        s.turn === 'waiting' && !s.busy
+          ? 'waiting for you'
+          : [
+              s.turn === 'busy' ? 'mid-turn' : '',
+              s.procs.length ? `running ${s.procs.join(', ')}` : '',
+              s.outputFresh && s.turn !== 'busy' ? 'printing' : ''
+            ]
+              .filter(Boolean)
+              .join(', ');
       return `${name(s.id)} — ${why}`;
     });
 
   // The tray says it too, for a window that is hidden: a dot on the icon
   // while the PC is held awake, and who holds it in its tooltip.
   const held = holding
-    ? summary.sessions.filter(s => s.busy).map(s => `${name(s.id)} — ${doing(s)}`).join('\n') || 'a session that just went quiet'
+    ? summary.sessions
+        .filter(s => s.busy)
+        .map(s => `${name(s.id)} — ${doing(s)}`)
+        .join('\n') || 'a session that just went quiet'
     : '';
   useEffect(() => {
     void trayAwake(held || null).catch(() => {});

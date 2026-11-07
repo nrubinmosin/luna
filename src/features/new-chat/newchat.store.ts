@@ -71,7 +71,7 @@ export const useNewChat = create<NewChatUi>()(
         // A box that started "as last time" keeps what it would have shown.
         const p = (persisted ?? {}) as V2;
         const fixed = (start: V2['worktreeStart'], last: boolean | undefined, otherwise: boolean) =>
-          start === 'on' ? true : start === 'off' ? false : last ?? otherwise;
+          start === 'on' ? true : start === 'off' ? false : (last ?? otherwise);
         return {
           lastFolder: p.lastFolder ?? null,
           lastAccount: p.lastAccount ?? null,

@@ -181,7 +181,6 @@ export interface Account {
 /** `codex/work` — one string that names an account across both providers. */
 export const accountKey = (provider: Provider, name: string) => `${provider}/${name}`;
 
-
 // ------------------------------------------------ Claude Code's own settings
 
 export const MODELS: ModelLabel[] = ['Fable', 'Opus', 'Sonnet', 'Haiku'];
@@ -226,8 +225,7 @@ export const modelFromSetting = (raw: string): ModelLabel | null => {
   return MODELS.find(m => v.includes(m.toLowerCase())) ?? null;
 };
 
-export const effortFromSetting = (raw: string): Effort | null =>
-  EFFORTS.find(e => e === raw.toLowerCase()) ?? null;
+export const effortFromSetting = (raw: string): Effort | null => EFFORTS.find(e => e === raw.toLowerCase()) ?? null;
 
 export const permFromSetting = (raw: string): PermMode | null => PERM_OF_CLI[raw] ?? null;
 
@@ -255,7 +253,8 @@ export const CODEX_SANDBOX_HINTS: Record<CodexSandbox, string> = {
 
 /** What an approval and a sandbox come to together, as one line. */
 export function codexModeHint(approval: CodexApproval, sandbox: CodexSandbox): string {
-  if (approval === 'auto-review') return `Runs with --approve-for-me: ${CODEX_APPROVAL_HINTS[approval]}; ${CODEX_SANDBOX_HINTS[AUTO_REVIEW_SANDBOX]}.`;
+  if (approval === 'auto-review')
+    return `Runs with --approve-for-me: ${CODEX_APPROVAL_HINTS[approval]}; ${CODEX_SANDBOX_HINTS[AUTO_REVIEW_SANDBOX]}.`;
   if (sandbox === 'danger-full-access') {
     return approval === 'never'
       ? 'Runs with --dangerously-bypass-approvals-and-sandbox.'

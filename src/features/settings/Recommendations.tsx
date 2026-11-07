@@ -20,7 +20,10 @@ function Row({ check }: { check: CheckDto }) {
   const run = (confirmed: boolean) => {
     setBusy(true);
     setConfirming(false);
-    void useRecommendations.getState().apply(check, confirmed).finally(() => setBusy(false));
+    void useRecommendations
+      .getState()
+      .apply(check, confirmed)
+      .finally(() => setBusy(false));
   };
   const state = STATE[check.status];
   return (
@@ -34,7 +37,12 @@ function Row({ check }: { check: CheckDto }) {
       {check.current && (
         <div style={{ ...small, fontFamily: '"JetBrains Mono", monospace', marginTop: 2 }}>
           {check.current}
-          {check.target && <> → <span style={{ color: 'var(--fg)' }}>{check.target}</span></>}
+          {check.target && (
+            <>
+              {' '}
+              → <span style={{ color: 'var(--fg)' }}>{check.target}</span>
+            </>
+          )}
         </div>
       )}
       {check.note && <div style={{ ...small, marginTop: 2 }}>{check.note}</div>}
@@ -45,7 +53,9 @@ function Row({ check }: { check: CheckDto }) {
           <div style={{ fontSize: 'var(--fs-2)', marginBottom: 6 }}>{check.risk}</div>
           <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
             <button onClick={() => setConfirming(false)}>Cancel</button>
-            <button className="primary" onClick={() => run(true)}>Yes: {check.action}</button>
+            <button className="primary" onClick={() => run(true)}>
+              Yes: {check.action}
+            </button>
           </div>
         </div>
       )}
@@ -84,12 +94,13 @@ export function Recommendations() {
   const fine = checks.length - checks.filter(c => c.status !== 'ok').length;
   return (
     <div>
-      {shown.map(c => <Row key={checkKey(c)} check={c} />)}
+      {shown.map(c => (
+        <Row key={checkKey(c)} check={c} />
+      ))}
       <div style={{ ...small, marginTop: shown.length ? 6 : 0 }}>
         {shown.length === 0 ? `All ${fine} checks pass: ` : `${fine} more pass. `}
-        What Luna’s features rely on, in its own settings, the accounts’ files and any policy on this
-        computer. Nothing changes until you press its button, and a session already running may
-        go on as it was until it restarts.
+        What Luna’s features rely on, in its own settings, the accounts’ files and any policy on this computer. Nothing
+        changes until you press its button, and a session already running may go on as it was until it restarts.
       </div>
     </div>
   );
