@@ -235,7 +235,7 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
     settle_worktree(id);
     // Before the registry is locked for the command line: a pass reads and
     // writes every account's copies, and every helper's events wait on that
-    // lock (library.rs `session_args`).
+    // lock (library/folders.rs `session_args`).
     crate::library::lay_out("before a helper's turn");
     let (args, dir, envs, provider, on_stdin, line, account) = {
         let r = lock();

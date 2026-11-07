@@ -17,7 +17,7 @@ use crate::provider::Provider;
 /// the listener is on. `guard`: a PreToolUse hook on its shell tools that
 /// refuses a command waiting forever (guard.rs), for a session with Luna's
 /// tools or a helper. `library`: what the library's folders keep from the
-/// session (library.rs `SessionSkills`) — skills off in `skillOverrides`,
+/// session (library/folders.rs `SessionSkills`) — skills off in `skillOverrides`,
 /// which settings of this source beat whatever the account's or the
 /// project's say, and the account's instructions in `claudeMdExcludes`.
 /// Written to a file under the data dir (`hooks/`, named for what it first
@@ -46,7 +46,7 @@ pub(crate) fn claude_settings_file(
 }
 
 /// The instructions a folder of the library gives a Claude Code session in
-/// place of its account's (library.rs `SessionSkills::instructions`), as the
+/// place of its account's (library/folders.rs `SessionSkills::instructions`), as the
 /// `CLAUDE.md` of a folder of its own (`hooks/<id>/`) for `--add-dir`, which
 /// Claude Code reads with `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD` set
 /// — those of every folder it is given then, Luna's own holding none.
@@ -209,7 +209,7 @@ pub async fn ensure_claude_session(
             crate::worktree::fetch_origin(&folder);
         }
         // The skills the library gives sessions in this folder and keeps from
-        // them, at every start (library.rs `session_args`); not to a login
+        // them, at every start (library/folders.rs `session_args`); not to a login
         // session.
         let login = same_dir(&folder, &account_path);
         let skills = if login {
@@ -347,7 +347,7 @@ pub async fn ensure_codex_session(
         }
         let token = token.filter(|_| crate::hub::mcp_url().is_some());
         // The skills the library gives sessions in this folder and keeps
-        // from them, at every start (library.rs `session_args`).
+        // from them, at every start (library/folders.rs `session_args`).
         crate::library::lay_out("before a session starts");
         let skills = crate::library::session_args(Provider::Codex, &account_path, &folder);
         let (args, envs) = codex_launch::chat_args(&codex_launch::ChatStart {

@@ -39,7 +39,7 @@ pub struct Settings {
     /// without an entry in any account's config.toml (codex/trust.rs).
     pub codex_trusted_roots: Vec<String>,
     /// The user's skills and instructions, and where they are laid out
-    /// (library.rs).
+    /// (library/).
     pub library: LibrarySettings,
     /// Which browser a terminal's links open in (browsers.rs).
     pub browsers: crate::browsers::BrowserSettings,
@@ -122,7 +122,7 @@ enum InstructionsField {
 }
 
 /// The name the one instructions file of old goes by in the library
-/// (library.rs moves the file to match).
+/// (library/skills.rs moves the file to match).
 pub const FIRST_INSTRUCTIONS: &str = "main";
 
 impl From<LibrarySettingsFile> for LibrarySettings {
@@ -184,18 +184,18 @@ pub struct LibraryFolder {
     pub path: String,
     /// The accounts whose sessions here get a skill, by its name, in place
     /// of what it is meant for and of what a folder this one lies in says
-    /// (library.rs `deciding`); empty, no account's. A skill not named here
+    /// (library/folders.rs `deciding`); empty, no account's. A skill not named here
     /// goes by those.
     pub skills: std::collections::BTreeMap<String, Reach>,
     /// The instructions its sessions get in place of their account's, by
     /// the reach entry they are for (an account, as a rule): one of the
     /// library's by name, or None for none at all. The closest entry decides
     /// for an account, the deepest folder with one for it before that
-    /// (library.rs `folder_instructions`); an account none takes in goes by
+    /// (library/folders.rs `folder_instructions`); an account none takes in goes by
     /// its own.
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub instructions: std::collections::BTreeMap<String, Option<String>>,
-    /// The name its skills wait under (library.rs `folder_slugs`), given once
+    /// The name its skills wait under (library/folders.rs `folder_slugs`), given once
     /// and kept: one read off its place in the list would pass to another
     /// folder as an earlier one goes.
     #[serde(skip_serializing_if = "String::is_empty")]

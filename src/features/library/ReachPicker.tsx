@@ -47,7 +47,7 @@ const describe = (reach: Reach) =>
           })
           .join('\n');
 
-/** A reach as Rust saves it (library.rs `tidy_reach`): `all` alone, a provider without its own accounts, nothing twice. */
+/** A reach as Rust saves it (library/reach.rs `tidy_reach`): `all` alone, a provider without its own accounts, nothing twice. */
 const tidy = (reach: Reach): Reach =>
   reach.includes(ALL)
     ? [ALL]

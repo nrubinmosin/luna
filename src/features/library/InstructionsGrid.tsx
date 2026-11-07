@@ -15,10 +15,10 @@ import { accountKey, how, type AccountRef } from './places';
 import { RED } from './presentation';
 import { ReachPicker } from './ReachPicker';
 
-/** A select's value for none at all, which no instructions' name can be (library.rs `check_name`). */
+/** A select's value for none at all, which no instructions' name can be (library/skills.rs `check_name`). */
 const NO_INSTRUCTIONS = ' none';
 
-/** A folder's entry that decides for an account, as library.rs `folder_instructions` picks it — its own, its
+/** A folder's entry that decides for an account, as library/folders.rs `folder_instructions` picks it — its own, its
  *  CLI's, all — with its key. */
 function folderEntry(
   instructions: Record<string, string | null> | undefined,

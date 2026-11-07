@@ -71,7 +71,7 @@ pub(super) fn command_for(e: &Entry, id: &str) -> (Vec<String>, String, Vec<(&'s
             }
             // The skills the library gives sessions where it works and keeps
             // from them, on every turn: each is a process of its own
-            // (library.rs `session_args`). No hooks: its stream says it all; but
+            // (library/folders.rs `session_args`). No hooks: its stream says it all; but
             // the guard against endless waits, a helper's as any (guard.rs).
             let skills = crate::library::session_args(Provider::Claude, &s.account_path, &dir);
             if let Some(settings) = crate::pty::claude_settings_file(id, false, s.tools || s.parent.is_some(), &skills) {

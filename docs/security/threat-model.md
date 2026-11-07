@@ -133,7 +133,7 @@ in section 6.
 
 | STRIDE | Threat | Status |
 | --- | --- | --- |
-| T | Library sync follows a planted symlink or junction out of the account folder | mitigated: links are refused on read and write (`library.rs:542`, `library.rs:601-606`, `library.rs:955`); account names reject `.` and `..` (`accounts.rs:49`). Check-then-use remains (R6) |
+| T | Library sync follows a planted symlink or junction out of the account folder | mitigated: links are refused on read and write (`library/files.rs:28`, `library/files.rs:87-92`, `library/folders.rs:251`); account names reject `.` and `..` (`accounts.rs:49`). Check-then-use remains (R6) |
 | T | Worktree removal deletes outside the intended root | fixed (F6) |
 | I | OAuth refresh exposes tokens | fixed (F5); errors are logged without token values |
 
@@ -276,7 +276,7 @@ Residuals:
 - **R5. Agent history keeps prompt prefixes and last answers in plain text**
   (`agentlog.rs:17-19`: 300 and 3,000 characters) in the data dir; the same
   exposure as the CLIs' own transcripts.
-- **R6. Link checks are check-then-use** (`library.rs:601`, `worktree.rs`): a
+- **R6. Link checks are check-then-use** (`library/files.rs:87`, `worktree.rs`): a
   same-user process racing the check could redirect a write. Covered by R3.
 - **R7. Single signing key** for updates, no rollback index beyond Tauri's
   version comparison. Accepted for a single-maintainer project.

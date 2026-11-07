@@ -233,7 +233,7 @@ src-tauri/src/
                 and .claude.json, which the CLI rewrites in place, are read again when caught
                 half-written or held open; one that still will not parse is an error, not an
                 empty object written back
-  library.rs    the user's skills and instructions: a library folder (`<data>/library` or one of
+  library/      the user's skills and instructions: a library folder (`<data>/library` or one of
                 the user's) with `instructions/<name>.md` and `skills/<name>/SKILL.md`, laid out into the
                 accounts each is meant for — a reach of `all`, `claude`/`codex` or `provider/name`
                 entries (`CLAUDE.md` / `AGENTS.md`, one instructions file per account, the closest
@@ -241,7 +241,13 @@ src-tauri/src/
                 names, handed out (or kept from them) at every start by `session_args` (pty/start.rs,
                 background/command.rs); a ledger
                 of what Luna wrote where (`<data>/library-state.json`, bytes in `library-blobs/` by
-                hash) so only its own copies are touched — see Key decisions
+                hash) so only its own copies are touched — see Key decisions.
+                mod.rs the library's folders, the ledger and the pass lock; reach.rs whom a
+                skill or instructions file is for; skills.rs the library's own files read and
+                checked; files.rs copies on disk, blobs and backups; folders.rs what waits for
+                a named folder's sessions, and session_args; pass.rs one pass over every copy;
+                overview.rs what the window is shown; commands.rs the window's commands;
+                testkit.rs the library its tests lay out
   watchdog.rs   a window whose page stopped responding (WebView2 died) is rebuilt
   coreproc.rs   the core: the same exe with `--core`, no window; one per data dir (core.lock), listens on
                 127.0.0.1 with a token from <data>/core/core.json, exits by itself after 10 minutes with no
@@ -1140,7 +1146,7 @@ src-tauri/src/
   (`copyOnSelect`) from `.claude.json` only: such a spec is `global`, its Rec names the file, and apply
   rewrites `.claude.json` only for a key of its own. Rust:
   `apply_recommended(provider, account_path, add, remove)`.
-- **The library** (`library.rs`). The user's own instructions and skills, which belong to
+- **The library** (`library/`). The user's own instructions and skills, which belong to
   them rather than to any repository (a repository's skills reach everyone who clones it, and
   Luna's MCP instructions every model that connects). Each skill, and each instructions file
   (`instructions/<name>.md`), has a reach in settings.json — `all`, a provider's every account,
