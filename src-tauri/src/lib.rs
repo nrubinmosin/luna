@@ -30,6 +30,7 @@ mod power;
 mod procs;
 mod provider;
 mod pty;
+mod secret;
 mod settings;
 mod sysmenu;
 mod throttle;

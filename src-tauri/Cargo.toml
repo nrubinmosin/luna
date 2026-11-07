@@ -32,6 +32,9 @@ dirs = "6"
 portable-pty = "0.9"
 ureq = { version = "2", features = ["json"] }
 sha2 = "0.10"
+# The secrets Luna mints (src/secret.rs), from the OS's CSPRNG. The version
+# the tree already resolves.
+getrandom = "0.3.4"
 toml_edit = "0.22"
 # Lays out a config.toml edited by hand, comments kept (account_settings.rs).
 taplo = { version = "0.14", default-features = false }
