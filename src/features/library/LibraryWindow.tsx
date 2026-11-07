@@ -323,8 +323,8 @@ function FolderCell({
   act: (p: Promise<LibraryOverviewDto>) => Promise<boolean>;
 }) {
   // Own keys only: a skill may be named `constructor`.
-  const own = Object.hasOwn(folder.skills, skill) ? folder.skills[skill] : null;
-  const inherited = Object.hasOwn(folder.inherited, skill) ? folder.inherited[skill] : [];
+  const own = Object.hasOwn(folder.skills, skill) ? (folder.skills[skill] ?? null) : null;
+  const inherited = Object.hasOwn(folder.inherited, skill) ? (folder.inherited[skill] ?? []) : [];
   const gets = own ? accounts.filter(a => how(own, a)).map(accountKey) : inherited;
   const every = accounts.length > 0 && gets.length === accounts.length;
   const mark = own
@@ -397,7 +397,7 @@ function folderEntry(
   a: AccountRef
 ): { key: string; choice: string | null } | undefined {
   for (const key of [accountKey(a), a.provider, 'all'])
-    if (instructions && Object.hasOwn(instructions, key)) return { key, choice: instructions[key] };
+    if (instructions && Object.hasOwn(instructions, key)) return { key, choice: instructions[key] ?? null };
   return undefined;
 }
 

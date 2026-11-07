@@ -32,6 +32,7 @@ export function jumpToWaiting() {
   const active = useChats.getState().active;
   const at = waiting.findIndex(c => c.id === active);
   const chat = waiting[(at + 1) % waiting.length];
+  if (!chat) return;
   let panes = usePanes.getState();
   if (chat.group !== panes.group) {
     panes.setGroup(chat.group);

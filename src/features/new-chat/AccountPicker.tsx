@@ -42,7 +42,8 @@ export function AccountPicker({
       if (e.key === 'Escape' || e.key === 'Enter') {
         e.preventDefault();
         e.stopPropagation();
-        if (e.key === 'Enter') onChange(keys[hotRef.current]);
+        const key = keys[hotRef.current];
+        if (e.key === 'Enter' && key !== undefined) onChange(key);
         setOpen(false);
       } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
         e.preventDefault();
@@ -71,7 +72,8 @@ export function AccountPicker({
           if (open || !keys.length) return;
           if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
             e.preventDefault();
-            onChange(keys[(at + (e.key === 'ArrowDown' ? 1 : -1) + keys.length) % keys.length]);
+            const key = keys[(at + (e.key === 'ArrowDown' ? 1 : -1) + keys.length) % keys.length];
+            if (key !== undefined) onChange(key);
           }
         }}
         title={current ? `${current.name} — ${PROVIDER_LABEL[current.provider]}` : undefined}
@@ -97,7 +99,7 @@ export function AccountPicker({
               data-hot={i === hot ? 'yes' : 'no'}
               onMouseEnter={() => setHot(i)}
               onClick={() => {
-                onChange(keys[i]);
+                onChange(accountKey(a.provider, a.name));
                 setOpen(false);
               }}
               title={PROVIDER_LABEL[a.provider]}

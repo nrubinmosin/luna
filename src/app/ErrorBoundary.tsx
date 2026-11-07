@@ -6,17 +6,17 @@ import { logError } from '../shared/lib/log';
 // cleanup — which is how closing a pane used to blank the window until F5.
 // This keeps the failure local and visible instead of silently white-screening.
 export class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
-  state: { error: Error | null } = { error: null };
+  override state: { error: Error | null } = { error: null };
 
   static getDerivedStateFromError(error: Error) {
     return { error };
   }
 
-  componentDidCatch(error: Error, info: ErrorInfo) {
+  override componentDidCatch(error: Error, info: ErrorInfo) {
     logError('react', `${error.stack ?? error} | ${info.componentStack ?? ''}`);
   }
 
-  render() {
+  override render() {
     const { error } = this.state;
     if (!error) return this.props.children;
 

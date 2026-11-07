@@ -28,27 +28,28 @@ export function diffLines(a: string, b: string): DiffLine[] {
     for (const t of xs) middle.push({ kind: '-', text: t });
     for (const t of ys) middle.push({ kind: '+', text: t });
   } else {
-    // lcs[i][j]: the longest common run of xs[i..] and ys[j..].
+    // lcs[i][j]: the longest common run of xs[i..] and ys[j..]. Every index
+    // below is inside the table and the lines, hence the assertions.
     const w = m + 1;
     const lcs = new Uint32Array((n + 1) * w);
     for (let i = n - 1; i >= 0; i--) {
       for (let j = m - 1; j >= 0; j--) {
         lcs[i * w + j] =
-          xs[i] === ys[j] ? lcs[(i + 1) * w + j + 1] + 1 : Math.max(lcs[(i + 1) * w + j], lcs[i * w + j + 1]);
+          xs[i] === ys[j] ? lcs[(i + 1) * w + j + 1]! + 1 : Math.max(lcs[(i + 1) * w + j]!, lcs[i * w + j + 1]!);
       }
     }
     let i = 0;
     let j = 0;
     while (i < n || j < m) {
       if (i < n && j < m && xs[i] === ys[j]) {
-        middle.push({ kind: ' ', text: xs[i] });
+        middle.push({ kind: ' ', text: xs[i]! });
         i++;
         j++;
-      } else if (i < n && (j === m || lcs[(i + 1) * w + j] >= lcs[i * w + j + 1])) {
+      } else if (i < n && (j === m || lcs[(i + 1) * w + j]! >= lcs[i * w + j + 1]!)) {
         // What goes out before what comes in, as diffs are read.
-        middle.push({ kind: '-', text: xs[i++] });
+        middle.push({ kind: '-', text: xs[i++]! });
       } else {
-        middle.push({ kind: '+', text: ys[j++] });
+        middle.push({ kind: '+', text: ys[j++]! });
       }
     }
   }

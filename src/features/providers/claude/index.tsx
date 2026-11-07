@@ -118,8 +118,8 @@ const samePath = (a: string, b: string) =>
 /** The name `claude --worktree <name>` knows this folder's worktree by, or
  *  null when the path is not a worktree Claude Code made right in `folder`. */
 export function worktreeName(folder: string, path: string | null | undefined): string | null {
-  const m = path ? worktreeNameRe.exec(path) : null;
-  return m && samePath(m[1], folder) ? m[2] : null;
+  const [, root, name] = (path && worktreeNameRe.exec(path)) || [];
+  return root !== undefined && name !== undefined && samePath(root, folder) ? name : null;
 }
 
 // ---------------------------------------------------------------- dialog --

@@ -51,7 +51,9 @@ const describe = (reach: Reach) =>
 const tidy = (reach: Reach): Reach =>
   reach.includes(ALL)
     ? [ALL]
-    : reach.filter((r, i) => reach.indexOf(r) === i && !(r.includes('/') && reach.includes(r.split('/')[0])));
+    : reach.filter(
+        (r, i) => reach.indexOf(r) === i && !(r.includes('/') && reach.includes(r.slice(0, r.indexOf('/'))))
+      );
 
 /** One line of the list: a checkbox and what it stands for. */
 function Tick({
