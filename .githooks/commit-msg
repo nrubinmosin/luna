@@ -1,0 +1,10 @@
+#!/bin/sh
+# Refuses a commit message that carries AI attribution (a Co-Authored-By
+# trailer, the robot emoji, a "Generated with ..." line). The rule lives once in
+# scripts/check-commit-msg.sh, which CI runs over every pushed commit too.
+#
+# Enable once per clone:  git config core.hooksPath .githooks
+#
+# Plain sh and git, so it runs the same from Git for Windows' sh.
+
+exec sh "$(git rev-parse --show-toplevel)/scripts/check-commit-msg.sh" "$1"
