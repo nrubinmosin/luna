@@ -7,7 +7,7 @@ import {
   type BrowserSettingsDto,
   type BrowsersDto,
   type LinkContext
-} from '../../ipc/commands';
+} from '../../ipc/browsers';
 import { useChats } from '../chats/chats.store';
 import { logWarn } from '../../shared/lib/log';
 

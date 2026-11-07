@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useDialogHost } from '../../shared/ui/dialogHost';
 import { Icon } from '../../shared/ui/icons';
-import { killSession, orphanSessions, type OrphanSessionDto } from '../../ipc/commands';
+import { killSession, orphanSessions, type OrphanSessionDto } from '../../ipc/sessions';
 import { tail2 } from '../../shared/lib/format';
 import { ConfirmDialog } from '../../shared/ui/ConfirmDialog';
 import { usePanes } from '../panes/panes.store';

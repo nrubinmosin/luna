@@ -88,7 +88,11 @@ src/                          frontend (feature-sliced)
               agent_resumes → startSession (terminals.ts) for a helper to carry on, in a pane or not;
               a model asked for without an effort gets that model's default effort;
               agentAccounts.store — which accounts agents may not use (core settings.json)
-  ipc/        commands.ts (invoke), events.ts (listen) — the only boundary with Rust
+  ipc/        the only boundary with Rust: core.ts — call() (invoke, routed to the core
+              process or the window's side, timed; the demo's answers in a plain browser);
+              a module per domain of commands with its DTOs (accounts, sessions, worktrees,
+              defaults, trust, media, cli, power, coreProcess, agents, accountSettings,
+              library, browsers, accountConfig); events.ts (listen)
 
 src-tauri/src/
   provider.rs   enum Provider { Claude, Codex } — a tag, nothing more

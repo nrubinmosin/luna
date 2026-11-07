@@ -1,5 +1,8 @@
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import type { AgentSpawnRequest, BackgroundHelperDto, CliStatusDto, CoreStateDto, PowerStateDto } from './commands';
+import type { AgentSpawnRequest, BackgroundHelperDto } from './agents';
+import type { CliStatusDto } from './cli';
+import type { CoreStateDto } from './coreProcess';
+import type { PowerStateDto } from './power';
 
 const tauriAvailable = '__TAURI_INTERNALS__' in window;
 

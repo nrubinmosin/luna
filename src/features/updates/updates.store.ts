@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import type { Update } from '@tauri-apps/plugin-updater';
-import { noteExit, stopAllSessions } from '../../ipc/commands';
+import { noteExit, stopAllSessions } from '../../ipc/coreProcess';
 import { useCore } from '../core/core.store';
 import { logInfo, logWarn } from '../../shared/lib/log';
 

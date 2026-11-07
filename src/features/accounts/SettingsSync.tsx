@@ -5,7 +5,7 @@ import {
   settingsSyncState,
   syncSettingsNow,
   type SyncStateDto
-} from '../../ipc/commands';
+} from '../../ipc/accountSettings';
 import { Icon, ToolButton } from '../../shared/ui/icons';
 import { PROVIDER_LABEL, PROVIDERS, type Account, type Provider } from '../../shared/types';
 

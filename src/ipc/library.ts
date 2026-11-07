@@ -1,0 +1,134 @@
+import { call } from './core';
+import type { Provider } from '../shared/types';
+
+/** An account, or what the sessions in a folder get on one account. */
+export type LibraryTarget =
+  | { kind: 'account'; provider: Provider; name: string }
+  | { kind: 'folder'; path: string; provider: Provider; name: string };
+export type PlaceStatus = 'current' | 'behind' | 'missing' | 'changed' | 'gone' | 'taken' | 'skipped' | 'failed';
+
+/** One copy the library wants somewhere, and where it stands. */
+export interface PlaceDto {
+  dest: string;
+  target: LibraryTarget;
+  /** Null for an instructions file. */
+  skill: string | null;
+  /** Which instructions, for an instructions file. */
+  instructions: string | null;
+  /** The name a folder's copy goes by, where the skill's own is another skill's there. */
+  shownAs: string | null;
+  status: PlaceStatus;
+  /** Changed there, and in the library too, since Luna wrote it. */
+  both: boolean;
+  problem: string | null;
+}
+/** Which accounts something goes into: `all`, a provider's every account
+ *  (`claude`, `codex`) or one account (`provider/name`) per entry. */
+export type Reach = string[];
+export interface LibrarySkillDto {
+  name: string;
+  description: string;
+  /** Why it is laid out nowhere, while it is not fit to be. */
+  problem: string | null;
+  /** The accounts it goes into, wherever no folder says otherwise. */
+  accounts: Reach;
+}
+export interface LibraryInstructionsDto {
+  name: string;
+  /** Its first heading, `#` or else `##`; empty without one. */
+  description: string;
+  /** Why it is laid out nowhere: blank, or a file that will not do. */
+  problem: string | null;
+  /** The accounts its reach takes in; a closer reach of other instructions wins. */
+  accounts: Reach;
+}
+export interface LibraryFolderDto {
+  path: string;
+  /** The accounts whose sessions here get a skill, by the skills it says anything of; empty: none. */
+  skills: Record<string, Reach>;
+  /** The instructions its sessions get in place of their account's, by the reach entry they are for (as a
+   *  rule `provider/name`); null: none at all. Absent: it goes by what holds outside it. */
+  instructions?: Record<string, string | null>;
+  found: boolean;
+  /** The accounts, as `provider/name`, whose sessions here would get each skill were the folder to say
+   *  nothing of it; absent: none. */
+  inherited: Record<string, string[]>;
+}
+export interface LibraryOverviewDto {
+  root: string;
+  isDefault: boolean;
+  /** False while the library's folder is not there. */
+  found: boolean;
+  instructions: LibraryInstructionsDto[];
+  /** Accounts that get no instructions however others reach them. */
+  noInstructions: Reach;
+  /** The instructions each account gets, by `provider/name`; absent: none. */
+  instructionsFor: Record<string, string>;
+  /** The instructions.md of before there could be several, left beside instructions/main.md. */
+  oldInstructions: string | null;
+  skills: LibrarySkillDto[];
+  /** Every account, to pick a reach from. */
+  accounts: { provider: Provider; name: string }[];
+  folders: LibraryFolderDto[];
+  places: PlaceDto[];
+  /** Accounts' instruction files Luna did not write, where no instructions go, to start new ones from. */
+  foundInstructions: { dest: string; target: LibraryTarget }[];
+  /** Codex accounts whose AGENTS.override.md hides the AGENTS.md Luna writes. */
+  overridden: string[];
+  /** Copies no longer wanted, left in place because they had changed. */
+  kept: string[];
+}
+export interface LibraryFileDto {
+  path: string;
+  text: string;
+  exists: boolean;
+}
+/** One file of a copy as Luna wrote it last, as the library has it and as it is there. */
+export interface FileDiffDto {
+  path: string;
+  base: string | null;
+  library: string | null;
+  there: string | null;
+  binary: boolean;
+}
+
+export const libraryOverview = () => call<LibraryOverviewDto | null>('library_overview', {}, null);
+/** Lays the library out — everything that needs no asking. */
+export const librarySync = () => call<LibraryOverviewDto | null>('library_sync', {}, null);
+export const librarySetSource = (path: string) => call<LibraryOverviewDto>('library_set_source', { path });
+/** `name` null: the accounts that get no instructions. Each entry is taken from the instructions that had it. */
+export const librarySetInstructions = (name: string | null, accounts: Reach) =>
+  call<LibraryOverviewDto>('library_set_instructions', { name, accounts });
+export const librarySetAccounts = (skill: string, accounts: Reach) =>
+  call<LibraryOverviewDto>('library_set_accounts', { skill, accounts });
+/** Lists a folder, saying nothing of any skill yet, or takes it off the list with all it says. */
+export const librarySetFolder = (path: string, listed: boolean) =>
+  call<LibraryOverviewDto>('library_set_folder', { path, listed });
+/** The accounts whose sessions in a folder get a skill (empty: none), or null: the folder says nothing of it. */
+export const librarySetFolderSkill = (path: string, skill: string, accounts: Reach | null) =>
+  call<LibraryOverviewDto>('library_set_folder_skill', { path, skill, accounts });
+/** What sessions on an account in a folder get in place of its instructions: `name`'s or none (null);
+ *  `inherit`: what holds outside the folder. */
+export const librarySetFolderInstructions = (path: string, account: string, inherit: boolean, name: string | null) =>
+  call<LibraryOverviewDto>('library_set_folder_instructions', { path, account, inherit, name });
+export const librarySkip = (dest: string, on: boolean) => call<LibraryOverviewDto>('library_skip', { dest, on });
+/** `take`: the copy there becomes the library's; otherwise the library's goes back there. */
+export const libraryResolve = (dest: string, take: boolean) =>
+  call<LibraryOverviewDto>('library_resolve', { dest, take });
+export const libraryDiff = (dest: string) => call<FileDiffDto[]>('library_diff', { dest }, []);
+/** The file the editor has open: a skill's SKILL.md or instructions, by name. */
+export type LibraryEntry = { skill: string } | { instructions: string };
+export const libraryRead = (entry: LibraryEntry) => call<LibraryFileDto>('library_read', { entry });
+export const libraryWrite = (entry: LibraryEntry, text: string) =>
+  call<LibraryOverviewDto>('library_write', { entry, text });
+export const libraryCheckSkill = (skill: string, text: string) =>
+  call<string | null>('library_check_skill', { skill, text }, null);
+export const libraryNewSkill = (name: string) => call<LibraryOverviewDto>('library_new_skill', { name });
+export const libraryDeleteSkill = (name: string) => call<LibraryOverviewDto>('library_delete_skill', { name });
+export const libraryNewInstructions = (name: string) => call<LibraryOverviewDto>('library_new_instructions', { name });
+export const libraryRenameInstructions = (from: string, to: string) =>
+  call<LibraryOverviewDto>('library_rename_instructions', { from, to });
+export const libraryDeleteInstructions = (name: string) =>
+  call<LibraryOverviewDto>('library_delete_instructions', { name });
+/** The library's folder, or a skill's, in the file manager. */
+export const libraryOpen = (skill: string | null) => call<void>('library_open', { skill });

@@ -9,7 +9,7 @@ import { jumpToWaiting } from '../panes/navigate';
 import { useNow, worstLimit } from '../accounts/limits';
 import { useUpdates } from '../updates/updates.store';
 import { useCli } from '../updates/cli.store';
-import { cliUpdateNow } from '../../ipc/commands';
+import { cliUpdateNow } from '../../ipc/cli';
 import { PROVIDER_LABEL, PROVIDERS, accountKey, type Account } from '../../shared/types';
 import { PowerChip } from '../power/PowerChip';
 import { useShortcuts } from '../shortcuts/ShortcutsDialog';

@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { create } from 'zustand';
-import { orphanWorktrees } from '../../ipc/commands';
+import { orphanWorktrees } from '../../ipc/worktrees';
 import { useAccounts } from '../accounts/accounts.store';
 import { allChats, useChats } from './chats.store';
 

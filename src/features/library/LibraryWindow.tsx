@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
+import { pickFolder } from '../../ipc/cli';
 import {
   libraryDeleteInstructions,
   libraryDeleteSkill,
@@ -16,7 +17,6 @@ import {
   librarySetSource,
   librarySkip,
   librarySync,
-  pickFolder,
   type LibraryEntry,
   type LibraryFolderDto,
   type LibraryInstructionsDto,
@@ -24,7 +24,7 @@ import {
   type LibraryTarget,
   type PlaceDto,
   type Reach
-} from '../../ipc/commands';
+} from '../../ipc/library';
 import { useDialogHost } from '../../shared/ui/dialogHost';
 import { ConfirmDialog } from '../../shared/ui/ConfirmDialog';
 import { Icon, ToolButton } from '../../shared/ui/icons';

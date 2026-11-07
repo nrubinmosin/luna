@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { SYSTEM_BROWSER, type BrowserSettingsDto } from '../../ipc/commands';
+import { SYSTEM_BROWSER, type BrowserSettingsDto } from '../../ipc/browsers';
 import { useAccounts } from '../accounts/accounts.store';
 import { useChats } from '../chats/chats.store';
 import { PROVIDER_LABEL } from '../../shared/types';

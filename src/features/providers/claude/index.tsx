@@ -14,13 +14,9 @@ import {
   modelFromSetting,
   permFromSetting
 } from '../../../shared/types';
-import {
-  claudeDefaults,
-  claudeFolderTrusted,
-  claudeTrustFolder,
-  ensureClaudeSession,
-  type ClaudeDefaultSource
-} from '../../../ipc/commands';
+import { claudeDefaults, type ClaudeDefaultSource } from '../../../ipc/defaults';
+import { ensureClaudeSession } from '../../../ipc/sessions';
+import { claudeFolderTrusted, claudeTrustFolder } from '../../../ipc/trust';
 import { ModelSelect } from '../../../shared/ui/ModelSelect';
 import { Segmented } from '../../../shared/ui/Segmented';
 import type { Draft, From } from '../../new-chat/draft';

@@ -1,4 +1,5 @@
-import { saveMedia, writeSession } from '../../ipc/commands';
+import { saveMedia } from '../../ipc/media';
+import { writeSession } from '../../ipc/sessions';
 import { logWarn } from './log';
 
 const EXT_BY_TYPE: Record<string, string> = {

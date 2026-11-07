@@ -1,6 +1,6 @@
 import { allChats, useChats } from '../chats/chats.store';
 import { usePower } from './power.store';
-import type { SessionActivityDto } from '../../ipc/commands';
+import type { SessionActivityDto } from '../../ipc/power';
 
 /** What a running session is doing, in the words the power chip uses. */
 export const doing = (s: SessionActivityDto): string => {

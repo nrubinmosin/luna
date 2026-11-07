@@ -21,7 +21,7 @@ import {
   writeAccountConfig,
   type ConfigFileDto,
   type ConfigProblemDto
-} from '../../ipc/commands';
+} from '../../ipc/accountConfig';
 import { useDialogHost } from '../../shared/ui/dialogHost';
 import { Icon } from '../../shared/ui/icons';
 import { PROVIDER_LABEL, type Account, type Provider } from '../../shared/types';

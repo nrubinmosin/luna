@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { libraryOverview, librarySync, type LibraryOverviewDto, type PlaceDto } from '../../ipc/commands';
+import { libraryOverview, librarySync, type LibraryOverviewDto, type PlaceDto } from '../../ipc/library';
 
 /** A copy that waits on the user: changed or deleted there, someone else's
  *  file in its place, or one that cannot be laid out at all. */

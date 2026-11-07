@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { recommendedSettings, type RecommendationDto } from '../../ipc/commands';
+import { recommendedSettings, type RecommendationDto } from '../../ipc/accountSettings';
 import { accountKey, type Account } from '../../shared/types';
 
 /** "k/n": how many of an account's recommended settings its file has, or nothing with none to offer. */

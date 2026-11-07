@@ -12,20 +12,14 @@
  */
 import type { Terminal as XTerm } from '@xterm/xterm';
 import type { Account, Chat, ClaudeChat, CodexChat, Folder, Provider } from '../shared/types';
-import type {
-  AccountsRootInfo,
-  BackgroundHelperDto,
-  WorktreeInfoDto,
-  ClaudeDefaultsDto,
-  CliStatusDto,
-  CodexDefaultsDto,
-  CodexModelDto,
-  CoreStateDto,
-  PowerStateDto,
-  FileDiffDto,
-  LibraryOverviewDto,
-  PlaceDto
-} from '../ipc/commands';
+import type { AccountsRootInfo } from '../ipc/accounts';
+import type { BackgroundHelperDto } from '../ipc/agents';
+import type { CliStatusDto } from '../ipc/cli';
+import type { CoreStateDto } from '../ipc/coreProcess';
+import type { ClaudeDefaultsDto, CodexDefaultsDto, CodexModelDto } from '../ipc/defaults';
+import type { FileDiffDto, LibraryOverviewDto, PlaceDto } from '../ipc/library';
+import type { PowerStateDto } from '../ipc/power';
+import type { WorktreeInfoDto } from '../ipc/worktrees';
 import { useLibrary } from '../features/library/library.store';
 import { useRecommendations } from '../features/settings/recommendations.store';
 import { useBackground } from '../features/agents/background.store';

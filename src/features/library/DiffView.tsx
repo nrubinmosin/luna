@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { libraryDiff, type FileDiffDto } from '../../ipc/commands';
+import { libraryDiff, type FileDiffDto } from '../../ipc/library';
 import { diffLines, hunks } from './diff';
 
 const ADDED = 'color-mix(in oklab, oklch(.68 .16 145) 22%, transparent)';

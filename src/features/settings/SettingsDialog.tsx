@@ -3,27 +3,21 @@ import { createPortal } from 'react-dom';
 import { create } from 'zustand';
 import type { ReactNode } from 'react';
 import { agoLabel } from '../../shared/lib/format';
+import { getAccountsRoot, setAccountsRoot, type AccountsRootInfo } from '../../ipc/accounts';
+import { helpersAboveCaller, setHelpersAboveCaller } from '../../ipc/agents';
+import { pickFolder, cliUpdateNow } from '../../ipc/cli';
+import { coreRestart, coreState, type CoreStateDto } from '../../ipc/coreProcess';
 import {
-  getAccountsRoot,
-  pickFolder,
-  setAccountsRoot,
-  cliUpdateNow,
   fetchBeforeWorktree,
   setFetchBeforeWorktree,
-  helpersAboveCaller,
-  setHelpersAboveCaller,
   codexHooksStart,
   setCodexHooksDefault,
   codexTrustedRoots,
   setCodexTrustedRoots,
-  coreRestart,
-  coreState,
   waitingMarker,
   setWaitingMarker,
-  type AccountsRootInfo,
-  type CoreStateDto,
   type WaitingMarker
-} from '../../ipc/commands';
+} from '../../ipc/worktrees';
 import { onCoreState } from '../../ipc/events';
 import { useAccounts } from '../accounts/accounts.store';
 import { useUpdates } from '../updates/updates.store';

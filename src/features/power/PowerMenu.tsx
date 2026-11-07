@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { CSSProperties } from 'react';
-import type { PowerAction } from '../../ipc/commands';
+import type { PowerAction } from '../../ipc/power';
 import { useChats, allChats } from '../chats/chats.store';
 import { usePower } from './power.store';
 import { doing } from './LiveSessions';

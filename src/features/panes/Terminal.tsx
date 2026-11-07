@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { writeSession } from '../../ipc/commands';
+import { writeSession } from '../../ipc/sessions';
 import { attachFiles, filesFrom } from '../../shared/lib/attach';
 import { ACCENT, tint } from '../../shared/lib/format';
 import type { Chat } from '../../shared/types';

@@ -29,7 +29,7 @@ import { useLibrary } from '../features/library/library.store';
 import { healScaleDrift } from './dpi';
 import { Icon } from '../shared/ui/icons';
 import { STRIP, useShell } from './shell.store';
-import { uiHeartbeat } from '../ipc/commands';
+import { uiHeartbeat } from '../ipc/agents';
 import { onNotify, onOpenChat } from '../ipc/events';
 import { keepKeyboardHome, peekFromNotice } from '../features/panes/navigate';
 import { notify } from '../shared/lib/notify';

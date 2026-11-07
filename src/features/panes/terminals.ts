@@ -24,14 +24,8 @@ import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 import { logWarn } from '../../shared/lib/log';
 import type { Chat } from '../../shared/types';
-import {
-  ensureClaudeSession,
-  ensureCodexSession,
-  openLink,
-  resizeSession,
-  sessionModes,
-  writeSession
-} from '../../ipc/commands';
+import { openLink } from '../../ipc/browsers';
+import { ensureClaudeSession, ensureCodexSession, resizeSession, sessionModes, writeSession } from '../../ipc/sessions';
 import { linkContext, useLinkChooser } from '../browsers/browsers.store';
 import { onPtyExit, onPtyOutput } from '../../ipc/events';
 import { useChats } from '../chats/chats.store';

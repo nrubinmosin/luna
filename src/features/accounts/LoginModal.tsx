@@ -4,7 +4,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 import type { Account } from '../../shared/types';
-import { killSession, resizeSession, writeSession } from '../../ipc/commands';
+import { killSession, resizeSession, writeSession } from '../../ipc/sessions';
 import { onPtyExit, onPtyOutput } from '../../ipc/events';
 import { logWarn } from '../../shared/lib/log';
 import { dark, safely, themeFor, TERM_FONT_FAMILY, TERM_FONT_SIZE } from '../panes/terminals';

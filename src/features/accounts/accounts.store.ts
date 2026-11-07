@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import type { Account, Chat, Provider } from '../../shared/types';
-import * as ipc from '../../ipc/commands';
+import * as ipc from '../../ipc/accounts';
 // Used only inside actions (rename), never while the modules load.
 import { useChats } from '../chats/chats.store';
 import { useNewChat } from '../new-chat/newchat.store';

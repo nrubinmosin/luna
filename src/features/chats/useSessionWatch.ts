@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { savedTitle, sessionMeta } from '../../ipc/commands';
+import { savedTitle, sessionMeta } from '../../ipc/sessions';
 import { notifyWaiting } from '../../shared/lib/notify';
 import { PROVIDER_LABEL, type Chat } from '../../shared/types';
 import { accountOfChat, useAccounts } from '../accounts/accounts.store';

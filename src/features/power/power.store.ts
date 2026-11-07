@@ -7,7 +7,7 @@ import {
   setKeepAwake,
   type PowerAction,
   type PowerStateDto
-} from '../../ipc/commands';
+} from '../../ipc/power';
 import { onPowerState } from '../../ipc/events';
 import { logWarn } from '../../shared/lib/log';
 
