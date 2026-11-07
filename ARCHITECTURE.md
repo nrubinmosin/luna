@@ -221,9 +221,12 @@ src-tauri/src/
                 for helpers — background ones (`codex exec` leaves untrusted hooks out silently) and
                 visible ones (the spawn request carries it) alike. A visible Codex stopped on a list
                 of its own ("Hooks need review") is an `ask` (agents.rs `codex_list_on`)
-    session.rs  rollout files sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl: which is ours,
+    session/    rollout files sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl: which is ours,
                 status, model, context, first prompt, cwd (rollout_cwd — where a --worktree
-                session went); thread name from session_index.jsonl
+                session went); thread name from session_index.jsonl. mod.rs Live;
+                rollouts.rs the files and which is a chat's; scan.rs the running read of
+                turns, a failure, a question, subagents; read.rs what is read on demand;
+                testkit.rs the rollouts its tests write
   checks.rs     what Luna's features rely on, as checks with a status and a fix (the
                 Recommendations window, from its button in the status bar): Luna's settings, account files, the
                 machine's policy files. Answered by the core; a fix is asked for by id.
@@ -314,7 +317,7 @@ src-tauri/src/
   Worktrees are Codex's own: a new worktree chat starts with `--worktree` and `-C` = the project folder,
   and Codex puts the checkout at `<CODEX_HOME>/worktrees/<4 hex>/<repo>` (inside the account folder) on a
   detached HEAD, no branch. Luna learns the path from the rollout's `session_meta.cwd`
-  (`codex/session.rs` `rollout_cwd`), the same way it learns Claude Code's from its registry
+  (`codex/session/read.rs` `rollout_cwd`), the same way it learns Claude Code's from its registry
   (`useSessionWatch`). Codex refuses `--worktree` on resume, so a worktree chat resumes as
   `resume <uuid> -C <worktree>`; if that worktree is gone the session fails to start — nothing
   re-creates it. Login is the same command with `login: true`, i.e. `codex login` in the account folder.

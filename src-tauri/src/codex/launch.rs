@@ -178,7 +178,7 @@ pub(crate) const HOOKS_UNASKED: &str = "--dangerously-bypass-hook-trust";
 /// Codex puts the id of the thread it is on in the window title, which no pane
 /// shows (`PtyManager::codex_thread`): what follows it through a `/new`, a
 /// `/resume` or a `/fork` in its TUI, and tells two chats in one folder apart
-/// before either has a rollout (codex/session.rs `rollout_for`).
+/// before either has a rollout (codex/session/rollouts.rs `rollout_for`).
 const CODEX_TITLE: &str = "tui.terminal_title=[\"thread-id\"]";
 
 /// Luna's own sandbox value: Codex's read-only with the network on, which

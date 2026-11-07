@@ -149,7 +149,7 @@ pub(super) fn command_for(e: &Entry, id: &str) -> (Vec<String>, String, Vec<(&'s
 /// the conversation, where one note at its start goes with a compaction, and a
 /// long helper would go on as the chat of a person. Not in `Entry::opening`,
 /// which goes back to the caller as what it asked, nor in what `luna_read`
-/// gives back (codex/session.rs `message_of`).
+/// gives back (codex/session/read.rs `message_of`).
 pub(super) fn stdin_text(e: &Entry, prompt: &str) -> String {
     match (&e.spec.parent, e.spec.provider) {
         (Some(parent), Provider::Codex) => crate::pty::codex_helper_prompt(parent, prompt),
