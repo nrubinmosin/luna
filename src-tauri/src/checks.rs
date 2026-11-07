@@ -100,6 +100,9 @@ struct Facts {
     /// What the machine's Codex defaults say of the hooks feature.
     codex_default_hooks: Option<bool>,
     accounts: Vec<Account>,
+    /// Whether the data dir is private (paths.rs `data_dir_privacy`); None
+    /// where there is nothing to check.
+    data_dir: Option<crate::paths::Privacy>,
 }
 
 /// What a check of one file goes by beside the file.
@@ -257,6 +260,7 @@ fn gather() -> Result<Facts, String> {
         claude_version: crate::cli::current_version(Provider::Claude),
         codex_default_hooks,
         accounts,
+        data_dir: crate::paths::data_dir_privacy(),
     })
 }
 
@@ -612,6 +616,28 @@ fn policy_check(id: &str, title: &str, cli: &str, policy: &Policy) -> Option<Che
     })
 }
 
+/// The data dir's DACL (paths.rs `protect_data_dir`), which Luna sets
+/// itself as the core starts: a row only says that it did not hold, or what
+/// it found on the way.
+fn data_dir_check(p: &crate::paths::Privacy) -> Check {
+    Check {
+        id: DATA_DIR_PRIVATE.into(),
+        account: None,
+        title: if p.private { "Luna's folder is yours alone" } else { "Luna's folder is open to other users" }.into(),
+        why: "Other users of this computer could read your sessions' history and settings, or replace Luna's program files.".into(),
+        status: if p.private { Status::Ok } else { Status::Off },
+        current: (!p.private).then(|| "open".to_string()),
+        target: (!p.private).then(|| "you, SYSTEM and Administrators only".to_string()),
+        risk: None,
+        note: p.note.clone(),
+        action: (!p.private).then(|| "Make private".to_string()),
+        refused: None,
+        dismissed: false,
+    }
+}
+
+const DATA_DIR_PRIVATE: &str = "data-folder-private";
+
 fn dismiss_key(id: &str, account: Option<&str>) -> String {
     match account {
         Some(account) => format!("{id}@{account}"),
@@ -627,6 +653,7 @@ fn evaluate(f: &Facts) -> Vec<Check> {
     if f.has(Provider::Codex) {
         out.extend(policy_check("codex-policy-hooks", "Hooks are limited by policy", "Codex", &f.codex_policy));
     }
+    out.extend(f.data_dir.as_ref().map(data_dir_check));
     for o in own().iter().filter(|o| o.needs.is_none_or(|p| f.has(p))) {
         out.push(own_check(f, o));
     }
@@ -662,6 +689,9 @@ fn apply(f: &Facts, id: &str, account: Option<&str>, confirmed: bool) -> Result<
         return Err(busy.clone());
     }
     let Some(account) = account else {
+        if id == DATA_DIR_PRIVATE {
+            return crate::paths::protect_data_dir();
+        }
         let o = own().into_iter().find(|o| o.id == id).ok_or("No such recommendation")?;
         // The power module has a hold of its own to bring in line.
         if id == "keep-awake" {
@@ -747,7 +777,23 @@ mod tests {
             claude_version: Some("2.1.318".into()),
             codex_default_hooks: None,
             accounts,
+            data_dir: None,
         }
+    }
+
+    #[test]
+    fn an_open_data_folder_says_so_and_offers_to_close_it() {
+        let mut f = facts(Vec::new());
+        assert!(!evaluate(&f).iter().any(|c| c.id == DATA_DIR_PRIVATE), "nothing to check, no row");
+        f.data_dir = Some(crate::paths::Privacy { private: false, note: Some("could not make it private: denied".into()) });
+        let list = evaluate(&f);
+        let c = check(&list, DATA_DIR_PRIVATE, None);
+        assert_eq!((c.status, c.action.as_deref()), (Status::Off, Some("Make private")));
+        assert!(c.note.as_deref().unwrap().contains("denied"));
+        f.data_dir = Some(crate::paths::Privacy { private: true, note: None });
+        let list = evaluate(&f);
+        let c = check(&list, DATA_DIR_PRIVATE, None);
+        assert_eq!((c.status, c.action.as_deref()), (Status::Ok, None));
     }
 
     fn check<'a>(list: &'a [Check], id: &str, account: Option<&str>) -> &'a Check {
