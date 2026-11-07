@@ -1,5 +1,5 @@
 //! The secrets Luna mints for this run and the checks against them: the MCP
-//! bearer tokens (agents.rs), the hook URLs' secret (hub.rs) and the core's
+//! bearer tokens (agents.rs), the hook URLs' secrets (hub.rs) and the core's
 //! token (coreproc.rs, `core.json`). Each one is all that keeps another local
 //! process off a door on loopback, so it comes from the OS's CSPRNG, never
 //! from anything a process on the same machine could reconstruct (time, pid,
@@ -25,6 +25,25 @@ pub fn random_hex(bytes: usize) -> String {
 pub fn same(presented: &str, expected: &str) -> bool {
     use subtle::ConstantTimeEq;
     presented.as_bytes().ct_eq(expected.as_bytes()).into()
+}
+
+/// HMAC-SHA256 (RFC 2104) of `msg` under `key`, as lowercase hex: a secret
+/// of its own for each `msg`, which nobody can work out from another's
+/// without `key`. By hand over `sha2`, already a dependency, rather than a
+/// crate for these few lines.
+pub fn hmac_hex(key: &[u8], msg: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    const BLOCK: usize = 64;
+    let mut k = [0u8; BLOCK];
+    if key.len() > BLOCK {
+        k[..32].copy_from_slice(&Sha256::digest(key));
+    } else {
+        k[..key.len()].copy_from_slice(key);
+    }
+    let pad = |byte: u8| k.map(|b| b ^ byte);
+    let inner = Sha256::new().chain_update(pad(0x36)).chain_update(msg).finalize();
+    let outer = Sha256::new().chain_update(pad(0x5c)).chain_update(inner).finalize();
+    outer.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Makes `dir` (and its parents) for files that hold a secret, and leaves it
@@ -99,6 +118,17 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("luna-secret-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
+    }
+
+    #[test]
+    fn hmac_is_rfc_4231s() {
+        // Test cases 1, 2 and 6 (a key longer than a block).
+        assert_eq!(hmac_hex(&[0x0b; 20], b"Hi There"), "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7");
+        assert_eq!(hmac_hex(b"Jefe", b"what do ya want for nothing?"), "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843");
+        assert_eq!(
+            hmac_hex(&[0xaa; 131], b"Test Using Larger Than Block-Size Key - Hash Key First"),
+            "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54"
+        );
     }
 
     #[test]
