@@ -57,7 +57,9 @@ pub fn save_media(chat_id: String, name: String, data: String) -> Result<String,
         n += 1;
     }
 
-    fs::write(&path, &bytes).map_err(|e| e.to_string())?;
+    // Private as it is made: the data dir's pass at start covers only what
+    // is there by then.
+    crate::secret::create_private(&path).and_then(|mut f| std::io::Write::write_all(&mut f, &bytes)).map_err(|e| e.to_string())?;
     Ok(path.to_string_lossy().into_owned())
 }
 
