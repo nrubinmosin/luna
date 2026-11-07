@@ -43,8 +43,12 @@ export function RecommendationsChip() {
       }
       className="sb-field click"
       style={{
-        cursor: 'default', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums', fontWeight: 700,
-        color: open ? ACCENT : undefined, padding: open ? undefined : '0 6px'
+        cursor: 'default',
+        whiteSpace: 'nowrap',
+        fontVariantNumeric: 'tabular-nums',
+        fontWeight: 700,
+        color: open ? ACCENT : undefined,
+        padding: open ? undefined : '0 6px'
       }}
     >
       <Icon name="recommend" />

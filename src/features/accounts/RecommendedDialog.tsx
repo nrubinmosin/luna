@@ -14,7 +14,11 @@ const linkStyle = { cursor: 'default', color: 'var(--dim)', textDecoration: 'und
  * takes it back out. Applying touches only the keys that change and leaves
  * the rest of the file — other keys, their order, comments — as it was.
  */
-export function RecommendedDialog({ account, onClose, onEdit }: {
+export function RecommendedDialog({
+  account,
+  onClose,
+  onEdit
+}: {
   account: Account;
   onClose: () => void;
   /** Opens the same file in the hand editor. */
@@ -83,12 +87,23 @@ export function RecommendedDialog({ account, onClose, onEdit }: {
         e.stopPropagation();
         onClose();
       }}
-      style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.35)', display: 'grid', placeItems: 'center', zIndex: 80 }}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(0,0,0,.35)',
+        display: 'grid',
+        placeItems: 'center',
+        zIndex: 80
+      }}
     >
       <div
         onClick={e => e.stopPropagation()}
         className="window"
-        style={{ width: 600, maxWidth: 'calc(100vw - 32px)', boxShadow: 'var(--shadow), var(--border-window-outer), var(--border-window-inner)' }}
+        style={{
+          width: 600,
+          maxWidth: 'calc(100vw - 32px)',
+          boxShadow: 'var(--shadow), var(--border-window-outer), var(--border-window-inner)'
+        }}
       >
         <div className="title-bar">
           <div className="title-bar-text">Recommended settings — {account.name}</div>
@@ -98,54 +113,98 @@ export function RecommendedDialog({ account, onClose, onEdit }: {
         </div>
         <div className="window-body" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           <div style={{ fontSize: 'var(--fs-3)', color: 'var(--dim)', lineHeight: 1.45 }}>
-            What works well for {PROVIDER_LABEL[account.provider]} inside Luna, kept in this
-            account's <code>{file}</code> unless a key says otherwise. A ticked key is one the file will have; untick one it has to
-            take it back out, and {PROVIDER_LABEL[account.provider]} goes back to its own default. The rest
-            of the file stays as it is. Sessions already running pick it up when they next start.
+            What works well for {PROVIDER_LABEL[account.provider]} inside Luna, kept in this account's{' '}
+            <code>{file}</code> unless a key says otherwise. A ticked key is one the file will have; untick one it has
+            to take it back out, and {PROVIDER_LABEL[account.provider]} goes back to its own default. The rest of the
+            file stays as it is. Sessions already running pick it up when they next start.
           </div>
           <div style={{ display: 'flex', gap: 12, fontSize: 'var(--fs-3)' }}>
-            <span className="hover-bg" style={linkStyle} onClick={tickRecommended}>Tick recommended</span>
-            <span className="hover-bg" style={linkStyle} onClick={onEdit}>Edit {file}…</span>
+            <span className="hover-bg" style={linkStyle} onClick={tickRecommended}>
+              Tick recommended
+            </span>
+            <span className="hover-bg" style={linkStyle} onClick={onEdit}>
+              Edit {file}…
+            </span>
           </div>
-          <div className="xp-field" style={{ maxHeight: 'min(420px, calc(100vh - 280px))', overflowY: 'auto', padding: 4 }}>
+          <div
+            className="xp-field"
+            style={{ maxHeight: 'min(420px, calc(100vh - 280px))', overflowY: 'auto', padding: 4 }}
+          >
             {!recs && !error && <div style={{ padding: 8, color: 'var(--faint)' }}>Reading the file…</div>}
             {recs?.map(r => {
               const id = `rec-${r.key}`;
               const adding = picked.has(r.key) && !r.applied;
               const removing = !picked.has(r.key) && r.applied;
               return (
-                <div key={r.key} style={{ display: 'flex', gap: 8, padding: '6px 6px', borderBottom: '1px solid var(--line)' }}>
+                <div
+                  key={r.key}
+                  style={{ display: 'flex', gap: 8, padding: '6px 6px', borderBottom: '1px solid var(--line)' }}
+                >
                   <div className="field-row" style={{ flex: 'none', alignSelf: 'flex-start', paddingTop: 1 }}>
                     <input type="checkbox" id={id} checked={picked.has(r.key)} onChange={() => toggle(r.key)} />
-                    <label htmlFor={id} style={{ cursor: 'default', fontFamily: '"JetBrains Mono", monospace', fontSize: 'var(--fs-2)', fontWeight: 700 }}>
+                    <label
+                      htmlFor={id}
+                      style={{
+                        cursor: 'default',
+                        fontFamily: '"JetBrains Mono", monospace',
+                        fontSize: 'var(--fs-2)',
+                        fontWeight: 700
+                      }}
+                    >
                       {r.key}
                     </label>
                   </div>
                   <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
-                    <div style={{ fontSize: 'var(--fs-2)', fontFamily: '"JetBrains Mono", monospace', display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                    <div
+                      style={{
+                        fontSize: 'var(--fs-2)',
+                        fontFamily: '"JetBrains Mono", monospace',
+                        display: 'flex',
+                        gap: 6,
+                        flexWrap: 'wrap',
+                        alignItems: 'center'
+                      }}
+                    >
                       {r.applied ? (
                         <>
-                          <span style={{ color: 'var(--fg)', fontWeight: 700, textDecoration: removing ? 'line-through' : undefined }}>
+                          <span
+                            style={{
+                              color: 'var(--fg)',
+                              fontWeight: 700,
+                              textDecoration: removing ? 'line-through' : undefined
+                            }}
+                          >
                             {r.recommended}
                           </span>
                           {removing ? (
                             <span style={{ color: 'var(--wait)' }}>→ taken out</span>
                           ) : (
-                            <span title="The file has it" style={{ display: 'inline-flex' }}><Icon name="check" size={13} /></span>
+                            <span title="The file has it" style={{ display: 'inline-flex' }}>
+                              <Icon name="check" size={13} />
+                            </span>
                           )}
                         </>
                       ) : (
                         <>
                           <span style={{ color: 'var(--faint)' }}>{r.current ?? 'not set'}</span>
                           <span style={{ color: 'var(--faint)' }}>→</span>
-                          <span style={{ color: adding ? 'var(--fg)' : 'var(--faint)', fontWeight: 700 }}>{r.recommended}</span>
-                          {r.defaultOn && !adding && <span style={{ color: 'var(--faint)', fontFamily: 'inherit' }}>· recommended</span>}
+                          <span style={{ color: adding ? 'var(--fg)' : 'var(--faint)', fontWeight: 700 }}>
+                            {r.recommended}
+                          </span>
+                          {r.defaultOn && !adding && (
+                            <span style={{ color: 'var(--faint)', fontFamily: 'inherit' }}>· recommended</span>
+                          )}
                         </>
                       )}
                     </div>
                     <div style={{ fontSize: 'var(--fs-2)', color: 'var(--dim)' }}>
                       {r.why}
-                      {r.file && <> Kept in <code>{r.file}</code>, where {PROVIDER_LABEL[account.provider]} reads it.</>}
+                      {r.file && (
+                        <>
+                          {' '}
+                          Kept in <code>{r.file}</code>, where {PROVIDER_LABEL[account.provider]} reads it.
+                        </>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -154,7 +213,9 @@ export function RecommendedDialog({ account, onClose, onEdit }: {
           </div>
           {error && <div style={{ fontSize: 'var(--fs-3)', color: 'oklch(.58 .2 25)' }}>{error}</div>}
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 8 }}>
-            {done && !busy && !changes && <span style={{ flex: 1, fontSize: 'var(--fs-3)', color: 'var(--dim)' }}>Written to {file}.</span>}
+            {done && !busy && !changes && (
+              <span style={{ flex: 1, fontSize: 'var(--fs-3)', color: 'var(--dim)' }}>Written to {file}.</span>
+            )}
             <button onClick={onClose}>Close</button>
             <button className="primary" disabled={busy || !changes} onClick={() => void apply()}>
               {busy ? 'Applying…' : `Apply ${changes}`.trim()}

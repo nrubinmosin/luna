@@ -4,7 +4,12 @@
  * chat gets when nothing is changed carries "· default", so there is never a
  * "default" entry that hides which model it is.
  */
-export function ModelSelect<T extends string>({ items, value, onPick, defaultValue }: {
+export function ModelSelect<T extends string>({
+  items,
+  value,
+  onPick,
+  defaultValue
+}: {
   items: ReadonlyArray<{ value: T; label: string }>;
   value: T;
   onPick: (v: T) => void;

@@ -13,7 +13,12 @@ import { Icon } from '../../shared/ui/icons';
 import { AccountPicker } from './AccountPicker';
 
 const noteStyle: CSSProperties = { fontSize: 'var(--fs-2)', color: 'var(--faint)', marginTop: 3 };
-const linkStyle: CSSProperties = { cursor: 'default', color: 'var(--dim)', textDecoration: 'underline', borderRadius: 2 };
+const linkStyle: CSSProperties = {
+  cursor: 'default',
+  color: 'var(--dim)',
+  textDecoration: 'underline',
+  borderRadius: 2
+};
 
 /**
  * Where the value on screen came from, or the way back if it was changed.
@@ -21,10 +26,7 @@ const linkStyle: CSSProperties = { cursor: 'default', color: 'var(--dim)', textD
  * dialog is a new type on every render, and React would tear the node down
  * and build it again each time.
  */
-function originOf<S extends object>(
-  draft: Draft<S>,
-  describe: (field: keyof S, value: S[keyof S]) => string
-) {
+function originOf<S extends object>(draft: Draft<S>, describe: (field: keyof S, value: S[keyof S]) => string) {
   return (field: keyof S): ReactNode => {
     if (draft.settings[field] !== draft.resolved[field]) {
       return (
@@ -37,11 +39,7 @@ function originOf<S extends object>(
       );
     }
     const src = draft.from[field];
-    return (
-      <div style={noteStyle}>
-        {src ? `from ${src}` : 'nothing in settings says — Luna’s own default'}
-      </div>
-    );
+    return <div style={noteStyle}>{src ? `from ${src}` : 'nothing in settings says — Luna’s own default'}</div>;
   };
 }
 
@@ -106,10 +104,9 @@ export function NewChatDialog() {
   const keptHere = !!ownStart || (provider === 'codex' && hooksStart.kept !== null);
   // A start that is the defaults anyway is no start of the folder's own.
   const keepForFolder = () => {
-    useChats.getState().setStart(
-      folder,
-      worktree === defaultWorktree && tools === defaultTools ? undefined : { worktree, tools }
-    );
+    useChats
+      .getState()
+      .setStart(folder, worktree === defaultWorktree && tools === defaultTools ? undefined : { worktree, tools });
     if (provider !== 'codex') return;
     const kept = hooks === hooksStart.default ? null : hooks;
     void keepCodexHooks(folder, kept).then(() => setHooksStart(s => ({ ...s, kept })));
@@ -117,8 +114,18 @@ export function NewChatDialog() {
 
   // One draft per provider, both kept: switching the account between
   // providers and back must not lose what was set on either side.
-  const claudeDraft = useSettingsDraft<ClaudeSettings>(claude.STOCK, claude.settingsDefaults, provider === 'claude' ? accountPath : '', folder);
-  const codexDraft = useSettingsDraft<CodexSettings>(codex.STOCK, codex.settingsDefaults, provider === 'codex' ? accountPath : '', folder);
+  const claudeDraft = useSettingsDraft<ClaudeSettings>(
+    claude.STOCK,
+    claude.settingsDefaults,
+    provider === 'claude' ? accountPath : '',
+    folder
+  );
+  const codexDraft = useSettingsDraft<CodexSettings>(
+    codex.STOCK,
+    codex.settingsDefaults,
+    provider === 'codex' ? accountPath : '',
+    folder
+  );
 
   // Neither CLI can show its trust prompt the way Luna runs it; detect the
   // untrusted case up front so creating the chat can write the bit itself.
@@ -131,7 +138,8 @@ export function NewChatDialog() {
       setTrusted(true);
       return;
     }
-    void ui(provider).folderTrusted(accountPath, folder)
+    void ui(provider)
+      .folderTrusted(accountPath, folder)
       .then(ok => !stale && setTrusted(ok))
       .catch(() => !stale && setTrusted(true));
     return () => {
@@ -156,7 +164,13 @@ export function NewChatDialog() {
         await createChat({ provider: 'claude', folder, account, settings: claudeDraft.settings, worktree, tools });
       } else {
         await createChat({
-          provider: 'codex', folder, account, settings: codexDraft.settings, worktree, tools, hooksUnasked: hooks
+          provider: 'codex',
+          folder,
+          account,
+          settings: codexDraft.settings,
+          worktree,
+          tools,
+          hooksUnasked: hooks
         });
       }
     } catch (e) {
@@ -196,8 +210,22 @@ export function NewChatDialog() {
   const labelStyle: CSSProperties = { fontSize: 'var(--fs-3)', color: 'var(--dim)', marginBottom: 4, fontWeight: 600 };
 
   return (
-    <div className="scrim" style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.32)', backdropFilter: 'blur(1px)', display: 'grid', placeItems: 'center', zIndex: 60 }}>
-      <div className="window" style={{ width: 480, boxShadow: 'var(--shadow), var(--border-window-outer), var(--border-window-inner)' }}>
+    <div
+      className="scrim"
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(0,0,0,.32)',
+        backdropFilter: 'blur(1px)',
+        display: 'grid',
+        placeItems: 'center',
+        zIndex: 60
+      }}
+    >
+      <div
+        className="window"
+        style={{ width: 480, boxShadow: 'var(--shadow), var(--border-window-outer), var(--border-window-inner)' }}
+      >
         <div className="title-bar">
           <div className="title-bar-text">New chat</div>
           <div className="title-bar-controls">
@@ -212,10 +240,7 @@ export function NewChatDialog() {
             <div style={labelStyle}>Folder</div>
             {/* A list rather than a select: every folder needs its own way out
                 of the list, and a <select> has nowhere to put one. */}
-            <div
-              className="xp-field"
-              style={{ maxHeight: 132, overflowY: 'auto', padding: 2 }}
-            >
+            <div className="xp-field" style={{ maxHeight: 132, overflowY: 'auto', padding: 2 }}>
               {folders.length === 0 && (
                 <div style={{ padding: '6px 7px', fontSize: 'var(--fs-3)', color: 'var(--faint)' }}>
                   Nothing here yet — browse for a folder.
@@ -231,7 +256,12 @@ export function NewChatDialog() {
                     onClick={() => chooseFolder(f.path)}
                     title={f.path}
                     style={{
-                      display: 'flex', alignItems: 'center', gap: 6, padding: '3px 6px', cursor: 'default', borderRadius: 4,
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      padding: '3px 6px',
+                      cursor: 'default',
+                      borderRadius: 4,
                       background: on ? 'var(--row-sel)' : 'transparent',
                       color: on ? 'var(--row-sel-ink)' : 'var(--fg)',
                       fontWeight: on ? 600 : 400,
@@ -239,7 +269,16 @@ export function NewChatDialog() {
                     }}
                     className={on ? undefined : 'hover-bg'}
                   >
-                    <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 'var(--fs-4)' }}>
+                    <span
+                      style={{
+                        flex: 1,
+                        minWidth: 0,
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                        fontSize: 'var(--fs-4)'
+                      }}
+                    >
                       <span style={{ opacity: 0.7 }}>{t.parent} / </span>
                       {t.leaf}
                     </span>
@@ -251,13 +290,17 @@ export function NewChatDialog() {
                         if (!held) void keepCodexHooks(f.path, null);
                         if (on) setFolder('');
                       }}
-                      title={
-                        held ? 'Still holds chats — delete those first' : 'Forget this folder'
-                      }
+                      title={held ? 'Still holds chats — delete those first' : 'Forget this folder'}
                       className={held ? undefined : 'hover-danger'}
                       style={{
-                        width: 18, height: 18, flex: 'none', display: 'grid', placeItems: 'center', borderRadius: 4,
-                        cursor: 'default', opacity: held ? 0.3 : 0.8
+                        width: 18,
+                        height: 18,
+                        flex: 'none',
+                        display: 'grid',
+                        placeItems: 'center',
+                        borderRadius: 4,
+                        cursor: 'default',
+                        opacity: held ? 0.3 : 0.8
                       }}
                     >
                       <Icon name="close" size={13} />
@@ -267,16 +310,34 @@ export function NewChatDialog() {
               })}
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 5 }}>
-              <button className="slim" onClick={() => void browse()}>Browse…</button>
-              <span style={{ flex: 1, minWidth: 0, fontSize: 'var(--fs-2)', color: 'var(--faint)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              <button className="slim" onClick={() => void browse()}>
+                Browse…
+              </button>
+              <span
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  fontSize: 'var(--fs-2)',
+                  color: 'var(--faint)',
+                  whiteSpace: 'nowrap',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis'
+                }}
+              >
                 {folder || 'no folder chosen'}
               </span>
             </div>
             {!trusted && folder && account && (
               <div
                 style={{
-                  marginTop: 7, padding: '7px 9px', borderRadius: 2, fontSize: 'var(--fs-3)', lineHeight: 1.45,
-                  border: `1px solid ${ACCENT}`, background: tint(10, 'transparent'), color: 'var(--dim)'
+                  marginTop: 7,
+                  padding: '7px 9px',
+                  borderRadius: 2,
+                  fontSize: 'var(--fs-3)',
+                  lineHeight: 1.45,
+                  border: `1px solid ${ACCENT}`,
+                  background: tint(10, 'transparent'),
+                  color: 'var(--dim)'
                 }}
               >
                 <span style={{ fontWeight: 600, color: 'var(--fg)' }}>New folder for “{account.name}”.</span>{' '}
@@ -306,12 +367,7 @@ export function NewChatDialog() {
                 }
                 style={{ height: 'calc(var(--ui) * 1.6)' }}
               >
-                <input
-                  type="checkbox"
-                  id="worktree-toggle"
-                  checked={worktree}
-                  onChange={() => setWorktree(w => !w)}
-                />
+                <input type="checkbox" id="worktree-toggle" checked={worktree} onChange={() => setWorktree(w => !w)} />
                 <label htmlFor="worktree-toggle" style={{ whiteSpace: 'nowrap', cursor: 'default' }}>
                   Git worktree
                 </label>
@@ -319,7 +375,7 @@ export function NewChatDialog() {
               <div
                 className="field-row"
                 title={
-                  'Attach Luna\'s MCP tools: the session can spawn helper sessions (another model or ' +
+                  "Attach Luna's MCP tools: the session can spawn helper sessions (another model or " +
                   'account), send them text, read their replies, wait for them, kill and delete them. ' +
                   'Costs about 2k tokens of context once; a plain chat knows nothing of Luna.'
                 }

@@ -1,7 +1,12 @@
 import { create } from 'zustand';
 import {
-  armPowerOff, disarmPowerOff, IDLE_POWER, powerState, setKeepAwake,
-  type PowerAction, type PowerStateDto
+  armPowerOff,
+  disarmPowerOff,
+  IDLE_POWER,
+  powerState,
+  setKeepAwake,
+  type PowerAction,
+  type PowerStateDto
 } from '../../ipc/commands';
 import { onPowerState } from '../../ipc/events';
 import { logWarn } from '../../shared/lib/log';

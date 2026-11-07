@@ -26,8 +26,13 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, { error: E
       <div
         data-app
         style={{
-          height: '100vh', display: 'grid', placeItems: 'center', padding: 32,
-          background: '#3a6ea5', fontFamily: 'var(--sans-serif)', fontSize: 'var(--ui)'
+          height: '100vh',
+          display: 'grid',
+          placeItems: 'center',
+          padding: 32,
+          background: '#3a6ea5',
+          fontFamily: 'var(--sans-serif)',
+          fontSize: 'var(--ui)'
         }}
       >
         <div className="window" style={{ width: 640, maxWidth: '100%' }}>
@@ -44,8 +49,12 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, { error: E
                 <div style={{ fontWeight: 700, marginBottom: 6 }}>Something broke in the UI</div>
                 <pre
                   style={{
-                    maxHeight: 240, overflow: 'auto', margin: 0, padding: 8,
-                    fontSize: 'var(--fs-3)', whiteSpace: 'pre-wrap'
+                    maxHeight: 240,
+                    overflow: 'auto',
+                    margin: 0,
+                    padding: 8,
+                    fontSize: 'var(--fs-3)',
+                    whiteSpace: 'pre-wrap'
                   }}
                 >
                   {error.stack || String(error)}

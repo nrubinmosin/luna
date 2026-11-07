@@ -31,7 +31,7 @@ export function ChatRow({
   const marked = useMarked(s => !!s.by[chat.id]);
   // An agent may spawn into any folder, so a parent missing from this one
   // is not necessarily gone.
-  const parentName = useChats(s => (orphan ? s.findChat(chat.parentId ?? null)?.name ?? null : null));
+  const parentName = useChats(s => (orphan ? (s.findChat(chat.parentId ?? null)?.name ?? null) : null));
   const setActive = useChats(s => s.setActive);
   const dragging = usePanes(s => s.drag === chat.id);
   const layout = usePanes(currentLayout);
@@ -99,7 +99,10 @@ export function ChatRow({
       <span
         title={chat.color ? 'Chat colour — set from the pane title bar' : undefined}
         style={{
-          width: 4, height: 17, borderRadius: 2, flex: 'none',
+          width: 4,
+          height: 17,
+          borderRadius: 2,
+          flex: 'none',
           background: chatColorTheme(chat.color)?.swatch ?? 'transparent'
         }}
       />
@@ -116,7 +119,14 @@ export function ChatRow({
           data-open={chat.childrenOpen ? 'yes' : 'no'}
         >
           <svg width="9" height="9" viewBox="0 0 9 9" aria-hidden>
-            <path d="M3 1.5 6 4.5 3 7.5" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+            <path
+              d="M3 1.5 6 4.5 3 7.5"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.7"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
           </svg>
           {childCount}
         </span>
@@ -161,8 +171,13 @@ export function ChatRow({
             .filter(Boolean)
             .join('\n')}
           style={{
-            flex: '1 1 auto', minWidth: 40, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-            fontSize: 'var(--fs-4)', fontWeight: chat.status === 'waiting' ? 700 : 500
+            flex: '1 1 auto',
+            minWidth: 40,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+            fontSize: 'var(--fs-4)',
+            fontWeight: chat.status === 'waiting' ? 700 : 500
           }}
         >
           {chat.name}
@@ -180,8 +195,15 @@ export function ChatRow({
         <span
           title={layout === 1 ? `Number ${badge} in the list` : `Showing in pane ${badge}`}
           style={{
-            minWidth: 18, height: 18, padding: '0 3px', flex: 'none', borderRadius: 4,
-            display: 'grid', placeItems: 'center', fontSize: 'var(--fs-1)', fontWeight: 600,
+            minWidth: 18,
+            height: 18,
+            padding: '0 3px',
+            flex: 'none',
+            borderRadius: 4,
+            display: 'grid',
+            placeItems: 'center',
+            fontSize: 'var(--fs-1)',
+            fontWeight: 600,
             fontVariantNumeric: 'tabular-nums',
             color: onScreen ? '#fff' : 'inherit',
             opacity: onScreen ? 1 : 0.6,
@@ -209,7 +231,13 @@ export function ChatRow({
             setEditing(true);
           }}
         />
-        <ToolButton icon="trash" size={22} danger title="Delete chat — asks first" onClick={() => setConfirming(true)} />
+        <ToolButton
+          icon="trash"
+          size={22}
+          danger
+          title="Delete chat — asks first"
+          onClick={() => setConfirming(true)}
+        />
       </span>
 
       {confirming && <DeleteChatDialog chat={chat} onClose={() => setConfirming(false)} />}

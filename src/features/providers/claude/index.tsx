@@ -7,10 +7,19 @@
 import type { CSSProperties, ReactNode } from 'react';
 import type { Account, ClaudeChat, ClaudeSettings, Effort, ModelLabel, PermMode } from '../../../shared/types';
 import {
-  EFFORTS, MODELS, PERM_HINTS, effortFromSetting, modelFromSetting, permFromSetting
+  EFFORTS,
+  MODELS,
+  PERM_HINTS,
+  effortFromSetting,
+  modelFromSetting,
+  permFromSetting
 } from '../../../shared/types';
 import {
-  claudeDefaults, claudeFolderTrusted, claudeTrustFolder, ensureClaudeSession, type ClaudeDefaultSource
+  claudeDefaults,
+  claudeFolderTrusted,
+  claudeTrustFolder,
+  ensureClaudeSession,
+  type ClaudeDefaultSource
 } from '../../../ipc/commands';
 import { ModelSelect } from '../../../shared/ui/ModelSelect';
 import { Segmented } from '../../../shared/ui/Segmented';
@@ -29,7 +38,8 @@ export const SOURCE_LABELS: Record<Exclude<ClaudeDefaultSource, 'stock'>, string
   managed: 'the machine-wide managed settings'
 };
 
-export const settingsNote = 'Opens on this account’s Claude Code settings; anything changed here applies to this chat only';
+export const settingsNote =
+  'Opens on this account’s Claude Code settings; anything changed here applies to this chat only';
 
 /**
  * Model, effort and permission mode as Claude Code itself would resolve them
@@ -114,7 +124,10 @@ export function worktreeName(folder: string, path: string | null | undefined): s
 
 // ---------------------------------------------------------------- dialog --
 
-export function Fields({ draft, origin }: {
+export function Fields({
+  draft,
+  origin
+}: {
   draft: Draft<ClaudeSettings>;
   origin: (field: keyof ClaudeSettings) => ReactNode;
 }) {
@@ -151,7 +164,17 @@ export function Fields({ draft, origin }: {
                 <label htmlFor={id} style={{ fontWeight: 600, whiteSpace: 'nowrap', cursor: 'default' }}>
                   {p}
                 </label>
-                <span style={{ fontSize: 'var(--fs-2)', color: 'var(--faint)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{PERM_HINTS[p]}</span>
+                <span
+                  style={{
+                    fontSize: 'var(--fs-2)',
+                    color: 'var(--faint)',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap'
+                  }}
+                >
+                  {PERM_HINTS[p]}
+                </span>
               </div>
             );
           })}
@@ -171,7 +194,9 @@ export function Meta({ chat }: { chat: ClaudeChat }) {
       <span className="pchip" title={`Model and effort: ${chat.model}, ${chat.effort}`}>
         <b>{chat.model}</b> {chat.effort}
       </span>
-      <span className="pchip opt-2" title={`Permission mode: ${chat.perm} — ${PERM_HINTS[chat.perm]}`}>{chat.perm}</span>
+      <span className="pchip opt-2" title={`Permission mode: ${chat.perm} — ${PERM_HINTS[chat.perm]}`}>
+        {chat.perm}
+      </span>
     </>
   );
 }

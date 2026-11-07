@@ -93,9 +93,16 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
         take(filesFrom(e.dataTransfer));
       }}
       style={{
-        flex: 1, minHeight: 0, background: 'var(--term)', padding: '12px 14px',
-        fontFamily: TERM_FONT_FAMILY, fontSize: TERM_FONT_SIZE,
-        color: 'var(--dim)', overflow: 'hidden', display: 'flex', flexDirection: 'column',
+        flex: 1,
+        minHeight: 0,
+        background: 'var(--term)',
+        padding: '12px 14px',
+        fontFamily: TERM_FONT_FAMILY,
+        fontSize: TERM_FONT_SIZE,
+        color: 'var(--dim)',
+        overflow: 'hidden',
+        display: 'flex',
+        flexDirection: 'column',
         position: 'relative'
       }}
     >
@@ -104,9 +111,17 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
       {dropping && (
         <div
           style={{
-            position: 'absolute', inset: 6, borderRadius: 9, pointerEvents: 'none',
-            border: `1.5px dashed ${ACCENT}`, background: tint(14, 'transparent'),
-            display: 'grid', placeItems: 'center', fontSize: 'var(--fs-5)', fontWeight: 590, color: ACCENT,
+            position: 'absolute',
+            inset: 6,
+            borderRadius: 9,
+            pointerEvents: 'none',
+            border: `1.5px dashed ${ACCENT}`,
+            background: tint(14, 'transparent'),
+            display: 'grid',
+            placeItems: 'center',
+            fontSize: 'var(--fs-5)',
+            fontWeight: 590,
+            color: ACCENT,
             fontFamily: 'var(--sans-serif)'
           }}
         >
@@ -116,9 +131,16 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
       {attaching > 0 && (
         <div
           style={{
-            position: 'absolute', right: 12, bottom: 10, pointerEvents: 'none',
-            padding: '3px 9px', borderRadius: 7, background: 'var(--chip)',
-            fontSize: 'var(--fs-3)', color: 'var(--dim)', fontFamily: 'var(--sans-serif)'
+            position: 'absolute',
+            right: 12,
+            bottom: 10,
+            pointerEvents: 'none',
+            padding: '3px 9px',
+            borderRadius: 7,
+            background: 'var(--chip)',
+            fontSize: 'var(--fs-3)',
+            color: 'var(--dim)',
+            fontFamily: 'var(--sans-serif)'
           }}
         >
           attaching {attaching} file{attaching > 1 ? 's' : ''}…

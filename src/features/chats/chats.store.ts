@@ -60,9 +60,7 @@ interface ChatsState {
  *  A folder with nothing in this group is not shown: it stays in the launch
  *  list, which is the new-chat dialog's business, not the sidebar's. */
 export const foldersOfGroup = (folders: Folder[], group: GroupId): Folder[] =>
-  folders
-    .map(f => ({ ...f, chats: f.chats.filter(c => c.group === group) }))
-    .filter(f => f.chats.length > 0);
+  folders.map(f => ({ ...f, chats: f.chats.filter(c => c.group === group) })).filter(f => f.chats.length > 0);
 
 /**
  * One group's chats in the order the sidebar lists them, folded-away folders
@@ -173,8 +171,7 @@ export const useChats = create<ChatsState>()(
         }));
       },
 
-      removeFolder: folderId =>
-        set(s => ({ folders: s.folders.filter(f => f.id !== folderId || f.chats.length > 0) })),
+      removeFolder: folderId => set(s => ({ folders: s.folders.filter(f => f.id !== folderId || f.chats.length > 0) })),
 
       setStart: (folderPath, start) =>
         set(s => ({ folders: s.folders.map(f => (f.path === folderPath ? { ...f, start } : f)) })),
@@ -218,9 +215,7 @@ export const useChats = create<ChatsState>()(
         set(s => ({
           folders: s.folders.map(f => ({
             ...f,
-            chats: f.chats.map(c =>
-              c.id === chatId && c.worktreePath !== path ? { ...c, worktreePath: path } : c
-            )
+            chats: f.chats.map(c => (c.id === chatId && c.worktreePath !== path ? { ...c, worktreePath: path } : c))
           }))
         })),
 
@@ -228,9 +223,7 @@ export const useChats = create<ChatsState>()(
         set(s => ({
           folders: s.folders.map(f => ({
             ...f,
-            chats: f.chats.map(c =>
-              c.id === chatId && c.sessionId !== sessionId ? { ...c, sessionId } : c
-            )
+            chats: f.chats.map(c => (c.id === chatId && c.sessionId !== sessionId ? { ...c, sessionId } : c))
           }))
         })),
 

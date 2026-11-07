@@ -4,9 +4,22 @@ import { create } from 'zustand';
 import type { ReactNode } from 'react';
 import { agoLabel } from '../../shared/lib/format';
 import {
-  getAccountsRoot, pickFolder, setAccountsRoot, cliUpdateNow, fetchBeforeWorktree, setFetchBeforeWorktree,
-  codexHooksStart, setCodexHooksDefault, codexTrustedRoots, setCodexTrustedRoots,
-  coreRestart, coreState, waitingMarker, setWaitingMarker, type AccountsRootInfo, type CoreStateDto,
+  getAccountsRoot,
+  pickFolder,
+  setAccountsRoot,
+  cliUpdateNow,
+  fetchBeforeWorktree,
+  setFetchBeforeWorktree,
+  codexHooksStart,
+  setCodexHooksDefault,
+  codexTrustedRoots,
+  setCodexTrustedRoots,
+  coreRestart,
+  coreState,
+  waitingMarker,
+  setWaitingMarker,
+  type AccountsRootInfo,
+  type CoreStateDto,
   type WaitingMarker
 } from '../../ipc/commands';
 import { onCoreState } from '../../ipc/events';
@@ -21,16 +34,19 @@ import { useNotifyPrefs } from '../../shared/lib/notifyPrefs.store';
 import { useDialogHost } from '../../shared/ui/dialogHost';
 import { BrowserSection } from '../browsers/BrowserSection';
 
-const pct = (got: number, total: number | null) =>
-  total ? Math.min(100, Math.round((got / total) * 100)) : null;
+const pct = (got: number, total: number | null) => (total ? Math.min(100, Math.round((got / total) * 100)) : null);
 
 export function Section({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div style={{ marginBottom: 14 }}>
       <div
         style={{
-          fontSize: 'var(--fs-1)', fontWeight: 700, textTransform: 'uppercase',
-          letterSpacing: '.04em', color: 'var(--faint)', marginBottom: 6
+          fontSize: 'var(--fs-1)',
+          fontWeight: 700,
+          textTransform: 'uppercase',
+          letterSpacing: '.04em',
+          color: 'var(--faint)',
+          marginBottom: 6
         }}
       >
         {label}
@@ -42,7 +58,15 @@ export function Section({ label, children }: { label: string; children: ReactNod
 
 /** One product's line in the updates section: name, state, one button. */
 function VersionRow({
-  name, version, status, statusTitle, error, action, actionLabel, primary, disabled
+  name,
+  version,
+  status,
+  statusTitle,
+  error,
+  action,
+  actionLabel,
+  primary,
+  disabled
 }: {
   name: string;
   version: string;
@@ -64,8 +88,12 @@ function VersionRow({
         <div
           title={statusTitle ?? status}
           style={{
-            fontSize: 'var(--fs-2)', marginTop: 1, whiteSpace: 'nowrap', overflow: 'hidden',
-            textOverflow: 'ellipsis', color: error ? 'oklch(.58 .2 25)' : 'var(--faint)'
+            fontSize: 'var(--fs-2)',
+            marginTop: 1,
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            color: error ? 'oklch(.58 .2 25)' : 'var(--faint)'
           }}
         >
           {status}
@@ -99,8 +127,8 @@ function LunaRow() {
           : phase === 'stopping'
             ? 'stopping the sessions to install…'
             : phase === 'error'
-            ? `update check failed — ${error ?? 'unknown error'}`
-            : `checked ${agoLabel(checkedAt)}`;
+              ? `update check failed — ${error ?? 'unknown error'}`
+              : `checked ${agoLabel(checkedAt)}`;
 
   return (
     <VersionRow
@@ -360,7 +388,11 @@ function WaitingMarkerRow() {
           style={{ flex: 1, minWidth: 0, fontFamily: 'var(--mono, monospace)', fontSize: 'var(--fs-2)' }}
           aria-label="Waiting marker"
         />
-        <button className="slim" disabled={!saved || text.trim() === saved.text} onClick={() => saved && save(saved.on, text)}>
+        <button
+          className="slim"
+          disabled={!saved || text.trim() === saved.text}
+          onClick={() => saved && save(saved.on, text)}
+        >
           Save
         </button>
       </div>
@@ -381,7 +413,18 @@ function TrustedRoots() {
     <>
       {(roots ?? []).map(r => (
         <div key={r} className="field-row" style={{ padding: '2px 0', gap: 6 }}>
-          <span title={r} style={{ flex: 1, minWidth: 0, fontSize: 'var(--fs-3)', color: 'var(--dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          <span
+            title={r}
+            style={{
+              flex: 1,
+              minWidth: 0,
+              fontSize: 'var(--fs-3)',
+              color: 'var(--dim)',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap'
+            }}
+          >
             {r}
           </span>
           <button className="slim" onClick={() => save((roots ?? []).filter(x => x !== r))}>
@@ -402,10 +445,9 @@ function TrustedRoots() {
         Add folder…
       </button>
       <div style={{ fontSize: 'var(--fs-1)', color: 'var(--faint)', marginTop: 4 }}>
-        A Codex session in a project anywhere under these starts trusted — its own{' '}
-        <code>.codex/</code> config, hooks and rules load — with nothing written to the account’s{' '}
-        <code>config.toml</code>. Codex itself trusts each project by its exact path only. Helpers in
-        the background are trusted wherever they are sent.
+        A Codex session in a project anywhere under these starts trusted — its own <code>.codex/</code> config, hooks
+        and rules load — with nothing written to the account’s <code>config.toml</code>. Codex itself trusts each
+        project by its exact path only. Helpers in the background are trusted wherever they are sent.
       </div>
     </>
   );
@@ -435,8 +477,14 @@ function AccountsFolder() {
       <div
         title={info?.path}
         style={{
-          fontSize: 'var(--fs-3)', color: 'var(--dim)', whiteSpace: 'nowrap', overflow: 'hidden',
-          textOverflow: 'ellipsis', direction: 'rtl', textAlign: 'left', marginBottom: 6
+          fontSize: 'var(--fs-3)',
+          color: 'var(--dim)',
+          whiteSpace: 'nowrap',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          direction: 'rtl',
+          textAlign: 'left',
+          marginBottom: 6
         }}
       >
         {/* rtl so the ellipsis eats the drive letter, not the folder name. */}
@@ -444,7 +492,11 @@ function AccountsFolder() {
       </div>
       <div style={{ display: 'flex', gap: 6 }}>
         <button
-          onClick={() => void pickFolder().then(p => { if (p) return apply(p); })}
+          onClick={() =>
+            void pickFolder().then(p => {
+              if (p) return apply(p);
+            })
+          }
           className="slim"
           style={{ minWidth: 74 }}
         >
@@ -460,9 +512,8 @@ function AccountsFolder() {
         </button>
       </div>
       <div style={{ fontSize: 'var(--fs-1)', color: 'var(--faint)', marginTop: 5 }}>
-        Claude Code accounts live under <code>anthropic/</code>, Codex accounts under <code>openai/</code>.
-        Only the location changes — move the account folders yourself. Running sessions keep their
-        current paths.
+        Claude Code accounts live under <code>anthropic/</code>, Codex accounts under <code>openai/</code>. Only the
+        location changes — move the account folders yourself. Running sessions keep their current paths.
       </div>
       {error && <div style={{ fontSize: 'var(--fs-2)', color: 'oklch(.58 .2 25)', marginTop: 4 }}>{error}</div>}
     </>
@@ -509,8 +560,13 @@ function SettingsWindow({ onClose }: { onClose: () => void }) {
       }}
       className="scrim"
       style={{
-        position: 'fixed', inset: 0, background: 'rgba(0,0,0,.35)', backdropFilter: 'blur(1px)',
-        display: 'grid', placeItems: 'center', zIndex: 70
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(0,0,0,.35)',
+        backdropFilter: 'blur(1px)',
+        display: 'grid',
+        placeItems: 'center',
+        zIndex: 70
       }}
     >
       <div
@@ -533,20 +589,18 @@ function SettingsWindow({ onClose }: { onClose: () => void }) {
             <StartRow label="Luna tools" which="tools" />
             <HooksRow />
             <div style={{ fontSize: 'var(--fs-1)', color: 'var(--faint)', marginTop: 4 }}>
-              How the checkboxes start in a new chat, quick chats included. Flipping one is just for
-              that chat; a folder that should start otherwise keeps its own — “keep for this folder” in
-              the new-chat dialog. Codex runs a project’s hooks only once they are trusted, and asks
-              again for every new worktree, account or edited hook; a helper in the background cannot
-              ask and goes without them. Without asking, it runs them as they are. Helpers take what
-              their folder would start with.
+              How the checkboxes start in a new chat, quick chats included. Flipping one is just for that chat; a folder
+              that should start otherwise keeps its own — “keep for this folder” in the new-chat dialog. Codex runs a
+              project’s hooks only once they are trusted, and asks again for every new worktree, account or edited hook;
+              a helper in the background cannot ask and goes without them. Without asking, it runs them as they are.
+              Helpers take what their folder would start with.
             </div>
             <FetchRow />
             <div style={{ fontSize: 'var(--fs-1)', color: 'var(--faint)', marginTop: 4 }}>
-              Claude Code branches its worktree off origin’s default branch as last fetched, and fetches
-              it itself only once a day. With this on, Luna runs <code>git fetch</code> first — ten seconds
-              at most, never asking for a password. Only origin’s branches move; nothing you have checked
-              out is touched. Codex starts its worktree from the commit you have checked out, which no
-              fetch changes.
+              Claude Code branches its worktree off origin’s default branch as last fetched, and fetches it itself only
+              once a day. With this on, Luna runs <code>git fetch</code> first — ten seconds at most, never asking for a
+              password. Only origin’s branches move; nothing you have checked out is touched. Codex starts its worktree
+              from the commit you have checked out, which no fetch changes.
             </div>
           </Section>
           <Section label="Links">
@@ -558,37 +612,36 @@ function SettingsWindow({ onClose }: { onClose: () => void }) {
           <Section label="Board">
             <AutoTileRow />
             <div style={{ fontSize: 'var(--fs-1)', color: 'var(--faint)', marginTop: 4 }}>
-              A new chat with no free pane grows the board by one pane, up to four, and lands in it;
-              taking a chat off the board or deleting it shrinks the board by one. Off, a new chat with
-              nowhere to go comes up on the sheet and the board stays as you arranged it.
+              A new chat with no free pane grows the board by one pane, up to four, and lands in it; taking a chat off
+              the board or deleting it shrinks the board by one. Off, a new chat with nowhere to go comes up on the
+              sheet and the board stays as you arranged it.
             </div>
           </Section>
           <Section label="Notifications">
             <SoundRow />
             <div style={{ fontSize: 'var(--fs-1)', color: 'var(--faint)', marginTop: 4 }}>
-              The system’s own notification sound, at its volume and muted by Do Not Disturb like any
-              other. A click on a notification about a chat — waiting for you, or one its agent raised
-              with <code>luna_notify</code> — brings that chat up on the peek sheet.
+              The system’s own notification sound, at its volume and muted by Do Not Disturb like any other. A click on
+              a notification about a chat — waiting for you, or one its agent raised with <code>luna_notify</code> —
+              brings that chat up on the peek sheet.
             </div>
           </Section>
           <Section label="Waiting for you">
             <WaitingMarkerRow />
             <div style={{ fontSize: 'var(--fs-1)', color: 'var(--faint)', marginTop: 4 }}>
-              A chat of yours whose turn is over and whose last message ends on a line holding this
-              text shows as waiting, as one on a permission prompt does, until you next write to it or
-              clear it by hand with the check on its title bar or row; the next turn that ends on it
-              waits again. For a reply format that ends on a status line. Helpers ask the chat that
-              started them, not you. A power-off armed for when all is done does not wait for such a
-              chat.
+              A chat of yours whose turn is over and whose last message ends on a line holding this text shows as
+              waiting, as one on a permission prompt does, until you next write to it or clear it by hand with the check
+              on its title bar or row; the next turn that ends on it waits again. For a reply format that ends on a
+              status line. Helpers ask the chat that started them, not you. A power-off armed for when all is done does
+              not wait for such a chat.
             </div>
           </Section>
           <Section label="Deleting chats">
             <DropWorktreeRow />
             <div style={{ fontSize: 'var(--fs-1)', color: 'var(--faint)', marginTop: 4 }}>
-              Where the worktree checkbox starts when you delete a chat that has one: Claude Code’s, in
-              the project’s <code>.claude/worktrees</code>, goes with its <code>worktree-…</code> branch;
-              Codex’s, in the account folder, has no branch of its own. It can still be flipped per
-              chat; uncommitted work in a deleted worktree is lost.
+              Where the worktree checkbox starts when you delete a chat that has one: Claude Code’s, in the project’s{' '}
+              <code>.claude/worktrees</code>, goes with its <code>worktree-…</code> branch; Codex’s, in the account
+              folder, has no branch of its own. It can still be flipped per chat; uncommitted work in a deleted worktree
+              is lost.
             </div>
           </Section>
           <Section label="Versions & updates">
@@ -597,8 +650,8 @@ function SettingsWindow({ onClose }: { onClose: () => void }) {
             <CliRow provider="claude" />
             <CliRow provider="codex" />
             <div style={{ fontSize: 'var(--fs-1)', color: 'var(--faint)', marginTop: 4 }}>
-              Luna checks for its own updates on launch; each CLI is re-checked every 6 hours.
-              New chats spawn on a fresh CLI — running sessions keep the version they started with.
+              Luna checks for its own updates on launch; each CLI is re-checked every 6 hours. New chats spawn on a
+              fresh CLI — running sessions keep the version they started with.
             </div>
           </Section>
         </div>

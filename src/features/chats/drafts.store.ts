@@ -48,7 +48,8 @@ export function draftTag(d: DraftState | undefined): { text: string; title: stri
   if (d.draft) {
     return {
       text: 'draft',
-      title: 'An unsent draft is in the composer. Messages from other sessions wait for it, unless Claude Code can put it aside (Ctrl+S) for them.'
+      title:
+        'An unsent draft is in the composer. Messages from other sessions wait for it, unless Claude Code can put it aside (Ctrl+S) for them.'
     };
   }
   return { text: `${d.held} held`, title: `Luna is holding ${msgs} for this chat until you stop typing.` };

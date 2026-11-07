@@ -5,8 +5,13 @@ import { useDialogHost } from '../../shared/ui/dialogHost';
 import { Icon, ToolButton } from '../../shared/ui/icons';
 import { useChats } from '../chats/chats.store';
 
-const baseName = (path: string) => path.replace(/[\\/]+$/, '').split(/[\\/]+/).pop() || path;
-const same = (a: string, b: string) => a.replace(/[\\/]+$/, '').toLowerCase() === b.replace(/[\\/]+$/, '').toLowerCase();
+const baseName = (path: string) =>
+  path
+    .replace(/[\\/]+$/, '')
+    .split(/[\\/]+/)
+    .pop() || path;
+const same = (a: string, b: string) =>
+  a.replace(/[\\/]+$/, '').toLowerCase() === b.replace(/[\\/]+$/, '').toLowerCase();
 
 const TITLE =
   'Give skills to the sessions Luna starts in a folder of yours — a repository, say — and in its worktrees, or keep\n' +
@@ -75,7 +80,16 @@ export function AddFolder({ columns, onAdd }: { columns: string[]; onAdd: (path:
       className="hover-bg"
       title={title}
       onClick={onClick}
-      style={{ display: 'flex', alignItems: 'center', gap: 6, height: 26, padding: '0 8px', borderRadius: 4, cursor: 'default', whiteSpace: 'nowrap' }}
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 6,
+        height: 26,
+        padding: '0 8px',
+        borderRadius: 4,
+        cursor: 'default',
+        whiteSpace: 'nowrap'
+      }}
     >
       <Icon name="folder" size={14} />
       {label}
@@ -84,14 +98,30 @@ export function AddFolder({ columns, onAdd }: { columns: string[]; onAdd: (path:
 
   return (
     <span ref={face} style={{ display: 'inline-flex' }}>
-      <ToolButton icon="folder" label="Add a folder…" title={TITLE} active={open} onClick={() => (offered.length ? setOpen(o => !o) : browse())} />
+      <ToolButton
+        icon="folder"
+        label="Add a folder…"
+        title={TITLE}
+        active={open}
+        onClick={() => (offered.length ? setOpen(o => !o) : browse())}
+      />
       {open &&
         host &&
         createPortal(
-          <div ref={list} role="menu" className="popover" style={{ left: pos?.left ?? -9999, top: pos?.top ?? 0, minWidth: 220, padding: 4 }}>
+          <div
+            ref={list}
+            role="menu"
+            className="popover"
+            style={{ left: pos?.left ?? -9999, top: pos?.top ?? 0, minWidth: 220, padding: 4 }}
+          >
             {offered.map(f => row(f.path, baseName(f.path), f.path, () => add(f.path)))}
             <div style={{ borderTop: '1px solid var(--line)', margin: '4px 0' }} />
-            {row('other', 'Other folder…', 'Pick any folder — one that holds several repositories gives its skills to every one', browse)}
+            {row(
+              'other',
+              'Other folder…',
+              'Pick any folder — one that holds several repositories gives its skills to every one',
+              browse
+            )}
           </div>,
           host
         )}

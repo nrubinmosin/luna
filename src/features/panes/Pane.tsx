@@ -60,8 +60,11 @@ function ColorPicker({ chat, anchor, onClose }: { chat: Chat; anchor: HTMLElemen
       className="popover"
       onClick={e => e.stopPropagation()}
       style={{
-        left: pos?.left ?? -9999, top: pos?.top ?? 0,
-        display: 'grid', gridTemplateColumns: 'repeat(6, 22px)', gap: 6
+        left: pos?.left ?? -9999,
+        top: pos?.top ?? 0,
+        display: 'grid',
+        gridTemplateColumns: 'repeat(6, 22px)',
+        gap: 6
       }}
     >
       <span
@@ -194,7 +197,11 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
         else setOver(-1);
       }}
       style={{
-        flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column',
+        flex: 1,
+        minWidth: 0,
+        minHeight: 0,
+        display: 'flex',
+        flexDirection: 'column',
         background: 'var(--bg)',
         border: `1px solid ${over || spotted ? ACCENT : 'var(--window-frame)'}`,
         // The top corners sit one pixel outside the title bar's own 8px curve,
@@ -202,7 +209,8 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
         // with the bottom, the bar curved away from a frame that stayed square
         // and left a wedge of pane background showing in each corner.
         borderRadius: '9px 9px 3px 3px',
-        overflow: 'hidden', transition: 'box-shadow .12s, border-color .12s',
+        overflow: 'hidden',
+        transition: 'box-shadow .12s, border-color .12s',
         opacity: beingDragged ? 0.4 : 1,
         boxShadow: over
           ? `0 0 0 3px ${tint(28, 'transparent')}`
@@ -343,7 +351,10 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
 
               {!editing && (
                 <span className="pane-chips">
-                  <span className="pchip opt-1" title={`Running on ${PROVIDER_LABEL[chat.provider]} account "${chat.account}"`}>
+                  <span
+                    className="pchip opt-1"
+                    title={`Running on ${PROVIDER_LABEL[chat.provider]} account "${chat.account}"`}
+                  >
                     <Icon name={chat.provider} size={12} />
                     {chat.account}
                   </span>
@@ -351,14 +362,24 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
                       the end, and these two change what the session may do
                       and where it writes. */}
                   {chat.tools && (
-                    <span className="pchip opt-2" title="Luna tools on: this session can spawn and drive other sessions">
+                    <span
+                      className="pchip opt-2"
+                      title="Luna tools on: this session can spawn and drive other sessions"
+                    >
                       <Icon name="agents" size={12} />
                       tools
                     </span>
                   )}
                   {(chat.worktree || chat.worktreePath) && (
-                    <span className="pchip opt-2" title={`Isolated git worktree${chat.worktreePath ? `
-${chat.worktreePath}` : ''}`}>
+                    <span
+                      className="pchip opt-2"
+                      title={`Isolated git worktree${
+                        chat.worktreePath
+                          ? `
+${chat.worktreePath}`
+                          : ''
+                      }`}
+                    >
                       worktree
                     </span>
                   )}
@@ -421,7 +442,16 @@ ${chat.worktreePath}` : ''}`}>
           </div>
         </>
       ) : (
-        <div style={{ flex: 1, display: 'grid', placeItems: 'center', gap: 6, alignContent: 'center', color: 'var(--faint)' }}>
+        <div
+          style={{
+            flex: 1,
+            display: 'grid',
+            placeItems: 'center',
+            gap: 6,
+            alignContent: 'center',
+            color: 'var(--faint)'
+          }}
+        >
           <div style={{ width: 40, height: 30, border: '1.5px dashed var(--line)', borderRadius: 3 }} />
           {/* With one pane a click in the list fills it; with more, which pane
               a chat goes to is a choice, and the drag is how it is made. */}

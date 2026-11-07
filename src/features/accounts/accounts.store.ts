@@ -177,7 +177,7 @@ const patchOf = (lim: Round | null, prev: Account | undefined): Partial<Account>
     signedIn: lim.signedIn,
     refreshError: lim.refreshError
   };
-  const sync = lim.rateLimited != null ? 'throttled' as const : lim.stale ? 'stale' as const : null;
+  const sync = lim.rateLimited != null ? ('throttled' as const) : lim.stale ? ('stale' as const) : null;
 
   if (lim.haveUsage && lim.limits) {
     return {
@@ -228,7 +228,13 @@ export const useAccounts = create<AccountsState>()((set, get) => ({
       // The round is the only thing that schedules the next one: a list that
       // failed once (the core restarting) must not end the polling for good.
       if (polling) {
-        scheduleRetry(BACKOFF_S[Math.min(backoffStep++, BACKOFF_S.length - 1)], () => void get().refresh().catch(() => {}));
+        scheduleRetry(
+          BACKOFF_S[Math.min(backoffStep++, BACKOFF_S.length - 1)],
+          () =>
+            void get()
+              .refresh()
+              .catch(() => {})
+        );
       }
       throw e;
     }
@@ -236,9 +242,7 @@ export const useAccounts = create<AccountsState>()((set, get) => ({
     // the whole footer on a timer, which is what the flicker was.
     const cur = get();
     const same =
-      cur.loaded &&
-      cur.accounts.length === list.length &&
-      list.every((a, i) => cur.accounts[i]?.path === a.path);
+      cur.loaded && cur.accounts.length === list.length && list.every((a, i) => cur.accounts[i]?.path === a.path);
     if (!same) {
       set(s => ({
         accounts: list.map(a => s.accounts.find(x => x.path === a.path) ?? toAccount(a)),
@@ -262,7 +266,13 @@ export const useAccounts = create<AccountsState>()((set, get) => ({
       const askedAt = Date.now();
       const lim = a.provider === 'codex' ? await askCodex(a.path) : await askClaude(a.path);
       if (lim?.rateLimited != null) serverWait = Math.max(serverWait, lim.rateLimited);
-      patches.set(a.path, { askedAt, patch: patchOf(lim, get().accounts.find(x => x.path === a.path)) });
+      patches.set(a.path, {
+        askedAt,
+        patch: patchOf(
+          lim,
+          get().accounts.find(x => x.path === a.path)
+        )
+      });
     }
 
     // The round takes seconds per account; a click on refresh that answered
@@ -299,7 +309,13 @@ export const useAccounts = create<AccountsState>()((set, get) => ({
       unhappy.length === 0
         ? Math.max(HEALTHY_S, serverWait, throttled ? THROTTLED_S : 0)
         : Math.max(BACKOFF_S[Math.min(backoffStep++, BACKOFF_S.length - 1)], serverWait, throttled ? THROTTLED_S : 0);
-    scheduleRetry(wait, () => void get().refresh().catch(() => {}));
+    scheduleRetry(
+      wait,
+      () =>
+        void get()
+          .refresh()
+          .catch(() => {})
+    );
   },
 
   refreshAccount: async account => {
@@ -320,7 +336,9 @@ export const useAccounts = create<AccountsState>()((set, get) => ({
   startPolling: () => {
     if (polling) return;
     polling = true;
-    void get().refresh().catch(() => {});
+    void get()
+      .refresh()
+      .catch(() => {});
   },
 
   stopPolling: () => {

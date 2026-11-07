@@ -108,7 +108,8 @@ function Dock() {
 
   const startResize = (e: React.MouseEvent) => {
     e.preventDefault();
-    const x0 = e.clientX, w0 = useShell.getState().width;
+    const x0 = e.clientX,
+      w0 = useShell.getState().width;
     const onMove = (ev: MouseEvent) => useShell.getState().setWidth(w0 + ev.clientX - x0);
     const onUp = () => {
       window.removeEventListener('mousemove', onMove);
@@ -144,7 +145,9 @@ function Dock() {
         <OrphanSessions />
         <ChatList />
       </div>
-      {pinned && <div className="dock-grip" data-on={resizing ? 'yes' : 'no'} onMouseDown={startResize} title="Drag to resize" />}
+      {pinned && (
+        <div className="dock-grip" data-on={resizing ? 'yes' : 'no'} onMouseDown={startResize} title="Drag to resize" />
+      )}
     </div>
   );
 }
@@ -228,7 +231,9 @@ export function App() {
       data-app
       data-theme={theme}
       style={{
-        height: '100vh', background: 'var(--bg)', color: 'var(--fg)',
+        height: '100vh',
+        background: 'var(--bg)',
+        color: 'var(--fg)',
         fontFamily: 'var(--sans-serif)',
         fontSize: 'var(--ui)'
       }}

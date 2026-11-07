@@ -12,7 +12,12 @@ type AccountRef = { provider: Provider; name: string };
 
 /** What the face says: every account, or by a provider's mark its every account or an account's name. */
 function Summary({ reach }: { reach: Reach }) {
-  if (!reach.length) return <span className="picker-name" style={{ color: 'var(--faint)' }}>Nowhere</span>;
+  if (!reach.length)
+    return (
+      <span className="picker-name" style={{ color: 'var(--faint)' }}>
+        Nowhere
+      </span>
+    );
   if (reach.includes(ALL)) return <span className="picker-name">All accounts</span>;
   return (
     <span className="picker-name" style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
@@ -55,7 +60,14 @@ const tidy = (reach: Reach): Reach =>
  * folder's picker (`inherit`) has one more line on top: no reach of its own,
  * going by what holds outside it.
  */
-export function ReachPicker({ id, reach: saved, accounts, onChange, inherit, face: drawFace }: {
+export function ReachPicker({
+  id,
+  reach: saved,
+  accounts,
+  onChange,
+  inherit,
+  face: drawFace
+}: {
   id: string;
   /** None of its own (null) only with `inherit`. */
   reach: Reach | null;
@@ -132,9 +144,22 @@ export function ReachPicker({ id, reach: saved, accounts, onChange, inherit, fac
   const without = (...keys: string[]) => reach.filter(r => !keys.includes(r));
   const providers = PROVIDERS.filter(p => accounts.some(a => a.provider === p) || reach.includes(p));
 
-  const tick = (key: string, label: ReactNode, checked: boolean, disabled: boolean, onTick: (on: boolean) => void, indent = 0) => (
+  const tick = (
+    key: string,
+    label: ReactNode,
+    checked: boolean,
+    disabled: boolean,
+    onTick: (on: boolean) => void,
+    indent = 0
+  ) => (
     <div className="field-row" key={key} style={{ margin: 0, paddingLeft: indent, minHeight: 24 }}>
-      <input type="checkbox" id={`${id}-${key}`} checked={checked} disabled={disabled} onChange={e => onTick(e.target.checked)} />
+      <input
+        type="checkbox"
+        id={`${id}-${key}`}
+        checked={checked}
+        disabled={disabled}
+        onChange={e => onTick(e.target.checked)}
+      />
       <label htmlFor={`${id}-${key}`} style={{ cursor: 'default', whiteSpace: 'nowrap' }}>
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>{label}</span>
       </label>
@@ -156,14 +181,24 @@ export function ReachPicker({ id, reach: saved, accounts, onChange, inherit, fac
           {drawFace(toggle)}
         </span>
       ) : (
-        <button ref={face as RefObject<HTMLButtonElement>} type="button" className="picker-face" title={describe(reach)} onClick={toggle}>
+        <button
+          ref={face as RefObject<HTMLButtonElement>}
+          type="button"
+          className="picker-face"
+          title={describe(reach)}
+          onClick={toggle}
+        >
           <Summary reach={reach} />
         </button>
       )}
       {open &&
         host &&
         createPortal(
-          <div ref={list} className="popover" style={{ left: pos?.left ?? -9999, top: pos?.top ?? 0, minWidth: 200, padding: '6px 10px' }}>
+          <div
+            ref={list}
+            className="popover"
+            style={{ left: pos?.left ?? -9999, top: pos?.top ?? 0, minWidth: 200, padding: '6px 10px' }}
+          >
             {inherit && (
               <div style={{ borderBottom: '1px solid var(--line)', marginBottom: 4, paddingBottom: 4 }}>
                 {tick('inherit', inherit.label, inherited, false, on => send(on ? null : reach))}
@@ -188,7 +223,14 @@ export function ReachPicker({ id, reach: saved, accounts, onChange, inherit, fac
                     .filter(a => a.provider === p)
                     .map(a => {
                       const key = `${p}/${a.name}`;
-                      return tick(key, a.name, wide || reach.includes(key), wide, on => change(on ? [...without(key), key] : without(key)), 22);
+                      return tick(
+                        key,
+                        a.name,
+                        wide || reach.includes(key),
+                        wide,
+                        on => change(on ? [...without(key), key] : without(key)),
+                        22
+                      );
                     })}
                 </div>
               );

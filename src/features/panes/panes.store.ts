@@ -266,7 +266,14 @@ export const usePanes = create<PanesState>()(
         set(s =>
           s.groups.length >= MAX_GROUPS
             ? {}
-            : { groups: [...s.groups, blankGroup()], group: s.groups.length, over: -1, dragPane: null, activePane: 0, ...NO_PEEK }
+            : {
+                groups: [...s.groups, blankGroup()],
+                group: s.groups.length,
+                over: -1,
+                dragPane: null,
+                activePane: 0,
+                ...NO_PEEK
+              }
         ),
 
       dropGroup: g =>

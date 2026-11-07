@@ -1,7 +1,12 @@
 import { create } from 'zustand';
 import {
-  browsers, setBrowsers, SYSTEM_BROWSER,
-  type BrowserDto, type BrowserSettingsDto, type BrowsersDto, type LinkContext
+  browsers,
+  setBrowsers,
+  SYSTEM_BROWSER,
+  type BrowserDto,
+  type BrowserSettingsDto,
+  type BrowsersDto,
+  type LinkContext
 } from '../../ipc/commands';
 import { useChats } from '../chats/chats.store';
 import { logWarn } from '../../shared/lib/log';

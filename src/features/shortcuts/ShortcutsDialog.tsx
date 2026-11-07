@@ -30,7 +30,10 @@ const KEYBOARD: Row[] = [
 
 const MOUSE: Row[] = [
   ['Click a chat', 'Shows it: one pane swaps to it, several put it on the sheet — the same chat again goes back'],
-  ['Click outside the sheet', 'Back to the grid — so do the mouse’s Back button and, in the sheet’s bar, the chip of the pane that is up'],
+  [
+    'Click outside the sheet',
+    'Back to the grid — so do the mouse’s Back button and, in the sheet’s bar, the chip of the pane that is up'
+  ],
   ['Pointer at the left edge', 'With the sidebar hidden: slides it out over the board until the pointer leaves'],
   ['Drag a chat onto a pane', 'Seats it in that pane'],
   ['Drag a title bar onto a pane', 'Swaps the two panes'],
@@ -42,20 +45,32 @@ function Section({ label, rows }: { label: string; rows: Row[] }) {
     <div style={{ marginBottom: 12 }}>
       <div
         style={{
-          fontSize: 'var(--fs-1)', fontWeight: 700, textTransform: 'uppercase',
-          letterSpacing: '.04em', color: 'var(--faint)', marginBottom: 5
+          fontSize: 'var(--fs-1)',
+          fontWeight: 700,
+          textTransform: 'uppercase',
+          letterSpacing: '.04em',
+          color: 'var(--faint)',
+          marginBottom: 5
         }}
       >
         {label}
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', columnGap: 12, rowGap: 5, alignItems: 'baseline' }}>
+      <div
+        style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', columnGap: 12, rowGap: 5, alignItems: 'baseline' }}
+      >
         {rows.map(([keys, what], i) => (
           <div key={i} style={{ display: 'contents' }}>
             <span
               style={{
-                justifySelf: 'start', whiteSpace: 'nowrap', padding: '1px 5px', borderRadius: 2,
-                fontSize: 'var(--fs-2)', fontWeight: 600, background: 'var(--chip)',
-                border: '1px solid var(--line)', color: 'var(--fg)'
+                justifySelf: 'start',
+                whiteSpace: 'nowrap',
+                padding: '1px 5px',
+                borderRadius: 2,
+                fontSize: 'var(--fs-2)',
+                fontWeight: 600,
+                background: 'var(--chip)',
+                border: '1px solid var(--line)',
+                color: 'var(--fg)'
               }}
             >
               {keys}
@@ -93,14 +108,23 @@ export function ShortcutsDialog() {
       }}
       className="scrim"
       style={{
-        position: 'fixed', inset: 0, background: 'rgba(0,0,0,.35)', backdropFilter: 'blur(1px)',
-        display: 'grid', placeItems: 'center', zIndex: 70
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(0,0,0,.35)',
+        backdropFilter: 'blur(1px)',
+        display: 'grid',
+        placeItems: 'center',
+        zIndex: 70
       }}
     >
       <div
         onClick={e => e.stopPropagation()}
         className="window"
-        style={{ width: 520, maxWidth: 'calc(100vw - 32px)', boxShadow: 'var(--shadow), var(--border-window-outer), var(--border-window-inner)' }}
+        style={{
+          width: 520,
+          maxWidth: 'calc(100vw - 32px)',
+          boxShadow: 'var(--shadow), var(--border-window-outer), var(--border-window-inner)'
+        }}
       >
         <div className="title-bar">
           <div className="title-bar-text">Shortcuts</div>

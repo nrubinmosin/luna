@@ -2,14 +2,25 @@ import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
 import { json } from '@codemirror/lang-json';
-import { HighlightStyle, StreamLanguage, bracketMatching, indentOnInput, syntaxHighlighting } from '@codemirror/language';
+import {
+  HighlightStyle,
+  StreamLanguage,
+  bracketMatching,
+  indentOnInput,
+  syntaxHighlighting
+} from '@codemirror/language';
 import { toml } from '@codemirror/legacy-modes/mode/toml';
 import { linter, lintGutter, type Diagnostic } from '@codemirror/lint';
 import { EditorState } from '@codemirror/state';
 import { EditorView, highlightActiveLine, highlightActiveLineGutter, keymap, lineNumbers } from '@codemirror/view';
 import { tags } from '@lezer/highlight';
 import {
-  checkAccountConfig, formatAccountConfig, readAccountConfig, writeAccountConfig, type ConfigFileDto, type ConfigProblemDto
+  checkAccountConfig,
+  formatAccountConfig,
+  readAccountConfig,
+  writeAccountConfig,
+  type ConfigFileDto,
+  type ConfigProblemDto
 } from '../../ipc/commands';
 import { useDialogHost } from '../../shared/ui/dialogHost';
 import { Icon } from '../../shared/ui/icons';
@@ -25,14 +36,27 @@ export const highlight = HighlightStyle.define([
 ]);
 
 export const look = EditorView.theme({
-  '&': { flex: '1', minHeight: '0', background: 'var(--term)', color: 'var(--fg)', font: '13px/1.55 "JetBrains Mono", ui-monospace, monospace' },
+  '&': {
+    flex: '1',
+    minHeight: '0',
+    background: 'var(--term)',
+    color: 'var(--fg)',
+    font: '13px/1.55 "JetBrains Mono", ui-monospace, monospace'
+  },
   '&.cm-focused': { outline: 'none' },
   '.cm-scroller': { fontFamily: 'inherit', lineHeight: 'inherit' },
   '.cm-content': { caretColor: 'var(--fg)', padding: '10px 0' },
   '.cm-cursor': { borderLeftColor: 'var(--fg)' },
-  '.cm-gutters': { background: 'var(--term)', color: 'var(--faint)', border: 'none', borderRight: '1px solid var(--line)' },
+  '.cm-gutters': {
+    background: 'var(--term)',
+    color: 'var(--faint)',
+    border: 'none',
+    borderRight: '1px solid var(--line)'
+  },
   '.cm-activeLine, .cm-activeLineGutter': { background: 'color-mix(in oklab, var(--selection) 35%, transparent)' },
-  '&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection': { background: 'var(--selection) !important' },
+  '&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection': {
+    background: 'var(--selection) !important'
+  },
   '.cm-tooltip': { background: 'var(--card)', color: 'var(--fg)', border: '1px solid var(--line)' }
 });
 
@@ -181,27 +205,47 @@ export function ConfigEditor({ account, onClose }: { account: Account; onClose: 
         e.stopPropagation();
         close();
       }}
-      style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.35)', display: 'grid', placeItems: 'center', zIndex: 80 }}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(0,0,0,.35)',
+        display: 'grid',
+        placeItems: 'center',
+        zIndex: 80
+      }}
     >
       <div
         onClick={e => e.stopPropagation()}
         className="window"
         style={{
-          width: 760, maxWidth: 'calc(100vw - 32px)', height: 'min(640px, calc(100vh - 48px))',
-          display: 'flex', flexDirection: 'column',
+          width: 760,
+          maxWidth: 'calc(100vw - 32px)',
+          height: 'min(640px, calc(100vh - 48px))',
+          display: 'flex',
+          flexDirection: 'column',
           boxShadow: 'var(--shadow), var(--border-window-outer), var(--border-window-inner)'
         }}
       >
         <div className="title-bar" style={{ flex: 'none' }}>
-          <div className="title-bar-text">{fileName} — {account.name}</div>
+          <div className="title-bar-text">
+            {fileName} — {account.name}
+          </div>
           <div className="title-bar-controls">
             <button aria-label="Close" onClick={close} />
           </div>
         </div>
-        <div className="window-body" style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-2)', color: 'var(--faint)' }}>
+        <div
+          className="window-body"
+          style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', gap: 8 }}
+        >
+          <div
+            style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-2)', color: 'var(--faint)' }}
+          >
             <Icon name={account.provider} />
-            <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={file?.path}>
+            <span
+              style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+              title={file?.path}
+            >
               {file ? `${file.path}${file.exists ? '' : ' — not there yet, saving creates it'}` : 'Reading…'}
             </span>
             <span>{PROVIDER_LABEL[account.provider]} reads it when a session starts</span>
@@ -209,7 +253,10 @@ export function ConfigEditor({ account, onClose }: { account: Account; onClose: 
           <div ref={box} className="config-text" />
           <div style={{ minHeight: 18, fontSize: 'var(--fs-3)' }}>
             {problem ? (
-              <span style={{ color: 'oklch(.58 .2 25)' }}>{where}{problem.message}</span>
+              <span style={{ color: 'oklch(.58 .2 25)' }}>
+                {where}
+                {problem.message}
+              </span>
             ) : error ? (
               <span style={{ color: 'oklch(.58 .2 25)' }}>{error}</span>
             ) : leaving ? (
@@ -221,7 +268,11 @@ export function ConfigEditor({ account, onClose }: { account: Account; onClose: 
             ) : null}
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <button onClick={() => void format()} disabled={!!problem || !file} title="Lay the file out the way the CLI writes it; saving does this too">
+            <button
+              onClick={() => void format()}
+              disabled={!!problem || !file}
+              title="Lay the file out the way the CLI writes it; saving does this too"
+            >
               Format
             </button>
             <span style={{ flex: 1 }} />

@@ -4,7 +4,14 @@
  * choice is at least as wide as its label, and a line shares out whatever
  * room is left over evenly. Styled by `.seg` in theme.css.
  */
-export function Segmented<T extends string>({ items, value, onPick, height = 24, labels, hints }: {
+export function Segmented<T extends string>({
+  items,
+  value,
+  onPick,
+  height = 24,
+  labels,
+  hints
+}: {
   items: readonly T[];
   value: T;
   onPick: (v: T) => void;

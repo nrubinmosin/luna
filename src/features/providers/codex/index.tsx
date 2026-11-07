@@ -5,14 +5,34 @@
  * windows as the usage endpoint names them.
  */
 import { useEffect, useState, type CSSProperties, type ReactNode } from 'react';
-import type { Account, CodexApproval, CodexChat, CodexEffort, CodexSandbox, CodexSettings } from '../../../shared/types';
-import {
-  AUTO_REVIEW_SANDBOX, CODEX_APPROVAL_HINTS, CODEX_APPROVALS, CODEX_EFFORTS, CODEX_SANDBOX_HINTS, CODEX_SANDBOXES,
-  codexApprovalFromSetting, codexEffortFromSetting, codexModeHint, codexSandboxFromSetting
+import type {
+  Account,
+  CodexApproval,
+  CodexChat,
+  CodexEffort,
+  CodexSandbox,
+  CodexSettings
 } from '../../../shared/types';
 import {
-  codexDefaults, codexFolderTrusted, codexModels, codexTrustFolder, ensureCodexSession,
-  type CodexDefaultSource, type CodexModelDto
+  AUTO_REVIEW_SANDBOX,
+  CODEX_APPROVAL_HINTS,
+  CODEX_APPROVALS,
+  CODEX_EFFORTS,
+  CODEX_SANDBOX_HINTS,
+  CODEX_SANDBOXES,
+  codexApprovalFromSetting,
+  codexEffortFromSetting,
+  codexModeHint,
+  codexSandboxFromSetting
+} from '../../../shared/types';
+import {
+  codexDefaults,
+  codexFolderTrusted,
+  codexModels,
+  codexTrustFolder,
+  ensureCodexSession,
+  type CodexDefaultSource,
+  type CodexModelDto
 } from '../../../ipc/commands';
 import { ModelSelect } from '../../../shared/ui/ModelSelect';
 import { Segmented } from '../../../shared/ui/Segmented';
@@ -32,7 +52,8 @@ export const SOURCE_LABELS: Record<Exclude<CodexDefaultSource, 'stock'>, string>
   codex: "Codex's own default"
 };
 
-export const settingsNote = 'Opens on this account’s Codex config.toml; anything changed here applies to this chat only';
+export const settingsNote =
+  'Opens on this account’s Codex config.toml; anything changed here applies to this chat only';
 
 /** A chat that runs without `--model`: older chats, and any whose account
  *  had no model list to name one from. */
@@ -113,21 +134,33 @@ export const pasteImageKey = '\x16';
 
 // ---------------------------------------------------------------- dialog --
 
-export function Fields({ draft, origin, accountPath }: {
+export function Fields({
+  draft,
+  origin,
+  accountPath
+}: {
   draft: Draft<CodexSettings>;
   origin: (field: keyof CodexSettings) => ReactNode;
   accountPath: string;
 }) {
   const { settings, pick } = draft;
   const labelStyle: CSSProperties = { fontSize: 'var(--fs-3)', color: 'var(--dim)', marginBottom: 4, fontWeight: 600 };
-  const hintStyle: CSSProperties = { fontSize: 'var(--fs-2)', color: 'var(--faint)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' };
+  const hintStyle: CSSProperties = {
+    fontSize: 'var(--fs-2)',
+    color: 'var(--faint)',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap'
+  };
   // Codex's own model list: its cache file, another account's, or the CLI
   // asked directly (codex/models.rs) — never a box to type a slug into.
   const [models, setModels] = useState<CodexModelDto[] | null>(null);
   useEffect(() => {
     let stale = false;
     setModels(null);
-    void codexModels(accountPath).then(m => !stale && setModels(m)).catch(() => !stale && setModels([]));
+    void codexModels(accountPath)
+      .then(m => !stale && setModels(m))
+      .catch(() => !stale && setModels([]));
     return () => {
       stale = true;
     };
@@ -175,7 +208,9 @@ export function Fields({ draft, origin, accountPath }: {
           />
         ) : (
           <div style={hintStyle}>
-            {models === null ? 'Asking Codex for its models…' : 'Codex gave no model list — the chat runs on its default model.'}
+            {models === null
+              ? 'Asking Codex for its models…'
+              : 'Codex gave no model list — the chat runs on its default model.'}
           </div>
         )}
         {origin('model')}
@@ -200,8 +235,16 @@ export function Fields({ draft, origin, accountPath }: {
               const id = `codex-approval-${a}`;
               return (
                 <div key={a} className="field-row" title={CODEX_APPROVAL_HINTS[a]}>
-                  <input type="radio" id={id} name="codex-approval" checked={settings.approval === a} onChange={() => pickApproval(a)} />
-                  <label htmlFor={id} style={{ fontWeight: 600, whiteSpace: 'nowrap', cursor: 'default' }}>{a}</label>
+                  <input
+                    type="radio"
+                    id={id}
+                    name="codex-approval"
+                    checked={settings.approval === a}
+                    onChange={() => pickApproval(a)}
+                  />
+                  <label htmlFor={id} style={{ fontWeight: 600, whiteSpace: 'nowrap', cursor: 'default' }}>
+                    {a}
+                  </label>
                 </div>
               );
             })}
@@ -211,9 +254,23 @@ export function Fields({ draft, origin, accountPath }: {
             {CODEX_SANDBOXES.map(s => {
               const id = `codex-sandbox-${s}`;
               return (
-                <div key={s} className="field-row" title={CODEX_SANDBOX_HINTS[s]} style={autoReview && s !== AUTO_REVIEW_SANDBOX ? { opacity: 0.45 } : undefined}>
-                  <input type="radio" id={id} name="codex-sandbox" checked={settings.sandbox === s} disabled={autoReview} onChange={() => pick('sandbox', s as CodexSandbox)} />
-                  <label htmlFor={id} style={{ fontWeight: 600, whiteSpace: 'nowrap', cursor: 'default' }}>{s}</label>
+                <div
+                  key={s}
+                  className="field-row"
+                  title={CODEX_SANDBOX_HINTS[s]}
+                  style={autoReview && s !== AUTO_REVIEW_SANDBOX ? { opacity: 0.45 } : undefined}
+                >
+                  <input
+                    type="radio"
+                    id={id}
+                    name="codex-sandbox"
+                    checked={settings.sandbox === s}
+                    disabled={autoReview}
+                    onChange={() => pick('sandbox', s as CodexSandbox)}
+                  />
+                  <label htmlFor={id} style={{ fontWeight: 600, whiteSpace: 'nowrap', cursor: 'default' }}>
+                    {s}
+                  </label>
                 </div>
               );
             })}
@@ -237,12 +294,22 @@ export function Meta({ chat }: { chat: CodexChat }) {
     <>
       <span
         className="pchip"
-        title={(chat.model ? `Model: ${chat.model}` : `Model: ${DEFAULT_MODEL_LABEL}${chat.modelSeen ? ` (running ${chat.modelSeen})` : ''}`) + `\nReasoning effort: ${chat.effort}`}
+        title={
+          (chat.model
+            ? `Model: ${chat.model}`
+            : `Model: ${DEFAULT_MODEL_LABEL}${chat.modelSeen ? ` (running ${chat.modelSeen})` : ''}`) +
+          `\nReasoning effort: ${chat.effort}`
+        }
       >
         <b>{model ?? 'default'}</b> {chat.effort}
       </span>
       {bypass ? (
-        <span className="pchip opt-2" title="Approval: never · Sandbox: danger-full-access (--dangerously-bypass-approvals-and-sandbox)">bypass</span>
+        <span
+          className="pchip opt-2"
+          title="Approval: never · Sandbox: danger-full-access (--dangerously-bypass-approvals-and-sandbox)"
+        >
+          bypass
+        </span>
       ) : chat.approval === 'auto-review' ? (
         <span
           className="pchip opt-2"

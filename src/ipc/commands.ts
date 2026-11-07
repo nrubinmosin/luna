@@ -32,12 +32,39 @@ const SLOW_BUDGET_MS: Record<string, number> = {
 // window passes them on; keystrokes and resizes go without waiting for an
 // answer, in the order they are made.
 const CORE_CALL: ReadonlySet<string> = new Set([
-  'ensure_claude_session', 'ensure_codex_session', 'kill_session', 'delete_session', 'stop_all_sessions',
-  'orphan_sessions', 'session_meta', 'session_modes', 'dismiss_waiting', 'agent_spawned', 'agent_resumes', 'agent_spawns', 'chat_names', 'account_usage', 'power_state',
-  'background_helpers', 'background_promote', 'background_promoted', 'background_kill', 'background_delete',
-  'set_keep_awake', 'arm_power_off', 'disarm_power_off', 'rename_account', 'orphan_worktrees',
-  'remove_orphan_worktrees', 'sync_settings_now', 'recommendations', 'apply_recommendation', 'dismiss_recommendation',
-  'apply_recommended', 'codex_folder_trusted', 'codex_trust_folder'
+  'ensure_claude_session',
+  'ensure_codex_session',
+  'kill_session',
+  'delete_session',
+  'stop_all_sessions',
+  'orphan_sessions',
+  'session_meta',
+  'session_modes',
+  'dismiss_waiting',
+  'agent_spawned',
+  'agent_resumes',
+  'agent_spawns',
+  'chat_names',
+  'account_usage',
+  'power_state',
+  'background_helpers',
+  'background_promote',
+  'background_promoted',
+  'background_kill',
+  'background_delete',
+  'set_keep_awake',
+  'arm_power_off',
+  'disarm_power_off',
+  'rename_account',
+  'orphan_worktrees',
+  'remove_orphan_worktrees',
+  'sync_settings_now',
+  'recommendations',
+  'apply_recommendation',
+  'dismiss_recommendation',
+  'apply_recommended',
+  'codex_folder_trusted',
+  'codex_trust_folder'
 ]);
 const CORE_SEND: ReadonlySet<string> = new Set(['write_session', 'resize_session']);
 
@@ -142,16 +169,13 @@ export interface AccountsRootInfo {
   isDefault: boolean;
 }
 
-export const getAccountsRoot = () =>
-  call<AccountsRootInfo | null>('get_accounts_root', {}, null);
+export const getAccountsRoot = () => call<AccountsRootInfo | null>('get_accounts_root', {}, null);
 /** Empty string restores the default (Documents/luna-accounts). */
-export const setAccountsRoot = (path: string) =>
-  call<AccountsRootInfo>('set_accounts_root', { path });
+export const setAccountsRoot = (path: string) => call<AccountsRootInfo>('set_accounts_root', { path });
 
 export const createAccount = (provider: Provider, name: string) =>
   call<AccountInfo>('create_account', { provider, name });
-export const deleteAccount = (provider: Provider, name: string) =>
-  call<void>('delete_account', { provider, name });
+export const deleteAccount = (provider: Provider, name: string) => call<void>('delete_account', { provider, name });
 
 // -------------------------------------------------------------- sessions --
 
@@ -181,24 +205,28 @@ export interface ClaudeSessionSpec {
 }
 
 export const ensureClaudeSession = (spec: ClaudeSessionSpec) =>
-  call<string>('ensure_claude_session', {
-    id: spec.chatId,
-    folder: spec.folder,
-    accountPath: spec.accountPath,
-    // Fallback covers chats persisted before the model labels changed.
-    model: MODEL_CLI[spec.model] ?? spec.model.toLowerCase().split(' ')[0],
-    effort: spec.effort,
-    permissionMode: PERM_CLI[spec.perm],
-    worktree: spec.worktree,
-    worktreeName: spec.worktreeName ?? null,
-    resume: spec.resume ?? null,
-    tools: spec.tools ?? false,
-    parent: spec.parent ?? null,
-    prompt: spec.prompt ?? null,
-    readOnly: spec.readOnly ?? false,
-    agent: spec.agent ?? null,
-    spawnRequest: spec.spawnRequest ?? null
-  }, '');
+  call<string>(
+    'ensure_claude_session',
+    {
+      id: spec.chatId,
+      folder: spec.folder,
+      accountPath: spec.accountPath,
+      // Fallback covers chats persisted before the model labels changed.
+      model: MODEL_CLI[spec.model] ?? spec.model.toLowerCase().split(' ')[0],
+      effort: spec.effort,
+      permissionMode: PERM_CLI[spec.perm],
+      worktree: spec.worktree,
+      worktreeName: spec.worktreeName ?? null,
+      resume: spec.resume ?? null,
+      tools: spec.tools ?? false,
+      parent: spec.parent ?? null,
+      prompt: spec.prompt ?? null,
+      readOnly: spec.readOnly ?? false,
+      agent: spec.agent ?? null,
+      spawnRequest: spec.spawnRequest ?? null
+    },
+    ''
+  );
 
 export interface CodexSessionSpec {
   chatId: string;
@@ -224,26 +252,29 @@ export interface CodexSessionSpec {
 }
 
 export const ensureCodexSession = (spec: CodexSessionSpec) =>
-  call<string>('ensure_codex_session', {
-    id: spec.chatId,
-    folder: spec.folder,
-    accountPath: spec.accountPath,
-    model: spec.model,
-    effort: spec.effort,
-    approval: spec.approval,
-    sandbox: spec.sandbox,
-    worktree: spec.worktree ?? false,
-    resume: spec.resume ?? null,
-    login: spec.login ?? false,
-    tools: spec.tools ?? false,
-    hooksUnasked: spec.hooksUnasked ?? false,
-    parent: spec.parent ?? null,
-    prompt: spec.prompt ?? null,
-    spawnRequest: spec.spawnRequest ?? null
-  }, '');
+  call<string>(
+    'ensure_codex_session',
+    {
+      id: spec.chatId,
+      folder: spec.folder,
+      accountPath: spec.accountPath,
+      model: spec.model,
+      effort: spec.effort,
+      approval: spec.approval,
+      sandbox: spec.sandbox,
+      worktree: spec.worktree ?? false,
+      resume: spec.resume ?? null,
+      login: spec.login ?? false,
+      tools: spec.tools ?? false,
+      hooksUnasked: spec.hooksUnasked ?? false,
+      parent: spec.parent ?? null,
+      prompt: spec.prompt ?? null,
+      spawnRequest: spec.spawnRequest ?? null
+    },
+    ''
+  );
 
-export const writeSession = (id: string, data: string) =>
-  call<void>('write_session', { id, data });
+export const writeSession = (id: string, data: string) => call<void>('write_session', { id, data });
 
 export const resizeSession = (id: string, cols: number, rows: number) =>
   call<void>('resize_session', { id, cols, rows });
@@ -302,8 +333,7 @@ export interface OrphanSessionDto {
 }
 
 /** Sessions this app is running that no chat in the sidebar claims. */
-export const orphanSessions = (known: string[]) =>
-  call<OrphanSessionDto[]>('orphan_sessions', { known }, []);
+export const orphanSessions = (known: string[]) => call<OrphanSessionDto[]>('orphan_sessions', { known }, []);
 
 // ------------------------------------------------------------- worktrees --
 
@@ -340,25 +370,14 @@ export const setCodexTrustedRoots = (roots: string[]) => call<string[]>('set_cod
 export const keepCodexHooks = (folder: string, on: boolean | null) =>
   call<void>('keep_codex_hooks', { folder, on }, undefined);
 
-
-
 /**
  * Kills the session and cleans up after it in one call: the chat's attachments
  * always, its worktree and branch only when asked. Resolves the worktree
  * itself, so it works even when the UI never saw the path. Returns that
  * worktree whether or not it was removed.
  */
-export const deleteSession = (
-  chatId: string,
-  folder: string,
-  worktreePath: string | null,
-  dropWorktree: boolean
-) =>
-  call<string | null>(
-    'delete_session',
-    { id: chatId, folder, worktreePath, dropWorktree },
-    null
-  );
+export const deleteSession = (chatId: string, folder: string, worktreePath: string | null, dropWorktree: boolean) =>
+  call<string | null>('delete_session', { id: chatId, folder, worktreePath, dropWorktree }, null);
 
 /**
  * Worktree dirs under the folder that no live chat is using. `accountPaths`
@@ -453,8 +472,7 @@ export interface CodexModelDto {
 /** The models Codex lists for this account, off its own cache, in Codex's
  *  order (the first is its default) — with the reasoning levels each one
  *  takes. Empty until the CLI has run once. */
-export const codexModels = (accountPath: string) =>
-  call<CodexModelDto[]>('codex_models', { accountPath }, []);
+export const codexModels = (accountPath: string) => call<CodexModelDto[]>('codex_models', { accountPath }, []);
 
 // ----------------------------------------------------------------- trust --
 
@@ -478,7 +496,6 @@ export const codexTrustFolder = (accountPath: string, folder: string) =>
 export const saveMedia = (chatId: string, name: string, base64: string) =>
   call<string | null>('save_media', { chatId, name, data: base64 }, null);
 
-
 // ------------------------------------------------------------------- cli --
 
 export interface CliStatusDto {
@@ -495,8 +512,7 @@ export interface CliStatusDto {
   checkedAtMs: number | null;
 }
 
-export const cliStatus = (provider: Provider) =>
-  call<CliStatusDto | null>('cli_status', { provider }, null);
+export const cliStatus = (provider: Provider) => call<CliStatusDto | null>('cli_status', { provider }, null);
 /** Check the release channel now and install whatever is newer. */
 export const cliUpdateNow = (provider: Provider) => call<void>('cli_update_now', { provider });
 
@@ -660,11 +676,13 @@ export const backgroundHelpers = () => call<BackgroundHelperDto[]>('background_h
 export const backgroundPromote = (id: string) => call<PromotedDto>('background_promote', { id });
 /** The row for a helper being opened is made (`error` null), and the core lets the helper go; or it
  *  could not be, and the helper goes on as it was. */
-export const backgroundPromoted = (id: string, error: string | null) => call<void>('background_promoted', { id, error });
+export const backgroundPromoted = (id: string, error: string | null) =>
+  call<void>('background_promoted', { id, error });
 /** Stops the turn it is on, or between turns what its turns left running; the conversation stays. */
 export const backgroundKill = (id: string) => call<void>('background_kill', { id });
 /** Deletes it, the worktree it made too unless `dropWorktree` is false. */
-export const backgroundDelete = (id: string, dropWorktree = true) => call<void>('background_delete', { id, dropWorktree });
+export const backgroundDelete = (id: string, dropWorktree = true) =>
+  call<void>('background_delete', { id, dropWorktree });
 
 /** Answers `agent://spawn`: the chat made for it, or why not. */
 export const agentSpawned = (requestId: number, chatId: string | null, name: string | null, error: string | null) =>
@@ -761,7 +779,8 @@ const NO_SYNC: SyncStateDto = { claude: null, codex: null, onStart: false };
 export const settingsSyncState = () => call<SyncStateDto>('settings_sync_state', {}, NO_SYNC);
 export const setSettingsParent = (provider: Provider, parent: string | null) =>
   call<SyncStateDto>('set_settings_parent', { provider, parent }, NO_SYNC);
-export const setSettingsSyncOnStart = (on: boolean) => call<SyncStateDto>('set_settings_sync_on_start', { on }, NO_SYNC);
+export const setSettingsSyncOnStart = (on: boolean) =>
+  call<SyncStateDto>('set_settings_sync_on_start', { on }, NO_SYNC);
 export const syncSettingsNow = (provider: Provider) => call<SyncReportDto>('sync_settings_now', { provider });
 
 export const renameAccount = (provider: Provider, name: string, to: string) =>
@@ -867,9 +886,11 @@ export const librarySetSource = (path: string) => call<LibraryOverviewDto>('libr
 /** `name` null: the accounts that get no instructions. Each entry is taken from the instructions that had it. */
 export const librarySetInstructions = (name: string | null, accounts: Reach) =>
   call<LibraryOverviewDto>('library_set_instructions', { name, accounts });
-export const librarySetAccounts = (skill: string, accounts: Reach) => call<LibraryOverviewDto>('library_set_accounts', { skill, accounts });
+export const librarySetAccounts = (skill: string, accounts: Reach) =>
+  call<LibraryOverviewDto>('library_set_accounts', { skill, accounts });
 /** Lists a folder, saying nothing of any skill yet, or takes it off the list with all it says. */
-export const librarySetFolder = (path: string, listed: boolean) => call<LibraryOverviewDto>('library_set_folder', { path, listed });
+export const librarySetFolder = (path: string, listed: boolean) =>
+  call<LibraryOverviewDto>('library_set_folder', { path, listed });
 /** The accounts whose sessions in a folder get a skill (empty: none), or null: the folder says nothing of it. */
 export const librarySetFolderSkill = (path: string, skill: string, accounts: Reach | null) =>
   call<LibraryOverviewDto>('library_set_folder_skill', { path, skill, accounts });
@@ -879,12 +900,14 @@ export const librarySetFolderInstructions = (path: string, account: string, inhe
   call<LibraryOverviewDto>('library_set_folder_instructions', { path, account, inherit, name });
 export const librarySkip = (dest: string, on: boolean) => call<LibraryOverviewDto>('library_skip', { dest, on });
 /** `take`: the copy there becomes the library's; otherwise the library's goes back there. */
-export const libraryResolve = (dest: string, take: boolean) => call<LibraryOverviewDto>('library_resolve', { dest, take });
+export const libraryResolve = (dest: string, take: boolean) =>
+  call<LibraryOverviewDto>('library_resolve', { dest, take });
 export const libraryDiff = (dest: string) => call<FileDiffDto[]>('library_diff', { dest }, []);
 /** The file the editor has open: a skill's SKILL.md or instructions, by name. */
 export type LibraryEntry = { skill: string } | { instructions: string };
 export const libraryRead = (entry: LibraryEntry) => call<LibraryFileDto>('library_read', { entry });
-export const libraryWrite = (entry: LibraryEntry, text: string) => call<LibraryOverviewDto>('library_write', { entry, text });
+export const libraryWrite = (entry: LibraryEntry, text: string) =>
+  call<LibraryOverviewDto>('library_write', { entry, text });
 export const libraryCheckSkill = (skill: string, text: string) =>
   call<string | null>('library_check_skill', { skill, text }, null);
 export const libraryNewSkill = (name: string) => call<LibraryOverviewDto>('library_new_skill', { name });
@@ -892,7 +915,8 @@ export const libraryDeleteSkill = (name: string) => call<LibraryOverviewDto>('li
 export const libraryNewInstructions = (name: string) => call<LibraryOverviewDto>('library_new_instructions', { name });
 export const libraryRenameInstructions = (from: string, to: string) =>
   call<LibraryOverviewDto>('library_rename_instructions', { from, to });
-export const libraryDeleteInstructions = (name: string) => call<LibraryOverviewDto>('library_delete_instructions', { name });
+export const libraryDeleteInstructions = (name: string) =>
+  call<LibraryOverviewDto>('library_delete_instructions', { name });
 /** The library's folder, or a skill's, in the file manager. */
 /** The tray icon's awake dot, with who holds the PC in its tooltip; null takes it off. */
 export const trayAwake = (holders: string | null) => call<void>('tray_awake', { holders });
@@ -933,7 +957,11 @@ export interface LinkContext {
 }
 
 export const browsers = () =>
-  call<BrowsersDto>('browsers', {}, { system: null, found: [], settings: { custom: [], default: null, accounts: {}, folders: {} } });
+  call<BrowsersDto>(
+    'browsers',
+    {},
+    { system: null, found: [], settings: { custom: [], default: null, accounts: {}, folders: {} } }
+  );
 export const setBrowsers = (settings: BrowserSettingsDto) => call<BrowsersDto>('set_browsers', { settings });
 /** A link from a terminal, in the browser its context comes to (lib.rs `open_link`). */
 export const openLink = (url: string, ctx: LinkContext) => call<void>('open_link', { url, ctx });

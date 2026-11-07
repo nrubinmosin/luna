@@ -59,10 +59,7 @@ export function AppFrame({ children }: { children: ReactNode }) {
         <BoardTools />
         <div className="title-bar-controls">
           <button aria-label="Minimize" onClick={act(w => w.minimize())} />
-          <button
-            aria-label={maximized ? 'Restore' : 'Maximize'}
-            onClick={act(w => w.toggleMaximize())}
-          />
+          <button aria-label={maximized ? 'Restore' : 'Maximize'} onClick={act(w => w.toggleMaximize())} />
           <button aria-label="Close" title="Hide to tray" onClick={act(w => w.close())} />
         </div>
       </div>

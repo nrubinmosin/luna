@@ -20,9 +20,8 @@ const systemSound = (): string => {
 export async function notify(title: string, body: string, chatId?: string | null): Promise<void> {
   if (!tauriAvailable) return;
   try {
-    const { isPermissionGranted, requestPermission, sendNotification } = await import(
-      '@tauri-apps/plugin-notification'
-    );
+    const { isPermissionGranted, requestPermission, sendNotification } =
+      await import('@tauri-apps/plugin-notification');
     let granted = await isPermissionGranted();
     if (!granted) granted = (await requestPermission()) === 'granted';
     if (granted) {

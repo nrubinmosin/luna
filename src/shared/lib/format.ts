@@ -24,7 +24,10 @@ export const fmtResetDate = (iso: string | null): string | null => {
   const d = new Date(iso);
   if (!Number.isFinite(d.getTime())) return null;
   return d.toLocaleString(undefined, {
-    day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit'
+    day: 'numeric',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit'
   });
 };
 
@@ -60,5 +63,4 @@ export const limitColor = (v: number) => {
 
 export const ACCENT = 'var(--accent)';
 
-export const tint = (pct: number, base: string) =>
-  `color-mix(in oklab, ${ACCENT} ${pct}%, ${base})`;
+export const tint = (pct: number, base: string) => `color-mix(in oklab, ${ACCENT} ${pct}%, ${base})`;

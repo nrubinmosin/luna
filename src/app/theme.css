@@ -1,5 +1,10 @@
-* { box-sizing: border-box; }
-body { margin: 0; overflow: hidden; }
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  overflow: hidden;
+}
 
 /* The terminal face, shipped with the app. Fetched from Google Fonts it needed
    the network on every start, and without it xterm measured its cells on
@@ -65,7 +70,7 @@ body { margin: 0; overflow: hidden; }
   --selection: #ddcfbc;
   --accent: #2a62c9;
   --focus: #e5a01a;
-  --shadow: 0 14px 44px rgba(40, 30, 15, .28);
+  --shadow: 0 14px 44px rgba(40, 30, 15, 0.28);
 
   --button-highlight: #ffffff;
   --button-face: #ece5dc;
@@ -123,7 +128,7 @@ body { margin: 0; overflow: hidden; }
   --selection: #494137;
   --accent: #7a9cc6;
   --focus: #d9a441;
-  --shadow: 0 14px 44px rgba(0, 0, 0, .6);
+  --shadow: 0 14px 44px rgba(0, 0, 0, 0.6);
 
   --button-highlight: #4a4a4a;
   --button-face: #2e2e2e;
@@ -155,20 +160,42 @@ body { margin: 0; overflow: hidden; }
   --code-string: #9cc68a;
   --code-literal: #e0a36a;
 }
-[data-app] { --bg: var(--surface); --panel: var(--card); }
+[data-app] {
+  --bg: var(--surface);
+  --panel: var(--card);
+}
 
-@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
-@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
 
 /* Thin rounded scrollbars in the theme's own greys, in place of XP's blue
    bitmaps — which, in the dark theme, were the brightest thing on screen. */
-[data-app] ::-webkit-scrollbar { width: 10px; height: 10px; }
+[data-app] ::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
 /* !important: xp.css brings its arrow buttons back with
    `:vertical:start:decrement` and the like, which outrank a bare selector —
    a tall enough list showed two arrows at each end. */
-[data-app] ::-webkit-scrollbar-button { display: none !important; }
+[data-app] ::-webkit-scrollbar-button {
+  display: none !important;
+}
 [data-app] ::-webkit-scrollbar-track,
-[data-app] ::-webkit-scrollbar-corner { background: transparent; }
+[data-app] ::-webkit-scrollbar-corner {
+  background: transparent;
+}
 [data-app] ::-webkit-scrollbar-thumb {
   background: var(--scroll-thumb);
   background-clip: padding-box;
@@ -176,27 +203,54 @@ body { margin: 0; overflow: hidden; }
   border-radius: 6px;
   box-shadow: none;
 }
-[data-app] ::-webkit-scrollbar-thumb:hover { background-color: var(--scroll-thumb-hover); }
+[data-app] ::-webkit-scrollbar-thumb:hover {
+  background-color: var(--scroll-thumb-hover);
+}
 
-.hover-bg { transition: background .14s; }
-.hover-bg:hover { background: var(--hover) !important; }
-.hover-danger { transition: background .14s, color .14s; }
-.hover-danger:hover { background: oklch(.63 .19 25 / .16) !important; color: oklch(.58 .2 25) !important; }
+.hover-bg {
+  transition: background 0.14s;
+}
+.hover-bg:hover {
+  background: var(--hover) !important;
+}
+.hover-danger {
+  transition:
+    background 0.14s,
+    color 0.14s;
+}
+.hover-danger:hover {
+  background: oklch(0.63 0.19 25 / 0.16) !important;
+  color: oklch(0.58 0.2 25) !important;
+}
 
 /* An app, not a page: a drag across the sidebar or a stray double-click on a
    label painted the chrome in selection blue. Fields stay selectable, and the
    terminals keep theirs — xterm draws its own selection and copies it itself. */
-[data-app] { -webkit-user-select: none; user-select: none; }
+[data-app] {
+  -webkit-user-select: none;
+  user-select: none;
+}
 [data-app] input,
 [data-app] textarea,
-[data-app] [contenteditable] { -webkit-user-select: text; user-select: text; }
+[data-app] [contenteditable] {
+  -webkit-user-select: text;
+  user-select: text;
+}
 
-.xterm .xterm-viewport { background: transparent !important; }
+.xterm .xterm-viewport {
+  background: transparent !important;
+}
 /* xterm gives its viewport overflow-y: scroll unconditionally. The terminal
    has no scrollbar at all: the viewport still scrolls (wheel, shift+PgUp, and
    xterm's own scrollToBottom), it is only never painted. */
-.xterm .xterm-viewport { scrollbar-width: none; }
-.xterm .xterm-viewport::-webkit-scrollbar { display: none; width: 0; height: 0; }
+.xterm .xterm-viewport {
+  scrollbar-width: none;
+}
+.xterm .xterm-viewport::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
 
 /* ------------------------------------------------------------------------
    Controls. XP's shapes — a 1px rim, a 3px radius, a top-lit face and the
@@ -214,7 +268,9 @@ body { margin: 0; overflow: hidden; }
   font-family: var(--sans-serif);
   font-size: var(--fs-4);
 }
-[data-app] :focus { outline: none; }
+[data-app] :focus {
+  outline: none;
+}
 [data-app] button:focus-visible,
 [data-app] [role="button"]:focus-visible,
 [data-app] select:focus-visible {
@@ -229,21 +285,37 @@ body { margin: 0; overflow: hidden; }
   background: var(--btn-face);
   color: var(--btn-ink);
   box-shadow: none;
-  transition: transform .12s ease, box-shadow .14s ease, filter .14s ease, background .14s;
+  transition:
+    transform 0.12s ease,
+    box-shadow 0.14s ease,
+    filter 0.14s ease,
+    background 0.14s;
 }
 [data-app] button:not(:disabled):hover {
-  box-shadow: inset -1px 1px #fff0cf, inset 1px 2px #fdd889, inset -2px 2px #fbc761, inset 2px -2px #e5a01a;
+  box-shadow:
+    inset -1px 1px #fff0cf,
+    inset 1px 2px #fdd889,
+    inset -2px 2px #fbc761,
+    inset 2px -2px #e5a01a;
 }
 [data-app][data-theme="dark"] button:not(:disabled):hover {
-  box-shadow: inset 0 0 0 1px #c98e2a, inset 0 0 0 2px rgba(240, 180, 80, .25);
+  box-shadow:
+    inset 0 0 0 1px #c98e2a,
+    inset 0 0 0 2px rgba(240, 180, 80, 0.25);
 }
 [data-app] button:not(:disabled):active {
   background: var(--btn-face-down);
-  transform: scale(.97);
+  transform: scale(0.97);
 }
-[data-app] button:disabled { color: var(--faint); opacity: .7; }
+[data-app] button:disabled {
+  color: var(--faint);
+  opacity: 0.7;
+}
 /* XP sizes dialog buttons to a 75px minimum; small ones opt out. */
-[data-app] button.slim { min-width: 0; padding: 0 8px; }
+[data-app] button.slim {
+  min-width: 0;
+  padding: 0 8px;
+}
 
 /* The one button that matters wears a colour, the way XP's Start button and
    default dialog buttons stood out: green to go ahead, red to destroy. */
@@ -251,7 +323,7 @@ body { margin: 0; overflow: hidden; }
 [data-app] button.danger {
   color: #fff;
   font-weight: 700;
-  text-shadow: 0 1px 1px rgba(0, 0, 0, .35);
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.35);
 }
 [data-app] button.primary {
   border-color: #1f5f1f;
@@ -288,9 +360,14 @@ body { margin: 0; overflow: hidden; }
   border-radius: 5px;
   background-color: var(--field);
   color: var(--fg);
-  transition: border-color .14s, box-shadow .14s;
+  transition:
+    border-color 0.14s,
+    box-shadow 0.14s;
 }
-[data-app] textarea { height: auto; padding: 5px 8px; }
+[data-app] textarea {
+  height: auto;
+  padding: 5px 8px;
+}
 [data-app] select {
   padding-right: 26px;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.6 6 7.6l3-3' fill='none' stroke='%23908a80' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
@@ -301,7 +378,9 @@ body { margin: 0; overflow: hidden; }
 [data-app] select:hover,
 [data-app] input[type="text"]:hover,
 [data-app] input[type="password"]:hover,
-[data-app] input[type="email"]:hover { border-color: var(--faint); }
+[data-app] input[type="email"]:hover {
+  border-color: var(--faint);
+}
 [data-app] select:focus,
 [data-app] input[type="text"]:focus,
 [data-app] input[type="password"]:focus,
@@ -313,9 +392,16 @@ body { margin: 0; overflow: hidden; }
   border-color: var(--focus);
   box-shadow: 0 0 0 3px color-mix(in oklab, var(--focus) 22%, transparent);
 }
-[data-app] select:active { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.6 6 7.6l3-3' fill='none' stroke='%23908a80' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"); }
-[data-app] select option { background: var(--field); color: var(--fg); }
-[data-app] input::placeholder { color: var(--faint); }
+[data-app] select:active {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.6 6 7.6l3-3' fill='none' stroke='%23908a80' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+[data-app] select option {
+  background: var(--field);
+  color: var(--fg);
+}
+[data-app] input::placeholder {
+  color: var(--faint);
+}
 
 /* Checkboxes and radios: xp.css hides the input and draws the box on the
    label's ::before. Same structure, redrawn round-cornered and smooth, with
@@ -339,10 +425,15 @@ body { margin: 0; overflow: hidden; }
   border: 1px solid var(--field-line);
   border-radius: 4px;
   background: var(--field);
-  box-shadow: inset 0 1px 2px rgba(0, 0, 0, .12);
-  transition: border-color .14s, box-shadow .14s, background .14s;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.12);
+  transition:
+    border-color 0.14s,
+    box-shadow 0.14s,
+    background 0.14s;
 }
-[data-app] input[type="radio"] + label::before { border-radius: 50%; }
+[data-app] input[type="radio"] + label::before {
+  border-radius: 50%;
+}
 [data-app] input[type="checkbox"]:not([disabled]) + label:hover::before,
 [data-app] input[type="radio"]:not([disabled]) + label:hover::before {
   border-color: #e5a01a;
@@ -353,7 +444,9 @@ body { margin: 0; overflow: hidden; }
   box-shadow: 0 0 0 2px var(--focus);
 }
 [data-app] input[type="checkbox"]:active + label::before,
-[data-app] input[type="radio"]:active + label::before { background: var(--hover); }
+[data-app] input[type="radio"]:active + label::before {
+  background: var(--hover);
+}
 [data-app] input[type="checkbox"] + label::after,
 [data-app] input[type="radio"] + label::after {
   content: "";
@@ -364,15 +457,18 @@ body { margin: 0; overflow: hidden; }
   height: 15px;
   margin-top: -7.5px;
   background: none;
-  transform: scale(.3);
+  transform: scale(0.3);
   opacity: 0;
-  transition: transform .1s ease-out, opacity .1s;
+  transition:
+    transform 0.1s ease-out,
+    opacity 0.1s;
 }
 [data-app] input[type="checkbox"]:checked + label::after {
   display: block;
   opacity: 1;
   transform: scale(1);
-  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 15 15'%3E%3Cpath d='M3.6 7.8l2.6 2.6 5.2-5.6' fill='none' stroke='%2322a122' stroke-width='2.1' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / 15px 15px no-repeat;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 15 15'%3E%3Cpath d='M3.6 7.8l2.6 2.6 5.2-5.6' fill='none' stroke='%2322a122' stroke-width='2.1' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")
+    center / 15px 15px no-repeat;
 }
 /* An unticked box that says more (LibraryWindow `FolderCell`): turned off,
    a red cross; on for some only, a dash; ticked by something else, the tick
@@ -381,22 +477,27 @@ body { margin: 0; overflow: hidden; }
   display: block;
   opacity: 1;
   transform: scale(1);
-  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 15 15'%3E%3Cpath d='M4.6 4.6l5.8 5.8M10.4 4.6l-5.8 5.8' fill='none' stroke='%23c8352f' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E") center / 15px 15px no-repeat;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 15 15'%3E%3Cpath d='M4.6 4.6l5.8 5.8M10.4 4.6l-5.8 5.8' fill='none' stroke='%23c8352f' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E")
+    center / 15px 15px no-repeat;
 }
 [data-app] input[type="checkbox"][data-mark="inherited"]:not(:checked) + label::after {
   display: block;
-  opacity: .38;
+  opacity: 0.38;
   transform: scale(1);
-  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 15 15'%3E%3Cpath d='M3.6 7.8l2.6 2.6 5.2-5.6' fill='none' stroke='%2322a122' stroke-width='2.1' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / 15px 15px no-repeat;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 15 15'%3E%3Cpath d='M3.6 7.8l2.6 2.6 5.2-5.6' fill='none' stroke='%2322a122' stroke-width='2.1' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")
+    center / 15px 15px no-repeat;
 }
 [data-app] input[type="checkbox"][data-mark="some"]:not(:checked) + label::after,
 [data-app] input[type="checkbox"][data-mark="inherited-some"]:not(:checked) + label::after {
   display: block;
   opacity: 1;
   transform: scale(1);
-  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 15 15'%3E%3Cpath d='M4 7.5h7' fill='none' stroke='%2322a122' stroke-width='2.1' stroke-linecap='round'/%3E%3C/svg%3E") center / 15px 15px no-repeat;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 15 15'%3E%3Cpath d='M4 7.5h7' fill='none' stroke='%2322a122' stroke-width='2.1' stroke-linecap='round'/%3E%3C/svg%3E")
+    center / 15px 15px no-repeat;
 }
-[data-app] input[type="checkbox"][data-mark="inherited-some"]:not(:checked) + label::after { opacity: .38; }
+[data-app] input[type="checkbox"][data-mark="inherited-some"]:not(:checked) + label::after {
+  opacity: 0.38;
+}
 [data-app] input[type="radio"]:checked + label::after {
   display: block;
   opacity: 1;
@@ -406,11 +507,17 @@ body { margin: 0; overflow: hidden; }
   background: radial-gradient(circle at 50% 50%, #5fc25a 0 2.6px, #22a122 3.4px, transparent 4px);
 }
 [data-app] input[type="checkbox"][disabled] + label,
-[data-app] input[type="radio"][disabled] + label { color: var(--faint); }
+[data-app] input[type="radio"][disabled] + label {
+  color: var(--faint);
+}
 [data-app] input[type="checkbox"][disabled] + label::before,
-[data-app] input[type="radio"][disabled] + label::before { background: var(--hover); }
+[data-app] input[type="radio"][disabled] + label::before {
+  background: var(--hover);
+}
 
-[data-app] .xp-sunken { box-shadow: var(--border-sunken-outer), var(--border-sunken-inner); }
+[data-app] .xp-sunken {
+  box-shadow: var(--border-sunken-outer), var(--border-sunken-inner);
+}
 /* A list box in a dialog: the field's own frame and ground. */
 [data-app] .xp-field {
   border: 1px solid var(--field-line);
@@ -422,11 +529,16 @@ body { margin: 0; overflow: hidden; }
 /* ------------------------------------------------------------------------
    Windows and dialogs. xp.css keeps the light Luna frame; the body is ours.
    ------------------------------------------------------------------------ */
-[data-app] .window { background: var(--surface); color: var(--fg); }
+[data-app] .window {
+  background: var(--surface);
+  color: var(--fg);
+}
 [data-app][data-theme="dark"] .window {
   box-shadow: var(--border-window-outer), var(--border-window-inner);
 }
-[data-app] .window-body { margin: 10px 12px; }
+[data-app] .window-body {
+  margin: 10px 12px;
+}
 
 /* Title bars: XP's Luna blue gloss in the light theme, graphite in the dark
    one (Royale Noir, without its blue). Title text in Trebuchet, as XP had it. */
@@ -449,7 +561,9 @@ body { margin: 0; overflow: hidden; }
   background: linear-gradient(180deg, #555555 0%, #303030 8%, #282828 45%, #1f1f1f 55%, #262626 100%);
   border-color: #3a3a3a;
 }
-[data-app][data-theme="dark"] .title-bar-text { text-shadow: 1px 1px #000; }
+[data-app][data-theme="dark"] .title-bar-text {
+  text-shadow: 1px 1px #000;
+}
 
 /* The app's own title bar over the window's native edge: no frame of its
    own drawn round it, so Windows keeps the border, the rounded corners and
@@ -470,20 +584,35 @@ body { margin: 0; overflow: hidden; }
   border-right: none;
   border-top: none;
 }
-.app-frame > .app-body { flex: 1; min-height: 0; display: flex; }
+.app-frame > .app-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
 /* The window's buttons answer up to the bar's top edge, and Close to its
    right edge too: thrown into the corner of a maximised window, the pointer
    lands on Close, as on Windows' own title bar. The reach is generous so the
    press shrinking the button does not pull it out from under the pointer. */
-.app-frame > .title-bar > .title-bar-controls { padding-right: 5px; }
-.app-frame > .title-bar > .title-bar-controls button { position: relative; }
+.app-frame > .title-bar > .title-bar-controls {
+  padding-right: 5px;
+}
+.app-frame > .title-bar > .title-bar-controls button {
+  position: relative;
+}
 .app-frame > .title-bar > .title-bar-controls button::before {
   content: "";
   position: absolute;
   inset: -12px -2px -6px;
 }
-.app-frame > .title-bar > .title-bar-controls button:last-child::before { right: -10px; }
-.app-frame .title-bar-text { flex: none; display: flex; align-items: center; gap: 6px; }
+.app-frame > .title-bar > .title-bar-controls button:last-child::before {
+  right: -10px;
+}
+.app-frame .title-bar-text {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
 
 /* The board's controls, on the title bar: glass pills on the gloss, so they
    are part of the bar rather than a toolbar under it. */
@@ -499,13 +628,18 @@ body { margin: 0; overflow: hidden; }
   flex: none;
   display: flex;
   height: 24px;
-  border: 1px solid rgba(255, 255, 255, .38);
+  border: 1px solid rgba(255, 255, 255, 0.38);
   border-radius: 6px;
   overflow: hidden;
-  background: rgba(255, 255, 255, .12);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .18), 0 1px 1px rgba(0, 0, 40, .2);
+  background: rgba(255, 255, 255, 0.12);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    0 1px 1px rgba(0, 0, 40, 0.2);
 }
-[data-app][data-theme="dark"] .tb-seg { border-color: rgba(255, 255, 255, .14); background: rgba(255, 255, 255, .04); }
+[data-app][data-theme="dark"] .tb-seg {
+  border-color: rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.04);
+}
 [data-app] .tb-seg > button,
 [data-app] button.tb-btn {
   min-width: 30px;
@@ -518,19 +652,25 @@ body { margin: 0; overflow: hidden; }
   color: #fff;
   display: grid;
   place-items: center;
-  font: 700 var(--fs-4) "Times New Roman", serif;
-  text-shadow: 0 1px 1px rgba(0, 0, 40, .45);
-  transition: background .14s, transform .12s;
+  font:
+    700 var(--fs-4) "Times New Roman",
+    serif;
+  text-shadow: 0 1px 1px rgba(0, 0, 40, 0.45);
+  transition:
+    background 0.14s,
+    transform 0.12s;
 }
-[data-app] .tb-seg > button + button { border-left: 1px solid rgba(255, 255, 255, .22); }
+[data-app] .tb-seg > button + button {
+  border-left: 1px solid rgba(255, 255, 255, 0.22);
+}
 [data-app] .tb-seg > button:not(:disabled):hover,
 [data-app] button.tb-btn:not(:disabled):hover {
-  background: rgba(255, 255, 255, .22);
+  background: rgba(255, 255, 255, 0.22);
   box-shadow: none;
 }
 [data-app] .tb-seg > button[aria-pressed="true"] {
-  background: linear-gradient(180deg, rgba(255, 255, 255, .5), rgba(255, 255, 255, .26));
-  box-shadow: inset 0 1px 2px rgba(0, 0, 40, .3);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.5), rgba(255, 255, 255, 0.26));
+  box-shadow: inset 0 1px 2px rgba(0, 0, 40, 0.3);
 }
 [data-app][data-theme="dark"] .tb-seg > button[aria-pressed="true"] {
   background: linear-gradient(180deg, #5a5a5a, #464646);
@@ -544,9 +684,14 @@ body { margin: 0; overflow: hidden; }
   border-radius: 6px;
   font: 600 var(--fs-3) var(--sans-serif);
 }
-[data-app] button.tb-btn:not(:disabled):hover { border-color: rgba(255, 255, 255, .35); }
+[data-app] button.tb-btn:not(:disabled):hover {
+  border-color: rgba(255, 255, 255, 0.35);
+}
 [data-app] .tb-seg > button:not(:disabled):active,
-[data-app] button.tb-btn:not(:disabled):active { transform: scale(.94); background: rgba(0, 0, 40, .15); }
+[data-app] button.tb-btn:not(:disabled):active {
+  transform: scale(0.94);
+  background: rgba(0, 0, 40, 0.15);
+}
 /* How many stale worktrees there are, on the Worktrees button: the orange of
    a taskbar button that wants attention. */
 [data-app] .tb-count {
@@ -557,12 +702,17 @@ body { margin: 0; overflow: hidden; }
   display: grid;
   place-items: center;
   background: linear-gradient(180deg, #ffb347, #e07b00);
-  box-shadow: inset 0 0 0 1px rgba(120, 50, 0, .45);
+  box-shadow: inset 0 0 0 1px rgba(120, 50, 0, 0.45);
   color: #fff;
   font: 700 var(--fs-1) var(--sans-serif);
-  text-shadow: 0 1px 1px rgba(80, 30, 0, .5);
+  text-shadow: 0 1px 1px rgba(80, 30, 0, 0.5);
 }
-[data-app] .tb-sep { width: 1px; height: 18px; background: rgba(255, 255, 255, .28); flex: none; }
+[data-app] .tb-sep {
+  width: 1px;
+  height: 18px;
+  background: rgba(255, 255, 255, 0.28);
+  flex: none;
+}
 
 /* ------------------------------------------------------------------------
    Window controls: every control in a title bar (the window's, a pane's, a
@@ -602,22 +752,49 @@ body { margin: 0; overflow: hidden; }
   padding: 0;
   border: 1px solid var(--ctl-rim);
   border-radius: 4px;
-  background: var(--glyph) center / 16px 16px no-repeat, var(--face) !important;
-  box-shadow: inset -1px -1px rgba(0, 0, 40, .22) !important;
-  transition: filter .12s, opacity .15s, transform .12s;
+  background:
+    var(--glyph) center / 16px 16px no-repeat,
+    var(--face) !important;
+  box-shadow: inset -1px -1px rgba(0, 0, 40, 0.22) !important;
+  transition:
+    filter 0.12s,
+    opacity 0.15s,
+    transform 0.12s;
 }
-[data-app] .title-bar-controls button:not(:disabled):hover { filter: brightness(1.18); transform: translateY(-1px); }
-[data-app] .title-bar-controls button:not(:disabled):active { filter: brightness(.85); transform: scale(.92); }
+[data-app] .title-bar-controls button:not(:disabled):hover {
+  filter: brightness(1.18);
+  transform: translateY(-1px);
+}
+[data-app] .title-bar-controls button:not(:disabled):active {
+  filter: brightness(0.85);
+  transform: scale(0.92);
+}
 [data-app] .title-bar-controls button[aria-label="Minimize"],
-[data-app] .title-bar-controls button[data-glyph="min"] { --glyph: var(--g-min); }
+[data-app] .title-bar-controls button[data-glyph="min"] {
+  --glyph: var(--g-min);
+}
 [data-app] .title-bar-controls button[aria-label="Maximize"],
-[data-app] .title-bar-controls button[data-glyph="max"] { --glyph: var(--g-max); }
+[data-app] .title-bar-controls button[data-glyph="max"] {
+  --glyph: var(--g-max);
+}
 [data-app] .title-bar-controls button[aria-label="Restore"],
-[data-app] .title-bar-controls button[data-glyph="restore"] { --glyph: var(--g-restore); }
-[data-app] .title-bar-controls button[data-glyph="pencil"] { --glyph: var(--g-pencil); }
-[data-app] .title-bar-controls button[data-glyph="check"] { --glyph: var(--g-check); }
-[data-app] .title-bar-controls button[aria-label="Close"] { --glyph: var(--g-close); --face: var(--ctl-red); }
-[data-app] .title-bar-controls button[data-glyph="trash"] { --glyph: var(--g-trash); --face: var(--ctl-red); }
+[data-app] .title-bar-controls button[data-glyph="restore"] {
+  --glyph: var(--g-restore);
+}
+[data-app] .title-bar-controls button[data-glyph="pencil"] {
+  --glyph: var(--g-pencil);
+}
+[data-app] .title-bar-controls button[data-glyph="check"] {
+  --glyph: var(--g-check);
+}
+[data-app] .title-bar-controls button[aria-label="Close"] {
+  --glyph: var(--g-close);
+  --face: var(--ctl-red);
+}
+[data-app] .title-bar-controls button[data-glyph="trash"] {
+  --glyph: var(--g-trash);
+  --face: var(--ctl-red);
+}
 /* The colour button wears the chat's colour instead of a glyph. */
 [data-app] .title-bar-controls button[data-glyph="swatch"] {
   background:
@@ -641,7 +818,10 @@ body { margin: 0; overflow: hidden; }
    ------------------------------------------------------------------------ */
 [data-app] .pane {
   container-type: inline-size;
-  transition: border-color .12s, box-shadow .12s, opacity .12s;
+  transition:
+    border-color 0.12s,
+    box-shadow 0.12s,
+    opacity 0.12s;
 }
 [data-app] .pane-bar {
   --c: var(--luna-blue);
@@ -653,12 +833,22 @@ body { margin: 0; overflow: hidden; }
   border-top-color: color-mix(in oklab, var(--c) 75%, black);
   border-left-color: color-mix(in oklab, var(--c) 75%, black);
   border-right-color: color-mix(in oklab, var(--c) 55%, black);
-  background: linear-gradient(180deg,
-    color-mix(in oklab, var(--c) 45%, white) 0%, var(--c) 9%, color-mix(in oklab, var(--c) 88%, white) 40%,
-    var(--c) 86%, color-mix(in oklab, var(--c) 75%, black) 100%);
-  transition: background .15s, box-shadow .15s;
+  background: linear-gradient(
+    180deg,
+    color-mix(in oklab, var(--c) 45%, white) 0%,
+    var(--c) 9%,
+    color-mix(in oklab, var(--c) 88%, white) 40%,
+    var(--c) 86%,
+    color-mix(in oklab, var(--c) 75%, black) 100%
+  );
+  transition:
+    background 0.15s,
+    box-shadow 0.15s;
 }
-[data-app] .pane-bar .title-bar-controls { flex: none; position: relative; }
+[data-app] .pane-bar .title-bar-controls {
+  flex: none;
+  position: relative;
+}
 /* The bar's full height and a margin on the left: the clip is for what does
    not fit, not for the status dot's ring and halo, which it used to cut off
    against the window buttons. */
@@ -705,14 +895,16 @@ body { margin: 0; overflow: hidden; }
   border-radius: 9px;
   /* Dark glass, not light: white text needs a darker ground on the pale bar
      of an inactive pane as much as on a saturated one. */
-  background: rgba(0, 0, 0, .24);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .16);
+  background: rgba(0, 0, 0, 0.24);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16);
   color: #fff;
   font: 400 var(--fs-2) var(--sans-serif);
   white-space: nowrap;
   text-shadow: none;
 }
-[data-app] .pchip b { font-weight: 700; }
+[data-app] .pchip b {
+  font-weight: 700;
+}
 /* The folder the session runs in: by the name, in the title's own white,
    not one more chip among the settings. Whole: the name gives way first. */
 [data-app] .pane-folder {
@@ -727,16 +919,20 @@ body { margin: 0; overflow: hidden; }
 }
 [data-app] .pane-sid {
   flex: none;
-  font: 400 var(--fs-1) "JetBrains Mono", monospace;
-  color: rgba(255, 255, 255, .85);
+  font:
+    400 var(--fs-1) "JetBrains Mono",
+    monospace;
+  color: rgba(255, 255, 255, 0.85);
   padding: 2px 4px;
   border-radius: 4px;
   min-width: 8.5ch;
   text-align: center;
   cursor: copy;
-  transition: background .14s;
+  transition: background 0.14s;
 }
-[data-app] .pane-sid:hover { background: rgba(255, 255, 255, .2); }
+[data-app] .pane-sid:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
 /* Context: an XP block meter with the number beside it. */
 [data-app] .ctx-meter {
   flex: none;
@@ -755,7 +951,11 @@ body { margin: 0; overflow: hidden; }
 /* An inactive XP window is pale, not grey: the hue survives, the shout goes. */
 [data-app] .pane[data-focus="no"] .pane-bar {
   border-color: color-mix(in oklab, var(--c) 50%, #a89c8a);
-  background: linear-gradient(180deg, color-mix(in oklab, var(--c) 52%, #d9d0c2), color-mix(in oklab, var(--c) 64%, #b3a794));
+  background: linear-gradient(
+    180deg,
+    color-mix(in oklab, var(--c) 52%, #d9d0c2),
+    color-mix(in oklab, var(--c) 64%, #b3a794)
+  );
 }
 [data-app] .pane[data-focus="no"] .pane-bar .title-bar-text,
 [data-app] .pane[data-focus="no"] .pane-folder,
@@ -763,10 +963,19 @@ body { margin: 0; overflow: hidden; }
   color: #fff;
   text-shadow: 1px 1px color-mix(in oklab, var(--c) 55%, #5c5446);
 }
-[data-app] .pane[data-focus="no"] .pchip { background: rgba(0, 0, 0, .2); color: rgba(255, 255, 255, .92); }
-[data-app] .pane[data-focus="no"] .pane-sid { color: rgba(255, 255, 255, .88); }
-[data-app] .pane[data-focus="no"] .title-bar-controls button { opacity: .72; }
-[data-app] .pane[data-focus="no"] .title-bar-controls button:hover { opacity: 1; }
+[data-app] .pane[data-focus="no"] .pchip {
+  background: rgba(0, 0, 0, 0.2);
+  color: rgba(255, 255, 255, 0.92);
+}
+[data-app] .pane[data-focus="no"] .pane-sid {
+  color: rgba(255, 255, 255, 0.88);
+}
+[data-app] .pane[data-focus="no"] .title-bar-controls button {
+  opacity: 0.72;
+}
+[data-app] .pane[data-focus="no"] .title-bar-controls button:hover {
+  opacity: 1;
+}
 
 [data-app][data-theme="dark"] .pane-bar {
   border-color: #3a3a3a;
@@ -774,13 +983,17 @@ body { margin: 0; overflow: hidden; }
   box-shadow: inset 0 -3px 0 var(--c);
 }
 [data-app][data-theme="dark"] .pane-bar .title-bar-text,
-[data-app][data-theme="dark"] .pane-folder { text-shadow: 1px 1px #000; }
+[data-app][data-theme="dark"] .pane-folder {
+  text-shadow: 1px 1px #000;
+}
 [data-app][data-theme="dark"] .pchip {
-  background: rgba(255, 255, 255, .07);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .08);
+  background: rgba(255, 255, 255, 0.07);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
   color: var(--dim);
 }
-[data-app][data-theme="dark"] .pchip b { color: var(--fg); }
+[data-app][data-theme="dark"] .pchip b {
+  color: var(--fg);
+}
 [data-app][data-theme="dark"] .pane[data-focus="no"] .pane-bar {
   border-color: #333333;
   background: #232323;
@@ -788,29 +1001,74 @@ body { margin: 0; overflow: hidden; }
 }
 [data-app][data-theme="dark"] .pane[data-focus="no"] .pane-bar .title-bar-text,
 [data-app][data-theme="dark"] .pane[data-focus="no"] .pane-folder,
-[data-app][data-theme="dark"] .pane[data-focus="no"] .ctx-meter { color: #a3a3a3; text-shadow: none; }
+[data-app][data-theme="dark"] .pane[data-focus="no"] .ctx-meter {
+  color: #a3a3a3;
+  text-shadow: none;
+}
 [data-app][data-theme="dark"] .pane[data-focus="no"] .pchip,
 [data-app][data-theme="dark"] .pane[data-focus="no"] .pchip b,
-[data-app][data-theme="dark"] .pane[data-focus="no"] .pane-sid { color: #858585; }
+[data-app][data-theme="dark"] .pane[data-focus="no"] .pane-sid {
+  color: #858585;
+}
 
 /* A narrow pane gives up its details chip by chip before the name and the
    controls. */
-@container (max-width: 600px) { [data-app] .pchip.opt-2, [data-app] .pane-sid { display: none; } }
-@container (max-width: 500px) { [data-app] .pchip.opt-1, [data-app] .ctx-meter .track { display: none; } }
-@container (max-width: 380px) { [data-app] .pane-chips { display: none; } }
-@container (max-width: 300px) { [data-app] .pane-folder { display: none; } }
+@container (max-width: 600px) {
+  [data-app] .pchip.opt-2,
+  [data-app] .pane-sid {
+    display: none;
+  }
+}
+@container (max-width: 500px) {
+  [data-app] .pchip.opt-1,
+  [data-app] .ctx-meter .track {
+    display: none;
+  }
+}
+@container (max-width: 380px) {
+  [data-app] .pane-chips {
+    display: none;
+  }
+}
+@container (max-width: 300px) {
+  [data-app] .pane-folder {
+    display: none;
+  }
+}
 
 /* Waiting for you: the bar flashes orange the way an XP taskbar button did,
    and a balloon says so over a pane you are not looking at. */
-[data-app] .pane[data-waiting="yes"] .pane-bar { animation: taskbar-flash 2.4s ease-in-out infinite; }
-@keyframes taskbar-flash {
-  0%, 50%, 100% { box-shadow: inset 0 0 0 40px rgba(255, 128, 0, 0); }
-  62%, 88% { box-shadow: inset 0 0 0 40px rgba(255, 128, 0, .62); }
+[data-app] .pane[data-waiting="yes"] .pane-bar {
+  animation: taskbar-flash 2.4s ease-in-out infinite;
 }
-[data-app][data-theme="dark"] .pane[data-waiting="yes"] .pane-bar { animation-name: taskbar-flash-dark; }
+@keyframes taskbar-flash {
+  0%,
+  50%,
+  100% {
+    box-shadow: inset 0 0 0 40px rgba(255, 128, 0, 0);
+  }
+  62%,
+  88% {
+    box-shadow: inset 0 0 0 40px rgba(255, 128, 0, 0.62);
+  }
+}
+[data-app][data-theme="dark"] .pane[data-waiting="yes"] .pane-bar {
+  animation-name: taskbar-flash-dark;
+}
 @keyframes taskbar-flash-dark {
-  0%, 50%, 100% { box-shadow: inset 0 -3px 0 var(--c), inset 0 0 0 40px rgba(255, 140, 20, 0); }
-  62%, 88% { box-shadow: inset 0 -3px 0 var(--c), inset 0 0 0 40px rgba(255, 140, 20, .4); }
+  0%,
+  50%,
+  100% {
+    box-shadow:
+      inset 0 -3px 0 var(--c),
+      inset 0 0 0 40px rgba(255, 140, 20, 0);
+  }
+  62%,
+  88% {
+    box-shadow:
+      inset 0 -3px 0 var(--c),
+      inset 0 0 0 40px rgba(255, 140, 20, 0.4);
+  }
 }
 [data-app] .balloon {
   position: absolute;
@@ -825,12 +1083,21 @@ body { margin: 0; overflow: hidden; }
   color: var(--balloon-ink);
   font-size: var(--fs-3);
   line-height: 1.35;
-  box-shadow: 2px 3px 7px rgba(0, 0, 0, .28);
+  box-shadow: 2px 3px 7px rgba(0, 0, 0, 0.28);
   pointer-events: none;
-  animation: balloon-in .16s ease-out;
+  animation: balloon-in 0.16s ease-out;
 }
-@keyframes balloon-in { from { opacity: 0; transform: translateY(-8px) scale(.9); } }
-[data-app] .balloon b { display: flex; align-items: center; gap: 6px; }
+@keyframes balloon-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.9);
+  }
+}
+[data-app] .balloon b {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
 [data-app] .balloon b::before {
   content: "!";
   width: 15px;
@@ -855,13 +1122,17 @@ body { margin: 0; overflow: hidden; }
   transform: rotate(45deg);
 }
 [data-app][data-theme="dark"] .balloon,
-[data-app][data-theme="dark"] .balloon::after { border-color: #6f6650; }
+[data-app][data-theme="dark"] .balloon::after {
+  border-color: #6f6650;
+}
 
 /* ------------------------------------------------------------------------
    Sidebar: Explorer's task pane. Pinned, it sits in the row; hidden, it
    leaves a strip, and hovering the strip slides it out over the board.
    ------------------------------------------------------------------------ */
-[data-app] .taskpane { background: var(--taskpane); }
+[data-app] .taskpane {
+  background: var(--taskpane);
+}
 [data-app] .dock {
   position: relative;
   flex: none;
@@ -869,10 +1140,12 @@ body { margin: 0; overflow: hidden; }
   /* Clipped on the left only: the slid-away sidebar must not show over the
      window's frame, while the slid-out one overhangs the board on the right. */
   clip-path: inset(0 -100vw 0 0);
-  transition: width .13s ease-out;
+  transition: width 0.13s ease-out;
 }
 /* Slid out over the board, it goes over the peek sheet too. */
-[data-app] .dock[data-mode="hidden"][data-shown="yes"] { z-index: 60; }
+[data-app] .dock[data-mode="hidden"][data-shown="yes"] {
+  z-index: 60;
+}
 [data-app] .dock > .taskpane {
   position: absolute;
   inset: 0 auto 0 0;
@@ -881,10 +1154,17 @@ body { margin: 0; overflow: hidden; }
   gap: 6px;
   padding: 7px 7px 8px;
   border-right: 1px solid var(--line);
-  transition: transform .13s ease-out, box-shadow .13s;
+  transition:
+    transform 0.13s ease-out,
+    box-shadow 0.13s;
 }
-[data-app] .dock[data-shown="no"] > .taskpane { transform: translateX(-100%); pointer-events: none; }
-[data-app] .dock[data-mode="hidden"][data-shown="yes"] > .taskpane { box-shadow: 8px 0 28px rgba(0, 0, 0, .35); }
+[data-app] .dock[data-shown="no"] > .taskpane {
+  transform: translateX(-100%);
+  pointer-events: none;
+}
+[data-app] .dock[data-mode="hidden"][data-shown="yes"] > .taskpane {
+  box-shadow: 8px 0 28px rgba(0, 0, 0, 0.35);
+}
 /* Hidden, the sidebar takes no width at all: an invisible band over the
    board's margin is what the hover finds at the very edge, and App's Dock
    answers a little further in as well (see EDGE). */
@@ -903,17 +1183,19 @@ body { margin: 0; overflow: hidden; }
   width: 6px;
   z-index: 2;
   cursor: col-resize;
-  transition: background .15s;
+  transition: background 0.15s;
 }
 [data-app] .dock-grip:hover,
-[data-app] .dock-grip[data-on="yes"] { background: color-mix(in oklab, var(--accent) 60%, transparent); }
+[data-app] .dock-grip[data-on="yes"] {
+  background: color-mix(in oklab, var(--accent) 60%, transparent);
+}
 
 [data-app] .tp-group {
   flex: none;
   border-radius: 6px 6px 0 0;
   overflow: hidden;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, .14);
-  animation: pop-in .12s ease-out;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.14);
+  animation: pop-in 0.12s ease-out;
 }
 [data-app] .tp-head {
   display: flex;
@@ -926,9 +1208,11 @@ body { margin: 0; overflow: hidden; }
   font-size: var(--fs-4);
   font-weight: 700;
   cursor: default;
-  transition: color .14s;
+  transition: color 0.14s;
 }
-[data-app] .tp-head:hover { color: var(--group-ink-hover); }
+[data-app] .tp-head:hover {
+  color: var(--group-ink-hover);
+}
 /* The folder's name on two floors: where it sits, small, over the folder
    itself, so the name keeps the width the buttons leave. */
 [data-app] .tp-name {
@@ -939,8 +1223,16 @@ body { margin: 0; overflow: hidden; }
   justify-content: center;
   line-height: 1.15;
 }
-[data-app] .tp-name > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-[data-app] .tp-name > .tp-where { font-size: var(--fs-1); font-weight: 400; opacity: .7; }
+[data-app] .tp-name > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-app] .tp-name > .tp-where {
+  font-size: var(--fs-1);
+  font-weight: 400;
+  opacity: 0.7;
+}
 [data-app] .tp-chev {
   flex: none;
   width: 18px;
@@ -951,18 +1243,29 @@ body { margin: 0; overflow: hidden; }
   background: var(--card);
   border: 1px solid var(--line);
   color: var(--group-ink);
-  transition: transform .13s ease-out, background .12s;
+  transition:
+    transform 0.13s ease-out,
+    background 0.12s;
 }
-[data-app] .tp-head:hover .tp-chev { background: var(--hover); }
-[data-app] .tp-chev[data-open="no"] { transform: rotate(180deg); }
+[data-app] .tp-head:hover .tp-chev {
+  background: var(--hover);
+}
+[data-app] .tp-chev[data-open="no"] {
+  transform: rotate(180deg);
+}
 /* The body folds by animating its row height, not by vanishing. */
 [data-app] .tp-fold {
   display: grid;
   grid-template-rows: 1fr;
-  transition: grid-template-rows .14s ease-out;
+  transition: grid-template-rows 0.14s ease-out;
 }
-[data-app] .tp-fold[data-open="no"] { grid-template-rows: 0fr; }
-[data-app] .tp-fold > div { min-height: 0; overflow: hidden; }
+[data-app] .tp-fold[data-open="no"] {
+  grid-template-rows: 0fr;
+}
+[data-app] .tp-fold > div {
+  min-height: 0;
+  overflow: hidden;
+}
 [data-app] .tp-body {
   background: var(--group-body);
   border: 1px solid var(--group-line);
@@ -985,24 +1288,40 @@ body { margin: 0; overflow: hidden; }
   border: 0;
   border-radius: 4px 14px 14px 4px;
   color: #fff;
-  font: italic 700 var(--fs-6) "Trebuchet MS", var(--sans-serif);
-  text-shadow: 1px 1px 1px rgba(0, 0, 0, .45);
+  font:
+    italic 700 var(--fs-6) "Trebuchet MS",
+    var(--sans-serif);
+  text-shadow: 1px 1px 1px rgba(0, 0, 0, 0.45);
   background: linear-gradient(180deg, #5eac56 0%, #3c9a3c 12%, #2f8b2f 50%, #2d8a2d 85%, #1f6b1f 100%);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .4), 0 1px 2px rgba(0, 0, 0, .3) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.4),
+    0 1px 2px rgba(0, 0, 0, 0.3) !important;
 }
 [data-app] button.start-btn::after {
   content: "";
   position: absolute;
   inset: 0 auto 0 -60%;
   width: 45%;
-  background: linear-gradient(100deg, transparent, rgba(255, 255, 255, .35), transparent);
+  background: linear-gradient(100deg, transparent, rgba(255, 255, 255, 0.35), transparent);
   transform: skewX(-18deg);
   pointer-events: none;
 }
-[data-app] button.start-btn:hover { filter: brightness(1.08); transform: translateY(-1px); }
-[data-app] button.start-btn:hover::after { animation: gloss .45s ease-out; }
-@keyframes gloss { to { left: 120%; } }
-[data-app] button.start-btn:active { filter: brightness(.92); transform: scale(.98); }
+[data-app] button.start-btn:hover {
+  filter: brightness(1.08);
+  transform: translateY(-1px);
+}
+[data-app] button.start-btn:hover::after {
+  animation: gloss 0.45s ease-out;
+}
+@keyframes gloss {
+  to {
+    left: 120%;
+  }
+}
+[data-app] button.start-btn:active {
+  filter: brightness(0.92);
+  transform: scale(0.98);
+}
 
 /* Chat rows. */
 [data-app] .chat-row {
@@ -1014,12 +1333,18 @@ body { margin: 0; overflow: hidden; }
   padding: 0 2px 0 5px;
   border-radius: 4px;
   cursor: grab;
-  transition: background .15s, color .15s, transform .15s;
-  animation: row-in .12s ease-out;
+  transition:
+    background 0.15s,
+    color 0.15s,
+    transform 0.15s;
+  animation: row-in 0.12s ease-out;
 }
-[data-app] .chat-row:hover { background: var(--row-hover); transform: translateX(2px); }
+[data-app] .chat-row:hover {
+  background: var(--row-hover);
+  transform: translateX(2px);
+}
 [data-app] .chat-row[data-waiting="yes"] {
-  background: linear-gradient(90deg, rgba(255, 138, 0, .3), rgba(255, 138, 0, .06));
+  background: linear-gradient(90deg, rgba(255, 138, 0, 0.3), rgba(255, 138, 0, 0.06));
 }
 [data-app] .chat-row[data-active="yes"] {
   background: var(--row-sel);
@@ -1030,11 +1355,13 @@ body { margin: 0; overflow: hidden; }
   flex: none;
   font-size: var(--fs-1);
   font-weight: 700;
-  letter-spacing: .04em;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--wait);
 }
-[data-app] .chat-row[data-active="yes"] .row-tag { color: #ffc27a; }
+[data-app] .chat-row[data-active="yes"] .row-tag {
+  color: #ffc27a;
+}
 /* An unsent draft in the chat's composer, and the messages Luna holds for it
    (drafts.store.ts): on the pane's title bar, a pill the bar's colour shows
    through. */
@@ -1043,11 +1370,11 @@ body { margin: 0; overflow: hidden; }
   margin-right: 6px;
   padding: 0 5px;
   border-radius: 3px;
-  background: rgba(0, 0, 0, .28);
+  background: rgba(0, 0, 0, 0.28);
   color: #fff;
   font-size: var(--fs-1);
   font-weight: 700;
-  letter-spacing: .04em;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
   white-space: nowrap;
 }
@@ -1067,14 +1394,23 @@ body { margin: 0; overflow: hidden; }
   font: 700 var(--fs-1) var(--sans-serif);
   font-variant-numeric: tabular-nums;
   cursor: default;
-  transition: background .12s, border-color .12s;
+  transition:
+    background 0.12s,
+    border-color 0.12s;
 }
-[data-app] .chat-row .kids:hover { background: var(--hover); border-color: var(--faint); }
-[data-app] .chat-row .kids svg { transition: transform .12s ease-out; }
-[data-app] .chat-row .kids[data-open="yes"] svg { transform: rotate(90deg); }
+[data-app] .chat-row .kids:hover {
+  background: var(--hover);
+  border-color: var(--faint);
+}
+[data-app] .chat-row .kids svg {
+  transition: transform 0.12s ease-out;
+}
+[data-app] .chat-row .kids[data-open="yes"] svg {
+  transform: rotate(90deg);
+}
 [data-app] .chat-row[data-active="yes"] .kids {
-  background: rgba(255, 255, 255, .2);
-  border-color: rgba(255, 255, 255, .45);
+  background: rgba(255, 255, 255, 0.2);
+  border-color: rgba(255, 255, 255, 0.45);
   color: #fff;
 }
 /* The same count on the title bar of the chat's pane, in the bar's own chip
@@ -1087,32 +1423,51 @@ body { margin: 0; overflow: hidden; }
   height: 18px;
   padding: 0 7px 0 5px;
   border-radius: 9px;
-  background: rgba(0, 0, 0, .24);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .16);
+  background: rgba(0, 0, 0, 0.24);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16);
   color: #fff;
   font: 700 var(--fs-2) var(--sans-serif);
   font-variant-numeric: tabular-nums;
   text-shadow: none;
   cursor: default;
 }
-[data-app] .pane-bar .kids:hover { background: rgba(0, 0, 0, .34); }
-[data-app] .pane-bar .kids[data-asking="yes"] { box-shadow: inset 0 0 0 1.5px var(--wait); }
+[data-app] .pane-bar .kids:hover {
+  background: rgba(0, 0, 0, 0.34);
+}
+[data-app] .pane-bar .kids[data-asking="yes"] {
+  box-shadow: inset 0 0 0 1.5px var(--wait);
+}
 [data-app][data-theme="dark"] .pane-bar .kids {
-  background: rgba(255, 255, 255, .07);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .08);
+  background: rgba(255, 255, 255, 0.07);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
   color: var(--fg);
 }
-[data-app][data-theme="dark"] .pane-bar .kids:hover { background: rgba(255, 255, 255, .14); }
-[data-app][data-theme="dark"] .pane-bar .kids[data-asking="yes"] { box-shadow: inset 0 0 0 1.5px var(--wait); color: var(--wait); }
+[data-app][data-theme="dark"] .pane-bar .kids:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+[data-app][data-theme="dark"] .pane-bar .kids[data-asking="yes"] {
+  box-shadow: inset 0 0 0 1.5px var(--wait);
+  color: var(--wait);
+}
 /* A helper just spawned: the chip glows a few times, so a start is seen. */
 [data-app] .chat-row .kids[data-new="yes"],
-[data-app] .pane-bar .kids[data-new="yes"] { animation: kids-new 1.2s ease-in-out 4; }
+[data-app] .pane-bar .kids[data-new="yes"] {
+  animation: kids-new 1.2s ease-in-out 4;
+}
 @keyframes kids-new {
-  0%, 100% { box-shadow: 0 0 0 0 transparent; }
-  50% { box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 45%, transparent); }
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+  50% {
+    box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 45%, transparent);
+  }
 }
 /* A background helper waits on an answer: its agent is told, the chip shows it. */
-[data-app] .chat-row:not([data-active="yes"]) .kids[data-asking="yes"] { border-color: var(--wait); color: var(--wait); }
+[data-app] .chat-row:not([data-active="yes"]) .kids[data-asking="yes"] {
+  border-color: var(--wait);
+  color: var(--wait);
+}
 
 /* Rename and delete take no room of their own: they come up over the end of
    the row under the pointer, so the name gets the whole width the rest of
@@ -1130,10 +1485,15 @@ body { margin: 0; overflow: hidden; }
   background: linear-gradient(90deg, transparent, var(--row-ground) 14px);
   opacity: 0;
   pointer-events: none;
-  transition: opacity .15s;
+  transition: opacity 0.15s;
 }
-[data-app] .chat-row[data-active="yes"] .row-tools { --row-ground: var(--row-sel); }
-[data-app] .chat-row:hover .row-tools { opacity: 1; pointer-events: auto; }
+[data-app] .chat-row[data-active="yes"] .row-tools {
+  --row-ground: var(--row-sel);
+}
+[data-app] .chat-row:hover .row-tools {
+  opacity: 1;
+  pointer-events: auto;
+}
 
 /* XP's flat toolbar button: nothing until hovered, then a raised bevel. */
 [data-app] button.tool-btn {
@@ -1151,17 +1511,24 @@ body { margin: 0; overflow: hidden; }
   box-shadow: none !important;
   color: inherit;
   font-size: var(--fs-3);
-  transition: background .14s, border-color .14s, transform .12s;
+  transition:
+    background 0.14s,
+    border-color 0.14s,
+    transform 0.12s;
 }
-[data-app] button.tool-btn svg { transition: transform .12s ease-out; }
+[data-app] button.tool-btn svg {
+  transition: transform 0.12s ease-out;
+}
 [data-app] button.tool-btn:not(:disabled):hover {
   background: var(--btn-face);
   border-color: color-mix(in oklab, var(--btn-rim) 70%, transparent);
 }
-[data-app] button.tool-btn:not(:disabled):hover svg { transform: scale(1.12); }
+[data-app] button.tool-btn:not(:disabled):hover svg {
+  transform: scale(1.12);
+}
 [data-app] button.tool-btn:not(:disabled):active {
   background: var(--btn-face-down);
-  transform: scale(.94);
+  transform: scale(0.94);
 }
 [data-app] button.tool-btn-danger:not(:disabled):hover {
   background: linear-gradient(180deg, #fff7f4, #f7d9d0);
@@ -1181,8 +1548,13 @@ body { margin: 0; overflow: hidden; }
   border-color: #a07a2a;
   color: var(--fg);
 }
-[data-app] button.tool-btn:disabled svg { filter: grayscale(1); opacity: .45; }
-[data-app] .tool-btn-label { white-space: nowrap; }
+[data-app] button.tool-btn:disabled svg {
+  filter: grayscale(1);
+  opacity: 0.45;
+}
+[data-app] .tool-btn-label {
+  white-space: nowrap;
+}
 
 /* Segmented strips in dialogs: one row of choices, one of them pressed. */
 [data-app] .seg {
@@ -1206,13 +1578,21 @@ body { margin: 0; overflow: hidden; }
   white-space: nowrap;
   color: var(--dim);
   cursor: default;
-  transition: background .14s, color .14s, box-shadow .14s;
+  transition:
+    background 0.14s,
+    color 0.14s,
+    box-shadow 0.14s;
 }
-[data-app] .seg > [role="radio"]:hover { background: var(--hover); color: var(--fg); }
+[data-app] .seg > [role="radio"]:hover {
+  background: var(--hover);
+  color: var(--fg);
+}
 [data-app] .seg > [role="radio"][aria-checked="true"] {
   background: var(--btn-face);
   color: var(--fg);
-  box-shadow: inset 0 0 0 1px var(--btn-rim), 0 1px 2px rgba(0, 0, 0, .15);
+  box-shadow:
+    inset 0 0 0 1px var(--btn-rim),
+    0 1px 2px rgba(0, 0, 0, 0.15);
 }
 
 /* Meters: XP's boot-screen progress bar — a sunken rounded track and a run of
@@ -1224,10 +1604,13 @@ body { margin: 0; overflow: hidden; }
   border-radius: 4px;
   border: 1px solid #7a7a7a;
   background: linear-gradient(180deg, #e9e9e9, #ffffff 60%);
-  box-shadow: inset 0 1px 2px rgba(0, 0, 0, .25);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25);
   overflow: hidden;
 }
-[data-app][data-theme="dark"] .meter { border-color: #4a4a4a; background: linear-gradient(180deg, #0c0c0c, #181818); }
+[data-app][data-theme="dark"] .meter {
+  border-color: #4a4a4a;
+  background: linear-gradient(180deg, #0c0c0c, #181818);
+}
 [data-app] .meter > i {
   --block: 6px;
   display: block;
@@ -1235,14 +1618,29 @@ body { margin: 0; overflow: hidden; }
   min-width: 0;
   border-radius: 1px;
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, .55) 0%, rgba(255, 255, 255, .1) 45%, rgba(0, 0, 0, .12) 55%, rgba(255, 255, 255, .15) 100%),
+    linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0.55) 0%,
+      rgba(255, 255, 255, 0.1) 45%,
+      rgba(0, 0, 0, 0.12) 55%,
+      rgba(255, 255, 255, 0.15) 100%
+    ),
     var(--m);
-  -webkit-mask: repeating-linear-gradient(90deg, #000 0 var(--block), transparent var(--block) calc(var(--block) + 2px));
+  -webkit-mask: repeating-linear-gradient(
+    90deg,
+    #000 0 var(--block),
+    transparent var(--block) calc(var(--block) + 2px)
+  );
   mask: repeating-linear-gradient(90deg, #000 0 var(--block), transparent var(--block) calc(var(--block) + 2px));
-  transition: width .3s ease-out;
+  transition: width 0.3s ease-out;
 }
-[data-app] .sb-mini.meter { padding: 1px; border-radius: 3px; }
-[data-app] .sb-mini.meter > i { --block: 4px; }
+[data-app] .sb-mini.meter {
+  padding: 1px;
+  border-radius: 3px;
+}
+[data-app] .sb-mini.meter > i {
+  --block: 4px;
+}
 
 /* The account's settings file, edited by hand. */
 /* The settings editor (CodeMirror), sunk into the dialog like a field. */
@@ -1263,7 +1661,10 @@ body { margin: 0; overflow: hidden; }
   padding: 4px 0;
   max-height: 260px;
   overflow: auto;
-  font: 12px/1.5 "JetBrains Mono", ui-monospace, monospace;
+  font:
+    12px/1.5 "JetBrains Mono",
+    ui-monospace,
+    monospace;
   white-space: pre;
 }
 
@@ -1281,21 +1682,44 @@ body { margin: 0; overflow: hidden; }
   padding: 2px 6px 4px;
   white-space: nowrap;
 }
-[data-app] .library-grid th { vertical-align: bottom; }
-[data-app] .library-grid th:first-child { text-align: left; }
+[data-app] .library-grid th {
+  vertical-align: bottom;
+}
+[data-app] .library-grid th:first-child {
+  text-align: left;
+}
 /* Under a group heading the first column's heading spans both rows: the second row's first is a column like the rest. */
-[data-app] .library-grid tr + tr th:first-child { text-align: center; }
+[data-app] .library-grid tr + tr th:first-child {
+  text-align: center;
+}
 /* A heading over several columns: a CLI's accounts, the folders. */
-[data-app] .library-grid th.group { border-bottom: 1px solid var(--line); padding-bottom: 2px; }
+[data-app] .library-grid th.group {
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 2px;
+}
 /* A folder's remove button shows only on its heading, so it does not read as an error mark. */
-[data-app] .library-grid th.library-folder button { opacity: 0; }
+[data-app] .library-grid th.library-folder button {
+  opacity: 0;
+}
 [data-app] .library-grid th.library-folder:hover button,
-[data-app] .library-grid th.library-folder:focus-within button { opacity: 1; }
-[data-app] .library-grid td { border-top: 1px solid var(--line); padding: 5px 6px; vertical-align: middle; }
-[data-app] .library-grid td.cell { text-align: center; width: 1%; white-space: nowrap; }
+[data-app] .library-grid th.library-folder:focus-within button {
+  opacity: 1;
+}
+[data-app] .library-grid td {
+  border-top: 1px solid var(--line);
+  padding: 5px 6px;
+  vertical-align: middle;
+}
+[data-app] .library-grid td.cell {
+  text-align: center;
+  width: 1%;
+  white-space: nowrap;
+}
 
 /* The account box: a select drawn by hand, so its rows can carry icons. */
-[data-app] .picker { position: relative; }
+[data-app] .picker {
+  position: relative;
+}
 [data-app] button.picker-face {
   width: 100%;
   min-width: 0;
@@ -1307,14 +1731,30 @@ body { margin: 0; overflow: hidden; }
   gap: 7px;
   border: 1px solid var(--field-line);
   border-radius: 5px;
-  background: var(--field) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.6 6 7.6l3-3' fill='none' stroke='%23908a80' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat right 8px center / 12px 12px;
+  background: var(--field)
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.6 6 7.6l3-3' fill='none' stroke='%23908a80' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")
+    no-repeat right 8px center / 12px 12px;
   color: var(--fg);
   text-align: left;
 }
-[data-app] button.picker-face:not(:disabled):hover { border-color: var(--faint); box-shadow: none; }
-[data-app] button.picker-face:not(:disabled):active { transform: none; background-color: var(--field); }
-[data-app] .picker[data-picker-open] button.picker-face { border-color: var(--focus); }
-[data-app] .picker-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+[data-app] button.picker-face:not(:disabled):hover {
+  border-color: var(--faint);
+  box-shadow: none;
+}
+[data-app] button.picker-face:not(:disabled):active {
+  transform: none;
+  background-color: var(--field);
+}
+[data-app] .picker[data-picker-open] button.picker-face {
+  border-color: var(--focus);
+}
+[data-app] .picker-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 [data-app] .picker-list {
   position: absolute;
   z-index: 10;
@@ -1328,7 +1768,7 @@ body { margin: 0; overflow: hidden; }
   border-radius: 5px;
   background: var(--field);
   box-shadow: var(--shadow);
-  animation: pop-in .1s ease-out;
+  animation: pop-in 0.1s ease-out;
 }
 [data-app] .picker-list > [role="option"] {
   display: flex;
@@ -1340,8 +1780,13 @@ body { margin: 0; overflow: hidden; }
   color: var(--fg);
   cursor: default;
 }
-[data-app] .picker-list > [aria-selected="true"] { font-weight: 600; }
-[data-app] .picker-list > [data-hot="yes"] { background: var(--row-sel); color: var(--row-sel-ink); }
+[data-app] .picker-list > [aria-selected="true"] {
+  font-weight: 600;
+}
+[data-app] .picker-list > [data-hot="yes"] {
+  background: var(--row-sel);
+  color: var(--row-sel-ink);
+}
 
 /* Popovers (the colour picker): an XP menu, rising from where it was asked for. */
 [data-app] .popover {
@@ -1352,7 +1797,7 @@ body { margin: 0; overflow: hidden; }
   border: 1px solid var(--line);
   background: var(--surface);
   box-shadow: var(--shadow);
-  animation: pop-in .12s ease-out;
+  animation: pop-in 0.12s ease-out;
   transform-origin: var(--origin, top left);
 }
 [data-app] .swatch {
@@ -1362,10 +1807,18 @@ body { margin: 0; overflow: hidden; }
   cursor: default;
   display: grid;
   place-items: center;
-  transition: transform .1s ease-out, box-shadow .1s;
+  transition:
+    transform 0.1s ease-out,
+    box-shadow 0.1s;
 }
-[data-app] .swatch:hover { transform: scale(1.15); }
-[data-app] .swatch[data-on="yes"] { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--fg); }
+[data-app] .swatch:hover {
+  transform: scale(1.15);
+}
+[data-app] .swatch[data-on="yes"] {
+  box-shadow:
+    0 0 0 2px var(--surface),
+    0 0 0 4px var(--fg);
+}
 
 /* ------------------------------------------------------------------------
    Status bar: the whole width of the window, the way XP drew it.
@@ -1391,23 +1844,57 @@ body { margin: 0; overflow: hidden; }
   padding: 0 8px;
   min-width: 0;
   border-radius: 3px;
-  box-shadow: inset -1px -1px var(--button-highlight), inset 1px 1px var(--button-shadow);
+  box-shadow:
+    inset -1px -1px var(--button-highlight),
+    inset 1px 1px var(--button-shadow);
   color: var(--dim);
   font-variant-numeric: tabular-nums;
   cursor: default;
-  transition: background .14s, color .14s;
+  transition:
+    background 0.14s,
+    color 0.14s;
 }
-[data-app][data-theme="dark"] .sb-field { box-shadow: inset 0 0 0 1px var(--line); }
-[data-app] .sb-field.grow { flex: 1 1 auto; overflow: hidden; }
-[data-app] .sb-field.click:hover { background: var(--hover); color: var(--fg); }
-[data-app] .sb-field.click:active { background: var(--chip); }
-[data-app] .sb-field.loud { color: var(--fg); font-weight: 700; }
-[data-app] .sb-field.waiting { color: var(--wait); font-weight: 700; animation: sb-glow 2.4s ease-in-out infinite; }
+[data-app][data-theme="dark"] .sb-field {
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+[data-app] .sb-field.grow {
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+[data-app] .sb-field.click:hover {
+  background: var(--hover);
+  color: var(--fg);
+}
+[data-app] .sb-field.click:active {
+  background: var(--chip);
+}
+[data-app] .sb-field.loud {
+  color: var(--fg);
+  font-weight: 700;
+}
+[data-app] .sb-field.waiting {
+  color: var(--wait);
+  font-weight: 700;
+  animation: sb-glow 2.4s ease-in-out infinite;
+}
 @keyframes sb-glow {
-  0%, 50%, 100% { background: transparent; }
-  62%, 88% { background: rgba(255, 138, 0, .22); }
+  0%,
+  50%,
+  100% {
+    background: transparent;
+  }
+  62%,
+  88% {
+    background: rgba(255, 138, 0, 0.22);
+  }
 }
-[data-app] .sb-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; transition: background .15s; }
+[data-app] .sb-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+  transition: background 0.15s;
+}
 /* Each account a card of its own on the bar: in one run of text the windows
    of one account ran into the next one's name. */
 [data-app] .sb-acc {
@@ -1421,11 +1908,26 @@ body { margin: 0; overflow: hidden; }
   background: var(--card);
   box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--line) 80%, var(--fg));
 }
-[data-app] .sb-acc + .sb-acc { margin-left: 4px; }
-[data-app] .sb-acc b { color: var(--fg); font-weight: 700; margin-right: 3px; }
-[data-app] .sb-win { display: flex; align-items: center; gap: 4px; }
-[data-app] .sb-win + .sb-win { margin-left: 4px; }
-[data-app] .sb-win small { color: var(--faint); font-size: var(--fs-1); }
+[data-app] .sb-acc + .sb-acc {
+  margin-left: 4px;
+}
+[data-app] .sb-acc b {
+  color: var(--fg);
+  font-weight: 700;
+  margin-right: 3px;
+}
+[data-app] .sb-win {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+[data-app] .sb-win + .sb-win {
+  margin-left: 4px;
+}
+[data-app] .sb-win small {
+  color: var(--faint);
+  font-size: var(--fs-1);
+}
 [data-app] .sb-key {
   min-width: 14px;
   padding: 0 3px;
@@ -1446,16 +1948,48 @@ body { margin: 0; overflow: hidden; }
    the signals that ask for you and work in progress. All of it gives way to
    reduced motion.
    ------------------------------------------------------------------------ */
-@keyframes fade-in { from { opacity: 0; } }
-@keyframes pop-in { from { opacity: 0; transform: translateY(6px) scale(.96); } }
-@keyframes sheet-in { from { opacity: 0; transform: scale(.95); } }
-@keyframes cover-out { to { opacity: 0; visibility: hidden; } }
-@keyframes row-in { from { opacity: 0; transform: translateX(-10px); } }
-[data-app] .scrim { animation: fade-in .1s ease-out; }
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.96);
+  }
+}
+@keyframes sheet-in {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+}
+@keyframes cover-out {
+  to {
+    opacity: 0;
+    visibility: hidden;
+  }
+}
+@keyframes row-in {
+  from {
+    opacity: 0;
+    transform: translateX(-10px);
+  }
+}
+[data-app] .scrim {
+  animation: fade-in 0.1s ease-out;
+}
 [data-app] .scrim > .window,
-[data-app] .scrim > * > .window { animation: pop-in .13s ease-out; }
-[data-app] .peek-sheet { animation: sheet-in .12s ease-out; }
-[data-app] .peek-dim { animation: fade-in .1s ease-out; }
+[data-app] .scrim > * > .window {
+  animation: pop-in 0.13s ease-out;
+}
+[data-app] .peek-sheet {
+  animation: sheet-in 0.12s ease-out;
+}
+[data-app] .peek-dim {
+  animation: fade-in 0.1s ease-out;
+}
 /* A pane that has just been handed a chat fades its terminal in from blank
    paper instead of snapping from one session to the next. */
 [data-app] .pane-cover {
@@ -1464,10 +1998,12 @@ body { margin: 0; overflow: hidden; }
   z-index: 5;
   background: var(--term);
   pointer-events: none;
-  animation: cover-out .16s ease-out forwards;
+  animation: cover-out 0.16s ease-out forwards;
 }
 @media (prefers-reduced-motion: reduce) {
-  [data-app] *, [data-app] *::before, [data-app] *::after {
+  [data-app] *,
+  [data-app] *::before,
+  [data-app] *::after {
     animation-duration: 1ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 1ms !important;

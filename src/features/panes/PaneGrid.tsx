@@ -62,9 +62,7 @@ function Splitter({ axis, split }: { axis: 'x' | 'y'; split: SplitKey }) {
     background: 'transparent',
     transition: 'background .12s',
     cursor: axis === 'x' ? 'col-resize' : 'row-resize',
-    ...(axis === 'x'
-      ? { width: GAP, marginInline: -1 }
-      : { height: GAP, marginBlock: -1 })
+    ...(axis === 'x' ? { width: GAP, marginInline: -1 } : { height: GAP, marginBlock: -1 })
   };
 
   return (
@@ -145,10 +143,20 @@ function PaneChip({ index }: { index: number }) {
       title={(chat ? chat.name : `Pane ${index + 1} is empty`) + (on ? ' — click again to go back to the grid' : '')}
       className={on ? undefined : 'hover-bg'}
       style={{
-        minWidth: 19, height: 19, padding: '0 4px', flex: 'none', borderRadius: 3,
-        display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4,
-        fontSize: 'var(--fs-2)', fontWeight: 700, fontVariantNumeric: 'tabular-nums',
-        cursor: 'default', opacity: chat ? 1 : 0.5,
+        minWidth: 19,
+        height: 19,
+        padding: '0 4px',
+        flex: 'none',
+        borderRadius: 3,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 4,
+        fontSize: 'var(--fs-2)',
+        fontWeight: 700,
+        fontVariantNumeric: 'tabular-nums',
+        cursor: 'default',
+        opacity: chat ? 1 : 0.5,
         color: on ? '#fff' : 'var(--dim)',
         transition: 'background .14s, color .14s',
         background: on ? ACCENT : 'var(--chip)',
@@ -173,15 +181,26 @@ function PeekBar({ name }: { name: string | null }) {
   return (
     <div
       style={{
-        flex: 'none', height: 25, display: 'flex', alignItems: 'center', gap: 8, padding: '0 8px',
-        background: tint(18, 'var(--panel)'), borderBottom: `1px solid ${ACCENT}`,
-        fontSize: 'var(--fs-2)', color: 'var(--dim)'
+        flex: 'none',
+        height: 25,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        padding: '0 8px',
+        background: tint(18, 'var(--panel)'),
+        borderBottom: `1px solid ${ACCENT}`,
+        fontSize: 'var(--fs-2)',
+        color: 'var(--dim)'
       }}
     >
-      <span style={{ flex: 'none', fontWeight: 700, letterSpacing: '.05em', textTransform: 'uppercase', color: ACCENT }}>
+      <span
+        style={{ flex: 'none', fontWeight: 700, letterSpacing: '.05em', textTransform: 'uppercase', color: ACCENT }}
+      >
         Peek
       </span>
-      <span style={{ flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+      <span
+        style={{ flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+      >
         {name ?? ''}
         <span style={{ color: 'var(--faint)' }}>{name ? ' — ' : ''}the board is still behind, untouched</span>
       </span>
@@ -215,7 +234,11 @@ function Sheet({ index, children }: { index: number; children: ReactNode }) {
   const name = useChats(s => s.findChat(chatId)?.name ?? null);
   const left = useSheetLeft();
   return (
-    <div style={peeked ? sheetStyle(left) : inFlowStyle} className={peeked ? 'peek-sheet' : undefined} data-peek-sheet={peeked || undefined}>
+    <div
+      style={peeked ? sheetStyle(left) : inFlowStyle}
+      className={peeked ? 'peek-sheet' : undefined}
+      data-peek-sheet={peeked || undefined}
+    >
       {peeked && <PeekBar name={name} />}
       {children}
     </div>
@@ -253,7 +276,10 @@ export function PaneGrid() {
     }
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
     root.current?.animate(
-      [{ opacity: 0.3, transform: 'scale(.994)' }, { opacity: 1, transform: 'none' }],
+      [
+        { opacity: 0.3, transform: 'scale(.994)' },
+        { opacity: 1, transform: 'none' }
+      ],
       { duration: 260, easing: 'cubic-bezier(.2,.8,.3,1)' }
     );
   }, [group]);
@@ -309,7 +335,10 @@ export function PaneGrid() {
   );
 
   return (
-    <div ref={root} style={{ flex: 1, minHeight: 0, padding: GAP, background: 'var(--board)', display: 'flex', position: 'relative' }}>
+    <div
+      ref={root}
+      style={{ flex: 1, minHeight: 0, padding: GAP, background: 'var(--board)', display: 'flex', position: 'relative' }}
+    >
       {layout === 1 && <div style={box('row')}>{pane(0)}</div>}
 
       {layout === 2 && (

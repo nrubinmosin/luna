@@ -12,7 +12,13 @@ const canRestart = navigator.userAgent.includes('Windows') || import.meta.env.DE
 const ACTIONS: Array<{ value: PowerAction; label: string; note: string }> = [
   { value: 'shutdown', label: 'Shut down', note: 'closes every session first, then powers off' },
   ...(canRestart
-    ? [{ value: 'restart' as const, label: 'Restart', note: 'closes every session first, then restarts; Luna starts again when you sign in' }]
+    ? [
+        {
+          value: 'restart' as const,
+          label: 'Restart',
+          note: 'closes every session first, then restarts; Luna starts again when you sign in'
+        }
+      ]
     : []),
   { value: 'hibernate', label: 'Hibernate', note: 'sessions stay; the rule applies again after the wake' },
   { value: 'sleep', label: 'Sleep', note: 'sessions stay; the rule applies again after the wake' }
@@ -69,8 +75,13 @@ export function PowerMenu({ onClose }: { onClose: () => void }) {
       }}
       className="scrim"
       style={{
-        position: 'fixed', inset: 0, background: 'rgba(0,0,0,.35)', backdropFilter: 'blur(1px)',
-        display: 'grid', placeItems: 'center', zIndex: 70
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(0,0,0,.35)',
+        backdropFilter: 'blur(1px)',
+        display: 'grid',
+        placeItems: 'center',
+        zIndex: 70
       }}
     >
       <div
@@ -98,10 +109,9 @@ export function PowerMenu({ onClose }: { onClose: () => void }) {
               </label>
             </div>
             <div style={fine}>
-              Held while any session is mid-turn, still has anything it started running, however
-              long after its turn, or is still printing; let go a minute after the last one goes
-              quiet. A session waiting for your answer does not hold it. Shows up in{' '}
-              <code>powercfg /requests</code> as Luna's.
+              Held while any session is mid-turn, still has anything it started running, however long after its turn, or
+              is still printing; let go a minute after the last one goes quiet. A session waiting for your answer does
+              not hold it. Shows up in <code>powercfg /requests</code> as Luna's.
             </div>
             {state.holding && (
               <div style={{ ...fine, color: 'var(--dim)' }}>
@@ -109,7 +119,9 @@ export function PowerMenu({ onClose }: { onClose: () => void }) {
                 {holders.length ? ':' : ': a session that just went quiet.'}
                 {holders.length > 0 && (
                   <ul style={{ margin: '2px 0 0', paddingLeft: 18 }}>
-                    {holders.map(h => <li key={h}>{h}</li>)}
+                    {holders.map(h => (
+                      <li key={h}>{h}</li>
+                    ))}
                   </ul>
                 )}
               </div>
@@ -119,14 +131,28 @@ export function PowerMenu({ onClose }: { onClose: () => void }) {
           <div style={{ marginBottom: 14 }}>
             <div style={label}>When every session is done</div>
             <div style={{ display: 'flex', gap: 8 }}>
-              <select value={action} onChange={e => setAction(e.target.value as PowerAction)} disabled={!!armed} style={{ flex: 1 }}>
+              <select
+                value={action}
+                onChange={e => setAction(e.target.value as PowerAction)}
+                disabled={!!armed}
+                style={{ flex: 1 }}
+              >
                 {ACTIONS.map(a => (
-                  <option key={a.value} value={a.value}>{a.label}</option>
+                  <option key={a.value} value={a.value}>
+                    {a.label}
+                  </option>
                 ))}
               </select>
-              <select value={quiet} onChange={e => setQuiet(Number(e.target.value))} disabled={!!armed} style={{ width: 130 }}>
+              <select
+                value={quiet}
+                onChange={e => setQuiet(Number(e.target.value))}
+                disabled={!!armed}
+                style={{ width: 130 }}
+              >
                 {QUIET.map(q => (
-                  <option key={q.value} value={q.value}>after {q.label}</option>
+                  <option key={q.value} value={q.value}>
+                    after {q.label}
+                  </option>
                 ))}
               </select>
             </div>
@@ -143,20 +169,18 @@ export function PowerMenu({ onClose }: { onClose: () => void }) {
               </label>
             </div>
             <div style={fine}>
-              Agents can start no helper and send no message until it fires or you disarm; what
-              runs finishes, and what is asked can be answered. Your own chats are not touched.
+              Agents can start no helper and send no message until it fires or you disarm; what runs finishes, and what
+              is asked can be answered. Your own chats are not touched.
             </div>
             <div style={fine}>
-              {ACTIONS.find(a => a.value === action)?.note}. Done means: no session mid-turn or
-              waiting for you, nothing running under any of them, screens quiet — for the whole
-              window. A session stopped on a usage limit counts as done: nothing moves there
-              before the reset. Then a one-minute countdown with a notification; any activity in it
-              cancels the count and keeps the rule armed.
+              {ACTIONS.find(a => a.value === action)?.note}. Done means: no session mid-turn or waiting for you, nothing
+              running under any of them, screens quiet — for the whole window. A session stopped on a usage limit counts
+              as done: nothing moves there before the reset. Then a one-minute countdown with a notification; any
+              activity in it cancels the count and keeps the rule armed.
             </div>
             {waiting.length > 0 && (
               <div style={{ ...fine, color: 'var(--dim)' }}>
-                Waiting for you now: {waiting.join(', ')} — the rule will not fire until they are
-                answered.
+                Waiting for you now: {waiting.join(', ')} — the rule will not fire until they are answered.
               </div>
             )}
             {stalled.length > 0 && (
@@ -166,17 +190,21 @@ export function PowerMenu({ onClose }: { onClose: () => void }) {
             )}
             {worktrees.length > 0 && (
               <div style={{ ...fine, color: 'var(--dim)' }}>
-                In worktrees: {worktrees.map(c => c.name).join(', ')}. Anything uncommitted there
-                stays on disk, but check before you shut down.
+                In worktrees: {worktrees.map(c => c.name).join(', ')}. Anything uncommitted there stays on disk, but
+                check before you shut down.
               </div>
             )}
           </div>
 
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
             {armed ? (
-              <button onClick={() => void disarm()} className="danger">Disarm</button>
+              <button onClick={() => void disarm()} className="danger">
+                Disarm
+              </button>
             ) : (
-              <button onClick={() => void arm(action, quiet, drain)} className="primary">Arm</button>
+              <button onClick={() => void arm(action, quiet, drain)} className="primary">
+                Arm
+              </button>
             )}
             <button onClick={onClose}>Close</button>
           </div>

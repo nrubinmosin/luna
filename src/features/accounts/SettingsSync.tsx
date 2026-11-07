@@ -1,6 +1,10 @@
 import { useEffect, useState } from 'react';
 import {
-  setSettingsParent, setSettingsSyncOnStart, settingsSyncState, syncSettingsNow, type SyncStateDto
+  setSettingsParent,
+  setSettingsSyncOnStart,
+  settingsSyncState,
+  syncSettingsNow,
+  type SyncStateDto
 } from '../../ipc/commands';
 import { Icon, ToolButton } from '../../shared/ui/icons';
 import { PROVIDER_LABEL, PROVIDERS, type Account, type Provider } from '../../shared/types';
@@ -44,8 +48,27 @@ export function SettingsSync({ accounts }: { accounts: Account[] }) {
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '8px 10px', marginBottom: 8, borderRadius: 6, background: 'var(--card)', border: '1px solid var(--line)' }}>
-      <div style={{ fontSize: 'var(--fs-1)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--faint)' }}>
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 6,
+        padding: '8px 10px',
+        marginBottom: 8,
+        borderRadius: 6,
+        background: 'var(--card)',
+        border: '1px solid var(--line)'
+      }}
+    >
+      <div
+        style={{
+          fontSize: 'var(--fs-1)',
+          fontWeight: 700,
+          textTransform: 'uppercase',
+          letterSpacing: '.05em',
+          color: 'var(--faint)'
+        }}
+      >
         Shared settings
       </div>
       {providers.map(p => {
@@ -53,7 +76,9 @@ export function SettingsSync({ accounts }: { accounts: Account[] }) {
         return (
           <div key={p} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <Icon name={p} />
-            <span style={{ fontSize: 'var(--fs-3)', color: 'var(--dim)', whiteSpace: 'nowrap' }}>{PROVIDER_LABEL[p]} from</span>
+            <span style={{ fontSize: 'var(--fs-3)', color: 'var(--dim)', whiteSpace: 'nowrap' }}>
+              {PROVIDER_LABEL[p]} from
+            </span>
             <select
               id={`sync-parent-${p}`}
               value={parent ?? ''}
@@ -62,29 +87,42 @@ export function SettingsSync({ accounts }: { accounts: Account[] }) {
               title="The account whose settings file the others copy"
             >
               <option value="">— no parent —</option>
-              {accounts.filter(a => a.provider === p).map(a => (
-                <option key={a.name} value={a.name}>{a.name}</option>
-              ))}
+              {accounts
+                .filter(a => a.provider === p)
+                .map(a => (
+                  <option key={a.name} value={a.name}>
+                    {a.name}
+                  </option>
+                ))}
             </select>
             <ToolButton
               icon="sync"
               label="Sync now"
               disabled={!parent || busy === p}
               spin={busy === p}
-              title={parent ? `Copy ${parent}'s settings onto the other ${PROVIDER_LABEL[p]} accounts now` : 'Choose a parent first'}
+              title={
+                parent
+                  ? `Copy ${parent}'s settings onto the other ${PROVIDER_LABEL[p]} accounts now`
+                  : 'Choose a parent first'
+              }
               onClick={() => void syncNow(p)}
             />
           </div>
         );
       })}
       {alone.map(p => (
-        <div key={p} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-2)', color: 'var(--faint)' }}>
+        <div
+          key={p}
+          style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-2)', color: 'var(--faint)' }}
+        >
           <Icon name={p} />
           {PROVIDER_LABEL[p]}: only one account, nothing to share its settings with yet.
         </div>
       ))}
       {Object.entries(note).map(([p, text]) => (
-        <div key={p} style={{ fontSize: 'var(--fs-2)', color: 'var(--faint)' }}>{PROVIDER_LABEL[p as Provider]}: {text}</div>
+        <div key={p} style={{ fontSize: 'var(--fs-2)', color: 'var(--faint)' }}>
+          {PROVIDER_LABEL[p as Provider]}: {text}
+        </div>
       ))}
       <div className="field-row">
         <input
@@ -98,8 +136,8 @@ export function SettingsSync({ accounts }: { accounts: Account[] }) {
         </label>
       </div>
       <div style={{ fontSize: 'var(--fs-1)', color: 'var(--faint)', lineHeight: 1.4 }}>
-        The other accounts get an exact copy of the parent's file: whatever was set on them
-        alone is replaced. Logins and Codex's trusted folders stay each account's own.
+        The other accounts get an exact copy of the parent's file: whatever was set on them alone is replaced. Logins
+        and Codex's trusted folders stay each account's own.
       </div>
     </div>
   );

@@ -139,7 +139,13 @@ export async function quickChat(): Promise<void> {
       const { values } = await codex.settingsDefaults(account.path, folder);
       const hooks = await codexHooksStart(folder);
       await createChat({
-        provider: 'codex', folder, account, settings: values, worktree, tools, hooksUnasked: hooks.kept ?? hooks.default
+        provider: 'codex',
+        folder,
+        account,
+        settings: values,
+        worktree,
+        tools,
+        hooksUnasked: hooks.kept ?? hooks.default
       });
     }
   } catch {

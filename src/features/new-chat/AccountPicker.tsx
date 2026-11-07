@@ -9,7 +9,11 @@ import { Icon } from '../../shared/ui/icons';
  * the list is open, Enter and Escape belong to it, not to the dialog
  * (`data-picker-open` tells the dialog and the keymap to keep off).
  */
-export function AccountPicker({ accounts, value, onChange }: {
+export function AccountPicker({
+  accounts,
+  value,
+  onChange
+}: {
   accounts: Account[];
   value: string;
   onChange: (key: string) => void;
@@ -77,7 +81,9 @@ export function AccountPicker({ accounts, value, onChange }: {
             <span className="picker-name">{current.name}</span>
           </>
         ) : (
-          <span className="picker-name" style={{ color: 'var(--faint)' }}>add an account first</span>
+          <span className="picker-name" style={{ color: 'var(--faint)' }}>
+            add an account first
+          </span>
         )}
       </button>
       {open && (

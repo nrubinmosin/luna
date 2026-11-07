@@ -62,7 +62,8 @@ function Window() {
       // Fresh rather than the button's count, which may be a minute old.
       await useWorktrees.getState().rescan();
       const byFolder = new Map<string, string[]>();
-      for (const w of useWorktrees.getState().stale) byFolder.set(w.folder, [...(byFolder.get(w.folder) ?? []), w.path]);
+      for (const w of useWorktrees.getState().stale)
+        byFolder.set(w.folder, [...(byFolder.get(w.folder) ?? []), w.path]);
       const lists = await Promise.all(
         [...byFolder].map(([folder, paths]) =>
           inspectWorktrees(folder, paths)
@@ -95,7 +96,8 @@ function Window() {
     setArmed(null);
     setBusy(new Set(paths));
     const byFolder = new Map<string, string[]>();
-    for (const w of infos.filter(w => paths.includes(w.path))) byFolder.set(w.folder, [...(byFolder.get(w.folder) ?? []), w.path]);
+    for (const w of infos.filter(w => paths.includes(w.path)))
+      byFolder.set(w.folder, [...(byFolder.get(w.folder) ?? []), w.path]);
     // Re-checked in the core against what is in use now: the list on screen
     // may be minutes old by the time the button is pressed.
     const { inUse, accountPaths } = scanScope();
@@ -143,14 +145,23 @@ function Window() {
       }}
       className="scrim"
       style={{
-        position: 'fixed', inset: 0, background: 'rgba(0,0,0,.35)', backdropFilter: 'blur(1px)',
-        display: 'grid', placeItems: 'center', zIndex: 70
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(0,0,0,.35)',
+        backdropFilter: 'blur(1px)',
+        display: 'grid',
+        placeItems: 'center',
+        zIndex: 70
       }}
     >
       <div
         onClick={e => e.stopPropagation()}
         className="window"
-        style={{ width: 620, maxWidth: 'calc(100vw - 32px)', boxShadow: 'var(--shadow), var(--border-window-outer), var(--border-window-inner)' }}
+        style={{
+          width: 620,
+          maxWidth: 'calc(100vw - 32px)',
+          boxShadow: 'var(--shadow), var(--border-window-outer), var(--border-window-inner)'
+        }}
       >
         <div className="title-bar">
           <div className="title-bar-text">Stale worktrees</div>
@@ -174,17 +185,43 @@ function Window() {
             </div>
           )}
 
-          <div className="xp-field" style={{ marginTop: 8, maxHeight: 'calc(100vh - 320px)', minHeight: 60, overflowY: 'auto', padding: 2 }}>
+          <div
+            className="xp-field"
+            style={{ marginTop: 8, maxHeight: 'calc(100vh - 320px)', minHeight: 60, overflowY: 'auto', padding: 2 }}
+          >
             {!infos && <div style={{ padding: '6px 7px', ...faint, fontSize: 'var(--fs-3)' }}>Looking inside…</div>}
             {infos?.length === 0 && (
-              <div style={{ padding: '6px 7px', ...faint, fontSize: 'var(--fs-3)' }}>Nothing to clean: every worktree is in use.</div>
+              <div style={{ padding: '6px 7px', ...faint, fontSize: 'var(--fs-3)' }}>
+                Nothing to clean: every worktree is in use.
+              </div>
             )}
             {folders.map(folder => (
               <div key={folder} style={{ marginBottom: 6 }}>
-                <div title={folder} style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '5px 5px 3px', fontWeight: 700, fontSize: 'var(--fs-4)', color: 'var(--fg)' }}>
+                <div
+                  title={folder}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 5,
+                    padding: '5px 5px 3px',
+                    fontWeight: 700,
+                    fontSize: 'var(--fs-4)',
+                    color: 'var(--fg)'
+                  }}
+                >
                   <Icon name="folder" size={14} />
                   {tail2(folder).leaf}
-                  <span style={{ ...faint, fontWeight: 400, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{folder}</span>
+                  <span
+                    style={{
+                      ...faint,
+                      fontWeight: 400,
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap'
+                    }}
+                  >
+                    {folder}
+                  </span>
                 </div>
                 {PROVIDERS.map(p => {
                   const rows = infos!.filter(w => w.folder === folder && p.match(w.path));
@@ -194,8 +231,30 @@ function Window() {
                   return (
                     <div key={p.key} style={{ marginLeft: 12 }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '3px 5px' }}>
-                        <input type="checkbox" id={groupId} checked={all} disabled={working} onChange={() => toggle(rows.map(w => w.path), !all)} />
-                        <label htmlFor={groupId} style={{ display: 'flex', alignItems: 'center', gap: 5, cursor: 'default', fontWeight: 600, fontSize: 'var(--fs-3)', color: 'var(--dim)' }}>
+                        <input
+                          type="checkbox"
+                          id={groupId}
+                          checked={all}
+                          disabled={working}
+                          onChange={() =>
+                            toggle(
+                              rows.map(w => w.path),
+                              !all
+                            )
+                          }
+                        />
+                        <label
+                          htmlFor={groupId}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 5,
+                            cursor: 'default',
+                            fontWeight: 600,
+                            fontSize: 'var(--fs-3)',
+                            color: 'var(--dim)'
+                          }}
+                        >
                           <Icon name={p.key} size={12} />
                           {p.label} · {rows.length}
                         </label>
@@ -226,7 +285,9 @@ function Window() {
             </div>
           )}
           <div style={{ marginTop: 12, display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-            <button onClick={close} disabled={working}>Close</button>
+            <button onClick={close} disabled={working}>
+              Close
+            </button>
             <button className="danger" disabled={working || picked.size === 0} onClick={() => void remove([...picked])}>
               {working ? 'Deleting…' : `Delete selected (${picked.size})`}
             </button>
@@ -239,7 +300,14 @@ function Window() {
 }
 
 function Row({
-  w, picked, busy, disabled, armed, error, onToggle, onDelete
+  w,
+  picked,
+  busy,
+  disabled,
+  armed,
+  error,
+  onToggle,
+  onDelete
 }: {
   w: Info;
   picked: boolean;
@@ -258,9 +326,19 @@ function Row({
           and the label a matching `for`. */}
       <input type="checkbox" id={id} checked={picked} disabled={disabled} onChange={onToggle} />
       <label htmlFor={id} style={{ display: 'block', flex: 1, cursor: 'default', minWidth: 0, color: 'var(--fg)' }}>
-        <div style={{ fontSize: 'var(--fs-4)', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        <div
+          style={{
+            fontSize: 'var(--fs-4)',
+            fontWeight: 600,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap'
+          }}
+        >
           {nameOf(w.path)}
-          {w.branch && w.branch !== leaf(w.path) && <span style={{ fontWeight: 400, color: 'var(--faint)' }}> · {w.branch}</span>}
+          {w.branch && w.branch !== leaf(w.path) && (
+            <span style={{ fontWeight: 400, color: 'var(--faint)' }}> · {w.branch}</span>
+          )}
         </div>
         <div style={{ fontSize: 'var(--fs-2)', marginTop: 1, color: stake ? red : 'var(--faint)' }}>
           {stake ?? 'clean — nothing that is not elsewhere'}

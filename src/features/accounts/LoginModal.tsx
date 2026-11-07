@@ -144,15 +144,42 @@ export function LoginModal({ account }: { account: Account }) {
   };
 
   return (
-    <div className="scrim" style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.32)', backdropFilter: 'blur(1px)', display: 'grid', placeItems: 'center', zIndex: 70 }}>
+    <div
+      className="scrim"
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(0,0,0,.32)',
+        backdropFilter: 'blur(1px)',
+        display: 'grid',
+        placeItems: 'center',
+        zIndex: 70
+      }}
+    >
       <div
         className="window"
-        style={{ width: 720, height: 500, boxShadow: 'var(--shadow), var(--border-window-outer), var(--border-window-inner)', display: 'flex', flexDirection: 'column' }}
+        style={{
+          width: 720,
+          height: 500,
+          boxShadow: 'var(--shadow), var(--border-window-outer), var(--border-window-inner)',
+          display: 'flex',
+          flexDirection: 'column'
+        }}
       >
         <div className="title-bar" style={{ flex: 'none', gap: 8 }}>
-          <div className="title-bar-text" style={{ flex: 'none' }}>Sign in — {account.name} · {PROVIDER_LABEL[account.provider]}</div>
+          <div className="title-bar-text" style={{ flex: 'none' }}>
+            Sign in — {account.name} · {PROVIDER_LABEL[account.provider]}
+          </div>
           <div
-            style={{ flex: 1, minWidth: 0, fontSize: 'var(--fs-2)', color: 'rgba(255,255,255,.75)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+            style={{
+              flex: 1,
+              minWidth: 0,
+              fontSize: 'var(--fs-2)',
+              color: 'rgba(255,255,255,.75)',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap'
+            }}
           >
             {account.path}
           </div>

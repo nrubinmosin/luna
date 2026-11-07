@@ -35,12 +35,9 @@ function deleteOne(chat: Chat, dropWorktree: boolean) {
     // worktree and its branch only if that was asked for. It resolves the
     // worktree itself, so deleting a chat seconds after creating it no longer
     // orphans one.
-    void deleteSession(
-      chat.id,
-      folder.path,
-      chat.worktreePath ?? null,
-      dropWorktree
-    ).catch(err => console.warn('[luna] delete failed', err));
+    void deleteSession(chat.id, folder.path, chat.worktreePath ?? null, dropWorktree).catch(err =>
+      console.warn('[luna] delete failed', err)
+    );
   }
   // Both stores clear the panes themselves, open or not.
   useChats.getState().deleteChat(chat.id);
@@ -77,20 +74,30 @@ export function DeleteChatDialog({ chat, onClose }: { chat: Chat; onClose: () =>
       title={`Delete "${chat.name.length > 38 ? `${chat.name.slice(0, 38)}…` : chat.name}"?`}
       body={
         <>
-          The session is stopped and its scrollback is lost. Pasted attachments are removed.
-          The transcript is kept, so the session can still be resumed from the CLI.
-          {chat.worktree && (dropWorktree
-            ? <> Its git worktree goes too, unless you untick the box below.</>
-            : <> Its git worktree stays on disk unless you say otherwise.</>)}
+          The session is stopped and its scrollback is lost. Pasted attachments are removed. The transcript is kept, so
+          the session can still be resumed from the CLI.
+          {chat.worktree &&
+            (dropWorktree ? (
+              <> Its git worktree goes too, unless you untick the box below.</>
+            ) : (
+              <> Its git worktree stays on disk unless you say otherwise.</>
+            ))}
           {chat.worktree && chat.worktreePath && (
             // On its own line: a Windows worktree path is long enough to
             // break the sentence it sits in across three ragged lines.
             <div
               title={chat.worktreePath}
               style={{
-                marginTop: 8, padding: '4px 6px', borderRadius: 2, background: 'var(--chip)',
-                fontFamily: 'ui-monospace, Consolas, monospace', fontSize: 'var(--fs-3)',
-                color: 'var(--faint)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'
+                marginTop: 8,
+                padding: '4px 6px',
+                borderRadius: 2,
+                background: 'var(--chip)',
+                fontFamily: 'ui-monospace, Consolas, monospace',
+                fontSize: 'var(--fs-3)',
+                color: 'var(--faint)',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap'
               }}
             >
               {chat.worktreePath}
@@ -101,11 +108,20 @@ export function DeleteChatDialog({ chat, onClose }: { chat: Chat; onClose: () =>
       extra={
         (chat.worktree || spawned.length > 0) && (
           <div onClick={e => e.stopPropagation()} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {(chat.worktree || (withChildren && (children.some(c => c.worktree) || background.some(h => h.worktree)))) && (
+            {(chat.worktree ||
+              (withChildren && (children.some(c => c.worktree) || background.some(h => h.worktree)))) && (
               // The box itself is drawn by xp.css on the label, which is why
               // the input needs an id and the label a matching `for`: nested
               // inside one, the checkbox renders as nothing at all.
-              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 7, fontSize: 'var(--fs-4)', color: 'var(--dim)' }}>
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: 7,
+                  fontSize: 'var(--fs-4)',
+                  color: 'var(--dim)'
+                }}
+              >
                 <input
                   type="checkbox"
                   id={`drop-worktree-${chat.id}`}
@@ -115,9 +131,14 @@ export function DeleteChatDialog({ chat, onClose }: { chat: Chat; onClose: () =>
                 {/* xp.css makes every label inline-flex, which chops a wrapping
                     label into unwrappable flex columns around the <code> child;
                     block restores normal text flow. */}
-                <label htmlFor={`drop-worktree-${chat.id}`} style={{ display: 'block', cursor: 'default', lineHeight: 1.5 }}>
+                <label
+                  htmlFor={`drop-worktree-${chat.id}`}
+                  style={{ display: 'block', cursor: 'default', lineHeight: 1.5 }}
+                >
                   {ui(chat.provider).branchPrefix ? (
-                    <>Delete the worktree and its throwaway <code>{ui(chat.provider).branchPrefix}…</code> branch too,</>
+                    <>
+                      Delete the worktree and its throwaway <code>{ui(chat.provider).branchPrefix}…</code> branch too,
+                    </>
                   ) : (
                     <>Delete the worktree too,</>
                   )}{' '}
@@ -126,16 +147,27 @@ export function DeleteChatDialog({ chat, onClose }: { chat: Chat; onClose: () =>
               </div>
             )}
             {spawned.length > 0 && (
-              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 7, fontSize: 'var(--fs-4)', color: 'var(--dim)' }}>
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: 7,
+                  fontSize: 'var(--fs-4)',
+                  color: 'var(--dim)'
+                }}
+              >
                 <input
                   type="checkbox"
                   id={`drop-children-${chat.id}`}
                   checked={withChildren}
                   onChange={e => setWithChildren(e.target.checked)}
                 />
-                <label htmlFor={`drop-children-${chat.id}`} style={{ display: 'block', cursor: 'default', lineHeight: 1.5 }}>
-                  Also delete the {spawned.length} session{spawned.length > 1 ? 's' : ''} its agent spawned
-                  ({spawned.join(', ')}). Left alone, they stay listed as orphans
+                <label
+                  htmlFor={`drop-children-${chat.id}`}
+                  style={{ display: 'block', cursor: 'default', lineHeight: 1.5 }}
+                >
+                  Also delete the {spawned.length} session{spawned.length > 1 ? 's' : ''} its agent spawned (
+                  {spawned.join(', ')}). Left alone, they stay listed as orphans
                   {background.length > 0 && ', and a background one goes by itself half an hour after it is done'}.
                 </label>
               </div>

@@ -8,15 +8,43 @@
  */
 import { useEffect } from 'react';
 import {
-  accountUsage, agentResumes, agentSpawned, agentSpawns, backgroundHelpers, backgroundPromote, backgroundPromoted, chatNames, codexModels, deleteSession,
-  ensureClaudeSession, ensureCodexSession, type AgentSpawnRequest, type BackgroundHelperDto, type CodexModelDto, type PromotedDto
+  accountUsage,
+  agentResumes,
+  agentSpawned,
+  agentSpawns,
+  backgroundHelpers,
+  backgroundPromote,
+  backgroundPromoted,
+  chatNames,
+  codexModels,
+  deleteSession,
+  ensureClaudeSession,
+  ensureCodexSession,
+  type AgentSpawnRequest,
+  type BackgroundHelperDto,
+  type CodexModelDto,
+  type PromotedDto
 } from '../../ipc/commands';
 import { onAgentDeleted, onAgentReparent, onAgentSpawn, onBackgroundHelpers } from '../../ipc/events';
 import { logWarn } from '../../shared/lib/log';
 import {
-  AUTO_REVIEW_SANDBOX, CODEX_APPROVALS, CODEX_SANDBOXES, EFFORTS, MODEL_CLI, MODELS, PERM_CLI, accountKey,
-  codexApprovalFromSetting, codexEffortFromSetting, codexSandboxFromSetting, effortFromSetting, modelFromSetting, permFromSetting,
-  type Account, type ClaudeSettings, type CodexSettings
+  AUTO_REVIEW_SANDBOX,
+  CODEX_APPROVALS,
+  CODEX_SANDBOXES,
+  EFFORTS,
+  MODEL_CLI,
+  MODELS,
+  PERM_CLI,
+  accountKey,
+  codexApprovalFromSetting,
+  codexEffortFromSetting,
+  codexSandboxFromSetting,
+  effortFromSetting,
+  modelFromSetting,
+  permFromSetting,
+  type Account,
+  type ClaudeSettings,
+  type CodexSettings
 } from '../../shared/types';
 import { accountOfChat, findAccount, useAccounts } from '../accounts/accounts.store';
 import { allChats, useChats } from '../chats/chats.store';
@@ -43,17 +71,21 @@ const asked = (v: string | null | undefined): v is string => !!v?.trim();
  *  an alias or a full id (`claude-sonnet-5-5`), read the way a settings
  *  file's `model` is. */
 function claudeSettings(req: AgentSpawnRequest, values: ClaudeSettings): ClaudeSettings {
-  if (asked(req.approval) || asked(req.sandbox)) refuse('approval and sandbox are Codex settings; Claude takes permissionMode');
+  if (asked(req.approval) || asked(req.sandbox))
+    refuse('approval and sandbox are Codex settings; Claude takes permissionMode');
   const model = asked(req.model)
-    ? modelFromSetting(req.model) ??
-      refuse(`unknown Claude model "${req.model}"; use ${MODELS.map(m => MODEL_CLI[m]).join(', ')} or a full id such as claude-opus-5`)
+    ? (modelFromSetting(req.model) ??
+      refuse(
+        `unknown Claude model "${req.model}"; use ${MODELS.map(m => MODEL_CLI[m]).join(', ')} or a full id such as claude-opus-5`
+      ))
     : values.model;
   const effort = asked(req.effort)
-    ? effortFromSetting(req.effort.trim()) ?? refuse(`unknown Claude effort "${req.effort}"; use ${EFFORTS.join(', ')}`)
+    ? (effortFromSetting(req.effort.trim()) ??
+      refuse(`unknown Claude effort "${req.effort}"; use ${EFFORTS.join(', ')}`))
     : values.effort;
   const perm = asked(req.permissionMode)
-    ? permFromSetting(req.permissionMode.trim()) ??
-      refuse(`unknown permission mode "${req.permissionMode}"; use ${Object.values(PERM_CLI).join(', ')}`)
+    ? (permFromSetting(req.permissionMode.trim()) ??
+      refuse(`unknown permission mode "${req.permissionMode}"; use ${Object.values(PERM_CLI).join(', ')}`))
     : values.perm;
   return { model, effort, perm };
 }
@@ -68,13 +100,15 @@ async function codexSettings(
 ): Promise<CodexSettings> {
   if (asked(req.permissionMode)) refuse('permissionMode is a Claude setting; Codex takes approval and sandbox');
   const approval = asked(req.approval)
-    ? codexApprovalFromSetting(req.approval.trim()) ??
-      refuse(`unknown approval "${req.approval}"; use ${CODEX_APPROVALS.join(', ')}`)
+    ? (codexApprovalFromSetting(req.approval.trim()) ??
+      refuse(`unknown approval "${req.approval}"; use ${CODEX_APPROVALS.join(', ')}`))
     : values.approval;
   const sandbox = asked(req.sandbox)
-    ? codexSandboxFromSetting(req.sandbox.trim()) ??
-      refuse(`unknown sandbox "${req.sandbox}"; use ${CODEX_SANDBOXES.join(', ')}`)
-    : approval === 'auto-review' ? AUTO_REVIEW_SANDBOX : values.sandbox;
+    ? (codexSandboxFromSetting(req.sandbox.trim()) ??
+      refuse(`unknown sandbox "${req.sandbox}"; use ${CODEX_SANDBOXES.join(', ')}`))
+    : approval === 'auto-review'
+      ? AUTO_REVIEW_SANDBOX
+      : values.sandbox;
   if (approval === 'auto-review' && sandbox !== AUTO_REVIEW_SANDBOX) {
     refuse(`auto-review runs in ${AUTO_REVIEW_SANDBOX} only; leave sandbox out`);
   }
@@ -89,7 +123,7 @@ async function codexSettings(
   // a settings file names one.
   const fromFile = !!from.effort && from.effort !== codex.SOURCE_LABELS.codex;
   const effort = asked(req.effort)
-    ? codexEffortFromSetting(req.effort) ?? refuse(`"${req.effort}" is not a Codex effort level`)
+    ? (codexEffortFromSetting(req.effort) ?? refuse(`"${req.effort}" is not a Codex effort level`))
     : asked(req.model) && !fromFile && listed?.defaultEffort
       ? listed.defaultEffort
       : values.effort;
@@ -131,7 +165,10 @@ async function spawn(req: AgentSpawnRequest): Promise<void> {
   // behind.
   const spec =
     req.provider === 'claude'
-      ? { provider: 'claude' as const, settings: claudeSettings(req, (await claude.settingsDefaults(account.path, folder)).values) }
+      ? {
+          provider: 'claude' as const,
+          settings: claudeSettings(req, (await claude.settingsDefaults(account.path, folder)).values)
+        }
       : {
           provider: 'codex' as const,
           settings: await codexSettings(req, await codex.settingsDefaults(account.path, folder), account)
@@ -146,7 +183,19 @@ async function spawn(req: AgentSpawnRequest): Promise<void> {
   const id = useChats.getState().findChat(rowId)
     ? rowId
     : await createChat({
-        ...spec, id: rowId, folder, account, worktree, tools, hooksUnasked, parentId: parent?.id, name, inWorktree, byAgent: true, readOnly, agent
+        ...spec,
+        id: rowId,
+        folder,
+        account,
+        worktree,
+        tools,
+        hooksUnasked,
+        parentId: parent?.id,
+        name,
+        inWorktree,
+        byAgent: true,
+        readOnly,
+        agent
       });
   const chat = useChats.getState().findChat(id);
   const common = {
@@ -207,10 +256,15 @@ async function startResumes(): Promise<void> {
     const folder = chats.folderOf(id)?.path;
     const account = chat ? accountOfChat(useAccounts.getState().accounts, chat) : null;
     if (!chat || !folder || !account) {
-      logWarn('agents', `helper ${id} is to go on, and has no ${!chat ? 'row' : !folder ? 'folder' : 'account'} to start it from`);
+      logWarn(
+        'agents',
+        `helper ${id} is to go on, and has no ${!chat ? 'row' : !folder ? 'folder' : 'account'} to start it from`
+      );
       continue;
     }
-    startSession(chat, folder, account.path).catch(e => logWarn('agents', `starting helper ${id} to go on failed: ${String(e)}`));
+    startSession(chat, folder, account.path).catch(e =>
+      logWarn('agents', `starting helper ${id} to go on failed: ${String(e)}`)
+    );
   }
 }
 
@@ -280,7 +334,9 @@ function settleOpenings(rows: BackgroundHelperDto[]): void {
  * shows it, once the core has let go of it.
  */
 async function promote(p: PromotedDto): Promise<void> {
-  const account = useAccounts.getState().accounts.find(a => a.provider === p.provider && samePath(a.path, p.accountPath));
+  const account = useAccounts
+    .getState()
+    .accounts.find(a => a.provider === p.provider && samePath(a.path, p.accountPath));
   if (!account) throw new Error(`no ${p.provider} account at ${p.accountPath}`);
   const s = p.settings as Record<string, string | null | undefined>;
   const word = (k: string) => (typeof s[k] === 'string' ? (s[k] as string) : '');
@@ -354,7 +410,9 @@ export function useAgentBridge() {
     // Asked once listening, so that nothing falls between: what was sent before this
     // page could hear it, with no window or while one loaded, was sent to nobody.
     const askForSpawns = () =>
-      void agentSpawns().then(asked => asked.forEach(takeSpawn)).catch(e => logWarn('agents', `asking which spawns are waiting failed: ${String(e)}`));
+      void agentSpawns()
+        .then(asked => asked.forEach(takeSpawn))
+        .catch(e => logWarn('agents', `asking which spawns are waiting failed: ${String(e)}`));
     void onAgentSpawn(takeSpawn).then(off => {
       if (dead) {
         off();
@@ -370,8 +428,11 @@ export function useAgentBridge() {
       if (useChats.getState().findChat(id)) useChats.getState().deleteChat(id);
     }).then(off => (dead ? off() : offs.push(off)));
     // The row names its parent at every spawn, a core started later included.
-    void onAgentReparent(({ id, parent }) => useChats.getState().setParent(id, parent)).then(off => (dead ? off() : offs.push(off)));
-    const resume = () => void startResumes().catch(e => logWarn('agents', `asking which helpers go on failed: ${String(e)}`));
+    void onAgentReparent(({ id, parent }) => useChats.getState().setParent(id, parent)).then(off =>
+      dead ? off() : offs.push(off)
+    );
+    const resume = () =>
+      void startResumes().catch(e => logWarn('agents', `asking which helpers go on failed: ${String(e)}`));
     resume();
     offs.push(onCoreUp(resume));
     return () => {

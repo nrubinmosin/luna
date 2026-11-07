@@ -83,7 +83,10 @@ export function LooseHelpers() {
   );
   if (helpers.length === 0) return null;
   return (
-    <div className="tp-group" title="Background helpers whose chat was deleted. Each is deleted by itself half an hour after it is done.">
+    <div
+      className="tp-group"
+      title="Background helpers whose chat was deleted. Each is deleted by itself half an hour after it is done."
+    >
       <div className="tp-body">
         <div className="chat-row" data-active="no" style={{ cursor: 'default' }}>
           <span style={{ flex: '1 1 auto', paddingLeft: 4, fontSize: 'var(--fs-4)' }}>Helpers with no chat</span>
@@ -137,7 +140,15 @@ function HelperChip({ helpers, what }: { helpers: BackgroundHelperDto[]; what: s
   );
 }
 
-function HelperList({ helpers, anchor, onClose }: { helpers: BackgroundHelperDto[]; anchor: HTMLElement; onClose: () => void }) {
+function HelperList({
+  helpers,
+  anchor,
+  onClose
+}: {
+  helpers: BackgroundHelperDto[];
+  anchor: HTMLElement;
+  onClose: () => void;
+}) {
   const host = useDialogHost();
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
@@ -187,21 +198,46 @@ function HelperList({ helpers, anchor, onClose }: { helpers: BackgroundHelperDto
         const line = askLine(h);
         const busy = h.state === 'working' || h.state === 'waiting' || h.state === 'question';
         // Between turns, what its turns left running is what there is to stop.
-        const left = h.state === 'background' ? h.leftRunning ?? [] : [];
+        const left = h.state === 'background' ? (h.leftRunning ?? []) : [];
         return (
           <div key={h.id} style={{ display: 'grid', gap: 4 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
               <Icon name={h.provider} size={13} />
-              <span style={{ flex: '1 1 auto', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              <span
+                style={{
+                  flex: '1 1 auto',
+                  fontWeight: 600,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap'
+                }}
+              >
                 {h.name || h.id}
               </span>
               <span style={{ flex: 'none', color: 'var(--dim)', fontSize: 'var(--fs-1)' }}>{stateLine(h, now)}</span>
             </div>
-            <div style={{ fontSize: 'var(--fs-1)', color: 'var(--dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            <div
+              style={{
+                fontSize: 'var(--fs-1)',
+                color: 'var(--dim)',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap'
+              }}
+            >
               {setupLine(h)}
             </div>
             {line && (
-              <div style={{ fontSize: 'var(--fs-1)', color: 'var(--dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={line}>
+              <div
+                style={{
+                  fontSize: 'var(--fs-1)',
+                  color: 'var(--dim)',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap'
+                }}
+                title={line}
+              >
                 {line}
               </div>
             )}

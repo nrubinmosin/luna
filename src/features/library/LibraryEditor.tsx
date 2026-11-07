@@ -3,7 +3,13 @@ import { createPortal } from 'react-dom';
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
 import { EditorState } from '@codemirror/state';
 import { EditorView, highlightActiveLine, highlightActiveLineGutter, keymap, lineNumbers } from '@codemirror/view';
-import { libraryCheckSkill, libraryRead, libraryWrite, type LibraryEntry, type LibraryFileDto } from '../../ipc/commands';
+import {
+  libraryCheckSkill,
+  libraryRead,
+  libraryWrite,
+  type LibraryEntry,
+  type LibraryFileDto
+} from '../../ipc/commands';
 import { useDialogHost } from '../../shared/ui/dialogHost';
 import { Icon } from '../../shared/ui/icons';
 import { look } from '../accounts/ConfigEditor';
@@ -130,14 +136,24 @@ export function LibraryEditor({ entry, onClose }: { entry: LibraryEntry; onClose
         e.stopPropagation();
         close();
       }}
-      style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.35)', display: 'grid', placeItems: 'center', zIndex: 80 }}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(0,0,0,.35)',
+        display: 'grid',
+        placeItems: 'center',
+        zIndex: 80
+      }}
     >
       <div
         onClick={e => e.stopPropagation()}
         className="window"
         style={{
-          width: 760, maxWidth: 'calc(100vw - 32px)', height: 'min(640px, calc(100vh - 48px))',
-          display: 'flex', flexDirection: 'column',
+          width: 760,
+          maxWidth: 'calc(100vw - 32px)',
+          height: 'min(640px, calc(100vh - 48px))',
+          display: 'flex',
+          flexDirection: 'column',
           boxShadow: 'var(--shadow), var(--border-window-outer), var(--border-window-inner)'
         }}
       >
@@ -147,13 +163,25 @@ export function LibraryEditor({ entry, onClose }: { entry: LibraryEntry; onClose
             <button aria-label="Close" onClick={close} />
           </div>
         </div>
-        <div className="window-body" style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-2)', color: 'var(--faint)' }}>
+        <div
+          className="window-body"
+          style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', gap: 8 }}
+        >
+          <div
+            style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-2)', color: 'var(--faint)' }}
+          >
             <Icon name="library" />
-            <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={file?.path}>
+            <span
+              style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+              title={file?.path}
+            >
               {file ? `${file.path}${file.exists ? '' : ' — not there yet, saving creates it'}` : 'Reading…'}
             </span>
-            <span>{skill ? 'The description is what the model sees until it opens the skill' : 'CLAUDE.md and AGENTS.md in the accounts that get it'}</span>
+            <span>
+              {skill
+                ? 'The description is what the model sees until it opens the skill'
+                : 'CLAUDE.md and AGENTS.md in the accounts that get it'}
+            </span>
           </div>
           <div ref={box} className="config-text" />
           <div style={{ minHeight: 18, fontSize: 'var(--fs-3)' }}>
@@ -162,7 +190,9 @@ export function LibraryEditor({ entry, onClose }: { entry: LibraryEntry; onClose
             ) : leaving ? (
               <span style={{ color: 'var(--wait)' }}>Unsaved changes — Esc again to throw them away</span>
             ) : problem ? (
-              <span style={{ color: 'var(--wait)' }}>{problem} — saved as a draft, laid out nowhere until it is fixed</span>
+              <span style={{ color: 'var(--wait)' }}>
+                {problem} — saved as a draft, laid out nowhere until it is fixed
+              </span>
             ) : saved && !dirty ? (
               <span style={{ color: 'var(--dim)', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                 <Icon name="check" size={13} /> Saved and laid out. New sessions start with it.

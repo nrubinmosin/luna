@@ -21,9 +21,16 @@ export function CoreBanner() {
     <div
       role="alert"
       style={{
-        display: 'flex', alignItems: 'center', gap: 10, padding: '6px 10px', margin: '6px 6px 0',
-        borderRadius: 4, background: 'oklch(.55 .17 25 / .18)', border: '1px solid oklch(.58 .2 25 / .5)',
-        fontSize: 'var(--fs-3)', color: 'var(--fg)'
+        display: 'flex',
+        alignItems: 'center',
+        gap: 10,
+        padding: '6px 10px',
+        margin: '6px 6px 0',
+        borderRadius: 4,
+        background: 'oklch(.55 .17 25 / .18)',
+        border: '1px solid oklch(.58 .2 25 / .5)',
+        fontSize: 'var(--fs-3)',
+        color: 'var(--fg)'
       }}
     >
       <span style={{ flex: 1 }}>{text}</span>
