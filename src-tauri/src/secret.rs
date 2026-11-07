@@ -29,21 +29,13 @@ pub fn same(presented: &str, expected: &str) -> bool {
 
 /// HMAC-SHA256 (RFC 2104) of `msg` under `key`, as lowercase hex: a secret
 /// of its own for each `msg`, which nobody can work out from another's
-/// without `key`. By hand over `sha2`, already a dependency, rather than a
-/// crate for these few lines.
+/// without `key`.
 pub fn hmac_hex(key: &[u8], msg: &[u8]) -> String {
-    use sha2::{Digest, Sha256};
-    const BLOCK: usize = 64;
-    let mut k = [0u8; BLOCK];
-    if key.len() > BLOCK {
-        k[..32].copy_from_slice(&Sha256::digest(key));
-    } else {
-        k[..key.len()].copy_from_slice(key);
-    }
-    let pad = |byte: u8| k.map(|b| b ^ byte);
-    let inner = Sha256::new().chain_update(pad(0x36)).chain_update(msg).finalize();
-    let outer = Sha256::new().chain_update(pad(0x5c)).chain_update(inner).finalize();
-    outer.iter().map(|b| format!("{b:02x}")).collect()
+    use hmac::{Hmac, Mac};
+    // Any key length will do for HMAC; `new_from_slice` cannot fail for it.
+    let mut mac = Hmac::<sha2::Sha256>::new_from_slice(key).expect("HMAC takes a key of any length");
+    mac.update(msg);
+    mac.finalize().into_bytes().iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Makes `dir` (and its parents) for files that hold a secret, and leaves it
