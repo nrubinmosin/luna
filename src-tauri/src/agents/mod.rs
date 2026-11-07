@@ -4,8 +4,8 @@
 //! included. This module is the registry behind those tools: who is who,
 //! who may touch whom, and the round trips to the UI that owns the chat list.
 //!
-//! The core does not know chats, only pty sessions (see ARCHITECTURE.md), so
-//! a spawn is a request to the frontend — `agent://spawn` out, `agent_spawned`
+//! The core does not know chats, only pty sessions
+//! (docs/adr/0001-session-state-lives-in-the-cli.md), so a spawn is a request to the frontend — `agent://spawn` out, `agent_spawned`
 //! back — and a delete tells the frontend to drop the row after the session
 //! and its worktree are gone. Lineage lives here: every session registered
 //! with a parent is that parent's, and a caller may only reach its own
