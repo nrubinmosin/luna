@@ -330,6 +330,12 @@ pub struct SessionSkills {
 /// them now — off any lock of the caller's, as a pass reads and writes every
 /// account's copies.
 pub fn session_args(provider: Provider, account_path: &str, folder: &str) -> SessionSkills {
+    // A library a test holds, for the accounts it made (testkit
+    // `GoldenLibrary`), in place of Luna's own settings and accounts.
+    #[cfg(test)]
+    if let Some((dirs, lib, a)) = held(provider, account_path) {
+        return folder_args(&dirs, &lib, &a, folder);
+    }
     let lib = crate::settings::get().library;
     if lib.folders.is_empty() {
         return SessionSkills::default();

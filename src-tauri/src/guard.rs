@@ -4,7 +4,7 @@
 //! killed leaves its pipeline behind, and it holds the PC awake all night (as
 //! in a campaign on 2026-11-04). Sessions with Luna's tools and every helper
 //! get a PreToolUse hook that posts the call here (hub.rs `/guard`,
-//! pty/start.rs `claude_settings_file`, codex/launch.rs `codex_guard_args`);
+//! pty/start.rs `claude_settings_file` and `codex_guard_args`);
 //! such a command is refused with what to do instead, everything else goes
 //! ahead. A deadline is a `timeout N`
 //! in front of it in the same command; a tool's own `timeout` is none (Claude

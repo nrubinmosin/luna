@@ -1,15 +1,16 @@
 //! How a Codex session in a pane is started, and what a helper's `codex exec`
 //! shares with it (background/): arguments and environment, laid out from
-//! what the start has already settled. Nothing here writes, registers or
-//! mints a token; that happens under the chat's spawn gate (pty/start.rs),
-//! which hands the results in.
+//! what the start has already settled. Pure: nothing here reads the
+//! environment, the disk or Luna's state, logs, writes, registers or mints.
+//! The start does that under the chat's spawn gate (pty/start.rs) and hands
+//! the results in; a helper's turn, in background/command.rs.
 
 use crate::pty::MCP_TOOL_TIMEOUT_MS;
-use std::sync::Mutex;
 
 /// A Codex chat's start as `chat_args` lays it out: what the window asked
 /// for, and what the start settled for it under the spawn gate — the trust
-/// override, the token — which this only passes on.
+/// override, the sandbox's profile, PATH and git entries, the guard, Luna's
+/// server and the token — which this only passes on.
 pub(crate) struct ChatStart<'a> {
     pub(crate) id: &'a str,
     pub(crate) folder: &'a str,
@@ -22,12 +23,22 @@ pub(crate) struct ChatStart<'a> {
     pub(crate) approval: &'a str,
     /// The sandbox it runs in: `AUTO_REVIEW_SANDBOX` under the reviewer.
     pub(crate) sandbox: &'a str,
+    /// The `read-only-net` profile's name, new on every start
+    /// (`read_only_net_args`); in any other sandbox, None.
+    pub(crate) profile: Option<&'a str>,
+    /// PATH for the sandbox (pty/start.rs `codex_sandbox_path`), where it
+    /// takes one.
+    pub(crate) sandbox_path: Option<&'a str>,
+    /// What the sandbox needs of git's config (pty/start.rs `codex_git_envs`).
+    pub(crate) git_envs: &'a [(&'static str, String)],
     pub(crate) hooks_unasked: bool,
-    /// The guard against endless waits (guard.rs), if the session has it.
-    pub(crate) guard: bool,
+    /// The guard against endless waits (guard.rs) as its `-c` override, if
+    /// the session has it (pty/start.rs `codex_guard_args`).
+    pub(crate) guard: &'a [String],
     pub(crate) parent: Option<&'a str>,
-    /// The session's MCP token, while Luna's server is up to take it.
-    pub(crate) token: Option<&'a str>,
+    /// Luna's MCP server's URL and the session's token, while the server is
+    /// up to take it.
+    pub(crate) mcp: Option<(&'a str, &'a str)>,
     pub(crate) skill_args: &'a [String],
     pub(crate) prompt: Option<&'a str>,
 }
@@ -74,31 +85,34 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
             args.push(approval.to_string());
             args.push("-c".into());
             args.push(CODEX_PERSON_REVIEWS.into());
-            if sandbox == READ_ONLY_NET {
-                args.extend(codex_read_only_net_args());
-            } else {
-                args.push("--sandbox".into());
-                args.push(sandbox.to_string());
+            // Without its profile, `--sandbox read-only-net`, which Codex
+            // refuses: never a sandbox looser than the one asked for.
+            match s.profile.filter(|_| sandbox == READ_ONLY_NET) {
+                Some(profile) => args.extend(read_only_net_args(profile)),
+                None => {
+                    args.push("--sandbox".into());
+                    args.push(sandbox.to_string());
+                }
             }
         }
         if let Some(sb) = codex_windows_sandbox(sandbox) {
             args.push("-c".into());
             args.push(sb);
         }
-        if let Some(path) = codex_sandbox_path(sandbox) {
-            envs.push(("PATH", path));
+        if let Some(path) = s.sandbox_path {
+            envs.push(("PATH", path.to_string()));
         }
-        envs.extend(codex_git_envs(sandbox));
+        envs.extend(s.git_envs.iter().cloned());
     }
     if s.hooks_unasked {
         args.push(HOOKS_UNASKED.into());
     }
-    args.extend(codex_guard_args(s.id, s.guard, s.hooks_unasked));
+    args.extend(s.guard.iter().cloned());
     args.push("-c".into());
     args.push(CODEX_TITLE.into());
     envs.extend(crate::pty::session_envs(s.id, s.parent));
-    if let Some(token) = s.token {
-        args.extend(codex_mcp_args());
+    if let Some((url, token)) = s.mcp {
+        args.extend(mcp_args(url));
         envs.push(("LUNA_MCP_TOKEN", token.to_string()));
     }
     args.extend(s.skill_args.iter().cloned());
@@ -110,36 +124,11 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
     (args, envs)
 }
 
-/// The guard (guard.rs) for a Codex session, as `-c` overrides: a PreToolUse
-/// hook on its shell, which its hooks call `Bash`. Codex runs a hook given so
-/// only with its trust bypassed (`HOOKS_UNASKED`): untrusted, `exec` drops it
-/// and the TUI stops on a review screen. Without that, none, and a line in the
-/// log says why.
-pub(crate) fn codex_guard_args(chat_id: &str, guard: bool, hooks_unasked: bool) -> Vec<String> {
-    if !guard {
-        return Vec::new();
-    }
-    if !hooks_unasked {
-        // Once per session: a helper's `codex exec` starts at every turn.
-        static TOLD: std::sync::OnceLock<Mutex<std::collections::HashSet<String>>> = std::sync::OnceLock::new();
-        if TOLD.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner()).insert(chat_id.to_string()) {
-            crate::log::info(
-                "guard",
-                &format!(
-                    "{}: no guard against endless waits, as Codex runs a hook Luna gives it only with hooks' trust bypassed (Settings, Codex hooks)",
-                    crate::agents::label(chat_id)
-                ),
-            );
-        }
-        return Vec::new();
-    }
-    crate::hub::guard_url(chat_id).map_or_else(Vec::new, |url| vec!["-c".into(), codex_guard_override(&url)])
-}
-
-/// `hooks.PreToolUse` for Codex, posting each shell call to `url`. A TOML
-/// literal string: the command's Windows paths hold backslashes.
-fn codex_guard_override(url: &str) -> String {
-    format!(r#"hooks.PreToolUse=[{{matcher="Bash",hooks=[{{type="command",command='{}',timeout=5}}]}}]"#, codex_hook_command(url))
+/// `hooks.PreToolUse` for Codex, posting each shell call to `url` through
+/// `curl` (pty/start.rs `codex_guard_args`). A TOML literal string: the
+/// command's Windows paths hold backslashes.
+pub(crate) fn guard_override(url: &str, curl: &str) -> String {
+    format!(r#"hooks.PreToolUse=[{{matcher="Bash",hooks=[{{type="command",command='{}',timeout=5}}]}}]"#, hook_command(url, curl))
 }
 
 /// `hook_command` for Codex, which runs a hook through the user's shell —
@@ -148,20 +137,8 @@ fn codex_guard_override(url: &str) -> String {
 /// `cmd.exe /C` when it has none, with an environment of its own. So `"@-"`
 /// quoted, which PowerShell, cmd and sh all hand curl as `@-`, and curl by its
 /// full path, found whatever PATH the hook gets.
-fn codex_hook_command(url: &str) -> String {
-    format!(r#"{} -s -m 3 -X POST --data-binary "@-" {url}"#, curl_program())
-}
-
-/// curl by its full path where Windows keeps it, else by name.
-fn curl_program() -> String {
-    #[cfg(windows)]
-    if let Some(root) = std::env::var("SystemRoot").ok().filter(|r| !r.is_empty() && !r.contains([' ', '\'', '"'])) {
-        let full = format!(r"{root}\System32\curl.exe");
-        if std::path::Path::new(&full).is_file() {
-            return full;
-        }
-    }
-    if cfg!(windows) { "curl.exe" } else { "curl" }.to_string()
+fn hook_command(url: &str, curl: &str) -> String {
+    format!(r#"{curl} -s -m 3 -X POST --data-binary "@-" {url}"#)
 }
 
 /// Luna's name for Codex's `--approve-for-me`: what Codex would ask goes to a
@@ -182,22 +159,22 @@ pub(crate) const HOOKS_UNASKED: &str = "--dangerously-bypass-hook-trust";
 const CODEX_TITLE: &str = "tui.terminal_title=[\"thread-id\"]";
 
 /// Luna's own sandbox value: Codex's read-only with the network on, which
-/// `sandbox_mode` cannot say (see `codex_read_only_net_args`).
+/// `sandbox_mode` cannot say (see `read_only_net_args`).
 pub(crate) const READ_ONLY_NET: &str = "read-only-net";
 
 /// `read-only-net` as `-c` overrides: a permission profile of Luna's that
 /// extends Codex's `:read-only`, with direct network, and nothing written to
 /// the account's config.toml. Codex's docs say not to set `sandbox_mode` beside
 /// `default_permissions`; this override beats one in the account's or the
-/// project's config, so the disk stays read-only either way. The name is new
-/// on every start: Codex lays the rules any config has for a profile's name
-/// over the ones given here, so a project's `.codex/config.toml` saying
-/// `":root" = "write"` for a name it could know would make this writable. It
-/// need not last: a resume takes a new one. On Windows TLS through schannel
-/// still fails under the sandbox's restricted token, as it does in
-/// `workspace-write` with its network on (see `codex_git_envs`, luna_guide.md).
-pub(crate) fn codex_read_only_net_args() -> Vec<String> {
-    let profile = format!("luna-{}", &crate::agents::mint()[..16]);
+/// project's config, so the disk stays read-only either way. The name,
+/// `profile`, is new on every start (pty/start.rs `codex_profile`): Codex lays
+/// the rules any config has for a profile's name over the ones given here, so
+/// a project's `.codex/config.toml` saying `":root" = "write"` for a name it
+/// could know would make this writable. It need not last: a resume takes a new
+/// one. On Windows TLS through schannel still fails under the sandbox's
+/// restricted token, as it does in `workspace-write` with its network on (see
+/// `git_ssl_backend_envs`, luna_guide.md).
+pub(crate) fn read_only_net_args(profile: &str) -> Vec<String> {
     [
         format!("default_permissions=\"{profile}\""),
         format!("permissions.{profile}.extends=\":read-only\""),
@@ -212,7 +189,7 @@ pub(crate) fn codex_read_only_net_args() -> Vec<String> {
 /// schannel by default and fails under the sandbox's token: entries for
 /// `GIT_CONFIG_*`, after any it was started with. Nothing if those already
 /// choose a backend, or if their count is one git itself would refuse.
-fn git_ssl_backend_envs(count: Option<&str>, key: impl Fn(usize) -> Option<String>) -> Vec<(String, String)> {
+pub(crate) fn git_ssl_backend_envs(count: Option<&str>, key: impl Fn(usize) -> Option<String>) -> Vec<(String, String)> {
     let n: usize = match count {
         None => 0,
         Some(c) => match c.trim().parse() {
@@ -230,33 +207,13 @@ fn git_ssl_backend_envs(count: Option<&str>, key: impl Fn(usize) -> Option<Strin
     ]
 }
 
-/// `git_ssl_backend_envs` for a session in that sandbox. Worked out once: the
-/// environment they build on is this process's, which stays as it started,
-/// and the names are made only the once for their `'static` lifetime.
-pub(crate) fn codex_git_envs(sandbox: &str) -> Vec<(&'static str, String)> {
-    static ENVS: std::sync::OnceLock<Vec<(&'static str, String)>> = std::sync::OnceLock::new();
-    if !cfg!(windows) || sandbox != READ_ONLY_NET {
-        return Vec::new();
+/// A sandbox as `-c` overrides, for `codex exec`, which asks nobody;
+/// `read-only-net` by its `profile`.
+pub(crate) fn sandbox_args(sandbox: &str, profile: Option<&str>) -> Vec<String> {
+    match profile.filter(|_| sandbox == READ_ONLY_NET) {
+        Some(profile) => read_only_net_args(profile),
+        None => vec!["-c".into(), format!("sandbox_mode=\"{sandbox}\"")],
     }
-    ENVS.get_or_init(|| {
-        let count = std::env::var("GIT_CONFIG_COUNT").ok();
-        git_ssl_backend_envs(count.as_deref(), |i| std::env::var(format!("GIT_CONFIG_KEY_{i}")).ok())
-            .into_iter()
-            .map(|(k, v)| {
-                let k: &'static str = Box::leak(k.into_boxed_str());
-                (k, v)
-            })
-            .collect()
-    })
-    .clone()
-}
-
-/// A sandbox as `-c` overrides, for `codex exec`, which asks nobody.
-pub(crate) fn codex_sandbox_args(sandbox: &str) -> Vec<String> {
-    if sandbox == READ_ONLY_NET {
-        return codex_read_only_net_args();
-    }
-    vec!["-c".into(), format!("sandbox_mode=\"{sandbox}\"")]
 }
 
 /// The override that gives Codex its Windows sandbox, for the modes that
@@ -270,27 +227,20 @@ pub(crate) fn codex_windows_sandbox(sandbox: &str) -> Option<String> {
         .then(|| "windows.sandbox=\"unelevated\"".to_string())
 }
 
-/// PATH for a Codex session in that sandbox: without `…\Microsoft\WindowsApps`.
-/// Codex takes the first `pwsh.exe` on PATH for its shell, and the Store
-/// PowerShell's there is an app alias the restricted token cannot start —
-/// `CreateProcessAsUserW failed: 5` on every command, whatever it was. Without
-/// it Codex falls back to a PowerShell installed the ordinary way, or to
-/// Windows PowerShell; Store apps' aliases are out of the sandbox's reach
-/// either way.
-pub(crate) fn codex_sandbox_path(sandbox: &str) -> Option<String> {
-    codex_windows_sandbox(sandbox)?;
-    let path = std::env::var("PATH").ok()?;
-    Some(without_windows_apps(&path))
-}
-
-fn without_windows_apps(path: &str) -> String {
+/// PATH for a Codex session in a Windows sandbox: `path` without
+/// `…\Microsoft\WindowsApps`. Codex takes the first `pwsh.exe` on PATH for its
+/// shell, and the Store PowerShell's there is an app alias the restricted
+/// token cannot start — `CreateProcessAsUserW failed: 5` on every command,
+/// whatever it was. Without it Codex falls back to a PowerShell installed the
+/// ordinary way, or to Windows PowerShell; Store apps' aliases are out of the
+/// sandbox's reach either way.
+pub(crate) fn without_windows_apps(path: &str) -> String {
     path.split(';').filter(|p| !p.to_lowercase().replace('/', "\\").contains("\\microsoft\\windowsapps")).collect::<Vec<_>>().join(";")
 }
 
-/// Luna's MCP server as `-c` overrides for Codex, the token through
+/// Luna's MCP server at `url` as `-c` overrides for Codex, the token through
 /// `LUNA_MCP_TOKEN`: neither touches the account's config.toml.
-pub(crate) fn codex_mcp_args() -> Vec<String> {
-    let Some(url) = crate::hub::mcp_url() else { return Vec::new() };
+pub(crate) fn mcp_args(url: &str) -> Vec<String> {
     let mut args = Vec::new();
     for value in [
         format!("mcp_servers.luna.url=\"{url}\""),
@@ -339,24 +289,25 @@ mod tests {
         let hooks = helper["hooks"].as_object().unwrap();
         assert_eq!(hooks.keys().collect::<Vec<_>>(), ["PreToolUse"], "no hooks of its own: its stream says it all");
         assert!(claude_settings(None, None, &none).is_empty());
-        let guard = codex_guard_override("http://h/guard/c/s");
+        let curl = crate::pty::curl_program();
+        let guard = guard_override("http://h/guard/c/s", &curl);
         assert!(guard.starts_with(r#"hooks.PreToolUse=[{matcher="Bash",hooks=[{type="command",command='"#), "{guard}");
         assert!(guard.ends_with(r#" -s -m 3 -X POST --data-binary "@-" http://h/guard/c/s',timeout=5}]}]"#), "{guard}");
-        assert!(!codex_hook_command("u").contains('\''), "a TOML literal string holds no quote");
-        assert!(codex_guard_args("c", false, true).is_empty(), "not guarded");
-        assert!(codex_guard_args("c", true, false).is_empty(), "Codex would drop it untrusted");
+        assert!(!hook_command("u", &curl).contains('\''), "a TOML literal string holds no quote");
+        assert!(crate::pty::codex_guard_args("c", false, true).is_empty(), "not guarded");
+        assert!(crate::pty::codex_guard_args("c", true, false).is_empty(), "Codex would drop it untrusted");
     }
 
     #[test]
     fn read_only_net_is_a_profile_and_never_a_sandbox_mode() {
-        let args = codex_sandbox_args(READ_ONLY_NET);
+        let args = crate::pty::codex_sandbox_args(READ_ONLY_NET);
         assert!(!args.iter().any(|a| a.starts_with("sandbox_mode")), "Codex's docs say not to set both");
         let profile = args[1].strip_prefix("default_permissions=\"").and_then(|p| p.strip_suffix('"')).expect("the profile is named first");
         assert!(args.contains(&format!("permissions.{profile}.extends=\":read-only\"")));
         assert!(args.contains(&format!("permissions.{profile}.network.enabled=true")));
         assert_eq!(args.iter().filter(|a| *a == "-c").count(), 3);
-        assert_ne!(codex_sandbox_args(READ_ONLY_NET)[1], args[1], "no config can have rules ready for the next one's name");
-        assert_eq!(codex_sandbox_args("read-only"), ["-c", "sandbox_mode=\"read-only\""]);
+        assert_ne!(crate::pty::codex_sandbox_args(READ_ONLY_NET)[1], args[1], "no config can have rules ready for the next one's name");
+        assert_eq!(crate::pty::codex_sandbox_args("read-only"), ["-c", "sandbox_mode=\"read-only\""]);
         assert_eq!(codex_windows_sandbox(READ_ONLY_NET), codex_windows_sandbox("read-only"), "it runs in the same sandbox");
     }
 
@@ -379,13 +330,13 @@ mod tests {
         let chosen = |i: usize| (i == 1).then(|| "HTTP.sslbackend".to_string());
         assert!(git_ssl_backend_envs(Some("2"), chosen).is_empty(), "a backend chosen already stays chosen");
         assert!(git_ssl_backend_envs(Some("many"), none).is_empty(), "a count git refuses is not made worse");
-        assert!(codex_git_envs("read-only").is_empty(), "only where the network is on");
+        assert!(crate::pty::codex_git_envs("read-only").is_empty(), "only where the network is on");
     }
 
     #[test]
     fn the_sandbox_path_has_no_store_aliases() {
         let path = r"C:\Users\n\AppData\Local\Microsoft\WindowsApps\Microsoft.PowerShell_8wekyb3d8bbwe;C:\WINDOWS\system32;C:\Users\n\AppData\Local\Microsoft\WindowsApps;C:\Program Files\PowerShell\7";
         assert_eq!(without_windows_apps(path), r"C:\WINDOWS\system32;C:\Program Files\PowerShell\7");
-        assert_eq!(codex_sandbox_path("danger-full-access"), None, "full access keeps the PATH it had");
+        assert_eq!(crate::pty::codex_sandbox_path("danger-full-access"), None, "full access keeps the PATH it had");
     }
 }

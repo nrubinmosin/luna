@@ -71,6 +71,8 @@ pub(crate) use pass::*;
 pub(crate) use reach::*;
 pub(crate) use skills::*;
 #[cfg(test)]
+pub(crate) use testkit::GoldenLibrary;
+#[cfg(test)]
 use testkit::*;
 
 /// A unit's files by path relative to it, `/`-separated; the instructions
