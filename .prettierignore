@@ -1,0 +1,16 @@
+# The Rust crate has rustfmt; its JSON (tauri.conf, capabilities, generated
+# schemas) is written by the Tauri toolchain.
+src-tauri/
+
+# Lockfiles belong to their package manager.
+pnpm-lock.yaml
+
+# Build output and the test flavour's folder.
+dist/
+test-build/
+
+# Brand assets are exported as they are from the design tools.
+docs/brand/
+
+# Prose: its line breaks and lists are written by hand.
+*.md
