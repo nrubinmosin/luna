@@ -111,7 +111,7 @@ impl InFlight {
         let key = (caller.to_string(), id.to_string());
         let call = Arc::new(Call::new());
         let mut m = in_flight().lock().unwrap_or_else(|e| e.into_inner());
-        m.retain(|_, entry| entry.1.map_or(true, |at| at.elapsed() < LATE_CANCEL));
+        m.retain(|_, entry| entry.1.is_none_or(|at| at.elapsed() < LATE_CANCEL));
         m.insert(key.clone(), (call.clone(), None));
         InFlight { key, call }
     }
@@ -160,9 +160,7 @@ pub fn handle(caller: &str, body: &str) -> Option<Value> {
     }
     // Without an id it is a notification; without a method, a response to
     // nothing this server asks. Neither is answered.
-    let Some(id) = req.get("id").cloned().filter(|_| !method.is_empty() && !method.starts_with("notifications/")) else {
-        return None;
-    };
+    let id = req.get("id").cloned().filter(|_| !method.is_empty() && !method.starts_with("notifications/"))?;
     let result = match method {
         "initialize" => {
             let asked = params["protocolVersion"].as_str().filter(|v| PROTOCOLS.contains(v));
@@ -354,7 +352,7 @@ fn permission_tool() -> Value {
 /// The tools a caller is offered: Luna's own when it was given them, and
 /// the permission handler when it is a background helper.
 fn tools_for(caller: &str) -> Value {
-    let mut list: Vec<Value> = if crate::agents::has_tools(caller) { tools().as_array().cloned().unwrap_or_default() } else { Vec::new() };
+    let mut list: Vec<Value> = if agents::has_tools(caller) { tools().as_array().cloned().unwrap_or_default() } else { Vec::new() };
     if crate::background::has(caller) {
         list.push(permission_tool());
     }
@@ -365,7 +363,7 @@ fn tools_for(caller: &str) -> Value {
 /// how long it took. The arguments that steer a call are named; what is said
 /// through it (prompts, sent text, answers, notifications) is not.
 fn call(caller: &str, params: &Value, this: &Call) -> Value {
-    let started = std::time::Instant::now();
+    let started = Instant::now();
     let out = run(caller, params, this);
     let name = params["name"].as_str().unwrap_or("?");
     let a = &params["arguments"];

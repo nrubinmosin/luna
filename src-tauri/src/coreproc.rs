@@ -260,7 +260,7 @@ fn keep_full_speed() {
             GetCurrentProcess(),
             ProcessPowerThrottling,
             &state as *const _ as *const std::ffi::c_void,
-            std::mem::size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32,
+            size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32,
         )
     };
     if let Err(e) = set {

@@ -1041,9 +1041,9 @@ mod tests {
         let ok = |c: &mut Command| c.output().is_ok_and(|o| o.status.success());
         // Claude Code's in that folder is none of a Codex helper's.
         assert!(ok(git(&repo).args(["worktree", "add", "-q", "-b", "worktree-c", &named_path(&repo, "c")])));
-        assert_eq!(codex_new_since(&repo, &account, &[], &[]), [codex.clone()]);
-        assert!(codex_new_since(&repo, &account, &[codex.clone()], &[]).is_empty());
-        assert!(codex_new_since(&repo, &account, &[], &[codex.clone()]).is_empty());
+        assert_eq!(codex_new_since(&repo, &account, &[], &[]), std::slice::from_ref(&codex));
+        assert!(codex_new_since(&repo, &account, std::slice::from_ref(&codex), &[]).is_empty());
+        assert!(codex_new_since(&repo, &account, &[], std::slice::from_ref(&codex)).is_empty());
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1051,7 +1051,7 @@ mod tests {
     fn a_worktree_a_cli_made_is_found_for_its_folder_and_account() {
         let Some((root, repo, wt)) = codex_layout("made-for") else { return };
         let account = root.join("account").to_string_lossy().into_owned();
-        assert_eq!(made_for(&repo, &account), [wt.clone()]);
+        assert_eq!(made_for(&repo, &account), std::slice::from_ref(&wt));
         assert!(made_for(&repo, r"C:\no\such\account").is_empty());
         let _ = std::fs::remove_dir_all(&root);
     }

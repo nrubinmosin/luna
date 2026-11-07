@@ -482,7 +482,7 @@ fn past_dry() -> bool {
 /// Off the sampler thread: quitting the CLIs takes seconds.
 fn fire(action: Action) {
     if dry() && action != Action::Log {
-        let relaunch = (action == Action::Restart).then(|| format!("; RunOnce would be: {:?}", relaunch_command())).unwrap_or_default();
+        let relaunch = if action == Action::Restart { format!("; RunOnce would be: {:?}", relaunch_command()) } else { Default::default() };
         crate::log::warn("power", &format!("dry run: would {}; the sessions and the PC are left alone{relaunch}", action.as_str()));
         notify("Luna: dry run", &format!("Would {} the PC now. Nothing was done.", verb(action)));
         if matches!(action, Action::Sleep | Action::Hibernate) {
@@ -766,10 +766,12 @@ mod os {
             // request does, hence leaked.
             let reason: &'static mut Vec<u16> =
                 Box::leak(Box::new("Luna: sessions are working".encode_utf16().chain(std::iter::once(0)).collect()));
-            let mut ctx = REASON_CONTEXT::default();
-            // POWER_REQUEST_CONTEXT_VERSION
-            ctx.Version = 0;
-            ctx.Flags = POWER_REQUEST_CONTEXT_SIMPLE_STRING;
+            let mut ctx = REASON_CONTEXT {
+                // POWER_REQUEST_CONTEXT_VERSION
+                Version: 0,
+                Flags: POWER_REQUEST_CONTEXT_SIMPLE_STRING,
+                ..Default::default()
+            };
             ctx.Reason.SimpleReasonString = windows::core::PWSTR(reason.as_mut_ptr());
             // SAFETY: the context and its string outlive the request.
             match unsafe { PowerCreateRequest(&ctx) } {
