@@ -448,6 +448,53 @@ pub mod acl {
         }
     }
 
+    /// A new file at `path` (`CREATE_NEW`), open for writing, made with a
+    /// protected DACL for this user, SYSTEM and Administrators: set as it is
+    /// created, never a moment open to what the folder hands down. A rename
+    /// in the same volume keeps it.
+    pub fn create_new(path: &Path) -> io::Result<std::fs::File> {
+        use std::os::windows::io::{FromRawHandle, RawHandle};
+        use windows::Win32::Foundation::GENERIC_WRITE;
+        use windows::Win32::Security::SECURITY_ATTRIBUTES;
+        use windows::Win32::Storage::FileSystem::{
+            CreateFileW, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        };
+        let user = user_sid()?;
+        // A file has nothing to hand down: the folder's ACEs without OICI.
+        let sddl: Vec<u16> = format!("D:P(A;;FA;;;{user})(A;;FA;;;SY)(A;;FA;;;BA)").encode_utf16().chain(Some(0)).collect();
+        let name = wide(path.as_os_str());
+        let mut sd = PSECURITY_DESCRIPTOR::default();
+        // SAFETY: the descriptor is made from the string and lives through
+        // the call that reads it, then is freed once; the handle CreateFileW
+        // returns is handed to the File, which closes it.
+        unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(PCWSTR(sddl.as_ptr()), SDDL_REVISION_1, &mut sd, None)?;
+            let attrs = SECURITY_ATTRIBUTES {
+                nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+                lpSecurityDescriptor: sd.0,
+                bInheritHandle: BOOL(0),
+            };
+            // The share modes std opens with, so others' reads go on as before.
+            let made = CreateFileW(
+                PCWSTR(name.as_ptr()),
+                GENERIC_WRITE.0,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                Some(&attrs),
+                CREATE_NEW,
+                FILE_ATTRIBUTE_NORMAL,
+                None,
+            );
+            let _ = LocalFree(Some(HLOCAL(sd.0)));
+            // As the Win32 error it wraps, so its kind is told (AlreadyExists,
+            // NotFound) as std's own open tells it; `open_private` goes by it.
+            let made = made.map_err(|e| match e.code().0 as u32 {
+                h if h & 0xFFFF_0000 == 0x8007_0000 => io::Error::from_raw_os_error((h & 0xFFFF) as i32),
+                _ => io::Error::from(e),
+            })?;
+            Ok(std::fs::File::from_raw_handle(made.0 as RawHandle))
+        }
+    }
+
     /// `path`'s DACL as SDDL.
     pub fn dacl_sddl(path: &Path) -> io::Result<String> {
         let name = wide(path.as_os_str());
@@ -490,16 +537,47 @@ pub fn claim_private(dir: &Path, uid: u32) -> Result<(), String> {
     Ok(())
 }
 
-/// A new file at `path`, owner-only on Unix (0600) from the moment it exists:
-/// no window in which it is readable at the umask's mode. Fails if `path` is
-/// there already, so a file planted ahead of it is never written into.
+/// A new file at `path`, private from the moment it exists: owner-only on
+/// Unix (0600), whatever the umask; on Windows made with a protected DACL of
+/// this user's, SYSTEM's and Administrators' (`acl::create_new`), whatever
+/// the folder would have it inherit. A data dir that is not Luna's alone has
+/// only Luna's own things made private, and only those there as it starts
+/// (paths.rs `scope`): a file made later in the open folder would take its
+/// ACL. Fails if `path` is there already, so a file planted ahead of it is
+/// never written into.
 pub fn create_private(path: &Path) -> io::Result<std::fs::File> {
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
+    #[cfg(windows)]
     {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
+        acl::create_new(path)
+    }
+    #[cfg(not(windows))]
+    {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        options.open(path)
+    }
+}
+
+/// `path` opened with `options`, made first through `create_private` where
+/// it is not there: for a file appended to or held as a lock, which is
+/// written in place rather than replaced. One there already keeps what it
+/// has; the data dir's pass at start sees to Luna's own (paths.rs).
+/// `options` must not create: what is not there is made here.
+pub fn open_private(path: &Path, options: &std::fs::OpenOptions) -> io::Result<std::fs::File> {
+    match options.open(path) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        opened => return opened,
+    }
+    match create_private(path) {
+        Ok(_) => {}
+        // Another process (or thread) made it in between: as good.
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(e),
     }
     options.open(path)
 }
@@ -522,7 +600,8 @@ pub fn restrict(file: &std::fs::File) -> io::Result<()> {
 
 /// Writes `bytes` to `path` through `create_private` and a rename in the
 /// same folder: a reader sees the old file or the new one whole, and the new
-/// one is never readable by anyone else on Unix. The temporary file's name is
+/// one is never readable by anyone else. Luna's state files in its data dir
+/// are written so, or through `open_private`. The temporary file's name is
 /// random, so nobody can have one ready for it.
 pub fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -576,13 +655,65 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), b"two");
         let names: Vec<_> = std::fs::read_dir(dir.join("sub")).unwrap().flatten().map(|e| e.file_name()).collect();
         assert_eq!(names, [std::ffi::OsString::from("core.json")]);
-        assert!(create_private(&path).is_err(), "never into a file already there");
+        // Never into a file already there, and said so (`open_private` goes by it).
+        assert_eq!(create_private(&path).unwrap_err().kind(), io::ErrorKind::AlreadyExists);
         // A temp name someone else holds: refused, and their file left alone.
         let theirs = dir.join("sub").join("core.json.planted.tmp");
         std::fs::write(&theirs, "theirs").unwrap();
         assert!(write_through(&path, &theirs, b"three").is_err());
         assert_eq!(std::fs::read(&theirs).unwrap(), b"theirs");
         assert_eq!(std::fs::read(&path).unwrap(), b"two");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A data dir that is not Luna's alone stays open to others, only what of
+    /// Luna's is there as it starts made private (paths.rs `scope`): what it
+    /// writes there later is private all the same, replaced or appended to.
+    #[test]
+    fn a_file_made_later_in_an_open_data_dir_is_private_all_the_same() {
+        use std::io::Write;
+        #[cfg(windows)]
+        let dir = crate::paths::data_dir().join(format!("open-test-{}", std::process::id()));
+        #[cfg(not(windows))]
+        let dir = scratch("open");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        #[cfg(windows)]
+        {
+            // As a shared tools folder on a second drive has it.
+            let out = std::process::Command::new("icacls").arg(&dir).args(["/grant", "*S-1-5-11:(OI)(CI)M"]).output().unwrap();
+            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+            let plain = dir.join("notes.txt");
+            std::fs::write(&plain, "theirs").unwrap();
+            assert!(!acl::is_private(&plain).unwrap(), "the folder is open to what is made plainly");
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777)).unwrap();
+        }
+        let helpers = dir.join("helpers.json");
+        write_private(&helpers, b"[]").unwrap();
+        write_private(&helpers, b"[{}]").unwrap();
+        let log = dir.join("agents.jsonl");
+        for line in ["one", "two"] {
+            writeln!(open_private(&log, std::fs::OpenOptions::new().append(true)).unwrap(), "{line}").unwrap();
+        }
+        assert_eq!(std::fs::read_to_string(&log).unwrap(), "one\ntwo\n");
+        let lock = dir.join("settings.json.lock");
+        open_private(&lock, std::fs::OpenOptions::new().write(true)).unwrap().lock().unwrap();
+        for p in [&helpers, &log, &lock] {
+            #[cfg(windows)]
+            {
+                assert!(acl::is_private(p).unwrap(), "{}: {}", p.display(), acl::dacl_sddl(p).unwrap());
+                assert_eq!(acl::verify(p).unwrap(), Vec::<String>::new());
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                assert_eq!(std::fs::metadata(p).unwrap().permissions().mode() & 0o777, 0o600, "{}", p.display());
+            }
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
