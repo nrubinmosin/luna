@@ -5,7 +5,8 @@
 
 use crate::agents::ask::Ask;
 use crate::agents::registry::{is_descendant, reg, DEV_CALLER};
-use crate::agents::{asked, SpawnParams, CLAUDE_MODES};
+use crate::agents::spawn::SpawnParams;
+use crate::agents::{asked, CLAUDE_MODES};
 use crate::provider::Provider;
 
 /// An agent's name as Claude Code takes one, a plugin's `plugin:name` too, and
@@ -398,7 +399,7 @@ mod tests {
     use super::*;
     use crate::agents::answer::answer_reach;
     use crate::agents::ask::{Ask, AskQuestion};
-    use crate::agents::SpawnParams;
+    use crate::agents::spawn::SpawnParams;
 
     fn role(read_only: bool, f: impl FnOnce(&mut SpawnParams)) -> SpawnParams {
         let mut p = SpawnParams { read_only: Some(read_only), ..Default::default() };

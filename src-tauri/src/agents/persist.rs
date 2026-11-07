@@ -8,8 +8,8 @@ use crate::agents::read::{transcript_path, transcripts};
 use crate::agents::registry::{account_name, issue_token, label, reg, register, Known, Registry, DEV_CALLER};
 use crate::agents::resume::{said_to, ChatResume, WentIn};
 use crate::agents::said::messages_at;
+use crate::agents::spawn::SpawnTaken;
 use crate::agents::teardown::Auto;
-use crate::agents::SpawnTaken;
 use crate::provider::Provider;
 use crate::throttle::now_ms;
 use serde::{Deserialize, Serialize};
@@ -525,9 +525,10 @@ mod tests {
     use crate::agents::owed::{last_shown, owe_from};
     use crate::agents::registry::{gone_from_the_window, parent_of, reg, register};
     use crate::agents::said::{first_words, TASK_CHARS};
+    use crate::agents::spawn::{spawn_is, SpawnParams, SpawnTaken, SpawnUnderWay};
     use crate::agents::teardown::forget;
     use crate::agents::tests::{cut_short_chat, spawn_taken, spawns_to_myself, take_up};
-    use crate::agents::{notice_line, owed_stands, spawn_is, Settled, SpawnParams, SpawnTaken, SpawnUnderWay, CALLER_RETURN_MS};
+    use crate::agents::{notice_line, owed_stands, Settled, CALLER_RETURN_MS};
 
     /// What a helper was spawned on is kept with it, not with `agents.jsonl`,
     /// which is cut with the helper still there.
