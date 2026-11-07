@@ -58,7 +58,7 @@ flowchart LR
 | Source code and git state of the user's projects | project folders, worktrees | integrity, confidentiality |
 | Prompts, transcripts, agent history | CLI transcript dirs; `agents.jsonl` (`agentlog.rs`) | may hold pasted secrets |
 | Integrity of the Luna binary | install dir, updater | code execution as the user |
-| Availability of the PC and sessions | `power.rs`, `agents.rs` kill/delete | lost work, forced shutdown |
+| Availability of the PC and sessions | `power/`, `agents.rs` kill/delete | lost work, forced shutdown |
 
 ## 3. Actors
 
@@ -172,7 +172,7 @@ caller has at most 8 descendants (`agents.rs:35`).
 | `luna_answer` with `allow`, `keys`, or on a CLI's own list | own descendants; `allow` only where the caller would run the tool unasked and never from read-only or asking modes; `keys` and CLI lists only from full access (`agents.rs:4943`, call sites `agents.rs:5112-5149`) | `answer_reach` | yes |
 | `luna_read`, `luna_wait` | any session but itself | `authorize_view` (`agents.rs:2071`) | yes |
 | `luna_spawn` | a new helper in any account not on the denylist `agent_blocked_accounts` (empty by default, `agents.rs:2191`), in any folder except Luna's data dir and what holds it (`agents.rs:3120`, `agents.rs:3195`), at no more privilege than the caller (`agents.rs:3042`, `agents.rs:3257`) | `cap`, `reaches_luna`, spawn cap | yes |
-| `luna_power` | the whole PC (shutdown, restart, sleep; or disarm the user's) | tools only (`power.rs:709`) | no authorization test (R4) |
+| `luna_power` | the whole PC (shutdown, restart, sleep; or disarm the user's) | tools only (`power/commands.rs:90`) | no authorization test (R4) |
 | `luna_sessions`, `luna_list`, `luna_notify`, `luna_guide` | read-only, or notify the user | tools only | yes |
 
 ## 6. Limits of the least-privilege layer
@@ -272,7 +272,7 @@ Residuals:
   confined by its CLI sandbox, reaching `core.json` is F3's residual, not
   accepted.
 - **R4. Agents may arm a PC shutdown** (`luna_power`), bounded by the quiet
-  window and drain logic in `power.rs`. An orchestration feature.
+  window and drain logic in `power/`. An orchestration feature.
 - **R5. Agent history keeps prompt prefixes and last answers in plain text**
   (`agentlog.rs:17-19`: 300 and 3,000 characters) in the data dir; the same
   exposure as the CLIs' own transcripts.

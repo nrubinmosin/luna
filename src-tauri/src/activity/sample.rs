@@ -1,6 +1,6 @@
 //! Each sample: what the disk says of a session's turn — Claude Code's registry,
 //! Codex's rollout — and what its processes do, folded with the hook's word and
-//! the clock into one verdict per session, and the summary power.rs follows.
+//! the clock into one verdict per session, and the summary power/ follows.
 
 use super::*;
 
@@ -268,7 +268,7 @@ pub fn sample(probes: Vec<crate::pty::ActivityProbe>, helpers: Vec<SessionActivi
 
             // A turn "ends" for an agent when the model stops, not when its
             // background jobs do: `wait` wants the reply, and the children are
-            // the machine's concern (power.rs), not the caller's.
+            // the machine's concern (power/), not the caller's.
             let model_busy = t.turn == Turn::Busy;
             // Codex: the rollout's count is the truth.
             count_on(t, p.spawned_at_ms, disk_turns);
@@ -330,7 +330,7 @@ pub fn sample(probes: Vec<crate::pty::ActivityProbe>, helpers: Vec<SessionActivi
     st.summary.clone()
 }
 
-/// The sampler thread: probes, samples, hands the board to power.rs.
+/// The sampler thread: probes, samples, hands the board to power/.
 pub fn start() {
     std::thread::Builder::new()
         .name("luna-activity".into())

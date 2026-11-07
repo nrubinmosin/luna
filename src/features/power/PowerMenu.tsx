@@ -6,7 +6,7 @@ import { useChats, allChats } from '../chats/chats.store';
 import { usePower } from './power.store';
 import { doing } from './LiveSessions';
 
-// Refused elsewhere (power.rs). The demo's screenshots are taken on Linux.
+// Refused elsewhere (power/admission.rs). The demo's screenshots are taken on Linux.
 const canRestart = navigator.userAgent.includes('Windows') || import.meta.env.DEV;
 
 const ACTIONS: Array<{ value: PowerAction; label: string; note: string }> = [

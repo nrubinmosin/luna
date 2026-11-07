@@ -42,7 +42,7 @@ export interface Notice {
   chatId: string | null;
 }
 
-/** A desktop notification the Rust side wants shown (power.rs, agents.rs). */
+/** A desktop notification the Rust side wants shown (power/machine.rs, agents.rs). */
 export const onNotify = (cb: (n: Notice) => void): Promise<UnlistenFn> =>
   tauriAvailable ? listen<Notice>('ui://notify', e => cb(e.payload)) : Promise.resolve(() => {});
 

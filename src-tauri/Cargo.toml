@@ -54,7 +54,7 @@ vt100 = "0.16"
 # Subclassing the windows — the Alt menu and WM_ENDSESSION (src/sysmenu.rs);
 # Job Objects and process counters for what a session has running under it
 # (src/procs.rs); power requests and suspend for keep-awake and
-# shutdown-when-done (src/power.rs); the exit watcher's wait, exit code and
+# shutdown-when-done (src/power/machine.rs); the exit watcher's wait, exit code and
 # boot time (src/lifecycle.rs); the DACLs on the folders holding secrets
 # and on the private files made with one (src/secret.rs). Pinned to the version tauri already
 # resolves, so this adds features to a crate in the tree rather than a second

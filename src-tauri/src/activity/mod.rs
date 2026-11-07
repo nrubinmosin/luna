@@ -13,7 +13,7 @@
 //! - the screen: pty output in the last half minute.
 //!
 //! The sampler runs every few seconds on its own thread and hands the summary
-//! to power.rs. The UI's own 4s poll (useSessionWatch) keeps drawing the
+//! to power/. The UI's own 4s poll (useSessionWatch) keeps drawing the
 //! chat rows; this tracker is what the machine's power state follows.
 //!
 //! This module holds what the sampler keeps per session, the counts of turns

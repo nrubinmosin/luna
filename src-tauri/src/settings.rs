@@ -12,7 +12,7 @@ use std::sync::{Mutex, OnceLock};
 pub struct Settings {
     /// Absolute path; None means the default (`Documents/luna-accounts`).
     pub accounts_root: Option<String>,
-    /// Hold the machine awake while any session is busy (power.rs).
+    /// Hold the machine awake while any session is busy (power/).
     pub keep_awake: bool,
     /// How long everything has to be quiet before an armed power-off counts down.
     pub quiet_window_s: u64,

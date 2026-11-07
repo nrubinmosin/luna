@@ -183,8 +183,11 @@ src-tauri/src/
                 disk, the processes, the verdict and the sampler thread
   asking.rs     a user's chat whose turn ended on the marker setting → `waiting` in
                 session_meta until the next turn, or until cleared by hand (dismiss_waiting)
-  power.rs      keep-awake (PowerSetRequest) and "shut down when everything is done":
-                arming, quiet window, countdown, action; commands and the power://state event
+  power/        keep-awake (PowerSetRequest) and "shut down when everything is done":
+                arming, quiet window, countdown, action; commands and the power://state event.
+                mod.rs the rule's state; rule.rs each tick; machine.rs firing, the
+                notifications and each OS's calls; admission.rs what a draining rule lets
+                in; commands.rs the commands and luna_power's; testkit.rs its tests' boards
   claude/
     launch.rs   a session's arguments and environment (chat_args), its settings file's hooks
                 and guard, the helper's system prompt line; pure, nothing written
@@ -471,7 +474,7 @@ src-tauri/src/
   stays idle. `luna_list`'s `active` is work in the last 10 min. A chat's are measured the same way (activity/mod.rs `Track::left`, the processes
   `procs::judge` calls young): a forgotten `tail -F` under a chat held the machine just the same, and
   `judge` itself counts a child's I/O only past that rate, as a polling one moves a few bytes every
-  sample. While the hold stands, power.rs says every hour what keeps it (`HOLD_LOG_EVERY_MS`). Its job alone
+  sample. While the hold stands, power/rule.rs says every hour what keeps it (`HOLD_LOG_EVERY_MS`). Its job alone
   is tied to the core (`procs::tie`, `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`): a chat's CLI goes with its
   terminal when a core dies, a helper's has none, and would run on unowned beside the turn the next
   core starts on that conversation. This is the leftover rule, not an exception to it: a core that
@@ -556,7 +559,7 @@ src-tauri/src/
   those words and the time they were said, from the same read of the transcript or rollout, are the ones it
   was shown on, so the next turn ending on the marker shows again, the same words included. A CLI's own prompt is never `marked` and cannot be cleared. The activity tracker keeps
   the turn idle, so power counts it as done.
-- **Power follows busyness** (`power.rs`). Keep-awake — `PowerSetRequest(SystemRequired)`
+- **Power follows busyness** (`power/`). Keep-awake — `PowerSetRequest(SystemRequired)`
   with a reason visible in `powercfg /requests`, while busy > 0, released after 60 s of quiet;
   `waiting` does not keep the machine up (nobody is answering), but blocks shutdown (the work is not
   done). Stalled (limit and other API errors) does not block: until the reset nothing

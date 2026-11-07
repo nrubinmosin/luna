@@ -7,7 +7,7 @@
 //! words of that turn, and the next turn that ends on the marker shows again.
 //!
 //! Only for the user's own chats: a helper asks its parent, who has its own
-//! ways of hearing it (agents.rs). And only for the eye: for power.rs the turn
+//! ways of hearing it (agents.rs). And only for the eye: for power/ the turn
 //! is over, and an armed shutdown goes ahead — a question nobody is there to
 //! answer must not keep the PC on all night.
 
