@@ -464,15 +464,20 @@ fn ask_of(args: &Value, blocking: bool) -> Option<crate::agents::Ask> {
     (!questions.is_empty()).then(|| crate::agents::Ask::question(questions, blocking))
 }
 
+/// Whether a rollout's cwd is this folder, or a worktree of it: under `--worktree`
+/// the rollout names the checkout Codex made, which points back at the folder the
+/// session was started in. That repository is in git's spelling (long names) and
+/// the folder may be in 8.3 short ones, so the two are compared by place.
+fn in_folder(cwd: &str, folder: &str) -> bool {
+    use crate::worktree::{codex_shaped, project_of, same_place};
+    norm_path(cwd) == norm_path(folder) || (codex_shaped(cwd) && project_of(cwd).is_some_and(|p| same_place(&p, folder)))
+}
+
 /// The rollouts a terminal session started at or after `since_ms` in this folder, or
 /// in a worktree of it, whichever chat's they are.
 pub fn rollouts_since(account_path: &str, folder: &str, since_ms: u64) -> Vec<PathBuf> {
     let Some(since) = Local.timestamp_millis_opt(since_ms as i64).single().map(|t| t.naive_local()) else { return Vec::new() };
-    let want = norm_path(folder);
-    let ours = |cwd: &str| {
-        norm_path(cwd) == want
-            || (crate::worktree::codex_shaped(cwd) && crate::worktree::project_of(cwd).is_some_and(|p| norm_path(&p) == want))
-    };
+    let ours = |cwd: &str| in_folder(cwd, folder);
     // Its name has it to the second, and the clocks may differ by a few.
     let not_before = since - chrono::Duration::seconds(5);
     rollouts_on(account_path, days_back(Local::now().date_naive(), 2))
@@ -582,13 +587,7 @@ fn rollout_on(live: &Live, thread: Option<String>) -> Option<PathBuf> {
     let not_before = spawned - chrono::Duration::seconds(5);
     let taken: Vec<PathBuf> =
         claims().lock().map(|m| m.iter().filter(|(k, _)| *k != live.chat_id).map(|(_, v)| v.clone()).collect()).unwrap_or_default();
-    let want = norm_path(live.cwd);
-    // Under `--worktree` the rollout names the checkout Codex made, which
-    // points back at the folder the session was started in.
-    let ours = |cwd: &str| {
-        norm_path(cwd) == want
-            || (crate::worktree::codex_shaped(cwd) && crate::worktree::project_of(cwd).is_some_and(|p| norm_path(&p) == want))
-    };
+    let ours = |cwd: &str| in_folder(cwd, live.cwd);
     // Only what a terminal session writes can be this one's. A background
     // helper's `codex exec` says `exec`, and the subagents either kind starts
     // say `{"subagent":…}`, all in this folder and on this account, and any
@@ -984,6 +983,39 @@ pub fn latest_rate_limits(account_path: &str) -> Option<(Value, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_rollout_in_a_worktree_codex_made_is_of_the_folder_however_that_is_spelled() {
+        let root = std::env::temp_dir().join(format!("luna-rollout-folder-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        // Short where the volume keeps 8.3 names: the worktree's `.git` file names
+        // the repository in long ones.
+        let root = crate::worktree::short_spelling(&root);
+        let (repo, other) = (root.join("repo"), root.join("other"));
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        let wt = root.join("account").join("worktrees").join("0a1b").join("repo");
+        std::fs::create_dir_all(wt.parent().unwrap()).unwrap();
+        let s = |p: &Path| p.to_string_lossy().into_owned();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(["-c", "user.email=t@t", "-c", "user.name=t"])
+                .args(args)
+                .output()
+                .is_ok_and(|o| o.status.success())
+        };
+        if !git(&["init", "-q"]) || !git(&["commit", "-q", "--allow-empty", "-m", "i"]) {
+            return;
+        }
+        assert!(git(&["worktree", "add", "-q", "--detach", &s(&wt)]));
+        assert!(in_folder(&s(&wt), &s(&repo)), "Codex's worktree of it");
+        assert!(in_folder(&s(&repo), &s(&repo)));
+        assert!(!in_folder(&s(&wt), &s(&other)), "another folder's");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn a_rollout_names_its_model_and_context() {
