@@ -716,6 +716,11 @@ export const agentBlockedAccounts = () => call<string[]>('agent_blocked_accounts
 export const setAgentAccount = (provider: Provider, name: string, allowed: boolean) =>
   call<string[]>('set_agent_account', { provider, name, allowed }, []);
 
+/** Whether helpers may run with more privilege than the session spawning them
+ *  (Settings; agents.rs `cap`). */
+export const helpersAboveCaller = () => call<boolean>('helpers_above_caller', {}, false);
+export const setHelpersAboveCaller = (on: boolean) => call<boolean>('set_helpers_above_caller', { on }, on);
+
 /** The page is alive: watchdog.rs rebuilds a window whose page stops saying so. */
 export const uiHeartbeat = () => call<void>('ui_heartbeat');
 
