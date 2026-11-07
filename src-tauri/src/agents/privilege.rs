@@ -396,8 +396,9 @@ pub(super) fn plain_text(text: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agents::answer::answer_reach;
     use crate::agents::ask::{Ask, AskQuestion};
-    use crate::agents::{answer_reach, SpawnParams};
+    use crate::agents::SpawnParams;
 
     fn role(read_only: bool, f: impl FnOnce(&mut SpawnParams)) -> SpawnParams {
         let mut p = SpawnParams { read_only: Some(read_only), ..Default::default() };

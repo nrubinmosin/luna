@@ -2,6 +2,7 @@
 //! (`TypingInto`), a person's draft put aside and back, and text held while
 //! someone types (`hold`, `deliver_held`).
 
+use crate::agents::answer::{answer_reach, press, Key, INTERRUPT_SETTLE};
 use crate::agents::ask::{ask_of, live, state_of};
 use crate::agents::lost::still_all_lost;
 use crate::agents::owed::{owe_from, seen, Owed};
@@ -9,7 +10,7 @@ use crate::agents::privilege::{answerer, command_reach_now, plain_text};
 use crate::agents::read::transcript_end;
 use crate::agents::registry::{authorize_send, chat_name, label, reg, Registry, DEV_CALLER};
 use crate::agents::resume::{call_off_resume, mark_going_in, reconcile_held, resume_chats, resume_pending, unmark_going_in};
-use crate::agents::{answer_reach, core_up_ms, press, returning, Key, INTERRUPT_SETTLE, NOTIFY_EVERY};
+use crate::agents::{core_up_ms, returning, NOTIFY_EVERY};
 use crate::provider::Provider;
 use crate::throttle::now_ms;
 use serde::{Deserialize, Serialize};
