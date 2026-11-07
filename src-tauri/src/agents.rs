@@ -5098,8 +5098,16 @@ pub fn answer(
     for t in answers.iter().map(String::as_str).chain(note) {
         plain_text(t)?;
     }
-    if !crate::background::has(id) {
+    let background = crate::background::has(id);
+    if !background {
         typed_answers(answers, note)?;
+        // A refusal's note is typed after the Esc that closes the dialog, into
+        // the composer, and Enter sends it; an answer of one's own words lands
+        // there too if its dialog has gone by the time it is typed. Either is
+        // held to what may be typed there (`command_reach`).
+        for t in answers.iter().map(String::as_str).chain(note) {
+            command_reach_now(caller, id, t)?;
+        }
     }
     let (own, approver) = answerer(caller, id);
     answer_reach(own, approver, known.provider, None, allow, keys)?;
@@ -5120,7 +5128,12 @@ pub fn answer(
     };
     let baseline = crate::activity::turn_state(id).map(|t| t.turns_ended).unwrap_or(0);
     let ask = ask_of(id);
-    answer_reach(own, approver, known.provider, ask.as_ref(), allow, keys)?;
+    // A background helper's answer is checked against the very ask it lands
+    // on, as it is recorded (`background::answer`): the first held, read here,
+    // need not be the one an askId names.
+    if !background {
+        answer_reach(own, approver, known.provider, ask.as_ref(), allow, keys)?;
+    }
     if draining {
         drain_lets_answer(id, ask.as_ref(), ask_id, answers, note, keys)?;
     }
@@ -5133,7 +5146,9 @@ pub fn answer(
                 "a background helper has no terminal: answer with answers or allow, or stop its turn with luna_send interrupt: true".into(),
             );
         }
-        crate::background::answer(id, ask_id, answers, allow, note)?;
+        // Checked against the ask it lands on, as it is recorded.
+        let may = |a: &Ask| answer_reach(own, approver, known.provider, Some(a), allow, keys);
+        crate::background::answer(id, ask_id, answers, allow, note, may)?;
     } else {
         // A person's keys between Luna's would land in the dialog or the answer.
         let hold = pty.hold_keys(id).ok_or("no such session")?;
@@ -12944,6 +12959,33 @@ mod tests {
         for bad in ["answer\r/permissions :workspace", "a\nb", "a\tb"] {
             assert!(typed_answers(&one(bad), None).unwrap_err().contains("one line"), "{bad:?}");
             assert!(typed_answers(&one("ok"), Some(bad)).is_err(), "a note too: {bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_refusals_note_typed_into_a_terminal_is_held_to_what_may_be_typed_there() {
+        let mode = |m: &str| serde_json::json!({ "permissionMode": m });
+        register("rn-asks", Provider::Claude, "C:/p", "C:/acc/one", None, true, mode("default"));
+        register("rn-full", Provider::Claude, "C:/p", "C:/acc/one", None, true, mode("bypassPermissions"));
+        register("rn-kid", Provider::Claude, "C:/p", "C:/acc/one", Some("rn-asks"), false, mode("default"));
+        register("rn-kid2", Provider::Codex, "C:/p", "C:/acc/one", Some("rn-full"), false, mode("default"));
+        let refuse = |caller: &str, id: &str, note: &str| {
+            answer(caller, id, None, &[], Some(false), Some(note), None, false).err().unwrap_or_default()
+        };
+        // After the Esc, the note is a prompt in the composer: a command there
+        // is refused before any key goes in.
+        for note in ["! rm -rf build", "  /permissions :workspace"] {
+            assert!(refuse("rn-asks", "rn-kid", note).contains("not a prompt"), "{note:?}");
+        }
+        // So is an answer in one's own words.
+        let e = answer("rn-asks", "rn-kid", None, &["!whoami".to_string()], None, None, None, false).err().unwrap();
+        assert!(e.contains("not a prompt"), "{e}");
+        // Plain words pass that check (and stop at the session not running).
+        assert!(refuse("rn-asks", "rn-kid", "not that file").contains("is not running"));
+        // A caller at full access, into its own helper.
+        assert!(refuse("rn-full", "rn-kid2", "! make test").contains("is not running"));
+        for id in ["rn-kid", "rn-kid2", "rn-asks", "rn-full"] {
+            forget(id);
         }
     }
 }

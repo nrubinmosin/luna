@@ -212,11 +212,16 @@ struct Run {
     /// A `result` of this process's said it failed: a later one that succeeds
     /// clears what that one left in `Entry::error`.
     result_failed: bool,
+    /// Which claim this is, of all this core has made: a batch reserved on it
+    /// (`Reservation`) tells the claim it holds from one made after it.
+    claim: u64,
 }
 
 impl Run {
     fn claimed(pid: Option<u32>, started_ms: u64) -> Run {
-        Run { pid, started_ms, stopped: false, feed: None, line: None, result_failed: false }
+        static CLAIMS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let claim = CLAIMS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Run { pid, started_ms, stopped: false, feed: None, line: None, result_failed: false, claim }
     }
 }
 
@@ -313,10 +318,12 @@ fn stamp(batch: &mut [Queued]) {
 
 /// A batch claimed for the next turn, its senders still to be asked
 /// (`settle_batch`): what it holds, by id, and the text in it a CLI would read
-/// as a command (`/`, `!`), by (id, sender, text). The claim, a run with no
-/// process yet, and these ids in `in_flight` are what keep it: whatever moves
-/// either meanwhile has taken the batch over.
+/// as a command (`/`, `!`), by (id, sender, text), and the claim it is on.
+/// A claim made since (the helper deleted and made again, a turn begun) has
+/// taken the batch over; with its own claim still there and the batch moved
+/// by a stop, the claim is the reservation's to give back.
 pub(crate) struct Reservation {
+    claim: u64,
     ids: Vec<String>,
     screen: Vec<(String, String, String)>,
     /// A `resume`'s batch, which runs as `resume_text` has it even with none
@@ -326,6 +333,7 @@ pub(crate) struct Reservation {
 }
 
 fn reservation_of(e: &Entry, resume: Option<bool>) -> Reservation {
+    let claim = e.run.as_ref().map_or(0, |run| run.claim);
     let ids = e.in_flight.iter().map(|q| q.id.clone()).collect();
     let screen = e
         .in_flight
@@ -333,7 +341,7 @@ fn reservation_of(e: &Entry, resume: Option<bool>) -> Reservation {
         .filter(|q| crate::agents::command_prefix(&q.text).is_some())
         .filter_map(|q| Some((q.id.clone(), q.from.clone()?, q.text.clone())))
         .collect();
-    Reservation { ids, screen, resume }
+    Reservation { claim, ids, screen, resume }
 }
 
 /// What is queued becomes the batch of the turn about to start, on a run the
@@ -365,6 +373,7 @@ fn settle_batch(id: &str, mut res: Reservation) -> Option<Batch> {
         Run(Batch),
         Again(Reservation),
         Idle,
+        Released,
         Lost,
     }
     loop {
@@ -377,8 +386,21 @@ fn settle_batch(id: &str, mut res: Reservation) -> Option<Batch> {
             .collect();
         let step = {
             let mut r = lock();
+            let ours = |e: &Entry| e.run.as_ref().is_some_and(|run| run.claim == res.claim && run.pid.is_none());
+            let stopped =
+                |e: &Entry| e.run.as_ref().is_some_and(|run| run.stopped) || !e.in_flight.iter().map(|q| &q.id).eq(res.ids.iter());
             match r.entries.get_mut(id) {
-                Some(e) if e.run.as_ref().is_some_and(|run| run.pid.is_none()) && e.in_flight.iter().map(|q| &q.id).eq(res.ids.iter()) => {
+                // A stop came while its senders were asked: the batch went with
+                // it, and the claim, which no process will take up now, goes
+                // back, the turn it was for counted as ended (as `run_turn`
+                // counts one that could not start).
+                Some(e) if ours(e) && stopped(e) => {
+                    e.run = None;
+                    e.turns_ended += 1;
+                    note(e, "stopped before its turn began");
+                    Step::Released
+                }
+                Some(e) if ours(e) => {
                     e.in_flight.retain(|q| !refused.iter().any(|(qid, _, _)| *qid == q.id));
                     stamp(&mut e.in_flight);
                     let carried = e.in_flight.len();
@@ -395,8 +417,8 @@ fn settle_batch(id: &str, mut res: Reservation) -> Option<Batch> {
                 _ => Step::Lost,
             }
         };
-        // Taken over meanwhile: nothing of it was dropped here.
-        if !matches!(step, Step::Lost) {
+        // Taken over or stopped meanwhile: nothing of it was dropped here.
+        if !matches!(step, Step::Lost | Step::Released) {
             for (_, from, why) in &refused {
                 crate::log::warn("background", &format!("{}: dropped text queued by {from}: {why}", crate::agents::label(id)));
             }
@@ -406,7 +428,7 @@ fn settle_batch(id: &str, mut res: Reservation) -> Option<Batch> {
         match step {
             Step::Run(batch) => return Some(batch),
             Step::Again(next) => res = next,
-            Step::Idle => {
+            Step::Idle | Step::Released => {
                 reg().1.notify_all();
                 changed();
                 return None;
@@ -2202,7 +2224,18 @@ pub fn permission(id: &str, args: &Value) -> Value {
 /// longer open is refused. Without it the answer goes through only when a
 /// single ask is held, as it did when there could be only one: with several,
 /// nothing says it was written on the first.
-pub fn answer(id: &str, ask_id: Option<&str>, answers: &[String], allow: Option<bool>, note_text: Option<&str>) -> Result<(), String> {
+///
+/// `may`: whether the caller may give this answer to the ask it lands on
+/// (agents.rs `answer_reach`), asked of that very ask under the lock it is
+/// recorded under, so that one looked at before is never the one let through.
+pub fn answer(
+    id: &str,
+    ask_id: Option<&str>,
+    answers: &[String],
+    allow: Option<bool>,
+    note_text: Option<&str>,
+    may: impl FnOnce(&Ask) -> Result<(), String>,
+) -> Result<(), String> {
     let mut r = lock();
     let given = ask_id.is_some_and(|want| {
         want.strip_prefix('a').and_then(|n| n.parse::<u64>().ok()).and_then(|n| r.asked.get(&n)).is_some_and(|to| to == id)
@@ -2229,6 +2262,7 @@ pub fn answer(id: &str, ask_id: Option<&str>, answers: &[String], allow: Option<
             first
         }
     };
+    may(&h.ask)?;
     let reply = build_answer(&h.ask, &h.input, answers, allow, note_text)?;
     h.answer = Some(reply);
     drop(r);
@@ -3549,7 +3583,7 @@ mod tests {
         assert_eq!(turn_state("two-asks").unwrap().turn, crate::activity::Turn::Waiting);
         assert!(!turn_holds(&turn_state("two-asks").unwrap()), "held: waiting, keeping nothing awake");
         let stale = asked.id.clone().unwrap();
-        answer("two-asks", Some(&stale), &[], Some(true), None).unwrap();
+        answer("two-asks", Some(&stale), &[], Some(true), None, |_| Ok(())).unwrap();
         reg().1.notify_all();
         assert_eq!(first.join().unwrap()["behavior"], "allow", "the second did not cost it its answer");
         let next = super::ask("two-asks").unwrap();
@@ -3557,18 +3591,18 @@ mod tests {
         assert_ne!(next.id, asked.id);
         assert_eq!(turn_state("two-asks").unwrap().turn, crate::activity::Turn::Waiting, "still held on that one");
         // A second responder who also saw the first, its answer late.
-        let late = answer("two-asks", Some(&stale), &[], Some(true), None).unwrap_err();
+        let late = answer("two-asks", Some(&stale), &[], Some(true), None, |_| Ok(())).unwrap_err();
         assert!(late.contains("no longer open"), "{late}");
         // An id it never had: none it was given, or another helper's.
         for never in ["a0", "nonsense"] {
-            let e = answer("two-asks", Some(never), &[], Some(true), None).unwrap_err();
+            let e = answer("two-asks", Some(never), &[], Some(true), None, |_| Ok(())).unwrap_err();
             assert!(e.contains("unknown") && !e.contains("no longer open"), "{e}");
         }
         lock().asked.insert(u64::MAX, "another".into());
-        assert!(answer("two-asks", Some(&format!("a{}", u64::MAX)), &[], Some(true), None).unwrap_err().contains("unknown"));
+        assert!(answer("two-asks", Some(&format!("a{}", u64::MAX)), &[], Some(true), None, |_| Ok(())).unwrap_err().contains("unknown"));
         lock().asked.remove(&u64::MAX);
         assert_eq!(super::ask("two-asks").unwrap().id, next.id, "the next is untouched");
-        answer("two-asks", None, &[], Some(false), Some("not that")).unwrap();
+        answer("two-asks", None, &[], Some(false), Some("not that"), |_| Ok(())).unwrap();
         let no = second.join().unwrap();
         assert_eq!((no["behavior"].as_str(), no["message"].as_str()), (Some("deny"), Some("not that")));
         assert_eq!(super::ask("two-asks"), None);
@@ -3594,20 +3628,20 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        let unsaid = answer("which-ask", None, &[], Some(true), None).unwrap_err();
+        let unsaid = answer("which-ask", None, &[], Some(true), None, |_| Ok(())).unwrap_err();
         assert!(unsaid.contains("askId") && unsaid.contains("Bash"), "says how, and what is first: {unsaid}");
         assert!(lock().entries.get("which-ask").unwrap().held.iter().all(|h| h.answer.is_none()), "and answers nothing");
         // One named out of turn is the one it means.
         let last = lock().entries.get("which-ask").unwrap().held.back().unwrap().ask.id.clone().unwrap();
-        answer("which-ask", Some(&last), &[], Some(false), None).unwrap();
+        answer("which-ask", Some(&last), &[], Some(false), None, |_| Ok(())).unwrap();
         reg().1.notify_all();
         assert_eq!(second.join().unwrap()["behavior"], "deny");
         assert_eq!(super::ask("which-ask").unwrap().tool.as_deref(), Some("Bash"));
         // A single ask is answered with no id, as before.
-        answer("which-ask", None, &[], Some(true), None).unwrap();
+        answer("which-ask", None, &[], Some(true), None, |_| Ok(())).unwrap();
         reg().1.notify_all();
         assert_eq!(first.join().unwrap()["behavior"], "allow");
-        assert!(answer("which-ask", None, &[], Some(true), None).unwrap_err().contains("not waiting"));
+        assert!(answer("which-ask", None, &[], Some(true), None, |_| Ok(())).unwrap_err().contains("not waiting"));
         lock().entries.remove("which-ask");
     }
 
@@ -5059,16 +5093,118 @@ mod tests {
         assert_eq!(top.len(), 1, "{top:?}");
         assert!(top[0].contains("bq-full, since gone") && !top[0].contains("whoami"), "{top:?}");
 
-        // Taken over while its senders were asked (a stop moved the batch): left
-        // as it is, no turn, nobody told of a drop that did not happen.
+        // Stopped while its senders were asked: no turn, the claim given back,
+        // nobody told of a drop that did not happen.
         let res = reserved(vec![queued("bq-gone", "/x")]);
-        lock().entries.get_mut("bq-kid").unwrap().in_flight.clear();
+        stop(lock().entries.get_mut("bq-kid").unwrap());
         assert!(settle_batch("bq-kid", res).is_none());
-        assert!(lock().entries["bq-kid"].run.is_some(), "the claim is whoever took it over's");
+        assert!(lock().entries["bq-kid"].run.is_none(), "no processless claim left behind");
         assert_eq!(news_for("bq-top").len(), 1);
 
         lock().entries.remove("bq-kid");
         forget("bq-kid");
         forget("bq-top");
+    }
+
+    #[test]
+    fn a_background_answer_is_checked_against_the_ask_it_lands_on() {
+        use crate::agents::{answer, forget, register};
+        let mode = |m: &str| serde_json::json!({ "permissionMode": m });
+        register("ba-edits", Provider::Claude, "C:/p", "C:/acc/one", None, true, mode("acceptEdits"));
+        register("ba-kid", Provider::Claude, "C:/p", "C:/acc/one", Some("ba-edits"), false, mode("default"));
+        lock().entries.insert("ba-kid".into(), entry(Provider::Claude));
+        let hold = |serial: u64, ask: Ask| {
+            let mut r = lock();
+            r.asked.insert(serial, "ba-kid".into());
+            let ask = Ask { id: Some(format!("a{serial}")), ..ask };
+            r.entries.get_mut("ba-kid").unwrap().held.push_back(Held { serial, ask, input: Value::Null, answer: None });
+        };
+        let answered = |serial: u64| lock().entries["ba-kid"].held.iter().find(|h| h.serial == serial).is_some_and(|h| h.answer.is_some());
+        let yes = |ask_id: Option<&str>| answer("ba-edits", "ba-kid", ask_id, &[], Some(true), None, None, false).map(|_| ());
+
+        // An edit held first, a command behind it: the first passes for an
+        // acceptEdits caller, the command does not, named by its id.
+        hold(901, Ask::permission(Some("Edit".into()), None));
+        hold(902, Ask::permission(Some("Bash".into()), Some("rm -rf build".into())));
+        let e = yes(Some("a902")).unwrap_err();
+        assert!(e.contains("approving Bash"), "{e}");
+        assert!(!answered(902));
+        // Without an id, with both held: which one is not said, so neither.
+        assert!(yes(None).unwrap_err().contains("several asks"));
+        yes(Some("a901")).unwrap();
+        assert!(answered(901));
+        // The command alone now: without an id it is the one checked.
+        assert!(yes(None).unwrap_err().contains("approving Bash"));
+        assert!(!answered(902));
+        // Refusing it stays the caller's.
+        answer("ba-edits", "ba-kid", Some("a902"), &[], Some(false), Some("not that"), None, false).unwrap();
+        assert!(answered(902));
+
+        // A model's question held first: answering it takes no privilege, and
+        // does not let a command behind it through.
+        let question = Ask::question(
+            vec![crate::agents::AskQuestion { text: "Which?".into(), options: vec!["A".into()], multi: false, list_at: None }],
+            true,
+        );
+        hold(903, question);
+        hold(904, Ask::permission(Some("Bash".into()), None));
+        assert!(yes(Some("a904")).unwrap_err().contains("approving Bash"));
+        assert!(!answered(904));
+        answer("ba-edits", "ba-kid", Some("a903"), &["A".to_string()], None, None, None, false).unwrap();
+        assert!(answered(903));
+
+        lock().entries.remove("ba-kid");
+        forget("ba-kid");
+        forget("ba-edits");
+    }
+
+    #[test]
+    fn what_lands_between_a_batch_reserved_and_its_senders_asked_is_taken_into_account() {
+        let id = "rw-kid";
+        let fresh = || {
+            let mut e = entry(Provider::Claude);
+            e.queue.push(Queued::new(None, "first".into(), Vec::new()));
+            lock().entries.insert(id.into(), e);
+            let mut r = lock();
+            let e = r.entries.get_mut(id).unwrap();
+            claim(e);
+            reserve(e)
+        };
+
+        // Killed meanwhile: the batch went with the stop, the claim goes back,
+        // its turn counted as ended, and the next text is not stuck behind it.
+        let res = fresh();
+        let ended = lock().entries[id].turns_ended;
+        stop(lock().entries.get_mut(id).unwrap());
+        assert!(settle_batch(id, res).is_none());
+        {
+            let r = lock();
+            let e = &r.entries[id];
+            assert!(e.run.is_none(), "no processless claim left behind");
+            assert_eq!(e.turns_ended, ended + 1);
+        }
+
+        // Text sent meanwhile is queued behind the claim: the batch runs, it waits.
+        let res = fresh();
+        lock().entries.get_mut(id).unwrap().queue.push(Queued::new(None, "later".into(), Vec::new()));
+        assert_eq!(settle_batch(id, res).map(|b| b.text).as_deref(), Some("first"));
+        assert_eq!(lock().entries[id].queue, ["later"]);
+
+        // Deleted meanwhile: nothing to settle, nothing made again.
+        let res = fresh();
+        lock().entries.remove(id);
+        assert!(settle_batch(id, res).is_none());
+        assert!(!lock().entries.contains_key(id));
+
+        // Deleted and made again, with a claim of its own: that one is not touched.
+        let res = fresh();
+        lock().entries.remove(id);
+        let mut e = entry(Provider::Claude);
+        claim(&mut e);
+        lock().entries.insert(id.into(), e);
+        assert!(settle_batch(id, res).is_none());
+        assert!(lock().entries[id].run.is_some(), "the new claim stays");
+
+        lock().entries.remove(id);
     }
 }
