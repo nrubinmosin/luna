@@ -574,10 +574,11 @@ pub(crate) fn claude_settings_file(
     if settings.is_empty() {
         return None;
     }
+    // Owner-only: the hook URLs in it carry the hub's secret.
     let dir = crate::paths::data_dir().join("hooks");
-    std::fs::create_dir_all(&dir).ok()?;
+    crate::secret::private_dir(&dir).ok()?;
     let path = dir.join(format!("{chat_id}.json"));
-    std::fs::write(&path, serde_json::to_string_pretty(&settings).ok()?).ok()?;
+    crate::secret::write_private(&path, serde_json::to_string_pretty(&settings).ok()?.as_bytes()).ok()?;
     Some(path)
 }
 
@@ -595,7 +596,10 @@ pub(crate) fn claude_instructions_dir(chat_id: &str, file: Option<&std::path::Pa
         let _ = std::fs::remove_dir_all(&dir);
         return None;
     };
-    let copied = std::fs::create_dir_all(&dir).and_then(|()| std::fs::copy(file, dir.join("CLAUDE.md")));
+    // `hooks/` made owner-only first, if this is what makes it: the settings
+    // files beside this folder carry the hub's secret.
+    let hooks = dir.parent().map_or(Ok(()), crate::secret::private_dir);
+    let copied = hooks.and_then(|()| std::fs::create_dir_all(&dir)).and_then(|()| std::fs::copy(file, dir.join("CLAUDE.md")));
     match copied {
         Ok(_) => Some(dir),
         Err(e) => {
@@ -960,9 +964,9 @@ pub(crate) fn claude_mcp_file(chat_id: &str, token: &str) -> Option<std::path::P
         }
     });
     let dir = crate::paths::data_dir().join("mcp");
-    std::fs::create_dir_all(&dir).ok()?;
+    crate::secret::private_dir(&dir).ok()?;
     let path = dir.join(format!("{chat_id}.json"));
-    std::fs::write(&path, serde_json::to_string_pretty(&config).ok()?).ok()?;
+    crate::secret::write_private(&path, serde_json::to_string_pretty(&config).ok()?.as_bytes()).ok()?;
     Some(path)
 }
 
