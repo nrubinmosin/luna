@@ -61,7 +61,7 @@ export function Terminal({ chat, folderPath }: { chat: Chat; folderPath: string 
         // one). xterm would forward an empty paste, so press the CLI's own
         // image-paste key instead: it reads the clipboard itself and attaches
         // the image the way it does in any terminal.
-        const bitmap = files.length === 0 || (files.length === 1 && files[0].name === 'image.png');
+        const bitmap = files.length === 0 || (files.length === 1 && files[0]?.name === 'image.png');
         if (!e.clipboardData?.getData('text') && bitmap) {
           e.preventDefault();
           e.stopPropagation();

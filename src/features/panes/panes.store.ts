@@ -102,7 +102,10 @@ const seatedChats = (g: Group): string[] =>
 const tiled = (g: Group, chats: string[]): Group => {
   const n = Math.min(4, Math.max(1, chats.length)) as Layout;
   const slots = emptySlots();
-  chats.slice(0, 4).forEach((id, i) => (slots[TILE_ORDER[n][i]] = id));
+  TILE_ORDER[n].forEach((slot, i) => {
+    const id = chats[i];
+    if (id !== undefined) slots[slot] = id;
+  });
   return { ...g, layout: n, boards: { ...g.boards, [n]: slots } };
 };
 
@@ -189,8 +192,8 @@ interface PanesState {
   setAside: (on: boolean) => void;
 }
 
-/** The group currently on screen. */
-export const currentGroup = (s: PanesState): Group => s.groups[s.group] ?? s.groups[0];
+/** The group currently on screen. There is always one: the store starts with one and never drops the last. */
+export const currentGroup = (s: PanesState): Group => s.groups[s.group] ?? s.groups[0]!;
 export const currentLayout = (s: PanesState): Layout => currentGroup(s).layout;
 /** Slots of the board currently on screen. */
 export const currentSlots = (s: PanesState): Slots => currentGroup(s).boards[currentLayout(s)];
@@ -342,13 +345,14 @@ export const usePanes = create<PanesState>()(
           // chat, parked ones included — coming back to a group should not
           // mean coming back to a hole.
           const groups = cleared.groups.map((g, i) => {
-            if (!s.groups[i].boards[s.groups[i].layout].includes(chatId)) return g;
+            const was = s.groups[i];
+            if (!was?.boards[was.layout].includes(chatId)) return g;
             const rest = seatedChats(g);
             return rest.length < g.layout ? tiled(g, rest) : g;
           });
-          const reshaped = groups[s.group].layout !== s.groups[s.group].layout;
-          return reshaped
-            ? { groups, activePane: keepActive(s, groups[s.group]), ...NO_PEEK }
+          const shown = groups[s.group];
+          return shown && shown.layout !== s.groups[s.group]?.layout
+            ? { groups, activePane: keepActive(s, shown), ...NO_PEEK }
             : evictTail(s, { groups }, chatId);
         }),
 
@@ -447,7 +451,7 @@ export const usePanes = create<PanesState>()(
         set(s => {
           if (a === b) return { over: -1, dragPane: null };
           const slots = currentSlots(s).slice();
-          [slots[a], slots[b]] = [slots[b], slots[a]];
+          [slots[a], slots[b]] = [slots[b] ?? null, slots[a] ?? null];
           return { ...withBoard(s, slots), over: -1, dragPane: null, activePane: b };
         }),
 

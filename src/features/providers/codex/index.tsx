@@ -180,6 +180,7 @@ export function Fields({
   // entry of its own, chosen.
   const modelItems = list.map(m => ({ value: m.slug, label: m.displayName }));
   if (settings.model && !listed) modelItems.push({ value: settings.model, label: settings.model });
+  const firstModel = modelItems[0];
 
   // `--approve-for-me` brings its own sandbox: Codex takes no `--sandbox`
   // with it.
@@ -193,10 +194,10 @@ export function Fields({
     <>
       <div>
         <div style={labelStyle}>Model</div>
-        {modelItems.length > 0 ? (
+        {firstModel ? (
           <ModelSelect
             items={modelItems}
-            value={settings.model ?? modelItems[0].value}
+            value={settings.model ?? firstModel.value}
             defaultValue={draft.resolved.model}
             onPick={slug => pick('model', slug)}
           />

@@ -38,7 +38,8 @@ export const pickChatColor = (worn: Array<string | null | undefined>): string =>
   const taken = new Set(worn.filter(Boolean));
   const free = CHAT_COLORS.filter(c => !taken.has(c.key));
   const pool = free.length ? free : CHAT_COLORS;
-  return pool[Math.floor(Math.random() * pool.length)].key;
+  // The palette is never empty, so neither is the pool.
+  return pool[Math.floor(Math.random() * pool.length)]!.key;
 };
 
 export interface ChatColorTheme {

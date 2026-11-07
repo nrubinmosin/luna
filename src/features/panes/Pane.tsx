@@ -97,7 +97,7 @@ function ColorPicker({ chat, anchor, onClose }: { chat: Chat; anchor: HTMLElemen
  * grid".
  */
 export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: string }) {
-  const chatId = usePanes(s => soloChat ?? currentSlots(s)[index]);
+  const chatId = usePanes(s => soloChat ?? currentSlots(s)[index] ?? null);
   const over = usePanes(s => !soloChat && s.over === index);
   const spotted = usePanes(s => !!s.spot && s.spot === (soloChat ?? currentSlots(s)[index]));
   const layout = usePanes(currentLayout);

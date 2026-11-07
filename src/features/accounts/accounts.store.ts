@@ -75,6 +75,8 @@ let retryTimer: ReturnType<typeof setTimeout> | undefined;
 // into a loop that kept the usage endpoint throttled indefinitely.
 let backoffStep = 0;
 const BACKOFF_S = [30, 60, 120, 300, 600, 900];
+/** The wait for the next unhappy round: the ladder's last rung once past its end. */
+const nextBackoff = () => BACKOFF_S[Math.min(backoffStep++, BACKOFF_S.length - 1)]!;
 
 const HEALTHY_S = 60;
 // The usage endpoints 429 without a retry-after header, so the server never
@@ -108,7 +110,7 @@ interface Round {
  *  the initial and the window ("G5H", "GW"). The full name is in the tooltip
  *  and the Accounts window. */
 const shortOf = (label: string) => {
-  const [name, window] = label.split(' · ');
+  const [name = '', window] = label.split(' · ');
   const key = window === '5 hours' ? '5H' : window === 'week' ? 'W' : '';
   return (name.trim().charAt(0).toUpperCase() || '?') + key;
 };
@@ -229,7 +231,7 @@ export const useAccounts = create<AccountsState>()((set, get) => ({
       // failed once (the core restarting) must not end the polling for good.
       if (polling) {
         scheduleRetry(
-          BACKOFF_S[Math.min(backoffStep++, BACKOFF_S.length - 1)],
+          nextBackoff(),
           () =>
             void get()
               .refresh()
@@ -308,7 +310,7 @@ export const useAccounts = create<AccountsState>()((set, get) => ({
     const wait =
       unhappy.length === 0
         ? Math.max(HEALTHY_S, serverWait, throttled ? THROTTLED_S : 0)
-        : Math.max(BACKOFF_S[Math.min(backoffStep++, BACKOFF_S.length - 1)], serverWait, throttled ? THROTTLED_S : 0);
+        : Math.max(nextBackoff(), serverWait, throttled ? THROTTLED_S : 0);
     scheduleRetry(
       wait,
       () =>
