@@ -61,6 +61,21 @@ pub fn create_private(path: &Path) -> io::Result<std::fs::File> {
     options.open(path)
 }
 
+/// Makes an open file the owner's alone on Unix (0600), for one written in
+/// place rather than made anew. Nothing to do elsewhere: see `private_dir`.
+pub fn restrict(file: &std::fs::File) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = file;
+        Ok(())
+    }
+}
+
 /// Writes `bytes` to `path` through `create_private` and a rename in the
 /// same folder: a reader sees the old file or the new one whole, and the new
 /// one is never readable by anyone else on Unix. The temporary file's name is
