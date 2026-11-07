@@ -311,8 +311,26 @@ fn stamp(batch: &mut [Queued]) {
     }
 }
 
-/// What is queued becomes the batch of the turn about to start.
-fn take_queue(e: &mut Entry) -> String {
+/// Text that a CLI would read as a command (`/`, `!`) goes in only if its
+/// sender may still send it here, as when it was taken: the sender may have
+/// been deleted, run lower or lost the user's setting meanwhile. Luna's own
+/// (no sender) was checked when it was made. Dropped, not kept as
+/// undelivered, which a resume would type in.
+fn still_may_send(id: &str, q: &Queued) -> bool {
+    let Some(from) = q.from.as_deref() else { return true };
+    match crate::agents::command_reach_now(from, id, &q.text) {
+        Ok(()) => true,
+        Err(why) => {
+            crate::log::warn("background", &format!("{id}: dropped queued text from {from}: {why}"));
+            false
+        }
+    }
+}
+
+/// What is queued becomes the batch of the turn about to start, less any
+/// text its sender may no longer send (`still_may_send`).
+fn take_queue(id: &str, e: &mut Entry) -> String {
+    e.queue.retain(|q| still_may_send(id, q));
     e.in_flight = std::mem::take(&mut e.queue);
     stamp(&mut e.in_flight);
     joined(&e.in_flight)
@@ -1450,7 +1468,7 @@ fn turn_over(id: &str, code: Option<i32>) {
                 Vec::new()
             }
         };
-        let next = (!e.queue.is_empty()).then(|| take_queue(e));
+        let next = (!e.queue.is_empty()).then(|| take_queue(id, e));
         if next.is_some() {
             claim(e);
         }
@@ -1791,7 +1809,7 @@ pub fn kill(id: &str) -> Vec<String> {
         // What was sent meanwhile is the next turn's, as after any turn.
         (e.run.is_none() && !e.promoting && !e.queue.is_empty()).then(|| {
             claim(e);
-            take_queue(e)
+            take_queue(id, e)
         })
     };
     if !ended.is_empty() {
@@ -2347,7 +2365,7 @@ pub fn background_promoted(id: String, error: Option<String>) -> Result<(), Stri
         e.promoting = false;
         (e.run.is_none() && !e.ending_left && !e.queue.is_empty()).then(|| {
             claim(e);
-            take_queue(e)
+            take_queue(&id, e)
         })
     };
     match next {
@@ -4670,7 +4688,7 @@ mod tests {
         assert!(e.fed.is_empty() && e.undelivered.is_empty());
 
         // The next process is started on it. Its pipe taking the line retires nothing.
-        assert_eq!(take_queue(&mut e), "joined\n\nbehind it");
+        assert_eq!(take_queue("x", &mut e), "joined\n\nbehind it");
         assert_eq!(e.in_flight[0].id, uuid, "the id it had");
         assert_eq!(e.in_flight[1].line.as_deref(), Some(uuid.as_str()), "the batch goes by the first's");
 
@@ -4906,5 +4924,27 @@ mod tests {
         e.session = Some("sid".into());
         note_opening(&mut e, "do B", "b-id");
         assert_eq!((e.opening.as_deref(), e.opening_id.as_deref()), (None, None));
+    }
+
+    #[test]
+    fn queued_text_a_cli_reads_as_a_command_is_checked_again_against_its_sender() {
+        use crate::agents::{forget, register};
+        let mode = |m: &str| serde_json::json!({ "permissionMode": m });
+        register("bq-full", Provider::Claude, "C:/p", "C:/acc/one", None, true, mode("bypassPermissions"));
+        register("bq-kid", Provider::Claude, "C:/p", "C:/acc/one", Some("bq-full"), false, mode("default"));
+        let queued = |from: &str, text: &str| Queued::new(Some(from.to_string()), text.to_string(), Vec::new());
+        let mut e = entry(Provider::Claude);
+        // Taken while its sender was at full access: it would go in now.
+        e.queue.push(queued("bq-full", "/project-command"));
+        assert_eq!(take_queue("bq-kid", &mut e), "/project-command");
+        // The sender runs lower by the time the turn starts: dropped; plain text still goes.
+        register("bq-full", Provider::Claude, "C:/p", "C:/acc/one", None, true, mode("default"));
+        e.queue.extend([queued("bq-full", "/project-command"), queued("bq-full", "plain words")]);
+        assert_eq!(take_queue("bq-kid", &mut e), "plain words");
+        // Its sender gone: dropped too. Luna's own (no sender) goes.
+        forget("bq-full");
+        e.queue.extend([queued("bq-full", "! whoami"), Queued::new(None, "a notice".into(), Vec::new())]);
+        assert_eq!(take_queue("bq-kid", &mut e), "a notice");
+        forget("bq-kid");
     }
 }
