@@ -37,6 +37,9 @@ sha2 = "0.10"
 getrandom = "0.3.4"
 # Compares a presented secret with Luna's in constant time (src/secret.rs).
 subtle = "2.6.1"
+# Each chat's hook secret, HMAC-SHA256 of its id (src/secret.rs, hub.rs).
+# Pinned exactly; it builds on the digest, sha2 and subtle already in the tree.
+hmac = "=0.12.1"
 # The hub's request heads (src/hub.rs), parsed strictly.
 httparse = "1.10.1"
 toml_edit = "0.22"
