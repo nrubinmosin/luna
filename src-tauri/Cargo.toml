@@ -35,6 +35,10 @@ sha2 = "0.10"
 # The secrets Luna mints (src/secret.rs), from the OS's CSPRNG. The version
 # the tree already resolves.
 getrandom = "0.3.4"
+# Compares a presented secret with Luna's in constant time (src/secret.rs).
+subtle = "2.6.1"
+# The hub's request heads (src/hub.rs), parsed strictly.
+httparse = "1.10.1"
 toml_edit = "0.22"
 # Lays out a config.toml edited by hand, comments kept (account_settings.rs).
 taplo = { version = "0.14", default-features = false }

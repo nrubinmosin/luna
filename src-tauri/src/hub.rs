@@ -11,11 +11,16 @@
 //! rewritten at spawn, so a session that outlives a Luna restart simply stops
 //! being heard and the registry poll covers it.
 //!
-//! The HTTP is Luna's own, and only as much of it as the clients speak: one
-//! request per connection, its body by `Content-Length` or chunked. That way
-//! nothing is read before Luna bounds it (admit.rs): a connection that has not
-//! yet shown its secret has a slot of `Limits::unknown`, `HEAD_DEADLINE` to
-//! send its head and `HEAD_MAX` bytes for it.
+//! The HTTP around it is Luna's own, the head parsed by `httparse`, and only
+//! as much of it as the clients speak: one request per connection, its body
+//! by `Content-Length` alone. curl's hooks (`--data-binary @-` reads all of
+//! stdin first), Claude Code's and Codex's MCP clients all send a whole JSON
+//! body of known length, so any `Transfer-Encoding` is refused rather than
+//! decoded: no chunk parser, and no request whose length two readers could
+//! see differently. That way nothing is read before Luna bounds it
+//! (admit.rs): a connection that has not yet shown its secret has a slot of
+//! `Limits::unknown`, `HEAD_DEADLINE` to send its head and `HEAD_MAX` bytes
+//! for it.
 
 use crate::admit::{Deadline, Slot, Slots};
 use std::io::{self, BufRead, BufReader, Read, Write};
@@ -36,8 +41,15 @@ const HEAD_MAX: usize = 16 * 1024;
 const HEAD_DEADLINE: Duration = Duration::from_secs(5);
 /// For a body once the request has shown its secret: megabytes on loopback.
 const BODY_DEADLINE: Duration = Duration::from_secs(30);
-/// For the answer: a client that stops reading does not hold its thread.
+/// For the whole answer: a client that stops reading does not hold its
+/// thread.
 const WRITE_DEADLINE: Duration = Duration::from_secs(30);
+/// For a 503 written from the accept loop, which must not wait on anyone.
+const TURN_AWAY_DEADLINE: Duration = Duration::from_millis(100);
+/// For reading away what a client still sends after its answer.
+const DRAIN_DEADLINE: Duration = Duration::from_millis(200);
+/// Headers in a request: curl and the MCP clients send about ten.
+const HEADERS_MAX: usize = 64;
 /// A hook's stdin: a small JSON object.
 const HOOK_BODY_MAX: usize = 64 * 1024;
 /// An MCP call or the shell call the guard is asked about.
@@ -107,7 +119,7 @@ fn serve(listener: TcpListener, limits: Limits) {
     for stream in listener.incoming() {
         let Ok(stream) = stream else { continue };
         let Some(slot) = lanes.0.take() else {
-            reply(&stream, 503, None);
+            reply(&stream, 503, None, TURN_AWAY_DEADLINE);
             continue;
         };
         let (hooks, mcp) = (lanes.1.clone(), lanes.2.clone());
@@ -131,7 +143,16 @@ enum Route {
 
 fn connection(stream: &TcpStream, unknown: Slot, hooks: &Slots, mcp: &Slots, head_deadline: Duration) -> io::Result<()> {
     let mut reader = BufReader::new(Deadline::new(stream, head_deadline));
-    let head = read_head(&mut reader)?;
+    let head = match read_head(&mut reader) {
+        Ok(head) => head,
+        // A head that parses but frames its body in a way Luna does not take:
+        // said so, and closed.
+        Err(e) if e.kind() == io::ErrorKind::Unsupported => {
+            reply(stream, 400, None, WRITE_DEADLINE);
+            return Ok(());
+        }
+        Err(e) => return Err(e),
+    };
     let route = match route(&head) {
         Ok(route) => route,
         Err((status, body)) => {
@@ -152,8 +173,7 @@ fn connection(stream: &TcpStream, unknown: Slot, hooks: &Slots, mcp: &Slots, hea
     let max = if matches!(route, Route::Hook(_)) { HOOK_BODY_MAX } else { BODY_MAX };
     reader.get_mut().extend(BODY_DEADLINE);
     if head.header("expect").is_some_and(|v| v.eq_ignore_ascii_case("100-continue")) {
-        let mut s = stream;
-        s.write_all(b"HTTP/1.1 100 Continue\r\n\r\n")?;
+        Deadline::new(stream, WRITE_DEADLINE).write_all(b"HTTP/1.1 100 Continue\r\n\r\n")?;
     }
     let body = match read_body(&mut reader, &head, max) {
         Ok(body) => String::from_utf8(body).unwrap_or_default(),
@@ -222,8 +242,10 @@ fn on_hook(chat_id: &str, body: &str) -> u16 {
 struct Head {
     method: String,
     path: String,
-    /// Names lowercased.
+    /// Names lowercased, values as text.
     headers: Vec<(String, String)>,
+    /// The body's length: `Content-Length`, or 0 without one.
+    content_length: usize,
 }
 
 impl Head {
@@ -236,8 +258,14 @@ fn bad(what: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.to_string())
 }
 
-/// The request line and headers, up to `HEAD_MAX` bytes; what follows them
-/// stays in the reader.
+/// A request Luna understands but does not take: answered 400.
+fn unsupported(what: &str) -> io::Error {
+    io::Error::new(io::ErrorKind::Unsupported, what.to_string())
+}
+
+/// The request line and headers, up to `HEAD_MAX` bytes, parsed by
+/// `httparse`; what follows them stays in the reader. An error of kind
+/// `Unsupported` for a body framed other than by one `Content-Length`.
 fn read_head(r: &mut impl BufRead) -> io::Result<Head> {
     let mut raw = Vec::new();
     loop {
@@ -252,76 +280,60 @@ fn read_head(r: &mut impl BufRead) -> io::Result<Head> {
             break;
         }
     }
-    let text = std::str::from_utf8(&raw).map_err(|_| bad("head is not text"))?;
-    let mut lines = text.lines();
-    let mut start = lines.next().unwrap_or_default().split(' ');
-    let (Some(method), Some(path), Some(version)) = (start.next(), start.next(), start.next()) else {
-        return Err(bad("no request line"));
-    };
-    if !version.starts_with("HTTP/1.") {
-        return Err(bad("not HTTP/1"));
+    let mut slots = [httparse::EMPTY_HEADER; HEADERS_MAX];
+    let mut req = httparse::Request::new(&mut slots);
+    // Strict as httparse is by default: no space before a header's colon,
+    // no folded lines, a request line of three parts and HTTP/1.x.
+    match req.parse(&raw) {
+        Ok(httparse::Status::Complete(n)) if n == raw.len() => {}
+        _ => return Err(bad("not an HTTP/1 request head")),
     }
-    let headers = lines
-        .filter(|l| !l.is_empty())
-        .map(|l| l.split_once(':').map(|(n, v)| (n.trim().to_ascii_lowercase(), v.trim().to_string())).ok_or_else(|| bad("bad header")))
-        .collect::<io::Result<_>>()?;
-    Ok(Head { method: method.to_string(), path: path.to_string(), headers })
+    let (Some(method), Some(path)) = (req.method, req.path) else { return Err(bad("no request line")) };
+    let mut headers = Vec::with_capacity(req.headers.len());
+    for h in req.headers.iter() {
+        let value = std::str::from_utf8(h.value).map_err(|_| bad("a header that is not text"))?;
+        headers.push((h.name.to_ascii_lowercase(), value.trim().to_string()));
+    }
+    if headers.iter().any(|(n, _)| n == "transfer-encoding") {
+        return Err(unsupported("transfer-encoding"));
+    }
+    let mut content_length = None;
+    for (_, v) in headers.iter().filter(|(n, _)| n == "content-length") {
+        // Digits only: `str::parse` would take a leading `+`.
+        if v.is_empty() || !v.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(unsupported("content-length"));
+        }
+        let n = v.parse::<usize>().map_err(|_| unsupported("content-length"))?;
+        if content_length.is_some_and(|m| m != n) {
+            return Err(unsupported("conflicting content-length"));
+        }
+        content_length = Some(n);
+    }
+    Ok(Head { method: method.to_string(), path: path.to_string(), headers, content_length: content_length.unwrap_or(0) })
 }
 
-/// The body, by `Content-Length` or chunked, refused past `max` with an
-/// error of kind `FileTooLarge` before more of it is read.
+/// The body of `Content-Length` bytes, refused past `max` with an error of
+/// kind `FileTooLarge` before any of it is read.
 fn read_body(r: &mut impl BufRead, head: &Head, max: usize) -> io::Result<Vec<u8>> {
-    let too_large = || io::Error::new(io::ErrorKind::FileTooLarge, "body too large");
-    if head.header("transfer-encoding").is_some_and(|v| v.eq_ignore_ascii_case("chunked")) {
-        let mut body = Vec::new();
-        loop {
-            let mut line = Vec::new();
-            (&mut *r).take(64).read_until(b'\n', &mut line)?;
-            let line = std::str::from_utf8(&line).map_err(|_| bad("bad chunk size"))?;
-            let hex = line.split(';').next().unwrap_or_default().trim();
-            let size = usize::from_str_radix(hex, 16).map_err(|_| bad("bad chunk size"))?;
-            if size == 0 {
-                // Trailers, if any, up to the empty line.
-                loop {
-                    let mut t = Vec::new();
-                    if (&mut *r).take(HEAD_MAX as u64).read_until(b'\n', &mut t)? == 0 || t == b"\r\n" || t == b"\n" {
-                        return Ok(body);
-                    }
-                }
-            }
-            if body.len() + size > max {
-                return Err(too_large());
-            }
-            let at = body.len();
-            body.resize(at + size, 0);
-            r.read_exact(&mut body[at..])?;
-            let mut crlf = Vec::new();
-            (&mut *r).take(2).read_until(b'\n', &mut crlf)?;
-        }
+    if head.content_length > max {
+        return Err(io::Error::new(io::ErrorKind::FileTooLarge, "body too large"));
     }
-    let len = match head.header("content-length") {
-        Some(v) => v.parse::<usize>().map_err(|_| bad("bad content-length"))?,
-        None => 0,
-    };
-    if len > max {
-        return Err(too_large());
-    }
-    let mut body = vec![0u8; len];
+    let mut body = vec![0u8; head.content_length];
     r.read_exact(&mut body)?;
     Ok(body)
 }
 
-/// `reply`, then what the client may still be sending read away for a
-/// moment: closed on unread data, the socket would reset, and the client
-/// might lose the answer.
+/// `reply`, then what the client may still be sending read away until one
+/// deadline for all of it: closed on unread data, the socket would reset, and
+/// the client might lose the answer.
 fn answer(stream: &TcpStream, status: u16, json: Option<&str>) {
-    reply(stream, status, json);
-    let _ = stream.set_read_timeout(Some(Duration::from_millis(200)));
-    let _ = (&mut &*stream).take(64 * 1024).read_to_end(&mut Vec::new());
+    reply(stream, status, json, WRITE_DEADLINE);
+    let _ = Deadline::new(stream, DRAIN_DEADLINE).take(64 * 1024).read_to_end(&mut Vec::new());
 }
 
-/// The answer, and the connection closed: one request per connection.
-fn reply(stream: &TcpStream, status: u16, json: Option<&str>) {
+/// The answer, written within one deadline for all of it, and the connection
+/// closed: one request per connection.
+fn reply(stream: &TcpStream, status: u16, json: Option<&str>, within: Duration) {
     let reason = match status {
         100 => "Continue",
         200 => "OK",
@@ -338,9 +350,7 @@ fn reply(stream: &TcpStream, status: u16, json: Option<&str>) {
     let body = json.unwrap_or_default();
     let kind = if json.is_some() { "Content-Type: application/json\r\n" } else { "" };
     let msg = format!("HTTP/1.1 {status} {reason}\r\n{kind}Content-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
-    let _ = stream.set_write_timeout(Some(WRITE_DEADLINE));
-    let mut s = stream;
-    let _ = s.write_all(msg.as_bytes()).and_then(|()| s.flush());
+    let _ = Deadline::new(stream, within).write_all(msg.as_bytes());
     let _ = stream.shutdown(std::net::Shutdown::Write);
 }
 
@@ -390,24 +400,51 @@ mod tests {
         let huge = format!("POST /hook/a/b HTTP/1.1\r\nX: {}\r\n\r\n", "y".repeat(HEAD_MAX));
         assert_eq!(head(&huge).err().unwrap().kind(), io::ErrorKind::InvalidData);
         assert_eq!(head("POST /hook/a/b HTTP/1.1\r\nHost: x\r\n").err().unwrap().kind(), io::ErrorKind::UnexpectedEof);
-        assert!(head("hello\r\n\r\n").is_err());
-        assert!(head("POST / SPDY/3\r\n\r\n").is_err());
-        assert!(head("POST / HTTP/1.1\r\nno colon\r\n\r\n").is_err());
+        for raw in [
+            "hello\r\n\r\n",
+            "POST / SPDY/3\r\n\r\n",
+            "POST / HTTP/1.1 extra\r\n\r\n",
+            "POST  / HTTP/1.1\r\n\r\n",
+            "POST / HTTP/2.0\r\n\r\n",
+            "POST / HTTP/1.1\r\nno colon\r\n\r\n",
+            "POST / HTTP/1.1\r\nContent-Length : 4\r\n\r\n",
+            "POST / HTTP/1.1\r\n Content-Length: 4\r\n\r\n",
+            "POST / HTTP/1.1\r\nHost: x\r\n folded\r\n\r\n",
+        ] {
+            assert_eq!(head(raw).err().map(|e| e.kind()), Some(io::ErrorKind::InvalidData), "{raw:?}");
+        }
+        let many: String = (0..HEADERS_MAX + 1).map(|i| format!("X-{i}: y\r\n")).collect();
+        assert!(head(&format!("POST / HTTP/1.1\r\n{many}\r\n")).is_err(), "more headers than room for");
     }
 
     #[test]
-    fn reads_bodies_by_length_and_chunked_within_their_cap() {
+    fn a_body_is_framed_by_one_content_length_and_nothing_else() {
+        let unsupported = |raw: &str| head(raw).err().map(|e| e.kind()) == Some(io::ErrorKind::Unsupported);
+        for raw in [
+            "POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n",
+            "POST / HTTP/1.1\r\nTransfer-Encoding: gzip, chunked\r\n\r\n",
+            "POST / HTTP/1.1\r\nContent-Length: 4\r\nTransfer-Encoding: chunked\r\n\r\n",
+            "POST / HTTP/1.1\r\nContent-Length: 4\r\nContent-Length: 5\r\n\r\n",
+            "POST / HTTP/1.1\r\nContent-Length: 4, 4\r\n\r\n",
+            "POST / HTTP/1.1\r\nContent-Length: +4\r\n\r\n",
+            "POST / HTTP/1.1\r\nContent-Length: -4\r\n\r\n",
+            "POST / HTTP/1.1\r\nContent-Length: 0x4\r\n\r\n",
+            "POST / HTTP/1.1\r\nContent-Length:\r\n\r\n",
+            "POST / HTTP/1.1\r\nContent-Length: 99999999999999999999999\r\n\r\n",
+        ] {
+            assert!(unsupported(raw), "{raw:?}");
+        }
+        let same_twice = head("POST / HTTP/1.1\r\nContent-Length: 4\r\ncontent-length: 4\r\n\r\n").unwrap();
+        assert_eq!(same_twice.content_length, 4);
+        assert_eq!(head("POST / HTTP/1.1\r\n\r\n").unwrap().content_length, 0);
+    }
+
+    #[test]
+    fn reads_a_body_within_its_cap() {
         let h = head("POST / HTTP/1.1\r\nContent-Length: 10\r\n\r\n").unwrap();
         assert_eq!(read_body(&mut io::Cursor::new(b"0123456789".to_vec()), &h, 10).unwrap().len(), 10);
         assert_eq!(read_body(&mut io::Cursor::new(b"0123456789".to_vec()), &h, 9).err().unwrap().kind(), io::ErrorKind::FileTooLarge);
         assert_eq!(read_body(&mut io::Cursor::new(b"01234".to_vec()), &h, 10).err().unwrap().kind(), io::ErrorKind::UnexpectedEof);
-
-        let h = head("POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n").unwrap();
-        let chunked = b"4\r\nWiki\r\n5;x=y\r\npedia\r\n0\r\nTrailer: z\r\n\r\n".to_vec();
-        assert_eq!(read_body(&mut io::Cursor::new(chunked.clone()), &h, 9).unwrap(), b"Wikipedia");
-        assert_eq!(read_body(&mut io::Cursor::new(chunked), &h, 8).err().unwrap().kind(), io::ErrorKind::FileTooLarge);
-        assert!(read_body(&mut io::Cursor::new(b"4\r\nWi".to_vec()), &h, 9).is_err());
-        assert!(read_body(&mut io::Cursor::new(b"zz\r\n".to_vec()), &h, 9).is_err());
     }
 }
 
@@ -497,14 +534,70 @@ mod live {
     }
 
     #[test]
-    fn a_chunked_hook_is_heard() {
+    fn a_transfer_encoding_is_refused_before_anything_is_heard() {
         let addr = listener(LIMITS);
         let body = format!("{:x}\r\n{PROMPT}\r\n0\r\n\r\n", PROMPT.len());
-        let req =
-            format!("POST {} HTTP/1.1\r\nTransfer-Encoding: chunked\r\nExpect: 100-continue\r\n\r\n{body}", hook_path("chat-hub-chunked"));
+        for te in ["Transfer-Encoding: chunked", "Transfer-Encoding: chunked\r\nContent-Length: 5"] {
+            let req = format!("POST {} HTTP/1.1\r\n{te}\r\n\r\n{body}", hook_path("chat-hub-te"));
+            let out = send(addr, req.as_bytes());
+            assert!(out.is_empty() || out.starts_with("HTTP/1.1 400"), "{out}");
+        }
+        let req = format!("POST {} HTTP/1.1\r\nContent-Length: +5\r\n\r\n{PROMPT}", hook_path("chat-hub-te"));
         let out = send(addr, req.as_bytes());
-        assert!(out.contains("HTTP/1.1 204"), "{out}");
-        assert_eq!(crate::activity::hook_turn("chat-hub-chunked"), Some(crate::activity::Turn::Busy));
+        assert!(out.is_empty() || out.starts_with("HTTP/1.1 400"), "{out}");
+        assert_eq!(crate::activity::hook_turn("chat-hub-te"), None, "nothing reached the tracker");
+    }
+
+    #[test]
+    fn a_hook_waiting_on_continue_is_heard() {
+        let addr = listener(LIMITS);
+        let req = format!(
+            "POST {} HTTP/1.1\r\nContent-Length: {}\r\nExpect: 100-continue\r\n\r\n{PROMPT}",
+            hook_path("chat-hub-continue"),
+            PROMPT.len()
+        );
+        let out = send(addr, req.as_bytes());
+        assert!(out.starts_with("HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 204"), "{out}");
+        assert_eq!(crate::activity::hook_turn("chat-hub-continue"), Some(crate::activity::Turn::Busy));
+    }
+
+    #[test]
+    fn a_trickling_stranger_is_let_go_after_its_answer() {
+        let addr = listener(LIMITS);
+        let mut c = TcpStream::connect(addr).unwrap();
+        c.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        // A bad secret is answered 403, then drained: a byte every 100 ms,
+        // each inside any per-read timeout, must not keep the drain going.
+        // The listener's end is gone once a write to it fails.
+        c.write_all(b"POST /hook/x/wrong HTTP/1.1\r\nContent-Length: 1000000\r\n\r\n").unwrap();
+        let mut out = [0u8; 12];
+        c.read_exact(&mut out).unwrap();
+        assert_eq!(&out, b"HTTP/1.1 403");
+        let begun = Instant::now();
+        let mut closed = None;
+        for _ in 0..100 {
+            if c.write_all(b"x").is_err() {
+                closed = Some(begun.elapsed());
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let closed = closed.expect("the listener kept reading for ten seconds");
+        assert!(closed < Duration::from_secs(3), "{closed:?}");
+    }
+
+    #[test]
+    fn a_reader_that_stops_reading_is_let_go_at_the_deadline() {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        // Connected and never read from: what is written fills the buffers.
+        let c = TcpStream::connect(addr).unwrap();
+        let (s, _) = l.accept().unwrap();
+        let big = "x".repeat(64 * 1024 * 1024);
+        let begun = Instant::now();
+        reply(&s, 200, Some(&big), Duration::from_millis(500));
+        assert!(begun.elapsed() < Duration::from_secs(3), "{:?}", begun.elapsed());
+        drop(c);
     }
 
     #[test]

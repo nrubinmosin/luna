@@ -15,15 +15,12 @@ pub fn random_hex(bytes: usize) -> String {
 }
 
 /// Whether a presented secret is the one expected, in time that depends only
-/// on their lengths, so a caller timing the answer learns nothing about how
-/// much of a guess was right. The lengths are no secret: every one Luna mints
-/// is of a fixed size.
+/// on their lengths (`subtle`), so a caller timing the answer learns nothing
+/// about how much of a guess was right. The lengths are no secret: every one
+/// Luna mints is of a fixed size.
 pub fn same(presented: &str, expected: &str) -> bool {
-    let (a, b) = (presented.as_bytes(), expected.as_bytes());
-    if a.len() != b.len() {
-        return false;
-    }
-    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+    use subtle::ConstantTimeEq;
+    presented.as_bytes().ct_eq(expected.as_bytes()).into()
 }
 
 #[cfg(test)]
