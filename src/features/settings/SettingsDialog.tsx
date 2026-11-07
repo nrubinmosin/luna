@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { create } from 'zustand';
-import type { ReactNode } from 'react';
 import { agoLabel } from '../../shared/lib/format';
 import { getAccountsRoot, setAccountsRoot, type AccountsRootInfo } from '../../ipc/accounts';
 import { helpersAboveCaller, setHelpersAboveCaller } from '../../ipc/agents';
@@ -29,28 +28,9 @@ import { usePanes } from '../panes/panes.store';
 import { useNotifyPrefs } from '../../shared/lib/notifyPrefs.store';
 import { useDialogHost } from '../../shared/ui/dialogHost';
 import { BrowserSection } from '../browsers/BrowserSection';
+import { Section } from '../../shared/ui/Section';
 
 const pct = (got: number, total: number | null) => (total ? Math.min(100, Math.round((got / total) * 100)) : null);
-
-export function Section({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div style={{ marginBottom: 14 }}>
-      <div
-        style={{
-          fontSize: 'var(--fs-1)',
-          fontWeight: 700,
-          textTransform: 'uppercase',
-          letterSpacing: '.04em',
-          color: 'var(--faint)',
-          marginBottom: 6
-        }}
-      >
-        {label}
-      </div>
-      {children}
-    </div>
-  );
-}
 
 /** One product's line in the updates section: name, state, one button. */
 function VersionRow({
