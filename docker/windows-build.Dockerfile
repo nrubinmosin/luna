@@ -10,7 +10,7 @@
 # Node comes from the official image of the exact version, not from a distro or
 # NodeSource channel that moves under the same name. The gate's frontend steps
 # run in this same image (scripts/lib.ps1 Get-NodeImage).
-FROM node:24.22.2-trixie-slim@sha256:0820eaa85e07d0490446dd01d14707e17e6108a36988cf374899cd057eb3812d AS node
+FROM node:26.12.1-trixie-slim@sha256:94816674c62774da0d099a947bf4613b9e1972a2733abd0d0cd80e795f8411d0 AS node
 
 # Trixie for NSIS 3.11: the tauri 2.12 installer script includes
 # Win\RestartManager.nsh, which bookworm's NSIS 3.08 does not ship.
