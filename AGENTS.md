@@ -28,7 +28,14 @@ Rules for anyone (person or agent) changing Luna.
   happens. The CLIs' own account folders are theirs, not Luna's.
 
 ## Building and testing
-- There is no local Rust or Node toolchain: everything builds in Docker.
+- There is no local Rust or Node toolchain: everything builds in Docker, on
+  the versions pinned in `src-tauri/rust-toolchain.toml` and `.node-version`.
+  - `./scripts/gate.ps1` — the gate a change passes before it is committed:
+    formatting, lints, types, the frontend's tests and build and the Linux
+    unit tests, the same steps CI runs (`-Windows` adds clippy over the
+    Windows build).
+  - `./scripts/windows-tests.ps1 -Build -Run` — the unit tests built as
+    Windows executables and run on this machine, as CI's Windows job does.
   - `./scripts/build-windows.ps1` — the release exe (`-Installer` for the setup).
   - `./scripts/test-build.ps1` — the **test build**, `test-build/luna-test.exe`.
   - `./scripts/linux-check.ps1` — the crate built for Linux and all its unit tests run

@@ -7,7 +7,7 @@
 #   ./scripts/test-build.ps1 -Run            build, then start it
 #   ./scripts/test-build.ps1 -Run -NoBuild   start the last build
 #   ./scripts/test-build.ps1 -Test           also build the Rust unit tests in Docker and
-#                                            run them here (they are Windows binaries)
+#                                            run them here (windows-tests.ps1)
 #   ./scripts/test-build.ps1 -Run -DevCaller -DevFolder C:\src\x -DevAccount test-build\accounts\anthropic\dev
 #       also registers a scripted MCP caller (agents.rs register_dev_caller);
 #       the token is printed and the MCP url is in test-build\luna.log
@@ -36,29 +36,12 @@ if (-not $NoBuild) {
     $build = Get-BuildStamp
     Write-Host "test build stamp: $build"
 
-    $image = Build-Image luna-winbuild windows-build.Dockerfile
-
-    $cmd = ConvertTo-BashScript @"
-set -e
+    Use-BuildLock {
+        $image = Build-Image luna-winbuild windows-build.Dockerfile
+        Invoke-WinBuild 'test build' $build $image @'
 pnpm install --frozen-lockfile
 pnpm tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --no-bundle --config src-tauri/tauri.test.conf.json -- --locked
-$(if ($Test) { 'cd src-tauri && cargo xwin test --locked --release --no-run --target x86_64-pc-windows-msvc' })
-"@
-
-    Use-BuildLock {
-        Invoke-Checked 'test build' {
-            docker run --rm `
-              -e COREPACK_ENABLE_DOWNLOAD_PROMPT=0 `
-              -e LUNA_BUILD=$build `
-              -e LUNA_FLAVOR=test `
-              -e VITE_LUNA_FLAVOR=test `
-              -e CARGO_TARGET_DIR=/app/test-build/target `
-              -v "${root}:/app" `
-              @WinBuildVolumes `
-              -w /app `
-              $image `
-              bash -c $cmd
-        }
+'@ $TestBuildEnv
     }
 
     Copy-Item -Force (Join-Path $out 'target/x86_64-pc-windows-msvc/release/luna.exe') (Join-Path $out 'luna-test.exe')
@@ -66,11 +49,7 @@ $(if ($Test) { 'cd src-tauri && cargo xwin test --locked --release --no-run --ta
 }
 
 if ($Test) {
-    $bin = Get-ChildItem (Join-Path $out 'target/x86_64-pc-windows-msvc/release/deps') -Filter 'luna_lib-*.exe' |
-        Sort-Object LastWriteTime -Descending | Select-Object -First 1
-    if (-not $bin) { throw 'no test binary - build with -Test first' }
-    & $bin.FullName
-    if ($LASTEXITCODE) { throw "unit tests failed (exit $LASTEXITCODE)" }
+    & "$PSScriptRoot/windows-tests.ps1" -Build:(-not $NoBuild) -Run
 }
 
 if ($Run) {
