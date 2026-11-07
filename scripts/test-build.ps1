@@ -1,3 +1,4 @@
+#Requires -Version 7.4
 # Builds the test flavor of Luna into test-build\ (ignored by git) and,
 # with -Run, starts it. It runs beside the Luna in use without touching it:
 # its own identifier (single-instance lock, webview storage), and its log,
