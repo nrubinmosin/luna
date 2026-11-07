@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { accountKey, PROVIDER_LABEL, type Account } from '../../shared/types';
 import { Icon } from '../../shared/ui/icons';
 
@@ -19,22 +19,31 @@ export function AccountPicker({
   onChange: (key: string) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const [hot, setHotState] = useState(0);
+  // The highlighted row, by account key rather than position: the list can
+  // change while open (an account removed, the order shuffled), and the
+  // highlight stays on the account it was on, or on nothing once it is gone.
+  const [hot, setHotState] = useState<string | null>(null);
   // The keyboard handler outlives renders; it reads the row from here.
-  const hotRef = useRef(0);
-  const setHot = (i: number) => {
-    hotRef.current = i;
-    setHotState(i);
-  };
+  const hotRef = useRef<string | null>(null);
+  const setHot = useCallback((key: string | null) => {
+    hotRef.current = key;
+    setHotState(key);
+  }, []);
   const box = useRef<HTMLDivElement>(null);
   const keys = accounts.map(a => accountKey(a.provider, a.name));
   const at = Math.max(0, keys.indexOf(value));
   const current = accounts[at];
+  // The list and callback as of the latest render: the handler is set up once
+  // per opening, and the list can change under it.
+  const live = useRef({ keys, value, onChange });
+  useLayoutEffect(() => {
+    live.current = { keys, value, onChange };
+  });
 
   useEffect(() => {
     if (!open) return;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- opening puts the highlight on the current account
-    setHot(at);
+    const { keys, value } = live.current;
+    setHot(keys[Math.max(0, keys.indexOf(value))] ?? null);
     const away = (e: MouseEvent) => {
       if (!box.current?.contains(e.target as Node)) setOpen(false);
     };
@@ -42,13 +51,19 @@ export function AccountPicker({
       if (e.key === 'Escape' || e.key === 'Enter') {
         e.preventDefault();
         e.stopPropagation();
-        const key = keys[hotRef.current];
-        if (e.key === 'Enter' && key !== undefined) onChange(key);
+        const { keys, onChange } = live.current;
+        const key = hotRef.current;
+        if (e.key === 'Enter' && key !== null && keys.includes(key)) onChange(key);
         setOpen(false);
       } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
         e.preventDefault();
         e.stopPropagation();
-        setHot((hotRef.current + (e.key === 'ArrowDown' ? 1 : -1) + keys.length) % keys.length);
+        const { keys } = live.current;
+        const down = e.key === 'ArrowDown';
+        const from = hotRef.current === null ? -1 : keys.indexOf(hotRef.current);
+        // From nothing (or a row gone) a step lands on the first or last row.
+        const to = from < 0 ? (down ? 0 : keys.length - 1) : (from + (down ? 1 : -1) + keys.length) % keys.length;
+        setHot(keys[to] ?? null);
       }
     };
     document.addEventListener('mousedown', away);
@@ -58,8 +73,7 @@ export function AccountPicker({
       document.removeEventListener('mousedown', away);
       window.removeEventListener('keydown', onKey, true);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+  }, [open, setHot]);
 
   return (
     <div ref={box} className="picker" data-picker-open={open || undefined}>
@@ -96,8 +110,8 @@ export function AccountPicker({
               key={keys[i]}
               role="option"
               aria-selected={i === at}
-              data-hot={i === hot ? 'yes' : 'no'}
-              onMouseEnter={() => setHot(i)}
+              data-hot={keys[i] === hot ? 'yes' : 'no'}
+              onMouseEnter={() => setHot(keys[i] ?? null)}
               onClick={() => {
                 onChange(accountKey(a.provider, a.name));
                 setOpen(false);
