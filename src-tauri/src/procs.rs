@@ -22,7 +22,7 @@
 //! which the OS will not except, so every way out that is not a death lets go
 //! of the tie first (`let_go`, and dropping a job), and `end_leftovers` spares
 //! them as ever. Off Windows a process stands in for the OS, with the same ways
-//! in and out (keeper.rs). There a job lists nothing: no window can be told from
+//! in and out (keeper/). There a job lists nothing: no window can be told from
 //! a job left running, so nothing is counted, and what a turn left runs on past
 //! every way out but a death.
 
@@ -109,7 +109,7 @@ mod imp {
         LastTies
     }
 
-    /// Needed only where a job goes by what is in the environment (keeper.rs).
+    /// Needed only where a job goes by what is in the environment (keeper/).
     pub fn also_marked(_job: &Job, _var: &str, _value: &str) {}
 
     /// So is this.
@@ -441,7 +441,7 @@ mod imp {
     pub use crate::keeper::{adopt, also_marked, await_environment, end_last_ties, from_args as keeper_from_args, join, let_go, tie, Job};
 
     /// Nothing holds a pid here: the CLI is reaped as it ends, and what kills by
-    /// pid looks again before it does (keeper.rs `end_tree`).
+    /// pid looks again before it does (keeper/job.rs `end_tree`).
     pub struct Pin;
 
     pub fn pin(_pid: u32) -> Pin {

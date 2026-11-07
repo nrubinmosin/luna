@@ -76,7 +76,7 @@ windows = { version = "0.62", features = [
 ] }
 
 # The tie to the core off Windows: signals, and a look at every process
-# (src/keeper.rs). Already in the tree through most of the above.
+# (src/keeper/). Already in the tree through most of the above.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 

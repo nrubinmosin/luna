@@ -137,9 +137,13 @@ src-tauri/src/
   procs.rs      what the CLI has running under it: a Job Object per session, pid list,
                 CPU/IO/start time of each, the "busy" rule (judge), windowed programs left
                 out (shown), what is left ended with the session (end_leftovers)
-  keeper.rs     the tie to the core off Windows: the `--keep-ties` process that ends a dead
+  keeper/       the tie to the core off Windows: the `--keep-ties` process that ends a dead
                 core's jobs, what a job holds there, the next core's backstop (end_last_ties);
-                and `kill_tree`'s walk there (end_tree)
+                and `kill_tree`'s walk there (end_tree). mod.rs a process, a turn's leader
+                and a job's record; system.rs what each OS says of a process; job.rs a
+                job at one look and ending one or a tree; process.rs the keeper itself;
+                ties.rs the core's side, the records and end_last_ties; testkit.rs real
+                turns for its tests
   browsers.rs   which browser a terminal's link opens in: a command line with %1 per
                 browser; found on Windows (StartMenuInternet + each Chromium browser's
                 Local State profiles, Firefox's profiles.ini, the https UserChoice handler)
@@ -459,7 +463,7 @@ src-tauri/src/
   leaves ends leftovers already (`stop_all`). The OS spares no window, so every way out that is not a
   death lets go first (`let_go`, `Drop for Job`), `end_leftovers` sparing windows as ever; a window a
   helper's turn opened dies with a core that dies, and only then. Off Windows the same tie is a process
-  of Luna's (`keeper.rs`): the keeper, this exe with `--keep-ties`, one to a core once a helper has a
+  of Luna's (`keeper/`): the keeper, this exe with `--keep-ties`, one to a core once a helper has a
   turn, reads a pipe only the core writes, and the end of that input is the core's death, on which it
   ends every job not let go of; it also looks at the core itself every 2 s by pid and start time, as on
   macOS a pipe becomes close-on-exec a moment after it is made and a process started then holds the write
@@ -1268,7 +1272,7 @@ src-tauri/src/
   the Rust tests and runs them on the host. The rules are in AGENTS.md — the one instructions file for
   both CLIs (Claude Code reads it when there is no CLAUDE.md).
 - Linux check — `scripts/linux-check.ps1` (also Docker): builds the crate for Linux and runs its unit tests
-  there, the only place the Unix code (`keeper.rs` and the like) compiles and runs. Its own image and
+  there, the only place the Unix code (`keeper/` and the like) compiles and runs. Its own image and
   volumes; the checkout goes in read-only.
 - Gate — `scripts/gate.ps1`: rustfmt, clippy with `-D warnings`, the Linux tests (linux-check's image,
   volumes and lock), and the frontend's install, lint, format check, typecheck, text check, script

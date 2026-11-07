@@ -696,7 +696,7 @@ fixture is also the only way to retake all three shots from the same state.
 ```
 
 Builds the crate for Linux and runs its whole unit test suite there: the Unix code
-(`keeper.rs`, parts of `procs.rs` and `pty/`) that `./scripts/test-build.ps1 -Test`, with its
+(`keeper/`, parts of `procs.rs` and `pty/`) that `./scripts/test-build.ps1 -Test`, with its
 Windows binaries, never compiles. The checkout goes in read-only, and the caches (the cargo
 registry, the Linux target) live in named volumes of its own. Runs under `pwsh` on any host
 with Docker.
