@@ -18,6 +18,9 @@ RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
 RUN rustup target add x86_64-pc-windows-msvc \
     && cargo install --locked cargo-xwin
 
+# The lint gate for the Windows-only code, which the Linux image never compiles.
+RUN rustup component add clippy
+
 # cargo-xwin downloads the Windows SDK/CRT on first use into this dir;
 # mount a named volume over it to cache between runs.
 ENV XWIN_CACHE_DIR=/xwin-cache
