@@ -35,9 +35,11 @@ param(
 $TestBuild = Join-Path $RepoRoot 'test-build'
 $AccountsRoot = Join-Path $TestBuild 'accounts'
 
-# What a clone leaves out, by top-level name in the account folder.
+# What a clone leaves out, by top-level name (wildcards allowed) in the account
+# folder. Codex keeps its logs and thread history in SQLite files too, with
+# their -wal and -shm beside them.
 $CLAUDE_SKIP = @('projects', 'file-history', 'shell-snapshots', 'debug', 'logs', 'history.jsonl')
-$CODEX_SKIP = @('sessions', 'archived_sessions', 'log', 'logs', 'history.jsonl')
+$CODEX_SKIP = @('sessions', 'archived_sessions', 'log', 'logs', 'history.jsonl', 'logs_*.sqlite*', 'thread_history_*.sqlite*')
 $CREDENTIALS = @{ anthropic = '.credentials.json'; openai = 'auth.json' }
 
 function Get-Credentials([string]$Provider) { $CREDENTIALS[$Provider] }
@@ -115,7 +117,7 @@ function Invoke-Clone([string]$Source, [string]$Provider, [string]$Name, [bool]$
     New-Item -ItemType Directory $dest | Out-Null
     $files = 0; $bytes = 0; $left = @()
     foreach ($entry in Get-ChildItem -LiteralPath $src -Force) {
-        if ($entry.Name -in $skip) { $left += $entry.Name; continue }
+        if ($skip | Where-Object { $entry.Name -like $_ }) { $left += $entry.Name; continue }
         $to = Join-Path $dest $entry.Name
         if ($entry.PSIsContainer) {
             Copy-Item -LiteralPath $entry.FullName -Destination $to -Recurse -Force
@@ -202,6 +204,9 @@ function Invoke-SelfTest {
         Write-Fake (Join-Path $codex 'skills/s/SKILL.md') 'x'
         Write-Fake (Join-Path $codex 'sessions/2026/01/r.jsonl') '{}'
         Write-Fake (Join-Path $codex 'log/codex-tui.log') 'x'
+        Write-Fake (Join-Path $codex 'logs_2.sqlite') 'x'
+        Write-Fake (Join-Path $codex 'thread_history_1.sqlite-wal') 'x'
+        Write-Fake (Join-Path $codex 'state_5.sqlite') 'x'
 
         $a = Invoke-Clone $claude 'anthropic' $names[0] $false | Select-Object -Last 1
         Check (Test-Path (Join-Path $a 'plugins/x/plugin.json')) 'clone copies the account tree'
@@ -211,6 +216,7 @@ function Invoke-SelfTest {
         Check (Test-Path (Join-Path $o 'skills/s/SKILL.md')) 'clone copies a Codex account'
         Check (-not (Test-Path (Join-Path $o 'auth.json'))) 'clone leaves the Codex login out by default'
         Check (-not (Test-Path (Join-Path $o 'sessions')) -and -not (Test-Path (Join-Path $o 'log'))) 'clone leaves Codex sessions/ and log/ out'
+        Check (-not (Test-Path (Join-Path $o 'logs_2.sqlite')) -and -not (Test-Path (Join-Path $o 'thread_history_1.sqlite-wal')) -and (Test-Path (Join-Path $o 'state_5.sqlite'))) 'clone leaves Codex SQLite logs and history out, its state in'
         $c = Invoke-Clone $claude 'anthropic' $names[1] $true 3>$null | Select-Object -Last 1
         Check (Test-Path (Join-Path $c '.credentials.json')) '-WithCredentials copies the login'
         $listed = @(Get-TestAccounts | Where-Object Name -in $names)

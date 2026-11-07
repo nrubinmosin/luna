@@ -130,10 +130,15 @@ impl Live {
         dir.to_string_lossy().into_owned()
     }
 
-    /// A registered session to spawn from, in `settings`' mode, with tools.
+    /// A registered session to spawn from, in `settings`' mode, with tools,
+    /// and in a turn as far as the agent layer can tell: a `wait` lets go once
+    /// its caller is no live session (agents/ask.rs `live`). A helper with no
+    /// process stands in, as in the agent layer's own tests.
     fn caller(&self, folder: &str, settings: Value) -> String {
         let id = format!("live-caller-{}", crate::background::mint_id());
-        crate::agents::register(&id, self.provider, folder, &self.account.to_string_lossy(), None, true, settings);
+        let account = self.account.to_string_lossy();
+        crate::agents::register(&id, self.provider, folder, &account, None, true, settings);
+        crate::background::test_helper(&id, &account, None, true);
         id
     }
 
@@ -191,6 +196,7 @@ impl Drop for Spawned {
         if let Err(e) = crate::agents::delete(&self.caller, &self.id, true, true) {
             eprintln!("could not delete live helper {}: {e}", self.id);
         }
+        crate::background::gone_for_test(&self.caller);
         let _ = std::fs::remove_dir_all(&self.folder);
     }
 }
@@ -307,6 +313,7 @@ fn an_over_privileged_spawn_is_refused(provider: Provider) {
     let err = refused.expect_err("an over-privileged spawn is refused");
     assert!(err.contains("more privilege than its caller"), "{err}");
     assert_eq!(crate::background::background_helpers().len(), before, "no helper was started");
+    crate::background::gone_for_test(&caller);
     let _ = std::fs::remove_dir_all(&folder);
 }
 
