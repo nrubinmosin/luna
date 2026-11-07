@@ -750,7 +750,7 @@ src-tauri/src/
   begun, for 8 s on end (`let_go`, `LET_GO_MS`: a sample published late shows the turn before over);
   while that is unsure nothing is handed over. Each tool call in flight has an `mcp::Call` whose fate
   is decided once by `compare_exchange`: Running→Committed when a `wait` or `read` hands the answer
-  over (`hand_over` settles the debt and returns an undo), Running→Cancelled on the cancel. A cancel <!-- lang-check: allow -->
+  over (`hand_over` settles the debt and returns an undo), Running→Canceled on the cancel. A cancel
   that crosses the response finds the call committed — an answered one stays findable for 10 s
   (`LATE_CANCEL`) — and runs the undo: the debt (merged with any question since) and the count seen
   come back. A cancel never loses the answer; at worst it arrives twice.
