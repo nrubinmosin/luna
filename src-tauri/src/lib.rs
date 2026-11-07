@@ -2,6 +2,7 @@ mod account_settings;
 mod account_use;
 mod accounts;
 mod activity;
+mod admit;
 mod agentlog;
 mod agents;
 mod asking;

@@ -14,6 +14,7 @@
 //! every connected window; what the page asks of them comes in by name
 //! (corecmd.rs).
 
+use crate::admit::{Deadline, Slot, Slots};
 use crate::ipc::{self, Discovery, Event, Hello, Req, Res, Welcome};
 use std::io::{self, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
@@ -30,6 +31,15 @@ const IDLE_EXIT: Duration = Duration::from_secs(10 * 60);
 /// reading must not make a session's output wait. It reconnects and each of
 /// its terminals reattaches from the scrollback.
 const QUEUE: usize = 8192;
+/// Connections let in at once before their hello: any local process can
+/// connect, and only a hello with the token earns more than this. Windows and
+/// one-off commands each say hello at once, so this is never full in use.
+const STRANGERS: usize = 32;
+/// For the whole hello, from the connection on: a window sends it at once,
+/// and gives up on a core that has not answered within as long (corelink.rs).
+const HELLO_DEADLINE: Duration = Duration::from_secs(5);
+/// A hello's frame: a token, a role and a number, far smaller than this.
+const HELLO_MAX: usize = 4096;
 
 /// A connected window's outgoing queue, and its socket to close if it falls
 /// behind.
@@ -171,10 +181,13 @@ fn run() {
 
     ALONE_SINCE.store(started, Ordering::SeqCst);
     std::thread::spawn(leave_when_alone);
+    let strangers = Slots::new(STRANGERS);
     for stream in listener.incoming().flatten() {
+        // Past the cap the connection is closed at once, with nothing said.
+        let Some(slot) = strangers.take() else { continue };
         let token = token.clone();
         std::thread::spawn(move || {
-            if let Err(e) = serve(stream, &token, started) {
+            if let Err(e) = serve(stream, slot, &token, started) {
                 crate::log::info("core", &format!("connection ended: {e}"));
             }
         });
@@ -292,21 +305,30 @@ fn broadcast(event: &str, payload: serde_json::Value) {
     });
 }
 
+/// The first frame of a connection, which must be a hello with the token:
+/// read within `within` and `HELLO_MAX` bytes, the stranger's slot held until
+/// then. Returns the request's id and the hello.
+fn hello(stream: &TcpStream, _slot: Slot, token: &str, within: Duration) -> io::Result<(u64, Hello)> {
+    let (kind, payload) = ipc::read_frame_within(&mut Deadline::new(stream, within), HELLO_MAX)?;
+    stream.set_read_timeout(None)?;
+    let first: Option<Req> = (kind == ipc::REQ).then(|| serde_json::from_slice(&payload).ok()).flatten();
+    let hello = first.filter(|r| r.cmd == "hello").and_then(|r| Some((r.id, serde_json::from_value::<Hello>(r.args).ok()?)));
+    // Nothing for someone without the token, not even why.
+    hello
+        .filter(|(_, h)| crate::secret::same(&h.token, token))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::PermissionDenied, "no valid hello"))
+}
+
 /// One connection: the hello, then requests until the other end goes.
-fn serve(mut stream: TcpStream, token: &str, started: u64) -> io::Result<()> {
-    let first: Req = ipc::recv(&mut stream, ipc::REQ)?;
-    let hello: Option<Hello> = (first.cmd == "hello").then(|| serde_json::from_value(first.args).ok()).flatten();
-    let Some(hello) = hello.filter(|h| crate::secret::same(&h.token, token)) else {
-        // Nothing for someone without the token, not even why.
-        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "no valid hello"));
-    };
+fn serve(mut stream: TcpStream, slot: Slot, token: &str, started: u64) -> io::Result<()> {
+    let (first_id, hello) = hello(&stream, slot, token, HELLO_DEADLINE)?;
     if hello.proto != ipc::PROTO {
         let err = format!("protocol {} spoken here, {} asked for", ipc::PROTO, hello.proto);
-        ipc::send(&mut stream, ipc::RES, &Res { id: first.id, ok: None, err: Some(err) })?;
+        ipc::send(&mut stream, ipc::RES, &Res { id: first_id, ok: None, err: Some(err) })?;
         return Ok(());
     }
     let welcome = serde_json::to_value(Welcome::of_this_process(started)).ok();
-    ipc::send(&mut stream, ipc::RES, &Res { id: first.id, ok: welcome, err: None })?;
+    ipc::send(&mut stream, ipc::RES, &Res { id: first_id, ok: welcome, err: None })?;
 
     // Everything this connection is sent from here on goes through its queue
     // and one writer thread, so answers and events never interleave mid-frame.
@@ -393,6 +415,7 @@ fn answer(replies: &Replies, id: u64, result: Result<serde_json::Value, String>)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Read;
 
     #[test]
     fn with_no_window_only_what_must_not_be_missed_is_held() {
@@ -403,5 +426,88 @@ mod tests {
         broadcast("agent://reparent", serde_json::json!({ "id": "x", "parent": "y" }));
         assert_eq!(HELD.lock().unwrap().len(), 2, "and so does a chat's new parent");
         HELD.lock().unwrap().clear();
+    }
+
+    /// `hello` on the far end of a fresh connection the client side of which
+    /// `client` drives; what `hello` made of it, and how long that took.
+    fn hello_from(within: Duration, client: impl FnOnce(TcpStream) + Send + 'static) -> (io::Result<(u64, Hello)>, Duration) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let peer = std::thread::spawn(move || client(TcpStream::connect(addr).unwrap()));
+        let (stream, _) = listener.accept().unwrap();
+        let slots = Slots::new(1);
+        let begun = std::time::Instant::now();
+        let got = hello(&stream, slots.take().unwrap(), "t0k3n", within);
+        let took = begun.elapsed();
+        assert_eq!(slots.taken(), 0, "the stranger's slot is given back");
+        drop(stream);
+        let _ = peer.join();
+        (got, took)
+    }
+
+    fn hello_req(token: &str) -> Req {
+        let args = serde_json::json!({ "proto": ipc::PROTO, "token": token, "role": "ctl" });
+        Req { id: 7, cmd: "hello".into(), args }
+    }
+
+    #[test]
+    fn a_hello_with_the_token_is_let_in() {
+        let (got, _) = hello_from(HELLO_DEADLINE, |mut c| ipc::send(&mut c, ipc::REQ, &hello_req("t0k3n")).unwrap());
+        let (id, h) = got.unwrap();
+        assert_eq!((id, h.role.as_str()), (7, "ctl"));
+    }
+
+    #[test]
+    fn a_stranger_gets_nothing() {
+        let (got, _) = hello_from(HELLO_DEADLINE, |mut c| {
+            ipc::send(&mut c, ipc::REQ, &hello_req("guess")).unwrap();
+            // Nothing comes back before the core closes the connection.
+            c.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+            let mut out = Vec::new();
+            let _ = c.read_to_end(&mut out);
+            assert!(out.is_empty());
+        });
+        assert_eq!(got.err().unwrap().kind(), io::ErrorKind::PermissionDenied);
+        let (got, _) = hello_from(HELLO_DEADLINE, |mut c| {
+            ipc::send(&mut c, ipc::REQ, &Req { id: 1, cmd: "info".into(), args: serde_json::json!({}) }).unwrap()
+        });
+        assert_eq!(got.err().unwrap().kind(), io::ErrorKind::PermissionDenied, "a request before the hello");
+    }
+
+    #[test]
+    fn an_oversized_or_truncated_hello_is_refused() {
+        // A frame claiming a megabyte: refused on its length, before any of it is read.
+        let (got, took) = hello_from(HELLO_DEADLINE, |mut c| {
+            c.write_all(&(1u32 << 20).to_le_bytes()).unwrap();
+            c.write_all(&[ipc::REQ]).unwrap();
+            std::thread::sleep(Duration::from_millis(200));
+        });
+        assert_eq!(got.err().unwrap().kind(), io::ErrorKind::InvalidData);
+        assert!(took < Duration::from_secs(2), "{took:?}");
+        // Half a frame, then the connection closed.
+        let (got, _) = hello_from(HELLO_DEADLINE, |mut c| {
+            let frame = ipc::encode(ipc::REQ, &hello_req("t0k3n")).unwrap();
+            c.write_all(&frame[..frame.len() / 2]).unwrap();
+        });
+        assert_eq!(got.err().unwrap().kind(), io::ErrorKind::UnexpectedEof);
+    }
+
+    #[test]
+    fn a_silent_or_trickling_stranger_is_let_go_at_the_deadline() {
+        let within = Duration::from_millis(300);
+        let (got, took) = hello_from(within, |_c| std::thread::sleep(Duration::from_millis(1500)));
+        assert!(got.is_err());
+        assert!(took < Duration::from_secs(1), "{took:?}");
+        let (got, took) = hello_from(within, |mut c| {
+            let frame = ipc::encode(ipc::REQ, &hello_req("t0k3n")).unwrap();
+            for b in frame {
+                if c.write_all(&[b]).is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        });
+        assert!(got.is_err());
+        assert!(took < Duration::from_secs(1), "{took:?}");
     }
 }
