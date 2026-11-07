@@ -24,7 +24,7 @@ on:
 # Each job asks for what it uses.
 permissions: {}
 
-# One run per tag (or branch) at a time, and none cancelled halfway: a release
+# One run per tag (or branch) at a time, and none canceled halfway: a release
 # stopped between its attestations and its draft would leave half a release.
 concurrency:
   group: release-${{ github.ref }}

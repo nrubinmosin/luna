@@ -117,7 +117,7 @@ try {
         Assert-Equal (Get-CiVerdict $null) 'missing'
         Assert-Equal (Get-CiVerdict @((& $run 'in_progress' $null))) 'pending'
         Assert-Equal (Get-CiVerdict @((& $run 'completed' 'failure'), (& $run 'queued' $null))) 'pending'
-        Assert-Equal (Get-CiVerdict @((& $run 'completed' 'failure'), (& $run 'completed' 'cancelled'))) 'red'
+        Assert-Equal (Get-CiVerdict @((& $run 'completed' 'failure'), (& $run 'completed' 'timed_out'))) 'red'
         Assert-Equal (Get-CiVerdict @((& $run 'completed' 'failure'), (& $run 'completed' 'success'))) 'green'
     }
 
