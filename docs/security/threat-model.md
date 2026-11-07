@@ -22,7 +22,7 @@ flowchart LR
     W["Window process<br/>Tauri commands, corelink.rs"]
     C["Core process<br/>coreproc.rs, corecmd.rs, agents.rs"]
     H["Hub: loopback HTTP<br/>hub.rs (hooks, /guard, /mcp)"]
-    S["CLI child processes<br/>claude / codex<br/>pty/, background.rs"]
+    S["CLI child processes<br/>claude / codex<br/>pty/, background/"]
     D[("Luna data dir<br/>core/core.json, hooks/, mcp/,<br/>settings, logs, agents.jsonl,<br/>managed CLI binaries")]
     A[("Account folders<br/>CLI credentials, settings,<br/>skills")]
     P[("Project folders<br/>and worktrees")]
@@ -120,13 +120,13 @@ in section 6.
 | D | Thread or memory exhaustion | fixed (H2): 64 connections still sending their head (16 KiB, 5 s), then separate lanes of 32 for hooks and the guard and 128 for MCP; bodies 64 KiB (hooks) or 4 MiB within 30 s; 503 past a cap, 413 past a body cap (`hub.rs:42-75`, `admit.rs`). Spawns capped per caller (`agents.rs:514`) |
 | R | Who did what through MCP | every tool call is logged with caller, target and steering arguments, never prompt text (`mcp.rs:419-443`); spawns and exits go to `agents.jsonl` |
 
-### B4. Core to CLI child processes (`pty/`, `background.rs`)
+### B4. Core to CLI child processes (`pty/`, `background/`)
 
 | STRIDE | Threat | Status |
 | --- | --- | --- |
 | T, E | Shell or argument injection through spawn parameters | mitigated: children start from an argv vector, never a shell (`pty/spawn.rs:196`); modes, efforts, models and sandboxes are checked against fixed lists, spelled exactly (`agents.rs:3079`); text Luna types is refused if it holds control characters (`agents.rs:5065`) |
 | E | A tooled session spawns a helper with more privilege than itself | fixed (F1) |
-| E | A config's `auto_review` answers for a person | mitigated: Codex sessions Luna starts without auto-review pin `approvals_reviewer="user"` (`codex/launch.rs:175`, `codex/launch.rs:76`, `background.rs:871`) |
+| E | A config's `auto_review` answers for a person | mitigated: Codex sessions Luna starts without auto-review pin `approvals_reviewer="user"` (`codex/launch.rs:175`, `codex/launch.rs:76`, `background/command.rs:122`) |
 | I | A session inherits Luna's or a parent session's identity variables | mitigated: inherited CLI session variables are removed (`pty/spawn.rs:206`, `pty/spawn.rs:506`) |
 
 ### B5. Core to account folders and project folders
@@ -168,7 +168,7 @@ caller has at most 8 descendants (`agents.rs:35`).
 | Tool | May target | Check | Tested |
 | --- | --- | --- | --- |
 | `luna_kill`, `luna_delete` | own descendants | `authorize` (`agents.rs:2060`) | yes |
-| `luna_send`; `luna_answer` to a question a model asked | any session but itself, the user's chats included; `/`- or `!`-led text only from full access into its own helper, checked again where queued or kept text is typed (`agents.rs:5039`, `agents.rs:5054`, `background.rs:384`) | `authorize_send` (`agents.rs:2082`), `command_reach` | yes |
+| `luna_send`; `luna_answer` to a question a model asked | any session but itself, the user's chats included; `/`- or `!`-led text only from full access into its own helper, checked again where queued or kept text is typed (`agents.rs:5039`, `agents.rs:5054`, `background/queue.rs:84`) | `authorize_send` (`agents.rs:2082`), `command_reach` | yes |
 | `luna_answer` with `allow`, `keys`, or on a CLI's own list | own descendants; `allow` only where the caller would run the tool unasked and never from read-only or asking modes; `keys` and CLI lists only from full access (`agents.rs:4943`, call sites `agents.rs:5112-5149`) | `answer_reach` | yes |
 | `luna_read`, `luna_wait` | any session but itself | `authorize_view` (`agents.rs:2071`) | yes |
 | `luna_spawn` | a new helper in any account not on the denylist `agent_blocked_accounts` (empty by default, `agents.rs:2191`), in any folder except Luna's data dir and what holds it (`agents.rs:3120`, `agents.rs:3195`), at no more privilege than the caller (`agents.rs:3042`, `agents.rs:3257`) | `cap`, `reaches_luna`, spawn cap | yes |

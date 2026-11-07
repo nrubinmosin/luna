@@ -159,10 +159,15 @@ src-tauri/src/
                 (agent://spawn ↔ agent_spawned), send into the pty, read from the transcript, wait on activity, kill, delete (+worktree);
                 notifier: an uncollected helper answer is typed to the caller when it is free;
                 autoDelete helpers are deleted once they have served
-  background.rs helpers with no row (luna_spawn without visible): a turn is one run of
+  background/   helpers with no row (luna_spawn without visible): a turn is one run of
                 `claude -p --output-format stream-json` or `codex exec --json`, prompt on stdin,
                 events on stdout, the next turn a resume; a held permission / question
-                (`--permission-prompt-tool`) waits for luna_answer; agent://background to the window
+                (`--permission-prompt-tool`) waits for luna_answer; agent://background to the window.
+                mod.rs the registry; types.rs what a helper is made of; queue.rs text queued,
+                joined and reserved; command.rs a turn's argv; run.rs its process; events.rs
+                the CLIs' streams and a turn's end; control.rs kill, interrupt, leftovers;
+                ask.rs screen, transcript, held asks; rows.rs rows and promotion; persist.rs
+                helpers.json across cores; testkit.rs the hooks other tests use
   agentlog.rs   <data>/agents.jsonl: a line per spawn and per end, for luna_sessions(history: true)
   activity.rs   sampler every 5 s: turn (hooks + registry / rollout), descendants, output →
                 busy / waiting / idle per session and a summary
@@ -234,7 +239,7 @@ src-tauri/src/
                 entries (`CLAUDE.md` / `AGENTS.md`, one instructions file per account, the closest
                 reach winning; `skills/<name>`) — and skills for the sessions in folders the user
                 names, handed out (or kept from them) at every start by `session_args` (pty/start.rs,
-                background.rs); a ledger
+                background/command.rs); a ledger
                 of what Luna wrote where (`<data>/library-state.json`, bytes in `library-blobs/` by
                 hash) so only its own copies are touched — see Key decisions
   watchdog.rs   a window whose page stopped responding (WebView2 died) is rebuilt
@@ -845,7 +850,7 @@ src-tauri/src/
   without it Codex falls back to an ordinarily installed PowerShell or Windows PowerShell. The
   instruction says that the CLIs' built-in subagents can do neither another provider nor another
   account: without that a Codex orchestrator took its own `spawn_agent`.
-  **Background helpers** (background.rs) are what `luna_spawn` makes unless asked for `visible:
+  **Background helpers** (background/) are what `luna_spawn` makes unless asked for `visible:
   true`: no chat row and no pty, all in the core, so no window is needed. Each turn is one process —
   `claude -p --output-format stream-json --verbose` / `codex exec --json`, resumed by the session /
   thread id the first turn printed — with the prompt on stdin (no command-line limit) and stdout

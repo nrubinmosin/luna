@@ -1,5 +1,5 @@
 //! What the launch golden tests share (pty/start.rs for the sessions in a pane,
-//! background.rs for the helpers without one): a start's arguments and
+//! background/command.rs for the helpers without one): a start's arguments and
 //! environment with what changes from run to run — the hub's port and
 //! secrets, a session's MCP token, the files under the data dir, a profile's
 //! random name — put as stable placeholders, so the rest can be compared

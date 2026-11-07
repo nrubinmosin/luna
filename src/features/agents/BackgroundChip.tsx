@@ -54,7 +54,7 @@ function askLine(h: BackgroundHelperDto): string | null {
 }
 
 /**
- * The background helpers of one chat (background.rs), its helpers' helpers
+ * The background helpers of one chat (background/), its helpers' helpers
  * with them: a count on its row, and on a click a list of them with what each
  * is doing, to open one as a chat of its own, stop it or delete it. Its agent
  * is the one told what they say; this is for a person who wants to look.

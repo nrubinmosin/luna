@@ -1,5 +1,5 @@
 //! How a Codex session in a pane is started, and what a helper's `codex exec`
-//! shares with it (background.rs): arguments and environment, laid out from
+//! shares with it (background/): arguments and environment, laid out from
 //! what the start has already settled. Nothing here writes, registers or
 //! mints a token; that happens under the chat's spawn gate (pty/start.rs),
 //! which hands the results in.

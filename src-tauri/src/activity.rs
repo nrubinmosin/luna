@@ -255,7 +255,7 @@ pub fn left_quiet(chat_id: &str) -> Option<(u64, String)> {
 }
 
 pub fn turn_state(chat_id: &str) -> Option<TurnState> {
-    // A helper with no terminal keeps its own count (background.rs).
+    // A helper with no terminal keeps its own count (background/).
     if let Some(t) = crate::background::turn_state(chat_id) {
         return Some(t);
     }
@@ -309,7 +309,7 @@ pub struct SessionActivity {
 
 impl SessionActivity {
     /// A session known only by its turn: a background helper, whose turn is
-    /// its process (background.rs).
+    /// its process (background/).
     pub fn of_turn(id: &str, turn: Turn, busy: bool) -> SessionActivity {
         SessionActivity {
             id: id.to_string(),

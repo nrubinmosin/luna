@@ -501,7 +501,7 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
     Ok(String::new())
 }
 
-/// The same clean-up for a process started without a pty (background.rs).
+/// The same clean-up for a process started without a pty (background/).
 pub(crate) fn clean_env(cmd: &mut Command) {
     for k in INHERITED_SESSION_VARS {
         cmd.env_remove(k);

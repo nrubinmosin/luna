@@ -1,5 +1,5 @@
 /**
- * The helpers agents run in the background (background.rs): no rows of their
+ * The helpers agents run in the background (background/): no rows of their
  * own, so the sidebar shows them only as a count on their parent's row. The
  * core sends the whole list on every change (`agent://background`); the
  * bridge keeps it here.
