@@ -51,6 +51,57 @@ pub fn codex_shaped(path: &str) -> bool {
         && name(root).is_some_and(|r| r.eq_ignore_ascii_case("worktrees"))
 }
 
+/// `codex_shaped`, and in the `worktrees` folder of a Codex account Luna runs
+/// sessions on (`<accounts root>/openai/<account>`, its `CODEX_HOME`), which
+/// is where Codex puts what `--worktree` makes (seen on 0.167.0:
+/// `$CODEX_HOME/worktrees/<4 hex>/<repo>`, detached). That shape anywhere
+/// else is a folder nobody can show Codex made, and nothing deletes it as one.
+fn codex_made(path: &str) -> bool {
+    !has_dot_parts(path)
+        && codex_shaped(path)
+        && Path::new(path.trim_end_matches(['\\', '/'])).ancestors().nth(4).is_some_and(|accounts| {
+            let accounts = accounts.to_string_lossy();
+            #[cfg(test)]
+            if TEST_CODEX_ACCOUNTS.lock().unwrap().iter().any(|a| same_place(a, &accounts)) {
+                return true;
+            }
+            crate::accounts::provider_root(crate::provider::Provider::Codex)
+                .is_ok_and(|root| same_place(&root.to_string_lossy(), &accounts))
+        })
+}
+
+/// Folders the tests' fake Codex accounts are in, taken as the accounts root's.
+#[cfg(test)]
+static TEST_CODEX_ACCOUNTS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// Whether git keeps `path` as one of `folder`'s worktrees (`git worktree
+/// list`). Anyone can write a `.git` file pointing at a repository; git's own
+/// record takes a write into that repository.
+fn registered(folder: &str, path: &str) -> bool {
+    listed(folder).iter().any(|(p, _)| same_place(p, path))
+}
+
+/// Each worktree of `folder` as git lists it, with the branch it has checked
+/// out. From `--porcelain -z`, whose fields end in NUL: a path is the one thing
+/// in it anyone can name, and a newline in one would read, line by line, as a
+/// record of its own. A field that is not UTF-8 is left out rather than read
+/// lossily into something it is not.
+fn listed(folder: &str) -> Vec<(String, Option<String>)> {
+    let Ok(out) = git(folder).args(["worktree", "list", "--porcelain", "-z"]).output() else { return Vec::new() };
+    if !out.status.success() {
+        return Vec::new();
+    }
+    let mut all: Vec<(String, Option<String>)> = Vec::new();
+    for field in out.stdout.split(|&b| b == 0).filter_map(|f| std::str::from_utf8(f).ok()) {
+        if let Some(p) = field.strip_prefix("worktree ") {
+            all.push((p.to_string(), None));
+        } else if let (Some(b), Some(last)) = (field.strip_prefix("branch refs/heads/"), all.last_mut()) {
+            last.1 = Some(b.to_string());
+        }
+    }
+    all
+}
+
 /// The repository a linked worktree belongs to, off its `.git` file
 /// (`gitdir: <repo>/.git/worktrees/<id>`). None when the worktree is gone or
 /// is not a linked one.
@@ -68,11 +119,11 @@ fn repo_of_linked(worktree: &str) -> Option<String> {
 }
 
 /// True when `candidate` is a worktree a CLI made for this folder: under its
-/// `.claude/worktrees`, or one Codex made whose checkout points back at it.
-/// Every destructive path below is gated on this.
+/// `.claude/worktrees`, or one Codex made (`codex_made`) whose checkout points
+/// back at it. Every destructive path below is gated on this.
 pub fn is_worktree_of(folder: &str, candidate: &str) -> bool {
     under_claude_worktrees(folder, candidate)
-        || (!has_dot_parts(candidate) && codex_shaped(candidate) && repo_of_linked(candidate).is_some_and(|r| same_place(&r, folder)))
+        || (!has_dot_parts(candidate) && codex_made(candidate) && repo_of_linked(candidate).is_some_and(|r| same_place(&r, folder)))
 }
 
 /// The project folder a CLI-made worktree belongs to, given that worktree or a
@@ -166,19 +217,7 @@ pub fn root_of(path: &str) -> Option<(String, String)> {
 
 /// Branch checked out in the given worktree, per `git worktree list`.
 pub fn branch_of(folder: &str, worktree_path: &str) -> Option<String> {
-    let out = git(folder).args(["worktree", "list", "--porcelain"]).output().ok()?;
-    let text = String::from_utf8_lossy(&out.stdout);
-    let mut current: Option<String> = None;
-    for line in text.lines() {
-        if let Some(p) = line.strip_prefix("worktree ") {
-            current = Some(p.to_string());
-        } else if let Some(b) = line.strip_prefix("branch refs/heads/") {
-            if current.as_deref().is_some_and(|p| same_place(p, worktree_path)) {
-                return Some(b.trim().to_string());
-            }
-        }
-    }
-    None
+    listed(folder).into_iter().find(|(p, b)| b.is_some() && same_place(p, worktree_path)).and_then(|(_, b)| b)
 }
 
 /// What a checkout has checked out: the branch, none on a detached HEAD, and
@@ -392,7 +431,7 @@ pub fn remove_worktree_now(folder: String, worktree_path: String) -> Result<(), 
         // Still worth pruning a stale admin entry and its branch. A Codex
         // worktree that is gone cannot show whose it was; git's prune only
         // drops entries whose folder is missing, so nothing else is at risk.
-        if !under_claude_worktrees(&folder, &worktree_path) && !codex_shaped(&worktree_path) {
+        if !under_claude_worktrees(&folder, &worktree_path) && !codex_made(&worktree_path) {
             return Err("refusing: path is not a worktree of this folder".into());
         }
         let branch = branch_of(&folder, &worktree_path);
@@ -403,6 +442,13 @@ pub fn remove_worktree_now(folder: String, worktree_path: String) -> Result<(), 
     }
     if !is_worktree_of(&folder, &worktree_path) {
         return Err("refusing: path is not a worktree of this folder".into());
+    }
+    // A Codex one goes by its `.git` file above, which proves nothing alone:
+    // git must have it too, or the fallback below would delete by hand a
+    // folder git never made. Claude Code's are by place, and one git has lost
+    // track of (a removal stopped halfway) is still for that fallback.
+    if codex_made(&worktree_path) && !registered(&folder, &worktree_path) {
+        return Err("refusing: git keeps no record of this worktree".into());
     }
 
     // Resolve the branch before the worktree disappears from git's records.
@@ -467,7 +513,7 @@ pub fn remove_worktree_now(folder: String, worktree_path: String) -> Result<(), 
     crate::log::info("worktree", &format!("removed {worktree_path}: branches deleted {deleted:?}, kept {kept:?}"));
     // Codex keeps each checkout in a bucket of its own, which git leaves
     // behind empty.
-    if codex_shaped(&worktree_path) {
+    if codex_made(&worktree_path) {
         if let Some(bucket) = Path::new(&worktree_path).parent() {
             let _ = std::fs::remove_dir(bucket);
         }
@@ -961,13 +1007,15 @@ mod tests {
     }
 
     /// A repository with one linked worktree where Codex puts them, under a
-    /// fake account: (root, repo, worktree), spelled short where the volume has
-    /// short names. None where there is no git.
+    /// fake account (`<root>/account`, `root` taken for the accounts root's
+    /// Codex folder): (root, repo, worktree), spelled short where the volume
+    /// has short names. None where there is no git.
     fn codex_layout(tag: &str) -> Option<(PathBuf, String, String)> {
         let root = std::env::temp_dir().join(format!("luna-wt-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).ok()?;
         let root = short_spelling(&root);
+        TEST_CODEX_ACCOUNTS.lock().unwrap().push(root.to_string_lossy().into_owned());
         let repo = root.join("repo");
         std::fs::create_dir_all(&repo).ok()?;
         let repo_s = repo.to_string_lossy().into_owned();
@@ -1315,6 +1363,55 @@ mod tests {
         assert!(!codex_shaped(&native(r"E:\acc\worktrees\d6ff")));
         assert!(!codex_shaped(&native(r"E:\acc\worktrees\codex-1\repo")));
         assert!(!codex_shaped(&native(r"E:\p\.codex\worktrees\codex-1a2b3c")));
+    }
+
+    #[test]
+    fn a_folder_shaped_like_codexs_is_deleted_only_in_a_codex_account_and_with_gits_record() {
+        let Some((root, repo, wt)) = codex_layout("anchor") else { return };
+        let dot_git = std::fs::read_to_string(Path::new(&wt).join(".git")).unwrap();
+        let forge = |at: PathBuf| {
+            std::fs::create_dir_all(&at).unwrap();
+            std::fs::write(at.join(".git"), &dot_git).unwrap();
+            std::fs::write(at.join("keep.txt"), "mine").unwrap();
+            at.to_string_lossy().into_owned()
+        };
+        // Its shape and a `.git` file pointing at the repository, out of any account.
+        let astray = forge(root.join("elsewhere").join("x").join("worktrees").join("0a1b").join("repo"));
+        assert!(codex_shaped(&astray) && !is_worktree_of(&repo, &astray));
+        assert!(remove_worktree_now(repo.clone(), astray.clone()).is_err());
+        assert!(Path::new(&astray).join("keep.txt").exists());
+        // In the account, where Codex would put it, but never made by git.
+        let forged = forge(root.join("account").join("worktrees").join("ffff").join("repo"));
+        assert!(is_worktree_of(&repo, &forged), "its place and its `.git` file say so");
+        assert!(remove_worktree_now(repo.clone(), forged.clone()).unwrap_err().contains("no record"));
+        assert!(Path::new(&forged).join("keep.txt").exists());
+        // The real one goes, bucket and all.
+        assert!(registered(&repo, &wt));
+        remove_worktree_now(repo.clone(), wt.clone()).unwrap();
+        assert!(!Path::new(&wt).exists() && !Path::new(&wt).parent().unwrap().exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A worktree whose path has a newline and what reads, line by line, as
+    /// another worktree's record: that other is no worktree of git's.
+    #[cfg(unix)]
+    #[test]
+    fn a_path_cannot_write_a_record_of_gits_into_its_list() {
+        let Some((root, repo, wt)) = codex_layout("newline") else { return };
+        let forged = root.join("account").join("worktrees").join("eeee").join("repo");
+        std::fs::create_dir_all(&forged).unwrap();
+        std::fs::write(forged.join(".git"), std::fs::read_to_string(Path::new(&wt).join(".git")).unwrap()).unwrap();
+        let forged = forged.to_string_lossy().into_owned();
+        let evil = root.join(format!("evil\nworktree {forged}\nHEAD {}\ndetached", "0".repeat(40)));
+        let added = git(&repo).args(["worktree", "add", "-q", "--detach"]).arg(&evil).output().unwrap();
+        assert!(added.status.success(), "{}", String::from_utf8_lossy(&added.stderr));
+        assert!(registered(&repo, &evil.to_string_lossy()), "the odd one is git's");
+        assert!(is_worktree_of(&repo, &forged) && !registered(&repo, &forged), "the one it names is not");
+        assert!(remove_worktree_now(repo.clone(), forged.clone()).is_err());
+        assert!(Path::new(&forged).exists());
+        let _ = remove_worktree_now(repo.clone(), wt);
+        let _ = git(&repo).args(["worktree", "remove", "--force"]).arg(&evil).output();
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

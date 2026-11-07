@@ -5,10 +5,11 @@
 //! silent costs context). One hook speaks: the guard's (`/guard`, guard.rs),
 //! which refuses a shell call that would wait forever, and says why.
 //!
-//! Loopback only, on a port picked at start; every request carries a secret
-//! minted for this run, so a stray local process cannot feed the activity
-//! tracker. Each session's hook file names the port and the secret, and is
-//! rewritten at spawn, so a session that outlives a Luna restart simply stops
+//! Loopback only, on a port picked at start; every request carries its chat's
+//! secret, derived from a key minted for this run, so a stray local process
+//! cannot feed the activity tracker, and a session that knows its own hook
+//! URL cannot post as another chat. Each session's hook file names the port
+//! and its secret, and is rewritten at spawn, so a session that outlives a Luna restart simply stops
 //! being heard and the registry poll covers it.
 //!
 //! The HTTP around it is Luna's own, the head parsed by `httparse`, and only
@@ -30,7 +31,9 @@ use std::time::Duration;
 
 struct Listener {
     port: u16,
-    secret: String,
+    /// What each chat's secret is derived from (`chat_secret`); never in a
+    /// URL itself.
+    key: String,
 }
 
 static LISTENER: OnceLock<Listener> = OnceLock::new();
@@ -85,7 +88,7 @@ pub fn start() {
         crate::log::error("hub", "listener has no address; hooks are off");
         return;
     };
-    if LISTENER.set(Listener { port: addr.port(), secret: mint_secret() }).is_err() {
+    if LISTENER.set(Listener { port: addr.port(), key: mint_key() }).is_err() {
         // Started already: the tests start it from more than one place.
         return;
     }
@@ -96,14 +99,23 @@ pub fn start() {
 /// The URL a session's hooks post to, or None while the listener is off.
 pub fn hook_url(chat_id: &str) -> Option<String> {
     let l = LISTENER.get()?;
-    Some(format!("http://127.0.0.1:{}/hook/{}/{}", l.port, chat_id, l.secret))
+    Some(format!("http://127.0.0.1:{}/hook/{}/{}", l.port, chat_id, chat_secret(&l.key, chat_id)))
 }
 
 /// The URL a session's guard hook posts a shell call to (guard.rs), or None
 /// while the listener is off.
 pub fn guard_url(chat_id: &str) -> Option<String> {
     let l = LISTENER.get()?;
-    Some(format!("http://127.0.0.1:{}/guard/{}/{}", l.port, chat_id, l.secret))
+    Some(format!("http://127.0.0.1:{}/guard/{}/{}", l.port, chat_id, chat_secret(&l.key, chat_id)))
+}
+
+/// The secret of one chat's hook and guard URLs: HMAC-SHA256 of its id under
+/// the run's key, 128 bits of it. One chat's URL, which its own session can
+/// read, says nothing of another's.
+fn chat_secret(key: &str, chat_id: &str) -> String {
+    let mut secret = crate::secret::hmac_hex(key.as_bytes(), chat_id.as_bytes());
+    secret.truncate(32);
+    secret
 }
 
 /// The MCP endpoint, or None while the listener is off.
@@ -221,7 +233,9 @@ fn route(head: &Head) -> Result<Route, (u16, Option<String>)> {
     }
     let (chat_id, secret) = parse_path(path, if guard { "/guard/" } else { "/hook/" }).ok_or((404, None))?;
     let Some(l) = LISTENER.get() else { return Err((503, None)) };
-    if !crate::secret::same(secret, &l.secret) {
+    // The secret of the chat the path names, so it is that chat's events or
+    // none: the guard's too, though it answers for no chat in particular.
+    if !crate::secret::same(secret, &chat_secret(&l.key, chat_id)) {
         return Err((403, None));
     }
     Ok(if guard { Route::Guard } else { Route::Hook(chat_id.to_string()) })
@@ -362,9 +376,9 @@ fn parse_path<'a>(path: &'a str, prefix: &str) -> Option<(&'a str, &'a str)> {
     (!id.is_empty() && !secret.is_empty() && !secret.contains('/')).then_some((id, secret))
 }
 
-/// 128 bits from the OS's CSPRNG, as 32 hex characters.
-fn mint_secret() -> String {
-    crate::secret::random_hex(16)
+/// 256 bits from the OS's CSPRNG, as 64 hex characters.
+fn mint_key() -> String {
+    crate::secret::random_hex(32)
 }
 
 #[cfg(test)]
@@ -479,6 +493,17 @@ mod live {
         let (base, _secret) = url.rsplit_once('/').unwrap();
         let bad = format!("{base}/nope");
         assert_eq!(ureq::post(&bad).send_string("{}").unwrap_err().into_response().map(|r| r.status()), Some(403));
+        // Its own secret is no key to another chat, the guard's door included.
+        let (_, own) = url.rsplit_once('/').unwrap();
+        let other = hook_url("chat-hub-other").unwrap();
+        assert_ne!(other.rsplit_once('/').unwrap().1, own);
+        let forged = format!("{}/{own}", other.rsplit_once('/').unwrap().0);
+        let stop = r#"{"hook_event_name":"Stop"}"#;
+        assert_eq!(ureq::post(&forged).send_string(stop).unwrap_err().into_response().map(|r| r.status()), Some(403));
+        assert_eq!(crate::activity::hook_turn("chat-hub-other"), None, "nothing reached the tracker as that chat");
+        let guard = guard_url("chat-hub-other").unwrap().replace(other.rsplit_once('/').unwrap().1, own);
+        assert_eq!(ureq::post(&guard).send_string("{}").unwrap_err().into_response().map(|r| r.status()), Some(403));
+        assert!(ureq::post(&other).send_string(stop).is_ok_and(|r| r.status() == 204), "its own secret lets it in");
         assert_eq!(post("not json").unwrap_err().into_response().map(|r| r.status()), Some(400));
         assert_eq!(ureq::get(&url).call().unwrap_err().into_response().map(|r| r.status()), Some(405));
         // An MCP call without a token, and one past the hooks' body cap.
@@ -500,7 +525,7 @@ mod live {
     }
 
     fn hook_path(chat: &str) -> String {
-        format!("/hook/{chat}/{}", LISTENER.get().unwrap().secret)
+        format!("/hook/{chat}/{}", chat_secret(&LISTENER.get().unwrap().key, chat))
     }
 
     /// What the listener answers to `bytes`, the connection's write side

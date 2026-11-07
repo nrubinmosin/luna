@@ -37,6 +37,9 @@ sha2 = "0.10"
 getrandom = "0.3.4"
 # Compares a presented secret with Luna's in constant time (src/secret.rs).
 subtle = "2.6.1"
+# Each chat's hook secret, HMAC-SHA256 of its id (src/secret.rs, hub.rs).
+# Pinned exactly; it builds on the digest, sha2 and subtle already in the tree.
+hmac = "=0.12.1"
 # The hub's request heads (src/hub.rs), parsed strictly.
 httparse = "1.10.1"
 toml_edit = "0.22"
@@ -52,13 +55,15 @@ vt100 = "0.16"
 # Job Objects and process counters for what a session has running under it
 # (src/procs.rs); power requests and suspend for keep-awake and
 # shutdown-when-done (src/power.rs); the exit watcher's wait, exit code and
-# boot time (src/lifecycle.rs). Pinned to the version tauri already
+# boot time (src/lifecycle.rs); the DACLs on the folders holding secrets
+# (src/secret.rs). Pinned to the version tauri already
 # resolves, so this adds features to a crate in the tree rather than a second
 # copy of it.
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Security",
+    "Win32_Security_Authorization",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_JobObjects",
     "Win32_System_Power",

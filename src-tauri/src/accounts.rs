@@ -35,7 +35,7 @@ fn default_root(test: bool, data_dir: &Path, documents: Option<PathBuf>) -> Resu
     Ok(docs.join("luna-accounts"))
 }
 
-fn provider_root(provider: Provider) -> Result<PathBuf, String> {
+pub(crate) fn provider_root(provider: Provider) -> Result<PathBuf, String> {
     Ok(accounts_root()?.join(provider.accounts_dir()))
 }
 

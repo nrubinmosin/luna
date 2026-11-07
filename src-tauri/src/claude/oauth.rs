@@ -177,29 +177,41 @@ fn renewed(oauth: &Value, resp: &Value) -> Option<Value> {
 }
 
 /// Temp file and rename, so a CLI reading at the same instant sees the old
-/// file or the new one and never half of either. A rename can lose to a
-/// reader holding the file open; a plain write is the last resort, because
-/// the tokens it carries are the only copy there is once the old refresh
-/// token has rotated away.
+/// file or the new one and never half of either. The temp file is the
+/// owner's alone from the call that creates it (`secret::create_private`),
+/// under a random name nobody can have ready. A rename can lose to a reader
+/// holding the file open (Windows); a write in place is the last resort,
+/// because the tokens it carries are the only copy there is once the old
+/// refresh token has rotated away, and it tightens the file first or writes
+/// nothing.
 fn write(account_path: &str, text: &str) -> Result<(), String> {
     let path = creds_path(account_path);
-    let tmp = path.with_extension("json.luna-tmp");
-    std::fs::write(&tmp, text).map_err(|e| e.to_string())?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+    write_via(&path, &path.with_extension(format!("json.{}.luna-tmp", crate::secret::random_hex(8))), text)
+}
+
+/// `write` through `tmp`, which is removed on a failure only once this call
+/// has made it: a file someone else has there is not ours to delete.
+fn write_via(path: &Path, tmp: &Path, text: &str) -> Result<(), String> {
+    use std::io::Write;
+    let mut file = crate::secret::create_private(tmp).map_err(|e| e.to_string())?;
+    let wrote = file.write_all(text.as_bytes());
+    drop(file);
+    if let Err(e) = wrote {
+        let _ = std::fs::remove_file(tmp);
+        return Err(e.to_string());
     }
     for attempt in 0..3 {
         if attempt > 0 {
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
-        if std::fs::rename(&tmp, &path).is_ok() {
+        if std::fs::rename(tmp, path).is_ok() {
             return Ok(());
         }
     }
-    let _ = std::fs::remove_file(&tmp);
-    std::fs::write(&path, text).map_err(|e| e.to_string())
+    let _ = std::fs::remove_file(tmp);
+    let mut file = std::fs::OpenOptions::new().write(true).open(path).map_err(|e| e.to_string())?;
+    crate::secret::restrict(&file).map_err(|e| e.to_string())?;
+    file.set_len(0).and_then(|()| file.write_all(text.as_bytes())).map_err(|e| e.to_string())
 }
 
 /// Renews the account's access token if it has expired. `force` skips the
@@ -299,6 +311,38 @@ mod tests {
         assert_eq!(next["refreshToken"], "rt-old");
         assert_eq!(next["scopes"], json!(["user:inference"]));
         assert!(renewed(&stored, &json!({"expires_in": 60})).is_none());
+    }
+
+    #[test]
+    fn renewed_tokens_replace_the_file_whole_and_are_the_owners_alone() {
+        let root = std::env::temp_dir().join(format!("luna-oauth-write-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let acct = root.to_string_lossy().into_owned();
+        let path = creds_path(&acct);
+        std::fs::write(&path, "old").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            // As a careless copy may have left it.
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        write(&acct, "new").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new");
+        let left: Vec<_> = std::fs::read_dir(&root).unwrap().flatten().map(|e| e.file_name()).collect();
+        assert_eq!(left.len(), 1, "no temp file left: {left:?}");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        // A temp name someone else holds: refused, their file and ours untouched.
+        let theirs = root.join("planted.luna-tmp");
+        std::fs::write(&theirs, "theirs").unwrap();
+        assert!(write_via(&path, &theirs, "newer").is_err());
+        assert_eq!(std::fs::read_to_string(&theirs).unwrap(), "theirs");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
