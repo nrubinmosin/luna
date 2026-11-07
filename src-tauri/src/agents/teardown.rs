@@ -3,11 +3,12 @@
 //! chat's helpers and debts.
 
 use crate::agents::ask::live;
+use crate::agents::notifier::{left_holds, left_quiet};
 use crate::agents::read::{transcript_path, transcripts};
 use crate::agents::registry::{authorize, descendants, label, reg, Known, Registry};
 use crate::agents::said::replies_since;
 use crate::agents::spawn::worktree::worktree_of;
-use crate::agents::{budget_owed, left_holds, left_quiet, save_quota_told};
+use crate::agents::{budget_owed, save_quota_told};
 use crate::throttle::now_ms;
 use serde::Serialize;
 

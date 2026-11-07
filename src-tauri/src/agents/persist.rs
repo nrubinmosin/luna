@@ -522,13 +522,14 @@ pub(super) fn conversation_on_disk(id: &str, provider: Provider, folder: &str, a
 mod tests {
     use super::*;
     use crate::agents::delivery::{deliver_held, is_held};
+    use crate::agents::notice_line;
+    use crate::agents::notifier::{owed_stands, Settled, CALLER_RETURN_MS};
     use crate::agents::owed::{last_shown, owe_from};
     use crate::agents::registry::{gone_from_the_window, parent_of, reg, register};
     use crate::agents::said::{first_words, TASK_CHARS};
     use crate::agents::spawn::{spawn_is, SpawnParams, SpawnTaken, SpawnUnderWay};
     use crate::agents::teardown::forget;
     use crate::agents::tests::{cut_short_chat, spawn_taken, spawns_to_myself, take_up};
-    use crate::agents::{notice_line, owed_stands, Settled, CALLER_RETURN_MS};
 
     /// What a helper was spawned on is kept with it, not with `agents.jsonl`,
     /// which is cut with the helper still there.

@@ -4,13 +4,13 @@
 
 use crate::agents::ask::ask_of;
 use crate::agents::delivery::{needle_of, spill, type_held, words, GoingIn, TypingInto};
+use crate::agents::notifier::{CALLER_RETURN_MS, NOTIFY_IDLE_LOOKS};
 use crate::agents::owed::{owe_from, resumed_in, seen};
 use crate::agents::persist::{core_up_ms, SESSION_RETURN_MS};
 use crate::agents::privilege::{command_prefix, command_reach_now, plain_text};
 use crate::agents::read::{transcript_end, transcript_path, Message};
 use crate::agents::registry::{label, reg};
 use crate::agents::said::messages_at;
-use crate::agents::{CALLER_RETURN_MS, NOTIFY_IDLE_LOOKS};
 use crate::provider::Provider;
 
 /// A visible helper spawned with `resumeOnRestart` that a core's going stopped
@@ -328,13 +328,14 @@ fn resume_chat(pty: &crate::pty::PtyManager, id: &str) {
 mod tests {
     use super::*;
     use crate::agents::delivery::{needle_of, GoingIn, Held, NEEDLE};
+    use crate::agents::notice_line;
+    use crate::agents::notifier::{Settled, CALLER_RETURN_MS, NOTICE_TAG};
     use crate::agents::owed::{resumed, Owed};
     use crate::agents::persist::{chats_now, ties_in, SavedSend, SESSION_RETURN_MS};
     use crate::agents::read::Message;
     use crate::agents::registry::{reg, register, resumes_on_restart};
     use crate::agents::teardown::forget;
     use crate::agents::tests::{cut_short_chat, notice_for, take_up};
-    use crate::agents::{notice_line, Settled, CALLER_RETURN_MS, NOTICE_TAG};
 
     #[test]
     fn a_visible_helper_cut_short_with_the_flag_waits_to_go_on_and_says_nothing_yet() {

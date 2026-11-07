@@ -2,11 +2,11 @@
 //! afresh under a later core.
 
 use crate::agents::lost::{left_words, sentence};
+use crate::agents::notifier::CALLER_RETURN_MS;
 use crate::agents::persist::SESSION_RETURN_MS;
 use crate::agents::registry::{label, reg, Registry, DEV_CALLER};
 use crate::agents::said::note_file;
 use crate::agents::spawn::{spawn_with, SpawnTaken};
-use crate::agents::CALLER_RETURN_MS;
 use std::collections::HashMap;
 
 /// How a spawn is named to its caller, who may have several: as it was named,
@@ -197,12 +197,12 @@ pub(in crate::agents) fn spawn_news(up_ms: u64) -> HashMap<String, Vec<(u64, Str
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agents::notifier::CALLER_RETURN_MS;
     use crate::agents::persist::{take_up_spawns, SESSION_RETURN_MS};
     use crate::agents::registry::{reg, register};
     use crate::agents::spawn::SpawnTaken;
     use crate::agents::teardown::forget;
     use crate::agents::tests::{cut_short_chat, spawn_taken, spawns_to_myself, take_up};
-    use crate::agents::CALLER_RETURN_MS;
     use crate::provider::Provider;
 
     #[test]

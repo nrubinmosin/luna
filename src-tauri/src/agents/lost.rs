@@ -264,6 +264,7 @@ pub fn undelivered_left(id: &str, lost: &[crate::background::Queued]) {
 mod tests {
     use super::*;
     use crate::agents::delivery::{deliver_held, is_held};
+    use crate::agents::notifier::Settled;
     use crate::agents::owed::{hand_over, owe_from};
     use crate::agents::persist::{chats_now, conversation_of, Opening};
     use crate::agents::read::transcripts;
@@ -272,7 +273,6 @@ mod tests {
     use crate::agents::teardown::forget;
     use crate::agents::tests::{back, first_turn_cut, lost_helper, notice_for, take_up};
     use crate::agents::wait::wait;
-    use crate::agents::Settled;
     use crate::provider::Provider;
     use crate::throttle::now_ms;
 
