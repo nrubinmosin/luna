@@ -122,10 +122,9 @@ sequenceDiagram
   R-->>Wn: agent://spawn (request id, settings, prompt)
   Wn->>Wn: createChat(parentId), row not seated in a pane
   Wn->>PT: ensure_claude_session / ensure_codex_session (spawnRequest)
-  Note over PT: under the chat's spawn gate, before any process exists
-  PT->>R: register: token, lineage, settings
-  PT->>R: spawn_is: bind the session to the request, save the ties
-  PT->>PT: write settings / MCP files, lay out args (launch.rs)
+  Note over PT,R: schematic: under the chat's spawn gate, before any process exists (exact order per CLI below)
+  PT->>R: register (token, lineage) + spawn_is (bind to the request, save the ties)
+  PT->>PT: library pass, settings / MCP files, args (launch.rs)
   PT->>S: create the CLI process in a pty, prompt after --
   Wn->>R: agent_spawned (request id, chat id)
   R->>PT: await_start: prompt taken up, or screen
@@ -136,6 +135,15 @@ sequenceDiagram
   S-->>R: turn ends (hooks / transcript)
   R->>A: notifier types "[Luna notice, not typed by the user] ..."
 ```
+
+The preparation boxes are schematic; `pty/start.rs` does them in this order:
+
+- **Claude Code:** worktree fetch (if any) → library pass and `session_args` →
+  settings file (`claude_settings_file`) → `register` → `spawn_is` → MCP file
+  (`claude_mcp_file`) → instructions folder → `claude::launch::chat_args`.
+- **Codex:** guard arguments → `register` → `spawn_is` → library pass and
+  `session_args` → `codex::launch::chat_args` (Luna's MCP server goes by `-c`
+  arguments, no file).
 
 Registration and `spawn_is` happen inside the start, before the process is
 created, so a session can never run unknown to the registry and a core that dies
