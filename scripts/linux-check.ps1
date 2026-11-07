@@ -1,3 +1,4 @@
+#Requires -Version 7.4
 # Builds the crate for Linux in Docker and runs its whole unit test suite there:
 # the Unix code (keeper.rs, parts of procs.rs and pty.rs) that test-build.ps1
 # -Test, with its Windows binaries, never compiles.

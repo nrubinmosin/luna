@@ -656,6 +656,8 @@ nothing, so nothing reaches the model's context.
 
 ## Development
 
+The scripts in `scripts/` take PowerShell 7.4+ (pwsh), on any OS, and Docker.
+
 ```sh
 pnpm install
 pnpm dev          # frontend only, in a browser (tauri commands are no-ops)

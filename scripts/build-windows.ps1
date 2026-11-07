@@ -1,3 +1,4 @@
+#Requires -Version 7.4
 # Builds the Windows exe + NSIS installer inside Docker (no local Rust needed).
 # Results:
 #   src-tauri\target\x86_64-pc-windows-msvc\release\luna.exe                   (the bare exe)

@@ -1,3 +1,4 @@
+#Requires -Version 7.4
 # Cuts a GitHub release: builds the signed installer, writes the updater
 # manifest and uploads both. The version comes from src-tauri/tauri.conf.json,
 # so bumping that (and package.json alongside it) is the only edit a release

@@ -1,3 +1,4 @@
+#Requires -Version 7.4
 # The one gate a change passes before it goes in: formatting, lints, types, tests
 # and the frontend build, each in Docker on the pinned toolchains. CI runs this
 # same script, a group per job (.github/workflows/ci.yml), so a green run here is
