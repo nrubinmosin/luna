@@ -252,3 +252,23 @@ function Use-BuildLock([scriptblock]$Body) {
         $lock.Dispose()
     }
 }
+
+# Whether an account folder holds a login its CLI can start on, by the rule
+# Luna's own spawns go by (agents/spawn/account.rs `signed_in`): Claude Code's
+# OAuth refresh token, or Codex's ChatGPT tokens or API key. $Provider is the
+# accounts folder's name for it, anthropic or openai.
+function Test-AccountSignedIn([string]$Provider, [string]$Path) {
+    $file = if ($Provider -eq 'anthropic') { '.credentials.json' } else { 'auth.json' }
+    $json = try { Get-Content -LiteralPath (Join-Path $Path $file) -Raw -ErrorAction Stop | ConvertFrom-Json -AsHashtable } catch { $null }
+    if (-not $json) { return $false }
+    if ($Provider -eq 'anthropic') {
+        return $json.claudeAiOauth -is [hashtable] -and $json.claudeAiOauth.refreshToken -is [string]
+    }
+    ($json.tokens -is [hashtable]) -or ($json.OPENAI_API_KEY -is [string] -and [bool]$json.OPENAI_API_KEY)
+}
+
+# Whether $Path is a junction or symlink (any reparse point), not following it.
+function Test-Link([string]$Path) {
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    [bool]($item -and ($item.Attributes -band [IO.FileAttributes]::ReparsePoint))
+}

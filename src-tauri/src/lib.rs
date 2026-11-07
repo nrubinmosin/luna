@@ -25,6 +25,8 @@ mod ipc;
 mod keeper;
 mod library;
 mod lifecycle;
+#[cfg(test)]
+mod live;
 mod log;
 mod mcp;
 mod media;
