@@ -142,46 +142,123 @@ pub mod acl {
         owner == user || ["S-1-5-32-544", "S-1-5-18", TRUSTED_INSTALLER].contains(&owner)
     }
 
-    /// Gives `dir` the protected DACL of `super::private_sddl`. Refused first:
-    /// a link or junction, which the DACL would be written through to wherever
-    /// it points, and a folder owned by anyone `owner_ok` does not name.
+    /// Gives `dir` the protected DACL of `super::private_sddl`, after
+    /// `check_root`. For a token folder (`private_dir`), whose files Luna
+    /// writes itself; a tree that may hold anything is `protect_tree`'s.
     pub fn claim(dir: &Path) -> io::Result<()> {
-        let meta = std::fs::symlink_metadata(dir)?;
-        if !meta.is_dir() {
-            return Err(io::Error::other(format!("{} is not a folder (a link or a file is there)", dir.display())));
-        }
-        let user = user_sid()?;
-        let owner = owner_sid(dir)?;
-        if !owner_ok(&owner, &user) {
-            return Err(io::Error::other(format!("{} belongs to someone else ({owner})", dir.display())));
-        }
+        let user = check_root(dir, true)?;
         set_dacl(dir, &super::private_sddl(&user), PROTECTED_DACL_SECURITY_INFORMATION)
     }
 
-    /// Whether `dir`'s DACL is `super::sddl_is_private`.
-    pub fn is_private(dir: &Path) -> io::Result<bool> {
-        Ok(super::sddl_is_private(&dacl_sddl(dir)?, &user_sid()?))
+    /// What every root is refused for: a link or junction, which a DACL would
+    /// be written through to wherever it points; something other than a
+    /// folder where one is `want_dir`; and an owner `owner_ok` does not name,
+    /// who could rewrite any DACL on it at will. This user's SID.
+    fn check_root(path: &Path, want_dir: bool) -> io::Result<String> {
+        let meta = std::fs::symlink_metadata(path)?;
+        if meta.file_type().is_symlink() || (want_dir && !meta.is_dir()) {
+            return Err(io::Error::other(format!("{} is not a folder (a link or a file is there)", path.display())));
+        }
+        let user = user_sid()?;
+        let owner = owner_sid(path)?;
+        if !owner_ok(&owner, &user) {
+            return Err(io::Error::other(format!("{} belongs to someone else ({owner})", path.display())));
+        }
+        Ok(user)
     }
 
-    /// `claim` for `root`, then everything in it reset to inherit from it:
-    /// an explicit ACE (or a protected DACL) below would outlive the change to
-    /// the root. Links and junctions are left alone and not gone into, and a
-    /// file owned by someone `owner_ok` does not name is taken over, since its
-    /// owner could open it again. Each of those is returned, for the log and
-    /// Settings' checks: one taken over may have been changed by its owner.
+    /// Whether `path` belongs to someone `owner_ok` names.
+    pub fn owner_trusted(path: &Path) -> io::Result<bool> {
+        Ok(owner_ok(&owner_sid(path)?, &user_sid()?))
+    }
+
+    /// Whether `path`'s own DACL is `super::sddl_is_private`: the root alone,
+    /// a quick look. `verify` is the whole of it.
+    pub fn is_private(path: &Path) -> io::Result<bool> {
+        Ok(super::sddl_is_private(&dacl_sddl(path)?, &user_sid()?))
+    }
+
+    /// Makes `root` (a folder or a file) and everything in it private:
+    /// everything below reset to inherit, since an explicit ACE (or a
+    /// protected DACL) below outlives any change to the root; a file owned by
+    /// someone `owner_ok` does not name taken over, since its owner could open
+    /// it again; links and junctions left alone and not gone into. The root
+    /// gets its protected DACL last, so a pass that fails halfway leaves it
+    /// as it was and is gone through again; `verify` says whether one held.
+    /// What was taken over or left alone is returned, for the log and
+    /// Settings' checks: a file taken over may have been changed by its owner.
     pub fn protect_tree(root: &Path) -> io::Result<Vec<String>> {
-        claim(root)?;
-        let user = user_sid()?;
+        let user = check_root(root, false)?;
         let mut odd = Vec::new();
-        reset_below(root, &user, &mut odd)?;
+        if std::fs::symlink_metadata(root)?.is_dir() {
+            reset_below(root, &user, &mut odd)?;
+        }
+        set_dacl(root, &super::private_sddl(&user), PROTECTED_DACL_SECURITY_INFORMATION)?;
         Ok(odd)
+    }
+
+    /// What keeps `root` from being private down to the last file: none when
+    /// it is. The root's own DACL must be `super::sddl_is_private`; each
+    /// thing below must inherit only, belong to someone `owner_ok` names and
+    /// be no link or junction.
+    pub fn verify(root: &Path) -> io::Result<Vec<String>> {
+        let user = user_sid()?;
+        let mut problems = Vec::new();
+        let meta = std::fs::symlink_metadata(root)?;
+        if meta.file_type().is_symlink() {
+            problems.push(format!("{}: a link or junction", root.display()));
+            return Ok(problems);
+        }
+        let owner = owner_sid(root)?;
+        if !owner_ok(&owner, &user) {
+            problems.push(format!("{}: owned by {owner}", root.display()));
+        }
+        if !super::sddl_is_private(&dacl_sddl(root)?, &user) {
+            problems.push(format!("{}: open to others", root.display()));
+        }
+        if meta.is_dir() {
+            verify_below(root, &user, &mut problems)?;
+        }
+        Ok(problems)
+    }
+
+    fn verify_below(dir: &Path, user: &str, problems: &mut Vec<String>) -> io::Result<()> {
+        for entry in std::fs::read_dir(dir)? {
+            let path = entry?.path();
+            match verify_one(&path, user, problems) {
+                // Gone meanwhile: a running WebView comes and goes with files.
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                done => done.map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", path.display())))?,
+            }
+        }
+        Ok(())
+    }
+
+    fn verify_one(path: &Path, user: &str, problems: &mut Vec<String>) -> io::Result<()> {
+        let meta = std::fs::symlink_metadata(path)?;
+        if meta.file_type().is_symlink() {
+            problems.push(format!("{}: a link or junction", path.display()));
+            return Ok(());
+        }
+        let owner = owner_sid(path)?;
+        if !owner_ok(&owner, user) {
+            problems.push(format!("{}: owned by {owner}", path.display()));
+        }
+        // A token folder keeps the private DACL of its own (`private_dir`).
+        let sddl = dacl_sddl(path)?;
+        if !super::sddl_inherits_only(&sddl) && !super::sddl_is_private(&sddl, user) {
+            problems.push(format!("{}: has access entries of its own", path.display()));
+        }
+        if meta.is_dir() {
+            verify_below(path, user, problems)?;
+        }
+        Ok(())
     }
 
     fn reset_below(dir: &Path, user: &str, odd: &mut Vec<String>) -> io::Result<()> {
         for entry in std::fs::read_dir(dir)? {
             let path = entry?.path();
             match reset(&path, user, odd) {
-                // Gone meanwhile: a running WebView comes and goes with files.
                 Err(e) if e.kind() == io::ErrorKind::NotFound => {}
                 done => done.map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", path.display())))?,
             }
@@ -616,10 +693,40 @@ mod tests {
             assert!(sddl_inherits_only(&sddl) && !sddl.contains(";AU)") && !sddl.contains(";BU)"), "{}: {sddl}", p.display());
         }
         assert_eq!(acl::dacl_sddl(&outside).unwrap(), outside_before, "nothing done through the junction");
-        let _ = std::fs::remove_dir(&link);
+        // The junction is what is still in the way, and nothing else.
+        let open = acl::verify(&root).unwrap();
+        assert!(open.len() == 1 && open[0].contains("elsewhere"), "{open:?}");
+        std::fs::remove_dir(&link).unwrap();
+        assert_eq!(acl::verify(&root).unwrap(), Vec::<String>::new());
+        // A token folder's own private DACL is no problem.
+        private_dir(&root.join("core")).unwrap();
+        assert_eq!(acl::verify(&root).unwrap(), Vec::<String>::new());
         for d in [&root, &outside] {
             let _ = std::fs::remove_dir_all(d);
         }
+    }
+
+    /// A pass that cannot finish leaves the root as it was, so the next start
+    /// goes through it again: here a file whose DACL nobody may rewrite, its
+    /// owner included (OWNER RIGHTS denied WRITE_DAC).
+    #[cfg(windows)]
+    #[test]
+    fn a_pass_that_fails_halfway_leaves_the_root_open_to_be_done_again() {
+        let icacls = |p: &Path, args: &[&str]| {
+            let out = std::process::Command::new("icacls").arg(p).args(args).output().unwrap();
+            assert!(out.status.success(), "icacls {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        let root = crate::paths::data_dir().join(format!("half-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let stuck = root.join("stuck.json");
+        std::fs::write(&stuck, "{}").unwrap();
+        let user = acl::user_sid().unwrap();
+        icacls(&stuck, &["/grant", "*S-1-5-11:M", "/deny", "*S-1-3-4:(WDAC)", &format!("*{user}:(WDAC)")]);
+        assert!(acl::protect_tree(&root).is_err());
+        assert!(!acl::is_private(&root).unwrap(), "the root is done last");
+        assert!(!acl::verify(&root).unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
