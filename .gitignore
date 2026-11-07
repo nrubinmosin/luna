@@ -2,6 +2,9 @@ node_modules/
 dist/
 .pnpm-store/
 src-tauri/target/
+# tauri-build writes these on every build, for the platform it builds on
+# (capabilities/*.json name them as their $schema).
+src-tauri/gen/schemas/
 *.local
 .DS_Store
 .claude/worktrees/

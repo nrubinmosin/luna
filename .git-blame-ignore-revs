@@ -1,0 +1,8 @@
+# Commits that only reformatted code, skipped by `git blame` so a line still
+# points at the change that wrote it. GitHub reads this file by itself; locally:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+
+# Format the frontend with Prettier (no change in behavior)
+d06c0d8b52d8af7b51ab88d12423cf0ddec134bb
+# Format the Rust code with rustfmt (no change in behavior)
+2805f27127b2da092703f23637c8dff8c08433b5

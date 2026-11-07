@@ -1,0 +1,31 @@
+#!/bin/sh
+# Refuses a commit whose index holds anything under .claude/skills/ but a
+# symlink (mode 120000). Each skill lives once, in .agents/skills/<name>/, and
+# Claude Code finds it through .claude/skills/<name>, a symlink to it (AGENTS.md,
+# "Agent setup"). A Windows checkout without symlink support turns that link into
+# a text file holding the target path, or a copy of the skill gets staged in its
+# place; either would reach every other checkout as a skill Claude Code does not
+# see.
+#
+# Enable once per clone:  git config core.hooksPath .githooks
+#
+# Plain sh and git, so it runs the same from Git for Windows' sh.
+
+tab=$(printf '\t')
+bad=$(git ls-files -s -- .claude/skills | while IFS= read -r entry; do
+    case $entry in
+        120000\ *) ;;
+        *) printf '  %s\n' "${entry#*"$tab"}" ;;
+    esac
+done)
+
+if [ -n "$bad" ]; then
+    echo 'pre-commit: these entries under .claude/skills/ are not symlinks:' >&2
+    echo "$bad" >&2
+    echo '' >&2
+    echo 'Each skill lives in .agents/skills/<name>/; .claude/skills/<name> is only a' >&2
+    echo 'symlink to ../../.agents/skills/<name> (AGENTS.md, "Agent setup"). On Windows' >&2
+    echo 'that takes Developer Mode and git config --global core.symlinks true; then' >&2
+    echo 'git rm --cached the entry and add the link again.' >&2
+    exit 1
+fi
