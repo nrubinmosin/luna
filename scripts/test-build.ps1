@@ -36,13 +36,13 @@ if (-not $NoBuild) {
     $build = Get-BuildStamp
     Write-Host "test build stamp: $build"
 
-    Build-Image luna-winbuild windows-build.Dockerfile
+    $image = Build-Image luna-winbuild windows-build.Dockerfile
 
     $cmd = ConvertTo-BashScript @"
 set -e
 pnpm install --frozen-lockfile
-pnpm tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --no-bundle --config src-tauri/tauri.test.conf.json
-$(if ($Test) { 'cd src-tauri && cargo xwin test --release --no-run --target x86_64-pc-windows-msvc' })
+pnpm tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --no-bundle --config src-tauri/tauri.test.conf.json -- --locked
+$(if ($Test) { 'cd src-tauri && cargo xwin test --locked --release --no-run --target x86_64-pc-windows-msvc' })
 "@
 
     Use-BuildLock {
@@ -56,7 +56,7 @@ $(if ($Test) { 'cd src-tauri && cargo xwin test --release --no-run --target x86_
               -v "${root}:/app" `
               @WinBuildVolumes `
               -w /app `
-              luna-winbuild `
+              $image `
               bash -c $cmd
         }
     }

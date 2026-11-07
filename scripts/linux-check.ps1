@@ -10,7 +10,7 @@
 
 $build = Get-BuildStamp
 
-Build-Image luna-linuxcheck linux-check.Dockerfile
+$image = Build-Image luna-linuxcheck linux-check.Dockerfile
 
 # Single-quoted: the container's shell owns every $ in here.
 #
@@ -48,7 +48,7 @@ Use-BuildLock {
           -v luna-linux-target:/target `
           -v luna-linux-cargo-registry:/usr/local/cargo/registry `
           -w /app `
-          luna-linuxcheck `
+          $image `
           bash -c $cmd
     }
 }

@@ -29,11 +29,35 @@ function Invoke-Checked([string]$What, [scriptblock]$Command) {
     if ($LASTEXITCODE) { throw "$What failed (exit $LASTEXITCODE)" }
 }
 
-# Builds one of the toolchain images in docker/.
-function Build-Image([string]$Tag, [string]$Dockerfile) {
-    Invoke-Checked "docker build of $Tag" {
-        docker build -t $Tag -f (Join-Path $RepoRoot "docker/$Dockerfile") (Join-Path $RepoRoot 'docker')
+# The Node version everything runs on, from the repo's .node-version: the one
+# place it is pinned, for the images here and for anyone's local Node.
+function Get-NodeVersion {
+    $version = (Get-Content (Join-Path $RepoRoot '.node-version') -TotalCount 1).Trim()
+    if ($version -notmatch '^\d+\.\d+\.\d+$') { throw ".node-version should hold an exact x.y.z, not '$version'" }
+    $version
+}
+
+# Builds one of the toolchain images in docker/ and returns the image to run.
+# The tag is a hash of what the image is built from, the Dockerfile and its
+# arguments: every checkout on the machine shares Docker, and under a plain name
+# a checkout with another Dockerfile, building in between, would have this one
+# run in its image. NODE_VERSION goes only to the images that take it (docker
+# warns about an argument nothing uses).
+function Build-Image([string]$Name, [string]$Dockerfile) {
+    $file = Join-Path $RepoRoot "docker/$Dockerfile"
+    $text = (Get-Content $file -Raw) -replace "`r`n", "`n"
+    $argList = @()
+    if ($text -match '(?m)^ARG NODE_VERSION') {
+        $argList = @('--build-arg', "NODE_VERSION=$(Get-NodeVersion)")
     }
+    $sha = [Security.Cryptography.SHA256]::Create()
+    $bytes = [Text.Encoding]::UTF8.GetBytes($text + "`n" + ($argList -join ' '))
+    $hash = -join ($sha.ComputeHash($bytes)[0..5] | ForEach-Object { $_.ToString('x2') })
+    $image = "${Name}:$hash"
+    Invoke-Checked "docker build of $image" {
+        docker build -t $image @argList -f $file (Join-Path $RepoRoot 'docker') | Out-Host
+    }
+    $image
 }
 
 # A bash script for `bash -c`, with the CRLFs a Windows checkout gives a here-string

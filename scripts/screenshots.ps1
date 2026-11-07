@@ -21,7 +21,7 @@ param(
 # shoots at some default size instead.
 $Size = ($Size -replace '\s+', ',')
 
-Build-Image luna-shots screenshots.Dockerfile
+$image = Build-Image luna-shots screenshots.Dockerfile
 
 $outDir = Join-Path $RepoRoot $Out
 New-Item -ItemType Directory -Force $outDir | Out-Null
@@ -45,15 +45,26 @@ set -e
 fc-cache -f >/dev/null
 pnpm install --frozen-lockfile
 pnpm exec vite --host 0.0.0.0 --port 1420 >/tmp/vite.log 2>&1 &
+vite=$!
+up=
 for i in $(seq 1 90); do
-  curl -sfo /dev/null http://localhost:1420/ && break
+  if curl -sfo /dev/null http://localhost:1420/; then up=1; break; fi
+  kill -0 $vite 2>/dev/null || break
   sleep 1
 done
+if test -z $up; then
+  echo 'vite did not come up on :1420; its log:' >&2
+  cat /tmp/vite.log >&2
+  exit 1
+fi
 IFS=
+# Chromium can exit 0 without having written the shot, so the file is the test.
 shoot() {
+  rm -f $SHOT_OUT/$1.png
   chromium --headless=new --no-sandbox --disable-gpu --hide-scrollbars \
     --window-size=$SHOT_SIZE --virtual-time-budget=8000 \
     --screenshot=$SHOT_OUT/$1.png http://localhost:1420/\?demo=$2
+  test -s $SHOT_OUT/$1.png || { echo no shot $1 >&2; exit 1; }
   echo shot $1
 }
 mkdir -p $SHOT_OUT
@@ -70,16 +81,21 @@ fi
 '@
 
 $sceneList = $Scenes -join ','
-docker run --rm `
-  -e COREPACK_ENABLE_DOWNLOAD_PROMPT=0 `
-  -e SHOT_SIZE=$Size `
-  -e SHOT_OUT="/app/$Out" `
-  -e SHOT_SCENES=$sceneList `
-  @fontArgs `
-  -v "${RepoRoot}:/app" `
-  -v luna-node-modules:/app/node_modules `
-  -w /app `
-  luna-shots `
-  bash -c $cmd
+# The node_modules volume is the Windows build's too (scripts/lib.ps1 Use-BuildLock).
+Use-BuildLock {
+    Invoke-Checked 'screenshots' {
+        docker run --rm `
+          -e COREPACK_ENABLE_DOWNLOAD_PROMPT=0 `
+          -e SHOT_SIZE=$Size `
+          -e SHOT_OUT="/app/$Out" `
+          -e SHOT_SCENES=$sceneList `
+          @fontArgs `
+          -v "${RepoRoot}:/app" `
+          -v luna-node-modules:/app/node_modules `
+          -w /app `
+          $image `
+          bash -c $cmd
+    }
+}
 
 Get-ChildItem $outDir -Filter *.png | ForEach-Object { "{0} ({1:N0} KB)" -f $_.Name, ($_.Length / 1KB) }

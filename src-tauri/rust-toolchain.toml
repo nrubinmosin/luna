@@ -1,0 +1,9 @@
+# The one Rust toolchain the crate is built, linted and tested with. The Docker
+# images start FROM rust:<this version> (docker/*.Dockerfile) and carry what is
+# listed here, so rustup has nothing to fetch; scripts/gate.ps1 fails when the
+# two disagree. Bump them together.
+[toolchain]
+channel = "1.99.1"
+profile = "minimal"
+components = ["rustfmt", "clippy"]
+targets = ["x86_64-pc-windows-msvc"]
