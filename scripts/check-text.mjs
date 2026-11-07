@@ -7,27 +7,47 @@
 //
 // Some text has to stay as it is: a test fixture that exercises non-Latin
 // input, or another tool's literal output that happens to be British. Such a
-// line carries the marker `lang-check: allow` in a comment, at its end or on
-// a line of its own just above it, and is skipped. A trailing marker covers
-// its own line only, so the prose that follows it is still checked.
+// line carries the marker `lang-check: allow` as a comment of its own (after
+// `//`, `#`, `<!--`, `/*`, `--` or a doc comment's `*`), at the end of the line
+// or alone on the line just above it, and is skipped. A trailing marker covers
+// its own line only, so the prose after it is still checked; the marker inside
+// a string, or with anything but a comment's close after it, is no marker.
+//
+// A file of a known text type that is not UTF-8 is a finding as well; a file
+// of another type that is not is taken for binary and passed over.
 //
 //   node scripts/check-text.mjs            check the files git tracks
 //   node scripts/check-text.mjs FILE...    check just these files
 
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { extname } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { basename, extname, isAbsolute, relative, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const MARKER = 'lang-check: allow';
-// The marker alone in a comment (`// …`, `# …`, `<!-- … -->`), covering the line below.
-const MARKER_LINE = /^\s*(?:\/\/|#|<!--|\/\*)\s*lang-check: allow\s*(?:-->|\*\/)?\s*$/;
+const MARKER_TAIL = String.raw`\s*lang-check: allow\s*(?:-->|\*\/)?\s*$`;
+// The marker ending a line, after a comment opener that starts the line or follows a space.
+const MARKER_END = new RegExp(String.raw`(?:^\s*\*|(?:^|\s)(?:\/\/+|#|<!--|\/\*+|--))` + MARKER_TAIL);
+// The marker alone on its line, which covers the line below.
+const MARKER_LINE = new RegExp(String.raw`^\s*(?:\/\/+|#|<!--|\/\*+|\*|--)` + MARKER_TAIL);
+
+/** The repository's root: every path is taken relative to it. */
+export const ROOT = fileURLToPath(new URL('..', import.meta.url));
 
 // Not text anyone writes (lockfiles, generated schemas), and this checker and
 // its tests, which spell out the very words they look for.
-const SKIP_PATHS = [/(^|\/)pnpm-lock\.yaml$/, /(^|\/)Cargo\.lock$/, /^src-tauri\/gen\//, /^scripts\/check-text\./];
-const BINARY_EXTENSIONS = new Set(
+const SKIP_PATHS = [/(^|\/)pnpm-lock\.yaml$/, /(^|\/)Cargo\.lock$/, /^src-tauri\/gen\//];
+const SKIP_FILES = new Set(['scripts/check-text.mjs', 'scripts/check-text.test.mjs']);
+
+// A file's type is its extension, or its name when it has none (`.gitignore`).
+const fileType = path => (extname(path) || basename(path)).toLowerCase();
+const BINARY_TYPES = new Set(
   '.png .ico .icns .jpg .jpeg .gif .webp .bmp .pdf .woff .woff2 .ttf .otf .zip .gz .exe .dll .wasm'.split(' ')
+);
+// Types that must be UTF-8 text.
+const TEXT_TYPES = new Set(
+  `.rs .ts .tsx .js .mjs .cjs .json .md .css .html .svg .xml .toml .yaml .yml .txt .ps1 .sh .nsh
+   .dockerfile .editorconfig .gitattributes .gitignore .prettierignore`.split(/\s+/)
 );
 
 // A letter (\p{L}) that is not in the Latin script.
@@ -43,7 +63,7 @@ const BRITISH = {
   'favours?|favoured|favouring|favourites?|favourable': 'favor',
   'honours?|honoured|honouring': 'honor',
   'neighbours?|neighbouring': 'neighbor',
-  'labours?|laboured': 'labor',
+  'labours?|laboured|labouring': 'labor',
   'humours?|rumours?|odours?|vapours?|armours?|harbours?|endeavours?': 'humor, rumor, …',
   'licences?': 'license',
   'defences?|offences?|pretences?': 'defense, offense, pretense',
@@ -106,7 +126,7 @@ export function checkText(text) {
   const findings = [];
   const lines = text.split(/\r?\n/);
   lines.forEach((line, i) => {
-    if (line.includes(MARKER) || MARKER_LINE.test(lines[i - 1] ?? '')) return;
+    if (MARKER_END.test(line) || MARKER_LINE.test(lines[i - 1] ?? '')) return;
     const at = (m, message) => findings.push({ line: i + 1, col: m.index + 1, message });
     for (const m of line.matchAll(NON_LATIN_LETTER)) at(m, `non-Latin letter "${m[0]}"`);
     for (const { re, american } of RULES)
@@ -115,15 +135,39 @@ export function checkText(text) {
   return findings.sort((a, b) => a.line - b.line || a.col - b.col);
 }
 
-const isChecked = path => !SKIP_PATHS.some(re => re.test(path)) && !BINARY_EXTENSIONS.has(extname(path).toLowerCase());
+/** `path` relative to the root with forward slashes, however it was spelled. */
+export function repoPath(path) {
+  const slashed = path.replaceAll('\\', '/');
+  return relative(ROOT, isAbsolute(slashed) ? slashed : resolve(slashed)).replaceAll('\\', '/');
+}
 
-/** Checks the given files and returns each finding as `path:line:col message`. */
+const isChecked = path =>
+  !SKIP_FILES.has(path) && !SKIP_PATHS.some(re => re.test(path)) && !BINARY_TYPES.has(fileType(path));
+
+const utf8 = new TextDecoder('utf-8', { fatal: true });
+
+/** The file's text, or null when it holds a NUL or is not valid UTF-8. */
+function readText(path) {
+  const bytes = readFileSync(resolve(ROOT, path));
+  if (bytes.includes(0)) return null;
+  try {
+    return utf8.decode(bytes);
+  } catch {
+    return null;
+  }
+}
+
+/** Checks the given files and returns each finding as `path:line:col message`, the path from the root. */
 export function checkFiles(paths) {
   const out = [];
-  for (const path of paths.filter(isChecked)) {
-    const bytes = readFileSync(path);
-    if (bytes.includes(0)) continue; // binary under an extension not listed above
-    for (const f of checkText(bytes.toString('utf8'))) out.push(`${path}:${f.line}:${f.col} ${f.message}`);
+  for (const path of paths.map(repoPath).filter(isChecked)) {
+    const text = readText(path);
+    if (text === null) {
+      // Binary under a type not listed above, unless its type says text.
+      if (TEXT_TYPES.has(fileType(path))) out.push(`${path}:1:1 not UTF-8 text`);
+      continue;
+    }
+    for (const f of checkText(text)) out.push(`${path}:${f.line}:${f.col} ${f.message}`);
   }
   return out;
 }
@@ -132,7 +176,10 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
   const args = process.argv.slice(2);
   const paths = args.length
     ? args
-    : execFileSync('git', ['ls-files', '-z'], { encoding: 'utf8' }).split('\0').filter(Boolean);
+    : execFileSync('git', ['ls-files', '-z'], { cwd: ROOT, encoding: 'utf8' })
+        .split('\0')
+        .filter(Boolean)
+        .map(path => resolve(ROOT, path));
   const findings = checkFiles(paths);
   for (const line of findings) console.log(line);
   if (findings.length) {
