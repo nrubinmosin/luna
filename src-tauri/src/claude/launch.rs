@@ -135,7 +135,7 @@ pub(crate) fn claude_settings(
             hooks.insert(event.into(), hook(5));
         }
         // A subagent's life, which a background agent lives past the turn
-        // that started it (activity.rs `HookEvent::AgentAtWork`).
+        // that started it (activity/hooks.rs `HookEvent::AgentAtWork`).
         hooks.insert("SubagentStart".into(), hook(5));
         hooks.insert("SubagentStop".into(), hook(5));
         // What a prompt asks, which neither the screen nor the transcript

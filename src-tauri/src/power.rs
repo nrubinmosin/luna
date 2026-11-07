@@ -2,7 +2,7 @@
 //! and — when asked — shuts down, restarts, hibernates or sleeps once they are
 //! all done.
 //!
-//! Both follow activity.rs. Keep-awake is a Windows power request
+//! Both follow activity/. Keep-awake is a Windows power request
 //! (`powercfg /requests` lists it as Luna's) held while any session is busy
 //! and released a minute after the last one goes quiet. A session waiting for
 //! a person does not hold the machine: nobody is answering it.
@@ -10,7 +10,7 @@
 //! Shutdown-when-done is armed for the run, not saved. Armed, it waits for a
 //! quiet window in which nothing is busy *or waiting* — a pending permission
 //! is unfinished work, while a session parked on a usage limit is not: its
-//! turn is over and nothing moves before the reset (activity.rs, *stalled*);
+//! turn is over and nothing moves before the reset (activity/, *stalled*);
 //! arming with someone waiting says so in a notification — then counts down a minute with a notification, and
 //! any activity in that minute cancels the count and leaves the arm in place.
 //! Sleep and hibernate leave the sessions running and stay armed, so after a

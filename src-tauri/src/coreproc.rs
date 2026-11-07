@@ -10,7 +10,7 @@
 //!
 //! Everything that runs the sessions runs here: the ptys (pty/), the hooks'
 //! listener and the agents' MCP server (hub.rs, agents.rs), the activity
-//! sampler and power (activity.rs, power.rs). What they send the page goes to
+//! sampler and power (activity/, power.rs). What they send the page goes to
 //! every connected window; what the page asks of them comes in by name
 //! (corecmd.rs).
 

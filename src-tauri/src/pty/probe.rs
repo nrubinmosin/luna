@@ -72,7 +72,7 @@ pub fn prune_session_files_periodically() {
     });
 }
 
-/// What the activity sampler needs of a live session (activity.rs).
+/// What the activity sampler needs of a live session (activity/).
 pub struct ActivityProbe {
     pub id: String,
     pub provider: Provider,

@@ -177,8 +177,10 @@ src-tauri/src/
                 ask.rs screen, transcript, held asks; rows.rs rows and promotion; persist.rs
                 helpers.json across cores; testkit.rs the hooks other tests use
   agentlog.rs   <data>/agents.jsonl: a line per spawn and per end, for luna_sessions(history: true)
-  activity.rs   sampler every 5 s: turn (hooks + registry / rollout), descendants, output →
-                busy / waiting / idle per session and a summary
+  activity/     sampler every 5 s: turn (hooks + registry / rollout), descendants, output →
+                busy / waiting / idle per session and a summary. mod.rs what it keeps per
+                session and the turn counts; hooks.rs Claude Code's hooks; sample.rs the
+                disk, the processes, the verdict and the sampler thread
   asking.rs     a user's chat whose turn ended on the marker setting → `waiting` in
                 session_meta until the next turn, or until cleared by hand (dismiss_waiting)
   power.rs      keep-awake (PowerSetRequest) and "shut down when everything is done":
@@ -443,7 +445,7 @@ src-tauri/src/
   so the bit is written before the spawn: `hasTrustDialogAccepted` in `.claude.json` or
   `[projects.'<native path>'] trust_level = "trusted"` in `config.toml` (via `toml_edit`, so as
   not to lose the user's comments; the key is compared case-insensitively and with either slash).
-- **Session busyness is measured, not read from one status.** Every 5 s `activity.rs`
+- **Session busyness is measured, not read from one status.** Every 5 s `activity/`
   combines three signals: the turn (for Claude — hooks via a `--settings` file with `curl.exe` (outside Windows — `curl`) to the loopback
   `hub.rs`, checked against the registry; for Codex — the rollout plus screen silence, and an approval dialog
   (a command, an edit), which is not in the rollout and under which the screen is not silent, — by its text on
@@ -466,7 +468,7 @@ src-tauri/src/
   expiry, kept a PC awake all night. Birth is no work: a process first seen is as quiet as the job it came
   into, and until it is 30 s old only its CPU since it started can say otherwise (its I/O then is loading,
   which a read in the middle of its start would count next time), so a loop starting a `sleep 60` a minute
-  stays idle. `luna_list`'s `active` is work in the last 10 min. A chat's are measured the same way (activity.rs `Track::left`, the processes
+  stays idle. `luna_list`'s `active` is work in the last 10 min. A chat's are measured the same way (activity/mod.rs `Track::left`, the processes
   `procs::judge` calls young): a forgotten `tail -F` under a chat held the machine just the same, and
   `judge` itself counts a child's I/O only past that rate, as a polling one moves a few bytes every
   sample. While the hold stands, power.rs says every hour what keeps it (`HOLD_LOG_EVERY_MS`). Its job alone
@@ -626,7 +628,7 @@ src-tauri/src/
   oldest messages that fit and puts the cursor back where they end, with `last` the newest; `leftOut`
   counts the rest, and one message past the cap is cut with a pointer to the transcript.
   `wait(turn_done)` counts busy→idle transitions in
-  `activity.rs` (`turns_ended`; the count grows across respawn/resume too — for Codex only turns after
+  `activity/mod.rs` (`turns_ended`; the count grows across respawn/resume too — for Codex only turns after
   the process spawned are taken from the rollout) and returns everything the session said past the
   debt's transcript offset (below), report first as in the notice's file (`reply_of`) — past `MAX_TEXT`
   cut, with that file named — so `read` is not needed.
