@@ -1,7 +1,7 @@
 //! What a session said since a point in its transcript (`Said`), and how a
 //! tool result or a notice puts it: its report first, a long one in a file.
 
-use crate::agents::notes_dir;
+use crate::agents::delivery::notes_dir;
 use crate::agents::read::{transcript_seen, Message};
 use crate::provider::Provider;
 

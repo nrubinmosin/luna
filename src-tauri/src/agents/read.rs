@@ -2,10 +2,11 @@
 //! `luna_read`, which hands them over from a cursor on.
 
 use crate::agents::ask::{state_of, Ask};
+use crate::agents::delivery::screen_of;
 use crate::agents::lost::{lost_count, lost_whole, undelivered_note};
 use crate::agents::owed::{hand_over, queue_settled, seen};
 use crate::agents::registry::{authorize_view, label, reg};
-use crate::agents::{resume_pending, screen_of};
+use crate::agents::resume_pending;
 use crate::provider::Provider;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -335,10 +336,11 @@ fn cursor_after(path: &std::path::Path, from: u64, end: u64, found: usize, keep:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agents::delivery::is_held;
+    use crate::agents::forget;
     use crate::agents::owed::owe_from;
     use crate::agents::registry::{reg, register, session_exited};
     use crate::agents::tests::lost_helper;
-    use crate::agents::{forget, is_held};
 
     #[test]
     fn a_cut_read_goes_on_where_the_kept_messages_end() {
