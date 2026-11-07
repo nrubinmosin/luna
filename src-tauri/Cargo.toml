@@ -32,15 +32,18 @@ dirs = "6"
 portable-pty = "0.9"
 ureq = { version = "2", features = ["json"] }
 sha2 = "0.10"
+# The secrets Luna mints (src/secret.rs), from the OS's CSPRNG. The version
+# the tree already resolves.
+getrandom = "0.3.4"
+# Compares a presented secret with Luna's in constant time (src/secret.rs).
+subtle = "2.6.1"
+# The hub's request heads (src/hub.rs), parsed strictly.
+httparse = "1.10.1"
 toml_edit = "0.22"
 # Lays out a config.toml edited by hand, comments kept (account_settings.rs).
 taplo = { version = "0.14", default-features = false }
 flate2 = "1"
 tar = "0.4"
-# The loopback listener the sessions' hooks post to (src/hub.rs): a few
-# requests a minute, answered in microseconds — a blocking server on one
-# thread, no async runtime.
-tiny_http = "0.12"
 # A terminal emulator in memory, for showing an agent what its helper's
 # screen says (src/pty.rs `screen`): the scrollback replayed into a grid.
 vt100 = "0.16"

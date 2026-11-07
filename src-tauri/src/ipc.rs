@@ -124,10 +124,15 @@ pub fn discovery_file() -> PathBuf {
 }
 
 pub fn read_frame(r: &mut impl Read) -> io::Result<(u8, Vec<u8>)> {
+    read_frame_within(r, MAX_FRAME)
+}
+
+/// A frame of at most `max` bytes, refused before its payload is read.
+pub fn read_frame_within(r: &mut impl Read, max: usize) -> io::Result<(u8, Vec<u8>)> {
     let mut head = [0u8; 5];
     r.read_exact(&mut head)?;
     let len = u32::from_le_bytes([head[0], head[1], head[2], head[3]]) as usize;
-    if len > MAX_FRAME {
+    if len > max {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "frame too large"));
     }
     let mut payload = vec![0u8; len];
@@ -162,21 +167,9 @@ pub fn recv<T: DeserializeOwned>(r: &mut impl Read, want: u8) -> io::Result<T> {
     serde_json::from_slice(&payload).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }
 
-/// A token nobody can guess: hashed from the OS-seeded keys std hands every
-/// `RandomState`, with the time and the pid for good measure.
+/// The core's token: 256 bits from the OS's CSPRNG, as 64 hex characters.
 pub fn mint_token() -> String {
-    use sha2::{Digest, Sha256};
-    use std::hash::{BuildHasher, Hasher};
-    let mut h = Sha256::new();
-    for i in 0..4u64 {
-        let mut k = std::collections::hash_map::RandomState::new().build_hasher();
-        k.write_u64(i);
-        h.update(k.finish().to_le_bytes());
-    }
-    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-    h.update(nanos.to_le_bytes());
-    h.update(std::process::id().to_le_bytes());
-    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+    crate::secret::random_hex(32)
 }
 
 #[cfg(test)]

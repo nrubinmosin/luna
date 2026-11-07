@@ -560,7 +560,8 @@ struct Opening {
 }
 
 struct Registry {
-    tokens: HashMap<String, String>,
+    /// Sessions by the SHA-256 of their bearer token (`token_key`).
+    tokens: HashMap<[u8; 32], String>,
     known: HashMap<String, Known>,
     pending: HashMap<u64, std::sync::Arc<(Mutex<Pending>, Condvar)>>,
     /// Spawns whose caller stopped waiting (SPAWN_TIMEOUT), or which the last
@@ -1221,8 +1222,8 @@ pub fn register(
     if !tools {
         return None;
     }
-    let token = mint(id);
-    r.tokens.insert(token.clone(), id.to_string());
+    let token = mint();
+    r.tokens.insert(token_key(&token), id.to_string());
     Some(token)
 }
 
@@ -1243,7 +1244,7 @@ pub fn register_dev_caller() {
     let provider = if account_path.replace('\\', "/").contains("/openai/") { Provider::Codex } else { Provider::Claude };
     register(DEV_CALLER, provider, &folder, &account_path, None, false, serde_json::json!({}));
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-    r.tokens.insert(token.trim().to_string(), DEV_CALLER.to_string());
+    r.tokens.insert(token_key(token.trim()), DEV_CALLER.to_string());
     let url = crate::hub::mcp_url().unwrap_or_default();
     crate::log::warn("agents", &format!("dev caller registered for {folder} ({account_path}); MCP at {url}"));
 }
@@ -1277,34 +1278,32 @@ pub fn label(id: &str) -> String {
     }
 }
 
-pub(crate) fn mint(id: &str) -> String {
+/// A bearer token: 160 bits from the OS's CSPRNG, as 40 hex characters.
+pub(crate) fn mint() -> String {
+    crate::secret::random_hex(20)
+}
+
+/// What the registry keys a token by. A map lookup compares the presented
+/// token against a stored one byte by byte and stops at the first difference;
+/// over digests, how far a guess got says nothing about the token itself.
+fn token_key(token: &str) -> [u8; 32] {
     use sha2::{Digest, Sha256};
-    use std::sync::atomic::{AtomicU64, Ordering};
-    // Two spawns in the same millisecond must not share a token.
-    static SERIAL: AtomicU64 = AtomicU64::new(0);
-    let mut h = Sha256::new();
-    h.update(id.as_bytes());
-    h.update(now_ms().to_le_bytes());
-    h.update(std::process::id().to_le_bytes());
-    h.update(SERIAL.fetch_add(1, Ordering::Relaxed).to_le_bytes());
-    let slot = 0u8;
-    h.update((&slot as *const u8 as usize).to_le_bytes());
-    h.finalize().iter().take(20).map(|b| format!("{b:02x}")).collect()
+    Sha256::digest(token.as_bytes()).into()
 }
 
 /// The session behind a bearer token.
 pub fn caller_of(token: &str) -> Option<String> {
-    reg().lock().unwrap_or_else(|e| e.into_inner()).tokens.get(token).cloned()
+    reg().lock().unwrap_or_else(|e| e.into_inner()).tokens.get(&token_key(token)).cloned()
 }
 
 /// A token for a session registered without tools: a background Claude Code
 /// helper takes its permission prompts through Luna's MCP server all the
 /// same, and `tools/list` offers it that one tool only.
 fn issue_token(id: &str) -> String {
-    let token = mint(id);
+    let token = mint();
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
     r.tokens.retain(|_, chat| chat != id);
-    r.tokens.insert(token.clone(), id.to_string());
+    r.tokens.insert(token_key(&token), id.to_string());
     token
 }
 
