@@ -3258,12 +3258,10 @@ fn spawn_with(caller: &str, mut params: SpawnParams, replaces: Option<u64>, stil
         let above = caller == DEV_CALLER || crate::settings::get().helpers_above_caller;
         let run_in = in_worktree.clone().or_else(|| params.folder.clone()).unwrap_or_default();
         settle_mode(&mut params, provider, (me.provider, &me.settings), &account.path, &run_in, above)?;
-        // A visible helper's CLI takes its opening prompt as typed input would
-        // be taken, a command among it (`command_reach`); it is its caller's own.
-        if params.visible.unwrap_or(false) {
-            let approver = (!above).then(|| Privilege::of_caller(me.provider, &me.settings));
-            command_reach(&params.prompt, caller == DEV_CALLER, true, approver)?;
-        }
+        // A helper's CLI takes its opening prompt as it takes text sent later,
+        // a command among it (`command_reach`); it is its caller's own.
+        let approver = (!above).then(|| Privilege::of_caller(me.provider, &me.settings));
+        command_reach(&params.prompt, caller == DEV_CALLER, true, approver)?;
         let account_choice = picked.map(|(_, choice)| choice);
         let taken = SpawnUnderWay::begin(caller, &params, &account.path, in_worktree.as_deref(), replaces)?;
         if !params.visible.unwrap_or(false) {
@@ -4057,9 +4055,7 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool) -> Result<Sent,
     // time, the text is held like any other (`hold`), and goes in when it can.
     // A background helper has no terminal: its queue takes turns by itself.
     plain_text(text)?;
-    if !crate::background::has(id) {
-        command_reach_now(caller, id, text)?;
-    }
+    command_reach_now(caller, id, text)?;
     let terminal = if crate::background::has(id) { None } else { TypingInto::wait_for(id, TYPING_WAIT) };
     let (state_before, ask) = state_of(id);
     if let Some(a) = ask.as_ref().filter(|a| a.blocking && !interrupt) {
@@ -5035,8 +5031,10 @@ fn command_prefix(text: &str) -> Option<char> {
 /// would take as a command goes only from a caller at full access into its
 /// own helper (`approver` None: the user's setting), or from the dev caller;
 /// it is refused, not escaped, as no escape is known to hold in both CLIs.
-/// A background helper takes text as a prompt, never as a command line, and
-/// is not held to this.
+/// A background helper is held to it too: `claude -p` runs a project's custom
+/// commands and skills, which can pre-approve tools (`allowed-tools`). Codex's
+/// `exec` is not known to read a leading `/` as a command; one rule for both
+/// costs it nothing a full-access caller cannot still send.
 fn command_reach(text: &str, dev: bool, own: bool, approver: Option<Privilege>) -> Result<(), String> {
     let Some(c) = command_prefix(text) else { return Ok(()) };
     let full = Privilege { reach: Reach::Full, net: true };
@@ -5074,6 +5072,16 @@ fn plain_text(text: &str) -> Result<(), String> {
     }
 }
 
+/// Answers and a note go into a terminal's dialog as keys (`presses_for`): a
+/// line break there submits the field, and what follows lands in the composer
+/// as a prompt of its own (`answer\r/permissions …`); a tab moves on.
+fn typed_answers(answers: &[String], note: Option<&str>) -> Result<(), String> {
+    if answers.iter().map(String::as_str).chain(note).any(|t| t.contains(['\r', '\n', '\t'])) {
+        return Err("an answer or note typed into a terminal is one line, without tabs".into());
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn answer(
     caller: &str,
@@ -5089,6 +5097,9 @@ pub fn answer(
     // Typed in as keys: what is not plain text would be keys of its own.
     for t in answers.iter().map(String::as_str).chain(note) {
         plain_text(t)?;
+    }
+    if !crate::background::has(id) {
+        typed_answers(answers, note)?;
     }
     let (own, approver) = answerer(caller, id);
     answer_reach(own, approver, known.provider, None, allow, keys)?;
@@ -12888,6 +12899,16 @@ mod tests {
         assert_eq!(command_reach_now("cr-asks", "cr-kid", "permissions, please"), Ok(()));
         for id in ["cr-kid", "cr-kid2", "cr-asks", "cr-full"] {
             forget(id);
+        }
+    }
+
+    #[test]
+    fn an_answer_typed_as_keys_is_one_line() {
+        let one = |a: &str| vec![a.to_string()];
+        assert_eq!(typed_answers(&one("Blue, and a word of my own"), Some("not now")), Ok(()));
+        for bad in ["answer\r/permissions :workspace", "a\nb", "a\tb"] {
+            assert!(typed_answers(&one(bad), None).unwrap_err().contains("one line"), "{bad:?}");
+            assert!(typed_answers(&one("ok"), Some(bad)).is_err(), "a note too: {bad:?}");
         }
     }
 }
