@@ -755,7 +755,7 @@ pub(crate) const READ_ONLY_NET: &str = "read-only-net";
 /// still fails under the sandbox's restricted token, as it does in
 /// `workspace-write` with its network on (see `codex_git_envs`, luna_guide.md).
 pub(crate) fn codex_read_only_net_args() -> Vec<String> {
-    let profile = format!("luna-{}", &crate::agents::mint("read-only-net")[..16]);
+    let profile = format!("luna-{}", &crate::agents::mint()[..16]);
     [
         format!("default_permissions=\"{profile}\""),
         format!("permissions.{profile}.extends=\":read-only\""),

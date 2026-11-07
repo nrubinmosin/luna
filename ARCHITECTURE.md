@@ -127,9 +127,10 @@ src-tauri/src/
                 Local State profiles, Firefox's profiles.ini, the https UserChoice handler)
                 and the user's own; chosen chat → account → folder → default, run with the
                 link as an argument of its own and no shell (open_link in lib.rs)
-  hub.rs        loopback HTTP (tiny_http) on a random port with a per-launch secret;
-                POST /hook/<chat>/<secret> takes Claude Code hooks' stdin;
-                POST /mcp with the session's bearer token — MCP for agents; a thread per request
+  hub.rs        loopback HTTP (its own, one request per connection) on a random port with a
+                per-launch secret; POST /hook/<chat>/<secret> takes Claude Code hooks' stdin;
+                POST /mcp with the session's bearer token — MCP for agents; a thread per
+                request, in bounded lanes (hooks apart from MCP calls, admit.rs)
   mcp.rs        the MCP server's JSON-RPC: initialize (with instructions), tools/list, tools/call;
                 twelve luna_* tools with short descriptions (~2k tokens), offered to sessions given
                 them; luna_permission only to a background Claude Code helper's CLI
