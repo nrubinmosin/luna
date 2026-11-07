@@ -29,7 +29,7 @@ pub struct Settings {
     pub settings_parents: SettingsParents,
     /// Copy them once at every launch.
     pub settings_sync_on_start: bool,
-    /// `git fetch` origin before a new worktree branches off it (worktree.rs).
+    /// `git fetch` origin before a new worktree branches off it (worktree/refs.rs).
     pub fetch_before_worktree: bool,
     /// Codex sessions run a project's hooks without asking for trust first
     /// (codex/hooks.rs): the default, and the folders kept otherwise.

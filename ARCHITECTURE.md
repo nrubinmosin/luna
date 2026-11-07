@@ -128,11 +128,15 @@ src-tauri/src/
     probe.rs    ActivityProbe::working_dir() — where a session actually works (Claude
                 registry / Codex rollout); session_meta dispatches by provider; tails; the
                 sweep of hook and MCP files
-  worktree.rs   finds the worktrees both CLIs make: Claude's under <folder>/.claude/worktrees
+  worktree/     finds the worktrees both CLIs make: Claude's under <folder>/.claude/worktrees
                 (branch worktree-*), Codex's by shape …/worktrees/<4 hex>/<name> plus a .git
                 file pointing back at the folder; removal, orphan sweep (including each
                 account's worktrees/), fetch origin before a Claude Code worktree (setting
-                fetchBeforeWorktree)
+                fetchBeforeWorktree). mod.rs the git command; paths.rs which folder a
+                worktree is of; refs.rs HEAD off the files, and the fetch; remove.rs removal
+                with its branches; orphans.rs the unclaimed and their sweep; named.rs a
+                worktree asked for by name; inspect.rs what deleting one would lose;
+                testkit.rs the paths and repositories its tests lay out
   throttle.rs   cool-off after a 429 from the usage endpoints, shared by both
   procs.rs      what the CLI has running under it: a Job Object per session, pid list,
                 CPU/IO/start time of each, the "busy" rule (judge), windowed programs left
