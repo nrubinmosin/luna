@@ -42,7 +42,7 @@ pub struct Spawn<'a> {
     pub name: Option<String>,
     pub prompt: &'a str,
     pub auto_delete: bool,
-    /// Runs with no terminal and no row (background.rs).
+    /// Runs with no terminal and no row (background/).
     pub background: bool,
 }
 
@@ -83,7 +83,7 @@ pub fn ended(id: &str, how: &str) {
     append(&file(), json!({ "at": now(), "event": "end", "id": id, "how": how }));
 }
 
-/// UTC, as `luna_list` gives its times (background.rs `iso`).
+/// UTC, as `luna_list` gives its times (background/types.rs `iso`).
 fn now() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }

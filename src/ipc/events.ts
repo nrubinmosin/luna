@@ -42,7 +42,7 @@ export interface Notice {
   chatId: string | null;
 }
 
-/** A desktop notification the Rust side wants shown (power.rs, agents/). */
+/** A desktop notification the Rust side wants shown (power/machine.rs, agents/). */
 export const onNotify = (cb: (n: Notice) => void): Promise<UnlistenFn> =>
   tauriAvailable ? listen<Notice>('ui://notify', e => cb(e.payload)) : Promise.resolve(() => {});
 
@@ -50,7 +50,7 @@ export const onNotify = (cb: (n: Notice) => void): Promise<UnlistenFn> =>
 export const onOpenChat = (cb: (p: { chatId: string }) => void): Promise<UnlistenFn> =>
   tauriAvailable ? listen<{ chatId: string }>('ui://open-chat', e => cb(e.payload)) : Promise.resolve(() => {});
 
-/** The background helpers, whenever one starts, moves on or goes (background.rs). */
+/** The background helpers, whenever one starts, moves on or goes (background/). */
 export const onBackgroundHelpers = (cb: (rows: BackgroundHelperDto[]) => void): Promise<UnlistenFn> =>
   tauriAvailable ? listen<BackgroundHelperDto[]>('agent://background', e => cb(e.payload)) : Promise.resolve(() => {});
 

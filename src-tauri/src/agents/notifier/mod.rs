@@ -180,8 +180,8 @@ pub(super) fn left_holds(id: &str) -> bool {
 }
 
 /// Between turns, how long all a session's turns left running has done nothing,
-/// and their names: a helper's job's (background.rs), a chat's under its CLI
-/// (activity.rs). None with nothing left.
+/// and their names: a helper's job's (background/), a chat's under its CLI
+/// (activity/). None with nothing left.
 pub(super) fn left_quiet(id: &str) -> Option<(u64, String)> {
     if crate::background::has(id) {
         return crate::background::left_quiet(id);
@@ -287,7 +287,7 @@ fn rides_since(how: &Settled) -> Option<u64> {
 /// costs a caller a read of its whole context, so they go with a notice it is
 /// getting anyway (`company`). Alone they go once all it is owed is such lines
 /// (`only_riders`), or with nothing anywhere at work (`busy` 0), so no notice is
-/// on its way: all that lets a power-off start counting (power.rs `advance`), which
+/// on its way: all that lets a power-off start counting (power/rule.rs `advance`), which
 /// is not to go ahead of a line held here. That is this gate's word only: a line
 /// past it can still be held back, as any notice can, by a draft in its caller's
 /// composer or a turn it is on, and a power-off does not wait for that. Their debts

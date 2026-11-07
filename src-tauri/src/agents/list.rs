@@ -238,7 +238,7 @@ pub struct AnySession {
     pub state: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ask: Option<Ask>,
-    /// Runs with no terminal and no row (background.rs).
+    /// Runs with no terminal and no row (background/).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub background: bool,
     pub settings: serde_json::Value,

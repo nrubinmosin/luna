@@ -153,7 +153,7 @@ const ANSWER_SETTLE: std::time::Duration = std::time::Duration::from_millis(1500
 
 /// `luna_answer`: answers what the session waits on — a question or a
 /// permission (`ask_of`), or with `keys`, any dialog on its screen.
-/// Under a drain (power.rs) only a structured answer goes through, to what a session
+/// Under a drain (power/) only a structured answer goes through, to what a session
 /// holds for one now, named where it has a name. Raw keys are refused outright: a
 /// permission's dialog takes `{enter}` and the rest is a new prompt. So is a note, which
 /// a refused permission's terminal takes as one, and a line break in an answer's own

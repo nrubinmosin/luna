@@ -16,6 +16,8 @@ mod corecmd;
 mod corelink;
 mod coreproc;
 mod emit;
+#[cfg(test)]
+mod golden;
 mod guard;
 mod hub;
 mod ipc;
@@ -353,7 +355,7 @@ pub fn run() {
             corelink::core_state,
             corelink::core_restart,
             lifecycle::note_exit,
-            pty::saved_title,
+            pty::probe::saved_title,
             settings::get_accounts_root,
             settings::set_accounts_root,
             watchdog::ui_heartbeat,

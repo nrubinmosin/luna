@@ -76,7 +76,7 @@ fn background_spec(params: &SpawnParams, provider: Provider, account_path: &str,
             })
         }
         Provider::Codex => {
-            use crate::pty::{AUTO_REVIEW, AUTO_REVIEW_SANDBOX};
+            use crate::codex::launch::{AUTO_REVIEW, AUTO_REVIEW_SANDBOX};
             if asked(&params.permission_mode).is_some() {
                 return Err("permissionMode is a Claude setting; Codex takes approval and sandbox".into());
             }
@@ -96,7 +96,9 @@ fn background_spec(params: &SpawnParams, provider: Provider, account_path: &str,
                 Some(s) if auto_review && s != AUTO_REVIEW_SANDBOX => {
                     return Err(format!("{AUTO_REVIEW} runs in {AUTO_REVIEW_SANDBOX} only; leave sandbox out"))
                 }
-                Some(s) if ["read-only", crate::pty::READ_ONLY_NET, "workspace-write", "danger-full-access"].contains(&s) => s.to_string(),
+                Some(s) if ["read-only", crate::codex::launch::READ_ONLY_NET, "workspace-write", "danger-full-access"].contains(&s) => {
+                    s.to_string()
+                }
                 Some(s) => {
                     return Err(format!("unknown sandbox \"{s}\"; use read-only, read-only-net, workspace-write, danger-full-access"))
                 }
@@ -164,7 +166,7 @@ pub(in crate::agents) fn spawn_background(
     let id = crate::background::mint_id();
     spec.worktree_name = (own_worktree && provider == Provider::Claude).then(|| helper_worktree_name(&id));
     let mut settings = match provider {
-        Provider::Claude => crate::pty::with_role(
+        Provider::Claude => crate::claude::launch::with_role(
             serde_json::json!({
                 "model": spec.model, "effort": spec.effort, "permissionMode": spec.mode, "worktree": own_worktree, "background": true,
             }),
@@ -173,7 +175,7 @@ pub(in crate::agents) fn spawn_background(
         ),
         Provider::Codex => serde_json::json!({
             "model": spec.model, "effort": spec.effort,
-            "approval": if spec.auto_review { crate::pty::AUTO_REVIEW } else { "never" }, "sandbox": spec.mode,
+            "approval": if spec.auto_review { crate::codex::launch::AUTO_REVIEW } else { "never" }, "sandbox": spec.mode,
             "hooksUnasked": spec.hooks_unasked, "background": true,
         }),
     };

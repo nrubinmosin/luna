@@ -22,7 +22,7 @@ flowchart LR
     W["Window process<br/>Tauri commands, corelink.rs"]
     C["Core process<br/>coreproc.rs, corecmd.rs, agents/"]
     H["Hub: loopback HTTP<br/>hub.rs (hooks, /guard, /mcp)"]
-    S["CLI child processes<br/>claude / codex<br/>pty.rs, background.rs"]
+    S["CLI child processes<br/>claude / codex<br/>pty/, background/"]
     D[("Luna data dir<br/>core/core.json, hooks/, mcp/,<br/>settings, logs, agents.jsonl,<br/>managed CLI binaries")]
     A[("Account folders<br/>CLI credentials, settings,<br/>skills")]
     P[("Project folders<br/>and worktrees")]
@@ -53,12 +53,12 @@ flowchart LR
 | --- | --- | --- |
 | CLI credentials (OAuth tokens, API keys) | account folders, e.g. `.credentials.json` (`claude/oauth.rs`) | account takeover, spend |
 | Core token (256 bits, `ipc.rs:171`) | `core/core.json` in the data dir (`coreproc.rs:204`) | full control of the core: spawn any session in any mode |
-| Hub run key (256 bits, `hub.rs:380`) and the per-chat secrets derived from it (`hub.rs:115`) | key in core memory only; a chat's secret in its Claude `--settings` file under `hooks/` (`pty.rs:563`) or its Codex `-c` hook arguments | forge that chat's hook and guard events |
-| Per-session MCP bearer tokens (160 bits, `agents/registry.rs:334`) | the `LUNA_MCP_TOKEN` environment of each tooled session (`pty.rs:924`, `pty.rs:958`, `pty.rs:1576`); never on disk | act as that session through Luna's tools |
+| Hub run key (256 bits, `hub.rs:380`) and the per-chat secrets derived from it (`hub.rs:115`) | key in core memory only; a chat's secret in its Claude `--settings` file under `hooks/` (`pty/start.rs:26`) or its Codex `-c` hook arguments | forge that chat's hook and guard events |
+| Per-session MCP bearer tokens (160 bits, `agents/registry.rs:334`) | the `LUNA_MCP_TOKEN` environment of each tooled session (`codex/launch.rs:292`, `pty/start.rs:80`, `claude/launch.rs:102`); never on disk | act as that session through Luna's tools |
 | Source code and git state of the user's projects | project folders, worktrees | integrity, confidentiality |
 | Prompts, transcripts, agent history | CLI transcript dirs; `agents.jsonl` (`agentlog.rs`) | may hold pasted secrets |
 | Integrity of the Luna binary | install dir, updater | code execution as the user |
-| Availability of the PC and sessions | `power.rs`, `agents/` kill/delete | lost work, forced shutdown |
+| Availability of the PC and sessions | `power/`, `agents/` kill/delete | lost work, forced shutdown |
 
 ## 3. Actors
 
@@ -120,20 +120,20 @@ in section 6.
 | D | Thread or memory exhaustion | fixed (H2): 64 connections still sending their head (16 KiB, 5 s), then separate lanes of 32 for hooks and the guard and 128 for MCP; bodies 64 KiB (hooks) or 4 MiB within 30 s; 503 past a cap, 413 past a body cap (`hub.rs:42-75`, `admit.rs`). Spawns capped per caller (`agents/spawn/mod.rs:241`) |
 | R | Who did what through MCP | every tool call is logged with caller, target and steering arguments, never prompt text (`mcp.rs:419-443`); spawns and exits go to `agents.jsonl` |
 
-### B4. Core to CLI child processes (`pty.rs`, `background.rs`)
+### B4. Core to CLI child processes (`pty/`, `background/`)
 
 | STRIDE | Threat | Status |
 | --- | --- | --- |
-| T, E | Shell or argument injection through spawn parameters | mitigated: children start from an argv vector, never a shell (`pty.rs:242`); modes, efforts, models and sandboxes are checked against fixed lists, spelled exactly (`agents/privilege.rs:264`); text Luna types is refused if it holds control characters (`agents/privilege.rs:387`) |
+| T, E | Shell or argument injection through spawn parameters | mitigated: children start from an argv vector, never a shell (`pty/spawn.rs:196`); modes, efforts, models and sandboxes are checked against fixed lists, spelled exactly (`agents/privilege.rs:264`); text Luna types is refused if it holds control characters (`agents/privilege.rs:389`) |
 | E | A tooled session spawns a helper with more privilege than itself | fixed (F1) |
-| E | A config's `auto_review` answers for a person | mitigated: Codex sessions Luna starts without auto-review pin `approvals_reviewer="user"` (`pty.rs:741`, `pty.rs:1682`, `background.rs:871`) |
-| I | A session inherits Luna's or a parent session's identity variables | mitigated: inherited CLI session variables are removed (`pty.rs:253`, `pty.rs:726`) |
+| E | A config's `auto_review` answers for a person | mitigated: Codex sessions Luna starts without auto-review pin `approvals_reviewer="user"` (`codex/launch.rs:175`, `codex/launch.rs:76`, `background/command.rs:122`) |
+| I | A session inherits Luna's or a parent session's identity variables | mitigated: inherited CLI session variables are removed (`pty/spawn.rs:206`, `pty/spawn.rs:506`) |
 
 ### B5. Core to account folders and project folders
 
 | STRIDE | Threat | Status |
 | --- | --- | --- |
-| T | Library sync follows a planted symlink or junction out of the account folder | mitigated: links are refused on read and write (`library.rs:542`, `library.rs:601-606`, `library.rs:955`); account names reject `.` and `..` (`accounts.rs:49`). Check-then-use remains (R6) |
+| T | Library sync follows a planted symlink or junction out of the account folder | mitigated: links are refused on read and write (`library/files.rs:28`, `library/files.rs:87-92`, `library/folders.rs:251`); account names reject `.` and `..` (`accounts.rs:49`). Check-then-use remains (R6) |
 | T | Worktree removal deletes outside the intended root | fixed (F6) |
 | I | OAuth refresh exposes tokens | fixed (F5); errors are logged without token values |
 
@@ -168,11 +168,11 @@ caller has at most 8 descendants (`agents/spawn/mod.rs:31`).
 | Tool | May target | Check | Tested |
 | --- | --- | --- | --- |
 | `luna_kill`, `luna_delete` | own descendants | `authorize` (`agents/registry.rs:440`) | yes |
-| `luna_send`; `luna_answer` to a question a model asked | any session but itself, the user's chats included; `/`- or `!`-led text only from full access into its own helper, checked again where queued or kept text is typed (`agents/privilege.rs:361`, `agents/privilege.rs:376`, `background.rs:384`) | `authorize_send` (`agents/registry.rs:462`), `command_reach` | yes |
-| `luna_answer` with `allow`, `keys`, or on a CLI's own list | own descendants; `allow` only where the caller would run the tool unasked and never from read-only or asking modes; `keys` and CLI lists only from full access (`agents/answer.rs:202`, call sites `agents/answer.rs:306-343`) | `answer_reach` | yes |
+| `luna_send`; `luna_answer` to a question a model asked | any session but itself, the user's chats included; `/`- or `!`-led text only from full access into its own helper, checked again where queued or kept text is typed (`agents/privilege.rs:363`, `agents/privilege.rs:378`, `background/queue.rs:84`) | `authorize_send` (`agents/registry.rs:462`), `command_reach` | yes |
+| `luna_answer` with `allow`, `keys`, or on a CLI's own list | own descendants; `allow` only where the caller would run the tool unasked and never from read-only or asking modes; `keys` and CLI lists only from full access (`agents/answer.rs:204`, call sites `agents/answer.rs:306-343`) | `answer_reach` | yes |
 | `luna_read`, `luna_wait` | any session but itself | `authorize_view` (`agents/registry.rs:451`) | yes |
 | `luna_spawn` | a new helper in any account not on the denylist `agent_blocked_accounts` (empty by default, `agents/spawn/account.rs:12`), in any folder except Luna's data dir and what holds it (`agents/privilege.rs:305`, `agents/spawn/mod.rs:385`), at no more privilege than the caller (`agents/privilege.rs:227`, `agents/spawn/mod.rs:447`) | `cap`, `reaches_luna`, spawn cap | yes |
-| `luna_power` | the whole PC (shutdown, restart, sleep; or disarm the user's) | tools only (`power.rs:709`) | no authorization test (R4) |
+| `luna_power` | the whole PC (shutdown, restart, sleep; or disarm the user's) | tools only (`power/commands.rs:90`) | no authorization test (R4) |
 | `luna_sessions`, `luna_list`, `luna_notify`, `luna_guide` | read-only, or notify the user | tools only | yes |
 
 ## 6. Limits of the least-privilege layer
@@ -197,11 +197,11 @@ on `refactor/phase-1`; "residual" names what is left and why.
 | ID | Severity | Finding | Status |
 | --- | --- | --- | --- |
 | F1 | High | `luna_spawn` let a tooled session start a helper in `bypassPermissions` or `danger-full-access` whatever its own mode | **fixed** (7c2203e, cb5d05a): one privilege scale for both CLIs (`Reach` × network, `agents/privilege.rs:75`); the spawn's mode, the account's default when left out, is resolved, checked for its exact spelling and capped at the caller's on every path before the helper is made, then pinned (`cap`, `settle_mode`, `agents/privilege.rs:227`, `agents/privilege.rs:264`); unknown modes are refused; no helper in or above Luna's data dir, where it could edit the setting that lifts the cap. Residual: section 6 |
-| F2 | High | `luna_answer` with `allow` or `keys` reached any session, so a tooled session could approve another chat's permission prompt | **fixed** (7c2203e, cb5d05a, a6fc733, 5f4fef7): `answer_reach` (`agents/answer.rs:202`) limits `allow`, `keys` and CLI lists to the caller's descendants and to what the caller could run unasked; a background helper is checked against the very ask an answer lands on. Related: `/`- and `!`-led text is held to the same reach, also for background helpers and queued text (a489ea4, e379b77, b8ec193) |
-| F3 | Medium; High where a sandboxed session can read `core.json` | Claude sessions' MCP tokens were in plain text in `mcp/<chat>.json`, and the core token is in `core.json` | **MCP part fixed** (3d65909): the file holds `Bearer ${LUNA_MCP_TOKEN}`, which Claude Code expands from its environment (verified live on 2.1.319); the token goes in the session's environment, as Codex's `bearer_token_env_var` already did (`pty.rs:924`, `pty.rs:958`), and is removed from what nested sessions inherit. **`core.json` part residual**: every same-user process can read it (R3). Whether the CLIs' sandboxes keep a session from reading it and reaching loopback is unverified; it needs an end-to-end test per CLI and sandbox, then keeping `core/` outside session-readable roots or in the CLIs' read deny lists |
+| F2 | High | `luna_answer` with `allow` or `keys` reached any session, so a tooled session could approve another chat's permission prompt | **fixed** (7c2203e, cb5d05a, a6fc733, 5f4fef7): `answer_reach` (`agents/answer.rs:204`) limits `allow`, `keys` and CLI lists to the caller's descendants and to what the caller could run unasked; a background helper is checked against the very ask an answer lands on. Related: `/`- and `!`-led text is held to the same reach, also for background helpers and queued text (a489ea4, e379b77, b8ec193) |
+| F3 | Medium; High where a sandboxed session can read `core.json` | Claude sessions' MCP tokens were in plain text in `mcp/<chat>.json`, and the core token is in `core.json` | **MCP part fixed** (3d65909): the file holds `Bearer ${LUNA_MCP_TOKEN}`, which Claude Code expands from its environment (verified live on 2.1.319); the token goes in the session's environment, as Codex's `bearer_token_env_var` already did (`codex/launch.rs:292`, `pty/start.rs:80`), and is removed from what nested sessions inherit. **`core.json` part residual**: every same-user process can read it (R3). Whether the CLIs' sandboxes keep a session from reading it and reaching loopback is unverified; it needs an end-to-end test per CLI and sandbox, then keeping `core/` outside session-readable roots or in the CLIs' read deny lists |
 | F4 | High where the prerequisites hold | Token files were created with the default mode; on Windows the data dir (often the install folder) inherited its parent's ACL, e.g. Authenticated Users Modify on a second drive, down to `core.json`, `agents.jsonl` and `luna.exe` | **fixed** (983e250, 5872a6b, cf4886a, f1b3f60, b2384b3, 233990a, 6a740b5). Unix: `core/`, `hooks/`, `mcp/` are `0700` (a link or another user's folder is refused), token files `0600` from creation, `O_EXCL` under a random temp name, renamed into place (`secret.rs:48`, `secret.rs:422-477`). Windows: those folders get a protected DACL (user, SYSTEM, Administrators; `secret.rs:148`); the installer protects the install folder before any file goes in (section 7.1); the core verifies the data dir at every start (`coreproc.rs:117`, `paths.rs:213`): the whole folder where it is Luna's alone, else Luna's own entries only (`paths.rs:154`); everything below is reset to inherit, untrusted owners are taken over, links are refused, and the root's DACL is set last; the full walk runs every start, a marker only spares the changing pass, and the installer deletes any marker. A failing walk keeps the Settings check `data-folder-private` red (`checks.rs:639`). Residuals: files written while the folder was open cannot be checked for integrity (no reference; the next update reinstalls Luna's binaries); a copy run from a shared folder keeps that folder open: Luna's state files written there after the start are private from creation (a protected DACL given by `CreateFileW`, `secret::create_private`; settings, logs, `agents.jsonl`, `helpers.json`, `chat-ties.json`, notes, attachments), but a folder of Luna's first made after the start, and the managed CLI binaries, take that folder's ACL until the next start; ancestor checks catch links, not renames under an ancestor writable by others; sandboxed Codex commands under the new DACL are not yet verified end to end |
 | F5 | Low-Medium (Unix) | The OAuth temp file was written before `chmod 0600`, and the fallback kept the old file's permissions | **fixed** (64c06aa): temp file created `0600` (`secret::create_private`, random name, `O_EXCL`); the in-place fallback tightens the open file first or fails (`claude/oauth.rs:194`) |
-| F6 | Low (hardening; no exploit chain found) | A folder shaped like a Codex worktree anywhere on disk, with a forged `.git`, could reach `remove_dir_all` | **fixed** (9f04457, 6a94c62): a Codex worktree is removed only under `<accounts root>/openai/<account>/worktrees/<4 hex>/<name>` (`worktree.rs:59`) and only if `git worktree list --porcelain -z` of the folder has it, parsed on NUL (`worktree.rs:80-89`). Residuals: ancestry is checked on the path's text (`remove_dir_all` does not follow links, R6); git's record proves a worktree of the repository, not that Codex made it; worktrees under a moved accounts root are no longer removed |
+| F6 | Low (hardening; no exploit chain found) | A folder shaped like a Codex worktree anywhere on disk, with a forged `.git`, could reach `remove_dir_all` | **fixed** (9f04457, 6a94c62): a Codex worktree is removed only under `<accounts root>/openai/<account>/worktrees/<4 hex>/<name>` (`worktree/paths.rs:44`) and only if `git worktree list --porcelain -z` of the folder has it, parsed on NUL (`worktree/paths.rs:65-74`). Residuals: ancestry is checked on the path's text (`remove_dir_all` does not follow links, R6); git's record proves a worktree of the repository, not that Codex made it; worktrees under a moved accounts root are no longer removed |
 | F7 | Low-Medium | The hook secret was global, so any session could forge another chat's turn and permission events | **fixed** (4540647, b21dadf): each chat's secret is the first 128 bits of HMAC-SHA256(run key, chat id), checked against the path's chat id in constant time (`hub.rs:115`, `hub.rs:238`). Residual: the Codex guard URL rides in a `-c` argument, visible to other OS users in the Unix process list; it opens only that chat's door |
 | F8 | Low; Medium in the fallback deployment | The data dir fell back to a shared, predictable `temp_dir()/luna` | **fixed** (4336990): on Unix the fallback is `temp_dir()/luna-<euid>`, `0700`, used only if a real folder of this uid's, else Luna stops (`paths.rs:66`). Windows keeps `temp_dir()/luna`: its temp folder is the user's own |
 | F9 | Hardening gap | Tauri app commands are not scoped (no `AppManifest` in `build.rs`) and take raw paths, which sets the impact of any script in the page | **residual**: needs per-capability command scoping and `account_path` validated against the accounts root; CSP (H3) makes injection harder meanwhile |
@@ -272,11 +272,11 @@ Residuals:
   confined by its CLI sandbox, reaching `core.json` is F3's residual, not
   accepted.
 - **R4. Agents may arm a PC shutdown** (`luna_power`), bounded by the quiet
-  window and drain logic in `power.rs`. An orchestration feature.
+  window and drain logic in `power/`. An orchestration feature.
 - **R5. Agent history keeps prompt prefixes and last answers in plain text**
   (`agentlog.rs:17-19`: 300 and 3,000 characters) in the data dir; the same
   exposure as the CLIs' own transcripts.
-- **R6. Link checks are check-then-use** (`library.rs:601`, `worktree.rs`): a
+- **R6. Link checks are check-then-use** (`library/files.rs:87`, `worktree/`): a
   same-user process racing the check could redirect a write. Covered by R3.
 - **R7. Single signing key** for updates, no rollback index beyond Tauri's
   version comparison. Accepted for a single-maintainer project.

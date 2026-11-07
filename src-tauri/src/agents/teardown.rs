@@ -311,7 +311,7 @@ fn reap_these(pty: &crate::pty::PtyManager, ids: Vec<String>) {
 }
 
 /// Text queued for background helper `id` was dropped when its turn came, as
-/// its sender (`from`, with why) may no longer send it there (background.rs
+/// its sender (`from`, with why) may no longer send it there (background/queue.rs
 /// `settle_batch`): the sender hears so in its next notice, having been told
 /// the text was taken; with the sender gone, the helper's parent, without the
 /// text, which was not its own.

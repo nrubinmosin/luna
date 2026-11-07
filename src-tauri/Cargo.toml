@@ -43,18 +43,18 @@ hmac = "=0.12.1"
 # The hub's request heads (src/hub.rs), parsed strictly.
 httparse = "1.10.1"
 toml_edit = "0.22"
-# Lays out a config.toml edited by hand, comments kept (account_settings.rs).
+# Lays out a config.toml edited by hand, comments kept (account_settings/editor.rs).
 taplo = { version = "0.14", default-features = false }
 flate2 = "1"
 tar = "0.4"
 # A terminal emulator in memory, for showing an agent what its helper's
-# screen says (src/pty.rs `screen`): the scrollback replayed into a grid.
+# screen says (src/pty/screen.rs `screen`): the scrollback replayed into a grid.
 vt100 = "0.16"
 
 # Subclassing the windows — the Alt menu and WM_ENDSESSION (src/sysmenu.rs);
 # Job Objects and process counters for what a session has running under it
-# (src/procs.rs); power requests and suspend for keep-awake and
-# shutdown-when-done (src/power.rs); the exit watcher's wait, exit code and
+# (src/procs/win.rs); power requests and suspend for keep-awake and
+# shutdown-when-done (src/power/machine.rs); the exit watcher's wait, exit code and
 # boot time (src/lifecycle.rs); the DACLs on the folders holding secrets
 # and on the private files made with one (src/secret.rs). Pinned to the version tauri already
 # resolves, so this adds features to a crate in the tree rather than a second
@@ -76,7 +76,7 @@ windows = { version = "0.62", features = [
 ] }
 
 # The tie to the core off Windows: signals, and a look at every process
-# (src/keeper.rs). Already in the tree through most of the above.
+# (src/keeper/). Already in the tree through most of the above.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 

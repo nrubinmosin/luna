@@ -3,7 +3,7 @@
 //! ones off an account while one of its files is rewritten.
 //!
 //! The session map cannot say this: a chat being deleted leaves the map first
-//! and exits after (pty.rs `take_and_shut_down`), and a CLI on its way out still
+//! and exits after (pty/control.rs `take_and_shut_down`), and a CLI on its way out still
 //! writes its files. A CLI rewrites them from what it read, so a change made
 //! under it is lost whichever of the two writes last; an atomic rename only
 //! keeps the file whole. Hence a hold is taken only with no process on the

@@ -12,7 +12,7 @@ import { onPowerState } from '../../ipc/events';
 import { logWarn } from '../../shared/lib/log';
 
 /**
- * The machine's side of the sessions, as Rust tracks it (power.rs): whether
+ * The machine's side of the sessions, as Rust tracks it (power/): whether
  * the awake hold is on, whether a power-off is armed, and what is keeping it
  * from firing. Rust pushes every change as `power://state`; the store asks
  * once at start and otherwise only listens.

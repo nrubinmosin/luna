@@ -8,7 +8,7 @@
 //! cannot name a key. A fix that does more than the row's title — takes a
 //! barrier away, reaches other accounts — carries a `risk` the page has to
 //! have shown and had confirmed. Nothing is ever applied unasked. The keys that
-//! are a matter of taste stay in `account_settings.rs`.
+//! are a matter of taste stay in `account_settings/specs.rs`.
 //!
 //! All of it runs in the core: only the core knows which accounts are in use
 //! (account_use.rs).

@@ -1,5 +1,5 @@
 //! What outlives a core. A background helper's ties go with its record
-//! (background.rs), the visible chats' and the spawns under way into
+//! (background/), the visible chats' and the spawns under way into
 //! `chat-ties.json`, and the next core takes both up.
 
 use crate::agents::delivery::{words, GoingIn, Held, NEEDLE};
@@ -39,7 +39,7 @@ pub(super) struct Opening {
 }
 
 /// What the agent layer holds of a background helper, saved with it
-/// (background.rs `save`) so a core started later takes it up where this one
+/// (background/persist.rs `save`) so a core started later takes it up where this one
 /// left it: whose it is, what it is called, and what its callers are owed.
 #[derive(Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -284,7 +284,7 @@ pub(super) fn chats_now() -> SavedChats {
     SavedChats { chats, sends, spawns }
 }
 
-/// Writes `chats_now` out if it changed since the last write (background.rs
+/// Writes `chats_now` out if it changed since the last write (background/persist.rs
 /// `save` keeps the beat).
 pub fn save_chats() {
     use std::sync::atomic::Ordering;

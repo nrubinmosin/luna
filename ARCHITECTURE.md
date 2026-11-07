@@ -116,23 +116,40 @@ src-tauri/src/
   cli.rs        shared mechanics of Luna's own CLI copies: versions/<ver>/, current, sha256,
                 progress, prune, auto-update every 6h; where to get a version from — the
                 provider's Source
-  pty.rs        session manager: shared spawn in a pty, scrollback buffer, pty://output
-                and pty://exit events, write/resize/kill; ensure_claude_session / ensure_codex_session
-                build the command line; session_meta dispatches by provider;
-                ActivityProbe::working_dir() — where a session actually works (Claude
-                registry / Codex rollout)
-  worktree.rs   finds the worktrees both CLIs make: Claude's under <folder>/.claude/worktrees
+  pty/          session manager (mod.rs: the session map, PtyManager, manager())
+    start.rs    ensure_claude_session / ensure_codex_session: what a start settles under the
+                chat's spawn gate (token, settings/MCP/instructions files, worktree), then the
+                command line from claude/launch.rs or codex/launch.rs
+    spawn.rs    the shared spawn in a pty, scrollback buffer, pty://output and pty://exit
+                events, cursor queries answered
+    control.rs  write/resize/keys/kill, quitting the way a person would, delete, orphans
+    screen.rs   the screen replayed (vt100), composer and draft, terminal modes and title,
+                Codex's key events on Windows; SessionMeta
+    probe.rs    ActivityProbe::working_dir() — where a session actually works (Claude
+                registry / Codex rollout); session_meta dispatches by provider; tails; the
+                sweep of hook and MCP files
+  worktree/     finds the worktrees both CLIs make: Claude's under <folder>/.claude/worktrees
                 (branch worktree-*), Codex's by shape …/worktrees/<4 hex>/<name> plus a .git
                 file pointing back at the folder; removal, orphan sweep (including each
                 account's worktrees/), fetch origin before a Claude Code worktree (setting
-                fetchBeforeWorktree)
+                fetchBeforeWorktree). mod.rs the git command; paths.rs which folder a
+                worktree is of; refs.rs HEAD off the files, and the fetch; remove.rs removal
+                with its branches; orphans.rs the unclaimed and their sweep; named.rs a
+                worktree asked for by name; inspect.rs what deleting one would lose;
+                testkit.rs the paths and repositories its tests lay out
   throttle.rs   cool-off after a 429 from the usage endpoints, shared by both
-  procs.rs      what the CLI has running under it: a Job Object per session, pid list,
+  procs/        what the CLI has running under it: a Job Object per session, pid list,
                 CPU/IO/start time of each, the "busy" rule (judge), windowed programs left
-                out (shown), what is left ended with the session (end_leftovers)
-  keeper.rs     the tie to the core off Windows: the `--keep-ties` process that ends a dead
+                out (shown), what is left ended with the session (end_leftovers). mod.rs
+                those; win.rs and unix.rs each OS's `imp`; leftovers.rs what turns left
+                running and when it is at work; testkit.rs processes for tests (Windows)
+  keeper/       the tie to the core off Windows: the `--keep-ties` process that ends a dead
                 core's jobs, what a job holds there, the next core's backstop (end_last_ties);
-                and `kill_tree`'s walk there (end_tree)
+                and `kill_tree`'s walk there (end_tree). mod.rs a process, a turn's leader
+                and a job's record; system.rs what each OS says of a process; job.rs a
+                job at one look and ending one or a tree; process.rs the keeper itself;
+                ties.rs the core's side, the records and end_last_ties; testkit.rs real
+                turns for its tests
   browsers.rs   which browser a terminal's link opens in: a command line with %1 per
                 browser; found on Windows (StartMenuInternet + each Chromium browser's
                 Local State profiles, Firefox's profiles.ini, the https UserChoice handler)
@@ -151,32 +168,38 @@ src-tauri/src/
                 a helper capped at its caller's privilege (docs/security/threat-model.md), spawn via the frontend
                 (agent://spawn ↔ agent_spawned), send into the pty, read from the transcript, wait on activity, kill, delete (+worktree);
                 notifier: an uncollected helper answer is typed to the caller when it is free;
-                autoDelete helpers are deleted once they have served; one Registry behind one lock, its files:
-    registry.rs   the Registry and reg(), Known, tokens, names, lineage and authorize*
-    owed.rs       answers owed, hand_over and its undo, seen counts
-    ask.rs        Ask: hooks' asks, Codex screens, state_of
-    read.rs       transcripts, luna_read          said.rs   what a session said, answer files
-    lost.rs       text that never reached a session, a first turn lost
-    privilege.rs  least privilege: settle_mode, reaches_luna, command_reach
-    delivery.rs   typing into terminals, luna_send, held sends
-    resume.rs     resumeOnRestart chats, text going in as a core went
-    answer.rs     luna_answer                     wait.rs   luna_wait, one or several
-    list.rs       luna_list, luna_sessions        teardown.rs  kill, delete, reap, forget
-    persist.rs    ties and chat-ties.json across cores
-    spawn/        luna_spawn (mod.rs); account.rs, background.rs, worktree.rs, settle.rs
-    notifier/     the notifier loop (mod.rs); lines.rs what a notice says, usage.rs quota and budget
-  background.rs helpers with no row (luna_spawn without visible): a turn is one run of
+                autoDelete helpers are deleted once they have served.
+                One Registry behind one lock (registry.rs, with tokens and lineage); owed.rs
+                answers owed and handed over; ask.rs what a session waits on; read.rs and
+                said.rs transcripts and what was said; lost.rs what never arrived; privilege.rs
+                least privilege; delivery.rs typing in, luna_send; resume.rs carrying on after a
+                core; answer.rs, wait.rs, list.rs the tools; teardown.rs kill, delete, reap,
+                forget; persist.rs ties across cores; spawn/ luna_spawn (account.rs,
+                background.rs, worktree.rs, settle.rs); notifier/ the loop (lines.rs, usage.rs)
+  background/   helpers with no row (luna_spawn without visible): a turn is one run of
                 `claude -p --output-format stream-json` or `codex exec --json`, prompt on stdin,
                 events on stdout, the next turn a resume; a held permission / question
-                (`--permission-prompt-tool`) waits for luna_answer; agent://background to the window
+                (`--permission-prompt-tool`) waits for luna_answer; agent://background to the window.
+                mod.rs the registry; types.rs what a helper is made of; queue.rs text queued,
+                joined and reserved; command.rs a turn's argv; run.rs its process; events.rs
+                the CLIs' streams and a turn's end; control.rs kill, interrupt, leftovers;
+                ask.rs screen, transcript, held asks; rows.rs rows and promotion; persist.rs
+                helpers.json across cores; testkit.rs the hooks other tests use
   agentlog.rs   <data>/agents.jsonl: a line per spawn and per end, for luna_sessions(history: true)
-  activity.rs   sampler every 5 s: turn (hooks + registry / rollout), descendants, output →
-                busy / waiting / idle per session and a summary
+  activity/     sampler every 5 s: turn (hooks + registry / rollout), descendants, output →
+                busy / waiting / idle per session and a summary. mod.rs what it keeps per
+                session and the turn counts; hooks.rs Claude Code's hooks; sample.rs the
+                disk, the processes, the verdict and the sampler thread
   asking.rs     a user's chat whose turn ended on the marker setting → `waiting` in
                 session_meta until the next turn, or until cleared by hand (dismiss_waiting)
-  power.rs      keep-awake (PowerSetRequest) and "shut down when everything is done":
-                arming, quiet window, countdown, action; commands and the power://state event
+  power/        keep-awake (PowerSetRequest) and "shut down when everything is done":
+                arming, quiet window, countdown, action; commands and the power://state event.
+                mod.rs the rule's state; rule.rs each tick; machine.rs firing, the
+                notifications and each OS's calls; admission.rs what a draining rule lets
+                in; commands.rs the commands and luna_power's; testkit.rs its tests' boards
   claude/
+    launch.rs   a session's arguments and environment (chat_args), its settings file's hooks
+                and guard, the helper's system prompt line; pure, nothing written
     cli.rs      Source: downloads.claude.ai, latest + manifest.json, bare exe
     defaults.rs model/effortLevel/permissions.defaultMode from Claude Code's settings in its
                 order: the account's settings.json → the project's .claude/settings.json →
@@ -186,9 +209,15 @@ src-tauri/src/
     models.rs   context windows from the Models API
     trust.rs    hasTrustDialogAccepted in .claude.json; a file that will not read or parse is
                 read again and then an error, never taken as empty and written back
-    session.rs  registry <config>/sessions/<pid>.json + transcript projects/<cwd>/<sid>.jsonl:
-                context, CLI title (custom-title / ai-title), first prompt
+    session/    registry <config>/sessions/<pid>.json + transcript projects/<cwd>/<sid>.jsonl:
+                context, CLI title (custom-title / ai-title), first prompt. registry.rs the
+                registry and meta; transcript.rs where a transcript is and the conversation
+                read from it; ending.rs what its end says (context, model, last words, API
+                error, pending tool, due); titles.rs titles and the opening prompt
   codex/
+    launch.rs   a session's arguments and environment (chat_args), and what a helper's
+                `codex exec` shares with it: approval and sandbox overrides, read-only-net,
+                the guard, Luna's MCP server; pure, nothing written
     cli.rs      Source: GitHub Releases openai/codex, rust-v<ver>, package tarball + SHA256SUMS
     config.rs   config.toml via toml_edit (comments and formatting kept), seed; a read for a
                 write looks again at a file caught blank, cut short or held open, and one that
@@ -213,31 +242,43 @@ src-tauri/src/
                 for helpers — background ones (`codex exec` leaves untrusted hooks out silently) and
                 visible ones (the spawn request carries it) alike. A visible Codex stopped on a list
                 of its own ("Hooks need review") is an `ask` (agents/ask.rs `codex_list_on`)
-    session.rs  rollout files sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl: which is ours,
+    session/    rollout files sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl: which is ours,
                 status, model, context, first prompt, cwd (rollout_cwd — where a --worktree
-                session went); thread name from session_index.jsonl
+                session went); thread name from session_index.jsonl. mod.rs Live;
+                rollouts.rs the files and which is a chat's; scan.rs the running read of
+                turns, a failure, a question, subagents; read.rs what is read on demand;
+                testkit.rs the rollouts its tests write
   checks.rs     what Luna's features rely on, as checks with a status and a fix (the
                 Recommendations window, from its button in the status bar): Luna's settings, account files, the
                 machine's policy files. Answered by the core; a fix is asked for by id.
   account_use.rs  which accounts have a CLI of Luna's on them until it has exited, and the
                 holds that keep new ones off while a file the CLI rewrites is changed.
-  account_settings.rs  recommended settings (settings.json + .claude.json / config.toml, key by
+  account_settings/  recommended settings (settings.json + .claude.json / config.toml, key by
                 key, platform-aware; apply_recommended adds and removes keys), sync from the
                 parent account, and hand editing of the file (check_account_config: problems
                 with line/column; format_account_config: JSON pretty with 2 spaces, TOML via
                 taplo, comments and key order kept; only what parses is written). settings.json
                 and .claude.json, which the CLI rewrites in place, are read again when caught
                 half-written or held open; one that still will not parse is an error, not an
-                empty object written back
-  library.rs    the user's skills and instructions: a library folder (`<data>/library` or one of
+                empty object written back. mod.rs the lock every change goes under;
+                specs.rs what is recommended; files.rs the files and keys in them; edit.rs
+                changes key by key; editor.rs hand editing; sync.rs the parent's copy;
+                testkit.rs its tests' account folder
+  library/      the user's skills and instructions: a library folder (`<data>/library` or one of
                 the user's) with `instructions/<name>.md` and `skills/<name>/SKILL.md`, laid out into the
                 accounts each is meant for — a reach of `all`, `claude`/`codex` or `provider/name`
                 entries (`CLAUDE.md` / `AGENTS.md`, one instructions file per account, the closest
                 reach winning; `skills/<name>`) — and skills for the sessions in folders the user
-                names, handed out (or kept from them) at every start by `session_args` (pty.rs,
-                background.rs); a ledger
+                names, handed out (or kept from them) at every start by `session_args` (pty/start.rs,
+                background/command.rs); a ledger
                 of what Luna wrote where (`<data>/library-state.json`, bytes in `library-blobs/` by
-                hash) so only its own copies are touched — see Key decisions
+                hash) so only its own copies are touched — see Key decisions.
+                mod.rs the library's folders, the ledger and the pass lock; reach.rs whom a
+                skill or instructions file is for; skills.rs the library's own files read and
+                checked; files.rs copies on disk, blobs and backups; folders.rs what waits for
+                a named folder's sessions, and session_args; pass.rs one pass over every copy;
+                overview.rs what the window is shown; commands.rs the window's commands;
+                testkit.rs the library its tests lay out
   watchdog.rs   a window whose page stopped responding (WebView2 died) is rebuilt
   coreproc.rs   the core: the same exe with `--core`, no window; one per data dir (core.lock), listens on
                 127.0.0.1 with a token from <data>/core/core.json, exits by itself after 10 minutes with no
@@ -300,7 +341,7 @@ src-tauri/src/
   Worktrees are Codex's own: a new worktree chat starts with `--worktree` and `-C` = the project folder,
   and Codex puts the checkout at `<CODEX_HOME>/worktrees/<4 hex>/<repo>` (inside the account folder) on a
   detached HEAD, no branch. Luna learns the path from the rollout's `session_meta.cwd`
-  (`codex/session.rs` `rollout_cwd`), the same way it learns Claude Code's from its registry
+  (`codex/session/read.rs` `rollout_cwd`), the same way it learns Claude Code's from its registry
   (`useSessionWatch`). Codex refuses `--worktree` on resume, so a worktree chat resumes as
   `resume <uuid> -C <worktree>`; if that worktree is gone the session fails to start — nothing
   re-creates it. Login is the same command with `login: true`, i.e. `codex login` in the account folder.
@@ -416,12 +457,12 @@ src-tauri/src/
   so the bit is written before the spawn: `hasTrustDialogAccepted` in `.claude.json` or
   `[projects.'<native path>'] trust_level = "trusted"` in `config.toml` (via `toml_edit`, so as
   not to lose the user's comments; the key is compared case-insensitively and with either slash).
-- **Session busyness is measured, not read from one status.** Every 5 s `activity.rs`
+- **Session busyness is measured, not read from one status.** Every 5 s `activity/`
   combines three signals: the turn (for Claude — hooks via a `--settings` file with `curl.exe` (outside Windows — `curl`) to the loopback
   `hub.rs`, checked against the registry; for Codex — the rollout plus screen silence, and an approval dialog
   (a command, an edit), which is not in the rollout and under which the screen is not silent, — by its text on
   the rendered screen; the same verdict also goes to the chat row in the UI instead of `working`), the CLI's descendants
-  (`procs.rs`: on spawn the CLI is put into a Job Object, descendants inherit it; "busy" = growth in
+  (`procs/`: on spawn the CLI is put into a Job Object, descendants inherit it; "busy" = growth in
   CPU/IO over the window, or a process born after the first turn began and still alive — that is how
   a background `sleep` is caught, while what the CLI starts in its first 30 s (`STARTUP_MS`: MCP
   servers, its shell) counts as furniture however soon a first turn begins, and a respawn starts that
@@ -439,17 +480,17 @@ src-tauri/src/
   expiry, kept a PC awake all night. Birth is no work: a process first seen is as quiet as the job it came
   into, and until it is 30 s old only its CPU since it started can say otherwise (its I/O then is loading,
   which a read in the middle of its start would count next time), so a loop starting a `sleep 60` a minute
-  stays idle. `luna_list`'s `active` is work in the last 10 min. A chat's are measured the same way (activity.rs `Track::left`, the processes
+  stays idle. `luna_list`'s `active` is work in the last 10 min. A chat's are measured the same way (activity/mod.rs `Track::left`, the processes
   `procs::judge` calls young): a forgotten `tail -F` under a chat held the machine just the same, and
   `judge` itself counts a child's I/O only past that rate, as a polling one moves a few bytes every
-  sample. While the hold stands, power.rs says every hour what keeps it (`HOLD_LOG_EVERY_MS`). Its job alone
+  sample. While the hold stands, power/rule.rs says every hour what keeps it (`HOLD_LOG_EVERY_MS`). Its job alone
   is tied to the core (`procs::tie`, `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`): a chat's CLI goes with its
   terminal when a core dies, a helper's has none, and would run on unowned beside the turn the next
   core starts on that conversation. This is the leftover rule, not an exception to it: a core that
   leaves ends leftovers already (`stop_all`). The OS spares no window, so every way out that is not a
   death lets go first (`let_go`, `Drop for Job`), `end_leftovers` sparing windows as ever; a window a
   helper's turn opened dies with a core that dies, and only then. Off Windows the same tie is a process
-  of Luna's (`keeper.rs`): the keeper, this exe with `--keep-ties`, one to a core once a helper has a
+  of Luna's (`keeper/`): the keeper, this exe with `--keep-ties`, one to a core once a helper has a
   turn, reads a pipe only the core writes, and the end of that input is the core's death, on which it
   ends every job not let go of; it also looks at the core itself every 2 s by pid and start time, as on
   macOS a pipe becomes close-on-exec a moment after it is made and a process started then holds the write
@@ -527,7 +568,7 @@ src-tauri/src/
   those words and the time they were said, from the same read of the transcript or rollout, are the ones it
   was shown on, so the next turn ending on the marker shows again, the same words included. A CLI's own prompt is never `marked` and cannot be cleared. The activity tracker keeps
   the turn idle, so power counts it as done.
-- **Power follows busyness** (`power.rs`). Keep-awake — `PowerSetRequest(SystemRequired)`
+- **Power follows busyness** (`power/`). Keep-awake — `PowerSetRequest(SystemRequired)`
   with a reason visible in `powercfg /requests`, while busy > 0, released after 60 s of quiet;
   `waiting` does not keep the machine up (nobody is answering), but blocks shutdown (the work is not
   done). Stalled (limit and other API errors) does not block: until the reset nothing
@@ -599,7 +640,7 @@ src-tauri/src/
   oldest messages that fit and puts the cursor back where they end, with `last` the newest; `leftOut`
   counts the rest, and one message past the cap is cut with a pointer to the transcript.
   `wait(turn_done)` counts busy→idle transitions in
-  `activity.rs` (`turns_ended`; the count grows across respawn/resume too — for Codex only turns after
+  `activity/mod.rs` (`turns_ended`; the count grows across respawn/resume too — for Codex only turns after
   the process spawned are taken from the rollout) and returns everything the session said past the
   debt's transcript offset (below), report first as in the notice's file (`reply_of`) — past `MAX_TEXT`
   cut, with that file named — so `read` is not needed.
@@ -743,7 +784,7 @@ src-tauri/src/
   registry's cwd, then in every project folder (`located_transcript`): a session resumed elsewhere writes to the folder
   it started in. No transcript is not "no reply": the notice and `transcriptMissing` say which.
   The CLI's own resident helpers (`codex-code-mode-host` and its
-  `conhost`) do not count as background work while they do not move (procs.rs, `without_furniture`):
+  `conhost`) do not count as background work while they do not move (procs/mod.rs, `without_furniture`):
   otherwise every Codex helper was announced "NOT done yet" after a turn. A turn with no answer in the transcript waits up to 5 s for it (Claude
   Code's Stop hook arrives before the last answer lands in the transcript; `wait` waits the same way), and then
   the notification says "no answer" and points to the screen. Luna counts the draft from the person's keystrokes
@@ -846,7 +887,7 @@ src-tauri/src/
   without it Codex falls back to an ordinarily installed PowerShell or Windows PowerShell. The
   instruction says that the CLIs' built-in subagents can do neither another provider nor another
   account: without that a Codex orchestrator took its own `spawn_agent`.
-  **Background helpers** (background.rs) are what `luna_spawn` makes unless asked for `visible:
+  **Background helpers** (background/) are what `luna_spawn` makes unless asked for `visible:
   true`: no chat row and no pty, all in the core, so no window is needed. Each turn is one process —
   `claude -p --output-format stream-json --verbose` / `codex exec --json`, resumed by the session /
   thread id the first turn printed — with the prompt on stdin (no command-line limit) and stdout
@@ -1136,7 +1177,7 @@ src-tauri/src/
   (`copyOnSelect`) from `.claude.json` only: such a spec is `global`, its Rec names the file, and apply
   rewrites `.claude.json` only for a key of its own. Rust:
   `apply_recommended(provider, account_path, add, remove)`.
-- **The library** (`library.rs`). The user's own instructions and skills, which belong to
+- **The library** (`library/`). The user's own instructions and skills, which belong to
   them rather than to any repository (a repository's skills reach everyone who clones it, and
   Luna's MCP instructions every model that connects). Each skill, and each instructions file
   (`instructions/<name>.md`), has a reach in settings.json — `all`, a provider's every account,
@@ -1258,7 +1299,7 @@ src-tauri/src/
   the Rust tests and runs them on the host. The rules are in AGENTS.md — the one instructions file for
   both CLIs (Claude Code reads it when there is no CLAUDE.md).
 - Linux check — `scripts/linux-check.ps1` (also Docker): builds the crate for Linux and runs its unit tests
-  there, the only place the Unix code (`keeper.rs` and the like) compiles and runs. Its own image and
+  there, the only place the Unix code (`keeper/` and the like) compiles and runs. Its own image and
   volumes; the checkout goes in read-only.
 - Gate — `scripts/gate.ps1`: rustfmt, clippy with `-D warnings`, the Linux tests (linux-check's image,
   volumes and lock), and the frontend's install, lint, format check, typecheck, text check, script

@@ -420,7 +420,7 @@ fn due_ms(pty: &crate::pty::PtyManager, id: &str, provider: Provider) -> Option<
 }
 
 /// While a session's turn runs, how long nothing has come of it: a helper's
-/// output (background.rs), a chat's transcript; None between turns.
+/// output (background/), a chat's transcript; None between turns.
 fn turn_quiet_ms(pty: &crate::pty::PtyManager, id: &str) -> Option<u64> {
     let now = now_ms();
     if crate::background::has(id) {

@@ -74,7 +74,7 @@ pub struct SpawnParams {
     #[serde(skip_serializing)]
     pub budget_tokens: Option<u64>,
     /// A chat the user sees, run by the window. Without it the helper runs
-    /// in the background (background.rs) and the frontend never hears of it.
+    /// in the background (background/) and the frontend never hears of it.
     #[serde(skip_serializing)]
     pub visible: Option<bool>,
     /// Without the edit tools (Claude Code); in a read-only sandbox (Codex).
@@ -366,7 +366,7 @@ pub(super) fn spawn_with(caller: &str, mut params: SpawnParams, replaces: Option
         };
         // Off the registry lock: what follows reads folders and login files,
         // and every Claude Code session's hook waits on this lock with its next
-        // step behind it (activity.rs `sample` has the same care).
+        // step behind it (activity/sample.rs `sample` has the same care).
         if params.folder.is_none() {
             params.folder = Some(worktree.unwrap_or_else(|| me.folder.clone()));
         }

@@ -8,7 +8,7 @@ export const what = (p: PlaceDto) => p.skill ?? (p.instructions ? `${p.instructi
 export type AccountRef = { provider: Provider; name: string };
 export const accountKey = (a: AccountRef) => `${a.provider}/${a.name}`;
 
-/** How a reach takes in an account, as library.rs `closeness` ranks it: the closest wins it. */
+/** How a reach takes in an account, as library/reach.rs `closeness` ranks it: the closest wins it. */
 export function how(reach: Reach, a: AccountRef): string | null {
   if (reach.includes(accountKey(a))) return 'named for it';
   if (reach.includes(a.provider)) return `as every ${PROVIDER_LABEL[a.provider]} account`;

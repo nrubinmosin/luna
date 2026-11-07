@@ -36,7 +36,7 @@ export interface AskDto {
   detail?: string;
 }
 
-/** A helper that runs with no row (background.rs `Row`), listed under its parent. */
+/** A helper that runs with no row (background/rows.rs `Row`), listed under its parent. */
 export interface BackgroundHelperDto {
   id: string;
   parent: string | null;

@@ -1,5 +1,5 @@
 # Toolchain image for building the crate for Linux and running its unit tests:
-# the Unix code (keeper.rs, parts of procs.rs and pty.rs) that the Windows test
+# the Unix code (keeper/, procs/unix.rs and parts of pty/) that the Windows test
 # run never compiles.
 # Build:  docker build -t luna-linuxcheck -f docker/linux-check.Dockerfile docker
 # Usage:  see scripts/linux-check.ps1
