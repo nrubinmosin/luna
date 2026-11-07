@@ -731,6 +731,10 @@ pub(crate) fn clean_env(cmd: &mut Command) {
 /// in `workspace-write`.
 pub(crate) const AUTO_REVIEW: &str = "auto-review";
 pub(crate) const AUTO_REVIEW_SANDBOX: &str = "workspace-write";
+/// What Codex asks goes to a person, whatever an account's or project's
+/// `approvals_reviewer` says: `auto_review` there would have a reviewer model
+/// answer a session Luna started, and held its helper to, as asking one.
+pub(crate) const CODEX_PERSON_REVIEWS: &str = "approvals_reviewer=\"user\"";
 /// Codex runs the project's hooks without asking for trust (codex/hooks.rs).
 pub(crate) const HOOKS_UNASKED: &str = "--dangerously-bypass-hook-trust";
 /// Codex puts the id of the thread it is on in the window title, which no pane
@@ -1658,6 +1662,8 @@ pub async fn ensure_codex_session(
                 } else {
                     args.push("--ask-for-approval".into());
                     args.push(approval.clone());
+                    args.push("-c".into());
+                    args.push(CODEX_PERSON_REVIEWS.into());
                     if sandbox == READ_ONLY_NET {
                         args.extend(codex_read_only_net_args());
                     } else {

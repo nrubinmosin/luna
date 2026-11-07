@@ -632,9 +632,10 @@ function SettingsWindow({ onClose }: { onClose: () => void }) {
             <HelpersAboveRow />
             <div style={{ fontSize: 'var(--fs-1)', color: 'var(--faint)', marginTop: 4 }}>
               Off, a chat’s helpers do no more without asking than it does: a Plan-only chat cannot spawn one that
-              edits, an Ask chat none that bypasses permissions, and the same for Codex’s sandbox. On, any chat with
-              Luna tools may spawn helpers that bypass permissions or run with full access, whatever it runs in itself.
-              Chats you make yourself are not affected either way.
+              edits, an Ask chat none that bypasses permissions, and the same for Codex’s sandbox and network. A chat
+              approves its helpers’ permission prompts only for what it runs unasked itself. On, any chat with Luna
+              tools may spawn helpers that bypass permissions or run with full access, and approve what they ask,
+              whatever it runs in itself. Chats you make yourself are not affected either way.
             </div>
           </Section>
           <Section label="Links">
