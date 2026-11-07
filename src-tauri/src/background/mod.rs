@@ -103,7 +103,7 @@ struct Entry {
     /// The helpers whose budget lines its CLI's stdin has taken, until the agent
     /// layer has noted it: the one word that a line arrived (`stdin_took`).
     budgets_landed: Vec<String>,
-    /// Its turn's processes are in a job tied to the core (procs.rs), so a core
+    /// Its turn's processes are in a job tied to the core (procs/), so a core
     /// that dies takes them along. Saved: without it the next core cannot tell
     /// that a turn it did not stop is over.
     tied: bool,
@@ -126,7 +126,7 @@ struct Entry {
     /// the machine as a chat's would, and is ended with the helper. Tied to
     /// the core: a helper has no terminal whose going would end its CLI, and
     /// one left running by a core that died would run alongside the turn the
-    /// next core starts on the same conversation (procs.rs).
+    /// next core starts on the same conversation (procs/).
     job: Option<std::sync::Arc<crate::procs::Job>>,
     /// Its turns left something running in that job, when last looked: at the
     /// end of its turn and at every activity sample since. Reading a job takes

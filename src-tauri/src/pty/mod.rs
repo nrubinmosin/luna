@@ -84,7 +84,7 @@ struct Session {
     /// its title and status live under this account.
     account_path: String,
     /// The job the CLI was put in at spawn, for listing what it has running
-    /// under it (procs.rs). None where Windows refused or off Windows.
+    /// under it (procs/). None where Windows refused or off Windows.
     job: Option<Arc<crate::procs::Job>>,
     /// The last size the pty was given (rows, cols), so `screen` can render
     /// the scrollback the way the CLI laid it out.

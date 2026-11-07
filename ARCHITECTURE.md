@@ -138,9 +138,11 @@ src-tauri/src/
                 worktree asked for by name; inspect.rs what deleting one would lose;
                 testkit.rs the paths and repositories its tests lay out
   throttle.rs   cool-off after a 429 from the usage endpoints, shared by both
-  procs.rs      what the CLI has running under it: a Job Object per session, pid list,
+  procs/        what the CLI has running under it: a Job Object per session, pid list,
                 CPU/IO/start time of each, the "busy" rule (judge), windowed programs left
-                out (shown), what is left ended with the session (end_leftovers)
+                out (shown), what is left ended with the session (end_leftovers). mod.rs
+                those; win.rs and unix.rs each OS's `imp`; leftovers.rs what turns left
+                running and when it is at work; testkit.rs processes for tests (Windows)
   keeper/       the tie to the core off Windows: the `--keep-ties` process that ends a dead
                 core's jobs, what a job holds there, the next core's backstop (end_last_ties);
                 and `kill_tree`'s walk there (end_tree). mod.rs a process, a turn's leader
@@ -453,7 +455,7 @@ src-tauri/src/
   `hub.rs`, checked against the registry; for Codex — the rollout plus screen silence, and an approval dialog
   (a command, an edit), which is not in the rollout and under which the screen is not silent, — by its text on
   the rendered screen; the same verdict also goes to the chat row in the UI instead of `working`), the CLI's descendants
-  (`procs.rs`: on spawn the CLI is put into a Job Object, descendants inherit it; "busy" = growth in
+  (`procs/`: on spawn the CLI is put into a Job Object, descendants inherit it; "busy" = growth in
   CPU/IO over the window, or a process born after the first turn began and still alive — that is how
   a background `sleep` is caught, while what the CLI starts in its first 30 s (`STARTUP_MS`: MCP
   servers, its shell) counts as furniture however soon a first turn begins, and a respawn starts that
@@ -775,7 +777,7 @@ src-tauri/src/
   registry's cwd, then in every project folder (`located_transcript`): a session resumed elsewhere writes to the folder
   it started in. No transcript is not "no reply": the notice and `transcriptMissing` say which.
   The CLI's own resident helpers (`codex-code-mode-host` and its
-  `conhost`) do not count as background work while they do not move (procs.rs, `without_furniture`):
+  `conhost`) do not count as background work while they do not move (procs/mod.rs, `without_furniture`):
   otherwise every Codex helper was announced "NOT done yet" after a turn. A turn with no answer in the transcript waits up to 5 s for it (Claude
   Code's Stop hook arrives before the last answer lands in the transcript; `wait` waits the same way), and then
   the notification says "no answer" and points to the screen. Luna counts the draft from the person's keystrokes

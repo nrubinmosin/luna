@@ -8,7 +8,7 @@
 //!   *waiting*, which is neither working nor done — unless what it waits
 //!   on is the dialog an API error left (a usage limit), which is *stalled*:
 //!   the turn is over and nothing more happens by itself, so it counts as done;
-//! - the children: the processes the CLI has under it (procs.rs) — moving
+//! - the children: the processes the CLI has under it (procs/) — moving
 //!   ones, and ones born of the current turn even if they only sleep;
 //! - the screen: pty output in the last half minute.
 //!
