@@ -23,10 +23,10 @@ if (-not $Group) {
 }
 
 $build = Get-BuildStamp
-$node = Get-NodeVersion
+$nodeImage = Get-NodeImage
 
-# A package.json script, in the official Node image of the pinned version: the
-# frontend needs nothing else. pnpm itself is the one packageManager names,
+# A package.json script, in the official Node image of the pinned version and
+# digest: the frontend needs nothing else. pnpm itself is the one packageManager names,
 # through corepack, whose downloads stay in a volume of their own.
 function Invoke-Frontend([string]$What, [string]$Script) {
     Invoke-Checked $What {
@@ -37,7 +37,7 @@ function Invoke-Frontend([string]$What, [string]$Script) {
           -v luna-node-modules:/app/node_modules `
           -v luna-corepack:/corepack `
           -w /app `
-          "node:$node-trixie-slim" `
+          $nodeImage `
           bash -c (ConvertTo-BashScript "set -e`n$Script")
     }
 }

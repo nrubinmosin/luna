@@ -4,8 +4,8 @@
 # Build:  docker build -t luna-linuxcheck -f docker/linux-check.Dockerfile docker
 # Usage:  see scripts/linux-check.ps1
 # Rust is pinned here and in src-tauri/rust-toolchain.toml; the gate checks that
-# they agree (scripts/gate.ps1).
-FROM rust:1.99.1-slim-trixie
+# they agree (scripts/gate.ps1). The digest holds the tag to one build of it.
+FROM rust:1.99.1-slim-trixie@sha256:7eab7ce19273ce785e0ca7578bdf7bc1fcbae621775a8197379a04c9f6e03cd5
 
 # What the crate links on Linux: webkit2gtk brings GTK and libsoup along, tao
 # needs libdbus. git, sh, sleep and kill are what the tests themselves run.
