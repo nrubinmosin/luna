@@ -260,7 +260,13 @@ pub fn tick(summary: &Summary) {
     let action = st.armed.as_ref().map(|a| a.action);
 
     let busy_now = || {
-        summary.sessions.iter().filter(|s| s.busy).map(|s| format!("{} {}", crate::agents::label(&s.id), s.why())).collect::<Vec<_>>().join(" | ")
+        summary
+            .sessions
+            .iter()
+            .filter(|s| s.busy)
+            .map(|s| format!("{} {}", crate::agents::label(&s.id), s.why()))
+            .collect::<Vec<_>>()
+            .join(" | ")
     };
     for effect in advance(&mut st, settings.keep_awake, summary, now) {
         match effect {
@@ -361,7 +367,11 @@ fn parked(summary: &Summary) -> (Vec<String>, Vec<String>) {
 }
 
 fn plural(n: usize) -> String {
-    if n == 1 { "1 session is".to_string() } else { format!("{n} sessions are") }
+    if n == 1 {
+        "1 session is".to_string()
+    } else {
+        format!("{n} sessions are")
+    }
 }
 
 fn verb(a: Action) -> &'static str {
@@ -438,7 +448,9 @@ fn relaunch_command() -> Result<String, String> {
 fn relaunch_line(asked: &Result<String, String>) -> String {
     match asked {
         Ok(command) => format!("RunOnce set: {command} starts at the next sign-in"),
-        Err(e) => format!("could not set Luna to start at the next sign-in: {e}; restarting all the same, Luna stays down until started by hand"),
+        Err(e) => {
+            format!("could not set Luna to start at the next sign-in: {e}; restarting all the same, Luna stays down until started by hand")
+        }
     }
 }
 
@@ -506,7 +518,8 @@ fn fire(action: Action) {
             }
         }
         Action::Restart => {
-            let asked = relaunch_command().and_then(|command| to_machine(Err("a dry run sets nothing".to_string()), || os::run_once(&command)).map(|()| command));
+            let asked = relaunch_command()
+                .and_then(|command| to_machine(Err("a dry run sets nothing".to_string()), || os::run_once(&command)).map(|()| command));
             crate::log::warn("power", &relaunch_line(&asked));
             let quit = crate::coreproc::wind_down();
             crate::log::warn("power", &format!("{quit} sessions closed; restarting"));
@@ -663,10 +676,7 @@ pub fn arm_power_off(action: String, quiet_s: u64, drain: Option<bool>) -> Resul
     // Said at once, not found out in the morning: the menu closes on Arm,
     // and nothing else would tell that the rule cannot fire as things stand.
     if !waiting.is_empty() {
-        notify(
-            &format!("{} waiting for you — Luna will not {} until answered", plural(waiting.len()), verb(action)),
-            &waiting.join(", "),
-        );
+        notify(&format!("{} waiting for you — Luna will not {} until answered", plural(waiting.len()), verb(action)), &waiting.join(", "));
     }
     publish(&mut st, &summary);
     if drain {
@@ -1066,17 +1076,11 @@ mod tests {
         assert_eq!(advance(&mut st, true, &board(1, 0, None), 0), vec![]);
         assert_eq!(advance(&mut st, true, &board(0, 0, Some(1_000)), 60_000), vec![]);
         // Quiet for the window: the countdown starts.
-        assert_eq!(
-            advance(&mut st, true, &board(0, 0, Some(1_000)), 121_000),
-            vec![Effect::Countdown { quiet_for_s: 120 }]
-        );
+        assert_eq!(advance(&mut st, true, &board(0, 0, Some(1_000)), 121_000), vec![Effect::Countdown { quiet_for_s: 120 }]);
         assert_eq!(st.countdown_ends_at_ms, Some(121_000 + COUNTDOWN_MS));
         // Not yet. Then fire, and shutdown drops the arm.
         assert_eq!(advance(&mut st, true, &board(0, 0, Some(1_000)), 150_000), vec![]);
-        assert_eq!(
-            advance(&mut st, true, &board(0, 0, Some(1_000)), 121_000 + COUNTDOWN_MS),
-            vec![Effect::Fire(Action::Shutdown)]
-        );
+        assert_eq!(advance(&mut st, true, &board(0, 0, Some(1_000)), 121_000 + COUNTDOWN_MS), vec![Effect::Fire(Action::Shutdown)]);
         assert!(st.armed.is_none());
         assert!(st.firing);
     }

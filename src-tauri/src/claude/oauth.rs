@@ -23,8 +23,7 @@ use std::sync::{Mutex, OnceLock};
 const TOKEN_URL: &str = "https://platform.claude.com/v1/oauth/token";
 const CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 /// What the CLI asks for when the credentials do not list their scopes.
-const SCOPES: &str =
-    "user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload user:plugins";
+const SCOPES: &str = "user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload user:plugins";
 /// proper-lockfile's `stale`, as the CLI configures it.
 const LOCK_STALE_MS: u128 = 60_000;
 /// After a failed exchange the poller leaves the account alone this long; a

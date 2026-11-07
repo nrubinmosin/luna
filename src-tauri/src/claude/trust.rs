@@ -62,9 +62,7 @@ fn read_config_for_write(path: &Path) -> Result<Value, String> {
 #[tauri::command]
 pub fn claude_folder_trusted(account_path: String, folder: String) -> Result<bool, String> {
     let cfg = read_config(&config_file(&account_path)?);
-    Ok(cfg["projects"][project_key(&folder)]["hasTrustDialogAccepted"]
-        .as_bool()
-        .unwrap_or(false))
+    Ok(cfg["projects"][project_key(&folder)]["hasTrustDialogAccepted"].as_bool().unwrap_or(false))
 }
 
 /// Marks the folder trusted for this account — the same bit the CLI's own trust
@@ -75,26 +73,15 @@ pub fn claude_trust_folder(account_path: String, folder: String) -> Result<(), S
     let _editing = crate::account_settings::editing()?;
     let mut cfg = read_config_for_write(&path)?;
 
-    let projects = cfg
-        .as_object_mut()
-        .ok_or("Malformed .claude.json")?
-        .entry("projects")
-        .or_insert_with(|| Value::Object(Map::new()));
+    let projects = cfg.as_object_mut().ok_or("Malformed .claude.json")?.entry("projects").or_insert_with(|| Value::Object(Map::new()));
     if !projects.is_object() {
         *projects = Value::Object(Map::new());
     }
-    let entry = projects
-        .as_object_mut()
-        .unwrap()
-        .entry(project_key(&folder))
-        .or_insert_with(|| Value::Object(Map::new()));
+    let entry = projects.as_object_mut().unwrap().entry(project_key(&folder)).or_insert_with(|| Value::Object(Map::new()));
     if !entry.is_object() {
         *entry = Value::Object(Map::new());
     }
-    entry.as_object_mut().unwrap().insert(
-        "hasTrustDialogAccepted".into(),
-        Value::Bool(true),
-    );
+    entry.as_object_mut().unwrap().insert("hasTrustDialogAccepted".into(), Value::Bool(true));
 
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).map_err(|e| e.to_string())?;
@@ -102,8 +89,7 @@ pub fn claude_trust_folder(account_path: String, folder: String) -> Result<(), S
     // Write via a sibling temp file so a crash mid-write cannot truncate the
     // account's whole config.
     let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, serde_json::to_vec_pretty(&cfg).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())?;
+    fs::write(&tmp, serde_json::to_vec_pretty(&cfg).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
     // A rename refused (the CLI holding the file) leaves no temp file behind.
     fs::rename(&tmp, &path).map_err(|e| {
         let _ = fs::remove_file(&tmp);

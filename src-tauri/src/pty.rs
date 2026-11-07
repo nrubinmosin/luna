@@ -164,10 +164,7 @@ pub fn manager() -> &'static PtyManager {
 }
 
 fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
 /// Everything a spawn needs that is not the provider's business to work out.
@@ -240,12 +237,7 @@ async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, String>) -> R
 
     let pty_system = native_pty_system();
     let pair = pty_system
-        .openpty(PtySize {
-            rows: INITIAL_ROWS,
-            cols: INITIAL_COLS,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
+        .openpty(PtySize { rows: INITIAL_ROWS, cols: INITIAL_COLS, pixel_width: 0, pixel_height: 0 })
         .map_err(|e| e.to_string())?;
 
     // Luna's own copy of the CLI (see cli.rs), or the bare name on PATH until
@@ -470,12 +462,7 @@ async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, String>) -> R
             // of the session is on its way before the exit event goes out.
             drop(tx);
             let Ok(id) = emitter.join() else { return };
-            let code = child
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .wait()
-                .ok()
-                .map(|st| st.exit_code());
+            let code = child.lock().unwrap_or_else(|e| e.into_inner()).wait().ok().map(|st| st.exit_code());
             drop(on_account);
             crate::log::info("pty", &format!("session {} exited, code {code:?}", crate::agents::label(&id)));
             let pm = manager();
@@ -483,12 +470,7 @@ async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, String>) -> R
             // the same id since — a kill and a respawn quicker than this
             // teardown — is the one its pane is listening to, and this exit
             // would mark that running session dead.
-            let replaced = pm
-                .sessions
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .get(&id)
-                .is_some_and(|s| !Arc::ptr_eq(&s.alive, &alive));
+            let replaced = pm.sessions.lock().unwrap_or_else(|e| e.into_inner()).get(&id).is_some_and(|s| !Arc::ptr_eq(&s.alive, &alive));
             if !replaced {
                 crate::agents::session_exited(&id, code);
                 crate::emit::to_ui("pty://exit", PtyExit { id: &id, code });
@@ -510,10 +492,7 @@ async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, String>) -> R
         });
     }
 
-    crate::log::info(
-        "pty",
-        &format!("spawned {} ({}) pid {pid:?} {describe} in {cwd}", crate::agents::label(&id), provider.as_str()),
-    );
+    crate::log::info("pty", &format!("spawned {} ({}) pid {pid:?} {describe} in {cwd}", crate::agents::label(&id), provider.as_str()));
 
     // A CLI that quits on its own (`/exit`, a crash) ends its process, but
     // on Windows the pty's output stays open for as long as the pseudoconsole
@@ -584,7 +563,12 @@ async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, String>) -> R
 /// Written to a file under the data dir (`hooks/`, named for what it first
 /// held) rather than passed inline, so the command line stays readable and
 /// quoting is not a concern. None with nothing to say.
-pub(crate) fn claude_settings_file(chat_id: &str, hooks: bool, guard: bool, library: &crate::library::SessionSkills) -> Option<std::path::PathBuf> {
+pub(crate) fn claude_settings_file(
+    chat_id: &str,
+    hooks: bool,
+    guard: bool,
+    library: &crate::library::SessionSkills,
+) -> Option<std::path::PathBuf> {
     let settings = claude_settings(
         crate::hub::hook_url(chat_id).filter(|_| hooks).as_deref(),
         crate::hub::guard_url(chat_id).filter(|_| guard).as_deref(),
@@ -639,15 +623,17 @@ fn hook_command(url: &str) -> String {
 
 /// `claude_settings_file`'s settings: the session's hooks to `hook_url`, the
 /// guard's to `guard_url`, and the skills and instructions it does not get.
-fn claude_settings(hook_url: Option<&str>, guard_url: Option<&str>, library: &crate::library::SessionSkills) -> serde_json::Map<String, serde_json::Value> {
+fn claude_settings(
+    hook_url: Option<&str>,
+    guard_url: Option<&str>,
+    library: &crate::library::SessionSkills,
+) -> serde_json::Map<String, serde_json::Value> {
     let mut settings = serde_json::Map::new();
     let mut hooks = serde_json::Map::new();
     let mut pre_tool_use = Vec::new();
     if let Some(url) = hook_url {
         let command = hook_command(url);
-        let hook = |timeout: u32| {
-            serde_json::json!([{ "hooks": [{ "type": "command", "command": command, "timeout": timeout }] }])
-        };
+        let hook = |timeout: u32| serde_json::json!([{ "hooks": [{ "type": "command", "command": command, "timeout": timeout }] }]);
         for event in ["UserPromptSubmit", "PostToolUse", "Stop", "StopFailure", "Notification", "SessionEnd", "PermissionRequest"] {
             hooks.insert(event.into(), hook(5));
         }
@@ -658,7 +644,8 @@ fn claude_settings(hook_url: Option<&str>, guard_url: Option<&str>, library: &cr
         // What a prompt asks, which neither the screen nor the transcript
         // gives whole: the question and its options (the transcript gets the
         // call only once it is answered), the command up for leave.
-        pre_tool_use.push(serde_json::json!({ "matcher": "AskUserQuestion", "hooks": [{ "type": "command", "command": command, "timeout": 5 }] }));
+        pre_tool_use
+            .push(serde_json::json!({ "matcher": "AskUserQuestion", "hooks": [{ "type": "command", "command": command, "timeout": 5 }] }));
     }
     if let Some(url) = guard_url {
         pre_tool_use.push(serde_json::json!({ "matcher": crate::guard::TOOLS, "hooks": [{ "type": "command", "command": hook_command(url), "timeout": 5 }] }));
@@ -840,7 +827,8 @@ pub(crate) fn codex_sandbox_args(sandbox: &str) -> Vec<String> {
 /// `workspace-write` Codex grants its sandbox write access to the folder
 /// once, in the folder's ACL.
 pub(crate) fn codex_windows_sandbox(sandbox: &str) -> Option<String> {
-    (cfg!(windows) && matches!(sandbox, "read-only" | READ_ONLY_NET | "workspace-write")).then(|| "windows.sandbox=\"unelevated\"".to_string())
+    (cfg!(windows) && matches!(sandbox, "read-only" | READ_ONLY_NET | "workspace-write"))
+        .then(|| "windows.sandbox=\"unelevated\"".to_string())
 }
 
 /// PATH for a Codex session in that sandbox: without `…\Microsoft\WindowsApps`.
@@ -1067,7 +1055,9 @@ impl ActivityProbe {
     /// leave on disk says where — Claude Code's registry, Codex's rollout.
     pub fn working_dir(&self) -> Option<String> {
         match self.provider {
-            Provider::Claude => crate::claude::session::session_cwd(self.pid, self.resume.as_deref(), &self.cwd, self.spawned_at_ms, &self.account_path),
+            Provider::Claude => {
+                crate::claude::session::session_cwd(self.pid, self.resume.as_deref(), &self.cwd, self.spawned_at_ms, &self.account_path)
+            }
             Provider::Codex => crate::codex::session::rollout_cwd(&crate::codex::session::Live {
                 chat_id: &self.id,
                 cwd: &self.cwd,
@@ -1108,11 +1098,7 @@ impl PtyManager {
     /// Every live session, copied out from under the map.
     pub fn activity_probes(&self) -> Vec<ActivityProbe> {
         let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
-        sessions
-            .iter()
-            .filter(|(_, s)| s.alive.load(Ordering::SeqCst))
-            .map(|(id, s)| activity_probe(id, s))
-            .collect()
+        sessions.iter().filter(|(_, s)| s.alive.load(Ordering::SeqCst)).map(|(id, s)| activity_probe(id, s)).collect()
     }
 
     /// One live session, or None.
@@ -1341,10 +1327,7 @@ impl PtyManager {
             p == wt || p.starts_with(&format!("{wt}\\"))
         };
         // Probed off the session map: the disk reads below must not hold it.
-        self.activity_probes()
-            .iter()
-            .filter(|p| p.id != id)
-            .any(|p| inside(&p.cwd) || p.working_dir().is_some_and(|real| inside(&real)))
+        self.activity_probes().iter().filter(|p| p.id != id).any(|p| inside(&p.cwd) || p.working_dir().is_some_and(|real| inside(&real)))
             || crate::background::working_dirs(Some(id)).iter().any(|d| inside(d))
     }
 
@@ -1391,9 +1374,7 @@ impl PtyManager {
                 crate::log::warn("delete", &format!("kept worktree {wt}: another session is in it"));
                 Ok(None)
             }
-            Some(wt) if drop_worktree => {
-                crate::worktree::remove_worktree_now(folder.to_string(), wt.clone()).map(|_| resolved.clone())
-            }
+            Some(wt) if drop_worktree => crate::worktree::remove_worktree_now(folder.to_string(), wt.clone()).map(|_| resolved.clone()),
             Some(_) => Ok(resolved),
             None => Ok(None),
         }
@@ -1452,7 +1433,8 @@ pub async fn ensure_claude_session(
         let resume = resume.filter(|sid| crate::claude::session::find_transcript(&account_path, sid).is_some());
         let asked_nothing = spawn_request.is_none() && prompt.is_none();
         // A conversation a core went in the middle of and the window never heard of.
-        let resume = resume.or_else(|| asked_nothing.then(|| crate::agents::conversation_of(&id, Provider::Claude, &folder, &account_path)).flatten());
+        let resume = resume
+            .or_else(|| asked_nothing.then(|| crate::agents::conversation_of(&id, Provider::Claude, &folder, &account_path)).flatten());
         // A helper's is named by Luna (`agents::helper_worktree_name`), so that this
         // start knows which is its own: in a conversation that one, afresh that one if
         // still as made, else another.
@@ -1620,7 +1602,11 @@ pub async fn ensure_codex_session(
         let asked_nothing = !login && spawn_request.is_none() && prompt.is_none();
         // A conversation a core went in the middle of and the window never heard of,
         // resumed where it works, as Codex refuses `--worktree` on a resume.
-        let recovered = if asked_nothing && resume.is_none() { crate::agents::conversation_of(&id, Provider::Codex, &folder, &account_path) } else { None };
+        let recovered = if asked_nothing && resume.is_none() {
+            crate::agents::conversation_of(&id, Provider::Codex, &folder, &account_path)
+        } else {
+            None
+        };
         let folder = recovered.as_deref().and_then(|thread| crate::codex::session::thread_cwd(&account_path, thread)).unwrap_or(folder);
         let resume = resume.or(recovered);
         // Afresh, it makes a new worktree: Codex takes no name to go back into one
@@ -1649,7 +1635,8 @@ pub async fn ensure_codex_session(
             // A project under a folder trusted on this machine starts trusted
             // without an entry in the account's config, and so does one
             // trusted while the account was in use (codex/trust.rs).
-            let trust = crate::codex::trust::root_override(&folder).or_else(|| crate::codex::trust::session_override(&account_path, &folder));
+            let trust =
+                crate::codex::trust::root_override(&folder).or_else(|| crate::codex::trust::session_override(&account_path, &folder));
             if let Some(trust) = trust {
                 args.extend(trust);
             }
@@ -1722,20 +1709,9 @@ pub async fn ensure_codex_session(
                 args.push("--".into());
                 args.push(p.to_string());
             }
-            describe = format!(
-                "model {} effort {effort} approval {approval} sandbox {sandbox}",
-                model.as_deref().unwrap_or("default")
-            );
+            describe = format!("model {} effort {effort} approval {approval} sandbox {sandbox}", model.as_deref().unwrap_or("default"));
         }
-        Ok(Launch {
-            provider: Provider::Codex,
-            cwd: folder,
-            account_path,
-            args,
-            envs,
-            resume: if login { None } else { resume },
-            describe,
-        })
+        Ok(Launch { provider: Provider::Codex, cwd: folder, account_path, args, envs, resume: if login { None } else { resume }, describe })
     })
     .await
 }
@@ -1766,9 +1742,7 @@ fn take_keys(s: &Session, data: String) -> Result<(), String> {
         s.stashing.store(true, Ordering::Relaxed);
     }
     // Queueing, so the command returns at once however busy the pty is.
-    s.input_tx
-        .send(Input::Bytes(data.into_bytes()))
-        .map_err(|_| "session writer is gone".to_string())
+    s.input_tx.send(Input::Bytes(data.into_bytes())).map_err(|_| "session writer is gone".to_string())
 }
 
 /// A person's keys held back from a session (`PtyManager::hold_keys`); they
@@ -1799,12 +1773,7 @@ pub fn resize_session(id: String, cols: u16, rows: u16) -> Result<(), String> {
     let sessions = state.sessions.lock().unwrap();
     let s = sessions.get(&id).ok_or("no such session")?;
     s.input_tx
-        .send(Input::Resize(PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        }))
+        .send(Input::Resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 }))
         .map_err(|_| "session writer is gone".to_string())
 }
 
@@ -1873,14 +1842,7 @@ const EXIT_DIALOG_WAIT: std::time::Duration = std::time::Duration::from_millis(1
 ///
 /// Blocks for up to `grace`: callers run it off the main thread.
 fn shut_down(mut s: Session, grace: std::time::Duration) {
-    let exited = || {
-        s.child
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .try_wait()
-            .map(|status| status.is_some())
-            .unwrap_or(true)
-    };
+    let exited = || s.child.lock().unwrap_or_else(|e| e.into_inner()).try_wait().map(|status| status.is_some()).unwrap_or(true);
     let deadline = std::time::Instant::now() + grace;
     // A modal question — Claude Code's "wait for the limit to reset?", a
     // picker — ignores Ctrl+C and answers Esc, and sat out the whole grace
@@ -2051,11 +2013,7 @@ pub async fn orphan_sessions(known: Vec<String>) -> Result<Vec<OrphanSession>, S
     let state = manager();
     let candidates: Vec<Probe> = {
         let sessions = state.sessions.lock().unwrap();
-        sessions
-            .iter()
-            .filter(|(id, s)| !known.contains(id) && s.alive.load(Ordering::SeqCst))
-            .map(|(id, s)| probe_of(id, s))
-            .collect()
+        sessions.iter().filter(|(id, s)| !known.contains(id) && s.alive.load(Ordering::SeqCst)).map(|(id, s)| probe_of(id, s)).collect()
     };
     if candidates.is_empty() {
         return Ok(Vec::new());
@@ -2074,9 +2032,7 @@ pub async fn orphan_sessions(known: Vec<String>) -> Result<Vec<OrphanSession>, S
                     pid: p.pid,
                     cwd: p.cwd,
                     account_path: p.account_path,
-                    title: meta.as_ref().and_then(|m| {
-                        m.title.clone().or_else(|| m.first_prompt.clone()).or_else(|| m.name.clone())
-                    }),
+                    title: meta.as_ref().and_then(|m| m.title.clone().or_else(|| m.first_prompt.clone()).or_else(|| m.name.clone())),
                     status: meta.and_then(|m| m.status),
                 }
             })
@@ -2486,7 +2442,11 @@ impl Modes {
                 // BEL ends a title, as does ST (ESC \), whose ESC ends it here.
                 (5, 0x07 | 0x1b) => {
                     self.title = Some(String::from_utf8_lossy(&self.params).into_owned());
-                    if b == 0x1b { 1 } else { 0 }
+                    if b == 0x1b {
+                        1
+                    } else {
+                        0
+                    }
                 }
                 (5, _) => {
                     if self.params.len() < TITLE_MAX {
@@ -2535,10 +2495,7 @@ impl Modes {
     }
 
     fn replay(&self) -> String {
-        self.on
-            .iter()
-            .map(|(n, set)| format!("\x1b[?{n}{}", if *set { 'h' } else { 'l' }))
-            .collect()
+        self.on.iter().map(|(n, set)| format!("\x1b[?{n}{}", if *set { 'h' } else { 'l' })).collect()
     }
 }
 
@@ -2651,9 +2608,7 @@ pub async fn session_meta(id: String, account_path: String) -> Result<Option<Ses
     };
 
     let codex = probe.provider == Provider::Codex;
-    let mut meta = tauri::async_runtime::spawn_blocking(move || meta_from_disk(&probe))
-        .await
-        .map_err(|e| e.to_string())?;
+    let mut meta = tauri::async_runtime::spawn_blocking(move || meta_from_disk(&probe)).await.map_err(|e| e.to_string())?;
     // Codex's approval dialog is not in its rollout and the screen does not
     // go quiet under it, so the rollout calls the session working; the
     // activity sampler reads the dialog off the screen (`codex::session::asks`).
@@ -2775,7 +2730,11 @@ mod tests {
         assert_eq!(thread_in_title("E:\\Programs\\Luna\\codex-cli\\versions\\0.166.0\\bin\\codex.exe"), None);
         assert_eq!(thread_in_title("01a1a631-dc9f-7170-a47e-"), None, "too little of one to tell");
         assert_eq!(thread_in_title("01a1a631-dc9f-7170-a47e-3..."), Some("01a1a631-dc9f-7170-a47e-3"), "enough");
-        assert_eq!(thread_in_title("x01a1a631-dc9f-7170-a47e-388412a20b13"), Some("01a1a631-dc9f-7170-a47e-388412a20b13"), "a letter not hex before it");
+        assert_eq!(
+            thread_in_title("x01a1a631-dc9f-7170-a47e-388412a20b13"),
+            Some("01a1a631-dc9f-7170-a47e-388412a20b13"),
+            "a letter not hex before it"
+        );
         assert_eq!(thread_in_title("f01a1a631-dc9f-7170-a47e-388412a20b13"), None, "a run that is not shaped like one");
     }
 
@@ -2855,7 +2814,10 @@ mod tests {
         // What Claude Code 2.1.316 draws: a no-break space, its own caret in reverse.
         let caret = "❯\u{a0}\x1b[7m \x1b[27m\x1b[K";
         assert!(at(&hidden(&[(1, 1, "❯ say hello"), (6, 1, &rule), (7, 1, caret), (8, 1, &rule)])));
-        assert!(at(&hidden(&[(6, 1, &rule), (7, 1, "❯ \x1b[2mTry something\x1b[22m"), (8, 1, &rule)])), "a dim placeholder is nothing typed");
+        assert!(
+            at(&hidden(&[(6, 1, &rule), (7, 1, "❯ \x1b[2mTry something\x1b[22m"), (8, 1, &rule)])),
+            "a dim placeholder is nothing typed"
+        );
         assert!(at(&hidden(&[(9, 1, &rule), (10, 1, caret)])), "no room left for the rule under it");
         assert!(!at(&hidden(&[(6, 1, &rule), (7, 1, "❯ a draft"), (8, 1, &rule)])), "text in it");
         assert!(!at(&hidden(&[(3, 1, "Use this API key?"), (5, 1, "❯ No (recommended)"), (6, 1, "  Yes")])), "a dialog's choice");
@@ -2866,7 +2828,10 @@ mod tests {
         // Codex has one way of showing it, the cursor at its caret.
         assert!(at_empty_prompt(&drawn(&[(6, 1, "› "), (8, 1, "? for shortcuts")], (6, 3)), 10, 40, Provider::Codex));
         assert!(!at_empty_prompt(&drawn(&[(6, 1, "› a draft"), (8, 1, "? for shortcuts")], (6, 10)), 10, 40, Provider::Codex));
-        assert!(!at_empty_prompt(&hidden(&[(6, 1, "› "), (8, 1, "? for shortcuts")]), 10, 40, Provider::Codex), "not by the cursor, not at all");
+        assert!(
+            !at_empty_prompt(&hidden(&[(6, 1, "› "), (8, 1, "? for shortcuts")]), 10, 40, Provider::Codex),
+            "not by the cursor, not at all"
+        );
     }
 
     #[test]
@@ -2915,10 +2880,7 @@ mod tests {
     #[test]
     fn a_session_is_told_its_id_and_a_helper_its_parent() {
         assert_eq!(session_envs("c1", None), [("LUNA_SESSION_ID", "c1".to_string())]);
-        assert_eq!(
-            session_envs("c1", Some("p1")),
-            [("LUNA_SESSION_ID", "c1".to_string()), ("LUNA_PARENT_ID", "p1".to_string())]
-        );
+        assert_eq!(session_envs("c1", Some("p1")), [("LUNA_SESSION_ID", "c1".to_string()), ("LUNA_PARENT_ID", "p1".to_string())]);
         for k in ["LUNA_SESSION_ID", "LUNA_PARENT_ID"] {
             assert!(INHERITED_SESSION_VARS.contains(&k), "{k} must not reach a session of another Luna");
         }

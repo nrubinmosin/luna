@@ -104,20 +104,11 @@ fn read_auth(account_path: &str) -> Option<Auth> {
     let access = tokens["access_token"].as_str()?.to_string();
     let claims = tokens["id_token"].as_str().and_then(jwt_claims).unwrap_or(Value::Null);
     let auth_ns = &claims["https://api.openai.com/auth"];
-    let expired = jwt_claims(&access)
-        .and_then(|c| c["exp"].as_u64())
-        .map(|exp| now_ms() / 1000 >= exp)
-        .unwrap_or(false);
+    let expired = jwt_claims(&access).and_then(|c| c["exp"].as_u64()).map(|exp| now_ms() / 1000 >= exp).unwrap_or(false);
     Some(Auth {
         access,
-        account_id: tokens["account_id"]
-            .as_str()
-            .or_else(|| auth_ns["chatgpt_account_id"].as_str())
-            .map(str::to_owned),
-        email: claims["email"]
-            .as_str()
-            .or_else(|| claims["https://api.openai.com/profile"]["email"].as_str())
-            .map(str::to_owned),
+        account_id: tokens["account_id"].as_str().or_else(|| auth_ns["chatgpt_account_id"].as_str()).map(str::to_owned),
+        email: claims["email"].as_str().or_else(|| claims["https://api.openai.com/profile"]["email"].as_str()).map(str::to_owned),
         plan: auth_ns["chatgpt_plan_type"].as_str().and_then(plan_label),
         expired,
     })
@@ -163,10 +154,7 @@ pub fn windows_from_api(body: &Value) -> (Vec<LimitWindow>, Option<String>) {
     if let Some(extra) = body["additional_rate_limits"].as_array() {
         for lim in extra {
             let feature = lim["metered_feature"].as_str().unwrap_or("extra");
-            let name = lim["limit_name"]
-                .as_str()
-                .or_else(|| lim["normal_model_slug"].as_str())
-                .unwrap_or(feature);
+            let name = lim["limit_name"].as_str().or_else(|| lim["normal_model_slug"].as_str()).unwrap_or(feature);
             let r = &lim["rate_limit"];
             if let Some(mut w) = window_from_api(feature, Some(name), &r["primary_window"]) {
                 let wl = window_label(w.window_minutes);
@@ -221,10 +209,9 @@ fn get_usage(auth: &Auth) -> Result<Value, String> {
     }
     let resp = req.call().map_err(|e| match e {
         ureq::Error::Status(401, _) => "token expired — run a session to refresh".to_string(),
-        ureq::Error::Status(429, r) => format!(
-            "{RATE_429}:{}",
-            r.header("retry-after").and_then(|h| h.trim().parse::<u64>().ok()).unwrap_or(0)
-        ),
+        ureq::Error::Status(429, r) => {
+            format!("{RATE_429}:{}", r.header("retry-after").and_then(|h| h.trim().parse::<u64>().ok()).unwrap_or(0))
+        }
         other => other.to_string(),
     })?;
     resp.into_json().map_err(|e| e.to_string())
@@ -239,9 +226,7 @@ fn from_rollout(out: &mut CodexLimits, account_path: &str) {
     out.windows = windows;
     out.have_usage = true;
     out.source = Some("rollout".into());
-    out.fetched_at_ms = chrono::DateTime::parse_from_rfc3339(&ts)
-        .ok()
-        .map(|t| t.timestamp_millis() as f64);
+    out.fetched_at_ms = chrono::DateTime::parse_from_rfc3339(&ts).ok().map(|t| t.timestamp_millis() as f64);
     if out.plan.is_none() {
         out.plan = plan;
     }
@@ -252,9 +237,7 @@ fn from_rollout(out: &mut CodexLimits, account_path: &str) {
 #[tauri::command]
 pub async fn codex_limits(account_path: String, force: Option<bool>) -> Result<CodexLimits, String> {
     let force = force.unwrap_or(false);
-    tauri::async_runtime::spawn_blocking(move || fetch_limits(&account_path, force))
-        .await
-        .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || fetch_limits(&account_path, force)).await.map_err(|e| e.to_string())?
 }
 
 fn fetch_limits(account_path: &str, force: bool) -> Result<CodexLimits, String> {

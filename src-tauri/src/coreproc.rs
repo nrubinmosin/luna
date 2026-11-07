@@ -50,10 +50,7 @@ const KEPT_FOR_A_WINDOW: [&str; 3] = ["agent://deleted", "agent://spawn", "agent
 static ALONE_SINCE: AtomicU64 = AtomicU64::new(0);
 
 fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
 /// `luna --core --data-dir <dir> --log <path> --window-exe <path>`: runs as the
@@ -249,8 +246,7 @@ fn sweep_old_copies() {
 fn keep_full_speed() {
     use windows::Win32::System::Threading::{
         GetCurrentProcess, ProcessPowerThrottling, SetProcessInformation, PROCESS_POWER_THROTTLING_CURRENT_VERSION,
-        PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION,
-        PROCESS_POWER_THROTTLING_STATE,
+        PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION, PROCESS_POWER_THROTTLING_STATE,
     };
     let state = PROCESS_POWER_THROTTLING_STATE {
         Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,

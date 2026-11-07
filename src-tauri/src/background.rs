@@ -232,7 +232,14 @@ fn new_id() -> String {
         h.finish()
     };
     let (a, b) = (word(SEQ.fetch_add(1, Ordering::Relaxed)), word(crate::throttle::now_ms()));
-    format!("{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}", a >> 32, (a >> 16) & 0xffff, a & 0xfff, 0x8000 | ((b >> 48) & 0x3fff), b & 0xffff_ffff_ffff)
+    format!(
+        "{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}",
+        a >> 32,
+        (a >> 16) & 0xffff,
+        a & 0xfff,
+        0x8000 | ((b >> 48) & 0x3fff),
+        b & 0xffff_ffff_ffff
+    )
 }
 
 /// Text sent to a helper, and by whom: what never reaches it goes back only to
@@ -414,7 +421,9 @@ struct Registry {
 
 fn reg() -> &'static (Mutex<Registry>, Condvar) {
     static R: OnceLock<(Mutex<Registry>, Condvar)> = OnceLock::new();
-    R.get_or_init(|| (Mutex::new(Registry { entries: HashMap::new(), next_serial: 1, asked: HashMap::new(), closed: false }), Condvar::new()))
+    R.get_or_init(|| {
+        (Mutex::new(Registry { entries: HashMap::new(), next_serial: 1, asked: HashMap::new(), closed: false }), Condvar::new())
+    })
 }
 
 fn lock() -> std::sync::MutexGuard<'static, Registry> {
@@ -621,7 +630,10 @@ fn command_for(e: &Entry, id: &str) -> (Vec<String>, String, Vec<(&'static str, 
     let mut dir = s.folder.clone();
     match s.provider {
         Provider::Claude => {
-            args.extend(["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--replay-user-messages"].map(String::from));
+            args.extend(
+                ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--replay-user-messages"]
+                    .map(String::from),
+            );
             if let Some(m) = &s.model {
                 args.extend(["--model".into(), m.clone()]);
             }
@@ -1157,7 +1169,10 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
             return Err(why.into());
         }
     }
-    crate::log::info("background", &format!("{} turn started, pid {pid:?}: {} {}", crate::agents::label(id), provider.as_str(), args.join(" ")));
+    crate::log::info(
+        "background",
+        &format!("{} turn started, pid {pid:?}: {} {}", crate::agents::label(id), provider.as_str(), args.join(" ")),
+    );
     // The reader waits on the other end; should it be gone, the turn still
     // ends here rather than with nobody to say so.
     if let Err(std::sync::mpsc::SendError((child, _, _, _))) = hand.send((child, stdout, stderr, on_account)) {
@@ -1388,7 +1403,14 @@ fn turn_over(id: &str, code: Option<i32>) {
     if let (Some(job), Some((cli, since))) = (&job, strays) {
         let ended = crate::procs::end_tree_of(job, cli, since);
         if !ended.is_empty() {
-            crate::log::info("background", &format!("{}: its CLI went before its model did anything; ended what it had started: {}", crate::agents::label(id), ended.join(", ")));
+            crate::log::info(
+                "background",
+                &format!(
+                    "{}: its CLI went before its model did anything; ended what it had started: {}",
+                    crate::agents::label(id),
+                    ended.join(", ")
+                ),
+            );
         }
     }
     // Before the turn reads as over: whoever is owed its answer must not hear
@@ -1514,11 +1536,8 @@ fn turn_holds(t: &crate::activity::TurnState) -> bool {
 /// for LEFTOVER_HOLD_MS on end (`Leftover::holds`). Noted for `turn_state`,
 /// which is what tells its caller and `reap` that a job still runs, however idle.
 pub fn activity() -> Vec<crate::activity::SessionActivity> {
-    let ids: Vec<(String, Option<std::sync::Arc<crate::procs::Job>>)> = lock()
-        .entries
-        .iter()
-        .map(|(id, e)| (id.clone(), e.job.clone().filter(|_| e.run.is_none())))
-        .collect();
+    let ids: Vec<(String, Option<std::sync::Arc<crate::procs::Job>>)> =
+        lock().entries.iter().map(|(id, e)| (id.clone(), e.job.clone().filter(|_| e.run.is_none()))).collect();
     let mut moved = false;
     let out = ids
         .into_iter()
@@ -1542,7 +1561,12 @@ pub fn activity() -> Vec<crate::activity::SessionActivity> {
             if !gone_quiet.is_empty() {
                 crate::log::warn(
                     "power",
-                    &format!("{}: no longer holds the PC by what its turns left, idle {} min on end: {}", crate::agents::label(&id), crate::procs::LEFTOVER_HOLD_MS / 60_000, gone_quiet.join(", ")),
+                    &format!(
+                        "{}: no longer holds the PC by what its turns left, idle {} min on end: {}",
+                        crate::agents::label(&id),
+                        crate::procs::LEFTOVER_HOLD_MS / 60_000,
+                        gone_quiet.join(", ")
+                    ),
                 );
             }
             let t = turn_state(&id)?;
@@ -1766,7 +1790,10 @@ pub fn kill(id: &str) -> Vec<String> {
         })
     };
     if !ended.is_empty() {
-        crate::log::info("background", &format!("{}: stopped between turns, which ended what its turns left running: {}", crate::agents::label(id), ended.join(", ")));
+        crate::log::info(
+            "background",
+            &format!("{}: stopped between turns, which ended what its turns left running: {}", crate::agents::label(id), ended.join(", ")),
+        );
     }
     if let Some(text) = next {
         save();
@@ -2207,9 +2234,7 @@ pub fn signs(id: &str) -> Option<Signs> {
             last_activity_at: last.and_then(iso),
             // A Codex rollout that would not read: what it was asked to run on,
             // once a turn has got through on it.
-            resolved_model: o.model.clone().or_else(|| {
-                e.spec.model.clone().filter(|_| e.spec.provider == Provider::Codex && o.answered)
-            }),
+            resolved_model: o.model.clone().or_else(|| e.spec.model.clone().filter(|_| e.spec.provider == Provider::Codex && o.answered)),
             context: None,
             left_running: left_shown(e, crate::throttle::now_ms()),
         };
@@ -2534,10 +2559,17 @@ pub fn restore() {
 /// `resumeOnRestart`: each starts its next turn by itself. Off this thread,
 /// and only once the hub listens: a turn's MCP config names its port.
 pub fn resume_stopped() {
-    let (ids, unsure): (Vec<(String, bool)>, Vec<(String, bool)>) =
-        lock().entries.iter().filter(|(_, e)| e.cut_short && e.run.is_none()).map(|(id, e)| (id.clone(), e.resumable)).partition(|(_, sure)| *sure);
+    let (ids, unsure): (Vec<(String, bool)>, Vec<(String, bool)>) = lock()
+        .entries
+        .iter()
+        .filter(|(_, e)| e.cut_short && e.run.is_none())
+        .map(|(id, e)| (id.clone(), e.resumable))
+        .partition(|(_, sure)| *sure);
     for (id, _) in unsure.iter().filter(|(id, _)| crate::agents::resumes_on_restart(id)) {
-        crate::log::warn("background", &format!("{}: not resumed: nothing says the last core's turn ended, and a second could overlap it", crate::agents::label(id)));
+        crate::log::warn(
+            "background",
+            &format!("{}: not resumed: nothing says the last core's turn ended, and a second could overlap it", crate::agents::label(id)),
+        );
     }
     let ids: Vec<String> = ids.into_iter().map(|(id, _)| id).collect();
     let ids: Vec<String> = ids.into_iter().filter(|id| crate::agents::resumes_on_restart(id)).collect();
@@ -2589,7 +2621,10 @@ fn resume(id: &str) {
             }
             crate::log::warn(
                 "background",
-                &format!("{}: resumed by itself after a core stopped its turn, {carried} undelivered message(s) with it", crate::agents::label(id)),
+                &format!(
+                    "{}: resumed by itself after a core stopped its turn, {carried} undelivered message(s) with it",
+                    crate::agents::label(id)
+                ),
             );
         }
         Err(why) => {
@@ -2802,7 +2837,8 @@ pub fn undelivered_for(id: &str, caller: &str, parent: bool) -> Vec<String> {
 pub fn take_undelivered_for(id: &str, caller: &str, parent: bool) -> Vec<Queued> {
     let mut r = lock();
     let Some(e) = r.entries.get_mut(id) else { return Vec::new() };
-    let (taken, left) = std::mem::take(&mut e.undelivered).into_iter().partition(|q: &Queued| q.from.as_deref().map_or(parent, |f| f == caller));
+    let (taken, left) =
+        std::mem::take(&mut e.undelivered).into_iter().partition(|q: &Queued| q.from.as_deref().map_or(parent, |f| f == caller));
     e.undelivered = left;
     taken
 }
@@ -2947,7 +2983,16 @@ pub(crate) fn left_for_test(id: &str, left: &[(&str, u32, u64)]) {
     e.left_running = !left.is_empty();
     e.left = left
         .iter()
-        .map(|(exe, pid, quiet)| Leftover { pid: *pid, exe: exe.to_string(), started_ms: 0, cpu_ms: 0, io_bytes: 0, read_ms: now, seen_ms: now, moved_ms: now - quiet })
+        .map(|(exe, pid, quiet)| Leftover {
+            pid: *pid,
+            exe: exe.to_string(),
+            started_ms: 0,
+            cpu_ms: 0,
+            io_bytes: 0,
+            read_ms: now,
+            seen_ms: now,
+            moved_ms: now - quiet,
+        })
         .collect();
 }
 
@@ -3075,7 +3120,10 @@ mod tests {
         }]);
         let saved: Vec<Saved> = serde_json::from_value(saved).unwrap();
         let e = taken_up(saved.into_iter().next().unwrap());
-        assert_eq!((e.turns_ended, e.observed.model.as_deref(), e.observed.turn_ended_ms, e.observed.answered), (3, Some("claude-haiku-5-5"), 7, true));
+        assert_eq!(
+            (e.turns_ended, e.observed.model.as_deref(), e.observed.turn_ended_ms, e.observed.answered),
+            (3, Some("claude-haiku-5-5"), 7, true)
+        );
         let json = serde_json::to_value(&e.observed).unwrap();
         assert!(json.get("spend").is_none() && json.get("unreported").is_none(), "and is written without them");
     }
@@ -3101,9 +3149,12 @@ mod tests {
 
         let codex = dir.join("rollout-2026-11-05T10-00-00-abc.jsonl");
         let started = concat!(
-            r#"{"timestamp":"t","type":"session_meta","payload":{"id":"abc","cwd":"/p"}}"#, "\n",
-            r#"{"timestamp":"t","type":"turn_context","payload":{"model":"gpt-5-codex"}}"#, "\n",
-            r#"{"timestamp":"t","type":"event_msg","payload":{"type":"token_count","info":null,"rate_limits":{"primary":null}}}"#, "\n",
+            r#"{"timestamp":"t","type":"session_meta","payload":{"id":"abc","cwd":"/p"}}"#,
+            "\n",
+            r#"{"timestamp":"t","type":"turn_context","payload":{"model":"gpt-5-codex"}}"#,
+            "\n",
+            r#"{"timestamp":"t","type":"event_msg","payload":{"type":"token_count","info":null,"rate_limits":{"primary":null}}}"#,
+            "\n",
         );
         std::fs::write(&codex, started).unwrap();
         assert_eq!(Context::of(&codex, Provider::Codex), None, "a count of rate limits alone: no turn yet");
@@ -3166,7 +3217,10 @@ mod tests {
         lock().entries.get_mut("reroute-1").unwrap().error = None;
         assert_eq!(signs("reroute-1").unwrap().resolved_model, None, "no model has answered yet");
         lock().entries.get_mut("reroute-1").unwrap().error = None;
-        on_codex_event(lock().entries.get_mut("reroute-1").unwrap(), &json!({ "type": "item.completed", "item": { "id": "item_0", "type": "agent_message", "text": "ok" } }));
+        on_codex_event(
+            lock().entries.get_mut("reroute-1").unwrap(),
+            &json!({ "type": "item.completed", "item": { "id": "item_0", "type": "agent_message", "text": "ok" } }),
+        );
         turn_over("reroute-1", Some(0));
         assert_eq!(model().as_deref(), Some("gpt-a"), "the rollout, with no reroute");
         on_codex_event(
@@ -3419,9 +3473,7 @@ mod tests {
     #[test]
     fn with_several_held_an_answer_says_which() {
         in_claimed_turn("which-ask");
-        let ask = |tool: &'static str| {
-            std::thread::spawn(move || permission("which-ask", &json!({ "tool_name": tool, "input": {} })))
-        };
+        let ask = |tool: &'static str| std::thread::spawn(move || permission("which-ask", &json!({ "tool_name": tool, "input": {} })));
         let first = ask("Bash");
         for _ in 0..200 {
             if lock().entries.get("which-ask").unwrap().held.len() == 1 {
@@ -3474,9 +3526,7 @@ mod tests {
     #[test]
     fn a_kill_lets_every_held_prompt_go() {
         in_claimed_turn("kill-asks");
-        let ask = |tool: &'static str| {
-            std::thread::spawn(move || permission("kill-asks", &json!({ "tool_name": tool, "input": {} })))
-        };
+        let ask = |tool: &'static str| std::thread::spawn(move || permission("kill-asks", &json!({ "tool_name": tool, "input": {} })));
         let (a, b) = (ask("Bash"), ask("Edit"));
         for _ in 0..200 {
             if lock().entries.get("kill-asks").unwrap().held.len() == 2 {
@@ -3543,7 +3593,10 @@ mod tests {
         assert!(crate::procs::join(&job, cli));
         let mut its = None;
         for _ in 0..40 {
-            its = crate::procs::left_in(&job).into_iter().find(|(r, n)| n.eq_ignore_ascii_case("ping.exe") && r.pid != kids.0[0].id()).map(|(r, _)| r.pid);
+            its = crate::procs::left_in(&job)
+                .into_iter()
+                .find(|(r, n)| n.eq_ignore_ascii_case("ping.exe") && r.pid != kids.0[0].id())
+                .map(|(r, _)| r.pid);
             if its.is_some() {
                 break;
             }
@@ -3768,7 +3821,10 @@ mod tests {
         assert!(!second.resumable && second.unsure, "as it was");
         let cleared = taken_up(Saved { unsure: false, cut_short: true, ..saved(false, false) });
         assert!(cleared.resumable && !cleared.unsure);
-        assert!(!serde_json::to_value(saved(false, false)).unwrap().as_object().unwrap().contains_key("unsure"), "and nothing in the file otherwise");
+        assert!(
+            !serde_json::to_value(saved(false, false)).unwrap().as_object().unwrap().contains_key("unsure"),
+            "and nothing in the file otherwise"
+        );
     }
 
     #[test]
@@ -4157,7 +4213,10 @@ mod tests {
     fn a_helper_started_afresh_has_started_once_its_cli_names_a_conversation() {
         take_up_for_test("afresh", "C:\\p", 0, &[], Some("the prompt"));
         assert!(never_started("afresh"));
-        on_claude_event(lock().entries.get_mut("afresh").unwrap(), &json!({ "type": "system", "subtype": "init", "session_id": "started-afresh", "cwd": "C:\\p" }));
+        on_claude_event(
+            lock().entries.get_mut("afresh").unwrap(),
+            &json!({ "type": "system", "subtype": "init", "session_id": "started-afresh", "cwd": "C:\\p" }),
+        );
         assert!(!never_started("afresh"));
         lock().entries.remove("afresh");
     }
@@ -4188,7 +4247,10 @@ mod tests {
     #[test]
     fn a_failed_turn_says_why() {
         let mut e = entry(Provider::Claude);
-        on_claude_event(&mut e, &json!({ "type": "result", "subtype": "error_during_execution", "is_error": true, "result": "rate limited" }));
+        on_claude_event(
+            &mut e,
+            &json!({ "type": "result", "subtype": "error_during_execution", "is_error": true, "result": "rate limited" }),
+        );
         assert_eq!(e.error.as_deref(), Some("rate limited"));
         let mut e = entry(Provider::Codex);
         on_codex_event(&mut e, &json!({ "type": "turn.failed", "error": { "message": "boom" } }));
@@ -4313,10 +4375,7 @@ mod tests {
     #[test]
     fn a_turn_killed_or_crashed_ends_on_an_error() {
         let run = |e: &mut Entry| e.run = Some(Run::claimed(Some(1), 0));
-        for (id, code, why) in [
-            ("end-crash", Some(1), "codex exited with code 1"),
-            ("end-signal", None, "codex was killed"),
-        ] {
+        for (id, code, why) in [("end-crash", Some(1), "codex exited with code 1"), ("end-signal", None, "codex was killed")] {
             let mut e = entry(Provider::Codex);
             run(&mut e);
             lock().entries.insert(id.into(), e);
@@ -4536,7 +4595,10 @@ mod tests {
         assert_eq!(place(&mut e, "joined".into(), true), Placed::Joined);
         let uuid = e.fed[0].id.clone();
         assert!(!on_claude_event(&mut e, &json!({ "type": "user", "uuid": uuid, "message": {} })), "a tool result, say");
-        assert!(!on_claude_event(&mut e, &json!({ "type": "command_lifecycle", "command_uuid": uuid, "state": "queued" })), "queued is lost with a kill");
+        assert!(
+            !on_claude_event(&mut e, &json!({ "type": "command_lifecycle", "command_uuid": uuid, "state": "queued" })),
+            "queued is lost with a kill"
+        );
         assert_eq!(e.fed.len(), 1);
         assert!(!on_claude_event(&mut e, &json!({ "type": "user", "isReplay": true, "uuid": "another" })));
         assert!(on_claude_event(&mut e, &json!({ "type": "user", "isReplay": true, "uuid": uuid })));

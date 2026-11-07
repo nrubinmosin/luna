@@ -220,7 +220,8 @@ fn codex_policy(path: &Path) -> Policy {
         Err(e) => return Policy { blocked_by: None, unreadable: Some(format!("{}: {e}", path.display())) },
     };
     let doc = Doc::Toml(doc);
-    let pinned_off = ["features", "feature_requirements"].into_iter().any(|table| HOOK_FEATURES.iter().any(|f| doc.bool_at(&[table, f]) == Some(false)));
+    let pinned_off =
+        ["features", "feature_requirements"].into_iter().any(|table| HOOK_FEATURES.iter().any(|f| doc.bool_at(&[table, f]) == Some(false)));
     let blocked_by = if doc.bool_at(&["allow_managed_hooks_only"]) == Some(true) {
         Some("allow_managed_hooks_only".to_string())
     } else if pinned_off {
@@ -318,7 +319,9 @@ fn hooks_said(doc: &Doc) -> Option<bool> {
 /// machine's defaults if not.
 fn codex_hooks_off(doc: &Doc, ctx: Ctx) -> Option<String> {
     match hooks_said(doc).or(ctx.codex_default_hooks) {
-        Some(false) if hooks_said(doc).is_some() => HOOK_FEATURES.iter().find(|f| doc.bool_at(&["features", f]) == Some(false)).map(|f| format!("features.{f} = false")),
+        Some(false) if hooks_said(doc).is_some() => {
+            HOOK_FEATURES.iter().find(|f| doc.bool_at(&["features", f]) == Some(false)).map(|f| format!("features.{f} = false"))
+        }
         Some(false) => Some("off by this computer's Codex defaults".to_string()),
         _ => None,
     }
@@ -434,13 +437,18 @@ fn sync_effect(f: &Facts, a: &Account, spec: &Spec) -> Option<String> {
         return None;
     }
     let parent = f.parent_of(a)?;
-    let others: Vec<&str> =
-        f.accounts.iter().filter(|o| o.provider == a.provider && o.name != parent.name && o.name != a.name).map(|o| o.name.as_str()).collect();
+    let others: Vec<&str> = f
+        .accounts
+        .iter()
+        .filter(|o| o.provider == a.provider && o.name != parent.name && o.name != a.name)
+        .map(|o| o.name.as_str())
+        .collect();
     let reach = if others.is_empty() { None } else { Some(format!(" The next settings sync copies it to {}.", others.join(", "))) };
     if parent.name == a.name {
         return Some(format!("This is the accounts' settings parent.{}", reach.unwrap_or_default()));
     }
-    off_or_unknown(parent, spec, f).then(|| format!("Its settings parent {} says the same and is changed with it.{}", parent.name, reach.unwrap_or_default()))
+    off_or_unknown(parent, spec, f)
+        .then(|| format!("Its settings parent {} says the same and is changed with it.{}", parent.name, reach.unwrap_or_default()))
 }
 
 fn account_check(f: &Facts, a: &Account, spec: &Spec) -> Check {
@@ -477,7 +485,9 @@ fn account_check(f: &Facts, a: &Account, spec: &Spec) -> Check {
     c.risk = (!parts.is_empty()).then(|| parts.join(" "));
     if spec.quiet {
         let name = if a.provider == Provider::Claude { "Claude Code" } else { "Codex" };
-        c.note = Some(format!("Written only while no session of Luna's is on the account. A {name} running outside Luna can still race this write."));
+        c.note = Some(format!(
+            "Written only while no session of Luna's is on the account. A {name} running outside Luna can still race this write."
+        ));
         if let Some(busy) = candidates(f, a, spec).into_iter().find(|t| t.in_use) {
             c.refused = Some(format!("{} is in use. Stop its sessions; one closing counts until its process has exited.", busy.name));
         }
@@ -578,7 +588,11 @@ fn own_check(f: &Facts, o: &Own) -> Check {
 
 fn policy_check(id: &str, title: &str, cli: &str, policy: &Policy) -> Option<Check> {
     let (status, current, note) = match (&policy.blocked_by, &policy.unreadable) {
-        (Some(key), _) => (Status::Blocked, Some(key.clone()), Some("Set by your administrator: nothing in Luna or an account can change it.".to_string())),
+        (Some(key), _) => (
+            Status::Blocked,
+            Some(key.clone()),
+            Some("Set by your administrator: nothing in Luna or an account can change it.".to_string()),
+        ),
         (None, Some(e)) => (Status::Unknown, None, Some(e.clone())),
         (None, None) => return None,
     };
@@ -661,14 +675,18 @@ fn apply(f: &Facts, id: &str, account: Option<&str>, confirmed: bool) -> Result<
     let candidates = candidates(f, a, &spec);
     let paths: Vec<String> = candidates.iter().map(|t| t.path.clone()).collect();
     // What the row told of, and so what the yes covers.
-    let shown: Vec<String> = candidates.iter().filter(|t| t.name == a.name || off_or_unknown(t, &spec, f)).map(|t| t.path.clone()).collect();
+    let shown: Vec<String> =
+        candidates.iter().filter(|t| t.name == a.name || off_or_unknown(t, &spec, f)).map(|t| t.path.clone()).collect();
     // First the hold, then the file lock, as a sync takes them; `refused` above
     // only said what was so a moment ago.
     let held = if spec.quiet { Some(crate::account_use::quiet(&paths)?) } else { None };
     let ctx = f.ctx();
     let changed = edit_together(spec.file, &paths, &shown, &(spec.edits)(ctx), &|doc| (spec.off)(doc, ctx).is_some())?;
     drop(held);
-    crate::log::info("settings", &format!("recommendation {id} on {account}: {changed} file(s), was {}", c.current.as_deref().unwrap_or("?")));
+    crate::log::info(
+        "settings",
+        &format!("recommendation {id} on {account}: {changed} file(s), was {}", c.current.as_deref().unwrap_or("?")),
+    );
     Ok(())
 }
 
@@ -830,7 +848,13 @@ mod tests {
         let note = c.note.as_deref().unwrap();
         assert!(note.contains("C:/held") && !note.contains("C:/open"), "{note}");
 
-        let mut s = Settings { waiting_marker_on: false, waiting_marker: " ".into(), keep_awake: false, fetch_before_worktree: false, ..Default::default() };
+        let mut s = Settings {
+            waiting_marker_on: false,
+            waiting_marker: " ".into(),
+            keep_awake: false,
+            fetch_before_worktree: false,
+            ..Default::default()
+        };
         for o in own() {
             (o.fix)(&mut s);
             assert!((o.ok)(&s), "{}", o.id);
@@ -843,7 +867,8 @@ mod tests {
     fn a_dismissed_check_stays_listed_for_its_account_only() {
         let root = dir("dismiss");
         let mut f = facts(vec![account(&root, Provider::Claude, "a", &[]), account(&root, Provider::Claude, "b", &[])]);
-        f.settings.recommendations_dismissed = vec![dismiss_key("claude-bypass-consent", Some("claude/a")), dismiss_key("keep-awake", None)];
+        f.settings.recommendations_dismissed =
+            vec![dismiss_key("claude-bypass-consent", Some("claude/a")), dismiss_key("keep-awake", None)];
         f.settings.keep_awake = false;
         let list = evaluate(&f);
         assert!(check(&list, "claude-bypass-consent", Some("claude/a")).dismissed);
@@ -927,7 +952,9 @@ mod tests {
     }
 
     fn fullscreen_account(root: &Path, version: &str) -> Account {
-        let text = format!(r#"{{"numStartups":3,"fullscreenAutoDisabled":{{"version":"{version}","at":1}},"fullscreenBootStrikes":{{"count":2,"version":"{version}"}},"fullscreenBootPending":{{"7":{{}}}}}}"#);
+        let text = format!(
+            r#"{{"numStartups":3,"fullscreenAutoDisabled":{{"version":"{version}","at":1}},"fullscreenBootStrikes":{{"count":2,"version":"{version}"}},"fullscreenBootPending":{{"7":{{}}}}}}"#
+        );
         account(root, Provider::Claude, "fs", &[(".claude.json", &text)])
     }
 
@@ -1021,7 +1048,11 @@ mod tests {
     #[test]
     fn hooks_off_in_an_inline_table_or_under_the_old_name_are_seen_and_fixed() {
         let root = dir("inline");
-        for (name, text) in [("inline", "features = { hooks = false }\n"), ("alias", "[features]\ncodex_hooks = false\n"), ("dotted", "features.hooks = false\n")] {
+        for (name, text) in [
+            ("inline", "features = { hooks = false }\n"),
+            ("alias", "[features]\ncodex_hooks = false\n"),
+            ("dotted", "features.hooks = false\n"),
+        ] {
             let f = facts(vec![account(&root, Provider::Codex, name, &[("config.toml", text)])]);
             let label = format!("codex/{name}");
             assert_eq!(check(&evaluate(&f), "codex-hooks-feature", Some(&label)).status, Status::Off, "{name}");
@@ -1040,7 +1071,12 @@ mod tests {
         let mut f = facts(vec![
             account(&root, Provider::Codex, "dad", &[("config.toml", off)]),
             account(&root, Provider::Codex, "kid", &[("config.toml", off)]),
-            account(&root, Provider::Codex, "sib", &[("config.toml", "model = \"mine\"\n[features]\nhooks = false\n[projects.'C:\\\\s']\ntrust_level = \"trusted\"\n")]),
+            account(
+                &root,
+                Provider::Codex,
+                "sib",
+                &[("config.toml", "model = \"mine\"\n[features]\nhooks = false\n[projects.'C:\\\\s']\ntrust_level = \"trusted\"\n")],
+            ),
         ]);
         f.settings.settings_parents.codex = Some("dad".into());
         apply(&f, "codex-hooks-feature", Some("codex/kid"), true).unwrap();
@@ -1127,7 +1163,11 @@ mod tests {
         assert_eq!(read(&f.accounts[0].path, "config.toml"), "");
 
         // Off in both: a key taken out alone would leave it off.
-        for (name, text) in [("both", "[features]\nhooks = false\n"), ("old", "[features]\ncodex_hooks = false\n"), ("inline", "features = { hooks = false }\n")] {
+        for (name, text) in [
+            ("both", "[features]\nhooks = false\n"),
+            ("old", "[features]\ncodex_hooks = false\n"),
+            ("inline", "features = { hooks = false }\n"),
+        ] {
             let mut f = facts(vec![account(&root, Provider::Codex, name, &[("config.toml", text)])]);
             f.codex_default_hooks = Some(false);
             apply(&f, "codex-hooks-feature", Some(&format!("codex/{name}")), true).unwrap();
@@ -1144,7 +1184,8 @@ mod tests {
             account(&root, Provider::Codex, "x", &[("config.toml", "a = [")]),
         ]);
         let list = evaluate(&f);
-        for (id, account_label) in [("claude-hooks", "claude/c"), ("claude-bypass-consent", "claude/c"), ("codex-hooks-feature", "codex/x")] {
+        for (id, account_label) in [("claude-hooks", "claude/c"), ("claude-bypass-consent", "claude/c"), ("codex-hooks-feature", "codex/x")]
+        {
             let c = check(&list, id, Some(account_label));
             assert!(c.status == Status::Unknown && c.action.is_none() && c.note.is_some(), "{c:?}");
             assert!(apply(&f, id, Some(account_label), true).is_err());

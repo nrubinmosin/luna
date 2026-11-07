@@ -43,10 +43,7 @@ fn validate_name(name: &str) -> Result<(), String> {
     if name.is_empty() || name.len() > 64 {
         return Err("Account name must be 1..64 characters".into());
     }
-    if name
-        .chars()
-        .any(|c| matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') || c.is_control())
-    {
+    if name.chars().any(|c| matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') || c.is_control()) {
         return Err("Account name contains invalid characters".into());
     }
     if name == "." || name == ".." {
@@ -72,20 +69,11 @@ pub fn list_accounts() -> Result<Vec<AccountInfo>, String> {
                 continue;
             }
             if entry.file_type().map_err(|e| e.to_string())?.is_dir() {
-                out.push(AccountInfo {
-                    provider,
-                    name,
-                    path: entry.path().to_string_lossy().into_owned(),
-                });
+                out.push(AccountInfo { provider, name, path: entry.path().to_string_lossy().into_owned() });
             }
         }
     }
-    out.sort_by(|a, b| {
-        a.provider
-            .index()
-            .cmp(&b.provider.index())
-            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-    });
+    out.sort_by(|a, b| a.provider.index().cmp(&b.provider.index()).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));
     Ok(out)
 }
 
@@ -109,11 +97,7 @@ pub fn create_account(provider: Provider, name: String) -> Result<AccountInfo, S
 /// rename), and a running session would lose its config under it. The names
 /// Luna keeps elsewhere — agents' blocked list, the settings parent — follow.
 #[tauri::command]
-pub fn rename_account(
-    provider: Provider,
-    name: String,
-    to: String,
-) -> Result<AccountInfo, String> {
+pub fn rename_account(provider: Provider, name: String, to: String) -> Result<AccountInfo, String> {
     let to = to.trim().to_string();
     let root = provider_root(provider)?;
     let path = root.join(&name).to_string_lossy().into_owned();

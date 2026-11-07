@@ -105,10 +105,7 @@ fn state() -> &'static Mutex<HashMap<Provider, CliStatus>> {
 static BUSY: [AtomicBool; 2] = [AtomicBool::new(false), AtomicBool::new(false)];
 
 fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
 // ---------------------------------------------------------------- layout --
@@ -163,11 +160,7 @@ fn publish(provider: Provider, f: impl FnOnce(&mut CliStatus)) {
 
 #[tauri::command]
 pub fn cli_status(provider: Provider) -> CliStatus {
-    state()
-        .lock()
-        .ok()
-        .and_then(|m| m.get(&provider).cloned())
-        .unwrap_or_default()
+    state().lock().ok().and_then(|m| m.get(&provider).cloned()).unwrap_or_default()
 }
 
 /// A click on the status-bar field: check now, install if newer.
@@ -190,10 +183,7 @@ pub fn refresh_periodically() {
 // ---------------------------------------------------------------- update --
 
 pub fn http() -> ureq::Agent {
-    ureq::builder()
-        .timeout_connect(Duration::from_secs(10))
-        .timeout_read(Duration::from_secs(60))
-        .build()
+    ureq::builder().timeout_connect(Duration::from_secs(10)).timeout_read(Duration::from_secs(60)).build()
 }
 
 /// A version string that came off the network and is about to become a
@@ -210,12 +200,7 @@ pub fn sane_version(v: &str, what: &str) -> Result<String, String> {
 
 /// Streams `url` into `part`, hashing as it goes, and returns the sha256 hex.
 /// The caller compares it and decides what the file becomes.
-pub fn download_to(
-    agent: &ureq::Agent,
-    url: &str,
-    part: &Path,
-    progress: &mut dyn FnMut(u64, Option<u64>),
-) -> Result<String, String> {
+pub fn download_to(agent: &ureq::Agent, url: &str, part: &Path, progress: &mut dyn FnMut(u64, Option<u64>)) -> Result<String, String> {
     let resp = agent.get(url).call().map_err(|e| format!("download: {e}"))?;
     let total = resp.header("Content-Length").and_then(|s| s.parse::<u64>().ok());
     progress(0, total);

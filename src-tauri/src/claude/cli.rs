@@ -15,13 +15,7 @@ const BIN_NAME: &str = "claude.exe";
 #[cfg(not(windows))]
 const BIN_NAME: &str = "claude";
 
-pub static SOURCE: Source = Source {
-    root_name: "claude-cli",
-    bin_rel: BIN_NAME,
-    path_fallback: "claude",
-    latest,
-    fetch,
-};
+pub static SOURCE: Source = Source { root_name: "claude-cli", bin_rel: BIN_NAME, path_fallback: "claude", latest, fetch };
 
 fn platform() -> &'static str {
     match (std::env::consts::OS, std::env::consts::ARCH) {
@@ -59,12 +53,7 @@ fn expected_checksum(agent: &ureq::Agent, version: &str) -> Result<String, Strin
 
 /// Downloads `version` into `dir`, verifying the sha256 from the manifest
 /// before the file gets its real name.
-fn fetch(
-    agent: &ureq::Agent,
-    version: &str,
-    dir: &Path,
-    progress: &mut dyn FnMut(u64, Option<u64>),
-) -> Result<(), String> {
+fn fetch(agent: &ureq::Agent, version: &str, dir: &Path, progress: &mut dyn FnMut(u64, Option<u64>)) -> Result<(), String> {
     let checksum = expected_checksum(agent, version)?;
     let dest = dir.join(BIN_NAME);
     let part = dir.join(format!("{BIN_NAME}.part"));

@@ -199,7 +199,8 @@ fn chosen<'a>(lib: &'a LibrarySettings, have: impl Fn(&str) -> bool, a: &Account
 /// the skill from every account there, as it kept it from all but that one.
 pub fn rename_account(lib: &mut LibrarySettings, from: &str, to: Option<&str>) {
     let folders = lib.folders.iter_mut().flat_map(|f| f.skills.values_mut());
-    let reaches = lib.instructions.values_mut().chain(lib.skills.values_mut()).chain(std::iter::once(&mut lib.no_instructions)).chain(folders);
+    let reaches =
+        lib.instructions.values_mut().chain(lib.skills.values_mut()).chain(std::iter::once(&mut lib.no_instructions)).chain(folders);
     for reach in reaches {
         match to {
             Some(to) => reach.iter_mut().filter(|r| *r == from).for_each(|r| *r = to.to_string()),
@@ -312,8 +313,9 @@ fn front_matter(text: &str) -> Result<(Option<String>, Option<String>), String> 
             let get = |k: &str| {
                 keys.get(k).map(|(v, _)| {
                     let v = v.trim();
-                    let unquoted = (v.len() >= 2 && ((v.starts_with('"') && v.ends_with('"')) || (v.starts_with('\'') && v.ends_with('\''))))
-                        .then(|| &v[1..v.len() - 1]);
+                    let unquoted = (v.len() >= 2
+                        && ((v.starts_with('"') && v.ends_with('"')) || (v.starts_with('\'') && v.ends_with('\''))))
+                    .then(|| &v[1..v.len() - 1]);
                     unquoted.unwrap_or(v).to_string()
                 })
             };
@@ -838,7 +840,8 @@ fn account_copy_for(lib: &LibrarySettings, name: &str, a: &AccountInfo) -> bool 
 /// as `<outer>:<name>` and `<inner>:<name>`).
 fn folder_copy_for(lib: &LibrarySettings, f: &LibraryFolder, name: &str, a: &AccountInfo) -> bool {
     let gives = |g: &LibraryFolder| g.skills.get(name).is_some_and(|reach| reaches(reach, a));
-    let outer = |g: &&LibraryFolder| ident(Path::new(&g.path)) != ident(Path::new(&f.path)) && within(Path::new(&f.path), Path::new(&g.path));
+    let outer =
+        |g: &&LibraryFolder| ident(Path::new(&g.path)) != ident(Path::new(&f.path)) && within(Path::new(&f.path), Path::new(&g.path));
     gives(f) && !account_copy_for(lib, name, a) && !lib.folders.iter().filter(outer).any(gives)
 }
 
@@ -891,7 +894,9 @@ fn free_names(ours: &[&str], taken: &BTreeSet<String>) -> BTreeMap<String, Strin
     for name in ours.iter().filter(|n| taken.contains(**n)) {
         let base: String = format!("{RENAMED}{name}").chars().take(60).collect();
         let base = base.trim_end_matches('-').to_string();
-        let Some(free) = std::iter::once(base.clone()).chain((2..100).map(|i| format!("{base}-{i}"))).find(|c| !used.contains(c)) else { continue };
+        let Some(free) = std::iter::once(base.clone()).chain((2..100).map(|i| format!("{base}-{i}"))).find(|c| !used.contains(c)) else {
+            continue;
+        };
         used.insert(free.clone());
         out.insert(name.to_string(), free);
     }
@@ -1127,8 +1132,12 @@ fn hidden_here(dirs: &Dirs, lib: &LibrarySettings, a: &AccountInfo, lies_in: &[(
                 Provider::Claude => {
                     let ledger = ledger.get_or_insert_with(|| Ledger::load(dirs));
                     // As `units` takes them: the skills the library has.
-                    let going: Vec<&str> =
-                        f.skills.keys().filter(|n| folder_copy_for(lib, f, n, a) && dirs.skills().join(n).is_dir()).map(String::as_str).collect();
+                    let going: Vec<&str> = f
+                        .skills
+                        .keys()
+                        .filter(|n| folder_copy_for(lib, f, n, a) && dirs.skills().join(n).is_dir())
+                        .map(String::as_str)
+                        .collect();
                     let shown = claude_shown_names(f, a, ledger, &going);
                     out.insert(shown.get(name.as_str()).cloned().unwrap_or_else(|| name.clone()));
                 }
@@ -1163,9 +1172,16 @@ struct Unit {
 #[derive(Serialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub enum Target {
-    Account { provider: Provider, name: String },
+    Account {
+        provider: Provider,
+        name: String,
+    },
     /// What the sessions in a folder get on one account.
-    Folder { path: String, provider: Provider, name: String },
+    Folder {
+        path: String,
+        provider: Provider,
+        name: String,
+    },
 }
 
 #[derive(Serialize, Clone, Copy, Debug, PartialEq)]
@@ -1388,12 +1404,8 @@ fn units(
     for (f, slug) in folder_slugs(&lib.folders) {
         let there = Path::new(&f.path).is_dir();
         for a in accounts {
-            let going: Vec<(&String, Result<Files, String>)> = f
-                .skills
-                .keys()
-                .filter(|n| folder_copy_for(lib, f, n, a))
-                .filter_map(|n| Some((n, files_of(n)?)))
-                .collect();
+            let going: Vec<(&String, Result<Files, String>)> =
+                f.skills.keys().filter(|n| folder_copy_for(lib, f, n, a)).filter_map(|n| Some((n, files_of(n)?))).collect();
             if going.is_empty() {
                 continue;
             }
@@ -1404,7 +1416,9 @@ fn units(
             for (name, files) in going {
                 let shown = shown.get(name.as_str()).cloned();
                 let dest = match a.provider {
-                    Provider::Claude => claude_folder_dir(dirs, &slug, a).join(".claude").join("skills").join(shown.as_deref().unwrap_or(name)),
+                    Provider::Claude => {
+                        claude_folder_dir(dirs, &slug, a).join(".claude").join("skills").join(shown.as_deref().unwrap_or(name))
+                    }
                     Provider::Codex => codex_plugin_dir(a, &slug).join("skills").join(name),
                 };
                 let source = match (there, &shown) {
@@ -1509,9 +1523,16 @@ pub struct FolderInfo {
 /// nothing of it — by what the skill is meant for, or by the deepest folder
 /// it lies in that says something.
 fn inherited(lib: &LibrarySettings, accounts: &[AccountInfo], f: &LibraryFolder, name: &str) -> Vec<String> {
-    let outer: Vec<&LibraryFolder> =
-        lib.folders.iter().filter(|g| ident(Path::new(&g.path)) != ident(Path::new(&f.path)) && within(Path::new(&f.path), Path::new(&g.path))).collect();
-    accounts.iter().filter(|a| gets_in(lib, outer.iter().copied(), name, a)).map(|a| format!("{}/{}", a.provider.as_str(), a.name)).collect()
+    let outer: Vec<&LibraryFolder> = lib
+        .folders
+        .iter()
+        .filter(|g| ident(Path::new(&g.path)) != ident(Path::new(&f.path)) && within(Path::new(&f.path), Path::new(&g.path)))
+        .collect();
+    accounts
+        .iter()
+        .filter(|a| gets_in(lib, outer.iter().copied(), name, a))
+        .map(|a| format!("{}/{}", a.provider.as_str(), a.name))
+        .collect()
 }
 
 /// An account's instructions file Luna did not write, where no instructions of
@@ -1615,21 +1636,19 @@ fn overview_locked(act: bool) -> Result<Overview, String> {
         .map(|a| (a, Path::new(&a.path).join(instructions_name(a.provider))))
         .filter(|(_, dest)| dest.is_file() && !ledger.written.contains_key(&*dest.to_string_lossy()))
         .filter(|(_, dest)| !units.iter().any(|u| ident(&u.dest) == ident(dest)))
-        .map(|(a, dest)| FoundFile { dest: dest.to_string_lossy().into_owned(), target: Target::Account { provider: a.provider, name: a.name.clone() } })
+        .map(|(a, dest)| FoundFile {
+            dest: dest.to_string_lossy().into_owned(),
+            target: Target::Account { provider: a.provider, name: a.name.clone() },
+        })
         .collect();
     let have = |name: &str| instructions.as_ref().map_or(true, |found| found.contains_key(name));
-    let instructions_for = accounts
-        .iter()
-        .filter_map(|a| Some((format!("{}/{}", a.provider.as_str(), a.name), chosen(&lib, have, a)?.to_string())))
-        .collect();
+    let instructions_for =
+        accounts.iter().filter_map(|a| Some((format!("{}/{}", a.provider.as_str(), a.name), chosen(&lib, have, a)?.to_string()))).collect();
     let old_instructions = dirs.root.join(OLD_INSTRUCTIONS);
     let skills: Vec<SkillInfo> = skills
         .unwrap_or_default()
         .into_values()
-        .map(|(info, _)| SkillInfo {
-            accounts: lib.skills.get(&info.name).cloned().unwrap_or_default(),
-            ..info
-        })
+        .map(|(info, _)| SkillInfo { accounts: lib.skills.get(&info.name).cloned().unwrap_or_default(), ..info })
         .collect();
     let folders = lib
         .folders
@@ -1655,7 +1674,10 @@ fn overview_locked(act: bool) -> Result<Overview, String> {
         root: dirs.root.to_string_lossy().into_owned(),
         is_default: lib.source.is_none(),
         found,
-        instructions: instructions.as_ref().map(|i| i.iter().map(|(name, text)| instructions_info(name, text, &lib)).collect()).unwrap_or_default(),
+        instructions: instructions
+            .as_ref()
+            .map(|i| i.iter().map(|(name, text)| instructions_info(name, text, &lib)).collect())
+            .unwrap_or_default(),
         instructions_for,
         old_instructions: old_instructions.is_file().then(|| old_instructions.to_string_lossy().into_owned()),
         skills,
@@ -1958,11 +1980,8 @@ pub fn library_diff(dest: String) -> Result<Vec<FileDiff>, String> {
         return Err("No instructions of the library go there".into());
     };
     let ledger = Ledger::load(&dirs);
-    let base: Files = ledger
-        .written
-        .get(&dest)
-        .map(|h| h.iter().filter_map(|(k, v)| Some((k.clone(), blob(&dirs, v)?))).collect())
-        .unwrap_or_default();
+    let base: Files =
+        ledger.written.get(&dest).map(|h| h.iter().filter_map(|(k, v)| Some((k.clone(), blob(&dirs, v)?))).collect()).unwrap_or_default();
     // As the copy is to be, under the name it goes by there; a skill not fit
     // to be laid out, as the library has it.
     let library = match source {
@@ -1978,8 +1997,15 @@ pub fn library_diff(dest: String) -> Result<Vec<FileDiff>, String> {
         .map(|p| {
             let all = [base.get(p), library.get(p), there.get(p)];
             let binary = all.iter().flatten().any(|b| std::str::from_utf8(b).is_err());
-            let text = |b: Option<&Vec<u8>>| if binary { b.map(|_| String::new()) } else { b.map(|b| String::from_utf8_lossy(b).into_owned()) };
-            FileDiff { path: if p.is_empty() { name.clone() } else { p.clone() }, base: text(all[0]), library: text(all[1]), there: text(all[2]), binary }
+            let text =
+                |b: Option<&Vec<u8>>| if binary { b.map(|_| String::new()) } else { b.map(|b| String::from_utf8_lossy(b).into_owned()) };
+            FileDiff {
+                path: if p.is_empty() { name.clone() } else { p.clone() },
+                base: text(all[0]),
+                library: text(all[1]),
+                there: text(all[2]),
+                binary,
+            }
         })
         .collect())
 }
@@ -2201,14 +2227,15 @@ mod tests {
             let base = std::env::temp_dir().join(format!("luna-library-{tag}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&base);
             let dirs = Dirs { root: base.join("library"), data: base.join("data") };
-            let accounts = [(Provider::Claude, "anthropic", "work"), (Provider::Codex, "openai", "home"), (Provider::Claude, "anthropic", "home")]
-                .into_iter()
-                .map(|(provider, vendor, name)| {
-                    let path = base.join("accounts").join(vendor).join(name);
-                    std::fs::create_dir_all(&path).unwrap();
-                    AccountInfo { provider, name: name.into(), path: path.to_string_lossy().into_owned() }
-                })
-                .collect();
+            let accounts =
+                [(Provider::Claude, "anthropic", "work"), (Provider::Codex, "openai", "home"), (Provider::Claude, "anthropic", "home")]
+                    .into_iter()
+                    .map(|(provider, vendor, name)| {
+                        let path = base.join("accounts").join(vendor).join(name);
+                        std::fs::create_dir_all(&path).unwrap();
+                        AccountInfo { provider, name: name.into(), path: path.to_string_lossy().into_owned() }
+                    })
+                    .collect();
             std::fs::create_dir_all(&dirs.root).unwrap();
             Fixture { base, dirs, accounts }
         }
@@ -2504,7 +2531,8 @@ mod tests {
         assert!(f.dirs.folders().join("asuri-app/home/.claude/skills/review/SKILL.md").is_file());
         let plugin = f.account(1).join("plugins/cache/luna/asuri-app/local");
         assert!(plugin.join("skills/review/SKILL.md").is_file());
-        let manifest: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(plugin.join(".codex-plugin/plugin.json")).unwrap()).unwrap();
+        let manifest: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(plugin.join(".codex-plugin/plugin.json")).unwrap()).unwrap();
         assert_eq!(manifest["name"], "asuri-app");
         assert_eq!(manifest["skills"], "./skills/");
         assert!(!repo.join("review").exists() && !repo.join(".claude").exists(), "nothing goes into the folder");
@@ -2622,7 +2650,10 @@ mod tests {
     #[test]
     fn a_folder_keeps_its_name_when_an_earlier_one_goes() {
         let mut lib = LibrarySettings {
-            folders: ["E:/a/app", "E:/b/app", "E:/c/app"].iter().map(|p| LibraryFolder { path: p.to_string(), ..Default::default() }).collect(),
+            folders: ["E:/a/app", "E:/b/app", "E:/c/app"]
+                .iter()
+                .map(|p| LibraryFolder { path: p.to_string(), ..Default::default() })
+                .collect(),
             ..Default::default()
         };
         settle_slugs(&mut lib);
@@ -2690,7 +2721,8 @@ mod tests {
 
         // Codex, in a worktree it made of the repository: known by its `.git` file.
         let wt = f.account(1).join("worktrees/0a1b/repo");
-        write_file(&wt.join(".git"), format!("gitdir: {}\n", repo.join(".git").join("worktrees").join("repo").display()).as_bytes()).unwrap();
+        write_file(&wt.join(".git"), format!("gitdir: {}\n", repo.join(".git").join("worktrees").join("repo").display()).as_bytes())
+            .unwrap();
         let codex = ["-c".to_string(), "plugins.repo@luna.enabled=true".to_string()];
         assert_eq!(folder_args(&f.dirs, &lib, &f.accounts[1], &repo_s).args, codex);
         assert_eq!(folder_args(&f.dirs, &lib, &f.accounts[1], &wt.to_string_lossy()).args, codex);
@@ -2741,7 +2773,10 @@ mod tests {
         assert_eq!(folder_args(&f.dirs, &lib, &f.accounts[2], &repo_s).hidden, ["notes", "review"]);
         assert_eq!(folder_args(&f.dirs, &lib, &f.accounts[0], &repo_s).hidden, ["notes", "review"]);
         let codex = folder_args(&f.dirs, &lib, &f.accounts[1], &repo_s).args;
-        assert_eq!(codex.last().map(String::as_str), Some("skills.config=[{name=\"review\",enabled=false},{name=\"work:notes\",enabled=false}]"));
+        assert_eq!(
+            codex.last().map(String::as_str),
+            Some("skills.config=[{name=\"review\",enabled=false},{name=\"work:notes\",enabled=false}]")
+        );
 
         // Ticked in the repository again, the closer folder decides.
         let mut lib = lib;
@@ -2766,7 +2801,11 @@ mod tests {
             ..Default::default()
         };
         let (o, i) = (&lib.folders[0], &lib.folders[1]);
-        assert_eq!(inherited(&lib, &f.accounts, o, "review"), ["claude/work", "codex/home", "claude/home"], "every account has it as a whole");
+        assert_eq!(
+            inherited(&lib, &f.accounts, o, "review"),
+            ["claude/work", "codex/home", "claude/home"],
+            "every account has it as a whole"
+        );
         assert_eq!(inherited(&lib, &f.accounts, i, "review"), ["codex/home"], "the folder it lies in gives it to Codex alone");
         assert_eq!(inherited(&lib, &f.accounts, o, "notes"), ["claude/work"]);
         assert!(inherited(&lib, &f.accounts, o, "tidy").is_empty(), "meant for none, given nowhere");
@@ -2818,7 +2857,8 @@ mod tests {
         let (repo, mut folder) = repo_folder(&f, "repo", &[]);
         // work: none; every other Claude Code account: terse; Codex: none,
         // which it has no way to take.
-        folder.instructions = BTreeMap::from([("claude/work".into(), None), ("claude".into(), Some("terse".into())), ("codex/home".into(), None)]);
+        folder.instructions =
+            BTreeMap::from([("claude/work".into(), None), ("claude".into(), Some("terse".into())), ("codex/home".into(), None)]);
         let mut lib = LibrarySettings { instructions: first(all()), folders: vec![folder], ..Default::default() };
         let repo_s = repo.join("src").to_string_lossy().into_owned();
         let claude_md = |i: usize| format!("{}/CLAUDE.md", f.account(i).to_string_lossy().replace('\\', "/"));
@@ -2838,7 +2878,8 @@ mod tests {
         // What the account's file holds already: nothing to change — but a
         // copy changed there is no longer what was picked. Blank: none. Gone
         // from the library: none.
-        lib.folders[0].instructions = BTreeMap::from([("claude/work".into(), Some("main".into())), ("claude/home".into(), Some("blank".into()))]);
+        lib.folders[0].instructions =
+            BTreeMap::from([("claude/work".into(), Some("main".into())), ("claude/home".into(), Some("blank".into()))]);
         f.run(&lib, &mut Ledger::default(), true);
         assert_eq!(f.read(0, "CLAUDE.md"), "# Main\n");
         assert_eq!(folder_args(&f.dirs, &lib, &f.accounts[0], &repo_s), SessionSkills { args: work.args.clone(), ..Default::default() });
@@ -2878,16 +2919,24 @@ mod tests {
         let f = Fixture::new("folder-in-worktree");
         f.skill("review", "v1");
         let (repo, _) = repo_folder(&f, "repo", &[]);
-        let src = LibraryFolder { path: repo.join("src").to_string_lossy().into_owned(), skills: BTreeMap::from([("review".into(), Vec::new())]), ..Default::default() };
+        let src = LibraryFolder {
+            path: repo.join("src").to_string_lossy().into_owned(),
+            skills: BTreeMap::from([("review".into(), Vec::new())]),
+            ..Default::default()
+        };
         let lib = LibrarySettings { skills: skills(&["review"]), folders: vec![src], ..Default::default() };
         f.run(&lib, &mut Ledger::default(), true);
         // A Codex worktree of it, in the account's own folder.
         let wt = f.account(1).join("worktrees/0a1b/repo");
-        write_file(&wt.join(".git"), format!("gitdir: {}\n", repo.join(".git").join("worktrees").join("repo").display()).as_bytes()).unwrap();
+        write_file(&wt.join(".git"), format!("gitdir: {}\n", repo.join(".git").join("worktrees").join("repo").display()).as_bytes())
+            .unwrap();
         std::fs::create_dir_all(wt.join("src")).unwrap();
         let hide = ["-c".to_string(), "skills.config=[{name=\"review\",enabled=false}]".to_string()];
         assert_eq!(folder_args(&f.dirs, &lib, &f.accounts[1], &wt.join("src").to_string_lossy()).args, hide);
-        assert!(folder_args(&f.dirs, &lib, &f.accounts[1], &wt.to_string_lossy()).args.is_empty(), "the worktree's root is the repository's");
+        assert!(
+            folder_args(&f.dirs, &lib, &f.accounts[1], &wt.to_string_lossy()).args.is_empty(),
+            "the worktree's root is the repository's"
+        );
     }
 
     /// Where an outer folder and one inside it both give an account a skill,
@@ -2898,7 +2947,8 @@ mod tests {
         f.skill("review", "v1");
         let (repo, outer) = repo_folder(&f, "repo", &["review"]);
         std::fs::create_dir_all(repo.join("web")).unwrap();
-        let inner = LibraryFolder { path: repo.join("web").to_string_lossy().into_owned(), skills: given(&["review"]), ..Default::default() };
+        let inner =
+            LibraryFolder { path: repo.join("web").to_string_lossy().into_owned(), skills: given(&["review"]), ..Default::default() };
         let mut lib = LibrarySettings { folders: vec![outer, inner], ..Default::default() };
         f.run(&lib, &mut Ledger::default(), true);
         codex_manifests(&lib, &f.accounts);

@@ -50,14 +50,10 @@ fn parse(text: &str) -> Vec<CodexModel> {
             let model = CodexModel {
                 display_name: m["display_name"].as_str().unwrap_or(&slug).to_string(),
                 default_effort: m["default_reasoning_level"].as_str().map(str::to_owned),
-                efforts: levels
-                    .map(|a| a.iter().filter_map(|l| l["effort"].as_str().map(str::to_owned)).collect())
-                    .unwrap_or_default(),
+                efforts: levels.map(|a| a.iter().filter_map(|l| l["effort"].as_str().map(str::to_owned)).collect()).unwrap_or_default(),
                 effort_hints: levels
                     .map(|a| {
-                        a.iter()
-                            .filter_map(|l| Some((l["effort"].as_str()?.to_owned(), l["description"].as_str()?.to_owned())))
-                            .collect()
+                        a.iter().filter_map(|l| Some((l["effort"].as_str()?.to_owned(), l["description"].as_str()?.to_owned()))).collect()
                     })
                     .unwrap_or_default(),
                 slug,
@@ -71,9 +67,7 @@ fn parse(text: &str) -> Vec<CodexModel> {
 }
 
 pub fn read_models(account_path: &str) -> Vec<CodexModel> {
-    std::fs::read_to_string(Path::new(account_path).join("models_cache.json"))
-        .map(|t| parse(&t))
-        .unwrap_or_default()
+    std::fs::read_to_string(Path::new(account_path).join("models_cache.json")).map(|t| parse(&t)).unwrap_or_default()
 }
 
 /// The freshest cache file among the other Codex accounts.

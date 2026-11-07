@@ -29,14 +29,7 @@ pub fn silence(window: &tauri::WebviewWindow) {
     /// Only has to be stable and unique among this window's subclasses.
     const ID: usize = 1;
 
-    unsafe extern "system" fn proc_(
-        hwnd: HWND,
-        msg: u32,
-        wparam: WPARAM,
-        lparam: LPARAM,
-        _id: usize,
-        _data: usize,
-    ) -> LRESULT {
+    unsafe extern "system" fn proc_(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM, _id: usize, _data: usize) -> LRESULT {
         if msg == WM_SYSCOMMAND {
             // Windows reserves the low four bits of a system command for its
             // own use; the command itself is the high twelve.
@@ -80,14 +73,7 @@ pub fn exit_with_session() {
     /// Distinct from the menu hook's id: both may sit on the main window.
     const ID: usize = 2;
 
-    unsafe extern "system" fn proc_(
-        hwnd: HWND,
-        msg: u32,
-        wparam: WPARAM,
-        lparam: LPARAM,
-        _id: usize,
-        _data: usize,
-    ) -> LRESULT {
+    unsafe extern "system" fn proc_(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM, _id: usize, _data: usize) -> LRESULT {
         // wParam FALSE is a shutdown cancelled after WM_QUERYENDSESSION, which
         // nothing here acted on.
         if msg == WM_ENDSESSION && wparam.0 != 0 {
@@ -122,11 +108,7 @@ pub fn exit_with_session() {
     // SAFETY: enumerates the calling thread's own windows and subclasses them
     // from that same thread; `hooked` outlives the synchronous enumeration.
     unsafe {
-        let _ = EnumThreadWindows(
-            GetCurrentThreadId(),
-            Some(hook),
-            LPARAM(&mut hooked as *mut usize as isize),
-        );
+        let _ = EnumThreadWindows(GetCurrentThreadId(), Some(hook), LPARAM(&mut hooked as *mut usize as isize));
     }
     if hooked == 0 {
         crate::log::warn("app", "could not hook WM_ENDSESSION on any window");

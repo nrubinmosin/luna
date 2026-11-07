@@ -74,10 +74,7 @@ pub fn spawned(s: &Spawn) {
 /// word, cut to LAST_CHARS.
 pub fn left(id: &str, transcript: Option<&str>, worktree: Option<&str>, last: Option<&str>) {
     let last: Option<String> = last.map(|t| t.chars().take(LAST_CHARS).collect());
-    append(
-        &file(),
-        json!({ "at": now(), "event": "left", "id": id, "transcript": transcript, "worktree": worktree, "last": last }),
-    );
+    append(&file(), json!({ "at": now(), "event": "left", "id": id, "transcript": transcript, "worktree": worktree, "last": last }));
 }
 
 /// A spawned session's row is gone: `deleted` (by its agent or by hand) or
@@ -110,11 +107,7 @@ fn append(path: &Path, line: Value) {
             }
         }
     }
-    let written = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .and_then(|mut f| writeln!(f, "{line}"));
+    let written = std::fs::OpenOptions::new().create(true).append(true).open(path).and_then(|mut f| writeln!(f, "{line}"));
     if let Err(e) = written {
         crate::log::warn("agents", &format!("could not write {}: {e}", path.display()));
     }
@@ -236,8 +229,11 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let settings = json!({ "model": "sonnet" });
         for (id, folder, prompt) in [("a1", "C:\\work\\hh", "/hh-process"), ("a2", "C:\\work\\luna", "fix the build")] {
-            append(&path, json!({ "at": "t", "event": "spawn", "id": id, "parent": "p", "folder": folder,
-                "provider": "claude", "account": "team", "settings": settings, "prompt": prompt }));
+            append(
+                &path,
+                json!({ "at": "t", "event": "spawn", "id": id, "parent": "p", "folder": folder,
+                "provider": "claude", "account": "team", "settings": settings, "prompt": prompt }),
+            );
         }
         append(&path, json!({ "at": "t2", "event": "left", "id": "a1", "transcript": "t.jsonl", "last": "done" }));
         append(&path, json!({ "at": "t2", "event": "end", "id": "a1", "how": "deleted" }));

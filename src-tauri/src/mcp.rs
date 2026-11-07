@@ -374,9 +374,41 @@ fn call(caller: &str, params: &Value, this: &Call) -> Value {
         line.push_str(&format!(" on {}", agents::label(id)));
     }
     const STEERING: &[&str] = &[
-        "provider", "account", "model", "effort", "permissionMode", "sandbox", "readOnly", "agent", "approval", "folder", "worktree", "visible",
-        "tools", "autoDelete", "budgetTokens", "name", "until", "timeoutS", "afterTurn", "since", "last", "screen", "interrupt", "dropWorktree",
-        "group", "history", "allow", "ids", "mode", "resumeOnRestart", "force", "action", "quietS", "drain", "accounts",
+        "provider",
+        "account",
+        "model",
+        "effort",
+        "permissionMode",
+        "sandbox",
+        "readOnly",
+        "agent",
+        "approval",
+        "folder",
+        "worktree",
+        "visible",
+        "tools",
+        "autoDelete",
+        "budgetTokens",
+        "name",
+        "until",
+        "timeoutS",
+        "afterTurn",
+        "since",
+        "last",
+        "screen",
+        "interrupt",
+        "dropWorktree",
+        "group",
+        "history",
+        "allow",
+        "ids",
+        "mode",
+        "resumeOnRestart",
+        "force",
+        "action",
+        "quietS",
+        "drain",
+        "accounts",
     ];
     let set: Vec<String> = STEERING.iter().filter_map(|k| a.get(*k).filter(|v| !v.is_null()).map(|v| format!("{k}={v}"))).collect();
     if !set.is_empty() {
@@ -393,7 +425,20 @@ fn call(caller: &str, params: &Value, this: &Call) -> Value {
         // The first block is the result's JSON; its few fields that say how
         // the call went.
         let v: Value = out["content"][0]["text"].as_str().and_then(|t| serde_json::from_str(t).ok()).unwrap_or(Value::Null);
-        const OUTCOME: &[&str] = &["id", "outcome", "failed", "finished", "started", "starting", "queued", "turnsEnded", "state", "leftOut", "worktreeRemoved", "worktreeLeft"];
+        const OUTCOME: &[&str] = &[
+            "id",
+            "outcome",
+            "failed",
+            "finished",
+            "started",
+            "starting",
+            "queued",
+            "turnsEnded",
+            "state",
+            "leftOut",
+            "worktreeRemoved",
+            "worktreeLeft",
+        ];
         let got: Vec<String> = OUTCOME.iter().filter_map(|k| v.get(*k).filter(|v| !v.is_null()).map(|v| format!("{k}={v}"))).collect();
         crate::log::info("mcp", &format!("{line} in {ms}ms: {}", if got.is_empty() { "ok".to_string() } else { got.join(" ") }));
     }
@@ -435,20 +480,22 @@ fn run(caller: &str, params: &Value, this: &Call) -> Value {
             )
             .map(|r| json!(r))
         }
-        "luna_sessions" => serde_json::from_value::<agents::SessionFilter>(a.clone())
-            .map_err(|e| format!("bad arguments: {e}"))
-            .and_then(|f| match f.history {
-                Some(true) => {
-                    let mut runs = crate::agentlog::runs(f.q.as_deref());
-                    for last in runs.iter_mut().filter_map(|r| r.last.as_mut()) {
-                        if last.chars().count() > HISTORY_LAST {
-                            *last = format!("{}…", last.chars().take(HISTORY_LAST).collect::<String>());
+        "luna_sessions" => {
+            serde_json::from_value::<agents::SessionFilter>(a.clone()).map_err(|e| format!("bad arguments: {e}")).and_then(|f| {
+                match f.history {
+                    Some(true) => {
+                        let mut runs = crate::agentlog::runs(f.q.as_deref());
+                        for last in runs.iter_mut().filter_map(|r| r.last.as_mut()) {
+                            if last.chars().count() > HISTORY_LAST {
+                                *last = format!("{}…", last.chars().take(HISTORY_LAST).collect::<String>());
+                            }
                         }
+                        Ok(json!({ "runs": runs }))
                     }
-                    Ok(json!({ "runs": runs }))
+                    _ => agents::sessions(caller, &f).map(|s| json!({ "sessions": s })),
                 }
-                _ => agents::sessions(caller, &f).map(|s| json!({ "sessions": s })),
-            }),
+            })
+        }
         "luna_spawn" => serde_json::from_value::<agents::SpawnParams>(a.clone())
             .map_err(|e| format!("bad arguments: {e}"))
             .and_then(|p| {
@@ -535,7 +582,9 @@ fn wait_several(caller: &str, a: &Value, this: &Call) -> Result<Value, String> {
         return Err("give id or ids, not both".into());
     }
     if !a["afterTurn"].is_null() {
-        return Err("afterTurn goes with id; with ids each waits for what you are owed, else a turn past the last count you were shown".into());
+        return Err(
+            "afterTurn goes with id; with ids each waits for what you are owed, else a turn past the last count you were shown".into()
+        );
     }
     let ids = id_list(&a["ids"])?;
     let all = match a["mode"].as_str().unwrap_or("any") {
@@ -586,7 +635,23 @@ mod tests {
         assert!(handle("me", r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#).is_none());
         let list = handle("me", r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#).unwrap();
         let names: Vec<&str> = list["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names, ["luna_list", "luna_sessions", "luna_spawn", "luna_send", "luna_answer", "luna_read", "luna_wait", "luna_kill", "luna_delete", "luna_guide", "luna_notify", "luna_power"]);
+        assert_eq!(
+            names,
+            [
+                "luna_list",
+                "luna_sessions",
+                "luna_spawn",
+                "luna_send",
+                "luna_answer",
+                "luna_read",
+                "luna_wait",
+                "luna_kill",
+                "luna_delete",
+                "luna_guide",
+                "luna_notify",
+                "luna_power"
+            ]
+        );
         // One without them is offered none, and may call none.
         agents::register("plain", crate::provider::Provider::Claude, "C:/p", "C:/acc/anthropic/one", None, false, json!({}));
         assert_eq!(handle("plain", r#"{"jsonrpc":"2.0","id":9,"method":"tools/list"}"#).unwrap()["result"]["tools"], json!([]));
@@ -649,11 +714,17 @@ mod tests {
     #[test]
     fn a_tool_on_a_foreign_session_is_an_error_result() {
         tooled("me");
-        let r = handle("me", r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"luna_kill","arguments":{"id":"someone"}}}"#).unwrap();
+        let r =
+            handle("me", r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"luna_kill","arguments":{"id":"someone"}}}"#)
+                .unwrap();
         assert_eq!(r["result"]["isError"], true);
         assert!(r["result"]["content"][0]["text"].as_str().unwrap().contains("not one you spawned"));
         // Text may go to any session, but only one Luna runs.
-        let r = handle("me", r#"{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"luna_send","arguments":{"id":"nobody","text":"hi"}}}"#).unwrap();
+        let r = handle(
+            "me",
+            r#"{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"luna_send","arguments":{"id":"nobody","text":"hi"}}}"#,
+        )
+        .unwrap();
         assert_eq!(r["result"]["isError"], true);
         assert!(r["result"]["content"][0]["text"].as_str().unwrap().contains("unknown session"));
     }
@@ -685,7 +756,8 @@ mod tests {
     #[test]
     fn the_guide_is_a_tool_result() {
         tooled("guide-test");
-        let r = handle("guide-test", r#"{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"luna_guide","arguments":{}}}"#).unwrap();
+        let r = handle("guide-test", r#"{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"luna_guide","arguments":{}}}"#)
+            .unwrap();
         assert!(r["result"].get("isError").is_none());
         assert!(r["result"]["content"][0]["text"].as_str().unwrap().contains("luna_spawn"));
     }
@@ -693,9 +765,8 @@ mod tests {
     #[test]
     fn reading_tools_say_so() {
         let list = tools();
-        let hint = |name: &str, key: &str| {
-            list.as_array().unwrap().iter().find(|t| t["name"] == name).unwrap()["annotations"][key].as_bool()
-        };
+        let hint =
+            |name: &str, key: &str| list.as_array().unwrap().iter().find(|t| t["name"] == name).unwrap()["annotations"][key].as_bool();
         for name in ["luna_list", "luna_sessions", "luna_read", "luna_wait", "luna_guide"] {
             assert_eq!(hint(name, "readOnlyHint"), Some(true), "{name}");
         }
@@ -813,7 +884,11 @@ mod tests {
     #[test]
     fn an_unknown_until_is_an_error_result() {
         tooled("me");
-        let r = handle("me", r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"luna_wait","arguments":{"id":"x","until":"forever"}}}"#).unwrap();
+        let r = handle(
+            "me",
+            r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"luna_wait","arguments":{"id":"x","until":"forever"}}}"#,
+        )
+        .unwrap();
         assert_eq!(r["result"]["isError"], true);
         assert!(r["result"]["content"][0]["text"].as_str().unwrap().contains("unknown until"));
     }

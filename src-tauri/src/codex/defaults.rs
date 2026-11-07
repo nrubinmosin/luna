@@ -110,9 +110,10 @@ pub async fn codex_defaults(account_path: String, folder: String) -> CodexDefaul
 
 fn resolve(account_path: &str, folder: &str, models: &[CodexModel]) -> CodexDefaults {
     let said = read(account_path, folder);
-    let model = said.model.filter(|s| !s.value.trim().is_empty()).or_else(|| {
-        models.first().map(|m| Setting { value: m.slug.clone(), source: "codex".to_owned() })
-    });
+    let model = said
+        .model
+        .filter(|s| !s.value.trim().is_empty())
+        .or_else(|| models.first().map(|m| Setting { value: m.slug.clone(), source: "codex".to_owned() }));
     let own_level = model
         .as_ref()
         .and_then(|m| models.iter().find(|l| l.slug == m.value))
@@ -138,8 +139,7 @@ fn read(account_path: &str, folder: &str) -> Said {
     apply(&mut out, "account", &config::read_or_empty(&account_file));
 
     if !folder.is_empty() {
-        let trusted = super::trust::codex_folder_trusted(account_path.to_owned(), folder.to_owned())
-            .unwrap_or(false);
+        let trusted = super::trust::codex_folder_trusted(account_path.to_owned(), folder.to_owned()).unwrap_or(false);
         if trusted {
             let project = Path::new(folder).join(".codex").join("config.toml");
             apply(&mut out, "project", &config::read_or_empty(&project));

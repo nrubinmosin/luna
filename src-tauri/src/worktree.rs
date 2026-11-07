@@ -37,9 +37,7 @@ fn under_claude_worktrees(folder: &str, candidate: &str) -> bool {
     // One folder past a separator, as Claude Code names them:
     // `.claude\worktrees-old\x` is no worktree of the folder, and
     // `.claude\worktrees\x\src` only a part of one.
-    c.strip_prefix(&base)
-        .and_then(|rest| rest.strip_prefix(KEY_SEP))
-        .is_some_and(|name| !name.is_empty() && !name.contains(KEY_SEP))
+    c.strip_prefix(&base).and_then(|rest| rest.strip_prefix(KEY_SEP)).is_some_and(|name| !name.is_empty() && !name.contains(KEY_SEP))
 }
 
 /// Shaped like a worktree Codex made: `…\worktrees\<4 hex>\<repo>`.
@@ -74,9 +72,7 @@ fn repo_of_linked(worktree: &str) -> Option<String> {
 /// Every destructive path below is gated on this.
 pub fn is_worktree_of(folder: &str, candidate: &str) -> bool {
     under_claude_worktrees(folder, candidate)
-        || (!has_dot_parts(candidate)
-            && codex_shaped(candidate)
-            && repo_of_linked(candidate).is_some_and(|r| norm(&r) == norm(folder)))
+        || (!has_dot_parts(candidate) && codex_shaped(candidate) && repo_of_linked(candidate).is_some_and(|r| norm(&r) == norm(folder)))
 }
 
 /// The project folder a CLI-made worktree belongs to, given that worktree or a
@@ -152,7 +148,8 @@ fn same_place(a: &str, b: &str) -> bool {
 /// or by its `.git` file (one made from inside another worktree). `project_of`
 /// knows a Codex worktree by its root alone, so a folder of one is looked up from.
 pub fn root_of(path: &str) -> Option<(String, String)> {
-    let codex = || Path::new(path).ancestors().map(|d| d.to_string_lossy().into_owned()).find(|d| codex_shaped(d) && repo_of_linked(d).is_some());
+    let codex =
+        || Path::new(path).ancestors().map(|d| d.to_string_lossy().into_owned()).find(|d| codex_shaped(d) && repo_of_linked(d).is_some());
     let project = project_of(path).or_else(|| project_of(&codex()?))?;
     let mut dir = Path::new(path);
     loop {
@@ -166,10 +163,7 @@ pub fn root_of(path: &str) -> Option<(String, String)> {
 
 /// Branch checked out in the given worktree, per `git worktree list`.
 pub fn branch_of(folder: &str, worktree_path: &str) -> Option<String> {
-    let out = git(folder)
-        .args(["worktree", "list", "--porcelain"])
-        .output()
-        .ok()?;
+    let out = git(folder).args(["worktree", "list", "--porcelain"]).output().ok()?;
     let text = String::from_utf8_lossy(&out.stdout);
     let want = norm(worktree_path);
     let mut current: Option<String> = None;
@@ -351,7 +345,10 @@ pub fn fetch_origin(folder: &str) {
                 _ => {
                     let _ = child.kill();
                     let _ = child.wait();
-                    crate::log::warn("worktree", &format!("fetch before a worktree in {folder} took over {FETCH_TIMEOUT:?}; using origin as it was"));
+                    crate::log::warn(
+                        "worktree",
+                        &format!("fetch before a worktree in {folder} took over {FETCH_TIMEOUT:?}; using origin as it was"),
+                    );
                     return;
                 }
             }
@@ -493,7 +490,8 @@ fn made_branch(worktree_path: &str) -> Option<String> {
 /// Restricted to Claude Code's `worktree-*` naming: anything else is a branch
 /// someone made on purpose, and `-D` would discard real commits.
 fn throwaway_branches(worktree_path: &str, checked_out: Option<&str>) -> Vec<String> {
-    let mut branches: Vec<String> = made_branch(worktree_path).into_iter().chain(checked_out.map(str::to_owned)).filter(|b| b.starts_with("worktree-")).collect();
+    let mut branches: Vec<String> =
+        made_branch(worktree_path).into_iter().chain(checked_out.map(str::to_owned)).filter(|b| b.starts_with("worktree-")).collect();
     branches.dedup();
     branches
 }
@@ -525,11 +523,7 @@ fn younger_than(path: &Path, secs: u64) -> bool {
 /// minute per folder, so it reads directories only; what each one holds is
 /// `inspect_worktrees`' job, asked for when someone means to delete.
 #[tauri::command]
-pub async fn orphan_worktrees(
-    folder: String,
-    in_use: Vec<String>,
-    account_paths: Vec<String>,
-) -> Result<Vec<String>, String> {
+pub async fn orphan_worktrees(folder: String, in_use: Vec<String>, account_paths: Vec<String>) -> Result<Vec<String>, String> {
     let live = crate::pty::live_cwds();
     tauri::async_runtime::spawn_blocking(move || orphan_worktrees_now(folder, in_use, account_paths, live))
         .await
@@ -620,7 +614,10 @@ pub fn left_since(now: Vec<String>, before: &[String], live_cwds: &[String]) -> 
 /// takes (it refuses past 64 characters), and no leading dash. As a separate argument
 /// `--dangerously-skip-permissions` is that flag, which turns permissions off.
 pub fn name_ok(name: &str) -> bool {
-    !name.is_empty() && name.len() <= 64 && !name.starts_with(['-', '.']) && name.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
+    !name.is_empty()
+        && name.len() <= 64
+        && !name.starts_with(['-', '.'])
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
 }
 
 /// The argument that asks Claude Code for a worktree: that name if it will do, always
@@ -648,7 +645,11 @@ const LEFT_BY_CLAUDE: &str = "!! .claude/settings.local.json";
 /// default branch, not the folder's HEAD), and a core may go before anything could note
 /// it; git writes it as the branch is made. None with no reflog, or none kept.
 fn start_commit(folder: &str, branch: &str) -> Option<String> {
-    let out = git(folder).args(["reflog", "show", "--format=%H", &format!("refs/heads/{branch}")]).output().ok().filter(|o| o.status.success())?;
+    let out = git(folder)
+        .args(["reflog", "show", "--format=%H", &format!("refs/heads/{branch}")])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
     String::from_utf8_lossy(&out.stdout).lines().rev().map(str::trim).find(|l| !l.is_empty()).map(str::to_owned)
 }
 
@@ -669,7 +670,15 @@ pub fn as_made(folder: &str, path: &str) -> bool {
         return false;
     }
     let status = git(path)
-        .args(["-c", "core.quotepath=off", "status", "--porcelain", "--ignored=matching", "--untracked-files=all", "--ignore-submodules=none"])
+        .args([
+            "-c",
+            "core.quotepath=off",
+            "status",
+            "--porcelain",
+            "--ignored=matching",
+            "--untracked-files=all",
+            "--ignore-submodules=none",
+        ])
         .output()
         .ok()
         .filter(|o| o.status.success());
@@ -699,14 +708,19 @@ pub fn someone_in(path: &str, cwds: &[String]) -> bool {
 /// CLI that went with a core leaves its entry behind, and the worktree it names is
 /// the very one to go on in.
 pub fn claude_sessions_running(account_path: &str) -> Vec<String> {
-    [Some(account_path.to_string()), own_claude_dir()].into_iter().flatten().flat_map(|dir| crate::claude::session::running_cwds(&dir)).collect()
+    [Some(account_path.to_string()), own_claude_dir()]
+        .into_iter()
+        .flatten()
+        .flat_map(|dir| crate::claude::session::running_cwds(&dir))
+        .collect()
 }
 
 /// The worktrees Codex has made for this folder on this account since `before`, that
 /// nobody is in: all there is to tell what a Codex helper cut off may have begun, as it
 /// takes no name and says where only once it has a thread.
 pub fn codex_new_since(folder: &str, account_path: &str, before: &[String], claimed: &[String]) -> Vec<String> {
-    let mut new: Vec<String> = left_since(made_for(folder, account_path), before, claimed).into_iter().filter(|p| codex_shaped(p)).collect();
+    let mut new: Vec<String> =
+        left_since(made_for(folder, account_path), before, claimed).into_iter().filter(|p| codex_shaped(p)).collect();
     new.sort();
     new
 }
@@ -745,7 +759,12 @@ fn changes_in(path: &str) -> Option<Vec<String>> {
     let status = Path::new(path)
         .join(".git")
         .exists()
-        .then(|| git(path).args(["-c", "core.quotepath=off", "status", "--porcelain", "--untracked-files=normal", "--ignore-submodules=none"]).output().ok())
+        .then(|| {
+            git(path)
+                .args(["-c", "core.quotepath=off", "status", "--porcelain", "--untracked-files=normal", "--ignore-submodules=none"])
+                .output()
+                .ok()
+        })
         .flatten()
         .filter(|o| o.status.success())?;
     Some(String::from_utf8_lossy(&status.stdout).lines().filter(|l| !l.is_empty()).map(str::to_owned).collect())
@@ -804,7 +823,8 @@ pub fn unsaved_work(folder: &str, path: &str) -> Option<String> {
                 0 => String::new(),
                 n => format!(" and {n} more"),
             };
-            let what = if changes.len() == 1 { "1 uncommitted change".to_string() } else { format!("{} uncommitted changes", changes.len()) };
+            let what =
+                if changes.len() == 1 { "1 uncommitted change".to_string() } else { format!("{} uncommitted changes", changes.len()) };
             said.push(format!("{what} ({}{more})", names.join(", ")));
         }
     }
@@ -841,11 +861,7 @@ fn inspect(folder: &str, path: &str) -> WorktreeInfo {
 pub async fn inspect_worktrees(folder: String, paths: Vec<String>) -> Result<Vec<WorktreeInfo>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         std::thread::scope(|scope| {
-            let jobs: Vec<_> = paths
-                .iter()
-                .filter(|p| is_worktree_of(&folder, p))
-                .map(|p| scope.spawn(|| inspect(&folder, p)))
-                .collect();
+            let jobs: Vec<_> = paths.iter().filter(|p| is_worktree_of(&folder, p)).map(|p| scope.spawn(|| inspect(&folder, p))).collect();
             jobs.into_iter().filter_map(|j| j.join().ok()).collect()
         })
     })
@@ -880,8 +896,7 @@ pub async fn remove_orphan_worktrees(
 ) -> Result<SweepResult, String> {
     let live = crate::pty::live_cwds();
     tauri::async_runtime::spawn_blocking(move || {
-        let orphans: Vec<String> =
-            orphan_worktrees_now(folder.clone(), in_use, account_paths, live)?.iter().map(|p| norm(p)).collect();
+        let orphans: Vec<String> = orphan_worktrees_now(folder.clone(), in_use, account_paths, live)?.iter().map(|p| norm(p)).collect();
         let mut result = SweepResult { removed: vec![], failed: vec![] };
         for path in paths {
             if !orphans.contains(&norm(&path)) {
@@ -938,7 +953,8 @@ mod tests {
 
     #[test]
     fn what_a_spawn_left_is_what_is_new_with_nobody_in_it() {
-        let now = vec![native(r"E:\p\.claude\worktrees\old"), native(r"E:\p\.claude\worktrees\new"), native(r"E:\p\.claude\worktrees\busy")];
+        let now =
+            vec![native(r"E:\p\.claude\worktrees\old"), native(r"E:\p\.claude\worktrees\new"), native(r"E:\p\.claude\worktrees\busy")];
         let before = [native(r"E:\p\.claude\worktrees\old")];
         let live = [native(r"E:\p\.claude\worktrees\busy\sub")];
         assert_eq!(left_since(now, &before, &live), [native(r"E:\p\.claude\worktrees\new")]);
@@ -1062,7 +1078,9 @@ mod tests {
         let repo = root.join("repo");
         std::fs::create_dir_all(&repo).unwrap();
         let s = |p: &Path| p.to_string_lossy().into_owned();
-        let ok = |dir: &Path, args: &[&str]| git(&s(dir)).args(["-c", "user.email=t@t", "-c", "user.name=t"]).args(args).output().is_ok_and(|o| o.status.success());
+        let ok = |dir: &Path, args: &[&str]| {
+            git(&s(dir)).args(["-c", "user.email=t@t", "-c", "user.name=t"]).args(args).output().is_ok_and(|o| o.status.success())
+        };
         if !ok(&repo, &["init", "-q"]) {
             return;
         }
@@ -1121,7 +1139,8 @@ mod tests {
         assert_eq!(of(&sub), None);
         let moved = worktrees.join("moved");
         std::fs::create_dir_all(&moved).unwrap();
-        std::fs::write(moved.join(".git"), format!("gitdir: {}", s(&root.join("gone").join(".git").join("worktrees").join("moved")))).unwrap();
+        std::fs::write(moved.join(".git"), format!("gitdir: {}", s(&root.join("gone").join(".git").join("worktrees").join("moved"))))
+            .unwrap();
         assert_eq!(of(&moved), None, "its repository is not there");
 
         // Gone, as Claude Code leaves a clean one: where it was is all there is, in a
@@ -1192,7 +1211,8 @@ mod tests {
         let wt = wt.to_string_lossy().into_owned();
         let ok = |c: &mut Command| c.output().is_ok_and(|o| o.status.success());
         assert!(ok(git(&repo).args(["worktree", "add", "-q", "-b", "worktree-w1", &wt])));
-        let commit = |msg: &str| ok(git(&wt).args(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", msg]));
+        let commit =
+            |msg: &str| ok(git(&wt).args(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", msg]));
         assert_eq!(unsaved_work(&repo, &wt), None, "nothing past what it was made from");
         assert!(commit("on the throwaway branch"));
         assert_eq!(unsaved_work(&repo, &wt).unwrap(), "1 commit on no other branch or remote", "branch -D takes it");
@@ -1360,7 +1380,10 @@ mod tests {
     fn a_ref_is_loose_or_packed_at_every_step_of_its_chain() {
         let packed = format!("# pack-refs with: peeled fully-peeled sorted\n{ID} refs/heads/main\n^{}\n", "f".repeat(40));
         // HEAD -> loose alias -> packed branch: the branch is the last of the chain.
-        let (root, _) = git_folder("chain", &[("HEAD", "ref: refs/heads/alias\n"), ("refs/heads/alias", "ref: refs/heads/main\n"), ("packed-refs", &packed)]);
+        let (root, _) = git_folder(
+            "chain",
+            &[("HEAD", "ref: refs/heads/alias\n"), ("refs/heads/alias", "ref: refs/heads/main\n"), ("packed-refs", &packed)],
+        );
         assert_eq!(head_at(&root.to_string_lossy()), on(Some("main"), Some("0123456")));
         let _ = std::fs::remove_dir_all(&root);
         // A loose ref over a packed one wins, as it is the newer.
@@ -1373,7 +1396,10 @@ mod tests {
         assert_eq!(head_at(&root.to_string_lossy()), on(Some("new"), None));
         let _ = std::fs::remove_dir_all(&root);
         // Round and round, or on and on: no answer, and it ends.
-        let (root, _) = git_folder("cycle", &[("HEAD", "ref: refs/heads/a\n"), ("refs/heads/a", "ref: refs/heads/b\n"), ("refs/heads/b", "ref: refs/heads/a\n")]);
+        let (root, _) = git_folder(
+            "cycle",
+            &[("HEAD", "ref: refs/heads/a\n"), ("refs/heads/a", "ref: refs/heads/b\n"), ("refs/heads/b", "ref: refs/heads/a\n")],
+        );
         assert_eq!(head_at(&root.to_string_lossy()), None);
         let _ = std::fs::remove_dir_all(&root);
         let (root, _) = git_folder("self", &[("HEAD", "ref: refs/heads/a\n"), ("refs/heads/a", "ref: refs/heads/a\n")]);
@@ -1396,7 +1422,8 @@ mod tests {
     #[test]
     fn a_ref_that_cannot_be_read_leaves_the_head_unknown() {
         let packed = format!("{ID} refs/heads/main\n");
-        let (root, git) = git_folder("unreadable", &[("HEAD", "ref: refs/heads/main\n"), ("refs/heads/main", ""), ("packed-refs", &packed)]);
+        let (root, git) =
+            git_folder("unreadable", &[("HEAD", "ref: refs/heads/main\n"), ("refs/heads/main", ""), ("packed-refs", &packed)]);
         std::fs::write(git.join("refs/heads/main"), [0xff, 0xfe]).unwrap();
         assert_eq!(head_at(&root.to_string_lossy()), None);
         // Gone, it is the packed one's to say.
@@ -1415,10 +1442,12 @@ mod tests {
         // not a read error, only no loose ref.
         let id = format!("{ID}\n");
         let packed = format!("{ID} refs/heads/fix\n{ID} refs/heads/main/old\n");
-        let (root, _) = git_folder("in-a-folder", &[("HEAD", "ref: refs/heads/fix\n"), ("refs/heads/fix/a", &id), ("packed-refs", &packed)]);
+        let (root, _) =
+            git_folder("in-a-folder", &[("HEAD", "ref: refs/heads/fix\n"), ("refs/heads/fix/a", &id), ("packed-refs", &packed)]);
         assert_eq!(head_at(&root.to_string_lossy()), on(Some("fix"), Some("0123456")));
         let _ = std::fs::remove_dir_all(&root);
-        let (root, _) = git_folder("under-a-file", &[("HEAD", "ref: refs/heads/main/old\n"), ("refs/heads/main", &id), ("packed-refs", &packed)]);
+        let (root, _) =
+            git_folder("under-a-file", &[("HEAD", "ref: refs/heads/main/old\n"), ("refs/heads/main", &id), ("packed-refs", &packed)]);
         assert_eq!(head_at(&root.to_string_lossy()), on(Some("main/old"), Some("0123456")));
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1428,7 +1457,8 @@ mod tests {
     fn a_git_folder_with_a_commondir_has_its_refs_there() {
         let shared = format!("{ID}\n");
         let stale = format!("{}\n", "b".repeat(40));
-        let (root, git) = git_folder("common", &[("HEAD", "ref: refs/heads/main\n"), ("commondir", "../shared\n"), ("refs/heads/main", &stale)]);
+        let (root, git) =
+            git_folder("common", &[("HEAD", "ref: refs/heads/main\n"), ("commondir", "../shared\n"), ("refs/heads/main", &stale)]);
         let refs = root.join("shared").join("refs").join("heads");
         std::fs::create_dir_all(&refs).unwrap();
         std::fs::write(refs.join("main"), &shared).unwrap();
@@ -1441,11 +1471,10 @@ mod tests {
     #[test]
     fn a_linked_worktree_has_its_head_of_its_own_and_its_refs_from_the_repository() {
         let id = format!("{ID}\n");
-        let (root, git) = git_folder("linked", &[
-            ("refs/heads/feature", &id),
-            ("worktrees/wt/HEAD", "ref: refs/heads/feature\n"),
-            ("worktrees/wt/commondir", "../..\n"),
-        ]);
+        let (root, git) = git_folder(
+            "linked",
+            &[("refs/heads/feature", &id), ("worktrees/wt/HEAD", "ref: refs/heads/feature\n"), ("worktrees/wt/commondir", "../..\n")],
+        );
         let wt = root.join("wt");
         std::fs::create_dir_all(wt.join("src")).unwrap();
         std::fs::write(wt.join(".git"), format!("gitdir: {}\n", git.join("worktrees").join("wt").display())).unwrap();
@@ -1471,7 +1500,9 @@ mod tests {
             let _ = std::fs::remove_dir_all(&root);
             return;
         }
-        let says = |dir: &str| on(run(dir, &["symbolic-ref", "--short", "-q", "HEAD"]).as_deref(), run(dir, &["rev-parse", "--short=7", "HEAD"]).as_deref());
+        let says = |dir: &str| {
+            on(run(dir, &["symbolic-ref", "--short", "-q", "HEAD"]).as_deref(), run(dir, &["rev-parse", "--short=7", "HEAD"]).as_deref())
+        };
         assert_eq!(head_at(&repo), says(&repo));
         let wt = root.join("wt").to_string_lossy().into_owned();
         run(&repo, &["worktree", "add", "-q", "-b", "side", &wt]).unwrap();
@@ -1487,7 +1518,10 @@ mod tests {
 
     #[test]
     fn a_worktree_names_the_branch_it_was_made_on() {
-        assert_eq!(made_branch(&native(r"E:\p\.claude\worktrees\merry-coalescing-cosmos")).as_deref(), Some("worktree-merry-coalescing-cosmos"));
+        assert_eq!(
+            made_branch(&native(r"E:\p\.claude\worktrees\merry-coalescing-cosmos")).as_deref(),
+            Some("worktree-merry-coalescing-cosmos")
+        );
         assert_eq!(made_branch(&native(r"E:\acc\worktrees\d6ff\repo")), None);
     }
 }
