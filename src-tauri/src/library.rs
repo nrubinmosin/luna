@@ -64,7 +64,7 @@ struct Locked {
 fn lock() -> Locked {
     let threads = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let path = Dirs::current().ledger().with_extension("json.lock");
-    let file = crate::secret::open_private(&path, std::fs::OpenOptions::new().write(true)).and_then(|f| f.lock().map(|()| f));
+    let file = crate::secret::open_private(&path).and_then(|f| f.lock().map(|()| f));
     // Without it a pass still runs, as one did before passes came from two
     // processes.
     if let Err(e) = &file {
@@ -253,6 +253,16 @@ impl Dirs {
     }
     fn backups(&self) -> PathBuf {
         self.data.join("library-backups")
+    }
+    /// An edit of the library: private in the data dir's own `library/`
+    /// (`write_file`), as that folder has it in a source of the user's
+    /// choosing (`write_copy`), which is theirs, not Luna's to lock down.
+    fn write(&self, path: &Path, bytes: &[u8]) -> Result<(), String> {
+        if self.root.starts_with(&self.data) {
+            write_file(path, bytes)
+        } else {
+            write_copy(path, bytes)
+        }
     }
 }
 
@@ -563,22 +573,36 @@ fn read_dir_files(dir: &Path) -> Result<Files, String> {
 /// a write beside it, and one left by a write that died taken for the skill's.
 const TMP_SUFFIX: &str = ".luna-tmp";
 
-/// Through a temp file beside it, so a reader never sees half. The temp name
-/// is this write's own (process and count), so two writers never share one.
+/// One of Luna's own files (the library, its blobs and backups), through a
+/// temp file beside it, so a reader never sees half, made private as it is
+/// made under a random name nobody can have ready
+/// (`secret::write_private_as`): they sit in the data dir, which may be open
+/// to others.
 fn write_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     }
-    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    crate::secret::write_private_as(path, bytes, TMP_SUFFIX).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// A copy in a CLI's folder or a repo's, through a temp file beside it as
+/// `write_file`'s, which takes the folder's ACL like everything else there:
+/// the folder is the CLI's or the repo's, not Luna's to lock down. The temp
+/// name is random and made new (`create_new`), so one planted ahead of it is
+/// never written into, nor removed.
+fn write_copy(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
     let mut tmp = path.as_os_str().to_owned();
-    tmp.push(format!(".{}-{n}{TMP_SUFFIX}", std::process::id()));
+    tmp.push(format!(".{}{TMP_SUFFIX}", crate::secret::random_hex(8)));
     let tmp = PathBuf::from(tmp);
-    std::fs::write(&tmp, bytes).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
-        format!("{}: {e}", path.display())
-    })?;
-    std::fs::rename(&tmp, path).map_err(|e| {
+    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp).map_err(|e| format!("{}: {e}", path.display()))?;
+    let wrote = file.write_all(bytes);
+    // Closed before the rename, which Windows refuses for a file held open.
+    drop(file);
+    wrote.and_then(|()| std::fs::rename(&tmp, path)).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
         format!("{}: {e}", path.display())
     })
@@ -621,7 +645,7 @@ fn read_at(dest: &Path, file: bool) -> Result<Option<Files>, String> {
 /// Luna's own copy, or with the user's word and a backup taken.
 fn write_at(dest: &Path, file: bool, files: &Files) -> Result<(), String> {
     if file {
-        return write_file(dest, files.get("").map(Vec::as_slice).unwrap_or_default());
+        return write_copy(dest, files.get("").map(Vec::as_slice).unwrap_or_default());
     }
     std::fs::create_dir_all(dest).map_err(|e| format!("{}: {e}", dest.display()))?;
     let old = read_dir_files(dest)?;
@@ -635,7 +659,7 @@ fn write_at(dest: &Path, file: bool, files: &Files) -> Result<(), String> {
     prune_empty(dest);
     for (rel, bytes) in files {
         if old.get(rel) != Some(bytes) {
-            write_file(&join_rel(dest, rel), bytes)?;
+            write_copy(&join_rel(dest, rel), bytes)?;
         }
     }
     Ok(())
@@ -972,7 +996,7 @@ fn codex_manifests(lib: &LibrarySettings, accounts: &[AccountInfo]) {
                 });
                 let text = serde_json::to_string_pretty(&manifest_json).unwrap_or_default() + "\n";
                 if std::fs::read(&manifest).ok().as_deref() != Some(text.as_bytes()) {
-                    if let Err(e) = write_file(&manifest, text.as_bytes()) {
+                    if let Err(e) = write_copy(&manifest, text.as_bytes()) {
                         crate::log::warn("library", &format!("could not write {}: {e}", manifest.display()));
                     }
                 }
@@ -2059,8 +2083,9 @@ pub fn library_read(entry: Entry) -> Result<LibraryFile, String> {
 #[tauri::command(async)]
 pub fn library_write(entry: Entry, text: String) -> Result<Overview, String> {
     let _guard = lock();
-    let path = library_path(&Dirs::current(), &entry)?;
-    write_file(&path, text.as_bytes())?;
+    let dirs = Dirs::current();
+    let path = library_path(&dirs, &entry)?;
+    dirs.write(&path, text.as_bytes())?;
     overview_locked(true)
 }
 
@@ -2083,7 +2108,7 @@ pub fn library_new_skill(name: String) -> Result<Overview, String> {
     let text = format!(
         "---\nname: {name}\ndescription: What this skill does and when to use it. The model reads only this line until it decides to.\n---\n\n# {name}\n\nThe steps, rules and examples to follow.\n"
     );
-    write_file(&dir.join(SKILL_FILE), text.as_bytes())?;
+    dirs.write(&dir.join(SKILL_FILE), text.as_bytes())?;
     overview_locked(false)
 }
 
@@ -2122,7 +2147,7 @@ pub fn library_new_instructions(name: String) -> Result<Overview, String> {
     if std::fs::symlink_metadata(&path).is_ok() {
         return Err(format!("The library already has instructions named {name}"));
     }
-    write_file(&path, b"")?;
+    dirs.write(&path, b"")?;
     crate::settings::update(|s| {
         s.library.instructions.remove(&name);
     })?;
