@@ -5265,4 +5265,291 @@ mod tests {
 
         lock().entries.remove(id);
     }
+
+    // Golden tests of what a background helper's turn is started with: the
+    // arguments, folder and environment of each kind of turn, word for word,
+    // as they stand.
+
+    use crate::golden::{self, pairs, strings, Redact};
+
+    /// A turn's command for `e`, placeholders in, with the settings and MCP
+    /// files it was given read back (and removed).
+    struct Turn {
+        args: Vec<String>,
+        dir: String,
+        envs: Vec<(String, String)>,
+        settings: Option<Value>,
+        mcp: Option<Value>,
+    }
+
+    fn turn(e: &Entry, id: &str, r: &Redact) -> Turn {
+        let (args, dir, envs) = command_for(e, id);
+        let args = r.args(&args);
+        let data = crate::paths::data_dir();
+        let read = |sub: &str, placeholder: &str| {
+            let path = data.join(sub).join(format!("{id}.json"));
+            let v = args.iter().any(|a| a == placeholder).then(|| r.file(&path.to_string_lossy()));
+            let _ = std::fs::remove_file(&path);
+            v
+        };
+        let (settings, mcp) = (read("hooks", "<settings-file>"), read("mcp", "<mcp-file>"));
+        Turn { dir: r.text(&dir), envs: r.envs(&envs), settings, mcp, args }
+    }
+
+    /// A Claude Code turn's arguments up to where a conversation is named.
+    fn claude_turn(mode: &str) -> Vec<String> {
+        strings(&[
+            "-p",
+            "--input-format",
+            "stream-json",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--replay-user-messages",
+            "--model",
+            "haiku",
+            "--effort",
+            "low",
+            "--permission-mode",
+            mode,
+        ])
+    }
+
+    fn claude_turn_envs(id: &str) -> Vec<(String, String)> {
+        pairs(&[("CLAUDE_CONFIG_DIR", "C:\\acc"), ("DISABLE_AUTOUPDATER", "1"), ("LUNA_SESSION_ID", id)])
+    }
+
+    #[test]
+    fn golden_headless_claude_turn_streams_json_in_its_folder() {
+        const ID: &str = "golden-bg-claude";
+        let r = Redact::for_chat(ID);
+        let mut e = entry(Provider::Claude);
+        e.spec.mode = "acceptEdits".into();
+        let t = turn(&e, ID, &r);
+        assert_eq!(t.args, claude_turn("acceptEdits"));
+        assert_eq!(t.dir, "C:\\p");
+        assert_eq!(t.envs, claude_turn_envs(ID));
+        assert_eq!((t.settings, t.mcp), (None, None), "no hooks: its stream says it all");
+    }
+
+    #[test]
+    fn golden_headless_claude_resume_and_worktree() {
+        const ID: &str = "golden-bg-claude-resume";
+        let r = Redact::for_chat(ID);
+        let mut e = entry(Provider::Claude);
+        e.spec.mode = "default".into();
+        // Afresh in a worktree of Luna's naming.
+        e.spec.worktree = true;
+        e.spec.worktree_name = Some("luna-x".into());
+        let mut want = claude_turn("default");
+        want.push("--worktree=luna-x".into());
+        assert_eq!(turn(&e, ID, &r).args, want);
+
+        // A conversation, in the folder it was sent to.
+        e.session = Some("s-1".into());
+        let mut want = claude_turn("default");
+        want.extend(strings(&["--resume", "s-1"]));
+        let t = turn(&e, ID, &r);
+        assert_eq!((t.args, t.dir.as_str()), (want.clone(), "C:\\p"));
+
+        // In the worktree its first turn made, while that is there.
+        let wt = std::env::temp_dir().join(format!("luna-golden-bg-wt-{}", std::process::id())).join("luna-x");
+        std::fs::create_dir_all(&wt).unwrap();
+        e.cwd = Some(wt.to_string_lossy().into_owned());
+        let t = turn(&e, ID, &r);
+        assert_eq!((t.args, t.dir), (want, wt.to_string_lossy().into_owned()));
+        let _ = std::fs::remove_dir_all(wt.parent().unwrap());
+
+        // Gone: asked for again by its name, from the folder.
+        let t = turn(&e, ID, &r);
+        let mut want = claude_turn("default");
+        want.extend(strings(&["--worktree=luna-x", "--resume", "s-1"]));
+        assert_eq!((t.args, t.dir.as_str()), (want, "C:\\p"));
+    }
+
+    #[test]
+    fn golden_headless_claude_helper_with_tools_answers_permissions_through_luna() {
+        const ID: &str = "golden-bg-claude-helper";
+        let r = Redact::for_chat(ID);
+        let mut e = entry(Provider::Claude);
+        e.spec.mode = "default".into();
+        e.spec.tools = true;
+        e.spec.token = Some("the-helpers-token".into());
+        e.spec.parent = Some("golden-parent".into());
+        e.spec.read_only = true;
+        e.spec.agent = Some("reviewer".into());
+        let t = turn(&e, ID, &r);
+        let mut want = claude_turn("default");
+        want.extend(strings(&[
+            "--agent",
+            "reviewer",
+            "--mcp-config",
+            "<mcp-file>",
+            "--permission-prompt-tool",
+            "mcp__luna__luna_permission",
+            "--allowedTools",
+            "mcp__luna",
+            "--disallowedTools",
+            "Edit,Write,NotebookEdit,mcp__luna__luna_permission",
+            "--append-system-prompt",
+            &golden::helper_line("golden-parent"),
+            "--add-dir",
+            "<notes-dir>",
+            "--settings",
+            "<settings-file>",
+        ]));
+        assert_eq!(t.args, want);
+        let mut envs = pairs(&[("LUNA_MCP_TOKEN", "<token>")]);
+        envs.extend(claude_turn_envs(ID));
+        envs.extend(pairs(&[("LUNA_PARENT_ID", "golden-parent")]));
+        assert_eq!(t.envs, envs);
+        assert_eq!(t.settings, Some(serde_json::json!({ "hooks": { "PreToolUse": [golden::claude_guard_entry()] } })), "the guard alone");
+        assert_eq!(t.mcp, Some(golden::claude_mcp_config()));
+
+        // No tools of its own: Luna's server is there for the permission prompts only.
+        e.spec.tools = false;
+        e.spec.parent = None;
+        e.spec.read_only = false;
+        e.spec.agent = None;
+        let t = turn(&e, ID, &r);
+        let mut want = claude_turn("default");
+        want.extend(strings(&[
+            "--mcp-config",
+            "<mcp-file>",
+            "--permission-prompt-tool",
+            "mcp__luna__luna_permission",
+            "--disallowedTools",
+            "mcp__luna__luna_permission",
+        ]));
+        assert_eq!(t.args, want);
+        assert_eq!(t.settings, None, "neither tools nor a parent: no guard");
+    }
+
+    /// A Codex turn's arguments from the folder's trust to the effort.
+    fn codex_turn(model: bool) -> Vec<String> {
+        let mut args = strings(&["--json", "--skip-git-repo-check"]);
+        args.extend(crate::codex::trust::trust_override("C:\\p"));
+        if model {
+            args.extend(strings(&["--model", "haiku"]));
+        }
+        args.extend(strings(&["-c", "model_reasoning_effort=\"low\""]));
+        args
+    }
+
+    /// `exec` asking nobody, held by the sandbox `mode`.
+    fn codex_held(sandbox: Vec<String>, windows: bool) -> Vec<String> {
+        let mut args = strings(&["-c", "approval_policy=\"never\"", "-c", "approvals_reviewer=\"user\""]);
+        args.extend(sandbox);
+        if windows {
+            args.extend(golden::codex_windows_sandbox());
+        }
+        args
+    }
+
+    fn codex_turn_envs(id: &str, sandboxed: bool) -> Vec<(String, String)> {
+        let mut envs = if sandboxed { golden::codex_sandbox_path() } else { Vec::new() };
+        envs.extend(pairs(&[("CODEX_HOME", "C:\\acc"), ("LUNA_SESSION_ID", id)]));
+        envs
+    }
+
+    #[test]
+    fn golden_headless_codex_turn_is_exec_on_json_with_the_prompt_on_stdin() {
+        const ID: &str = "golden-bg-codex";
+        let r = Redact::for_chat(ID);
+        let e = entry(Provider::Codex);
+        let t = turn(&e, ID, &r);
+        let mut want = strings(&["exec", "-C", "C:\\p"]);
+        want.extend(codex_turn(true));
+        want.extend(codex_held(strings(&["-c", "sandbox_mode=\"read-only\""]), true));
+        want.push("-".into());
+        assert_eq!(t.args, want);
+        assert_eq!(t.dir, "C:\\p");
+        assert_eq!(t.envs, codex_turn_envs(ID, true));
+    }
+
+    #[test]
+    fn golden_headless_codex_resume_and_worktree() {
+        const ID: &str = "golden-bg-codex-resume";
+        let r = Redact::for_chat(ID);
+        let mut e = entry(Provider::Codex);
+        e.spec.model = None;
+        e.spec.worktree = true;
+        let tail = |mut a: Vec<String>| {
+            a.extend(codex_turn(false));
+            a.extend(codex_held(strings(&["-c", "sandbox_mode=\"read-only\""]), true));
+            a.push("-".into());
+            a
+        };
+        assert_eq!(turn(&e, ID, &r).args, tail(strings(&["exec", "-C", "C:\\p", "--worktree"])));
+        e.session = Some("t-1".into());
+        let t = turn(&e, ID, &r);
+        assert_eq!((t.args, t.dir.as_str()), (tail(strings(&["exec", "resume", "t-1"])), "C:\\p"));
+        // In the worktree its first turn made, while that is there.
+        let wt = std::env::temp_dir().join(format!("luna-golden-bg-codex-wt-{}", std::process::id()));
+        std::fs::create_dir_all(&wt).unwrap();
+        e.cwd = Some(wt.to_string_lossy().into_owned());
+        let t = turn(&e, ID, &r);
+        assert_eq!((t.args, t.dir), (tail(strings(&["exec", "resume", "t-1"])), wt.to_string_lossy().into_owned()));
+        let _ = std::fs::remove_dir_all(&wt);
+    }
+
+    #[test]
+    fn golden_headless_codex_sandboxes_and_the_reviewer() {
+        // (sandbox, auto review, what holds it, whether Windows sandboxes it)
+        let read_only_net = codex_held(golden::codex_read_only_net(), true);
+        let cases: [(&str, bool, Vec<String>, bool); 4] = [
+            ("workspace-write", false, codex_held(strings(&["-c", "sandbox_mode=\"workspace-write\""]), true), true),
+            ("danger-full-access", false, codex_held(strings(&["-c", "sandbox_mode=\"danger-full-access\""]), false), false),
+            ("read-only-net", false, read_only_net, true),
+            ("workspace-write", true, [strings(&["--approve-for-me"]), golden::codex_windows_sandbox()].concat(), true),
+        ];
+        for (mode, auto_review, held, sandboxed) in cases {
+            let id = format!("golden-bg-codex-{mode}-{auto_review}");
+            let r = Redact::for_chat(&id);
+            let mut e = entry(Provider::Codex);
+            e.spec.mode = mode.into();
+            e.spec.auto_review = auto_review;
+            let t = turn(&e, &id, &r);
+            let mut want = strings(&["exec", "-C", "C:\\p"]);
+            want.extend(codex_turn(true));
+            want.extend(held);
+            want.push("-".into());
+            assert_eq!(t.args, want, "{mode} {auto_review}");
+            assert_eq!(t.envs, codex_turn_envs(&id, sandboxed), "{mode} {auto_review}");
+        }
+    }
+
+    #[test]
+    fn golden_headless_codex_helper_with_tools_gets_the_guard_and_luna_mcp() {
+        const ID: &str = "golden-bg-codex-helper";
+        let r = Redact::for_chat(ID);
+        let mut e = entry(Provider::Codex);
+        e.spec.mode = "workspace-write".into();
+        e.spec.tools = true;
+        e.spec.token = Some("the-helpers-token".into());
+        e.spec.hooks_unasked = true;
+        e.spec.parent = Some("golden-parent".into());
+        let t = turn(&e, ID, &r);
+        let mut want = strings(&["exec", "-C", "C:\\p"]);
+        want.extend(codex_turn(true));
+        want.extend(strings(&["--dangerously-bypass-hook-trust", "-c", &golden::codex_guard()]));
+        want.extend(codex_held(strings(&["-c", "sandbox_mode=\"workspace-write\""]), true));
+        want.extend(golden::codex_mcp());
+        want.push("-".into());
+        assert_eq!(t.args, want);
+        let mut envs = golden::codex_sandbox_path();
+        envs.extend(pairs(&[
+            ("LUNA_MCP_TOKEN", "<token>"),
+            ("CODEX_HOME", "C:\\acc"),
+            ("LUNA_SESSION_ID", ID),
+            ("LUNA_PARENT_ID", "golden-parent"),
+        ]));
+        assert_eq!(t.envs, envs);
+
+        // A token without tools gives no server: Codex has no permission prompt to route.
+        e.spec.tools = false;
+        let t = turn(&e, ID, &r);
+        assert!(!t.args.iter().any(|a| a.starts_with("mcp_servers.")), "{:?}", t.args);
+        assert!(!t.envs.iter().any(|(k, _)| k == "LUNA_MCP_TOKEN"));
+    }
 }

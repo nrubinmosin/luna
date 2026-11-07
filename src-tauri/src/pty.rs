@@ -177,6 +177,37 @@ struct Launch {
     describe: String,
 }
 
+/// The starts a test has asked to see (`expect`): `spawn` builds their
+/// `Launch`, side effects and all, and hands it here instead of running it.
+#[cfg(test)]
+mod capture {
+    use super::Launch;
+    use std::collections::BTreeMap;
+    use std::sync::Mutex;
+
+    static TAKEN: Mutex<BTreeMap<String, Option<Launch>>> = Mutex::new(BTreeMap::new());
+
+    pub(super) fn expect(id: &str) {
+        TAKEN.lock().unwrap_or_else(|e| e.into_inner()).insert(id.to_string(), None);
+    }
+
+    /// The launch back if nobody expects it, else None: kept for `take`.
+    pub(super) fn keep(id: &str, launch: Launch) -> Option<Launch> {
+        let mut taken = TAKEN.lock().unwrap_or_else(|e| e.into_inner());
+        match taken.get_mut(id) {
+            Some(slot) => {
+                *slot = Some(launch);
+                None
+            }
+            None => Some(launch),
+        }
+    }
+
+    pub(super) fn take(id: &str) -> Option<Launch> {
+        TAKEN.lock().unwrap_or_else(|e| e.into_inner()).remove(id).flatten()
+    }
+}
+
 // Creating a session means a `git fetch` before a worktree plus a process spawn — seconds of
 // blocking work that must not run on the main thread, where it would stall
 // every other chat's IPC. It used to hold the session map for that whole
@@ -211,7 +242,13 @@ async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, String>) -> R
     if let Some(old) = exited {
         end_leftovers(&old);
     }
-    let Launch { provider, cwd, account_path, args, envs, resume, describe } = launch()?;
+    let launch = launch()?;
+    // A test reads what a start would run, and nothing runs (`capture`).
+    #[cfg(test)]
+    let Some(launch) = capture::keep(&id, launch) else {
+        return Ok(String::new());
+    };
+    let Launch { provider, cwd, account_path, args, envs, resume, describe } = launch;
 
     // portable-pty starts a process whose cwd is not there in the user
     // profile instead, without a word: a chat whose worktree had been removed
@@ -2971,5 +3008,508 @@ mod tests {
         assert_eq!(cursor_at(b"", 30, 100), (0, 0));
         assert_eq!(cursor_at(b"hello\r\nab", 30, 100), (1, 2));
         assert_eq!(cursor_at(b"\x1b[5;7H", 30, 100), (4, 6));
+    }
+
+    // Golden tests of what a session in a pane is started with: the arguments
+    // and environment of each kind of start, word for word, as they stand.
+    // Built through the commands themselves, side effects and all, and caught
+    // before anything runs (`capture`).
+
+    use crate::golden::{self, pairs, strings, Redact};
+
+    const FOLDER: &str = "/golden/project";
+    const PARENT: &str = "golden-parent";
+    const PROMPT: &str = "Fix the build.";
+
+    /// A start as `spawn` would have run it, placeholders in, with the
+    /// settings and MCP files it was given read back (and removed).
+    struct Started {
+        args: Vec<String>,
+        envs: Vec<(String, String)>,
+        cwd: String,
+        resume: Option<String>,
+        describe: String,
+        settings: Option<serde_json::Value>,
+        mcp: Option<serde_json::Value>,
+    }
+
+    fn started(id: &str, r: &Redact, start: impl std::future::Future<Output = Result<String, String>>) -> Started {
+        capture::expect(id);
+        let built = tauri::async_runtime::block_on(start);
+        let launch = capture::take(id);
+        crate::agents::forget(id);
+        assert_eq!(built, Ok(String::new()));
+        let l = launch.expect("the start was caught");
+        let args = r.args(&l.args);
+        let data = crate::paths::data_dir();
+        let read = |sub: &str, placeholder: &str| {
+            let path = data.join(sub).join(format!("{id}.json"));
+            let v = args.iter().any(|a| a == placeholder).then(|| r.file(&path.to_string_lossy()));
+            let _ = std::fs::remove_file(&path);
+            v
+        };
+        let (settings, mcp) = (read("hooks", "<settings-file>"), read("mcp", "<mcp-file>"));
+        Started { envs: r.envs(&l.envs), cwd: r.text(&l.cwd), resume: l.resume, describe: l.describe, settings, mcp, args }
+    }
+
+    /// The window's ask for a Claude Code chat; each case changes what it is about.
+    struct ClaudeAsk {
+        folder: String,
+        account: String,
+        model: &'static str,
+        effort: &'static str,
+        mode: &'static str,
+        worktree: bool,
+        worktree_name: Option<&'static str>,
+        resume: Option<String>,
+        tools: Option<bool>,
+        parent: Option<&'static str>,
+        prompt: Option<&'static str>,
+        read_only: Option<bool>,
+        agent: Option<&'static str>,
+    }
+
+    impl ClaudeAsk {
+        fn chat() -> Self {
+            ClaudeAsk {
+                folder: FOLDER.into(),
+                account: "/golden/acc-claude".into(),
+                model: "opus",
+                effort: "high",
+                mode: "default",
+                worktree: false,
+                worktree_name: None,
+                resume: None,
+                tools: None,
+                parent: None,
+                prompt: None,
+                read_only: None,
+                agent: None,
+            }
+        }
+
+        fn start(self, id: &str, r: &Redact) -> Started {
+            let s = |v: Option<&str>| v.map(str::to_owned);
+            started(
+                id,
+                r,
+                ensure_claude_session(
+                    id.into(),
+                    self.folder,
+                    self.account,
+                    self.model.into(),
+                    self.effort.into(),
+                    self.mode.into(),
+                    self.worktree,
+                    s(self.worktree_name),
+                    self.resume,
+                    self.tools,
+                    s(self.parent),
+                    s(self.prompt),
+                    self.read_only,
+                    s(self.agent),
+                    None,
+                ),
+            )
+        }
+    }
+
+    fn claude_envs(id: &str, account: &str) -> Vec<(String, String)> {
+        pairs(&[("CLAUDE_CONFIG_DIR", account), ("DISABLE_AUTOUPDATER", "1"), ("LUNA_SESSION_ID", id)])
+    }
+
+    #[test]
+    fn golden_claude_chat_starts_with_its_flags_and_hooks() {
+        const ID: &str = "golden-claude-chat";
+        let r = Redact::for_chat(ID);
+        let s = ClaudeAsk::chat().start(ID, &r);
+        assert_eq!(
+            s.args,
+            strings(&["--model", "opus", "--effort", "high", "--permission-mode", "default", "--settings", "<settings-file>"])
+        );
+        assert_eq!(s.envs, claude_envs(ID, "/golden/acc-claude"));
+        assert_eq!(s.settings, Some(golden::claude_chat_settings(false)));
+        assert_eq!(s.mcp, None);
+        assert_eq!((s.cwd.as_str(), s.resume), (FOLDER, None));
+        assert_eq!(s.describe, "model opus perm default worktree false");
+    }
+
+    #[test]
+    fn golden_claude_permission_modes_pass_through_as_given() {
+        for mode in ["acceptEdits", "plan", "bypassPermissions", "auto"] {
+            let id = format!("golden-claude-mode-{mode}");
+            let r = Redact::for_chat(&id);
+            let s = ClaudeAsk { mode, ..ClaudeAsk::chat() }.start(&id, &r);
+            assert_eq!(
+                s.args,
+                strings(&["--model", "opus", "--effort", "high", "--permission-mode", mode, "--settings", "<settings-file>"])
+            );
+        }
+    }
+
+    #[test]
+    fn golden_claude_resumes_a_conversation_that_has_a_transcript_and_only_then() {
+        const ID: &str = "golden-claude-resume";
+        const SID: &str = "0a1b2c3d-0000-4000-8000-00000000c1a0";
+        let account = std::env::temp_dir().join(format!("luna-golden-resume-{}", std::process::id()));
+        let projects = account.join("projects").join("golden");
+        std::fs::create_dir_all(&projects).unwrap();
+        std::fs::write(projects.join(format!("{SID}.jsonl")), "{}\n").unwrap();
+        let acc = account.to_string_lossy().into_owned();
+        let r = Redact::for_chat(ID).with(acc.clone(), "<acc>");
+        let s = ClaudeAsk { account: acc.clone(), mode: "acceptEdits", resume: Some(SID.into()), ..ClaudeAsk::chat() }.start(ID, &r);
+        assert_eq!(
+            s.args,
+            strings(&[
+                "--model",
+                "opus",
+                "--effort",
+                "high",
+                "--permission-mode",
+                "acceptEdits",
+                "--resume",
+                SID,
+                "--settings",
+                "<settings-file>"
+            ])
+        );
+        assert_eq!(s.envs, claude_envs(ID, "<acc>"));
+        assert_eq!(s.resume.as_deref(), Some(SID));
+
+        // No transcript: `--resume` would fail, and it starts afresh.
+        let s = ClaudeAsk { account: acc, resume: Some("0a1b2c3d-0000-4000-8000-00000000dead".into()), ..ClaudeAsk::chat() }.start(ID, &r);
+        assert_eq!(
+            s.args,
+            strings(&["--model", "opus", "--effort", "high", "--permission-mode", "default", "--settings", "<settings-file>"])
+        );
+        assert_eq!(s.resume, None);
+        let _ = std::fs::remove_dir_all(&account);
+    }
+
+    #[test]
+    fn golden_claude_worktree_goes_by_its_name_or_the_clis() {
+        const ID: &str = "golden-claude-worktree";
+        let r = Redact::for_chat(ID);
+        let s = ClaudeAsk { worktree: true, worktree_name: Some("feature-x"), ..ClaudeAsk::chat() }.start(ID, &r);
+        assert_eq!(
+            s.args,
+            strings(&[
+                "--model",
+                "opus",
+                "--effort",
+                "high",
+                "--permission-mode",
+                "default",
+                "--worktree=feature-x",
+                "--settings",
+                "<settings-file>"
+            ])
+        );
+        assert_eq!(s.describe, "model opus perm default worktree true");
+        assert_eq!(s.cwd, FOLDER, "it starts in the project and moves itself");
+        // No name of Luna's: the CLI names it.
+        let s = ClaudeAsk { worktree: true, ..ClaudeAsk::chat() }.start(ID, &r);
+        assert_eq!(
+            s.args,
+            strings(&[
+                "--model",
+                "opus",
+                "--effort",
+                "high",
+                "--permission-mode",
+                "default",
+                "--worktree",
+                "--settings",
+                "<settings-file>"
+            ])
+        );
+    }
+
+    #[test]
+    fn golden_claude_login_runs_in_its_account_with_nothing_of_a_chat() {
+        const ID: &str = "golden-claude-login";
+        const ACC: &str = "/golden/acc-claude-login";
+        let r = Redact::for_chat(ID);
+        let s = ClaudeAsk { folder: ACC.into(), account: ACC.into(), tools: Some(true), ..ClaudeAsk::chat() }.start(ID, &r);
+        assert_eq!(
+            s.args,
+            strings(&[
+                "--model",
+                "opus",
+                "--effort",
+                "high",
+                "--permission-mode",
+                "default",
+                "--settings",
+                "<settings-file>",
+                "--add-dir",
+                "<notes-dir>",
+            ])
+        );
+        assert_eq!(s.envs, claude_envs(ID, ACC), "no token: not a chat agents may reach");
+        assert_eq!(s.settings, Some(golden::claude_chat_settings(true)));
+        assert_eq!(s.mcp, None);
+        assert_eq!(s.cwd, ACC);
+    }
+
+    #[test]
+    fn golden_claude_helper_with_tools_gets_the_guard_luna_mcp_and_its_role() {
+        const ID: &str = "golden-claude-helper";
+        let r = Redact::for_chat(ID);
+        let s = ClaudeAsk {
+            model: "sonnet",
+            effort: "medium",
+            mode: "bypassPermissions",
+            tools: Some(true),
+            parent: Some(PARENT),
+            prompt: Some(PROMPT),
+            read_only: Some(true),
+            agent: Some("reviewer"),
+            ..ClaudeAsk::chat()
+        }
+        .start(ID, &r);
+        let line = golden::helper_line(PARENT);
+        assert_eq!(
+            s.args,
+            strings(&[
+                "--model",
+                "sonnet",
+                "--effort",
+                "medium",
+                "--permission-mode",
+                "bypassPermissions",
+                "--settings",
+                "<settings-file>",
+                "--agent",
+                "reviewer",
+                "--disallowedTools",
+                "Edit,Write,NotebookEdit",
+                "--append-system-prompt",
+                &line,
+                "--allowedTools",
+                "mcp__luna",
+                "--mcp-config",
+                "<mcp-file>",
+                "--add-dir",
+                "<notes-dir>",
+                "--",
+                PROMPT,
+            ])
+        );
+        assert_eq!(
+            s.envs,
+            pairs(&[
+                ("CLAUDE_CONFIG_DIR", "/golden/acc-claude"),
+                ("DISABLE_AUTOUPDATER", "1"),
+                ("LUNA_MCP_TOKEN", "<token>"),
+                ("LUNA_SESSION_ID", ID),
+                ("LUNA_PARENT_ID", PARENT),
+            ])
+        );
+        assert_eq!(s.settings, Some(golden::claude_chat_settings(true)));
+        assert_eq!(s.mcp, Some(golden::claude_mcp_config()), "the token stays in the environment");
+        assert_eq!(s.describe, "model sonnet perm bypassPermissions worktree false");
+    }
+
+    /// The window's ask for a Codex chat; each case changes what it is about.
+    struct CodexAsk {
+        model: Option<&'static str>,
+        effort: &'static str,
+        approval: &'static str,
+        sandbox: &'static str,
+        worktree: Option<bool>,
+        resume: Option<&'static str>,
+        login: bool,
+        tools: Option<bool>,
+        hooks_unasked: Option<bool>,
+        parent: Option<&'static str>,
+        prompt: Option<&'static str>,
+    }
+
+    const CODEX_ACC: &str = "/golden/acc-codex";
+
+    impl CodexAsk {
+        fn chat() -> Self {
+            CodexAsk {
+                model: Some("gpt-5.5"),
+                effort: "medium",
+                approval: "on-request",
+                sandbox: "workspace-write",
+                worktree: None,
+                resume: None,
+                login: false,
+                tools: None,
+                hooks_unasked: None,
+                parent: None,
+                prompt: None,
+            }
+        }
+
+        fn start(self, id: &str, r: &Redact) -> Started {
+            let s = |v: Option<&str>| v.map(str::to_owned);
+            started(
+                id,
+                r,
+                ensure_codex_session(
+                    id.into(),
+                    FOLDER.into(),
+                    CODEX_ACC.into(),
+                    s(self.model),
+                    self.effort.into(),
+                    self.approval.into(),
+                    self.sandbox.into(),
+                    self.worktree,
+                    s(self.resume),
+                    self.login,
+                    self.tools,
+                    self.hooks_unasked,
+                    s(self.parent),
+                    s(self.prompt),
+                    None,
+                ),
+            )
+        }
+    }
+
+    /// A Codex chat's arguments in FOLDER: `head` before `-C`, its own flags,
+    /// the title, then `tail`.
+    fn codex_args(head: &[&str], flags: Vec<String>, tail: Vec<String>) -> Vec<String> {
+        let mut args = strings(head);
+        args.extend(strings(&["-C", FOLDER, "--no-daemon"]));
+        args.extend(flags);
+        args.extend(strings(&["-c", "tui.terminal_title=[\"thread-id\"]"]));
+        args.extend(tail);
+        args
+    }
+
+    /// The model and effort a chat asks for, then `--ask-for-approval` with a
+    /// person answering, and the sandbox as a flag.
+    fn codex_flags(model: Option<&str>, effort: &str, approval: &str, sandbox: &str) -> Vec<String> {
+        let mut args = model.map_or_else(Vec::new, |m| strings(&["--model", m]));
+        args.extend(strings(&["-c", &format!("model_reasoning_effort=\"{effort}\"")]));
+        args.extend(codex_asks(approval, sandbox));
+        args
+    }
+
+    fn codex_asks(approval: &str, sandbox: &str) -> Vec<String> {
+        let mut args = strings(&["--ask-for-approval", approval, "-c", "approvals_reviewer=\"user\"", "--sandbox", sandbox]);
+        if sandbox != "danger-full-access" {
+            args.extend(golden::codex_windows_sandbox());
+        }
+        args
+    }
+
+    fn codex_envs(id: &str, sandboxed: bool) -> Vec<(String, String)> {
+        let mut envs = pairs(&[("CODEX_HOME", CODEX_ACC)]);
+        if sandboxed {
+            envs.extend(golden::codex_sandbox_path());
+        }
+        envs.extend(pairs(&[("LUNA_SESSION_ID", id)]));
+        envs
+    }
+
+    #[test]
+    fn golden_codex_chat_starts_in_its_folder_with_a_person_answering() {
+        const ID: &str = "golden-codex-chat";
+        let r = Redact::for_chat(ID);
+        let s = CodexAsk::chat().start(ID, &r);
+        assert_eq!(s.args, codex_args(&[], codex_flags(Some("gpt-5.5"), "medium", "on-request", "workspace-write"), Vec::new()));
+        assert_eq!(s.envs, codex_envs(ID, true));
+        assert_eq!((s.cwd.as_str(), s.resume), (FOLDER, None));
+        assert_eq!(s.describe, "model gpt-5.5 effort medium approval on-request sandbox workspace-write");
+    }
+
+    #[test]
+    fn golden_codex_resume_names_its_thread_and_never_a_worktree() {
+        const ID: &str = "golden-codex-resume";
+        const THREAD: &str = "019a0000-0000-7000-8000-000000000c0d";
+        let r = Redact::for_chat(ID);
+        let s = CodexAsk { resume: Some(THREAD), worktree: Some(true), ..CodexAsk::chat() }.start(ID, &r);
+        let flags = codex_flags(Some("gpt-5.5"), "medium", "on-request", "workspace-write");
+        assert_eq!(s.args, codex_args(&["resume", THREAD], flags, Vec::new()));
+        assert_eq!(s.envs, codex_envs(ID, true));
+        assert_eq!(s.resume.as_deref(), Some(THREAD));
+    }
+
+    #[test]
+    fn golden_codex_worktree_is_codexs_own_to_make() {
+        const ID: &str = "golden-codex-worktree";
+        let r = Redact::for_chat(ID);
+        let s = CodexAsk { worktree: Some(true), model: None, ..CodexAsk::chat() }.start(ID, &r);
+        let mut flags = strings(&["--worktree"]);
+        flags.extend(codex_flags(None, "medium", "on-request", "workspace-write"));
+        assert_eq!(s.args, codex_args(&[], flags, Vec::new()));
+        assert_eq!(s.cwd, FOLDER, "it starts in the project and moves itself");
+        assert_eq!(s.describe, "model default effort medium approval on-request sandbox workspace-write");
+    }
+
+    #[test]
+    fn golden_codex_login_is_the_bare_command() {
+        const ID: &str = "golden-codex-login";
+        let r = Redact::for_chat(ID);
+        let s = CodexAsk { login: true, resume: Some("019a0000-0000-7000-8000-00000000dead"), tools: Some(true), ..CodexAsk::chat() }
+            .start(ID, &r);
+        assert_eq!(s.args, ["login"]);
+        assert_eq!(s.envs, pairs(&[("CODEX_HOME", CODEX_ACC)]));
+        assert_eq!((s.resume, s.describe.as_str()), (None, "login"));
+    }
+
+    #[test]
+    fn golden_codex_helper_with_tools_gets_the_guard_and_luna_mcp() {
+        const ID: &str = "golden-codex-helper";
+        let r = Redact::for_chat(ID);
+        let s = CodexAsk {
+            model: None,
+            effort: "high",
+            approval: "never",
+            tools: Some(true),
+            hooks_unasked: Some(true),
+            parent: Some(PARENT),
+            prompt: Some(PROMPT),
+            ..CodexAsk::chat()
+        }
+        .start(ID, &r);
+        let mut flags = codex_flags(None, "high", "never", "workspace-write");
+        flags.extend(strings(&["--dangerously-bypass-hook-trust", "-c", &golden::codex_guard()]));
+        let mut tail = golden::codex_mcp();
+        tail.extend(strings(&["--", PROMPT]));
+        assert_eq!(s.args, codex_args(&[], flags, tail));
+        let mut envs = codex_envs(ID, true);
+        envs.extend(pairs(&[("LUNA_PARENT_ID", PARENT), ("LUNA_MCP_TOKEN", "<token>")]));
+        assert_eq!(s.envs, envs);
+        assert_eq!(s.describe, "model default effort high approval never sandbox workspace-write");
+
+        // Hooks' trust asked for: Codex would drop the guard, and it is given none.
+        let s = CodexAsk { tools: Some(true), ..CodexAsk::chat() }.start(ID, &r);
+        assert_eq!(s.args, codex_args(&[], codex_flags(Some("gpt-5.5"), "medium", "on-request", "workspace-write"), golden::codex_mcp()));
+    }
+
+    #[test]
+    fn golden_codex_approval_and_sandbox_pairs() {
+        let with_windows = |mut a: Vec<String>| {
+            a.extend(golden::codex_windows_sandbox());
+            a
+        };
+        let mut read_only_net = strings(&["--ask-for-approval", "on-request", "-c", "approvals_reviewer=\"user\""]);
+        read_only_net.extend(golden::codex_read_only_net());
+        // (approval, sandbox, the flags for them, PATH cut for the sandbox, the sandbox it runs in)
+        let cases: [(&str, &str, Vec<String>, bool, &str); 5] = [
+            ("never", "danger-full-access", strings(&["--dangerously-bypass-approvals-and-sandbox"]), false, "danger-full-access"),
+            ("on-request", "danger-full-access", codex_asks("on-request", "danger-full-access"), false, "danger-full-access"),
+            ("untrusted", "read-only", codex_asks("untrusted", "read-only"), true, "read-only"),
+            ("on-request", "read-only-net", with_windows(read_only_net), true, "read-only-net"),
+            // The reviewer model takes the sandbox it runs in, whatever was asked.
+            ("auto-review", "read-only", with_windows(strings(&["--approve-for-me"])), true, "workspace-write"),
+        ];
+        for (approval, sandbox, asks, sandboxed, runs_in) in cases {
+            let id = format!("golden-codex-{approval}-{sandbox}");
+            let r = Redact::for_chat(&id);
+            let s = CodexAsk { approval, sandbox, ..CodexAsk::chat() }.start(&id, &r);
+            let mut flags = strings(&["--model", "gpt-5.5", "-c", "model_reasoning_effort=\"medium\""]);
+            flags.extend(asks);
+            assert_eq!(s.args, codex_args(&[], flags, Vec::new()), "{approval} {sandbox}");
+            assert_eq!(s.envs, codex_envs(&id, sandboxed), "{approval} {sandbox}");
+            assert_eq!(s.describe, format!("model gpt-5.5 effort medium approval {approval} sandbox {runs_in}"));
+        }
     }
 }

@@ -16,6 +16,8 @@ mod corecmd;
 mod corelink;
 mod coreproc;
 mod emit;
+#[cfg(test)]
+mod golden;
 mod guard;
 mod hub;
 mod ipc;
