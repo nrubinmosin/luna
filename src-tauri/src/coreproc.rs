@@ -296,7 +296,7 @@ fn broadcast(event: &str, payload: serde_json::Value) {
 fn serve(mut stream: TcpStream, token: &str, started: u64) -> io::Result<()> {
     let first: Req = ipc::recv(&mut stream, ipc::REQ)?;
     let hello: Option<Hello> = (first.cmd == "hello").then(|| serde_json::from_value(first.args).ok()).flatten();
-    let Some(hello) = hello.filter(|h| h.token == token) else {
+    let Some(hello) = hello.filter(|h| crate::secret::same(&h.token, token)) else {
         // Nothing for someone without the token, not even why.
         return Err(io::Error::new(io::ErrorKind::PermissionDenied, "no valid hello"));
     };

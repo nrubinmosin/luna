@@ -125,7 +125,7 @@ fn handle(req: &mut tiny_http::Request) -> u16 {
     let path = req.url().to_string();
     let Some((chat_id, secret)) = parse_path(&path, "/hook/") else { return 404 };
     let Some(l) = LISTENER.get() else { return 503 };
-    if secret != l.secret {
+    if !crate::secret::same(secret, &l.secret) {
         return 403;
     }
     // The hook's stdin, forwarded as the body: a small JSON object.
@@ -151,7 +151,7 @@ fn handle_guard(req: &mut tiny_http::Request) -> Result<String, u16> {
     }
     let path = req.url().to_string();
     let (_, secret) = parse_path(&path, "/guard/").ok_or(404u16)?;
-    if secret != LISTENER.get().ok_or(503u16)?.secret {
+    if !crate::secret::same(secret, &LISTENER.get().ok_or(503u16)?.secret) {
         return Err(403);
     }
     // Whole: a command cut short is no JSON, and would go ahead unread.
@@ -168,18 +168,9 @@ fn parse_path<'a>(path: &'a str, prefix: &str) -> Option<(&'a str, &'a str)> {
     (!id.is_empty() && !secret.is_empty() && !secret.contains('/')).then_some((id, secret))
 }
 
-/// Unguessable enough for loopback: this process, this instant, and the
-/// address of a stack slot, hashed.
+/// 128 bits from the OS's CSPRNG, as 32 hex characters.
 fn mint_secret() -> String {
-    use sha2::{Digest, Sha256};
-    let slot = 0u8;
-    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-    let mut h = Sha256::new();
-    h.update(std::process::id().to_le_bytes());
-    h.update(nanos.to_le_bytes());
-    h.update((&slot as *const u8 as usize).to_le_bytes());
-    let out = h.finalize();
-    out.iter().take(16).map(|b| format!("{b:02x}")).collect()
+    crate::secret::random_hex(16)
 }
 
 #[cfg(test)]
