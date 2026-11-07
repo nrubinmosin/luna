@@ -373,7 +373,7 @@ pub(crate) fn editing() -> Result<Editing, String> {
     static L: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let here = L.lock().unwrap_or_else(|e| e.into_inner());
     let path = lock_path();
-    let file = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&path).and_then(|f| f.lock().map(|()| f));
+    let file = crate::secret::open_private(&path, std::fs::OpenOptions::new().write(true)).and_then(|f| f.lock().map(|()| f));
     match file {
         Ok(file) => Ok(Editing { _here: here, _everywhere: file }),
         Err(e) => Err(format!("Nothing written: no lock on {}: {e}", path.display())),

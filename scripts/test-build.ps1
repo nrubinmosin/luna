@@ -33,6 +33,19 @@ $root = $RepoRoot
 $out = Join-Path $root 'test-build'
 New-Item -ItemType Directory -Force $out | Out-Null
 
+# test-build\ is the test build's data folder, and Luna refuses a helper folder
+# inside its data folder or above it (the repo itself; agents.rs
+# `reaches_luna`): said before a build rather than by the dev caller's first
+# spawn.
+if ($DevFolder) {
+    $outFull = [IO.Path]::GetFullPath($out).TrimEnd('\') + '\'
+    $folderFull = [IO.Path]::GetFullPath($DevFolder, (Get-Location).Path).TrimEnd('\') + '\'
+    $ignoreCase = [StringComparison]::OrdinalIgnoreCase
+    if ($folderFull.StartsWith($outFull, $ignoreCase) -or $outFull.StartsWith($folderFull, $ignoreCase)) {
+        throw "-DevFolder must be outside $outFull (the test build's data folder) and not hold it: Luna refuses helper folders there, and $DevFolder is one"
+    }
+}
+
 if (-not $NoBuild) {
     $build = Get-BuildStamp
     Write-Host "test build stamp: $build"

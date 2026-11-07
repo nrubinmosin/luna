@@ -55,7 +55,9 @@ pub fn write(level: &str, source: &str, message: &str) {
     // Other processes of this Luna (its exit watcher) write here too: the
     // rotation and the append happen under a lock file, so no line is lost to
     // a rename in the middle of it.
-    let file_lock = OpenOptions::new().create(true).truncate(false).write(true).open(p.with_extension("log.lock"));
+    // Each file made private as it is made (`secret::open_private`): the data
+    // dir's pass at start covers only what is there by then.
+    let file_lock = crate::secret::open_private(&p.with_extension("log.lock"), OpenOptions::new().write(true));
     let _file_guard = file_lock.as_ref().ok().filter(|f| f.lock().is_ok());
 
     // Keep one generation around so a long session cannot fill the disk.
@@ -63,7 +65,7 @@ pub fn write(level: &str, source: &str, message: &str) {
         let _ = std::fs::rename(p, p.with_extension("log.1"));
     }
 
-    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(p) {
+    if let Ok(mut f) = crate::secret::open_private(p, OpenOptions::new().append(true)) {
         let one_line = message.replace('\n', " ⏎ ");
         // One write for the whole line: appends from two processes interleave
         // between writes, never inside one.

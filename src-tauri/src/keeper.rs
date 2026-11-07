@@ -715,9 +715,12 @@ fn record_file(dir: &Path, mark: &str) -> PathBuf {
 fn write_record(dir: &Path, job: &Record) {
     let path = record_file(dir, &job.mark);
     let tmp = path.with_extension("tmp");
+    // Made private as it is made (`secret::create_private`), so the one a
+    // write that died left is cleared first.
+    let _ = std::fs::remove_file(&tmp);
     let written = std::fs::create_dir_all(dir)
         .and_then(|()| serde_json::to_vec(job).map_err(std::io::Error::other))
-        .and_then(|bytes| std::fs::write(&tmp, bytes))
+        .and_then(|bytes| crate::secret::create_private(&tmp).and_then(|mut f| f.write_all(&bytes)))
         .and_then(|()| std::fs::rename(&tmp, &path));
     if let Err(e) = written {
         crate::log::warn("tie", &format!("could not write {}: {e}", path.display()));

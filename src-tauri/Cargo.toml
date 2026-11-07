@@ -56,7 +56,7 @@ vt100 = "0.16"
 # (src/procs.rs); power requests and suspend for keep-awake and
 # shutdown-when-done (src/power.rs); the exit watcher's wait, exit code and
 # boot time (src/lifecycle.rs); the DACLs on the folders holding secrets
-# (src/secret.rs). Pinned to the version tauri already
+# and on the private files made with one (src/secret.rs). Pinned to the version tauri already
 # resolves, so this adds features to a crate in the tree rather than a second
 # copy of it.
 [target.'cfg(windows)'.dependencies]
@@ -64,6 +64,7 @@ windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_JobObjects",
     "Win32_System_Power",
