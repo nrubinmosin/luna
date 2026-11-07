@@ -49,7 +49,10 @@ src/                          frontend (feature-sliced)
               (auto-tiling lives there too: TILE_ORDER, board grows/shrinks by ±1 pane);
               peek — a sheet over the dimmed board, the same pane without remounting;
               altPeek.ts — a look at a chat while Alt is held over its row;
-              terminals.ts — registry of live xterms that outlive their panes
+              terminals.ts — registry of live xterms that outlive their panes; what one
+              xterm is made of in terminal/ (theme, links, clipboard keys, scrollback and
+              the replayed tail, fit and repaint, the gated pty sender, webgl, the title
+              taken from what is typed)
     new-chat/ creation dialog: folder, account (which also picks the provider), checkboxes
               "Git worktree" and "Luna tools" (start state — from Settings or saved for the
               folder, Folder.start), for Codex "Hooks unasked" (the same, kept by the Rust

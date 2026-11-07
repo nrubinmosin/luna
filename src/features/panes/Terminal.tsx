@@ -6,7 +6,8 @@ import type { Chat } from '../../shared/types';
 import { accountOfChat, useAccounts } from '../accounts/accounts.store';
 import { useCore } from '../core/core.store';
 import { ui } from '../providers';
-import { acquire, release, TERM_FONT_FAMILY, TERM_FONT_SIZE } from './terminals';
+import { acquire, release } from './terminals';
+import { TERM_FONT_FAMILY, TERM_FONT_SIZE } from './terminal/theme';
 
 /** A drag carrying real files, as opposed to a chat row being dropped into a pane. */
 const hasFiles = (dt: DataTransfer | null) => !!dt && Array.from(dt.types).includes('Files');
