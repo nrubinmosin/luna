@@ -87,5 +87,7 @@ one CLI only.
   committed with it. macOS and Linux check symlinks out as they are; on
   Windows it takes Developer Mode and `git config --global core.symlinks
   true`, or the link arrives as a text file Claude Code does not see.
+- Once per clone, `git config core.hooksPath .githooks`: its pre-commit hook
+  refuses a commit with anything under `.claude/skills/` that is not a symlink.
 - A setting only one CLI understands goes in that CLI's project file:
   `.claude/settings.json` or `.codex/config.toml`.
