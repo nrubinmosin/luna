@@ -2987,9 +2987,7 @@ fn cap(
     }
     let yours = match caller.0 {
         Provider::Claude => caller.1["permissionMode"].as_str().map(|m| mode_label(Provider::Claude, m, None)),
-        Provider::Codex => {
-            caller.1["sandbox"].as_str().map(|s| mode_label(Provider::Codex, s, caller.1["approval"].as_str()))
-        }
+        Provider::Codex => caller.1["sandbox"].as_str().map(|s| mode_label(Provider::Codex, s, caller.1["approval"].as_str())),
     }
     .unwrap_or_else(|| "a mode Luna cannot read, taken as read-only".into());
     let whence = if defaulted { " (the account's or project's default, as you left it out)" } else { "" };
