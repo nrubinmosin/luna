@@ -529,7 +529,7 @@ mod tests {
     use crate::agents::said::{first_words, TASK_CHARS};
     use crate::agents::spawn::{spawn_is, SpawnParams, SpawnTaken, SpawnUnderWay};
     use crate::agents::teardown::forget;
-    use crate::agents::tests::{cut_short_chat, spawn_taken, spawns_to_myself, take_up};
+    use crate::agents::test_support::{cut_short_chat, spawn_taken, spawns_to_myself, take_up};
 
     /// What a helper was spawned on is kept with it, not with `agents.jsonl`,
     /// which is cut with the helper still there.

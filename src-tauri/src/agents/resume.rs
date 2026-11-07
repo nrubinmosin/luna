@@ -335,7 +335,7 @@ mod tests {
     use crate::agents::read::Message;
     use crate::agents::registry::{reg, register, resumes_on_restart};
     use crate::agents::teardown::forget;
-    use crate::agents::tests::{cut_short_chat, notice_for, take_up};
+    use crate::agents::test_support::{cut_short_chat, notice_for, take_up};
 
     #[test]
     fn a_visible_helper_cut_short_with_the_flag_waits_to_go_on_and_says_nothing_yet() {

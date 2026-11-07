@@ -340,7 +340,7 @@ mod tests {
     use crate::agents::owed::owe_from;
     use crate::agents::registry::{reg, register, session_exited};
     use crate::agents::teardown::forget;
-    use crate::agents::tests::lost_helper;
+    use crate::agents::test_support::lost_helper;
 
     #[test]
     fn a_cut_read_goes_on_where_the_kept_messages_end() {

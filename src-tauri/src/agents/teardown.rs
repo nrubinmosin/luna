@@ -3,12 +3,12 @@
 //! chat's helpers and debts.
 
 use crate::agents::ask::live;
+use crate::agents::notifier::usage::{budget_owed, save_quota_told};
 use crate::agents::notifier::{left_holds, left_quiet};
 use crate::agents::read::{transcript_path, transcripts};
 use crate::agents::registry::{authorize, descendants, label, reg, Known, Registry};
 use crate::agents::said::replies_since;
 use crate::agents::spawn::worktree::worktree_of;
-use crate::agents::{budget_owed, save_quota_told};
 use crate::throttle::now_ms;
 use serde::Serialize;
 
@@ -455,11 +455,11 @@ fn pass_up(r: &mut Registry, id: &str, up: Option<String>) -> (bool, Vec<Reparen
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agents::notifier::usage::set_budget_state;
     use crate::agents::owed::{owe_from, Owed};
     use crate::agents::persist::{ties_of, Ties};
     use crate::agents::registry::{authorize, authorize_view, descendants, parent_of, reg, register};
-    use crate::agents::set_budget_state;
-    use crate::agents::tests::tooled;
+    use crate::agents::test_support::tooled;
     use crate::provider::Provider;
     use std::sync::Mutex;
 

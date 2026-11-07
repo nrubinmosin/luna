@@ -746,7 +746,7 @@ mod tests {
     use crate::agents::registry::{reg, register, resumes_on_restart};
     use crate::agents::spawn::settle::{settle_spawns, spawn_news};
     use crate::agents::teardown::forget;
-    use crate::agents::tests::{spawn_taken, spawns_to_myself, take_up};
+    use crate::agents::test_support::{spawn_taken, spawns_to_myself, take_up};
 
     #[test]
     fn account_comes_as_a_name_or_a_list_and_goes_out_as_a_name() {

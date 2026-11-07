@@ -531,7 +531,7 @@ mod tests {
     use crate::agents::registry::{parent_of, reg, register, waits_on_helpers};
     use crate::agents::said::said_since;
     use crate::agents::teardown::forget;
-    use crate::agents::tests::{job_over_helper, notice_for};
+    use crate::agents::test_support::{job_over_helper, notice_for};
     use crate::agents::wait::{reply_text, REPLY_GRACE_MS};
 
     #[test]

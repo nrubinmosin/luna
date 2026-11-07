@@ -271,7 +271,7 @@ mod tests {
     use crate::agents::registry::{reg, register};
     use crate::agents::spawn::chat_starting;
     use crate::agents::teardown::forget;
-    use crate::agents::tests::{back, first_turn_cut, lost_helper, notice_for, take_up};
+    use crate::agents::test_support::{back, first_turn_cut, lost_helper, notice_for, take_up};
     use crate::agents::wait::wait;
     use crate::provider::Provider;
     use crate::throttle::now_ms;

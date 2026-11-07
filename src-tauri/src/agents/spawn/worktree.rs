@@ -200,7 +200,7 @@ mod tests {
     use crate::agents::registry::{reg, register};
     use crate::agents::spawn::Spawned;
     use crate::agents::teardown::forget;
-    use crate::agents::tests::{cut_short_chat, take_up};
+    use crate::agents::test_support::{cut_short_chat, take_up};
 
     #[test]
     fn a_worktree_still_being_made_says_so() {

@@ -202,7 +202,7 @@ mod tests {
     use crate::agents::registry::{reg, register};
     use crate::agents::spawn::SpawnTaken;
     use crate::agents::teardown::forget;
-    use crate::agents::tests::{cut_short_chat, spawn_taken, spawns_to_myself, take_up};
+    use crate::agents::test_support::{cut_short_chat, spawn_taken, spawns_to_myself, take_up};
     use crate::provider::Provider;
 
     #[test]

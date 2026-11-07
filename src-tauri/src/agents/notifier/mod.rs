@@ -3,6 +3,7 @@
 //! tool's desktop notification.
 
 pub(super) mod lines;
+pub(super) mod usage;
 
 use crate::agents::ask::live;
 use crate::agents::delivery::{still_starting, type_text, TypingInto, DRAFT_ALERT_MS};
@@ -11,12 +12,14 @@ use crate::agents::notifier::lines::{
     count_notice, last_notice, notice_line, notice_turn, pair_stopped, standing_line, BACKGROUND_GRACE_MS, BREAKER_NOTICES,
     BREAKER_WINDOW_MS,
 };
+use crate::agents::notifier::usage::{
+    budget_news, quota_file, quota_from, quota_news, save_quota_told, your_helper, BudgetNews, QuotaNews,
+};
 use crate::agents::owed::Owed;
 use crate::agents::persist::{core_up_ms, SESSION_RETURN_MS};
 use crate::agents::registry::{chat_name, label, parent_of, reg, waits_on_helpers, Known, Registry};
 use crate::agents::spawn::settle::{settle_spawns, spawn_news};
 use crate::agents::teardown::reap;
-use crate::agents::{budget_news, quota_file, quota_from, quota_news, save_quota_told, your_helper, BudgetNews, QuotaNews};
 use crate::provider::Provider;
 use crate::throttle::now_ms;
 use std::collections::HashMap;
@@ -726,7 +729,7 @@ mod tests {
     use crate::agents::owed::{owe_from, retried, Owed};
     use crate::agents::registry::{reg, register};
     use crate::agents::teardown::forget;
-    use crate::agents::tests::job_over_helper;
+    use crate::agents::test_support::job_over_helper;
     use crate::agents::wait::{Reserved, WaitOut};
 
     #[test]
