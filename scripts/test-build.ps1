@@ -12,6 +12,10 @@
 #   ./scripts/test-build.ps1 -Run -DevCaller -DevFolder C:\src\x -DevAccount test-build\accounts\anthropic\dev
 #       also registers a scripted MCP caller (agents.rs register_dev_caller);
 #       the token is printed and the MCP url is in test-build\luna.log
+#   ./scripts/test-build.ps1 -Run -Background
+#       the window off screen, unfocused and off the taskbar (LUNA_TEST_WINDOW,
+#       lib.rs background), out of the way of whoever is at the screen; the
+#       tray icon brings it up. -DevCaller implies it unless -Foreground is given.
 #
 # -Run also keeps a "Luna Test" shortcut in the Start menu carrying the test
 # identifier, as the installer does for Luna: Windows drops the toasts of an
@@ -24,6 +28,8 @@ param(
     [switch]$Test,
     [switch]$NoBuild,
     [switch]$DevCaller,
+    [switch]$Background,
+    [switch]$Foreground,
     [string]$DevFolder = '',
     [string]$DevAccount = ''
 )
@@ -93,6 +99,13 @@ if ($Run) {
         $env:LUNA_DEV_FOLDER = $DevFolder
         $env:LUNA_DEV_ACCOUNT = $DevAccount
         Write-Host "dev caller token: $token  (MCP url: see test-build\luna.log)"
+    }
+    if ($Background -and $Foreground) { throw '-Background and -Foreground exclude each other' }
+    # Set or cleared every run: the started exe inherits this shell's environment.
+    if ($Background -or ($DevCaller -and -not $Foreground)) {
+        $env:LUNA_TEST_WINDOW = 'background'
+    } else {
+        Remove-Item Env:LUNA_TEST_WINDOW -ErrorAction SilentlyContinue
     }
     # The shortcut's System.AppUserModel.ID is what ties toasts to it; neither
     # WScript.Shell nor any cmdlet sets that property, hence the COM below.

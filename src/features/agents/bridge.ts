@@ -16,15 +16,13 @@ import {
   backgroundPromote,
   backgroundPromoted,
   chatNames,
-  codexModels,
-  deleteSession,
-  ensureClaudeSession,
-  ensureCodexSession,
   type AgentSpawnRequest,
   type BackgroundHelperDto,
-  type CodexModelDto,
   type PromotedDto
-} from '../../ipc/commands';
+} from '../../ipc/agents';
+import { codexModels, type CodexModelDto } from '../../ipc/defaults';
+import { ensureClaudeSession, ensureCodexSession } from '../../ipc/sessions';
+import { deleteSession } from '../../ipc/worktrees';
 import { onAgentDeleted, onAgentReparent, onAgentSpawn, onBackgroundHelpers } from '../../ipc/events';
 import { logWarn } from '../../shared/lib/log';
 import {

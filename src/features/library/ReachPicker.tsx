@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
-import type { Reach } from '../../ipc/commands';
+import type { Reach } from '../../ipc/library';
 import { useDialogHost } from '../../shared/ui/dialogHost';
 import { Icon } from '../../shared/ui/icons';
 import { PROVIDER_LABEL, type Provider } from '../../shared/types';

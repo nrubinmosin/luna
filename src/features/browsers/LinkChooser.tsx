@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { openLink } from '../../ipc/commands';
+import { openLink } from '../../ipc/browsers';
 import { useDialogHost } from '../../shared/ui/dialogHost';
 import { useChats } from '../chats/chats.store';
 import { choices, linkContext, useBrowsers, useLinkChooser } from './browsers.store';

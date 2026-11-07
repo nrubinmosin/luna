@@ -9,7 +9,7 @@ import { RecommendedDialog } from '../accounts/RecommendedDialog';
 import { recommendedCount, useRecommended } from '../accounts/recommended';
 import { Recommendations } from './Recommendations';
 import { useRecommendations } from './recommendations.store';
-import { Section } from './SettingsDialog';
+import { Section } from '../../shared/ui/Section';
 
 /** One account's recommended settings: how many it has, what the everyday set still lacks, and the way in. */
 function AccountRow({

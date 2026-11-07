@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { cliStatus, type CliStatusDto } from '../../ipc/commands';
+import { cliStatus, type CliStatusDto } from '../../ipc/cli';
 import { onCliStatus } from '../../ipc/events';
 import { PROVIDERS, type Provider } from '../../shared/types';
 

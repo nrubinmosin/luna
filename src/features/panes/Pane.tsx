@@ -14,6 +14,7 @@ import { claude, codex } from '../providers';
 import { PROVIDER_LABEL, type Chat } from '../../shared/types';
 import { currentLayout, currentSlots, usePanes } from './panes.store';
 import { Terminal } from './Terminal';
+import './panes.css';
 
 /**
  * The chat's color, picked from a popover under the swatch button. Portaled

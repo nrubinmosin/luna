@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { pickFolder } from '../../ipc/commands';
+import { pickFolder } from '../../ipc/cli';
 import { useDialogHost } from '../../shared/ui/dialogHost';
 import { Icon, ToolButton } from '../../shared/ui/icons';
 import { useChats } from '../chats/chats.store';

@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { applyRecommendation, dismissRecommendation, recommendations, type CheckDto } from '../../ipc/commands';
+import { applyRecommendation, dismissRecommendation, recommendations, type CheckDto } from '../../ipc/accountSettings';
 
 interface State {
   /** Whether the Recommendations window is up. */

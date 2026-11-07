@@ -2,7 +2,7 @@ import { useEffect } from 'react';
 import { ACCENT } from '../../shared/lib/format';
 import { Icon } from '../../shared/ui/icons';
 import { useAccountsWindow } from '../accounts/AccountsPanel';
-import { useSettings } from './SettingsDialog';
+import { useSettings } from './settings.store';
 import { openChecks, useRecommendations } from './recommendations.store';
 
 const EVERY_MS = 10 * 60_000;

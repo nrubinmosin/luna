@@ -3,6 +3,7 @@ import { LooseHelpers } from '../agents/BackgroundChip';
 import { usePanes } from '../panes/panes.store';
 import { foldersOfGroup, useChats } from './chats.store';
 import { FolderSection } from './FolderSection';
+import './chats.css';
 
 export function ChatList() {
   const group = usePanes(s => s.group);

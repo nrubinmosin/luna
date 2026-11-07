@@ -1,0 +1,536 @@
+/* ------------------------------------------------------------------------
+   Controls. XP's shapes — a 1px rim, a 3px radius, a top-lit face and the
+   warm rim on hover — drawn from the tokens, so they read in both themes.
+   Focus: nothing for the mouse (xp.css drew a dotted rectangle on every
+   pressed button), a ring for the keyboard.
+   ------------------------------------------------------------------------ */
+[data-app] button,
+[data-app] select,
+[data-app] input,
+[data-app] textarea,
+[data-app] label,
+[data-app] .window,
+[data-app] .window-body {
+  font-family: var(--sans-serif);
+  font-size: var(--fs-4);
+}
+[data-app] :focus {
+  outline: none;
+}
+[data-app] button:focus-visible,
+[data-app] [role="button"]:focus-visible,
+[data-app] select:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+[data-app] button {
+  min-height: calc(var(--ui) * 1.85);
+  border: 1px solid var(--btn-rim);
+  border-radius: 4px;
+  background: var(--btn-face);
+  color: var(--btn-ink);
+  box-shadow: none;
+  transition:
+    transform 0.12s ease,
+    box-shadow 0.14s ease,
+    filter 0.14s ease,
+    background 0.14s;
+}
+[data-app] button:not(:disabled):hover {
+  box-shadow:
+    inset -1px 1px #fff0cf,
+    inset 1px 2px #fdd889,
+    inset -2px 2px #fbc761,
+    inset 2px -2px #e5a01a;
+}
+[data-app][data-theme="dark"] button:not(:disabled):hover {
+  box-shadow:
+    inset 0 0 0 1px #c98e2a,
+    inset 0 0 0 2px rgba(240, 180, 80, 0.25);
+}
+[data-app] button:not(:disabled):active {
+  background: var(--btn-face-down);
+  transform: scale(0.97);
+}
+[data-app] button:disabled {
+  color: var(--faint);
+  opacity: 0.7;
+}
+/* XP sizes dialog buttons to a 75px minimum; small ones opt out. */
+[data-app] button.slim {
+  min-width: 0;
+  padding: 0 8px;
+}
+
+/* The one button that matters wears a color, the way XP's Start button and
+   default dialog buttons stood out: green to go ahead, red to destroy. */
+[data-app] button.primary,
+[data-app] button.danger {
+  color: #fff;
+  font-weight: 700;
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.35);
+}
+[data-app] button.primary {
+  border-color: #1f5f1f;
+  background: linear-gradient(180deg, #7cc36f, #3f9a3c 45%, #2f8a2f 55%, #2a7a2a);
+}
+[data-app] button.danger {
+  border-color: #6e1b12;
+  background: linear-gradient(180deg, #ea9286, #cf5038 45%, #b8301c 55%, #96240f);
+}
+[data-app] button.primary:not(:disabled):active {
+  background: linear-gradient(180deg, #2a7a2a, #2f8a2f 45%, #3f9a3c 55%, #7cc36f);
+}
+[data-app] button.danger:not(:disabled):active {
+  background: linear-gradient(180deg, #96240f, #b8301c 45%, #cf5038 55%, #ea9286);
+}
+[data-app] button.primary:disabled,
+[data-app] button.danger:disabled {
+  background: var(--btn-face);
+  border-color: var(--btn-rim);
+  color: var(--faint);
+  text-shadow: none;
+}
+
+/* Fields: XP's single-line border, rounded like the rest. */
+[data-app] select,
+[data-app] input[type="text"],
+[data-app] input[type="email"],
+[data-app] input[type="password"],
+[data-app] textarea {
+  height: calc(var(--ui) * 1.85);
+  line-height: normal;
+  padding: 0 8px;
+  border: 1px solid var(--field-line);
+  border-radius: 5px;
+  background-color: var(--field);
+  color: var(--fg);
+  transition:
+    border-color 0.14s,
+    box-shadow 0.14s;
+}
+[data-app] textarea {
+  height: auto;
+  padding: 5px 8px;
+}
+[data-app] select {
+  padding-right: 26px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.6 6 7.6l3-3' fill='none' stroke='%23908a80' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  background-size: 12px 12px;
+}
+[data-app] select:hover,
+[data-app] input[type="text"]:hover,
+[data-app] input[type="password"]:hover,
+[data-app] input[type="email"]:hover {
+  border-color: var(--faint);
+}
+[data-app] select:focus,
+[data-app] input[type="text"]:focus,
+[data-app] input[type="password"]:focus,
+[data-app] input[type="email"]:focus,
+[data-app] textarea:focus {
+  outline: none;
+  color: var(--fg);
+  background-color: var(--field);
+  border-color: var(--focus);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--focus) 22%, transparent);
+}
+[data-app] select:active {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.6 6 7.6l3-3' fill='none' stroke='%23908a80' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+[data-app] select option {
+  background: var(--field);
+  color: var(--fg);
+}
+[data-app] input::placeholder {
+  color: var(--faint);
+}
+
+/* Checkboxes and radios: xp.css hides the input and draws the box on the
+   label's ::before. Same structure, redrawn round-cornered and smooth, with
+   XP's green tick and its warm hover rim. */
+[data-app] input[type="checkbox"] + label,
+[data-app] input[type="radio"] + label {
+  position: relative;
+  margin-left: 22px;
+  line-height: 16px;
+  outline: none;
+}
+[data-app] input[type="checkbox"] + label::before,
+[data-app] input[type="radio"] + label::before {
+  content: "";
+  position: absolute;
+  left: -22px;
+  top: 50%;
+  width: 15px;
+  height: 15px;
+  margin: -7.5px 0 0;
+  border: 1px solid var(--field-line);
+  border-radius: 4px;
+  background: var(--field);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.12);
+  transition:
+    border-color 0.14s,
+    box-shadow 0.14s,
+    background 0.14s;
+}
+[data-app] input[type="radio"] + label::before {
+  border-radius: 50%;
+}
+[data-app] input[type="checkbox"]:not([disabled]) + label:hover::before,
+[data-app] input[type="radio"]:not([disabled]) + label:hover::before {
+  border-color: #e5a01a;
+  box-shadow: inset 0 0 0 1px #fbc761;
+}
+[data-app] input[type="checkbox"]:focus-visible + label::before,
+[data-app] input[type="radio"]:focus-visible + label::before {
+  box-shadow: 0 0 0 2px var(--focus);
+}
+[data-app] input[type="checkbox"]:active + label::before,
+[data-app] input[type="radio"]:active + label::before {
+  background: var(--hover);
+}
+[data-app] input[type="checkbox"] + label::after,
+[data-app] input[type="radio"] + label::after {
+  content: "";
+  position: absolute;
+  left: -22px;
+  top: 50%;
+  width: 15px;
+  height: 15px;
+  margin-top: -7.5px;
+  background: none;
+  transform: scale(0.3);
+  opacity: 0;
+  transition:
+    transform 0.1s ease-out,
+    opacity 0.1s;
+}
+[data-app] input[type="checkbox"]:checked + label::after {
+  display: block;
+  opacity: 1;
+  transform: scale(1);
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 15 15'%3E%3Cpath d='M3.6 7.8l2.6 2.6 5.2-5.6' fill='none' stroke='%2322a122' stroke-width='2.1' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")
+    center / 15px 15px no-repeat;
+}
+/* An unticked box that says more (LibraryWindow `FolderCell`): turned off,
+   a red cross; on for some only, a dash; ticked by something else, the tick
+   or the dash faint. */
+[data-app] input[type="checkbox"][data-mark="off"]:not(:checked) + label::after {
+  display: block;
+  opacity: 1;
+  transform: scale(1);
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 15 15'%3E%3Cpath d='M4.6 4.6l5.8 5.8M10.4 4.6l-5.8 5.8' fill='none' stroke='%23c8352f' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E")
+    center / 15px 15px no-repeat;
+}
+[data-app] input[type="checkbox"][data-mark="inherited"]:not(:checked) + label::after {
+  display: block;
+  opacity: 0.38;
+  transform: scale(1);
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 15 15'%3E%3Cpath d='M3.6 7.8l2.6 2.6 5.2-5.6' fill='none' stroke='%2322a122' stroke-width='2.1' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")
+    center / 15px 15px no-repeat;
+}
+[data-app] input[type="checkbox"][data-mark="some"]:not(:checked) + label::after,
+[data-app] input[type="checkbox"][data-mark="inherited-some"]:not(:checked) + label::after {
+  display: block;
+  opacity: 1;
+  transform: scale(1);
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 15 15'%3E%3Cpath d='M4 7.5h7' fill='none' stroke='%2322a122' stroke-width='2.1' stroke-linecap='round'/%3E%3C/svg%3E")
+    center / 15px 15px no-repeat;
+}
+[data-app] input[type="checkbox"][data-mark="inherited-some"]:not(:checked) + label::after {
+  opacity: 0.38;
+}
+[data-app] input[type="radio"]:checked + label::after {
+  display: block;
+  opacity: 1;
+  transform: scale(1);
+  top: 50%;
+  left: -22px;
+  background: radial-gradient(circle at 50% 50%, #5fc25a 0 2.6px, #22a122 3.4px, transparent 4px);
+}
+[data-app] input[type="checkbox"][disabled] + label,
+[data-app] input[type="radio"][disabled] + label {
+  color: var(--faint);
+}
+[data-app] input[type="checkbox"][disabled] + label::before,
+[data-app] input[type="radio"][disabled] + label::before {
+  background: var(--hover);
+}
+
+[data-app] .xp-sunken {
+  box-shadow: var(--border-sunken-outer), var(--border-sunken-inner);
+}
+/* A list box in a dialog: the field's own frame and ground. */
+[data-app] .xp-field {
+  border: 1px solid var(--field-line);
+  border-radius: 5px;
+  background: var(--field);
+  color: var(--fg);
+}
+
+/* XP's flat toolbar button: nothing until hovered, then a raised bevel. */
+[data-app] button.tool-btn {
+  min-width: 0;
+  min-height: 0;
+  padding: 0 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  flex: none;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  box-shadow: none !important;
+  color: inherit;
+  font-size: var(--fs-3);
+  transition:
+    background 0.14s,
+    border-color 0.14s,
+    transform 0.12s;
+}
+[data-app] button.tool-btn svg {
+  transition: transform 0.12s ease-out;
+}
+[data-app] button.tool-btn:not(:disabled):hover {
+  background: var(--btn-face);
+  border-color: color-mix(in oklab, var(--btn-rim) 70%, transparent);
+}
+[data-app] button.tool-btn:not(:disabled):hover svg {
+  transform: scale(1.12);
+}
+[data-app] button.tool-btn:not(:disabled):active {
+  background: var(--btn-face-down);
+  transform: scale(0.94);
+}
+[data-app] button.tool-btn-danger:not(:disabled):hover {
+  background: linear-gradient(180deg, #fff7f4, #f7d9d0);
+  border-color: #e0907c;
+}
+[data-app][data-theme="dark"] button.tool-btn-danger:not(:disabled):hover {
+  background: linear-gradient(180deg, #4e3430, #3e2a27);
+  border-color: #8a5048;
+}
+[data-app] button.tool-btn-on {
+  background: linear-gradient(180deg, #fff6dc, #ffe2a0);
+  border-color: #e5a01a;
+  color: #26211a;
+}
+[data-app][data-theme="dark"] button.tool-btn-on {
+  background: linear-gradient(180deg, #4a4232, #3a3427);
+  border-color: #a07a2a;
+  color: var(--fg);
+}
+[data-app] button.tool-btn:disabled svg {
+  filter: grayscale(1);
+  opacity: 0.45;
+}
+[data-app] .tool-btn-label {
+  white-space: nowrap;
+}
+
+/* Segmented strips in dialogs: one row of choices, one of them pressed. */
+[data-app] .seg {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--field-line);
+  border-radius: 6px;
+  background: var(--field);
+}
+[data-app] .seg > [role="radio"] {
+  flex: 1 1 0;
+  min-width: max-content;
+  padding: 0 8px;
+  border-radius: 4px;
+  display: grid;
+  place-items: center;
+  font-size: var(--fs-4);
+  font-weight: 600;
+  white-space: nowrap;
+  color: var(--dim);
+  cursor: default;
+  transition:
+    background 0.14s,
+    color 0.14s,
+    box-shadow 0.14s;
+}
+[data-app] .seg > [role="radio"]:hover {
+  background: var(--hover);
+  color: var(--fg);
+}
+[data-app] .seg > [role="radio"][aria-checked="true"] {
+  background: var(--btn-face);
+  color: var(--fg);
+  box-shadow:
+    inset 0 0 0 1px var(--btn-rim),
+    0 1px 2px rgba(0, 0, 0, 0.15);
+}
+
+/* Meters: XP's boot-screen progress bar — a sunken rounded track and a run of
+   separate glossy blocks in it, green, turning amber and red as a limit
+   fills (--m, from limitColor). Used for context, limits, every bar. */
+[data-app] .meter {
+  display: block;
+  padding: 2px;
+  border-radius: 4px;
+  border: 1px solid #7a7a7a;
+  background: linear-gradient(180deg, #e9e9e9, #ffffff 60%);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25);
+  overflow: hidden;
+}
+[data-app][data-theme="dark"] .meter {
+  border-color: #4a4a4a;
+  background: linear-gradient(180deg, #0c0c0c, #181818);
+}
+[data-app] .meter > i {
+  --block: 6px;
+  display: block;
+  height: 100%;
+  min-width: 0;
+  border-radius: 1px;
+  background:
+    linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0.55) 0%,
+      rgba(255, 255, 255, 0.1) 45%,
+      rgba(0, 0, 0, 0.12) 55%,
+      rgba(255, 255, 255, 0.15) 100%
+    ),
+    var(--m);
+  -webkit-mask: repeating-linear-gradient(
+    90deg,
+    #000 0 var(--block),
+    transparent var(--block) calc(var(--block) + 2px)
+  );
+  mask: repeating-linear-gradient(90deg, #000 0 var(--block), transparent var(--block) calc(var(--block) + 2px));
+  transition: width 0.3s ease-out;
+}
+[data-app] .sb-mini.meter {
+  padding: 1px;
+  border-radius: 3px;
+}
+[data-app] .sb-mini.meter > i {
+  --block: 4px;
+}
+
+/* The account's settings file, edited by hand. */
+/* The settings editor (CodeMirror), sunk into the dialog like a field. */
+[data-app] .config-text {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+  background: var(--term);
+  box-shadow: var(--border-sunken-outer), var(--border-sunken-inner);
+  padding: 2px;
+}
+
+/* The account box: a select drawn by hand, so its rows can carry icons. */
+[data-app] .picker {
+  position: relative;
+}
+[data-app] button.picker-face {
+  width: 100%;
+  min-width: 0;
+  height: calc(var(--ui) * 1.85);
+  min-height: 0;
+  padding: 0 26px 0 8px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--field-line);
+  border-radius: 5px;
+  background: var(--field)
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.6 6 7.6l3-3' fill='none' stroke='%23908a80' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")
+    no-repeat right 8px center / 12px 12px;
+  color: var(--fg);
+  text-align: left;
+}
+[data-app] button.picker-face:not(:disabled):hover {
+  border-color: var(--faint);
+  box-shadow: none;
+}
+[data-app] button.picker-face:not(:disabled):active {
+  transform: none;
+  background-color: var(--field);
+}
+[data-app] .picker[data-picker-open] button.picker-face {
+  border-color: var(--focus);
+}
+[data-app] .picker-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-app] .picker-list {
+  position: absolute;
+  z-index: 10;
+  top: calc(100% + 3px);
+  left: 0;
+  right: 0;
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 3px;
+  border: 1px solid var(--field-line);
+  border-radius: 5px;
+  background: var(--field);
+  box-shadow: var(--shadow);
+  animation: pop-in 0.1s ease-out;
+}
+[data-app] .picker-list > [role="option"] {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 26px;
+  padding: 0 8px;
+  border-radius: 4px;
+  color: var(--fg);
+  cursor: default;
+}
+[data-app] .picker-list > [aria-selected="true"] {
+  font-weight: 600;
+}
+[data-app] .picker-list > [data-hot="yes"] {
+  background: var(--row-sel);
+  color: var(--row-sel-ink);
+}
+
+/* Popovers (the color picker): an XP menu, rising from where it was asked for. */
+[data-app] .popover {
+  position: fixed;
+  z-index: 90;
+  padding: 7px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  animation: pop-in 0.12s ease-out;
+  transform-origin: var(--origin, top left);
+}
+[data-app] .swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  cursor: default;
+  display: grid;
+  place-items: center;
+  transition:
+    transform 0.1s ease-out,
+    box-shadow 0.1s;
+}
+[data-app] .swatch:hover {
+  transform: scale(1.15);
+}
+[data-app] .swatch[data-on="yes"] {
+  box-shadow:
+    0 0 0 2px var(--surface),
+    0 0 0 4px var(--fg);
+}

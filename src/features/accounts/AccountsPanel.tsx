@@ -14,7 +14,7 @@ import {
 } from '../../shared/types';
 import { useAccounts } from './accounts.store';
 import { useChats } from '../chats/chats.store';
-import { useSettings } from '../settings/SettingsDialog';
+import { useSettings } from '../settings/settings.store';
 import { LimitBars, worstLimit } from './limits';
 import { RecommendedDialog } from './RecommendedDialog';
 import { recommendedCount, useRecommended } from './recommended';

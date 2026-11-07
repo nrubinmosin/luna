@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { agentBlockedAccounts, setAgentAccount } from '../../ipc/commands';
+import { agentBlockedAccounts, setAgentAccount } from '../../ipc/agents';
 import type { Provider } from '../../shared/types';
 
 /**

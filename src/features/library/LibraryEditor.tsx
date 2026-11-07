@@ -9,7 +9,7 @@ import {
   libraryWrite,
   type LibraryEntry,
   type LibraryFileDto
-} from '../../ipc/commands';
+} from '../../ipc/library';
 import { useDialogHost } from '../../shared/ui/dialogHost';
 import { Icon } from '../../shared/ui/icons';
 import { look } from '../accounts/ConfigEditor';

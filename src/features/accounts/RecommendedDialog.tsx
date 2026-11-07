@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { applyRecommended, recommendedSettings, type RecommendationDto } from '../../ipc/commands';
+import { applyRecommended, recommendedSettings, type RecommendationDto } from '../../ipc/accountSettings';
 import { useDialogHost } from '../../shared/ui/dialogHost';
 import { Icon } from '../../shared/ui/icons';
 import { PROVIDER_LABEL, type Account } from '../../shared/types';

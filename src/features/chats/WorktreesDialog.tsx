@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import type { CSSProperties } from 'react';
 import { agoLabel, tail2 } from '../../shared/lib/format';
 import { Icon } from '../../shared/ui/icons';
-import { inspectWorktrees, removeOrphanWorktrees, type WorktreeInfoDto } from '../../ipc/commands';
+import { inspectWorktrees, removeOrphanWorktrees, type WorktreeInfoDto } from '../../ipc/worktrees';
 import { isClaudeWorktree, scanScope, useWorktrees } from './worktrees.store';
 
 type Info = WorktreeInfoDto & { folder: string };

@@ -18,15 +18,9 @@ import {
   codexModeHint,
   codexSandboxFromSetting
 } from '../../../shared/types';
-import {
-  codexDefaults,
-  codexFolderTrusted,
-  codexModels,
-  codexTrustFolder,
-  ensureCodexSession,
-  type CodexDefaultSource,
-  type CodexModelDto
-} from '../../../ipc/commands';
+import { codexDefaults, codexModels, type CodexDefaultSource, type CodexModelDto } from '../../../ipc/defaults';
+import { ensureCodexSession } from '../../../ipc/sessions';
+import { codexFolderTrusted, codexTrustFolder } from '../../../ipc/trust';
 import { ModelSelect } from '../../../shared/ui/ModelSelect';
 import { Segmented } from '../../../shared/ui/Segmented';
 import type { Draft, From } from '../../new-chat/draft';

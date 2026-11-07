@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useShallow } from 'zustand/react/shallow';
-import { backgroundDelete, backgroundKill, type BackgroundHelperDto } from '../../ipc/commands';
+import { backgroundDelete, backgroundKill, type BackgroundHelperDto } from '../../ipc/agents';
 import { Icon } from '../../shared/ui/icons';
 import { useDialogHost } from '../../shared/ui/dialogHost';
 import { sinceLabel } from '../../shared/lib/format';

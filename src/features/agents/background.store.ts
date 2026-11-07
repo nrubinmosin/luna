@@ -5,7 +5,7 @@
  * bridge keeps it here.
  */
 import { create } from 'zustand';
-import type { BackgroundHelperDto } from '../../ipc/commands';
+import type { BackgroundHelperDto } from '../../ipc/agents';
 
 interface BackgroundState {
   helpers: BackgroundHelperDto[];

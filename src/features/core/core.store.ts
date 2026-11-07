@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { coreRestart, coreState, type CoreStateDto } from '../../ipc/commands';
+import { coreRestart, coreState, type CoreStateDto } from '../../ipc/coreProcess';
 import { onCoreState } from '../../ipc/events';
 import { forgetAll } from '../panes/terminals';
 

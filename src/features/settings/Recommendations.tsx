@@ -1,5 +1,5 @@
 import { useEffect, useState, type CSSProperties } from 'react';
-import type { CheckDto } from '../../ipc/commands';
+import type { CheckDto } from '../../ipc/accountSettings';
 import { checkKey, useRecommendations } from './recommendations.store';
 
 const small: CSSProperties = { fontSize: 'var(--fs-1)', color: 'var(--faint)' };

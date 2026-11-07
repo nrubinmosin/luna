@@ -3,7 +3,7 @@ import { ACCENT } from '../../shared/lib/format';
 import { Icon } from '../../shared/ui/icons';
 import { useChats, allChats } from '../chats/chats.store';
 import { usePower } from './power.store';
-import { trayAwake } from '../../ipc/commands';
+import { trayAwake } from '../../ipc/power';
 import { PowerMenu } from './PowerMenu';
 import { doing } from './LiveSessions';
 
