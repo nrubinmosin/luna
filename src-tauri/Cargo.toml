@@ -69,6 +69,29 @@ windows = { version = "0.62", features = [
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# Checked by `cargo clippy --all-targets -- -D warnings` on both Linux and
+# Windows, the latter for the code only Windows compiles.
+[lints.rust]
+# Each unsafe call inside an `unsafe fn` gets a block of its own, as edition
+# 2024 asks; the crate is still on 2021, where it is allowed by default.
+unsafe_op_in_unsafe_fn = "warn"
+# A path spelled out in full where the name is already in scope reads as if it
+# meant some other item.
+unused_qualifications = "warn"
+
+[lints.clippy]
+# The default set (correctness, suspicious, style, complexity, perf). Priority
+# below the single lints so that those can override it.
+all = { level = "warn", priority = -1 }
+# The code types a tuple or a map of them where it is used (a lock's contents,
+# a partition's two halves); an alias for each would put the shape a jump away
+# from the one place that reads it.
+type_complexity = "allow"
+# Debug output and placeholders belong in a working copy, never in a commit.
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+
 [profile.release]
 strip = true
 lto = true
