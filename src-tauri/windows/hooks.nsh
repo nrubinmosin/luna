@@ -46,6 +46,56 @@ Var LunaExeName
   ${EndIf}
 !macroend
 
+; What makes $INSTDIR no place for Luna as a path, in $R9 (empty when
+; nothing does): a drive's root, whose ACL is the whole drive's, or a link or
+; junction at the folder or on the way to it, through which a DACL set there
+; would land wherever it points.
+Function LunaPathProblem
+  Push $R0
+  Push $R1
+  Push $R2
+  Push $R3
+  StrCpy $R9 ""
+  StrLen $R0 "$INSTDIR"
+  ${GetParent} "$INSTDIR" $R1
+  ${If} $R0 <= 3
+  ${OrIf} $R1 == ""
+    StrCpy $R9 "$INSTDIR is the root of a drive. Choose a folder of its own for Luna."
+  ${EndIf}
+  StrCpy $R1 "$INSTDIR"
+  ${Do}
+    ${IfThen} $R9 != "" ${|} ${ExitDo} ${|}
+    StrLen $R0 "$R1"
+    ${IfThen} $R0 <= 2 ${|} ${ExitDo} ${|}
+    System::Call 'kernel32::GetFileAttributesW(w R1) i .R2'
+    ${If} $R2 <> -1
+      IntOp $R3 $R2 & 0x400 ; FILE_ATTRIBUTE_REPARSE_POINT
+      ${If} $R3 <> 0
+        StrCpy $R9 "$R1 is a link or junction. Choose a folder that is not reached through one."
+      ${EndIf}
+    ${EndIf}
+    ${GetParent} "$R1" $R1
+  ${LoopUntil} $R1 == ""
+  Pop $R3
+  Pop $R2
+  Pop $R1
+  Pop $R0
+FunctionEnd
+
+; Before the template's SetOutPath makes the folder, which it would do
+; through a junction: the directory page keeps Next off for such a path. A
+; silent install never asks (seen on NSIS 3.11): there the hook below refuses
+; it after SetOutPath, which has made the empty folder by then.
+Function .onVerifyInstDir
+  Push $R9
+  Call LunaPathProblem
+  ${If} $R9 != ""
+    Pop $R9
+    Abort
+  ${EndIf}
+  Pop $R9
+FunctionEnd
+
 Function LunaClaimInstallDir
   ; The template's own steps after this hook keep their registers.
   Push $R0
@@ -58,31 +108,10 @@ Function LunaClaimInstallDir
   Push $R7
   Push $R8
   Push $R9
-  ; Not a drive's root, whose ACL is the whole drive's.
-  StrLen $R0 "$INSTDIR"
-  ${GetParent} "$INSTDIR" $R1
-  ${If} $R0 <= 3
-  ${OrIf} $R1 == ""
-    StrCpy $R9 "$INSTDIR is the root of a drive. Choose a folder of its own for Luna."
+  Call LunaPathProblem
+  ${If} $R9 != ""
     !insertmacro LunaRefuse
   ${EndIf}
-
-  ; No link or junction at the folder or on the way to it: a DACL set there
-  ; would land wherever it points.
-  StrCpy $R1 "$INSTDIR"
-  ${Do}
-    StrLen $R0 "$R1"
-    ${IfThen} $R0 <= 2 ${|} ${ExitDo} ${|}
-    System::Call 'kernel32::GetFileAttributesW(w R1) i .R2'
-    ${If} $R2 <> -1
-      IntOp $R3 $R2 & 0x400 ; FILE_ATTRIBUTE_REPARSE_POINT
-      ${If} $R3 <> 0
-        StrCpy $R9 "$R1 is a link or junction. Choose a folder that is not reached through one."
-        !insertmacro LunaRefuse
-      ${EndIf}
-    ${EndIf}
-    ${GetParent} "$R1" $R1
-  ${LoopUntil} $R1 == ""
 
   ; Empty, or Luna already: a folder holding anything else is someone's, and
   ; making it private would take it away from them.
@@ -144,6 +173,9 @@ Function LunaClaimInstallDir
   !insertmacro LunaIcacls '"$INSTDIR" /setowner "*$R7" /L /Q'
   ${If} $R4 = 1
     !insertmacro LunaIcacls '"$INSTDIR\*" /reset /T /C /L /Q'
+    ; And everything in it this user's too: an owner may rewrite the DACL of
+    ; what is theirs, whatever the folder says.
+    !insertmacro LunaIcacls '"$INSTDIR\*" /setowner "*$R7" /T /C /L /Q'
   ${EndIf}
   Pop $R9
   Pop $R8
