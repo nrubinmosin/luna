@@ -44,13 +44,13 @@ Write-Host "build stamp: $build"
 
 # A failed image build would otherwise go on to build the app in whatever image
 # was left from last time.
-Build-Image luna-winbuild windows-build.Dockerfile
+$image = Build-Image luna-winbuild windows-build.Dockerfile
 
 $cmd = ConvertTo-BashScript @"
 set -e
 $signStep
 pnpm install --frozen-lockfile
-pnpm tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc $bundleArg
+pnpm tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc $bundleArg -- --locked
 "@
 
 Use-BuildLock {
@@ -62,7 +62,7 @@ Use-BuildLock {
           -v "${RepoRoot}:/app" `
           @WinBuildVolumes `
           -w /app `
-          luna-winbuild `
+          $image `
           bash -c $cmd
     }
 }

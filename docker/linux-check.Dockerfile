@@ -3,7 +3,9 @@
 # run never compiles.
 # Build:  docker build -t luna-linuxcheck -f docker/linux-check.Dockerfile docker
 # Usage:  see scripts/linux-check.ps1
-FROM rust:1-slim-trixie
+# Rust is pinned here and in src-tauri/rust-toolchain.toml; the gate checks that
+# they agree (scripts/gate.ps1).
+FROM rust:1.99.1-slim-trixie
 
 # What the crate links on Linux: webkit2gtk brings GTK and libsoup along, tao
 # needs libdbus. git, sh, sleep and kill are what the tests themselves run.
@@ -13,8 +15,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # The formatter and lint gates (cargo fmt --check, cargo clippy) run here too,
-# and the image ships neither.
-RUN rustup component add rustfmt clippy
+# and the image ships neither. The Windows target is never built here, but
+# src-tauri/rust-toolchain.toml lists it, and rustup would otherwise fetch it
+# into every throwaway container that runs cargo there.
+RUN rustup component add rustfmt clippy     && rustup target add x86_64-pc-windows-msvc
 
 # The tests need no frontend, and the build only wants a folder to embed. Here
 # and not in the script's command: Windows PowerShell breaks up a native argument
