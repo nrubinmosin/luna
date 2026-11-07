@@ -124,10 +124,15 @@ pub fn discovery_file() -> PathBuf {
 }
 
 pub fn read_frame(r: &mut impl Read) -> io::Result<(u8, Vec<u8>)> {
+    read_frame_within(r, MAX_FRAME)
+}
+
+/// A frame of at most `max` bytes, refused before its payload is read.
+pub fn read_frame_within(r: &mut impl Read, max: usize) -> io::Result<(u8, Vec<u8>)> {
     let mut head = [0u8; 5];
     r.read_exact(&mut head)?;
     let len = u32::from_le_bytes([head[0], head[1], head[2], head[3]]) as usize;
-    if len > MAX_FRAME {
+    if len > max {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "frame too large"));
     }
     let mut payload = vec![0u8; len];
