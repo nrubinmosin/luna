@@ -32,10 +32,21 @@ try {
 
     # A release has to be reproducible from a commit, and the build stamp baked into
     # the binary is only meaningful if the tree it was built from is the tree that
-    # was pushed.
-    if (git status --porcelain) { throw 'Working tree is dirty — commit before releasing.' }
-    if (git log origin/master..HEAD --oneline) { throw 'HEAD is ahead of origin/master — push before releasing.' }
-    if (gh release view $tag 2>$null) { throw "$tag already exists — bump the version." }
+    # was pushed. Each answer is read only once its command has succeeded: a git
+    # or gh that fails prints nothing on stdout, which would read as all clear.
+    $changes = git status --porcelain
+    if ($LASTEXITCODE) { throw "git status failed (exit $LASTEXITCODE)" }
+    if ($changes) { throw 'Working tree is dirty — commit before releasing.' }
+    $ahead = git rev-list --count origin/master..HEAD
+    if ($LASTEXITCODE) { throw "comparing HEAD with origin/master failed (exit $LASTEXITCODE) — is origin/master fetched?" }
+    if ([int]$ahead) { throw 'HEAD is ahead of origin/master — push before releasing.' }
+    # gh has one exit code for every failure; only its "release not found" means
+    # the tag is free. Anything else (auth, network) stops the release here.
+    $view = gh release view $tag 2>&1 | ForEach-Object { "$_" }
+    if (-not $LASTEXITCODE) { throw "$tag already exists — bump the version." }
+    if (-not ($view -match 'release not found')) {
+        throw "gh release view $tag failed (exit $LASTEXITCODE): $($view -join ' ')"
+    }
 
     Write-Host "Releasing $tag" -ForegroundColor Cyan
     # A native command failing does not trip $ErrorActionPreference, so each one

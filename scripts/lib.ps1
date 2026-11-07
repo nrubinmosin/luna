@@ -15,7 +15,10 @@ function Get-BuildStamp {
     $stamp = (git -C $RepoRoot rev-parse --short HEAD)
     if ($LASTEXITCODE) { throw "git rev-parse failed (exit $LASTEXITCODE)" }
     $stamp = $stamp.Trim()
-    if (git -C $RepoRoot status --porcelain) { $stamp = "$stamp+" }
+    # Empty output means a clean tree only when git ran at all.
+    $changes = git -C $RepoRoot status --porcelain
+    if ($LASTEXITCODE) { throw "git status failed (exit $LASTEXITCODE)" }
+    if ($changes) { $stamp = "$stamp+" }
     $stamp
 }
 
