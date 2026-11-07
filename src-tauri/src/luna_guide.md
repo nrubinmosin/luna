@@ -55,6 +55,10 @@ on one of the user's accounts.
 - A model the organization does not allow, swapped by the CLI, is in `warnings`.
 
 ## Spawning
+- A helper's mode (exact spelling; else the account's default) may not exceed yours: plan /
+  read-only < default, dontAsk / read-only asking < acceptEdits < workspace-write < auto-review <
+  bypassPermissions / danger-full-access; network apart. Allow rules, config unweighed. Higher:
+  refused unless the user allows. No helper works in or above Luna's own folder.
 - Codex's `approval`: auto-review has a reviewer model answer what Codex would ask
   (workspace-write only); on-request is for visible ones: a background Codex has nobody to
   ask, and runs with never unless told auto-review, the sandbox being what holds it. Running
@@ -152,6 +156,10 @@ on one of the user's accounts.
   It returns `state`, `ask` and the `screen` after it. A background helper's `ask` has an
   `id`: pass it as `askId`, so your answer cannot land on the next one; a stale or unknown id
   is refused, and so is no id with several held.
+- `allow`, `keys`, a CLI's own list: your helpers only; allow true only for what you run unasked
+  (never plan/default), keys and lists at full access; others': model questions only. No control chars.
+  Text or a prompt starting with `/` or `!` (CLI command, shell as you): only at
+  full access, into your own helpers.
 - A visible Codex stopped on a list of its own ("Hooks need review" at startup) has it as a
   question too, its options the only answers it takes; a spawn it kept back returns it as `ask`.
 - A background Claude Code helper's questions and permission prompts come to you this way, one
