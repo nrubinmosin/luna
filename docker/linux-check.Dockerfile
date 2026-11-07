@@ -12,6 +12,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git procps \
     && rm -rf /var/lib/apt/lists/*
 
+# The formatter and lint gates (cargo fmt --check, cargo clippy) run here too,
+# and the image ships neither.
+RUN rustup component add rustfmt clippy
+
 # The tests need no frontend, and the build only wants a folder to embed. Here
 # and not in the script's command: Windows PowerShell breaks up a native argument
 # with a double quote in it, and JSON has no way around them.

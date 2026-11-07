@@ -1,0 +1,8 @@
+# Fitted to the code as it was written before rustfmt ran over it: 99% of its
+# lines were already within 140 columns, and "Max" lets a call, chain or
+# struct literal stay on one line as long as it fits, as the code keeps them.
+# Of the widths tried this pair rewrote the fewest lines short of 160, which
+# saves little more and leaves lines too wide to read side by side in a diff.
+# Stable options only, so any toolchain formats the same.
+max_width = 140
+use_small_heuristics = "Max"
