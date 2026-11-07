@@ -87,7 +87,7 @@ export const themeFor = (isDark: boolean) =>
         brightWhite: '#ececec'
       }
     : {
-        // Warm paper. Matches --term in theme.css.
+        // Warm paper. Matches --term in styles/tokens.css.
         background: '#fdf2e2',
         foreground: '#26211a',
         cursor: '#8a5a14',

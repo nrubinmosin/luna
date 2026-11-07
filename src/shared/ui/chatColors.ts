@@ -43,7 +43,7 @@ export const pickChatColor = (worn: Array<string | null | undefined>): string =>
 };
 
 export interface ChatColorTheme {
-  /** The color itself: the pane title bar mixes its gloss from it (theme.css),
+  /** The color itself: the pane title bar mixes its gloss from it (features/panes/panes.css),
    *  the sidebar row wears it as a stripe, the picker as a swatch. */
   swatch: string;
 }

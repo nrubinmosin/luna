@@ -1,0 +1,83 @@
+/* ------------------------------------------------------------------------
+   Motion. On everything that changes, and never something to wait for: an
+   app for work, so nothing takes longer than ~150ms, and nothing loops except
+   the signals that ask for you and work in progress. All of it gives way to
+   reduced motion.
+   ------------------------------------------------------------------------ */
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.96);
+  }
+}
+@keyframes sheet-in {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+}
+@keyframes cover-out {
+  to {
+    opacity: 0;
+    visibility: hidden;
+  }
+}
+@keyframes row-in {
+  from {
+    opacity: 0;
+    transform: translateX(-10px);
+  }
+}
+[data-app] .scrim {
+  animation: fade-in 0.1s ease-out;
+}
+[data-app] .scrim > .window,
+[data-app] .scrim > * > .window {
+  animation: pop-in 0.13s ease-out;
+}
+[data-app] .peek-sheet {
+  animation: sheet-in 0.12s ease-out;
+}
+[data-app] .peek-dim {
+  animation: fade-in 0.1s ease-out;
+}
+/* A pane that has just been handed a chat fades its terminal in from blank
+   paper instead of snapping from one session to the next. */
+[data-app] .pane-cover {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  background: var(--term);
+  pointer-events: none;
+  animation: cover-out 0.16s ease-out forwards;
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-app] *,
+  [data-app] *::before,
+  [data-app] *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+  }
+}

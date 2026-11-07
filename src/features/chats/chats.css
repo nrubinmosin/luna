@@ -1,0 +1,368 @@
+/* ------------------------------------------------------------------------
+   Sidebar: Explorer's task pane. Pinned, it sits in the row; hidden, it
+   leaves a strip, and hovering the strip slides it out over the board.
+   ------------------------------------------------------------------------ */
+[data-app] .taskpane {
+  background: var(--taskpane);
+}
+[data-app] .dock {
+  position: relative;
+  flex: none;
+  z-index: 30;
+  /* Clipped on the left only: the slid-away sidebar must not show over the
+     window's frame, while the slid-out one overhangs the board on the right. */
+  clip-path: inset(0 -100vw 0 0);
+  transition: width 0.13s ease-out;
+}
+/* Slid out over the board, it goes over the peek sheet too. */
+[data-app] .dock[data-mode="hidden"][data-shown="yes"] {
+  z-index: 60;
+}
+[data-app] .dock > .taskpane {
+  position: absolute;
+  inset: 0 auto 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 7px 7px 8px;
+  border-right: 1px solid var(--line);
+  transition:
+    transform 0.13s ease-out,
+    box-shadow 0.13s;
+}
+[data-app] .dock[data-shown="no"] > .taskpane {
+  transform: translateX(-100%);
+  pointer-events: none;
+}
+[data-app] .dock[data-mode="hidden"][data-shown="yes"] > .taskpane {
+  box-shadow: 8px 0 28px rgba(0, 0, 0, 0.35);
+}
+/* Hidden, the sidebar takes no width at all: an invisible band over the
+   board's margin is what the hover finds at the very edge, and App's Dock
+   answers a little further in as well (see EDGE). */
+[data-app] .dock-strip {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 10px;
+}
+[data-app] .dock-grip {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: -3px;
+  width: 6px;
+  z-index: 2;
+  cursor: col-resize;
+  transition: background 0.15s;
+}
+[data-app] .dock-grip:hover,
+[data-app] .dock-grip[data-on="yes"] {
+  background: color-mix(in oklab, var(--accent) 60%, transparent);
+}
+
+[data-app] .tp-group {
+  flex: none;
+  border-radius: 6px 6px 0 0;
+  overflow: hidden;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.14);
+  animation: pop-in 0.12s ease-out;
+}
+[data-app] .tp-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: calc(var(--ui) * 2);
+  padding: 0 4px 0 8px;
+  background: var(--group-head);
+  color: var(--group-ink);
+  font-size: var(--fs-4);
+  font-weight: 700;
+  cursor: default;
+  transition: color 0.14s;
+}
+[data-app] .tp-head:hover {
+  color: var(--group-ink-hover);
+}
+/* The folder's name on two floors: where it sits, small, over the folder
+   itself, so the name keeps the width the buttons leave. */
+[data-app] .tp-name {
+  flex: 1 1 auto;
+  min-width: 40px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  line-height: 1.15;
+}
+[data-app] .tp-name > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-app] .tp-name > .tp-where {
+  font-size: var(--fs-1);
+  font-weight: 400;
+  opacity: 0.7;
+}
+[data-app] .tp-chev {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--card);
+  border: 1px solid var(--line);
+  color: var(--group-ink);
+  transition:
+    transform 0.13s ease-out,
+    background 0.12s;
+}
+[data-app] .tp-head:hover .tp-chev {
+  background: var(--hover);
+}
+[data-app] .tp-chev[data-open="no"] {
+  transform: rotate(180deg);
+}
+/* The body folds by animating its row height, not by vanishing. */
+[data-app] .tp-fold {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition: grid-template-rows 0.14s ease-out;
+}
+[data-app] .tp-fold[data-open="no"] {
+  grid-template-rows: 0fr;
+}
+[data-app] .tp-fold > div {
+  min-height: 0;
+  overflow: hidden;
+}
+[data-app] .tp-body {
+  background: var(--group-body);
+  border: 1px solid var(--group-line);
+  border-top: 0;
+  padding: 2px;
+}
+
+/* New chat: the one green button, shaped after XP's Start. A gloss sweeps
+   across it on hover. */
+[data-app] button.start-btn {
+  position: relative;
+  overflow: hidden;
+  flex: none;
+  min-width: 0;
+  height: 30px;
+  padding: 0 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  border-radius: 4px 14px 14px 4px;
+  color: #fff;
+  font:
+    italic 700 var(--fs-6) "Trebuchet MS",
+    var(--sans-serif);
+  text-shadow: 1px 1px 1px rgba(0, 0, 0, 0.45);
+  background: linear-gradient(180deg, #5eac56 0%, #3c9a3c 12%, #2f8b2f 50%, #2d8a2d 85%, #1f6b1f 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.4),
+    0 1px 2px rgba(0, 0, 0, 0.3) !important;
+}
+[data-app] button.start-btn::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 -60%;
+  width: 45%;
+  background: linear-gradient(100deg, transparent, rgba(255, 255, 255, 0.35), transparent);
+  transform: skewX(-18deg);
+  pointer-events: none;
+}
+[data-app] button.start-btn:hover {
+  filter: brightness(1.08);
+  transform: translateY(-1px);
+}
+[data-app] button.start-btn:hover::after {
+  animation: gloss 0.45s ease-out;
+}
+@keyframes gloss {
+  to {
+    left: 120%;
+  }
+}
+[data-app] button.start-btn:active {
+  filter: brightness(0.92);
+  transform: scale(0.98);
+}
+
+/* Chat rows. */
+[data-app] .chat-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: calc(var(--ui) * 2.15);
+  padding: 0 2px 0 5px;
+  border-radius: 4px;
+  cursor: grab;
+  transition:
+    background 0.15s,
+    color 0.15s,
+    transform 0.15s;
+  animation: row-in 0.12s ease-out;
+}
+[data-app] .chat-row:hover {
+  background: var(--row-hover);
+  transform: translateX(2px);
+}
+[data-app] .chat-row[data-waiting="yes"] {
+  background: linear-gradient(90deg, rgba(255, 138, 0, 0.3), rgba(255, 138, 0, 0.06));
+}
+[data-app] .chat-row[data-active="yes"] {
+  background: var(--row-sel);
+  color: var(--row-sel-ink);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--row-sel) 70%, var(--fg));
+}
+[data-app] .chat-row .row-tag {
+  flex: none;
+  font-size: var(--fs-1);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--wait);
+}
+[data-app] .chat-row[data-active="yes"] .row-tag {
+  color: #ffc27a;
+}
+/* An unsent draft in the chat's composer, and the messages Luna holds for it
+   (drafts.store.ts): on the pane's title bar, a pill the bar's color shows
+   through. */
+[data-app] .pane-tag {
+  flex: none;
+  margin-right: 6px;
+  padding: 0 5px;
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.28);
+  color: #fff;
+  font-size: var(--fs-1);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+/* The helpers a chat spawned: a count to unfold, shaped like the folders'
+   own fold button. */
+[data-app] .chat-row .kids {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 18px;
+  padding: 0 6px 0 4px;
+  border-radius: 9px;
+  border: 1px solid var(--line);
+  background: var(--card);
+  color: var(--fg);
+  font: 700 var(--fs-1) var(--sans-serif);
+  font-variant-numeric: tabular-nums;
+  cursor: default;
+  transition:
+    background 0.12s,
+    border-color 0.12s;
+}
+[data-app] .chat-row .kids:hover {
+  background: var(--hover);
+  border-color: var(--faint);
+}
+[data-app] .chat-row .kids svg {
+  transition: transform 0.12s ease-out;
+}
+[data-app] .chat-row .kids[data-open="yes"] svg {
+  transform: rotate(90deg);
+}
+[data-app] .chat-row[data-active="yes"] .kids {
+  background: rgba(255, 255, 255, 0.2);
+  border-color: rgba(255, 255, 255, 0.45);
+  color: #fff;
+}
+/* The same count on the title bar of the chat's pane, in the bar's own chip
+   glass rather than the list's card. */
+[data-app] .pane-bar .kids {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 18px;
+  padding: 0 7px 0 5px;
+  border-radius: 9px;
+  background: rgba(0, 0, 0, 0.24);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16);
+  color: #fff;
+  font: 700 var(--fs-2) var(--sans-serif);
+  font-variant-numeric: tabular-nums;
+  text-shadow: none;
+  cursor: default;
+}
+[data-app] .pane-bar .kids:hover {
+  background: rgba(0, 0, 0, 0.34);
+}
+[data-app] .pane-bar .kids[data-asking="yes"] {
+  box-shadow: inset 0 0 0 1.5px var(--wait);
+}
+[data-app][data-theme="dark"] .pane-bar .kids {
+  background: rgba(255, 255, 255, 0.07);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  color: var(--fg);
+}
+[data-app][data-theme="dark"] .pane-bar .kids:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+[data-app][data-theme="dark"] .pane-bar .kids[data-asking="yes"] {
+  box-shadow: inset 0 0 0 1.5px var(--wait);
+  color: var(--wait);
+}
+/* A helper just spawned: the chip glows a few times, so a start is seen. */
+[data-app] .chat-row .kids[data-new="yes"],
+[data-app] .pane-bar .kids[data-new="yes"] {
+  animation: kids-new 1.2s ease-in-out 4;
+}
+@keyframes kids-new {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+  50% {
+    box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 45%, transparent);
+  }
+}
+/* A background helper waits on an answer: its agent is told, the chip shows it. */
+[data-app] .chat-row:not([data-active="yes"]) .kids[data-asking="yes"] {
+  border-color: var(--wait);
+  color: var(--wait);
+}
+
+/* Rename and delete take no room of their own: they come up over the end of
+   the row under the pointer, so the name gets the whole width the rest of
+   the time. The fade in front of them is the row's own ground. */
+[data-app] .chat-row .row-tools {
+  --row-ground: var(--row-hover);
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 2px;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding-left: 16px;
+  background: linear-gradient(90deg, transparent, var(--row-ground) 14px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s;
+}
+[data-app] .chat-row[data-active="yes"] .row-tools {
+  --row-ground: var(--row-sel);
+}
+[data-app] .chat-row:hover .row-tools {
+  opacity: 1;
+  pointer-events: auto;
+}

@@ -24,13 +24,17 @@ know the words "permission mode" and "Fable", Claude does not know "sandbox" and
 src/                          frontend (feature-sliced)
   app/        App (sidebar dock: pinned or slides out on hover), AppFrame + BoardTools
               (layouts, groups, Even out, Clear, theme — in the window title bar), shell.store
-              (theme, sidebar pin and width), theme.css (light/dark tokens, code colors
-              --code-key/--code-string/--code-literal, and all controls),
+              (theme, sidebar pin and width),
               keymap: Ctrl+N / Ctrl+Shift+N, Ctrl+1..4 (focus pane), Alt+1..4 (peek),
               Ctrl+Shift+W (next waiting), Ctrl+Shift+B (sidebar), Ctrl+Tab (next group),
               Ctrl+Shift+T (new group),
               Ctrl+0 (exit), Ctrl+Shift+1..4 (layout), F1 (shortcuts) — listened to in the
               capture phase, otherwise xterm swallows them before window
+  styles/     the app-wide sheets, loaded by main.tsx over xp.css in this order: tokens.css
+              (light/dark tokens, code colors --code-key/--code-string/--code-literal), base.css,
+              controls.css (every shared control), windows.css (window and dialog chrome, title
+              bars and their controls); motion.css last, after the features' own sheets
+              (<feature>.css beside its entry component: panes, chats, status-bar, library)
   shared/     types, format, status; ui/icons.tsx — XP icons (and provider badges),
               ToolButton, title bar glyphs; ui/ModelSelect.tsx — model drop-down (native
               <select>); ui/dialogHost.ts
@@ -1223,7 +1227,7 @@ src-tauri/src/
   Shapes are XP (glossy title bars, bevels, task pane, Start button), tones are for long reading:
   neutrals without blue, layers differ by lightness (OKLCH), the terminal is the darkest "well".
   The compiled xp.css pins its controls to light literals, so buttons, fields,
-  checkboxes, radios and scrollbars are redrawn in theme.css from the tokens.
+  checkboxes, radios and scrollbars are redrawn in src/styles/controls.css from the tokens.
 
 ## Build
 

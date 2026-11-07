@@ -1,8 +1,18 @@
+// The app's own sheets go over xp.css, and before every feature's sheet (each
+// imported by its feature's entry component, so after these): a feature's rule
+// outranks a shared control's of the same specificity by coming later.
 import 'xp.css/dist/XP.css';
+import './styles/tokens.css';
+import './styles/base.css';
+import './styles/controls.css';
+import './styles/windows.css';
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { App } from './app/App';
 import { ErrorBoundary } from './app/ErrorBoundary';
+// Last of all, after the features' sheets that App brings in: the reduced-motion
+// override has to outrank every animation and transition they set.
+import './styles/motion.css';
 import { installGlobalErrorLog, logInfo, watchMainThreadStalls } from './shared/lib/log';
 
 installGlobalErrorLog();
@@ -26,7 +36,7 @@ const boot = () =>
 
 // xterm measures its cell on the face it finds when it opens, and a stand-in
 // gives it the wrong cell for the real one; the refit on fonts.ready is a
-// patch over that, not a cure. The face is local now (theme.css), so having it
+// patch over that, not a cure. The face is local now (styles/base.css), so having it
 // in hand before anything opens costs a few milliseconds. The timer covers a
 // font store that never answers — a late font is a nuisance, a blank app is not.
 const termFont = Promise.race([

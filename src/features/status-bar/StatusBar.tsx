@@ -16,6 +16,7 @@ import { useShortcuts } from '../shortcuts/ShortcutsDialog';
 import { useSettings } from '../settings/SettingsDialog';
 import { useLibrary, waiting } from '../library/library.store';
 import { RecommendationsChip } from '../settings/RecommendationsChip';
+import './status-bar.css';
 
 const chipStyle = (loud: boolean) => ({
   cursor: 'default',

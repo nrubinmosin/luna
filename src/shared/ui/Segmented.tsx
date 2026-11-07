@@ -2,7 +2,7 @@
  * A row of equal-width choices, one of them pressed. A row that does not fit
  * wraps onto a second line instead of spilling out of the dialog: every
  * choice is at least as wide as its label, and a line shares out whatever
- * room is left over evenly. Styled by `.seg` in theme.css.
+ * room is left over evenly. Styled by `.seg` in styles/controls.css.
  */
 export function Segmented<T extends string>({
   items,

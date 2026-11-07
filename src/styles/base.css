@@ -1,0 +1,101 @@
+/* What every surface starts from: the box model, the terminal face, the
+   scrollbars, and an app's (not a page's) selection. */
+
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  overflow: hidden;
+}
+
+/* The terminal face, shipped with the app. Fetched from Google Fonts it needed
+   the network on every start, and without it xterm measured its cells on
+   whatever monospace it found first. Regular and Bold are the two weights
+   xterm asks for. Files under public/fonts, license alongside. */
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+  src: url("/fonts/JetBrainsMono-Regular.woff2") format("woff2");
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 700;
+  font-display: block;
+  src: url("/fonts/JetBrainsMono-Bold.woff2") format("woff2");
+}
+
+/* Thin rounded scrollbars in the theme's own grays, in place of XP's blue
+   bitmaps — which, in the dark theme, were the brightest thing on screen. */
+[data-app] ::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+/* !important: xp.css brings its arrow buttons back with
+   `:vertical:start:decrement` and the like, which outrank a bare selector —
+   a tall enough list showed two arrows at each end. */
+[data-app] ::-webkit-scrollbar-button {
+  display: none !important;
+}
+[data-app] ::-webkit-scrollbar-track,
+[data-app] ::-webkit-scrollbar-corner {
+  background: transparent;
+}
+[data-app] ::-webkit-scrollbar-thumb {
+  background: var(--scroll-thumb);
+  background-clip: padding-box;
+  border: 2px solid transparent;
+  border-radius: 6px;
+  box-shadow: none;
+}
+[data-app] ::-webkit-scrollbar-thumb:hover {
+  background-color: var(--scroll-thumb-hover);
+}
+
+.hover-bg {
+  transition: background 0.14s;
+}
+.hover-bg:hover {
+  background: var(--hover) !important;
+}
+.hover-danger {
+  transition:
+    background 0.14s,
+    color 0.14s;
+}
+.hover-danger:hover {
+  background: oklch(0.63 0.19 25 / 0.16) !important;
+  color: oklch(0.58 0.2 25) !important;
+}
+
+/* An app, not a page: a drag across the sidebar or a stray double-click on a
+   label painted the chrome in selection blue. Fields stay selectable, and the
+   terminals keep theirs — xterm draws its own selection and copies it itself. */
+[data-app] {
+  -webkit-user-select: none;
+  user-select: none;
+}
+[data-app] input,
+[data-app] textarea,
+[data-app] [contenteditable] {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.xterm .xterm-viewport {
+  background: transparent !important;
+}
+/* xterm gives its viewport overflow-y: scroll unconditionally. The terminal
+   has no scrollbar at all: the viewport still scrolls (wheel, shift+PgUp, and
+   xterm's own scrollToBottom), it is only never painted. */
+.xterm .xterm-viewport {
+  scrollbar-width: none;
+}
+.xterm .xterm-viewport::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}

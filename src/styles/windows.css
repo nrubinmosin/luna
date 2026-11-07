@@ -1,0 +1,284 @@
+/* ------------------------------------------------------------------------
+   Windows and dialogs. xp.css keeps the light Luna frame; the body is ours.
+   ------------------------------------------------------------------------ */
+[data-app] .window {
+  background: var(--surface);
+  color: var(--fg);
+}
+[data-app][data-theme="dark"] .window {
+  box-shadow: var(--border-window-outer), var(--border-window-inner);
+}
+[data-app] .window-body {
+  margin: 10px 12px;
+}
+
+/* Title bars: XP's Luna blue gloss in the light theme, graphite in the dark
+   one (Royale Noir, without its blue). Title text in Trebuchet, as XP had it. */
+[data-app] .title-bar {
+  font-family: "Trebuchet MS", Tahoma, sans-serif;
+  font-size: var(--fs-4);
+  text-shadow: none;
+  /* xp.css rounds the two top corners by 8px and 7px; a pane's frame can
+     only follow one radius. */
+  border-top-right-radius: 8px;
+}
+[data-app] .title-bar-text {
+  text-shadow: 1px 1px #0f1089;
+  margin-right: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-app][data-theme="dark"] .title-bar {
+  background: linear-gradient(180deg, #555555 0%, #303030 8%, #282828 45%, #1f1f1f 55%, #262626 100%);
+  border-color: #3a3a3a;
+}
+[data-app][data-theme="dark"] .title-bar-text {
+  text-shadow: 1px 1px #000;
+}
+
+/* The app's own title bar over the window's native edge: no frame of its
+   own drawn round it, so Windows keeps the border, the rounded corners and
+   the shadow it gives every window, maximized or not. */
+.app-frame {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+}
+.app-frame > .title-bar {
+  flex: none;
+  height: 34px;
+  gap: 6px;
+  padding-right: 0;
+  border-radius: 0;
+  border-left: none;
+  border-right: none;
+  border-top: none;
+}
+.app-frame > .app-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+/* The window's buttons answer up to the bar's top edge, and Close to its
+   right edge too: thrown into the corner of a maximized window, the pointer
+   lands on Close, as on Windows' own title bar. The reach is generous so the
+   press shrinking the button does not pull it out from under the pointer. */
+.app-frame > .title-bar > .title-bar-controls {
+  padding-right: 5px;
+}
+.app-frame > .title-bar > .title-bar-controls button {
+  position: relative;
+}
+.app-frame > .title-bar > .title-bar-controls button::before {
+  content: "";
+  position: absolute;
+  inset: -12px -2px -6px;
+}
+.app-frame > .title-bar > .title-bar-controls button:last-child::before {
+  right: -10px;
+}
+.app-frame .title-bar-text {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* The board's controls, on the title bar: glass pills on the gloss, so they
+   are part of the bar rather than a toolbar under it. */
+[data-app] .tb-tools {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--sans-serif);
+}
+[data-app] .tb-seg {
+  flex: none;
+  display: flex;
+  height: 24px;
+  border: 1px solid rgba(255, 255, 255, 0.38);
+  border-radius: 6px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.12);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    0 1px 1px rgba(0, 0, 40, 0.2);
+}
+[data-app][data-theme="dark"] .tb-seg {
+  border-color: rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.04);
+}
+[data-app] .tb-seg > button,
+[data-app] button.tb-btn {
+  min-width: 30px;
+  min-height: 0;
+  height: 100%;
+  padding: 0 7px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: #fff;
+  display: grid;
+  place-items: center;
+  font:
+    700 var(--fs-4) "Times New Roman",
+    serif;
+  text-shadow: 0 1px 1px rgba(0, 0, 40, 0.45);
+  transition:
+    background 0.14s,
+    transform 0.12s;
+}
+[data-app] .tb-seg > button + button {
+  border-left: 1px solid rgba(255, 255, 255, 0.22);
+}
+[data-app] .tb-seg > button:not(:disabled):hover,
+[data-app] button.tb-btn:not(:disabled):hover {
+  background: rgba(255, 255, 255, 0.22);
+  box-shadow: none;
+}
+[data-app] .tb-seg > button[aria-pressed="true"] {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.5), rgba(255, 255, 255, 0.26));
+  box-shadow: inset 0 1px 2px rgba(0, 0, 40, 0.3);
+}
+[data-app][data-theme="dark"] .tb-seg > button[aria-pressed="true"] {
+  background: linear-gradient(180deg, #5a5a5a, #464646);
+}
+[data-app] button.tb-btn {
+  height: 24px;
+  gap: 5px;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  font: 600 var(--fs-3) var(--sans-serif);
+}
+[data-app] button.tb-btn:not(:disabled):hover {
+  border-color: rgba(255, 255, 255, 0.35);
+}
+[data-app] .tb-seg > button:not(:disabled):active,
+[data-app] button.tb-btn:not(:disabled):active {
+  transform: scale(0.94);
+  background: rgba(0, 0, 40, 0.15);
+}
+/* How many stale worktrees there are, on the Worktrees button: the orange of
+   a taskbar button that wants attention. */
+[data-app] .tb-count {
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(180deg, #ffb347, #e07b00);
+  box-shadow: inset 0 0 0 1px rgba(120, 50, 0, 0.45);
+  color: #fff;
+  font: 700 var(--fs-1) var(--sans-serif);
+  text-shadow: 0 1px 1px rgba(80, 30, 0, 0.5);
+}
+[data-app] .tb-sep {
+  width: 1px;
+  height: 18px;
+  background: rgba(255, 255, 255, 0.28);
+  flex: none;
+}
+
+/* ------------------------------------------------------------------------
+   Window controls: every control in a title bar (the window's, a pane's, a
+   dialog's) drawn from one face and one set of white glyphs, at 22px.
+   ------------------------------------------------------------------------ */
+[data-app] {
+  --g-min: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='4' y='10.6' width='8' height='2.6' rx='.5' fill='white'/%3E%3C/svg%3E");
+  --g-max: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3.4 3.6h9.2v9H3.4z' stroke='white' fill='none' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.4'/%3E%3Cpath d='M3.4 4.3h9.2' stroke='white' stroke-width='2.4'/%3E%3C/svg%3E");
+  --g-restore: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M6 5.2V3h7v6.6h-2.2' stroke='white' fill='none' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.3'/%3E%3Cpath d='M6 3.5h7' stroke='white' stroke-width='1.8'/%3E%3Cpath d='M3 6.4h7.4v6.6H3z' stroke='white' fill='none' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.3'/%3E%3Cpath d='M3 7h7.4' stroke='white' stroke-width='1.8'/%3E%3C/svg%3E");
+  --g-close: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4.4 4.4l7.2 7.2M11.6 4.4l-7.2 7.2' stroke='white' fill='none' stroke-linecap='round' stroke-linejoin='round' stroke-width='2.2'/%3E%3C/svg%3E");
+  --g-trash: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4.4 5.4h7.2l-.7 8H5.1z' stroke='white' fill='none' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.4'/%3E%3Cpath d='M3 4h10M6.4 4V2.6h3.2V4M7 7.2v4.2M9 7.2v4.2' stroke='white' fill='none' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.3'/%3E%3C/svg%3E");
+  --g-pencil: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3 13l.7-2.9 7-7 2.2 2.2-7 7z' stroke='white' fill='none' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.4'/%3E%3Cpath d='M9.4 4.3l2.3 2.3' stroke='white' fill='none' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.2'/%3E%3C/svg%3E");
+  --g-check: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3.6 8.4l2.9 2.9 5.9-6.3' stroke='white' fill='none' stroke-linecap='round' stroke-linejoin='round' stroke-width='2'/%3E%3C/svg%3E");
+
+  --ctl-face: linear-gradient(180deg, #6aa6fc 0%, #2b70f1 45%, #1a5fe6 55%, #3b7cf3 100%);
+  --ctl-red: linear-gradient(180deg, #f0a694 0%, #e4613f 40%, #dc451f 60%, #ae2400 100%);
+  --ctl-rim: #ffffff;
+}
+[data-app][data-theme="dark"] {
+  --ctl-face: linear-gradient(180deg, #686868 0%, #404040 48%, #313131 52%, #3a3a3a 100%);
+  --ctl-red: linear-gradient(180deg, #e08a78 0%, #c04a30 48%, #a3321a 52%, #962a10 100%);
+  --ctl-rim: #8a8a8a;
+}
+[data-app] .title-bar-controls {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+[data-app] .title-bar-controls button {
+  --glyph: var(--g-max);
+  --face: var(--ctl-face);
+  width: 22px;
+  height: 22px;
+  min-width: 22px;
+  min-height: 22px;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--ctl-rim);
+  border-radius: 4px;
+  background:
+    var(--glyph) center / 16px 16px no-repeat,
+    var(--face) !important;
+  box-shadow: inset -1px -1px rgba(0, 0, 40, 0.22) !important;
+  transition:
+    filter 0.12s,
+    opacity 0.15s,
+    transform 0.12s;
+}
+[data-app] .title-bar-controls button:not(:disabled):hover {
+  filter: brightness(1.18);
+  transform: translateY(-1px);
+}
+[data-app] .title-bar-controls button:not(:disabled):active {
+  filter: brightness(0.85);
+  transform: scale(0.92);
+}
+[data-app] .title-bar-controls button[aria-label="Minimize"],
+[data-app] .title-bar-controls button[data-glyph="min"] {
+  --glyph: var(--g-min);
+}
+[data-app] .title-bar-controls button[aria-label="Maximize"],
+[data-app] .title-bar-controls button[data-glyph="max"] {
+  --glyph: var(--g-max);
+}
+[data-app] .title-bar-controls button[aria-label="Restore"],
+[data-app] .title-bar-controls button[data-glyph="restore"] {
+  --glyph: var(--g-restore);
+}
+[data-app] .title-bar-controls button[data-glyph="pencil"] {
+  --glyph: var(--g-pencil);
+}
+[data-app] .title-bar-controls button[data-glyph="check"] {
+  --glyph: var(--g-check);
+}
+[data-app] .title-bar-controls button[aria-label="Close"] {
+  --glyph: var(--g-close);
+  --face: var(--ctl-red);
+}
+[data-app] .title-bar-controls button[data-glyph="trash"] {
+  --glyph: var(--g-trash);
+  --face: var(--ctl-red);
+}
+/* The color button wears the chat's color instead of a glyph. */
+[data-app] .title-bar-controls button[data-glyph="swatch"] {
+  background:
+    linear-gradient(var(--swatch, transparent), var(--swatch, transparent)) center / 10px 10px no-repeat,
+    var(--face) !important;
+}
+[data-app] .title-bar-controls button[data-glyph="swatch"]::after {
+  content: "";
+  display: block;
+  width: 12px;
+  height: 12px;
+  margin: auto;
+  border: 1px solid #fff;
+  border-radius: 3px;
+}

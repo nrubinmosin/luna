@@ -21,7 +21,7 @@ For how it is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
   Explorer's task pane, every control in every title bar is drawn from one set of
   glyphs, and every other button, the provider marks included, comes from one family of
   XP-style icons. Checkboxes, radios, fields and scrollbars are XP's, rounded off and
-  themed. The whole interface scales from one variable, `--ui` in `src/app/theme.css`,
+  themed. The whole interface scales from one variable, `--ui` in `src/styles/tokens.css`,
   and follows Windows' own text-size setting on top of that.
 - The window's title bar carries the board's controls: the sidebar button, the four
   layouts, the window groups, Even out, Clear and the theme. A hidden sidebar takes

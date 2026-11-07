@@ -15,7 +15,7 @@ async function appWindow() {
  * the title bar: `data-tauri-drag-region` moves the window (and maximizes it on
  * a double-click, which is the platform's own behavior, not ours). The board's
  * controls sit on it between the name and the window's three buttons, whose
- * glyphs theme.css draws.
+ * glyphs styles/windows.css draws.
  *
  * Closing hides to tray rather than exiting — the Rust side intercepts the
  * close request, so this only has to ask for it.

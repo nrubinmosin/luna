@@ -35,7 +35,6 @@ import { keepKeyboardHome, peekFromNotice } from '../features/panes/navigate';
 import { notify } from '../shared/lib/notify';
 import { allChats, useChats } from '../features/chats/chats.store';
 import { usePanes } from '../features/panes/panes.store';
-import './theme.css';
 
 /** How far in from the window's left edge the pointer brings a hidden
  *  sidebar out: the board's margin and the terminal's own padding, so it

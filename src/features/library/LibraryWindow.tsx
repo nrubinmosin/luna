@@ -34,6 +34,7 @@ import { DiffView } from './DiffView';
 import { LibraryEditor } from './LibraryEditor';
 import { needsLook, useLibrary, waiting } from './library.store';
 import { ReachPicker } from './ReachPicker';
+import './library.css';
 
 const RED = 'oklch(.58 .2 25)';
 const GREEN = 'oklch(.64 .18 145)';
@@ -277,7 +278,7 @@ function Tick({
   /** The group a radio belongs to. */
   radio?: string;
   checked: boolean;
-  /** An unticked box drawn as turned off, as ticked for some only, or as ticked (for all or some) by something else (theme.css). */
+  /** An unticked box drawn as turned off, as ticked for some only, or as ticked (for all or some) by something else (styles/controls.css). */
   mark?: 'off' | 'some' | 'inherited' | 'inherited-some';
   disabled: boolean;
   title: string;
