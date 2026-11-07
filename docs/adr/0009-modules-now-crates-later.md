@@ -13,10 +13,27 @@ crates (`luna-agents`, `luna-pty`, ...) or split the large files into module
 folders along their seams.
 
 Crates buy enforced boundaries and parallel compilation, but the seams were not
-yet clean: `agents/` and `background/` share one registry lock and call each
-other in both directions, and `pty/` reaches into both CLIs' launch code.
-Cutting crates along unclean seams would freeze today's coupling into public
-APIs and `pub` items.
+yet clean. `agents/` and `background/` keep separate registries behind separate
+mutexes (`agents/registry.rs` `reg()`, a `Mutex<Registry>`; `background/mod.rs`
+`reg()`, a `Mutex<Registry>` with a `Condvar`), yet they call each other in both
+directions, and the correctness of those calls rests on lock rules no type
+enforces:
+
+- Where both locks are held, the agents' lock is taken first
+  (`background/persist.rs`).
+- Code in `background/` that needs the agent layer lets its own lock go first:
+  saving `helpers.json` reads `agents::ties_of` after collecting entries, and
+  the helper rows read lineage and state after their snapshot.
+- Queue authorization runs background → agents without nesting
+  (`background/queue.rs` `settle_batch`): a batch is reserved under the
+  background lock, each sender of command text is asked
+  `agents::command_reach_now` with no lock held, and the background lock is
+  taken again to apply the answer only if the reservation still stands (same
+  claim, same in-flight ids), since a stop may have come meanwhile.
+
+`pty/` also reaches into both CLIs' launch code and into `agents::register` and
+`spawn_is` during a start. Cutting crates along such seams would freeze
+today's coupling, and these lock rules, into public APIs and `pub` items.
 
 ## Decision
 

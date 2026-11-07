@@ -38,7 +38,10 @@ the CLIs' own files.
   [cli-compatibility.md](../cli-compatibility.md), and readers fail soft
   (unknown lines are skipped, not fatal).
 - What the core must remember on its own (agent lineage, debts, helpers)
-  became a deliberate exception with its own persistence
-  (`helpers.json`, `chat-ties.json`; see
-  [background helpers](../architecture/background-helpers.md)), and holds no
-  conversation text.
+  became a deliberate exception with its own persistence (`helpers.json`,
+  `chat-ties.json`, `agents.jsonl`, answer files under `<data>/agents/`). It does
+  not mirror the transcript, but it does hold some text: opening prompts, queued,
+  in-flight and held messages, prompt and last-message excerpts in
+  `agents.jsonl`, and full replies in answer files. What is kept where, and for
+  how long, is listed in
+  [background helpers](../architecture/background-helpers.md#what-luna-keeps-of-conversations).

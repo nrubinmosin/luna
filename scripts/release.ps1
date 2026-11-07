@@ -47,7 +47,7 @@ function Assert-Pushed {
     if ($changes) { throw 'Working tree is dirty — commit before releasing.' }
     $ahead = git rev-list --count origin/master..HEAD
     if ($LASTEXITCODE) { throw "comparing HEAD with origin/master failed (exit $LASTEXITCODE) — is origin/master fetched?" }
-    if ([int]$ahead) { throw 'HEAD is ahead of origin/master — push before releasing.' }
+    if ([int]$ahead) { throw 'HEAD is ahead of origin/master — merge it through a pull request, then release from master as merged.' }
 }
 
 # Every path below, and the repo gh and git work on, is the checkout's.
@@ -57,9 +57,11 @@ try {
         Set-ReleaseVersion $Bump
         $version = Get-ReleaseVersion
         Write-Host "Version files now say $version." -ForegroundColor Green
-        Write-Host 'Next: add its CHANGELOG entry if there is a CHANGELOG.md, commit, push master,'
-        Write-Host 'then run ./scripts/release.ps1 to tag it:'
-        Write-Host "  git commit -am `"Luna $version`""
+        Write-Host 'Next: add its CHANGELOG entry if there is a CHANGELOG.md, commit on a branch and'
+        Write-Host 'merge it into master through a pull request (master takes no direct pushes):'
+        Write-Host "  git switch -c release-$version; git commit -am `"Luna $version`"; git push -u origin release-$version"
+        Write-Host 'Once it is merged, release from master as merged:'
+        Write-Host '  git switch master; git pull --ff-only; ./scripts/release.ps1'
         return
     }
 

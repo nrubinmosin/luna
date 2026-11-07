@@ -10,8 +10,12 @@ signing step and publishes the draft the workflow leaves.
 1. **Bump.** `./scripts/release.ps1 -Bump 1.2.3` writes the version into the four
    files that carry it: `package.json`, `src-tauri/tauri.conf.json`,
    `src-tauri/Cargo.toml` and `src-tauri/Cargo.lock`. Add the `CHANGELOG.md` entry if
-   there is one, commit (`Luna 1.2.3`) and push `master`.
-2. **Tag.** `./scripts/release.ps1` (or `-Notes "..."`) checks that the tree is clean,
+   there is one, and commit (`Luna 1.2.3`) on a branch of its own. `master` is
+   protected (see [One-time setup](#one-time-setup)), so the bump goes in through a
+   pull request like any other change: push the branch, open the PR, and merge it once
+   CI has passed.
+2. **Tag.** On `master` as merged (`git switch master; git pull --ff-only`),
+   `./scripts/release.ps1` (or `-Notes "..."`) checks that the tree is clean,
    HEAD is on `origin/master`, the four versions agree, `CHANGELOG.md` has a heading for
    the version (a warning when there is no CHANGELOG), and the tag is free here and on
    `origin`. It then makes the annotated tag `v1.2.3`, whose message becomes the release

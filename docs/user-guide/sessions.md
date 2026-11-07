@@ -33,8 +33,9 @@ update can replace the exe), not in the window.
 ## Helpers across a core restart
 
 Background helpers outlive the core: each is kept in `helpers.json` in the data
-folder (its settings, its conversation's id, whose it is; never what was said),
-and the next core takes them up after an update, a restart or a reboot.
+folder (its settings, its conversation's id, whose it is, and any message not yet
+delivered to it; the conversation itself stays in the CLI's transcript), and the
+next core takes them up after an update, a restart or a reboot.
 
 - A turn the core was in the middle of is stopped with it. The agent owed the
   answer is told so once its own chat is back, along with any messages queued

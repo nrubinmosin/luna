@@ -32,7 +32,18 @@ in `test-build/` ([ADR-0006](0006-isolated-test-flavor.md)).
 
 ## Consequences
 
-- Install anywhere, on any drive; uninstalling removes everything.
+- Install anywhere, on any drive; everything of Luna's is in one folder you can
+  find and remove.
+- Uninstalling does not remove all of it. Tauri's uninstaller removes the files
+  it installed; Luna's hooks (`src-tauri/windows/hooks.nsh`) first stop the core
+  (`--stop-core`, each session asked to quit) and remove the exe copies it ran
+  from (`core/`, in the install folder or `%LOCALAPPDATA%\luna`); with "Delete
+  the application data" ticked, and never on an update, they also remove the
+  WebView profile (`webview/`: chats, layout). Retained: settings, `luna.log`,
+  the downloaded CLIs, `helpers.json`, `chat-ties.json`, `agents.jsonl`, answer
+  files, hook and MCP files, the library with its ledger and backups, and
+  attachments, so the install folder stays while they do. Account folders and
+  the worktrees the CLIs made are not Luna's and are never touched.
 - The updater must install into the folder Luna runs from, so no bare exe is
   released ([development](../development.md#releases)).
 - Agents are kept out of this folder: no helper is rooted in or above it

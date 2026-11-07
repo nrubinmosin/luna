@@ -122,16 +122,26 @@ sequenceDiagram
   R-->>Wn: agent://spawn (request id, settings, prompt)
   Wn->>Wn: createChat(parentId), row not seated in a pane
   Wn->>PT: ensure_claude_session / ensure_codex_session (spawnRequest)
-  PT->>S: start CLI with flags, hooks, MCP config, prompt after --
+  Note over PT: under the chat's spawn gate, before any process exists
+  PT->>R: register: token, lineage, settings
+  PT->>R: spawn_is: bind the session to the request, save the ties
+  PT->>PT: write settings / MCP files, lay out args (launch.rs)
+  PT->>S: create the CLI process in a pty, prompt after --
   Wn->>R: agent_spawned (request id, chat id)
-  R->>R: spawn_is: register lineage, owe the caller
   R->>PT: await_start: prompt taken up, or screen
+  R->>R: owe_from: record the caller's debt for the answer
   R-->>H: result: id, settings, warnings, sameFolder, worktree
   H-->>A: tool result
   Note over A: caller may end its turn
   S-->>R: turn ends (hooks / transcript)
   R->>A: notifier types "[Luna notice, not typed by the user] ..."
 ```
+
+Registration and `spawn_is` happen inside the start, before the process is
+created, so a session can never run unknown to the registry and a core that dies
+mid-start leaves a record to settle. The caller's debt is a separate step,
+recorded once the spawn call has its answer (or, for a session that came up
+after the call timed out, when `agent_spawned` arrives).
 
 A background helper (the default) skips the window entirely: `agents/spawn`
 hands the request to `background/`, which runs each turn as one headless CLI

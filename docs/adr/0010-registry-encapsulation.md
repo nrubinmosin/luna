@@ -38,6 +38,9 @@ Rules:
 - No second lock: the methods take `&mut Registry` (or `&mut Debts`) inside an
   existing guard, so lock order and atomicity with the rest of the registry
   stay as they are.
+- The cross-registry rules of [ADR-0009](0009-modules-now-crates-later.md)
+  stay: no method calls into `background/` while holding the agents' lock in a
+  way that would take the background lock first.
 - No behavior change in the same commits; golden and unit tests must pass
   unchanged.
 - Other fields follow one group at a time (spawns, resumes and openings next),

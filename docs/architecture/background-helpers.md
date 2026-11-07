@@ -113,8 +113,10 @@ must not undo (a spawn, a conversation named, a delete, a question, a
 promotion), the registry is written to `<data>/helpers.json` when changed, one
 save at a time. It holds the spec without its token, the session id, the
 worktree, the turn count, queued text with each sender (`Queued`), and the
-agent ties (`agents::Ties`: parent, name, settings, debts, counts shown). Never
-the conversation. A `send` that queues writes at once. A batch a turn claimed is
+agent ties (`agents::Ties`: parent, name, settings, debts, counts shown); the
+conversation itself stays in the CLI's transcript ([what Luna keeps of
+conversations](#what-luna-keeps-of-conversations)). A `send` that queues writes
+at once. A batch a turn claimed is
 saved as `Entry::in_flight` until stdin has it.
 
 The next core reads it before the hub listens (`background::restore`,
@@ -224,7 +226,22 @@ spawn is named (`codex_new_since`, `report_codex_worktrees`). A CLI not back by
   turns too (`stop_turns`), or the old core could not be replaced.
 - A core that dies takes each helper's whole job with it
   ([power and lifecycle](power-and-lifecycle.md#process-jobs)).
-- Nothing of a conversation is ever persisted by Luna.
+- Luna never copies a transcript; the text it does keep is listed below, each
+  with when it goes.
+
+## What Luna keeps of conversations
+
+Luna does not mirror a CLI's transcript, but it does keep text of its own:
+
+| Where | What text | Kept until |
+| --- | --- | --- |
+| `<data>/helpers.json` (`background/persist.rs`) | a helper's opening prompt (while no turn has named its conversation), and text queued, in flight or undelivered, word for word with its sender | the text is delivered or handed back |
+| `<data>/chat-ties.json` (`agents/persist.rs`) | a visible helper's opening prompt (`Opening`), sends Luna holds for a draft (`Held`), a spawn under way with its request and prompt (`SpawnTaken`) | a first turn has ended under a core / the send goes in / the spawn settles |
+| `<data>/agents.jsonl` (`agentlog.rs`) | the first 300 characters of each spawn's prompt; on its end the last message, up to 3,000 (`history` shows 400) | cut to the newest half past 2,000 lines |
+| `<data>/agents/<id>-<hash>.md` (`agents/said.rs`, `agents/delivery.rs`) | a notice's or cut `wait`'s full answer (every message since the question), long prompts and messages sent as files, undelivered text named to its sender | swept after a week |
+
+What is never kept: the CLIs' own transcripts and rollouts (Luna reads them in
+place), and anything in `luna.log`, which names sessions but holds no chat text.
 
 ## Failure modes
 

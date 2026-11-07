@@ -58,10 +58,21 @@ user-facing behavior.
 - Tests for stores, keymap, agent bridge, IPC layer, dialogs and the terminal
   pool.
 
-### Phase 4: test window
+### Phase 4: test window and the live suite
 
 - The test build can run its window in the background (`-Background`, implied by
   `-DevCaller`): off screen, unfocused, off the taskbar.
+- A live suite on today's real CLIs (`scripts/live-tests.ps1`), on throwaway
+  accounts cloned by `scripts/test-accounts.ps1`; by hand only, never in CI.
+  Test levels in `docs/testing.md`.
+
+### Phase 6: release pipeline
+
+- Releases built, signed and attested by `.github/workflows/release.yml` on a
+  `v*` tag, behind a `release` environment, with CycloneDX SBOMs and
+  `SHA256SUMS`, left as a draft to publish; `scripts/release.ps1` bumps the
+  version and tags (`-Local` still releases from this machine). Flow and setup
+  in `docs/releasing.md`.
 
 ### Phase 5: documentation
 

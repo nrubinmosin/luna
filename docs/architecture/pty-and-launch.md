@@ -4,9 +4,14 @@ How a session is started, what it is started with, and how its terminal is run.
 
 ## Responsibility
 
-- Build each CLI's command line and environment (pure functions, no I/O).
-- Write what a start needs (hook settings, MCP config, instructions folder,
-  token), then spawn in a pty.
+- Lay out each CLI's command line and environment from what the start has
+  settled: `claude/launch.rs` and `codex/launch.rs` are pure (they read no
+  environment, disk or Luna state, and log, write, register or mint nothing).
+- Settle a start under the chat's spawn gate (`pty/start.rs`; a helper's turn in
+  `background/command.rs` through the same functions): the MCP token and
+  registration, the settings, MCP and instructions files, the worktree and the
+  library pass, what the sandbox and guard take from this machine; then spawn in
+  a pty (`pty/spawn.rs`).
 - Keep the scrollback, answer terminal queries, read the screen, and write
   input the way each CLI needs it.
 
@@ -67,13 +72,35 @@ silently substitute the user's profile.
 
 ## Golden tests
 
-Unit tests in `pty/start.rs` (sessions in a pane) and `background/command.rs`
-(headless helpers) assert whole argument and environment lists, and the
-generated settings files, against expected values written in the test.
-`golden.rs` `Redact` replaces what changes per run (hub port and secrets, MCP
-token, files under the data dir, a profile's random name) with placeholders
-such as `<hook-url>`, `<settings-file>`, `<mcp-file>`. Any change to a launch
-path shows up as a reviewed diff of the golden text.
+The goldens run the real start, not the builders alone.
+
+- **In a pane** (`pty/start.rs`, `golden_claude_*`, `golden_codex_*`): the
+  start runs through `ensure_*` and `pty::spawn` under the spawn gate, side
+  effects and all, and `pty::spawn::capture` (test builds only) takes the
+  `Launch` in place of creating the process. Each test compares the whole
+  argument list, the environment, the cwd, the resume decision and the session's
+  description, and reads back the settings, MCP and instructions files written
+  for it. Cases: chats, permission modes, resume only with a transcript,
+  worktrees by name, login, helpers with tools (guard, Luna's MCP, role), Codex
+  approval / sandbox pairs, library folders (skills, instructions, plugins,
+  hidden skills).
+- **Headless** (`background/command.rs`, `golden_headless_*`): a helper turn's
+  argv, folder and environment, and the settings and MCP files where the CLI takes them, for both CLIs: first turn,
+  resume and worktree, sandboxes and the reviewer, tools, library folders. What
+  goes on stdin (the prompt, Luna's note, slash commands kept out of a
+  command's arguments) has tests of its own there.
+- **Redaction is strict** (`golden.rs` `Redact`): only what changes per run is
+  replaced, and each placeholder is first checked to be what it stands for. The
+  hub's URLs, the data-dir files and the notes folder become `<hook-url>`,
+  `<guard-url>`, `<mcp-url>`, `<settings-file>`, `<mcp-file>`,
+  `<instructions-dir>`, `<notes-dir>`; `LUNA_MCP_TOKEN` becomes `<token>` only
+  once it is the token the registry knows this session by; a sandbox's `PATH`
+  becomes `<sandbox-path>` only if it is this process's minus the Store's app
+  aliases; the `GIT_CONFIG_*` TLS entries (Windows) become one
+  `<git-ssl-backend>` only if they are exactly this process's plus the backend;
+  a `read-only-net` profile's random name becomes `<profile>`.
+
+Any change to a launch path shows up as a reviewed diff of the expected values.
 
 ## Hooks and the guard
 
@@ -121,8 +148,11 @@ the command quotes `"@-"` and calls curl by full path.
 
 ## Invariants
 
-- `claude/launch.rs` and `codex/launch.rs` write nothing; `pty/start.rs` does
-  the writing under the chat's spawn gate.
+- `claude/launch.rs` and `codex/launch.rs` are pure; everything with an effect
+  happens in `pty/start.rs` (or `background/command.rs` / `background/run.rs`
+  for a helper's turn) before them, under the chat's spawn gate.
+- A session is registered (`register`, and `spawn_is` for an agent's spawn)
+  before its process is created.
 - MCP tokens are never written to disk; the config names `${LUNA_MCP_TOKEN}`.
 - A prompt goes after `--`: Claude Code's `--mcp-config` takes any number of
   files and swallowed the prompt as one more.
