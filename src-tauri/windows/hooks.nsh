@@ -1,5 +1,16 @@
 ; Luna's own steps in the NSIS installer (tauri.conf.json → installerHooks).
 
+!macro NSIS_HOOK_POSTINSTALL
+  ; The install folder outside Program Files takes the ACL of the folder it is
+  ; in, which on a second drive commonly lets every signed-in user change it:
+  ; replace the exe, plant a DLL beside it. The exe just installed gives it a
+  ; DACL of its own, by SID (paths.rs `protect_install_from_args`). Also on an
+  ; update, which runs this installer, so a copy installed before is closed
+  ; at its next update.
+  nsExec::Exec '"$INSTDIR\${MAINBINARYNAME}.exe" --protect-install-dir'
+  Pop $0
+!macroend
+
 !macro NSIS_HOOK_PREUNINSTALL
   ; The sessions run in Luna's core, a process started from a copy of the exe
   ; under the data folder. Left running, it would keep its sessions going with
