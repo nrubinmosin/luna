@@ -195,8 +195,7 @@ fn publish(st: &mut State, summary: &Summary) {
 enum Effect {
     Hold(bool),
     Countdown { quiet_for_s: u64 },
-    // lang-check: allow
-    Cancelled,
+    Canceled,
     Fire(Action),
 }
 
@@ -226,8 +225,7 @@ fn advance(st: &mut State, keep_awake: bool, summary: &Summary, now: u64) -> Vec
         if let Some(ends) = st.countdown_ends_at_ms {
             if blocked {
                 st.countdown_ends_at_ms = None;
-                // lang-check: allow
-                out.push(Effect::Cancelled);
+                out.push(Effect::Canceled);
             } else if now >= ends && !st.firing {
                 st.firing = true;
                 st.countdown_ends_at_ms = None;
@@ -283,8 +281,7 @@ pub fn tick(summary: &Summary) {
                     crate::log::warn("power", &format!("awake hold let go: nothing busy for a minute; last held by {}", st.held_by));
                 }
             }
-            // lang-check: allow
-            Effect::Cancelled => {
+            Effect::Canceled => {
                 crate::log::warn("power", &format!("countdown canceled: {} busy, {} waiting", summary.busy, summary.waiting));
             }
             Effect::Countdown { quiet_for_s } => {
@@ -901,8 +898,7 @@ mod tests {
         let quiet = board(0, 0, Some(now - 1000));
         assert!(advance(&mut st, false, &quiet, now).iter().any(|e| matches!(e, Effect::Countdown { .. })));
         assert!(crate::agents::riders_go(false, rest_owed, fresh, now, quiet.busy));
-        // lang-check: allow
-        assert_eq!(advance(&mut st, false, &at_work, now + 1000), vec![Effect::Cancelled], "and its caller's turn stops the count");
+        assert_eq!(advance(&mut st, false, &at_work, now + 1000), vec![Effect::Canceled], "and its caller's turn stops the count");
     }
 
     fn armed(action: Action, quiet_s: u64) -> State {
@@ -1017,8 +1013,7 @@ mod tests {
         st.admitted = 0;
         assert_eq!(advance(&mut st, true, &quiet, 120_000), vec![Effect::Countdown { quiet_for_s: 120 }]);
         st.admitted = 1;
-        // lang-check: allow
-        assert_eq!(advance(&mut st, true, &quiet, 121_000), vec![Effect::Cancelled]);
+        assert_eq!(advance(&mut st, true, &quiet, 121_000), vec![Effect::Canceled]);
     }
 
     #[test]
@@ -1097,8 +1092,7 @@ mod tests {
         let mut st = armed(Action::Hibernate, 60);
         st.holding = true;
         assert_eq!(advance(&mut st, true, &board(0, 0, Some(0)), 60_000), vec![Effect::Countdown { quiet_for_s: 60 }]);
-        // lang-check: allow
-        assert_eq!(advance(&mut st, true, &board(0, 1, None), 70_000), vec![Effect::Cancelled]);
+        assert_eq!(advance(&mut st, true, &board(0, 1, None), 70_000), vec![Effect::Canceled]);
         assert!(st.armed.is_some());
         assert_eq!(st.countdown_ends_at_ms, None);
         // The quiet window starts over from the new idle stretch.

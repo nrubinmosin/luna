@@ -41,8 +41,7 @@ const HISTORY_LAST: usize = 400;
 
 const RUNNING: u8 = 0;
 const COMMITTED: u8 = 1;
-// lang-check: allow
-const CANCELLED: u8 = 2;
+const CANCELED: u8 = 2;
 
 /// How long a call that has been answered stays where a cancel finds it: a
 /// client that cancels as the response crosses its cancel drops it unread.
@@ -62,10 +61,8 @@ impl Call {
         Call { state: AtomicU8::new(RUNNING), undo: Mutex::new(None) }
     }
 
-    // lang-check: allow
-    pub fn cancelled(&self) -> bool {
-        // lang-check: allow
-        self.state.load(Ordering::SeqCst) == CANCELLED
+    pub fn canceled(&self) -> bool {
+        self.state.load(Ordering::SeqCst) == CANCELED
     }
 
     /// Commits the call to its response, once the hand-over `undo` reverses
@@ -85,8 +82,7 @@ impl Call {
     }
 
     pub(crate) fn cancel(&self) {
-        // lang-check: allow
-        if self.state.compare_exchange(RUNNING, CANCELLED, Ordering::SeqCst, Ordering::SeqCst).is_err()
+        if self.state.compare_exchange(RUNNING, CANCELED, Ordering::SeqCst, Ordering::SeqCst).is_err()
             && self.state.load(Ordering::SeqCst) == COMMITTED
         {
             let undo = self.undo.lock().unwrap_or_else(|e| e.into_inner()).take();
@@ -188,8 +184,7 @@ pub fn handle(caller: &str, body: &str) -> Option<Value> {
             let call_out = InFlight::start(caller, &id);
             let r = call(caller, &params, &call_out.call);
             // A canceled request gets no response.
-            // lang-check: allow
-            if call_out.call.cancelled() {
+            if call_out.call.canceled() {
                 return None;
             }
             Ok(r)
@@ -420,8 +415,7 @@ fn call(caller: &str, params: &Value, this: &Call) -> Value {
         line.push_str(&format!(" ({})", set.join(" ")));
     }
     let ms = started.elapsed().as_millis();
-    // lang-check: allow
-    if this.cancelled() {
+    if this.canceled() {
         crate::log::info("mcp", &format!("{line} canceled by the client after {ms}ms"));
     } else if out["isError"] == true {
         let e = out["content"][0]["text"].as_str().unwrap_or("");
@@ -686,10 +680,8 @@ mod tests {
         let other = InFlight::start("cancel-test", &json!("7"));
         // lang-check: allow
         assert!(handle("cancel-test", r#"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":7}}"#).is_none());
-        // lang-check: allow
-        assert!(call.call.cancelled());
-        // lang-check: allow
-        assert!(!other.call.cancelled(), "a string id is another call");
+        assert!(call.call.canceled());
+        assert!(!other.call.canceled(), "a string id is another call");
         drop(call);
         assert!(!in_flight().lock().unwrap().contains_key(&("cancel-test".to_string(), "7".to_string())));
     }
@@ -712,8 +704,7 @@ mod tests {
         // even once the call has ended, puts the answer back, once.
         let late = InFlight::start("late-cancel", &json!(3));
         assert!(late.call.commit(undo()));
-        // lang-check: allow
-        assert!(!late.call.cancelled());
+        assert!(!late.call.canceled());
         drop(late);
         // lang-check: allow
         let cancel = r#"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":3}}"#;
