@@ -522,7 +522,7 @@ pub(super) fn conversation_on_disk(id: &str, provider: Provider, folder: &str, a
 mod tests {
     use super::*;
     use crate::agents::delivery::{deliver_held, is_held};
-    use crate::agents::notice_line;
+    use crate::agents::notifier::lines::notice_line;
     use crate::agents::notifier::{owed_stands, Settled, CALLER_RETURN_MS};
     use crate::agents::owed::{last_shown, owe_from};
     use crate::agents::registry::{gone_from_the_window, parent_of, reg, register};

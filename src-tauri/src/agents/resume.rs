@@ -328,7 +328,7 @@ fn resume_chat(pty: &crate::pty::PtyManager, id: &str) {
 mod tests {
     use super::*;
     use crate::agents::delivery::{needle_of, GoingIn, Held, NEEDLE};
-    use crate::agents::notice_line;
+    use crate::agents::notifier::lines::notice_line;
     use crate::agents::notifier::{Settled, CALLER_RETURN_MS, NOTICE_TAG};
     use crate::agents::owed::{resumed, Owed};
     use crate::agents::persist::{chats_now, ties_in, SavedSend, SESSION_RETURN_MS};

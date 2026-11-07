@@ -2,18 +2,21 @@
 //! what it is owed has come (an answer, a prompt, an exit), and the luna_notify
 //! tool's desktop notification.
 
+pub(super) mod lines;
+
 use crate::agents::ask::live;
 use crate::agents::delivery::{still_starting, type_text, TypingInto, DRAFT_ALERT_MS};
 use crate::agents::lost::{take_undelivered, worktrees_left_line};
+use crate::agents::notifier::lines::{
+    count_notice, last_notice, notice_line, notice_turn, pair_stopped, standing_line, BACKGROUND_GRACE_MS, BREAKER_NOTICES,
+    BREAKER_WINDOW_MS,
+};
 use crate::agents::owed::Owed;
 use crate::agents::persist::{core_up_ms, SESSION_RETURN_MS};
 use crate::agents::registry::{chat_name, label, parent_of, reg, waits_on_helpers, Known, Registry};
 use crate::agents::spawn::settle::{settle_spawns, spawn_news};
 use crate::agents::teardown::reap;
-use crate::agents::{
-    budget_news, count_notice, last_notice, notice_line, notice_turn, pair_stopped, quota_file, quota_from, quota_news, save_quota_told,
-    standing_line, your_helper, BudgetNews, QuotaNews, BACKGROUND_GRACE_MS, BREAKER_NOTICES, BREAKER_WINDOW_MS,
-};
+use crate::agents::{budget_news, quota_file, quota_from, quota_news, save_quota_told, your_helper, BudgetNews, QuotaNews};
 use crate::provider::Provider;
 use crate::throttle::now_ms;
 use std::collections::HashMap;
@@ -719,12 +722,12 @@ fn breaker_tripped(caller: &str, id: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agents::notifier::lines::{notice_line, BACKGROUND_GRACE_MS, QUIET_TURN_MS};
     use crate::agents::owed::{owe_from, retried, Owed};
     use crate::agents::registry::{reg, register};
     use crate::agents::teardown::forget;
     use crate::agents::tests::job_over_helper;
     use crate::agents::wait::{Reserved, WaitOut};
-    use crate::agents::{notice_line, BACKGROUND_GRACE_MS, QUIET_TURN_MS};
 
     #[test]
     fn a_wait_out_holds_the_notice_for_a_while() {

@@ -3,12 +3,13 @@
 //! calls it, which token is its, whose it is and whom it may reach.
 
 use crate::agents::delivery::Held;
+use crate::agents::notifier::lines::NoticeTurn;
 use crate::agents::owed::{Owed, Receipt};
 use crate::agents::persist::{Opening, CHATS_FROZEN};
 use crate::agents::resume::ChatResume;
 use crate::agents::spawn::{Pending, SpawnTaken};
 use crate::agents::teardown::{forget, Auto, Reparented};
-use crate::agents::{NoticeTurn, QuotaTold};
+use crate::agents::QuotaTold;
 use crate::provider::Provider;
 use crate::throttle::now_ms;
 use std::collections::HashMap;

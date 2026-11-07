@@ -5,12 +5,12 @@ use crate::agents::ask::{ask_of, live, state_of, Ask};
 use crate::agents::delivery::{is_held, screen_of, POLL};
 use crate::agents::lost::{lost_answer, still_all_lost, undelivered_note};
 use crate::agents::notifier::job_end_stood;
+use crate::agents::notifier::lines::{news_for_parent, real_turn_past, verdict, Verdict};
 use crate::agents::owed::{hand_over, last_shown, looked, Owed, QUEUED_GRACE_MS};
 use crate::agents::read::{failure_of, transcript_found, transcript_path, MAX_TEXT};
 use crate::agents::registry::{authorize_view, reg, waits_on_helpers, DEV_CALLER};
 use crate::agents::resume::resume_pending;
 use crate::agents::said::{answer_file, answer_text, replies_since, said_since, Said};
-use crate::agents::{news_for_parent, real_turn_past, verdict, Verdict};
 use crate::provider::Provider;
 use crate::throttle::now_ms;
 use serde::Serialize;
@@ -666,13 +666,13 @@ pub(super) fn reply_text(id: &str, replies: &Said, cut: bool) -> Option<String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agents::notifier::lines::BACKGROUND_GRACE_MS;
     use crate::agents::notifier::{held_for_wait, WAIT_HOLD_MS};
     use crate::agents::owed::{hand_over, last_shown, owe_from, retried, shown, Owed};
     use crate::agents::persist::ties_of;
     use crate::agents::read::{transcripts, MAX_TEXT};
     use crate::agents::registry::{reg, register};
     use crate::agents::teardown::forget;
-    use crate::agents::BACKGROUND_GRACE_MS;
 
     /// A caller and two background helpers of its, one whose answer is on
     /// disk and owed, the other in the middle of a turn.
