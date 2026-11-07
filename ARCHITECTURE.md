@@ -136,7 +136,8 @@ src-tauri/src/
                 twelve luna_* tools with short descriptions (~2k tokens), offered to sessions given
                 them; luna_permission only to a background Claude Code helper's CLI
   agents.rs     registry of sessions with tools and those they spawned: tokens, kinship,
-                rights (kill/delete — descendants only; sessions, send, read, wait — all), spawn via the frontend
+                rights (kill/delete, answer's allow/keys — descendants only; sessions, send, read, wait — all),
+                a helper capped at its caller's privilege (docs/security/threat-model.md), spawn via the frontend
                 (agent://spawn ↔ agent_spawned), send into the pty, read from the transcript, wait on activity, kill, delete (+worktree);
                 notifier: an uncollected helper answer is typed to the caller when it is free;
                 autoDelete helpers are deleted once they have served
@@ -236,7 +237,8 @@ src-tauri/src/
                 for the next launch, event loop hangs and machine sleep; the tray's Restart
                 window (a new window started as `--after <pid>`, the core left running)
   paths.rs      data_dir(): next to the exe when writable, else LOCALAPPDATA\luna — settings,
-                log, attachments, CLIs and (Windows) the WebView profile; the test
+                log, attachments, CLIs and (Windows) the WebView profile; on Windows
+                verified private at every core start (protect_data_dir); the test
                 build (LUNA_FLAVOR=test) keeps everything next to its exe in test-build/
   lib.rs        Builder + generate_handler
 ```
@@ -587,8 +589,10 @@ src-tauri/src/
   chat folder, cwd, the CLI's sessionId, path to the transcript/rollout, pid; the frontend sends chat names
   as `chat_names` on every change), `send`, which writes into any of them except its own, and
   `read`/`wait` — also on any except its own (the transcript is on disk anyway, and whoever wrote must
-  be able to collect the answer); `kill`/`delete` — descendants only;
-  tool depth 1; at most 8 descendants. Children outlive the parent (`forget`): each passes to the parent's own parent, which reached it already through
+  be able to collect the answer); `kill`/`delete` — descendants only; `answer` with `allow`, `keys` or on a
+  CLI's own list — descendants only, at the caller's privilege; a helper runs at no more privilege than its
+  caller unless `helpersAboveCaller` is on, and never in or above the data dir (the trust contract in
+  docs/security/threat-model.md); tool depth 1; at most 8 descendants. Children outlive the parent (`forget`): each passes to the parent's own parent, which reached it already through
   that one (a visible one's row hears, `agent://reparent`, as it names its parent to every spawn, a core started later included); with none it is an orphan (`Known::orphan`, saved in `Ties`): no agent has a claim on it, a visible one stays a row with ↳ (a child in another folder also stands apart, but with the parent's name
   in the tooltip), and a background one is listed under "Helpers with no chat" (`LooseHelpers`, any helper whose line up through helpers ends at no chat row) and joins `auto`, since no row shows it and nobody awaits its answer; a helper started without a folder works where its caller does, worktree and all
   (`agents::caller_worktree`, both providers). Deleting a child via `delete` removes its worktree if asked — `remove -f -f`,
