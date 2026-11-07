@@ -142,7 +142,7 @@ in section 6.
 | STRIDE | Threat | Status |
 | --- | --- | --- |
 | T, S | On-path attacker or compromised release host serves a malicious build | mitigated: HTTPS endpoint on GitHub Releases and a minisign public key pinned in the app (`tauri.conf.json:70-76`); Tauri refuses unsigned bundles |
-| T | Signing key theft | accepted (R7) |
+| T | Signing key theft | reduced: the key is a secret of the `release` environment, handed only to runs of the release workflow on a `v*` tag after a reviewer approves, and kept from the package install ([releasing.md](../releasing.md)); a leak is still accepted (R7) |
 
 ### B7. Core to vendor CLI releases (managed CLI downloads)
 

@@ -18,7 +18,7 @@ use crate::admit::{Deadline, Slot, Slots};
 use crate::ipc::{self, Discovery, Event, Hello, Req, Res, Welcome};
 use std::io::{self, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{sync_channel, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
@@ -86,18 +86,24 @@ pub fn from_args() -> bool {
 }
 
 /// `luna --core-fingerprint <file>`: writes this build's core fingerprint to
-/// the file and returns true. For scripts/release.ps1, which publishes it with the
-/// update so a window can tell an update that leaves the core as it is; an
-/// exe built for the windows subsystem has no console to print to.
+/// the file and returns true; an exe built for the windows subsystem has no
+/// console to print to. The release publishes the fingerprint with the update,
+/// so a window can tell an update that leaves the core as it is, and reads it
+/// from the file build.rs leaves beside the exe; on Windows,
+/// scripts/release-bundle.ps1 asks the exe too and stops if the two differ.
 pub fn fingerprint_from_args() -> bool {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) != Some("--core-fingerprint") {
         return false;
     }
     if let Some(file) = args.get(1) {
-        let _ = std::fs::write(file, env!("LUNA_CORE_FP"));
+        let _ = write_fingerprint(Path::new(file));
     }
     true
+}
+
+fn write_fingerprint(file: &Path) -> io::Result<()> {
+    std::fs::write(file, env!("LUNA_CORE_FP"))
 }
 
 /// `luna --stop-core`: has the running core stop — its sessions quit first —
@@ -511,5 +517,21 @@ mod tests {
         });
         assert!(got.is_err());
         assert!(took < Duration::from_secs(1), "{took:?}");
+    }
+
+    /// What build.rs leaves beside the exe, read when this build was compiled:
+    /// the file the release publishes in `latest.json` without running the exe.
+    const LEFT_BESIDE_THE_EXE: &str = include_str!(concat!(env!("OUT_DIR"), "/../../../core-fingerprint.txt"));
+
+    #[test]
+    fn the_flag_reports_the_fingerprint_left_beside_the_exe() {
+        let dir = crate::paths::data_dir().join("coreproc-tests");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("core-fingerprint.txt");
+        write_fingerprint(&file).unwrap();
+        let reported = std::fs::read_to_string(&file).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(reported, LEFT_BESIDE_THE_EXE);
+        assert!(reported.len() == 16 && reported.bytes().all(|b| b.is_ascii_hexdigit()), "{reported:?}");
     }
 }
