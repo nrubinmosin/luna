@@ -3258,6 +3258,12 @@ fn spawn_with(caller: &str, mut params: SpawnParams, replaces: Option<u64>, stil
         let above = caller == DEV_CALLER || crate::settings::get().helpers_above_caller;
         let run_in = in_worktree.clone().or_else(|| params.folder.clone()).unwrap_or_default();
         settle_mode(&mut params, provider, (me.provider, &me.settings), &account.path, &run_in, above)?;
+        // A visible helper's CLI takes its opening prompt as typed input would
+        // be taken, a command among it (`command_reach`); it is its caller's own.
+        if params.visible.unwrap_or(false) {
+            let approver = (!above).then(|| Privilege::of_caller(me.provider, &me.settings));
+            command_reach(&params.prompt, caller == DEV_CALLER, true, approver)?;
+        }
         let account_choice = picked.map(|(_, choice)| choice);
         let taken = SpawnUnderWay::begin(caller, &params, &account.path, in_worktree.as_deref(), replaces)?;
         if !params.visible.unwrap_or(false) {
@@ -4051,6 +4057,9 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool) -> Result<Sent,
     // time, the text is held like any other (`hold`), and goes in when it can.
     // A background helper has no terminal: its queue takes turns by itself.
     plain_text(text)?;
+    if !crate::background::has(id) {
+        command_reach_now(caller, id, text)?;
+    }
     let terminal = if crate::background::has(id) { None } else { TypingInto::wait_for(id, TYPING_WAIT) };
     let (state_before, ask) = state_of(id);
     if let Some(a) = ask.as_ref().filter(|a| a.blocking && !interrupt) {
@@ -4157,6 +4166,8 @@ fn put_in(
     baseline: u32,
     interrupted: bool,
 ) -> Result<Option<Sent>, String> {
+    // Held text too comes through here, typed long after it was taken.
+    command_reach_now(caller, id, text)?;
     let pty = crate::pty::manager();
     // After an Esc the TUI is between turns whatever the sampler has caught
     // up with: the text is a prompt of its own, not one queued.
@@ -4560,6 +4571,19 @@ fn resume_chat(pty: &crate::pty::PtyManager, id: &str) {
     // Kept on disk across cores: read back, it is checked as it was when taken.
     if plain_text(&text).is_err() {
         return call_off_resume(id, "its kept text holds control characters, which would go in as keys");
+    }
+    // Text a CLI would take as a command goes in only if everyone whose words
+    // it carries may type one there now: its parent's opening prompt, and what
+    // was held for it.
+    if command_prefix(&text).is_some() {
+        let senders: Vec<String> = {
+            let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+            let parent = r.known.get(id).and_then(|k| k.parent.clone());
+            parent.into_iter().chain(r.held.iter().filter(|h| h.id == id).map(|h| h.caller.clone())).collect()
+        };
+        if senders.is_empty() || senders.iter().any(|s| command_reach_now(s, id, &text).is_err()) {
+            return call_off_resume(id, "its kept text starts with a command to the CLI, which its sender may not type there");
+        }
     }
     let typed = spill(&text);
     mark_going_in(id, &typed, cursor, None);
@@ -4996,6 +5020,44 @@ fn answerer(caller: &str, id: &str) -> (bool, Option<Privilege>) {
     let approver = (caller != DEV_CALLER && !crate::settings::get().helpers_above_caller)
         .then(|| me.map_or(Privilege::LEAST, |(p, s)| Privilege::of_caller(p, &s)));
     (own, approver)
+}
+
+/// The first non-blank character a CLI's composer reads as a command rather
+/// than a prompt: `/` (slash commands; Codex's `/permissions` switches its
+/// sandbox with no dialog) and `!` (shell mode: the command runs as the user,
+/// outside the model and its sandbox), in both CLIs. Claude Code 2.1.318 has
+/// no `#` shortcut (its hints: `!`, `/`, `@` for file paths, `?` for help).
+fn command_prefix(text: &str) -> Option<char> {
+    text.trim_start().chars().next().filter(|c| matches!(c, '/' | '!'))
+}
+
+/// Text typed into a visible session is a prompt for its model. One the CLI
+/// would take as a command goes only from a caller at full access into its
+/// own helper (`approver` None: the user's setting), or from the dev caller;
+/// it is refused, not escaped, as no escape is known to hold in both CLIs.
+/// A background helper takes text as a prompt, never as a command line, and
+/// is not held to this.
+fn command_reach(text: &str, dev: bool, own: bool, approver: Option<Privilege>) -> Result<(), String> {
+    let Some(c) = command_prefix(text) else { return Ok(()) };
+    let full = Privilege { reach: Reach::Full, net: true };
+    if dev || (own && approver.is_none_or(|a| a.covers(full))) {
+        return Ok(());
+    }
+    let what = if c == '/' { "a slash command" } else { "shell mode, a command run as the user" };
+    Err(format!(
+        "text starting with \"{c}\" is {what} to the CLI, not a prompt: only a caller at full access types one, into \
+         its own helpers. Start the text with something else"
+    ))
+}
+
+/// `command_reach` for a caller and a target as they stand now: checked when
+/// text is taken and again when it is typed, held text and resumes included.
+fn command_reach_now(caller: &str, id: &str, text: &str) -> Result<(), String> {
+    if command_prefix(text).is_none() {
+        return Ok(());
+    }
+    let (own, approver) = answerer(caller, id);
+    command_reach(text, caller == DEV_CALLER, own, approver)
 }
 
 /// Text an agent sends, refused if it holds what a terminal takes as keys:
@@ -12782,5 +12844,50 @@ mod tests {
     fn a_spawns_prompt_is_plain_text_before_anything_else() {
         let p = SpawnParams { prompt: "go\x1b[201~\ry".into(), ..Default::default() };
         assert!(spawn("nobody", p).err().unwrap().contains("control character"));
+    }
+
+    #[test]
+    fn text_a_cli_reads_as_a_command_goes_only_from_full_access_into_ones_own_helper() {
+        for text in ["/permissions :workspace", "! rm -rf build", "!cmd", "  /approve-for-me", "\n\t! whoami", "\u{3000}/x"] {
+            assert!(command_prefix(text).is_some(), "{text:?}");
+        }
+        for text in ["fix /src/main.rs", "why ! there", "# heading", "@file.rs look", "?", "", "   "] {
+            assert!(command_prefix(text).is_none(), "{text:?}");
+        }
+        let at = |reach, net| Some(Privilege { reach, net });
+        let full = at(Reach::Full, true);
+        for text in ["/permissions :workspace", "  ! cmd"] {
+            for has in [at(Reach::ReadOnly, false), at(Reach::Asks, false), at(Reach::Commands, false), at(Reach::Reviewed, true)] {
+                for own in [true, false] {
+                    assert!(command_reach(text, false, own, has).unwrap_err().contains("not a prompt"), "{text:?} {has:?} own {own}");
+                }
+            }
+            assert_eq!(command_reach(text, false, true, full), Ok(()), "full access, its own helper");
+            assert!(command_reach(text, false, false, full).is_err(), "never into another's session, the user's chats included");
+            assert_eq!(command_reach(text, false, true, None), Ok(()), "the user's setting, on its own helper");
+            assert!(command_reach(text, false, false, None).is_err(), "the setting does not reach others' sessions");
+            assert_eq!(command_reach(text, true, false, at(Reach::ReadOnly, false)), Ok(()), "the dev caller");
+        }
+        assert_eq!(command_reach("plain words", false, false, at(Reach::ReadOnly, false)), Ok(()));
+    }
+
+    #[test]
+    fn a_command_is_checked_again_when_held_text_is_typed() {
+        let none = serde_json::json!({ "permissionMode": "default" });
+        let bypass = serde_json::json!({ "permissionMode": "bypassPermissions" });
+        register("cr-asks", Provider::Claude, "C:\\p", "C:\\acc\\one", None, true, none.clone());
+        register("cr-full", Provider::Claude, "C:\\p", "C:\\acc\\one", None, true, bypass);
+        register("cr-kid", Provider::Codex, "C:\\p", "C:\\acc\\one", Some("cr-asks"), false, none.clone());
+        register("cr-kid2", Provider::Codex, "C:\\p", "C:\\acc\\one", Some("cr-full"), false, none);
+        // `put_in` types what `send` took and what was held: refused there
+        // before anything reaches the terminal.
+        let e = put_in("cr-asks", "cr-kid", "/permissions :workspace", None, 0, false).err().unwrap();
+        assert!(e.contains("not a prompt"), "{e}");
+        assert!(put_in("cr-full", "cr-kid", " !whoami", None, 0, false).err().unwrap().contains("not a prompt"), "not its helper");
+        assert_eq!(command_reach_now("cr-full", "cr-kid2", "/permissions :workspace"), Ok(()));
+        assert_eq!(command_reach_now("cr-asks", "cr-kid", "permissions, please"), Ok(()));
+        for id in ["cr-kid", "cr-kid2", "cr-asks", "cr-full"] {
+            forget(id);
+        }
     }
 }
