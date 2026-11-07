@@ -1483,7 +1483,7 @@ fn in_library(dirs: &Dirs, dest: &Path) -> bool {
 /// `p` with the part of it that is there canonicalized, links and junctions
 /// followed, and the rest put back on. Both sides of a comparison go through
 /// it, so they carry the same form (`\\?\` on Windows).
-fn resolved(p: &Path) -> PathBuf {
+pub(crate) fn resolved(p: &Path) -> PathBuf {
     let mut rest = Vec::new();
     let mut at = p;
     loop {

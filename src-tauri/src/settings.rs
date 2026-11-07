@@ -21,6 +21,9 @@ pub struct Settings {
     /// `provider/name` of accounts agents may not spawn on (agents.rs). Every
     /// account is available unless listed here.
     pub agent_blocked_accounts: Vec<String>,
+    /// Helpers may run with more privilege than the session spawning them
+    /// (agents.rs `cap`). Off: a helper is held to its caller's.
+    pub helpers_above_caller: bool,
     /// Per provider, the account whose settings file the others copy
     /// (account_settings.rs), by name.
     pub settings_parents: SettingsParents,
@@ -214,6 +217,7 @@ impl Default for Settings {
             quiet_window_s: 120,
             power_action: "shutdown".into(),
             agent_blocked_accounts: Vec::new(),
+            helpers_above_caller: false,
             settings_parents: SettingsParents::default(),
             settings_sync_on_start: false,
             fetch_before_worktree: true,
