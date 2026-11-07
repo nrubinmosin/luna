@@ -384,6 +384,8 @@ fn settle_batch(id: &str, mut res: Reservation) -> Option<Batch> {
                 crate::agents::command_reach_now(from, id, text).err().map(|why| (qid.clone(), from.clone(), why))
             })
             .collect();
+        // Whether the refused text was dropped here, and so is to be told of.
+        let mut dropped = false;
         let step = {
             let mut r = lock();
             let ours = |e: &Entry| e.run.as_ref().is_some_and(|run| run.claim == res.claim && run.pid.is_none());
@@ -393,14 +395,25 @@ fn settle_batch(id: &str, mut res: Reservation) -> Option<Batch> {
                 // A stop came while its senders were asked: the batch went with
                 // it, and the claim, which no process will take up now, goes
                 // back, the turn it was for counted as ended (as `run_turn`
-                // counts one that could not start).
+                // counts one that could not start). What was sent meanwhile,
+                // queued behind that claim, is the next turn's, as after any
+                // turn: reserved and asked about the same way. Not while a stop
+                // is still ending what was left running, or the helper is being
+                // opened as a chat: each takes the queue up itself once the
+                // claim has gone.
                 Some(e) if ours(e) && stopped(e) => {
                     e.run = None;
                     e.turns_ended += 1;
                     note(e, "stopped before its turn began");
-                    Step::Released
+                    if !e.queue.is_empty() && !e.ending_left && !e.promoting {
+                        claim(e);
+                        Step::Again(reserve(e))
+                    } else {
+                        Step::Released
+                    }
                 }
                 Some(e) if ours(e) => {
+                    dropped = true;
                     e.in_flight.retain(|q| !refused.iter().any(|(qid, _, _)| *qid == q.id));
                     stamp(&mut e.in_flight);
                     let carried = e.in_flight.len();
@@ -418,7 +431,7 @@ fn settle_batch(id: &str, mut res: Reservation) -> Option<Batch> {
             }
         };
         // Taken over or stopped meanwhile: nothing of it was dropped here.
-        if !matches!(step, Step::Lost | Step::Released) {
+        if dropped {
             for (_, from, why) in &refused {
                 crate::log::warn("background", &format!("{}: dropped text queued by {from}: {why}", crate::agents::label(id)));
             }
@@ -5182,6 +5195,37 @@ mod tests {
             let e = &r.entries[id];
             assert!(e.run.is_none(), "no processless claim left behind");
             assert_eq!(e.turns_ended, ended + 1);
+        }
+
+        // Killed, then sent text, which queues behind the stopped claim: that
+        // turn counts as ended and the text starts the next, as after any turn.
+        let res = fresh();
+        let ended = lock().entries[id].turns_ended;
+        stop(lock().entries.get_mut(id).unwrap());
+        lock().entries.get_mut(id).unwrap().queue.push(Queued::new(None, "after the kill".into(), Vec::new()));
+        let next = settle_batch(id, res).expect("the queued text starts a turn");
+        assert_eq!(next.text, "after the kill");
+        {
+            let r = lock();
+            let e = &r.entries[id];
+            assert_eq!(e.turns_ended, ended + 1, "the stopped turn is counted, the new one not yet");
+            assert!(e.run.as_ref().is_some_and(|run| run.pid.is_none() && !run.stopped), "claimed afresh for it");
+            assert!(e.queue.is_empty() && e.in_flight.len() == 1);
+        }
+        // The same while the kill is still ending what was left running: the
+        // claim goes back and the queue waits for the kill to take it up.
+        let res = fresh();
+        {
+            let mut r = lock();
+            let e = r.entries.get_mut(id).unwrap();
+            stop(e);
+            e.ending_left = true;
+            e.queue.push(Queued::new(None, "after the kill".into(), Vec::new()));
+        }
+        assert!(settle_batch(id, res).is_none());
+        {
+            let r = lock();
+            assert!(r.entries[id].run.is_none() && r.entries[id].queue.len() == 1);
         }
 
         // Text sent meanwhile is queued behind the claim: the batch runs, it waits.
