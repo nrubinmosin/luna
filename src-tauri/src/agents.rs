@@ -1640,8 +1640,7 @@ pub fn save_chats() {
         return;
     }
     let path = chat_ties_file();
-    let tmp = path.with_extension("json.tmp");
-    match std::fs::write(&tmp, &bytes).and_then(|()| std::fs::rename(&tmp, &path)) {
+    match crate::secret::write_private(&path, &bytes) {
         Ok(()) => *last = bytes,
         Err(e) => crate::log::warn("agents", &format!("could not save the chats' ties to {}: {e}", path.display())),
     }
@@ -3677,7 +3676,7 @@ fn spill(text: &str) -> String {
     }
     let dir = notes_dir();
     let path = dir.join(format!("{}.md", crate::background::mint_id()));
-    if std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&path, text)).is_err() {
+    if std::fs::create_dir_all(&dir).and_then(|()| crate::secret::write_private(&path, text.as_bytes())).is_err() {
         return text.to_string();
     }
     format!(
@@ -6666,7 +6665,7 @@ fn note_file(id: &str, text: &str) -> Option<std::path::PathBuf> {
         let _ = std::fs::File::options().write(true).open(&path).and_then(|f| f.set_modified(std::time::SystemTime::now()));
         return Some(path);
     }
-    std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&path, text)).ok().map(|()| path)
+    std::fs::create_dir_all(&dir).and_then(|()| crate::secret::write_private(&path, text.as_bytes())).ok().map(|()| path)
 }
 
 /// Whether a visible helper has nothing to carry on from, as one
@@ -7512,8 +7511,7 @@ fn save_quota_told() {
     let _saving = SAVING.lock().unwrap_or_else(|e| e.into_inner());
     let bytes = quota_bytes(&reg().lock().unwrap_or_else(|e| e.into_inner()).quota_told);
     let path = quota_file();
-    let tmp = path.with_extension("json.tmp");
-    if let Err(e) = std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, &path)) {
+    if let Err(e) = crate::secret::write_private(&path, &bytes) {
         crate::log::warn("agents", &format!("could not save {}: {e}", path.display()));
     }
 }

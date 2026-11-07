@@ -2613,8 +2613,7 @@ pub fn save() {
         return;
     }
     let path = saved_file();
-    let tmp = path.with_extension("json.tmp");
-    match std::fs::write(&tmp, &bytes).and_then(|()| std::fs::rename(&tmp, &path)) {
+    match crate::secret::write_private(&path, &bytes) {
         Ok(()) => *last = bytes,
         Err(e) => crate::log::warn("background", &format!("could not save the helpers to {}: {e}", path.display())),
     }

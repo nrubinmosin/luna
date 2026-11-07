@@ -82,11 +82,7 @@ fn read() -> Option<Run> {
 /// the next start to misread.
 fn save(run: &Run) {
     let Ok(json) = serde_json::to_string(run) else { return };
-    let p = marker();
-    let tmp = p.with_extension(if is_core() { "core.run.tmp" } else { "run.tmp" });
-    if std::fs::write(&tmp, json).is_ok() {
-        let _ = std::fs::rename(&tmp, &p);
-    }
+    let _ = crate::secret::write_private(&marker(), json.as_bytes());
 }
 
 /// When this boot of the machine began, to tell "Luna was killed" from "the

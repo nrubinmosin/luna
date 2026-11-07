@@ -300,20 +300,14 @@ pub fn update(f: impl FnOnce(&mut Settings)) -> Result<(), String> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
-    let lock = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(path.with_extension("json.lock"))
+    let lock = crate::secret::open_private(&path.with_extension("json.lock"), std::fs::OpenOptions::new().write(true))
         .map_err(|e| format!("settings lock: {e}"))?;
     lock.lock().map_err(|e| format!("settings lock: {e}"))?;
 
     let mut s = read(&path)?;
     f(&mut s);
     let raw = serde_json::to_string_pretty(&s).map_err(|e| e.to_string())?;
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, raw).map_err(|e| format!("write {}: {e}", tmp.display()))?;
-    std::fs::rename(&tmp, &path).map_err(|e| format!("write {}: {e}", path.display()))?;
+    crate::secret::write_private(&path, raw.as_bytes()).map_err(|e| format!("write {}: {e}", path.display()))?;
     if let Ok(mut c) = cache().lock() {
         *c = (s, stamp(&path));
     }
