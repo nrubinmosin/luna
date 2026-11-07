@@ -676,7 +676,8 @@ The gate runs every check in Docker on the pinned toolchains (Rust in
 `src-tauri/rust-toolchain.toml`, Node in `.node-version`), stops at the first failure and
 ends on a summary. CI (`.github/workflows/ci.yml`) runs the same scripts on every push to
 `master` and every pull request; the Windows tests are cross-built on Linux there and run on
-a Windows runner.
+a Windows runner. [docs/testing.md](docs/testing.md) sets out the test levels, including
+the live suite on real CLIs (`./scripts/live-tests.ps1`), which CI never runs.
 
 ## Screenshots
 
