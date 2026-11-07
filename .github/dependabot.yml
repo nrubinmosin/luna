@@ -1,0 +1,38 @@
+# Weekly, one pull request per ecosystem: each goes through the whole gate in CI.
+# Two pins stay manual, as Dependabot does not read them: the Rust toolchain
+# (src-tauri/rust-toolchain.toml with the FROM lines in docker/) and Node
+# (.node-version). A Docker bump of the rust image alone fails the gate's pin
+# check, which names the file to bump with it.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /src-tauri
+    schedule:
+      interval: weekly
+    groups:
+      cargo:
+        patterns: ['*']
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      npm:
+        patterns: ['*']
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: ['*']
+
+  - package-ecosystem: docker
+    directory: /docker
+    schedule:
+      interval: weekly
+    groups:
+      docker:
+        patterns: ['*']
