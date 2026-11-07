@@ -51,6 +51,14 @@ Rules for anyone (person or agent) changing Luna.
   beside its exe in `test-build/` (ignored by git), so it runs alongside the
   real one. `./scripts/test-build.ps1 -Run -DevCaller ...` also registers a scripted
   MCP caller for exercising Luna tools.
+- An agent runs the test build with `-Background` (implied by `-DevCaller`):
+  its window stays off screen, unfocused and off the taskbar, and keeps
+  working. Drive its UI only by targeted means aimed at the test build's own
+  windows (WebDriver on its WebView, messages to its own HWNDs, UI Automation
+  patterns on its own elements), never by anything that activates a window.
+  The owner's desktop is off limits: no global input (SendInput, keybd_event,
+  mouse_event, SendKeys, cursor moves), no SetForegroundWindow, nothing aimed
+  at a window that is not the test build's.
 - Anything that writes into account folders (settings, sync, helpers run end to
   end) is tried on throwaway accounts under `test-build/accounts`, not on real
   ones, and never through a junction or symlink to one: `scripts/test-build.ps1 -Run`
