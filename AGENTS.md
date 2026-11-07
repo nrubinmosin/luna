@@ -75,6 +75,17 @@ Rules for anyone (person or agent) changing Luna.
 - Everything in the repo is in US English: code, comments, UI strings, docs.
   Enforced by `pnpm check:text`.
 
+## Docs
+The docs live in `docs/` (index: `docs/README.md`) and are kept current with
+the code, in the same change.
+- Behavior a person sees goes in `docs/user-guide/`; how a part works (its
+  modules, invariants, failure modes) in `docs/architecture/`; a decision that
+  is costly to reverse in a new ADR in `docs/adr/`, from `0000-template.md`.
+- What a CLI was seen to do (a flag, a hook, a file format, a quirk) goes in
+  `docs/cli-compatibility.md`, with the version it was seen on.
+- Toolchains, scripts and CI are in `docs/development.md`; notable changes go
+  under [Unreleased] in `CHANGELOG.md`.
+
 ## Both providers
 Luna runs Claude Code and Codex side by side, and what one CLI does to a
 session the other usually has its own way of doing.

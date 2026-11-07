@@ -1,0 +1,190 @@
+# Power and lifecycle
+
+How Luna decides a session is busy, keeps the PC awake for it, powers off when
+everything is done, and how its own processes start, update and end.
+
+## Responsibility
+
+- Turn three noisy signals into one verdict per session: busy, waiting, idle,
+  stalled.
+- Hold the PC awake exactly as long as work moves, and fire the "when done" rule
+  only when nothing is busy or waiting.
+- Make sure nothing a session started runs on unowned after it is gone.
+- Start, link, update and end the window and core processes, and say why a run
+  ended.
+
+## Key modules
+
+| Path | What it holds |
+| --- | --- |
+| `activity/mod.rs` | per-session tracking, turn counts (`turns_ended`, `keep_count`), `Track::left` |
+| `activity/hooks.rs` | Claude Code's hooks as turn signals |
+| `activity/sample.rs` | the 5 s sampler: disk, processes, verdict |
+| `procs/` | Job Object per session, CPU/IO per process, the busy rule (`judge`), leftovers; `win.rs`, `unix.rs` |
+| `keeper/` | off Windows: the `--keep-ties` process, job records, `end_last_ties`, `end_tree` |
+| `asking.rs` | a turn that ended on the waiting marker |
+| `power/` | `mod.rs` state; `rule.rs` each tick; `machine.rs` firing and OS calls; `admission.rs` what a draining rule lets in; `commands.rs` incl. `luna_power` |
+| `coreproc.rs`, `corelink.rs`, `ipc.rs` | the core's life, the window's link, the frame protocol |
+| `lifecycle.rs` | exit reasons, the `--watch-exit` watcher, `luna.run`, Restart window |
+| `log.rs` | `luna.log` |
+| `watchdog.rs` | rebuilds a window whose WebView died |
+
+## Busy is measured
+
+Every 5 s `activity/` combines three signals per session:
+
+1. **The turn.** Claude Code: hooks (via the `--settings` file, posting to the
+   hub) checked against the registry. Codex: the rollout plus screen silence,
+   and an approval dialog recognized on the rendered screen.
+2. **Descendants** (`procs/`): at spawn the CLI goes into a Job Object that its
+   descendants inherit. Busy = CPU/IO growth over the window, or a process born
+   after the first turn began and still alive (how a background `sleep` is
+   caught). What the CLI starts in its first 30 s (`STARTUP_MS`: MCP servers,
+   its shell) is furniture; a program with a visible window of its own, and
+   everything under it, is the user's and left out.
+3. **Output** over the last 30 s.
+
+Rules between hooks and registry: the registry beats an "idle" from a hook; a
+hook's "waiting" beats the registry's "busy" (a permission prompt is inside a
+turn); the registry's `waiting` beats a hook's "busy". No mark is eternal: a
+hook's "busy" against an idle registry goes stale in 15 s; a hook's "waiting" at
+once when the registry's idle is newer (`statusUpdatedAt`), else in 60 s; the
+registry's "busy" against a hook's "idle" in 60 s without a hook. Without hooks
+(Codex, a session that survived a restart) the registry is believed as is.
+
+A session waiting on a dialog after an API error (`StopFailure`, or a last
+transcript line with `isApiErrorMessage`) is **stalled**: not `waiting`.
+
+**Subagents.** A subagent's hooks carry its `agent_id` and are never the turn's.
+Luna keeps the ones at work apart, from `SubagentStart` (or a first tool) to
+`SubagentStop`: while any is, the turn reads over (notices go in) but the
+session holds the machine like a job (`children_busy`, "N subagents" in the
+power chip). An idle registry for 15 s means none is left. Codex subagents are
+read off their rollouts (`codex::session::children_at_work`, set replaced each
+sample by `agents_on_disk`); the 15 s rule is Claude Code's only.
+
+**Waiting by the marker** (`asking.rs`): a user's chat (not a helper) whose turn
+is over and whose last message ends on a line holding the configured marker
+reads `waiting` with `marked`. Cleared by hand (`dismiss_waiting`), it stays
+cleared while the same words and time are shown. Activity keeps the turn idle,
+so power counts it as done.
+
+## Leftovers
+
+Doing something is measured per process (`procs::leftovers`): CPU at 1% of a
+core or 1 KiB/s of I/O between two samples at least 4 s apart (Windows counts
+CPU in 15.6 ms ticks; a polling `tail -F` used 0.5 ms/s and 250 B/s). Birth is
+not work: until 30 s old only CPU since start counts. What a turn left holds the
+machine until it has done nothing for 2 h on end (`LEFTOVER_HOLD_MS`): a
+Docker or remote client waits on work done elsewhere, but a Monitor's `tail -F`
+once kept a PC awake all night. `luna_list`'s `active` is work in the last 10
+min. When a session goes (delete, kill, Quit, a respawn), `procs::end_leftovers`
+ends what is still in its job, sparing windowed programs.
+
+## Process jobs
+
+Only a helper's job is tied to the core (`procs::tie`,
+`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`): a chat's CLI goes with its terminal when
+a core dies, a helper's has none and would run on unowned. Every orderly exit
+lets go first (`let_go`, `Drop for Job`); only a core's death kills windows a
+helper's turn opened.
+
+Off Windows the tie is the **keeper** (`keeper/`): this exe with `--keep-ties`,
+one per core once a helper has a turn, reading a pipe only the core writes; EOF
+is the core's death, on which it ends every job not let go of. It also checks the
+core by pid and start time every 2 s (on macOS a pipe becomes close-on-exec a
+moment late). Not `PR_SET_PDEATHSIG`: it fires when the spawning thread ends,
+reaches one child, and macOS has none. A job there is what carries its mark
+(`LUNA_JOB`; for Codex also `CODEX_THREAD_ID`, set after its environment
+filter), the turns' processes by pid and start time with their groups, and all
+below by parent link. Stops go top down; on Linux each signal through a pidfd,
+never to a group by number. Each tied job is a file in `<data>/tied-jobs/`, so letting go is one unlink a
+full disk does not refuse; the next core ends what is left before it takes
+helpers up (`end_last_ties`). A pid whose start time differs is another's and
+left alone, a file of another boot names nothing, and a job not seen out stays
+written down for the core after. Off Windows a job lists no
+leftovers (nothing tells a window from a job), so `children_busy` stays false
+there. `kill_tree` there is `keeper::end_tree`, the equivalent of `taskkill /T`: the
+process, what it started, and what is in a group or session one of those leads,
+stopped top down and looked below again so nothing forks out, then killed. So
+`luna_kill`, an interrupt, a core's stop and a chat that would not quit take the
+tool commands with them. In the core a live pid that is no child of the core is
+another program's and is left alone.
+
+## Keep-awake and "when done"
+
+- **Keep awake:** `PowerSetRequest(SystemRequired)` with a reason visible in
+  `powercfg /requests` while busy > 0, released 60 s after quiet. `waiting` does
+  not hold the machine but blocks shutdown; stalled does neither. While the rule
+  is armed the hold is always kept. Windows does not restart its idle timer for
+  the request: past the sleep timeout it sleeps the moment the hold goes.
+- **The automaton:** busy = 0 and waiting = 0 for `quiet_s` → a 60 s countdown
+  with a notification → action. Any activity cancels the count, not the rule.
+  Shutdown closes sessions (`shut_down`, 5 s grace for exit hooks) then
+  `shutdown /s /t 0`. Restart (Windows only, refused elsewhere at arming) sets a
+  RunOnce value with the window's exe (`--window-exe`), winds the core down
+  (`coreproc::wind_down`) and runs `shutdown /r /t 0`. Sleep / hibernate is
+  `SetSuspendState`; sessions live on, and the clock jump on wake resets the
+  window and countdown.
+- **Drain** (`Armed::drain`, "start nothing new") refuses agents' `luna_spawn`
+  and `luna_send` in `mcp::run` and narrows `luna_answer` to structured answers;
+  a person is never refused. Calls are counted under the lock that arms
+  (`power::enter`); arming waits for those in flight (`settle`, bounded).
+- The test build and unit tests never reach the OS (`power::dry`).
+- An armed rule that does not fire logs `armed, not firing: <chat> <why>` on
+  change (at most once a minute) and every 10 minutes; the hold logs
+  `awake hold set: <who>` / `let go: … last held by <who>` and every hour what
+  keeps it (`HOLD_LOG_EVERY_MS`).
+
+## Core and window lifecycle
+
+- The core: `--core`, one per data dir (`core.lock`), 127.0.0.1 with a token in
+  `<data>/core/core.json`, from a copy of the exe on Windows. It exits after 10
+  minutes with no window and no session; a helper in a turn counts, and so does
+  one whose leftovers still hold the PC (`background::running`). Leaving, it
+  stops every helper's turn with its process tree (`background::stop_all`).
+- The window (`corelink.rs`) finds the core of its own build or starts it,
+  holds the connection (losing it means the core died: banner, Restart), skips a
+  `core.json` whose pid is dead, runs restarts one at a time. A core of another
+  build with no sessions is replaced at once; with sessions only on a button.
+- **Restart window** (tray) starts a new window as `--after <pid>`, the core left
+  running. `watchdog.rs` rebuilds a window whose WebView died.
+- **Quit** asks every session to quit as a delete would, stops helper turns, then
+  the core and the window go; a core still there 30 s later is killed with its
+  tree.
+- **Why Luna stopped** (`lifecycle.rs`): its own exits with a reason (tray Quit,
+  an update, OS sign-out or shutdown); the `--watch-exit <pid>` watcher logs the
+  exit code (a kill from outside vs. a crash, and whether Task Manager was
+  open); `luna.run` holds the last sign of life for the next launch, which
+  reports event-loop hangs, machine sleep and reboots in between.
+
+## Updates
+
+- The app checks `latest.json` on GitHub Releases at startup (endpoint in
+  `tauri.conf.json` → `plugins.updater.endpoints`); a release lights a chip and
+  installs only on a click. A release whose `core_fingerprint` (a hash of
+  `src-tauri`, written by `build.rs`) matches the running core restarts only the
+  window. Any other stops the sessions (each asked to quit with its exit hooks,
+  `stop_all_sessions` also stopping helper turns) and the chats resume from
+  their transcripts.
+- The CLIs update separately ([providers](providers.md#cli-binaries)).
+
+## Logging
+
+`luna.log` beside the exe (or in the data dir fallback) takes warnings, errors
+and INFO events only: session start / exit / delete, helper turns, one line per
+MCP call (caller, tool, target, outcome, duration, steering arguments, never
+text), notices, the awake hold. Sessions are named by id and chat name
+(`agents::label`). Every line names the version; each launch opens with a
+`START` line.
+
+## Failure modes
+
+| Failure | Behavior |
+| --- | --- |
+| A missed `Stop` hook | hook "busy" goes stale in 15 s against an idle registry |
+| A forgotten `tail -F` or idle server | holds the PC 2 h after its last activity, then logged and let go |
+| Core dies | chats' CLIs end with their terminals; helpers' jobs end with the core (Job Object or keeper) |
+| Keeper gone with its core | the next core ends tied jobs from `tied-jobs/` (`end_last_ties`) |
+| WebView2 dies | `watchdog.rs` rebuilds the window; sessions untouched |
+| Restart's RunOnce cannot be set | logged; the PC restarts anyway |

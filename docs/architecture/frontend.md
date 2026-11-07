@@ -1,0 +1,106 @@
+# Frontend
+
+React 19 + TypeScript + Vite, feature-sliced, in `src/`. The page owns the chat
+list and the board; the core owns sessions
+([ADR-0001](../adr/0001-session-state-lives-in-the-cli.md)).
+
+## Layout
+
+| Path | What it holds |
+| --- | --- |
+| `main.tsx` | entry; loads xp.css, then the app-wide sheets; `?demo` in a plain browser loads the fixture |
+| `app/` | `App` (sidebar dock: pinned, or slides out from the left edge), `AppFrame` + `BoardTools` (layouts, groups, Even out, Clear, theme in the window title bar), `shell.store.ts` (theme, sidebar pin and width), `keymap.ts`, `ErrorBoundary`, `dpi.ts` |
+| `shared/` | `types.ts`, `lib/` (format, log, notify), `ui/` (`icons.tsx` XP icons and provider badges, title bar glyphs, `ModelSelect` native `<select>`, `ConfirmDialog`, `dialogHost.ts`, `chatColors.ts`, `status.ts`) |
+| `features/chats/` | sidebar (folders, rows, drag source), `chats.store.ts`, `useSessionWatch.ts`, `worktrees.store.ts` + `WorktreesDialog`, `drafts.store.ts`, `marked.store.ts`, `OrphanSessions`, `DeleteChatDialog` |
+| `features/panes/` | the 1/2/3/4 grid (`PaneGrid`, `Pane` drop target, `Terminal`), `panes.store.ts` (boards, auto-tile `TILE_ORDER`), peek, `altPeek.ts`, `navigate.ts`, `terminals.ts`, `terminal/` |
+| `features/new-chat/` | `NewChatDialog`, `AccountPicker`, `draft.ts` (settings draft with "touched by hand" and `follow`), `create.ts` (one creation path for the dialog and Ctrl+Shift+N) |
+| `features/providers/` | `claude/` and `codex/`: stock values, defaults, dialog `Fields`, title bar `Meta`, `LimitBars`, login, trust, `worktreeRe`, `projectOf(cwd)`, `branchPrefix`; `index.ts` `ui(provider)` |
+| `features/accounts/` | Accounts window, limits, sign-in (`LoginModal`), `RecommendedDialog`, `ConfigEditor`, `SettingsSync` |
+| `features/library/` | Skills & instructions window: grids, `ReachPicker`, `FolderCell`, `AddFolder`, "Needs a look" with `diff.ts` (line LCS), `LibraryEditor` |
+| `features/settings/` | Settings dialog, one file per section in `sections/`; Recommendations window and chip |
+| `features/status-bar/`, `power/`, `shortcuts/`, `updates/`, `browsers/`, `core/` | the status bar, power chip and menu (`power.store` only listens to `power://state`), the F1 list, app and CLI updates, link browsers, the core banner |
+| `features/agents/` | `bridge.ts` (agent events ↔ chats), `background.store.ts`, `BackgroundChip`, `agentAccounts.store.ts` |
+| `ipc/` | the only boundary with Rust |
+| `styles/` | app-wide sheets |
+| `dev/demo/` | the fixture behind screenshots: scenes, fixtures, the panes' paint, the IPC stand-in |
+
+## IPC modules
+
+`ipc/core.ts` holds the transport: `call()` invokes a command, routes the core's
+commands through `core_call` (and terminal input through `core_send`), times
+every call (a sync Tauri command runs on the main thread, so a slow one looks
+like a hang), logs failures, and in a plain browser answers from the demo or a
+fallback. One module per domain holds its commands and DTOs: `accounts`,
+`sessions`, `worktrees`, `defaults`, `trust`, `media`, `cli`, `power`,
+`coreProcess`, `agents`, `accountSettings`, `library`, `browsers`,
+`accountConfig`; `events.ts` wraps `listen`. Tests mock per module.
+
+## Stores
+
+Zustand stores, persisted to localStorage where they are UI state (chats,
+folders, boards). The page computes no session state of its own: status,
+titles, context and drafts come from the core (`session_meta`), polled by
+`useSessionWatch` and pushed by events.
+
+- **Naming.** `Chat.nameSource` says where a name came from and `mayRename`
+  decides what may replace it: a typed first line (`prompt`) replaces only the
+  placeholder; the CLI's first title (`cli`) the placeholder or the prompt, then
+  it is frozen; a `/rename` (`rename`) anything but a name from Luna; a name set
+  in Luna (`user`) is final.
+- **Folders** offered by the new-chat dialog are the `picked` ones: where a
+  person launched a chat, adopted an orphan or browsed to. A folder only an agent
+  ran a helper in keeps its sidebar row but is not offered.
+- **New-chat dialog.** Model from a drop-down for both providers, the one the
+  files (or CLI) would pick marked "· default"; Codex's catalog in `priority`
+  order with level descriptions as tooltips; approval and sandbox as two radio
+  columns, `auto-review` holding the sandbox at `workspace-write`. The title bar
+  shows `bypass` for never + danger-full-access and `auto-review` for that.
+- **Agent bridge** (`features/agents/bridge.ts`): `agent://spawn` →
+  `createChat` with `parentId` and `ensure_*` with the prompt → `agent_spawned`;
+  `agent://deleted` → `deleteChat`; `agent_resumes` → `startSession`; a model
+  asked for without an effort gets its default effort.
+
+## Terminals
+
+- A pane takes a ready xterm from `terminals.ts` and returns it to parking (off
+  screen but in the document, or the renderer and fit addon measure zero), so
+  switching chats costs no `ensure_session`, reset and redraw. The three most
+  recently put away keep their subscriptions; older ones are evicted. Returning
+  is a refit plus a nudge to redraw.
+- `terminal/`: `theme.ts`, `links.ts`, `keys.ts` (clipboard keys), `scrollback.ts`
+  (the replayed tail), `sizing.ts` (fit and repaint), `pty.ts` (the gated pty
+  sender), `webgl.ts`, `title.ts` (a title from what is typed), `safely.ts`.
+- Shortcuts are claimed in the capture phase (`app/keymap.ts`), otherwise xterm
+  swallows them; everything unclaimed goes to the CLI. Escape is never claimed.
+
+## Styles
+
+`main.tsx` loads, over xp.css: `tokens.css` (light / dark tokens, code colors
+`--code-key` / `--code-string` / `--code-literal`), `base.css`, `controls.css`
+(every shared control), `windows.css` (window and dialog chrome); the features'
+own sheets beside their entry components (`panes.css`, `chats.css`,
+`status-bar.css`, `library.css`); `motion.css` last.
+
+Theme tokens are CSS custom properties on `[data-app][data-theme]`, switching
+system / light / dark without redrawing terminals (xterm gets its theme through
+a MutationObserver). Shapes are XP's; tones are for long reading: neutrals with
+no blue cast, layers apart by lightness (OKLCH), the terminal the darkest well,
+ANSI colors at 4.5:1 or better. xp.css pins its controls to light literals, so
+buttons, fields, checkboxes, radios and scrollbars are redrawn in
+`controls.css`. The whole UI scales from `--ui` in `tokens.css`.
+
+## Invariants
+
+- Commands are invoked only through `ipc/core.ts` (the logger in
+  `shared/lib/log.ts` is the one other importer of `@tauri-apps/api/core`).
+- No HTML sinks (`innerHTML`, `dangerouslySetInnerHTML`): terminal and
+  transcript text is drawn as text; the CSP forbids inline script
+  ([ADR-0008](../adr/0008-strict-csp-with-inline-styles.md)).
+- A provider-specific concept lives under `features/providers/<cli>/`.
+
+## Testing
+
+Vitest with Testing Library (`src/test/setup.ts`, `src/test/zustand.ts` resets
+stores). Stores, keymap, the agent bridge, the IPC layer, dialogs and the
+terminal pool (over a fake xterm) have tests. Screenshots come from the demo
+fixture ([development](../development.md#screenshots)).

@@ -2,6 +2,7 @@
   "name": "luna",
   "private": true,
   "version": "0.9.10",
+  "license": "MIT OR Apache-2.0",
   "type": "module",
   "packageManager": "pnpm@10.34.7",
   "scripts": {
