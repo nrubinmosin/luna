@@ -142,6 +142,11 @@ async function mountBridge() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // clearAllMocks keeps what a test told a mock to answer; these go back to
+  // the module mocks' own answers, so no test leans on the one before it.
+  mocked.agentSpawns.mockResolvedValue([]);
+  mocked.codexModels.mockResolvedValue([]);
+  mocked.backgroundPromote.mockReset();
   // A refused spawn is logged as well as answered; the answer is what is tested.
   vi.spyOn(console, 'warn').mockImplementation(() => {});
   events.off.count = 0;
@@ -313,7 +318,7 @@ describe('agent bridge: Codex settings', () => {
     expect((await answerTo(req)).error).toBeNull();
     const [spec] = mocked.ensureCodexSession.mock.calls[0]!;
     expect(spec.approval).toBe('auto-review');
-    expect(spec.sandbox).not.toBe('danger-full-access');
+    expect(spec.sandbox).toBe('workspace-write');
   });
 });
 
