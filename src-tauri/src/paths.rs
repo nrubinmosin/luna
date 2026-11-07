@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 const APP_DIR: &str = "luna";
 
-/// The build test-build.ps1 makes. It runs beside the Luna in use, so it keeps
+/// The build scripts/test-build.ps1 makes. It runs beside the Luna in use, so it keeps
 /// everything — log, attachments, settings, downloaded CLIs — next to its exe
 /// in the repo's ignored `test-build/`, and shares none of it.
 pub fn is_test() -> bool {

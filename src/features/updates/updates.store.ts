@@ -23,7 +23,7 @@ interface UpdatesState {
   /** The release on offer, once there is one. */
   next: string | null;
   notes: string | null;
-  /** The core fingerprint the release on offer was built with (release.ps1),
+  /** The core fingerprint the release on offer was built with (scripts/release.ps1),
    *  if it says. */
   nextCore: string | null;
   /** Bytes in, and the total — only when the server declared a length. */
@@ -75,7 +75,7 @@ export const useUpdates = create<UpdatesState>(set => ({
         import('@tauri-apps/api/app')
       ]);
       set({ current: await getVersion() });
-      // The test build (test-build.ps1) must never install a release over itself.
+      // The test build (scripts/test-build.ps1) must never install a release over itself.
       const update = import.meta.env.VITE_LUNA_FLAVOR === 'test' ? null : await check();
       if (!update) {
         pending = null;

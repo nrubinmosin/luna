@@ -76,7 +76,7 @@ pub fn from_args() -> bool {
 }
 
 /// `luna --core-fingerprint <file>`: writes this build's core fingerprint to
-/// the file and returns true. For release.ps1, which publishes it with the
+/// the file and returns true. For scripts/release.ps1, which publishes it with the
 /// update so a window can tell an update that leaves the core as it is; an
 /// exe built for the windows subsystem has no console to print to.
 pub fn fingerprint_from_args() -> bool {

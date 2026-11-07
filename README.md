@@ -665,7 +665,7 @@ pnpm tauri dev    # the whole app (needs a Rust toolchain)
 ## Screenshots
 
 ```powershell
-./screenshots.ps1
+./scripts/screenshots.ps1
 ```
 
 Rewrites `docs/screenshots/*.png` in Docker: the frontend alone, standing on the invented
@@ -676,11 +676,11 @@ fixture is also the only way to retake all three shots from the same state.
 ## Checking the Rust side without a local toolchain (Docker)
 
 ```powershell
-./linux-check.ps1
+./scripts/linux-check.ps1
 ```
 
 Builds the crate for Linux and runs its whole unit test suite there: the Unix code
-(`keeper.rs`, parts of `procs.rs` and `pty.rs`) that `./test-build.ps1 -Test`, with its
+(`keeper.rs`, parts of `procs.rs` and `pty.rs`) that `./scripts/test-build.ps1 -Test`, with its
 Windows binaries, never compiles. The checkout goes in read-only, and the caches (the cargo
 registry, the Linux target) live in named volumes of its own. Runs under `pwsh` on any host
 with Docker.
@@ -688,7 +688,7 @@ with Docker.
 ## Windows build through Docker
 
 ```powershell
-./build-windows.ps1
+./scripts/build-windows.ps1
 ```
 
 Builds the toolchain image (rust + cargo-xwin + NSIS + node) and cross-compiles for
@@ -705,9 +705,9 @@ repeat builds are fast.
 ## Releases
 
 ```powershell
-./release.ps1              # release the version in tauri.conf.json
-./release.ps1 -Notes "..." # with your own release notes
-./release.ps1 -DryRun      # build and compose the manifest, upload nothing
+./scripts/release.ps1              # release the version in tauri.conf.json
+./scripts/release.ps1 -Notes "..." # with your own release notes
+./scripts/release.ps1 -DryRun      # build and compose the manifest, upload nothing
 ```
 
 Bumping the version means editing `src-tauri/tauri.conf.json` and `package.json` together;
@@ -746,7 +746,7 @@ anywhere else would update into a second Luna with none of its data.
 - The update signing key is `C:\Users\Nikita\.ssh\luna-updater.key` — private and
   passwordless, so keep it safe; its `.pub` half is already baked into the config. For a
   signed build, set `TAURI_SIGNING_PRIVATE_KEY_PATH` in the build environment (which is
-  what `build-windows.ps1` mounts) — `.sig` files then appear next to the bundle, and
+  what `scripts/build-windows.ps1` mounts) — `.sig` files then appear next to the bundle, and
   those plus `latest.json` are what you upload to the Release.
 - Authenticode-signing the exe (so SmartScreen stops complaining) needs a certificate.
   When there is one, add it under `tauri.conf.json` → `bundle.windows.signCommand`.

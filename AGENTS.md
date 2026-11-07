@@ -29,20 +29,20 @@ Rules for anyone (person or agent) changing Luna.
 
 ## Building and testing
 - There is no local Rust or Node toolchain: everything builds in Docker.
-  - `./build-windows.ps1` — the release exe (`-Installer` for the setup).
-  - `./test-build.ps1` — the **test build**, `test-build/luna-test.exe`.
-  - `./linux-check.ps1` — the crate built for Linux and all its unit tests run
+  - `./scripts/build-windows.ps1` — the release exe (`-Installer` for the setup).
+  - `./scripts/test-build.ps1` — the **test build**, `test-build/luna-test.exe`.
+  - `./scripts/linux-check.ps1` — the crate built for Linux and all its unit tests run
     there, the Unix code included.
-  - `./screenshots.ps1 -Out test-build/shots` — headless shots of the UI on
+  - `./scripts/screenshots.ps1 -Out test-build/shots` — headless shots of the UI on
     the demo data in `src/dev/demo.ts`.
 - Test only on the test build, never on the Luna in use. It has its own
   identifier and keeps its log, attachments, settings and downloaded CLIs
   beside its exe in `test-build/` (ignored by git), so it runs alongside the
-  real one. `./test-build.ps1 -Run -DevCaller ...` also registers a scripted
+  real one. `./scripts/test-build.ps1 -Run -DevCaller ...` also registers a scripted
   MCP caller for exercising Luna tools.
 - Anything that writes into account folders (settings, sync, helpers run end to
   end) is tried on throwaway accounts under `test-build/accounts`, not on real
-  ones, and never through a junction or symlink to one: `test-build.ps1 -Run`
+  ones, and never through a junction or symlink to one: `scripts/test-build.ps1 -Run`
   refuses links there, and a `-DevAccount` outside it. The test build's
   default accounts root is that folder.
 - Before stopping a Luna core or the PC (a restart test, a kill), check

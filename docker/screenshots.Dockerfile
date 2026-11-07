@@ -2,7 +2,7 @@
 # headless Chromium to shoot it. No Rust and no Tauri — the shots are of the UI
 # alone, standing on the ?demo fixture.
 # Build:  docker build -t luna-shots -f docker/screenshots.Dockerfile docker
-# Usage:  see screenshots.ps1
+# Usage:  see scripts/screenshots.ps1
 FROM node:24-bookworm-slim
 
 # The terminals' JetBrains Mono ships with the app (public/fonts); the UI's

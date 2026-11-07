@@ -132,7 +132,7 @@ pub fn run() {
     // A dev build driven by a script runs beside the Luna a person is using,
     // possibly under the same identifier, and the second launch would only
     // focus the first. The same variable turns on the dev caller (agents.rs);
-    // the test flavor (test-build.ps1) has an identifier of its own anyway.
+    // the test flavor (scripts/test-build.ps1) has an identifier of its own anyway.
     let dev = std::env::var_os("LUNA_DEV_TOKEN").is_some();
     let builder = tauri::Builder::default();
     let builder = if dev {
