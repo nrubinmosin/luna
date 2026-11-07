@@ -532,7 +532,8 @@ src-tauri/src/
   idle timer: once nobody has touched the PC for longer than its sleep timeout, it sleeps the moment
   the hold is let go, so that line is the time of the sleep.
 - **Agents — via MCP, not via the prompt.** A session with the "Luna tools" checkbox gets
-  `--mcp-config <data>/mcp/<chat>.json` with `"timeout": 1900000` on the server and `--allowedTools mcp__luna`
+  `--mcp-config <data>/mcp/<chat>.json` with `"timeout": 1900000` on the server, its header
+  `Bearer ${LUNA_MCP_TOKEN}` (the token in the session's environment, never in the file), and `--allowedTools mcp__luna`
   (Claude: without `timeout` it drops an HTTP call that is silent for 5 min) or `-c mcp_servers.luna.url=… -c
   mcp_servers.luna.bearer_token_env_var=LUNA_MCP_TOKEN -c mcp_servers.luna.tool_timeout_sec=1900
   -c mcp_servers.luna.default_tools_approval_mode="approve"`
