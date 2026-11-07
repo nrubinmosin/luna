@@ -191,8 +191,11 @@ src-tauri/src/
     models.rs   context windows from the Models API
     trust.rs    hasTrustDialogAccepted in .claude.json; a file that will not read or parse is
                 read again and then an error, never taken as empty and written back
-    session.rs  registry <config>/sessions/<pid>.json + transcript projects/<cwd>/<sid>.jsonl:
-                context, CLI title (custom-title / ai-title), first prompt
+    session/    registry <config>/sessions/<pid>.json + transcript projects/<cwd>/<sid>.jsonl:
+                context, CLI title (custom-title / ai-title), first prompt. registry.rs the
+                registry and meta; transcript.rs where a transcript is and the conversation
+                read from it; ending.rs what its end says (context, model, last words, API
+                error, pending tool, due); titles.rs titles and the opening prompt
   codex/
     launch.rs   a session's arguments and environment (chat_args), and what a helper's
                 `codex exec` shares with it: approval and sandbox overrides, read-only-net,
