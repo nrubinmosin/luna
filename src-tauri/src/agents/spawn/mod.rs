@@ -4,6 +4,7 @@
 
 pub(crate) mod account;
 pub(super) mod background;
+pub(super) mod worktree;
 
 use crate::agents::ask::{ask_of, Ask};
 use crate::agents::delivery::{await_start, screen_of, spill, still_starting, unknown_command};
@@ -14,8 +15,9 @@ use crate::agents::registry::{chat_name, depth_of, descendants, is_descendant, l
 use crate::agents::said::{first_words, TASK_CHARS};
 use crate::agents::spawn::account::{allowed_account_dirs, list_provider, pick_from_list, signed_in, AccountChoice};
 use crate::agents::spawn::background::spawn_background;
+use crate::agents::spawn::worktree::{caller_worktree, helper_worktree_name, neighbors_in, worktree_of, Neighbor, Worktree};
+use crate::agents::spawn_failed_late;
 use crate::agents::teardown::Auto;
-use crate::agents::{caller_worktree, helper_worktree_name, neighbors_in, spawn_failed_late, worktree_of, Neighbor, Worktree};
 use crate::provider::Provider;
 use crate::throttle::now_ms;
 use serde::{Deserialize, Serialize};

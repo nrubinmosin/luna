@@ -4,9 +4,9 @@
 use crate::agents::delivery::POLL;
 use crate::agents::owed::{owe_from, shown};
 use crate::agents::registry::{chat_name, issue_token, reg, register, set_name};
+use crate::agents::spawn::worktree::{helper_worktree_name, neighbors_in, worktree_of, Worktree};
 use crate::agents::spawn::{spawn_is, SpawnParams, Spawned};
 use crate::agents::teardown::{forget, Auto};
-use crate::agents::{helper_worktree_name, neighbors_in, worktree_of, Worktree};
 use crate::provider::Provider;
 
 /// How long a background spawn in a worktree of its own waits for the CLI
