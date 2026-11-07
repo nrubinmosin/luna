@@ -78,9 +78,28 @@ static TEST_CODEX_ACCOUNTS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::ne
 /// list`). Anyone can write a `.git` file pointing at a repository; git's own
 /// record takes a write into that repository.
 fn registered(folder: &str, path: &str) -> bool {
-    let Ok(out) = git(folder).args(["worktree", "list", "--porcelain"]).output() else { return false };
-    out.status.success()
-        && String::from_utf8_lossy(&out.stdout).lines().filter_map(|l| l.strip_prefix("worktree ")).any(|p| same_place(p, path))
+    listed(folder).iter().any(|(p, _)| same_place(p, path))
+}
+
+/// Each worktree of `folder` as git lists it, with the branch it has checked
+/// out. From `--porcelain -z`, whose fields end in NUL: a path is the one thing
+/// in it anyone can name, and a newline in one would read, line by line, as a
+/// record of its own. A field that is not UTF-8 is left out rather than read
+/// lossily into something it is not.
+fn listed(folder: &str) -> Vec<(String, Option<String>)> {
+    let Ok(out) = git(folder).args(["worktree", "list", "--porcelain", "-z"]).output() else { return Vec::new() };
+    if !out.status.success() {
+        return Vec::new();
+    }
+    let mut all: Vec<(String, Option<String>)> = Vec::new();
+    for field in out.stdout.split(|&b| b == 0).filter_map(|f| std::str::from_utf8(f).ok()) {
+        if let Some(p) = field.strip_prefix("worktree ") {
+            all.push((p.to_string(), None));
+        } else if let (Some(b), Some(last)) = (field.strip_prefix("branch refs/heads/"), all.last_mut()) {
+            last.1 = Some(b.to_string());
+        }
+    }
+    all
 }
 
 /// The repository a linked worktree belongs to, off its `.git` file
@@ -198,19 +217,7 @@ pub fn root_of(path: &str) -> Option<(String, String)> {
 
 /// Branch checked out in the given worktree, per `git worktree list`.
 pub fn branch_of(folder: &str, worktree_path: &str) -> Option<String> {
-    let out = git(folder).args(["worktree", "list", "--porcelain"]).output().ok()?;
-    let text = String::from_utf8_lossy(&out.stdout);
-    let mut current: Option<String> = None;
-    for line in text.lines() {
-        if let Some(p) = line.strip_prefix("worktree ") {
-            current = Some(p.to_string());
-        } else if let Some(b) = line.strip_prefix("branch refs/heads/") {
-            if current.as_deref().is_some_and(|p| same_place(p, worktree_path)) {
-                return Some(b.trim().to_string());
-            }
-        }
-    }
-    None
+    listed(folder).into_iter().find(|(p, b)| b.is_some() && same_place(p, worktree_path)).and_then(|(_, b)| b)
 }
 
 /// What a checkout has checked out: the branch, none on a detached HEAD, and
@@ -1382,6 +1389,28 @@ mod tests {
         assert!(registered(&repo, &wt));
         remove_worktree_now(repo.clone(), wt.clone()).unwrap();
         assert!(!Path::new(&wt).exists() && !Path::new(&wt).parent().unwrap().exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A worktree whose path has a newline and what reads, line by line, as
+    /// another worktree's record: that other is no worktree of git's.
+    #[cfg(unix)]
+    #[test]
+    fn a_path_cannot_write_a_record_of_gits_into_its_list() {
+        let Some((root, repo, wt)) = codex_layout("newline") else { return };
+        let forged = root.join("account").join("worktrees").join("eeee").join("repo");
+        std::fs::create_dir_all(&forged).unwrap();
+        std::fs::write(forged.join(".git"), std::fs::read_to_string(Path::new(&wt).join(".git")).unwrap()).unwrap();
+        let forged = forged.to_string_lossy().into_owned();
+        let evil = root.join(format!("evil\nworktree {forged}\nHEAD {}\ndetached", "0".repeat(40)));
+        let added = git(&repo).args(["worktree", "add", "-q", "--detach"]).arg(&evil).output().unwrap();
+        assert!(added.status.success(), "{}", String::from_utf8_lossy(&added.stderr));
+        assert!(registered(&repo, &evil.to_string_lossy()), "the odd one is git's");
+        assert!(is_worktree_of(&repo, &forged) && !registered(&repo, &forged), "the one it names is not");
+        assert!(remove_worktree_now(repo.clone(), forged.clone()).is_err());
+        assert!(Path::new(&forged).exists());
+        let _ = remove_worktree_now(repo.clone(), wt);
+        let _ = git(&repo).args(["worktree", "remove", "--force"]).arg(&evil).output();
         let _ = std::fs::remove_dir_all(&root);
     }
 
