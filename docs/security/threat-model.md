@@ -96,7 +96,7 @@ Both gaps are F1 and F2, **planned fix (phase 1)**.
 
 | STRIDE | Threat | Status |
 | --- | --- | --- |
-| E, T | Script injected into the page (rendered terminal or transcript text) calls any of the ~99 app commands, which take raw `account_path` / `folder` strings and can write account config (`account_settings.rs:736`) | mitigated in part: no HTML sinks in `src/` (no `innerHTML` / `dangerouslySetInnerHTML`); terminal output is drawn by xterm.js as text. **CSP is `null`** (`tauri.conf.json:29`); strict CSP is **planned (phase 1)**. CSP narrows the ways script gets injected; script already running in the trusted origin can still invoke every command, so only command scoping limits impact (F9) |
+| E, T | Script injected into the page (rendered terminal or transcript text) calls any of the ~99 app commands, which take raw `account_path` / `folder` strings and can write account config (`account_settings.rs:736`) | mitigated in part: no HTML sinks in `src/` (no `innerHTML` / `dangerouslySetInnerHTML`); terminal output is drawn by xterm.js as text. A strict CSP is set (`tauri.conf.json`, `app.security.csp`): `default-src 'self'`, `script-src 'self'` (no inline script, no `eval`), `connect-src ipc: http://ipc.localhost` (Tauri IPC: `ipc:` on macOS and Linux, `http://ipc.localhost` on Windows; the updater is fetched by the Rust plugin, not the page), `img-src 'self' data:` (the stylesheet's inline SVG icons and small images Vite inlines), `font-src 'self'`, `object-src 'none'`, `base-uri 'self'`, `form-action 'none'`, `frame-ancestors 'none'`. Residual: `style-src` allows `'unsafe-inline'`, because CodeMirror 6 (style-mod) and xterm.js's DOM renderer inject `<style>` elements without a nonce; Tauri's style nonce is turned off (`dangerousDisableAssetCspModification: ["style-src"]`), since a nonce makes the browser ignore `'unsafe-inline'`. Injected CSS can restyle the page but runs no script. `devCsp` is `null`: the Vite dev server needs inline script and a websocket, and the policy holds in every built exe. The page logs each refused load as a `[csp]` warning (`src/shared/lib/log.ts`). CSP narrows the ways script gets injected; script already running in the trusted origin can still invoke every command, so only command scoping limits impact (F9) |
 | E | Plugin permissions broader than needed | `capabilities/default.json` grants only `core:default`, five window actions, `dialog:allow-open`, `notification:default`, `updater:default`; no `remote` origins, no shell/fs plugin |
 | S | A link clicked in a terminal opens a non-web scheme (`file:`, custom protocol handlers) | mitigated: `open_link` allows `http`, `https`, `mailto` only and does not log the URL (`lib.rs:69-78`) |
 
@@ -206,7 +206,7 @@ can call `luna_permission` only, and only if it is a background helper
   version comparison. Accepted for a single-maintainer project.
 - **Planned (phase 1):** OS-random tokens with constant-time comparison (hub
   secret, MCP tokens, core token); connection, size and time limits on the hub
-  and core listeners; a strict CSP replacing `csp: null`; the least-privilege
+  and core listeners; the least-privilege
   trust contract (F1, F2).
 
 ## 7. Open findings

@@ -60,8 +60,10 @@ export function LoginModal({ account }: { account: Account }) {
       webgl = new WebglAddon();
       ctxLossSub = webgl.onContextLoss(disposeWebgl);
       term.loadAddon(webgl);
-    } catch {
-      webgl = null; // canvas/DOM renderer fallback
+    } catch (e) {
+      // Slower, and otherwise invisible: the terminal still draws.
+      logWarn('terminal', `webgl renderer unavailable, using the DOM renderer: ${(e as Error)?.message ?? String(e)}`);
+      webgl = null;
     }
 
     let disposed = false;
