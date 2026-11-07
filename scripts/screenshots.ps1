@@ -1,3 +1,4 @@
+#Requires -Version 7.4
 # Retakes the README screenshots, in Docker, without going near a running Luna.
 # Shooting the real app means shooting whatever is open in it; this runs the
 # frontend alone (Tauri commands are no-ops) on the invented data in
@@ -32,9 +33,13 @@ New-Item -ItemType Directory -Force $outDir | Out-Null
 $faces = 'SegUIVar.ttf', 'segoeui.ttf', 'segoeuib.ttf', 'seguisb.ttf', 'tahoma.ttf', 'tahomabd.ttf',
          'trebuc.ttf', 'trebucbd.ttf', 'trebucit.ttf', 'trebucbi.ttf'
 $fontArgs = @()
-foreach ($f in $faces) {
-    $src = Join-Path 'C:\Windows\Fonts' $f
-    if (Test-Path $src) { $fontArgs += @('-v', "${src}:/usr/share/fonts/truetype/windows/${f}:ro") }
+# Only Windows has them, and only there is C: a drive Join-Path will take.
+if ($IsWindows) {
+    $fontDir = [Environment]::GetFolderPath('Fonts')
+    foreach ($f in $faces) {
+        $src = Join-Path $fontDir $f
+        if (Test-Path -LiteralPath $src) { $fontArgs += @('-v', "${src}:/usr/share/fonts/truetype/windows/${f}:ro") }
+    }
 }
 if (-not $fontArgs) { Write-Warning 'no Windows fonts found — the shots will fall back to other faces' }
 
