@@ -51,6 +51,14 @@ Rules for anyone (person or agent) changing Luna.
   beside its exe in `test-build/` (ignored by git), so it runs alongside the
   real one. `./scripts/test-build.ps1 -Run -DevCaller ...` also registers a scripted
   MCP caller for exercising Luna tools.
+- An agent runs the test build with `-Background` (implied by `-DevCaller`):
+  its window stays off screen, unfocused and off the taskbar, and keeps
+  working. Drive its UI only by targeted means aimed at the test build's own
+  windows (WebDriver on its WebView, messages to its own HWNDs, UI Automation
+  patterns on its own elements), never by anything that activates a window.
+  The owner's desktop is off limits: no global input (SendInput, keybd_event,
+  mouse_event, SendKeys, cursor moves), no SetForegroundWindow, nothing aimed
+  at a window that is not the test build's.
 - Anything that writes into account folders (settings, sync, helpers run end to
   end) is tried on throwaway accounts under `test-build/accounts`, not on real
   ones, and never through a junction or symlink to one: `scripts/test-build.ps1 -Run`
@@ -93,5 +101,8 @@ one CLI only.
   true`, or the link arrives as a text file Claude Code does not see.
 - Once per clone, `git config core.hooksPath .githooks`: its pre-commit hook
   refuses a commit with anything under `.claude/skills/` that is not a symlink.
+- No attribution trailers in commits (`Co-Authored-By:`, the robot emoji,
+  "Generated with ..."): authorship is git's author field only. Enforced by
+  the commit-msg hook and, over every pushed commit, by CI.
 - A setting only one CLI understands goes in that CLI's project file:
   `.claude/settings.json` or `.codex/config.toml`.

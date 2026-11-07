@@ -102,12 +102,12 @@ fn append(path: &Path, line: Value) {
         let lines: Vec<&str> = text.lines().collect();
         if lines.len() >= MAX_LINES {
             let keep = lines[lines.len() - MAX_LINES / 2..].join("\n") + "\n";
-            if let Err(e) = std::fs::write(path, keep) {
+            if let Err(e) = crate::secret::write_private(path, keep.as_bytes()) {
                 crate::log::warn("agents", &format!("could not trim {}: {e}", path.display()));
             }
         }
     }
-    let written = std::fs::OpenOptions::new().create(true).append(true).open(path).and_then(|mut f| writeln!(f, "{line}"));
+    let written = crate::secret::open_private(path, std::fs::OpenOptions::new().append(true)).and_then(|mut f| writeln!(f, "{line}"));
     if let Err(e) = written {
         crate::log::warn("agents", &format!("could not write {}: {e}", path.display()));
     }

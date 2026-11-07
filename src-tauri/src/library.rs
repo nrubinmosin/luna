@@ -64,7 +64,7 @@ struct Locked {
 fn lock() -> Locked {
     let threads = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let path = Dirs::current().ledger().with_extension("json.lock");
-    let file = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&path).and_then(|f| f.lock().map(|()| f));
+    let file = crate::secret::open_private(&path, std::fs::OpenOptions::new().write(true)).and_then(|f| f.lock().map(|()| f));
     // Without it a pass still runs, as one did before passes came from two
     // processes.
     if let Err(e) = &file {
@@ -268,7 +268,9 @@ impl Ledger {
     }
     fn save(&self, dirs: &Dirs) -> Result<(), String> {
         let text = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
-        write_file(&dirs.ledger(), text.as_bytes())
+        // Luna's own, in the data dir: private like the rest of it, where
+        // `write_file` is for the copies in account folders.
+        crate::secret::write_private(&dirs.ledger(), text.as_bytes()).map_err(|e| format!("{}: {e}", dirs.ledger().display()))
     }
 }
 

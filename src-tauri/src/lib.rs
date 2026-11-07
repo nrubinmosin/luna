@@ -44,8 +44,25 @@ use tauri::{
     Manager,
 };
 
+/// The test build kept out of the way of the person at the screen while an
+/// agent drives it (`LUNA_TEST_WINDOW=background`, which
+/// `scripts/test-build.ps1 -Background` sets): its window is made off screen,
+/// without taking focus and without a taskbar button. The release ignores the
+/// variable.
+pub(crate) fn background() -> bool {
+    paths::is_test() && std::env::var("LUNA_TEST_WINDOW").is_ok_and(|v| v == "background")
+}
+
+/// Brings the window up. A test window run in the background comes on screen
+/// with it: only a person's click on the tray or a toast gets here then, and
+/// that is how one looks at it.
 pub(crate) fn show_main(app: &tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
+        if background() {
+            let _ = w.set_focusable(true);
+            let _ = w.set_skip_taskbar(false);
+            let _ = w.center();
+        }
         let _ = w.show();
         let _ = w.unminimize();
         let _ = w.set_focus();
@@ -60,7 +77,41 @@ pub(crate) fn build_main(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow,
     let builder = tauri::WebviewWindowBuilder::from_config(app, config).map_err(|e| e.to_string())?;
     #[cfg(windows)]
     let builder = builder.data_directory(paths::webview_dir());
-    builder.build().map_err(|e| e.to_string())
+    if !background() {
+        return builder.build().map_err(|e| e.to_string());
+    }
+    // Shown rather than hidden, since a hidden WebView2 stops rendering and
+    // throttles the page, its heartbeat (watchdog.rs) and terminals with it;
+    // but made just past the right edge of the rightmost monitor, so nothing
+    // of it is on screen. Made there, not moved there: tao shows a window it
+    // makes unfocused without activating it, a later show() activates, and
+    // tao drops a starting position no monitor holds, while a monitor's very
+    // edge still counts as on it. Unfocusable too (WS_EX_NOACTIVATE on
+    // Windows), so nothing done to it takes focus from the person at the
+    // screen. On Linux and macOS the window manager may still place it on
+    // screen (Wayland ignores positions); it takes no focus and no taskbar
+    // entry there either.
+    let edge = app
+        .available_monitors()
+        .unwrap_or_default()
+        .iter()
+        .max_by_key(|m| m.position().x + m.size().width as i32)
+        .map(|m| ((m.position().x + m.size().width as i32) as f64 / m.scale_factor(), m.position().y as f64 / m.scale_factor()));
+    let (x, y) = edge.unwrap_or((10_000.0, 0.0));
+    let builder = builder.maximized(false).visible(true).focused(false).focusable(false).skip_taskbar(true).position(x, y);
+    // Chromium counts a window off every monitor as covered and backgrounds
+    // its page; these keep it running as if seen. The first switch is Tauri's
+    // own default, which setting any arguments replaces.
+    #[cfg(windows)]
+    let builder = builder.additional_browser_args(
+        "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,CalculateNativeWinOcclusion \
+         --disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows",
+    );
+    let w = builder.build().map_err(|e| e.to_string())?;
+    // tao takes the button away before the window is first shown, and the
+    // shell may give it one back then.
+    let _ = w.set_skip_taskbar(true);
+    Ok(w)
 }
 
 /// A link a terminal was clicked on, in a browser of the user's (browsers.rs)
@@ -142,13 +193,19 @@ pub fn run() {
     } else {
         // Must be the first plugin: a second launch focuses the running
         // instance instead of spawning a duplicate app + tray icon.
+        // A second launch of a test build run in the background is a
+        // script's, and must not bring the window up.
         builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            show_main(app);
+            if !background() {
+                show_main(app);
+            }
         }))
     };
+    // Restores size, position and maximized state from last run. Not in the
+    // background: it would bring the test window back on screen, and save
+    // the off-screen place for the next run that is not.
+    let builder = if background() { builder } else { builder.plugin(tauri_plugin_window_state::Builder::default().build()) };
     builder
-        // Restores size, position and maximized state from last run.
-        .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())

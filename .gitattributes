@@ -20,3 +20,4 @@ src-tauri/src/luna_guide.md  eol=lf
 
 # Git hooks run under sh, which reads a CR as part of the command.
 .githooks/*                  eol=lf
+scripts/*.sh                 eol=lf

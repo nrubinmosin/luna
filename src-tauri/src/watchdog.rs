@@ -87,8 +87,11 @@ fn rebuild(app: &AppHandle) {
                 Ok(w) => {
                     crate::sysmenu::silence(&w);
                     crate::sysmenu::exit_with_session();
-                    let _ = w.show();
-                    let _ = w.set_focus();
+                    // A test window in the background is built shown, off screen.
+                    if !crate::background() {
+                        let _ = w.show();
+                        let _ = w.set_focus();
+                    }
                 }
                 Err(e) => crate::log::error("app", &format!("could not rebuild the window: {e}")),
             }
