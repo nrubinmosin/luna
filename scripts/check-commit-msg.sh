@@ -23,8 +23,15 @@
 # "fixup!" and "squash!" commits pass the hook, to be squashed, and fail the
 # range check, so they never merge.
 #
-#   check-commit-msg.sh FILE            one message file (the commit-msg hook)
-#   check-commit-msg.sh --range A..B    every commit in a range (CI)
+#   check-commit-msg.sh FILE              one message file (the commit-msg hook)
+#   check-commit-msg.sh --range REVS...   every commit git rev-list REVS selects
+#                                         (CI: A..B, with ^C for what to leave out)
+#
+# The hook sees the message as git hands it over, before the cleanup: comment
+# lines (core.commentChar) and, after a scissors line, the diff of commit -v are
+# no part of it and are skipped for the form, though an attribution in a comment
+# is refused all the same. What a --cleanup=whitespace or verbatim commit keeps
+# of them is then checked literally, as a stored message, by the range check.
 #
 # Plain sh and git, so it runs the same from Git for Windows' sh and on Linux.
 
@@ -42,23 +49,47 @@ length() { printf '%s' "$1" | tr -d '\200-\277' | wc -c | tr -d ' '; }
 matches() { printf '%s\n' "$1" | grep -qE "$2"; }
 matches_i() { printf '%s\n' "$1" | grep -qiE "$2"; }
 
+cr=$(printf '\r')
+scissors=' ------------------------ >8 ------------------------'
+
+# What opens a comment line in the message file $1, from the repository's
+# core.commentChar (or commentString; "#" when unset), or nothing when git
+# added no comments. With "auto", git picks per message the first of #;@!$%^&|:
+# that opens no line of the text, and tells nobody: the pick is read off the
+# file, from the scissors line of a commit -v when there is one, else from the
+# last non-blank line, which is git's last comment line when there are any.
+# A text line there opening with one of those characters is taken for a
+# comment: a rare miss, and one the range check catches once committed.
+comment_prefix() {
+    c=$(git config --get core.commentString 2>/dev/null || git config --get core.commentChar 2>/dev/null) || c='#'
+    [ -n "$c" ] || c='#'
+    [ "$c" = auto ] || { printf '%s' "$c"; return; }
+    last=$(tr -d "$cr" <"$1" | grep -E "^[^ ]+$scissors\$" | head -n 1)
+    [ -n "$last" ] || last=$(tr -d "$cr" <"$1" | grep -v '^[[:space:]]*$' | tail -n 1)
+    case $last in
+        [\#\;@!\$%^\&\|:]*) printf '%s' "$last" | cut -c1 ;;
+    esac
+}
+
 # Checks the message on stdin, printing "line N (rule): text" per problem, and
-# fails on one. $1 is hook, range or attribution: the hook sees git's comment
-# lines, which are no part of the message, and lets a fixup! through; attribution
-# skips the form (Dependabot). A verbose commit's scissors line ends the message.
+# fails on one. $1 is hook or range: the hook skips comment lines (opened by
+# $comment, when set) and stops at the scissors line, and lets a fixup! through;
+# the range check takes the stored message as it is. $2 is whether the form is
+# checked at all, besides the attribution: a merge's or a Dependabot commit's
+# is not.
 check_message() {
     mode=$1
-    form=yes
-    [ "$mode" = attribution ] && form=no
+    form=$2
     n=0
     subject=
     k=0
     bad=0
     while IFS= read -r line || [ -n "$line" ]; do
         n=$((n + 1))
-        case $line in
-            '# ------------------------ >8 ------------------------') break ;;
-        esac
+        line=${line%"$cr"} # a CRLF file: the CR is no part of the line
+        if [ "$mode" = hook ] && [ -n "$comment" ] && [ "$line" = "$comment$scissors" ]; then
+            break
+        fi
         why=
         case $line in
             *"$robot"*) why='robot emoji' ;;
@@ -76,8 +107,8 @@ check_message() {
         fi
 
         [ "$form" = yes ] || continue
-        if [ "$mode" = hook ]; then
-            case $line in '#'*) continue ;; esac
+        if [ "$mode" = hook ] && [ -n "$comment" ]; then
+            case $line in "$comment"*) continue ;; esac
         fi
         case $line in
             *[![:space:]]*) blank=no ;;
@@ -148,12 +179,19 @@ refuse() { # $1 = what was checked, $2 = the problems, $3 = the fix
 
 case $1 in
     --range)
+        shift
+        # rev-list has said what is wrong with the revisions; a bad range is
+        # not an empty one.
+        revs=$(git rev-list "$@") || exit 2
         bad=0
-        # Merges are git's own messages; Dependabot's keep their own form but
-        # carry no attribution either.
-        for c in $(git rev-list --no-merges "$2"); do
-            if [ "$(git log -1 --format=%ae "$c")" = "$dependabot" ]; then mode=attribution; else mode=range; fi
-            if ! out=$(git show -s --format=%B "$c" | check_message $mode); then
+        for c in $revs; do
+            # A merge's message is git's own, and Dependabot's body is
+            # generated: neither is held to the form, both to the attribution.
+            form=yes
+            info=$(git show -s --format='%P|%ae' "$c")
+            case ${info%%|*} in *' '*) form=no ;; esac
+            [ "${info#*|}" = "$dependabot" ] && form=no
+            if ! out=$(git show -s --format=%B "$c" | check_message range $form); then
                 refuse "commit $(git rev-parse --short "$c")" "$out" 'Rewrite the commit message before merging.'
                 bad=1
             fi
@@ -161,11 +199,12 @@ case $1 in
         exit $bad
         ;;
     '')
-        echo 'usage: check-commit-msg.sh FILE | --range A..B' >&2
+        echo 'usage: check-commit-msg.sh FILE | --range REVS...' >&2
         exit 2
         ;;
     *)
-        if ! out=$(check_message hook <"$1"); then
+        comment=$(comment_prefix "$1")
+        if ! out=$(check_message hook yes <"$1"); then
             refuse 'commit-msg hook' "$out" 'Edit it with: git commit --amend'
             exit 1
         fi

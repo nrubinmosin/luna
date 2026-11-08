@@ -37,7 +37,9 @@ jobs:
       - run: ./scripts/gate.ps1 -Group frontend
       # Only the commits this push or PR brings, so history from before the rules
       # does not fail it. A new branch (or a force-push whose old tip is gone)
-      # is checked against master.
+      # is checked against master. Off master, what master already holds is
+      # left out too: a branch that merged master in, or was force-pushed over
+      # its own merge, has master's commits in its before..after.
       - name: Commit messages follow the rules
         shell: sh
         env:
@@ -51,7 +53,9 @@ jobs:
               || ! git cat-file -e "$from^{commit}" 2>/dev/null; then
             from=origin/master
           fi
-          sh scripts/check-commit-msg.sh --range "$from..$HEAD"
+          not=
+          [ "$GITHUB_REF" = refs/heads/master ] || not=^origin/master
+          sh scripts/check-commit-msg.sh --range "$from..$HEAD" $not
 
   # The Linux image (docker/linux-check.Dockerfile) rather than a setup action:
   # one definition of the toolchain and the system libraries for the local gate

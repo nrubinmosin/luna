@@ -185,7 +185,97 @@ check_range refuse 'build(deps): bump the npm group across 1 directory with 3 up
 Co-Authored-By: Someone <a@b.c>' "$dependabot"
 check_range refuse 'build(deps): bump the npm group across 1 directory with 3 updates' 'someone@example.com'
 
-# A merge commit is not checked, whatever its subject.
+# The range as it is stored: no comment lines, no scissors, and a bad range is
+# an error, not an empty one.
+check_range refuse '# Please enter the commit message
+# ------------------------ >8 ------------------------
+Co-Authored-By: x'
+check_range refuse 'Fix the gate
+
+# ------------------------ >8 ------------------------
+Co-Authored-By: x'
+(cd "$repo" && sh "$here/check-commit-msg.sh" --range "no-such-branch..HEAD") >/dev/null 2>&1
+[ $? = 2 ] || { echo 'FAIL (range): a bad range should exit 2' >&2; fail=1; }
+
+# --- CRLF: the CR is no part of the line, in either mode ---
+
+cr=$(printf '\r')
+seventytwo='An elevated run takes back an open file it made, owned by Administrators'
+check accept "$seventytwo$cr"
+check refuse "Fix the gate.$cr"
+check accept "Luna 0.10.0$cr"
+check accept "Fix the gate$cr
+$cr
+The body, each line ending in a CR.$cr"
+# git's own cleanup strips a CR; verbatim keeps it, as a message in the store.
+range_verbatim() { # $1 = refuse|accept, $2 = message
+    printf '%s\n' "$2" >"$tmp"
+    g commit -q --allow-empty --no-verify --cleanup=verbatim -F "$tmp"
+    if (cd "$repo" && sh "$here/check-commit-msg.sh" --range "$base..HEAD") >/dev/null 2>&1; then got=accept; else got=refuse; fi
+    [ "$got" = "$1" ] || report range "$1" "$got" "$2"
+    g reset -q --hard "$base"
+}
+range_verbatim accept "$seventytwo$cr"
+range_verbatim refuse "Fix the gate.$cr"
+range_verbatim accept "Luna 0.10.0$cr"
+
+# --- the hook follows core.commentChar ---
+
+check_in_repo() { # $1 = refuse|accept, $2 = message; the hook mode, in the repository
+    printf '%s\n' "$2" >"$tmp"
+    if (cd "$repo" && sh "$here/check-commit-msg.sh" "$tmp") >/dev/null 2>&1; then got=accept; else got=refuse; fi
+    [ "$got" = "$1" ] || report "hook, commentChar=$(g config core.commentChar || echo unset)" "$1" "$got" "$2"
+}
+check_in_repo accept 'Fix the gate
+# a comment, with the default character
+
+The body.'
+g config core.commentChar ';'
+check_in_repo accept 'Fix the gate
+; Please enter the commit message for your changes. Lines starting
+
+The body.'
+check_in_repo refuse 'Fix the gate
+# a heading is text now, where a blank line should be
+
+The body.'
+check_in_repo accept 'Fix the gate
+
+The body.
+; ------------------------ >8 ------------------------
+Co-Authored-By: x'
+check_in_repo refuse 'Fix the gate
+
+The body.
+# ------------------------ >8 ------------------------
+Co-Authored-By: x'
+g config core.commentChar auto
+# git chose ";" here, "#" opening a line of the text: a commit -v tells by its
+# scissors line, a plain one by its last comment line.
+check_in_repo accept 'Fix the gate
+
+# A heading
+;
+; Please enter the commit message for your changes. Lines starting
+; ------------------------ >8 ------------------------
+Co-Authored-By: x'
+check_in_repo accept 'Fix the gate
+
+# A heading
+;
+; Please enter the commit message for your changes. Lines starting
+; with ";" will be ignored, and an empty message aborts the commit.'
+check_in_repo refuse 'Fix the gate
+
+# A heading
+;
+; Please enter the commit message for your changes. Lines starting
+Co-Authored-By: x'
+g config --unset core.commentChar
+
+# --- merges and what a range leaves out ---
+
+# A merge commit's form is git's own, but its attribution is checked.
 g switch -q -c side
 g commit -q --allow-empty --no-verify -m 'Side'
 g switch -q -
@@ -193,7 +283,27 @@ g merge -q --no-ff --no-verify -m 'merged the side branch.' side
 if (cd "$repo" && sh "$here/check-commit-msg.sh" --range "$base..HEAD") >/dev/null 2>&1; then got=accept; else got=refuse; fi
 [ "$got" = accept ] || report range accept "$got" 'a merge commit'
 g reset -q --hard "$base"
+g merge -q --no-ff --no-verify -m 'Merge branch side
+
+Co-Authored-By: Someone <a@b.c>' side
+if (cd "$repo" && sh "$here/check-commit-msg.sh" --range "$base..HEAD") >/dev/null 2>&1; then got=accept; else got=refuse; fi
+[ "$got" = refuse ] || report range refuse "$got" 'a merge commit with attribution'
+g reset -q --hard "$base"
 g branch -q -D side
+
+# What another branch already holds (master, merged into a topic branch) is
+# left out of the range with ^branch, as CI does off master.
+g switch -q -c other
+g commit -q --allow-empty --no-verify -m 'a subject already on the other branch, lowercase and all.'
+g switch -q -
+g commit -q --allow-empty --no-verify -m 'Fix the gate'
+g merge -q --no-ff --no-verify -m 'Merge branch other' other
+if (cd "$repo" && sh "$here/check-commit-msg.sh" --range "$base..HEAD") >/dev/null 2>&1; then got=accept; else got=refuse; fi
+[ "$got" = refuse ] || report range refuse "$got" 'the other branch merged in, nothing left out'
+if (cd "$repo" && sh "$here/check-commit-msg.sh" --range "$base..HEAD" ^other) >/dev/null 2>&1; then got=accept; else got=refuse; fi
+[ "$got" = accept ] || report range accept "$got" 'the other branch merged in and left out'
+g reset -q --hard "$base"
+g branch -q -D other
 
 [ "$fail" = 0 ] && echo 'check-commit-msg: all cases passed'
 exit $fail
