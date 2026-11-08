@@ -97,8 +97,9 @@ installer, checks the signature against `plugins.updater.pubkey` in
 `latest.json`; `attest` and `publish` then leave the draft. A key rotation's
 bridge release, which embeds the new public key but is signed with the old
 key, is checked against the old public key instead: the `release`
-environment's variable `UPDATER_TRUSTED_PUBKEY` gives it, set for that
-release only (`docs/releasing.md`, "The signing key: rotation and recovery").
+environment's variable `UPDATER_TRUSTED_PUBKEY` gives it for that release,
+`embedded` for every other (`docs/releasing.md`, "The signing key: rotation
+and recovery").
 
 On a failure, `gh run view <id> --log-failed`, find the step, and bring a
 diagnosis. In `sign` the step says what it means:
@@ -109,7 +110,8 @@ diagnosis. In `sign` the step says what it means:
 - *Sign the installer*: the Tauri CLI download did not match the integrity
   `pnpm-lock.yaml` pins, or the key does not sign for the updater's public
   key (a wrong or rotated secret, or a bridge release run without
-  `UPDATER_TRUSTED_PUBKEY`). Nothing was signed into `latest.json`.
+  `UPDATER_TRUSTED_PUBKEY`), or the `release` environment does not define
+  `UPDATER_TRUSTED_PUBKEY` at all. Nothing was signed into `latest.json`.
 
 A re-run on the same tag is Actions → Release → Run workflow on the tag with
 `dry-run` unchecked (`docs/releasing.md`, "Dry runs").

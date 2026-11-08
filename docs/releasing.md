@@ -131,8 +131,19 @@ build made. The workflow, whose runners start empty, has no such carry-over.
        leave the secret out and an empty password is used.
 
    Keep both out of the repository secrets, which reach every job of every workflow.
-   - *Environment variables*: `UPDATER_TRUSTED_PUBKEY`, left unset except for the bridge
-     release of a key rotation (see [the signing key](#the-signing-key-rotation-and-recovery)).
+   - *Environment variables*: `UPDATER_TRUSTED_PUBKEY`, always defined: `embedded`, except
+     for the bridge release of a key rotation (see
+     [the signing key](#the-signing-key-rotation-and-recovery)). The sign step reads it
+     through `vars`, which falls back to a *repository* variable of the same name when the
+     environment has none, and repository variables any collaborator can create, while
+     an environment's only the repository owner can (GitHub's "Store information in
+     variables"). The job's token cannot list variables, so it cannot tell where a value
+     came from; instead the environment's value, always there, takes precedence over any
+     repository one, and the sign step stops on an empty value, which means the
+     environment lost its. What is left: if the environment's variable is deleted while a
+     collaborator has defined a repository one, that value is used. A wrong key still
+     fails closed (the signature does not check out), so the worst it does is stop a
+     release.
 2. **A tag ruleset** (Settings → Rules → Rulesets → New tag ruleset) for `v*`: restrict
    creations, updates and deletions, with the maintainer as the only bypass. Only they
    can then push a release tag, or move one.
@@ -161,7 +172,7 @@ never shows a secret again.
   one, so for N give it the old one installed copies hold: set the `release`
   environment's variable `UPDATER_TRUSTED_PUBKEY` to the old `plugins.updater.pubkey`
   (or pass `-TrustedPubkey`, or set `LUNA_UPDATER_TRUSTED_PUBKEY`, for `-Local`), and
-  unset it once N is out. Copy it from the `tauri.conf.json` of the last published
+  set it back to `embedded` once N is out. Copy it from the `tauri.conf.json` of the last published
   release, never from the build. Once installed copies have taken N, replace the
   environment secrets with the new key; N+1 onward is signed with it. A copy that skipped N cannot verify N+1: its update fails on the
   signature, and its user installs N+1 by hand from the release page, over the existing
