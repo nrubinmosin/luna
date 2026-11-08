@@ -50,7 +50,8 @@ signing job and publishes the draft the workflow leaves.
      `scripts/release-sign.ps1`: it fetches the Tauri CLI's Linux build
      (`@tauri-apps/cli-linux-x64-gnu`) from the npm registry, holds it to the
      integrity `pnpm-lock.yaml` pins, the bytes the build itself ran, and runs its
-     `signer sign` in the pinned Node image with no network and a read-only root. The
+     `signer sign` in the pinned Node image with no network, a read-only root and no
+     capabilities, as the runner's own user so that it can write the `.sig`. The
      signature is checked against `plugins.updater.pubkey` as installed copies check it
      (the version included) before `latest.json` takes it, so a wrong key stops the
      release here. Nothing of the build's runs in this job.
@@ -87,8 +88,10 @@ on.
 **Dry runs.** Actions → Release → Run workflow, with `dry-run` checked (the default),
 runs everything short of the attestations and the release; the assets are kept as the
 run's `release-v<version>` artifact. Run on a tag, it signs as the release would (and
-waits for the approval); run on a branch, the sign job passes the installer on unsigned,
-with an empty signature in `latest.json`, as the key is only handed to `v*` tags. Unchecking `dry-run` on a tag releases that tag, e.g. after a run that
+waits for the approval); run on a branch, the sign job signs a copy of the bundle with a
+key made for the run and thrown away (`release-sign.ps1 -Throwaway`), so the signing
+itself is tried, and passes the installer on unsigned, with an empty signature in
+`latest.json`, as the key is only handed to `v*` tags. Unchecking `dry-run` on a tag releases that tag, e.g. after a run that
 failed once the tag was out. A manual run uses the workflow and scripts as the chosen
 ref has them: a fix to those reaches a tag only through a commit that carries it, so a
 tag whose run failed on the workflow itself is released as a new version (or re-tagged
