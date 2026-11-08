@@ -15,6 +15,7 @@ mod codex;
 mod corecmd;
 mod corelink;
 mod coreproc;
+mod elevation;
 mod emit;
 #[cfg(test)]
 mod golden;
