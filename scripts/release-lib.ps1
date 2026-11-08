@@ -196,6 +196,20 @@ function New-UpdaterManifest {
     $manifest | ConvertTo-Json -Depth 5
 }
 
+# An SBOM as the release workflow's attestation step takes it. actions/attest
+# (src/sbom.ts, checkIsCycloneDX) calls a file CycloneDX only with bomFormat,
+# serialNumber and specVersion all set, and refuses anything else as
+# "Unsupported SBOM format"; the check is repeated here so sbom.ps1 stops a
+# release at the SBOM, not after the installer is built and signed. Throws
+# naming the file and what it lacks.
+function Assert-AttestableSbom([string]$Path) {
+    $bom = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json -AsHashtable
+    if ($bom -isnot [hashtable]) { throw "$Path is not a JSON object" }
+    if ($bom.bomFormat -cne 'CycloneDX') { throw "$Path has bomFormat '$($bom.bomFormat)', not CycloneDX" }
+    $missing = @('serialNumber', 'specVersion' | Where-Object { [string]::IsNullOrEmpty($bom[$_]) })
+    if ($missing) { throw "$Path has no $($missing -join ', '), which actions/attest requires of a CycloneDX SBOM" }
+}
+
 # The updater endpoint in tauri.conf.json, which latest.json is published for.
 function Get-UpdaterEndpoint([string]$Root = $RepoRoot) {
     $conf = Get-Content (Join-Path $Root 'src-tauri/tauri.conf.json') -Raw | ConvertFrom-Json
