@@ -95,8 +95,10 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   Gmail, Slack and the like; Codex's apps and `config.toml` servers), and a Claude Code one no
   auto-memory. `connectors: true` keeps them, for a task that needs them. A Codex helper still has
   servers from the project's `.codex/` and from plugins.
-- `requestKey` (spawn, send, delete): a retry with the same key within an hour gets the first
-  call's result, not a second helper or message; one that failed is made anew.
+- `requestKey` (spawn, send, delete): a retry with the same key and arguments within an hour gets
+  the first call's result, not a second helper or message; one that failed is made anew. A key
+  stands for one call: other arguments under it are refused. Keys are kept in the core's memory:
+  a core restart forgets them.
 - `budgetTokens`: past that many `context` tokens (its own, not its subagents' or helpers') its
   parent hears, once; nothing stops. `settings` shows `budgetBreach`, `budgetTold`.
 
