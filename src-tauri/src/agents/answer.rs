@@ -274,6 +274,20 @@ fn typed_answers(answers: &[String], note: Option<&str>) -> Result<(), String> {
     Ok(())
 }
 
+/// The message that answers a question with no dialog (Claude Code's async
+/// `AskUserQuestion`): each answer beside its question, by number, label or
+/// the caller's words. One answer per question exactly, as for a dialog
+/// (`presses_for`): a missing one would leave a question unanswered with the
+/// rest sent as if complete, an extra one would be dropped unsaid.
+fn async_answers(ask: &Ask, answers: &[String]) -> Result<String, String> {
+    if ask.questions.is_empty() || answers.len() != ask.questions.len() {
+        return Err(format!("{} question(s), {} answer(s): give one answer per question", ask.questions.len(), answers.len()));
+    }
+    let text: Vec<String> =
+        ask.questions.iter().zip(answers).map(|(q, ans)| format!("\"{}\": {}", q.text, resolve_option(q, ans))).collect();
+    Ok(format!("Answers to your question: {}", text.join("; ")))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn answer(
     caller: &str,
@@ -351,13 +365,9 @@ pub fn answer(
             (Some(k), _) => press(pty, id, &parse_keys(k)?)?,
             // An async question holds no dialog: the answer is a message.
             (None, Some(a)) if !a.blocking => {
-                let text: Vec<String> =
-                    a.questions.iter().zip(answers).map(|(q, ans)| format!("\"{}\": {}", q.text, resolve_option(q, ans))).collect();
-                if text.is_empty() {
-                    return Err("give one answer per question".into());
-                }
+                let text = async_answers(a, answers)?;
                 let before = crate::activity::turn_state(id);
-                type_in(pty, id, &format!("Answers to your question: {}", text.join("; ")), before.map(|t| t.turn), baseline, hold)?;
+                type_in(pty, id, &text, before.map(|t| t.turn), baseline, hold)?;
             }
             (None, Some(a)) => press(pty, id, &presses_for(known.provider, a, answers, allow, note)?)?,
             (None, None) => {
@@ -385,6 +395,19 @@ mod tests {
     use crate::agents::privilege::{Privilege, Reach};
     use crate::agents::registry::register;
     use crate::agents::teardown::forget;
+
+    #[test]
+    fn an_async_question_takes_one_answer_per_question() {
+        let q = |text: &str| AskQuestion { text: text.into(), options: vec!["Red".into(), "Blue".into()], multi: false, list_at: None };
+        let ask = Ask::question(vec![q("Which?"), q("And then?")], false);
+        let both = async_answers(&ask, &["1".into(), "blue".into()]).unwrap();
+        assert_eq!(both, "Answers to your question: \"Which?\": Red; \"And then?\": Blue");
+        for given in [vec![], vec!["1".to_string()], vec!["1".into(), "2".into(), "green".into()]] {
+            let e = async_answers(&ask, &given).unwrap_err();
+            assert!(e.starts_with(&format!("2 question(s), {} answer(s)", given.len())), "{e}");
+        }
+        assert!(async_answers(&Ask::question(Vec::new(), false), &[]).is_err(), "nothing to answer");
+    }
 
     #[test]
     fn keys_read_as_presses() {
