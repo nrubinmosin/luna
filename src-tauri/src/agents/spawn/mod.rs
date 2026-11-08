@@ -18,7 +18,7 @@ use crate::throttle::now_ms;
 use serde::{Deserialize, Serialize};
 
 /// The most a caller may spawn under itself, all generations counted.
-const MAX_DESCENDANTS: usize = 8;
+pub(in crate::agents) const MAX_DESCENDANTS: usize = 8;
 
 /// A child of a child may exist; a child of that may not have tools.
 const MAX_TOOL_DEPTH: usize = 1;
@@ -179,7 +179,7 @@ impl SpawnUnderWay {
 /// reached its caller and that only waits out its time to go (`Auto::idle_since`);
 /// and how many spawns of any of them are under way with no session yet,
 /// `except` aside (the one asked for again).
-fn under_cap(r: &Registry, caller: &str, except: Option<u64>) -> (Vec<String>, usize) {
+pub(in crate::agents) fn under_cap(r: &Registry, caller: &str, except: Option<u64>) -> (Vec<String>, usize) {
     let top = top_of(r, caller);
     let coming = r
         .spawns
