@@ -134,11 +134,15 @@ pub(super) fn command_for(e: &Entry, id: &str) -> Result<(Vec<String>, String, V
             if let Some(path) = crate::pty::codex_sandbox_path(&s.mode) {
                 envs.push(("PATH", path));
             }
+            // Luna's own server, with its tools: none while the hub is not up.
+            let luna = s.token.clone().filter(|_| s.tools).map(|token| (crate::pty::codex_mcp_args(), token));
             if !s.connectors {
-                args.extend(crate::codex::launch::connectors_off(&crate::codex::config::helper_mcp_servers(&s.account_path)?));
+                let supplied = luna.as_ref().is_some_and(|(mcp, _)| !mcp.is_empty());
+                let servers = crate::codex::config::helper_mcp_servers(&s.account_path)?;
+                args.extend(crate::codex::launch::connectors_off(&servers, supplied)?);
             }
-            if let Some(token) = s.token.clone().filter(|_| s.tools) {
-                args.extend(crate::pty::codex_mcp_args());
+            if let Some((mcp, token)) = luna {
+                args.extend(mcp);
                 envs.push(("LUNA_MCP_TOKEN", token));
             }
             envs.extend(crate::pty::codex_git_envs(&s.mode));
@@ -843,10 +847,32 @@ mod tests {
         want.extend(codex_turn(true));
         want.extend(codex_held(golden::codex_read_only(&["-c", "sandbox_mode=\"read-only\""]), true));
         // A name a `-c` key cannot spell is left on: overriding it would fail the
-        // run; `luna` is Luna's own.
+        // run. One the account calls `luna` is its own, not Luna's, which this
+        // helper without tools is not given: off as well.
         want.extend(apps_off());
-        want.extend(strings(&["-c", "mcp_servers.gmail.enabled=false", "-c", "mcp_servers.Zoho_CRM-2.enabled=false", "-"]));
+        want.extend(strings(&[
+            "-c",
+            "mcp_servers.gmail.enabled=false",
+            "-c",
+            "mcp_servers.luna.enabled=false",
+            "-c",
+            "mcp_servers.Zoho_CRM-2.enabled=false",
+            "-",
+        ]));
         assert_eq!(t.args, want);
+        // With tools, Luna's own is `luna`: the account's, a url alone, is replaced
+        // whole and turned on; one with more of its own stops the start.
+        e.spec.tools = true;
+        e.spec.token = helper_token(ID, &e);
+        let t = turn(&e, ID, &r);
+        assert!(t.args.windows(2).any(|w| w == ["-c", "mcp_servers.luna.enabled=true"]), "{:?}", t.args);
+        assert!(!t.args.iter().any(|a| a == "mcp_servers.luna.enabled=false"), "{:?}", t.args);
+        assert!(t.args.ends_with(&[golden::codex_mcp(), strings(&["-"])].concat()), "{:?}", t.args);
+        std::fs::write(std::path::Path::new(&account).join("config.toml"), "[mcp_servers.luna]\ncommand = \"node\"\n").unwrap();
+        assert!(command_for(&e, ID).err().unwrap().contains("named luna"));
+        e.spec.tools = false;
+        e.spec.token = None;
+        crate::agents::forget(ID);
         // A config that will not parse: no turn, rather than one with its servers on.
         std::fs::write(std::path::Path::new(&account).join("config.toml"), "[mcp_servers.gmail\n").unwrap();
         let e = command_for(&e, ID).err().unwrap();
