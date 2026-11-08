@@ -9,7 +9,7 @@
 
 use super::same_dir;
 use super::spawn::{spawn, Launch};
-use crate::claude::launch::{self as claude_launch, claude_settings, with_role, CLAUDE_MCP_TOKEN_ENV};
+use crate::claude::launch::{self as claude_launch, claude_settings, with_role, HelperSettings, CLAUDE_MCP_TOKEN_ENV};
 use crate::codex::launch::{self as codex_launch, AUTO_REVIEW, AUTO_REVIEW_SANDBOX, READ_ONLY_NET};
 use crate::provider::Provider;
 use std::sync::Mutex;
@@ -36,12 +36,14 @@ pub(crate) fn claude_settings_file(
     hooks: bool,
     guard: bool,
     library: &crate::library::SessionSkills,
+    helper: Option<HelperSettings>,
 ) -> Result<std::path::PathBuf, String> {
     let settings = claude_settings(
         crate::hub::hook_url(chat_id).filter(|_| hooks).as_deref(),
         crate::hub::guard_url(chat_id).filter(|_| guard).as_deref(),
         library,
         &crate::ipc::core_dir().to_string_lossy(),
+        helper,
     );
     // Owner-only: the hook URLs in it carry the hub's secret.
     let dir = crate::paths::data_dir().join("hooks");
@@ -359,10 +361,13 @@ pub async fn ensure_claude_session(
         // The guard against endless waits (guard.rs): a chat with Luna's tools
         // and a helper, which only such a chat starts.
         let guard = tools.unwrap_or(false) || parent.is_some();
+        // A helper, the window's or not, starts with none of its account's
+        // reach out of Luna but what it was spawned with (`HelperSettings`).
+        let helper = parent.is_some().then(|| HelperSettings { connectors: crate::agents::keeps_connectors(&id, spawn_request) });
         // Mandatory: it carries the core-folder deny (threat model F3). If it
         // cannot be written, the session does not start rather than run
         // without it.
-        let settings_file = claude_settings_file(&id, true, guard, &skills)?;
+        let settings_file = claude_settings_file(&id, true, guard, &skills, helper)?;
         let tools = tools.unwrap_or(false);
         let read_only = read_only.unwrap_or(false);
         let agent = agent.filter(|a| !a.is_empty());
@@ -400,6 +405,7 @@ pub async fn ensure_claude_session(
             agent: agent.as_deref(),
             read_only,
             parent: parent.as_deref(),
+            strict_mcp: helper.is_some_and(|h| !h.connectors),
             mcp: mcp.as_ref().map(|(file, token)| (file.as_path(), token.as_str())),
             notes_dir: notes.as_deref(),
             instructions_dir: instructions.as_deref(),
@@ -494,6 +500,13 @@ pub async fn ensure_codex_session(
             None => {}
         }
         let mcp = token.and_then(|t| Some((crate::hub::mcp_url()?, t)));
+        // A helper starts without its account's MCP servers and apps, as a
+        // Claude Code one does, unless spawned with them (`connectors_off`).
+        let connectors_off = if parent.is_some() && !crate::agents::keeps_connectors(&id, spawn_request) {
+            codex_launch::connectors_off(&crate::codex::config::helper_mcp_servers(&account_path)?, mcp.is_some())?
+        } else {
+            Vec::new()
+        };
         // The skills the library gives sessions in this folder and keeps
         // from them, at every start (library/folders.rs `session_args`).
         crate::library::lay_out("before a session starts");
@@ -515,6 +528,7 @@ pub async fn ensure_codex_session(
             git_envs: &git_envs,
             hooks_unasked,
             guard: &guard,
+            connectors_off: &connectors_off,
             parent: parent.as_deref(),
             mcp: mcp.as_ref().map(|(url, token)| (url.as_str(), token.as_str())),
             skill_args: &skills.args,
@@ -864,6 +878,7 @@ mod tests {
                 "Edit,Write,NotebookEdit",
                 "--append-system-prompt",
                 &line,
+                "--strict-mcp-config",
                 "--allowedTools",
                 "mcp__luna",
                 "--mcp-config",
@@ -879,12 +894,13 @@ mod tests {
             pairs(&[
                 ("CLAUDE_CONFIG_DIR", "/golden/acc-claude"),
                 ("DISABLE_AUTOUPDATER", "1"),
+                ("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "1"),
                 ("LUNA_MCP_TOKEN", "<token>"),
                 ("LUNA_SESSION_ID", ID),
                 ("LUNA_PARENT_ID", PARENT),
             ])
         );
-        assert_eq!(s.settings, Some(golden::claude_chat_settings(true)));
+        assert_eq!(s.settings, Some(golden::claude_helper_settings(golden::claude_chat_settings(true))));
         assert_eq!(s.mcp, Some(golden::claude_mcp_config()), "the token stays in the environment");
         assert_eq!(s.describe, "model sonnet perm bypassPermissions worktree false");
     }
@@ -1110,6 +1126,8 @@ mod tests {
         .start(ID, &r);
         let mut flags = codex_flags(None, "high", "never", "workspace-write");
         flags.extend(strings(&["--dangerously-bypass-hook-trust", "-c", &golden::codex_guard()]));
+        // Its account's apps off (the golden account names no server).
+        flags.extend(strings(&["-c", "features.apps=false"]));
         let mut tail = golden::codex_mcp();
         tail.extend(strings(&["--", PROMPT]));
         assert_eq!(s.args, codex_args(&[], flags, tail));

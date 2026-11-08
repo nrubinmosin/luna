@@ -88,8 +88,21 @@ in section 6.
   privilege it would itself need to run the tool unasked.
 - Text a CLI reads as a command (`/` slash command, `!` shell mode) goes only
   from a caller at full access into its own helper.
-- Reading, waiting on and sending plain text to other sessions stays open
-  (R1): that is how sessions hand work to one another.
+- Stopping a turn (`luna_send` with `interrupt`) works only on the caller's own
+  helpers and theirs, of either provider, as kill and delete do (F12).
+- Reading, waiting on, sending plain text to and answering a model's question
+  in other sessions stays open (R1), as that is how sessions hand work to one
+  another, but only when the call says `scope: "all"`; text sent so, an answer
+  typed in as a message included, arrives opened `[From session <id> via
+  Luna]`, not as the user's own words.
+- A helper reaches out of Luna only as far as its spawn asked: it starts with
+  Luna's MCP server alone, without its account's MCP servers and connectors,
+  and a Claude Code helper without auto-memory, unless spawned with
+  `connectors: true` (F13; a Codex helper's project and plugin servers are
+  section 6's).
+- Every argument a tool is called with is checked against its schema before
+  it runs: what it does not know or cannot take is refused, never passed over
+  (F14).
 
 ## 4. Trust boundaries and STRIDE
 
@@ -121,6 +134,7 @@ in section 6.
 | S | A local process or web page posts forged hook events or MCP calls | mitigated: loopback only (`hub.rs:80`); hook and guard URLs carry their chat's secret (`hub.rs:238`, F7); MCP needs a per-session bearer token, looked up by its SHA-256 (`agents/registry.rs:341`, H1); a browser cannot set `Authorization` cross-origin without a preflight the hub never answers |
 | S | One session posts hook or guard events as another chat | fixed (F7) |
 | E | Session A acts on session B through MCP | see the authorization matrix (section 5) |
+| T, E | A misspelled or mistyped tool argument is passed over and the tool runs on a default that widens it (`read_only` for `readOnly`: a helper that writes) | fixed (F14): `arguments_fit` holds each call to its tool's schema before it runs (`mcp.rs:629`) |
 | T | Request smuggling or parser confusion | mitigated (H2): head parsed by `httparse` in its strict default; body framed by `Content-Length` only, digits only, repeats equal; any `Transfer-Encoding` is answered 400 and closed (`hub.rs:297-312`) |
 | D | Thread or memory exhaustion | fixed (H2): 64 connections still sending their head (16 KiB, 5 s), then separate lanes of 32 for hooks and the guard and 128 for MCP; bodies 64 KiB (hooks) or 4 MiB within 30 s; 503 past a cap, 413 past a body cap (`hub.rs:42-75`, `admit.rs`). Spawns capped per caller (`agents/spawn/mod.rs:241`) |
 | R | Who did what through MCP | every tool call is logged with caller, target and steering arguments, never prompt text (`mcp.rs:419-443`); spawns and exits go to `agents.jsonl` |
@@ -132,6 +146,7 @@ in section 6.
 | T, E | Shell or argument injection through spawn parameters | mitigated: children start from an argv vector, never a shell (`pty/spawn.rs:196`); modes, efforts, models and sandboxes are checked against fixed lists, spelled exactly (`agents/privilege.rs:264`); text Luna types is refused if it holds control characters (`agents/privilege.rs:493`) |
 | E | A tooled session spawns a helper with more privilege than itself | fixed (F1) |
 | E | A config's `auto_review` answers for a person | mitigated: Codex sessions Luna starts without auto-review pin `approvals_reviewer="user"` (`codex/launch.rs:155`, `codex/launch.rs:90`, `background/command.rs:123`) |
+| E, I | A helper inherits its account's MCP servers and connectors (claude.ai's Gmail, Slack, CRM tools that send and write; Codex's apps), so a brief or an injected prompt acts in the person's name outside Luna; a Claude Code helper writes the account's auto-memory, which every later session reads | fixed (F13) for Claude Code: `--strict-mcp-config`, `disableClaudeAiConnectors` and `autoMemoryEnabled: false` in its settings file, `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` in its environment and that file's `env` (`claude/launch.rs:119`, `background/command.rs:52`, `pty/start.rs`); Codex: apps and the account's `config.toml` servers off for the run (`codex/launch.rs:142`); a project's `.codex/` and plugins' servers stay (section 6). `connectors: true` keeps them |
 | I | A session inherits Luna's or a parent session's identity variables | mitigated: inherited CLI session variables are removed (`pty/spawn.rs:206`, `pty/spawn.rs:506`) |
 | E | Luna started as administrator (or root) hands its elevated token to the core and so to every CLI | fixed (F11): see below |
 
@@ -221,18 +236,21 @@ binary and checksum replaced together, installed and run (F10).
 
 Callers are sessions holding a Luna MCP token. A session without Luna's tools
 can call `luna_permission` only, and only as a background helper
-(`mcp.rs:454-462`). A helper's helper never gets tools (`agents/spawn/mod.rs:34`); a
+(`mcp.rs:517-525`). Every other call's arguments are held to its tool's schema
+first (`arguments_fit`, `mcp.rs:629`). A helper's helper never gets tools (`agents/spawn/mod.rs:34`); a
 caller has at most 8 descendants (`agents/spawn/mod.rs:31`).
 
 | Tool | May target | Check | Tested |
 | --- | --- | --- | --- |
-| `luna_kill`, `luna_delete` | own descendants | `authorize` (`agents/registry.rs:440`) | yes |
-| `luna_send`; `luna_answer` to a question a model asked | any session but itself, the user's chats included; `/`- or `!`-led text only from full access into its own helper, checked again where queued or kept text is typed (`agents/privilege.rs:467`, `agents/privilege.rs:482`, `background/queue.rs:84`) | `authorize_send` (`agents/registry.rs:462`), `command_reach` | yes |
+| `luna_kill`, `luna_delete` | own descendants | `authorize` (`agents/registry.rs:439`) | yes |
+| `luna_send` | own descendants; with `scope: "all"` any session but itself, the user's chats included, the text opened `[From session <id> via Luna]` (`agents/delivery.rs:322`); `interrupt` only own descendants, both providers (`agents/delivery.rs:339`); `/`- or `!`-led text only from full access into its own helper, checked again where queued or kept text is typed (`agents/privilege.rs:467`, `agents/privilege.rs:482`, `background/queue.rs:84`) | `in_scope` (`agents/registry.rs:468`), `authorize_send` (`agents/registry.rs:487`), `is_mine`, `command_reach` | yes |
+| `luna_answer` to a question a model asked | own descendants; with `scope: "all"` any session but itself, the user's chats included; an answer typed in as a message (a question with no dialog) opened `[From session <id> via Luna]` (`agents/answer.rs`, `answer_message`) | `in_scope` (`agents/registry.rs:468`), `authorize_send` | yes |
 | `luna_answer` with `allow`, `keys`, or on a CLI's own list | own descendants; `allow` only where the caller would run the tool unasked and never from read-only or asking modes; `keys` and CLI lists only from full access (`agents/answer.rs:204`, call sites `agents/answer.rs:306-343`) | `answer_reach` | yes |
-| `luna_read`, `luna_wait` | any session but itself | `authorize_view` (`agents/registry.rs:451`) | yes |
+| `luna_read`, `luna_wait` | own descendants; with `scope: "all"` any session but itself | `in_scope` (`agents/registry.rs:468`), `authorize_view` (`agents/registry.rs:450`) | yes |
 | `luna_spawn` | a new helper in any account not on the denylist `agent_blocked_accounts` (empty by default, `agents/spawn/account.rs:12`), in any folder except Luna's data dir and what holds it (`agents/privilege.rs:305`, `agents/spawn/mod.rs:385`), at no more privilege than the caller (`agents/privilege.rs:227`, `agents/spawn/mod.rs:447`) | `cap`, `reaches_luna`, spawn cap | yes |
 | `luna_power` | the whole PC (shutdown, restart, sleep; or cancel the user's) | tools only (`power/commands.rs:90`) | no authorization test (R4) |
-| `luna_sessions`, `luna_list`, `luna_notify`, `luna_guide` | read-only, or notify the user | tools only | yes |
+| `luna_sessions`, `luna_list` | every session's metadata (state, folders, settings, transcript path); another's `ask` and `task`, and others' past spawns with their prompts and last replies (`history`), only with `scope: "all"` (`agents/list.rs`, `mcp.rs` `runs_in_scope`) | `scope_all`, `own_or_self` | yes |
+| `luna_notify`, `luna_guide` | notify the user, or read the guide | tools only | yes |
 
 ## 6. Limits of the least-privilege layer
 
@@ -244,7 +262,9 @@ not cover:
 | Recorded modes approximate effective authority | Luna compares the mode, sandbox, approval and network flag it started a session with (`Privilege`, `agents/privilege.rs:75-147`). It does not evaluate allow rules, skills, hooks, extra writable roots or a Codex config's network settings, so two sessions on the same rung can differ in what they may actually do |
 | Helpers may be rooted in any folder except Luna's data dir | a helper is refused only in, inside or above the data dir (`reaches_luna`); the cap limits its mode, not what that folder lets the mode reach (another project, an account folder) |
 | Same-user processes can read files and impersonate tokens | anything running as the user, an agent with a shell included, can read `core.json` or another process's environment and act as the UI or as that session. The layer is no OS isolation (R3, F3). A process whose token marks it confined (a CLI sandbox) is refused at the core port on Windows (`peer.rs`), but an unconfined same-user process is not |
-| A weaker session can still ask a stronger one in plain words | plain text to any session stays open (R1); the stronger session's own mode, and its person, decide what it does with it |
+| A weaker session can still ask a stronger one in plain words | plain text to any session stays open with `scope: "all"` (R1), marked as the caller's; the stronger session's own mode, and its person, decide what it does with it |
+| A Codex helper keeps some MCP servers | Codex 0.167.0 has no switch for every server: a helper's run turns off its apps and each bare-key server its account's `config.toml` names, as an override for a server no config layer defines, or a dotted name, fails the run. Servers from the project's `.codex/config.toml` (trusted for the run) and from plugins stay on, as do a name `-c` cannot spell (F13) |
+| A promoted or orphaned visible helper | a visible helper's `--strict-mcp-config` goes by its having a parent at each start: one whose lineage is gone starts as a chat, with its account's servers |
 | Screen detection depends on CLI versions | permission dialogs and the lists a CLI holds its screen on are recognized from the terminal (`agents/ask.rs:195`, `agents/ask.rs:204`) as Claude Code 2.1.318+ and Codex 0.167.0 draw them. The answer checks apply to what Luna recognized. A dialog another version draws differently is not recognized: `allow` and answers to it are refused, and only raw `keys` reach it, which need full access whatever is detected |
 | Two explicit relaxations | `helpersAboveCaller` (`settings.rs:26`) lifts the cap for spawns, answers and command text, and is turned on only through a native dialog the page cannot answer; the dev caller (`LUNA_DEV_TOKEN`, `agents/registry.rs:288`, test builds) stands in for the user and is exempt |
 
@@ -266,6 +286,9 @@ on `refactor/phase-1`; "residual" names what is left and why.
 | F9 | Hardening gap | Tauri app commands are not scoped (no `AppManifest` in `build.rs`) and take raw paths, which sets the impact of any script in the page | **fixed** ([ADR-0015](../adr/0015-the-page-gets-only-what-it-calls.md)): the application manifest and a capability that grants each command and plugin call the page makes to the `main` window only; the core bridge passes on only `corecmd::COMMANDS`, each on its lane; account and folder paths typed at the boundary (`boundary.rs`); turning on `helpersAboveCaller` takes a native dialog. Residual: what the page does stays open to a script in it (B1), code execution through a session among it |
 | F10 | Medium | Managed CLI binaries are checked only against a sha256 from the same origin (B7) | **Claude Code part fixed** (3b603be): its manifest is verified against Anthropic's release key pinned in the app (`claude/manifest_sig.rs`), so the exe's checksum is the key holder's. **Residual**: Codex is still checked only against `codex-package_SHA256SUMS` from the same release; it publishes Sigstore bundles for its Linux packages only (`*.tar.gz.sigstore`, seen on rust-v0.167.0), none for Windows or macOS, and verifying them would take a Sigstore client and a pinned workflow identity. Claude Code's `latest` pointer is unsigned: an older signed release is refused below the floor (616d138), but a fresh install can still be held anywhere from `MIN_VERSION` up, and a release Anthropic pulls back is refused until a newer one comes. A new Anthropic key stops Claude Code updates until a Luna release pins it |
 | F11 | High | Started as administrator ("Run as administrator", an elevated terminal), the window started the core with its elevated token, and the core every CLI and helper: an agent's tool commands with the whole machine in reach. Root likewise off Windows | **fixed** (`fix/never-elevated`): the privilege boundary is the user's ordinary token, and no CLI crosses above it. An elevated window (`TokenIsElevated`, or integrity High or above) starts the core with the desktop shell's token: this user's and not elevated, checked on the token actually duplicated, then `CreateProcessWithTokenW` suspended until the new process's token reads ordinary (`elevation.rs` `plan`, `spawn_as_shell`); no shell, another user's shell (over-the-shoulder credentials: never started as either user) or an elevated one (no limited token) starts no core. The core and the window check their own token: elevated, the core starts no hub, helper or session and answers only `info` and `shutdown` (`coreproc.rs` `requests`), and `elevation::guard` refuses at every CLI start (`pty/spawn.rs` `spawn`, `background/run.rs` `spawn_turn`, `codex/models.rs` `from_cli`), whatever asked. A running core whose token reads elevated, or cannot be read at all (fail closed; off Windows its effective uid), is never attached (`corelink.rs` `verdict`, `counts_as_elevated`). The de-elevated core's environment is the user's profile's (`CreateEnvironmentBlock`) plus the window's `LUNA_*` alone. The tests read the OS's answer too: the live suite, run from an elevated terminal, is refused (`live.rs`, `scripts/live-tests.ps1`); a test may add a refusal, never lift one. Unix: euid 0 refused the same way. Residuals: the window itself stays elevated (its WebView, the links and folders it opens, dialogs); de-elevation needs the Secondary Logon service, so where hardening disables it Luna refuses rather than falls back; `CreateProcessWithTokenW` from an elevated window was not exercised live (no elevation without a UAC click), only the decision with a stand-in OS and the token, profile-environment and job reads on a medium-integrity token, so whether the core lands outside the window's job is logged at each such start rather than known; an elevated core of this build lets an ordinary window in below its integrity to stop it and nothing else (B2's peer check, `StopOnly`); one that still cannot be reached (another user's) ends only by an elevated `luna --stop-core`, signing out, or its idle exit ten minutes after its last window |
+| F12 | High | `luna_send` with `interrupt: true` reached any session: Esc into a person's chat, or for another chat's background helper a kill of its turn that also dismissed the question it waited on | **fixed** (2f8b682): only the caller's descendants, both providers, visible or background (`agents/delivery.rs:339`); refusal tests for another chat's helper and a person's chat |
+| F13 | Medium | Helpers inherited every MCP server of their account, claude.ai connectors with send and write tools among them, and a Claude Code helper's auto-memory wrote into every later session of the account | **fixed** (3fd0f76) for Claude Code; Codex in part: see B4 and section 6 |
+| F14 | Medium | Tool arguments were read field by field with defaults: an unknown or mistyped one was passed over, so `read_only` spawned a writing helper and `interrupt: "true"` was no interrupt | **fixed** (d76ab9e): `arguments_fit` |
 | H1 | — | Tokens and secrets were hashed from time, pid and addresses; compares used `==` | **fixed** (d502edf, d09261c): every token, key and secret from the OS CSPRNG (`secret.rs:15`); hub secret and core token compared with `subtle` (`secret.rs:25`); MCP tokens keyed by SHA-256 |
 | H2 | — | Listeners read unauthenticated input with no deadline or cap (`tiny_http`, a thread per connection) | **fixed** (6b8fecc, d09261c): see B2 and B3 |
 | H3 | — | `csp: null` | **fixed** (1cb24c4, 3d787a6): see section 7.2 |
@@ -320,8 +343,10 @@ Residuals:
 ## 8. Accepted risks
 
 - **R1. Broad agent read/send access (by design).** Any tooled session may read
-  and wait on every session and send plain text to any other, the user's chats
-  included (`agents/registry.rs:451-477`). A prompt-injected session can put text in
+  and wait on every session, send plain text to any other and answer its
+  model's questions, the user's chats included, once the call says `scope:
+  "all"` (`agents/registry.rs:450-505`);
+  text so sent opens `[From session <id> via Luna]`. A prompt-injected session can put text in
   front of a more privileged one; what that session does stays within its own
   mode, and its permission prompts are answered by a person or its own caller
   (F2).

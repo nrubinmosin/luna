@@ -386,9 +386,9 @@ pub fn promoted(id: &str) {
 }
 
 /// What a session's settings hold that no window sets: `register` keeps them across
-/// every start of its CLI, and ties across cores. `resumeOnRestart`, and a budget
-/// with where it stands (`budget_news`).
-const CORE_SETTINGS: [&str; 4] = ["resumeOnRestart", "budgetTokens", "budgetBreach", "budgetTold"];
+/// every start of its CLI, and ties across cores. `resumeOnRestart`, a budget
+/// with where it stands (`budget_news`), and `connectors` (`keeps_connectors`).
+const CORE_SETTINGS: [&str; 5] = ["resumeOnRestart", "budgetTokens", "budgetBreach", "budgetTold", "connectors"];
 
 /// Whether a helper was spawned with `resumeOnRestart`.
 pub fn resumes_on_restart(id: &str) -> bool {
@@ -453,6 +453,42 @@ pub(super) fn authorize_view(caller: &str, target: &str) -> Result<Known, String
     }
     let r = reg().lock().unwrap_or_else(|e| e.into_inner());
     r.known.get(target).cloned().ok_or_else(|| format!("unknown session {target}; luna_sessions lists them"))
+}
+
+/// Whether `id` is the caller's: spawned by it, directly or through a helper.
+pub(super) fn is_mine(caller: &str, id: &str) -> bool {
+    is_descendant(&reg().lock().unwrap_or_else(|e| e.into_inner()), caller, id)
+}
+
+/// Whether a call's `scope` says `all`: past the caller's own (`mine`, the default).
+pub fn scope_all(scope: Option<&str>) -> Result<bool, String> {
+    match scope {
+        None | Some("mine") => Ok(false),
+        Some("all") => Ok(true),
+        Some(other) => Err(format!("unknown scope {other:?}; use mine (the default) or all")),
+    }
+}
+
+/// Whether `id` is the caller or one of its own: what `scope` `mine` reaches.
+pub fn own_or_self(caller: &str, id: &str) -> bool {
+    caller == id || is_mine(caller, id)
+}
+
+/// What a read, a wait or a send may reach, by its `scope`: the caller's own
+/// helpers and theirs, unless it says `all`. Text read off or typed into a
+/// session no one asked it to touch is the reach a prompt injection wants, so
+/// going past its own takes an argument that says so. An unknown session, or
+/// the caller itself, is left to the tool's own refusal, which says more.
+pub fn in_scope(caller: &str, id: &str, scope: Option<&str>, verb: &str) -> Result<(), String> {
+    let all = scope_all(scope)?;
+    let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    if all || caller == id || !r.known.contains_key(id) || is_descendant(&r, caller, id) {
+        return Ok(());
+    }
+    Err(format!(
+        "session {id} is not one you spawned; to {verb} a session that is not yours (the user's own chats, another's \
+         helpers) pass scope: \"all\""
+    ))
 }
 
 /// Text may go to any session Luna runs, the user's own chats included —
@@ -542,6 +578,34 @@ mod tests {
         let mut d = descendants(&r, "a");
         d.sort();
         assert_eq!(d, vec!["b", "c"]);
+    }
+
+    #[test]
+    fn reaching_past_ones_own_takes_scope_all() {
+        let (account, none) = ("C:\\acc\\anthropic\\one", serde_json::json!({}));
+        register("sc-me", Provider::Claude, "C:\\p", account, None, true, none.clone());
+        register("sc-kid", Provider::Claude, "C:\\p", account, Some("sc-me"), true, none.clone());
+        register("sc-grand", Provider::Codex, "C:\\p", "C:\\acc\\openai\\two", Some("sc-kid"), false, none.clone());
+        register("sc-chat", Provider::Claude, "C:\\p", account, None, false, none.clone());
+        register("sc-theirs", Provider::Codex, "C:\\p", "C:\\acc\\openai\\two", Some("sc-chat"), false, none);
+        // Its own, by default or said.
+        assert_eq!(in_scope("sc-me", "sc-kid", None, "read"), Ok(()));
+        assert_eq!(in_scope("sc-me", "sc-grand", Some("mine"), "read"), Ok(()));
+        // A person's chat, another chat's helper, and upwards: only when told.
+        for (caller, id) in [("sc-me", "sc-chat"), ("sc-me", "sc-theirs"), ("sc-kid", "sc-me")] {
+            let e = in_scope(caller, id, None, "send to").unwrap_err();
+            assert!(e.contains("not one you spawned") && e.contains("scope: \"all\""), "{caller} -> {id}: {e}");
+            assert!(in_scope(caller, id, Some("mine"), "read").is_err());
+            assert_eq!(in_scope(caller, id, Some("all"), "read"), Ok(()));
+        }
+        // An unknown session and itself are the tool's to refuse, in its words.
+        assert_eq!(in_scope("sc-me", "sc-nobody", None, "read"), Ok(()));
+        assert_eq!(in_scope("sc-me", "sc-me", None, "read"), Ok(()));
+        assert!(in_scope("sc-me", "sc-kid", Some("everything"), "read").unwrap_err().contains("unknown scope"));
+        assert!(own_or_self("sc-me", "sc-me") && own_or_self("sc-me", "sc-grand") && !own_or_self("sc-me", "sc-theirs"));
+        for id in ["sc-grand", "sc-kid", "sc-theirs", "sc-chat", "sc-me"] {
+            forget(id);
+        }
     }
 
     #[test]

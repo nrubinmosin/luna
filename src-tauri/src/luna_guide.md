@@ -32,8 +32,12 @@ on one of the user's accounts.
 - `luna_list` `ids: [..]`: those rows alone, of any session (unknown ids in `unknown`), no
   accounts unless `accounts: true`; `accounts: false` drops them;
   `ids: []` with `accounts: true`: accounts alone. Their models only with `models: true`.
-- You kill and delete only sessions you spawned and theirs. Any other session you can read,
-  wait on and send text to. A deleted parent's helper passes to its parent; with none, only
+  Another's `ask` and `task` there, its `ask` in `luna_sessions`, and others' spawns in its
+  `history`, only with `scope: "all"`.
+- You interrupt, kill and delete only sessions you spawned and theirs. Any other (the user's own
+  chats, other chats' helpers, your parent) you can read, wait on, send text to and answer with
+  `scope: "all"`, without which those tools refuse it; your text reaches it opened `[From session
+  <your id> via Luna]`. A deleted parent's helper passes to its parent; with none, only
   the user can stop or delete it, and a background one goes once idle for 30 min.
 - At most eight helpers under one chat. A helper given `tools: true` gets these tools too,
   but its own helpers get none.
@@ -82,6 +86,10 @@ on one of the user's accounts.
   names the worktree and branch, or `worktreePending` until the CLI has made it. `sameFolder`
   lists live sessions working in the same directory.
 - A prompt over 8,000 characters reaches a visible session as a file it is told to read.
+- A helper has Luna's MCP server alone: none of its account's servers or connectors (claude.ai's
+  Gmail, Slack and the like; Codex's apps and `config.toml` servers), and a Claude Code one no
+  auto-memory. `connectors: true` keeps them, for a task that needs them. A Codex helper still has
+  servers from the project's `.codex/` and from plugins.
 - `budgetTokens`: past that many `context` tokens (its own, not its subagents' or helpers') its
   parent hears, once; nothing stops. The line rides like an idle one. `settings`
   shows `budgetBreach`, `budgetTold`.
@@ -160,7 +168,8 @@ on one of the user's accounts.
   `id`: pass it as `askId`, so your answer cannot land on the next one; a stale or unknown id
   is refused, and so is no id with several held.
 - `allow`, `keys`, a CLI's own list: your helpers only; allow true only for what you run unasked
-  (never plan/default), keys and lists at full access; others': model questions only. No control chars.
+  (never plan/default), keys and lists at full access; others' (`scope: "all"`): model questions only.
+  No control chars.
   Text or a prompt starting with `/` or `!` (CLI command, shell as you): only at
   full access, into your own helpers.
 - A visible Codex stopped on a list of its own ("Hooks need review" at startup) has it as a
@@ -170,8 +179,8 @@ on one of the user's accounts.
 - `luna_send` to a working session is `queued`: a visible CLI takes it into the running turn
   or the next; a background Claude helper at its next tool boundary (`joined`; a long tool
   or subagent delays it); background Codex the next turn. `luna_wait` with the
-  `turnsEnded` returned waits for whichever answers it. `interrupt: true` makes the text the
-  next turn, behind any queued (`queued` if that turn would not stop). Where the user is
+  `turnsEnded` returned waits for whichever answers it. `interrupt: true` (your own helpers and
+  theirs only) makes the text the next turn, behind any queued (`queued` if that turn would not stop). Where the user is
   typing, or left a draft Luna cannot put aside (Codex's), the result says `held: true`: Luna
   types it in once they are done, and a `luna_wait` waits for that first. Do not send again.
 - `autoDelete`: Luna deletes the helper 30 minutes after its answer reached you, not while a

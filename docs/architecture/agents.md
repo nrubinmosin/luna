@@ -60,17 +60,40 @@ decisions in [ADR-0012](../adr/0012-agents-over-mcp-with-notices.md) and
   go without; a compaction can lose a visible one's.
 - The instruction says the CLIs' own subagents cannot use another provider or
   account (without it a Codex orchestrator used its own `spawn_agent`).
+- A helper gets Luna's server and none of its account's, unless spawned with
+  `connectors: true` (`keeps_connectors`: the spawn's record, then
+  `connectors` in its settings, one of `CORE_SETTINGS`). Claude Code:
+  `--strict-mcp-config` (no user, project, plugin or claude.ai server) and a
+  settings file (`HelperSettings`) with `disableClaudeAiConnectors` and
+  `autoMemoryEnabled: false`, the latter even with `connectors`, and
+  `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` in its environment and that file's `env`,
+  as an inherited `0` would turn auto-memory on ahead of the setting. Codex:
+  `-c features.apps=false` and `-c mcp_servers.<name>.enabled=false` for each
+  bare-key server of the account's `config.toml` (`connectors_off`), one it
+  calls `luna` too unless Luna gives the run its own; then Codex merges the
+  two key by key, and an account's `luna` setting more than Luna's replaces
+  stops the start. A config that will not read stops it as well. The
+  project's `.codex/` and plugins' servers stay, as overriding a server no
+  layer defines fails the run. A visible helper is one with a parent at its
+  start.
 
 ## Rights
 
 | Tool | May target |
 | --- | --- |
-| `luna_sessions`, `luna_list` | all sessions of this launch (`list` with `ids` gives any session's rows) |
-| `luna_send` | any session but its own; command text (`/`, `!`) only from full access into its own helper |
-| `luna_read`, `luna_wait` | any session but its own (the transcript is on disk anyway) |
+| `luna_sessions`, `luna_list` | all sessions of this launch (`list` with `ids` gives any session's rows), as metadata: another's `ask` and `task`, and others' spawns in `history`, only with `scope: "all"` |
+| `luna_send` | its descendants; with `scope: "all"` any session but its own, the text opened `[From session <id> via Luna]` (`as_sent`); `interrupt` descendants only; command text (`/`, `!`) only from full access into its own helper |
+| `luna_read`, `luna_wait` | its descendants; with `scope: "all"` any session but its own |
 | `luna_kill`, `luna_delete` | descendants only |
+| `luna_answer` to a model's question | its descendants; with `scope: "all"` any session but its own, an answer typed in as a message opened as `luna_send`'s (`answer_message`) |
 | `luna_answer` with `allow`, `keys`, or on a CLI's own list | descendants only, at the caller's privilege |
 | `luna_spawn` | a helper at no more privilege than the caller, never in or above the data dir |
+
+Every call's arguments are held to its tool's schema first (`arguments_fit`):
+an unknown key is refused naming those the tool takes, a value of the wrong
+type or outside its enum is refused, a required one must be there and not
+empty. `scope` is checked in `mcp.rs` (`agents::in_scope`) before the tool runs;
+an unknown session or the caller itself is left to the tool's own refusal.
 
 Tool depth is 1 (a helper's helpers get no tools); at most 8 descendants per
 chat. The full matrix with code references is in the
@@ -298,8 +321,9 @@ turn, stopped on a prompt (once per stop) or exited.
   a send into a chat typed in within 5 s. A draft or text held a minute is
   announced on the desktop once. `session_meta` carries `draft` and `held` for
   the row tag and the pane balloon.
-- `send` with `interrupt: true`: Esc in a terminal (up to 3 s for the turn to
-  read as over), then the text as a prompt of its own.
+- `send` with `interrupt: true`, to the caller's descendants only: Esc in a
+  terminal (up to 3 s for the turn to read as over), then the text as a prompt
+  of its own; a background helper's turn is killed and its held asks cleared.
 - A prompt or message past 8,000 characters reaches a visible session as a file
   under `<data>/agents/` (an `--add-dir` for Claude Code sessions with tools or
   an agent above; Codex sandboxes read anywhere, but `read-only` and
