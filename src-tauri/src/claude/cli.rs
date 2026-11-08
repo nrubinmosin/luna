@@ -1,8 +1,8 @@
 //! Where Claude Code releases come from: the same bucket the official
 //! installer reads, a plain-text `latest` pointer, a manifest with per-platform
-//! sha256s, and a bare executable per platform.
+//! sha256s and sizes, and a bare executable per platform.
 
-use crate::cli::{download_to, sane_version, Source};
+use crate::cli::{download_to, sane_version, Package, PackageFile, Source};
 use std::fs;
 use std::path::Path;
 
@@ -38,23 +38,28 @@ fn latest(agent: &ureq::Agent) -> Result<String, String> {
     sane_version(&text, CHANNEL)
 }
 
-fn expected_checksum(agent: &ureq::Agent, version: &str) -> Result<String, String> {
+/// The sha256 and the size the manifest gives our platform's exe. Manifests
+/// carry both; the size is taken as optional all the same, the hash being
+/// what pins the file.
+fn expected(agent: &ureq::Agent, version: &str) -> Result<(String, Option<u64>), String> {
     let manifest: serde_json::Value = agent
         .get(&format!("{RELEASES}/{version}/manifest.json"))
         .call()
         .map_err(|e| format!("manifest: {e}"))?
         .into_json()
         .map_err(|e| format!("manifest: {e}"))?;
-    manifest["platforms"][platform()]["checksum"]
+    let entry = &manifest["platforms"][platform()];
+    let checksum = entry["checksum"]
         .as_str()
         .map(|s| s.to_ascii_lowercase())
-        .ok_or_else(|| format!("platform {} not in manifest for {version}", platform()))
+        .ok_or_else(|| format!("platform {} not in manifest for {version}", platform()))?;
+    Ok((checksum, entry["size"].as_u64()))
 }
 
 /// Downloads `version` into `dir`, verifying the sha256 from the manifest
-/// before the file gets its real name.
-fn fetch(agent: &ureq::Agent, version: &str, dir: &Path, progress: &mut dyn FnMut(u64, Option<u64>)) -> Result<(), String> {
-    let checksum = expected_checksum(agent, version)?;
+/// before the file gets its real name. The package is that one file.
+fn fetch(agent: &ureq::Agent, version: &str, dir: &Path, progress: &mut dyn FnMut(u64, Option<u64>)) -> Result<Package, String> {
+    let (checksum, size) = expected(agent, version)?;
     let dest = dir.join(BIN_NAME);
     let part = dir.join(format!("{BIN_NAME}.part"));
     let url = format!("{RELEASES}/{version}/{}/{BIN_NAME}", platform());
@@ -69,5 +74,9 @@ fn fetch(agent: &ureq::Agent, version: &str, dir: &Path, progress: &mut dyn FnMu
         let _ = fs::set_permissions(&part, fs::Permissions::from_mode(0o755));
     }
     fs::rename(&part, &dest).map_err(|e| format!("rename: {e}"))?;
-    Ok(())
+    let (size, verified) = match size {
+        Some(size) => (size, format!("sha256 and size from {version}/manifest.json")),
+        None => (fs::metadata(&dest).map_err(|e| e.to_string())?.len(), format!("sha256 from {version}/manifest.json")),
+    };
+    Ok(Package { files: vec![PackageFile { rel: BIN_NAME.into(), size, sha256: Some(checksum) }], verified })
 }

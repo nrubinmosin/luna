@@ -30,6 +30,15 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Fixed
 
+- A CLI install cut short (Luna killed or the PC off while Codex's package was
+  unpacked) could be taken for a finished one on the next check: the executable
+  being there was enough, so Codex ran without its sandbox helpers or from a
+  truncated file. Both CLIs are now fetched into a staging folder, checked file
+  by file against what their release publishes (Claude Code: sha256 and size;
+  Codex: the package's sha256, then each file's size), given a completion
+  record, and moved into place with one rename under a name no folder has, so a
+  version a session is running is never touched. Only a version with its record
+  counts as installed; ones installed before this are fetched again once.
 - The release workflow failed at attesting the npm SBOM (`Unsupported SBOM
   format`): it was written without a serial number, which the attest action
   requires of a CycloneDX file. Both SBOMs now carry one and are checked for it
