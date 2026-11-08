@@ -188,6 +188,23 @@ try {
         Assert-Throws { Find-ReleaseArtifacts '0.9.2' -Dir $dir } 'no installer for 0.9.2'
     }
 
+    Check 'an SBOM is checked the way actions/attest checks it' {
+        $dir = New-Item -ItemType Directory -Force (Join-Path $work 'sbom')
+        $sbom = { param($name, $json) $path = Join-Path $dir $name; Set-Content $path $json; $path }
+        Assert-AttestableSbom (& $sbom 'cargo.cdx.json' '{"bomFormat":"CycloneDX","specVersion":"1.5","version":1,"serialNumber":"urn:uuid:755d855a-6e1c-4bd8-84fe-56baa8b7d251","metadata":{}}')
+        # What cyclonedx-npm --output-reproducible wrote for v0.10.0: no serial number.
+        Assert-Throws {
+            Assert-AttestableSbom (& $sbom 'npm.cdx.json' '{"$schema":"http://cyclonedx.org/schema/bom-1.5.schema.json","bomFormat":"CycloneDX","specVersion":"1.5","version":1}')
+        } 'npm.cdx.json has no serialNumber'
+        Assert-Throws {
+            Assert-AttestableSbom (& $sbom 'empty.cdx.json' '{"bomFormat":"CycloneDX","specVersion":"","serialNumber":""}')
+        } 'no serialNumber, specVersion'
+        Assert-Throws {
+            Assert-AttestableSbom (& $sbom 'spdx.json' '{"spdxVersion":"SPDX-2.3","SPDXID":"SPDXRef-DOCUMENT"}')
+        } 'not CycloneDX'
+        Assert-Throws { Assert-AttestableSbom (& $sbom 'list.json' '[]') } 'not a JSON object'
+    }
+
     Check 'a core fingerprint is 16 lowercase hex digits' {
         Assert-CoreFingerprint '0123456789abcdef' 'test'
         Assert-Throws { Assert-CoreFingerprint '0123456789ABCDEF' 'x.txt' } 'x.txt holds'

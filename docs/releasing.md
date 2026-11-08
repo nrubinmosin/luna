@@ -35,7 +35,9 @@ signing step and publishes the draft the workflow leaves.
      same Docker image as a local build, and writes `latest.json`
      (`scripts/release-bundle.ps1`).
    - **sbom**: CycloneDX SBOMs of the Rust crates in the Windows build and of the npm
-     packages in the frontend (`scripts/sbom.ps1`).
+     packages in the frontend (`scripts/sbom.ps1`), each checked to be a file the
+     attest step takes (`bomFormat`, `serialNumber` and `specVersion` all set), so a
+     bad SBOM stops the run here rather than after the signed build.
    - **attest**: `SHA256SUMS` over every asset, a build provenance attestation of each,
      and the two SBOMs attested against the installer.
    - **publish** creates a **draft** release with the installer, `.sig`, `latest.json`,
@@ -54,7 +56,10 @@ runs everything short of the attestations and the release; the assets are kept a
 run's `release-v<version>` artifact. Run on a tag, it signs as the release would (and
 waits for the approval); run on a branch, it builds unsigned, as the key is only handed
 to `v*` tags. Unchecking `dry-run` on a tag releases that tag, e.g. after a run that
-failed once the tag was out.
+failed once the tag was out. A manual run uses the workflow and scripts as the chosen
+ref has them: a fix to those reaches a tag only through a commit that carries it, so a
+tag whose run failed on the workflow itself is released as a new version (or re-tagged
+on the fixed commit, which the tag ruleset lets only the maintainer do).
 
 **Without the workflow.** `./scripts/release.ps1 -Local` cuts the release the way it
 was done before the workflow: it builds and signs on this machine with the key that

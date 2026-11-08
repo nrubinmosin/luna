@@ -127,6 +127,8 @@ jobs:
   # attestation of each and the SBOMs attested against the installer, signed
   # through Sigstore with this run's identity. A job of its own, so the build,
   # which runs every dependency's build code, never holds the OIDC token.
+  # actions/attest with sbom-path is what actions/attest-sbom wrapped before it
+  # was deprecated; sbom.ps1 has already checked each SBOM is one it takes.
   attest:
     needs: [verify, build, sbom]
     runs-on: ubuntu-24.04
@@ -160,12 +162,12 @@ jobs:
         with:
           subject-checksums: assets/SHA256SUMS
       - if: needs.verify.outputs.publish == 'true'
-        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: assets/*-setup.exe
           sbom-path: assets/luna-${{ needs.verify.outputs.version }}-cargo.cdx.json
       - if: needs.verify.outputs.publish == 'true'
-        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: assets/*-setup.exe
           sbom-path: assets/luna-${{ needs.verify.outputs.version }}-npm.cdx.json
