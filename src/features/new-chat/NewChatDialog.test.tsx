@@ -196,6 +196,38 @@ describe('NewChatDialog: what Luna adds only when asked', () => {
     expect(write).toHaveBeenCalledWith('/accounts/claude/work', '/repo');
   });
 
+  it('binds a tick to its folder: another one picked is asked about afresh, and pending until answered', async () => {
+    useChats.getState().rememberFolder('/other');
+    let answerOther: (trusted: boolean) => void = () => {};
+    vi.mocked(trust.claudeFolderTrusted).mockImplementation((_account, folder) =>
+      folder === '/other' ? new Promise(resolve => (answerOther = resolve)) : Promise.resolve(false)
+    );
+    const write = vi.mocked(trust.claudeTrustFolder);
+    const user = userEvent.setup();
+    render(<NewChatDialog />);
+    await settle();
+    const worktree = screen.getByRole('checkbox', { name: 'Git worktree' });
+    if ((worktree as HTMLInputElement).checked) await user.click(worktree);
+    await user.click(screen.getByRole('checkbox', { name: 'Trust this folder in “work”' }));
+    // Another folder, its answer still on the way: no Create, and no box.
+    await user.click(screen.getByTitle('/other'));
+    expect(screen.getByRole('button', { name: 'Create' })).toBeDisabled();
+    expect(screen.queryByRole('checkbox', { name: /Trust this folder/ })).toBeNull();
+    await user.keyboard('{Enter}');
+    expect(write).not.toHaveBeenCalled();
+    // Answered untrusted: asked afresh, unticked; created so, nothing written.
+    act(() => answerOther(false));
+    await settle();
+    expect(screen.getByRole('checkbox', { name: 'Trust this folder in “work”' })).not.toBeChecked();
+    // The folder picked starts its boxes afresh, the worktree's among them.
+    const again = screen.getByRole('checkbox', { name: 'Git worktree' });
+    if ((again as HTMLInputElement).checked) await user.click(again);
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    expect(write).not.toHaveBeenCalled();
+    const [chat] = allChats(useChats.getState().folders);
+    expect(useChats.getState().folderOf(chat!.id)?.path).toBe('/other');
+  });
+
   it('will not make a Claude Code worktree in a folder it cannot be asked about', async () => {
     vi.mocked(trust.claudeFolderTrusted).mockResolvedValue(false);
     const user = userEvent.setup();
