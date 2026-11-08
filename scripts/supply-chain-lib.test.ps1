@@ -116,6 +116,31 @@ reason = "$reason Expires 2027-02-08"
         Assert-Throws { Assert-DenyIgnores $entries $today } 'RUSTSEC-2026-0003 has no reason'
     }
 
+    # As the workflow runs it: GitHub's pwsh step ends on `exit $LASTEXITCODE`,
+    # and a native command that failed before (here as pnpm audit does on any
+    # advisory) must not decide the step for the script.
+    Check 'the audit check''s exit code is its verdict: 0 below the bar, 1 on a high' {
+        New-Item -ItemType Directory -Force $work | Out-Null
+        $advisory = { param($id, $severity) @{ github_advisory_id = $id; severity = $severity; module_name = 'pkg'; vulnerable_versions = '<2'; patched_versions = '>=2'; findings = @(@{ paths = @('.>pkg') }) } }
+        $report = {
+            param($name, [hashtable[]]$advisories)
+            $all = [ordered]@{}; $i = 0
+            foreach ($a in $advisories) { $all["$((++$i))"] = $a }
+            $path = Join-Path $work "$name.json"
+            @{ advisories = $all; metadata = @{ totalDependencies = 1; vulnerabilities = @{ critical = 0; high = 0; moderate = 0; low = 0 } } } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $path
+            $path
+        }
+        $step = {
+            param($path)
+            $script = Join-Path $PSScriptRoot 'supply-chain.ps1'
+            pwsh -NoProfile -Command "`$ErrorActionPreference = 'stop'; pwsh -NoProfile -Command 'exit 1'; & '$script' -Check audit -AuditReport '$path' *> `$null; if ((Test-Path -LiteralPath variable:\LASTEXITCODE)) { exit `$LASTEXITCODE }" *> $null
+            $LASTEXITCODE
+        }
+        Assert-Equal (& $step (& $report moderate @((& $advisory 'GHSA-aaaa-bbbb-cccc' moderate), (& $advisory 'GHSA-dddd-eeee-ffff' low)))) 0
+        Assert-Equal (& $step (& $report high @((& $advisory 'GHSA-aaaa-bbbb-cccc' moderate), (& $advisory 'GHSA-gggg-hhhh-iiii' high)))) 1
+        Assert-Equal (& $step (& $report critical @(& $advisory 'GHSA-jjjj-kkkk-llll' critical))) 1
+    }
+
     Check 'a deny.toml that is not TOML fails' {
         Assert-Throws { Read-Deny broken "[advisories]`nignore = [" 2>$null } 'does not parse'
     }

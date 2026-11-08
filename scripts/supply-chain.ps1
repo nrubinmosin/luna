@@ -27,7 +27,10 @@ param(
     [string[]]$Check = @('tests', 'deny', 'audit', 'secrets'),
     # What gitleaks scans, as git log takes it: a range, or a commit for the
     # whole history reachable from it.
-    [string]$Range = 'HEAD'
+    [string]$Range = 'HEAD',
+    # A pnpm audit --json report to decide on in place of running pnpm audit:
+    # how supply-chain-lib.test.ps1 drives the audit check's verdict.
+    [string]$AuditReport
 )
 . "$PSScriptRoot/lib.ps1"
 . "$PSScriptRoot/supply-chain-lib.ps1"
@@ -85,14 +88,16 @@ function Invoke-Audit {
 
     # pnpm audit exits non-zero whenever it finds anything, so its exit code
     # says nothing; output that is not its report is a failure of its own.
-    $json = docker run --rm `
-      -e COREPACK_ENABLE_DOWNLOAD_PROMPT=0 `
-      -e COREPACK_HOME=/corepack `
-      -v "${RepoRoot}:/app:ro" `
-      -v luna-corepack:/corepack `
-      -w /app `
-      (Get-NodeImage) `
-      bash -c 'corepack pnpm audit --json'
+    $json = if ($AuditReport) { Get-Content -LiteralPath $AuditReport } else {
+        docker run --rm `
+          -e COREPACK_ENABLE_DOWNLOAD_PROMPT=0 `
+          -e COREPACK_HOME=/corepack `
+          -v "${RepoRoot}:/app:ro" `
+          -v luna-corepack:/corepack `
+          -w /app `
+          (Get-NodeImage) `
+          bash -c 'corepack pnpm audit --json'
+    }
     $report = try { ($json -join "`n") | ConvertFrom-Json } catch { $null }
     if (-not $report -or -not $report.metadata -or $report.error) {
         throw "pnpm audit gave no report: $($json -join "`n")"
@@ -136,27 +141,29 @@ function Invoke-Secrets {
     Invoke-Gitleaks $store.Trim() ($ends -join '..')
 }
 
+# Only the checks that use the shared cache volumes (the cargo registry,
+# corepack) take the build lock: the tests start this script again, and would
+# wait on the lock their parent holds.
 $results = @()
-Use-BuildLock {
-    foreach ($name in $Check) {
-        Write-Host "== $name" -ForegroundColor Cyan
-        $timer = [Diagnostics.Stopwatch]::StartNew()
-        $result = 'ok'
-        try {
-            switch ($name) {
-                'tests' { Invoke-Checked 'supply-chain-lib tests' { pwsh -NoProfile -File (Join-Path $PSScriptRoot 'supply-chain-lib.test.ps1') | Out-Host } }
-                'deny' { Invoke-Deny }
-                'audit' { Invoke-Audit }
-                'secrets' { Invoke-Secrets }
-            }
-        } catch {
-            $result = "FAILED: $_"
-        }
-        $script:results += [pscustomobject]@{
-            Check  = $name
-            Result = $result
-            Time   = '{0:mm\:ss}' -f $timer.Elapsed
-        }
+foreach ($name in $Check) {
+    Write-Host "== $name" -ForegroundColor Cyan
+    $timer = [Diagnostics.Stopwatch]::StartNew()
+    $result = 'ok'
+    $run = switch ($name) {
+        'tests' { { Invoke-Checked 'supply-chain-lib tests' { pwsh -NoProfile -File (Join-Path $PSScriptRoot 'supply-chain-lib.test.ps1') | Out-Host } } }
+        'deny' { { Use-BuildLock { Invoke-Deny } } }
+        'audit' { if ($AuditReport) { { Invoke-Audit } } else { { Use-BuildLock { Invoke-Audit } } } }
+        'secrets' { { Invoke-Secrets } }
+    }
+    try {
+        & $run
+    } catch {
+        $result = "FAILED: $_"
+    }
+    $results += [pscustomobject]@{
+        Check  = $name
+        Result = $result
+        Time   = '{0:mm\:ss}' -f $timer.Elapsed
     }
 }
 
@@ -166,3 +173,7 @@ if ($results | Where-Object Result -ne 'ok') {
     exit 1
 }
 Write-Host "supply-chain checks passed ($($Check -join ', '))" -ForegroundColor Green
+# Said outright: a caller that exits with $LASTEXITCODE afterwards, as a GitHub
+# Actions pwsh step does, would otherwise take the last native command's, and
+# pnpm audit exits 1 whenever it reports anything at all.
+exit 0
