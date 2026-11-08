@@ -6,7 +6,9 @@ itself is on the right. Only the page scrolls: the title bar, the list and the
 page’s title stay where they are. The dialog is 920 px wide and as tall as its
 page, up to 720 px, or the window less a margin where that is smaller; its top
 edge stays put as pages change. It reopens on the page it was left on. Escape
-or a click beside it closes it.
+or a click beside it closes it. Something typed and not yet saved on one page
+(the waiting marker's text, a browser of your own) is still there after a look
+at another, until Settings closes.
 
 Each setting is a row: its name and one line on what it does on the left, its
 control on the right. A list (trusted folders, link exceptions, browsers) sits
@@ -43,5 +45,10 @@ folded into a "How … works" line at the foot of its card.
 - Tab goes from the list into the page and through its rows in order; a row
   scrolled out of view comes into view as it takes the focus. Space toggles a
   checkbox, and Enter or Space opens a "How … works" line.
-- In the Add an exception… menu, Up and Down move between entries, Enter picks
-  one, and Escape closes the menu without closing Settings.
+- Tab and Shift+Tab stay inside Settings, going round from its last control to
+  its Close button; the rest of the window cannot be reached while it is open.
+  On closing, the focus goes back to what opened it.
+- In the Add an exception… menu, Up and Down move between entries, Home and End
+  to the first and last, Enter picks one, and Escape closes the menu without
+  closing Settings. Tab closes it and goes on to the next control, Shift+Tab
+  back to the button.

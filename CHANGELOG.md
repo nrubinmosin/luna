@@ -52,7 +52,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   line. Help text is 12 px at the least and passes WCAG AA in both themes.
   Lists say when they are empty, link exceptions are added from a menu, and a
   browser's long command line can be shown in full or copied. The page list
-  works from the keyboard. See docs/user-guide/settings.md.
+  and the exception menu work from the keyboard, Tab stays inside the dialog
+  and the focus returns to what opened it, and a draft on one page survives a
+  look at another. See docs/user-guide/settings.md.
 - `luna_list` names each account with its defaults and usage but no longer its
   models, Codex's catalog with every model's levels being most of what a
   listing cost an agent that lists often; `models: true` brings them back.
