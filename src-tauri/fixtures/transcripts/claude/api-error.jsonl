@@ -1,0 +1,7 @@
+{"type":"user","message":{"role":"user","content":"go on"},"timestamp":"2026-11-04T15:00:00.000Z"}
+{"type":"assistant","timestamp":"2026-11-04T15:00:01.000Z","message":{"model":"claude-sonnet-5-5","usage":{"input_tokens":10,"cache_read_input_tokens":20000},"content":[{"type":"text","text":"Starting."}]}}
+{"parentUuid":"p","isSidechain":false,"type":"assistant","uuid":"u","message":{"id":"m","model":"<synthetic>","role":"assistant","content":[{"type":"text","text":"Invalid API key · Fix external API key"}]},"error":"authentication_failed","isApiErrorMessage":true,"apiErrorStatus":401}
+{"type":"system","subtype":"turn_duration","durationMs":1200}
+{"type":"assistant","isSidechain":true,"isApiErrorMessage":true,"error":"rate_limit"}
+{"type":"attachment","attachment":{"type":"prompt_snapshot","systemPrompt":["You are Claude Code."]}}
+{"type":"ai-title","aiTitle":"Keep going","sessionId":"s"}
