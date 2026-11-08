@@ -47,7 +47,7 @@ mod worktree;
 #[doc(hidden)]
 pub mod transcripts {
     pub use crate::agents::{Ask, AskQuestion, Message};
-    pub use crate::claude::session::{read_transcript, TranscriptRead};
+    pub use crate::claude::session::{messages_in, read_transcript, TranscriptRead};
     pub use crate::codex::session::{read_rollout, RolloutRead, Tail};
 }
 

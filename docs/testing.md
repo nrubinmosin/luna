@@ -91,7 +91,8 @@ has a dictionary of the keys and values its readers match on
 target checks that:
 
 - the reading stops where the complete lines do, and a reader that goes on
-  from its cursor gets the conversation a read from the top does (Claude Code);
+  from its cursor, after the file grew, gets the conversation a read from the
+  top does, `after_cli` included (Claude Code);
 - every message, title, model, question, failure and timestamp it hands over
   is part of a string in the input (or a line the reader writes itself, such
   as `[tool: Name]`), and messages are trimmed and never empty;
