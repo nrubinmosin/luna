@@ -244,6 +244,66 @@ pub fn stop_all() {
         end_leftovers(&id, Some(&job));
         crate::procs::let_go(&job);
     }
+    // As the ties now stand: none.
+    for e in lock().entries.values_mut() {
+        e.tied = false;
+    }
+}
+
+/// The core stays after all — a shutdown of the PC it had wound down for was
+/// taken back. Every helper's job is tied to the core again, as `stop_all` let
+/// them go for a core that leaves: a later turn joins that same job, and a core
+/// dying then must still take its processes along, or the next core would read
+/// the tie it saved and start a second turn beside them. Each helper this core
+/// stopped is settled as a new core would have found it (`settle_stopped`), and
+/// turns may start again.
+pub fn reopen() {
+    let jobs: Vec<(String, std::sync::Arc<crate::procs::Job>)> =
+        lock().entries.iter().filter_map(|(id, e)| Some((id.clone(), e.job.clone()?))).collect();
+    let ties = retie(&jobs);
+    let reached = stopped_lines();
+    let mut r = lock();
+    for (id, tied) in ties {
+        if let Some(e) = r.entries.get_mut(&id) {
+            e.tied = tied;
+        }
+    }
+    for (id, e) in r.entries.iter_mut() {
+        settle_stopped(e, &|line| reached.get(&(id.clone(), line.to_string())).copied().flatten());
+    }
+    r.closed = false;
+}
+
+/// Ties each helper's job to the core again, and says for each whether it took.
+/// Off the registry's lock: a tie is a kernel call, or a word to the keeper.
+fn retie(jobs: &[(String, std::sync::Arc<crate::procs::Job>)]) -> Vec<(String, bool)> {
+    jobs.iter().map(|(id, job)| (id.clone(), crate::procs::tie(job, id))).collect()
+}
+
+/// What the conversations say of the lines the stopped Claude Code turns had on
+/// stdin — by helper and line, whether the transcript holds it, None where that
+/// cannot be read — gathered off the registry's lock, as `restore` reads them
+/// before taking a saved helper up.
+fn stopped_lines() -> HashMap<(String, String), Option<bool>> {
+    let pending: Vec<(String, String, Option<String>, Vec<String>)> = lock()
+        .entries
+        .iter()
+        .filter(|(_, e)| e.spec.provider == Provider::Claude && e.cut_short && e.run.is_none())
+        .map(|(id, e)| {
+            let stores = [&e.in_flight, &e.fed, &e.undelivered];
+            let lines = stores.iter().flat_map(|store| store.iter().filter_map(|q| q.line.clone())).collect();
+            (id.clone(), e.spec.account_path.clone(), e.session.clone(), lines)
+        })
+        .collect();
+    let mut reached = HashMap::new();
+    for (id, account, session, lines) in pending {
+        let transcript = session.and_then(|sid| crate::claude::session::find_transcript(&account, &sid));
+        for line in lines {
+            let took = transcript.as_deref().and_then(|path| crate::claude::session::took_line(path, &line));
+            reached.insert((id.clone(), line), took);
+        }
+    }
+    reached
 }
 
 /// Stops every turn in progress with its process tree and takes what was
@@ -334,5 +394,95 @@ mod tests {
         e.in_flight = vec!["flying".into()];
         stop(&mut e);
         assert!(e.in_flight.is_empty() && e.undelivered.is_empty());
+    }
+
+    /// `stop_all` lets every job go, for a core that leaves. A core that stays
+    /// on after a shutdown taken back ties them again, or its death later would
+    /// leave the helpers' processes running on unowned, and the next core,
+    /// trusting the tie it saved, would start a second turn beside them.
+    #[cfg(windows)]
+    #[test]
+    fn reopening_ties_the_helpers_jobs_to_the_core_again() {
+        use crate::procs::testkit::{ended_within, idler, job_of};
+        let mut child = idler(30);
+        let job = job_of(&child);
+        assert!(crate::procs::tie(&job, "reopen-tie"));
+        crate::procs::let_go(&job);
+        assert_eq!(retie(&[("reopen-tie".to_string(), job.clone())]), [("reopen-tie".to_string(), true)]);
+        let job = std::sync::Arc::try_unwrap(job).ok().expect("the one handle left");
+        crate::procs::close_as_in_a_death(job);
+        assert!(ended_within(&mut child, 3000), "tied again, the job ends what is in it when the core dies");
+    }
+
+    /// What `taken_up` does for a new core, done here for the same one: a turn this
+    /// core stopped is over, so the helper may resume; the prompt of one with no
+    /// conversation yet is what it is owed first; a doubt an older core left stands.
+    /// On entries of its own: the registry is every test's.
+    #[test]
+    fn a_helper_this_core_stopped_may_resume_once_the_core_stays_on() {
+        // Stopped as `stop_all` stops a turn; the process is reaped by its thread
+        // before the fate of the shutdown is known, which none ran here to do.
+        let stopped = |mut e: Entry| {
+            stop_for_luna(&mut e);
+            e.run = None;
+            settle_stopped(&mut e, &|_| None);
+            e
+        };
+        for provider in [Provider::Claude, Provider::Codex] {
+            let mut e = entry(provider);
+            e.session = Some("sid".into());
+            e.run = Some(Run::claimed(None, 0));
+            e.queue = vec!["behind it".into()];
+            let e = stopped(e);
+            assert!(e.cut_short && e.resumable && !e.unsure, "{}", provider.as_str());
+            assert_eq!(e.undelivered, ["behind it"], "{}", provider.as_str());
+        }
+        let mut e = entry(Provider::Claude);
+        e.run = Some(Run::claimed(None, 0));
+        e.opening = Some("the prompt".into());
+        e.opening_id = Some("line-1".into());
+        let e = stopped(e);
+        assert!(e.resumable && e.opening.is_none());
+        assert_eq!(e.undelivered, ["the prompt"]);
+        let mut e = taken_up(with_lines(false));
+        settle_stopped(&mut e, &|_| None);
+        assert!(e.cut_short && !e.resumable && e.unsure, "nothing says the older core's turn ended");
+    }
+
+    /// What a stopped Claude Code turn had on stdin goes by the conversation
+    /// before the helper resumes, as it does for a new core: in it, the model has
+    /// it and it is not sent again; not in it, with the turn over, it never got
+    /// there; unreadable, its sender decides. Codex has no lines to settle.
+    #[test]
+    fn what_a_stopped_turn_had_on_stdin_is_settled_against_the_conversation_before_it_resumes() {
+        let mut e = entry(Provider::Claude);
+        e.session = Some("sid".into());
+        e.run = Some(Run::claimed(None, 0));
+        e.fed = vec![pending("told", "went in"), pending("missed", "not taken in")];
+        e.queue = vec!["behind it".into()];
+        stop_for_luna(&mut e);
+        e.run = None;
+        settle_stopped(&mut e, &|line| Some(line == "told"));
+        assert_eq!(e.undelivered, ["not taken in", "behind it"], "the one the model has is off the books");
+        assert!(e.undelivered.iter().all(|q| !q.maybe_reached && q.line.is_none()), "the turn is over: what is not there never got there");
+
+        let mut e = entry(Provider::Claude);
+        e.session = Some("sid".into());
+        e.run = Some(Run::claimed(None, 0));
+        e.fed = vec![pending("a", "joined")];
+        stop_for_luna(&mut e);
+        e.run = None;
+        settle_stopped(&mut e, &|_| None);
+        assert!(e.resumable && e.undelivered[0].maybe_reached, "unreadable: withheld, its sender's to decide");
+
+        let mut e = entry(Provider::Codex);
+        e.session = Some("thread".into());
+        e.run = Some(Run::claimed(None, 0));
+        e.in_flight = vec![pending("c", "flying")];
+        stop_for_luna(&mut e);
+        e.run = None;
+        settle_stopped(&mut e, &|_| panic!("Codex has no such lines"));
+        assert_eq!(e.undelivered, ["flying"]);
+        assert!(!e.undelivered[0].maybe_reached);
     }
 }
