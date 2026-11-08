@@ -61,11 +61,18 @@ closed (`coreproc.rs` `serve`, `peer.rs` `verdict`). The unelevated sandbox's
 token is restricted for `read-only` and `workspace-write` alike (measured: its
 write access is an ACL grant on the workspace, not a looser token), so a
 sandboxed Codex is turned away whatever its mode, while a window and the test
-build — a plain token of the core's integrity — are let through. It relies on
-Luna never running Codex elevated, so a sandboxed peer is never above the
-core. An equivalent peer check is not taken off Windows: Codex's Linux sandbox
-is Landlock, the same uid and namespaces as the core, so a connecting process
-cannot be told from the window there; macOS is untried.
+build — a plain token of the core's integrity — are let through. This closes
+the **direct-client** path (the sandboxed process connects itself),
+demonstrated live. It relies on Luna never running Codex elevated, so a
+sandboxed peer is never above the core and a window is never below it — the
+rule that a Medium window is refused by a High (elevated) core is acceptable
+only because the core and the CLIs are never run elevated (0.10.2 will enforce
+it). Not yet covered: **broker** paths, where the sandbox has an unrestricted
+helper open the connection for it (WMI, COM, `schtasks` launching a plain
+process) — a residual until tested. An equivalent peer check is not taken off
+Windows: Codex's Linux sandbox is Landlock, the same uid and namespaces as the
+core, so a connecting process cannot be told from the window there; macOS is
+untried.
 
 Considered and deferred, **protocol v2**: no credential on disk. The core
 alone creates windows and hands each one an inherited channel (a socketpair,
@@ -83,11 +90,13 @@ recognized and not trusted as protected.
   `core/` with Codex's own runner; the other that a sandboxed Codex connecting
   to a test port is refused while a plain process is let in. Each fails when
   its side changes.
-- Windows is closed by the OS (the sandbox's token betrays it at the port);
-  the read-only Codex sandboxes off Windows are closed by the OS (the deny);
-  the rest are not. Claude's deny is a rule its Bash does not obey; Codex
-  `workspace-write` off Windows has no deny; any unconfined process of the
-  user's still reads the file and connects (R3).
+- On Windows the direct-client path is closed by the OS (the sandbox's token
+  betrays it at the port); the read-only Codex sandboxes off Windows are closed
+  by the OS (the deny); the rest are not. Residuals: a broker path on Windows
+  (an unrestricted helper connecting for the sandbox) is untested; Claude's deny
+  is a rule its Bash does not obey; Codex `workspace-write` off Windows has no
+  deny; any unconfined process of the user's still reads the file and connects
+  (R3).
 - Protocol v2 is deferred because it rebuilds the window–core handshake, the
   installer's stop and every core start, while the read deny and the Windows
   peer check together close the case the audit put first — a read-only sandbox

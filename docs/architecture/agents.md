@@ -282,8 +282,10 @@ turn, stopped on a prompt (once per stop) or exited.
   read as over), then the text as a prompt of its own.
 - A prompt or message past 8,000 characters reaches a visible session as a file
   under `<data>/agents/` (an `--add-dir` for Claude Code sessions with tools or
-  an agent above; Codex sandboxes read anywhere but `core/`, Windows' included
-  through the data folder's private DACL), swept after a week.
+  an agent above; Codex sandboxes read anywhere, but `read-only` and
+  `read-only-net` off Windows are denied `core/` (F3) — `workspace-write` and
+  every Windows sandbox still read it, the latter through the data folder's
+  private DACL), swept after a week.
 
 ## Failed turns
 
