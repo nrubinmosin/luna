@@ -1,5 +1,6 @@
-//! Helpers with no terminal and no row: what `luna_spawn` starts unless it is
-//! asked for a visible chat. Each turn is one run of the CLI in its headless
+//! Helpers with no terminal and no row: every one `luna_spawn` starts. The
+//! person watches one read-only, or opens it as a chat, which hands it over to
+//! them for good (agents/handover.rs). Each turn is one run of the CLI in its headless
 //! mode — `claude -p --output-format stream-json`, `codex exec --json` — with
 //! the prompt on stdin, the events on stdout, and the next turn a resume of
 //! the same conversation. Whether it works is whether that process runs;
@@ -142,9 +143,30 @@ struct Entry {
     ending_left: bool,
     /// Being opened as a chat (`background_promote`), until the window says how
     /// its row came out: no turn starts meanwhile, as its conversation may be
-    /// resumed in a terminal any moment; text sent queues, and goes with it.
+    /// resumed in a terminal any moment, and its parent can neither stop nor
+    /// delete it; text sent queues, and is told of as never delivered once the
+    /// person has it (agents/handover.rs).
     promoting: bool,
+    /// When `promoting` began, for PROMOTE_TIMEOUT_MS: kept across a core, as
+    /// `promoting` is.
+    promoting_since: u64,
+    /// A delete is under way (`claim_delete`), until it has removed the helper or
+    /// been refused: no turn starts, and it is not opened as a chat, meanwhile, so
+    /// what the delete went by (whose it is, that it is idle, its worktree) still
+    /// holds when it removes it. Text sent queues, and goes with it.
+    deleting: bool,
+    /// The window's word that its row is made is being acted on (rows.rs
+    /// `background_promoted`): a second word, a retry whose first answer was
+    /// lost, hands nothing over again.
+    handing: bool,
     observed: Observed,
+}
+
+impl Entry {
+    /// Something has it held between turns: no turn starts until it lets go.
+    fn held_back(&self) -> bool {
+        self.promoting || self.deleting
+    }
 }
 
 struct Registry {
@@ -191,6 +213,11 @@ pub fn mint_id() -> String {
 
 pub fn has(id: &str) -> bool {
     lock().entries.contains_key(id)
+}
+
+/// Whether the person is opening helper `id` as a chat (`background_promote`).
+pub fn promoting(id: &str) -> bool {
+    lock().entries.get(id).is_some_and(|e| e.promoting)
 }
 
 /// How many helpers are in a turn, or between turns have what their turns left

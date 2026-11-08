@@ -15,16 +15,10 @@ export interface ClaudeSessionSpec {
   resume?: string | null;
   /** Attach Luna's MCP tools (spawn/drive other sessions). */
   tools?: boolean;
-  /** The chat whose agent spawned this one. */
-  parent?: string | null;
-  /** An opening prompt, for a chat an agent starts. */
-  prompt?: string | null;
   /** Without the edit tools. */
   readOnly?: boolean;
   /** The agent it runs as (`--agent`). */
   agent?: string | null;
-  /** The agent's spawn this is the session of (agents/spawn/mod.rs `spawn_is`). */
-  spawnRequest?: number | null;
   /** The guard against endless waits, as the chat's person asked. */
   guard?: boolean;
 }
@@ -44,11 +38,8 @@ export const ensureClaudeSession = (spec: ClaudeSessionSpec) =>
       worktreeName: spec.worktreeName ?? null,
       resume: spec.resume ?? null,
       tools: spec.tools ?? false,
-      parent: spec.parent ?? null,
-      prompt: spec.prompt ?? null,
       readOnly: spec.readOnly ?? false,
       agent: spec.agent ?? null,
-      spawnRequest: spec.spawnRequest ?? null,
       guard: spec.guard ?? false
     },
     ''
@@ -71,10 +62,6 @@ export interface CodexSessionSpec {
   tools?: boolean;
   /** Run the project's hooks without their trust prompt (codex/hooks.rs). */
   hooksUnasked?: boolean;
-  parent?: string | null;
-  prompt?: string | null;
-  /** The agent's spawn this is the session of (agents/spawn/mod.rs `spawn_is`). */
-  spawnRequest?: number | null;
   /** The guard against endless waits, as the chat's person asked. */
   guard?: boolean;
 }
@@ -95,9 +82,6 @@ export const ensureCodexSession = (spec: CodexSessionSpec) =>
       login: spec.login ?? false,
       tools: spec.tools ?? false,
       hooksUnasked: spec.hooksUnasked ?? false,
-      parent: spec.parent ?? null,
-      prompt: spec.prompt ?? null,
-      spawnRequest: spec.spawnRequest ?? null,
       guard: spec.guard ?? false
     },
     ''

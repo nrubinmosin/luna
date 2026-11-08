@@ -104,11 +104,11 @@ fn models_of(provider: Provider, path: &str) -> Vec<serde_json::Value> {
     }
 }
 
-/// What `luna_list` says of a visible session beyond its state: its turn's
+/// What `luna_list` says of a chat the window runs beyond its state: its turn's
 /// start from the activity tracker, and from its transcript when the CLI last
 /// wrote there — the screen is no measure, a spinner paints through a hung
 /// call — the model and how full its context is.
-fn visible_signs(pty: &crate::pty::PtyManager, id: &str, provider: Provider) -> crate::background::Signs {
+fn chat_signs(pty: &crate::pty::PtyManager, id: &str, provider: Provider) -> crate::background::Signs {
     let turn_started_at = crate::activity::turn_started_ms(id).and_then(crate::background::iso);
     let Some(path) = transcript_path(pty, id) else {
         return crate::background::Signs { turn_started_at, ..Default::default() };
@@ -185,7 +185,7 @@ pub fn list(caller: &str, ids: Option<&[String]>, accounts: bool, models: bool, 
             let (state, ask) = state_of(&id);
             let (ask, task) = if told { (ask, task) } else { (None, None) };
             let worktree = checkout_of(pty, &id, &k);
-            let signs = crate::background::signs(&id).unwrap_or_else(|| visible_signs(pty, &id, k.provider));
+            let signs = crate::background::signs(&id).unwrap_or_else(|| chat_signs(pty, &id, k.provider));
             SessionRow {
                 state,
                 ask,

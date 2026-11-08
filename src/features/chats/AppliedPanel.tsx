@@ -51,12 +51,10 @@ function Group({ title, means, items }: { title: string; means: string; items: A
 /**
  * The chat's own "Wait guard", as the new-chat dialog has it: for a chat
  * made before it was a choice, or to change one's mind. Applies from the
- * CLI's next start. A helper has the guard whatever this says, so it gets no
- * box; Codex runs the hook only with its hooks unasked.
+ * CLI's next start. Codex runs the hook only with its hooks unasked.
  */
 function GuardBox({ chat }: { chat: Chat }) {
   const on = useChats(s => s.findChat(chat.id)?.guard ?? false);
-  if (chat.parentId) return null;
   const able = chat.provider !== 'codex' || !!chat.hooksUnasked;
   return (
     <div style={{ marginTop: 10 }}>

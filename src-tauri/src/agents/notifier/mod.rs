@@ -6,7 +6,8 @@ pub(super) mod lines;
 pub(super) mod usage;
 
 use crate::agents::ask::live;
-use crate::agents::delivery::{still_starting, type_text, TypingInto, DRAFT_ALERT_MS};
+use crate::agents::delivery::{still_starting, type_text, TypingInto};
+use crate::agents::held::DRAFT_ALERT_MS;
 use crate::agents::lost::{take_undelivered, worktrees_left_line};
 use crate::agents::notifier::lines::{
     count_notice, last_notice, notice_line, notice_turn, pair_stopped, standing_line, BACKGROUND_GRACE_MS, BREAKER_NOTICES,
@@ -17,7 +18,7 @@ use crate::agents::notifier::usage::{
 };
 use crate::agents::owed::Owed;
 use crate::agents::persist::{core_up_ms, SESSION_RETURN_MS};
-use crate::agents::registry::{chat_name, label, parent_of, reg, waits_on_helpers, Known, Registry};
+use crate::agents::registry::{chat_name, label, parent_of, reg, waits_on_helpers, Known, Registry, DEV_CALLER};
 use crate::agents::spawn::settle::{settle_spawns, spawn_news};
 use crate::agents::teardown::reap;
 use crate::provider::Provider;
@@ -52,7 +53,7 @@ pub(super) const CALLER_RETURN_MS: u64 = 10 * 60 * 1000;
 pub const NOTICE_TAG: &str = "[Luna notice, not typed by the user]";
 
 /// How many of the notifier's looks go by between reads of the transcripts of
-/// helpers with a budget: finding a visible one's goes to the disk.
+/// helpers with a budget: each read goes to the disk.
 const BUDGET_EVERY_LOOKS: u32 = 5;
 
 /// The shortest gap between two notifications from one session: a model in
@@ -413,13 +414,24 @@ pub(super) fn notifier() {
         for caller in budget.keys() {
             by_caller.entry(caller.clone()).or_default();
         }
-        settle_spawns(core_up_ms());
+        settle_spawns();
         let mut news: HashMap<String, Vec<String>> = HashMap::new();
         {
             let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
             let Registry { news: queued, known, .. } = &mut *r;
-            queued.retain(|(caller, _)| known.contains_key(caller));
-            for (caller, line) in queued.iter() {
+            // A caller a core restart has yet to bring back gets the time any
+            // caller gets (CALLER_RETURN_MS): these lines are said once, and kept
+            // across a core for that (`SavedChats::news`).
+            let up_ms = core_up_ms();
+            // The dev caller has no terminal to be told in: the log has its lines,
+            // as it has its spawns' (`spawn_news`).
+            queued.retain(|(caller, line)| {
+                if caller == DEV_CALLER {
+                    crate::log::warn("agents", &format!("{caller} is not there to be told: {line}"));
+                }
+                caller != DEV_CALLER && (known.contains_key(caller) || up_ms < CALLER_RETURN_MS)
+            });
+            for (caller, line) in queued.iter().filter(|(caller, _)| known.get(caller).is_some_and(|k| !k.waiting)) {
                 news.entry(caller.clone()).or_default().push(line.clone());
             }
         }
@@ -467,7 +479,7 @@ pub(super) fn notifier() {
                     continue;
                 }
                 let said = if pair_stopped(pty, &caller, id) {
-                    standing_line(pty, &caller, who, id, k, *o)
+                    standing_line(pty, who, id, k, *o)
                 } else {
                     notice_line(pty, &caller, who, id, k, *o)
                 };
@@ -563,12 +575,104 @@ pub(super) fn notifier() {
     }
 }
 
-/// A debt a notice was put together on has become another since (`Owed::rev`), and
-/// what it says may no longer hold: nothing of it is typed, nothing is settled, and
-/// the next look starts over. A debt taken since is left to `settle_told`.
+/// A debt a notice was put together on has become another since (`Owed::rev`), or
+/// is gone (a wait took the answer, the person took the session over), and what it
+/// says may no longer hold: nothing of it is typed, nothing is settled, and the next
+/// look starts over. A debt taken since is left to `settle_told`.
 fn debts_moved(caller: &str, told: &[(String, Settled, Owed)]) -> bool {
     let r = reg().lock().unwrap_or_else(|e| e.into_inner());
-    told.iter().any(|(id, _, o)| r.owed.get(&(caller.to_string(), id.clone())).is_some_and(|now| now.rev != o.rev))
+    told.iter().any(|(id, _, o)| r.owed.get(&(caller.to_string(), id.clone())).is_none_or(|now| now.rev != o.rev))
+}
+
+/// The one exclusion between a notice going in and a handover of a session it
+/// tells of (agents/handover.rs): by session, those a notice is going into its
+/// caller about now, and those being handed over to the person. Either waits
+/// for the other, so no handover lands between a notice's last look at its
+/// debts and its text going in.
+#[derive(Default)]
+struct Gate {
+    telling: HashMap<String, usize>,
+    handing: std::collections::HashSet<String>,
+}
+
+fn gate() -> &'static (std::sync::Mutex<Gate>, std::sync::Condvar) {
+    static G: std::sync::OnceLock<(std::sync::Mutex<Gate>, std::sync::Condvar)> = std::sync::OnceLock::new();
+    G.get_or_init(Default::default)
+}
+
+/// A notice's hold on the sessions it tells of, from its last look at their
+/// debts until its text is in (`tell_of`): a handover of any of them waits.
+struct Telling(Vec<String>);
+
+impl Drop for Telling {
+    fn drop(&mut self) {
+        let (lock, done) = gate();
+        let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
+        for id in &self.0 {
+            if let Some(n) = g.telling.get_mut(id) {
+                *n -= 1;
+                if *n == 0 {
+                    g.telling.remove(id);
+                }
+            }
+        }
+        done.notify_all();
+    }
+}
+
+/// The hold a notice to `caller` about `told` goes in under, if it still may: none
+/// of its sessions is being handed over and its debts are as it found them. The
+/// debts are looked at under the gate, so a handover either waits for this notice
+/// or has cleared them first.
+fn tell_of(caller: &str, told: &[(String, Settled, Owed)]) -> Option<Telling> {
+    let mut g = gate().0.lock().unwrap_or_else(|e| e.into_inner());
+    if told.iter().any(|(id, ..)| g.handing.contains(id)) || debts_moved(caller, told) {
+        return None;
+    }
+    let ids: Vec<String> = told.iter().map(|(id, ..)| id.clone()).collect();
+    for id in &ids {
+        *g.telling.entry(id.clone()).or_default() += 1;
+    }
+    Some(Telling(ids))
+}
+
+/// A handover's hold on session `id` (`hand_off`), let go when dropped.
+pub(in crate::agents) struct HandingOff(String);
+
+impl Drop for HandingOff {
+    fn drop(&mut self) {
+        let (lock, done) = gate();
+        lock.lock().unwrap_or_else(|e| e.into_inner()).handing.remove(&self.0);
+        done.notify_all();
+    }
+}
+
+/// How long a handover waits for a notice going in about its session: a notice's
+/// typing gives up well within this (delivery.rs).
+const HAND_OFF_WAIT: Duration = Duration::from_secs(120);
+
+/// Holds session `id` for its handover: no notice about it starts going in from
+/// here, and one going in now is waited for. Err if that one is not in within
+/// HAND_OFF_WAIT; nothing has changed hands then, and the window says it again.
+pub(in crate::agents) fn hand_off(id: &str) -> Result<HandingOff, String> {
+    // Before the gate: the registry is taken under it only after it.
+    let who = label(id);
+    let (lock, done) = gate();
+    let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
+    if !g.handing.insert(id.to_string()) {
+        return Err(format!("{who} is being handed over already"));
+    }
+    let deadline = Instant::now() + HAND_OFF_WAIT;
+    while g.telling.contains_key(id) {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            g.handing.remove(id);
+            done.notify_all();
+            return Err(format!("a notice about {who} is still going in; it is handed over once that is through"));
+        }
+        g = done.wait_timeout(g, left).unwrap_or_else(|e| e.into_inner()).0;
+    }
+    Ok(HandingOff(id.to_string()))
 }
 
 /// What the breaker counts, and all it silences: notices a turn's or a job's
@@ -595,6 +699,18 @@ fn deliver_notice(
 ) {
     let before = crate::activity::turn_state(caller);
     let baseline = before.map(|t| t.turns_ended).unwrap_or(0);
+    // Again here, where it goes in, and held from this check until it is in
+    // (`Telling`): the look that put it together was before this thread, and a
+    // debt it tells of may have gone since (a handover clears them,
+    // agents/handover.rs) or become another, or a handover of one of its
+    // sessions be under way. Then nothing of it goes in and nothing is settled;
+    // the next look starts over from what stands.
+    let Some(telling) = tell_of(caller, &settled) else {
+        crate::log::info("agents", &format!("notice to {} not typed: what it told of changed as it was about to go in", label(caller)));
+        return;
+    };
+    #[cfg(test)]
+    tests::between_check_and_typing(caller);
     // The turn it starts: the next, or for a background caller that has begun
     // one since the look, the one after that.
     let background = crate::background::has(caller);
@@ -608,6 +724,8 @@ fn deliver_notice(
     } else {
         (type_text(pty, caller, text, before.map(|t| t.turn), baseline), baseline + 1)
     };
+    // In, or not to be: a handover waiting on it goes ahead.
+    drop(telling);
     // Typed and no turn begun, with text still in the composer: its Enter went
     // astray, and it never reached the model. What it told of stays owed, as it
     // is for text held back, and the text stands as a draft: the next notice
@@ -630,7 +748,7 @@ fn deliver_notice(
         .map(|(id, _, _)| label(id))
         .chain(quota_lines.iter().map(|n| format!("{} at {}%", n.key.1, n.told.level)))
         .chain(spawn_lines.iter().map(|(request, _)| format!("spawn {request}")))
-        .chain(news_lines.iter().map(|_| "an auto-delete".to_string()))
+        .chain(news_lines.iter().map(|_| "a helper's going".to_string()))
         .chain(budget_lines.iter().map(|n| format!("the budget of {}", label(&n.id))))
         .collect::<Vec<_>>()
         .join(", ");
@@ -683,6 +801,8 @@ fn deliver_notice(
                 r.quota_told.insert(n.key, n.told);
             }
             r.news.retain(|(c, line)| !(c == caller && news_lines.contains(line)));
+            // Told: not to be told again by a core after this one.
+            let told_news = !news_lines.is_empty();
             let told_spawns = !spawn_lines.is_empty();
             for (request, _) in spawn_lines {
                 r.spawns.remove(&request);
@@ -700,7 +820,7 @@ fn deliver_notice(
             for id in &told_lost {
                 take_undelivered(id, caller, parent_of(id).as_deref() == Some(caller));
             }
-            if !told_lost.is_empty() || !told_left.is_empty() || told_spawns || told_budgets {
+            if !told_lost.is_empty() || !told_left.is_empty() || told_news || told_spawns || told_budgets {
                 crate::background::save();
             }
             for id in stopped {
@@ -785,6 +905,82 @@ mod tests {
     use crate::agents::teardown::forget;
     use crate::agents::test_support::job_over_helper;
     use crate::agents::wait::{Reserved, WaitOut};
+
+    type Between = (String, Box<dyn FnOnce() + Send>);
+
+    /// What a test has run in a notice's delivery to a caller, once, between its
+    /// check and its text going in (`deliver_notice`).
+    static BETWEEN: std::sync::Mutex<Vec<Between>> = std::sync::Mutex::new(Vec::new());
+
+    pub(super) fn between_check_and_typing(caller: &str) {
+        let hook = {
+            let mut b = BETWEEN.lock().unwrap_or_else(|e| e.into_inner());
+            b.iter().position(|(c, _)| c == caller).map(|i| b.remove(i).1)
+        };
+        if let Some(run) = hook {
+            run();
+        }
+    }
+
+    /// A handover started exactly between a notice's check and its text going in
+    /// waits for that notice, which goes in as the helper's answer it was, and only
+    /// then changes hands. A notice that finds a handover of its session under way
+    /// does not go in. Both providers alike.
+    #[test]
+    fn a_handover_and_a_notice_going_in_wait_for_each_other() {
+        for (provider, tag) in [(Provider::Claude, "cl"), (Provider::Codex, "cx")] {
+            let (a, id, next) = (format!("hb-{tag}-caller"), format!("hb-{tag}-helper"), format!("hb-{tag}-next"));
+            let bg = serde_json::json!({ "background": true });
+            register(&a, Provider::Claude, "C:\\p", "C:\\acc\\one", None, true, serde_json::json!({}));
+            register(&id, provider, "C:\\p", "C:\\acc\\one", Some(&a), false, bg.clone());
+            register(&next, provider, "C:\\p", "C:\\acc\\one", Some(&a), false, bg);
+            // The caller mid-turn: a notice for it queues, to be seen.
+            crate::background::test_helper(&a, "C:\\acc", None, true);
+            crate::background::idle_for_test(&id, provider, 1, false);
+            let looked_up = |helper: &str| {
+                owe_from(&a, helper, 0, 0);
+                reg().lock().unwrap().owed[&(a.clone(), helper.to_string())]
+            };
+            let pty = crate::pty::manager();
+            let text = format!("{NOTICE_TAG} {id} answered");
+
+            let (sent, handover) = std::sync::mpsc::channel();
+            let (helper, caller) = (id.clone(), a.clone());
+            BETWEEN.lock().unwrap().push((
+                a.clone(),
+                Box::new(move || {
+                    let taking = helper.clone();
+                    let t = std::thread::spawn(move || crate::agents::take_over(&taking, || Some(Vec::new())).unwrap());
+                    let until = Instant::now() + Duration::from_secs(5);
+                    while !gate().0.lock().unwrap().handing.contains(&helper) {
+                        assert!(Instant::now() < until, "the handover never took its hold");
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    std::thread::sleep(Duration::from_millis(200));
+                    assert_eq!(parent_of(&helper).as_deref(), Some(caller.as_str()), "nothing changed hands under the notice");
+                    sent.send(t).unwrap();
+                }),
+            ));
+            deliver_notice(pty, &a, &text, vec![(id.clone(), Settled::Answered, looked_up(&id))], vec![], vec![], vec![], vec![]);
+            handover.recv().unwrap().join().unwrap();
+            assert_eq!(crate::background::queued_for_test(&a), std::slice::from_ref(&text), "the notice went in whole");
+            assert_eq!(parent_of(&id), None, "and the handover after it");
+
+            // The other order: a handover of `next` under way, a notice about it waits
+            // for nothing and goes nowhere.
+            let held = hand_off(&next).unwrap();
+            let other = format!("{NOTICE_TAG} {next} answered");
+            deliver_notice(pty, &a, &other, vec![(next.clone(), Settled::Answered, looked_up(&next))], vec![], vec![], vec![], vec![]);
+            assert_eq!(crate::background::queued_for_test(&a), [text], "nothing more went in");
+            drop(held);
+
+            reg().lock().unwrap().news.retain(|(c, _)| *c != a);
+            for s in [&id, &next, &a] {
+                crate::background::gone_for_test(s);
+                forget(s);
+            }
+        }
+    }
 
     #[test]
     fn a_wait_out_holds_the_notice_for_a_while() {
@@ -1003,6 +1199,46 @@ mod tests {
         assert!(riders_go(false, true, fresh, now, 1), "owed nothing else");
         assert!(riders_go(true, false, fresh, now, 1), "a notice is going in anyway");
         assert!(riders_go(false, false, now - RIDE_MAX_MS, now, 1), "ten minutes at most");
+    }
+
+    /// A notice put together before a handover and going in after it, the gap
+    /// between the notifier's look and its delivery thread: the debt it told of
+    /// went with the handover, so nothing of it goes in. One whose debt stands
+    /// goes in as ever. Both providers' helpers alike.
+    #[test]
+    fn a_notice_on_its_way_through_a_handover_does_not_go_in() {
+        for (provider, tag) in [(Provider::Claude, "cl"), (Provider::Codex, "cx")] {
+            let (a, id, other) = (format!("nh-{tag}-caller"), format!("nh-{tag}-helper"), format!("nh-{tag}-other"));
+            let bg = serde_json::json!({ "background": true });
+            register(&a, Provider::Claude, "C:\\p", "C:\\acc\\one", None, true, serde_json::json!({}));
+            register(&id, provider, "C:\\p", "C:\\acc\\one", Some(&a), false, bg.clone());
+            register(&other, provider, "C:\\p", "C:\\acc\\one", Some(&a), false, bg);
+            // The caller mid-turn: a notice for it queues, to be seen.
+            crate::background::test_helper(&a, "C:\\acc", None, true);
+            crate::background::idle_for_test(&id, provider, 1, false);
+            let looked_up = |helper: &str| {
+                owe_from(&a, helper, 0, 0);
+                reg().lock().unwrap().owed[&(a.clone(), helper.to_string())]
+            };
+            let told = looked_up(&id);
+            assert!(!debts_moved(&a, &[(id.clone(), Settled::Answered, told)]), "as the notifier found it");
+            crate::agents::take_over(&id, || Some(Vec::new())).unwrap();
+            let pty = crate::pty::manager();
+            let notice = |helper: &str, o: Owed| {
+                let text = format!("{NOTICE_TAG} {helper} answered");
+                deliver_notice(pty, &a, &text, vec![(helper.to_string(), Settled::Answered, o)], vec![], vec![], vec![], vec![]);
+            };
+            notice(&id, told);
+            assert!(crate::background::queued_for_test(&a).is_empty(), "the handover's notice went nowhere");
+            let other_told = looked_up(&other);
+            notice(&other, other_told);
+            assert_eq!(crate::background::queued_for_test(&a), [format!("{NOTICE_TAG} {other} answered")]);
+            reg().lock().unwrap().news.retain(|(c, _)| *c != a);
+            for s in [&id, &other, &a] {
+                crate::background::gone_for_test(s);
+                forget(s);
+            }
+        }
     }
 
     /// A look taken before a retry reads the turn that missed as the answer.

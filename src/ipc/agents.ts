@@ -1,32 +1,6 @@
 import { call } from './core';
 import type { Provider } from '../shared/types';
 
-/** What an agent asked for (agents/spawn/mod.rs SpawnParams), as `agent://spawn` carries it. */
-export interface AgentSpawnRequest {
-  requestId: number;
-  parentId: string;
-  provider: Provider;
-  account: string;
-  model?: string | null;
-  effort?: string | null;
-  permissionMode?: string | null;
-  approval?: string | null;
-  sandbox?: string | null;
-  readOnly?: boolean | null;
-  agent?: string | null;
-  folder: string;
-  /** The caller's worktree, to run in without owning it; `folder` is its
-   *  project. */
-  inWorktree?: string | null;
-  worktree?: boolean | null;
-  prompt: string;
-  name?: string | null;
-  tools?: boolean | null;
-  /** Codex: run the project's hooks unasked, as the folder starts a chat of
-   *  the user's — the core decides, not the agent. */
-  hooksUnasked: boolean;
-}
-
 /** What a session waits on a person for (agents/ask.rs `Ask`). */
 export interface AskDto {
   kind: 'question' | 'permission';
@@ -59,7 +33,8 @@ export interface BackgroundHelperDto {
   promoting?: boolean;
 }
 
-/** A background helper to be handed over to a chat row (`backgroundPromote`). */
+/** A background helper to be handed over to the person as a chat of their own (`backgroundPromote`):
+ *  no parent, as it is nobody's helper once open. */
 export interface PromotedDto {
   id: string;
   provider: Provider;
@@ -67,36 +42,72 @@ export interface PromotedDto {
   folder: string;
   worktreePath: string | null;
   sessionId: string | null;
-  parent: string | null;
   name: string | null;
   /** The flags it ran with, in the CLI's own words. */
   settings: Record<string, unknown>;
   tools: boolean;
 }
 
+/** What a helper has at stake in a delete (agents/teardown.rs `AtStake`). */
+export interface AtStakeDto {
+  id: string;
+  /** What it is doing that a delete would cut off. */
+  working?: string;
+  /** The worktree it made, which a delete that drops worktrees takes. */
+  worktree?: string;
+  /** What in that worktree is saved nowhere else. */
+  unsaved?: string;
+}
+
+/** What the person's delete did beyond deleting the helper (agents/teardown.rs `UserDeleted`). */
+export interface HelperDeletedDto {
+  /** A worktree kept for the unsaved work in it, though worktrees were to go. */
+  worktreeKept?: string;
+  worktreeError?: string;
+}
+
+/** One message of a helper's conversation, as `luna_read` reads it. */
+export interface HelperMessageDto {
+  role: string;
+  text: string;
+}
+
+/** A look at a helper's conversation (background/rows.rs `Transcript`). */
+export interface HelperTranscriptDto {
+  messages: HelperMessageDto[];
+  /** Pass back as `since` for what comes after. */
+  cursor: number;
+  /** The file it was read from, passed back with `since`. */
+  file: string | null;
+  /** A turn is running. */
+  running: boolean;
+  /** Older messages a first look left out. */
+  leftOut?: number;
+  /** Part of the conversation was passed over unread: too far back, or a line too long. */
+  passedOver?: boolean;
+}
+
 export const backgroundHelpers = () => call<BackgroundHelperDto[]>('background_helpers', {}, []);
-/** Starts making the helper a chat of its own, refused while a turn runs: what the row needs. The
- *  helper stays, with no turn starting, until `backgroundPromoted` says how the row came out. */
+/** Starts handing the helper over to the person as a chat of their own, refused while a turn runs:
+ *  what the row needs. The helper stays, with no turn starting and out of its parent's reach, until
+ *  `backgroundPromoted` says how the row came out. */
 export const backgroundPromote = (id: string) => call<PromotedDto>('background_promote', { id });
-/** The row for a helper being opened is made (`error` null), and the core lets the helper go; or it
- *  could not be, and the helper goes on as it was. */
+/** The row for a helper being opened is made (`error` null), and it is the person's for good; or it
+ *  could not be, and the helper goes on as its parent's. Whether it was handed over: false for a row
+ *  made for an opening the core has since given up, the helper its parent's again. */
 export const backgroundPromoted = (id: string, error: string | null) =>
-  call<void>('background_promoted', { id, error });
+  call<boolean>('background_promoted', { id, error });
 /** Stops the turn it is on, or between turns what its turns left running; the conversation stays. */
 export const backgroundKill = (id: string) => call<void>('background_kill', { id });
-/** Deletes it, the worktree it made too unless `dropWorktree` is false. */
-export const backgroundDelete = (id: string, dropWorktree = true) =>
-  call<void>('background_delete', { id, dropWorktree });
-
-/** Answers `agent://spawn`: the chat made for it, or why not. */
-export const agentSpawned = (requestId: number, chatId: string | null, name: string | null, error: string | null) =>
-  call<void>('agent_spawned', { requestId, chatId, name, error });
-
-/** The chats the core wants started to go on by themselves (agents/resume.rs `resume_chats`). */
-export const agentResumes = () => call<string[]>('agent_resumes');
-/** What the window has been asked to start and nothing has come of yet: an event
- *  reaches only a page that is listening. */
-export const agentSpawns = () => call<AgentSpawnRequest[]>('agent_spawns', {}, []);
+/** Deletes it, the worktree it made too unless `dropWorktree` is false. A helper at work is refused
+ *  unless `stopWorking`, and a worktree with unsaved work is kept unless `dropUnsaved`. */
+export const backgroundDelete = (id: string, { dropWorktree = true, stopWorking = false, dropUnsaved = false } = {}) =>
+  call<HelperDeletedDto>('background_delete', { id, dropWorktree, stopWorking, dropUnsaved }, {});
+/** What each helper has at stake in a delete, looked at now. */
+export const backgroundAtStake = (ids: string[]) => call<AtStakeDto[]>('background_at_stake', { ids }, []);
+/** A helper's conversation from `since` on, read-only (`file`: the one `since` was a cursor into). */
+export const backgroundTranscript = (id: string, since: number | null, file: string | null) =>
+  call<HelperTranscriptDto>('background_transcript', { id, since, file });
 
 /** Every chat's name by id, for `luna_sessions` (agents/). */
 export const chatNames = (names: Record<string, string>, groups: Record<string, number>) =>

@@ -37,7 +37,7 @@ How a session is started, what it is started with, and how its terminal is run.
 | `pty/control.rs` | write, resize, keys, kill, quitting the way a person would, delete, orphans |
 | `pty/screen.rs` | the screen replayed (`vt100`), composer and draft, terminal modes and title, Codex key events on Windows; `SessionMeta` |
 | `pty/probe.rs` | `ActivityProbe::working_dir()`, `session_meta` by provider, tails, sweep of hook and MCP files |
-| `claude/launch.rs` | Claude Code's arguments and environment (`chat_args`), the settings file's hooks and guard, the helper's system prompt line |
+| `claude/launch.rs` | Claude Code's arguments and environment (`chat_args`), the settings file's hooks and guard, the helper's system prompt line and settings (`claude_helper_args`, `HelperSettings`, used by `background/command.rs`) |
 | `codex/launch.rs` | Codex's arguments and environment, approval and sandbox overrides, `read-only-net`, the guard, Luna's MCP server |
 | `guard.rs` | the PreToolUse guard against waits that never end |
 | `applied.rs` | the items Luna may apply, each with its class and why; the ledger of account writes; `applied_by_luna` |
@@ -54,7 +54,7 @@ unless changed by hand ([providers](providers.md#defaults)).
 ```
 claude --model <alias> --effort <low|medium|high|xhigh|max|ultracode>
        --permission-mode <mode> [--resume <uuid>] [--worktree[=<name>]]
-       --settings <data>/hooks/<chat>.json [--mcp-config …] [--add-dir …] [-- <prompt>]
+       --settings <data>/hooks/<chat>.json [--mcp-config …] [--add-dir …]
 ```
 
 `cwd` is the chat's folder; `CLAUDE_CONFIG_DIR` is the account folder;
@@ -99,8 +99,8 @@ The goldens run the real start, not the builders alone.
   description, and reads back the settings, MCP and instructions files written
   for it, and what it applied (`Started::applied`, placeholders in). Cases:
   chats, permission modes, resume only with a transcript, worktrees by name,
-  login, the guard only when asked for, helpers with tools (guard, Luna's MCP,
-  role, reviewer, per-run trust), a `windows.sandbox` of the user's kept, Codex
+  login, the guard only when asked for, chats with tools (guard, Luna's MCP,
+  role; none of a helper's items), a `windows.sandbox` of the user's kept, Codex
   approval / sandbox pairs, library folders (skills, instructions, plugins,
   hidden skills, the other added folders' memory left out).
 - **Headless** (`background/command.rs`, `golden_headless_*`): a helper turn's
@@ -182,11 +182,11 @@ the command quotes `"@-"` and calls curl by full path.
 - `claude/launch.rs` and `codex/launch.rs` are pure; everything with an effect
   happens in `pty/start.rs` (or `background/command.rs` / `background/run.rs`
   for a helper's turn) before them, under the chat's spawn gate.
-- A session is registered (`register`, and `spawn_is` for an agent's spawn)
-  before its process is created.
+- A session is registered (`register`) before its process is created. A chat
+  the window starts is the person's, never a helper: it is registered with no
+  parent and starts with no opening prompt, helper note, `--strict-mcp-config`
+  or connectors turned off. Helpers start in `background/`.
 - MCP tokens are never written to disk; the config names `${LUNA_MCP_TOKEN}`.
-- A prompt goes after `--`: Claude Code's `--mcp-config` takes any number of
-  files and swallowed the prompt as one more.
 - `cwd` must exist.
 
 ## Failure modes

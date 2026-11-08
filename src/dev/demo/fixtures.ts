@@ -1,7 +1,7 @@
 // The invented chats, accounts and answers the demo scenes stand on.
 import type { Account, Chat, ClaudeChat, CodexChat, Folder, Provider } from '../../shared/types';
 import type { AccountsRootInfo } from '../../ipc/accounts';
-import type { BackgroundHelperDto } from '../../ipc/agents';
+import type { AtStakeDto, BackgroundHelperDto, HelperTranscriptDto } from '../../ipc/agents';
 import type { CliStatusDto } from '../../ipc/cli';
 import type { CoreStateDto } from '../../ipc/coreProcess';
 import type { ClaudeDefaultsDto, CodexDefaultsDto, CodexModelDto } from '../../ipc/defaults';
@@ -570,6 +570,39 @@ export const BACKGROUND: BackgroundHelperDto[] = [
     turnStartedMs: null
   }
 ];
+
+// What the working helper has said so far, as its read-only view shows it.
+export const HELPER_TRANSCRIPT: HelperTranscriptDto = {
+  messages: [
+    {
+      role: 'user',
+      text: 'Review docs/release-plan.md against what CHANGELOG.md says is in 0.11.0. List anything the plan promises that the changelog does not have, and the other way round.'
+    },
+    {
+      role: 'assistant',
+      text: 'Reading both files first.\n\n[tool: Read docs/release-plan.md]\n[tool: Read CHANGELOG.md]'
+    },
+    {
+      role: 'assistant',
+      text: 'Two gaps so far:\n\n1. The plan promises the read-only helper view; the changelog has it under Added.\n2. The changelog lists the delete dialog guards; the plan does not mention them.\n\nChecking the migration notes next.'
+    }
+  ],
+  cursor: 4096,
+  file: 'C:\\Users\\demo\\.codex\\sessions\\2026\\11\\09\\rollout-demo.jsonl',
+  running: true
+};
+
+// What the first chat's helpers have at stake in its delete: one at work in a
+// worktree holding uncommitted work, one waiting on a question.
+export const AT_STAKE: Record<string, AtStakeDto> = {
+  'demo-bg-1': {
+    id: 'demo-bg-1',
+    working: 'in the middle of a turn',
+    worktree: 'C:\\src\\luna\\.codex\\worktrees\\review',
+    unsaved: '2 uncommitted files'
+  },
+  'demo-bg-2': { id: 'demo-bg-2', working: 'waits on a question or permission' }
+};
 
 /** What the first chat's panel says Luna applied (applied.rs), as a Claude
  *  Code chat with Luna's tools started on a work account. */

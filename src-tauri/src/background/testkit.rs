@@ -23,6 +23,12 @@ pub fn queued_for_test(id: &str) -> Vec<String> {
     lock().entries.get(id).map(|e| e.queue.iter().map(|q| q.text.clone()).collect()).unwrap_or_default()
 }
 
+/// Being opened as a chat by the person, or not.
+#[cfg(test)]
+pub fn promoting_for_test(id: &str, on: bool) {
+    lock().entries.get_mut(id).unwrap().promoting = on;
+}
+
 /// A turn of its runs.
 #[cfg(test)]
 pub fn set_running_for_test(id: &str) {
@@ -111,6 +117,7 @@ pub fn take_up_for_test(id: &str, folder: &str, turns_ended: u32, queue: &[&str]
         unsure: false,
         opening: opening.map(str::to_owned),
         opening_id: None,
+        promoting_since: None,
         cut_short: false,
         observed: Default::default(),
         ties: Default::default(),
@@ -236,6 +243,9 @@ pub fn test_helper(id: &str, account_path: &str, session: Option<&str>, busy: bo
         left: Vec::new(),
         ending_left: false,
         promoting: false,
+        promoting_since: 0,
+        deleting: false,
+        handing: false,
         observed: Observed::default(),
     };
     lock().entries.insert(id.to_string(), e);
@@ -294,6 +304,9 @@ pub(super) fn entry(provider: Provider) -> Entry {
         left: Vec::new(),
         ending_left: false,
         promoting: false,
+        promoting_since: 0,
+        deleting: false,
+        handing: false,
         observed: Observed::default(),
     }
 }

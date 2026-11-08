@@ -6,7 +6,6 @@ use crate::agents::delivery::screen_of;
 use crate::agents::lost::{lost_count, lost_whole, undelivered_note};
 use crate::agents::owed::{hand_over, queue_settled, seen};
 use crate::agents::registry::{authorize_view, label, reg};
-use crate::agents::resume::resume_pending;
 use crate::provider::Provider;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -278,14 +277,11 @@ pub fn read(
     // And the session was done with it before the read: a read while it
     // works on has seen a turn on the way, and the answer is still to come.
     let done = ts.is_none_or(|t| t.turn == crate::activity::Turn::Idle && !t.children_busy);
-    let settles = whole
-        && done
-        && !resume_pending(id)
-        && owed.is_some_and(|o| turns_ended > o.baseline && (!o.queued || queue_settled(&key, o, turns_ended)));
+    let settles = whole && done && owed.is_some_and(|o| turns_ended > o.baseline && (!o.queued || queue_settled(&key, o, turns_ended)));
     // Ahead of the hand-over, which takes it off. With an answer still to come
     // it stays for the notice; with none owed this read is all that tells it.
     let undelivered = undelivered_note(caller, id);
-    if undelivered.is_some() && lost_whole(pty, caller, id) {
+    if undelivered.is_some() && lost_whole(caller, id) {
         // No answer is to come: this was all of it, and no notice is to say it again.
         // Canceled first, it and the debt are put back together.
         call.commit(hand_over(caller, id, lost_count(caller, id), None));
@@ -406,11 +402,9 @@ fn cursor_after(path: &std::path::Path, from: u64, end: u64, found: usize, keep:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agents::delivery::is_held;
     use crate::agents::owed::owe_from;
     use crate::agents::registry::{reg, register, session_exited};
     use crate::agents::teardown::forget;
-    use crate::agents::test_support::lost_helper;
 
     /// `report: true` reads as a read does: the reader's cursor, never past a
     /// line still being written; a long report cut at MAX_TEXT; an explicit
@@ -486,31 +480,19 @@ mod tests {
     #[test]
     fn a_read_of_a_lost_first_turn_collects_it_and_a_cancel_puts_it_back_with_the_debt() {
         let dir = std::env::temp_dir().to_string_lossy().into_owned();
-        lost_helper("lr-parent", "lr-chat", &dir, &["and a follow-up"]);
-        let key = ("lr-parent".to_string(), "lr-chat".to_string());
-        let read_it = |call: &crate::mcp::Call| read("lr-parent", "lr-chat", None, None, false, false, false, call).unwrap().undelivered;
-        let call = crate::mcp::Call::new();
-        let note = read_it(&call).unwrap();
-        assert!(note.contains("never got started") && note.contains("its prompt and 1 queued message are in "), "{note}");
-        assert!(!reg().lock().unwrap().owed.contains_key(&key), "all there was: no notice is to say it again");
-        assert!(!is_held("lr-parent", "lr-chat"));
-        assert_eq!(read_it(&crate::mcp::Call::new()), None, "and no read either");
-        call.cancel();
-        assert!(reg().lock().unwrap().owed.contains_key(&key) && is_held("lr-parent", "lr-chat"), "payload and debt together");
-        assert!(read_it(&crate::mcp::Call::new()).is_some());
-        // Another reader takes nothing of it.
-        reg().lock().unwrap().held.retain(|h| h.id != "lr-chat");
-        forget("lr-chat");
-
-        // A background helper's is the same, its prompt its own way.
+        register("lr-parent", Provider::Claude, &dir, &dir, None, true, serde_json::json!({}));
+        crate::background::test_helper("lr-parent", &dir, None, false);
         register("lb-child", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("lr-parent"), false, serde_json::json!({}));
         crate::background::take_up_for_test("lb-child", "C:\\p", 0, &[], Some("do the whole job"));
         owe_from("lr-parent", "lb-child", 0, 0);
+        let key = ("lr-parent".to_string(), "lb-child".to_string());
         let call = crate::mcp::Call::new();
         let note = read("lr-parent", "lb-child", None, None, false, false, false, &call).unwrap().undelivered.unwrap();
         assert!(note.contains("never got started"), "{note}");
-        assert!(!reg().lock().unwrap().owed.contains_key(&("lr-parent".to_string(), "lb-child".to_string())));
+        assert!(!reg().lock().unwrap().owed.contains_key(&key), "all there was: no notice is to say it again");
         assert_eq!(read("lr-parent", "lb-child", None, None, false, false, false, &crate::mcp::Call::new()).unwrap().undelivered, None);
+        call.cancel();
+        assert!(reg().lock().unwrap().owed.contains_key(&key), "payload and debt together");
         crate::background::remove("lb-child");
         forget("lb-child");
         crate::background::gone_for_test("lr-parent");

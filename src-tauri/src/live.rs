@@ -234,7 +234,7 @@ fn first_turn(s: &Spawned) -> Turn {
         std::thread::sleep(Duration::from_millis(100));
     }
     let call = crate::mcp::Call::new();
-    let w = crate::agents::wait(&s.caller, &s.id, "turn_done", 30, Some(0), &call).expect("luna_wait on the helper");
+    let w = crate::agents::wait(&s.caller, &s.id, "turn_done", 30, Some(0), None, &call).expect("luna_wait on the helper");
     Turn { states, outcome: w.outcome, turns_ended: w.turns_ended, reply: w.reply, failed: w.failed, screen: w.screen }
 }
 
@@ -249,7 +249,7 @@ fn spawn(live: &Live, extra: Value, prompt: &str) -> Spawned {
         extra[k] = v.clone();
     }
     let spawned = crate::agents::spawn(&caller, live.params(&folder, prompt, extra)).expect("luna_spawn");
-    assert!(spawned.started, "a background helper starts at once");
+    assert!(crate::background::has(&spawned.id), "a helper runs in the background");
     Spawned { caller, id: spawned.id, folder }
 }
 

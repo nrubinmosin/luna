@@ -1,8 +1,9 @@
 # Background helpers
 
-What `luna_spawn` makes unless asked for `visible: true`: no chat row, no pty,
-all in the core, so no window is needed. Also: how helpers and agent-owned
-chats outlive a core restart.
+What `luna_spawn` makes, every time: no chat row, no pty, all in the core, so no
+window is needed. The person watches one read-only or opens it as a chat of
+their own, which hands it over for good. Also: how helpers, and what agents are
+owed by the person's chats, outlive a core restart.
 
 ## Responsibility
 
@@ -24,9 +25,10 @@ chats outlive a core restart.
 | `background/events.rs` | the CLIs' JSON streams and a turn's end |
 | `background/control.rs` | kill, interrupt, leftovers |
 | `background/ask.rs` | log as screen, transcript, held asks |
-| `background/rows.rs` | `agent://background` rows, promotion to a chat |
+| `background/rows.rs` | `agent://background` rows, the read-only view (`background_transcript`), the person's delete (`background_delete`, `background_at_stake`), opening one as a chat |
 | `background/persist.rs` | `helpers.json` across cores |
-| `agents/persist.rs`, `agents/resume.rs` | chat ties, chats that go on by themselves |
+| `agents/persist.rs`, `agents/held.rs` | chat ties, text held for the person's chats |
+| `agents/handover.rs` | a helper opened as a chat, handed over to the person |
 
 ## A turn
 
@@ -86,14 +88,47 @@ helpers (`codex-code-mode-host` and its `conhost`) are furniture while they do
 not move (`without_furniture`). See [power and lifecycle](power-and-lifecycle.md)
 for the activity rule.
 
-## Promotion to a chat
+## The window's view
 
-The window gets the list as `agent://background` and can open a helper as a chat
-row between turns, in two steps so a failure leaves the helper:
-`background_promote` marks it (no turn starts; sends queue) and returns the row's
-data (same id, session id to resume); the window answers `background_promoted`,
-which lets the helper go, or an error, which unmarks it. A window coming up
-settles what a gone one was opening.
+The window gets the list as `agent://background` and lists a chat's helpers on
+its row's chip.
+
+- **Watch** reads the helper's conversation off its transcript
+  (`background_transcript`, by the same readers `luna_read` uses, tool calls
+  marked) from a cursor, and again every second while a turn runs, every five
+  between turns (`useHelperTranscript`). The file is the helper's own, from its
+  record, never one the window names. A look reads at most 2 MB back from the
+  file's end into memory (`VIEW_SCAN`), from a line's start, passes over a line
+  longer than 256 KB (`VIEW_LINE`), and parses the rest with the readers that
+  work on bytes (`claude::session::messages_in`, `codex::session::messages_in`);
+  it keeps the newest 200 messages, each cut at 20,000 characters, and says
+  when it passed anything over (`passedOver`). Read-only: nothing it shows takes
+  input.
+- **Delete** (`background_delete`) refuses a helper at work unless
+  `stopWorking`, and keeps a worktree with unsaved work unless `dropUnsaved`
+  (agents/teardown.rs `delete_by_user`). A chat's Delete dialog asks first what
+  each of its helpers has at stake (`background_at_stake`: its turn, its
+  worktree and the work in it) and offers each as a box of its own.
+
+## Opened as a chat: handed over
+
+Between turns, with nothing it left running, the person can open a helper as a
+chat of their own, in two steps so a failure leaves the helper its parent's:
+`background_promote` marks it `promoting` (no turn starts, sends queue, its
+parent's kill and delete are refused) and returns the row's data (same id,
+session id to resume, no parent); the window answers `background_promoted`. On
+success `agents::take_over` changes its hands under one registry hold, then
+takes its record with what was queued for it, and tells its parent and every
+other sender once ([agents](agents.md#rights)); on an error it is unmarked and
+goes on. The window seats the row in a pane only once the core has let go, and
+`ensure_*_session` refuses a helper's id until then. It tells the core again on a
+failure (`SETTLE_RETRY_MS`, up to about two minutes), and a window coming up
+settles what a gone one was opening. `promoting` and since when are saved in
+`helpers.json`, so a core restarted meanwhile holds the helper the same way. An
+opening unsettled for 15 minutes (`PROMOTE_TIMEOUT_MS`, checked by the activity
+sampler) goes back to the parent, which hears so (`handover::opening_lapsed`);
+a row made for it after that is refused (`background_promoted` answers false)
+and the window lets go of it.
 
 ## Worktrees
 
@@ -110,7 +145,7 @@ where the shell went, `home_of` maps it back), between turns too, for
 
 Every 2 s, as the core leaves (`stop_all`), and at once on what a killed core
 must not undo (a spawn, a conversation named, a delete, a question, a
-promotion), the registry is written to `<data>/helpers.json` when changed, one
+handover), the registry is written to `<data>/helpers.json` when changed, one
 save at a time. It holds the spec without its token, the session id, the
 worktree, the turn count, queued text with each sender (`Queued`), and the
 agent ties (`agents::Ties`: parent, name, settings, debts, counts shown); the
@@ -144,35 +179,25 @@ has read the file, so an empty registry never overwrites it.
 - A `budgetTokens` line is marked in the notice itself (`Queued::budget`), so
   `stdin_took` is the one receipt (`budgets_landed`).
 
-### Visible sessions: `chat-ties.json`
+### The person's chats: `chat-ties.json`
 
-`agents::save_chats` keeps, for each session that was spawned, handed a
-worktree or is owed on, its `Ties`, turn count and transcript, and the sends
-Luna holds (`Held`). `restore_chats` reads it; a chat is `Known::waiting` until
-the window starts it and `register` clears the mark. The count goes on
+`agents::save_chats` keeps, for each chat of the person's that an agent is owed
+an answer by or holds text for, its `Ties`, turn count and transcript, and the
+sends Luna holds (`Held`); and the lines still to be told (`Registry::news`,
+such as a parent's "the person took over your helper"), so one is said once
+whatever comes between. `restore_chats` reads it; a chat is `Known::waiting`
+until the window starts it and `register` clears the mark. The count goes on
 (`activity::keep_count`). A debt the count had not passed is one whose turn went
-too (`Owed::cut_short`). A session not back within `SESSION_RETURN_MS` (1 min)
-is reported as not started again. A chat's parent has one record, the core's
-(`Known::parent`); `register` takes the window's word only where the core has
-none. `save_chats` stops while sessions are being stopped (`freeze_chats`), so
-the next core does not read what quitting did to them.
+too (`Owed::cut_short`). A chat not back within `SESSION_RETURN_MS` (1 min) is
+reported as not started again. A chat is never anyone's helper: one an earlier
+Luna saved with a parent (a visible helper) comes back with none, and none of a
+helper's settings. `save_chats` stops while sessions are being stopped
+(`freeze_chats`), so the next core does not read what quitting did to them.
 
 Neither CLI continues a turn a core killed (Claude Code's `--resume` needs an
 environment variable Luna does not set; Codex's continuation lives in the daemon
-`--no-daemon` keeps out), so the window restarts them between turns.
-
-### A chat that goes on by itself
-
-A `resumeOnRestart` chat whose turn went with the core (`SavedChat::mid_turn`, or
-a debt the count had not passed) goes on `Registry::resumes` (`take_up_chats`).
-The window asks which to start (`agent_resumes`) and starts them as a pane would
-(`startSession`), because what a chat starts with is the window's. On
-`luna-held`'s beat `resume_look` types into it once it has stood two looks at an
-empty prompt (`at_empty_prompt`, not by the cursor, which Claude Code hides
-without focus). A conversation gets `resume_text`; a CLI that came back afresh
-gets its opening prompt (`ChatResume::opening`). Held text follows in order. A
-person's key, a `send`, the CLI gone, or a timeout calls it off
-(`call_off_resume`), and the caller gets the plain notice.
+`--no-daemon` keeps out), so the window restarts chats between turns, and the
+person carries them on.
 
 ### Text a core went in the middle of typing
 
@@ -187,38 +212,26 @@ with the core, so its notice says the core restarted.
 ### A spawn under way
 
 `spawn` writes a `SpawnTaken` (`SpawnUnderWay`) to `chat-ties.json` before
-anything is made. `spawn_is` names the session as it registers. Left in the
+anything is made. `spawn_is` names the helper as it registers. Left in the
 file, it means the core went mid-way: `take_up_spawns` owes the caller from the
-saved session; `settle_spawns`, `SESSION_RETURN_MS` in, gives up the rest
-(`settled`), after which `spawn_is` refuses a late session. With
-`resumeOnRestart` `spawn_afresh` asks again (`retried`; `still_coming` if the
-window is slow; `spawn_failed_late` on failure). Otherwise the caller is told it
+saved helper (`helpers.json` is read first); `settle_spawns` gives up the rest
+(`settled`), after which `spawn_is` refuses a late helper. With
+`resumeOnRestart` `spawn_afresh` asks again. Otherwise the caller is told it
 never completed, prompt in a file (`never_completed`). A worktree new since the
 spawn with no session in it is reported as `worktreeLeft`, never removed.
 
-### A first turn a core went with
-
-`spawn_is` keeps every visible helper's prompt (`Opening`) until a first turn
-has ended under a core. Before a CLI starts on no prompt, `conversation_of`
-looks for its transcript on disk: found, it resumes; not found, it is
-`Opening::lost` (`first_turn_lost`) and the parent is told it never started,
-with the prompt and that parent's held text (`undelivered_for`), which is not
-typed in meanwhile. `wait` answers at once (`lost_answer`); `read` collects it
-(`take_undelivered`).
-
 ### A worktree half-made
 
-Luna names every Claude Code helper's worktree (`helper_worktree_name`,
-`Registry::worktree_names`, a background one's in its `Spec`) and passes
-`--worktree=<name>` (`worktree::name_ok`, `worktree_arg`). A fresh start goes
-back only into that one and only if it is `as_made`: on its branch, HEAD at the
-commit the branch was created at (oldest reflog line), and nothing in it that
-is not in that commit except the `.claude/settings.local.json` the CLI copies
-in. Anything else is reported once as `worktreeLeft` (`worktrees_left_line`) and
-the helper takes the next name (`name_to_go_on`). Codex takes no name, so a
-Codex helper starting afresh makes a new worktree, and what is new since the
-spawn is named (`codex_new_since`, `report_codex_worktrees`). A CLI not back by
-`SESSION_RETURN_MS` has what it began named (`leave_half_made`).
+Luna names every Claude Code helper's worktree (`helper_worktree_name`, kept in
+its `Spec`) and passes `--worktree=<name>` (`worktree::name_ok`,
+`worktree_arg`). A fresh start goes back only into that one and only if it is
+`as_made`: on its branch, HEAD at the commit the branch was created at (oldest
+reflog line), and nothing in it that is not in that commit except the
+`.claude/settings.local.json` the CLI copies in. Anything else is reported once
+as `worktreeLeft` (`worktrees_left_line`) and the helper takes the next name
+(`name_to_go_on`). Codex takes no name, so a Codex helper starting afresh makes
+a new worktree, and what is new since the spawn is named (`codex_new_since`,
+`report_codex_worktrees`, by `Registry::worktrees_before`).
 
 ## Invariants
 
@@ -236,7 +249,7 @@ Luna does not mirror a CLI's transcript, but it does keep text of its own:
 | Where | What text | Kept until |
 | --- | --- | --- |
 | `<data>/helpers.json` (`background/persist.rs`) | a helper's opening prompt (while no turn has named its conversation), and text queued, in flight or undelivered, word for word with its sender | the text is delivered or handed back |
-| `<data>/chat-ties.json` (`agents/persist.rs`) | a visible helper's opening prompt (`Opening`), sends Luna holds for a draft (`Held`), a spawn under way with its request and prompt (`SpawnTaken`) | a first turn has ended under a core / the send goes in / the spawn settles |
+| `<data>/chat-ties.json` (`agents/persist.rs`) | sends Luna holds for a draft (`Held`), a spawn under way with its request and prompt (`SpawnTaken`), lines still to be told (`news`) | the send goes in / the spawn settles / the line is told |
 | `<data>/agents.jsonl` (`agentlog.rs`) | the first 300 characters of each spawn's prompt; on its end the last message, up to 3,000 (`history` shows 400) | cut to the newest half past 2,000 lines |
 | `<data>/agents/<id>-<hash>.md` (`agents/said.rs`, `agents/delivery.rs`) | a notice's or cut `wait`'s full answer (every message since the question), long prompts and messages sent as files, undelivered text named to its sender | swept after a week |
 
@@ -250,4 +263,4 @@ place), and anything in `luna.log`, which names sessions but holds no chat text.
 | Core killed mid-turn | turn counts as ended; caller told "did not finish"; optional auto-resume |
 | Core killed between claim and stdin | `in_flight` neither forgotten nor replayed |
 | Disk full | letting go of a tied job is one unlink (`tied-jobs/`), which a full disk does not refuse |
-| Window gone while promoting | the next window settles it |
+| Window gone while opening one as a chat | the next window settles it by whether the row exists |

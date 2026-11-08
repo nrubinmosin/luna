@@ -34,7 +34,6 @@ export type IconName =
   | 'update'
   | 'close'
   | 'check'
-  | 'child'
   | 'claude'
   | 'codex'
   | 'recommend'
@@ -300,18 +299,6 @@ function draw(name: IconName, p: string): ReactNode {
             strokeLinejoin="round"
           />
         </>
-      );
-    case 'child':
-      return (
-        <path
-          d="M4.5 2.5v6.2a1.8 1.8 0 0 0 1.8 1.8h6M10 8l2.6 2.5L10 13"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.5"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          opacity=".7"
-        />
       );
     // The provider marks are drawn in the color of the text around them:
     // they say which CLI, and should not pull the eye any more than its name.

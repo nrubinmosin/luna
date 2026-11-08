@@ -1,38 +1,24 @@
 /**
- * The frontend's half of the agent layer (agents/). The core owns the
- * sessions and the lineage, the frontend owns the chat list — so a spawn
- * an agent asks for arrives here as `agent://spawn`, becomes a chat row and
- * a running session, and is answered with `agent_spawned`. A delete the
- * core has already carried out arrives as `agent://deleted` and only has
- * to drop the row.
+ * The frontend's half of the agent layer (agents/). Every helper an agent
+ * spawns runs in the background, in the core; the window lists them under the
+ * chat whose agent runs them (background.store), shows one read-only, and opens
+ * one as a chat of the person's own when asked (`openAsChat`). It also keeps the
+ * core told of what only the window knows: the chats' names and groups, and the
+ * accounts' usage.
  */
 import { useEffect } from 'react';
 import {
   accountUsage,
-  agentResumes,
-  agentSpawned,
-  agentSpawns,
   backgroundHelpers,
   backgroundPromote,
   backgroundPromoted,
   chatNames,
-  type AgentSpawnRequest,
   type BackgroundHelperDto,
   type PromotedDto
 } from '../../ipc/agents';
-import { codexModels, type CodexModelDto } from '../../ipc/defaults';
-import { ensureClaudeSession, ensureCodexSession } from '../../ipc/sessions';
-import { deleteSession } from '../../ipc/worktrees';
-import { onAgentDeleted, onAgentReparent, onAgentSpawn, onBackgroundHelpers } from '../../ipc/events';
+import { onBackgroundHelpers } from '../../ipc/events';
 import { logWarn } from '../../shared/lib/log';
 import {
-  AUTO_REVIEW_SANDBOX,
-  CODEX_APPROVALS,
-  CODEX_SANDBOXES,
-  EFFORTS,
-  MODEL_CLI,
-  MODELS,
-  PERM_CLI,
   accountKey,
   codexApprovalFromSetting,
   codexEffortFromSetting,
@@ -40,191 +26,16 @@ import {
   effortFromSetting,
   modelFromSetting,
   permFromSetting,
-  type Account,
   type ClaudeSettings,
   type CodexSettings
 } from '../../shared/types';
-import { accountOfChat, findAccount, useAccounts } from '../accounts/accounts.store';
+import { useAccounts } from '../accounts/accounts.store';
 import { allChats, useChats } from '../chats/chats.store';
 import { useCore } from '../core/core.store';
 import { createChat } from '../new-chat/create';
-import type { From } from '../new-chat/draft';
 import { usePanes } from '../panes/panes.store';
-import { startSession } from '../panes/terminals';
 import { claude, codex } from '../providers';
 import { useBackground } from './background.store';
-
-/**
- * A setting the agent asked for and Luna cannot give: said back to it as the
- * spawn's error, rather than quietly replaced by a default it did not ask for.
- */
-function refuse(why: string): never {
-  throw new Error(why);
-}
-
-/** Given and not blank. */
-const asked = (v: string | null | undefined): v is string => !!v?.trim();
-
-/** The Claude settings asked for, over the account's defaults. A model may be
- *  an alias or a full id (`claude-sonnet-5-5`), read the way a settings
- *  file's `model` is. */
-function claudeSettings(req: AgentSpawnRequest, values: ClaudeSettings): ClaudeSettings {
-  if (asked(req.approval) || asked(req.sandbox))
-    refuse('approval and sandbox are Codex settings; Claude takes permissionMode');
-  const model = asked(req.model)
-    ? (modelFromSetting(req.model) ??
-      refuse(
-        `unknown Claude model "${req.model}"; use ${MODELS.map(m => MODEL_CLI[m]).join(', ')} or a full id such as claude-opus-5`
-      ))
-    : values.model;
-  const effort = asked(req.effort)
-    ? (effortFromSetting(req.effort.trim()) ??
-      refuse(`unknown Claude effort "${req.effort}"; use ${EFFORTS.join(', ')}`))
-    : values.effort;
-  const perm = asked(req.permissionMode)
-    ? (permFromSetting(req.permissionMode.trim()) ??
-      refuse(`unknown permission mode "${req.permissionMode}"; use ${Object.values(PERM_CLI).join(', ')}`))
-    : values.perm;
-  return { model, effort, perm };
-}
-
-/** The Codex settings asked for, over the account's defaults. The model and
- *  its effort are checked against the models Codex lists for the account,
- *  when it has listed any yet. */
-async function codexSettings(
-  req: AgentSpawnRequest,
-  { values, from }: { values: CodexSettings; from: From<CodexSettings> },
-  account: Account
-): Promise<CodexSettings> {
-  if (asked(req.permissionMode)) refuse('permissionMode is a Claude setting; Codex takes approval and sandbox');
-  const approval = asked(req.approval)
-    ? (codexApprovalFromSetting(req.approval.trim()) ??
-      refuse(`unknown approval "${req.approval}"; use ${CODEX_APPROVALS.join(', ')}`))
-    : values.approval;
-  const sandbox = asked(req.sandbox)
-    ? (codexSandboxFromSetting(req.sandbox.trim()) ??
-      refuse(`unknown sandbox "${req.sandbox}"; use ${CODEX_SANDBOXES.join(', ')}`))
-    : approval === 'auto-review'
-      ? AUTO_REVIEW_SANDBOX
-      : values.sandbox;
-  if (approval === 'auto-review' && sandbox !== AUTO_REVIEW_SANDBOX) {
-    refuse(`auto-review runs in ${AUTO_REVIEW_SANDBOX} only; leave sandbox out`);
-  }
-  const model = asked(req.model) ? req.model.trim() : values.model;
-
-  const models = await codexModels(account.path).catch((): CodexModelDto[] => []);
-  const listed = models.find(m => m.slug === model);
-  if (asked(req.model) && models.length > 0 && !listed) {
-    refuse(`Codex on ${account.name} does not list model "${model}"; it has ${models.map(m => m.slug).join(', ')}`);
-  }
-  // As in the dialog: a model asked for brings its own default level, unless
-  // a settings file names one.
-  const fromFile = !!from.effort && from.effort !== codex.SOURCE_LABELS.codex;
-  const effort = asked(req.effort)
-    ? (codexEffortFromSetting(req.effort) ?? refuse(`"${req.effort}" is not a Codex effort level`))
-    : asked(req.model) && !fromFile && listed?.defaultEffort
-      ? listed.defaultEffort
-      : values.effort;
-  if (asked(req.effort) && listed && listed.efforts.length > 0 && !listed.efforts.includes(effort)) {
-    refuse(`${listed.slug} takes effort ${listed.efforts.join(', ')}, not "${effort}"`);
-  }
-  return { model, effort, approval, sandbox };
-}
-
-/** The accounts have come in: a chat is started from one, and a request looked up
- *  before then would be refused as naming none. */
-const accountsLoaded = () =>
-  new Promise<void>(done => {
-    if (useAccounts.getState().loaded) return done();
-    const off = useAccounts.subscribe(s => {
-      if (s.loaded) {
-        off();
-        done();
-      }
-    });
-  });
-
-async function spawn(req: AgentSpawnRequest): Promise<void> {
-  await accountsLoaded();
-  const chats = useChats.getState();
-  // A caller without a row of its own — the dev caller of agents/, or a
-  // chat whose row was dropped while its session lived on — gets a top-level
-  // chat in the folder it asked for.
-  const parent = chats.findChat(req.parentId);
-  const account = findAccount(useAccounts.getState().accounts, req.provider, req.account);
-  if (!account) throw new Error(`no ${req.provider} account named ${req.account}`);
-  const folder = req.folder || (parent ? chats.folderOf(parent.id)?.path : undefined);
-  if (!folder) throw new Error('no folder to run in');
-  const worktree = req.worktree ?? false;
-  const tools = req.tools ?? false;
-  const name = req.name?.trim() || undefined;
-
-  // Everything is checked before the row exists, so a refusal leaves nothing
-  // behind.
-  const spec =
-    req.provider === 'claude'
-      ? {
-          provider: 'claude' as const,
-          settings: claudeSettings(req, (await claude.settingsDefaults(account.path, folder)).values)
-        }
-      : {
-          provider: 'codex' as const,
-          settings: await codexSettings(req, await codex.settingsDefaults(account.path, folder), account)
-        };
-  const inWorktree = req.inWorktree ?? undefined;
-  const hooksUnasked = req.hooksUnasked;
-  const readOnly = req.readOnly ?? false;
-  const agent = req.agent ?? null;
-  // Named by the request: asked for until answered (`agent_spawns`), it is the same
-  // row should a page before this one have got that far, and no second.
-  const rowId = `c${req.requestId.toString(36)}`;
-  const id = useChats.getState().findChat(rowId)
-    ? rowId
-    : await createChat({
-        ...spec,
-        id: rowId,
-        folder,
-        account,
-        worktree,
-        tools,
-        hooksUnasked,
-        parentId: parent?.id,
-        name,
-        inWorktree,
-        byAgent: true,
-        readOnly,
-        agent
-      });
-  const chat = useChats.getState().findChat(id);
-  const common = {
-    chatId: id,
-    folder: chat?.worktreePath || folder,
-    accountPath: account.path,
-    tools,
-    parent: parent?.id ?? req.parentId,
-    prompt: req.prompt,
-    spawnRequest: req.requestId
-  };
-  try {
-    if (spec.provider === 'claude') {
-      await ensureClaudeSession({ ...common, ...spec.settings, worktree, readOnly, agent });
-    } else {
-      await ensureCodexSession({ ...common, ...spec.settings, hooksUnasked, worktree: worktree && !inWorktree });
-    }
-  } catch (e) {
-    // No session to go with the row: a row that sits there failing to start
-    // is one nobody asked for. A worktree made for it goes too, unused; one
-    // it was handed is its caller's.
-    void deleteSession(id, folder, chat?.worktreePath ?? null, !inWorktree).catch(() => {});
-    useChats.getState().deleteChat(id);
-    throw e;
-  }
-  // A top-level row comes into view only now that its session runs (see
-  // `byAgent`).
-  if (!parent) usePanes.getState().autoPlace(id);
-  const made = useChats.getState().findChat(id);
-  await agentSpawned(req.requestId, id, made?.name ?? null, null);
-}
 
 /**
  * Runs `again` whenever a core comes up: the registry the window keeps it
@@ -238,48 +49,6 @@ const onCoreUp = (again: () => void) =>
     if (pid != null && pid !== was) again();
   });
 
-/**
- * Starts the visible helpers the core means to carry on after a restart
- * (`resumeOnRestart`), as their panes would: a helper usually sits in none, and a
- * chat's CLI otherwise starts as a pane attaches. One that cannot be started here
- * the core gives up on within a minute, and its caller gets the plain notice.
- */
-async function startResumes(): Promise<void> {
-  const ids = await agentResumes();
-  if (ids.length === 0) return;
-  await accountsLoaded();
-  for (const id of ids) {
-    const chats = useChats.getState();
-    const chat = chats.findChat(id);
-    const folder = chats.folderOf(id)?.path;
-    const account = chat ? accountOfChat(useAccounts.getState().accounts, chat) : null;
-    if (!chat || !folder || !account) {
-      logWarn(
-        'agents',
-        `helper ${id} is to go on, and has no ${!chat ? 'row' : !folder ? 'folder' : 'account'} to start it from`
-      );
-      continue;
-    }
-    startSession(chat, folder, account.path).catch(e =>
-      logWarn('agents', `starting helper ${id} to go on failed: ${String(e)}`)
-    );
-  }
-}
-
-/** The requests this page has taken up: one may come both ways, by its event and
- *  by asking (`agent_spawns`), and is taken up once. */
-const taken = new Set<number>();
-
-function takeSpawn(req: AgentSpawnRequest): void {
-  if (taken.has(req.requestId)) return;
-  taken.add(req.requestId);
-  spawn(req).catch(e => {
-    logWarn('agents', `spawn for ${req.parentId} failed: ${String(e)}`);
-    // The agent reads this as the tool's error: the message, not "Error: …".
-    agentSpawned(req.requestId, null, null, e instanceof Error ? e.message : String(e)).catch(() => {});
-  });
-}
-
 const samePath = (a: string, b: string) =>
   a.replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase() === b.replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase();
 
@@ -287,9 +56,12 @@ const samePath = (a: string, b: string) =>
 const opening = new Set<string>();
 
 /**
- * Opens a background helper as a chat. The core holds the helper, with no turn
- * starting, until the row is made, and lets it go only then: a row that could
- * not be made leaves the helper as it was, never neither.
+ * Opens a background helper as a chat, handing it over to the person for good:
+ * the agent that spawned it has no claim on it from then on, and hears so once
+ * (agents/handover.rs). The core holds the helper, with no turn starting, until
+ * the row is made, and lets it go only then: a row that could not be made leaves
+ * the helper as it was, its agent's, never neither. The row is seated in a pane,
+ * which resumes the conversation, only once the core has let go of it.
  */
 export async function openAsChat(id: string): Promise<void> {
   // A second click while the first is on its way: one row, made once.
@@ -304,31 +76,76 @@ export async function openAsChat(id: string): Promise<void> {
       await backgroundPromoted(id, why).catch(() => {});
       throw e;
     }
-    await backgroundPromoted(id, null);
+    if (await settleMade(id)) usePanes.getState().autoPlace(id);
   } finally {
     opening.delete(id);
   }
 }
 
+/** How long to wait before each try again to tell the core a row is made, in
+ *  ms: a core restarting, or taken over by another, has it on a later try. Past
+ *  the last, the next core to come up is told (`settleOpenings`), and one that
+ *  never is gives the helper back to its agent (background/rows.rs
+ *  `PROMOTE_TIMEOUT_MS`). */
+export const SETTLE_RETRY_MS = [500, 1000, 2000, 4000, 8000, 15_000, 30_000, 60_000];
+
+/**
+ * Tells the core the row for helper `id` is made, trying again as long as
+ * `SETTLE_RETRY_MS` says. True once the helper is the person's. A row made for
+ * an opening the core has since given up is let go of here: the helper is its
+ * agent's again, and the row would only run its conversation beside it.
+ */
+async function settleMade(id: string): Promise<boolean> {
+  for (let i = 0; ; i++) {
+    try {
+      const handed = await backgroundPromoted(id, null);
+      if (handed === false) {
+        logWarn('agents', `helper ${id} went back to its agent before its opening was settled; its row is let go`);
+        useChats.getState().deleteChat(id);
+      }
+      return handed !== false;
+    } catch (e) {
+      if (i >= SETTLE_RETRY_MS.length) {
+        logWarn(
+          'agents',
+          `telling the core helper ${id} is opened failed: ${String(e)}; the next core to come up is told`
+        );
+        return false;
+      }
+      await new Promise(resolve => setTimeout(resolve, SETTLE_RETRY_MS[i]));
+    }
+  }
+}
+
 /**
  * Helpers a window that went away was opening as chats, settled by what this
- * one has: its row made, the core lets the helper go; none, it goes on as a
- * helper. A row with a helper's id is made by nothing but an opening.
+ * one has: its row made, the core hands the helper over and the row is seated;
+ * none, it goes on as a helper. A row with a helper's id is made by nothing but
+ * an opening, so one whose opening the core gave up is let go of.
  */
 function settleOpenings(rows: BackgroundHelperDto[]): void {
   for (const h of rows) {
     if (opening.has(h.id)) continue;
     const made = !!useChats.getState().findChat(h.id);
     if (!made && !h.promoting) continue;
-    backgroundPromoted(h.id, made ? null : 'the window that was opening it as a chat went away').catch(e =>
-      logWarn('agents', `settling the opening of helper ${h.id} failed: ${String(e)}`)
-    );
+    if (!made) {
+      backgroundPromoted(h.id, 'the window that was opening it as a chat went away').catch(e =>
+        logWarn('agents', `settling the opening of helper ${h.id} failed: ${String(e)}`)
+      );
+      continue;
+    }
+    opening.add(h.id);
+    void settleMade(h.id)
+      .then(handed => {
+        if (handed) usePanes.getState().autoPlace(h.id);
+      })
+      .finally(() => opening.delete(h.id));
   }
 }
 
 /**
- * A background helper the user opened as a chat: a row under its parent,
- * keeping the helper's id, and its conversation resumed when a pane first
+ * A background helper the person opened as a chat: a top-level row of their
+ * own, keeping the helper's id, its conversation resumed when a pane first
  * shows it, once the core has let go of it.
  */
 async function promote(p: PromotedDto): Promise<void> {
@@ -358,7 +175,6 @@ async function promote(p: PromotedDto): Promise<void> {
             sandbox: codexSandboxFromSetting(word('sandbox')) ?? (defaults as CodexSettings).sandbox
           }
         };
-  const parent = p.parent ? useChats.getState().findChat(p.parent) : null;
   const id = await createChat({
     ...spec,
     id: p.id,
@@ -368,19 +184,19 @@ async function promote(p: PromotedDto): Promise<void> {
     tools: p.tools,
     // As it ran in the background, which its folder decided.
     hooksUnasked: p.settings.hooksUnasked === true,
-    parentId: parent?.id,
+    // A helper always runs with the wait guard; the chat keeps it until the
+    // person turns it off in its panel, rather than losing it on the handover.
+    guard: true,
     name: p.name ?? undefined,
     inWorktree: p.worktreePath ?? undefined,
-    byAgent: true,
+    fromHelper: true,
     readOnly: p.settings.readOnly === true,
     agent: word('agent') || null
   });
   if (p.sessionId) useChats.getState().setSessionId(id, p.sessionId);
-  if (parent) useChats.getState().setChildrenOpen(parent.id, true);
-  else usePanes.getState().autoPlace(id);
 }
 
-/** Mounted once in App: listens for the core's agent requests. */
+/** Mounted once in App: keeps the helpers' list and the core's view of the chats. */
 export function useAgentBridge() {
   useEffect(() => {
     let dead = false;
@@ -405,34 +221,6 @@ export function useAgentBridge() {
       helpersNow(true);
     });
     offs.push(onCoreUp(() => helpersNow(true)));
-    // Asked once listening, so that nothing falls between: what was sent before this
-    // page could hear it, with no window or while one loaded, was sent to nobody.
-    const askForSpawns = () =>
-      void agentSpawns()
-        .then(asked => asked.forEach(takeSpawn))
-        .catch(e => logWarn('agents', `asking which spawns are waiting failed: ${String(e)}`));
-    void onAgentSpawn(takeSpawn).then(off => {
-      if (dead) {
-        off();
-        return;
-      }
-      offs.push(off);
-      askForSpawns();
-    });
-    offs.push(onCoreUp(askForSpawns));
-    void onAgentDeleted(({ id }) => {
-      // The session, attachments and worktree are already gone (agents/);
-      // only the row is left to drop.
-      if (useChats.getState().findChat(id)) useChats.getState().deleteChat(id);
-    }).then(off => (dead ? off() : offs.push(off)));
-    // The row names its parent at every spawn, a core started later included.
-    void onAgentReparent(({ id, parent }) => useChats.getState().setParent(id, parent)).then(off =>
-      dead ? off() : offs.push(off)
-    );
-    const resume = () =>
-      void startResumes().catch(e => logWarn('agents', `asking which helpers go on failed: ${String(e)}`));
-    resume();
-    offs.push(onCoreUp(resume));
     return () => {
       dead = true;
       offs.forEach(off => off());

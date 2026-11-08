@@ -99,13 +99,13 @@ pub(super) fn settle_batch(id: &str, mut res: Reservation) -> Option<Batch> {
                 // queued behind that claim, is the next turn's, as after any
                 // turn: reserved and asked about the same way. Not while a stop
                 // is still ending what was left running, or the helper is being
-                // opened as a chat: each takes the queue up itself once the
-                // claim has gone.
+                // opened as a chat or deleted (`held_back`): each takes the queue
+                // up itself once the claim has gone.
                 Some(e) if ours(e) && stopped(e) => {
                     e.run = None;
                     e.turns_ended += 1;
                     note(e, "stopped before its turn began");
-                    if !e.queue.is_empty() && !e.ending_left && !e.promoting {
+                    if !e.queue.is_empty() && !e.ending_left && !e.held_back() {
                         claim(e);
                         Step::Again(reserve(e))
                     } else {
@@ -194,7 +194,7 @@ fn join(e: &mut Entry, mut q: Queued) -> Result<(), Queued> {
 /// or for the turn now claimed. One with budget lines is `in_flight` as queued text
 /// is by then, so they count as arrived when the CLI has it, not before.
 pub(super) fn place(e: &mut Entry, q: Queued, may_join: bool) -> Placed {
-    if e.run.is_some() || e.ending_left || e.promoting {
+    if e.run.is_some() || e.ending_left || e.held_back() {
         let q = if may_join {
             match join(e, q) {
                 Ok(()) => return Placed::Joined,

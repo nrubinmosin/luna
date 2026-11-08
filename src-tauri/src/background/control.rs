@@ -55,7 +55,7 @@ pub fn kill(id: &str) -> Vec<String> {
         e.left_running = !still.is_empty();
         e.left = leftovers(&e.left, still, crate::throttle::now_ms(), e.observed.turn_ended_ms);
         // What was sent meanwhile is the next turn's, as after any turn.
-        (e.run.is_none() && !e.promoting && !e.queue.is_empty()).then(|| {
+        (e.run.is_none() && !e.held_back() && !e.queue.is_empty()).then(|| {
             claim(e);
             reserve(e)
         })
@@ -152,7 +152,7 @@ pub fn interrupt(id: &str, text: &str, from: Option<&str>) -> Result<Interrupted
         let mut r = lock();
         let e = r.entries.get_mut(id).ok_or("no such helper")?;
         e.held.clear();
-        let free = e.run.is_none() && !e.ending_left && !e.promoting;
+        let free = e.run.is_none() && !e.ending_left && !e.held_back();
         if free {
             claim(e);
         } else {
@@ -245,6 +245,85 @@ pub fn stop_for_good(id: &str) {
     kill(id);
     let job = lock().entries.get(id).and_then(|e| e.job.clone());
     end_leftovers(id, job.as_deref());
+}
+
+/// A delete's hold on a helper (`claim_delete`), let go when dropped: by a delete
+/// refused, the helper goes on as it was; by one done, it is gone already.
+pub struct DeleteClaim {
+    id: String,
+    held: bool,
+}
+
+impl DeleteClaim {
+    /// Whether there was a helper to hold: none, the id is a record alone.
+    pub fn held(&self) -> bool {
+        self.held
+    }
+}
+
+impl Drop for DeleteClaim {
+    fn drop(&mut self) {
+        if !self.held {
+            return;
+        }
+        let there = match lock().entries.get_mut(&self.id) {
+            Some(e) => {
+                e.deleting = false;
+                true
+            }
+            None => false,
+        };
+        if there {
+            go_on(&self.id);
+        }
+    }
+}
+
+/// Holds helper `id` for a delete, from before it looks at anything until it has
+/// removed it or let it be (agents/teardown.rs): no turn starts meanwhile, and the
+/// person cannot open it as a chat, so what the delete went by still holds when it
+/// removes it. Refused while it is being opened, or deleted by another. With no
+/// helper by that id, a claim on nothing (`held` false).
+pub fn claim_delete(id: &str) -> Result<DeleteClaim, String> {
+    let mut r = lock();
+    let Some(e) = r.entries.get_mut(id) else { return Ok(DeleteClaim { id: id.to_string(), held: false }) };
+    if e.promoting {
+        return Err(format!("the person is opening {id} as a chat of their own; it is theirs once it opens"));
+    }
+    if e.deleting {
+        return Err(format!("{id} is being deleted already"));
+    }
+    e.deleting = true;
+    Ok(DeleteClaim { id: id.to_string(), held: true })
+}
+
+/// What waited while helper `id` was held (`Entry::held_back`) goes on once it is
+/// not: the turn on what was sent meanwhile, or the resume a restart left it.
+pub(super) fn go_on(id: &str) {
+    let next = {
+        let mut r = lock();
+        let Some(e) = r.entries.get_mut(id) else { return };
+        (e.run.is_none() && !e.ending_left && !e.held_back() && !e.queue.is_empty()).then(|| {
+            claim(e);
+            reserve(e)
+        })
+    };
+    let next = next.and_then(|res| settle_batch(id, res)).map(|b| b.text);
+    match next {
+        Some(text) => {
+            save();
+            if run_turn(id, &text).is_err() {
+                if let Some(e) = lock().entries.get_mut(id) {
+                    e.in_flight.clear();
+                }
+            }
+        }
+        // A `resumeOnRestart` helper a restart left to go on, which the hold kept
+        // back: it goes on now, if nothing else has taken it up.
+        None if crate::agents::resumes_on_restart(id) => resume(id),
+        None => {}
+    }
+    changed();
 }
 
 /// Stops it and forgets it. Returns the worktree it made, if any.
