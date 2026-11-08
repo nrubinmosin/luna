@@ -105,4 +105,54 @@ describe('SettingsDialog', () => {
     await user.keyboard('{Escape}');
     expect(useSettings.getState().open).toBe(false);
   });
+
+  it('is modal: the app behind is inert, Tab goes round, and the focus goes back to the opener', async () => {
+    render(
+      <div data-app>
+        <div data-testid="app">
+          <button>Gear</button>
+        </div>
+        <SettingsDialog />
+      </div>
+    );
+    const user = userEvent.setup();
+    const gear = screen.getByRole('button', { name: 'Gear' });
+    gear.focus();
+    act(() => useSettings.getState().setOpen(true));
+
+    expect(screen.getByTestId('app')).toHaveAttribute('inert');
+    expect(tab('General')).toHaveFocus();
+    const close = screen.getByRole('button', { name: 'Close' });
+    await user.tab({ shift: true });
+    expect(close).toHaveFocus();
+    await user.tab({ shift: true });
+    const last = document.activeElement as HTMLElement;
+    expect(screen.getByRole('dialog')).toContainElement(last);
+    expect(last).not.toBe(close);
+    await user.tab();
+    expect(close).toHaveFocus();
+
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.getByTestId('app')).not.toHaveAttribute('inert');
+    expect(gear).toHaveFocus();
+  });
+
+  it('keeps a draft on one page while another is looked at', async () => {
+    const user = open('general');
+    const marker = await screen.findByRole('textbox', { name: 'Waiting marker text' });
+    await user.clear(marker);
+    await user.type(marker, 'STATUS: WAITING');
+
+    await user.click(tab('Links'));
+    await user.click(await screen.findByRole('button', { name: 'Add a browser' }));
+    const name = await screen.findByRole('textbox', { name: 'Browser name' });
+    await user.clear(name);
+    await user.type(name, 'Firefox — Work');
+
+    await user.click(tab('General'));
+    expect(screen.getByRole('textbox', { name: 'Waiting marker text' })).toHaveValue('STATUS: WAITING');
+    await user.click(tab('Links'));
+    expect(screen.getByRole('textbox', { name: 'Browser name' })).toHaveValue('Firefox — Work');
+  });
 });
