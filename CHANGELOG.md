@@ -56,6 +56,12 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   it signs from, and no longer runs the built exe to ask its core fingerprint.
   A key rotation's bridge release is checked against the old public key, given
   as `UPDATER_TRUSTED_PUBKEY`.
+- The transcript readers, which take what a prompt-injected agent can write,
+  are fuzzed: each provider's are pure functions of a file's bytes, held to
+  golden readings of the fixtures, with a cargo-fuzz target each
+  (`scripts/fuzz.ps1`) that also checks every text read comes out of the
+  input, and that a line's length or depth costs no more than its bytes. A
+  scheduled workflow runs them weekly.
 
 ## [0.10.0] - 2026-11-08
 

@@ -69,6 +69,67 @@ synthetic input (`SendInput`, `keybd_event`, `mouse_event`, `SendKeys`, cursor
 moves), no `SetForegroundWindow`, nothing aimed at a window that is not the test
 build's.
 
+## Fuzzing
+
+Luna reads both CLIs' transcripts, and a prompt-injected agent decides much of
+what lands in them, so the readers take untrusted input. Each provider's are
+pure functions of a file's bytes, `claude::session::read_transcript` and
+`codex::session::read_rollout`: every part of a transcript the rest of Luna
+reads (the conversation, opening prompt, titles, context, model, last words,
+API error, pending tool, due time, the Codex turn scan), by the same functions
+the file-based readers call, with no file, lock or cache between. The fixture
+tests (`claude/session/fixtures.rs`, `codex/session/fixtures.rs`) hold both
+ways of reading to one golden per file in `src-tauri/fixtures/transcripts/`
+(`LUNA_BLESS=1` rewrites the goldens, in a container that can write the
+checkout; review the diff).
+
+`src-tauri/fuzz` is a cargo-fuzz crate, a workspace of its own on a nightly
+pinned for it alone, with one target per provider, `claude_transcript` and
+`codex_rollout`: each corpus is seeded from its provider's fixtures, and each
+has a dictionary of the keys and values its readers match on
+(`src-tauri/fuzz/*.dict`). Beyond not panicking, with overflow checks on, a
+target checks that:
+
+- the reading stops where the complete lines do, and a reader that goes on
+  from its cursor gets the conversation a read from the top does (Claude Code);
+- every message, title, model, question, failure and timestamp it hands over
+  is part of a string in the input (or a line the reader writes itself, such
+  as `[tool: Name]`), and messages are trimmed and never empty;
+- the moment a process was spawned bears on which Codex turn ends count, and
+  on nothing else;
+- a line's length and depth cost no more than its bytes: the input is also read
+  as one line, and as that line nested 4096 arrays deep (serde_json stops at
+  128), each read in the time and memory a unit gets.
+
+libFuzzer gives each input 10 s and 2 GB (`-timeout`, `-rss_limit_mb`) and up
+to 256 KiB. A cost quadratic in the number of lines (a list of open calls
+searched per line) is too small at that size to time out; the readers bound
+it by reading a tail of a fixed size (at most 4 MiB).
+
+```powershell
+./scripts/fuzz.ps1                                   # each target for 60 s
+./scripts/fuzz.ps1 -Target codex_rollout -Seconds 600
+./scripts/fuzz.ps1 -Target claude_transcript -Reproduce test-build/fuzz/claude_transcript/artifacts/crash-<sha1>
+./scripts/fuzz.ps1 -Minimize                         # shrink each corpus
+```
+
+What a run keeps is in `test-build/fuzz/<target>/`: `corpus/`, the inputs that
+add coverage, which the next run starts from; `artifacts/`, an input that
+crashed (`crash-*`), ran out of time (`timeout-*`) or memory (`oom-*`); and
+`run.log`. A run that finds one fails and names the file. `-Reproduce` runs
+the target on that one input, with its panic and stack.
+
+`.github/workflows/fuzz.yml` runs each target for five minutes on Mondays and
+by hand (`seconds` sets the time), from the seeds alone, and uploads only what
+it finds, as `fuzz-<target>-findings`; download it and reproduce from there.
+
+A finding becomes a regression test before it is fixed: the input, cut to what
+still fails, goes into a unit test beside the reader it broke, as a literal fed
+to the function (`due_in`, `read_transcript`, ...) with what it should read, so
+`cargo test` holds it without the fuzzer. When it is a whole transcript worth
+keeping, it goes into `fixtures/transcripts/` with its golden too, and so seeds
+the corpus as well.
+
 ## 3. Live
 
 `src-tauri/src/live.rs` drives background helpers on the real CLIs through the

@@ -22,6 +22,9 @@ src-tauri/src/luna_guide.md  eol=lf
 # one of them has CRLF endings on purpose: no conversion either way.
 src-tauri/fixtures/**        -text
 
+# libFuzzer reads a CR as part of a dictionary entry, and refuses the line.
+src-tauri/fuzz/*.dict        eol=lf
+
 # Git hooks run under sh, which reads a CR as part of the command.
 .githooks/*                  eol=lf
 scripts/*.sh                 eol=lf

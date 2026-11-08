@@ -13,6 +13,7 @@ in [testing.md](testing.md); cutting a release is in [releasing.md](releasing.md
 | Node | `.node-version` and the images' `FROM node:<version>` |
 | pnpm | `packageManager` in `package.json` (via corepack) |
 | cargo-xwin, NSIS | `docker/windows-build.Dockerfile` |
+| Rust nightly, cargo-fuzz (fuzzing only) | `docker/fuzz.Dockerfile` and `src-tauri/fuzz/rust-toolchain.toml`; `scripts/fuzz.ps1` fails when the two disagree |
 
 The gate fails when the pins disagree. Every `FROM` names its image by tag and
 digest; the gate's frontend steps run in the Windows image's Node stage, so one
@@ -57,6 +58,7 @@ git config core.hooksPath .githooks   # pre-commit and commit-msg hooks
 | `./scripts/build-windows.ps1` | the release exe, `src-tauri/target/x86_64-pc-windows-msvc/release/luna.exe` (self-contained; needs only the system WebView2) |
 | `./scripts/build-windows.ps1 -Installer` | the signed NSIS setup, `…/release/bundle/nsis/Luna_*_x64-setup.exe` |
 | `./scripts/screenshots.ps1 -Out test-build/shots` | headless shots of the UI on the demo data |
+| `./scripts/fuzz.ps1` | the fuzz targets over the transcript readers, built and run in `docker/fuzz.Dockerfile`'s image; `-Seconds`, `-Reproduce <file>`, `-Minimize` (see [testing.md](testing.md#fuzzing)) |
 | `./scripts/live-tests.ps1` | the live suite on real CLIs and throwaway accounts (`scripts/test-accounts.ps1`); never run by CI, see [testing.md](testing.md) |
 | `./scripts/release.ps1` | bump the version, or tag a release for the workflow (see [releasing.md](releasing.md)) |
 
@@ -113,6 +115,10 @@ hand, with the same scripts:
 | `rust-linux` | `gate.ps1 -Group rust` in `docker/linux-check.Dockerfile`'s image |
 | `windows-build` | `gate.ps1 -Group windows` and `windows-tests.ps1 -Build`, uploading the test executables |
 | `windows-tests` | runs those executables on a `windows-2025` runner |
+
+`.github/workflows/fuzz.yml` runs each fuzz target for five minutes on Mondays
+and by hand, keeping only what one finds as an artifact (see
+[testing.md](testing.md#fuzzing)).
 
 `.github/workflows/release.yml` runs only on `v*` tags and by hand
 ([Releases](#releases)). Actions are pinned by commit; Dependabot (`.github/dependabot.yml`) moves them,
