@@ -460,17 +460,27 @@ pub(super) fn is_mine(caller: &str, id: &str) -> bool {
     is_descendant(&reg().lock().unwrap_or_else(|e| e.into_inner()), caller, id)
 }
 
+/// Whether a call's `scope` says `all`: past the caller's own (`mine`, the default).
+pub fn scope_all(scope: Option<&str>) -> Result<bool, String> {
+    match scope {
+        None | Some("mine") => Ok(false),
+        Some("all") => Ok(true),
+        Some(other) => Err(format!("unknown scope {other:?}; use mine (the default) or all")),
+    }
+}
+
+/// Whether `id` is the caller or one of its own: what `scope` `mine` reaches.
+pub fn own_or_self(caller: &str, id: &str) -> bool {
+    caller == id || is_mine(caller, id)
+}
+
 /// What a read, a wait or a send may reach, by its `scope`: the caller's own
 /// helpers and theirs, unless it says `all`. Text read off or typed into a
 /// session no one asked it to touch is the reach a prompt injection wants, so
 /// going past its own takes an argument that says so. An unknown session, or
 /// the caller itself, is left to the tool's own refusal, which says more.
 pub fn in_scope(caller: &str, id: &str, scope: Option<&str>, verb: &str) -> Result<(), String> {
-    let all = match scope {
-        None | Some("mine") => false,
-        Some("all") => true,
-        Some(other) => return Err(format!("unknown scope {other:?}; use mine (the default) or all")),
-    };
+    let all = scope_all(scope)?;
     let r = reg().lock().unwrap_or_else(|e| e.into_inner());
     if all || caller == id || !r.known.contains_key(id) || is_descendant(&r, caller, id) {
         return Ok(());
@@ -592,6 +602,7 @@ mod tests {
         assert_eq!(in_scope("sc-me", "sc-nobody", None, "read"), Ok(()));
         assert_eq!(in_scope("sc-me", "sc-me", None, "read"), Ok(()));
         assert!(in_scope("sc-me", "sc-kid", Some("everything"), "read").unwrap_err().contains("unknown scope"));
+        assert!(own_or_self("sc-me", "sc-me") && own_or_self("sc-me", "sc-grand") && !own_or_self("sc-me", "sc-theirs"));
         for id in ["sc-grand", "sc-kid", "sc-theirs", "sc-chat", "sc-me"] {
             forget(id);
         }

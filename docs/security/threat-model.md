@@ -249,7 +249,8 @@ caller has at most 8 descendants (`agents/spawn/mod.rs:31`).
 | `luna_read`, `luna_wait` | own descendants; with `scope: "all"` any session but itself | `in_scope` (`agents/registry.rs:468`), `authorize_view` (`agents/registry.rs:450`) | yes |
 | `luna_spawn` | a new helper in any account not on the denylist `agent_blocked_accounts` (empty by default, `agents/spawn/account.rs:12`), in any folder except Luna's data dir and what holds it (`agents/privilege.rs:305`, `agents/spawn/mod.rs:385`), at no more privilege than the caller (`agents/privilege.rs:227`, `agents/spawn/mod.rs:447`) | `cap`, `reaches_luna`, spawn cap | yes |
 | `luna_power` | the whole PC (shutdown, restart, sleep; or cancel the user's) | tools only (`power/commands.rs:90`) | no authorization test (R4) |
-| `luna_sessions`, `luna_list`, `luna_notify`, `luna_guide` | read-only, or notify the user | tools only | yes |
+| `luna_sessions`, `luna_list` | every session's metadata (state, folders, settings, transcript path); another's `ask` and `task`, and others' past spawns with their prompts and last replies (`history`), only with `scope: "all"` (`agents/list.rs`, `mcp.rs` `runs_in_scope`) | `scope_all`, `own_or_self` | yes |
+| `luna_notify`, `luna_guide` | notify the user, or read the guide | tools only | yes |
 
 ## 6. Limits of the least-privilege layer
 

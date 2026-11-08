@@ -81,7 +81,7 @@ decisions in [ADR-0012](../adr/0012-agents-over-mcp-with-notices.md) and
 
 | Tool | May target |
 | --- | --- |
-| `luna_sessions`, `luna_list` | all sessions of this launch (`list` with `ids` gives any session's rows) |
+| `luna_sessions`, `luna_list` | all sessions of this launch (`list` with `ids` gives any session's rows), as metadata: another's `ask` and `task`, and others' spawns in `history`, only with `scope: "all"` |
 | `luna_send` | its descendants; with `scope: "all"` any session but its own, the text opened `[From session <id> via Luna]` (`as_sent`); `interrupt` descendants only; command text (`/`, `!`) only from full access into its own helper |
 | `luna_read`, `luna_wait` | its descendants; with `scope: "all"` any session but its own |
 | `luna_kill`, `luna_delete` | descendants only |

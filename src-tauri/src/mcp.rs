@@ -260,17 +260,23 @@ fn tools() -> Value {
     json!([
         {
             "name": "luna_list",
-            "description": "Your id (me), sessions you spawned (state, ask, turnsEnded, worktree, branch, sha, task, deletesInMin, turnStartedAt, lastActivityAt, resolvedModel, context, leftRunning) and accounts you may use: a helper's defaults in your folder, usage (% per window, resets), models if models: true. ids: only these, any session; accounts then only if true.",
-            "inputSchema": s(json!({ "ids": { "type": "array", "items": { "type": "string" } }, "accounts": { "type": "boolean" }, "models": { "type": "boolean" } }), &[]),
+            "description": "Your id (me), sessions you spawned (state, ask, turnsEnded, worktree, branch, sha, task, deletesInMin, turnStartedAt, lastActivityAt, resolvedModel, context, leftRunning) and accounts you may use: a helper's defaults in your folder, usage (% per window, resets), models if models: true. ids: only these, any session (others' ask, task: scope all); accounts then only if true.",
+            "inputSchema": s(json!({
+                "ids": { "type": "array", "items": { "type": "string" } },
+                "accounts": { "type": "boolean" },
+                "models": { "type": "boolean" },
+                "scope": scope.clone()
+            }), &[]),
             "annotations": reads
         },
         {
             "name": "luna_sessions",
-            "description": "Every session in Luna, the user's chats too: group (window group, I=1), folders, transcript path, parent, you/yours, state. Filters: group (a number or \"mine\"), q (text in name/folder/account/id). history: true = past spawns instead, deleted too (with transcript, last message), newest first (q also searches prompts).",
+            "description": "Every session in Luna, the user's chats too: group (window group, I=1), folders, transcript path, parent, you/yours, state. Filters: group (a number or \"mine\"), q (text in name/folder/account/id). history: true = past spawns instead, deleted too (with transcript, last message), newest first (q also searches prompts). Others' ask, and spawns: scope all.",
             "inputSchema": s(json!({
                 "group": { "anyOf": [{ "type": "integer" }, { "type": "string" }] },
                 "q": { "type": "string" },
-                "history": { "type": "boolean" }
+                "history": { "type": "boolean" },
+                "scope": scope.clone()
             }), &[]),
             "annotations": reads
         },
@@ -557,7 +563,8 @@ fn run(caller: &str, params: &Value, this: &Call) -> Value {
             serde_json::from_value::<agents::SessionFilter>(a.clone()).map_err(|e| format!("bad arguments: {e}")).and_then(|f| {
                 match f.history {
                     Some(true) => {
-                        let mut runs = crate::agentlog::runs(f.q.as_deref());
+                        let all = agents::scope_all(f.scope.as_deref())?;
+                        let mut runs = runs_in_scope(caller, crate::agentlog::runs(f.q.as_deref()), all);
                         for last in runs.iter_mut().filter_map(|r| r.last.as_mut()) {
                             if last.chars().count() > HISTORY_LAST {
                                 *last = format!("{}…", last.chars().take(HISTORY_LAST).collect::<String>());
@@ -707,13 +714,21 @@ fn kind_of(spec: &Value) -> String {
     }
 }
 
+/// Past spawns as a caller may have them: its own and its helpers' (by the
+/// session that spawned each), or with `all` everyone's. A run holds its whole
+/// prompt and its last reply.
+fn runs_in_scope(caller: &str, runs: Vec<crate::agentlog::Run>, all: bool) -> Vec<crate::agentlog::Run> {
+    runs.into_iter().filter(|run| all || agents::own_or_self(caller, &run.parent)).collect()
+}
+
 /// `luna_list`: every row and the accounts, the costly part of it, unless told;
 /// a caller naming sessions wants those, and has not asked for accounts.
 fn listing(caller: &str, a: &Value) -> Result<Value, String> {
     let ids = if a["ids"].is_null() { None } else { Some(id_list(&a["ids"])?) };
     let models = a["models"].as_bool().unwrap_or(false);
     let accounts = a["accounts"].as_bool().unwrap_or(ids.is_none() || models);
-    Ok(json!(agents::list(caller, ids.as_deref(), accounts, models)))
+    let all = agents::scope_all(a["scope"].as_str())?;
+    Ok(json!(agents::list(caller, ids.as_deref(), accounts, models, all)))
 }
 
 /// A tool's `ids`, whose each must be a session id.
@@ -938,6 +953,89 @@ mod tests {
     }
 
     #[test]
+    fn what_another_session_asks_or_was_asked_needs_scope_all() {
+        tooled("ms-me");
+        let background = json!({ "background": true });
+        agents::register("ms-chat", crate::provider::Provider::Claude, "C:/p", "C:/acc/anthropic/one", None, false, json!({}));
+        agents::register(
+            "ms-theirs",
+            crate::provider::Provider::Claude,
+            "C:/p",
+            "C:/acc/anthropic/one",
+            Some("ms-chat"),
+            false,
+            background.clone(),
+        );
+        agents::register("ms-kid", crate::provider::Provider::Claude, "C:/p", "C:/acc/anthropic/one", Some("ms-me"), false, background);
+        for id in ["ms-theirs", "ms-kid"] {
+            crate::background::take_up_for_test(id, "C:/p", 1, &[], None);
+            crate::background::set_running_for_test(id);
+            crate::background::hold_for_test(id);
+        }
+        let call = |name: &str, args: Value| {
+            let body = json!({ "jsonrpc": "2.0", "id": 18, "method": "tools/call", "params": { "name": name, "arguments": args } });
+            let r = handle("ms-me", &body.to_string()).unwrap()["result"].clone();
+            assert!(r.get("isError").is_none(), "{r}");
+            serde_json::from_str::<Value>(r["content"][0]["text"].as_str().unwrap()).unwrap()
+        };
+        let row = |v: &Value, key: &str, id: &str| v[key].as_array().unwrap().iter().find(|s| s["id"] == id).cloned().unwrap();
+        // A listing of any session: its state, not what it asks.
+        let listed = call("luna_list", json!({ "ids": ["ms-theirs", "ms-kid"] }));
+        let theirs = row(&listed, "sessions", "ms-theirs");
+        assert!(theirs["state"].is_string(), "{theirs}");
+        assert!(theirs["ask"].is_null() && theirs["task"].is_null(), "{theirs}");
+        assert!(row(&listed, "sessions", "ms-kid")["ask"].is_object(), "its own helper's, as ever");
+        let told = call("luna_list", json!({ "ids": ["ms-theirs"], "scope": "all" }));
+        assert!(row(&told, "sessions", "ms-theirs")["ask"].is_object());
+        let sessions = call("luna_sessions", json!({ "q": "ms-" }));
+        assert!(row(&sessions, "sessions", "ms-theirs").get("ask").is_none());
+        assert!(row(&sessions, "sessions", "ms-kid")["ask"].is_object());
+        let told = call("luna_sessions", json!({ "q": "ms-", "scope": "all" }));
+        assert!(row(&told, "sessions", "ms-theirs")["ask"].is_object());
+        for id in ["ms-theirs", "ms-kid"] {
+            crate::background::remove(id);
+        }
+        for id in ["ms-kid", "ms-theirs", "ms-chat", "ms-me"] {
+            agents::forget(id);
+        }
+    }
+
+    #[test]
+    fn past_spawns_are_the_callers_own_unless_scope_all() {
+        tooled("hs-me");
+        agents::register("hs-kid", crate::provider::Provider::Claude, "C:/p", "C:/acc/anthropic/one", Some("hs-me"), true, json!({}));
+        let run = |id: &str, parent: &str| crate::agentlog::Run {
+            id: id.into(),
+            at: "t".into(),
+            ended: None,
+            how: None,
+            parent: parent.into(),
+            parent_name: None,
+            folder: "C:/p".into(),
+            worktree: false,
+            provider: "claude".into(),
+            account: "one".into(),
+            settings: json!({}),
+            name: None,
+            prompt: "the whole prompt".into(),
+            auto_delete: false,
+            transcript: None,
+            worktree_path: None,
+            last: Some("the whole reply".into()),
+        };
+        let runs = || vec![run("r1", "hs-me"), run("r2", "hs-kid"), run("r3", "someone-else"), run("r4", "")];
+        let ids = |runs: Vec<crate::agentlog::Run>| runs.into_iter().map(|r| r.id).collect::<Vec<_>>();
+        assert_eq!(ids(runs_in_scope("hs-me", runs(), false)), ["r1", "r2"], "its own and its helpers'");
+        assert_eq!(ids(runs_in_scope("hs-me", runs(), true)), ["r1", "r2", "r3", "r4"]);
+        // Through the tool: a scope it does not know is refused, not taken for mine.
+        let body = json!({ "jsonrpc": "2.0", "id": 19, "method": "tools/call",
+            "params": { "name": "luna_sessions", "arguments": { "history": true, "scope": "everyone" } } });
+        assert_eq!(handle("hs-me", &body.to_string()).unwrap()["result"]["isError"], true);
+        agents::forget("hs-kid");
+        agents::forget("hs-me");
+    }
+
+    #[test]
     fn every_tool_holds_its_arguments_to_its_schema() {
         tooled("sa-me");
         let call = |name: &str, args: Value| {
@@ -999,7 +1097,7 @@ mod tests {
             t.as_object_mut().unwrap().remove("annotations");
         }
         let text = list.to_string();
-        assert!(text.len() < 8000, "tools/list is {} chars", text.len());
+        assert!(text.len() < 8200, "tools/list is {} chars", text.len());
         assert!(INSTRUCTIONS.len() < 1000, "instructions are {} bytes", INSTRUCTIONS.len());
         // Read whole once, on request: keep it to a few thousand tokens. Its
         // index, what a bare call gives, to a few hundred.
