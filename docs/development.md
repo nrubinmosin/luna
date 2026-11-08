@@ -48,7 +48,7 @@ git config core.hooksPath .githooks   # pre-commit and commit-msg hooks
 
 | Command | What it does |
 | --- | --- |
-| `./scripts/gate.ps1` | the gate a change passes before commit: rustfmt, clippy `-D warnings`, the Linux unit tests, the commit-message check's tests, and the frontend's install, lint, format check, typecheck, text check, script tests, Vitest suite and build. Stops at the first failure, ends on a summary |
+| `./scripts/gate.ps1` | the gate a change passes before commit: rustfmt, clippy `-D warnings`, the Linux unit tests, the commit-message check's tests, and the frontend's install, lint, format check, typecheck, text check, Tauri version check, script tests, Vitest suite and build. Stops at the first failure, ends on a summary |
 | `./scripts/gate.ps1 -Group frontend` | one group only (`frontend`, `rust`, `windows`) |
 | `./scripts/gate.ps1 -Windows` | adds clippy over the Windows build |
 | `./scripts/windows-tests.ps1 -Build -Run` | the unit tests cross-built as Windows executables (files named by cargo's JSON messages), copied to a folder of their own and run on this machine |
@@ -67,6 +67,14 @@ alone in a browser (Tauri commands are no-ops; `?demo` loads the fixture).
 The text check (`pnpm check:text`) keeps every tracked file in US English: no
 letters outside the Latin script and no British spellings. A line that must keep
 one carries a `lang-check: allow` comment.
+
+The Tauri version check (`pnpm check:tauri`, `scripts/check-tauri-versions.mjs`)
+holds each Tauri crate in `src-tauri/Cargo.lock` and its npm package in
+`pnpm-lock.yaml` (`tauri` and `@tauri-apps/api`, `tauri-plugin-<name>` and
+`@tauri-apps/plugin-<name>`) to one major.minor, the rule `tauri build` refuses
+a build by. The gate never runs `tauri build`, and Dependabot moves the cargo and
+npm sides in separate PRs, so a bump to one side fails here first: move the other
+side to match in the same PR.
 
 ## The test build
 
