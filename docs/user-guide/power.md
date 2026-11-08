@@ -47,7 +47,7 @@ it and leaves the rule armed.
 - While the rule is armed and something holds it up, `luna.log` says which
   session and why, so a morning with the PC still on can be read back.
 - An agent asked to turn the PC off when done arms this same rule with
-  `luna_power`.
+  `luna_power`, and cancels it with the action `cancel`.
 
 ## What "busy" and "done" mean
 

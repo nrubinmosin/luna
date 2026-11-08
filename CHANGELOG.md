@@ -8,6 +8,11 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Changed
+
+- `luna_power` disarms with the action `cancel`; `off`, its old name, still
+  works.
+
 ### Fixed
 
 - Shut down and restart when done turn the PC off again. Luna asks Windows

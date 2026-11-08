@@ -172,7 +172,7 @@ caller has at most 8 descendants (`agents/spawn/mod.rs:31`).
 | `luna_answer` with `allow`, `keys`, or on a CLI's own list | own descendants; `allow` only where the caller would run the tool unasked and never from read-only or asking modes; `keys` and CLI lists only from full access (`agents/answer.rs:204`, call sites `agents/answer.rs:306-343`) | `answer_reach` | yes |
 | `luna_read`, `luna_wait` | any session but itself | `authorize_view` (`agents/registry.rs:451`) | yes |
 | `luna_spawn` | a new helper in any account not on the denylist `agent_blocked_accounts` (empty by default, `agents/spawn/account.rs:12`), in any folder except Luna's data dir and what holds it (`agents/privilege.rs:305`, `agents/spawn/mod.rs:385`), at no more privilege than the caller (`agents/privilege.rs:227`, `agents/spawn/mod.rs:447`) | `cap`, `reaches_luna`, spawn cap | yes |
-| `luna_power` | the whole PC (shutdown, restart, sleep; or disarm the user's) | tools only (`power/commands.rs:90`) | no authorization test (R4) |
+| `luna_power` | the whole PC (shutdown, restart, sleep; or cancel the user's) | tools only (`power/commands.rs:90`) | no authorization test (R4) |
 | `luna_sessions`, `luna_list`, `luna_notify`, `luna_guide` | read-only, or notify the user | tools only | yes |
 
 ## 6. Limits of the least-privilege layer
