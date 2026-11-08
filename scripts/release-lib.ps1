@@ -1,6 +1,7 @@
 # What the release scripts share: release.ps1, release-bundle.ps1,
-# release-verify.ps1 and sbom.ps1, and through them the release workflow
-# (.github/workflows/release.yml). Each dot-sources it after lib.ps1:
+# release-sign.ps1, release-verify.ps1 and sbom.ps1, and through them the
+# release workflow (.github/workflows/release.yml). Each dot-sources it after
+# lib.ps1:
 #
 #   . "$PSScriptRoot/lib.ps1"
 #   . "$PSScriptRoot/release-lib.ps1"
@@ -335,10 +336,11 @@ $fence
 # (build-windows.ps1).
 $ReleaseBuildDir = Join-Path $RepoRoot 'src-tauri/target/x86_64-pc-windows-msvc/release'
 
-# The release build's artifacts for $Version: the exe, the installer, its
-# updater signature ($null for an -Unsigned build) and the core fingerprint
-# build.rs left beside the exe. Throws when one is missing.
-function Find-ReleaseArtifacts([string]$Version, [switch]$Unsigned, [string]$Dir = $ReleaseBuildDir) {
+# The release build's artifacts for $Version: the exe, the installer and the
+# core fingerprint build.rs left beside the exe. Throws when one is missing.
+# The build signs nothing: the installer's updater signature is made apart
+# from it (release-sign.ps1).
+function Find-ReleaseArtifacts([string]$Version, [string]$Dir = $ReleaseBuildDir) {
     # By version, not by whatever comes first: the bundle folder keeps every
     # installer ever built there, and picking the first one alphabetically is
     # how v0.2.0 went out carrying the 0.1.0 setup and its signature, an update
@@ -349,10 +351,9 @@ function Find-ReleaseArtifacts([string]$Version, [switch]$Unsigned, [string]$Dir
     $found = [pscustomobject]@{
         Exe         = Join-Path $Dir 'luna.exe'
         Setup       = $setup.FullName
-        Signature   = if ($Unsigned) { $null } else { "$($setup.FullName).sig" }
         Fingerprint = Join-Path $Dir 'core-fingerprint.txt'
     }
-    foreach ($f in @($found.Exe, $found.Setup, $found.Signature, $found.Fingerprint) | Where-Object { $_ }) {
+    foreach ($f in @($found.Exe, $found.Setup, $found.Fingerprint)) {
         if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { throw "missing build artifact: $f" }
     }
     $found
@@ -399,6 +400,134 @@ function New-UpdaterManifest {
         }
     }
     $manifest | ConvertTo-Json -Depth 5
+}
+
+# latest.json as the build left it, with no signature, made again with the
+# installer's updater signature ($Signature, the .sig's text) once
+# release-sign.ps1 has made and checked it. The build that wrote $Manifest ran
+# every dependency's build code, so only its core fingerprint, notes and date
+# are taken from it, each checked, and everything else is New-UpdaterManifest's
+# for $Version and $SetupName: a manifest with another version, URL, platform
+# or field, or a signature already, is refused. Returns the JSON text.
+function Set-UpdaterManifestSignature {
+    param(
+        [Parameter(Mandatory)][string]$Manifest,
+        [Parameter(Mandatory)][string]$Signature,
+        [Parameter(Mandatory)][string]$Version,
+        [Parameter(Mandatory)][string]$SetupName,
+        [Parameter(Mandatory)][string]$Endpoint
+    )
+    if (-not $Signature.Trim()) { throw 'no signature to put into latest.json' }
+    $json = $Manifest | ConvertFrom-Json -AsHashtable
+    if ($json -isnot [System.Collections.IDictionary]) { throw 'latest.json is not a JSON object' }
+    $fields = @($json.Keys | Sort-Object)
+    if (($fields -join ',') -cne 'core_fingerprint,notes,platforms,pub_date,version') {
+        throw "latest.json has the fields $($fields -join ', '), not the ones New-UpdaterManifest writes"
+    }
+    if ($json.version -cne $Version) { throw "latest.json is for version '$($json.version)', not $Version" }
+    Assert-CoreFingerprint $json.core_fingerprint 'latest.json'
+    $platforms = $json.platforms
+    if ($platforms -isnot [System.Collections.IDictionary] -or $platforms.Count -ne 1 -or -not $platforms.Contains('windows-x86_64')) {
+        throw 'latest.json should name the one platform windows-x86_64'
+    }
+    $windows = $platforms['windows-x86_64']
+    if ($windows.signature) { throw 'latest.json carries a signature already; the build signs nothing' }
+    # ConvertFrom-Json reads an ISO date as a DateTime; anything else stops here.
+    $published = $json.pub_date
+    if ($published -isnot [datetime]) { throw "latest.json's pub_date '$published' is not a date" }
+    $signed = New-UpdaterManifest -Version $Version -CoreFingerprint $json.core_fingerprint -Signature $Signature.Trim() `
+        -SetupName $SetupName -Endpoint $Endpoint -Notes $json.notes -PubDate $published
+    $expectedUrl = ($signed | ConvertFrom-Json).platforms.'windows-x86_64'.url
+    if ($windows.url -cne $expectedUrl) { throw "latest.json points at $($windows.url), not $expectedUrl" }
+    $signed
+}
+
+# The updater's public key in tauri.conf.json, which every installed Luna
+# checks an update's signature against.
+function Get-UpdaterPubkey([string]$Root = $RepoRoot) {
+    $conf = Get-Content (Join-Path $Root 'src-tauri/tauri.conf.json') -Raw | ConvertFrom-Json
+    $pubkey = $conf.plugins.updater.pubkey
+    if (-not $pubkey) { throw 'tauri.conf.json has no plugins.updater.pubkey' }
+    $pubkey
+}
+
+# The one version of the npm package $Name that pnpm-lock.yaml pins, from its
+# packages section: Name, Version, Integrity (the SRI sha512 pnpm checks the
+# tarball against) and Url, the tarball on the npm registry, where pnpm fetched
+# it from (the lockfile names no other tarball, and the repo no other
+# registry). Throws when the lockfile holds none, more than one, or one that
+# comes from elsewhere.
+function Get-LockedNpmPackage([string]$Name, [string]$Root = $RepoRoot) {
+    $lock = [IO.File]::ReadAllText((Join-Path $Root 'pnpm-lock.yaml'))
+    $entry = "(?m)^  '?$([regex]::Escape($Name))@(?<version>[^':\s(]+)'?:\r?\n    resolution: \{integrity: (?<integrity>sha512-[A-Za-z0-9+/]+=*)\}\r?$"
+    $found = [regex]::Matches($lock, $entry)
+    if ($found.Count -ne 1) {
+        throw "pnpm-lock.yaml should pin one $Name from the npm registry, not $($found.Count)"
+    }
+    $version = $found[0].Groups['version'].Value
+    [pscustomobject]@{
+        Name      = $Name
+        Version   = $version
+        Integrity = $found[0].Groups['integrity'].Value
+        Url       = "https://registry.npmjs.org/$Name/-/$(($Name -split '/')[-1])-$version.tgz"
+    }
+}
+
+# Throws unless the file at $Path has the SRI sha512 $Integrity
+# ("sha512-<base64>"), as pnpm-lock.yaml writes it.
+function Assert-Sha512Integrity([string]$Path, [string]$Integrity) {
+    if ($Integrity -notmatch '^sha512-(?<digest>[A-Za-z0-9+/]+=*)$') { throw "'$Integrity' is not a sha512 integrity" }
+    $expected = [Convert]::FromBase64String($Matches.digest)
+    $stream = [IO.File]::OpenRead($Path)
+    try { $actual = [Security.Cryptography.SHA512]::HashData($stream) } finally { $stream.Dispose() }
+    if (-not [Security.Cryptography.CryptographicOperations]::FixedTimeEquals($actual, $expected)) {
+        throw "$Path does not match ${Integrity}: it is sha512-$([Convert]::ToBase64String($actual))"
+    }
+}
+
+# Writes the one regular file $Entry of the gzipped tarball $Tarball to
+# $Destination, in-process: no tar of the host's (Windows may find the bsdtar
+# or Git's GNU tar first, which take a drive letter for a remote host), and no
+# other entry, nor any path the tarball names, gets written. Throws when the
+# entry is missing, not a regular file, or there twice.
+function Export-TarballEntry([string]$Tarball, [string]$Entry, [string]$Destination) {
+    $file = [IO.File]::OpenRead($Tarball)
+    try {
+        $reader = [System.Formats.Tar.TarReader]::new([IO.Compression.GZipStream]::new($file, [IO.Compression.CompressionMode]::Decompress))
+        $written = $false
+        while ($null -ne ($item = $reader.GetNextEntry())) {
+            if ($item.Name -cne $Entry) { continue }
+            if ($written) { throw "$Tarball holds $Entry twice" }
+            if ($item.EntryType -notin 'RegularFile', 'V7RegularFile') { throw "$Entry in $Tarball is a $($item.EntryType), not a file" }
+            $item.ExtractToFile($Destination, $false)
+            $written = $true
+        }
+        if (-not $written) { throw "$Tarball has no $Entry" }
+    } finally {
+        $file.Dispose()
+    }
+}
+
+# Throws unless the folder $Dir holds exactly the files $Sums lists (sha256sum
+# lines, "<hash>  <name>") and each has its hash: nothing changed, missing or
+# added on the way from one job to the next.
+function Assert-AssetChecksums([string]$Dir, [string]$Sums) {
+    $listed = [ordered]@{}
+    foreach ($line in $Sums -split '\r?\n' | Where-Object { $_.Trim() }) {
+        if ($line -notmatch '^(?<hash>[0-9a-f]{64}) [ *](?<name>[^/\\]+)$') { throw "not a sha256sum line: '$line'" }
+        if ($listed.Contains($Matches.name)) { throw "$($Matches.name) is listed twice" }
+        $listed[$Matches.name] = $Matches.hash
+    }
+    if (-not $listed.Count) { throw 'no checksums to check against' }
+    $present = @(Get-ChildItem -LiteralPath $Dir -Force | ForEach-Object { $_.Name })
+    $extra = @($present | Where-Object { -not $listed.Contains($_) })
+    if ($extra) { throw "$Dir holds what the checksums do not list: $($extra -join ', ')" }
+    foreach ($name in $listed.Keys) {
+        $path = Join-Path $Dir $name
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "$name is missing from $Dir" }
+        $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($hash -cne $listed[$name]) { throw "$name has sha256 $hash, not $($listed[$name])" }
+    }
 }
 
 # An SBOM as the release workflow's attestation step takes it. actions/attest

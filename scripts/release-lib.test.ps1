@@ -429,15 +429,132 @@ d8e1  latest.json
             Set-Content (Join-Path $nsis $name) 'x'
         }
         Set-Content (Join-Path $dir 'luna.exe') 'x'
-        Assert-Throws { Find-ReleaseArtifacts '0.9.10' -Unsigned -Dir $dir } 'core-fingerprint.txt'
+        Assert-Throws { Find-ReleaseArtifacts '0.9.10' -Dir $dir } 'core-fingerprint.txt'
         Set-Content (Join-Path $dir 'core-fingerprint.txt') '0123456789abcdef' -NoNewline
-        Assert-Throws { Find-ReleaseArtifacts '0.9.10' -Dir $dir } 'Luna_0.9.10_x64-setup.exe.sig'
-        $found = Find-ReleaseArtifacts '0.9.10' -Unsigned -Dir $dir
+        $found = Find-ReleaseArtifacts '0.9.10' -Dir $dir
         Assert-Equal (Split-Path -Leaf $found.Setup) 'Luna_0.9.10_x64-setup.exe'
-        Assert-Equal $found.Signature $null
         $found = Find-ReleaseArtifacts '0.9.1' -Dir $dir
-        Assert-Equal (Split-Path -Leaf $found.Signature) 'Luna_0.9.1_x64-setup.exe.sig'
+        Assert-Equal (Split-Path -Leaf $found.Setup) 'Luna_0.9.1_x64-setup.exe'
+        Assert-Equal $found.PSObject.Properties.Name.Contains('Signature') $false
         Assert-Throws { Find-ReleaseArtifacts '0.9.2' -Dir $dir } 'no installer for 0.9.2'
+    }
+
+    Check 'the signature goes into latest.json only as the build wrote it for the version' {
+        $endpoint = Get-UpdaterEndpoint
+        $at = [datetime]::new(2026, 11, 7, 12, 30, 5, [DateTimeKind]::Utc)
+        $made = { param($sig, $version = '0.9.10', $setup = 'Luna_0.9.10_x64-setup.exe')
+            New-UpdaterManifest -Version $version -CoreFingerprint '0123456789abcdef' -Signature $sig -SetupName $setup `
+                -Endpoint $endpoint -Notes "Line one`nLine two" -PubDate $at }
+        $sign = { param($manifest, $version = '0.9.10', $setup = 'Luna_0.9.10_x64-setup.exe')
+            Set-UpdaterManifestSignature -Manifest $manifest -Signature "c2lnbmF0dXJl`n" -Version $version -SetupName $setup -Endpoint $endpoint }
+        Assert-Equal (& $sign (& $made '')) (& $made 'c2lnbmF0dXJl')
+        Assert-Throws { & $sign (& $made 'old') } 'carries a signature already'
+        Assert-Throws { & $sign (& $made '') '0.9.11' } "for version '0.9.10', not 0.9.11"
+        Assert-Throws { & $sign (& $made '' '0.9.10' 'Luna_0.9.1_x64-setup.exe') } 'points at'
+        Assert-Throws { Set-UpdaterManifestSignature -Manifest (& $made '') -Signature ' ' -Version '0.9.10' -SetupName 'x' -Endpoint $endpoint } 'no signature'
+        $json = & $made '' | ConvertFrom-Json -AsHashtable
+        $json.platforms['darwin-aarch64'] = $json.platforms['windows-x86_64']
+        Assert-Throws { & $sign ($json | ConvertTo-Json -Depth 5) } 'one platform'
+        $json = & $made '' | ConvertFrom-Json -AsHashtable
+        $json.extra = 1
+        Assert-Throws { & $sign ($json | ConvertTo-Json -Depth 5) } 'has the fields'
+        $json = & $made '' | ConvertFrom-Json -AsHashtable
+        $json.pub_date = 'soon'
+        Assert-Throws { & $sign ($json | ConvertTo-Json -Depth 5) } 'not a date'
+    }
+
+    Check 'the Tauri CLI to sign with is the one pnpm-lock.yaml pins' {
+        $cli = Get-LockedNpmPackage '@tauri-apps/cli-linux-x64-gnu'
+        $wrapper = Get-LockedNpmPackage '@tauri-apps/cli'
+        Assert-Equal $cli.Version $wrapper.Version
+        Assert-Equal $cli.Url "https://registry.npmjs.org/@tauri-apps/cli-linux-x64-gnu/-/cli-linux-x64-gnu-$($cli.Version).tgz"
+        if ($cli.Integrity -notmatch '^sha512-[A-Za-z0-9+/]{86}==$') { throw "integrity $($cli.Integrity)" }
+        $root = New-Item -ItemType Directory -Force (Join-Path $work 'lock')
+        $entry = "  '@x/y@1.0.0':`n    resolution: {integrity: sha512-AAAA}`n"
+        Set-Content (Join-Path $root 'pnpm-lock.yaml') "packages:`n`n$entry`nsnapshots:`n`n  '@x/y@1.0.0': {}`n" -NoNewline
+        Assert-Equal (Get-LockedNpmPackage '@x/y' $root).Version '1.0.0'
+        Set-Content (Join-Path $root 'pnpm-lock.yaml') "packages:`n`n$entry`n$($entry -replace '1\.0\.0', '1.0.1')" -NoNewline
+        Assert-Throws { Get-LockedNpmPackage '@x/y' $root } 'not 2'
+        Set-Content (Join-Path $root 'pnpm-lock.yaml') "packages:`n`n  '@x/y@1.0.0':`n    resolution: {integrity: sha512-AAAA, tarball: https://example.com/y.tgz}`n" -NoNewline
+        Assert-Throws { Get-LockedNpmPackage '@x/y' $root } 'not 0'
+    }
+
+    Check 'a download is held to its sha512 integrity' {
+        $file = Join-Path (New-Item -ItemType Directory -Force (Join-Path $work 'sri')) 'cli.tgz'
+        [IO.File]::WriteAllBytes($file, [Text.Encoding]::ASCII.GetBytes('TAURI'))
+        $good = 'sha512-' + [Convert]::ToBase64String([Security.Cryptography.SHA512]::HashData([Text.Encoding]::ASCII.GetBytes('TAURI')))
+        Assert-Sha512Integrity $file $good
+        $bad = 'sha512-' + [Convert]::ToBase64String([Security.Cryptography.SHA512]::HashData([Text.Encoding]::ASCII.GetBytes('TAURJ')))
+        Assert-Throws { Assert-Sha512Integrity $file $bad } 'does not match'
+        Assert-Throws { Assert-Sha512Integrity $file 'sha256-AAAA' } 'not a sha512 integrity'
+    }
+
+    Check 'only the named file comes out of a tarball' {
+        $dir = New-Item -ItemType Directory -Force (Join-Path $work 'tar')
+        $tarball = Join-Path $dir 'pkg.tgz'
+        $out = [IO.File]::Create($tarball)
+        $writer = [System.Formats.Tar.TarWriter]::new([IO.Compression.GZipStream]::new($out, [IO.Compression.CompressionMode]::Compress))
+        foreach ($name in 'package/package.json', '../escape.node', 'package/cli.node') {
+            $entry = [System.Formats.Tar.PaxTarEntry]::new([System.Formats.Tar.TarEntryType]::RegularFile, $name)
+            $entry.DataStream = [IO.MemoryStream]::new([Text.Encoding]::ASCII.GetBytes("data of $name"))
+            $writer.WriteEntry($entry)
+        }
+        $writer.Dispose()
+        $to = Join-Path $dir 'cli.node'
+        Export-TarballEntry $tarball 'package/cli.node' $to
+        Assert-Equal (Get-Content -LiteralPath $to -Raw) 'data of package/cli.node'
+        Assert-Equal (@(Get-ChildItem -LiteralPath $dir).Name -join ',') 'cli.node,pkg.tgz'
+        Assert-Equal (Test-Path -LiteralPath (Join-Path $work 'escape.node')) $false
+        Assert-Throws { Export-TarballEntry $tarball 'package/cli.node' $to } 'already exists'
+        Assert-Throws { Export-TarballEntry $tarball 'package/missing.node' (Join-Path $dir 'm') } 'has no package/missing.node'
+    }
+
+    Check 'the bundle is held to the build''s checksums, file for file' {
+        $dir = New-Item -ItemType Directory -Force (Join-Path $work 'sums')
+        Set-Content (Join-Path $dir 'Luna_0.9.10_x64-setup.exe') 'setup' -NoNewline
+        Set-Content (Join-Path $dir 'latest.json') '{}' -NoNewline
+        $sha = { param($text) [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($text))).ToLowerInvariant() }
+        $sums = "$(& $sha 'setup')  Luna_0.9.10_x64-setup.exe`n$(& $sha '{}')  latest.json`n"
+        Assert-AssetChecksums $dir $sums
+        Assert-AssetChecksums $dir ($sums -replace '  latest', ' *latest')
+        Set-Content (Join-Path $dir 'latest.json') '{"x":1}' -NoNewline
+        Assert-Throws { Assert-AssetChecksums $dir $sums } 'latest.json has sha256'
+        Set-Content (Join-Path $dir 'latest.json') '{}' -NoNewline
+        Set-Content (Join-Path $dir 'Luna_0.9.10_x64-setup.exe.sig') 'x'
+        Assert-Throws { Assert-AssetChecksums $dir $sums } 'do not list: Luna_0.9.10_x64-setup.exe.sig'
+        Remove-Item -LiteralPath (Join-Path $dir 'Luna_0.9.10_x64-setup.exe.sig')
+        Remove-Item -LiteralPath (Join-Path $dir 'latest.json')
+        Assert-Throws { Assert-AssetChecksums $dir $sums } 'latest.json is missing'
+        Assert-Throws { Assert-AssetChecksums $dir '' } 'no checksums'
+        Assert-Throws { Assert-AssetChecksums $dir "$(& $sha 'setup')  ../setup.exe" } 'not a sha256sum line'
+    }
+
+    Check 'in release.yml only the sign job holds a secret or the release environment' {
+        # Jobs by their two-space-indented key under jobs:, each with its lines.
+        $jobs = [ordered]@{}
+        $current = $null
+        $inJobs = $false
+        foreach ($line in (Get-Content (Join-Path $RepoRoot '.github/workflows/release.yml'))) {
+            if ($line -match '^jobs:\s*$') { $inJobs = $true; continue }
+            if (-not $inJobs) {
+                if ($line -match 'secrets\.|environment:') { throw "outside the jobs: $line" }
+                continue
+            }
+            if ($line -match '^  ([A-Za-z0-9_-]+):\s*$') { $current = $Matches[1]; $jobs[$current] = @(); continue }
+            if ($current) { $jobs[$current] += $line }
+        }
+        Assert-Equal (($jobs.Keys) -join ',') 'verify,build,sign,sbom,attest,publish'
+        foreach ($job in $jobs.Keys) {
+            $text = ($jobs[$job] | Where-Object { $_ -notmatch '^\s*#' }) -join "`n"
+            $touches = $text -match 'secrets\.|TAURI_SIGNING|environment:'
+            if ($job -eq 'sign') {
+                if ($text -notmatch "environment: \$\{\{ needs\.verify\.outputs\.signed == 'true' && 'release' \|\| '' \}\}") { throw 'sign names no release environment' }
+                if ($text -notmatch 'secrets\.TAURI_SIGNING_PRIVATE_KEY\b') { throw 'sign gets no key' }
+                if ($text -match '(?m)^\s*-?\s*run: .*(pnpm|cargo|tauri build|build-windows)') { throw 'sign runs build tooling' }
+            } elseif ($touches) {
+                throw "the $job job references a secret, the signing key or an environment"
+            }
+        }
     }
 
     Check 'an SBOM is checked the way actions/attest checks it' {

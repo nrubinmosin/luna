@@ -14,17 +14,18 @@
 #
 # -Local cuts the release on this machine instead, the way it was done before
 # the workflow, for when the workflow cannot (no signing secrets yet): it builds
-# the signed installer here, writes latest.json and uploads a published release
-# with gh, its notes from CHANGELOG.md too, without the verify section a
-# release with SBOMs and attestations gets.
+# the installer here, signs it apart from the build as the workflow does
+# (release-sign.ps1), writes latest.json and uploads a published release with
+# gh, its notes from CHANGELOG.md too, without the verify section a release
+# with SBOMs and attestations gets.
 #
 #   ./scripts/release.ps1 -Local                release the current version
-#   ./scripts/release.ps1 -Local -DryRun        build and compose, upload nothing
-#   ./scripts/release.ps1 -Local -SkipBuild     upload what the last build of this commit
-#                                               left behind, e.g. after a failed upload
+#   ./scripts/release.ps1 -Local -DryRun        build, sign and compose, upload nothing
+#   ./scripts/release.ps1 -Local -SkipBuild     sign and upload what the last build of this
+#                                               commit left behind, e.g. after a failed upload
 #
 # -Local signs with the updater's private key: -UpdaterKey, or LUNA_UPDATER_KEY,
-# names it (build-windows.ps1).
+# names it. The build never sees it; only release-sign.ps1's container does.
 [CmdletBinding(DefaultParameterSetName = 'Tag')]
 param(
     [Parameter(ParameterSetName = 'Bump', Mandatory)][string]$Bump,
@@ -83,18 +84,28 @@ try {
             throw "gh release view $tag failed (exit $LASTEXITCODE): $($view -join ' ')"
         }
 
+        # Before the build, which takes a while, rather than after it.
+        if (-not $UpdaterKey -or -not (Test-Path -LiteralPath $UpdaterKey -PathType Leaf)) {
+            throw "-Local signs with the updater's private key: pass -UpdaterKey <path> or set LUNA_UPDATER_KEY (now '$UpdaterKey')"
+        }
+
         Write-Host "Releasing $tag from this machine" -ForegroundColor Cyan
         # build-windows.ps1 checks its own native commands: a failed build would
         # otherwise go on to upload whatever the previous build left behind.
         if (-not $SkipBuild) {
-            & "$PSScriptRoot/build-windows.ps1" -Installer -UpdaterKey $UpdaterKey
+            & "$PSScriptRoot/build-windows.ps1" -Installer
         }
+        # The build had the checkout mounted writable, and the signing runs
+        # from it: a tracked file the build changed (release-sign.ps1, say)
+        # stops the release before the key is used.
+        Assert-Pushed
         # The bare exe goes up no more: the updater installs the setup into the
         # folder Luna was installed in, so a copy run from anywhere else updated
         # into a second Luna with none of its data.
         $bundle = Join-Path $RepoRoot 'src-tauri/target/release-bundle'
         Remove-Item -LiteralPath $bundle -Recurse -Force -ErrorAction SilentlyContinue
         & "$PSScriptRoot/release-bundle.ps1" -Out $bundle -Notes $changelog.Intro
+        & "$PSScriptRoot/release-sign.ps1" -Dir $bundle -Version $version -UpdaterKey $UpdaterKey
         # Beside the bundle, not in it: everything in the bundle is uploaded.
         $notesFile = Join-Path $RepoRoot 'src-tauri/target/release-notes.md'
         [IO.File]::WriteAllText($notesFile, $notes, [Text.UTF8Encoding]::new($false))

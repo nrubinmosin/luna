@@ -3,7 +3,7 @@
 Releases are built, signed and attested by GitHub Actions
 ([`.github/workflows/release.yml`](../.github/workflows/release.yml)), not on the
 maintainer's machine. The maintainer bumps the version, pushes a tag, approves the
-signing step and publishes the draft the workflow leaves.
+signing job and publishes the draft the workflow leaves.
 
 ## How a release flows
 
@@ -26,8 +26,8 @@ signing step and publishes the draft the workflow leaves.
 3. **The workflow** runs on the tag push:
 
    ```
-   verify ─┬─ build (signing key, `release` environment) ─┬─ attest ── publish (draft)
-           └─ sbom ───────────────────────────────────────┘
+   verify ─┬─ build ── sign (signing key, `release` environment) ─┬─ attest ── publish (draft)
+           └─ sbom ───────────────────────────────────────────────┘
    ```
 
    - **verify**: the versions agree with the tag; the tag is annotated and points at a
@@ -36,10 +36,24 @@ signing step and publishes the draft the workflow leaves.
      refused: releases go forward only); CI (`ci.yml`) has
      passed on that very commit as a push. A CI run still going is waited for (up to 45
      minutes), so the tag can go out with its commit.
-   - **build** waits for a reviewer's approval of the `release` environment, then builds
-     the NSIS installer and its updater signature with `scripts/build-windows.ps1` in the
-     same Docker image as a local build, and writes `latest.json`
-     (`scripts/release-bundle.ps1`).
+   - **build** builds the NSIS installer with `scripts/build-windows.ps1` in the same
+     Docker image as a local build, and writes `latest.json` without a signature
+     (`scripts/release-bundle.ps1`). It holds no secret and names no environment:
+     `tauri build` runs every dependency's build scripts, proc-macros and frontend
+     tooling, any of which could read a key in reach. It hands the next job the
+     SHA-256 of each file as a job output.
+   - **sign** waits for a reviewer's approval of the `release` environment, the one
+     approval of a release, and only then gets the key. It checks out only the files
+     the signing reads (the release scripts, `updater-signature.mjs`, the Windows
+     Dockerfile for its pinned Node image, `pnpm-lock.yaml` and `tauri.conf.json`),
+     checks the build's files against the build's checksums, and runs
+     `scripts/release-sign.ps1`: it fetches the Tauri CLI's Linux build
+     (`@tauri-apps/cli-linux-x64-gnu`) from the npm registry, holds it to the
+     integrity `pnpm-lock.yaml` pins, the bytes the build itself ran, and runs its
+     `signer sign` in the pinned Node image with no network and a read-only root. The
+     signature is checked against `plugins.updater.pubkey` as installed copies check it
+     (the version included) before `latest.json` takes it, so a wrong key stops the
+     release here. Nothing of the build's runs in this job.
    - **sbom**: CycloneDX SBOMs of the Rust crates in the Windows build and of the npm
      packages in the frontend (`scripts/sbom.ps1`), each checked to be a file the
      attest step takes (`bomFormat`, `serialNumber` and `specVersion` all set), so a
@@ -59,31 +73,45 @@ signing step and publishes the draft the workflow leaves.
 
 Every job holds only the permissions it uses: `contents: read` throughout, plus
 `actions: read` for verify, `id-token: write` and `attestations: write` for attest, and
-`contents: write` for publish alone. The workflow does not run on branch pushes or pull
-requests.
+`contents: write` for publish alone. Only sign holds the signing key, and only attest
+the OIDC token; the build, which runs the dependencies' code, holds neither. The
+workflow does not run on branch pushes or pull requests.
+
+What the separation does not cover: a dependency that runs in the build can still put
+what it likes into the installer, which sign then signs and attest attests as built
+here. It keeps the key from that code, so a compromised build is one bad release, found
+and replaced, rather than a key that signs updates for every installed copy from then
+on.
 
 **Dry runs.** Actions → Release → Run workflow, with `dry-run` checked (the default),
 runs everything short of the attestations and the release; the assets are kept as the
 run's `release-v<version>` artifact. Run on a tag, it signs as the release would (and
-waits for the approval); run on a branch, it builds unsigned, as the key is only handed
-to `v*` tags. Unchecking `dry-run` on a tag releases that tag, e.g. after a run that
+waits for the approval); run on a branch, the sign job passes the installer on unsigned,
+with an empty signature in `latest.json`, as the key is only handed to `v*` tags. Unchecking `dry-run` on a tag releases that tag, e.g. after a run that
 failed once the tag was out. A manual run uses the workflow and scripts as the chosen
 ref has them: a fix to those reaches a tag only through a commit that carries it, so a
 tag whose run failed on the workflow itself is released as a new version (or re-tagged
 on the fixed commit, which the tag ruleset lets only the maintainer do).
 
 **Without the workflow.** `./scripts/release.ps1 -Local` cuts the release the way it
-was done before the workflow: it builds and signs on this machine with the key that
+was done before the workflow: it builds on this machine, signs with the key that
 `-UpdaterKey` or `LUNA_UPDATER_KEY` names, and uploads a published release with `gh`
 (no SBOMs or attestations; the notes from `CHANGELOG.md` as above, without the Verify
-section). `-Local -DryRun` builds and composes without uploading; `-Local -SkipBuild`
-uploads what the last build left.
+section). The signing is separated as in the workflow: the build never sees the key,
+which is mounted only into `release-sign.ps1`'s container. `-Local -DryRun` builds,
+signs and composes without uploading; `-Local -SkipBuild` signs and uploads what the
+last build left. What it cannot separate as well: the build container has the checkout
+mounted writable, and the signing runs from that checkout afterwards. `release.ps1`
+checks again after the build that the tree is clean, which stops a tracked script the
+build changed, but not everything code running as root in the checkout could leave
+behind (git's own configuration among it). The workflow, where sign runs on a fresh
+runner from a fresh checkout, is the release path that rules this out.
 
 ## One-time setup
 
 1. **The `release` environment** (Settings → Environments → New environment):
-   - *Required reviewers*: the maintainer. The build job waits for this approval before
-     the key is handed over.
+   - *Required reviewers*: the maintainer. The sign job waits for this approval before
+     the key is handed over; the build before it needs none, as it gets no secret.
    - *Deployment branches and tags*: selected only, with one tag rule, `v*`. No branch
      may use the environment.
    - *Environment secrets*:
@@ -148,5 +176,8 @@ sha256sum -c SHA256SUMS
 ```
 
 In PowerShell, compare `(Get-FileHash Luna_1.2.3_x64-setup.exe).Hash` with its line in
-`SHA256SUMS`. The `.sig` is the updater's minisign signature, which Luna checks itself
-against its built-in public key; `latest.json` carries the same signature.
+`SHA256SUMS`. The `.sig` is the updater's signature: base64 of a minisign signature file
+(Ed25519 over the installer's BLAKE2b-512, with a trusted comment naming the file and the
+version), which Luna checks itself against its built-in public key; `latest.json`
+carries the same text. `node scripts/updater-signature.mjs verify <setup> <setup>.sig
+<pubkey> 1.2.3` makes the same check, with the pubkey from `tauri.conf.json`.

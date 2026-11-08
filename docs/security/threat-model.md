@@ -142,7 +142,8 @@ in section 6.
 | STRIDE | Threat | Status |
 | --- | --- | --- |
 | T, S | On-path attacker or compromised release host serves a malicious build | mitigated: HTTPS endpoint on GitHub Releases and a minisign public key pinned in the app (`tauri.conf.json:70-76`); Tauri refuses unsigned bundles |
-| T | Signing key theft | reduced: the key is a secret of the `release` environment, handed only to runs of the release workflow on a `v*` tag after a reviewer approves, and kept from the package install ([releasing.md](../releasing.md)); a leak is still accepted (R7) |
+| T | Signing key theft | reduced: the key is a secret of the `release` environment, handed only to the release workflow's sign job on a `v*` tag after a reviewer approves ([releasing.md](../releasing.md)); a leak is still accepted (R7) |
+| T, E | A dependency's build code (build script, proc-macro, frontend tooling) reads the signing key during `tauri build` | mitigated (audit finding, High): the build job holds no secret and signs nothing (`build-windows.ps1`); the sign job, on a fresh runner with only the signing files checked out, checks the build's files against its checksums and signs with the Tauri CLI's `signer sign` held to the integrity `pnpm-lock.yaml` pins, in the pinned Node image with no network (`release-sign.ps1`), and checks the signature against the pinned public key before `latest.json` takes it. Residual: the same build code can still alter this release's installer, which is then signed and attested (one bad release, not a stolen key); `release.ps1 -Local` keeps the key out of the build container but signs from the checkout that container could write |
 
 ### B7. Core to vendor CLI releases (managed CLI downloads)
 
