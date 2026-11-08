@@ -38,6 +38,26 @@ pub fn read(path: &Path) -> Result<DocumentMut, String> {
     }
 }
 
+/// The MCP servers an account's `config.toml` defines, each by its name as
+/// written with the keys its table sets; none without the file. One that will not read or parse, after
+/// `read`'s looks again, is an error and not an empty list: a helper's start
+/// turns those servers off by name, and a list read short would leave them on.
+pub fn mcp_servers(account_path: &str) -> Result<Vec<(String, Vec<String>)>, String> {
+    let doc = read(&account_file(account_path)?)?;
+    let servers = doc.get("mcp_servers").and_then(|t| t.as_table_like());
+    let keys = |v: &toml_edit::Item| v.as_table_like().map(|t| t.iter().map(|(k, _)| k.to_string()).collect()).unwrap_or_default();
+    Ok(servers.map(|t| t.iter().map(|(name, v)| (name.to_string(), keys(v))).collect()).unwrap_or_default())
+}
+
+/// `mcp_servers` for a helper's start, which goes no further without it.
+pub fn helper_mcp_servers(account_path: &str) -> Result<Vec<(String, Vec<String>)>, String> {
+    mcp_servers(account_path).map_err(|e| {
+        format!(
+            "the helper is not started: Luna could not read which MCP servers its account's config.toml defines, to turn them off ({e})"
+        )
+    })
+}
+
 /// For lookups only: a config that will not parse simply has nothing to say.
 /// One look, as nothing is written back.
 pub fn read_or_empty(path: &Path) -> DocumentMut {
@@ -86,6 +106,21 @@ pub fn string_at(doc: &DocumentMut, key: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_accounts_servers_are_read_or_the_reading_fails() {
+        let root = std::env::temp_dir().join(format!("luna-codex-servers-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let account = root.to_string_lossy().into_owned();
+        assert_eq!(mcp_servers(&account), Ok(Vec::new()), "no file: no servers");
+        std::fs::write(root.join("config.toml"), "model = \"m\"\n[mcp_servers.gmail]\ncommand = \"node\"\n").unwrap();
+        assert_eq!(mcp_servers(&account), Ok(vec![("gmail".to_string(), vec!["command".to_string()])]));
+        // Caught mid-write, or broken: an error, never a short list.
+        std::fs::write(root.join("config.toml"), "[mcp_servers.gmail\ncommand = ").unwrap();
+        assert!(mcp_servers(&account).is_err());
+        assert!(helper_mcp_servers(&account).unwrap_err().contains("not started"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn seed_keeps_what_is_there() {

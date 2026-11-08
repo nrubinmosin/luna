@@ -24,7 +24,7 @@ const PROTOCOLS: [&str; 3] = [PROTOCOL, "2025-03-26", "2024-11-05"];
 
 const INSTRUCTIONS: &str = "Luna runs this session. Its luna_* tools start and drive other sessions: \
 another model, another account, Codex or Claude Code, another folder or a worktree, in the background \
-or as a chat the user sees; and they reach every other session in Luna. luna_guide explains them, \
+or as a chat the user sees; and, told scope \"all\", any other session in Luna. luna_guide explains them, \
 accounts and models included: read it whole (topic \"all\") before the first spawn. Once a session you spawned or wrote \
 to answers, asks something, stops on a prompt or exits, Luna types a notice into your session, \
 opening \"[Luna notice\" (Luna's, not the user's words): end your turn to get it, no need to poll. \
@@ -255,17 +255,29 @@ fn tools() -> Value {
     let reads = json!({ "readOnlyHint": true, "openWorldHint": false });
     let acts = json!({ "readOnlyHint": false, "destructiveHint": false, "openWorldHint": false });
     let ends = json!({ "readOnlyHint": false, "destructiveHint": true, "openWorldHint": false });
+    // Past the caller's own helpers only when asked (`agents::in_scope`).
+    let scope = json!({ "type": "string", "enum": ["mine", "all"] });
     json!([
         {
             "name": "luna_list",
-            "description": "Your id (me), sessions you spawned (state, ask, turnsEnded, worktree, branch, sha, task, deletesInMin, turnStartedAt, lastActivityAt, resolvedModel, context, leftRunning) and accounts you may use: a helper's defaults in your folder, usage (% per window, resets), models if models: true. ids: only these, any session; accounts then only if true.",
-            "inputSchema": s(json!({ "ids": { "type": "array", "items": { "type": "string" } }, "accounts": { "type": "boolean" }, "models": { "type": "boolean" } }), &[]),
+            "description": "Your id (me), sessions you spawned (state, ask, turnsEnded, worktree, branch, sha, task, deletesInMin, turnStartedAt, lastActivityAt, resolvedModel, context, leftRunning) and accounts you may use: a helper's defaults in your folder, usage (% per window, resets), models if models: true. ids: only these, any session (others' ask, task: scope all); accounts then only if true.",
+            "inputSchema": s(json!({
+                "ids": { "type": "array", "items": { "type": "string" } },
+                "accounts": { "type": "boolean" },
+                "models": { "type": "boolean" },
+                "scope": scope.clone()
+            }), &[]),
             "annotations": reads
         },
         {
             "name": "luna_sessions",
-            "description": "Every session in Luna, the user's chats too: group (window group, I=1), folders, transcript path, parent, you/yours, state. Filters: group (a number or \"mine\"), q (text in name/folder/account/id). history: true = past spawns instead, deleted too (with transcript, last message), newest first (q also searches prompts).",
-            "inputSchema": s(json!({ "group": { "type": "string" }, "q": { "type": "string" }, "history": { "type": "boolean" } }), &[]),
+            "description": "Every session in Luna, the user's chats too: group (window group, I=1), folders, transcript path, parent, you/yours, state. Filters: group (a number or \"mine\"), q (text in name/folder/account/id). history: true = past spawns instead, deleted too (with transcript, last message), newest first (q also searches prompts). Others' ask, and spawns: scope all.",
+            "inputSchema": s(json!({
+                "group": { "anyOf": [{ "type": "integer" }, { "type": "string" }] },
+                "q": { "type": "string" },
+                "history": { "type": "boolean" },
+                "scope": scope.clone()
+            }), &[]),
             "annotations": reads
         },
         {
@@ -292,49 +304,53 @@ fn tools() -> Value {
                 "visible": { "type": "boolean", "description": "a chat the user sees" },
                 "autoDelete": { "type": "boolean", "description": "deleted 30 min after its answer reached you; default: background true" },
                 "resumeOnRestart": { "type": "boolean", "description": "goes on by itself after a core restart" },
-                "budgetTokens": { "type": "integer", "description": "context tokens; past them you hear, once" }
+                "budgetTokens": { "type": "integer", "description": "context tokens; past them you hear, once" },
+                "connectors": { "type": "boolean", "description": "its account's MCP servers and connectors too" }
             }), &["prompt"]),
             "annotations": acts
         },
         {
             "name": "luna_send",
-            "description": "Send a prompt to a session (any from luna_sessions), read as the user's: name yourself to one you did not spawn. Returns stateBefore, queued (it was working: that turn or the next; Codex helper: next), joined (Claude helper: next tool boundary), held (a user's draft: typed in later), started (false if neither = not taken, see screen), turnsEnded for luna_wait afterTurn.",
+            "description": "Send a prompt to a session you spawned (scope all: any, opened \"[From session <you> via Luna]\"), read as the user's. Returns stateBefore, queued (it was working: that turn or the next; Codex helper: next), joined (Claude helper: next tool boundary), held (a user's draft: typed in later), started (false if neither = not taken, see screen), turnsEnded for luna_wait afterTurn.",
             "inputSchema": s(json!({
                 "id": { "type": "string" },
                 "text": { "type": "string" },
-                "interrupt": { "type": "boolean", "description": "stop its current turn first" }
+                "interrupt": { "type": "boolean", "description": "stop its current turn first (yours only)" },
+                "scope": scope.clone()
             }), &["id", "text"]),
             "annotations": acts
         },
         {
             "name": "luna_answer",
-            "description": "Answer what a session waits on (state question or waiting; ask says what, askId: its id if any): answers, one per question: an option's number or label, or your own words; allow: true/false for a permission, note: why not. keys: raw keystrokes for any other dialog, e.g. \"{down}{enter}\" (also {esc} {tab} {shift+tab} {up} {left} {right} {space} {backspace}).",
+            "description": "Answer what a session waits on (yours; scope all: any), its state question or waiting (ask says what, askId: its id if any): answers, one per question: an option's number or label, or your own words; allow: true/false for a permission, note: why not. keys: raw keystrokes for any other dialog, e.g. \"{down}{enter}\" (also {esc} {tab} {shift+tab} {up} {left} {right} {space} {backspace}).",
             "inputSchema": s(json!({
                 "id": { "type": "string" },
                 "askId": { "type": "string" },
                 "answers": { "type": "array", "items": { "type": "string" } },
                 "allow": { "type": "boolean" },
                 "note": { "type": "string" },
-                "keys": { "type": "string" }
+                "keys": { "type": "string" },
+                "scope": scope.clone()
             }), &["id"]),
             "annotations": acts
         },
         {
             "name": "luna_read",
-            "description": "Messages of any session from its transcript. `since` = cursor from an earlier read; `last` = only the last N messages (default 1; all after `since`). Cut past 60k chars (leftOut): `since` alone goes on from cursor, `last` keeps the newest. `report`: its report alone. Also: state, ask.",
+            "description": "Messages of a session from its transcript (yours; scope all: any). `since` = cursor from an earlier read; `last` = only the last N messages (default 1; all after `since`). Cut past 60k chars (leftOut): `since` alone goes on from cursor, `last` keeps the newest. `report`: its report alone. Also: state, ask.",
             "inputSchema": s(json!({
                 "id": { "type": "string" },
                 "since": { "type": "integer" },
                 "last": { "type": "integer" },
                 "tools": { "type": "boolean", "description": "tool call markers" },
                 "screen": { "type": "boolean", "description": "what the terminal shows" },
-                "report": { "type": "boolean" }
+                "report": { "type": "boolean" },
+                "scope": scope.clone()
             }), &["id"]),
             "annotations": reads
         },
         {
             "name": "luna_wait",
-            "description": "Block until a Luna session (not yours; no task id, not a timer) ends a turn (reply: all it said since you asked; failed: its error), stops on a question or permission, or exits. Timeout, waiting and no reply come with the screen (screen: false: never). `afterTurn`: wait for a turn past this turnsEnded (default: the answer you are owed, else the last you were shown). `ids`: several, `mode` any (default) or all, no afterTurn. Or end your turn: a notice brings the answer.",
+            "description": "Block until a Luna session (yours, or scope all; no task id, not a timer) ends a turn (reply: all it said since you asked; failed: its error), stops on a question or permission, or exits. Timeout, waiting and no reply come with the screen (screen: false: never). `afterTurn`: wait for a turn past this turnsEnded (default: the answer you are owed, else the last you were shown). `ids`: several, `mode` any (default) or all, no afterTurn. Or end your turn: a notice brings the answer.",
             "inputSchema": s(json!({
                 "id": { "type": "string" },
                 "ids": { "type": "array", "items": { "type": "string" } },
@@ -342,7 +358,8 @@ fn tools() -> Value {
                 "until": { "type": "string", "enum": ["turn_done", "waiting", "exit"] },
                 "timeoutS": { "type": "integer", "description": "default 600, max 1800" },
                 "afterTurn": { "type": "integer" },
-                "screen": { "type": "boolean" }
+                "screen": { "type": "boolean" },
+                "scope": scope
             }), &[]),
             "annotations": reads
         },
@@ -437,6 +454,7 @@ fn call(caller: &str, params: &Value, this: &Call) -> Value {
         "tools",
         "autoDelete",
         "budgetTokens",
+        "connectors",
         "name",
         "until",
         "timeoutS",
@@ -445,6 +463,7 @@ fn call(caller: &str, params: &Value, this: &Call) -> Value {
         "last",
         "screen",
         "interrupt",
+        "scope",
         "dropWorktree",
         "group",
         "history",
@@ -499,6 +518,7 @@ fn run(caller: &str, params: &Value, this: &Call) -> Value {
     let name = params["name"].as_str().unwrap_or("");
     let a = &params["arguments"];
     let id = a["id"].as_str().unwrap_or("").to_string();
+    let scope = a["scope"].as_str();
     // A background helper without tools holds a token for its permission
     // handler only.
     if name == "luna_permission" {
@@ -509,6 +529,9 @@ fn run(caller: &str, params: &Value, this: &Call) -> Value {
     }
     if !agents::has_tools(caller) {
         return json!({ "content": [{ "type": "text", "text": format!("{name} is not one of this session's tools") }], "isError": true });
+    }
+    if let Err(e) = arguments_fit(name, a) {
+        return json!({ "content": [{ "type": "text", "text": e }], "isError": true });
     }
     let strings = |v: &Value| -> Vec<String> {
         v.as_array().map(|a| a.iter().map(|x| x.as_str().map(str::to_owned).unwrap_or_else(|| x.to_string())).collect()).unwrap_or_default()
@@ -522,7 +545,7 @@ fn run(caller: &str, params: &Value, this: &Call) -> Value {
                 Err(e) => json!({ "content": [{ "type": "text", "text": e }], "isError": true }),
             };
         }
-        "luna_answer" => {
+        "luna_answer" => agents::in_scope(caller, &id, scope, "answer").and_then(|()| {
             let entered = crate::power::enter();
             agents::answer(
                 caller,
@@ -535,12 +558,16 @@ fn run(caller: &str, params: &Value, this: &Call) -> Value {
                 entered.draining(),
             )
             .map(|r| json!(r))
-        }
+        }),
         "luna_sessions" => {
             serde_json::from_value::<agents::SessionFilter>(a.clone()).map_err(|e| format!("bad arguments: {e}")).and_then(|f| {
                 match f.history {
                     Some(true) => {
-                        let mut runs = crate::agentlog::runs(f.q.as_deref());
+                        let all = agents::scope_all(f.scope.as_deref())?;
+                        let runs = crate::agentlog::runs(f.q.as_deref());
+                        // Whose each spawner was, from every run: `q` may leave a link out.
+                        let lineage = if all { HashMap::new() } else { lineage_of(&crate::agentlog::runs(None)) };
+                        let mut runs = runs_in_scope(caller, runs, all, &lineage);
                         for last in runs.iter_mut().filter_map(|r| r.last.as_mut()) {
                             if last.chars().count() > HISTORY_LAST {
                                 *last = format!("{}…", last.chars().take(HISTORY_LAST).collect::<String>());
@@ -560,31 +587,38 @@ fn run(caller: &str, params: &Value, this: &Call) -> Value {
             })
             .map(|s| json!(s)),
         "luna_send" => crate::power::admit()
-            .and_then(|_admitted| agents::send(caller, &id, a["text"].as_str().unwrap_or(""), a["interrupt"].as_bool().unwrap_or(false)))
+            .and_then(|_admitted| agents::in_scope(caller, &id, scope, "send to"))
+            .and_then(|()| agents::send(caller, &id, a["text"].as_str().unwrap_or(""), a["interrupt"].as_bool().unwrap_or(false)))
             .map(|s| json!(s)),
-        "luna_read" => agents::read(
-            caller,
-            &id,
-            a["since"].as_u64(),
-            // A cursor asks for everything after it; a bare read, for the
-            // last word.
-            a["last"].as_u64().map(|n| n as usize).or(a["since"].as_u64().is_none().then_some(1)),
-            a["tools"].as_bool().unwrap_or(false),
-            a["screen"].as_bool().unwrap_or(false),
-            a["report"].as_bool().unwrap_or(false),
-            this,
-        )
-        .map(|r| json!(r)),
+        "luna_read" => agents::in_scope(caller, &id, scope, "read")
+            .and_then(|()| {
+                agents::read(
+                    caller,
+                    &id,
+                    a["since"].as_u64(),
+                    // A cursor asks for everything after it; a bare read, for the
+                    // last word.
+                    a["last"].as_u64().map(|n| n as usize).or(a["since"].as_u64().is_none().then_some(1)),
+                    a["tools"].as_bool().unwrap_or(false),
+                    a["screen"].as_bool().unwrap_or(false),
+                    a["report"].as_bool().unwrap_or(false),
+                    this,
+                )
+            })
+            .map(|r| json!(r)),
         "luna_wait" if !a["ids"].is_null() => wait_several(caller, a, this).map(|w| screens_as_asked(w, a)),
-        "luna_wait" => agents::wait(
-            caller,
-            &id,
-            a["until"].as_str().unwrap_or("turn_done"),
-            a["timeoutS"].as_u64().unwrap_or(600),
-            a["afterTurn"].as_u64().map(|n| n as u32),
-            this,
-        )
-        .map(|w| screens_as_asked(json!(w), a)),
+        "luna_wait" => agents::in_scope(caller, &id, scope, "wait on")
+            .and_then(|()| {
+                agents::wait(
+                    caller,
+                    &id,
+                    a["until"].as_str().unwrap_or("turn_done"),
+                    a["timeoutS"].as_u64().unwrap_or(600),
+                    a["afterTurn"].as_u64().map(|n| n as u32),
+                    this,
+                )
+            })
+            .map(|w| screens_as_asked(json!(w), a)),
         "luna_kill" => agents::kill(caller, &id).map(|k| json!(k)),
         "luna_delete" => agents::delete(caller, &id, a["dropWorktree"].as_bool().unwrap_or(false), a["force"].as_bool().unwrap_or(false))
             .map(|r| json!(r)),
@@ -598,13 +632,134 @@ fn run(caller: &str, params: &Value, this: &Call) -> Value {
     }
 }
 
+/// A call's arguments held to its tool's schema (`tools`) before anything runs:
+/// an object, of keys the tool has, each of the type it says (an `integer` a
+/// whole number from 0, an `enum` one of its values), the `required` ones
+/// there and not empty. A key it does not know is refused rather than passed
+/// over, naming those it does: `read_only` for `readOnly` would otherwise
+/// spawn a helper that writes, and `interrupt: "true"` would be no interrupt.
+/// A null is a key left out. Not for an unknown tool, which `run` refuses by
+/// name, nor `luna_permission`, which the CLI calls in its own shape.
+fn arguments_fit(name: &str, a: &Value) -> Result<(), String> {
+    let list = tools();
+    let Some(schema) = list.as_array().and_then(|t| t.iter().find(|t| t["name"] == name)).map(|t| t["inputSchema"].clone()) else {
+        return Ok(());
+    };
+    let empty = serde_json::Map::new();
+    let props = schema["properties"].as_object().unwrap_or(&empty);
+    let given = match a {
+        Value::Null => &empty,
+        Value::Object(o) => o,
+        _ => return Err(format!("{name} takes its arguments as an object")),
+    };
+    let known: Vec<&str> = props.keys().map(String::as_str).collect();
+    for (key, v) in given.iter().filter(|(_, v)| !v.is_null()) {
+        let Some(spec) = props.get(key) else {
+            // `read_only`, `ReadOnly`, `read-only`: the one meant, by its spelling.
+            let loose = |k: &str| k.replace(['_', '-'], "").to_lowercase();
+            let meant = known.iter().find(|k| loose(k) == loose(key)).map(|k| format!(" (did you mean `{k}`?)")).unwrap_or_default();
+            let takes = if known.is_empty() { "no arguments".to_string() } else { known.join(", ") };
+            return Err(format!("{name} has no argument `{key}`{meant}; it takes: {takes}"));
+        };
+        fits(key, spec, v)?;
+    }
+    let present = |k: &str| given.get(k).is_some_and(|v| !v.is_null() && v.as_str() != Some(""));
+    for key in schema["required"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+        if !present(key) {
+            return Err(format!("{key} is required"));
+        }
+    }
+    // `luna_wait` names its session by one or the other.
+    if props.contains_key("id") && props.contains_key("ids") && !present("id") && given.get("ids").is_none_or(Value::is_null) {
+        return Err("id or ids is required".into());
+    }
+    Ok(())
+}
+
+/// Whether `v` is what `spec` (a property of a tool's schema) says `key` takes.
+fn fits(key: &str, spec: &Value, v: &Value) -> Result<(), String> {
+    if let Some(any) = spec["anyOf"].as_array() {
+        if any.iter().any(|one| fits(key, one, v).is_ok()) {
+            return Ok(());
+        }
+        return Err(format!("`{key}` takes {}", any.iter().map(kind_of).collect::<Vec<_>>().join(" or ")));
+    }
+    let ok = match spec["type"].as_str() {
+        Some("string") => v.is_string(),
+        Some("boolean") => v.is_boolean(),
+        Some("integer") => v.is_u64(),
+        Some("object") => v.is_object(),
+        Some("array") => v.as_array().is_some_and(|items| items.iter().all(|x| fits(key, &spec["items"], x).is_ok())),
+        _ => true,
+    };
+    if !ok {
+        return Err(format!("`{key}` takes {}", kind_of(spec)));
+    }
+    if let (Some(allowed), Some(given)) = (spec["enum"].as_array(), v.as_str()) {
+        if !allowed.iter().any(|x| x == given) {
+            let names: Vec<&str> = allowed.iter().filter_map(Value::as_str).collect();
+            return Err(format!("unknown {key} {given:?}; use {}", names.join(", ")));
+        }
+    }
+    Ok(())
+}
+
+/// What a schema's type is, as an error says it.
+fn kind_of(spec: &Value) -> String {
+    match spec["type"].as_str() {
+        Some("string") => "a string".into(),
+        Some("boolean") => "true or false".into(),
+        Some("integer") => "a whole number, 0 or more".into(),
+        Some("object") => "an object".into(),
+        Some("array") if spec["items"]["type"] == "string" => "a list of strings".into(),
+        Some("array") => "a list".into(),
+        _ => "a value".into(),
+    }
+}
+
+/// Past spawns as a caller may have them: its own and its helpers' and theirs,
+/// or with `all` everyone's. A run holds its whole prompt and its last reply.
+/// Whose a run is goes by the helper's owner now, where it is still known (one
+/// whose parent was deleted has passed up, `forget`), else by the spawner each
+/// run records (`lineage`, helper to spawner), up the chain: any link of it the
+/// caller or one of its own makes the run the caller's.
+fn runs_in_scope(caller: &str, runs: Vec<crate::agentlog::Run>, all: bool, lineage: &HashMap<String, String>) -> Vec<crate::agentlog::Run> {
+    let owned = |run: &crate::agentlog::Run| {
+        if agents::own_or_self(caller, &run.id) {
+            return true;
+        }
+        let mut link = run.parent.as_str();
+        // As deep as a lineage goes (`registry::depth_of`), and a loop no further.
+        for _ in 0..16 {
+            if link.is_empty() {
+                return false;
+            }
+            if agents::own_or_self(caller, link) {
+                return true;
+            }
+            match lineage.get(link) {
+                Some(spawner) => link = spawner,
+                None => return false,
+            }
+        }
+        false
+    };
+    runs.into_iter().filter(|run| all || owned(run)).collect()
+}
+
+/// Each spawned session's spawner, as the runs record them.
+fn lineage_of(runs: &[crate::agentlog::Run]) -> HashMap<String, String> {
+    runs.iter().map(|run| (run.id.clone(), run.parent.clone())).collect()
+}
+
 /// `luna_list`: every row and the accounts, the costly part of it, unless told;
 /// a caller naming sessions wants those, and has not asked for accounts.
 fn listing(caller: &str, a: &Value) -> Result<Value, String> {
     let ids = if a["ids"].is_null() { None } else { Some(id_list(&a["ids"])?) };
     let models = a["models"].as_bool().unwrap_or(false);
     let accounts = a["accounts"].as_bool().unwrap_or(ids.is_none() || models);
-    Ok(json!(agents::list(caller, ids.as_deref(), accounts, models)))
+    let all = agents::scope_all(a["scope"].as_str())?;
+    Ok(json!(agents::list(caller, ids.as_deref(), accounts, models, all)))
 }
 
 /// A tool's `ids`, whose each must be a session id.
@@ -645,6 +800,9 @@ fn wait_several(caller: &str, a: &Value, this: &Call) -> Result<Value, String> {
         );
     }
     let ids = id_list(&a["ids"])?;
+    for id in &ids {
+        agents::in_scope(caller, id, a["scope"].as_str(), "wait on")?;
+    }
     let all = match a["mode"].as_str().unwrap_or("any") {
         "any" => false,
         "all" => true,
@@ -790,6 +948,190 @@ mod tests {
     }
 
     #[test]
+    fn a_session_not_ones_own_is_reached_only_with_scope_all() {
+        tooled("rs-me");
+        agents::register("rs-kid", crate::provider::Provider::Claude, "C:/p", "C:/acc/anthropic/one", Some("rs-me"), false, json!({}));
+        agents::register("rs-chat", crate::provider::Provider::Codex, "C:/p", "C:/acc/openai/two", None, false, json!({}));
+        let call = |name: &str, args: Value| {
+            let body = json!({ "jsonrpc": "2.0", "id": 16, "method": "tools/call", "params": { "name": name, "arguments": args } });
+            let r = handle("rs-me", &body.to_string()).unwrap()["result"].clone();
+            (r["isError"] == true, r["content"][0]["text"].as_str().unwrap_or("").to_string())
+        };
+        let refused = |(failed, text): (bool, String)| failed && text.contains("scope: \"all\"");
+        assert!(refused(call("luna_read", json!({ "id": "rs-chat" }))));
+        assert!(refused(call("luna_wait", json!({ "id": "rs-chat", "timeoutS": 1 }))));
+        assert!(refused(call("luna_wait", json!({ "ids": ["rs-kid", "rs-chat"], "timeoutS": 1 }))));
+        assert!(refused(call("luna_send", json!({ "id": "rs-chat", "text": "hi" }))));
+        assert!(refused(call("luna_read", json!({ "id": "rs-chat", "scope": "mine" }))));
+        // An answer is at least a send: its question or permission is another's.
+        assert!(refused(call("luna_answer", json!({ "id": "rs-chat", "answers": ["1"] }))));
+        assert!(refused(call("luna_answer", json!({ "id": "rs-chat", "allow": false }))));
+        // Told so, the scope lets it by and the tool goes on to its own answer.
+        let (_, text) = call("luna_read", json!({ "id": "rs-chat", "scope": "all" }));
+        assert!(!text.contains("scope"), "{text}");
+        let (_, text) = call("luna_send", json!({ "id": "rs-chat", "text": "hi", "scope": "all" }));
+        assert!(text.contains("not running"), "{text}");
+        let (_, text) = call("luna_answer", json!({ "id": "rs-chat", "answers": ["1"], "scope": "all" }));
+        assert!(text.contains("not running"), "{text}");
+        // Its own needs nothing said.
+        let (_, text) = call("luna_read", json!({ "id": "rs-kid" }));
+        assert!(!text.contains("scope"), "{text}");
+        let (_, text) = call("luna_answer", json!({ "id": "rs-kid", "answers": ["1"] }));
+        assert!(text.contains("not running"), "{text}");
+        for id in ["rs-kid", "rs-chat", "rs-me"] {
+            agents::forget(id);
+        }
+    }
+
+    #[test]
+    fn what_another_session_asks_or_was_asked_needs_scope_all() {
+        tooled("ms-me");
+        let background = json!({ "background": true });
+        agents::register("ms-chat", crate::provider::Provider::Claude, "C:/p", "C:/acc/anthropic/one", None, false, json!({}));
+        agents::register(
+            "ms-theirs",
+            crate::provider::Provider::Claude,
+            "C:/p",
+            "C:/acc/anthropic/one",
+            Some("ms-chat"),
+            false,
+            background.clone(),
+        );
+        agents::register("ms-kid", crate::provider::Provider::Claude, "C:/p", "C:/acc/anthropic/one", Some("ms-me"), false, background);
+        for id in ["ms-theirs", "ms-kid"] {
+            crate::background::take_up_for_test(id, "C:/p", 1, &[], None);
+            crate::background::set_running_for_test(id);
+            crate::background::hold_for_test(id);
+        }
+        let call = |name: &str, args: Value| {
+            let body = json!({ "jsonrpc": "2.0", "id": 18, "method": "tools/call", "params": { "name": name, "arguments": args } });
+            let r = handle("ms-me", &body.to_string()).unwrap()["result"].clone();
+            assert!(r.get("isError").is_none(), "{r}");
+            serde_json::from_str::<Value>(r["content"][0]["text"].as_str().unwrap()).unwrap()
+        };
+        let row = |v: &Value, key: &str, id: &str| v[key].as_array().unwrap().iter().find(|s| s["id"] == id).cloned().unwrap();
+        // A listing of any session: its state, not what it asks.
+        let listed = call("luna_list", json!({ "ids": ["ms-theirs", "ms-kid"] }));
+        let theirs = row(&listed, "sessions", "ms-theirs");
+        assert!(theirs["state"].is_string(), "{theirs}");
+        assert!(theirs["ask"].is_null() && theirs["task"].is_null(), "{theirs}");
+        assert!(row(&listed, "sessions", "ms-kid")["ask"].is_object(), "its own helper's, as ever");
+        let told = call("luna_list", json!({ "ids": ["ms-theirs"], "scope": "all" }));
+        assert!(row(&told, "sessions", "ms-theirs")["ask"].is_object());
+        let sessions = call("luna_sessions", json!({ "q": "ms-" }));
+        assert!(row(&sessions, "sessions", "ms-theirs").get("ask").is_none());
+        assert!(row(&sessions, "sessions", "ms-kid")["ask"].is_object());
+        let told = call("luna_sessions", json!({ "q": "ms-", "scope": "all" }));
+        assert!(row(&told, "sessions", "ms-theirs")["ask"].is_object());
+        for id in ["ms-theirs", "ms-kid"] {
+            crate::background::remove(id);
+        }
+        for id in ["ms-kid", "ms-theirs", "ms-chat", "ms-me"] {
+            agents::forget(id);
+        }
+    }
+
+    #[test]
+    fn past_spawns_are_the_callers_own_unless_scope_all() {
+        tooled("hs-me");
+        agents::register("hs-kid", crate::provider::Provider::Claude, "C:/p", "C:/acc/anthropic/one", Some("hs-me"), true, json!({}));
+        let run = |id: &str, parent: &str| crate::agentlog::Run {
+            id: id.into(),
+            at: "t".into(),
+            ended: None,
+            how: None,
+            parent: parent.into(),
+            parent_name: None,
+            folder: "C:/p".into(),
+            worktree: false,
+            provider: "claude".into(),
+            account: "one".into(),
+            settings: json!({}),
+            name: None,
+            prompt: "the whole prompt".into(),
+            auto_delete: false,
+            transcript: None,
+            worktree_path: None,
+            last: Some("the whole reply".into()),
+        };
+        let runs = || vec![run("r1", "hs-me"), run("r2", "hs-kid"), run("r3", "someone-else"), run("r4", "")];
+        let ids = |runs: Vec<crate::agentlog::Run>| runs.into_iter().map(|r| r.id).collect::<Vec<_>>();
+        let lineage = lineage_of(&runs());
+        assert_eq!(ids(runs_in_scope("hs-me", runs(), false, &lineage)), ["r1", "r2"], "its own and its helpers'");
+        assert_eq!(ids(runs_in_scope("hs-me", runs(), true, &lineage)), ["r1", "r2", "r3", "r4"]);
+        // A -> B -> C, and B deleted: C passed up to A, its run still naming B.
+        agents::register("hs-b", crate::provider::Provider::Claude, "C:/p", "C:/acc/anthropic/one", Some("hs-me"), true, json!({}));
+        agents::register("hs-c", crate::provider::Provider::Claude, "C:/p", "C:/acc/anthropic/one", Some("hs-b"), false, json!({}));
+        agents::forget("hs-b");
+        assert_eq!(agents::parent_of("hs-c").as_deref(), Some("hs-me"));
+        let chain = || vec![run("hs-b", "hs-me"), run("hs-c", "hs-b"), run("hs-x", "someone-else")];
+        let lineage = lineage_of(&chain());
+        assert_eq!(ids(runs_in_scope("hs-me", chain(), false, &lineage)), ["hs-b", "hs-c"], "by C's owner now");
+        // And with C gone too: by the lineage the runs record.
+        agents::forget("hs-c");
+        assert_eq!(ids(runs_in_scope("hs-me", chain(), false, &lineage)), ["hs-b", "hs-c"], "by B's run");
+        assert!(runs_in_scope("someone-else", vec![run("hs-c", "hs-b")], false, &lineage).is_empty(), "not another's");
+        // Through the tool: a scope it does not know is refused, not taken for mine.
+        let body = json!({ "jsonrpc": "2.0", "id": 19, "method": "tools/call",
+            "params": { "name": "luna_sessions", "arguments": { "history": true, "scope": "everyone" } } });
+        assert_eq!(handle("hs-me", &body.to_string()).unwrap()["result"]["isError"], true);
+        agents::forget("hs-kid");
+        agents::forget("hs-me");
+    }
+
+    #[test]
+    fn every_tool_holds_its_arguments_to_its_schema() {
+        tooled("sa-me");
+        let call = |name: &str, args: Value| {
+            let body = json!({ "jsonrpc": "2.0", "id": 17, "method": "tools/call", "params": { "name": name, "arguments": args } });
+            let r = handle("sa-me", &body.to_string()).unwrap()["result"].clone();
+            (r["isError"] == true, r["content"][0]["text"].as_str().unwrap_or("").to_string())
+        };
+        let list = tools();
+        for tool in list.as_array().unwrap() {
+            let name = tool["name"].as_str().unwrap();
+            let props = tool["inputSchema"]["properties"].as_object().unwrap();
+            // A key it does not have, named back with those it does.
+            let (failed, e) = call(name, json!({ "bogus_key": 1 }));
+            assert!(failed && e.contains("no argument `bogus_key`"), "{name}: {e}");
+            for key in props.keys() {
+                assert!(e.contains(key.as_str()), "{name} names {key}: {e}");
+            }
+            // Each of its keys given a value of no type it takes.
+            for (key, spec) in props {
+                let wrong = match spec["type"].as_str() {
+                    Some("string") => json!(7),
+                    None => json!({ "not": "this" }),
+                    Some(_) => json!("7"),
+                };
+                let (failed, e) = call(name, json!({ key.as_str(): wrong }));
+                assert!(failed && e.contains(&format!("`{key}` takes")), "{name}.{key}: {e}");
+            }
+            // An id that names nothing.
+            if props.contains_key("id") {
+                let (failed, e) = call(name, json!({ "id": "", "ids": null }));
+                assert!(failed && e.contains("is required"), "{name}: {e}");
+            }
+            assert!(!call(name, json!("args")).1.is_empty(), "{name}: not an object");
+        }
+        // The cases that cost something when passed over.
+        let (failed, e) = call("luna_spawn", json!({ "prompt": "review it", "read_only": true }));
+        assert!(failed && e.contains("did you mean `readOnly`?"), "{e}");
+        assert!(call("luna_send", json!({ "id": "x", "text": "stop", "interrupt": "true" })).1.contains("`interrupt` takes true or false"));
+        assert!(call("luna_read", json!({ "id": "x", "last": -1 })).1.contains("`last` takes a whole number"));
+        assert!(call("luna_wait", json!({})).1.contains("id or ids is required"));
+        assert!(call("luna_wait", json!({ "id": "" })).1.contains("id or ids is required"));
+        assert!(call("luna_send", json!({ "id": "x" })).1.contains("text is required"));
+        assert!(call("luna_spawn", json!({ "prompt": "go", "account": 3 })).1.contains("`account` takes a string or a list of strings"));
+        assert!(call("luna_power", json!({ "action": "explode" })).1.contains("unknown action"));
+        // What the schema allows still goes through to the tool.
+        let (failed, e) = call("luna_guide", json!({ "topic": null }));
+        assert!(!failed, "a null is a key left out: {e}");
+        let (_, e) = call("luna_wait", json!({ "ids": ["sa-nobody"], "timeoutS": 1 }));
+        assert!(e.contains("unknown session"), "{e}");
+    }
+
+    #[test]
     fn the_tool_text_stays_small() {
         // The whole list is what every tooled session pays for once; keep it
         // under a few thousand characters. The annotations are the client's,
@@ -799,11 +1141,11 @@ mod tests {
             t.as_object_mut().unwrap().remove("annotations");
         }
         let text = list.to_string();
-        assert!(text.len() < 7600, "tools/list is {} chars", text.len());
+        assert!(text.len() < 8200, "tools/list is {} chars", text.len());
         assert!(INSTRUCTIONS.len() < 1000, "instructions are {} bytes", INSTRUCTIONS.len());
         // Read whole once, on request: keep it to a few thousand tokens. Its
         // index, what a bare call gives, to a few hundred.
-        assert!(GUIDE.len() < 16_000, "the guide is {} bytes", GUIDE.len());
+        assert!(GUIDE.len() < 16_500, "the guide is {} bytes", GUIDE.len());
         let index = guide_text(None).unwrap();
         assert!(index.len() < 1_000, "the guide's index is {} bytes: {index}", index.len());
     }
@@ -1006,7 +1348,7 @@ mod tests {
         tooled("me");
         let r = handle(
             "me",
-            r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"luna_wait","arguments":{"id":"x","until":"forever"}}}"#,
+            r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"luna_wait","arguments":{"id":"uu-x","until":"forever"}}}"#,
         )
         .unwrap();
         assert_eq!(r["result"]["isError"], true);
