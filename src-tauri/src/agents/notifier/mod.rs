@@ -298,6 +298,32 @@ pub(crate) fn riders_go(company: bool, only_riders: bool, oldest: u64, now: u64,
     company || only_riders || busy == 0 || now.saturating_sub(oldest) >= RIDE_MAX_MS
 }
 
+/// The longest a notice ready for an idle caller waits for another helper of
+/// the caller's that is mid-turn, so that two finishing seconds apart come as
+/// one notice, and one turn of the caller's, rather than two. Short beside
+/// RIDE_MAX_MS: an answer is news, and a caller may be waiting on it.
+pub(super) const COALESCE_MS: u64 = 20_000;
+// Within what a line with no news waits for company.
+const _: () = assert!(COALESCE_MS < RIDE_MAX_MS);
+
+/// Whether a notice first ready at `first_ready` waits on at `now`: only while
+/// something else the caller is owed is at work (`others_working`), and never
+/// past COALESCE_MS.
+pub(super) fn coalesce_holds(first_ready: u64, now: u64, others_working: bool) -> bool {
+    others_working && now.saturating_sub(first_ready) < COALESCE_MS
+}
+
+/// `coalesce_holds` for `caller` at `now`, keeping when its notice was first
+/// ready in `since`; a notice that goes out takes its entry with it.
+fn hold_for_company(since: &mut HashMap<String, u64>, caller: &str, now: u64, others_working: bool) -> bool {
+    let first = *since.entry(caller.to_string()).or_insert(now);
+    let holds = coalesce_holds(first, now, others_working);
+    if !holds {
+        since.remove(caller);
+    }
+    holds
+}
+
 /// Runs for the life of the app: every few seconds, for each caller owed an
 /// answer, checks whether one came and tells the caller once it is idle; and
 /// deletes the `autoDelete` helpers that are done (see `reap`).
@@ -309,6 +335,9 @@ pub(super) fn notifier() {
     // Callers whose notice a draft is holding back: since when, and whether
     // the desktop has been told.
     let mut drafts: HashMap<String, (u64, bool)> = HashMap::new();
+    // When each caller's notice was first ready while another of its helpers
+    // worked on (`hold_for_company`).
+    let mut company_since: HashMap<String, u64> = HashMap::new();
     let mut looks_at_budgets = 0;
     loop {
         std::thread::sleep(NOTIFY_EVERY);
@@ -388,6 +417,7 @@ pub(super) fn notifier() {
         }
         idle_looks.retain(|c, _| by_caller.contains_key(c));
         drafts.retain(|c, _| by_caller.contains_key(c));
+        company_since.retain(|c, _| by_caller.contains_key(c));
         reg().lock().unwrap_or_else(|e| e.into_inner()).notices_held.retain(|c, _| by_caller.contains_key(c));
         for (caller, items) in by_caller {
             // The last notice is still going in: it starts a turn of its own.
@@ -488,9 +518,20 @@ pub(super) fn notifier() {
             }
             if lines.is_empty() {
                 reg().lock().unwrap_or_else(|e| e.into_inner()).notices_held.remove(&caller);
+                company_since.remove(&caller);
                 continue;
             }
             if debts_moved(&caller, &settled) {
+                continue;
+            }
+            // Another session it is owed an answer by still at work: this notice
+            // waits a few seconds for that one's (COALESCE_MS), so near-simultaneous
+            // ends wake the caller once.
+            let others_working = items.iter().any(|(id, ..)| {
+                !settled.iter().any(|(s, ..)| s == id)
+                    && crate::activity::turn_state(id).is_some_and(|t| t.turn == crate::activity::Turn::Busy)
+            });
+            if hold_for_company(&mut company_since, &caller, now_ms(), others_working) {
                 continue;
             }
             // Typing it waits up to SEND_TIMEOUT for the turn to start, off this
@@ -795,6 +836,31 @@ mod tests {
         crate::background::gone_for_test("lj-s");
         forget("lj-s");
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// Two helpers finishing seconds apart: the first's notice waits for the
+    /// second's, up to COALESCE_MS, and goes alone past that or once nothing
+    /// else of the caller's is at work.
+    #[test]
+    fn a_notice_waits_a_little_for_a_helper_about_to_finish() {
+        let ready = 1_000_000;
+        let at = |s: u64| ready + s * 1000;
+        assert!(coalesce_holds(ready, at(0), true), "another helper of its mid-turn: it waits");
+        assert!(coalesce_holds(ready, at(19), true));
+        assert!(!coalesce_holds(ready, at(20), true), "never past COALESCE_MS");
+        assert!(!coalesce_holds(ready, at(0), false), "nothing else at work: it goes at once");
+        // A clock that went back holds no longer than it would have.
+        assert!(coalesce_holds(ready, ready - 5_000, true));
+        // The look loop's own bookkeeping: the first look a line is ready starts
+        // the wait, a later one keeps it, delivery or nothing ready clears it.
+        let mut since: HashMap<String, u64> = HashMap::new();
+        assert!(hold_for_company(&mut since, "c", at(0), true));
+        assert!(hold_for_company(&mut since, "c", at(10), true), "{since:?}");
+        assert_eq!(since.get("c"), Some(&at(0)), "the wait counts from the first look");
+        assert!(!hold_for_company(&mut since, "c", at(21), true));
+        assert!(!since.contains_key("c"), "going out clears it");
+        assert!(!hold_for_company(&mut since, "d", at(0), false));
+        assert!(!since.contains_key("d"));
     }
 
     /// A job's end with no word from it, or an idle job, is told of with the

@@ -59,6 +59,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   `all` the whole guide, and no topic its opening with the sections to ask
   for. The instruction sessions get says to read it whole before the first
   spawn; a lookup after that costs a section, not the whole manual.
+- A notice ready for an agent that another of its helpers is still working for
+  waits up to 20 seconds for that one's answer, so helpers finishing within
+  seconds of each other wake the agent once, not once each.
 
 ### Fixed
 

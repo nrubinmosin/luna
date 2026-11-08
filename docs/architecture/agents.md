@@ -235,6 +235,11 @@ turn, stopped on a prompt (once per stop) or exited.
   quota news and budget news are no reason to wake a caller: they ride with the
   next notice (`riders_go`), and go alone only once they are all it is owed,
   nothing in Luna is busy, or after `RIDE_MAX_MS`.
+- **Company.** A notice ready for an idle caller that is owed an answer by
+  another session still mid-turn (`Turn::Busy`) waits for it up to
+  `COALESCE_MS` (20 s; `hold_for_company`, counted from the first look it was
+  ready at), so helpers ending seconds apart wake the caller once. Past that,
+  or with nothing else at work, it goes as it would have.
 - A helper with its own helpers out (`waits_on_helpers`) reads `background`; a
   turn on a notice from them counts once it has all their answers. Meanwhile
   its parent hears of turns that wrote a message of 400 characters or more
