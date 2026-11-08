@@ -5,7 +5,8 @@ import { useAccounts } from '../accounts/accounts.store';
 import { useChats } from '../chats/chats.store';
 import { PROVIDER_LABEL } from '../../shared/types';
 import { useDialogHost } from '../../shared/ui/dialogHost';
-import { CommandLine, focusables, Group, List, ListItem, Row } from '../settings/SettingsRows';
+import { focusables } from '../../shared/ui/modal';
+import { CommandLine, Group, List, ListItem, Row } from '../settings/SettingsRows';
 import { choices, useBrowsers } from './browsers.store';
 
 /**

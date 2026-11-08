@@ -5,6 +5,8 @@ import { ACCOUNTS, FOLDERS } from '../../dev/demo/fixtures';
 import type { BrowserSettingsDto } from '../../ipc/browsers';
 import { useAccounts } from '../accounts/accounts.store';
 import { useChats } from '../chats/chats.store';
+import { UpdateConfirm } from '../updates/UpdateConfirm';
+import { useUpdates } from '../updates/updates.store';
 import { SettingsDialog } from './SettingsDialog';
 import { useSettings, type SettingsPage } from './settings.store';
 
@@ -165,6 +167,36 @@ describe('SettingsDialog', () => {
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(screen.getByTestId('app')).not.toHaveAttribute('inert');
     expect(gear).toHaveFocus();
+  });
+
+  it('is suspended under the update confirm it raises, and gets the focus back after', async () => {
+    act(() => useUpdates.setState({ phase: 'available', current: '0.10.1', next: '0.11.0' }));
+    render(
+      <div data-app>
+        <SettingsDialog />
+        <UpdateConfirm />
+      </div>
+    );
+    const user = userEvent.setup();
+    act(() => useSettings.getState().setOpen(true, 'updates'));
+    const update = screen.getByRole('button', { name: 'Update…' });
+    await user.click(update);
+
+    const confirm = screen.getByRole('dialog', { name: 'Update to 0.11.0?' });
+    expect(confirm).toHaveFocus();
+    const settings = document.querySelector('.settings')!;
+    expect(settings.closest('[inert]')).not.toBeNull();
+    // Tab walks the confirm's own controls and never lands in Settings.
+    for (let i = 0; i < 6; i++) {
+      await user.tab();
+      expect(confirm).toContainElement(document.activeElement as HTMLElement);
+    }
+
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog', { name: 'Update to 0.11.0?' })).not.toBeInTheDocument();
+    expect(useSettings.getState().open).toBe(true);
+    expect(settings.closest('[inert]')).toBeNull();
+    expect(update).toHaveFocus();
   });
 
   it('keeps a draft on one page while another is looked at', async () => {

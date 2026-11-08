@@ -9,20 +9,6 @@ import { Icon } from '../../shared/ui/icons';
  * of the explanation folds into the group's "How … works".
  */
 
-/** What Tab can reach inside `root`, in document order: enabled controls not
- *  taken out of the order, not on a hidden page and not folded away in a
- *  closed "How … works" (its summary still counts). */
-export function focusables(root: Element): HTMLElement[] {
-  return [...root.querySelectorAll<HTMLElement>('button, input, select, textarea, summary, [href], [tabindex]')].filter(
-    el => {
-      if (el.getAttribute('tabindex') === '-1' || (el as HTMLButtonElement).disabled) return false;
-      if (el.closest('[hidden], [inert]')) return false;
-      const folded = el.closest('details:not([open])');
-      return !folded || el.parentElement === folded;
-    }
-  );
-}
-
 /** A titled card of rows. `title` is left off where the page is the group. */
 export function Group({ title, about, children }: { title?: string; about?: About; children: ReactNode }) {
   return (
