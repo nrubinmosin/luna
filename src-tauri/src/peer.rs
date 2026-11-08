@@ -64,8 +64,13 @@ pub fn verdict(peer: Option<&PeerFacts>, core_integrity: u32) -> Verdict {
 /// token, for the log.
 #[cfg(windows)]
 pub fn refuse_reason(stream: &TcpStream) -> Option<String> {
+    // Without the core's own integrity there is no threshold to judge a peer
+    // against, so no connection is let in until it can be read (fail closed).
+    let Some(core) = win::core_integrity() else {
+        return Some("the core's own integrity could not be read".to_string());
+    };
     let facts = win::peer_facts(stream);
-    match verdict(facts.as_ref(), win::core_integrity()) {
+    match verdict(facts.as_ref(), core) {
         Verdict::Allow => None,
         Verdict::Refuse(why) => Some(match &facts {
             Some(f) => format!("pid {} ({}): {why}", f.pid, f.image),
@@ -96,25 +101,21 @@ mod win {
         GetCurrentProcess, OpenProcess, OpenProcessToken, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
     };
 
-    /// The core's own mandatory-label RID: what a peer must meet or beat. Read
-    /// once; it does not change under a running process. Medium (`0x2000`) in
-    /// the ordinary run, the fallback if it cannot be read.
-    pub(super) fn core_integrity() -> u32 {
-        use std::sync::OnceLock;
-        static IL: OnceLock<u32> = OnceLock::new();
-        *IL.get_or_init(|| {
-            // SAFETY: the current-process token is opened for query and closed
-            // here; the pseudo-handle needs no close.
-            unsafe {
-                let mut token = HANDLE::default();
-                if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).is_err() {
-                    return 0x2000;
-                }
-                let il = token_integrity(token).unwrap_or(0x2000);
-                let _ = CloseHandle(token);
-                il
-            }
-        })
+    /// The core's own mandatory-label RID: what a peer must meet or beat,
+    /// Medium (`0x2000`) in the ordinary run. None when it cannot be read, on
+    /// which the caller refuses rather than guess a threshold. Not cached: a
+    /// stale None would refuse every connection for the core's life, and the
+    /// read is a couple of local calls.
+    pub(super) fn core_integrity() -> Option<u32> {
+        // SAFETY: the current-process token is opened for query and closed
+        // here; the pseudo-handle needs no close.
+        unsafe {
+            let mut token = HANDLE::default();
+            OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).ok()?;
+            let il = token_integrity(token);
+            let _ = CloseHandle(token);
+            il
+        }
     }
 
     /// The facts about the process that owns `stream`'s client end, or None
@@ -224,7 +225,8 @@ mod win {
     }
 
     /// The token facts of `pid`, or None when it cannot be opened (gone, or
-    /// above this process's reach) — `verdict` fails closed on None.
+    /// above this process's reach) or a fact cannot be read — `verdict` fails
+    /// closed on None, so an unknown fact refuses the peer rather than pass it.
     fn read_token(pid: u32) -> Option<PeerFacts> {
         // SAFETY: the process is opened for query only and closed before
         // return; the token likewise; each Win32 call is checked.
@@ -237,11 +239,16 @@ mod win {
                 let _ = CloseHandle(process);
                 return None;
             }
+            // Each fact is required: an AppContainer or an integrity query that
+            // fails leaves the peer uncharacterized, and an uncharacterized
+            // peer is refused. `IsTokenRestricted` reports false for a plain
+            // token and cannot say "unknown" apart from it; it does not fail
+            // for a token just opened.
             let restricted = IsTokenRestricted(token).is_ok();
-            let app_container = token_is_app_container(token);
-            let integrity = token_integrity(token).unwrap_or(0);
+            let facts = token_is_app_container(token).zip(token_integrity(token));
             let _ = CloseHandle(token);
             let _ = CloseHandle(process);
+            let (app_container, integrity) = facts?;
             Some(PeerFacts { pid, image, restricted, app_container, integrity })
         }
     }
@@ -262,14 +269,16 @@ mod win {
     }
 
     /// Whether `token` is an AppContainer (`TokenIsAppContainer` nonzero).
-    unsafe fn token_is_app_container(token: HANDLE) -> bool {
+    /// None when the query fails, so the peer is refused rather than taken for
+    /// not contained.
+    unsafe fn token_is_app_container(token: HANDLE) -> Option<bool> {
         let mut is = 0u32;
         let mut len = 0u32;
-        // SAFETY: a u32 out-parameter sized to match; failure leaves `is` 0.
-        let ok = unsafe {
-            GetTokenInformation(token, TokenIsAppContainer, Some((&mut is as *mut u32).cast()), size_of::<u32>() as u32, &mut len)
-        };
-        ok.is_ok() && is != 0
+        // SAFETY: a u32 out-parameter sized to match.
+        unsafe {
+            GetTokenInformation(token, TokenIsAppContainer, Some((&mut is as *mut u32).cast()), size_of::<u32>() as u32, &mut len).ok()?;
+        }
+        Some(is != 0)
     }
 
     /// The mandatory-label RID of an open `token`: the last sub-authority of
