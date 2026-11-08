@@ -80,6 +80,7 @@ pub(super) fn spawn_taken(request: u64, caller: &str, helper: Option<&str>, resu
         auto_delete: None,
         resume_on_restart: resume,
         budget_tokens: None,
+        connectors: false,
         visible: true,
         in_worktree: None,
         account_path: "C:\\acc\\anthropic\\one".into(),

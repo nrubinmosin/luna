@@ -44,6 +44,8 @@ pub(crate) struct ChatStart<'a> {
     /// The guard against endless waits (guard.rs) as its `-c` override, if
     /// the session has it (pty/start.rs `codex_guard_args`).
     pub(crate) guard: &'a [String],
+    /// A helper's account's MCP servers and apps turned off (`connectors_off`).
+    pub(crate) connectors_off: &'a [String],
     pub(crate) parent: Option<&'a str>,
     /// Luna's MCP server's URL and the session's token, while the server is
     /// up to take it.
@@ -156,6 +158,10 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
     if !s.guard.is_empty() {
         applied.push(guard_applied(s.parent.is_some()));
     }
+    args.extend(s.connectors_off.iter().cloned());
+    if !s.connectors_off.is_empty() {
+        applied.push(connectors_off_applied(s.connectors_off));
+    }
     args.extend(no_update_check());
     applied.push(Item::NoAutoUpdate.with(format!("-c {NO_UPDATE_CHECK}")));
     args.push("-c".into());
@@ -232,6 +238,58 @@ pub(crate) const NO_UPDATE_CHECK: &str = "check_for_update_on_startup=false";
 pub(crate) fn no_update_check() -> [String; 2] {
     ["-c".into(), NO_UPDATE_CHECK.into()]
 }
+
+/// What keeps a Codex helper to Luna's MCP server, as a Claude Code one is kept
+/// by `--strict-mcp-config`: its account's apps (ChatGPT's connectors, the
+/// stable `features.apps`) and each server its account's `config.toml` defines
+/// (`servers`: name and keys, codex/config.rs `mcp_servers`), turned off for the
+/// run (`mcp_servers.<name>.enabled`; 0.167.0). Codex has no switch for all
+/// servers at once, and an override naming a server no layer defines fails the
+/// run's config ("invalid transport"), as does one for a name a `-c` key cannot
+/// spell, split as it is at every dot: only the account's own, bare-key names,
+/// are named here. A project's `.codex/` and a plugin's servers stay on
+/// (docs/security/threat-model.md).
+///
+/// A server the account calls `luna` is no exception: off, unless Luna gives the
+/// run its own (`luna_supplied`, `mcp_args`). Then Codex merges the two key by
+/// key, so the account's must set nothing Luna's does not replace
+/// (`LUNA_SERVER_KEYS`), or the helper is not started: what runs as `luna` is
+/// Luna's server, exactly.
+pub(crate) fn connectors_off(servers: &[(String, Vec<String>)], luna_supplied: bool) -> Result<Vec<String>, String> {
+    let mut args = vec!["-c".to_string(), "features.apps=false".to_string()];
+    let bare = |n: &str| !n.is_empty() && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    for (name, keys) in servers.iter().filter(|(n, _)| bare(n)) {
+        args.push("-c".into());
+        if name != LUNA_SERVER || !luna_supplied {
+            args.push(format!("mcp_servers.{name}.enabled=false"));
+            continue;
+        }
+        let other: Vec<&str> = keys.iter().map(String::as_str).filter(|k| !LUNA_SERVER_KEYS.contains(k)).collect();
+        if !other.is_empty() {
+            return Err(format!(
+                "the helper is not started: its account's config.toml defines an MCP server named {LUNA_SERVER} whose {} \
+                 would be merged into Luna's own; rename that server, or spawn with connectors: true",
+                other.join(", ")
+            ));
+        }
+        // What it sets Luna's overrides replace, but for one that turns it off.
+        args.push(format!("mcp_servers.{LUNA_SERVER}.enabled=true"));
+    }
+    Ok(args)
+}
+
+/// `connectors_off`'s overrides as applied: what a helper is kept to.
+pub(crate) fn connectors_off_applied(off: &[String]) -> Applied {
+    Item::HelperMcpAlone.with(off.iter().filter(|a| *a != "-c").map(|v| format!("-c {v}")).collect::<Vec<_>>().join(", "))
+}
+
+/// The name Luna's own MCP server goes by in a Codex session (`mcp_args`).
+const LUNA_SERVER: &str = "luna";
+
+/// The keys of `[mcp_servers.luna]` that `mcp_args` sets, and `enabled`, which
+/// `connectors_off` does: an account's server of that name setting only these
+/// is replaced by Luna's whole.
+const LUNA_SERVER_KEYS: [&str; 5] = ["url", "bearer_token_env_var", "tool_timeout_sec", "default_tools_approval_mode", "enabled"];
 
 /// `hooks.PreToolUse` for Codex, posting each shell call to `url` through
 /// `curl` (pty/start.rs `codex_guard_args`). A TOML literal string: the
@@ -396,6 +454,34 @@ mod tests {
     use super::*;
     use crate::claude::launch::claude_settings;
 
+    #[test]
+    fn a_helper_has_its_accounts_apps_and_named_servers_off() {
+        let servers = |n: &[(&str, &[&str])]| {
+            n.iter().map(|(name, keys)| (name.to_string(), keys.iter().map(|k| k.to_string()).collect())).collect::<Vec<_>>()
+        };
+        assert_eq!(connectors_off(&[], false).unwrap(), ["-c", "features.apps=false"]);
+        let account =
+            servers(&[("gmail", &["command"]), ("team.slack", &["url"]), ("", &[]), ("Zoho_CRM-2", &["url"]), ("café", &["url"])]);
+        assert_eq!(
+            connectors_off(&account, false).unwrap(),
+            ["-c", "features.apps=false", "-c", "mcp_servers.gmail.enabled=false", "-c", "mcp_servers.Zoho_CRM-2.enabled=false"],
+            "a name a -c key cannot spell is not tried"
+        );
+        // An account's own `luna`: off when Luna gives the run no server of its own.
+        let theirs = servers(&[("luna", &["command", "args"])]);
+        assert_eq!(connectors_off(&theirs, false).unwrap(), ["-c", "features.apps=false", "-c", "mcp_servers.luna.enabled=false"]);
+        // With Luna's own, only one Luna's would replace whole goes, turned on.
+        let e = connectors_off(&theirs, true).unwrap_err();
+        assert!(e.contains("not started") && e.contains("command, args"), "{e}");
+        let like_lunas = servers(&[("luna", &["url", "enabled"])]);
+        assert_eq!(connectors_off(&like_lunas, true).unwrap(), ["-c", "features.apps=false", "-c", "mcp_servers.luna.enabled=true"]);
+        // What `mcp_args` sets is what the account's may set.
+        for arg in mcp_args("http://h/mcp").iter().filter(|a| *a != "-c") {
+            let key = arg.trim_start_matches("mcp_servers.luna.").split('=').next().unwrap();
+            assert!(LUNA_SERVER_KEYS.contains(&key), "{key}");
+        }
+    }
+
     /// A chat's settings carry its hooks and, with the guard, a second
     /// PreToolUse entry on the shell tools; a background helper's, the guard
     /// alone; nothing at all, none.
@@ -406,7 +492,7 @@ mod tests {
             excluded: vec!["E:/acc/work/CLAUDE.md".to_string()],
             ..Default::default()
         };
-        let chat = claude_settings(Some("http://h/hook/c/s"), Some("http://h/guard/c/s"), &library, "/d/core");
+        let chat = claude_settings(Some("http://h/hook/c/s"), Some("http://h/guard/c/s"), &library, "/d/core", None);
         let pre = chat["hooks"]["PreToolUse"].as_array().unwrap();
         assert_eq!(pre.len(), 2);
         assert_eq!(pre[0]["matcher"], "AskUserQuestion");
@@ -416,12 +502,13 @@ mod tests {
         assert_eq!(chat["skillOverrides"]["deploy"], "off");
         assert_eq!(chat["claudeMdExcludes"], serde_json::json!(["E:/acc/work/CLAUDE.md"]));
         let none = crate::library::SessionSkills::default();
-        let unguarded = claude_settings(Some("http://h/hook/c/s"), None, &none, "/d/core");
+        let unguarded = claude_settings(Some("http://h/hook/c/s"), None, &none, "/d/core", None);
         assert_eq!(unguarded["hooks"]["PreToolUse"].as_array().unwrap().len(), 1);
-        let helper = claude_settings(None, Some("http://h/guard/c/s"), &none, "/d/core");
+        let helper = claude_settings(None, Some("http://h/guard/c/s"), &none, "/d/core", None);
         let hooks = helper["hooks"].as_object().unwrap();
         assert_eq!(hooks.keys().collect::<Vec<_>>(), ["PreToolUse"], "no hooks of its own: its stream says it all");
-        assert_eq!(claude_settings(None, None, &none, "/d/core").keys().collect::<Vec<_>>(), ["permissions"], "the core's deny alone");
+        let alone = claude_settings(None, None, &none, "/d/core", None);
+        assert_eq!(alone.keys().collect::<Vec<_>>(), ["permissions"], "the core's deny alone");
         let curl = crate::pty::curl_program();
         let guard = guard_override("http://h/guard/c/s", &curl);
         assert!(guard.starts_with(r#"hooks.PreToolUse=[{matcher="Bash",hooks=[{type="command",command='"#), "{guard}");

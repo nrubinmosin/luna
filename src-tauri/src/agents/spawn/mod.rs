@@ -81,6 +81,11 @@ pub struct SpawnParams {
     pub read_only: Option<bool>,
     /// The agent it runs as: Claude Code's `--agent`.
     pub agent: Option<String>,
+    /// Keeps the MCP servers and connectors its account has (claude.ai's,
+    /// Codex's apps), which a helper otherwise starts without: Luna's to act
+    /// on (`keeps_connectors`).
+    #[serde(skip_serializing)]
+    pub connectors: Option<bool>,
 }
 
 /// `account` in a spawn: a name, or names to choose from (`pick_from_list`).
@@ -138,6 +143,8 @@ pub(super) struct SpawnTaken {
     pub(super) resume_on_restart: bool,
     #[serde(default)]
     pub(super) budget_tokens: Option<u64>,
+    #[serde(default)]
+    pub(super) connectors: bool,
     pub(super) visible: bool,
     pub(super) in_worktree: Option<String>,
     pub(super) account_path: String,
@@ -195,6 +202,7 @@ impl SpawnUnderWay {
             auto_delete: params.auto_delete,
             resume_on_restart: params.resume_on_restart == Some(true),
             budget_tokens: params.budget_tokens,
+            connectors: params.connectors == Some(true),
             visible: params.visible == Some(true),
             in_worktree: in_worktree.map(str::to_owned),
             account_path: account_path.to_string(),
@@ -470,11 +478,7 @@ pub(super) fn spawn_with(caller: &str, mut params: SpawnParams, replaces: Option
     let (provider, account, prompt) =
         (params.provider.clone().unwrap_or_default(), params.account_name().unwrap_or_default().to_string(), params.prompt.clone());
     // A command line holds some 32 thousand characters on Windows.
-    params.prompt = if provider == Provider::Codex.as_str() {
-        spill(&crate::pty::codex_helper_prompt(caller, &params.prompt))
-    } else {
-        spill(&params.prompt)
-    };
+    params.prompt = spill(&crate::pty::helper_prompt(caller, &params.prompt));
     let hooks_unasked = provider == Provider::Codex.as_str() && crate::codex::hooks::unasked_in(&folder);
     let asking = SpawnRequest { request_id, parent_id: caller.to_string(), in_worktree, hooks_unasked, params };
     if let Some(s) = reg().lock().unwrap_or_else(|e| e.into_inner()).spawns.get_mut(&request_id) {
@@ -597,6 +601,18 @@ pub(super) fn spawn_with(caller: &str, mut params: SpawnParams, replaces: Option
     })
 }
 
+/// Whether helper `id` keeps its account's own MCP servers and connectors: as
+/// the spawn it is starting for asked (`request`), else as its settings have
+/// kept it since (`CORE_SETTINGS`). The window, which starts a visible helper,
+/// never hears of it.
+pub fn keeps_connectors(id: &str, request: Option<u64>) -> bool {
+    let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    match request.and_then(|q| r.spawns.get(&q)) {
+        Some(s) => s.connectors,
+        None => r.known.get(id).is_some_and(|k| k.settings["connectors"] == true),
+    }
+}
+
 /// The session a spawn came to, as soon as it is registered and before its CLI is
 /// started: what the spawn asked of it that the window does not carry goes on it now,
 /// as a core may go before the spawn gets any further, and from here on
@@ -614,7 +630,7 @@ pub fn spawn_is(request: u64, id: &str) -> Result<(), String> {
         };
         s.helper = Some(id.to_string());
         let (resumes, borrowed, auto) = (s.resume_on_restart, s.in_worktree.is_some(), s.auto_delete == Some(true));
-        let budget = s.budget_tokens;
+        let (budget, connectors) = (s.budget_tokens, s.connectors);
         // A background helper keeps its own (`Entry::opening`).
         let opening = s.visible.then(|| s.params.prompt.clone());
         let own_worktree = s.params.worktree == Some(true);
@@ -635,6 +651,9 @@ pub fn spawn_is(request: u64, id: &str) -> Result<(), String> {
         }
         if let (Some(budget), Some(k)) = (budget, r.known.get_mut(id)) {
             k.settings["budgetTokens"] = serde_json::json!(budget);
+        }
+        if let (true, Some(k)) = (connectors, r.known.get_mut(id)) {
+            k.settings["connectors"] = serde_json::json!(true);
         }
         if let Some(text) = opening {
             r.openings.insert(id.to_string(), Opening { text, floor: 0, lost: false, at_ms: now_ms() });
@@ -1023,6 +1042,30 @@ mod tests {
         let s = SpawnTaken { budget_tokens: Some(9), ..spawn_taken(9001, "b-caller", None, true) };
         let back: SpawnTaken = serde_json::from_slice(&serde_json::to_vec(&s).unwrap()).unwrap();
         assert_eq!(back.budget_tokens, Some(9));
+    }
+
+    #[test]
+    fn connectors_are_lunas_to_give_and_stay_with_the_helper() {
+        let p: SpawnParams = serde_json::from_value(serde_json::json!({ "prompt": "go", "connectors": true })).unwrap();
+        assert_eq!(p.connectors, Some(true));
+        assert!(serde_json::to_value(&p).unwrap().get("connectors").is_none(), "the window never hears of it");
+        // A visible helper's start asks the spawn it is for, which a core keeps.
+        let s = SpawnTaken { connectors: true, ..spawn_taken(9_000_700, "kc-caller", None, false) };
+        let back: SpawnTaken = serde_json::from_slice(&serde_json::to_vec(&s).unwrap()).unwrap();
+        assert!(back.connectors);
+        reg().lock().unwrap().spawns.insert(9_000_700, s);
+        assert!(keeps_connectors("kc-kid", Some(9_000_700)));
+        assert!(!keeps_connectors("kc-kid", None), "not asked of anything yet");
+        reg().lock().unwrap().spawns.remove(&9_000_700);
+        // Its every later start, by its settings, whatever the window starts it with.
+        let (account, none) = ("C:\\acc\\anthropic\\one", serde_json::json!({}));
+        register("kc-kid", Provider::Claude, "C:\\p", account, Some("kc-caller"), false, serde_json::json!({ "connectors": true }));
+        register("kc-kid", Provider::Claude, "C:\\p", account, Some("kc-caller"), false, none.clone());
+        assert!(keeps_connectors("kc-kid", None));
+        register("kc-other", Provider::Claude, "C:\\p", account, Some("kc-caller"), false, none);
+        assert!(!keeps_connectors("kc-other", None), "asked for by none: Luna's server alone");
+        forget("kc-kid");
+        forget("kc-other");
     }
 
     #[test]

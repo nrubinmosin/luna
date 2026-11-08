@@ -17,7 +17,8 @@ use serde::{Deserialize, Serialize};
 pub enum Class {
     /// What Luna needs to run the CLI as one of its sessions.
     Runtime,
-    /// What keeps a session out of Luna's own secrets.
+    /// What keeps a session out of Luna's own secrets, and a helper, briefed
+    /// by an agent rather than the person, within what Luna lets it reach.
     Boundary,
     /// What the person chose: in the new-chat dialog, Settings, the library,
     /// or an agent's request they gave it tools to make.
@@ -103,6 +104,10 @@ items! {
         "codex exec has nobody to ask: the sandbox chosen for it is what holds it.";
     HelperReviewer = "helper.reviewer", Runtime,
         "What a helper would ask goes to the chat that started it, never to a reviewer model an account or project names.";
+    HelperMcpAlone = "helper.luna-mcp-alone", Boundary,
+        "A helper is briefed by an agent, not by you: it gets Luna's MCP server alone, none of the account's connectors or MCP servers, unless the agent that spawned it asked for them (connectors: true).";
+    HelperNoMemory = "helper.no-auto-memory", Boundary,
+        "What a helper saved to the account's auto-memory would reach every later session of the account unseen: its auto-memory is off.";
     HelperTrust = "helper.trust", Runtime,
         "A helper has nobody to answer Codex's trust screen: the folder it was sent to is trusted for this run only, nothing written.";
     SkipGitRepoCheck = "helper.skip-git-repo-check", Runtime,

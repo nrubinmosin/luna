@@ -9,8 +9,9 @@
 //! back — and a delete tells the frontend to drop the row after the session
 //! and its worktree are gone. Lineage lives here: every session registered
 //! with a parent is that parent's, and a caller may only reach its own
-//! descendants — except to list every session, type a message into one and
-//! read or wait on its answer, which is how sessions talk to each other; only
+//! descendants — except to list every session, and, told `scope: "all"`, to
+//! type a message into one and read or wait on its answer, which is how
+//! sessions talk to each other (the message says whose it is); interrupting,
 //! killing and deleting stay with the lineage. Children outlive their parent:
 //! they pass to its parent, or with none stand alone, the window's to manage
 //! (see `forget`).
@@ -55,13 +56,13 @@ pub(crate) use privilege::{command_prefix, command_reach_now};
 pub use read::{read, Message};
 pub(crate) use registry::mint;
 pub use registry::{
-    applied_of, caller_of, chat_name, chat_names, has_tools, label, parent_of, parent_on_start, promoted, register, register_dev_caller,
-    resumes_on_restart, session_exited, set_applied, settings_of, DEV_CALLER,
+    applied_of, caller_of, chat_name, chat_names, has_tools, in_scope, label, own_or_self, parent_of, parent_on_start, promoted, register,
+    register_dev_caller, resumes_on_restart, scope_all, session_exited, set_applied, settings_of, DEV_CALLER,
 };
 pub use resume::agent_resumes;
 pub use spawn::account::account_usage;
 pub use spawn::worktree::{helper_worktree_name, name_to_go_on, report_codex_worktrees, worktree_for_start};
-pub use spawn::{agent_spawned, agent_spawns, chat_starting, spawn, spawn_is, SpawnParams};
+pub use spawn::{agent_spawned, agent_spawns, chat_starting, keeps_connectors, spawn, spawn_is, SpawnParams};
 #[cfg(test)]
 pub use teardown::news_for;
 pub use teardown::{delete, delete_by_user, forget, kill, queued_refused};

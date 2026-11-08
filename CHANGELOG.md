@@ -14,7 +14,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   added to the chat's CLI at its latest start, grouped as your choice,
   runtime, boundary or workaround, each with its value and why, and what Luna
   wrote into the account (the folder's trust, the library's copies). Tokens
-  and Luna's local addresses are never shown.
+  and Luna's local addresses are never shown. A helper kept to Luna's MCP
+  server and with its auto-memory off shows both as boundary items.
 
 ### Changed
 
@@ -39,8 +40,37 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   - Chats that had the guard because of Luna tools are named in a notice
     once; a chat's ⓘ panel turns the guard on for it.
 
+## [0.10.2] - 2026-11-08
+
+A security release for the agent tools and the app window: an agent reaches
+only its own helpers unless it asks for every session, helpers start without
+their account's connectors, the window's page can call only what it uses, and
+no CLI runs with administrator rights. It also makes Luna's tools cheaper for
+agents to use and fixes several ways a helper's report or a transcript was
+misread.
+
 ### Security
 
+- An agent can interrupt only its own helpers and theirs: `luna_send` with
+  `interrupt: true` reached any session, so one agent could stop another
+  chat's helper mid-turn, or a person's chat, and dismiss the question it was
+  waiting on.
+- Reading, waiting on, sending text to and answering a session that is not
+  the agent's own takes `scope: "all"` in the call, and text so sent, an
+  answer typed in as a message too, arrives opened `[From session <id> via
+  Luna]` rather than as the user's own words.
+- `luna_list` and `luna_sessions` list any session's state but give another
+  session's question, permission request or task, and others' past spawns
+  with their prompts and replies, only with `scope: "all"`.
+- Helpers start with Luna's MCP server alone: no MCP servers or connectors of
+  their account (claude.ai's Gmail, Slack and other tools that send and write
+  in the person's name; Codex's apps and its account's `config.toml`
+  servers), unless spawned with `connectors: true`, and Claude Code helpers
+  with auto-memory off. A Codex helper keeps the servers of the project's
+  `.codex/` and of plugins, which Codex gives no way to turn off for a run.
+- Every `luna_*` tool refuses an argument it does not take, or of the wrong
+  type, naming those it takes, instead of running on a default: `read_only`
+  for `readOnly` spawned a helper that could write.
 - The window's page reaches only what it calls, so a script injected into it
   would get no more: each app command is granted to the main window by name
   and refused to any other window or a remote page, plugins are cut to the
@@ -73,8 +103,31 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   input, and that a line's length or depth costs no more than its bytes. A
   scheduled workflow runs them weekly.
 
+### Changed
+
+- `luna_list` names each account with its defaults and usage but no longer its
+  models, Codex's catalog with every model's levels being most of what a
+  listing cost an agent that lists often; `models: true` brings them back.
+- A notice says which lines of its answer file are the report (`lines 1-N of
+  M`), and `luna_read` with `report: true` gives the report alone, so an agent
+  that wants only the report need not read everything else the helper said.
+- `luna_guide` takes a `topic`: a word of a section's title gives that section,
+  `all` the whole guide, and no topic its opening with the sections to ask
+  for. The instruction sessions get says to read it whole before the first
+  spawn; a lookup after that costs a section, not the whole manual.
+- A notice ready for an agent that another of its helpers is still working for
+  waits up to 20 seconds for that one's answer, so helpers finishing within
+  seconds of each other wake the agent once, not once each.
+
 ### Fixed
 
+- A Codex prompt that opens with a tag of its own, such as `<task>…</task>`,
+  is a prompt again: `luna_read` and answers left out every user message
+  starting with `<`, and with it the start of the turn that answered it. Only
+  the blocks Codex itself puts there (its environment, skills, shell commands,
+  interruptions and the like) are left out.
+- `luna_answer` refuses answers to a question with no dialog that are one too
+  few or too many, rather than send them as if they answered it.
 - A command call whose timeout is past any clock (a Claude Code `Bash`,
   `PowerShell` or `Monitor` call, a Codex call's bound) made the time it is due
   wrap round to one long before the call, so a caller waiting on a quiet turn
@@ -91,6 +144,17 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   opening prompt (the name it goes by until the CLI titles it), in Claude Code
   and Codex alike: it is read as the conversation reads it, a stray byte as
   U+FFFD.
+- A helper's notice led with the wrong report when its CLI started a short turn
+  of its own after the real one (a background job's end it took up): the short
+  line came first and the long report sank among the rest. Such a turn now
+  leaves the report to the long message before it, and comes next as the last
+  word.
+- Helpers followed rules their account's instructions set for the person's own
+  chat — one wrote its progress notes in the language set for "the operator".
+  The note a helper gets now names the words such instructions use (the
+  operator, the user, the person at this machine) and tells it to answer its
+  caller in its task's language and form; a Claude Code helper gets the note
+  after its first prompt too, not only in its system prompt.
 
 ## [0.10.1] - 2026-11-08
 
@@ -350,7 +414,8 @@ fixes below.
 - First release: Claude Code sessions in panes, accounts with isolated configs,
   usage limits, worktrees, the updater.
 
-[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.10.1...HEAD
+[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.10.2...HEAD
+[0.10.2]: https://github.com/nrubinmosin/luna/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/nrubinmosin/luna/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/nrubinmosin/luna/compare/v0.9.10...v0.10.0
 [0.9.0]: https://github.com/nrubinmosin/luna/compare/v0.8.0...v0.9.0

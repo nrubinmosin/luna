@@ -3,7 +3,7 @@
 
 use crate::agents::ask::{state_of, Ask};
 use crate::agents::read::transcript_path;
-use crate::agents::registry::{descendants, is_descendant, reg, Known, DEV_CALLER};
+use crate::agents::registry::{descendants, is_descendant, reg, scope_all, Known, DEV_CALLER};
 use crate::agents::spawn::account::allowed_account_dirs;
 use crate::agents::spawn::background::CLAUDE_MODELS;
 use crate::agents::spawn::worktree::{checkout_of, Worktree};
@@ -63,8 +63,11 @@ pub struct AccountRow {
     /// the caller's folder: the flags as `spawn` echoes them.
     pub defaults: serde_json::Value,
     /// The models a helper may ask for here: Claude Code's aliases (a full
-    /// id works too), Codex's catalog with each model's name and levels.
-    pub models: Vec<serde_json::Value>,
+    /// id works too), Codex's catalog with each model's name and levels. Only
+    /// when asked (`models: true`): Codex's catalog is most of what a listing
+    /// weighs, and a caller lists far more often than it picks a model.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub models: Option<Vec<serde_json::Value>>,
     /// Its usage as the window last showed it (see `account_usage`); none
     /// before the window has said.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -74,7 +77,7 @@ pub struct AccountRow {
 /// Accounts an agent may spawn on — every account folder on disk, minus the
 /// ones the user switched off for agents — with what a helper would get in
 /// `folder` on each.
-fn account_rows(folder: &str) -> Vec<AccountRow> {
+fn account_rows(folder: &str, with_models: bool) -> Vec<AccountRow> {
     let usage = reg().lock().unwrap_or_else(|e| e.into_inner()).usage.clone();
     allowed_account_dirs()
         .into_iter()
@@ -84,18 +87,21 @@ fn account_rows(folder: &str) -> Vec<AccountRow> {
                 Provider::Codex => crate::codex::defaults::flags(&a.path, folder),
             };
             let usage = usage.get(&format!("{}/{}", a.provider.as_str(), a.name)).cloned();
-            let models = match a.provider {
-                Provider::Claude => CLAUDE_MODELS.iter().map(|m| serde_json::json!({ "id": m })).collect(),
-                Provider::Codex => crate::codex::models::models_known(&a.path)
-                    .into_iter()
-                    .map(|m| {
-                        serde_json::json!({ "id": m.slug, "name": m.display_name, "efforts": m.efforts, "defaultEffort": m.default_effort })
-                    })
-                    .collect(),
-            };
+            let models = with_models.then(|| models_of(a.provider, &a.path));
             AccountRow { provider: a.provider, name: a.name, defaults, models, usage }
         })
         .collect()
+}
+
+/// The models a helper may ask for on the account at `path`.
+fn models_of(provider: Provider, path: &str) -> Vec<serde_json::Value> {
+    match provider {
+        Provider::Claude => CLAUDE_MODELS.iter().map(|m| serde_json::json!({ "id": m })).collect(),
+        Provider::Codex => crate::codex::models::models_known(path)
+            .into_iter()
+            .map(|m| serde_json::json!({ "id": m.slug, "name": m.display_name, "efforts": m.efforts, "defaultEffort": m.default_effort }))
+            .collect(),
+    }
 }
 
 /// What `luna_list` says of a visible session beyond its state: its turn's
@@ -124,11 +130,14 @@ fn visible_signs(pty: &crate::pty::PtyManager, id: &str, provider: Provider) -> 
 }
 
 /// The caller's own, or the sessions `ids` names, which may be any: what a row
-/// says is what `sessions` and `read` already show of them. `accounts` is the
-/// costly part of a listing, in time and in what it adds to the caller's context.
-pub fn list(caller: &str, ids: Option<&[String]>, accounts: bool) -> Listing {
+/// says is what `sessions` and `read` already show of them. Of a session not
+/// the caller's, what it was asked and is asking (`task`, `ask`) only with
+/// `all` (`scope: "all"`): a listing of any session is metadata. `accounts` is
+/// the costly part of a listing, in time and in what it adds to the caller's
+/// context, and `models` the costliest part of that.
+pub fn list(caller: &str, ids: Option<&[String]>, accounts: bool, models: bool, all: bool) -> Listing {
     let mut unknown = Vec::new();
-    let rows: Vec<(String, Known, String, Option<u32>)> = {
+    let rows: Vec<(String, Known, String, Option<u32>, bool)> = {
         let r = reg().lock().unwrap_or_else(|e| e.into_inner());
         let wanted = match ids {
             None => descendants(&r, caller),
@@ -152,14 +161,15 @@ pub fn list(caller: &str, ids: Option<&[String]>, accounts: bool) -> Listing {
             .filter_map(|id| {
                 let name = r.names.get(&id).cloned().unwrap_or_default();
                 let group = r.groups.get(&id).map(|g| g + 1);
-                r.known.get(&id).cloned().map(|k| (id, k, name, group))
+                let told = all || id == caller || is_descendant(&r, caller, &id);
+                r.known.get(&id).cloned().map(|k| (id, k, name, group, told))
             })
             .collect()
     };
     let pty = crate::pty::manager();
     let sessions = rows
         .into_iter()
-        .map(|(id, k, name, group)| {
+        .map(|(id, k, name, group, told)| {
             let (deletes_in_min, task) = {
                 let r = reg().lock().unwrap_or_else(|e| e.into_inner());
                 let left = r.auto.get(&id).and_then(|a| a.idle_since);
@@ -173,6 +183,7 @@ pub fn list(caller: &str, ids: Option<&[String]>, accounts: bool) -> Listing {
             // is taken to have seen of a session's turns.
             let turns_ended = ts.map(|t| t.turns_ended).unwrap_or(0);
             let (state, ask) = state_of(&id);
+            let (ask, task) = if told { (ask, task) } else { (None, None) };
             let worktree = checkout_of(pty, &id, &k);
             let signs = crate::background::signs(&id).unwrap_or_else(|| visible_signs(pty, &id, k.provider));
             SessionRow {
@@ -195,7 +206,7 @@ pub fn list(caller: &str, ids: Option<&[String]>, accounts: bool) -> Listing {
         .collect();
     let accounts = accounts.then(|| {
         let folder = reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(caller).map(|k| k.folder.clone()).unwrap_or_default();
-        account_rows(&folder)
+        account_rows(&folder, models)
     });
     Listing { me: caller.to_string(), accounts, sessions, unknown }
 }
@@ -252,6 +263,10 @@ pub struct SessionFilter {
     pub group: Option<serde_json::Value>,
     #[serde(default)]
     pub q: Option<String>,
+    /// Of sessions not the caller's, their `ask`, and with `history` their
+    /// spawns, only when `all` (`registry::scope_all`).
+    #[serde(default)]
+    pub scope: Option<String>,
     /// Past spawns instead (agentlog.rs), deleted helpers included.
     #[serde(default)]
     pub history: Option<bool>,
@@ -285,6 +300,7 @@ fn keeps(row: &AnySession, group: Option<u32>, q: Option<&str>) -> bool {
 /// Every session Luna runs, for a caller that has to find another one — to
 /// write to it, or to read its transcript off the disk.
 pub fn sessions(caller: &str, filter: &SessionFilter) -> Result<Vec<AnySession>, String> {
+    let all = scope_all(filter.scope.as_deref())?;
     type Row = (String, Known, String, Option<u32>, bool);
     let (rows, mine): (Vec<Row>, Option<u32>) = {
         let r = reg().lock().unwrap_or_else(|e| e.into_inner());
@@ -315,6 +331,9 @@ pub fn sessions(caller: &str, filter: &SessionFilter) -> Result<Vec<AnySession>,
                 .unwrap_or_default();
             let background = crate::background::has(&id);
             let (state, ask) = state_of(&id);
+            // What it waits on, its question's words or a command up for leave,
+            // is its own: listed for the caller's alone, unless told all.
+            let ask = ask.filter(|_| all || yours || id == caller);
             AnySession {
                 you: id == caller,
                 yours,
@@ -368,6 +387,15 @@ mod tests {
     use crate::agents::registry::{reg, register};
 
     #[test]
+    fn an_account_row_has_models_only_when_asked() {
+        let row =
+            |models| AccountRow { provider: Provider::Codex, name: "one".into(), defaults: serde_json::json!({}), models, usage: None };
+        assert_eq!(serde_json::to_value(row(None)).unwrap(), serde_json::json!({ "provider": "codex", "name": "one", "defaults": {} }));
+        let with = serde_json::to_value(row(Some(vec![serde_json::json!({ "id": "gpt-5.5" })]))).unwrap();
+        assert_eq!(with["models"], serde_json::json!([{ "id": "gpt-5.5" }]));
+    }
+
+    #[test]
     fn sessions_filter_by_group_and_text() {
         let none = serde_json::json!({});
         register("grp-me", Provider::Claude, "C:\\work\\luna", "C:\\acc\\anthropic\\one", None, true, none.clone());
@@ -388,18 +416,18 @@ mod tests {
             v.sort();
             v
         };
-        let by = |g: serde_json::Value| SessionFilter { group: Some(g), q: None, history: None };
+        let by = |g: serde_json::Value| SessionFilter { group: Some(g), q: None, history: None, scope: None };
         // Groups go out 1-based, as the title bar counts them.
         assert_eq!(ids("grp-me", by(serde_json::json!("mine"))), ["grp-me", "grp-peer"]);
         assert_eq!(ids("grp-me", by(serde_json::json!(1))), ["grp-far"]);
         assert_eq!(ids("grp-me", by(serde_json::json!("2"))), ["grp-me", "grp-peer"]);
         assert!(sessions("grp-loose", &by(serde_json::json!("mine"))).is_err(), "a session in no group has no mine");
         assert!(sessions("grp-me", &by(serde_json::json!(0))).is_err());
-        let q = |text: &str| SessionFilter { group: None, q: Some(text.into()), history: None };
+        let q = |text: &str| SessionFilter { group: None, q: Some(text.into()), history: None, scope: None };
         assert_eq!(ids("grp-me", q("tester")), ["grp-peer"], "name, any case");
         assert_eq!(ids("grp-me", q("asuri")), ["grp-peer"], "folder");
         assert_eq!(
-            ids("grp-me", SessionFilter { group: Some(serde_json::json!("mine")), q: Some("build".into()), history: None }),
+            ids("grp-me", SessionFilter { group: Some(serde_json::json!("mine")), q: Some("build".into()), history: None, scope: None }),
             ["grp-me"]
         );
     }
