@@ -10,6 +10,11 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Changed
 
+- Release notes are made from this file: a release's notes are its version's
+  section, the sections of every version since the last published release, a
+  link to the full changes, and the commands and checksums to verify the
+  download. The tag's message no longer carries them, and the update chip
+  shows the section's opening paragraph.
 - Commit messages follow one written-down form (CONTRIBUTING.md, "Commits"):
   a sentence of at most 72 characters saying what the change does, no type
   prefix, a blank line, then why. The commit-msg hook, the gate and CI refuse
