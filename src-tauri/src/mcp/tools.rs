@@ -39,11 +39,14 @@ pub(super) fn tools() -> Value {
     let flag = json!({ "type": "boolean" });
     let count = json!({ "type": "integer" });
     let provider = json!({ "type": "string", "enum": ["claude", "codex"] });
+    // `requestKey`: a change a caller may retry without making it twice
+    // (dispatch.rs `keyed`); the guide says so, once for the three.
+    let key = json!({ "type": "string" });
     let topics: Vec<&str> = TOPICS.iter().map(|(topic, _)| *topic).collect();
     json!([
         {
             "name": "luna_session_list",
-            "description": "Sessions as compact rows: id, name, provider, account, parent, state, askId, turnsEnded, task, lastActivityAt, deletesInMin. Yours; scope all: every one; ids: those (others' task, askId: scope all). Filters: state, provider, account, group (a number, I=1, or \"mine\"), q (name, folder, account, id). limit (50); nextCursor goes in cursor.",
+            "description": "Your sessions as compact rows (state, askId, turnsEnded, task, lastActivityAt); scope all: every one; ids: those (others' task, askId: scope all). Filters: state, provider, account, group (a number, I=1, or \"mine\"), q (name, folder, account, id). limit (50); nextCursor goes in cursor.",
             "inputSchema": s(json!({
                 "scope": scope, "ids": strings, "state": strings, "provider": provider, "account": string,
                 "group": { "anyOf": [{ "type": "integer" }, { "type": "string" }] }, "q": string, "limit": count, "cursor": string
@@ -77,7 +80,8 @@ pub(super) fn tools() -> Value {
                 "autoDelete": { "type": "boolean", "description": "default true: deleted 30 min after its answer reached you" },
                 "resumeOnRestart": flag,
                 "budgetTokens": { "type": "integer", "description": "context tokens; past them you hear, once" },
-                "connectors": { "type": "boolean", "description": "its account's MCP servers and connectors too" }
+                "connectors": { "type": "boolean", "description": "its account's MCP servers and connectors too" },
+                "requestKey": key
             }), &["prompt"]),
             "annotations": acts
         },
@@ -87,7 +91,7 @@ pub(super) fn tools() -> Value {
             "inputSchema": s(json!({
                 "id": string, "text": string,
                 "interrupt": { "type": "boolean", "description": "stop its turn first (yours only)" },
-                "scope": scope
+                "scope": scope, "requestKey": key
             }), &["id", "text"]),
             "annotations": acts
         },
@@ -120,7 +124,7 @@ pub(super) fn tools() -> Value {
         {
             "name": "luna_session_delete",
             "description": "Stop and remove your helpers, id or ids; one gone already answers already. dropWorktree: its worktree and worktree-* branch too, unless another session is in it; refused if that loses work, unless force.",
-            "inputSchema": s(json!({ "id": string, "ids": strings, "dropWorktree": flag, "force": flag }), &[]),
+            "inputSchema": s(json!({ "id": string, "ids": strings, "dropWorktree": flag, "force": flag, "requestKey": key }), &[]),
             "annotations": ends
         },
         {
