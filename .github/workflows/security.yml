@@ -27,6 +27,17 @@ defaults:
     shell: pwsh
 
 jobs:
+  # The checks' own tests: the ignore rules, and gitleaks' output kept free of
+  # the secrets it finds (scripts/supply-chain-lib.test.ps1).
+  supply-chain-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: ./scripts/supply-chain.ps1 -Check tests
+
   cargo-deny:
     runs-on: ubuntu-24.04
     timeout-minutes: 20

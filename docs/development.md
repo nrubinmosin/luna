@@ -130,12 +130,13 @@ Node or Rust major is left to a hand-made migration (`.github/dependabot.yml` sa
 
 | Check | What fails it |
 | --- | --- |
-| `deny` | cargo-deny 0.20.2 (release binary, SHA-256 pinned in the script) with `src-tauri/deny.toml`: a RustSec advisory (vulnerable, unmaintained, unsound), a license outside the allowlist, a wildcard requirement, a crate from anywhere but crates.io. Duplicate versions and yanked crates are warnings |
+| `tests` | the tests of the checks themselves (`scripts/supply-chain-lib.test.ps1`): the ignore rules, `deny.toml` read as TOML, gitleaks' output kept free of secrets |
+| `deny` | cargo-deny 0.20.2 (release binary, SHA-256 pinned in the script) with `src-tauri/deny.toml`: a RustSec advisory anywhere in the tree (vulnerable, unmaintained, unsound), a license outside the allowlist, a wildcard requirement, a crate from anywhere but crates.io. Duplicate versions and yanked crates are warnings |
 | `audit` | `pnpm audit`, production and dev packages: a high or critical advisory. Moderate and low ones are listed |
-| `secrets` | gitleaks 8.30.1 (image by digest) over the history reachable from `HEAD`, or `-Range <base>..<head>`; secrets are redacted in its output |
+| `secrets` | gitleaks 8.30.1 (image by digest) over the history reachable from `HEAD`, or `-Range <base>..<head>`. A finding prints its rule, file, line and commit only, never the text it matched: gitleaks' own redaction covers each finding's secret, not the rest of its line |
 
 ```powershell
-./scripts/supply-chain.ps1                     # all three; exit 1 if any fails
+./scripts/supply-chain.ps1                     # all four; exit 1 if any fails
 ./scripts/supply-chain.ps1 -Check deny,audit   # some of them
 ```
 
@@ -153,13 +154,14 @@ without macro expansion or the semantic analysis the rest gets.
 An advisory with no fix to take yet is ignored only with a reason and an
 expiry, which the script enforces; it fails once the date has passed:
 
-- a crate: an entry in `deny.toml`'s `[advisories] ignore`, on one line, whose
-  reason names who pulls the crate in and why it cannot go, ending on
-  `Expires YYYY-MM-DD`;
+- a crate: an entry in `deny.toml`'s `[advisories] ignore`,
+  `{ id = "RUSTSEC-...", reason = "... Expires YYYY-MM-DD" }`, whose reason
+  names who pulls the crate in and why it cannot go. The file is read as TOML,
+  so an entry in any form cargo-deny takes (a bare id included) is held to this;
 - an npm package: an entry in `pnpm-audit-ignores.json`'s `ignores`:
   `{ "id": "GHSA-...", "package": "...", "reason": "...", "expires": "YYYY-MM-DD" }`.
 
-An ignore goes in through a pull request like any change, with the advisory and
+A reason of a few words, or only whitespace, is refused. An ignore goes in through a pull request like any change, with the advisory and
 why it does not reach Luna in its description; three months is the usual
 expiry. The licenses `deny.toml` allows are the ones the tree needs, each
 unusual one justified there; a new license in the tree is decided there, not
