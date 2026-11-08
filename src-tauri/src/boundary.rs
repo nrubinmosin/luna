@@ -5,11 +5,16 @@
 //! absolute, every part a plain name (no `.`, no `..`, no device or verbatim
 //! prefix, no stream suffix), and an account folder must be one Luna lists.
 //!
-//! The checks are on the path's text, plus one look at the account folder
-//! itself; what lies under a checked path is the commands' own business
-//! (worktree removal keeps its own checks, worktree/paths.rs).
+//! A folder is checked on its text. An account folder is also checked on
+//! disk: no link or junction between the accounts root and it, and the
+//! folder the system resolves it to is that very one under the root as the
+//! system resolves the root. What lies under a checked path is the commands'
+//! own business (worktree removal keeps its own checks, worktree/paths.rs).
+//! The look on disk comes before the command opens the path again, a race a
+//! same-user process could win (threat model R6).
 
-use serde::Deserialize;
+use crate::provider::Provider;
+use serde::{Deserialize, Deserializer};
 use std::path::{Component, Path, PathBuf};
 
 /// Longer than any path Windows or Linux opens.
@@ -58,29 +63,53 @@ pub fn absolute(s: &str) -> Result<PathBuf, String> {
     Ok(path.to_path_buf())
 }
 
-/// An account folder: `<root>/<provider dir>/<name>` for one of `roots` (the
-/// providers' folders under the accounts root), a valid account name, and a
-/// folder of its own, not a link to one elsewhere. The same folders
-/// `list_accounts` lists, which is where the page gets every account path.
-pub fn account_in(s: &str, roots: &[PathBuf]) -> Result<PathBuf, String> {
+/// An account folder: `<root>/<provider dir>/<name>` with a valid account
+/// name, the folders `list_accounts` lists, which is where the page gets
+/// every account path. On disk:
+///
+/// - neither the provider's folder nor the account's is a link, junction or
+///   mount point (`symlink_metadata`, which on Windows opens the path with
+///   `FILE_FLAG_OPEN_REPARSE_POINT`; Windows counts any name-surrogate
+///   reparse point as a link). The root itself may be one: it is the user's
+///   choice in Settings;
+/// - the account resolves (`canonicalize`: `GetFinalPathNameByHandleW` on the
+///   opened folder on Windows, `realpath` elsewhere) to a folder directly in
+///   a provider's folder of the root as it resolves, under the very name
+///   given. Another spelling of the same folder (Windows' `name.` or
+///   `name `, an 8.3 short name, other case) is refused rather than trusted.
+pub fn account_in(s: &str, root: &Path) -> Result<PathBuf, String> {
+    let refuse = |why: &str| Err(format!("not an account folder of Luna's ({why})"));
+    // `<account>/` has lstat follow a link in the account's place.
+    if s.ends_with(['/', '\\']) {
+        return refuse("a trailing separator");
+    }
     let path = absolute(s)?;
-    let parent = path.parent().map(|p| crate::paths::path_key(&p.to_string_lossy()));
-    let under = roots.iter().any(|r| Some(crate::paths::path_key(&r.to_string_lossy())) == parent);
-    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    if !under || crate::accounts::validate_name(&name).is_err() {
-        return Err("not an account folder of Luna's".into());
+    let (Some(provider), Some(name)) = (path.parent(), path.file_name()) else { return refuse("no name") };
+    let key = |p: &Path| crate::paths::path_key(&p.to_string_lossy());
+    let in_root = provider.parent().is_some_and(|r| key(r) == key(root));
+    let provider_dir = provider.file_name().map(|d| key(Path::new(d))).unwrap_or_default();
+    let known = Provider::ALL.iter().any(|p| key(Path::new(p.accounts_dir())) == provider_dir);
+    if !in_root || !known || crate::accounts::validate_name(&name.to_string_lossy()).is_err() {
+        return refuse("not in a provider's folder of the accounts root");
     }
-    match std::fs::symlink_metadata(&path) {
-        Ok(m) if m.is_dir() && !m.file_type().is_symlink() => Ok(path),
-        Ok(_) => Err("not an account folder of Luna's (a link or a file)".into()),
-        Err(e) => Err(format!("not an account folder of Luna's: {e}")),
+    for dir in [provider, path.as_path()] {
+        match std::fs::symlink_metadata(dir) {
+            Ok(m) if m.is_dir() && !m.file_type().is_symlink() => {}
+            Ok(_) => return refuse(&format!("{} is a link or a file", dir.display())),
+            Err(e) => return Err(format!("not an account folder of Luna's: {e}")),
+        }
     }
+    let real = std::fs::canonicalize(&path).map_err(|e| format!("not an account folder of Luna's: {e}"))?;
+    let real_root = std::fs::canonicalize(root).map_err(|e| format!("the accounts root: {e}"))?;
+    if real.file_name() != Some(name) || real.parent().and_then(Path::parent) != Some(real_root.as_path()) {
+        return refuse("another spelling of it, or a folder elsewhere");
+    }
+    Ok(path)
 }
 
 /// `account_in` under the accounts root in use.
 pub fn account(s: &str) -> Result<PathBuf, String> {
-    let roots = crate::provider::Provider::ALL.iter().map(|p| crate::accounts::provider_root(*p)).collect::<Result<Vec<_>, _>>()?;
-    account_in(s, &roots)
+    account_in(s, &crate::accounts::accounts_root()?)
 }
 
 /// A path argument the page sends, checked as it is deserialized: a command
@@ -117,6 +146,29 @@ impl TryFrom<String> for AccountPath {
 impl From<AccountPath> for String {
     fn from(p: AccountPath) -> String {
         p.0
+    }
+}
+
+/// A path argument the page may leave empty, meaning none (no account
+/// chosen yet, no folder): `""` passes as itself, anything else is checked
+/// as `T`.
+#[derive(Debug)]
+pub struct OrEmpty<T>(Option<T>);
+
+impl<'de, T: TryFrom<String, Error = String>> Deserialize<'de> for OrEmpty<T> {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        if s.is_empty() {
+            return Ok(Self(None));
+        }
+        T::try_from(s).map(|t| Self(Some(t))).map_err(serde::de::Error::custom)
+    }
+}
+
+impl<T: Into<String>> OrEmpty<T> {
+    /// The checked path, or `""` where none was given.
+    pub fn into_string(self) -> String {
+        self.0.map(Into::into).unwrap_or_default()
     }
 }
 
@@ -162,43 +214,113 @@ mod tests {
         }
     }
 
+    /// A symlink on Unix, a junction on Windows (no privilege needed).
+    fn link_dir(link: &Path, target: &Path) {
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, link).unwrap();
+        #[cfg(windows)]
+        assert!(std::process::Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .output()
+            .is_ok_and(|o| o.status.success()));
+    }
+
+    fn unlink_dir(link: &Path) {
+        // Removes the link itself, never what it points at.
+        let _ = std::fs::remove_dir(link).or_else(|_| std::fs::remove_file(link));
+    }
+
+    fn s(p: &Path) -> String {
+        p.to_string_lossy().into_owned()
+    }
+
+    fn scratch(tag: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("luna-boundary-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("accounts").join("anthropic").join("work")).unwrap();
+        std::fs::create_dir_all(root.join("elsewhere").join("work")).unwrap();
+        root
+    }
+
     #[test]
     fn only_a_listed_account_folder_passes() {
-        let root = std::env::temp_dir().join(format!("luna-boundary-{}", std::process::id()));
-        let anthropic = root.join("anthropic");
-        std::fs::create_dir_all(anthropic.join("work")).unwrap();
-        std::fs::create_dir_all(root.join("elsewhere")).unwrap();
+        let root = scratch("listed");
+        let accounts = root.join("accounts");
+        let anthropic = accounts.join("anthropic");
         std::fs::write(anthropic.join("file"), "").unwrap();
-        let roots = [anthropic.clone(), root.join("openai")];
-        let s = |p: PathBuf| p.to_string_lossy().into_owned();
 
-        assert!(account_in(&s(anthropic.join("work")), &roots).is_ok());
-        // Outside the providers' folders, through `..`, a file, one not there.
+        assert!(account_in(&s(&anthropic.join("work")), &accounts).is_ok());
+        let sep = std::path::MAIN_SEPARATOR;
+        // Outside the providers' folders, through `..`, a file, one not there,
+        // one level too deep, a provider Luna does not know.
+        std::fs::create_dir_all(accounts.join("other").join("work")).unwrap();
         for p in [
-            s(root.join("elsewhere")),
-            s(root.clone()),
-            format!("{}{}..{}elsewhere", s(anthropic.join("work")), std::path::MAIN_SEPARATOR, std::path::MAIN_SEPARATOR),
-            s(anthropic.join("file")),
-            s(anthropic.join("missing")),
-            s(anthropic.join("work").join("deeper")),
+            s(&root.join("elsewhere").join("work")),
+            s(&accounts),
+            s(&anthropic),
+            format!("{}{sep}..{sep}elsewhere", s(&anthropic.join("work"))),
+            s(&anthropic.join("file")),
+            s(&anthropic.join("missing")),
+            s(&anthropic.join("work").join("deeper")),
+            s(&accounts.join("other").join("work")),
         ] {
-            assert!(account_in(&p, &roots).is_err(), "{p} was let through");
+            assert!(account_in(&p, &accounts).is_err(), "{p} was let through");
         }
-        // A link in an account's place, to a folder elsewhere.
-        let link = anthropic.join("linked");
-        #[cfg(unix)]
-        let linked = std::os::unix::fs::symlink(root.join("elsewhere"), &link).is_ok();
-        #[cfg(windows)]
-        let linked = std::process::Command::new("cmd")
-            .args(["/c", "mklink", "/J"])
-            .arg(&link)
-            .arg(root.join("elsewhere"))
-            .output()
-            .is_ok_and(|o| o.status.success());
-        if linked {
-            assert!(account_in(&s(link.clone()), &roots).is_err(), "a link was let through");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_link_in_an_accounts_place_is_refused_with_or_without_a_trailing_separator() {
+        let root = scratch("link");
+        let accounts = root.join("accounts");
+        let link = accounts.join("anthropic").join("linked");
+        link_dir(&link, &root.join("elsewhere").join("work"));
+        // With the separator, lstat would follow the link to its target.
+        for p in [s(&link), format!("{}/", s(&link)), format!("{}{}", s(&link), std::path::MAIN_SEPARATOR)] {
+            assert!(account_in(&p, &accounts).is_err(), "{p} was let through");
         }
-        let _ = std::fs::remove_dir(&link).or_else(|_| std::fs::remove_file(&link));
+        // A real account with a trailing separator is refused too.
+        assert!(account_in(&format!("{}/", s(&accounts.join("anthropic").join("work"))), &accounts).is_err());
+        unlink_dir(&link);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_provider_folder_that_is_a_link_is_refused() {
+        // `openai` itself leads elsewhere: an account folder in it passes
+        // every check on its own, yet lies outside the root.
+        let root = scratch("provider");
+        let accounts = root.join("accounts");
+        let openai = accounts.join("openai");
+        link_dir(&openai, &root.join("elsewhere"));
+        let err = account_in(&s(&openai.join("work")), &accounts).unwrap_err();
+        assert!(err.contains("link"), "{err}");
+        unlink_dir(&openai);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn other_spellings_of_an_account_are_refused() {
+        let root = scratch("spelling");
+        let accounts = root.join("accounts");
+        let anthropic = accounts.join("anthropic");
+        let sep = std::path::MAIN_SEPARATOR;
+        let tail = format!("{sep}anthropic{sep}work");
+        // Windows drops a trailing dot or space and opens the folder itself,
+        // and ignores case; elsewhere these name folders that are not there.
+        for p in [
+            s(&anthropic.join("work.")),
+            s(&anthropic.join("work ")),
+            s(&anthropic.join("WORK")),
+            s(&accounts.join("anthropic.").join("work")),
+            format!("{}.{tail}", s(&accounts)),
+            format!("{} {tail}", s(&accounts)),
+            format!("{}{tail}", s(&root.join("Accounts."))),
+        ] {
+            assert!(account_in(&p, &accounts).is_err(), "{p} was let through");
+        }
         std::fs::remove_dir_all(&root).unwrap();
     }
 
@@ -209,5 +331,11 @@ mod tests {
         assert!(err.contains("not a usable path"), "{err}");
         let err = serde_json::from_value::<AccountPath>(serde_json::json!(abs("not-an-account"))).unwrap_err().to_string();
         assert!(err.contains("account folder"), "{err}");
+        // Empty is none; anything else is held to the type.
+        let none = serde_json::from_value::<OrEmpty<AccountPath>>(serde_json::json!("")).unwrap();
+        assert_eq!(none.into_string(), "");
+        assert!(serde_json::from_value::<OrEmpty<AccountPath>>(serde_json::json!(abs("not-an-account"))).is_err());
+        assert!(serde_json::from_value::<OrEmpty<AbsPath>>(serde_json::json!("relative")).is_err());
+        assert_eq!(serde_json::from_value::<OrEmpty<AbsPath>>(serde_json::json!(abs("p"))).unwrap().into_string(), abs("p"));
     }
 }
