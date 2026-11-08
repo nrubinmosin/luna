@@ -8,6 +8,14 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Fixed
+
+- The release workflow failed at attesting the npm SBOM (`Unsupported SBOM
+  format`): it was written without a serial number, which the attest action
+  requires of a CycloneDX file. Both SBOMs now carry one and are checked for it
+  as soon as they are made, and the attestations use `actions/attest` in place
+  of the deprecated `actions/attest-sbom`.
+
 ## [0.10.0] - 2026-11-08
 
 A security and engineering release. Agent tools now follow least privilege,
