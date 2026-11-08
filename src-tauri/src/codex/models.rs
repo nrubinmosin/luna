@@ -22,6 +22,7 @@ use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use crate::boundary::{AccountPath, OrEmpty};
 use crate::provider::Provider;
 
 #[derive(Serialize, Clone, Debug)]
@@ -179,8 +180,14 @@ pub fn models_for(account_path: &str) -> Vec<CodexModel> {
 
 /// Async and off to a blocking thread: the CLI fallbacks take seconds, and a
 /// sync command would run them on the window's own thread.
+///
+/// A miss in the catalog runs the CLI with `CODEX_HOME` set to the account,
+/// which reads its config and auth and may write its cache there: the page's
+/// path is held to an account folder of Luna's (boundary.rs). An empty one,
+/// no account chosen yet, lists nothing and runs nothing.
 #[tauri::command]
-pub async fn codex_models(account_path: String) -> Vec<CodexModel> {
+pub async fn codex_models(account_path: OrEmpty<AccountPath>) -> Vec<CodexModel> {
+    let account_path = account_path.into_string();
     if account_path.is_empty() {
         return vec![];
     }
