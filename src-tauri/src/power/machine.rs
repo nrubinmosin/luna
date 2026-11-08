@@ -112,12 +112,48 @@ pub(super) trait PowerSteps {
     fn wait(&mut self, until: Instant) -> bool;
     /// Whether the session is being shut down.
     fn shutting_down(&mut self) -> bool;
+    /// What a request of this process's own looks like on the OS's record.
+    fn signature(&mut self) -> Signature;
     /// The OS's shutdown requests (User32 1074) and cancellations (1075)
-    /// recorded after `mark`, oldest first; an error where it cannot say.
-    fn shutdown_events_after(&mut self, mark: Option<u64>) -> Result<Vec<u32>, String>;
+    /// recorded after `mark`, oldest first and read to the record's end; an
+    /// error where it cannot say, or could not read them all.
+    fn shutdown_events_after(&mut self, mark: Option<u64>) -> Result<Vec<ShutdownEvent>, String>;
     /// Has the window start every chat's session over, and the helpers their
     /// stopped turns, as after a core restart.
     fn start_over(&mut self);
+}
+
+/// What Windows' notice says during the grace, and what the record keeps of the
+/// request as its comment.
+pub(super) const MESSAGE_TEXT: &str =
+    "Luna: every session is done, and the PC goes down as you asked. Programs still open are closed by force; unsaved work in them is lost.";
+
+/// A shutdown request or cancellation on the OS's record: which (User32 1074 or
+/// 1075) and, of a request, the process that made it as the record names it (its
+/// exe, then the computer) and the message it gave.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ShutdownEvent {
+    pub id: u32,
+    pub process: String,
+    pub comment: String,
+}
+
+/// What a request of Luna's own looks like on the record: this very exe, and
+/// the message Luna passes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Signature {
+    pub process: String,
+    pub comment: String,
+}
+
+impl ShutdownEvent {
+    /// Whether this is a request of Luna's own and no other program's.
+    fn is_ours(&self, ours: &Signature) -> bool {
+        !ours.process.is_empty()
+            && self.id == 1074
+            && self.process.to_lowercase().starts_with(&ours.process.to_lowercase())
+            && self.comment == ours.comment
+    }
 }
 
 /// What the OS's record says became of a request it said yes to and did not
@@ -257,7 +293,7 @@ pub(super) fn power_off(action: Action, steps: &mut dyn PowerSteps) -> Outcome {
     }
     steps.staying();
     let fate = match steps.shutdown_events_after(mark) {
-        Ok(events) => fate_of(&events),
+        Ok(events) => fate_of(&events, &steps.signature()),
         Err(e) => {
             crate::log::warn("power", &format!("could not read the OS's record of shutdown requests: {e}"));
             Fate::Unknown
@@ -286,13 +322,18 @@ pub(super) fn power_off(action: Action, steps: &mut dyn PowerSteps) -> Outcome {
 }
 
 /// What the OS's record says of the request, from the shutdown events after the
-/// mark taken before it: the request's own 1074 first, then a 1075 if it was
-/// taken back. A 1074 after it is another program's request, whose cancellation
-/// the 1075 may be; a 1075 before it, or no 1074 at all, says nothing of this one.
-fn fate_of(events: &[u32]) -> Fate {
-    let Some(ours) = events.iter().position(|&e| e == 1074) else { return Fate::Unknown };
-    let after = &events[ours + 1..];
-    if !after.contains(&1074) && after.contains(&1075) {
+/// mark taken before it: Luna's own 1074 first — this exe's, with Luna's message,
+/// not any program's — then a 1075 if it was taken back. A 1074 after it is
+/// another program's request, whose cancellation the 1075 may be; a 1075 before
+/// it, a first request that is not Luna's, or no 1074 at all says nothing of
+/// this one.
+fn fate_of(events: &[ShutdownEvent], ours: &Signature) -> Fate {
+    let Some(first) = events.iter().position(|e| e.id == 1074) else { return Fate::Unknown };
+    if !events[first].is_ours(ours) {
+        return Fate::Unknown;
+    }
+    let after = &events[first + 1..];
+    if !after.iter().any(|e| e.id == 1074) && after.iter().any(|e| e.id == 1075) {
         Fate::Canceled
     } else {
         Fate::Unknown
@@ -369,7 +410,13 @@ impl PowerSteps for Real {
         os::shutting_down()
     }
 
-    fn shutdown_events_after(&mut self, mark: Option<u64>) -> Result<Vec<u32>, String> {
+    fn signature(&mut self) -> Signature {
+        // The record names the process by its exe: the core's own copy of it.
+        let process = std::env::current_exe().map(|exe| exe.to_string_lossy().into_owned()).unwrap_or_default();
+        Signature { process, comment: MESSAGE_TEXT.to_string() }
+    }
+
+    fn shutdown_events_after(&mut self, mark: Option<u64>) -> Result<Vec<ShutdownEvent>, String> {
         os::shutdown_events_after(mark)
     }
 
@@ -387,10 +434,13 @@ impl PowerSteps for Real {
 
 #[cfg(windows)]
 pub(super) mod os {
+    use super::ShutdownEvent;
     use std::sync::{Mutex, OnceLock};
     use std::time::Duration;
     use windows::core::{HSTRING, PCWSTR};
-    use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_NOT_ALL_ASSIGNED, ERROR_SUCCESS, HANDLE, LUID, WIN32_ERROR};
+    use windows::Win32::Foundation::{
+        CloseHandle, GetLastError, ERROR_NOT_ALL_ASSIGNED, ERROR_NO_MORE_ITEMS, ERROR_SUCCESS, HANDLE, LUID, WIN32_ERROR,
+    };
     use windows::Win32::Security::{
         AdjustTokenPrivileges, LookupPrivilegeValueW, LUID_AND_ATTRIBUTES, SE_PRIVILEGE_ENABLED, SE_SHUTDOWN_NAME, TOKEN_ADJUST_PRIVILEGES,
         TOKEN_PRIVILEGES, TOKEN_QUERY,
@@ -519,8 +569,8 @@ pub(super) mod os {
         }
     }
 
-    /// What Windows' own notice says during the grace.
-    const MESSAGE: PCWSTR = windows::core::w!(
+    /// `MESSAGE_TEXT` as the call takes it; a test holds the two to one wording.
+    pub(super) const MESSAGE: PCWSTR = windows::core::w!(
         "Luna: every session is done, and the PC goes down as you asked. Programs still open are closed by force; unsaved work in them is lost."
     );
 
@@ -557,45 +607,92 @@ pub(super) mod os {
     /// grows, so that what a request leaves there is told from what was there
     /// before it, whatever the clocks do. None where the log cannot be read.
     pub fn log_mark() -> Option<u64> {
-        let latest = query(windows::core::w!("*"), EvtQueryReverseDirection, 1).ok()?;
+        let (latest, _) = query(windows::core::w!("*"), EvtQueryReverseDirection, 1).ok()?;
         let xml = latest.first()?;
         element(xml, "EventRecordID")
     }
 
     /// The User32 shutdown requests (1074) and cancellations (1075) the System log
-    /// holds after `mark`, oldest first: winlogon writes the one as a request comes
-    /// in and the other on an `AbortSystemShutdown` (`shutdown /a`), the one trace
-    /// of a request taken back.
-    pub fn shutdown_events_after(mark: Option<u64>) -> Result<Vec<u32>, String> {
+    /// holds after `mark`, oldest first and read to the record's end: winlogon
+    /// writes the one as a request comes in, naming the process and its message,
+    /// and the other on an `AbortSystemShutdown` (`shutdown /a`), the one trace of
+    /// a request taken back.
+    pub fn shutdown_events_after(mark: Option<u64>) -> Result<Vec<ShutdownEvent>, String> {
         let mark = mark.ok_or("the System log could not be read before the request")?;
         let xpath =
             HSTRING::from(format!("*[System[Provider[@Name='User32'] and (EventID=1074 or EventID=1075) and EventRecordID > {mark}]]"));
-        let events = query(&xpath, EvtQueryForwardDirection, 64)?;
-        Ok(events.iter().filter_map(|xml| element(xml, "EventID")).map(|id| id as u32).collect())
+        let (events, end) = query(&xpath, EvtQueryForwardDirection, 64)?;
+        let events = events
+            .iter()
+            .filter_map(|xml| {
+                let id = element(xml, "EventID")? as u32;
+                let process = data(xml, "param1").unwrap_or_default();
+                let comment = data(xml, "param6").unwrap_or_default();
+                Some(ShutdownEvent { id, process, comment })
+            })
+            .collect();
+        complete(events, end)
     }
 
-    /// Up to `most` events of the System log matching `xpath`, as XML, in the
-    /// `direction` given.
-    fn query(xpath: impl windows::core::Param<PCWSTR>, direction: EVT_QUERY_FLAGS, most: usize) -> Result<Vec<String>, String> {
+    /// How a reading of the record ended: at the record's end, at the cap given,
+    /// or on an error.
+    #[derive(Debug, PartialEq, Eq)]
+    pub(super) enum End {
+        Exhausted,
+        Capped,
+        Failed(String),
+    }
+
+    /// The events only if the record was read to its end: a prefix of it could
+    /// show a request and its cancellation with another request yet unread.
+    pub(super) fn complete(events: Vec<ShutdownEvent>, end: End) -> Result<Vec<ShutdownEvent>, String> {
+        match end {
+            End::Exhausted => Ok(events),
+            End::Capped => Err("more shutdown events on record than were read".into()),
+            End::Failed(e) => Err(e),
+        }
+    }
+
+    /// Up to `cap` events of the System log matching `xpath`, as XML, in the
+    /// `direction` given, and how the reading ended: only ERROR_NO_MORE_ITEMS is
+    /// the record's end.
+    fn query(xpath: impl windows::core::Param<PCWSTR>, direction: EVT_QUERY_FLAGS, cap: usize) -> Result<(Vec<String>, End), String> {
         let flags = EvtQueryChannelPath.0 | direction.0;
         // SAFETY: a null session is the local log; the query outlives the call, and
         // every handle it gives is closed here.
         unsafe {
             let results = EvtQuery(None, windows::core::w!("System"), xpath, flags).map_err(|e| format!("EvtQuery: {e}"))?;
             let mut out = Vec::new();
-            let mut handles = vec![0isize; most.clamp(1, 64)];
+            let mut handles = vec![0isize; cap.clamp(1, 64)];
             let mut returned = 0u32;
-            while out.len() < most && EvtNext(results, &mut handles, 0, 0, &mut returned).is_ok() && returned > 0 {
-                for &event in &handles[..returned as usize] {
-                    let event = EVT_HANDLE(event);
-                    let rendered = render(event);
-                    let _ = EvtClose(event);
-                    out.push(rendered?);
+            let end = loop {
+                if out.len() >= cap {
+                    break End::Capped;
                 }
-            }
+                match EvtNext(results, &mut handles, 0, 0, &mut returned) {
+                    Ok(()) if returned == 0 => break End::Failed("EvtNext gave no event and no end".into()),
+                    Ok(()) => {
+                        // Every handle closed, whatever a rendering says.
+                        let batch: Vec<Result<String, String>> = handles[..returned as usize]
+                            .iter()
+                            .map(|&event| {
+                                let event = EVT_HANDLE(event);
+                                let rendered = render(event);
+                                let _ = EvtClose(event);
+                                rendered
+                            })
+                            .collect();
+                        match batch.into_iter().collect::<Result<Vec<String>, String>>() {
+                            Ok(xmls) => out.extend(xmls),
+                            Err(e) => break End::Failed(e),
+                        }
+                    }
+                    Err(e) if e.code() == ERROR_NO_MORE_ITEMS.to_hresult() => break End::Exhausted,
+                    Err(e) => break End::Failed(format!("EvtNext: {e}")),
+                }
+            };
             let _ = EvtClose(results);
-            out.truncate(most);
-            Ok(out)
+            Ok((out, end))
         }
     }
 
@@ -615,11 +712,21 @@ pub(super) mod os {
 
     /// The number in `<tag ...>N</tag>` of an event's XML, if there is one.
     pub(super) fn element(xml: &str, tag: &str) -> Option<u64> {
-        let open = xml.find(&format!("<{tag}"))?;
-        let rest = &xml[open..];
+        text_after(xml, &format!("<{tag}"))?.trim().parse().ok()
+    }
+
+    /// The text of `<Data Name='name'>…</Data>` in an event's XML, its XML escapes
+    /// undone, if there is one.
+    pub(super) fn data(xml: &str, name: &str) -> Option<String> {
+        let text = text_after(xml, &format!("<Data Name='{name}'")).or_else(|| text_after(xml, &format!("<Data Name=\"{name}\"")))?;
+        Some(text.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&apos;", "'").replace("&amp;", "&"))
+    }
+
+    /// What stands between the end of the tag opening with `open` and the next tag.
+    fn text_after<'a>(xml: &'a str, open: &str) -> Option<&'a str> {
+        let rest = &xml[xml.find(open)?..];
         let body = &rest[rest.find('>')? + 1..];
-        let end = body.find('<')?;
-        body[..end].trim().parse().ok()
+        Some(&body[..body.find('<')?])
     }
 
     /// Takes a shutdown asked for back while its grace runs: the live check's
@@ -726,7 +833,7 @@ pub(super) mod os {
     }
 
     /// Nor one of a `shutdown -c`.
-    pub fn shutdown_events_after(_mark: Option<u64>) -> Result<Vec<u32>, String> {
+    pub fn shutdown_events_after(_mark: Option<u64>) -> Result<Vec<super::ShutdownEvent>, String> {
         Err("nothing here records shutdown requests".into())
     }
 
@@ -768,20 +875,41 @@ mod tests {
         assert!(relaunch_line(&Err("no".into())).contains("restarting all the same"));
     }
 
+    /// What Luna's requests look like on the recorder's record.
+    fn ours() -> Signature {
+        Signature { process: "C:\\Luna\\core\\luna.exe".into(), comment: MESSAGE_TEXT.into() }
+    }
+
+    /// A request of Luna's own, as the record names it: the exe, then the computer.
+    fn asked() -> ShutdownEvent {
+        ShutdownEvent { id: 1074, process: "c:\\luna\\core\\luna.exe (PC)".into(), comment: MESSAGE_TEXT.into() }
+    }
+
+    /// Another program's request.
+    fn theirs() -> ShutdownEvent {
+        ShutdownEvent { id: 1074, process: "C:\\Windows\\system32\\shutdown.exe (PC)".into(), comment: "".into() }
+    }
+
+    fn taken_back() -> ShutdownEvent {
+        ShutdownEvent { id: 1075, process: String::new(), comment: String::new() }
+    }
+
     /// Writes down each step a firing takes and plays the OS: one that says no,
     /// one that takes the session down, and a record of shutdown requests as
-    /// (record id, event id) pairs, with where it stood as the request went in.
+    /// (record id, event) pairs, with where it stood as the request went in, and
+    /// a reading of it that may break off (`cut`) before the record's end.
     struct Recorder {
         steps: Vec<String>,
         refuse: Option<&'static str>,
         down: bool,
         mark: Option<u64>,
-        log: Vec<(u64, u32)>,
+        log: Vec<(u64, ShutdownEvent)>,
+        cut: Option<&'static str>,
     }
 
     impl Default for Recorder {
         fn default() -> Self {
-            Recorder { steps: Vec::new(), refuse: None, down: false, mark: Some(10), log: Vec::new() }
+            Recorder { steps: Vec::new(), refuse: None, down: false, mark: Some(10), log: Vec::new(), cut: None }
         }
     }
 
@@ -821,10 +949,16 @@ mod tests {
         fn shutting_down(&mut self) -> bool {
             self.down
         }
-        fn shutdown_events_after(&mut self, mark: Option<u64>) -> Result<Vec<u32>, String> {
+        fn signature(&mut self) -> Signature {
+            ours()
+        }
+        fn shutdown_events_after(&mut self, mark: Option<u64>) -> Result<Vec<ShutdownEvent>, String> {
             let mark = mark.ok_or("no mark")?;
             self.steps.push(format!("events after {mark}"));
-            Ok(self.log.iter().filter(|(record, _)| *record > mark).map(|(_, event)| *event).collect())
+            if let Some(cut) = self.cut {
+                return Err(cut.to_string());
+            }
+            Ok(self.log.iter().filter(|(record, _)| *record > mark).map(|(_, event)| event.clone()).collect())
         }
         fn start_over(&mut self) {
             self.steps.push("start_over".into());
@@ -843,8 +977,8 @@ mod tests {
     }
 
     /// The record of a request taken back: Luna's own 1074, then the 1075.
-    fn canceled() -> Vec<(u64, u32)> {
-        vec![(11, 1074), (12, 1075)]
+    fn canceled() -> Vec<(u64, ShutdownEvent)> {
+        vec![(11, asked()), (12, taken_back())]
     }
 
     #[test]
@@ -916,12 +1050,12 @@ mod tests {
     /// that could not be marked says nothing.
     #[test]
     fn only_a_cancellation_after_this_request_and_no_other_counts() {
-        let stale = vec![(9, 1075), (11, 1074)];
+        let stale = vec![(9, taken_back()), (11, asked())];
         let mut rec = Recorder { log: stale, ..Default::default() };
         assert_eq!(run(Action::Shutdown, &mut rec), Outcome::Unclear, "a cancellation from before the mark");
         assert!(!rec.steps.contains(&"start_over".to_string()));
 
-        let anothers = vec![(11, 1074), (12, 1074), (13, 1075)];
+        let anothers = vec![(11, asked()), (12, theirs()), (13, taken_back())];
         let mut rec = Recorder { log: anothers, ..Default::default() };
         assert_eq!(run(Action::Shutdown, &mut rec), Outcome::Unclear, "another request in between");
 
@@ -929,21 +1063,76 @@ mod tests {
         assert_eq!(run(Action::Shutdown, &mut rec), Outcome::Unclear, "no mark, no reading");
         assert!(!rec.steps.iter().any(|s| s.starts_with("events after")));
 
-        assert_eq!(fate_of(&[1074, 1075]), Fate::Canceled);
-        assert_eq!(fate_of(&[1075, 1074]), Fate::Unknown, "a cancellation before the request");
-        assert_eq!(fate_of(&[1075]), Fate::Unknown, "no request of ours on record");
-        assert_eq!(fate_of(&[1074, 1075, 1074]), Fate::Unknown);
-        assert_eq!(fate_of(&[1074]), Fate::Unknown);
+        assert_eq!(fate_of(&[asked(), taken_back()], &ours()), Fate::Canceled);
+        assert_eq!(fate_of(&[taken_back(), asked()], &ours()), Fate::Unknown, "a cancellation before the request");
+        assert_eq!(fate_of(&[taken_back()], &ours()), Fate::Unknown, "no request of ours on record");
+        assert_eq!(fate_of(&[asked(), taken_back(), theirs()], &ours()), Fate::Unknown);
+        assert_eq!(fate_of(&[asked()], &ours()), Fate::Unknown);
+    }
+
+    /// A record read short of its end says nothing: a request and its cancellation
+    /// at the front could have another request behind them, still unread.
+    #[test]
+    fn a_record_read_short_of_its_end_undoes_nothing() {
+        let mut rec = Recorder { log: canceled(), cut: Some("EvtNext: The wait operation timed out."), ..Default::default() };
+        assert_eq!(run(Action::Shutdown, &mut rec), Outcome::Unclear);
+        assert!(rec.steps.contains(&"events after 10".to_string()) && !rec.steps.contains(&"start_over".to_string()));
+
+        let run_once = with_window_exe();
+        let mut rec = Recorder { log: canceled(), cut: Some("more shutdown events on record than were read"), ..Default::default() };
+        assert_eq!(run(Action::Restart, &mut rec), Outcome::Unclear);
+        assert!(rec.steps.contains(&run_once) && !rec.steps.contains(&"clear_run_once".to_string()), "the RunOnce value stays");
+    }
+
+    /// The first request after the mark is Luna's own only if this exe made it
+    /// with Luna's message: another program's, however timed, says nothing of ours.
+    #[test]
+    fn a_request_that_is_not_lunas_own_is_not_taken_for_it() {
+        let mut rec = Recorder { log: vec![(11, theirs()), (12, taken_back())], ..Default::default() };
+        assert_eq!(run(Action::Shutdown, &mut rec), Outcome::Unclear, "another exe");
+        assert!(!rec.steps.contains(&"start_over".to_string()));
+
+        let other_message = ShutdownEvent { comment: "shutdown /s by hand".into(), ..asked() };
+        let mut rec = Recorder { log: vec![(11, other_message), (12, taken_back())], ..Default::default() };
+        assert_eq!(run(Action::Shutdown, &mut rec), Outcome::Unclear, "this exe, another message");
+
+        let mut rec = Recorder { log: vec![(11, theirs()), (12, asked()), (13, taken_back())], ..Default::default() };
+        assert_eq!(run(Action::Shutdown, &mut rec), Outcome::Unclear, "another program's request came first");
+
+        let unknown_exe = Signature { process: String::new(), ..ours() };
+        assert_eq!(fate_of(&[asked(), taken_back()], &unknown_exe), Fate::Unknown, "no exe to go by matches nothing");
+        let elsewhere = Signature { process: "D:\\other\\luna.exe".into(), ..ours() };
+        assert_eq!(fate_of(&[asked(), taken_back()], &elsewhere), Fate::Unknown);
+        let in_another_case = Signature { process: "c:\\LUNA\\Core\\Luna.exe".into(), ..ours() };
+        assert_eq!(fate_of(&[asked(), taken_back()], &in_another_case), Fate::Canceled, "paths compare as Windows does");
     }
 
     #[cfg(windows)]
     #[test]
-    fn an_events_number_is_read_off_its_xml() {
-        let xml = "<Event><System><EventID Qualifiers=\"32768\">1074</EventID><EventRecordID>12345</EventRecordID></System></Event>";
+    fn an_events_fields_are_read_off_its_xml() {
+        let xml = "<Event><System><EventID Qualifiers=\"32768\">1074</EventID><EventRecordID>12345</EventRecordID></System>\
+                   <EventData><Data Name='param1'>C:\\a &amp; b\\luna.exe (PC)</Data><Data Name='param5'>power off</Data>\
+                   <Data Name='param6'>Luna: &lt;done&gt;</Data></EventData></Event>";
         assert_eq!(os::element(xml, "EventID"), Some(1074));
         assert_eq!(os::element(xml, "EventRecordID"), Some(12345));
         assert_eq!(os::element(xml, "Level"), None);
         assert_eq!(os::element("<EventID>x</EventID>", "EventID"), None);
+        assert_eq!(os::data(xml, "param1").as_deref(), Some("C:\\a & b\\luna.exe (PC)"));
+        assert_eq!(os::data(xml, "param6").as_deref(), Some("Luna: <done>"));
+        assert_eq!(os::data(xml, "param7"), None);
+        // The notice and the record's comment are one wording.
+        // SAFETY: a literal with its terminating zero.
+        assert_eq!(unsafe { os::MESSAGE.to_string() }.unwrap(), MESSAGE_TEXT);
+    }
+
+    /// Only a record read to its end is evidence.
+    #[cfg(windows)]
+    #[test]
+    fn a_reading_that_broke_off_or_hit_its_cap_is_no_record() {
+        let whole = vec![asked(), taken_back()];
+        assert_eq!(os::complete(whole.clone(), os::End::Exhausted), Ok(whole.clone()));
+        assert!(os::complete(whole.clone(), os::End::Capped).is_err());
+        assert_eq!(os::complete(whole, os::End::Failed("EvtNext: timed out".into())), Err("EvtNext: timed out".to_string()));
     }
 
     /// A link planted where a command's stderr file would go is not followed:
@@ -1038,7 +1227,7 @@ mod tests {
         let mut events = Ok(Vec::new());
         for _ in 0..50 {
             events = os::shutdown_events_after(mark);
-            if events.as_ref().is_ok_and(|e| e.contains(&1075)) {
+            if events.as_ref().is_ok_and(|e| e.iter().any(|event| event.id == 1075)) {
                 break;
             }
             std::thread::sleep(Duration::from_millis(100));
@@ -1046,7 +1235,9 @@ mod tests {
         eprintln!("User32 shutdown events after the mark: {events:?}");
         asked.expect("InitiateShutdownW");
         aborted.expect("AbortSystemShutdownW");
-        let events = events.expect("the System log reads");
-        assert_eq!(fate_of(&events), Fate::Canceled, "the request and its abort are on record, in that order");
+        let events = events.expect("the System log reads to its end");
+        let signature = Real.signature();
+        eprintln!("this process as the record should name it: {signature:?}");
+        assert_eq!(fate_of(&events, &signature), Fate::Canceled, "this exe's request with Luna's message, then its abort");
     }
 }

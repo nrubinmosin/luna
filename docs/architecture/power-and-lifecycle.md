@@ -138,9 +138,12 @@ another program's and is left alone.
   however long it takes; still zero `SHUTDOWN_OVERRUN` (60 s) past the grace, it
   reads the System log (`EvtQuery`) for the User32 shutdown events after the mark
   it took before asking (the latest `EventRecordID`, so no earlier cancellation
-  and no clock change can pass for this request's): its own 1074, then a 1075,
-  which winlogon writes when an `AbortSystemShutdown` (`shutdown /a`) takes a
-  pending shutdown back (`fate_of`). That order alone means canceled: the RunOnce
+  and no clock change can pass for this request's), read to the record's end
+  (only `ERROR_NO_MORE_ITEMS` is the end; an error or the cap short of it is no
+  reading): its own 1074 — the record names the process by its exe and keeps the
+  message passed, and both must be Luna's — then a 1075, which winlogon writes
+  when an `AbortSystemShutdown` (`shutdown /a`) takes a pending shutdown back
+  (`fate_of`). That order alone means canceled: the RunOnce
   value goes, the helpers' jobs are tied to the core again and the stopped ones
   settled — their stdin lines reconciled with the transcript off the lock, as
   `restore` does — and resumed (`background::reopen`, `settle_stopped`,
