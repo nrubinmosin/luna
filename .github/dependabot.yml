@@ -1,23 +1,49 @@
-# Weekly, one pull request per ecosystem: each goes through the whole gate in CI.
-# The FROM lines in docker/ name each image by tag and digest; Dependabot moves
-# both, a rebuilt tag included. Two pins stay manual, as Dependabot does not
-# read them: the Rust toolchain (src-tauri/rust-toolchain.toml) and Node
-# (.node-version). A Docker bump of the rust or node image alone fails the
-# gate's pin check, which names the file to bump with it.
+# Monthly, one pull request per ecosystem: each goes through the whole gate in
+# CI. Monthly rather than weekly, as every grouped PR costs a full gate run and
+# a review, and nothing here needs to move faster; a security advisory still
+# opens its own PR at once, outside the schedule.
+#
+# Toolchains stay on their major version. The FROM lines in docker/ name each
+# image by tag and digest, and Dependabot moves both, a rebuilt tag included;
+# but a new Node or Rust major is a migration, decided by hand, not a monthly
+# bump (an image major alone also fails the gate's pin check, Assert-ToolchainPins
+# in scripts/lib.ps1). The pins that go with the images are not Dependabot's to
+# move: .node-version, src-tauri/rust-toolchain.toml and rust-version in
+# src-tauri/Cargo.toml, and cargo-xwin, installed by version in
+# docker/windows-build.Dockerfile. So a minor or patch image bump still arrives
+# as a PR and fails the pin check, which names the file to bump with it; that
+# PR is the reminder. Rust has no next major in sight, so its 1.x releases keep
+# coming that way; the ignore is there for symmetry with Node.
 version: 2
 updates:
   - package-ecosystem: cargo
     directory: /src-tauri
     schedule:
-      interval: weekly
+      interval: monthly
     groups:
       cargo:
         patterns: ['*']
+    # Each of these is a migration the crate's code has to follow by hand; a
+    # monthly PR would fail to compile until then. Ranges rather than
+    # semver-major: Dependabot counts 0.10 -> 0.11 as a minor update. Lift an
+    # entry when the migration is done.
+    ignore:
+      # ureq 3 reworked the whole API (builder, errors, responses) in five
+      # modules and the hub's tests.
+      - dependency-name: ureq
+        versions: ['>=3']
+      # sha2 0.11 and hmac 0.13 build on digest 0.11, a second digest stack
+      # beside the 0.10 one tauri's tree still carries; the manifest pins them
+      # to what the tree already resolves. Move them when tauri does.
+      - dependency-name: sha2
+        versions: ['>=0.11']
+      - dependency-name: hmac
+        versions: ['>=0.13']
 
   - package-ecosystem: npm
     directory: /
     schedule:
-      interval: weekly
+      interval: monthly
     groups:
       npm:
         patterns: ['*']
@@ -25,7 +51,7 @@ updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
-      interval: weekly
+      interval: monthly
     groups:
       github-actions:
         patterns: ['*']
@@ -33,7 +59,12 @@ updates:
   - package-ecosystem: docker
     directory: /docker
     schedule:
-      interval: weekly
+      interval: monthly
     groups:
       docker:
         patterns: ['*']
+    ignore:
+      - dependency-name: node
+        update-types: ['version-update:semver-major']
+      - dependency-name: rust
+        update-types: ['version-update:semver-major']

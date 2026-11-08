@@ -8,6 +8,11 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Changed
+
+- Dependabot opens its grouped update PRs monthly instead of weekly, and leaves a
+  new Node or Rust major to a hand-made migration.
+
 ## [0.10.0] - 2026-11-08
 
 A security and engineering release. Agent tools now follow least privilege,
