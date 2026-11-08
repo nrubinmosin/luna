@@ -1,0 +1,38 @@
+Seen {
+    consumed: 196,
+    messages: [
+        (
+            "user",
+            false,
+            "ping",
+        ),
+        (
+            "assistant",
+            false,
+            "a bare string answer",
+        ),
+    ],
+    with_tools: [
+        (
+            "user",
+            false,
+            "ping",
+        ),
+        (
+            "assistant",
+            false,
+            "a bare string answer",
+        ),
+    ],
+    first_prompt: Some(
+        "ping",
+    ),
+    title: None,
+    context: None,
+    model: None,
+    last_said: None,
+    last_said_at: None,
+    api_error: None,
+    pending_tool: None,
+    due_ms: None,
+}

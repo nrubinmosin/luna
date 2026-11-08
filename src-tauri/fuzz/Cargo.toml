@@ -1,0 +1,49 @@
+# The fuzz targets: the transcript readers (luna_lib::transcripts) fed
+# whatever bytes libFuzzer makes up. A workspace of its own, so the app's
+# builds never see it; built on the nightly in rust-toolchain.toml here, in
+# docker/fuzz.Dockerfile, by scripts/fuzz.ps1, which starts its Cargo.lock from
+# the app's own (src-tauri/Cargo.lock): the targets read with the crates the
+# app ships.
+[package]
+name = "luna-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+members = ["."]
+
+[dependencies]
+luna = { path = ".." }
+serde_json = "1"
+# Pinned exactly: the app's lockfile holds none of them, so nothing else holds
+# them. jobserver is libfuzzer-sys's build script's (through cc), named here
+# only for the pin.
+libfuzzer-sys = "=0.4.13"
+arbitrary = "=1.4.2"
+jobserver = "=0.1.35"
+
+[[bin]]
+name = "claude_transcript"
+path = "fuzz_targets/claude_transcript.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "codex_rollout"
+path = "fuzz_targets/codex_rollout.rs"
+test = false
+doc = false
+bench = false
+
+# Overflow checks on, as in a debug build: an arithmetic overflow on what a
+# transcript says is a finding, not a wrap. Line tables for the stack a crash
+# prints.
+[profile.release]
+debug = 1
+overflow-checks = true

@@ -443,7 +443,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn a_leftover_holds_the_machine_until_long_idle_and_a_stop_ends_it() {
-        let mut kids = Kids(vec![idler(120), burner(60)]);
+        let mut kids = Kids(vec![idler(120), burner(120)]);
         let job = job_of(&kids.0[0]);
         assert!(crate::procs::join(&job, kids.0[1].id()));
         let mut e = entry(Provider::Claude);
@@ -457,11 +457,26 @@ mod tests {
         assert!(turn_state("left-work").unwrap().children_busy);
         // As if both had sat there for longer than LEFTOVER_HOLD_MS since, and
         // were last read a window ago: the next sample takes their rates.
+        let (loop_pid, mut burner) = (kids.0[1].id(), None);
         for l in lock().entries.get_mut("left-work").unwrap().left.iter_mut() {
             l.moved_ms = l.moved_ms.saturating_sub(crate::procs::LEFTOVER_HOLD_MS + 60_000);
             l.read_ms = l.read_ms.saturating_sub(crate::procs::LEFTOVER_WINDOW_MS);
+            if l.pid == loop_pid {
+                burner = Some((l.cpu_ms, l.read_ms));
+            }
         }
-        std::thread::sleep(std::time::Duration::from_millis(2_000));
+        // The window the next rate is taken over is the minute just put back,
+        // but the loop has only the real time since to burn in: wait until its
+        // own CPU since then is twice what that rate needs, however slowly a
+        // loaded machine runs it, so its start's I/O is not what makes it busy.
+        let (cpu_then, read_then) = burner.expect("the loop is among what is left");
+        let cpu_now = || crate::procs::left_in(&job).into_iter().find(|(r, _)| r.pid == loop_pid).map_or(0, |(r, _)| r.cpu_ms);
+        let needed = || 2 * crate::procs::LEFTOVER_CPU_MS_PER_S * crate::throttle::now_ms().saturating_sub(read_then) / 1000;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
+        while cpu_now().saturating_sub(cpu_then) < needed() {
+            assert!(std::time::Instant::now() < deadline, "the loop got too little CPU in 90 s to measure");
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
         let now = sample();
         assert!(now.busy, "the loop burns a core");
         assert!(

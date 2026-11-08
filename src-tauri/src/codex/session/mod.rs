@@ -25,6 +25,8 @@
 //!   open question, the subagents at work.
 //! - `read`: what is read of a rollout on demand: the opening prompt, the
 //!   conversation, the tail, the model, the status and meta of a session.
+//! - `reading`: all of a rollout that `read` and `scan` read, of its bytes
+//!   alone, by the same functions, for the fuzz target and the fixture tests.
 
 use crate::paths::path_key_loose as norm_path;
 use crate::pty::{sane_title, tail, title_from_prompt, CliTitle, SessionMeta};
@@ -34,15 +36,21 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
+#[cfg(test)]
+mod fixtures;
 mod read;
+mod reading;
 mod rollouts;
 mod scan;
 #[cfg(test)]
 mod testkit;
 
 // Every file of the module reaches the others' items through `use super::*`,
-// and the rest of the crate keeps its `crate::codex::session::X` paths.
+// and the rest of the crate keeps its `crate::codex::session::X` paths. What
+// `reading` reads is public, for `luna_lib::transcripts`.
+pub use read::Tail;
 pub(crate) use read::*;
+pub use reading::*;
 pub(crate) use rollouts::*;
 pub(crate) use scan::*;
 #[cfg(test)]

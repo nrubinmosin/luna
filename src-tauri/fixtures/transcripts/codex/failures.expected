@@ -1,0 +1,46 @@
+Seen {
+    consumed: 1170,
+    messages: [],
+    first_prompt: None,
+    cwd: Some(
+        "E:\\p",
+    ),
+    spawned_by: Some(
+        "own",
+    ),
+    tail_model: None,
+    context_tokens: None,
+    context_window: None,
+    rate_limits: None,
+    last_model: None,
+    answered_model: None,
+    due_ms: None,
+    scan_from_epoch: Scanned {
+        completed: 4,
+        working: Some(
+            false,
+        ),
+        ask: None,
+        failed: Some(
+            "its turn was aborted",
+        ),
+        last_said: None,
+        last_said_at: Some(
+            "not a time",
+        ),
+    },
+    scan_from_now: Scanned {
+        completed: 1,
+        working: Some(
+            false,
+        ),
+        ask: None,
+        failed: Some(
+            "its turn was aborted",
+        ),
+        last_said: None,
+        last_said_at: Some(
+            "not a time",
+        ),
+    },
+}
