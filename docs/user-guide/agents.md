@@ -16,7 +16,8 @@ does a background helper spawned without tools.
 - `luna_notify` raises a desktop notification mid-turn, titled with the chat's
   name and opening it when clicked, at most one every 10 seconds.
 - `luna_power`, for when you ask for it, arms the same "when done" shutdown,
-  restart, hibernate or sleep as the power chip, which shows and cancels it.
+  restart, hibernate or sleep as the power chip, which shows and cancels it; the
+  action `cancel` disarms it too.
 - A spawn may set `budgetTokens`: once that helper's context passes it, its
   parent hears so, once; nothing is stopped.
 

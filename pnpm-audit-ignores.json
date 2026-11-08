@@ -1,0 +1,4 @@
+{
+  "$comment": "High or critical npm advisories scripts/supply-chain.ps1 lets pass, each as { id (GHSA-...), package, reason, expires (yyyy-MM-dd) }; past its expiry an ignore fails the check. See docs/development.md, Supply chain.",
+  "ignores": []
+}

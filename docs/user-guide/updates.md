@@ -20,9 +20,12 @@ nothing depends on a global install.
 
 - Each CLI's release channel is checked every six hours; a new version installs
   into `<data>/claude-cli/versions/<ver>/` or `<data>/codex-cli/versions/<ver>/`
-  beside the old one, which goes once no session uses it.
+  beside the old one, which goes once no session uses it. A download is
+  checked whole before it counts, so one cut short (Luna closed, the PC off)
+  is simply fetched again on the next check.
 - Claude Code comes as a bare exe from the official release bucket, verified
-  against its manifest's sha256. Codex comes from GitHub Releases
+  against its manifest's sha256, and the manifest against Anthropic's release
+  signing key, which Luna carries. Codex comes from GitHub Releases
   (`openai/codex`, tag `rust-v<ver>`) as the package tarball, verified against
   the release's checksums, with the helpers its Windows sandbox needs.
 - Claude Code sessions run with `DISABLE_AUTOUPDATER=1` and Codex accounts are

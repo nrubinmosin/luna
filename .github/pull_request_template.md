@@ -24,5 +24,5 @@
 ## Checklist
 
 - [ ] US English (`pnpm check:text`)
-- [ ] No attribution trailers in commit messages
+- [ ] Commit messages follow CONTRIBUTING.md's "Commits": a sentence of at most 72 characters, no type prefix, no attribution trailers (`sh scripts/check-commit-msg.sh --range origin/master..HEAD`)
 - [ ] Nothing obsolete or scratch left in the tree

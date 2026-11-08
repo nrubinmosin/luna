@@ -8,17 +8,39 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
-### Changed
-
-- Dependabot opens its grouped update PRs monthly instead of weekly, and leaves a
-  new Node or Rust major to a hand-made migration.
-- Tauri 2.12.5 and its plugins' latest releases; base64, dirs, getrandom and
-  toml_edit moved to versions the rest of the tree already carried, which drops
-  dirs 6 and toml_edit 0.22 from the build; vt100 0.18 for the screen a helper's
-  output is replayed onto.
-
 ### Security
 
+- Dependencies with published vulnerabilities are updated: rustls 0.23.46 and
+  rustls-webpki 0.103.16 (TLS handshake fixes), webpki-roots 1.0.11 (distrusted
+  emSign roots removed), zip 9 under the updater (tauri-plugin-updater
+  2.14.1) and tokio 1.53.3 (an unsound `AsyncFd` constructor); among the build
+  tools, Vite 7.3.7 and source-map-js 1.2.2.
+- Every pull request, every change to master and a weekly run check the
+  dependencies for advisories, licenses and sources (cargo-deny, `pnpm audit`),
+  the history for committed secrets (gitleaks), and the code and workflows with
+  CodeQL. `scripts/supply-chain.ps1` runs the same checks locally.
+- The updater's signing key no longer reaches the release build. `tauri build`
+  runs every dependency's build scripts, proc-macros and frontend tooling, and
+  any of them could have read the key it was handed; the installer is now
+  built unsigned and signed afterwards in a job of its own, which runs only the
+  Tauri CLI pinned by `pnpm-lock.yaml`, without network, and checks the
+  signature against the updater's public key before publishing it. The release
+  still takes one approval, now given to the signing job. `release.ps1 -Local`
+  signs the same way, builds an export of the commit rather than the checkout
+  it signs from, and no longer runs the built exe to ask its core fingerprint.
+  A key rotation's bridge release is checked against the old public key, given
+  as `UPDATER_TRUSTED_PUBKEY`.
+- Claude Code's release manifest is verified against its detached OpenPGP
+  signature and Anthropic's release key, pinned in Luna, before the exe's
+  checksum from it is trusted: whoever serves the download bucket can no
+  longer hand Luna an exe of their own with a matching manifest. Codex is
+  still checked only against the checksums of its own release.
+- The signed manifest must name the version it was fetched for, and no Claude
+  Code version below the highest signed one Luna has accepted (or below
+  2.1.319 on a fresh install) is installed, so an old signed release cannot be
+  replayed under the unsigned `latest` pointer. A signature is held to its
+  signed creation and expiration times, and the release key to its expiry
+  where the signature gives one.
 - Sessions are denied the folder that holds the key to Luna's core, wherever
   their CLI can enforce it: Claude Code's file tools everywhere, and Codex's
   `read-only` and `read-only-net` sandboxes on Linux and macOS. A Claude Code
@@ -30,6 +52,80 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   or contained token, or a lower integrity level) before it can present the
   key. A normal window is unaffected. Codex's `workspace-write` on Linux and
   macOS remains able to read the file; the threat model (F3) says why.
+
+### Added
+
+- The installer puts `THIRD-PARTY-NOTICES.txt` beside Luna, and each release
+  publishes it too: the license texts of every crate and npm package Luna is
+  built from, and where their source is; the Rust standard library's own
+  inventory; and what the build tools and the installer add: Vite's helpers,
+  NSIS and its Tauri plug-in, the WebView2 loader and the Visual C++ runtime.
+
+### Changed
+
+- `luna_power` disarms with the action `cancel`; `off`, its old name, still
+  works.
+- Release notes are made from this file: a release's notes are its version's
+  section, the sections of every version since the last published release, a
+  link to the full changes, and the commands and checksums to verify the
+  download. The tag's message no longer carries them, and the update chip
+  shows the section's opening paragraph.
+- Commit messages follow one written-down form (CONTRIBUTING.md, "Commits"):
+  a sentence of at most 72 characters saying what the change does, no type
+  prefix, a blank line, then why. The commit-msg hook, the gate and CI refuse
+  the rest; past commits stay as they are. A refusal says to commit again from
+  the message, not to amend, and `amend!` commits are let through to be
+  squashed, as `fixup!` ones are.
+- Dependabot opens its grouped update PRs monthly instead of weekly, and leaves a
+  new Node or Rust major to a hand-made migration.
+- Tauri 2.12.5 and its plugins' latest releases; base64, dirs, getrandom and
+  toml_edit moved to versions the rest of the tree already carried, which drops
+  dirs 6 and toml_edit 0.22 from the build; vt100 0.18 for the screen a helper's
+  output is replayed onto.
+
+### Fixed
+
+- A CLI install cut short (Luna killed or the PC off while Codex's package was
+  unpacked) could be taken for a finished one on the next check: the executable
+  being there was enough, so Codex ran without its sandbox helpers or from a
+  truncated file. Both CLIs are now fetched into a staging folder, checked file
+  by file against what their release publishes (Claude Code: sha256 and size;
+  Codex: the package's sha256, then each file's size), given a completion
+  record, and moved into place with one rename under a name no folder has, so a
+  version a session is running is never touched. Only a version with its record
+  counts as installed; ones installed before this are fetched again once. The
+  files, the record and (on Unix) the folders are flushed to disk before the
+  version is named current, and once Luna has installed this way a version
+  without its record is never run. Sweeping old versions deletes nothing
+  through a link or junction below them. Codex's package is unpacked with caps
+  on its entries, its bytes as the tar reader writes them, each metadata record
+  and the decompressed stream, and a link entry or PAX size override in it is
+  refused.
+- Shut down and restart when done turn the PC off again. Luna asks Windows
+  itself, with the shutdown privilege turned on, instead of running
+  `shutdown.exe`, which had been failing without a word; a refusal is logged
+  with its Windows error.
+- Windows is asked before any session is closed, so a refusal leaves every chat
+  running, and a shutdown Windows records as canceled after the chats were
+  closed brings them back where they were instead of leaving dead panes. One
+  whose fate Windows does not tell leaves the chats closed and says how to bring
+  them back, rather than reopening them under a shutdown still on its way.
+- Windows' notice during the grace says that open programs are closed by force
+  and unsaved work in them is lost, and so does the user guide.
+- Shutdown winds Luna down the way restart does, so a chat parked mid-turn is
+  not saved as finished.
+- A restart that Windows refuses, or that is canceled, no longer leaves Luna set
+  to start at the next sign-in.
+- The release workflow failed at attesting the npm SBOM (`Unsupported SBOM
+  format`): it was written without a serial number, which the attest action
+  requires of a CycloneDX file. Both SBOMs now carry one and are checked for it
+  as soon as they are made, and the attestations use `actions/attest` in place
+  of the deprecated `actions/attest-sbom`.
+- The release and test builds failed: `tauri build` refuses a Tauri crate and its
+  npm package on different minor versions, and the notification plugin's crate
+  had moved to 2.8 while `@tauri-apps/plugin-notification` stayed at 2.7. The
+  package is on 2.8 now, and the gate checks every such pair in the lockfiles
+  (`pnpm check:tauri`), so a bump to one side alone fails there.
 
 ## [0.10.0] - 2026-11-08
 
@@ -71,6 +167,14 @@ fixes below.
 - Documentation in `docs/`: a user guide by topic, architecture pages, decision
   records, notes on how each CLI behaves, and a development guide.
 - A contributing guide, issue and pull request templates, and this changelog.
+
+### Added
+
+- The installer puts `THIRD-PARTY-NOTICES.txt` beside Luna, and each release
+  publishes it too: the license texts of every crate and npm package Luna is
+  built from, and where their source is; the Rust standard library's own
+  inventory; and what the build tools and the installer add: Vite's helpers,
+  NSIS and its Tauri plug-in, the WebView2 loader and the Visual C++ runtime.
 
 ### Changed
 

@@ -140,6 +140,14 @@ a routine run skips a sandboxed connection that never comes; with
 `LUNA_LIVE_STRICT=1` that connection is required and its absence fails the
 test, which is how to prove the refusal was exercised.
 
+One more ignored test reaches the machine rather than a CLI:
+`power::machine::tests::windows_takes_the_shutdown_request_and_its_abort` asks
+Windows for a real shutdown a minute away, through the call shut-down-when-done
+makes, and aborts it at once; Windows' own notice shows in between. Run it
+alone, by name, from the Windows test executable
+(`luna_lib-*.exe windows_takes_the_shutdown --ignored`), and should the abort
+fail, `shutdown /a` takes the request back.
+
 ### Cost, and why not in CI
 
 Every run spends real quota: a few short turns per provider, on the accounts
