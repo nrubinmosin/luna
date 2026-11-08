@@ -8,6 +8,15 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+## [0.10.2] - 2026-11-08
+
+A security release for the agent tools and the app window: an agent reaches
+only its own helpers unless it asks for every session, helpers start without
+their account's connectors, the window's page can call only what it uses, and
+no CLI runs with administrator rights. It also makes Luna's tools cheaper for
+agents to use and fixes several ways a helper's report or a transcript was
+misread.
+
 ### Security
 
 - An agent can interrupt only its own helpers and theirs: `luna_send` with
@@ -30,7 +39,6 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - Every `luna_*` tool refuses an argument it does not take, or of the wrong
   type, naming those it takes, instead of running on a default: `read_only`
   for `readOnly` spawned a helper that could write.
-
 - The window's page reaches only what it calls, so a script injected into it
   would get no more: each app command is granted to the main window by name
   and refused to any other window or a remote page, plugins are cut to the
@@ -374,7 +382,8 @@ fixes below.
 - First release: Claude Code sessions in panes, accounts with isolated configs,
   usage limits, worktrees, the updater.
 
-[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.10.1...HEAD
+[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.10.2...HEAD
+[0.10.2]: https://github.com/nrubinmosin/luna/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/nrubinmosin/luna/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/nrubinmosin/luna/compare/v0.9.10...v0.10.0
 [0.9.0]: https://github.com/nrubinmosin/luna/compare/v0.8.0...v0.9.0
