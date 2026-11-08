@@ -54,6 +54,7 @@ and check the other CLI for the same behavior (AGENTS.md, "Both providers").
 | A session resumed elsewhere keeps writing to the folder it started in | transcripts searched in every project folder |
 | `claude -p` with a `run_in_background` task open waits for it and takes its end up in the same run | one notice for the whole job |
 | `Unknown command: /x` is written and no turn starts | spawn answers `started: false` at once |
+| Release bucket (seen on 2.1.319): `manifest.json` gives each platform's `checksum` (sha256) and `size`, and says `manifestSignatureEnforcement: flag`; `manifest.json.sig` beside it is an ASCII-armored OpenPGP v4 signature, RSA 4096 with SHA-512, by key `31DD DE24 DDFA B679 F42D 7BD2 BAA9 29FF 1A7E CACE` | the manifest verified against that key, pinned, before its checksum is used (`claude/manifest_sig.rs`) |
 ### Terminal (all)
 
 | Observation | What Luna does |

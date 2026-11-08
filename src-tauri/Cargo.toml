@@ -34,6 +34,9 @@ dirs = "7"
 portable-pty = "0.9"
 ureq = { version = "2", features = ["json"] }
 sha2 = "0.10"
+# RSA verification of the Claude Code release manifest's signature
+# (src/claude/manifest_sig.rs). The version rustls already brings in.
+ring = "0.17.14"
 # The secrets Luna mints (src/secret.rs), from the OS's CSPRNG. The version
 # the tree already resolves.
 getrandom = "0.4.3"
