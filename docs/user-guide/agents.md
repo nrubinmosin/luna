@@ -65,7 +65,7 @@ hooks run unasked.
   in the same directory (`sameFolder`), whose files and git it shares. An unknown
   slash command comes back at once as not started, with the screen.
 - A helper runs at no more privilege than its caller (permission mode; Codex
-  sandbox, approval and network) unless Settings → Helpers allows helpers above
+  sandbox, approval and network) unless Settings → Agents & trust allows helpers above
   their caller, and never in or above Luna's data folder.
 
 ## Talking to sessions

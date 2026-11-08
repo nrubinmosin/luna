@@ -23,7 +23,7 @@ update can replace the exe), not in the window.
   scrollback.
 - The hooks' listener, the agents' MCP server, activity and power run there too,
   so an agent's `luna_wait` keeps working with no window open.
-- Settings → Versions shows the core and can restart it. It leaves by itself
+- Settings → Updates shows the core and can restart it. It leaves by itself
   after ten minutes with no window and no session (a background helper in a
   turn counts, and so does one whose leftovers still keep the PC awake).
 - If the core stops, its sessions end: a banner says so, and **Restart the
@@ -97,7 +97,7 @@ next core takes them up after an update, a restart or a reboot.
   helper sits in is ever deleted.
 - Deleting a chat takes its worktree, and the branch Claude Code made for it,
   by default, unless another chat or helper still works there. The checkbox can
-  be unticked per chat; where it starts is set in Settings.
+  be unticked per chat; where it starts is set in Settings → Chats → Worktrees.
 
 ## The log
 
