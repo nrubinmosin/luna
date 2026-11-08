@@ -80,6 +80,7 @@ decisions in [ADR-0012](../adr/0012-agents-over-mcp-with-notices.md) and
 | `luna_send` | its descendants; with `scope: "all"` any session but its own, the text opened `[From session <id> via Luna]` (`as_sent`); `interrupt` descendants only; command text (`/`, `!`) only from full access into its own helper |
 | `luna_read`, `luna_wait` | its descendants; with `scope: "all"` any session but its own |
 | `luna_kill`, `luna_delete` | descendants only |
+| `luna_answer` to a model's question | its descendants; with `scope: "all"` any session but its own, an answer typed in as a message opened as `luna_send`'s (`answer_message`) |
 | `luna_answer` with `allow`, `keys`, or on a CLI's own list | descendants only, at the caller's privilege |
 | `luna_spawn` | a helper at no more privilege than the caller, never in or above the data dir |
 
