@@ -159,14 +159,24 @@ releases (`codex/cli.rs`), both over HTTPS.
   [setup docs](https://code.claude.com/docs/en/setup#verify-the-manifest-signature)
   give it; a test derives the fingerprint from the pinned modulus). Only a v4
   RSA/SHA-512 document signature, one packet, armored as served or binary, is
-  accepted, and an unknown critical subpacket is refused. Then the exe's sha256 and size from
-  that signed manifest.
+  accepted. Its hashed subpackets are held to: a creation time is required,
+  not before the key's and not ahead of the clock by more than a day; a
+  signature or key expiration it gives is honored; an unknown critical one is
+  refused. Unhashed subpackets and the digest's two-byte prefix are unsigned
+  and skipped unread. The manifest must name the version it was fetched for,
+  and that version must not be below the floor (`claude/cli.rs`: the highest
+  signed version accepted, kept in `signed-floor`, or `MIN_VERSION` on a fresh
+  tree). Then the exe's sha256 and size from that manifest.
 - Codex: the package tarball's sha256 from the release's
-  `codex-package_SHA256SUMS`, the same origin as the tarball. Then each
-  unpacked file at its tar header's size; at most `MAX_ENTRIES` entries and
-  `MAX_BYTES` bytes (`codex/cli.rs`); files and folders only, a link,
-  device, pipe or sparse entry refused, paths that climb out refused by
-  `unpack_in`.
+  `codex-package_SHA256SUMS`, the same origin as the tarball. Then two passes
+  over it through a cap on the decompressed stream (`codex/cli.rs`,
+  `unpack_capped`): the first reads the headers raw and refuses a metadata
+  record (PAX, GNU long name) past 64 KiB before the tar reader would take it
+  into memory, a PAX `size` override, a link, device, pipe or sparse entry,
+  and more than `MAX_ENTRIES` entries or `MAX_BYTES` bytes; the second
+  unpacks, budgeting each entry's size as the reader writes it, paths that
+  climb out refused by `unpack_in`. Each unpacked file is then held to its
+  size.
 
 **The installation protocol** (`cli.rs`, `install_in`; detail in
 [providers.md](../architecture/providers.md#cli-binaries)): fetched into
@@ -180,15 +190,18 @@ check every component below the CLI root for a link before deleting
 
 **What an origin compromise gets.** The bucket or its CDN alone: no new code
 runs. A replaced exe fails the signed checksum, a replaced manifest the
-signature; it can withhold updates, or point the unsigned `latest` at an older
-signed release, which Luna then installs (a downgrade, F10). Anthropic's
+signature, a signed manifest of another release served under this one's URLs
+its version check, and an older signed release pointed to by the unsigned
+`latest` the floor. It can withhold updates, or hold a fresh install at any
+signed release from `MIN_VERSION` up to the newest. Anthropic's
 release key: everything, as for any user of the official installer. The
 `openai/codex` releases (a maintainer account or the release workflow):
 binary and checksum replaced together, installed and run (F10).
 
 | STRIDE | Threat | Status |
 | --- | --- | --- |
-| T, S | Claude Code's bucket or CDN serves a forged exe or manifest | mitigated: the manifest is verified against the pinned release key before its checksum is used (`claude/manifest_sig.rs`). Residual: a signed older release (F10) |
+| T, S | Claude Code's bucket or CDN serves a forged exe or manifest | mitigated: the manifest is verified against the pinned release key before its checksum is used (`claude/manifest_sig.rs`), must name the requested version, and must not be below the floor (`claude/cli.rs`) |
+| T, D | Codex's tarball, matching its checksum, unpacks without bound (a gzip bomb, a PAX size override, a huge metadata record) | mitigated: the stream, each metadata record, the entries and their bytes are capped, a PAX size override refused (`codex/cli.rs`, `unpack_capped`) |
 | T, S | Codex release origin compromised: binary and checksum replaced together | open (F10) |
 | T | Local replacement of the managed binary or its `current` version file | same user: accepted (R3); another OS user: the data dir's mode on Unix, its protected DACL on Windows (F4) |
 | T, E | Archive extraction writes outside the version folder, or fills the disk | mitigated: Codex entries go through `unpack_in`, which refuses paths that climb out, links are refused, entries and bytes are capped (`codex/cli.rs`, `unpack_capped`); Claude Code is a single file renamed after the hash check |
@@ -243,7 +256,7 @@ on `refactor/phase-1`; "residual" names what is left and why.
 | F7 | Low-Medium | The hook secret was global, so any session could forge another chat's turn and permission events | **fixed** (4540647, b21dadf): each chat's secret is the first 128 bits of HMAC-SHA256(run key, chat id), checked against the path's chat id in constant time (`hub.rs:115`, `hub.rs:238`). Residual: the Codex guard URL rides in a `-c` argument, visible to other OS users in the Unix process list; it opens only that chat's door |
 | F8 | Low; Medium in the fallback deployment | The data dir fell back to a shared, predictable `temp_dir()/luna` | **fixed** (4336990): on Unix the fallback is `temp_dir()/luna-<euid>`, `0700`, used only if a real folder of this uid's, else Luna stops (`paths.rs:66`). Windows keeps `temp_dir()/luna`: its temp folder is the user's own |
 | F9 | Hardening gap | Tauri app commands are not scoped (no `AppManifest` in `build.rs`) and take raw paths, which sets the impact of any script in the page | **residual**: needs per-capability command scoping and `account_path` validated against the accounts root; CSP (H3) makes injection harder meanwhile |
-| F10 | Medium | Managed CLI binaries are checked only against a sha256 from the same origin (B7) | **Claude Code part fixed** (3b603be): its manifest is verified against Anthropic's release key pinned in the app (`claude/manifest_sig.rs`), so the exe's checksum is the key holder's. **Residual**: Codex is still checked only against `codex-package_SHA256SUMS` from the same release; it publishes Sigstore bundles for its Linux packages only (`*.tar.gz.sigstore`, seen on rust-v0.167.0), none for Windows or macOS, and verifying them would take a Sigstore client and a pinned workflow identity. Claude Code's `latest` pointer is unsigned, so the bucket can offer an older signed release (no downgrade refusal yet). A new Anthropic key stops Claude Code updates until a Luna release pins it |
+| F10 | Medium | Managed CLI binaries are checked only against a sha256 from the same origin (B7) | **Claude Code part fixed** (3b603be): its manifest is verified against Anthropic's release key pinned in the app (`claude/manifest_sig.rs`), so the exe's checksum is the key holder's. **Residual**: Codex is still checked only against `codex-package_SHA256SUMS` from the same release; it publishes Sigstore bundles for its Linux packages only (`*.tar.gz.sigstore`, seen on rust-v0.167.0), none for Windows or macOS, and verifying them would take a Sigstore client and a pinned workflow identity. Claude Code's `latest` pointer is unsigned: an older signed release is refused below the floor (616d138), but a fresh install can still be held anywhere from `MIN_VERSION` up, and a release Anthropic pulls back is refused until a newer one comes. A new Anthropic key stops Claude Code updates until a Luna release pins it |
 | H1 | — | Tokens and secrets were hashed from time, pid and addresses; compares used `==` | **fixed** (d502edf, d09261c): every token, key and secret from the OS CSPRNG (`secret.rs:15`); hub secret and core token compared with `subtle` (`secret.rs:25`); MCP tokens keyed by SHA-256 |
 | H2 | — | Listeners read unauthenticated input with no deadline or cap (`tiny_http`, a thread per connection) | **fixed** (6b8fecc, d09261c): see B2 and B3 |
 | H3 | — | `csp: null` | **fixed** (1cb24c4, 3d787a6): see section 7.2 |
