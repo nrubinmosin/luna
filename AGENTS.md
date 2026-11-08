@@ -114,10 +114,14 @@ one CLI only.
   (the live suite on throwaway accounts), `release` (a version from bump to
   published draft), `cli-upgrade` (a new Claude Code or Codex version),
   `luna-security-review` (a change to a trust boundary, against the threat
-  model) and `ui-check` (gate, screenshots and test-build smoke for a UI
-  change).
+  model), `ui-check` (gate, screenshots and test-build smoke for a UI
+  change) and `commit-message` (a message that passes the hook and CI,
+  and the git moves around one: a refusal, fixups, rewording, reverts).
 - Once per clone, `git config core.hooksPath .githooks`: its pre-commit hook
   refuses a commit with anything under `.claude/skills/` that is not a symlink.
+- A commit message is a sentence saying what the change does, 72 characters at
+  most and no type prefix, then a blank line, then why (CONTRIBUTING.md,
+  "Commits"); the commit-msg hook and CI refuse the rest.
 - No attribution trailers in commits (`Co-Authored-By:`, the robot emoji,
   "Generated with ..."): authorship is git's author field only. Enforced by
   the commit-msg hook and, over every pushed commit, by CI.
