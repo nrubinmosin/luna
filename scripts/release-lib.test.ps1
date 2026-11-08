@@ -121,24 +121,173 @@ try {
         Assert-Equal (Get-CiVerdict @((& $run 'completed' 'failure'), (& $run 'completed' 'success'))) 'green'
     }
 
-    Check 'release notes are the tag''s message, short of its signature' {
-        Assert-Equal (Get-TagNotes "Fixes the thing.`n`nAnd another.`n" '1.2.3') "Fixes the thing.`n`nAnd another."
-        $signed = "Luna 1.2.3`n-----BEGIN PGP SIGNATURE-----`nabc`n-----END PGP SIGNATURE-----`n"
-        Assert-Equal (Get-TagNotes $signed '1.2.3') 'Luna 1.2.3'
-        Assert-Equal (Get-TagNotes "-----BEGIN SSH SIGNATURE-----`nabc`n" '1.2.3') 'Luna 1.2.3'
-        Assert-Equal (Get-TagNotes '' '1.2.3') 'Luna 1.2.3'
+    Check 'versions compare as semver, a release above its pre-releases' {
+        Assert-Equal (Compare-ReleaseVersion '0.10.0' '0.9.10') 1
+        Assert-Equal (Compare-ReleaseVersion '0.9.10' '0.10.0') -1
+        Assert-Equal (Compare-ReleaseVersion '1.2.3' '1.2.3') 0
+        Assert-Equal (Compare-ReleaseVersion '1.2.3' '1.2.3-rc.1') 1
+        Assert-Equal (Compare-ReleaseVersion '1.2.3-rc.1' '1.2.3-rc.2') -1
     }
 
-    Check 'a CHANGELOG is looked for a heading of the version' {
-        $root = Join-Path $work changelog
-        New-Item -ItemType Directory -Force $root | Out-Null
-        Assert-Equal (Test-ChangelogHasVersion '0.9.1' $root) $null
-        Set-Content (Join-Path $root 'CHANGELOG.md') "# Changelog`n`n## [0.9.10] - 2026-11-07`n`nMentions 0.9.1 in passing.`n"
-        Assert-Equal (Test-ChangelogHasVersion '0.9.10' $root) $true
-        Assert-Equal (Test-ChangelogHasVersion '0.9.1' $root) $false
-        Set-Content (Join-Path $root 'CHANGELOG.md') "## v0.9.1`n"
-        Assert-Equal (Test-ChangelogHasVersion '0.9.1' $root) $true
-        Assert-Equal (Test-ChangelogHasVersion '0.9.1-rc.1' $root) $false
+    # A CHANGELOG as the repo writes it: the Unreleased section, three versions
+    # with subsections, a bare one, an empty one, and the link definitions.
+    $changelog = @'
+# Changelog
+
+All notable changes are recorded here.
+
+## [Unreleased]
+
+### Fixed
+
+- Not out yet.
+
+## [0.10.1] - 2026-11-09
+
+A small release.
+
+### Fixed
+
+- The release workflow's SBOM attestation.
+
+## [0.10.0] - 2026-11-08
+
+A security and engineering release. Agent tools now follow least privilege.
+
+### Security
+
+- Helpers hold no more privilege than their starter.
+
+### Added
+
+- A threat model (`SECURITY.md`).
+
+## [0.9.11] - 2026-11-07
+
+## [0.9.10] - 2026-11-06
+
+- Fixes and refinements.
+
+[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.10.1...HEAD
+[0.10.1]: https://github.com/nrubinmosin/luna/compare/v0.10.0...v0.10.1
+'@ -replace "`r`n", "`n"
+    $tree = New-Tree notes
+    Set-Content (Join-Path $tree 'CHANGELOG.md') $changelog -NoNewline
+
+    Check 'a CHANGELOG section is extracted exactly, intro and subsections' {
+        $section = Get-ChangelogSection '0.10.0' $tree
+        Assert-Equal $section.Date '2026-11-08'
+        Assert-Equal $section.Heading '[0.10.0] - 2026-11-08'
+        Assert-Equal $section.Intro 'A security and engineering release. Agent tools now follow least privilege.'
+        $expected = @'
+A security and engineering release. Agent tools now follow least privilege.
+
+### Security
+
+- Helpers hold no more privilege than their starter.
+
+### Added
+
+- A threat model (`SECURITY.md`).
+'@ -replace "`r`n", "`n"
+        Assert-Equal $section.Body $expected.Trim()
+        # The last section ends before the link definitions, and may have no intro.
+        $last = Get-ChangelogSection '0.9.10' $tree
+        Assert-Equal $last.Body '- Fixes and refinements.'
+        Assert-Equal $last.Intro '- Fixes and refinements.'
+        Assert-Equal ((Get-ChangelogVersions $tree) -join ' ') '0.10.1 0.10.0 0.9.11 0.9.10'
+    }
+
+    Check 'a missing or empty CHANGELOG section is refused, and Unreleased never taken' {
+        Assert-Throws { Get-ChangelogSection '0.9.9' $tree } 'no section for 0.9.9'
+        Assert-Throws { Get-ChangelogSection '0.9.11' $tree } '0.9.11 section of CHANGELOG.md is empty'
+        Assert-Throws { Get-ChangelogSection 'Unreleased' $tree } 'not a version'
+        $bare = Join-Path $work 'no-changelog'
+        New-Item -ItemType Directory -Force $bare | Out-Null
+        Assert-Throws { Get-ChangelogSection '0.10.0' $bare } 'no CHANGELOG.md'
+        Assert-Throws { New-ReleaseNotes -Version '0.9.11' -Previous 'v0.9.10' -Root $tree } 'is empty'
+        # An empty section among those the notes cover is refused too: 0.9.11
+        # lies between 0.10.1 and the published 0.9.10.
+        Assert-Throws { New-ReleaseNotes -Version '0.10.1' -Previous 'v0.9.10' -Root $tree } '0.9.11 section of CHANGELOG.md is empty'
+    }
+
+    Check 'release notes span every CHANGELOG version since the last published release' {
+        # 0.10.0 was tagged but never published: 0.10.1's notes carry it.
+        $notes = New-ReleaseNotes -Version '0.10.1' -Previous 'v0.9.11' -Root $tree
+        $expected = @'
+A small release.
+
+### Fixed
+
+- The release workflow's SBOM attestation.
+
+## Also from 0.10.0
+
+0.10.0 had no published release of its own; its changes first ship here.
+
+A security and engineering release. Agent tools now follow least privilege.
+
+### Security
+
+- Helpers hold no more privilege than their starter.
+
+### Added
+
+- A threat model (`SECURITY.md`).
+
+Full changes: [v0.9.11...v0.10.1](https://github.com/nrubinmosin/luna/compare/v0.9.11...v0.10.1) and the [CHANGELOG](https://github.com/nrubinmosin/luna/blob/v0.10.1/CHANGELOG.md#0101---2026-11-09).
+
+'@ -replace "`r`n", "`n"
+        Assert-Equal $notes $expected
+        # With 0.10.0 published, 0.10.1's notes stop at its own section.
+        $notes = New-ReleaseNotes -Version '0.10.1' -Previous 'v0.10.0' -Root $tree
+        if ($notes -match 'Also from') { throw "0.10.0's section was included: $notes" }
+        if ($notes -notmatch '\[v0\.10\.0\.\.\.v0\.10\.1\]') { throw "no compare link from v0.10.0: $notes" }
+        # Nothing published yet: the version's section alone, no compare link.
+        $notes = New-ReleaseNotes -Version '0.10.1' -Previous '' -Root $tree
+        if ($notes -match 'Also from|compare/') { throw "an unpublished repo got a span or compare link: $notes" }
+        if ($notes -notmatch 'Full changes: the \[CHANGELOG\]') { throw "no CHANGELOG link: $notes" }
+        # Unreleased is not a version: a span never reaches it, and it cannot be released.
+        if ($notes -match 'Not out yet') { throw 'the Unreleased section leaked into the notes' }
+        Assert-Throws { New-ReleaseNotes -Version 'Unreleased' -Previous '' -Root $tree } 'not a version'
+    }
+
+    Check 'release notes end on the verify commands and the checksums' {
+        $sums = @'
+ff84  Luna_0.10.1_x64-setup.exe
+ddb7  Luna_0.10.1_x64-setup.exe.sig
+d8e1  latest.json
+'@ -replace "`r`n", "`n"
+        $notes = New-ReleaseNotes -Version '0.10.1' -Previous 'v0.10.0' -Checksums $sums -Root $tree
+        $expected = @'
+## Verify
+
+```sh
+# Built by this repository's release workflow, from the tagged commit.
+gh attestation verify Luna_0.10.1_x64-setup.exe --repo nrubinmosin/luna \
+  --signer-workflow nrubinmosin/luna/.github/workflows/release.yml
+
+# The SBOMs attested against the installer.
+gh attestation verify Luna_0.10.1_x64-setup.exe --repo nrubinmosin/luna \
+  --predicate-type https://cyclonedx.org/bom
+
+# Every asset against the checksums.
+sha256sum -c SHA256SUMS
+```
+
+SHA256SUMS:
+
+```text
+ff84  Luna_0.10.1_x64-setup.exe
+ddb7  Luna_0.10.1_x64-setup.exe.sig
+d8e1  latest.json
+```
+
+'@ -replace "`r`n", "`n"
+        if (-not $notes.EndsWith($expected)) { throw "the notes do not end on the verify block:`n$notes" }
+        Assert-Throws { New-ReleaseNotes -Version '0.10.1' -Previous 'v0.10.0' -Checksums "d8e1  latest.json`n" -Root $tree } 'no *-setup.exe'
+        $without = New-ReleaseNotes -Version '0.10.1' -Previous 'v0.10.0' -Root $tree
+        if ($without -match 'Verify|SHA256SUMS') { throw 'a verify block without checksums' }
     }
 
     # Byte for byte what scripts/release.ps1 wrote before the workflow, for the

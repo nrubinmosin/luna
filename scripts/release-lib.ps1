@@ -111,20 +111,137 @@ function Get-CiVerdict([object[]]$Runs) {
     'red'
 }
 
-# A tag's message as release notes: what comes before a signature block, or
-# "Luna <version>" when that leaves nothing.
-function Get-TagNotes([string]$Message, [string]$Version) {
-    $notes = ($Message -split '(?m)^-----BEGIN ', 2)[0].Trim()
-    if ($notes) { $notes } else { "Luna $Version" }
+# Two versions in the order the updater and semver put them: negative when
+# $A is the older, zero, positive. A release outranks its own pre-releases.
+function Compare-ReleaseVersion([string]$Left, [string]$Right) {
+    $l = @($Left -split '-', 2); $r = @($Right -split '-', 2)
+    $order = ([version]$l[0]).CompareTo([version]$r[0])
+    if ($order -ne 0) { return $order }
+    if ($l.Count -ne $r.Count) { return $(if ($l.Count -eq 1) { 1 } else { -1 }) }
+    if ($l.Count -eq 1) { return 0 }
+    [string]::CompareOrdinal($l[1], $r[1])
 }
 
-# Whether CHANGELOG.md has a heading for $Version: $true or $false, or $null
-# when there is no CHANGELOG.md.
-function Test-ChangelogHasVersion([string]$Version, [string]$Root = $RepoRoot) {
+# A version heading of CHANGELOG.md, Keep a Changelog style: "## [1.2.3] - 2026-11-08".
+$ChangelogHeading = '^## \[(?<version>[^\]]+)\](?: - (?<date>\S+))?\s*$'
+
+# CHANGELOG.md's lines; the release notes come from it, so a tree without one
+# cannot be released.
+function Read-Changelog([string]$Root) {
     $path = Join-Path $Root 'CHANGELOG.md'
-    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
-    $pattern = "(?m)^#{1,6}\s.*(?<![0-9A-Za-z.])v?$([regex]::Escape($Version))(?![0-9A-Za-z.-])"
-    [regex]::IsMatch([IO.File]::ReadAllText($path), $pattern)
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "no CHANGELOG.md in $Root; the release notes are made from it" }
+    [IO.File]::ReadAllText($path) -split "\r?\n"
+}
+
+# The versions CHANGELOG.md has sections for, in the file's order (newest
+# first); [Unreleased] is not one.
+function Get-ChangelogVersions([string]$Root = $RepoRoot) {
+    @(Read-Changelog $Root | ForEach-Object {
+        if ($_ -match $ChangelogHeading -and $Matches.version -ne 'Unreleased') { $Matches.version }
+    })
+}
+
+# One version's section of CHANGELOG.md: Version, Date, Heading (the line's
+# text after "## "), Intro (the text before its first ### subsection, which
+# latest.json carries for the update chip) and Body (intro and subsections as
+# written; the link definitions at the end of the file left out). Throws when
+# the heading is missing or the section holds no text or bullets, and for
+# [Unreleased], whose content is not released as it is.
+function Get-ChangelogSection([string]$Version, [string]$Root = $RepoRoot) {
+    Assert-VersionFormat $Version
+    $lines = Read-Changelog $Root
+    $start = -1
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        if ($lines[$i] -match $ChangelogHeading -and $Matches.version -ceq $Version) { $start = $i; $date = $Matches.date; break }
+    }
+    if ($start -lt 0) { throw "CHANGELOG.md has no section for $Version (## [$Version] - <date>); write its entry first" }
+    $body = foreach ($line in $lines[($start + 1)..($lines.Count - 1)]) {
+        if ($line -match '^## ') { break }
+        if ($line -match '^\[[^\]]+\]:\s*\S+\s*$') { continue }
+        $line
+    }
+    $text = (@($body) -join "`n").Trim()
+    if (-not @($text -split "`n" | Where-Object { $_.Trim() -and $_ -notmatch '^###' })) {
+        throw "the $Version section of CHANGELOG.md is empty; write what changed before releasing it"
+    }
+    [pscustomobject]@{
+        Version = $Version
+        Date    = $date
+        Heading = $lines[$start].Substring(3).Trim()
+        Intro   = (($text -split '(?m)^###', 2)[0]).Trim()
+        Body    = $text
+    }
+}
+
+# The release notes of $Version, from CHANGELOG.md: its section as written;
+# then, under a heading each, every CHANGELOG version newer than $Previous,
+# the tag of the latest published release (v0.10.0 was tagged and never
+# published, so 0.10.1's notes carry its changes too; '' when nothing has
+# been published yet, and then $Version's section alone); the compare view
+# and the CHANGELOG, linked; and with -Checksums (the SHA256SUMS text) a
+# Verify section with the commands docs/releasing.md documents and the
+# checksums themselves. Reads nothing but the tree at $Root. Returns the
+# Markdown text.
+function New-ReleaseNotes {
+    param(
+        [Parameter(Mandatory)][string]$Version,
+        [AllowEmptyString()][string]$Previous = '',
+        [string]$Checksums,
+        [string]$Root = $RepoRoot
+    )
+    $repo = Get-RepoUrl $Root
+    $section = Get-ChangelogSection $Version $Root
+    $parts = @($section.Body)
+    if ($Previous) {
+        $versions = Get-ChangelogVersions $Root
+        $previousVersion = $Previous -replace '^v', ''
+        for ($i = [array]::IndexOf($versions, $Version) + 1; $i -lt $versions.Count; $i++) {
+            if ((Compare-ReleaseVersion $versions[$i] $previousVersion) -le 0) { break }
+            $older = Get-ChangelogSection $versions[$i] $Root
+            $parts += "## Also from $($older.Version)`n`n$($older.Version) had no published release of its own; its changes first ship here.`n`n$($older.Body)"
+        }
+    }
+    # GitHub's anchor for the heading: lowercased, punctuation but hyphens
+    # dropped, blanks to hyphens.
+    $anchor = ($section.Heading.ToLowerInvariant() -replace '[^\w\s-]', '') -replace '\s', '-'
+    $changelog = "[CHANGELOG]($repo/blob/v$Version/CHANGELOG.md#$anchor)"
+    $parts += if ($Previous) {
+        "Full changes: [$Previous...v$Version]($repo/compare/$Previous...v$Version) and the $changelog."
+    } else {
+        "Full changes: the $changelog."
+    }
+    if ($Checksums) {
+        $setup = $null
+        foreach ($line in $Checksums -split "\r?\n") {
+            if ($line -match '^\S+\s+\*?(\S+-setup\.exe)$') { $setup = $Matches[1]; break }
+        }
+        if (-not $setup) { throw 'SHA256SUMS names no *-setup.exe; the verify commands in the notes need the installer' }
+        $slug = $repo -replace '^https://github\.com/', ''
+        $fence = '```'
+        $parts += @"
+## Verify
+
+${fence}sh
+# Built by this repository's release workflow, from the tagged commit.
+gh attestation verify $setup --repo $slug \
+  --signer-workflow $slug/.github/workflows/release.yml
+
+# The SBOMs attested against the installer.
+gh attestation verify $setup --repo $slug \
+  --predicate-type https://cyclonedx.org/bom
+
+# Every asset against the checksums.
+sha256sum -c SHA256SUMS
+$fence
+
+SHA256SUMS:
+
+${fence}text
+$($Checksums.Trim())
+$fence
+"@
+    }
+    (($parts -join "`n`n") -replace "`r`n", "`n") + "`n"
 }
 
 # The folder the Windows release build leaves its artifacts in
@@ -161,7 +278,8 @@ function Assert-CoreFingerprint([string]$Fingerprint, [string]$From) {
 
 # The latest.json the updater plugin fetches: version, the core fingerprint
 # (a window whose core has the same one installs the update by restarting only
-# itself, updates.store.ts), the notes the update chip shows, the date, and the
+# itself, updates.store.ts), the notes the update chip shows (the CHANGELOG
+# section's intro, Get-ChangelogSection), the date, and the
 # installer with its signature, which the plugin checks against the public key
 # in tauri.conf.json. The installer is downloaded from the release the
 # manifest is published with, in the repo the updater endpoint names: the
@@ -216,4 +334,25 @@ function Get-UpdaterEndpoint([string]$Root = $RepoRoot) {
     $endpoints = @($conf.plugins.updater.endpoints)
     if ($endpoints.Count -ne 1) { throw "tauri.conf.json should name one updater endpoint, not $($endpoints.Count)" }
     $endpoints[0]
+}
+
+# The repository on GitHub, https://github.com/<owner>/<name>, from the
+# updater endpoint: the one place the repo is written (New-UpdaterManifest).
+function Get-RepoUrl([string]$Root = $RepoRoot) {
+    $endpoint = Get-UpdaterEndpoint $Root
+    if ($endpoint -notmatch '^(https://github\.com/[^/]+/[^/]+)/releases/latest/download/latest\.json$') {
+        throw "the updater endpoint $endpoint is not a GitHub latest-release latest.json"
+    }
+    $Matches[1]
+}
+
+# The tag of the latest published release on GitHub, '' when there is none
+# yet: a draft or a pre-release is not one, as installed copies polling
+# releases/latest see it. Through gh (GH_TOKEN, or gh's own login); $Repo is
+# owner/name, by default the checkout's.
+function Get-LatestReleaseTag([string]$Repo = '{owner}/{repo}') {
+    $out = gh api "repos/$Repo/releases/latest" --jq .tag_name 2>&1 | ForEach-Object { "$_" }
+    if (-not $LASTEXITCODE) { return ($out -join '').Trim() }
+    if ($out -match 'HTTP 404') { return '' }
+    throw "gh api repos/$Repo/releases/latest failed (exit $LASTEXITCODE): $($out -join ' ')"
 }
