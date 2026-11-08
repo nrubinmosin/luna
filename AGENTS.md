@@ -115,8 +115,8 @@ one CLI only.
   published draft), `cli-upgrade` (a new Claude Code or Codex version),
   `luna-security-review` (a change to a trust boundary, against the threat
   model), `ui-check` (gate, screenshots and test-build smoke for a UI
-  change) and `commit-message` (the form a commit message takes, with
-  pairs from this history).
+  change) and `commit-message` (a message that passes the hook and CI,
+  and the git moves around one: a refusal, fixups, rewording, reverts).
 - Once per clone, `git config core.hooksPath .githooks`: its pre-commit hook
   refuses a commit with anything under `.claude/skills/` that is not a symlink.
 - A commit message is a sentence saying what the change does, 72 characters at
