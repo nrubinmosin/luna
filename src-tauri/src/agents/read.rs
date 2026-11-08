@@ -174,7 +174,8 @@ type Messages = (Vec<Message>, u64);
 /// and to MAX_TEXT: read on from `since`, to the oldest that fit, the cursor
 /// put back to where they end; with `last`, to the newest. A read that hands
 /// over all the session said since the caller asked it something collects
-/// that answer, as a `wait` would.
+/// that answer, as a `wait` would. `report` reads the report alone (`report_read`).
+#[allow(clippy::too_many_arguments)]
 pub fn read(
     caller: &str,
     id: &str,
@@ -182,10 +183,14 @@ pub fn read(
     last: Option<usize>,
     with_tools: bool,
     with_screen: bool,
+    report: bool,
     call: &crate::mcp::Call,
 ) -> Result<Reading, String> {
     let known = authorize_view(caller, id)?;
     let pty = crate::pty::manager();
+    if report {
+        return Ok(report_read(caller, id, known.provider, since, with_screen));
+    }
     let path = transcript_path(pty, id);
     // Taken before the transcript is read: a turn over by now has its words
     // in what is read.
@@ -305,6 +310,33 @@ pub fn read(
     })
 }
 
+/// The report of what the session said since `since`, else since the caller
+/// last asked it something, else of its last turn that said anything: the one
+/// message a notice's answer file opens with (`said::report_of`), for a caller
+/// that wants no more of it. The rest it said is counted in `left_out`. Not the
+/// answer collected: a notice owed still comes, its file holding the whole.
+fn report_read(caller: &str, id: &str, provider: Provider, since: Option<u64>, with_screen: bool) -> Reading {
+    let pty = crate::pty::manager();
+    let owed = reg().lock().unwrap_or_else(|e| e.into_inner()).owed.get(&(caller.to_string(), id.to_string())).map(|o| o.cursor);
+    let replies = crate::agents::said::replies_since(pty, id, provider, since.or(owed).unwrap_or(0), false);
+    let messages: Vec<Message> = crate::agents::said::report_text(&replies)
+        .map(|text| Message { role: "assistant".into(), text, after_cli: false })
+        .into_iter()
+        .collect();
+    let (state, ask) = state_of(id);
+    Reading {
+        transcript_missing: messages.is_empty() && !transcript_found(pty, id),
+        left_out: replies.len().saturating_sub(messages.len()),
+        messages,
+        cursor: transcript_end(id),
+        state,
+        ask,
+        turns_ended: crate::activity::turn_state(id).map(|t| t.turns_ended).unwrap_or(0),
+        screen: with_screen.then(|| screen_of(pty, id)).flatten(),
+        undelivered: None,
+    }
+}
+
 /// Where a read from `from`, which found `found` messages up to `end` and
 /// hands over the first `keep` of them, is to pick up again: the first line
 /// start past which only the rest are left. What the transcript gains
@@ -380,7 +412,7 @@ mod tests {
         let dir = std::env::temp_dir().to_string_lossy().into_owned();
         lost_helper("lr-parent", "lr-chat", &dir, &["and a follow-up"]);
         let key = ("lr-parent".to_string(), "lr-chat".to_string());
-        let read_it = |call: &crate::mcp::Call| read("lr-parent", "lr-chat", None, None, false, false, call).unwrap().undelivered;
+        let read_it = |call: &crate::mcp::Call| read("lr-parent", "lr-chat", None, None, false, false, false, call).unwrap().undelivered;
         let call = crate::mcp::Call::new();
         let note = read_it(&call).unwrap();
         assert!(note.contains("never got started") && note.contains("its prompt and 1 queued message are in "), "{note}");
@@ -399,10 +431,10 @@ mod tests {
         crate::background::take_up_for_test("lb-child", "C:\\p", 0, &[], Some("do the whole job"));
         owe_from("lr-parent", "lb-child", 0, 0);
         let call = crate::mcp::Call::new();
-        let note = read("lr-parent", "lb-child", None, None, false, false, &call).unwrap().undelivered.unwrap();
+        let note = read("lr-parent", "lb-child", None, None, false, false, false, &call).unwrap().undelivered.unwrap();
         assert!(note.contains("never got started"), "{note}");
         assert!(!reg().lock().unwrap().owed.contains_key(&("lr-parent".to_string(), "lb-child".to_string())));
-        assert_eq!(read("lr-parent", "lb-child", None, None, false, false, &crate::mcp::Call::new()).unwrap().undelivered, None);
+        assert_eq!(read("lr-parent", "lb-child", None, None, false, false, false, &crate::mcp::Call::new()).unwrap().undelivered, None);
         crate::background::remove("lb-child");
         forget("lb-child");
         crate::background::gone_for_test("lr-parent");

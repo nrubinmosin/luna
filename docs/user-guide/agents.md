@@ -122,7 +122,10 @@ would have asked in its reply, unless it runs with `approval: auto-review`.
   itself, everything the helper said since it was asked, report first. Past
   60,000 characters either is cut: `luna_read` says how many messages it left
   out (`leftOut`), goes on from its cursor with `since`, keeps the newest with
-  `last`; `luna_wait` names a file with the whole answer.
+  `last`; `luna_wait` names a file with the whole answer. `luna_read` with
+  `report: true` gives the report alone (of what was said since `since`, else
+  since the agent asked), and does not count as collecting the answer. A notice
+  says which lines of its file are the report (`lines 1-N of M`).
 - `luna_wait` takes several sessions (`ids`, `mode: "any"` or `"all"`) and says
   which finished. `screen: false` leaves the terminal out; `luna_list` with `ids`
   gives those rows alone, and `accounts: false` leaves the accounts out. The

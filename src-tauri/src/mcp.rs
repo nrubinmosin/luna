@@ -274,13 +274,14 @@ fn tools() -> Value {
         },
         {
             "name": "luna_read",
-            "description": "Messages of any session from its transcript. `since` = cursor from an earlier read; `last` = only the last N messages (default 1; all after `since`). Cut past 60k chars (leftOut): `since` alone goes on from cursor, `last` keeps the newest. Also: state, ask.",
+            "description": "Messages of any session from its transcript. `since` = cursor from an earlier read; `last` = only the last N messages (default 1; all after `since`). Cut past 60k chars (leftOut): `since` alone goes on from cursor, `last` keeps the newest. `report`: its report alone. Also: state, ask.",
             "inputSchema": s(json!({
                 "id": { "type": "string" },
                 "since": { "type": "integer" },
                 "last": { "type": "integer" },
                 "tools": { "type": "boolean", "description": "tool call markers" },
-                "screen": { "type": "boolean", "description": "what the terminal shows" }
+                "screen": { "type": "boolean", "description": "what the terminal shows" },
+                "report": { "type": "boolean" }
             }), &["id"]),
             "annotations": reads
         },
@@ -410,6 +411,7 @@ fn call(caller: &str, params: &Value, this: &Call) -> Value {
         "drain",
         "accounts",
         "models",
+        "report",
     ];
     let set: Vec<String> = STEERING.iter().filter_map(|k| a.get(*k).filter(|v| !v.is_null()).map(|v| format!("{k}={v}"))).collect();
     if !set.is_empty() {
@@ -516,6 +518,7 @@ fn run(caller: &str, params: &Value, this: &Call) -> Value {
             a["last"].as_u64().map(|n| n as usize).or(a["since"].as_u64().is_none().then_some(1)),
             a["tools"].as_bool().unwrap_or(false),
             a["screen"].as_bool().unwrap_or(false),
+            a["report"].as_bool().unwrap_or(false),
             this,
         )
         .map(|r| json!(r)),
@@ -779,6 +782,19 @@ mod tests {
         }
         assert_eq!(hint("luna_spawn", "readOnlyHint"), Some(false));
         assert_eq!(hint("luna_notify", "destructiveHint"), Some(false));
+    }
+
+    #[test]
+    fn a_report_read_gives_one_message_at_most() {
+        tooled("rr-me");
+        agents::register("rr-kid", crate::provider::Provider::Claude, "C:/p", "C:/acc/anthropic/one", Some("rr-me"), false, json!({}));
+        let body = json!({ "jsonrpc": "2.0", "id": 15, "method": "tools/call",
+            "params": { "name": "luna_read", "arguments": { "id": "rr-kid", "report": true } } });
+        let r = handle("rr-me", &body.to_string()).unwrap()["result"].clone();
+        assert!(r.get("isError").is_none(), "{r}");
+        let v: Value = serde_json::from_str(r["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert!(v["messages"].as_array().is_some_and(|m| m.len() <= 1), "{v}");
+        assert_eq!(v["transcriptMissing"], true, "no transcript, nothing to report: {v}");
     }
 
     #[test]
