@@ -47,12 +47,15 @@ pub(super) struct Said {
     pub(super) texts: Vec<String>,
     /// Index in `texts` of the first message of the last turn that wrote any.
     last_turn: usize,
+    /// That turn was one its CLI started by itself (a background job's end it
+    /// took up), with no prompt of anyone's behind it.
+    by_cli: bool,
 }
 
 impl Said {
     /// Messages of one turn, or of turns that cannot be told apart.
     pub(super) fn one_turn(texts: Vec<String>) -> Said {
-        Said { texts, last_turn: 0 }
+        Said { texts, last_turn: 0, by_cli: false }
     }
 }
 
@@ -83,6 +86,7 @@ fn own_words(messages: Vec<Message>, stopped: bool) -> Said {
         }
         if prompted || m.after_cli {
             said.last_turn = said.texts.len();
+            said.by_cli = !prompted;
             prompted = false;
         }
         said.texts.push(m.text);
@@ -151,14 +155,18 @@ pub(super) const SHORT_MESSAGE: usize = 400;
 /// — when it is the last, where it ended up. Not the longest of all: a turn on
 /// text sent mid-turn answers after the first, and the first's long report
 /// would lead with what it has since moved past (a commit it has rebased).
-fn report_of(replies: &Said) -> usize {
+/// But a short last turn its CLI started by itself (a background job's end)
+/// answers nobody: the report is the longest one before it that is not short,
+/// and the short line goes after it as its last word.
+pub(super) fn report_of(replies: &Said) -> usize {
     let from = replies.last_turn.min(replies.len().saturating_sub(1));
-    let longest = (from..replies.len()).max_by_key(|&i| replies[i].chars().count()).unwrap_or(from);
-    if replies.get(longest).map_or(0, |r| r.chars().count()) < SHORT_MESSAGE {
-        replies.len().saturating_sub(1)
-    } else {
-        longest
+    let len = |i: usize| replies[i].chars().count();
+    let longest = (from..replies.len()).max_by_key(|&i| len(i)).unwrap_or(from);
+    if replies.get(longest).map_or(0, |r| r.chars().count()) >= SHORT_MESSAGE {
+        return longest;
     }
+    let before = replies.by_cli.then(|| (0..from).filter(|&i| len(i) >= SHORT_MESSAGE).max_by_key(|&i| len(i))).flatten();
+    before.unwrap_or(replies.len().saturating_sub(1))
 }
 
 /// A report's first line that says anything, on one line and short, without
@@ -295,15 +303,39 @@ mod tests {
             false,
         );
         assert_eq!(said[report_of(&said)], "Still green at 5ce3b92d2.");
+        // As power-fix put it on 2026-11-08: a long report, then a turn its CLI
+        // started by itself on a background job's end, short. The report
+        // stands; the short line comes next as its last word.
+        let cli = |text: &str| Message { role: "assistant".into(), text: text.into(), after_cli: true };
+        let said = own_words(
+            vec![
+                m("user", "Fix the shutdown.".into()),
+                m("assistant", "Reading the crate.".into()),
+                m("assistant", first.clone()),
+                cli("A leftover wait loop I started has stopped; nothing else changed."),
+            ],
+            false,
+        );
+        assert_eq!(said.last_turn, 2, "the CLI's own turn is a turn");
+        assert_eq!(said[report_of(&said)], first, "the turn before reports");
+        let whole = answer_text(&said);
+        assert!(whole.starts_with("The new tip is 5ce3b92d2."), "{whole}");
+        assert!(whole.contains("Its last message:\n\nA leftover wait loop"), "{whole}");
+        assert!(begins(&said).starts_with(". It begins: \"The new tip is 5ce3b92d2."));
+        // With nothing long before it, the CLI's short turn still leads.
+        let said = own_words(vec![m("assistant", "Done.".into()), cli("A job ended.")], false);
+        assert_eq!(said[report_of(&said)], "A job ended.");
         // Stopped on its prompt, with nothing said to it: the turn before stands.
         let said = own_words(vec![m("assistant", first.clone()), m("user", "And now?".into())], true);
         assert_eq!((said.last_turn, said[report_of(&said)].clone()), (0, first.clone()));
         // A turn the CLI started itself, on a background job's end, is one
-        // too, though its prompt is not among the messages.
+        // too, though its prompt is not among the messages; short, it leaves
+        // the report to the turn before.
         let mut taken_up = m("assistant", "The lane finished green at 9f3e2a1; nothing else changed.".into());
         taken_up.after_cli = true;
-        let said = own_words(vec![m("user", "Verify it.".into()), m("assistant", first), taken_up], false);
-        assert_eq!(said[report_of(&said)], "The lane finished green at 9f3e2a1; nothing else changed.");
+        let said = own_words(vec![m("user", "Verify it.".into()), m("assistant", first.clone()), taken_up], false);
+        assert_eq!(said.last_turn, 1);
+        assert_eq!(said[report_of(&said)], first);
     }
 
     #[test]

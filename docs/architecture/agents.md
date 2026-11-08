@@ -203,8 +203,10 @@ turn, stopped on a prompt (once per stop) or exited.
 
 - The answer is everything said past the debt's offset (`replies_since`),
   written to `<data>/agents/<id>-<sha256, 128 bits>.md` (named by content),
-  report first (`report_of`: the longest message, or with every one under 400
-  characters the last), then the last, then the rest. The notice quotes about
+  report first (`report_of`: the longest message of the last turn, or with every
+  one under 400 characters the last; when that short turn is one the CLI started
+  by itself (`Said::by_cli`, a background job's end), the longest message of 400
+  or more before it), then the last, then the rest. The notice quotes about
   150 characters of the report's first line (`opening_line`), not for a failed
   turn.
 - A `wait` still out for that answer (`waits`) delivers it instead; if it has

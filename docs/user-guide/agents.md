@@ -137,7 +137,9 @@ would have asked in its reply, unless it runs with `approval: auto-review`.
   notice back.
 - The notice says what happened, how many messages the helper wrote, the first
   line of its report, and a file with all of them: the report (the longest
-  message, or the last when all are short) first, then the last, then the rest.
+  message, or the last when all are short — but a short turn the CLI started by
+  itself, on a background job's end, leaves the report to the long message
+  before it) first, then the last, then the rest.
   A `luna_read` collects the answer only when it returns all of it, uncut, from a
   finished helper.
 - Text sent to a visible session mid-turn may join that turn or start the next,
