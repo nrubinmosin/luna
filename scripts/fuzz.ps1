@@ -15,7 +15,9 @@
 #
 # The checkout goes in read-only: the crate is built from a copy of src-tauri/
 # in the container, whose Cargo.lock starts as the app's own. The build holds
-# the machine's build lock (Use-BuildLock); the run, minutes long, does not.
+# the machine's build lock (Use-BuildLock) and the target volume's, and under
+# them copies the targets to test-build/fuzz/run-<pid>/; the run, minutes long,
+# holds neither and runs that copy, which it deletes when it ends.
 param(
     [ValidateSet('claude_transcript', 'codex_rollout')]
     [string[]]$Target = @('claude_transcript', 'codex_rollout'),
@@ -56,17 +58,23 @@ foreach ($t in $Target) {
 # keeps one for its own.
 $volumes = @('-v', 'luna-fuzz-target:/target', '-v', 'luna-linux-cargo-registry:/usr/local/cargo/registry')
 $bin = '/target/x86_64-unknown-linux-gnu/release'
+# This run's own copy of the targets, taken under the locks that cover their
+# build: the target volume's executables are the next build's to replace, from
+# this checkout or another, while this one is still fuzzing.
+$runBin = Join-Path $out "run-$PID"
 
 $stamp = Get-BuildStamp
 # Set inside the lock's script block, which runs in a scope of its own.
 $images = @{}
-Use-BuildLock {
-    $images.fuzz = Build-Image luna-fuzz fuzz.Dockerfile
-    # Both targets, whichever is run: cargo fuzz builds one or all. Copied, so
-    # the build writes nothing into the checkout (tauri-build's
-    # gen/, the fuzz crate's Cargo.lock); the copy's files are all new, so cargo
-    # rebuilds the crate from them whatever another checkout built last.
-    $script = ConvertTo-BashScript @"
+New-Item -ItemType Directory -Force $runBin | Out-Null
+try {
+    Use-BuildLock {
+        $images.fuzz = Build-Image luna-fuzz fuzz.Dockerfile
+        # Both targets, whichever is run: cargo fuzz builds one or all. Copied, so
+        # the build writes nothing into the checkout (tauri-build's
+        # gen/, the fuzz crate's Cargo.lock); the copy's files are all new, so cargo
+        # rebuilds the crate from them whatever another checkout built last.
+        $script = ConvertTo-BashScript @"
 set -e
 exec 9>/target/.fuzz.lock
 flock -n 9 || { echo 'another fuzz build is using these volumes; waiting for it'; flock 9; }
@@ -75,37 +83,46 @@ tar -C /app --exclude=src-tauri/target --exclude=src-tauri/gen --exclude=src-tau
 cd /work/src-tauri/fuzz
 cp ../Cargo.lock Cargo.lock
 cargo fuzz build --sanitizer none --debug-assertions --target-dir /target
+cp $bin/claude_transcript $bin/codex_rollout /run-bin/
 "@
-    Invoke-Checked 'cargo fuzz build' {
-        docker run --rm -e LUNA_BUILD=$stamp -e LUNA_FLAVOR=test -v "${RepoRoot}:/app:ro" @volumes $images.fuzz bash -c $script
+        Invoke-Checked 'cargo fuzz build' {
+            docker run --rm -e LUNA_BUILD=$stamp -e LUNA_FLAVOR=test -v "${RepoRoot}:/app:ro" -v "${runBin}:/run-bin" @volumes $images.fuzz bash -c $script
+        }
     }
-}
 
-# libFuzzer's own options: a unit gets 10 s and 2 GB, and up to 256 KiB of
-# input, a few transcript lines of the size Claude Code writes after a turn.
-$limits = '-timeout=10 -rss_limit_mb=2048 -max_len=262144'
-$failed = @()
-foreach ($t in $Target) {
-    $seeds = "/app/src-tauri/fixtures/transcripts/$($Seeds[$t])"
-    $dict = "/app/src-tauri/fuzz/$t.dict"
-    $mounts = @('-v', "${RepoRoot}:/app:ro", '-v', "$(Join-Path $out $t):/out") + $volumes
-    if ($Reproduce) {
-        $mounts += @('-v', "$(Split-Path $Reproduce):/repro:ro")
-        $run = "$bin/$t $limits -runs=1 '/repro/$(Split-Path -Leaf $Reproduce)'"
-    } elseif ($Minimize) {
-        # Into a new folder, then in place of the old: a merge that fails
-        # leaves the corpus as it was.
-        $run = @"
+    # libFuzzer's own options: a unit gets 10 s and 2 GB, and up to 256 KiB of
+    # input, a few transcript lines of the size Claude Code writes after a turn.
+    $limits = '-timeout=10 -rss_limit_mb=2048 -max_len=262144'
+    $failed = @()
+    foreach ($t in $Target) {
+        $seeds = "/app/src-tauri/fixtures/transcripts/$($Seeds[$t])"
+        $dict = "/app/src-tauri/fuzz/$t.dict"
+        $mounts = @('-v', "${RepoRoot}:/app:ro", '-v', "$(Join-Path $out $t):/out", '-v', "${runBin}:/run-bin:ro")
+        # Run from the container's own disk: a bind mount from a Windows host
+        # keeps no executable bit.
+        $exe = "/tmp/$t"
+        $run = "cp /run-bin/$t $exe && chmod +x $exe`n"
+        if ($Reproduce) {
+            $mounts += @('-v', "$(Split-Path $Reproduce):/repro:ro")
+            $run += "$exe $limits -runs=1 '/repro/$(Split-Path -Leaf $Reproduce)'"
+        } elseif ($Minimize) {
+            # Into a new folder, then in place of the old: a merge that fails
+            # leaves the corpus as it was.
+            $run += @"
 rm -rf /out/corpus.min && mkdir /out/corpus.min
-$bin/$t $limits -dict=$dict -merge=1 /out/corpus.min /out/corpus $seeds
+$exe $limits -dict=$dict -merge=1 /out/corpus.min /out/corpus $seeds
 rm -rf /out/corpus && mv /out/corpus.min /out/corpus
 "@
-    } else {
-        $run = "$bin/$t $limits -dict=$dict -max_total_time=$Seconds -print_final_stats=1 -artifact_prefix=/out/artifacts/ /out/corpus $seeds 2>&1 | tee /out/run.log; exit `${PIPESTATUS[0]}"
+        } else {
+            $run += "$exe $limits -dict=$dict -max_total_time=$Seconds -print_final_stats=1 -artifact_prefix=/out/artifacts/ /out/corpus $seeds 2>&1 | tee /out/run.log; exit `${PIPESTATUS[0]}"
+        }
+        Write-Host "== $t"
+        docker run --rm @mounts $images.fuzz bash -c (ConvertTo-BashScript "set -e`n$run")
+        if ($LASTEXITCODE) { $failed += $t }
     }
-    Write-Host "== $t"
-    docker run --rm @mounts $images.fuzz bash -c (ConvertTo-BashScript "set -e`n$run")
-    if ($LASTEXITCODE) { $failed += $t }
+} finally {
+    # This run's copy only: a folder this script made, by its own name.
+    Remove-Item -LiteralPath $runBin -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 if ($failed) {
