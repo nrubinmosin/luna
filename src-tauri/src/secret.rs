@@ -918,16 +918,46 @@ pub fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
 /// whose reader knows its writer's temps by their end (library/files.rs).
 pub fn write_private_as(path: &Path, bytes: &[u8], suffix: &str) -> io::Result<()> {
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    write_through(path, &path.with_file_name(format!("{name}.{}{suffix}", random_hex(8))), bytes)
+    write_through(path, &path.with_file_name(format!("{name}.{}{suffix}", random_hex(8))), bytes, false)
 }
 
-/// `write_private` through `tmp`. What is left of a failed write is removed
-/// only once this call has made `tmp`: a file someone else has there is not
-/// ours to delete.
-fn write_through(path: &Path, tmp: &Path, bytes: &[u8]) -> io::Result<()> {
+/// `write_private`, on disk before it is in place: the new file is flushed
+/// before the rename and, on Unix, the folder after it, so a power cut
+/// leaves the old file or the new one whole, never the name on half a
+/// file. For a file that says what Luna runs (the managed CLI's `current`).
+pub fn write_private_synced(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    write_through(path, &path.with_file_name(format!("{name}.{}.tmp", random_hex(8))), bytes, true)?;
+    match path.parent() {
+        Some(dir) => sync_dir(dir),
+        None => Ok(()),
+    }
+}
+
+/// Makes a folder's entries (a rename into it, a new file) durable where
+/// the platform lets a folder be flushed: Unix, by fsync on the folder.
+/// Windows has no such call for a folder short of flushing the whole volume,
+/// which takes an administrator; NTFS journals the rename so it is whole or
+/// absent after a crash, but a recent one may be undone.
+pub fn sync_dir(dir: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        std::fs::File::open(dir)?.sync_all()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = dir;
+        Ok(())
+    }
+}
+
+/// `write_private` through `tmp`, flushed to disk before the rename where
+/// `sync` says so. What is left of a failed write is removed only once this
+/// call has made `tmp`: a file someone else has there is not ours to delete.
+fn write_through(path: &Path, tmp: &Path, bytes: &[u8], sync: bool) -> io::Result<()> {
     use std::io::Write;
     let mut file = create_private(tmp)?;
-    let wrote = file.write_all(bytes);
+    let wrote = file.write_all(bytes).and_then(|()| if sync { file.sync_all() } else { Ok(()) });
     // Closed before the rename, which Windows refuses for a file held open.
     drop(file);
     let written = wrote.and_then(|()| std::fs::rename(tmp, path));
@@ -973,7 +1003,7 @@ mod tests {
         // A temp name someone else holds: refused, and their file left alone.
         let theirs = dir.join("sub").join("core.json.planted.tmp");
         std::fs::write(&theirs, "theirs").unwrap();
-        assert!(write_through(&path, &theirs, b"three").is_err());
+        assert!(write_through(&path, &theirs, b"three", false).is_err());
         assert_eq!(std::fs::read(&theirs).unwrap(), b"theirs");
         assert_eq!(std::fs::read(&path).unwrap(), b"two");
         let _ = std::fs::remove_dir_all(&dir);
