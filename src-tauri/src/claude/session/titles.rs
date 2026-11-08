@@ -24,7 +24,7 @@ fn is_handle(s: &str) -> bool {
     s.contains('-') && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
-fn titles_in(text: &str) -> Titles {
+pub(super) fn titles_in(text: &str) -> Titles {
     let mut t = Titles::default();
     // The `agent-name` follows its `ai-title`, so reading backwards it is
     // known by the time the title it rules out comes up.
@@ -130,9 +130,15 @@ fn read_first_prompt(account_path: &str, cwd: &str, session_id: &str) -> Option<
     use std::io::{BufRead, BufReader};
     let path = located_transcript(account_path, cwd, session_id);
     let f = std::fs::File::open(&path).ok()?;
+    first_prompt_in(BufReader::new(f).lines().map_while(Result::ok))
+}
+
+/// `read_first_prompt` of the transcript's lines, up to the first that is no
+/// text.
+pub(super) fn first_prompt_in(lines: impl Iterator<Item = impl AsRef<str>>) -> Option<String> {
     // The opening prompt is near the top; no need to walk a 700KB transcript.
-    for line in BufReader::new(f).lines().take(80).map_while(Result::ok) {
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+    for line in lines.take(80) {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line.as_ref()) else { continue };
         // `isMeta` marks a turn the CLI injected rather than one the user
         // typed — a hook's instructions, a resumed-session preamble. One of
         // those titled a chat "A session-scoped Stop hook is now active…".
