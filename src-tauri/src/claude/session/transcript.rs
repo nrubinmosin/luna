@@ -139,37 +139,80 @@ const REBUILD_LINE: usize = 1024 * 1024;
 /// file written anew under it is not taken for the one read. The read that goes
 /// on from that cursor carries the state instead of reading it back, which a
 /// caller polling a session does every few seconds.
-type Carried = HashMap<(PathBuf, u64, bool), (Vec<u8>, bool)>;
+type Carried = HashMap<(PathBuf, u64, bool), (FileMark, bool)>;
 
 fn carried_states() -> &'static Mutex<Carried> {
     static STATES: std::sync::OnceLock<Mutex<Carried>> = std::sync::OnceLock::new();
     STATES.get_or_init(Default::default)
 }
 
-/// The last bytes before `at`, which a cursor's state goes with.
-fn before_cursor(path: &Path, at: u64) -> Option<Vec<u8>> {
+/// Which file a cursor was handed back on, and what lay just before it: the
+/// file's identity on its volume and its creation time, which a file renamed
+/// into its place (how a CLI rewrites one) does not share, and the
+/// MARK_BEFORE bytes before the cursor, which an edit near it changes. An
+/// in-place edit that keeps the length and those bytes goes unseen, and the
+/// state carried from before it stands: a transcript is the CLI's and only
+/// grows, and whoever can rewrite one already decides what that session
+/// reports; all it can change here is that session's `after_cli`.
+#[derive(PartialEq)]
+struct FileMark {
+    id: Option<(u64, u64)>,
+    created: Option<std::time::SystemTime>,
+    before: Vec<u8>,
+}
+
+const MARK_BEFORE: u64 = 4096;
+
+fn file_mark(path: &Path, at: u64) -> Option<FileMark> {
     use std::io::{Read, Seek, SeekFrom};
-    let start = at.saturating_sub(32);
-    let mut bytes = vec![0; (at - start) as usize];
     let mut f = std::fs::File::open(path).ok()?;
+    let start = at.saturating_sub(MARK_BEFORE);
+    let mut before = vec![0; (at - start) as usize];
     f.seek(SeekFrom::Start(start)).ok()?;
-    f.read_exact(&mut bytes).ok()?;
-    Some(bytes)
+    f.read_exact(&mut before).ok()?;
+    let created = f.metadata().ok()?.created().ok();
+    Some(FileMark { id: file_id(&f), created, before })
+}
+
+/// The file's volume serial number and index.
+#[cfg(windows)]
+fn file_id(file: &std::fs::File) -> Option<(u64, u64)> {
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Storage::FileSystem::{GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION};
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: the handle is the File's, open for the call; `info` is the
+    // buffer the call fills, of the type it takes.
+    unsafe { GetFileInformationByHandle(HANDLE(file.as_raw_handle()), &mut info) }.ok()?;
+    Some((u64::from(info.dwVolumeSerialNumber), (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow)))
+}
+
+/// The file's device and inode.
+#[cfg(unix)]
+fn file_id(file: &std::fs::File) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = file.metadata().ok()?;
+    Some((meta.dev(), meta.ino()))
+}
+
+#[cfg(not(any(windows, unix)))]
+fn file_id(_: &std::fs::File) -> Option<(u64, u64)> {
+    None
 }
 
 fn carried(path: &Path, from: u64, with_tools: bool) -> Option<bool> {
     let states = carried_states().lock().unwrap_or_else(|e| e.into_inner());
-    let (before, pending) = states.get(&(path.to_path_buf(), from, with_tools))?;
-    (before_cursor(path, from).as_ref() == Some(before)).then_some(*pending)
+    let (mark, pending) = states.get(&(path.to_path_buf(), from, with_tools))?;
+    (file_mark(path, from).as_ref() == Some(mark)).then_some(*pending)
 }
 
 fn carry(path: &Path, at: u64, with_tools: bool, pending: bool) {
-    let Some(before) = before_cursor(path, at) else { return };
+    let Some(mark) = file_mark(path, at) else { return };
     let mut states = carried_states().lock().unwrap_or_else(|e| e.into_inner());
     if states.len() >= CACHE_CAP {
         states.clear();
     }
-    states.insert((path.to_path_buf(), at, with_tools), (before, pending));
+    states.insert((path.to_path_buf(), at, with_tools), (mark, pending));
 }
 
 /// Whether the file up to `from` ends on a prompt the CLI put in itself with
@@ -557,6 +600,60 @@ mod tests {
         assert!(!messages_from(&path, cursor, false).0[0].after_cli);
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(&elsewhere);
+    }
+
+    /// What a cursor's carried state is checked against: the file it was
+    /// handed back on, by identity and creation time, and the 4 KiB before it.
+    /// A file put in its place by rename (as a CLI rewrites one) or edited
+    /// close to the cursor is read back; an edit in place that keeps the
+    /// length and the last 4 KiB is not seen, the documented limit.
+    #[test]
+    fn a_carried_state_holds_only_for_the_file_it_was_read_from() {
+        use std::io::{Seek, SeekFrom, Write};
+        let path = std::env::temp_dir().join(format!("luna-claude-carried-file-{}.jsonl", std::process::id()));
+        let summary = r#"{"type":"user","message":{"role":"user","content":"This session is being continued from a previous conversation."},"isCompactSummary":true}"#;
+        let result = format!(
+            r#"{{"type":"user","message":{{"content":[{{"type":"tool_result","tool_use_id":"t1","content":"{}"}}]}}}}"#,
+            "x".repeat(50_000)
+        );
+        let answer = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Green."}]}}"#;
+        let flag = summary.find("true").unwrap() as u64;
+        // The CLI's summary, read to its end, then answered: what answers it opens a turn.
+        let primed = || {
+            std::fs::write(&path, format!("{summary}\n{result}\n{result}\n")).unwrap();
+            let (_, cursor) = messages_from(&path, 0, false);
+            std::fs::OpenOptions::new().append(true).open(&path).unwrap().write_all(format!("{answer}\n").as_bytes()).unwrap();
+            cursor
+        };
+        let in_place = |at: u64, bytes: &[u8]| {
+            let mut f = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+            f.seek(SeekFrom::Start(at)).unwrap();
+            f.write_all(bytes).unwrap();
+        };
+        let after_cli = |cursor| messages_from(&path, cursor, false).0[0].after_cli;
+        let cursor = primed();
+        assert!(after_cli(cursor));
+        // The same length written anew and renamed into place, the summary no
+        // longer one: another file, so read back.
+        let cursor = primed();
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes[flag as usize..flag as usize + 4].copy_from_slice(b"null");
+        let anew = path.with_extension("anew");
+        std::fs::write(&anew, bytes).unwrap();
+        std::fs::rename(&anew, &path).unwrap();
+        assert!(!after_cli(cursor), "a file renamed into place is read back");
+        // Edited in place, and within the 4 KiB before the cursor too: read back.
+        let cursor = primed();
+        in_place(flag, b"null");
+        in_place(cursor - 100, b"y");
+        assert!(!after_cli(cursor), "an edit next to the cursor is seen");
+        // Edited in place far from the cursor alone, length kept: not seen. The
+        // transcript is the CLI's, append-only; whoever can rewrite it already
+        // decides what the session reports, and gains only this flag.
+        let cursor = primed();
+        in_place(flag, b"null");
+        assert!(after_cli(cursor), "the documented limit: an in-place, equal-length edit before the checked 4 KiB");
+        let _ = std::fs::remove_file(&path);
     }
 
     /// As a caller waiting on a session sees it: the CLI's own prompt lands in

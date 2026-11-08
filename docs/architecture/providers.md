@@ -140,9 +140,14 @@ transcript `projects/<cwd>/<sid>.jsonl`.
 - `transcript.rs`: where a transcript is, and the conversation. A read from a
   cursor (a plain byte offset its callers hold) starts in the state the lines
   before it left: a CLI prompt still open makes what answers it open a turn.
-  That state goes with the cursor a read hands back, kept per file and cursor;
-  for any other cursor it is read back from the file in 64 KiB chunks, 8 MiB
-  and lines of 1 MiB at most, a prompt further back counting as answered.
+  That state goes with the cursor a read hands back, kept per file and cursor
+  with the file's identity (volume and index, or device and inode), its
+  creation time and the 4 KiB before the cursor; for any other cursor, or a file
+  renamed into place or edited near the cursor since, it is read back from the
+  file in 64 KiB chunks, 8 MiB and lines of 1 MiB at most, a prompt further
+  back counting as answered. An in-place edit that keeps the length and those
+  4 KiB goes unseen: transcripts only grow, and whoever can rewrite one already
+  decides what that session reports, so all it can change is its `after_cli`.
 - `ending.rs`: context, model, last words, API error, pending tool.
 - `titles.rs`: order `custom-title` (a `/rename`) → registry name with
   `nameSource: user` → `ai-title` → first prompt (only while there is no title).
