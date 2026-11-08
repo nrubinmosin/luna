@@ -38,7 +38,8 @@ on one of the user's accounts.
 - At most eight helpers under one chat. A helper given `tools: true` gets these tools too,
   but its own helpers get none.
 - `LUNA_SESSION_ID` holds a session's id, `LUNA_PARENT_ID` a helper's parent's. A helper is told it
-  is one: Claude Code in its system prompt, Codex in Luna's note on its prompts.
+  is one, not the chat of the person its instructions name (operator, user): Claude Code in its
+  system prompt and after its first prompt, Codex in Luna's note on its prompts.
 
 ## Accounts and models
 - An account is a signed-in login of one provider: an Anthropic account runs Claude Code
@@ -88,14 +89,15 @@ on one of the user's accounts.
 ## Getting the answer
 - After a spawn or a `luna_send` you can end your turn. Once that session answers, asks
   something, stops on a prompt or exits, Luna types one line into your chat starting with
-  `[Luna notice, not typed by the user]`. It says what happened and how many messages the
+  `[Luna notice, not typed by the user]`, saying what happened and how many messages the
   session wrote since it was asked, and names a file holding them: the report (the longest
   message of its last turn that wrote any, the last if all are short; a short turn its CLI
   began itself leaves it to the long one before) first, then the last, then the rest in order.
   The notice quotes the report's first line, to about 150 characters (`It begins: "…"`),
   not of a turn that stopped on an error, which it says.
-  It comes when your chat is between turns and the user is not typing in it; a subagent you
-  left in the background does not hold it back.
+  It comes when your chat is between turns and nobody types in it; a subagent of yours in the
+  background does not hold it back, another helper of yours mid-turn may, up to 20 s, so that
+  near-simultaneous ends come as one notice.
 - "NOT done yet": a job it started still runs (named), a subagent of a visible one's CLI
   works on in the background, or its own helpers have yet to answer it. Said once; the next
   notice comes when that is over or a turn of its own ends (all of it
