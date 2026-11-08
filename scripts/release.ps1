@@ -28,12 +28,16 @@
 # names it. The build never sees it, nor this checkout: it builds an export of
 # the commit, and nothing it made is run here. Only release-sign.ps1's
 # container sees the key. A -Local build starts from a cold target folder.
+# -TrustedPubkey (or LUNA_UPDATER_TRUSTED_PUBKEY) is for a key rotation's
+# bridge release: the old public key the signature is checked against
+# (release-sign.ps1, docs/releasing.md).
 [CmdletBinding(DefaultParameterSetName = 'Tag')]
 param(
     [Parameter(ParameterSetName = 'Bump', Mandatory)][string]$Bump,
     [Parameter(ParameterSetName = 'Local', Mandatory)][switch]$Local,
     [Parameter(ParameterSetName = 'Tag')][Parameter(ParameterSetName = 'Local')][switch]$DryRun,
     [Parameter(ParameterSetName = 'Local')][string]$UpdaterKey = $env:LUNA_UPDATER_KEY,
+    [Parameter(ParameterSetName = 'Local')][string]$TrustedPubkey = $env:LUNA_UPDATER_TRUSTED_PUBKEY,
     [Parameter(ParameterSetName = 'Local')][switch]$SkipBuild
 )
 . "$PSScriptRoot/lib.ps1"
@@ -118,7 +122,7 @@ try {
         $bundle = Join-Path $RepoRoot 'src-tauri/target/release-bundle'
         Remove-Item -LiteralPath $bundle -Recurse -Force -ErrorAction SilentlyContinue
         & "$PSScriptRoot/release-bundle.ps1" -Out $bundle -Notes $changelog.Intro -Source $source
-        & "$PSScriptRoot/release-sign.ps1" -Dir $bundle -Version $version -UpdaterKey $UpdaterKey
+        & "$PSScriptRoot/release-sign.ps1" -Dir $bundle -Version $version -UpdaterKey $UpdaterKey -TrustedPubkey $TrustedPubkey
         # Beside the bundle, not in it: everything in the bundle is uploaded.
         $notesFile = Join-Path $RepoRoot 'src-tauri/target/release-notes.md'
         [IO.File]::WriteAllText($notesFile, $notes, [Text.UTF8Encoding]::new($false))

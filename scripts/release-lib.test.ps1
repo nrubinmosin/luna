@@ -885,6 +885,18 @@ d8e1  latest.json
         Assert-Throws { Resolve-TrustedPubkey 'dW50cnVzdGVkIGNvbW1lbnQ6IHgKUldRCg==' } 'not a minisign public key'
     }
 
+    Check 'release.ps1 -Local hands -TrustedPubkey on to the signing' {
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $RepoRoot 'scripts/release.ps1'), [ref]$null, [ref]$null)
+        $param = $ast.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'TrustedPubkey' }
+        if (-not $param) { throw 'release.ps1 has no -TrustedPubkey' }
+        Assert-Equal $param.DefaultValue.Extent.Text '$env:LUNA_UPDATER_TRUSTED_PUBKEY'
+        $calls = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.Extent.Text -match 'release-sign\.ps1' }, $true))
+        Assert-Equal $calls.Count 1
+        $elements = @($calls[0].CommandElements | ForEach-Object { $_.Extent.Text })
+        $at = [array]::IndexOf($elements, '-TrustedPubkey')
+        if ($at -lt 0 -or $elements[$at + 1] -cne '$TrustedPubkey') { throw "release-sign.ps1 is called as $($calls[0].Extent.Text)" }
+    }
+
     Check 'an SBOM is checked the way actions/attest checks it' {
         $dir = New-Item -ItemType Directory -Force (Join-Path $work 'sbom')
         $sbom = { param($name, $json) $path = Join-Path $dir $name; Set-Content $path $json; $path }
