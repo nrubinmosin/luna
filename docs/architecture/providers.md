@@ -28,14 +28,40 @@ folder (`accounts.rs`), CLI downloads (`cli.rs`), the 429 cool-off
 ## CLI binaries
 
 `cli.rs` keeps Luna's own copies in `<data>/claude-cli/versions/<ver>/claude.exe`
-and `<data>/codex-cli/versions/<ver>/bin/codex.exe`, with `current` pointing at
-the active one ([ADR-0013](../adr/0013-own-cli-binaries.md)). Versions are never
-overwritten; old ones are swept once nobody holds them; `PATH` is the fallback
-until a copy exists. Each channel is checked every six hours. Claude Code is
-verified against its manifest's sha256. Codex comes as the package tarball, the
-only asset with a line in `codex-package_SHA256SUMS`, which also carries
-`codex-command-runner.exe` and the other Windows sandbox helpers; it is unpacked
-whole into the version folder.
+and `<data>/codex-cli/versions/<ver>/bin/codex.exe`, with `current` naming the
+active version folder ([ADR-0013](../adr/0013-own-cli-binaries.md)). Versions are
+never overwritten; old ones are swept once nobody holds them; `PATH` is the
+fallback until a copy exists. Each channel is checked every six hours. Claude
+Code is verified against its manifest's sha256 and size. Codex comes as the
+package tarball, the only asset with a line in `codex-package_SHA256SUMS`, which
+also carries `codex-command-runner.exe` and the other Windows sandbox helpers; it
+is unpacked whole into the version folder.
+
+An install is all or nothing:
+
+1. **Staging.** The fetch writes into `<root>/staging/<ver>-<random>/`, on the
+   same volume as `versions/`. Whatever an earlier pass left in `staging/` (a
+   crash mid-download or mid-unpack) is removed first; a link or junction there,
+   or `staging` itself as one, is removed as itself and never gone into.
+2. **Validation.** The source says what it put there (`Package`): Claude Code
+   the one exe with the manifest's sha256 and size; Codex every regular file of
+   the tarball at its tar header's size (the release publishes no hash of the
+   files inside, so the tarball's sha256 is what pins them). `validate` checks
+   each is a regular file, not a link, at that size and, where given, that
+   hash, and that the executable is among them.
+3. **Record.** `luna-install.json` (version, how it was verified, every file
+   with its size and hash where known) is written into the staged folder last.
+4. **Promotion.** One rename of the staged folder into `versions/` under a name
+   nothing has: `<ver>`, or `<ver>~<n>` while an older `<ver>` folder is still
+   there. An existing folder, which a running session may hold, is never
+   replaced, moved or added to. Then `current` is rewritten (temp file and
+   rename) to the new folder's name, and the sweep runs.
+
+A folder counts as installed only by its record, with every file it lists
+present at its size; that is checked for each spawn, the hashes only at
+install. A folder from before records that `current` names is still spawned,
+but the update pass fetches its version again beside it, and the sweep removes
+the old one once nothing holds it.
 
 ## Defaults
 
