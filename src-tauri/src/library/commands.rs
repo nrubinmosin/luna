@@ -230,9 +230,11 @@ pub fn library_resolve(dest: String, take: bool) -> Result<Overview, String> {
     let there = read_at(&to, file)?;
     if take {
         let there = there.ok_or("Nothing is there to take")?;
-        // A copy under another name goes back under the skill's own.
+        // A copy under another name goes back under the skill's own;
+        // instructions without the line saying whose they are (`worded`).
         let taken = match (&skill, &shown) {
             (Some(name), Some(_)) => with_name(there.clone(), name),
+            (None, _) => there.iter().map(|(k, v)| (k.clone(), unworded(v))).collect(),
             _ => there.clone(),
         };
         if let Some(name) = &skill {
@@ -405,6 +407,7 @@ pub fn library_delete_skill(name: String) -> Result<Overview, String> {
     }
     crate::settings::update(|s| {
         s.library.skills.remove(&name);
+        s.library.audience.skills.remove(&name);
         for f in &mut s.library.folders {
             f.skills.remove(&name);
         }
@@ -429,6 +432,7 @@ pub fn library_new_instructions(name: String) -> Result<Overview, String> {
     dirs.write(&path, b"")?;
     crate::settings::update(|s| {
         s.library.instructions.remove(&name);
+        s.library.audience.instructions.remove(&name);
     })?;
     overview_locked(false)
 }
@@ -455,6 +459,9 @@ pub fn library_rename_instructions(from: String, to: String) -> Result<Overview,
     let moved = crate::settings::update(|s| {
         if let Some(reach) = s.library.instructions.remove(&from) {
             s.library.instructions.insert(to.clone(), reach);
+        }
+        if let Some(audience) = s.library.audience.instructions.remove(&from) {
+            s.library.audience.instructions.insert(to.clone(), audience);
         }
         for choice in s.library.folders.iter_mut().flat_map(|f| f.instructions.values_mut()) {
             if choice.as_deref() == Some(from.as_str()) {
@@ -485,6 +492,7 @@ pub fn library_delete_instructions(name: String) -> Result<Overview, String> {
     }
     crate::settings::update(|s| {
         s.library.instructions.remove(&name);
+        s.library.audience.instructions.remove(&name);
         // A folder that gave them goes by what holds outside it again.
         for f in &mut s.library.folders {
             f.instructions.retain(|_, choice| choice.as_deref() != Some(name.as_str()));

@@ -28,6 +28,34 @@ each name has a copy button, to name a skill or instructions in a chat.
   `description`, then the instructions) and any files beside it. It goes into
   each picked account's `skills/`, for every session in every project.
 
+## Chats, helpers or both
+
+Each skill and instructions file is for your own chats, for helpers (the
+sessions another session starts and briefs, through Luna's tools), or for both:
+the **For** column, **Both** until you pick another. A helper is briefed by an
+agent rather than by you, so what you wrote for your own chat (the language you
+want answers in, how replies to you look, agreeing a plan with you first) and a
+skill only your chat uses cost it context and mislead it.
+
+- **Claude Code** leaves an entry out of each session of the other kind at its
+  start: instructions through `claudeMdExcludes`, skills through
+  `skillOverrides`, both in the settings Luna starts it with. The account's
+  files stay as they are.
+- **Codex** turns a skill off for one run (`-c skills.config`), but reads its
+  account's `AGENTS.md` in every session with no way to leave it out of one. So
+  instructions for one kind are laid out with a line before them saying whose
+  they are ("For the person's own chats only: …" or "For helper sessions only:
+  …"), and Luna's note to every helper says it is a helper. That line goes into
+  the Claude Code copy too, for sessions Luna does not start; changing the
+  audience rewrites the copies, and taking a copy into the library takes the
+  line off.
+- An account gets one instructions file, so instructions for your chats only
+  leave a Claude Code helper with none from the library; a Codex helper reads
+  them, worded as yours.
+- **What Luna applied** for a session lists what the audience kept from it
+  (or, on Codex, which instructions say they are for the other kind) under
+  your choices.
+
 ## Folders
 
 A folder you add (a repository, say) is for what belongs to one project but not

@@ -132,6 +132,24 @@ impl GoldenLibrary {
         GoldenLibrary { folder: repo.to_string_lossy().into_owned(), f }
     }
 
+    /// A library whose entries are all the person's chats' (audience.rs): its
+    /// `main` instructions and `report` skill, into every account. Its folder
+    /// is a repository the library says nothing of.
+    pub(crate) fn chats_only(tag: &str) -> Self {
+        let f = Fixture::new(&format!("golden-{tag}"));
+        f.skill("report", "v1");
+        f.instructions(FIRST_INSTRUCTIONS, "# Me\n\nSpeak Russian to me.\n");
+        let repo = f.base.join("repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        let mut lib = LibrarySettings { instructions: first(all()), skills: skills(&["report"]), ..Default::default() };
+        lib.audience.instructions.insert(FIRST_INSTRUCTIONS.into(), Audience::Chats);
+        lib.audience.skills.insert("report".into(), Audience::Chats);
+        f.run(&lib, &mut Ledger::default(), true);
+        let dirs = Dirs { root: f.dirs.root.clone(), data: f.dirs.data.clone() };
+        HELD.lock().unwrap_or_else(|e| e.into_inner()).push((dirs, lib, f.accounts.clone()));
+        GoldenLibrary { folder: repo.to_string_lossy().into_owned(), f }
+    }
+
     /// Its Claude Code account, `claude/work`.
     pub(crate) fn claude(&self) -> String {
         self.f.accounts[0].path.clone()

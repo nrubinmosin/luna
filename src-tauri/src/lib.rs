@@ -223,6 +223,7 @@ macro_rules! app_handler {
             library::library_set_source,
             library::library_set_instructions,
             library::library_set_accounts,
+            library::library_set_audience,
             library::library_set_folder,
             library::library_set_folder_skill,
             library::library_set_folder_instructions,

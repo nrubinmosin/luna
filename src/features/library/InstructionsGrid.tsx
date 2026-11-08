@@ -9,6 +9,7 @@ import {
 } from '../../ipc/library';
 import { Icon, ToolButton } from '../../shared/ui/icons';
 import { PROVIDERS, PROVIDER_LABEL } from '../../shared/types';
+import { AUDIENCE_TITLE, AudiencePicker } from './AudiencePicker';
 import { CellDot, NameCell, Tick } from './cells';
 import { baseName } from './paths';
 import { accountKey, how, type AccountRef } from './places';
@@ -177,6 +178,9 @@ export function InstructionsGrid({
           onChange={r => act(librarySetInstructions(i.name, r ?? []))}
         />
       </td>
+      <td className="cell">
+        <AudiencePicker entry={{ instructions: i.name }} audience={i.audience} act={act} />
+      </td>
       {cols.map(a => {
         const key = accountKey(a);
         const gets = o.instructionsFor[key] === i.name;
@@ -226,6 +230,9 @@ export function InstructionsGrid({
           <th rowSpan={2} title="The accounts each is meant for — every account, every one of a CLI, or those you name">
             Meant for
           </th>
+          <th rowSpan={2} title={AUDIENCE_TITLE}>
+            For
+          </th>
           {PROVIDERS.map(provider => {
             const span = cols.filter(a => a.provider === provider).length;
             return span ? (
@@ -270,6 +277,7 @@ export function InstructionsGrid({
               Nothing from the library; the account’s own file, if any, is left alone
             </div>
           </td>
+          <td />
           <td />
           {cols.map(a => {
             const key = accountKey(a);
@@ -318,6 +326,7 @@ export function InstructionsGrid({
                 The sessions Luna starts there, in place of the account’s
               </div>
             </td>
+            <td />
             <td />
             {cols.map(a => (
               <td key={accountKey(a)} className="cell">

@@ -10,6 +10,14 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Added
 
+- Each skill and instructions file in the library is for your own chats, for
+  helpers, or for both (the default), picked in the Skills & instructions
+  window's new **For** column. Claude Code sessions of the other kind are
+  started without it (`claudeMdExcludes`, `skillOverrides`); Codex skills are
+  turned off per run, and since Codex reads its account's `AGENTS.md` in every
+  session, instructions for one kind are laid out with a line saying whose
+  they are. What Luna applied lists what the audience kept from a session.
+  See docs/user-guide/library.md.
 - "What Luna applied" (the ⓘ button on a chat's title bar): everything Luna
   added to the chat's CLI at its latest start, grouped as your choice,
   runtime, boundary or workaround, each with its value and why, and what Luna

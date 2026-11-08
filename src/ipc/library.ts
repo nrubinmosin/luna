@@ -25,6 +25,9 @@ export interface PlaceDto {
 /** Which accounts something goes into: `all`, a provider's every account
  *  (`claude`, `codex`) or one account (`provider/name`) per entry. */
 export type Reach = string[];
+/** Whose sessions a skill or instructions file is for: the person's own chats, the helpers other sessions
+ *  start, or both. */
+export type Audience = 'both' | 'chats' | 'helpers';
 export interface LibrarySkillDto {
   name: string;
   description: string;
@@ -32,6 +35,7 @@ export interface LibrarySkillDto {
   problem: string | null;
   /** The accounts it goes into, wherever no folder says otherwise. */
   accounts: Reach;
+  audience: Audience;
 }
 export interface LibraryInstructionsDto {
   name: string;
@@ -41,6 +45,7 @@ export interface LibraryInstructionsDto {
   problem: string | null;
   /** The accounts its reach takes in; a closer reach of other instructions wins. */
   accounts: Reach;
+  audience: Audience;
 }
 export interface LibraryFolderDto {
   path: string;
@@ -118,6 +123,9 @@ export const libraryResolve = (dest: string, take: boolean) =>
 export const libraryDiff = (dest: string) => call<FileDiffDto[]>('library_diff', { dest }, []);
 /** The file the editor has open: a skill's SKILL.md or instructions, by name. */
 export type LibraryEntry = { skill: string } | { instructions: string };
+/** Whose sessions a skill or instructions file is for. */
+export const librarySetAudience = (entry: LibraryEntry, audience: Audience) =>
+  call<LibraryOverviewDto>('library_set_audience', { entry, audience });
 export const libraryRead = (entry: LibraryEntry) => call<LibraryFileDto>('library_read', { entry });
 export const libraryWrite = (entry: LibraryEntry, text: string) =>
   call<LibraryOverviewDto>('library_write', { entry, text });

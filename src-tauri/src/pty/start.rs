@@ -497,7 +497,7 @@ pub async fn ensure_claude_session(
             crate::library::SessionSkills::default()
         } else {
             crate::library::lay_out("before a session starts");
-            crate::library::session_args(Provider::Claude, &account_path, &folder)
+            crate::library::session_args(Provider::Claude, &account_path, &folder, crate::library::SessionKind::Chat)
         };
         let notes = tools.unwrap_or(false).then(crate::agents::notes_dir).filter(|notes| std::fs::create_dir_all(notes).is_ok());
         let instructions = if login { None } else { claude_instructions_dir(&id, skills.instructions.as_deref()) };
@@ -627,8 +627,8 @@ pub async fn ensure_codex_session(
         // The skills the library gives sessions in this folder and keeps
         // from them, at every start (library/folders.rs `session_args`).
         crate::library::lay_out("before a session starts");
-        let skills = crate::library::session_args(Provider::Codex, &account_path, &folder);
-        let (args, envs, applied) = codex_launch::chat_args(&codex_launch::ChatStart {
+        let skills = crate::library::session_args(Provider::Codex, &account_path, &folder, crate::library::SessionKind::Chat);
+        let (args, envs, mut applied) = codex_launch::chat_args(&codex_launch::ChatStart {
             id: &id,
             folder: &folder,
             account_path: &account_path,
@@ -649,6 +649,7 @@ pub async fn ensure_codex_session(
             mcp: mcp.as_ref().map(|(url, token)| (url.as_str(), token.as_str())),
             skill_args: &skills.args,
         });
+        applied.extend(crate::library::audience_applied(&skills));
         let describe = format!("model {} effort {effort} approval {approval} sandbox {sandbox}", model.as_deref().unwrap_or("default"));
         Ok(Launch { provider: Provider::Codex, cwd: folder, account_path, args, envs, resume, describe, applied })
     })
@@ -1455,6 +1456,43 @@ mod tests {
         let plugin = format!("-c plugins.{}@luna.enabled=true", crate::library::GoldenLibrary::SLUG);
         assert_eq!(s.value("library.skills"), Some(plugin.as_str()));
         assert_eq!(s.value("library.hidden-skills"), Some("-c skills.config=[{name=\"review\",enabled=false}]"));
+    }
+
+    // The person's own chat where every entry of the library is theirs
+    // (library/audience.rs): started as with no audience set at all. Helpers'
+    // turns on the same library: background/command.rs.
+
+    #[test]
+    fn golden_claude_chat_gets_what_the_library_means_for_chats_as_ever() {
+        const ID: &str = "golden-claude-chats-only";
+        let lib = crate::library::GoldenLibrary::chats_only("pane-claude-audience");
+        let r = library_redact(ID, &lib, &lib.claude());
+        let s = ClaudeAsk { folder: lib.folder.clone(), account: lib.claude(), ..ClaudeAsk::chat() }.start(ID, &r);
+        assert_eq!(
+            s.args,
+            strings(&["--model", "opus", "--effort", "high", "--permission-mode", "default", "--settings", "<settings-file>"])
+        );
+        assert_eq!(s.envs, claude_envs(ID, "<acc>"));
+        assert_eq!(s.settings, Some(golden::claude_chat_settings(false)), "nothing hidden, nothing left out");
+        assert_eq!(s.instructions, None);
+        for key in ["library.audience", "library.hidden-skills", "library.account-instructions-off"] {
+            assert_eq!(s.value(key), None, "{key}");
+        }
+    }
+
+    #[test]
+    fn golden_codex_chat_gets_what_the_library_means_for_chats_as_ever() {
+        const ID: &str = "golden-codex-chats-only";
+        let lib = crate::library::GoldenLibrary::chats_only("pane-codex-audience");
+        let r = library_redact(ID, &lib, &lib.codex());
+        let s = CodexAsk { folder: lib.folder.clone(), account: lib.codex(), ..CodexAsk::chat() }.start(ID, &r);
+        let mut want = strings(&["-C", "<project>", "--no-daemon"]);
+        want.extend(codex_flags(Some("gpt-5.5"), "medium", "on-request", "workspace-write"));
+        want.extend(strings(&["-c", "check_for_update_on_startup=false", "-c", "tui.terminal_title=[\"thread-id\"]"]));
+        assert_eq!(s.args, want, "no skill turned off");
+        for key in ["library.audience", "library.hidden-skills"] {
+            assert_eq!(s.value(key), None, "{key}");
+        }
     }
 
     #[test]

@@ -59,3 +59,11 @@
   width: 1%;
   white-space: nowrap;
 }
+/* Whose sessions an entry is for: Settings' segmented choice, on one line and in the grid's own size. */
+[data-app] .library-audience .seg {
+  flex-wrap: nowrap;
+}
+[data-app] .library-audience .seg > [role="radio"] {
+  font-size: var(--fs-2);
+  padding: 0 6px;
+}
