@@ -428,15 +428,58 @@ d8e1  latest.json
         foreach ($name in 'Luna_0.9.1_x64-setup.exe', 'Luna_0.9.1_x64-setup.exe.sig', 'Luna_0.9.10_x64-setup.exe') {
             Set-Content (Join-Path $nsis $name) 'x'
         }
-        Set-Content (Join-Path $dir 'luna.exe') 'x'
         Assert-Throws { Find-ReleaseArtifacts '0.9.10' -Dir $dir } 'core-fingerprint.txt'
         Set-Content (Join-Path $dir 'core-fingerprint.txt') '0123456789abcdef' -NoNewline
+        # No exe: nothing the build made is run, so nothing asks for one.
         $found = Find-ReleaseArtifacts '0.9.10' -Dir $dir
         Assert-Equal (Split-Path -Leaf $found.Setup) 'Luna_0.9.10_x64-setup.exe'
         $found = Find-ReleaseArtifacts '0.9.1' -Dir $dir
         Assert-Equal (Split-Path -Leaf $found.Setup) 'Luna_0.9.1_x64-setup.exe'
-        Assert-Equal $found.PSObject.Properties.Name.Contains('Signature') $false
+        Assert-Equal (@($found.PSObject.Properties.Name) -join ',') 'Setup,Fingerprint'
         Assert-Throws { Find-ReleaseArtifacts '0.9.2' -Dir $dir } 'no installer for 0.9.2'
+    }
+
+    Check 'the release source is the commit''s tree, without .git or the skill links' {
+        $to = Join-Path $work 'source'
+        Export-ReleaseSource 'HEAD' $to
+        foreach ($file in 'package.json', 'pnpm-lock.yaml', 'src-tauri/Cargo.lock', 'src-tauri/tauri.conf.json', 'scripts/build-windows.ps1') {
+            if (-not (Test-Path -LiteralPath (Join-Path $to $file) -PathType Leaf)) { throw "no $file in the export" }
+        }
+        foreach ($absent in '.git', '.claude') {
+            if (Test-Path -LiteralPath (Join-Path $to $absent)) { throw "$absent in the export" }
+        }
+        $tracked = git -C $RepoRoot show 'HEAD:package.json'
+        Assert-Equal ((Get-Content -LiteralPath (Join-Path $to 'package.json')) -join "`n") ($tracked -join "`n")
+        Assert-Equal (Test-Path -LiteralPath "$to.tar") $false
+        Assert-Throws { Export-ReleaseSource 'HEAD' $to } 'there already'
+    }
+
+    Check 'a build artifact reached through a link is refused' {
+        # What a build in a container could leave in the tree it wrote: an
+        # artifact, or a folder on the way to it, that is a link elsewhere.
+        $root = Join-Path $work 'linked'
+        $dir = Join-Path $root 'release'
+        $nsis = New-Item -ItemType Directory -Force (Join-Path $dir 'bundle/nsis')
+        Set-Content (Join-Path $nsis 'Luna_0.9.10_x64-setup.exe') 'x'
+        $outside = New-Item -ItemType Directory -Force (Join-Path $work 'outside')
+        Set-Content (Join-Path $outside 'secret.txt') '0123456789abcdef' -NoNewline
+        New-Item -ItemType Junction -Path (Join-Path $root 'elsewhere') -Target $outside | Out-Null
+        Set-Content (Join-Path $dir 'core-fingerprint.txt') '0123456789abcdef' -NoNewline
+        Find-ReleaseArtifacts '0.9.10' -Dir $dir -Root $root | Out-Null
+        Assert-Throws { Find-ReleaseArtifacts '0.9.10' -Dir (Join-Path $root 'elsewhere') -Root $root } 'through a link'
+        Remove-Item -LiteralPath (Join-Path $dir 'core-fingerprint.txt')
+        if ($IsWindows) {
+            # A file symlink needs Developer Mode or elevation on Windows; a
+            # junction to a folder holding the file stands in for it.
+            New-Item -ItemType Junction -Path (Join-Path $dir 'core-fingerprint.txt') -Target $outside | Out-Null
+        } else {
+            New-Item -ItemType SymbolicLink -Path (Join-Path $dir 'core-fingerprint.txt') -Target (Join-Path $outside 'secret.txt') | Out-Null
+        }
+        Assert-Throws { Find-ReleaseArtifacts '0.9.10' -Dir $dir -Root $root } 'through a link'
+        # The link itself goes, never what it points at.
+        [IO.Directory]::Delete((Join-Path $root 'elsewhere'))
+        if ($IsWindows) { [IO.Directory]::Delete((Join-Path $dir 'core-fingerprint.txt')) } else { [IO.File]::Delete((Join-Path $dir 'core-fingerprint.txt')) }
+        Assert-Equal (Test-Path -LiteralPath (Join-Path $outside 'secret.txt')) $true
     }
 
     Check 'the signature goes into latest.json only as the build wrote it for the version' {

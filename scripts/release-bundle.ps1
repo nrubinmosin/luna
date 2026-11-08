@@ -10,35 +10,32 @@
 #   ./scripts/release-bundle.ps1 -Out <dir>                 for the version in the version files
 #   ./scripts/release-bundle.ps1 -Out <dir> -Notes "..."    the notes latest.json carries (the
 #                                                           CHANGELOG section's intro); "Luna <version>" without
+#   ./scripts/release-bundle.ps1 -Out <dir> -Source <tree>  from the build of the tree
+#                                                           `build-windows.ps1 -Source` built
 #
 # -Out has to be empty or not there yet: nothing in it is overwritten or deleted.
+# What the build left is only read, never run, and never through a link.
 param(
     [Parameter(Mandatory)][string]$Out,
-    [string]$Notes
+    [string]$Notes,
+    [string]$Source
 )
 . "$PSScriptRoot/lib.ps1"
 . "$PSScriptRoot/release-lib.ps1"
 
 $version = Get-ReleaseVersion
-$built = Find-ReleaseArtifacts $version
+$built = if ($Source) {
+    $Source = [IO.Path]::GetFullPath($Source, (Get-Location).Path)
+    Find-ReleaseArtifacts $version -Dir (Join-Path $Source 'src-tauri/target/x86_64-pc-windows-msvc/release') -Root $Source
+} else {
+    Find-ReleaseArtifacts $version
+}
 
-# The core fingerprint build.rs left beside the exe, from the value the exe is
-# stamped with. Where the exe can run, it is asked too: the two differing would
-# publish a fingerprint that is not the update's (coreproc.rs holds them to each
-# other in a test as well).
+# The core fingerprint build.rs left beside the exe, the value it stamps the
+# exe with; coreproc.rs holds the exe's `--core-fingerprint` to it in a test.
+# The exe itself is not asked: that would run the build's output here.
 $fingerprint = (Get-Content -LiteralPath $built.Fingerprint -Raw).Trim()
 Assert-CoreFingerprint $fingerprint $built.Fingerprint
-if ($IsWindows) {
-    $asked = Join-Path ([IO.Path]::GetDirectoryName($built.Exe)) 'core-fingerprint.reported.txt'
-    Remove-Item -LiteralPath $asked -ErrorAction SilentlyContinue
-    Start-Process -FilePath $built.Exe -ArgumentList '--core-fingerprint', "`"$asked`"" -Wait
-    if (-not (Test-Path -LiteralPath $asked)) { throw 'the exe did not report its core fingerprint' }
-    $reported = (Get-Content -LiteralPath $asked -Raw).Trim()
-    Remove-Item -LiteralPath $asked
-    if ($reported -cne $fingerprint) {
-        throw "the exe reports core fingerprint $reported, but build.rs left $fingerprint beside it"
-    }
-}
 
 $Out = [IO.Path]::GetFullPath($Out, (Get-Location).Path)
 if (Test-Path -LiteralPath $Out) {

@@ -336,24 +336,79 @@ $fence
 # (build-windows.ps1).
 $ReleaseBuildDir = Join-Path $RepoRoot 'src-tauri/target/x86_64-pc-windows-msvc/release'
 
-# The release build's artifacts for $Version: the exe, the installer and the
-# core fingerprint build.rs left beside the exe. Throws when one is missing.
-# The build signs nothing: the installer's updater signature is made apart
-# from it (release-sign.ps1).
-function Find-ReleaseArtifacts([string]$Version, [string]$Dir = $ReleaseBuildDir) {
+# The tree of $Commit, as git has it, written to the new folder $To: the
+# source `release.ps1 -Local` builds, so the build's container, which runs
+# every dependency's build code with the tree mounted writable, has no way
+# to this checkout, whose scripts then sign. No .git goes with it (build.rs
+# takes the stamp from LUNA_BUILD), nor .claude/, whose skill links the
+# build needs no more than a Windows extraction could make them.
+function Export-ReleaseSource([string]$Commit, [string]$To, [string]$Root = $RepoRoot) {
+    if (Test-Path -LiteralPath $To) { throw "$To is there already; the release source goes into a new folder" }
+    New-Item -ItemType Directory -Force $To | Out-Null
+    $tar = "$To.tar"
+    try {
+        Invoke-Checked 'git archive' { git -C $Root archive --format=tar -o $tar $Commit -- . ':(exclude).claude' }
+        [System.Formats.Tar.TarFile]::ExtractToDirectory($tar, $To, $false)
+    } finally {
+        Remove-Item -LiteralPath $tar -ErrorAction SilentlyContinue
+    }
+}
+
+# Deletes $Path, a tree a build in a container wrote, from inside a container
+# that sees only its parent: `rm -rf` there takes a link the build left as the
+# link, where a delete from this side could follow a junction out of the tree.
+function Remove-BuiltTree([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    $Path = [IO.Path]::GetFullPath($Path)
+    $parent = Split-Path -Parent $Path
+    $name = Split-Path -Leaf $Path
+    Invoke-Checked "removing $Path" {
+        docker run --rm --network none -v "${parent}:/parent" (Get-NodeImage) rm -rf -- "/parent/$name"
+    }
+    if (Test-Path -LiteralPath $Path) { throw "$Path is still there" }
+}
+
+# Throws when $Path, or any folder between $Root and it, is a link or
+# junction: what a build wrote is read only as the files it is, never
+# through a link it could have aimed at the updater key or anything else of
+# the user's. $Path has to be under $Root.
+function Assert-NoLinkBelow([string]$Root, [string]$Path) {
+    $Root = [IO.Path]::GetFullPath($Root).TrimEnd('\', '/')
+    $at = [IO.Path]::GetFullPath($Path).TrimEnd('\', '/')
+    $sep = [IO.Path]::DirectorySeparatorChar
+    if (-not ($at -eq $Root -or $at.StartsWith("$Root$sep", [StringComparison]::OrdinalIgnoreCase) -or $at.StartsWith("$Root/", [StringComparison]::OrdinalIgnoreCase))) {
+        throw "$Path is not under $Root"
+    }
+    while ($at.Length -gt $Root.Length) {
+        if (Test-Link $at) { throw "$Path is reached through a link ($at)" }
+        $at = [IO.Path]::GetDirectoryName($at)
+    }
+}
+
+# The release build's artifacts for $Version: the installer and the core
+# fingerprint build.rs left beside the exe, found in $Dir, which lies under
+# $Root, the tree the build wrote. Throws when one is missing or is reached
+# through a link below $Root. Nothing the build made is run: the exe is not
+# needed, and asking it for its fingerprint would run whatever a dependency's
+# build code put into it, on this machine, as its user. The build signs
+# nothing either: the installer's updater signature is made apart from it
+# (release-sign.ps1).
+function Find-ReleaseArtifacts([string]$Version, [string]$Dir = $ReleaseBuildDir, [string]$Root = $RepoRoot) {
+    $nsis = Join-Path $Dir 'bundle/nsis'
+    Assert-NoLinkBelow $Root $nsis
     # By version, not by whatever comes first: the bundle folder keeps every
     # installer ever built there, and picking the first one alphabetically is
     # how v0.2.0 went out carrying the 0.1.0 setup and its signature, an update
     # that offered a build its own version.
-    $setup = Get-ChildItem (Join-Path $Dir 'bundle/nsis') -Filter "*_${Version}_*-setup.exe" -ErrorAction SilentlyContinue |
+    $setup = Get-ChildItem -LiteralPath $nsis -Filter "*_${Version}_*-setup.exe" -ErrorAction SilentlyContinue |
         Select-Object -First 1
-    if (-not $setup) { throw "no installer for $Version in $Dir/bundle/nsis" }
+    if (-not $setup) { throw "no installer for $Version in $nsis" }
     $found = [pscustomobject]@{
-        Exe         = Join-Path $Dir 'luna.exe'
         Setup       = $setup.FullName
         Fingerprint = Join-Path $Dir 'core-fingerprint.txt'
     }
-    foreach ($f in @($found.Exe, $found.Setup, $found.Fingerprint)) {
+    foreach ($f in @($found.Setup, $found.Fingerprint)) {
+        Assert-NoLinkBelow $Root $f
         if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { throw "missing build artifact: $f" }
     }
     $found

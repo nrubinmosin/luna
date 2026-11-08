@@ -97,15 +97,25 @@ on the fixed commit, which the tag ruleset lets only the maintainer do).
 was done before the workflow: it builds on this machine, signs with the key that
 `-UpdaterKey` or `LUNA_UPDATER_KEY` names, and uploads a published release with `gh`
 (no SBOMs or attestations; the notes from `CHANGELOG.md` as above, without the Verify
-section). The signing is separated as in the workflow: the build never sees the key,
-which is mounted only into `release-sign.ps1`'s container. `-Local -DryRun` builds,
-signs and composes without uploading; `-Local -SkipBuild` signs and uploads what the
-last build left. What it cannot separate as well: the build container has the checkout
-mounted writable, and the signing runs from that checkout afterwards. `release.ps1`
-checks again after the build that the tree is clean, which stops a tracked script the
-build changed, but not everything code running as root in the checkout could leave
-behind (git's own configuration among it). The workflow, where sign runs on a fresh
-runner from a fresh checkout, is the release path that rules this out.
+section). The signing is separated as in the workflow. The build runs in Docker on an
+export of the commit (`git archive` into `src-tauri/target/release-source`, with no
+`.git`), never on this checkout, so the code it runs cannot change the scripts that sign
+afterwards; the commit the export holds is written beside it, for `-SkipBuild` to check.
+Nothing the build made is run on this machine: `release-bundle.ps1` takes the core
+fingerprint from the `core-fingerprint.txt` build.rs leaves, reads the installer and that
+file only as plain files (a link anywhere below the export is refused), and the key is
+mounted only into `release-sign.ps1`'s container. The export is deleted from inside a
+container, where `rm -rf` cannot follow a junction out of it. A `-Local` build starts
+from a cold target folder, so it takes as long as a first build. `-Local -DryRun`
+builds, signs and composes without uploading; `-Local -SkipBuild` signs and uploads what
+the last build of the same commit left.
+
+What remains on this path: the Docker volumes the builds share (`luna-node-modules`, the
+cargo registry, the xwin and Tauri caches) are written by every build, a development
+build's included, so code that ran in one build can plant something the next build
+runs. That reaches the next installer, which then gets signed, but not the key, which
+no build container mounts. The installer itself is, as in the workflow, whatever the
+build made. The workflow, whose runners start empty, has no such carry-over.
 
 ## One-time setup
 

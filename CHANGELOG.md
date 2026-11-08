@@ -33,7 +33,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   Tauri CLI pinned by `pnpm-lock.yaml`, without network, and checks the
   signature against the updater's public key before publishing it. The release
   still takes one approval, now given to the signing job. `release.ps1 -Local`
-  signs the same way.
+  signs the same way, builds an export of the commit rather than the checkout
+  it signs from, and no longer runs the built exe to ask its core fingerprint.
 
 ## [0.10.0] - 2026-11-08
 

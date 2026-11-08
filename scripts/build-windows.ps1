@@ -10,6 +10,12 @@
 #
 #   ./scripts/build-windows.ps1                 the bare exe
 #   ./scripts/build-windows.ps1 -Installer      and the setup
+#   ... -Source <tree>                          of another tree than this checkout: an
+#                                               export of its HEAD (release.ps1 -Local), so
+#                                               the build can write nothing the signing runs
+#
+# The build stamp is always this checkout's: a -Source tree is to hold the
+# commit it names.
 #
 # Nothing is signed here, and no key is taken: `tauri build` runs every
 # dependency's build scripts, proc-macros and frontend tooling, any of which
@@ -18,9 +24,11 @@
 # Tauri signs it; scripts/release-sign.ps1 makes its .sig afterwards, in a
 # container that runs nothing of the build's.
 param(
-    [switch]$Installer
+    [switch]$Installer,
+    [string]$Source
 )
 . "$PSScriptRoot/lib.ps1"
+$Source = if ($Source) { [IO.Path]::GetFullPath($Source, (Get-Location).Path) } else { $RepoRoot }
 
 # Tauri stops on a missing private key while the config asks for updater
 # artifacts; this override turns them, and so the signing, off.
@@ -39,5 +47,5 @@ Use-BuildLock {
 $clearSigs
 pnpm install --frozen-lockfile
 pnpm tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc $bundleArg -- --locked
-"@
+"@ -Root $Source
 }
