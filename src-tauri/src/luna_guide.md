@@ -21,7 +21,7 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   `provider`, `account`, `group` (a window group, I = 1, or `"mine"`), `q` (text in name, folder,
   account or id). `limit` rows a page (50); a `nextCursor` goes in `cursor` for the next.
 - `luna_session_get` gives one session whole: `settings`, `folder`, `cwd` (its worktree),
-  `transcript`, `worktree`, `branch` and `sha` (short; no branch: detached, as a Codex worktree
+  `transcript`, `sessionId` (the CLI's own), `worktree`, `branch` and `sha` (short; no branch: detached, as a Codex worktree
   is), `turnStartedAt` (null between turns), `lastActivityAt` (a long command shows nothing
   until it ends: quiet is not stuck), `resolvedModel` (the model that answered), `context`
   (`tokens` in its window against the model's `window`, `pct`, after its last step) and

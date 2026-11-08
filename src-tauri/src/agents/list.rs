@@ -376,6 +376,9 @@ pub struct SessionDetail {
     /// The transcript (Claude Code) or rollout (Codex) file.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transcript: Option<String>,
+    /// The CLI's own id for the conversation (`--resume`, `codex resume`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
 
 pub fn session_get(caller: &str, id: &str, all: bool) -> Result<SessionDetail, String> {
@@ -385,7 +388,8 @@ pub fn session_get(caller: &str, id: &str, all: bool) -> Result<SessionDetail, S
     let pty = crate::pty::manager();
     let cwd = pty.probe(id).map(|p| p.cwd).or_else(|| crate::background::working_dir(id)).filter(|c| !crate::pty::same_dir(c, &folder));
     let transcript = transcript_path(pty, id).map(|p| p.to_string_lossy().into_owned());
-    Ok(SessionDetail { row, folder, cwd, transcript })
+    let session_id = crate::background::session_id(id).or_else(|| pty.probe(id).as_ref().and_then(disk_meta).and_then(|m| m.session_id));
+    Ok(SessionDetail { row, folder, cwd, transcript, session_id })
 }
 
 /// One row of `luna_account_list`: an account agents may spawn on, and its
