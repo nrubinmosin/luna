@@ -238,6 +238,17 @@ pub(super) fn spill(text: &str) -> String {
     )
 }
 
+/// `spill` of text the caller sends `id`, already `as_sent`: past LONG_TEXT the
+/// line pointing at the file is what the session reads first, and it says
+/// whose the message is as the text would have (`as_sent`).
+pub(super) fn spill_sent(caller: &str, id: &str, sent: &str) -> String {
+    let typed = spill(sent);
+    if typed == sent {
+        return typed;
+    }
+    as_sent(caller, id, &typed)
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Sent {
@@ -430,7 +441,8 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool) -> Result<Sent,
     // go out with a draft they left: it waits for them (`deliver_held`),
     // unless the draft can be put aside (`type_text`).
     let typing = pty.typed_ago_ms(id).is_some_and(|ms| ms < SEND_TYPING_MS);
-    let typed = if typing || terminal.is_none() { None } else { put_in(caller, id, &spill(text), before, baseline, interrupted)? };
+    let typed =
+        if typing || terminal.is_none() { None } else { put_in(caller, id, &spill_sent(caller, id, text), before, baseline, interrupted)? };
     let Some(sent) = typed else {
         hold(caller, id, text);
         return Ok(Sent {
@@ -692,7 +704,7 @@ pub(super) fn deliver_held(pty: &crate::pty::PtyManager) {
         let baseline = before.map(|t| t.turns_ended).unwrap_or(0);
         let typing = if blocked { None } else { TypingInto::claim(&id) };
         let typed = if typing.is_some() {
-            let going = spill(&text);
+            let going = spill_sent(&caller, &id, &text);
             mark_going_in(&id, &going, transcript_end(&id), Some((caller.as_str(), since)));
             put_in(&caller, &id, &going, before, baseline, false)
         } else {
@@ -846,6 +858,33 @@ mod tests {
             crate::background::remove(id);
         }
         for id in ["ff-theirs", "ff-mine", "ff-chat", "ff-me"] {
+            forget(id);
+        }
+    }
+
+    #[test]
+    fn a_long_message_points_at_its_file_in_the_senders_name() {
+        let (account, none) = ("C:\\acc\\anthropic\\one", serde_json::json!({}));
+        register("sp-me", Provider::Claude, "C:\\p", account, None, true, none.clone());
+        register("sp-kid", Provider::Claude, "C:\\p", account, Some("sp-me"), false, none.clone());
+        register("sp-chat", Provider::Claude, "C:\\p", account, None, false, none);
+        let long = "word ".repeat(LONG_TEXT / 4);
+        let file_of = |line: &str| {
+            let after = line.split("put it in a file: ").nth(1).unwrap();
+            after.split(". Read the whole file").next().unwrap().to_string()
+        };
+        // To a session not the caller's: the pointer opens as the message would.
+        let theirs = spill_sent("sp-me", "sp-chat", &as_sent("sp-me", "sp-chat", &long));
+        assert!(theirs.starts_with("[From session sp-me via Luna] This message is"), "{theirs}");
+        let file = file_of(&theirs);
+        assert!(std::fs::read_to_string(&file).unwrap().starts_with("[From session sp-me via Luna] word"));
+        let _ = std::fs::remove_file(&file);
+        // To its own helper, as before; a short one as it is.
+        let mine = spill_sent("sp-me", "sp-kid", &as_sent("sp-me", "sp-kid", &long));
+        assert!(mine.starts_with("This message is"), "{mine}");
+        let _ = std::fs::remove_file(file_of(&mine));
+        assert_eq!(spill_sent("sp-me", "sp-chat", "[From session sp-me via Luna] hi"), "[From session sp-me via Luna] hi");
+        for id in ["sp-kid", "sp-chat", "sp-me"] {
             forget(id);
         }
     }
