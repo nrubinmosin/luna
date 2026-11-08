@@ -1,0 +1,11 @@
+{"timestamp":"2026-11-03T10:00:00.000Z","type":"event_msg","payload":{"type":"task_started"}}
+{"timestamp":"2026-11-03T10:00:01.000Z","type":"response_item","payload":{"type":"function_call","name":"request_user_input_async","arguments":"{\"questions\":[{\"title\":\"Can you paste CLAUDE.md here?\"}]}","call_id":"call_a"}}
+{"timestamp":"2026-11-03T10:00:01.100Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_a","output":"{\"accepted\":true}"}}
+{"timestamp":"2026-11-03T10:00:02.000Z","type":"event_msg","payload":{"type":"task_complete"}}
+{"timestamp":"2026-11-03T10:00:03.000Z","type":"event_msg","payload":{"type":"user_message","message":"here it is"}}
+{"timestamp":"2026-11-03T10:00:04.000Z","type":"event_msg","payload":{"type":"task_started"}}
+{"timestamp":"2026-11-03T10:00:05.000Z","type":"response_item","payload":{"type":"function_call","name":"request_user_input_async","arguments":"{\"questions\":[{\"title\":\"Size?\",\"options\":[\"Small\",\"Large\"]}]}","call_id":"c"}}
+{"timestamp":"2026-11-03T10:00:06.000Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","id":"u"}}}
+{"timestamp":"2026-11-03T10:00:07.000Z","type":"response_item","payload":{"type":"function_call","name":"request_user_input","arguments":"{\"questions\":[{\"id\":\"color\",\"header\":\"Color\",\"question\":\"Which color?\",\"options\":[{\"label\":\"Red (Recommended)\",\"description\":\"\"},{\"label\":\"Blue\",\"description\":\"\"}]}]}","call_id":"call_b"}}
+{"timestamp":"2026-11-03T10:00:08.000Z","type":"response_item","payload":{"type":"function_call","name":"request_user_input","arguments":"not json","call_id":"call_c"}}
+{"timestamp":"2026-11-03T10:00:09.000Z","type":"response_item","payload":{"type":"function_call","name":"request_user_input","arguments":"{\"questions\":[{\"question\":\"   \"}]}","call_id":"call_d"}}

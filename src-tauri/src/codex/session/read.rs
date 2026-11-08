@@ -28,13 +28,19 @@ fn cached_first_prompt(path: &Path) -> Option<String> {
 }
 
 pub(super) fn read_first_prompt(path: &Path) -> Option<String> {
-    use std::io::{BufRead, BufReader};
+    use std::io::BufReader;
     let f = std::fs::File::open(path).ok()?;
-    for line in BufReader::new(f).lines().take(200).map_while(Result::ok) {
+    first_prompt_in(crate::pty::read_lossy_lines(BufReader::new(f)))
+}
+
+/// `read_first_prompt` of the rollout's lines (`read_lossy_lines`).
+pub(super) fn first_prompt_in(lines: impl Iterator<Item = impl AsRef<str>>) -> Option<String> {
+    for line in lines.take(200) {
+        let line = line.as_ref();
         if !line.contains("\"message\"") {
             continue;
         }
-        let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
+        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
         let Some(m) = message_of(&v) else { continue };
         if m.role != "user" {
             continue;
@@ -97,7 +103,7 @@ pub fn thread_title(account_path: &str, thread_id: &str) -> Option<CliTitle> {
 }
 
 /// What the tail of a rollout says right now.
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Tail {
     pub model: Option<String>,
     pub context_tokens: Option<f64>,
@@ -107,8 +113,12 @@ pub struct Tail {
 }
 
 pub fn read_tail(path: &Path) -> Tail {
+    tail(path, 128 * 1024).map(|text| tail_in(&text)).unwrap_or_default()
+}
+
+/// See `read_tail`, of the tail's text.
+pub(super) fn tail_in(text: &str) -> Tail {
     let mut out = Tail::default();
-    let Some(text) = tail(path, 128 * 1024) else { return out };
     // The first line of a tail read is usually a fragment; a parse failure
     // just skips it.
     for line in text.lines().rev() {
@@ -157,16 +167,18 @@ pub fn read_tail(path: &Path) -> Tail {
 /// else what its `turn_context` names. A turn with much output pushes those
 /// lines out of the tail; the whole file is read only then.
 pub fn last_model(path: &Path) -> Option<String> {
-    let model_in = |text: &str| {
-        text.lines().rev().filter(|l| l.contains("\"turn_context\"") || l.contains("\"model_reroute\"")).find_map(|line| {
-            let v = serde_json::from_str::<Value>(line).ok()?;
-            let payload = &v["payload"];
-            payload["to_model"].as_str().or(payload["model"].as_str()).map(str::to_owned)
-        })
-    };
     tail(path, 128 * 1024)
-        .and_then(|t| model_in(&t))
-        .or_else(|| std::fs::read(path).ok().and_then(|b| model_in(&String::from_utf8_lossy(&b))))
+        .and_then(|t| last_model_in(&t))
+        .or_else(|| std::fs::read(path).ok().and_then(|b| last_model_in(&String::from_utf8_lossy(&b))))
+}
+
+/// See `last_model`, of a text.
+pub(super) fn last_model_in(text: &str) -> Option<String> {
+    text.lines().rev().filter(|l| l.contains("\"turn_context\"") || l.contains("\"model_reroute\"")).find_map(|line| {
+        let v = serde_json::from_str::<Value>(line).ok()?;
+        let payload = &v["payload"];
+        payload["to_model"].as_str().or(payload["model"].as_str()).map(str::to_owned)
+    })
 }
 
 /// The model of the last turn that was answered: the latest `turn_context` (or
@@ -177,34 +189,38 @@ pub fn last_model(path: &Path) -> Option<String> {
 /// does not say what the total stood at before its first count, so that count
 /// says nothing there; failing the tail, the whole file is read from nothing.
 pub fn answered_model(path: &Path) -> Option<String> {
-    let answered_in = |text: &str, from: Option<u64>| {
-        let (mut asked, mut answered, mut total) = (None::<String>, None::<String>, from);
-        for line in text.lines() {
-            let model = line.contains("\"turn_context\"") || line.contains("\"model_reroute\"");
-            if !model && !line.contains("\"token_count\"") {
-                continue;
-            }
-            let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
-            let payload = &v["payload"];
-            if model {
-                asked = payload["to_model"].as_str().or(payload["model"].as_str()).map(str::to_owned).or(asked);
-                continue;
-            }
-            let usage = &payload["info"]["total_token_usage"];
-            if !usage.is_object() {
-                continue;
-            }
-            let now = usage["input_tokens"].as_u64().unwrap_or(0) + usage["output_tokens"].as_u64().unwrap_or(0);
-            if total.is_some_and(|before| now > before) && asked.is_some() {
-                answered = asked.clone();
-            }
-            total = Some(now);
-        }
-        answered
-    };
     tail(path, 128 * 1024)
-        .and_then(|t| answered_in(&t, None))
-        .or_else(|| std::fs::read(path).ok().and_then(|b| answered_in(&String::from_utf8_lossy(&b), Some(0))))
+        .and_then(|t| answered_model_in(&t, None))
+        .or_else(|| std::fs::read(path).ok().and_then(|b| answered_model_in(&String::from_utf8_lossy(&b), Some(0))))
+}
+
+/// See `answered_model`, of a text, the total standing at `from` before it
+/// (None: not known).
+pub(super) fn answered_model_in(text: &str, from: Option<u64>) -> Option<String> {
+    let (mut asked, mut answered, mut total) = (None::<String>, None::<String>, from);
+    for line in text.lines() {
+        let model = line.contains("\"turn_context\"") || line.contains("\"model_reroute\"");
+        if !model && !line.contains("\"token_count\"") {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        let payload = &v["payload"];
+        if model {
+            asked = payload["to_model"].as_str().or(payload["model"].as_str()).map(str::to_owned).or(asked);
+            continue;
+        }
+        let usage = &payload["info"]["total_token_usage"];
+        if !usage.is_object() {
+            continue;
+        }
+        // Saturating: two counts the rollout makes up may overflow the sum.
+        let now = usage["input_tokens"].as_u64().unwrap_or(0).saturating_add(usage["output_tokens"].as_u64().unwrap_or(0));
+        if total.is_some_and(|before| now > before) && asked.is_some() {
+            answered = asked.clone();
+        }
+        total = Some(now);
+    }
+    answered
 }
 
 /// When the calls the turn waits on are due, the latest of them, in ms since
@@ -219,7 +235,9 @@ pub fn due_ms(path: &Path) -> Option<u64> {
     due_in(&tail(path, crate::claude::session::DUE_TAIL)?)
 }
 
-fn due_in(text: &str) -> Option<u64> {
+pub(super) fn due_in(text: &str) -> Option<u64> {
+    // A bound past any clock (`as` saturates) is a deadline never reached, so
+    // the sums with it saturate too rather than wrap round to one long past.
     let ms = |v: &Value| v.as_f64().filter(|t| *t > 0.0).map(|t| t as u64);
     // A call is back by the first of its bounds.
     let bound = |args: &Value| ["timeout_ms", "yield_time_ms", "duration_ms"].iter().filter_map(|k| ms(&args[*k])).min();
@@ -249,7 +267,7 @@ fn due_in(text: &str) -> Option<u64> {
                     .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
                     .map(|t| t.timestamp_millis().max(0) as u64);
                 if let (Some(by), Some(at), Some(id)) = (by, at, payload["call_id"].as_str()) {
-                    open.push((id.to_string(), at + by));
+                    open.push((id.to_string(), at.saturating_add(by)));
                 }
             }
             (Some("response_item"), Some("function_call_output" | "custom_tool_call_output")) => {
@@ -372,16 +390,16 @@ pub fn latest_rate_limits(account_path: &str) -> Option<(Value, String)> {
 pub fn messages_from(path: &Path, from: u64) -> (Vec<crate::agents::Message>, u64) {
     let from = if past_end(path, from) { 0 } else { from };
     let mut out = Vec::new();
-    let read = crate::pty::complete_lines(path, from, |line| {
-        if !line.contains("\"response_item\"") {
-            return;
-        }
-        let Ok(v) = serde_json::from_str::<Value>(line) else { return };
-        if let Some(m) = message_of(&v) {
-            out.push(m);
-        }
-    });
+    let read = crate::pty::complete_lines(path, from, |line| out.extend(message_in(line)));
     (out, read)
+}
+
+/// One complete line of a rollout as `messages_from` reads it.
+pub(super) fn message_in(line: &str) -> Option<crate::agents::Message> {
+    if !line.contains("\"response_item\"") {
+        return None;
+    }
+    message_of(&serde_json::from_str::<Value>(line).ok()?)
 }
 
 #[cfg(test)]
@@ -437,6 +455,23 @@ mod tests {
         )
         .unwrap();
         assert_eq!(last_model(&path).as_deref(), Some("gpt-6.1-sol"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A line that is not UTF-8 (a Latin-1 byte in a prompt) neither ends the
+    /// search for the opening prompt nor is passed over: it reads as the
+    /// conversation reads it.
+    #[test]
+    fn a_line_not_utf8_reads_lossily_in_the_search_for_the_opening_prompt() {
+        let path = std::env::temp_dir().join(format!("luna-codex-latin1-{}.jsonl", std::process::id()));
+        let developer = b"{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"developer\",\"content\":[{\"type\":\"input_text\",\"text\":\"caf\xe9\"}]}}\n";
+        let prompt = b"{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"fix the caf\xe9 page\"}]}}\n";
+        let bytes = [&developer[..], &prompt[..]].concat();
+        std::fs::write(&path, &bytes).unwrap();
+        let want = Some("fix the caf\u{fffd} page".to_string());
+        assert_eq!(read_first_prompt(&path), want);
+        assert_eq!(read_rollout(&bytes, 0).first_prompt, want);
+        assert_eq!(messages_from(&path, 0).0[0].text, "fix the caf\u{fffd} page", "as the conversation has it");
         let _ = std::fs::remove_file(&path);
     }
 
@@ -564,5 +599,19 @@ mod tests {
         assert_eq!(due(&[&shell]), Some(40 * min));
         let next = r#"{"timestamp":"t","type":"event_msg","payload":{"type":"task_started"}}"#;
         assert_eq!(due(&[&lane, next]), None, "an earlier turn's call");
+    }
+
+    /// Found by the codex_rollout fuzz target: a bound past any clock, added
+    /// to its call's start, overflowed (a panic with overflow checks, a
+    /// deadline long past without them), and so did two token counts past
+    /// u64 in a total.
+    #[test]
+    fn numbers_past_any_clock_or_count_saturate() {
+        let call = r#"{"timestamp":"2026-11-04T13:15:19.533Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"./lane.sh\",\"yield_time_ms\":9223372036854775807599999}","call_id":"c3"}}"#;
+        assert_eq!(due_in(call), Some(u64::MAX), "due never, not before the call");
+        let asked = r#"{"timestamp":"t","type":"turn_context","payload":{"model":"gpt-6.1-sol"}}"#;
+        let counted = r#"{"timestamp":"t","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":18446744073709551615,"output_tokens":1}}}}"#;
+        assert_eq!(answered_model_in(&[asked, counted].join("\n"), Some(0)).as_deref(), Some("gpt-6.1-sol"));
+        assert!(read_rollout([call, asked, counted].join("\n").as_bytes(), 0).due_ms.is_some());
     }
 }

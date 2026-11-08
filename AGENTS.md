@@ -46,6 +46,8 @@ Rules for anyone (person or agent) changing Luna.
     there, the Unix code included.
   - `./scripts/screenshots.ps1 -Out test-build/shots` — headless shots of the UI on
     the demo data in `src/dev/demo/`.
+  - `./scripts/fuzz.ps1` — the fuzz targets over the transcript readers, on a
+    nightly pinned for them alone (docs/testing.md, "Fuzzing").
 - Test only on the test build, never on the Luna in use. It has its own
   identifier and keeps its log, attachments, settings and downloaded CLIs
   beside its exe in `test-build/` (ignored by git), so it runs alongside the

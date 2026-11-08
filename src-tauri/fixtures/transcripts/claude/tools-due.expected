@@ -1,0 +1,66 @@
+Seen {
+    consumed: 2149,
+    messages: [
+        (
+            "user",
+            false,
+            "verify it",
+        ),
+        (
+            "assistant",
+            true,
+            "One lane is done; asking about the next.",
+        ),
+    ],
+    with_tools: [
+        (
+            "user",
+            false,
+            "verify it",
+        ),
+        (
+            "assistant",
+            false,
+            "[tool: Bash]",
+        ),
+        (
+            "assistant",
+            false,
+            "[tool: Bash]",
+        ),
+        (
+            "assistant",
+            false,
+            "[tool: Monitor]",
+        ),
+        (
+            "assistant",
+            true,
+            "One lane is done; asking about the next.\n[tool: Bash]\n[tool: AskUserQuestion]",
+        ),
+    ],
+    first_prompt: Some(
+        "verify it",
+    ),
+    title: None,
+    context: None,
+    model: Some(
+        "claude-opus-5-5",
+    ),
+    last_said: Some(
+        "One lane is done; asking about the next.",
+    ),
+    last_said_at: Some(
+        "2026-11-04T15:11:00.000Z",
+    ),
+    api_error: None,
+    pending_tool: Some(
+        (
+            "AskUserQuestion",
+            "{\"questions\":[{\"question\":\"Which color?\",\"options\":[{\"label\":\"Red\"},{\"label\":\"Blue\"}],\"multiSelect\":false}]}",
+        ),
+    ),
+    due_ms: Some(
+        1793808000000,
+    ),
+}

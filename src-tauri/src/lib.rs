@@ -43,6 +43,15 @@ mod throttle;
 mod watchdog;
 mod worktree;
 
+/// The transcript readers as pure functions of a file's bytes, for the fuzz
+/// targets in fuzz/: the one way into the crate from outside it.
+#[doc(hidden)]
+pub mod transcripts {
+    pub use crate::agents::{Ask, AskQuestion, Message};
+    pub use crate::claude::session::{messages_in, read_transcript, TranscriptRead};
+    pub use crate::codex::session::{read_rollout, RolloutRead, Tail};
+}
+
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
