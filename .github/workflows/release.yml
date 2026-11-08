@@ -190,6 +190,11 @@ jobs:
         with:
           persist-credentials: false
       - run: ./scripts/sbom.ps1 -Out "$env:RUNNER_TEMP/sbom"
+      # The third-party notices the installer carries, made by the same script
+      # from the same lockfiles as in the build, published beside it.
+      - env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: ./scripts/third-party-notices.ps1 -Out "$env:RUNNER_TEMP/sbom/luna-$env:VERSION-third-party-notices.txt"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sbom
