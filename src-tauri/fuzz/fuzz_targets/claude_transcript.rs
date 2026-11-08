@@ -5,7 +5,7 @@
 
 use libfuzzer_sys::fuzz_target;
 use luna_fuzz::{assert_text_from_input, complete_end, from_input, reshaped, strings_in};
-use luna_lib::transcripts::{read_transcript, Message};
+use luna_lib::transcripts::{messages_in, read_transcript, Message};
 
 fuzz_target!(|data: &[u8]| {
     let read = read_transcript(data);
@@ -50,16 +50,15 @@ fuzz_target!(|data: &[u8]| {
         assert!(at.as_ref().is_none_or(|at| from_input(at, &strings)));
     }
 
-    // Read on from wherever a read of the start stopped, the conversation is
-    // the one a read from the top gets; only where the CLI's own prompt and
-    // its answer fall either side of the cut does `after_cli` differ (each
-    // read starts afresh).
-    let cut = data.len() / 2;
-    let head = read_transcript(&data[..cut]);
-    let rest = read_transcript(&data[head.consumed..]);
-    let pieced: Vec<(&str, &str)> = head.messages.iter().chain(&rest.messages).map(|m| (m.role.as_str(), m.text.as_str())).collect();
-    let whole: Vec<(&str, &str)> = read.messages.iter().map(|m| (m.role.as_str(), m.text.as_str())).collect();
-    assert_eq!(pieced, whole, "read on from the cursor at {}", head.consumed);
+    // Read when the file had grown to half of it, then on from the cursor
+    // that read handed back once it is whole: the conversation, `after_cli`
+    // included, is the one a read from the top gets.
+    for (with_tools, whole) in [(false, &read.messages), (true, &read.with_tools)] {
+        assert_eq!(&messages_in(data, 0, with_tools).0, whole);
+        let (mut pieced, cursor) = messages_in(&data[..data.len() / 2], 0, with_tools);
+        pieced.extend(messages_in(data, cursor, with_tools).0);
+        assert_eq!(&pieced, whole, "read on from the cursor at {cursor}, with_tools {with_tools}");
+    }
 
     let [one_line, nested] = reshaped(data);
     let read = read_transcript(&one_line);

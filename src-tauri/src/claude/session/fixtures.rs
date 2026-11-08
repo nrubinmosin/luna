@@ -133,6 +133,29 @@ fn the_bytes_alone_read_as_the_file_does() {
     }
 }
 
+/// A reader that goes on from its cursor gets the conversation one read from
+/// the top does, `after_cli` and all, however the file grew in between: on
+/// disk and in memory, at every cursor a read can hand back.
+#[test]
+fn reading_on_from_a_cursor_reads_as_from_the_top() {
+    let path = std::env::temp_dir().join(format!("luna-claude-resume-{}.jsonl", std::process::id()));
+    for (name, bytes, _) in FIXTURES {
+        std::fs::write(&path, bytes).unwrap();
+        for with_tools in [false, true] {
+            let (whole, end) = messages_from(&path, 0, with_tools);
+            assert_eq!(messages_in(bytes, 0, with_tools), (whole.clone(), end as usize), "{name}");
+            for grown_to in 0..=bytes.len() {
+                let (mut seen, cursor) = messages_in(&bytes[..grown_to], 0, with_tools);
+                let (rest, read) = messages_in(bytes, cursor, with_tools);
+                assert_eq!(messages_from(&path, cursor as u64, with_tools), (rest.clone(), read as u64), "{name} on disk from {cursor}");
+                seen.extend(rest);
+                assert_eq!(seen, whole, "{name}, read to {grown_to} and then on, with_tools {with_tools}");
+            }
+        }
+    }
+    let _ = std::fs::remove_file(&path);
+}
+
 /// A reader that goes on from its cursor, wherever a read stopped, gets what
 /// one read from the top does: the lines are cut in the same places.
 #[test]

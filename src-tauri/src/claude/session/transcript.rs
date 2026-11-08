@@ -98,12 +98,62 @@ pub(super) fn located_transcript(account_path: &str, cwd: &str, session_id: &str
 /// neither the model nor whoever drives the session said any of them. A cursor
 /// past the end is one into a file
 /// since cut short or written anew, where it would land mid-line: the file is
-/// read from the top.
+/// read from the top. A read from a cursor gives what one from the top gives
+/// from there: a CLI prompt the lines before it end on still makes what answers
+/// it open a turn (`after_cli`), so the cursor stays a byte offset its callers
+/// can hold.
 pub fn messages_from(path: &Path, from: u64, with_tools: bool) -> (Vec<crate::agents::Message>, u64) {
     let from = if std::fs::metadata(path).is_ok_and(|m| from > m.len()) { 0 } else { from };
-    let mut said = Conversation::new(with_tools);
+    let mut said = Conversation::resumed(with_tools, from > 0 && cli_prompt_before(path, from, with_tools));
     let read = crate::pty::complete_lines(path, from, |line| said.line(line));
     (said.messages, read)
+}
+
+/// `messages_from` of a file's bytes, `from` an offset into them.
+pub fn messages_in(bytes: &[u8], from: usize, with_tools: bool) -> (Vec<crate::agents::Message>, usize) {
+    let from = if from > bytes.len() { 0 } else { from };
+    let pending = cli_prompt_at_end(&String::from_utf8_lossy(&bytes[..from]), with_tools).unwrap_or(false);
+    let mut said = Conversation::resumed(with_tools, pending);
+    let read = crate::pty::complete_lines_in(&bytes[from..], |line| said.line(line));
+    (said.messages, from + read)
+}
+
+/// Whether the file up to `from` ends on a prompt the CLI put in itself with
+/// nothing said since. Looked for backwards in windows that grow, as the line
+/// that decides is nearly always the last one or close to it; a window that
+/// does not reach the top starts at its first whole line.
+fn cli_prompt_before(path: &Path, from: u64, with_tools: bool) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut f) = std::fs::File::open(path) else { return false };
+    let mut size: u64 = 64 * 1024;
+    loop {
+        let start = from.saturating_sub(size);
+        let mut bytes = vec![0; (from - start) as usize];
+        if f.seek(SeekFrom::Start(start)).is_err() || f.read_exact(&mut bytes).is_err() {
+            return false;
+        }
+        let whole = match (start, bytes.iter().position(|b| *b == b'\n')) {
+            (0, _) => &bytes[..],
+            (_, Some(i)) => &bytes[i + 1..],
+            (_, None) => &[],
+        };
+        if let Some(pending) = cli_prompt_at_end(&String::from_utf8_lossy(whole), with_tools) {
+            return pending;
+        }
+        if start == 0 {
+            return false;
+        }
+        size = size.saturating_mul(4);
+    }
+}
+
+/// See `cli_prompt_before`, of a text: Some(whether its last turn line is a
+/// prompt the CLI put in itself), None where it has no turn line.
+fn cli_prompt_at_end(text: &str, with_tools: bool) -> Option<bool> {
+    text.lines().rev().find_map(|line| match message_of(line, with_tools)? {
+        Line::Injected => Some(true),
+        Line::Said(_) => Some(false),
+    })
 }
 
 /// The conversation `messages_from` reads, taken in a line at a time.
@@ -117,7 +167,12 @@ pub(super) struct Conversation {
 
 impl Conversation {
     pub(super) fn new(with_tools: bool) -> Self {
-        Conversation { with_tools, cli_prompt: false, messages: Vec::new() }
+        Self::resumed(with_tools, false)
+    }
+
+    /// One taken up where the lines before it left a CLI prompt open, or not.
+    fn resumed(with_tools: bool, cli_prompt: bool) -> Self {
+        Conversation { with_tools, cli_prompt, messages: Vec::new() }
     }
 
     pub(super) fn line(&mut self, line: &str) {
@@ -352,6 +407,29 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let seen: Vec<(&str, &str, bool)> = msgs.iter().map(|m| (m.role.as_str(), m.text.as_str(), m.after_cli)).collect();
         assert_eq!(seen, [("user", "verify it", false), ("assistant", "The lane runs.", false), ("assistant", "Green.", true)]);
+    }
+
+    /// As a caller waiting on a session sees it: the CLI's own prompt lands in
+    /// one read and what answers it in the next, past lines that are no turn
+    /// (a system prompt's snapshot, 300 KB), and it still opens a turn.
+    #[test]
+    fn the_answer_to_the_clis_own_prompt_opens_a_turn_in_a_later_read() {
+        let path = std::env::temp_dir().join(format!("luna-claude-after-cli-later-{}.jsonl", std::process::id()));
+        let notice = r#"{"type":"user","origin":{"kind":"task-notification"},"message":{"role":"user","content":"<task-notification>\n<status>completed</status>\n</task-notification>"}}"#;
+        let snapshot =
+            format!(r#"{{"type":"attachment","attachment":{{"type":"prompt_snapshot","systemPrompt":["{}"]}}}}"#, "x".repeat(300 * 1024));
+        let answer = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Green."}]}}"#;
+        std::fs::write(&path, format!("{notice}\n{snapshot}\n")).unwrap();
+        let (first, cursor) = messages_from(&path, 0, false);
+        assert!(first.is_empty());
+        std::fs::write(&path, format!("{notice}\n{snapshot}\n{answer}\n")).unwrap();
+        let (later, _) = messages_from(&path, cursor, false);
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(later, vec![crate::agents::Message { role: "assistant".into(), text: "Green.".into(), after_cli: true }]);
+        // Said since: the prompt is answered, and a read after that starts afresh.
+        let bytes = format!("{notice}\n{answer}\n{answer}\n");
+        let after_first = notice.len() + answer.len() + 2;
+        assert!(!messages_in(bytes.as_bytes(), after_first, false).0[0].after_cli);
     }
 
     #[test]

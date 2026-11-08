@@ -42,6 +42,11 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   it is now due never, as an open call with a long timeout is. Codex token
   counts past 2^64 no longer overflow the total the answering model is found
   by. Both found by fuzzing.
+- A Claude Code session's answer to a prompt the CLI put in itself (a
+  background task's end) opens a turn of its own for a caller reading the
+  conversation on from a cursor too, not only for one reading from the top,
+  so the report it leads with is the newest when that prompt and its answer
+  land in different reads.
 
 ### Security
 
