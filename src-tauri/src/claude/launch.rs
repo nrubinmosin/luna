@@ -40,9 +40,9 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
         Item::Account.with(format!("CLAUDE_CONFIG_DIR={}", s.account_path)),
         Item::NoAutoUpdate.with("DISABLE_AUTOUPDATER=1"),
         session_applied(s.id, s.parent),
-        Item::Model.with(s.model),
-        Item::Effort.with(s.effort),
-        Item::PermissionMode.with(s.permission_mode),
+        Item::Model.with(format!("--model {}", s.model)),
+        Item::Effort.with(format!("--effort {}", s.effort)),
+        Item::PermissionMode.with(format!("--permission-mode {}", s.permission_mode)),
     ];
     let mut args = vec![
         "--model".to_string(),
@@ -55,11 +55,12 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
     if let Some(session_id) = s.resume {
         args.push("--resume".into());
         args.push(session_id.to_string());
-        applied.push(Item::Resume.with(session_id));
+        applied.push(Item::Resume.with(format!("--resume {session_id}")));
     }
     if let Some(name) = s.worktree {
-        args.push(crate::worktree::worktree_arg(name));
-        applied.push(Item::Worktree.with(name.unwrap_or("named by Claude Code")));
+        let arg = crate::worktree::worktree_arg(name);
+        applied.push(Item::Worktree.with(&arg));
+        args.push(arg);
     }
     if let Some((settings, holds)) = s.settings_file {
         args.push("--settings".into());
@@ -69,7 +70,7 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
     if let Some(agent) = s.agent {
         args.push("--agent".into());
         args.push(agent.to_string());
-        applied.push(Item::Agent.with(agent));
+        applied.push(Item::Agent.with(format!("--agent {agent}")));
     }
     if s.read_only {
         args.push("--disallowedTools".into());
@@ -166,17 +167,20 @@ pub(crate) fn settings_applied(
 ) -> Vec<Applied> {
     let mut applied = Vec::new();
     if hooks {
-        applied.push(Item::ActivityHooks.with(format!("hooks in {path}")));
+        applied.push(Item::ActivityHooks.with(format!("hooks in --settings {path}")));
     }
     if let Some(guard) = guard {
-        applied.push(guard.with(format!("a PreToolUse hook on {} in {path}", crate::guard::TOOLS.replace('|', ", "))));
+        applied.push(guard.with(format!("a PreToolUse hook on {} in --settings {path}", crate::guard::TOOLS.replace('|', ", "))));
     }
-    applied.push(Item::CoreReadDeny.with(format!("permissions.deny {} in {path}", claude_read_deny(core, cfg!(windows)))));
+    applied.push(Item::CoreReadDeny.with(format!("permissions.deny {} in --settings {path}", claude_read_deny(core, cfg!(windows)))));
     if !library.hidden.is_empty() {
         applied.push(Item::LibraryHidden.with(format!("skillOverrides off: {}", library.hidden.join(", "))));
     }
     if !library.excluded.is_empty() {
-        applied.push(Item::LibraryAccountInstructions.with(format!("claudeMdExcludes {}", library.excluded.join(", "))));
+        applied.push(
+            Item::LibraryAccountInstructions
+                .with(format!("claudeMdExcludes {}", library.excluded.iter().map(|p| glob_literal(p)).collect::<Vec<_>>().join(", "))),
+        );
     }
     if !library.memory_off.is_empty() {
         applied.push(Item::MemoryNarrowed.with(format!("claudeMdExcludes {}", library.memory_off.join(", "))));
@@ -184,16 +188,26 @@ pub(crate) fn settings_applied(
     applied
 }
 
+/// A folder added to a session, as `memory_excludes` takes it: each spelling
+/// Claude Code may meet it by (as given, and as the disk resolves it), and
+/// the resolved one, which the containment checks go by.
+pub(crate) struct AddedDir {
+    pub(crate) spellings: Vec<String>,
+    pub(crate) resolved: String,
+}
+
 /// What `CLAUDE_ADDED_DIR_MEMORY` would have a session read as memory beyond
 /// the library's instructions, as `claudeMdExcludes` patterns: the memory
 /// files of each folder in `added` — every `--add-dir` but the instructions'
 /// own, and those the user's settings add — where the session working in
-/// `folder` would not read them anyway. Claude Code reads the memory of the
-/// folders above the one it works in and loads that of the folders below on
-/// demand, so a folder on either side of it is left alone. The variable is a
-/// switch (2.1.318: every additional folder's or none), and these patterns,
-/// matched against absolute paths with `/`, are what narrows it.
-pub(crate) fn memory_excludes(added: &[String], folder: &str) -> Vec<String> {
+/// `folder` (resolved) would not read them anyway. Claude Code reads the
+/// memory of the folders above the one it works in and loads that of the
+/// folders below on demand, so a folder on either side of it is left alone,
+/// judged on resolved paths: `<folder>/../shared` is beside it, not in it. The
+/// variable is a switch (2.1.318: every additional folder's or none), and
+/// these patterns are what narrows it; each folder's own name goes in
+/// literally (`glob_literal`).
+pub(crate) fn memory_excludes(added: &[AddedDir], folder: &str) -> Vec<String> {
     let norm = |p: &str| p.replace('\\', "/").trim_end_matches('/').to_string();
     let same = |a: &str, b: &str| if cfg!(windows) { a.eq_ignore_ascii_case(b) } else { a == b };
     let within = |inner: &str, outer: &str| {
@@ -201,15 +215,43 @@ pub(crate) fn memory_excludes(added: &[String], folder: &str) -> Vec<String> {
     };
     let folder = norm(folder);
     let mut out = Vec::new();
-    for dir in added.iter().map(|d| norm(d)) {
-        if dir.is_empty() || within(&folder, &dir) || within(&dir, &folder) {
+    for dir in added {
+        let resolved = norm(&dir.resolved);
+        if resolved.is_empty() || within(&folder, &resolved) || within(&resolved, &folder) {
             continue;
         }
-        for file in ["CLAUDE.md", "CLAUDE.local.md", ".claude/CLAUDE.md", ".claude/rules/**"] {
-            let pattern = format!("{dir}/{file}");
-            if !out.contains(&pattern) {
-                out.push(pattern);
+        for spelled in dir.spellings.iter().map(|s| norm(s)).filter(|s| !s.is_empty()) {
+            for file in ["CLAUDE.md", "CLAUDE.local.md", ".claude/CLAUDE.md", ".claude/rules/**"] {
+                let pattern = format!("{}/{file}", glob_literal(&spelled));
+                if !out.contains(&pattern) {
+                    out.push(pattern);
+                }
             }
+        }
+    }
+    out
+}
+
+/// `path` (with `/`) as a `claudeMdExcludes` pattern matching that path alone.
+/// Claude Code matches those patterns with picomatch (2.1.318: "Glob patterns
+/// or absolute paths of CLAUDE.md files to exclude from loading. Patterns are
+/// matched against absolute file paths using picomatch", its settings schema;
+/// https://code.claude.com/docs/en/memory#exclude-specific-claudemd-files),
+/// after turning every `\` in a pattern into `/`, so a backslash cannot escape
+/// anything there. Each character glob syntax gives a meaning to goes in a
+/// bracket class of its own (`[[]` is a literal `[`), which picomatch 4
+/// matches literally: a folder `E:/work/[ab]` would otherwise match
+/// `E:/work/a`.
+pub(crate) fn glob_literal(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    for c in path.chars() {
+        match c {
+            '*' | '?' | '[' | ']' | '{' | '}' | '(' | ')' | '!' | '+' | '@' | ',' => {
+                out.push('[');
+                out.push(c);
+                out.push(']');
+            }
+            c => out.push(c),
         }
     }
     out
@@ -272,7 +314,8 @@ pub(crate) fn claude_settings(
     if !library.hidden.is_empty() {
         settings.insert("skillOverrides".into(), library.hidden.iter().map(|n| (n.clone(), serde_json::json!("off"))).collect());
     }
-    let excluded: Vec<String> = library.excluded.iter().chain(&library.memory_off).cloned().collect();
+    // The account's instructions file is a path, not a pattern: taken literally.
+    let excluded: Vec<String> = library.excluded.iter().map(|p| glob_literal(p)).chain(library.memory_off.iter().cloned()).collect();
     if !excluded.is_empty() {
         settings.insert("claudeMdExcludes".into(), excluded.into());
     }

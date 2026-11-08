@@ -107,7 +107,13 @@ there:
   set none, its PATH without the Store's aliases, git's OpenSSL backend.
 
 Each item shows its value and the reason. Tokens and Luna's local addresses are
-never shown, and files appear by their path. Below those comes what Luna wrote
+never shown, and files appear by their path. The panel also has the chat's own
+**Wait guard for this chat** box (from the CLI's next start). If Luna could not
+note a write into the account, or its note of them will not read, the panel
+says **Accounting incomplete** and why.
+
+Chats from before the guard was a choice, which had it because of Luna tools,
+are named once in a notice across the board until you dismiss it. Below those comes what Luna wrote
 into the account outside a start: the folder's trust when you ticked it, and
 the library's copies. See [ADR-0016](../adr/0016-luna-is-a-runtime.md).
 

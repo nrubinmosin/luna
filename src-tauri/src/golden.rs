@@ -123,6 +123,44 @@ impl Redact {
             .collect()
     }
 
+    /// That what was applied shows the whole process as it runs, so the two
+    /// cannot drift: every flag of `args` (and the value after it), every
+    /// `-c` key, every variable `envs` sets and the folder it starts in are
+    /// each named by some item's value. What follows `--` is the prompt, and a
+    /// lone `-` says the prompt comes on stdin; a word that is no flag's value
+    /// (a subcommand) needs nothing.
+    pub(crate) fn assert_shown(args: &[String], envs: &[(&'static str, String)], cwd: &str, applied: &[crate::applied::Applied]) {
+        let shown = |text: &str| applied.iter().any(|a| a.value.contains(text));
+        let mut i = 0;
+        while i < args.len() {
+            let a = args[i].as_str();
+            match a {
+                "--" => break,
+                "-" => {}
+                "-c" => {
+                    let value = args.get(i + 1).map(String::as_str).unwrap_or_default();
+                    let key = value.split('=').next().unwrap_or_default();
+                    assert!(shown(key), "-c {key} is not among what was applied: {applied:#?}");
+                    i += 1;
+                }
+                flag if flag.starts_with('-') && flag.contains('=') => assert!(shown(flag), "{flag} not shown: {applied:#?}"),
+                flag if flag.starts_with('-') => {
+                    assert!(shown(flag), "{flag} not shown: {applied:#?}");
+                    if let Some(value) = args.get(i + 1).filter(|v| !v.starts_with('-')) {
+                        assert!(shown(value), "{flag}'s value {value} not shown: {applied:#?}");
+                        i += 1;
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        for (k, _) in envs {
+            assert!(shown(k), "{k} is set and not shown: {applied:#?}");
+        }
+        assert!(shown(cwd), "the folder it starts in, {cwd}, is not shown: {applied:#?}");
+    }
+
     /// A JSON file a start wrote, placeholders in.
     pub(crate) fn file(&self, path: &str) -> serde_json::Value {
         let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{path}: {e}"));
@@ -344,5 +382,26 @@ fn codex_core_deny() -> Vec<String> {
         Vec::new()
     } else {
         strings(&["-c", "permissions.<profile>.filesystem={\"<core-dir>\"=\"deny\"}"])
+    }
+}
+
+/// `Redact::assert_shown` refuses a process whose spec has more than what was
+/// applied names: a variable, a flag, a flag's value, a `-c` key or its cwd.
+#[test]
+fn a_spec_not_shown_whole_is_refused() {
+    use crate::applied::Item;
+    let shown = || vec![Item::Model.with("--model opus"), Item::Cwd.with("cwd /p"), Item::Terminal.with("TERM=xterm-256color")];
+    let args = strings(&["--model", "opus", "--", "a prompt --not-a-flag"]);
+    Redact::assert_shown(&args, &[("TERM", "xterm-256color".into())], "/p", &shown());
+    let cases: [(Vec<String>, Vec<(&'static str, String)>, &str); 5] = [
+        (strings(&["--model", "sonnet"]), vec![], "/p"),
+        (strings(&["--effort", "high"]), vec![], "/p"),
+        (strings(&["-c", "tui.terminal_title=[]"]), vec![], "/p"),
+        (strings(&[]), vec![("PATH", "x".to_string())], "/p"),
+        (strings(&[]), vec![], "/elsewhere"),
+    ];
+    for (args, envs, cwd) in cases {
+        let caught = std::panic::catch_unwind(|| Redact::assert_shown(&args, &envs, cwd, &shown()));
+        assert!(caught.is_err(), "{args:?} {envs:?} {cwd}");
     }
 }

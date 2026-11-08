@@ -36,6 +36,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   - Claude Code: with the library's instructions, the other folders added to a
     session (Luna's notes folder, the library's skills folders, the user's own
     `additionalDirectories`) are no longer read as memory.
+  - Chats that had the guard because of Luna tools are named in a notice
+    once; a chat's ⓘ panel turns the guard on for it.
 
 ### Security
 

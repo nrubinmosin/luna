@@ -65,7 +65,7 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
     if let Some(session_id) = s.resume {
         args.push("resume".into());
         args.push(session_id.to_string());
-        applied.push(Item::Resume.with(session_id));
+        applied.push(Item::Resume.with(format!("resume {session_id}")));
     }
     args.push("-C".into());
     args.push(s.folder.to_string());
@@ -88,23 +88,26 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
     if let Some(m) = s.model {
         args.push("--model".into());
         args.push(m.to_string());
-        applied.push(Item::Model.with(m));
+        applied.push(Item::Model.with(format!("--model {m}")));
     }
     args.push("-c".into());
     args.push(format!("model_reasoning_effort=\"{}\"", s.effort));
-    applied.push(Item::Effort.with(s.effort));
+    applied.push(Item::Effort.with(format!("-c model_reasoning_effort=\"{}\"", s.effort)));
     let (approval, sandbox) = (s.approval, s.sandbox);
-    applied.push(Item::Approval.with(approval));
-    applied.push(Item::Sandbox.with(sandbox));
     // The pair Codex itself spells as one flag.
     if approval == "never" && sandbox == "danger-full-access" {
         args.push("--dangerously-bypass-approvals-and-sandbox".into());
+        applied.push(Item::Approval.with("--dangerously-bypass-approvals-and-sandbox"));
+        applied.push(Item::Sandbox.with("danger-full-access, in --dangerously-bypass-approvals-and-sandbox"));
     } else {
         if approval == AUTO_REVIEW {
             args.push("--approve-for-me".into());
+            applied.push(Item::Approval.with("--approve-for-me"));
+            applied.push(Item::Sandbox.with(format!("{sandbox}, Codex's own under --approve-for-me")));
         } else {
             args.push("--ask-for-approval".into());
             args.push(approval.to_string());
+            applied.push(Item::Approval.with(format!("--ask-for-approval {approval}")));
             // What a helper would ask goes to the chat that started it; a
             // person's chat keeps whatever reviewer its account or project
             // names.
@@ -117,7 +120,9 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
             // refuses: never a sandbox looser than the one asked for.
             match s.profile.filter(|_| takes_profile(sandbox, cfg!(windows))) {
                 Some(profile) => {
-                    args.extend(profile_args(profile, sandbox == READ_ONLY_NET, s.deny));
+                    let held = profile_args(profile, sandbox == READ_ONLY_NET, s.deny);
+                    applied.push(sandbox_applied(sandbox, &held));
+                    args.extend(held);
                     if let Some(dir) = s.deny {
                         applied.push(core_deny_applied(profile, dir));
                     }
@@ -125,6 +130,7 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
                 None => {
                     args.push("--sandbox".into());
                     args.push(sandbox.to_string());
+                    applied.push(Item::Sandbox.with(format!("--sandbox {sandbox}")));
                 }
             }
         }
@@ -176,8 +182,15 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
 
 /// Luna's MCP server for Codex as applied: no URL, the token by the variable
 /// it travels in.
-pub(crate) const LUNA_TOOLS_VALUE: &str =
-    "-c mcp_servers.luna.* (Luna's MCP server, its tools approved); its token in LUNA_MCP_TOKEN, not shown";
+pub(crate) const LUNA_TOOLS_VALUE: &str = "-c mcp_servers.luna.url, mcp_servers.luna.bearer_token_env_var, \
+     mcp_servers.luna.tool_timeout_sec, mcp_servers.luna.default_tools_approval_mode (Luna's MCP server, its tools \
+     approved); its token in LUNA_MCP_TOKEN, not shown";
+
+/// A sandbox held by the `-c` overrides `held` (`profile_args`,
+/// `sandbox_args`), as applied: the overrides themselves, none secret.
+pub(crate) fn sandbox_applied(sandbox: &str, held: &[String]) -> Applied {
+    Item::Sandbox.with(format!("{sandbox}: {}", held.join(" ")))
+}
 
 /// The guard as applied: a helper's, or a chat's whose person ticked it.
 pub(crate) fn guard_applied(helper: bool) -> Applied {

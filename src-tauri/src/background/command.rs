@@ -34,14 +34,16 @@ pub(super) fn command_for(e: &Entry, id: &str) -> Result<Command, String> {
                 ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--replay-user-messages"]
                     .map(String::from),
             );
-            applied.push(Item::HelperHeadless.with("-p, stream-json in and out"));
+            applied.push(
+                Item::HelperHeadless.with("-p, --input-format stream-json, --output-format stream-json, --verbose, --replay-user-messages"),
+            );
             if let Some(m) = &s.model {
                 args.extend(["--model".into(), m.clone()]);
-                applied.push(Item::Model.with(m));
+                applied.push(Item::Model.with(format!("--model {m}")));
             }
             args.extend(["--effort".into(), s.effort.clone(), "--permission-mode".into(), s.mode.clone()]);
-            applied.push(Item::Effort.with(&s.effort));
-            applied.push(Item::PermissionMode.with(&s.mode));
+            applied.push(Item::Effort.with(format!("--effort {}", s.effort)));
+            applied.push(Item::PermissionMode.with(format!("--permission-mode {}", s.mode)));
             match (&e.session, &made) {
                 (Some(sid), Some(wt)) if std::path::Path::new(wt).is_dir() => {
                     dir = wt.clone();
@@ -61,14 +63,14 @@ pub(super) fn command_for(e: &Entry, id: &str) -> Result<Command, String> {
                 (None, _) => {}
             }
             if let Some(sid) = &e.session {
-                applied.push(Item::Resume.with(sid));
+                applied.push(Item::Resume.with(format!("--resume {sid}")));
             }
-            if s.worktree {
-                applied.push(Item::Worktree.with(s.worktree_name.as_deref().unwrap_or("named by Claude Code")));
+            if let Some(wt) = args.iter().find(|a| a.starts_with("--worktree")) {
+                applied.push(Item::Worktree.with(wt));
             }
             if let Some(agent) = &s.agent {
                 args.extend(["--agent".into(), agent.clone()]);
-                applied.push(Item::Agent.with(agent));
+                applied.push(Item::Agent.with(format!("--agent {agent}")));
             }
             let mut denied: Vec<&str> = if s.read_only { crate::claude::launch::CLAUDE_EDIT_TOOLS.to_vec() } else { Vec::new() };
             if s.read_only {
@@ -92,6 +94,10 @@ pub(super) fn command_for(e: &Entry, id: &str) -> Result<Command, String> {
             }
             if !denied.is_empty() {
                 args.extend(["--disallowedTools".into(), denied.join(",")]);
+                if s.token.is_some() {
+                    applied
+                        .push(Item::HelperPermissionPrompt.with(format!("Luna's own tool hidden: --disallowedTools {}", denied.join(","))));
+                }
             }
             if let Some(parent) = &s.parent {
                 args.extend(crate::claude::launch::claude_helper_args(parent));
@@ -118,9 +124,7 @@ pub(super) fn command_for(e: &Entry, id: &str) -> Result<Command, String> {
             if instructions.is_some() {
                 let mut luna_dirs: Vec<String> = skills.args.windows(2).filter(|w| w[0] == "--add-dir").map(|w| w[1].clone()).collect();
                 luna_dirs.extend(notes);
-                let mut added = luna_dirs;
-                added.extend(crate::pty::claude_settings_dirs(&s.account_path, &dir));
-                skills.memory_off = crate::claude::launch::memory_excludes(&added, &dir);
+                skills.memory_off = crate::pty::claude_memory_off(&luna_dirs, &s.account_path, &dir);
             }
             let (settings, holds) = crate::pty::claude_settings_file(id, false, guard.then_some(Item::HelperGuard), &skills)?;
             args.extend(["--settings".into(), settings.to_string_lossy().into_owned()]);
@@ -139,11 +143,11 @@ pub(super) fn command_for(e: &Entry, id: &str) -> Result<Command, String> {
         }
         Provider::Codex => {
             args.push("exec".into());
-            applied.push(Item::HelperHeadless.with("exec --json, the prompt on stdin"));
+            applied.push(Item::HelperHeadless.with("exec --json, the prompt on stdin (-)"));
             match &e.session {
                 Some(thread) => {
                     args.extend(["resume".into(), thread.clone()]);
-                    applied.push(Item::Resume.with(thread));
+                    applied.push(Item::Resume.with(format!("resume {thread}")));
                     if let Some(wt) = made.filter(|w| std::path::Path::new(w).is_dir()) {
                         dir = wt;
                     }
@@ -173,10 +177,10 @@ pub(super) fn command_for(e: &Entry, id: &str) -> Result<Command, String> {
             }
             if let Some(m) = &s.model {
                 args.extend(["--model".into(), m.clone()]);
-                applied.push(Item::Model.with(m));
+                applied.push(Item::Model.with(format!("--model {m}")));
             }
             args.extend(["-c".into(), format!("model_reasoning_effort=\"{}\"", s.effort)]);
-            applied.push(Item::Effort.with(&s.effort));
+            applied.push(Item::Effort.with(format!("-c model_reasoning_effort=\"{}\"", s.effort)));
             if s.hooks_unasked {
                 args.push(crate::codex::launch::HOOKS_UNASKED.into());
                 applied.push(Item::HooksUnasked.with(crate::codex::launch::HOOKS_UNASKED));
@@ -186,10 +190,11 @@ pub(super) fn command_for(e: &Entry, id: &str) -> Result<Command, String> {
                 applied.push(crate::codex::launch::guard_applied(true));
             }
             args.extend(guard_args);
-            applied.push(Item::Sandbox.with(if s.auto_review { crate::codex::launch::AUTO_REVIEW_SANDBOX } else { s.mode.as_str() }));
             if s.auto_review {
                 args.push("--approve-for-me".into());
-                applied.push(Item::Approval.with(crate::codex::launch::AUTO_REVIEW));
+                applied.push(Item::Approval.with("--approve-for-me"));
+                let sandbox = crate::codex::launch::AUTO_REVIEW_SANDBOX;
+                applied.push(Item::Sandbox.with(format!("{sandbox}, Codex's own under --approve-for-me")));
             } else {
                 // `exec` asks nobody: the sandbox is what holds it.
                 args.extend(["-c".into(), "approval_policy=\"never\"".into()]);
@@ -197,6 +202,7 @@ pub(super) fn command_for(e: &Entry, id: &str) -> Result<Command, String> {
                 args.extend(["-c".into(), crate::codex::launch::CODEX_PERSON_REVIEWS.into()]);
                 applied.push(Item::HelperReviewer.with(format!("-c {}", crate::codex::launch::CODEX_PERSON_REVIEWS)));
                 let sandbox = crate::pty::codex_sandbox_args(&s.mode);
+                applied.push(crate::codex::launch::sandbox_applied(&s.mode, &sandbox));
                 if let Some((profile, dir)) = profile_deny(&sandbox) {
                     applied.push(crate::codex::launch::core_deny_applied(&profile, &dir));
                 }
@@ -235,6 +241,8 @@ pub(super) fn command_for(e: &Entry, id: &str) -> Result<Command, String> {
         }
     }
     envs.extend(crate::pty::session_envs(id, s.parent.as_deref()));
+    // No terminal: a helper's CLI writes to pipes (`run.rs`, `clean_env`).
+    crate::pty::finish_spec(&mut envs, &mut applied, &dir, false);
     Ok((args, dir, envs, applied))
 }
 
@@ -583,6 +591,7 @@ mod tests {
 
     fn turn(e: &Entry, id: &str, r: &Redact) -> Turn {
         let (args, dir, envs, applied) = command_for(e, id).unwrap();
+        Redact::assert_shown(&args, &envs, &dir, &applied);
         let applied = r.applied(&applied, &envs);
         let args = r.args(&args);
         let data = crate::paths::data_dir();
