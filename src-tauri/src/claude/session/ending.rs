@@ -273,6 +273,8 @@ pub fn due_ms(path: &Path) -> Option<u64> {
 pub(crate) const DUE_TAIL: u64 = 4 * 1024 * 1024;
 
 pub(super) fn due_in(text: &str) -> Option<u64> {
+    // A timeout past any clock (`as` saturates) is a deadline never reached,
+    // so the sums with it saturate too rather than wrap round to one long past.
     struct Call {
         id: String,
         background: bool,
@@ -306,7 +308,7 @@ pub(super) fn due_in(text: &str) -> Option<u64> {
                     };
                     if let Some(timeout) = timeout {
                         let id = b["id"].as_str().unwrap_or("").to_string();
-                        open.push(Call { id, background, task: None, at, due: at + timeout });
+                        open.push(Call { id, background, task: None, at, due: at.saturating_add(timeout) });
                     }
                 }
             }
@@ -332,7 +334,7 @@ pub(super) fn due_in(text: &str) -> Option<u64> {
                         c.task = task.map(str::to_owned);
                         c.background |= c.task.is_some();
                         if let Some(timeout) = ms(&made["timeoutMs"]) {
-                            c.due = c.at + timeout;
+                            c.due = c.at.saturating_add(timeout);
                         }
                         c.task.is_some()
                     });
@@ -537,5 +539,18 @@ mod tests {
         let said = api_error_of(&path).expect("the error, past the snapshot");
         assert!(said.ends_with("Invalid API key · Fix external API key"), "{said}");
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// The overflow the codex_rollout fuzz target found, here too: a timeout
+    /// past any clock, on the call and on its result, is due never rather
+    /// than long before the call.
+    #[test]
+    fn a_timeout_past_any_clock_is_due_never() {
+        let call = r#"{"type":"assistant","timestamp":"2026-11-04T15:10:00.000Z","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"./lane.sh","timeout":1e300}}]}}"#;
+        assert_eq!(due_in(call), Some(u64::MAX));
+        let job = r#"{"type":"assistant","timestamp":"2026-11-04T15:10:00.000Z","message":{"content":[{"type":"tool_use","id":"t2","name":"Monitor","input":{"command":"tail -f x"}}]}}"#;
+        let armed = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t2","content":"…"}]},"toolUseResult":{"taskId":"m4","timeoutMs":18446744073709551615}}"#;
+        assert_eq!(due_in(&[job, armed].join("\n")), Some(u64::MAX));
+        assert_eq!(read_transcript([call, job, armed].join("\n").as_bytes()).due_ms, Some(u64::MAX));
     }
 }
