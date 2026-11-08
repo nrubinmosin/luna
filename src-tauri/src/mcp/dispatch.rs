@@ -321,7 +321,10 @@ fn act(caller: &str, name: &str, a: &Value, this: &Call) -> Value {
                     this,
                 )
             })
-            .map(|w| {
+            .map(|mut w| {
+                if reply_mode(a) == "report" {
+                    agents::report_reply(&id, &mut w);
+                }
                 let report = w.report.clone();
                 let mut v = json!(w);
                 as_asked(&mut v, report, a);
@@ -385,24 +388,29 @@ fn id_list(v: &Value) -> Result<Vec<String>, String> {
         .collect()
 }
 
-/// A wait's result as its `reply` and `screen` ask: the report alone unless
-/// told `all` (`rest` saying how many more there are, `file` holding them all),
-/// or no reply with `none`; the screen only with `screen: true`. `report` is
-/// the agent layer's report part of this result, taken off it before it was
-/// turned into JSON.
+/// What a wait's `reply` asks: `report` (the default), `all` or `none`.
+fn reply_mode(a: &Value) -> &str {
+    a["reply"].as_str().unwrap_or("report")
+}
+
+/// A wait's result as its `reply` and `screen` ask, its reply already its
+/// report where that is asked (`agents::report_reply`, held to the limit
+/// there): with it, `rest` (how many more messages there are) and `file`
+/// (all of them); no reply with `none`; the screen only with `screen: true`.
+/// `report` is the agent layer's report part of this result, taken off it
+/// before it was turned into JSON.
 pub(super) fn as_asked(v: &mut Value, report: Option<agents::ReportPart>, a: &Value) {
     let Some(o) = v.as_object_mut() else { return };
     if a["screen"] != true {
         o.remove("screen");
     }
-    match a["reply"].as_str().unwrap_or("report") {
+    match reply_mode(a) {
         "all" => {}
         "none" => {
             o.remove("reply");
         }
         _ => {
             let Some(r) = report.filter(|_| o.contains_key("reply")) else { return };
-            o.insert("reply".into(), r.text.into());
             if r.rest > 0 {
                 o.insert("rest".into(), r.rest.into());
                 if let Some(file) = r.file {
@@ -437,7 +445,7 @@ fn wait_several(caller: &str, a: &Value, this: &Call) -> Result<Value, String> {
         "all" => true,
         other => return Err(format!("unknown mode {other:?}; use any or all")),
     };
-    let w = agents::wait_many(
+    let mut w = agents::wait_many(
         caller,
         &ids,
         all,
@@ -446,6 +454,9 @@ fn wait_several(caller: &str, a: &Value, this: &Call) -> Result<Value, String> {
         a["scope"].as_str(),
         this,
     )?;
+    if reply_mode(a) == "report" {
+        agents::report_replies(&mut w.results);
+    }
     let reports: Vec<Option<agents::ReportPart>> = w.results.iter().map(|r| r.waited.report.clone()).collect();
     let mut v = json!(w);
     for (r, report) in v["results"].as_array_mut().into_iter().flatten().zip(reports) {

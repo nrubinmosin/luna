@@ -736,6 +736,27 @@ pub struct ReportPart {
     pub file: Option<String>,
 }
 
+/// A wait's reply as its report alone (`luna_session_wait`'s default), held to
+/// what one result carries as a whole reply is: a report past MAX_TEXT is cut,
+/// naming a file with the whole of it. Nothing to do without a reply.
+pub fn report_reply(id: &str, w: &mut Waited) {
+    if let (Some(r), Some(_)) = (&w.report, &w.reply) {
+        w.reply = reply_text(id, &Said::one_turn(vec![r.text.clone()]), true);
+    }
+}
+
+/// `report_reply` for a wait on several: each reply its report, and all of
+/// them held together to one result's limit (`share_replies`), each cut one
+/// naming a file with its whole.
+pub fn report_replies(results: &mut [WaitedOne]) {
+    for r in results.iter_mut() {
+        if let (Some(report), Some(_)) = (&r.waited.report, &r.waited.reply) {
+            r.waited.reply = Some(report.text.clone());
+        }
+    }
+    share_replies(results);
+}
+
 /// `reply_text` and its `ReportPart`; None for no messages.
 fn reply_with_report(id: &str, replies: &Said, cut: bool) -> Option<(String, ReportPart)> {
     let text = reply_text(id, replies, cut)?;
@@ -969,6 +990,53 @@ mod tests {
         assert!(wait_many("mw-me", &["mw-me".into()], false, "turn_done", 1, None, &call).err().unwrap().contains("your own"));
         assert!(wait_many("mw-me", &["x".into()], false, "soon", 1, None, &call).err().unwrap().contains("unknown until"));
         forget("mw-me");
+    }
+
+    #[test]
+    fn a_report_reply_is_held_to_the_limit_alone_and_shared() {
+        let report = |text: String| ReportPart { text, rest: 2, guessed: false, file: None };
+        let waited = |text: String| Waited {
+            outcome: "turn_done",
+            state: "idle",
+            ask: None,
+            turns_ended: 1,
+            reply: Some("the whole reply".into()),
+            report: Some(report(text)),
+            failed: None,
+            transcript_missing: false,
+            screen: None,
+            undelivered: None,
+            job_debt: None,
+        };
+        // One report past the limit: cut, and the cut names a file with all of it.
+        let long = "R".repeat(MAX_TEXT + 100);
+        let mut w = waited(long.clone());
+        report_reply("rl-one", &mut w);
+        let reply = w.reply.unwrap();
+        assert!(reply.chars().count() < MAX_TEXT + 300 && reply.contains("[cut at"), "{}", reply.len());
+        let file = reply.rsplit("the answer is in ").next().unwrap().trim_end_matches(']');
+        assert_eq!(std::fs::read_to_string(file).unwrap(), long);
+        let _ = std::fs::remove_file(file);
+        // A short one is itself; no reply stays none.
+        let mut w = waited("Short.".into());
+        report_reply("rl-one", &mut w);
+        assert_eq!(w.reply.as_deref(), Some("Short."));
+        let mut w = Waited { reply: None, ..waited("Short.".into()) };
+        report_reply("rl-one", &mut w);
+        assert!(w.reply.is_none());
+        // Several: their reports together within one result.
+        let mut results: Vec<WaitedOne> =
+            (0..3).map(|i| WaitedOne { id: format!("rl-{i}"), waited: waited(format!("{i}").repeat(MAX_TEXT / 2)) }).collect();
+        report_replies(&mut results);
+        let total: usize = results.iter().filter_map(|r| r.waited.reply.as_ref()).map(|t| t.chars().count()).sum();
+        assert!(total < MAX_TEXT + 1000, "{total}");
+        for r in &results {
+            let text = r.waited.reply.as_ref().unwrap();
+            assert!(text.contains("several sessions sharing this result"), "{}", &text[text.len() - 80..]);
+            let file = text.rsplit("the answer is in ").next().unwrap().split(", its report first").next().unwrap().trim_end_matches(']');
+            assert_eq!(std::fs::read_to_string(file).unwrap().chars().count(), MAX_TEXT / 2, "the whole report");
+            let _ = std::fs::remove_file(file);
+        }
     }
 
     #[test]
