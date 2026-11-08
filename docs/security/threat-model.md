@@ -272,7 +272,13 @@ Residuals:
   confined by its CLI sandbox, reaching `core.json` is F3's residual, not
   accepted.
 - **R4. Agents may arm a PC shutdown** (`luna_power`), bounded by the quiet
-  window and drain logic in `power/`. An orchestration feature.
+  window and drain logic in `power/`. The firing turns on the user's own
+  `SeShutdownPrivilege` in the core's token and asks for a forced shutdown
+  (`SHUTDOWN_FORCE_SELF`, `power/machine.rs`), so a program that will not close
+  cannot hold the PC up overnight: unsaved work in the user's other programs goes
+  with it, which arming the rule accepts. No more authority than `shutdown /f`
+  run by the user, and never another user's session (`SHUTDOWN_FORCE_OTHERS` is
+  not asked for). An orchestration feature.
 - **R5. Agent history keeps prompt prefixes and last answers in plain text**
   (`agentlog.rs:17-19`: 300 and 3,000 characters) in the data dir; the same
   exposure as the CLIs' own transcripts.

@@ -120,12 +120,24 @@ another program's and is left alone.
   the request: past the sleep timeout it sleeps the moment the hold goes.
 - **The automaton:** busy = 0 and waiting = 0 for `quiet_s` → a 60 s countdown
   with a notification → action. Any activity cancels the count, not the rule.
-  Shutdown closes sessions (`shut_down`, 5 s grace for exit hooks) then
-  `shutdown /s /t 0`. Restart (Windows only, refused elsewhere at arming) sets a
-  RunOnce value with the window's exe (`--window-exe`), winds the core down
-  (`coreproc::wind_down`) and runs `shutdown /r /t 0`. Sleep / hibernate is
-  `SetSuspendState`; sessions live on, and the clock jump on wake resets the
-  window and countdown.
+  Shutdown and restart ask the OS first (`power_off`, `machine.rs`): on Windows
+  `InitiateShutdownW` with `SeShutdownPrivilege` turned on in the core's token
+  first, `SHUTDOWN_POWEROFF` (or `SHUTDOWN_RESTART`) `| SHUTDOWN_FORCE_SELF`, a
+  planned reason, and a grace of `SHUTDOWN_GRACE` (30 s). Not `SHUTDOWN_HYBRID`,
+  so the PC shuts down fully whatever Fast Startup is set to; not
+  `SHUTDOWN_RESTARTAPPS`; not `SHUTDOWN_FORCE_OTHERS`, so Windows refuses while
+  another user is signed in. A refusal closes nothing and is logged with its
+  Win32 error. On a yes the core winds down inside the grace
+  (`coreproc::wind_down`: helper turns stopped, the chats frozen, each CLI asked
+  to quit with `pty::GRACE`, 10 s). Still running `SHUTDOWN_OVERRUN` (60 s) past
+  the grace, the core takes the shutdown for taken back (`shutdown /a`): it
+  removes the RunOnce value, reopens the helpers (`background::reopen`,
+  `resume_stopped`) and has the window start every chat over (`pty://start-over`,
+  `core.store.ts`), as a new core would. Restart (Windows only, refused elsewhere
+  at arming) sets the RunOnce value with the window's exe (`--window-exe`)
+  before asking. Off Windows the ask is `shutdown -h|-r +1` through `.output()`,
+  its exit status and stderr logged. Sleep / hibernate is `SetSuspendState`;
+  sessions live on, and the clock jump on wake resets the window and countdown.
 - **Drain** (`Armed::drain`, "start nothing new") refuses agents' `luna_spawn`
   and `luna_send` in `mcp::run` and narrows `luna_answer` to structured answers;
   a person is never refused. Calls are counted under the lock that arms
@@ -187,4 +199,6 @@ text), notices, the awake hold. Sessions are named by id and chat name
 | Core dies | chats' CLIs end with their terminals; helpers' jobs end with the core (Job Object or keeper) |
 | Keeper gone with its core | the next core ends tied jobs from `tied-jobs/` (`end_last_ties`) |
 | WebView2 dies | `watchdog.rs` rebuilds the window; sessions untouched |
+| The OS refuses the shutdown or restart | nothing closed; the Win32 error logged and shown; a restart's RunOnce value removed |
+| The shutdown is taken back after the sessions closed | seen 60 s past the grace; RunOnce value removed, helpers reopened, every chat started over from its transcript |
 | Restart's RunOnce cannot be set | logged; the PC restarts anyway |

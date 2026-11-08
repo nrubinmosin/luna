@@ -27,12 +27,19 @@ everything has been quiet for the chosen window it counts down a minute with a
 notification, and a click on the chip cancels. Activity during the count cancels
 it and leaves the rule armed.
 
-- **Shutdown** asks each CLI to quit first.
+- **Shutdown** asks Windows first, for a shutdown half a minute away, and closes
+  each CLI inside that time. Windows shows its own notice meanwhile. If Windows
+  refuses (another user is signed in, say), nothing is closed, and a notification
+  and the log say why. The shutdown is a full one whatever Fast Startup is set to,
+  and a program that will not close does not hold it up. If something cancels it
+  after the chats were closed (`shutdown /a`), Luna notices within about a minute
+  and the chats come back where they were, as after a core restart.
 - **Sleep / hibernate** leave sessions running; the rule applies again after
   wake.
-- **Restart** (Windows) closes sessions the same way and has Windows start Luna
-  once at the next sign-in, so someone has to sign in; if that cannot be set the
-  log says so and the PC restarts anyway.
+- **Restart** (Windows) goes the same way and has Windows start Luna once at the
+  next sign-in, so someone has to sign in; if that cannot be set the log says so
+  and the PC restarts anyway. A restart Windows refuses, or that is canceled,
+  leaves nothing set to start at the next sign-in.
 - **Start nothing new** drains: until the rule fires or is disarmed, agents'
   `luna_spawn` and `luna_send` are refused and `luna_answer` takes only a
   structured answer to a pending question or permission. What you do yourself is

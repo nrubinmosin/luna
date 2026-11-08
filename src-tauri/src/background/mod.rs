@@ -246,6 +246,12 @@ pub fn stop_all() {
     }
 }
 
+/// The core stays after all — a shutdown of the PC it had wound down for was
+/// taken back: turns may start again.
+pub fn reopen() {
+    lock().closed = false;
+}
+
 /// Stops every turn in progress with its process tree and takes what was
 /// queued off it, kept as undelivered; `close` also keeps any from starting
 /// after. A turn claimed but not yet started is stopped too: it does not

@@ -8,6 +8,20 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Fixed
+
+- Shut down and restart when done turn the PC off again. Luna asks Windows
+  itself, with the shutdown privilege turned on, instead of running
+  `shutdown.exe`, which had been failing without a word; a refusal is logged
+  with its Windows error.
+- Windows is asked before any session is closed, so a refusal leaves every chat
+  running, and a shutdown canceled after the chats were closed brings them back
+  where they were instead of leaving dead panes.
+- Shutdown winds Luna down the way restart does, so a chat parked mid-turn is
+  not saved as finished.
+- A restart that Windows refuses, or that is canceled, no longer leaves Luna set
+  to start at the next sign-in.
+
 ## [0.10.0] - 2026-11-08
 
 A security and engineering release. Agent tools now follow least privilege,
