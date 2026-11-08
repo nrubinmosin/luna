@@ -17,9 +17,6 @@ const MAX_LINES: usize = 2000;
 const PROMPT_CHARS: usize = 300;
 /// How much of a gone session's last message is kept.
 const LAST_CHARS: usize = 3000;
-/// The most one lookup returns, newest first.
-const MAX_RUNS: usize = 30;
-
 fn file() -> PathBuf {
     crate::paths::data_dir().join("agents.jsonl")
 }
@@ -211,8 +208,11 @@ fn runs_in(path: &Path, q: Option<&str>) -> Vec<Run> {
                 .any(|f| f.to_lowercase().contains(&q))
         });
     }
+    // All of them, newest first: whose each is, and how many a caller gets, are
+    // the caller's to settle (mcp/dispatch.rs `run_list`), and a run cut here
+    // would cut the lineage that tells whose the later ones are. The file
+    // itself is kept to MAX_LINES.
     runs.reverse();
-    runs.truncate(MAX_RUNS);
     runs
 }
 
@@ -252,6 +252,19 @@ mod tests {
         let hh = runs_in(&path, Some("HH-"));
         assert_eq!(hh.len(), 1, "the prompt and the folder are searched, any case");
         assert_eq!(hh[0].settings["model"], "sonnet");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_lookup_gives_every_run_for_the_caller_to_filter_and_limit() {
+        let path = std::env::temp_dir().join(format!("luna-agentlog-all-{}.jsonl", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        for i in 0..45 {
+            append(&path, json!({ "event": "spawn", "id": format!("r{i}"), "at": "2026-11-09T10:00:00Z", "parent": "p", "prompt": "go" }));
+        }
+        let runs = runs_in(&path, None);
+        assert_eq!(runs.len(), 45, "none cut before whose they are is known");
+        assert_eq!(runs[0].id, "r44", "newest first");
         let _ = std::fs::remove_file(&path);
     }
 
