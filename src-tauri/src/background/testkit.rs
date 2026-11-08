@@ -117,6 +117,7 @@ pub fn take_up_for_test(id: &str, folder: &str, turns_ended: u32, queue: &[&str]
         unsure: false,
         opening: opening.map(str::to_owned),
         opening_id: None,
+        promoting_since: None,
         cut_short: false,
         observed: Default::default(),
         ties: Default::default(),
@@ -242,6 +243,8 @@ pub fn test_helper(id: &str, account_path: &str, session: Option<&str>, busy: bo
         left: Vec::new(),
         ending_left: false,
         promoting: false,
+        promoting_since: 0,
+        deleting: false,
         observed: Observed::default(),
     };
     lock().entries.insert(id.to_string(), e);
@@ -300,6 +303,8 @@ pub(super) fn entry(provider: Provider) -> Entry {
         left: Vec::new(),
         ending_left: false,
         promoting: false,
+        promoting_since: 0,
+        deleting: false,
         observed: Observed::default(),
     }
 }

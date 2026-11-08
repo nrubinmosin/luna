@@ -3,14 +3,13 @@
 
 use crate::agents::ask::{ask_of, live, state_of, Ask};
 use crate::agents::delivery::{screen_of, POLL};
-use crate::agents::handover::{taken_from, taken_over_error};
 use crate::agents::held::is_held;
 use crate::agents::lost::undelivered_note;
 use crate::agents::notifier::job_end_stood;
 use crate::agents::notifier::lines::{news_for_parent, real_turn_past, verdict, Verdict};
 use crate::agents::owed::{hand_over, last_shown, looked, Owed, QUEUED_GRACE_MS};
 use crate::agents::read::{failure_of, transcript_found, transcript_path, MAX_TEXT};
-use crate::agents::registry::{authorize_view, reg, waits_on_helpers, DEV_CALLER};
+use crate::agents::registry::{authorize_view, in_scope, reg, waits_on_helpers, DEV_CALLER};
 use crate::agents::said::{answer_file, answer_text, replies_since, said_since, Said};
 use crate::provider::Provider;
 use crate::throttle::now_ms;
@@ -131,15 +130,19 @@ pub struct Waited {
 /// `waiting` — it stopped for a permission; `exit` — the process ended.
 /// A wait its caller let go (`call` canceled, or see `let_go`) returns an
 /// error and hands nothing over: the answer stays owed, for the notice.
+/// `scope` is the call's (`in_scope`), held to for as long as it waits: a session
+/// that stops being the caller's meanwhile (the person took it over) ends the
+/// wait with nothing of it handed over, unless the call said `all`.
 pub fn wait(
     caller: &str,
     id: &str,
     until: &str,
     timeout_s: u64,
     after_turn: Option<u32>,
+    scope: Option<&str>,
     call: &crate::mcp::Call,
 ) -> Result<Waited, String> {
-    wait_for(caller, id, until, timeout_s, after_turn, call, true).map(|(waited, _)| waited)
+    wait_for(caller, id, until, timeout_s, after_turn, scope, call, true).map(|(waited, _)| waited)
 }
 
 /// A session's turn state and the delivery floor that goes with it, on every look:
@@ -159,12 +162,14 @@ fn state_then_floor(
 /// `alone` that answer is handed over here, the reply cut to fit a result; a
 /// `wait_many` hands over and cuts for all its sessions at once, when it has
 /// its response (`alone` false).
+#[allow(clippy::too_many_arguments)]
 fn wait_for(
     caller: &str,
     id: &str,
     until: &str,
     timeout_s: u64,
     after_turn: Option<u32>,
+    scope: Option<&str>,
     call: &crate::mcp::Call,
     alone: bool,
 ) -> Result<(Waited, bool), String> {
@@ -179,17 +184,18 @@ fn wait_for(
     let gone_err = || -> Result<(Waited, bool), String> { Err(LET_GO.into()) };
     let pty = crate::pty::manager();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_s.clamp(1, 1800));
-    // Its helper the person took over while this waited: nothing more is to come.
-    let taken = || taken_from(id).is_some_and(|from| from == caller);
+    // Still within the call's reach, on every look and before anything is
+    // handed over: a helper of the caller's, or of one of its own, that the
+    // person took over meanwhile is theirs, and what it says from then on is
+    // no answer of the caller's.
+    let reach = || in_scope(caller, id, scope, "wait on");
     // Text Luna holds for a person's draft goes in first; the turn to wait
     // for is the one it starts, past whatever the person sent meanwhile.
     while is_held(caller, id) {
         if gone() {
             return gone_err();
         }
-        if taken() {
-            return Err(taken_over_error(id));
-        }
+        reach()?;
         if std::time::Instant::now() >= deadline {
             let (state, ask) = state_of(id);
             let turns_ended = crate::activity::turn_state(id).map_or(0, |t| t.turns_ended);
@@ -246,9 +252,7 @@ fn wait_for(
         if gone() {
             return gone_err();
         }
-        if taken() {
-            return Err(taken_over_error(id));
-        }
+        reach()?;
         let alive = live(pty, id);
         let (ts, floor) = state_then_floor(&key, || crate::activity::turn_state(id));
         baseline = baseline.max(floor);
@@ -356,6 +360,8 @@ fn wait_for(
             if gone() || (answers && holding() == Holding::Unsure) {
                 return gone_err();
             }
+            // Taken over while its words were read: none of them go out.
+            reach()?;
             let failed = failed.or_else(failure);
             let transcript_missing = says && reply.is_none() && !transcript_found(pty, id);
             let bare = outcome == "turn_done" && (reply.is_none() || failed.is_some());
@@ -431,13 +437,16 @@ pub struct WaitedMany {
 /// to have let the call go (`let_go`, which any of the waits may be the one to
 /// see) or a core going meanwhile leaves its answer for the notice to bring.
 /// Once the response is made they are all handed over together, and a cancel
-/// crossing it undoes them together.
+/// crossing it undoes them together. `scope` is held to as `wait` holds it, up to
+/// the hand-over: one taken out of the caller's reach meanwhile comes back with
+/// why in `failed` and nothing of what it said.
 pub fn wait_many(
     caller: &str,
     ids: &[String],
     all: bool,
     until: &str,
     timeout_s: u64,
+    scope: Option<&str>,
     call: &crate::mcp::Call,
 ) -> Result<WaitedMany, String> {
     if !matches!(until, "turn_done" | "waiting" | "exit") {
@@ -460,12 +469,12 @@ pub fn wait_many(
     let mut got: Vec<Option<Result<(Waited, bool), String>>> = unique.iter().map(|_| None).collect();
     let mut let_go_seen = false;
     let mut no_thread: Option<String> = None;
-    std::thread::scope(|scope| {
+    std::thread::scope(|threads| {
         let (tx, rx) = std::sync::mpsc::channel();
         for (i, id) in unique.iter().copied().enumerate() {
             let (tx, one) = (tx.clone(), &calls[i]);
-            let thread = std::thread::Builder::new().name(format!("luna-wait-{id}")).spawn_scoped(scope, move || {
-                let _ = tx.send((i, wait_for(caller, id, until, timeout_s, None, one, false)));
+            let thread = std::thread::Builder::new().name(format!("luna-wait-{id}")).spawn_scoped(threads, move || {
+                let _ = tx.send((i, wait_for(caller, id, until, timeout_s, None, scope, one, false)));
             });
             if let Err(e) = thread {
                 no_thread = Some(e.to_string());
@@ -512,6 +521,12 @@ pub fn wait_many(
         .copied()
         .zip(got)
         .map(|(id, r)| {
+            // Taken out of the caller's reach since its wait ended: nothing of
+            // it goes out.
+            let r = match (r, in_scope(caller, id, scope, "wait on")) {
+                (Some(Ok(_)), Err(e)) => Some(Err(e)),
+                (r, _) => r,
+            };
             let waited = match r {
                 Some(Ok((w, answered))) => {
                     if answered {
@@ -521,8 +536,13 @@ pub fn wait_many(
                 }
                 other => {
                     // Stopped for another's answer, nothing handed over. Any
-                    // other error is a session gone since it was looked up.
+                    // other error is a session gone since it was looked up, or
+                    // out of the caller's reach now, which says why.
                     let stopped = matches!(&other, Some(Err(e)) if e == LET_GO);
+                    let why = match other {
+                        Some(Err(e)) if e != LET_GO => Some(e),
+                        _ => None,
+                    };
                     let (state, ask) = state_of(id);
                     let turns_ended = crate::activity::turn_state(id).map_or(0, |t| t.turns_ended);
                     looked(id);
@@ -532,7 +552,7 @@ pub fn wait_many(
                         ask,
                         turns_ended,
                         reply: None,
-                        failed: None,
+                        failed: why,
                         transcript_missing: false,
                         screen: None,
                         undelivered: None,
@@ -710,7 +730,7 @@ mod tests {
     fn waiting_on_any_hands_over_the_first_and_leaves_the_rest_owed() {
         let (caller, done, busy, dir) = several("any");
         let call = crate::mcp::Call::new();
-        let w = wait_many(&caller, &[done.clone(), busy.clone(), done.clone()], false, "turn_done", 20, &call).unwrap();
+        let w = wait_many(&caller, &[done.clone(), busy.clone(), done.clone()], false, "turn_done", 20, None, &call).unwrap();
         assert_eq!(w.outcome, "finished");
         assert_eq!(w.finished, std::slice::from_ref(&done));
         assert_eq!(w.results.len(), 2, "an id asked for twice is one");
@@ -732,7 +752,7 @@ mod tests {
         crate::background::test_turn_ended(&done);
         crate::background::test_turn_ended(&done);
         let call = crate::mcp::Call::new();
-        let w = wait_many(&caller, &[done.clone(), busy.clone()], false, "turn_done", 20, &call).unwrap();
+        let w = wait_many(&caller, &[done.clone(), busy.clone()], false, "turn_done", 20, None, &call).unwrap();
         assert_eq!(w.finished, [done.clone(), busy.clone()]);
         assert!(!owed_to(&caller, &done) && !owed_to(&caller, &busy));
         leave(&[&caller, &done, &busy], &dir);
@@ -748,7 +768,7 @@ mod tests {
         let call = std::sync::Arc::new(crate::mcp::Call::new());
         let waiting = {
             let (caller, ids, call) = (caller.clone(), ids.clone(), call.clone());
-            std::thread::spawn(move || wait_many(&caller, &ids, true, "turn_done", 3, &call).is_ok())
+            std::thread::spawn(move || wait_many(&caller, &ids, true, "turn_done", 3, None, &call).is_ok())
         };
         std::thread::sleep(std::time::Duration::from_millis(1500));
         assert!(owed_to(&caller, &done));
@@ -767,7 +787,7 @@ mod tests {
         // The time runs out on one: what came is handed over, the other is
         // a timeout with its screen, still owed.
         let call = crate::mcp::Call::new();
-        let w = wait_many(&caller, &ids, true, "turn_done", 1, &call).unwrap();
+        let w = wait_many(&caller, &ids, true, "turn_done", 1, None, &call).unwrap();
         assert_eq!(w.outcome, "timeout");
         assert_eq!(w.finished, std::slice::from_ref(&done));
         assert_eq!(w.results[0].waited.reply.as_deref(), Some("answer of sid-done"));
@@ -788,7 +808,7 @@ mod tests {
         reg().lock().unwrap().seen.remove(&(caller.clone(), done.clone()));
         owe_from(&caller, &done, 0, 0);
         let call = crate::mcp::Call::new();
-        let w = wait_many(&caller, &ids, true, "turn_done", 20, &call).unwrap();
+        let w = wait_many(&caller, &ids, true, "turn_done", 20, None, &call).unwrap();
         ender.join().unwrap();
         assert_eq!(w.outcome, "finished");
         assert_eq!(w.finished, ids);
@@ -808,7 +828,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(1500));
             canceler.cancel();
         });
-        assert!(wait_many(&caller, &ids, true, "turn_done", 20, &call).is_err());
+        assert!(wait_many(&caller, &ids, true, "turn_done", 20, None, &call).is_err());
         canceling.join().unwrap();
         assert!(owed_to(&caller, &done), "still owed, for the notice");
         assert!(owed_to(&caller, &busy));
@@ -816,7 +836,7 @@ mod tests {
 
         // Crossing the response: the same, after it has been handed over.
         let call = crate::mcp::Call::new();
-        let w = wait_many(&caller, &ids, false, "turn_done", 20, &call).unwrap();
+        let w = wait_many(&caller, &ids, false, "turn_done", 20, None, &call).unwrap();
         assert_eq!(w.finished, std::slice::from_ref(&done));
         assert!(!owed_to(&caller, &done));
         call.cancel();
@@ -827,7 +847,7 @@ mod tests {
         let canceled = std::sync::Arc::new(crate::mcp::Call::new());
         let waiting = {
             let (caller, ids, call) = (caller.clone(), ids.clone(), canceled.clone());
-            std::thread::spawn(move || wait_many(&caller, &ids, true, "turn_done", 20, &call).is_err())
+            std::thread::spawn(move || wait_many(&caller, &ids, true, "turn_done", 20, None, &call).is_err())
         };
         std::thread::sleep(std::time::Duration::from_millis(1200));
         let _read = hand_over(&caller, &done, 1, None);
@@ -850,7 +870,7 @@ mod tests {
         .unwrap();
         crate::background::test_turn_ended(&busy);
         let call = crate::mcp::Call::new();
-        let w = wait_many(&caller, std::slice::from_ref(&done), false, "turn_done", 20, &call).unwrap();
+        let w = wait_many(&caller, std::slice::from_ref(&done), false, "turn_done", 20, None, &call).unwrap();
         let reply = w.results[0].waited.reply.as_ref().unwrap();
         assert_eq!(reply.matches("[cut at").count(), 1, "once");
         let file = reply.rsplit("the answer is in ").next().unwrap().split(", its report first").next().unwrap();
@@ -864,10 +884,10 @@ mod tests {
         let none = serde_json::json!({});
         register("mw-me", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, none);
         let call = crate::mcp::Call::new();
-        assert!(wait_many("mw-me", &[], false, "turn_done", 1, &call).err().unwrap().contains("empty"));
-        assert!(wait_many("mw-me", &["nobody".into()], false, "turn_done", 1, &call).err().unwrap().contains("unknown session"));
-        assert!(wait_many("mw-me", &["mw-me".into()], false, "turn_done", 1, &call).err().unwrap().contains("your own"));
-        assert!(wait_many("mw-me", &["x".into()], false, "soon", 1, &call).err().unwrap().contains("unknown until"));
+        assert!(wait_many("mw-me", &[], false, "turn_done", 1, None, &call).err().unwrap().contains("empty"));
+        assert!(wait_many("mw-me", &["nobody".into()], false, "turn_done", 1, None, &call).err().unwrap().contains("unknown session"));
+        assert!(wait_many("mw-me", &["mw-me".into()], false, "turn_done", 1, None, &call).err().unwrap().contains("your own"));
+        assert!(wait_many("mw-me", &["x".into()], false, "soon", 1, None, &call).err().unwrap().contains("unknown until"));
         forget("mw-me");
     }
 
@@ -930,7 +950,7 @@ mod tests {
             r.owed.get_mut(&key).unwrap().held = Some((turns, now_ms() - BACKGROUND_GRACE_MS));
         }
         let call = crate::mcp::Call::new();
-        let w = wait_many(&caller, &[done.clone(), busy.clone()], false, "turn_done", 20, &call).unwrap();
+        let w = wait_many(&caller, &[done.clone(), busy.clone()], false, "turn_done", 20, None, &call).unwrap();
         assert_eq!(w.finished, std::slice::from_ref(&done));
         let one = &w.results[0].waited;
         assert_eq!(one.outcome, "job_done");
@@ -990,11 +1010,61 @@ mod tests {
         crate::background::test_turn_ended("wc-helper");
         crate::background::cut_for_test("wc-helper");
         let call = crate::mcp::Call::new();
-        let w = wait("wc-caller", "wc-helper", "turn_done", 10, None, &call).unwrap();
+        let w = wait("wc-caller", "wc-helper", "turn_done", 10, None, None, &call).unwrap();
         assert_eq!(w.outcome, "turn_done");
         assert_eq!(w.reply.as_deref(), Some("Half the fix is in."));
         assert!(w.failed.as_deref().is_some_and(|f| f.contains("did NOT finish")), "{:?}", w.failed);
         for id in ["wc-helper", "wc-caller"] {
+            crate::background::remove(id);
+            forget(id);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A helper the person takes over while a wait is on it is out of reach of
+    /// every session above it that waits without `scope: "all"`, its former
+    /// parent's and that one's own parent's alike: their waits end with nothing
+    /// of it. With `all` its former parent reaches it as any of the person's chats.
+    #[test]
+    fn a_wait_holds_to_its_scope_through_a_takeover() {
+        let none = serde_json::json!({});
+        let dir = std::env::temp_dir().join(format!("luna-wait-taken-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let account = dir.to_string_lossy().into_owned();
+        register("wt-top", Provider::Claude, &account, &account, None, true, none.clone());
+        crate::background::test_helper("wt-top", &account, None, false);
+        register("wt-mid", Provider::Claude, &account, &account, Some("wt-top"), true, none.clone());
+        crate::background::test_helper("wt-mid", &account, None, false);
+        register("wt-helper", Provider::Claude, &account, &account, Some("wt-mid"), false, none);
+        crate::background::test_helper("wt-helper", &account, None, true);
+        let said = serde_json::json!({ "type": "assistant", "message": { "content": [{ "type": "text", "text": "the person's now" }] } });
+        let path = dir.join("wt-helper.jsonl");
+        std::fs::write(&path, format!("{said}\n")).unwrap();
+        transcripts().lock().unwrap().insert("wt-helper".into(), path);
+        // Both waiting on it, each as its own, when the person takes it over.
+        let waits: Vec<_> = ["wt-top", "wt-mid"]
+            .into_iter()
+            .map(|caller| {
+                std::thread::spawn(move || {
+                    let call = crate::mcp::Call::new();
+                    wait(caller, "wt-helper", "turn_done", 20, Some(0), None, &call)
+                })
+            })
+            .collect();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        crate::agents::take_over("wt-helper", || Some(Vec::new()));
+        crate::background::test_turn_ended("wt-helper");
+        for (w, caller) in waits.into_iter().zip(["wt-top", "wt-mid"]) {
+            let e = w.join().unwrap().err().unwrap_or_else(|| panic!("{caller}'s wait handed the person's chat over"));
+            assert!(e.contains("not one you spawned") || e.contains("no longer yours"), "{caller}: {e}");
+        }
+        let call = crate::mcp::Call::new();
+        let w = wait("wt-mid", "wt-helper", "turn_done", 5, Some(0), Some("all"), &call).expect("scope all reaches it");
+        assert_eq!(w.outcome, "turn_done");
+        let e = wait("wt-mid", "wt-helper", "turn_done", 5, Some(0), None, &call).err().unwrap();
+        assert!(e.contains("no longer yours"), "{e}");
+        reg().lock().unwrap().news.retain(|(c, _)| c != "wt-mid");
+        for id in ["wt-helper", "wt-mid", "wt-top"] {
             crate::background::remove(id);
             forget(id);
         }

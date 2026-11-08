@@ -252,10 +252,25 @@ pub(super) fn looked(id: &str) {
 /// answer reached it, the caller is owed that one too: the cursor stays the
 /// earlier one. The dev caller has no terminal to be told in.
 pub(super) fn owe_from(caller: &str, id: &str, baseline: u32, cursor: u64) {
+    owe(caller, id, baseline, cursor, None);
+}
+
+/// `owe_from` for text a send put into a helper's queue, `handovers` being the
+/// count (handover.rs `handovers_of`) taken before it went in: none if the person
+/// has taken the helper over since, which took that text back out and told its
+/// sender, so nothing of the chat it is now is owed. False then.
+pub(super) fn owe_from_at(caller: &str, id: &str, baseline: u32, cursor: u64, handovers: u64) -> bool {
+    owe(caller, id, baseline, cursor, Some(handovers))
+}
+
+fn owe(caller: &str, id: &str, baseline: u32, cursor: u64, handovers: Option<u64>) -> bool {
     if caller == DEV_CALLER {
-        return;
+        return true;
     }
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    if handovers.is_some_and(|n| r.handovers.get(id).copied().unwrap_or(0) != n) {
+        return false;
+    }
     let key = (caller.to_string(), id.to_string());
     // A new turn answers this one; that the last was cut short has yet to be
     // said all the same.
@@ -266,6 +281,7 @@ pub(super) fn owe_from(caller: &str, id: &str, baseline: u32, cursor: u64) {
     drop(r);
     // A spawn's or a question's: a core killed now must not forget either.
     crate::background::save();
+    true
 }
 
 /// The last count `caller` was shown for `id`, if any.
@@ -590,13 +606,13 @@ mod tests {
         // It went on to stop on a permission: that is no end of the turn it asked about.
         crate::background::in_turn_for_test(id);
         crate::background::hold_for_test(id);
-        let w = wait(a, id, "turn_done", 2, Some(0), &crate::mcp::Call::new()).unwrap();
+        let w = wait(a, id, "turn_done", 2, Some(0), None, &crate::mcp::Call::new()).unwrap();
         assert_eq!(w.outcome, "waiting", "not `turn_done`, though the count is past the 0 it asked for");
         assert_eq!(owed(a).baseline, 1, "and still owed");
 
         // The turn it did start ends, and that is the answer.
         crate::background::turn_ended_for_test(id);
-        let w = wait(a, id, "turn_done", 2, Some(0), &crate::mcp::Call::new()).unwrap();
+        let w = wait(a, id, "turn_done", 2, Some(0), None, &crate::mcp::Call::new()).unwrap();
         assert_eq!(w.outcome, "turn_done");
         forget(id);
         crate::background::gone_for_test(id);
@@ -628,7 +644,8 @@ mod tests {
         register(id, Provider::Claude, "C:\\p", "C:\\acc\\one", Some(a), false, none);
         crate::background::idle_for_test(id, Provider::Claude, 9, false);
         retried(id, &[a.to_string()], 9);
-        crate::background::background_promoted(id.to_string(), None).unwrap();
+        crate::background::background_promote(id.to_string()).unwrap();
+        assert_eq!(crate::background::background_promoted(id.to_string(), None), Ok(true));
         assert!(!crate::background::has(id));
         assert_eq!(crate::activity::turns_counted(id), Some(9), "not 0, which a floor of 9 would wait past for nine turns");
         crate::activity::between_turns_for_test(id);

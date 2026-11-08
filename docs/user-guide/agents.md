@@ -54,14 +54,18 @@ hooks run unasked.
   model, effort, account and worktree, and offers:
   - **Watch:** its conversation, read-only, as it goes: what its agent asked and
     what it said, tool calls marked, updating every second while a turn runs.
-    Nothing typed there reaches it.
+    A long conversation shows its latest part, and very long entries (a tool's
+    whole output) are left out; the view says when it did either. Nothing typed
+    there reaches it.
   - **Open as chat** (between turns, once nothing it left runs): it becomes a
     chat of your own, for good, a row in its folder seated in a pane, going on
     with the same conversation. Its agent loses it: it can no longer send to it,
     wait on it, read it as its own, stop or delete it, and is owed nothing more.
     The agent hears so once, in a notice that survives a restart. Text still
     queued for the helper is not delivered: whoever sent it is told, and the
-    notice names the file it is in. Luna asks before it does this.
+    notice names the file it is in. Luna asks before it does this. If Luna
+    cannot finish opening it (the window closed midway and stays closed), the
+    helper goes back to its agent after 15 minutes, and the agent is told.
   - **Stop** and **Delete**; Delete waits while it is at work, and keeps a
     worktree that holds uncommitted work.
 - At most eight helpers under one chat, and a helper's helpers get no tools.

@@ -89,8 +89,14 @@ pub struct UserDeleted {
 /// it made going too, unless it was handed one or the person said to keep it.
 /// A helper at work is refused unless `stop_working` says to stop it, and a
 /// worktree holding unsaved work is kept unless `drop_unsaved` says to drop it:
-/// each is its own yes, which a parent chat's checkbox is not.
+/// each is its own yes, which a parent chat's checkbox is not. Held from the first
+/// look to the removal (`claim_delete`): no turn starts in between, so one found idle
+/// is idle when it goes, and the person's opening it as a chat waits.
 pub fn delete_by_user(id: &str, drop_worktree: bool, stop_working: bool, drop_unsaved: bool) -> Result<UserDeleted, String> {
+    let claim = crate::background::claim_delete(id)?;
+    if !claim.held() {
+        return Err("no such helper".into());
+    }
     let known = reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(id).cloned().ok_or("no such helper")?;
     if !stop_working {
         if let Some(what) = at_work(id) {
@@ -107,7 +113,7 @@ pub fn delete_by_user(id: &str, drop_worktree: bool, stop_working: bool, drop_un
             kept = crate::worktree::unsaved_work(&folder, &wt).map(|work| format!("{wt} ({work})"));
         }
     }
-    let removed = remove(id, known, drop_worktree && kept.is_none(), None)?;
+    let removed = remove(id, known, drop_worktree && kept.is_none(), None, &claim)?;
     Ok(UserDeleted { worktree_kept: kept, worktree_error: removed.worktree_error })
 }
 
@@ -146,7 +152,14 @@ pub fn kill(caller: &str, id: &str) -> Result<Killed, String> {
 /// A person's Delete has its dialog to warn of the work in a worktree; an
 /// agent's refuses while there is any, unless `force`. Nothing has been touched
 /// by the time it does, the helper still running if it was.
+///
+/// Held from the first look to the removal (`claim_delete`), and whose it is asked
+/// again under that hold: a person's opening it as a chat either finished before
+/// (it is theirs, and refused) or waits until this is through, never lands between
+/// what this went by and what it removes.
 pub fn delete(caller: &str, id: &str, drop_worktree: bool, force: bool) -> Result<Removed, String> {
+    authorize(caller, id)?;
+    let claim = crate::background::claim_delete(id)?;
     let known = authorize(caller, id)?;
     if drop_worktree && !force {
         let folder = crate::worktree::project_of(&known.folder).unwrap_or_else(|| known.folder.clone());
@@ -162,13 +175,13 @@ pub fn delete(caller: &str, id: &str, drop_worktree: bool, force: bool) -> Resul
             // is stopped first and looked at again.
             crate::background::stop_for_good(id);
             if let Some(work) = crate::worktree::unsaved_work(&folder, &wt) {
-                return remove(id, known, false, None)
+                return remove(id, known, false, None, &claim)
                     .map(|_| Removed::left(Some(wt), format!("kept: it came to hold {work} as the session was stopped")));
             }
-            return remove(id, known, true, Some(wt));
+            return remove(id, known, true, Some(wt), &claim);
         }
     }
-    remove(id, known, drop_worktree, None)
+    remove(id, known, drop_worktree, None, &claim)
 }
 
 /// The worktree `remove` would take with the helper, as it would judge it: one
@@ -216,8 +229,19 @@ impl Removed {
     }
 }
 
-/// `worktree`: the one to drop, where the helper may no longer say itself.
-fn remove(id: &str, known: Known, drop_worktree: bool, worktree: Option<String>) -> Result<Removed, String> {
+/// `worktree`: the one to drop, where the helper may no longer say itself. Only
+/// under a delete's hold on it (`claim_delete`), and only while it is still a
+/// helper: never a chat the person took over, nor what is theirs in it.
+fn remove(
+    id: &str,
+    known: Known,
+    drop_worktree: bool,
+    worktree: Option<String>,
+    _held: &crate::background::DeleteClaim,
+) -> Result<Removed, String> {
+    if reg().lock().unwrap_or_else(|e| e.into_inner()).taken_over.contains_key(id) {
+        return Err(format!("{id} is the person's own chat now, not a helper to delete"));
+    }
     let pty = crate::pty::manager();
     // What `luna_sessions` history has left to go on once it is gone.
     let transcript = transcript_path(pty, id);
@@ -299,6 +323,19 @@ fn reap_these(pty: &crate::pty::PtyManager, ids: Vec<String>) {
             a.deleting = true;
             known
         };
+        // Held as any delete is (`delete`), and still `auto`'s under the hold: the
+        // person opening it as a chat meanwhile took it off, or holds it now.
+        let claim = crate::background::claim_delete(&id);
+        let still = reg().lock().unwrap_or_else(|e| e.into_inner()).auto.get(&id).is_some_and(|a| a.deleting);
+        let claim = match claim {
+            Ok(claim) if still => claim,
+            _ => {
+                if let Some(a) = reg().lock().unwrap_or_else(|e| e.into_inner()).auto.get_mut(&id) {
+                    a.deleting = false;
+                }
+                continue;
+            }
+        };
         let left = only_idle.then(|| left_quiet(&id)).flatten();
         // Whoever was told it was not done yet, before its removal forgets them.
         let owed: Vec<String> = if left.is_some() {
@@ -306,7 +343,7 @@ fn reap_these(pty: &crate::pty::PtyManager, ids: Vec<String>) {
         } else {
             Vec::new()
         };
-        match known.map(|k| (k.parent.clone(), remove(&id, k, false, None))) {
+        match known.map(|k| (k.parent.clone(), remove(&id, k, false, None, &claim))) {
             Some((parent, Ok(_))) => {
                 crate::log::info("agents", &format!("auto-deleted helper {}", label(&id)));
                 if let Some((quiet, names)) = left {
@@ -682,6 +719,50 @@ mod tests {
             crate::background::gone_for_test("po-s");
             forget("po-s");
             forget("po-c");
+        }
+    }
+
+    /// A delete holds the helper from its first look to its removal, and an opening
+    /// as a chat holds it the same way: neither lands inside the other, and no turn
+    /// starts under either. A removal that finds the helper the person's chat by
+    /// then refuses. Both providers alike.
+    #[test]
+    fn a_delete_and_an_opening_hold_each_other_off() {
+        use crate::background::{background_promote, claim_delete, Placed};
+        for provider in [Provider::Claude, Provider::Codex] {
+            register("dh-c", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, serde_json::json!({}));
+            register("dh-s", provider, "C:\\p", "C:\\acc\\anthropic\\one", Some("dh-c"), false, serde_json::json!({ "background": true }));
+            crate::background::idle_for_test("dh-s", provider, 1, false);
+            let claim = claim_delete("dh-s").unwrap();
+            assert!(claim.held());
+            assert!(background_promote("dh-s".into()).err().unwrap().contains("being deleted"));
+            assert!(claim_delete("dh-s").err().unwrap().contains("being deleted already"));
+            assert!(delete_by_user("dh-s", false, false, false).is_err(), "nor the person's at once");
+            // Text sent meanwhile waits: it found the helper idle, and idle it stays.
+            assert_eq!(crate::background::send("dh-s", "one more", Some("dh-c")).unwrap(), Placed::Queued);
+            assert_eq!(at_work("dh-s"), None);
+            crate::background::gone_for_test("dh-s");
+            drop(claim);
+
+            crate::background::idle_for_test("dh-s", provider, 1, false);
+            crate::background::promoting_for_test("dh-s", true);
+            assert!(claim_delete("dh-s").err().unwrap().contains("the person is opening dh-s"));
+            assert!(delete_by_user("dh-s", true, true, true).err().unwrap().contains("the person is opening dh-s"));
+            assert!(delete("dh-c", "dh-s", true, true).is_err());
+            assert!(crate::background::has("dh-s"), "nothing was touched");
+
+            // Handed over all the same: never removed as a helper.
+            crate::agents::take_over("dh-s", || Some(Vec::new()));
+            crate::background::promoting_for_test("dh-s", false);
+            let known = reg().lock().unwrap().known.get("dh-s").cloned().unwrap();
+            let claim = claim_delete("dh-s").unwrap();
+            assert!(remove("dh-s", known, true, None, &claim).err().unwrap().contains("the person's own chat"));
+            assert!(reg().lock().unwrap().known.contains_key("dh-s"), "the chat is still there");
+            crate::background::gone_for_test("dh-s");
+            drop(claim);
+            reg().lock().unwrap().news.retain(|(c, _)| c != "dh-c");
+            forget("dh-s");
+            forget("dh-c");
         }
     }
 

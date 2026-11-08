@@ -45,7 +45,7 @@ vi.mock('../../ipc/agents', async importOriginal => ({
   ...(await importOriginal<typeof import('../../ipc/agents')>()),
   backgroundHelpers: vi.fn(() => Promise.resolve([])),
   backgroundPromote: vi.fn(),
-  backgroundPromoted: vi.fn(() => Promise.resolve()),
+  backgroundPromoted: vi.fn(() => Promise.resolve(true)),
   chatNames: vi.fn(() => Promise.resolve()),
   accountUsage: vi.fn(() => Promise.resolve())
 }));
@@ -232,5 +232,33 @@ describe('agent bridge: opening a background helper as a chat', () => {
     mocked.backgroundPromote.mockResolvedValue(helper());
     await Promise.all([openAsChat('bg1'), openAsChat('bg1')]);
     expect(mocked.backgroundPromote).toHaveBeenCalledOnce();
+  });
+
+  it('tells the core again when it could not be told, and seats the row only once it has let go', async () => {
+    mocked.backgroundPromote.mockResolvedValue(helper());
+    mocked.backgroundPromoted.mockRejectedValueOnce(new Error('the core is not running'));
+    const opened = openAsChat('bg1');
+    await vi.waitFor(() => expect(mocked.backgroundPromoted).toHaveBeenCalledOnce());
+    expect(currentSlots(usePanes.getState())).not.toContain('bg1');
+    await opened;
+    expect(mocked.backgroundPromoted).toHaveBeenCalledTimes(2);
+    expect(currentSlots(usePanes.getState())).toContain('bg1');
+  });
+
+  it('lets go of the row when the core gave the opening up, the helper its agent’s again', async () => {
+    mocked.backgroundPromote.mockResolvedValue(helper());
+    mocked.backgroundPromoted.mockResolvedValueOnce(false);
+    await openAsChat('bg1');
+    expect(useChats.getState().findChat('bg1')).toBeNull();
+    expect(currentSlots(usePanes.getState())).not.toContain('bg1');
+  });
+
+  it('lets go of a row a page gone before it made, for an opening the core gave up since', async () => {
+    useChats.getState().addChat('/repo', { ...parent, id: 'bg-lapsed' }, false);
+    mocked.backgroundHelpers.mockResolvedValue([row({ id: 'bg-lapsed' })]);
+    mocked.backgroundPromoted.mockResolvedValueOnce(false);
+    await mountBridge();
+    await vi.waitFor(() => expect(useChats.getState().findChat('bg-lapsed')).toBeNull());
+    expect(mocked.backgroundPromoted).toHaveBeenCalledWith('bg-lapsed', null);
   });
 });

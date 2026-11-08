@@ -53,6 +53,11 @@ pub(super) struct Saved {
     /// See `Entry::opening_id`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) opening_id: Option<String>,
+    /// See `Entry::promoting`, since when: an opening the window had not settled
+    /// as the core went. The next core holds the helper as this one did, with no
+    /// turn starting or resuming, until the window says how its row came out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) promoting_since: Option<u64>,
     pub(super) cut_short: bool,
     pub(super) ties: crate::agents::Ties,
     #[serde(default)]
@@ -117,6 +122,7 @@ pub(super) fn snapshot() -> Vec<Saved> {
             unsure: e.unsure,
             opening: e.opening.clone().filter(|_| e.session.is_none()),
             opening_id: e.opening_id.clone().filter(|_| e.session.is_none()),
+            promoting_since: e.promoting.then_some(e.promoting_since),
             cut_short: e.cut_short,
             observed: e.observed.clone(),
             ties: Default::default(),
@@ -226,7 +232,7 @@ pub(super) fn resume(id: &str) {
         let (doubtful, sure): (Vec<Queued>, Vec<Queued>) = std::mem::take(&mut e.undelivered).into_iter().partition(|q| q.maybe_reached);
         // Or a turn it was sent meanwhile has gone on already, and been told.
         // Or it is being opened as a chat, which takes the conversation up.
-        if e.run.is_some() || e.promoting || !e.cut_short || !e.resumable || (unnamed && sure.is_empty()) {
+        if e.run.is_some() || e.held_back() || !e.cut_short || !e.resumable || (unnamed && sure.is_empty()) {
             e.undelivered = [sure, doubtful].concat();
             return;
         }
@@ -421,7 +427,9 @@ pub(super) fn taken_up(mut s: Saved) -> Entry {
         left_running: false,
         left: Vec::new(),
         ending_left: false,
-        promoting: false,
+        promoting: s.promoting_since.is_some(),
+        promoting_since: s.promoting_since.unwrap_or(0),
+        deleting: false,
         observed: s.observed,
     };
     if s.running {
@@ -540,6 +548,7 @@ mod tests {
             unsure: false,
             opening: None,
             opening_id: None,
+            promoting_since: None,
             cut_short: false,
             ties: Default::default(),
             observed: Default::default(),
@@ -560,6 +569,20 @@ mod tests {
         // A batch a turn was claimed for and never got comes back in its place.
         let e = taken_up(Saved { in_flight: vec!["flying".into()], ..saved(true, true) });
         assert_eq!(e.undelivered, ["flying", "first", "second"]);
+
+        // Being opened as a chat as the core went: held as it was, no turn and no
+        // resume, until the window settles the row it may have made; through the file.
+        let mut opening = taken_up(Saved { cut_short: true, tied: true, ..saved(false, false) });
+        opening.promoting = true;
+        opening.promoting_since = 42;
+        lock().entries.insert("opening-across".into(), opening);
+        let on_disk = snapshot().into_iter().find(|s| s.id == "opening-across").unwrap();
+        assert_eq!(on_disk.promoting_since, Some(42));
+        lock().entries.insert("opening-across".into(), taken_up(on_disk));
+        assert!(lock().entries["opening-across"].promoting && lock().entries["opening-across"].promoting_since == 42);
+        resume("opening-across");
+        assert!(lock().entries["opening-across"].run.is_none(), "not resumed while it is opened");
+        lock().entries.remove("opening-across");
 
         // A turn no core stopped is over only if the OS saw to it.
         assert!(!taken_up(saved(true, false)).resumable, "no tie: its CLI may be running yet");
@@ -727,6 +750,7 @@ mod tests {
                 unsure: false,
                 opening: Some("the prompt".into()),
                 opening_id: None,
+                promoting_since: None,
                 cut_short: false,
                 observed: Default::default(),
                 ties: Default::default(),

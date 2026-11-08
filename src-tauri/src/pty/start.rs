@@ -439,6 +439,17 @@ const PREVIOUS_HELPER_LINE: &str = "You are a helper session started through Lun
 your answers go to that session. Instructions meant only for the session a person talks to do not apply to you. Write in the \
 language of the task you were given, progress notes included.";
 
+/// A helper's id runs in a pane only once the helper is the person's
+/// (background/rows.rs `background_promoted`): before that its conversation is
+/// the helper's, held or going on, and a pane resuming it would run beside it
+/// and take it from its parent unannounced (`register` with no parent).
+fn not_a_helper(id: &str) -> Result<(), String> {
+    if crate::background::has(id) {
+        return Err(format!("{id} is still a helper being opened as your chat; it opens here once that is through"));
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn ensure_claude_session(
@@ -463,6 +474,7 @@ pub async fn ensure_claude_session(
     // new-chat dialog.
     guard: Option<bool>,
 ) -> Result<String, String> {
+    not_a_helper(&id)?;
     // Built only if no process is running (see `spawn`).
     spawn(id.clone(), move || {
         // `--resume` of a session with no transcript fails with "No
@@ -576,6 +588,7 @@ pub async fn ensure_codex_session(
     // new-chat dialog.
     guard: Option<bool>,
 ) -> Result<String, String> {
+    not_a_helper(&id)?;
     // Built only if no process is running (see `spawn`).
     spawn(id.clone(), move || {
         if login {
