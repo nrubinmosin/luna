@@ -63,8 +63,11 @@ pub struct AccountRow {
     /// the caller's folder: the flags as `spawn` echoes them.
     pub defaults: serde_json::Value,
     /// The models a helper may ask for here: Claude Code's aliases (a full
-    /// id works too), Codex's catalog with each model's name and levels.
-    pub models: Vec<serde_json::Value>,
+    /// id works too), Codex's catalog with each model's name and levels. Only
+    /// when asked (`models: true`): Codex's catalog is most of what a listing
+    /// weighs, and a caller lists far more often than it picks a model.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub models: Option<Vec<serde_json::Value>>,
     /// Its usage as the window last showed it (see `account_usage`); none
     /// before the window has said.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -74,7 +77,7 @@ pub struct AccountRow {
 /// Accounts an agent may spawn on — every account folder on disk, minus the
 /// ones the user switched off for agents — with what a helper would get in
 /// `folder` on each.
-fn account_rows(folder: &str) -> Vec<AccountRow> {
+fn account_rows(folder: &str, with_models: bool) -> Vec<AccountRow> {
     let usage = reg().lock().unwrap_or_else(|e| e.into_inner()).usage.clone();
     allowed_account_dirs()
         .into_iter()
@@ -84,18 +87,21 @@ fn account_rows(folder: &str) -> Vec<AccountRow> {
                 Provider::Codex => crate::codex::defaults::flags(&a.path, folder),
             };
             let usage = usage.get(&format!("{}/{}", a.provider.as_str(), a.name)).cloned();
-            let models = match a.provider {
-                Provider::Claude => CLAUDE_MODELS.iter().map(|m| serde_json::json!({ "id": m })).collect(),
-                Provider::Codex => crate::codex::models::models_known(&a.path)
-                    .into_iter()
-                    .map(|m| {
-                        serde_json::json!({ "id": m.slug, "name": m.display_name, "efforts": m.efforts, "defaultEffort": m.default_effort })
-                    })
-                    .collect(),
-            };
+            let models = with_models.then(|| models_of(a.provider, &a.path));
             AccountRow { provider: a.provider, name: a.name, defaults, models, usage }
         })
         .collect()
+}
+
+/// The models a helper may ask for on the account at `path`.
+fn models_of(provider: Provider, path: &str) -> Vec<serde_json::Value> {
+    match provider {
+        Provider::Claude => CLAUDE_MODELS.iter().map(|m| serde_json::json!({ "id": m })).collect(),
+        Provider::Codex => crate::codex::models::models_known(path)
+            .into_iter()
+            .map(|m| serde_json::json!({ "id": m.slug, "name": m.display_name, "efforts": m.efforts, "defaultEffort": m.default_effort }))
+            .collect(),
+    }
 }
 
 /// What `luna_list` says of a visible session beyond its state: its turn's
@@ -125,8 +131,9 @@ fn visible_signs(pty: &crate::pty::PtyManager, id: &str, provider: Provider) -> 
 
 /// The caller's own, or the sessions `ids` names, which may be any: what a row
 /// says is what `sessions` and `read` already show of them. `accounts` is the
-/// costly part of a listing, in time and in what it adds to the caller's context.
-pub fn list(caller: &str, ids: Option<&[String]>, accounts: bool) -> Listing {
+/// costly part of a listing, in time and in what it adds to the caller's context,
+/// and `models` the costliest part of that.
+pub fn list(caller: &str, ids: Option<&[String]>, accounts: bool, models: bool) -> Listing {
     let mut unknown = Vec::new();
     let rows: Vec<(String, Known, String, Option<u32>)> = {
         let r = reg().lock().unwrap_or_else(|e| e.into_inner());
@@ -195,7 +202,7 @@ pub fn list(caller: &str, ids: Option<&[String]>, accounts: bool) -> Listing {
         .collect();
     let accounts = accounts.then(|| {
         let folder = reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(caller).map(|k| k.folder.clone()).unwrap_or_default();
-        account_rows(&folder)
+        account_rows(&folder, models)
     });
     Listing { me: caller.to_string(), accounts, sessions, unknown }
 }
@@ -366,6 +373,15 @@ pub(super) fn disk_meta(p: &crate::pty::ActivityProbe) -> Option<crate::pty::Ses
 mod tests {
     use super::*;
     use crate::agents::registry::{reg, register};
+
+    #[test]
+    fn an_account_row_has_models_only_when_asked() {
+        let row =
+            |models| AccountRow { provider: Provider::Codex, name: "one".into(), defaults: serde_json::json!({}), models, usage: None };
+        assert_eq!(serde_json::to_value(row(None)).unwrap(), serde_json::json!({ "provider": "codex", "name": "one", "defaults": {} }));
+        let with = serde_json::to_value(row(Some(vec![serde_json::json!({ "id": "gpt-5.5" })]))).unwrap();
+        assert_eq!(with["models"], serde_json::json!([{ "id": "gpt-5.5" }]));
+    }
 
     #[test]
     fn sessions_filter_by_group_and_text() {

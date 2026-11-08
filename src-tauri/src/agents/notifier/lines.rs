@@ -9,7 +9,9 @@ use crate::agents::persist::{core_up_ms, returning};
 use crate::agents::read::{failure_of, transcript_end, transcript_found, transcript_path};
 use crate::agents::registry::{is_descendant, label, reg, waits_on_helpers, Known, Registry};
 use crate::agents::resume::resume_pending;
-use crate::agents::said::{answer_file, answer_text, answer_where, begins, note_file, replies_since, said_since, SHORT_MESSAGE};
+use crate::agents::said::{
+    answer_file, answer_text, answer_where, begins, note_file, replies_since, report_span, said_since, SHORT_MESSAGE,
+};
 use crate::agents::spawn::worktree::leave_half_made;
 use crate::agents::wait::REPLY_GRACE_MS;
 use crate::provider::Provider;
@@ -283,20 +285,22 @@ pub(in crate::agents) fn notice_line(
         }
         let parent = k.parent.as_deref() == Some(caller);
         let lost = undelivered_for(id, caller, parent);
-        let file = match (replies.is_empty(), lost.is_empty()) {
+        let text = match (replies.is_empty(), lost.is_empty()) {
             (true, true) => None,
-            (true, false) => note_file(id, &undelivered_text(&lost)),
-            (false, true) => note_file(id, &answer_text(&replies)),
-            (false, false) => note_file(id, &format!("{}\n\n---\n\n{}", answer_text(&replies), undelivered_text(&lost))),
+            (true, false) => Some(undelivered_text(&lost)),
+            (false, true) => Some(answer_text(&replies)),
+            (false, false) => Some(format!("{}\n\n---\n\n{}", answer_text(&replies), undelivered_text(&lost))),
         };
+        let file = text.as_deref().and_then(|t| note_file(id, t));
+        let span = text.as_deref().and_then(|t| report_span(&replies, t));
         let reply = match replies.len() {
             0 if !transcript_found(pty, id) => {
                 ", but Luna cannot find its transcript, so whether it replied is unknown (luna_read with screen: true shows what there is)"
                     .to_string()
             }
             0 => " without a reply (luna_read with screen: true shows why, if anything does)".to_string(),
-            1 => format!(" with 1 message since you asked; {}", answer_where(file.as_deref())),
-            n => format!(" with {n} messages since you asked; {}", answer_where(file.as_deref())),
+            1 => format!(" with 1 message since you asked; {}", answer_where(file.as_deref(), span)),
+            n => format!(" with {n} messages since you asked; {}", answer_where(file.as_deref(), span)),
         };
         if parent && (crate::background::never_started(id) || (o.cut_short && first_turn_lost(pty, id))) {
             // Before it is told: what its next turn will not go on in is told with this.

@@ -11,7 +11,6 @@ use crate::agents::privilege::{command_prefix, command_reach_now, plain_text};
 use crate::agents::read::{transcript_end, transcript_path, Message};
 use crate::agents::registry::{label, reg};
 use crate::agents::said::messages_at;
-use crate::provider::Provider;
 
 /// A visible helper spawned with `resumeOnRestart` that a core's going stopped
 /// mid-turn, until the text that carries it on has gone in or will not.
@@ -239,12 +238,10 @@ fn resume_chat(pty: &crate::pty::PtyManager, id: &str) {
             .filter(|h| h.id == id)
             .map(|h| crate::background::Queued::new(Some(h.caller.clone()), h.text.clone(), Vec::new()))
             .collect();
-        // As its first start would have had it: Codex has nowhere else to hear its note.
-        let noted = r.known.get(id).filter(|k| k.provider == Provider::Codex).and_then(|k| k.parent.clone());
-        let opening = res
-            .opening
-            .as_deref()
-            .map(|text| noted.as_deref().map_or(text.to_string(), |parent| crate::pty::codex_helper_prompt(parent, text)));
+        // As its first start would have had it, its note after it.
+        let noted = r.known.get(id).and_then(|k| k.parent.clone());
+        let opening =
+            res.opening.as_deref().map(|text| noted.as_deref().map_or(text.to_string(), |parent| crate::pty::helper_prompt(parent, text)));
         (opening, batch)
     };
     let Some(text) = resume_words(resuming, opening, &batch) else {
@@ -336,6 +333,7 @@ mod tests {
     use crate::agents::registry::{reg, register, resumes_on_restart};
     use crate::agents::teardown::forget;
     use crate::agents::test_support::{cut_short_chat, notice_for, take_up};
+    use crate::provider::Provider;
 
     #[test]
     fn a_visible_helper_cut_short_with_the_flag_waits_to_go_on_and_says_nothing_yet() {

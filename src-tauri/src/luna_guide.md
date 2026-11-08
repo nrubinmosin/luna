@@ -29,16 +29,17 @@ on one of the user's accounts.
     on end. `luna_kill` ends a background helper's alone (the user's Stop too). Killing a
     turn stops its CLI; what outlives that (on Windows a Git Bash command's own processes, a
     `run_in_background` job's) shows here after, for a second `luna_kill` to end.
-- `luna_list` with `ids: [..]` gives those rows alone, of any session, ids it does not know in
-  `unknown`, and no accounts unless `accounts: true`; `accounts: false` keeps a full list's out.
-  `ids: []` with `accounts: true`: accounts alone.
+- `luna_list` `ids: [..]`: those rows alone, of any session (unknown ids in `unknown`), no
+  accounts unless `accounts: true`; `accounts: false` drops them;
+  `ids: []` with `accounts: true`: accounts alone. Their models only with `models: true`.
 - You kill and delete only sessions you spawned and theirs. Any other session you can read,
   wait on and send text to. A deleted parent's helper passes to its parent; with none, only
   the user can stop or delete it, and a background one goes once idle for 30 min.
 - At most eight helpers under one chat. A helper given `tools: true` gets these tools too,
   but its own helpers get none.
 - `LUNA_SESSION_ID` holds a session's id, `LUNA_PARENT_ID` a helper's parent's. A helper is told it
-  is one: Claude Code in its system prompt, Codex in Luna's note on its prompts.
+  is one, not the chat of the person its instructions name (operator, user): Claude Code in its
+  system prompt and after its first prompt, Codex in Luna's note on its prompts.
 
 ## Accounts and models
 - An account is a signed-in login of one provider: an Anthropic account runs Claude Code
@@ -88,14 +89,15 @@ on one of the user's accounts.
 ## Getting the answer
 - After a spawn or a `luna_send` you can end your turn. Once that session answers, asks
   something, stops on a prompt or exits, Luna types one line into your chat starting with
-  `[Luna notice, not typed by the user]`. It says what happened and how many messages the
+  `[Luna notice, not typed by the user]`, saying what happened and how many messages the
   session wrote since it was asked, and names a file holding them: the report (the longest
-  message of its last turn that wrote any; if all of those are short, the last) first, then
-  the last message, then the rest in order, earlier turns' reports among them.
-  The notice quotes only the report's first line, cut to about 150 characters (`It begins:
-  "…"`), and not of a turn that stopped on an error, which it says.
-  It comes when your chat is between turns and the user is not typing in it; a subagent you
-  left working in the background does not hold it back.
+  message of its last turn that wrote any, the last if all are short; a short turn its CLI
+  began itself leaves it to the long one before) first, then the last, then the rest in order.
+  The notice quotes the report's first line, to about 150 characters (`It begins: "…"`),
+  not of a turn that stopped on an error, which it says.
+  It comes when your chat is between turns and nobody types in it; a subagent of yours in the
+  background does not hold it back, another helper of yours mid-turn may, up to 20 s, so that
+  near-simultaneous ends come as one notice (never a question or a prompt).
 - "NOT done yet": a job it started still runs (named), a subagent of a visible one's CLI
   works on in the background, or its own helpers have yet to answer it. Said once; the next
   notice comes when that is over or a turn of its own ends (all of it
@@ -108,29 +110,30 @@ on one of the user's accounts.
 - Past 12 turn-end notices about one session in 15 minutes Luna stops telling you of its turns
   and jobs (the last says so; its prompts and questions still come) until a person types into
   either chat; `luna_wait` and `luna_read` still work.
-- Use `luna_wait` when you need the answer within the same turn. `outcome` says which: `turn_done`,
+- `luna_wait` gets the answer within your turn. `outcome` says which: `turn_done`,
   `waiting`, `exit`, `job_done` or `timeout`. On `turn_done` (and an `exit` after such a
   turn), `reply` holds all the session said since you asked, the report first. `failed` names the error a turn stopped on (API error, usage limit,
   crash, kill): `reply` is what it said before that, if anything, and `screen` comes too.
-  `transcriptMissing`: no transcript found, so a null `reply` says nothing. `job_done`: told
+  `transcriptMissing`: no transcript, so a null `reply` says nothing. `job_done`: told
   it is not done, what it had running ended with no turn; `reply` is what it said since. A
   background helper does not exit between turns: `until: "exit"` returns once it is deleted.
 - `luna_wait` with `ids: [..]` returns `outcome` (`finished` or
   `timeout`), `finished` (the ids that got there) and `results`, one per id in the shape a
   single wait returns, with `id`. Under `any` the others come back `pending`, or `timeout`,
-  and are still owed. Their replies share one result: past 60,000 characters in all the
-  longest are cut, and each names a file with the whole.
+  and are still owed. Replies share one result: past 60,000 characters in all the longest
+  are cut, each naming a file with the whole.
 - A `luna_wait` running when the answer comes hands it over instead of the notice, one your
-  CLI moved to the background too. One you cancel or interrupt hands nothing over (one on
-  several: none of them), and the notice comes as usual. Claude Code hands a background one's
+  CLI moved to the background too. One canceled or interrupted hands nothing over (one on
+  several: none), and the notice comes. Claude Code hands a background one's
   result over HTML-escaped (`&lt;`, `&gt;`): take code from `luna_read`, not from that.
 - A turn that has written nothing for 30 min is told of once ("mid-turn and has written
-  nothing"), and not before 5 min past the timeout of a command it waits on: a hung command,
-  or a long one. `luna_read` with `screen: true` tells which.
-- `luna_read` with `since` and `last` gives the last N after the cursor, which goes past all
-  of them. `tools: true` is Claude Code only; `screen: true` gives a background helper's last
-  log lines. `luna_sessions`' transcript has a cut message whole.
-- A read of all a session said since you asked, whole, after it finished, collects the answer:
+  nothing"), and not before 5 min past the timeout of a command it waits on: hung, or long.
+  `luna_read` with `screen: true` tells which.
+- `luna_read` `since` + `last`: the last N after the cursor, which then goes past all.
+  `tools: true` is Claude Code only; `screen: true` gives a background helper's last
+  log lines. `luna_sessions`' transcript has a cut message whole. `report: true`: the report
+  alone (since `since`, else since you asked), collecting nothing; a notice names its lines.
+- A whole read of all it said since you asked, after it finished, collects the answer:
   no notice follows. Not one of only the last of several, or from a cursor taken since.
 - Asked again before an answer reached you, the next reply, read or notice covers all since the
   first question.
