@@ -109,6 +109,17 @@ $steps = @(
             Invoke-Checked 'notices-lib tests' { pwsh -NoProfile -File (Join-Path $RepoRoot 'scripts/notices-lib.test.ps1') }
         }
     }
+    @{
+        # The signer's container writes the .sig into a folder of the host
+        # user's, as in the release's sign job; on a Linux host, CI's, this is
+        # what that job meets (Assert-SignerWritesBundle).
+        Name  = 'signer writes into the bundle'
+        Group = 'frontend'
+        Run   = {
+            . (Join-Path $RepoRoot 'scripts/release-lib.ps1')
+            Assert-SignerWritesBundle
+        }
+    }
     New-ScriptStep 'test'
     New-ScriptStep 'build'
     @{

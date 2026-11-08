@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-library-set-source"
+description = "Enables the library_set_source command without any pre-configured scope."
+commands.allow = ["library_set_source"]
+
+[[permission]]
+identifier = "deny-library-set-source"
+description = "Denies the library_set_source command without any pre-configured scope."
+commands.deny = ["library_set_source"]

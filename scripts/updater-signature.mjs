@@ -3,6 +3,7 @@
 // network and nothing of the build's in reach).
 //
 //   node updater-signature.mjs sign <cli.node> <file> <version>
+//   node updater-signature.mjs generate <cli.node> <keyfile>
 //   node updater-signature.mjs verify <file> <file.sig> <pubkey> <version>
 //
 // sign runs `tauri signer sign` from the Tauri CLI's native module, the one
@@ -11,6 +12,10 @@
 // TAURI_SIGNING_PRIVATE_KEY_PASSWORD, as `tauri build` would have signed it:
 // the version goes into the signature's trusted comment. It writes
 // <file>.sig: base64 of the minisign signature file.
+//
+// generate runs `tauri signer generate` the same way: a key with no password
+// at <keyfile>, its public half, as tauri.conf.json holds one, at
+// <keyfile>.pub. A dry run signs with such a throwaway key.
 //
 // verify checks a .sig the way tauri-plugin-updater does before it installs an
 // update (updater.rs verify_signature, on minisign-verify): the public key and
@@ -113,11 +118,25 @@ function sign(cliPath, file, version) {
   });
 }
 
+/** Runs `tauri signer generate` from the CLI's native module: a key with no password. */
+function generate(cliPath, keyFile) {
+  const cli = createRequire(import.meta.url)(cliPath);
+  return new Promise((resolve, reject) => {
+    cli.run(['signer', 'generate', '--ci', '--password', '', '--write-keys', keyFile], 'tauri', (error, done) => {
+      if (error) reject(error);
+      else if (!done) reject(new Error('tauri signer generate did not finish'));
+      else resolve();
+    });
+  });
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const [command, ...args] = process.argv.slice(2);
   try {
     if (command === 'sign' && args.length === 3) {
       await sign(...args);
+    } else if (command === 'generate' && args.length === 2) {
+      await generate(...args);
     } else if (command === 'verify' && args.length === 4) {
       const [file, sigFile, pubkey, version] = args;
       const comment = verifyUpdaterSignature(
@@ -130,7 +149,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       console.log(`${basename(sigFile)} verifies against the updater's public key: ${comment.replaceAll('\t', ' ')}`);
     } else {
       throw new Error(
-        'usage: updater-signature.mjs sign <cli.node> <file> <version> | verify <file> <file.sig> <pubkey> <version>'
+        'usage: updater-signature.mjs sign <cli.node> <file> <version> | generate <cli.node> <keyfile> | verify <file> <file.sig> <pubkey> <version>'
       );
     }
   } catch (error) {

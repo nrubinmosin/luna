@@ -8,6 +8,7 @@ use crate::agents::registry::{is_descendant, reg, DEV_CALLER};
 use crate::agents::spawn::background::{asked, CLAUDE_MODES};
 use crate::agents::spawn::SpawnParams;
 use crate::provider::Provider;
+use std::sync::Mutex;
 
 /// An agent's name as Claude Code takes one, a plugin's `plugin:name` too, and
 /// a guard against one being read as a flag.
@@ -321,10 +322,113 @@ pub fn helpers_above_caller() -> bool {
     crate::settings::get().helpers_above_caller
 }
 
+/// Turning it on lifts the privilege cap for every tooled session (the trust
+/// contract, threat model §3), so it takes a person: a native dialog, asked by
+/// the window process, that a script in the page can open by calling this but
+/// cannot answer. Turning it off takes nothing. The answer is the setting as
+/// it stands after, so the switch shows a refusal as off.
 #[tauri::command]
-pub fn set_helpers_above_caller(on: bool) -> Result<bool, String> {
-    crate::settings::update(|s| s.helpers_above_caller = on)?;
-    Ok(on)
+pub async fn set_helpers_above_caller<R: tauri::Runtime>(window: tauri::WebviewWindow<R>, on: bool) -> Result<bool, String> {
+    // Off the main thread: the dialog blocks until it is answered.
+    tauri::async_runtime::spawn_blocking(move || set_above(on, || confirm_above(&window))).await.map_err(|e| e.to_string())?
+}
+
+const ABOVE_TITLE: &str = "Let helpers run above their caller?";
+const ABOVE_TEXT: &str = "Helpers will be able to run with more privilege than the session that spawns them: \
+                          a session in a read-only or asking mode could start one with full access, and answer \
+                          or type commands into its helpers.\n\nTurn this on only if you mean to.";
+
+/// A message box owned by the window. On Windows `MessageBoxW` itself, which
+/// can make Cancel the default, so a stray Enter leaves the cap on; the
+/// dialog plugin's task dialog has no such option.
+#[cfg(windows)]
+fn confirm_above<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) -> bool {
+    use windows::core::HSTRING;
+    use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, IDOK, MB_DEFBUTTON2, MB_ICONWARNING, MB_OKCANCEL};
+    // SAFETY: the owner is this window's own handle, or none; the strings
+    // live across the call.
+    unsafe {
+        MessageBoxW(
+            window.hwnd().ok(),
+            &HSTRING::from(ABOVE_TEXT),
+            &HSTRING::from(ABOVE_TITLE),
+            MB_OKCANCEL | MB_ICONWARNING | MB_DEFBUTTON2,
+        ) == IDOK
+    }
+}
+
+#[cfg(not(windows))]
+fn confirm_above<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) -> bool {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+    window
+        .dialog()
+        .message(ABOVE_TEXT)
+        .title(ABOVE_TITLE)
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom("Turn on".into(), "Cancel".into()))
+        .parent(window)
+        .blocking_show()
+}
+
+/// The setting, changed to `on` where that keeps the cap or `confirm` (the
+/// person, in the window) agrees to lifting it; as it was otherwise.
+fn set_above(on: bool, confirm: impl FnOnce() -> bool) -> Result<bool, String> {
+    static GATE: AboveGate = AboveGate::new();
+    GATE.set(on, helpers_above_caller, |v| crate::settings::update(|s| s.helpers_above_caller = v), confirm)
+}
+
+/// How `helpersAboveCaller` changes. Turning it off is written at once.
+/// Turning it on writes nothing where it is on already (a turn-off between
+/// that look and a write would otherwise be undone), and otherwise only after
+/// a yes, one dialog at a time, and only if no change was written while the
+/// dialog was open: a yes applies to the state it was asked about, never to
+/// one that came after. `writes` counts this process's writes, under its lock.
+struct AboveGate {
+    writes: Mutex<u64>,
+    asking: Mutex<()>,
+}
+
+impl AboveGate {
+    const fn new() -> Self {
+        Self { writes: Mutex::new(0), asking: Mutex::new(()) }
+    }
+
+    fn set(
+        &self,
+        on: bool,
+        read: impl Fn() -> bool,
+        write: impl Fn(bool) -> Result<(), String>,
+        confirm: impl FnOnce() -> bool,
+    ) -> Result<bool, String> {
+        let writes = || self.writes.lock().unwrap_or_else(|e| e.into_inner());
+        if !on {
+            let mut n = writes();
+            write(false)?;
+            *n += 1;
+            return Ok(false);
+        }
+        // Held across the dialog; a turn-off does not wait for it.
+        let _asking = self.asking.lock().unwrap_or_else(|e| e.into_inner());
+        let seen = {
+            let n = writes();
+            if read() {
+                return Ok(true);
+            }
+            *n
+        };
+        if !confirm() {
+            crate::log::info("agents", "helpers above their caller: not confirmed, left off");
+            return Ok(read());
+        }
+        let mut n = writes();
+        if *n != seen {
+            crate::log::info("agents", "helpers above their caller: changed while asking, the yes not applied");
+            return Ok(read());
+        }
+        write(true)?;
+        *n += 1;
+        Ok(true)
+    }
 }
 
 /// Whether `id` is one of the caller's helpers, and the caller's privilege for
@@ -405,6 +509,55 @@ mod tests {
         let mut p = SpawnParams { read_only: Some(read_only), ..Default::default() };
         f(&mut p);
         p
+    }
+
+    #[test]
+    fn lifting_the_cap_takes_a_persons_yes() {
+        // The page asks to turn it on and nobody agrees in the dialog: the
+        // setting stays off and nothing is written.
+        let mut asked = false;
+        let answer = set_above(true, || {
+            asked = true;
+            false
+        });
+        assert_eq!(answer, Ok(false));
+        assert!(asked, "turning it on must ask");
+        assert!(!helpers_above_caller());
+    }
+
+    #[test]
+    fn a_yes_never_lands_on_a_state_it_was_not_asked_about() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst};
+        let gate = AboveGate::new();
+        let (stored, written) = (AtomicBool::new(true), AtomicUsize::new(0));
+        let read = || stored.load(SeqCst);
+        let write = |v: bool| {
+            stored.store(v, SeqCst);
+            written.fetch_add(1, SeqCst);
+            Ok(())
+        };
+
+        // A finds it on already: no dialog and no write, so a turn-off by B
+        // right after has nothing of A's to undo it.
+        assert_eq!(gate.set(true, read, write, || panic!("asked although on")), Ok(true));
+        assert_eq!(written.load(SeqCst), 0, "A wrote the relaxation back without a yes");
+        assert_eq!(gate.set(false, read, write, || unreachable!()), Ok(false));
+        assert!(!read());
+
+        // A asks; while its dialog is open B turns it off; A's yes then
+        // finds a change it was not asked about and is not applied.
+        let answer = gate.set(true, read, write, || {
+            assert_eq!(gate.set(false, read, write, || unreachable!()), Ok(false));
+            true
+        });
+        assert_eq!(answer, Ok(false));
+        assert!(!read(), "a stale yes lifted the cap");
+
+        // A no leaves it off; an uninterrupted yes turns it on.
+        assert_eq!(gate.set(true, read, write, || false), Ok(false));
+        assert!(!read());
+        assert_eq!(gate.set(true, read, write, || true), Ok(true));
+        assert!(read());
     }
 
     #[test]

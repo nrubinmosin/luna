@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-helpers-above-caller"
+description = "Enables the helpers_above_caller command without any pre-configured scope."
+commands.allow = ["helpers_above_caller"]
+
+[[permission]]
+identifier = "deny-helpers-above-caller"
+description = "Denies the helpers_above_caller command without any pre-configured scope."
+commands.deny = ["helpers_above_caller"]
