@@ -136,9 +136,13 @@ then the window's `background_promoted`) becomes theirs for good
    (`handovers`) and clears its debts again: a send whose text went in before
    that checks its debt against the count it took first (`owe_from_at`) and
    registers none, and the notifier drops a notice prepared on a debt gone
-   since (`debts_moved`), checked again in the delivery thread as the notice
-   goes in. The window's word is acted on once (`Entry::handing`); said again,
-   or after the record is gone, it changes nothing.
+   since (`debts_moved`). A notice's delivery and a handover share one
+   exclusion per session (notifier `Telling`, `hand_off`): the delivery checks
+   its debts under it and holds it until its text is in, the whole handover
+   runs under it, so either the notice is in before anything changes hands or
+   it finds the handover and goes nowhere. The window's word is acted on once
+   (`Entry::handing`); said again, or after the record is gone, it changes
+   nothing.
 3. Each session owed by it, and each sender of that text, gets one line in
    `Registry::news`: its parent that the person took it over and nothing more
    is owed, the others that nothing more is owed by it; each with the file its

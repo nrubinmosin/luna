@@ -208,7 +208,7 @@ pub fn background_promoted(id: String, error: Option<String>) -> Result<bool, St
             }
         }
         let mut count = None;
-        crate::agents::take_over(&id, || {
+        let handed = crate::agents::take_over(&id, || {
             // Gone already (deleted meanwhile): the row has its conversation.
             let mut e = lock().entries.remove(&id)?;
             count = Some(e.turns_ended);
@@ -216,6 +216,14 @@ pub fn background_promoted(id: String, error: Option<String>) -> Result<bool, St
             unsent.extend(std::mem::take(&mut e.queue));
             Some(unsent)
         });
+        // Nothing changed hands (a notice about it would not finish going in): it
+        // is still being opened, and the window says it again.
+        if let Err(e) = handed {
+            if let Some(entry) = lock().entries.get_mut(&id) {
+                entry.handing = false;
+            }
+            return Err(e);
+        }
         // Its count goes on in the chat's track, so a count anyone was shown of it
         // stays one it has passed.
         if let Some(n) = count {
