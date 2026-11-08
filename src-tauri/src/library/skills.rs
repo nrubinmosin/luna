@@ -12,6 +12,8 @@ pub struct SkillInfo {
     pub problem: Option<String>,
     /// The accounts it goes into, wherever no folder says otherwise.
     pub accounts: Reach,
+    /// Whose sessions it is for (audience.rs).
+    pub audience: Audience,
 }
 
 /// A name both CLIs take for a skill, and the only kind Luna makes a folder
@@ -120,7 +122,7 @@ pub(super) fn read_skills(dirs: &Dirs) -> Result<Skills, String> {
             Err(e) => (String::new(), Some(e.clone())),
         };
         let files = checked.and(files);
-        out.insert(name.clone(), (SkillInfo { name, description, problem, accounts: Vec::new() }, files));
+        out.insert(name.clone(), (SkillInfo { name, description, problem, accounts: Vec::new(), audience: Audience::Both }, files));
     }
     Ok(out)
 }
@@ -136,6 +138,8 @@ pub struct InstructionsInfo {
     /// The accounts its reach takes in; each gets it unless a closer reach
     /// gives it other instructions.
     pub accounts: Reach,
+    /// Whose sessions it is for (audience.rs).
+    pub audience: Audience,
 }
 
 /// Every instructions file in the library, by name. A folder that will not
@@ -206,7 +210,13 @@ pub(super) fn instructions_info(name: &str, text: &Result<Option<Vec<u8>>, Strin
         Ok(None) => (String::new(), Some("Blank: laid out nowhere until it has something in it".to_string())),
         Err(e) => (String::new(), Some(e.clone())),
     };
-    InstructionsInfo { name: name.to_string(), description, problem, accounts: lib.instructions.get(name).cloned().unwrap_or_default() }
+    InstructionsInfo {
+        name: name.to_string(),
+        description,
+        problem,
+        accounts: lib.instructions.get(name).cloned().unwrap_or_default(),
+        audience: instructions_audience(lib, name),
+    }
 }
 
 /// Moves the one instructions file of old, `instructions.md`, to

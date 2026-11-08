@@ -125,7 +125,7 @@ pub(super) fn command_for(e: &Entry, id: &str) -> Result<Command, String> {
             // from them, on every turn: each is a process of its own
             // (library/folders.rs `session_args`). No hooks: its stream says it all; but
             // the guard against endless waits, a helper's as any (guard.rs).
-            let mut skills = crate::library::session_args(Provider::Claude, &s.account_path, &dir);
+            let mut skills = crate::library::session_args(Provider::Claude, &s.account_path, &dir, crate::library::SessionKind::Helper);
             let instructions = crate::pty::claude_instructions_dir(id, skills.instructions.as_deref());
             if instructions.is_some() {
                 let mut luna_dirs: Vec<String> = skills.args.windows(2).filter(|w| w[0] == "--add-dir").map(|w| w[1].clone()).collect();
@@ -248,9 +248,10 @@ pub(super) fn command_for(e: &Entry, id: &str) -> Result<Command, String> {
             }
             envs.extend(git);
             envs.push(("CODEX_HOME", s.account_path.clone()));
-            let library = crate::library::session_args(Provider::Codex, &s.account_path, &dir).args;
-            applied.extend(crate::codex::launch::library_applied(&library));
-            args.extend(library);
+            let library = crate::library::session_args(Provider::Codex, &s.account_path, &dir, crate::library::SessionKind::Helper);
+            applied.extend(crate::codex::launch::library_applied(&library.args));
+            applied.extend(crate::library::audience_applied(&library));
+            args.extend(library.args);
             if let Some(parent) = &s.parent {
                 applied.push(Item::HelperIdentity.with(format!("a note after every prompt: {}", crate::pty::helper_line(parent))));
             }
@@ -1134,5 +1135,48 @@ mod tests {
         envs.extend(pairs(&[("CODEX_HOME", "<acc>"), ("LUNA_SESSION_ID", ID)]));
         assert_eq!(t.envs, envs);
         assert_eq!((t.settings, t.instructions), (None, None), "Codex has no way to take other instructions");
+    }
+
+    // A helper's turn on a library whose every entry is the person's chats'
+    // (library/audience.rs): kept from all of it that its CLI can keep. The
+    // person's chats on the same library: pty/start.rs.
+
+    #[test]
+    fn golden_headless_claude_turn_is_kept_from_what_the_library_means_for_chats() {
+        const ID: &str = "golden-bg-claude-chats-only";
+        let lib = crate::library::GoldenLibrary::chats_only("bg-claude-audience");
+        let (mut e, r) = library_entry(ID, &lib, Provider::Claude);
+        e.spec.mode = "default".into();
+        let t = turn(&e, ID, &r);
+        assert_eq!(t.args, with_settings(strict(claude_turn("default"))), "nothing added in their place");
+        assert_eq!(t.dir, "<project>");
+        let mut settings = golden::claude_helper_settings(golden::claude_settings_alone());
+        settings["skillOverrides"] = json!({ "report": "off" });
+        settings["claudeMdExcludes"] = json!(["<acc>/CLAUDE.md"]);
+        assert_eq!(t.settings, Some(settings));
+        assert_eq!(t.instructions, None);
+        assert_eq!(t.value("library.audience"), Some("instructions main (chats only); skill report (chats only)"));
+        assert_eq!(t.value("library.hidden-skills"), Some("skillOverrides off: report"));
+        assert_eq!(t.value("library.account-instructions-off"), Some("claudeMdExcludes <acc>/CLAUDE.md"));
+    }
+
+    #[test]
+    fn golden_headless_codex_turn_is_kept_from_skills_meant_for_chats_and_told_whose_its_instructions_are() {
+        const ID: &str = "golden-bg-codex-chats-only";
+        let lib = crate::library::GoldenLibrary::chats_only("bg-codex-audience");
+        let (e, r) = library_entry(ID, &lib, Provider::Codex);
+        let t = turn(&e, ID, &r);
+        let mut want = strings(&["exec", "-C", "<project>", "--json"]);
+        want.extend(crate::codex::trust::trust_override(&lib.folder).iter().map(|a| r.text(a)));
+        want.extend(strings(&["--model", "haiku", "-c", "model_reasoning_effort=\"low\""]));
+        want.extend(codex_held(golden::codex_read_only(&["-c", "sandbox_mode=\"read-only\""]), true));
+        want.extend(apps_off());
+        want.extend(strings(&["-c", "skills.config=[{name=\"report\",enabled=false}]", "-"]));
+        assert_eq!(t.args, want);
+        assert_eq!(
+            t.value("library.audience"),
+            Some("instructions main (chats only): AGENTS.md says so, as Codex reads it in every session; skill report (chats only)")
+        );
+        assert_eq!(t.value("library.hidden-skills"), Some("-c skills.config=[{name=\"report\",enabled=false}]"));
     }
 }

@@ -149,7 +149,11 @@ pub(super) fn overview_locked(act: bool) -> Result<Overview, String> {
     let skills: Vec<SkillInfo> = skills
         .unwrap_or_default()
         .into_values()
-        .map(|(info, _)| SkillInfo { accounts: lib.skills.get(&info.name).cloned().unwrap_or_default(), ..info })
+        .map(|(info, _)| SkillInfo {
+            accounts: lib.skills.get(&info.name).cloned().unwrap_or_default(),
+            audience: skill_audience(&lib, &info.name),
+            ..info
+        })
         .collect();
     let folders = lib
         .folders

@@ -33,6 +33,8 @@
 //!
 //! - `reach`: which accounts a skill or an instructions file is meant for,
 //!   and which instructions an account gets.
+//! - `audience`: whose sessions one is for — the person's chats, helpers, or
+//!   both — and how each CLI keeps it from the others.
 //! - `skills`: the library's skills and instructions files, read and checked.
 //! - `files`: a copy's files on disk, and the blobs and backups kept of them.
 //! - `folders`: the folders the user names: where their skills wait, and what
@@ -44,13 +46,14 @@
 
 use crate::accounts::AccountInfo;
 use crate::provider::Provider;
-use crate::settings::{LibraryFolder, LibrarySettings, Reach};
+use crate::settings::{Audience, LibraryFolder, LibrarySettings, Reach};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+mod audience;
 mod commands;
 mod files;
 mod folders;
@@ -63,6 +66,7 @@ mod testkit;
 
 // Every file of the module reaches the others' items through `use super::*`,
 // and the rest of the crate keeps its `crate::library::X` paths.
+pub(crate) use audience::*;
 pub(crate) use commands::*;
 use files::*;
 pub(crate) use folders::*;

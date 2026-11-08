@@ -226,7 +226,8 @@ pub(super) fn units(
         // of its copies out.
         let source = match instructions.as_ref().map(|found| &found[name]) {
             Ok(Ok(None)) => continue,
-            Ok(Ok(Some(text))) => Ok(Files::from([(String::new(), text.clone())])),
+            // Meant for one kind of session, it says so (audience.rs).
+            Ok(Ok(Some(text))) => Ok(Files::from([(String::new(), worded(text, instructions_audience(lib, name)))])),
             Ok(Err(e)) | Err(e) => Err(e.clone()),
         };
         out.push(Unit {
