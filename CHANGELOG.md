@@ -36,6 +36,20 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   as soon as they are made, and the attestations use `actions/attest` in place
   of the deprecated `actions/attest-sbom`.
 
+### Security
+
+- The updater's signing key no longer reaches the release build. `tauri build`
+  runs every dependency's build scripts, proc-macros and frontend tooling, and
+  any of them could have read the key it was handed; the installer is now
+  built unsigned and signed afterwards in a job of its own, which runs only the
+  Tauri CLI pinned by `pnpm-lock.yaml`, without network, and checks the
+  signature against the updater's public key before publishing it. The release
+  still takes one approval, now given to the signing job. `release.ps1 -Local`
+  signs the same way, builds an export of the commit rather than the checkout
+  it signs from, and no longer runs the built exe to ask its core fingerprint.
+  A key rotation's bridge release is checked against the old public key, given
+  as `UPDATER_TRUSTED_PUBKEY`.
+
 ## [0.10.0] - 2026-11-08
 
 A security and engineering release. Agent tools now follow least privilege,
