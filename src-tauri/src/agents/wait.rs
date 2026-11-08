@@ -120,6 +120,30 @@ pub struct Waited {
     pub(super) job_debt: Option<u64>,
 }
 
+/// The outcome of a session in a `wait_many` that is out of the caller's reach
+/// by the time it answers (`Waited::refused`).
+const REFUSED: &str = "refused";
+
+impl Waited {
+    /// A session out of the caller's reach: why, in `failed`, and nothing of the
+    /// session itself — no state, question, count, words or screen — which may be
+    /// the person's own by now.
+    fn refused(why: String) -> Waited {
+        Waited {
+            outcome: REFUSED,
+            state: REFUSED,
+            ask: None,
+            turns_ended: 0,
+            reply: None,
+            failed: Some(why),
+            transcript_missing: false,
+            screen: None,
+            undelivered: None,
+            job_debt: None,
+        }
+    }
+}
+
 /// Blocks until the session reaches `until`, or `timeout_s` passes:
 /// `turn_done` — a turn ended after `after_turn` (default: the count the
 /// caller's question still unanswered went in at, else the count it was
@@ -521,12 +545,11 @@ pub fn wait_many(
         .copied()
         .zip(got)
         .map(|(id, r)| {
-            // Taken out of the caller's reach since its wait ended: nothing of
-            // it goes out.
-            let r = match (r, in_scope(caller, id, scope, "wait on")) {
-                (Some(Ok(_)), Err(e)) => Some(Err(e)),
-                (r, _) => r,
-            };
+            // Out of the caller's reach by now (the person took it over), however
+            // its own wait came back: a refusal, nothing of the session in it.
+            if let Err(e) = in_scope(caller, id, scope, "wait on") {
+                return WaitedOne { id: id.to_string(), waited: Waited::refused(e) };
+            }
             let waited = match r {
                 Some(Ok((w, answered))) => {
                     if answered {
@@ -536,8 +559,7 @@ pub fn wait_many(
                 }
                 other => {
                     // Stopped for another's answer, nothing handed over. Any
-                    // other error is a session gone since it was looked up, or
-                    // out of the caller's reach now, which says why.
+                    // other error is a session gone since it was looked up.
                     let stopped = matches!(&other, Some(Err(e)) if e == LET_GO);
                     let why = match other {
                         Some(Err(e)) if e != LET_GO => Some(e),
@@ -565,8 +587,11 @@ pub fn wait_many(
         .collect();
     share_replies(&mut results);
     let finished: Vec<String> =
-        results.iter().filter(|r| !matches!(r.waited.outcome, "timeout" | "pending")).map(|r| r.id.clone()).collect();
-    let outcome = if !finished.is_empty() && (!all || finished.len() == results.len()) { "finished" } else { "timeout" };
+        results.iter().filter(|r| !matches!(r.waited.outcome, "timeout" | "pending" | REFUSED)).map(|r| r.id.clone()).collect();
+    // One refused will not finish: it is over all the same.
+    let refused = results.iter().filter(|r| r.waited.outcome == REFUSED).count();
+    let over = finished.len() + refused == results.len();
+    let outcome = if (!all && !finished.is_empty()) || over { "finished" } else { "timeout" };
     let undo: Vec<_> = answers.iter().map(|(id, turns_ended, job_debt)| hand_over(caller, id, *turns_ended, *job_debt)).collect();
     if !call.commit(move || undo.into_iter().for_each(|u| u())) {
         return Err(LET_GO.into());
@@ -1063,6 +1088,19 @@ mod tests {
         assert_eq!(w.outcome, "turn_done");
         let e = wait("wt-mid", "wt-helper", "turn_done", 5, Some(0), None, &call).err().unwrap();
         assert!(e.contains("no longer yours"), "{e}");
+        // A wait on several holds to it the same way: the one out of reach comes
+        // back refused, with nothing of the session, least of all the question
+        // the person's chat asks now.
+        crate::background::hold_for_test("wt-helper");
+        assert!(state_of("wt-helper").1.is_some(), "it does ask");
+        let many = wait_many("wt-top", &["wt-helper".to_string()], false, "turn_done", 5, None, &crate::mcp::Call::new()).unwrap();
+        let one = &many.results[0].waited;
+        assert_eq!((many.outcome, one.outcome, one.state, one.turns_ended), ("finished", "refused", "refused", 0));
+        assert!(one.ask.is_none() && one.reply.is_none() && one.screen.is_none() && one.undelivered.is_none());
+        assert!(one.failed.as_deref().is_some_and(|f| f.contains("not one you spawned")), "{:?}", one.failed);
+        assert!(many.finished.is_empty());
+        let json = serde_json::to_value(&many).unwrap();
+        assert!(json["results"][0].get("ask").is_none(), "{json}");
         reg().lock().unwrap().news.retain(|(c, _)| c != "wt-mid");
         for id in ["wt-helper", "wt-mid", "wt-top"] {
             crate::background::remove(id);

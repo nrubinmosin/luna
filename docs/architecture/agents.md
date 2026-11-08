@@ -124,14 +124,17 @@ then the window's `background_promoted`) becomes theirs for good
    send, read and wait are refused as its own (`in_scope`), its kill and delete
    by `authorize`, both with the takeover's words. A `wait` in flight holds to
    its `scope` on every look and before it hands anything over (`wait.rs`), so
-   every ancestor's wait without `scope: "all"` ends with nothing of it; with
+   every ancestor's wait without `scope: "all"` ends with nothing of it, and a
+   `wait_many` lists it `refused`, with only why (`Waited::refused`); with
    `scope: "all"` it reaches the chat as any of the person's.
 2. Then the helper's record is taken (`background_promoted`), with what was
    queued for it and what never reached it, and `drained` moves its count on
    (`handovers`) and clears its debts again: a send whose text went in before
    that checks its debt against the count it took first (`owe_from_at`) and
    registers none, and the notifier drops a notice prepared on a debt gone
-   since (`debts_moved`).
+   since (`debts_moved`), checked again in the delivery thread as the notice
+   goes in. The window's word is acted on once (`Entry::handing`); said again,
+   or after the record is gone, it changes nothing.
 3. Each session owed by it, and each sender of that text, gets one line in
    `Registry::news`: its parent that the person took it over and nothing more
    is owed, the others that nothing more is owed by it; each with the file its
