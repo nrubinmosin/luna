@@ -65,7 +65,9 @@ decisions in [ADR-0012](../adr/0012-agents-over-mcp-with-notices.md) and
   `connectors` in its settings, one of `CORE_SETTINGS`). Claude Code:
   `--strict-mcp-config` (no user, project, plugin or claude.ai server) and a
   settings file (`HelperSettings`) with `disableClaudeAiConnectors` and
-  `autoMemoryEnabled: false`, the latter even with `connectors`. Codex:
+  `autoMemoryEnabled: false`, the latter even with `connectors`, and
+  `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` in its environment and that file's `env`,
+  as an inherited `0` would turn auto-memory on ahead of the setting. Codex:
   `-c features.apps=false` and `-c mcp_servers.<name>.enabled=false` for each
   bare-key server of the account's `config.toml` (`connectors_off`), one it
   calls `luna` too unless Luna gives the run its own; then Codex merges the
