@@ -261,14 +261,15 @@ pub fn reopen() {
     let jobs: Vec<(String, std::sync::Arc<crate::procs::Job>)> =
         lock().entries.iter().filter_map(|(id, e)| Some((id.clone(), e.job.clone()?))).collect();
     let ties = retie(&jobs);
+    let reached = stopped_lines();
     let mut r = lock();
     for (id, tied) in ties {
         if let Some(e) = r.entries.get_mut(&id) {
             e.tied = tied;
         }
     }
-    for e in r.entries.values_mut() {
-        settle_stopped(e);
+    for (id, e) in r.entries.iter_mut() {
+        settle_stopped(e, &|line| reached.get(&(id.clone(), line.to_string())).copied().flatten());
     }
     r.closed = false;
 }
@@ -277,6 +278,32 @@ pub fn reopen() {
 /// Off the registry's lock: a tie is a kernel call, or a word to the keeper.
 fn retie(jobs: &[(String, std::sync::Arc<crate::procs::Job>)]) -> Vec<(String, bool)> {
     jobs.iter().map(|(id, job)| (id.clone(), crate::procs::tie(job, id))).collect()
+}
+
+/// What the conversations say of the lines the stopped Claude Code turns had on
+/// stdin — by helper and line, whether the transcript holds it, None where that
+/// cannot be read — gathered off the registry's lock, as `restore` reads them
+/// before taking a saved helper up.
+fn stopped_lines() -> HashMap<(String, String), Option<bool>> {
+    let pending: Vec<(String, String, Option<String>, Vec<String>)> = lock()
+        .entries
+        .iter()
+        .filter(|(_, e)| e.spec.provider == Provider::Claude && e.cut_short && e.run.is_none())
+        .map(|(id, e)| {
+            let stores = [&e.in_flight, &e.fed, &e.undelivered];
+            let lines = stores.iter().flat_map(|store| store.iter().filter_map(|q| q.line.clone())).collect();
+            (id.clone(), e.spec.account_path.clone(), e.session.clone(), lines)
+        })
+        .collect();
+    let mut reached = HashMap::new();
+    for (id, account, session, lines) in pending {
+        let transcript = session.and_then(|sid| crate::claude::session::find_transcript(&account, &sid));
+        for line in lines {
+            let took = transcript.as_deref().and_then(|path| crate::claude::session::took_line(path, &line));
+            reached.insert((id.clone(), line), took);
+        }
+    }
+    reached
 }
 
 /// Stops every turn in progress with its process tree and takes what was
@@ -398,7 +425,7 @@ mod tests {
         let stopped = |mut e: Entry| {
             stop_for_luna(&mut e);
             e.run = None;
-            settle_stopped(&mut e);
+            settle_stopped(&mut e, &|_| None);
             e
         };
         for provider in [Provider::Claude, Provider::Codex] {
@@ -418,7 +445,44 @@ mod tests {
         assert!(e.resumable && e.opening.is_none());
         assert_eq!(e.undelivered, ["the prompt"]);
         let mut e = taken_up(with_lines(false));
-        settle_stopped(&mut e);
+        settle_stopped(&mut e, &|_| None);
         assert!(e.cut_short && !e.resumable && e.unsure, "nothing says the older core's turn ended");
+    }
+
+    /// What a stopped Claude Code turn had on stdin goes by the conversation
+    /// before the helper resumes, as it does for a new core: in it, the model has
+    /// it and it is not sent again; not in it, with the turn over, it never got
+    /// there; unreadable, its sender decides. Codex has no lines to settle.
+    #[test]
+    fn what_a_stopped_turn_had_on_stdin_is_settled_against_the_conversation_before_it_resumes() {
+        let mut e = entry(Provider::Claude);
+        e.session = Some("sid".into());
+        e.run = Some(Run::claimed(None, 0));
+        e.fed = vec![pending("told", "went in"), pending("missed", "not taken in")];
+        e.queue = vec!["behind it".into()];
+        stop_for_luna(&mut e);
+        e.run = None;
+        settle_stopped(&mut e, &|line| Some(line == "told"));
+        assert_eq!(e.undelivered, ["not taken in", "behind it"], "the one the model has is off the books");
+        assert!(e.undelivered.iter().all(|q| !q.maybe_reached && q.line.is_none()), "the turn is over: what is not there never got there");
+
+        let mut e = entry(Provider::Claude);
+        e.session = Some("sid".into());
+        e.run = Some(Run::claimed(None, 0));
+        e.fed = vec![pending("a", "joined")];
+        stop_for_luna(&mut e);
+        e.run = None;
+        settle_stopped(&mut e, &|_| None);
+        assert!(e.resumable && e.undelivered[0].maybe_reached, "unreadable: withheld, its sender's to decide");
+
+        let mut e = entry(Provider::Codex);
+        e.session = Some("thread".into());
+        e.run = Some(Run::claimed(None, 0));
+        e.in_flight = vec![pending("c", "flying")];
+        stop_for_luna(&mut e);
+        e.run = None;
+        settle_stopped(&mut e, &|_| panic!("Codex has no such lines"));
+        assert_eq!(e.undelivered, ["flying"]);
+        assert!(!e.undelivered[0].maybe_reached);
     }
 }
