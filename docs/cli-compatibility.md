@@ -73,6 +73,7 @@ and check the other CLI for the same behavior (AGENTS.md, "Both providers").
 | 2.1.314 | `--worktree --dangerously-skip-permissions` reads the flag as the worktree name and turns permissions off | names always go as `--worktree=<name>` (`worktree::name_ok`, `worktree_arg`) |
 | 2.1.318 | an agent's result is taken up in a turn of its own opening with `UserPromptSubmit` (`<task-notification>`) | the registry's busy is judged afresh after `SubagentStop` |
 | 2.1.318+ | permission dialogs and lists drawn as Luna's screen recognition expects | an unrecognized dialog accepts only raw `keys` |
+| 2.1.319 | the version last checked live (MCP token from the environment, the signed manifest) | the oldest a fresh tree installs (`claude/cli.rs` `MIN_VERSION`); raise it with each version checked |
 
 ## Codex
 

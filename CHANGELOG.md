@@ -59,6 +59,12 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   checksum from it is trusted: whoever serves the download bucket can no
   longer hand Luna an exe of their own with a matching manifest. Codex is
   still checked only against the checksums of its own release.
+- The signed manifest must name the version it was fetched for, and no Claude
+  Code version below the highest signed one Luna has accepted (or below
+  2.1.319 on a fresh install) is installed, so an old signed release cannot be
+  replayed under the unsigned `latest` pointer. A signature is held to its
+  signed creation and expiration times, and the release key to its expiry
+  where the signature gives one.
 
 ## [0.10.0] - 2026-11-08
 
