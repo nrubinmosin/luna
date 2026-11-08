@@ -85,6 +85,30 @@ fn seen_on_disk(n: usize, bytes: &[u8]) -> Seen {
     seen
 }
 
+/// The same reading off the bytes alone (`read_transcript`), each part put
+/// as its file-based reader gives it.
+fn seen_in_memory(bytes: &[u8]) -> Seen {
+    let r = read_transcript(bytes);
+    let (last_said, last_said_at) = r.last_said.flatten().map_or((None, None), |(said, at)| (Some(said), at));
+    Seen {
+        consumed: r.consumed as u64,
+        messages: said(r.messages),
+        with_tools: said(r.with_tools),
+        first_prompt: r.first_prompt,
+        title: match (r.custom_title, r.ai_title) {
+            (Some(title), _) => Some((title, true)),
+            (None, ai) => ai.map(|title| (title, false)),
+        },
+        context: r.usage.map(|(tokens, model)| (tokens, crate::claude::models::context_window(&model))),
+        model: r.model,
+        last_said,
+        last_said_at,
+        api_error: r.api_error.flatten().as_ref().map(api_error_text),
+        pending_tool: r.pending_tool.map(|(name, input)| (name, input.to_string())),
+        due_ms: r.due_ms,
+    }
+}
+
 fn held_to(name: &str, seen: &Seen, expected: &str) {
     let got = format!("{seen:#?}\n");
     if std::env::var_os("LUNA_BLESS").is_some() {
@@ -100,4 +124,37 @@ fn every_fixture_reads_as_it_did() {
     for (n, (name, bytes, expected)) in FIXTURES.iter().enumerate() {
         held_to(name, &seen_on_disk(n, bytes), expected);
     }
+}
+
+#[test]
+fn the_bytes_alone_read_as_the_file_does() {
+    for (name, bytes, expected) in FIXTURES {
+        assert_eq!(format!("{:#?}\n", seen_in_memory(bytes)), expected, "{name}.jsonl read in memory");
+    }
+}
+
+/// A reader that goes on from its cursor, wherever a read stopped, gets what
+/// one read from the top does: the lines are cut in the same places.
+#[test]
+fn the_lines_in_memory_are_the_lines_on_disk() {
+    let path = std::env::temp_dir().join(format!("luna-claude-lines-{}.jsonl", std::process::id()));
+    let mut samples: Vec<Vec<u8>> = FIXTURES.iter().map(|(_, bytes, _)| bytes.to_vec()).collect();
+    samples.push(b"a\r\r\n\nb\n\r\nc".to_vec());
+    for bytes in samples {
+        std::fs::write(&path, &bytes).unwrap();
+        let (mut on_disk, mut in_memory) = (Vec::new(), Vec::new());
+        let read = crate::pty::complete_lines(&path, 0, |l| on_disk.push(l.to_string()));
+        assert_eq!(crate::pty::complete_lines_in(&bytes, |l| in_memory.push(l.to_string())) as u64, read);
+        assert_eq!(in_memory, on_disk);
+        for cut in 0..=bytes.len() {
+            let mut lines = Vec::new();
+            let first = crate::pty::complete_lines_in(&bytes[..cut], |l| lines.push(l.to_string()));
+            crate::pty::complete_lines_in(&bytes[first..], |l| lines.push(l.to_string()));
+            assert_eq!(lines, on_disk, "cut at {cut}");
+        }
+        use std::io::BufRead;
+        let buffered: Vec<String> = std::io::BufReader::new(&bytes[..]).lines().map_while(Result::ok).collect();
+        assert_eq!(crate::pty::text_lines(&bytes).collect::<Vec<_>>(), buffered);
+    }
+    let _ = std::fs::remove_file(&path);
 }

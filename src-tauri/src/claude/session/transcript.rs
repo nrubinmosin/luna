@@ -101,23 +101,39 @@ pub(super) fn located_transcript(account_path: &str, cwd: &str, session_id: &str
 /// read from the top.
 pub fn messages_from(path: &Path, from: u64, with_tools: bool) -> (Vec<crate::agents::Message>, u64) {
     let from = if std::fs::metadata(path).is_ok_and(|m| from > m.len()) { 0 } else { from };
-    let mut out = Vec::new();
-    // A prompt the CLI put in itself is left out, but what answers it opens a
-    // turn of its own (`Message::after_cli`).
-    let mut cli_prompt = false;
-    let read = crate::pty::complete_lines(path, from, |line| match message_of(line, with_tools) {
-        Some(Line::Said(mut m)) => {
-            if m.role == "assistant" {
-                m.after_cli = std::mem::take(&mut cli_prompt);
-            } else {
-                cli_prompt = false;
+    let mut said = Conversation::new(with_tools);
+    let read = crate::pty::complete_lines(path, from, |line| said.line(line));
+    (said.messages, read)
+}
+
+/// The conversation `messages_from` reads, taken in a line at a time.
+pub(super) struct Conversation {
+    with_tools: bool,
+    /// A prompt the CLI put in itself is left out, but what answers it opens
+    /// a turn of its own (`Message::after_cli`).
+    cli_prompt: bool,
+    pub(super) messages: Vec<crate::agents::Message>,
+}
+
+impl Conversation {
+    pub(super) fn new(with_tools: bool) -> Self {
+        Conversation { with_tools, cli_prompt: false, messages: Vec::new() }
+    }
+
+    pub(super) fn line(&mut self, line: &str) {
+        match message_of(line, self.with_tools) {
+            Some(Line::Said(mut m)) => {
+                if m.role == "assistant" {
+                    m.after_cli = std::mem::take(&mut self.cli_prompt);
+                } else {
+                    self.cli_prompt = false;
+                }
+                self.messages.push(m);
             }
-            out.push(m);
+            Some(Line::Injected) => self.cli_prompt = true,
+            None => {}
         }
-        Some(Line::Injected) => cli_prompt = true,
-        None => {}
-    });
-    (out, read)
+    }
 }
 
 /// Whether the conversation has taken in the stdin line `uuid`: a line that

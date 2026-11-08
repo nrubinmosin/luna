@@ -30,11 +30,18 @@ fn cached_first_prompt(path: &Path) -> Option<String> {
 pub(super) fn read_first_prompt(path: &Path) -> Option<String> {
     use std::io::{BufRead, BufReader};
     let f = std::fs::File::open(path).ok()?;
-    for line in BufReader::new(f).lines().take(200).map_while(Result::ok) {
+    first_prompt_in(BufReader::new(f).lines().map_while(Result::ok))
+}
+
+/// `read_first_prompt` of the rollout's lines, up to the first that is no
+/// text.
+pub(super) fn first_prompt_in(lines: impl Iterator<Item = impl AsRef<str>>) -> Option<String> {
+    for line in lines.take(200) {
+        let line = line.as_ref();
         if !line.contains("\"message\"") {
             continue;
         }
-        let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
+        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
         let Some(m) = message_of(&v) else { continue };
         if m.role != "user" {
             continue;
@@ -97,7 +104,7 @@ pub fn thread_title(account_path: &str, thread_id: &str) -> Option<CliTitle> {
 }
 
 /// What the tail of a rollout says right now.
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Tail {
     pub model: Option<String>,
     pub context_tokens: Option<f64>,
@@ -107,8 +114,12 @@ pub struct Tail {
 }
 
 pub fn read_tail(path: &Path) -> Tail {
+    tail(path, 128 * 1024).map(|text| tail_in(&text)).unwrap_or_default()
+}
+
+/// See `read_tail`, of the tail's text.
+pub(super) fn tail_in(text: &str) -> Tail {
     let mut out = Tail::default();
-    let Some(text) = tail(path, 128 * 1024) else { return out };
     // The first line of a tail read is usually a fragment; a parse failure
     // just skips it.
     for line in text.lines().rev() {
@@ -157,16 +168,18 @@ pub fn read_tail(path: &Path) -> Tail {
 /// else what its `turn_context` names. A turn with much output pushes those
 /// lines out of the tail; the whole file is read only then.
 pub fn last_model(path: &Path) -> Option<String> {
-    let model_in = |text: &str| {
-        text.lines().rev().filter(|l| l.contains("\"turn_context\"") || l.contains("\"model_reroute\"")).find_map(|line| {
-            let v = serde_json::from_str::<Value>(line).ok()?;
-            let payload = &v["payload"];
-            payload["to_model"].as_str().or(payload["model"].as_str()).map(str::to_owned)
-        })
-    };
     tail(path, 128 * 1024)
-        .and_then(|t| model_in(&t))
-        .or_else(|| std::fs::read(path).ok().and_then(|b| model_in(&String::from_utf8_lossy(&b))))
+        .and_then(|t| last_model_in(&t))
+        .or_else(|| std::fs::read(path).ok().and_then(|b| last_model_in(&String::from_utf8_lossy(&b))))
+}
+
+/// See `last_model`, of a text.
+pub(super) fn last_model_in(text: &str) -> Option<String> {
+    text.lines().rev().filter(|l| l.contains("\"turn_context\"") || l.contains("\"model_reroute\"")).find_map(|line| {
+        let v = serde_json::from_str::<Value>(line).ok()?;
+        let payload = &v["payload"];
+        payload["to_model"].as_str().or(payload["model"].as_str()).map(str::to_owned)
+    })
 }
 
 /// The model of the last turn that was answered: the latest `turn_context` (or
@@ -177,34 +190,37 @@ pub fn last_model(path: &Path) -> Option<String> {
 /// does not say what the total stood at before its first count, so that count
 /// says nothing there; failing the tail, the whole file is read from nothing.
 pub fn answered_model(path: &Path) -> Option<String> {
-    let answered_in = |text: &str, from: Option<u64>| {
-        let (mut asked, mut answered, mut total) = (None::<String>, None::<String>, from);
-        for line in text.lines() {
-            let model = line.contains("\"turn_context\"") || line.contains("\"model_reroute\"");
-            if !model && !line.contains("\"token_count\"") {
-                continue;
-            }
-            let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
-            let payload = &v["payload"];
-            if model {
-                asked = payload["to_model"].as_str().or(payload["model"].as_str()).map(str::to_owned).or(asked);
-                continue;
-            }
-            let usage = &payload["info"]["total_token_usage"];
-            if !usage.is_object() {
-                continue;
-            }
-            let now = usage["input_tokens"].as_u64().unwrap_or(0) + usage["output_tokens"].as_u64().unwrap_or(0);
-            if total.is_some_and(|before| now > before) && asked.is_some() {
-                answered = asked.clone();
-            }
-            total = Some(now);
-        }
-        answered
-    };
     tail(path, 128 * 1024)
-        .and_then(|t| answered_in(&t, None))
-        .or_else(|| std::fs::read(path).ok().and_then(|b| answered_in(&String::from_utf8_lossy(&b), Some(0))))
+        .and_then(|t| answered_model_in(&t, None))
+        .or_else(|| std::fs::read(path).ok().and_then(|b| answered_model_in(&String::from_utf8_lossy(&b), Some(0))))
+}
+
+/// See `answered_model`, of a text, the total standing at `from` before it
+/// (None: not known).
+pub(super) fn answered_model_in(text: &str, from: Option<u64>) -> Option<String> {
+    let (mut asked, mut answered, mut total) = (None::<String>, None::<String>, from);
+    for line in text.lines() {
+        let model = line.contains("\"turn_context\"") || line.contains("\"model_reroute\"");
+        if !model && !line.contains("\"token_count\"") {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        let payload = &v["payload"];
+        if model {
+            asked = payload["to_model"].as_str().or(payload["model"].as_str()).map(str::to_owned).or(asked);
+            continue;
+        }
+        let usage = &payload["info"]["total_token_usage"];
+        if !usage.is_object() {
+            continue;
+        }
+        let now = usage["input_tokens"].as_u64().unwrap_or(0) + usage["output_tokens"].as_u64().unwrap_or(0);
+        if total.is_some_and(|before| now > before) && asked.is_some() {
+            answered = asked.clone();
+        }
+        total = Some(now);
+    }
+    answered
 }
 
 /// When the calls the turn waits on are due, the latest of them, in ms since
@@ -219,7 +235,7 @@ pub fn due_ms(path: &Path) -> Option<u64> {
     due_in(&tail(path, crate::claude::session::DUE_TAIL)?)
 }
 
-fn due_in(text: &str) -> Option<u64> {
+pub(super) fn due_in(text: &str) -> Option<u64> {
     let ms = |v: &Value| v.as_f64().filter(|t| *t > 0.0).map(|t| t as u64);
     // A call is back by the first of its bounds.
     let bound = |args: &Value| ["timeout_ms", "yield_time_ms", "duration_ms"].iter().filter_map(|k| ms(&args[*k])).min();
@@ -372,16 +388,16 @@ pub fn latest_rate_limits(account_path: &str) -> Option<(Value, String)> {
 pub fn messages_from(path: &Path, from: u64) -> (Vec<crate::agents::Message>, u64) {
     let from = if past_end(path, from) { 0 } else { from };
     let mut out = Vec::new();
-    let read = crate::pty::complete_lines(path, from, |line| {
-        if !line.contains("\"response_item\"") {
-            return;
-        }
-        let Ok(v) = serde_json::from_str::<Value>(line) else { return };
-        if let Some(m) = message_of(&v) {
-            out.push(m);
-        }
-    });
+    let read = crate::pty::complete_lines(path, from, |line| out.extend(message_in(line)));
     (out, read)
+}
+
+/// One complete line of a rollout as `messages_from` reads it.
+pub(super) fn message_in(line: &str) -> Option<crate::agents::Message> {
+    if !line.contains("\"response_item\"") {
+        return None;
+    }
+    message_of(&serde_json::from_str::<Value>(line).ok()?)
 }
 
 #[cfg(test)]

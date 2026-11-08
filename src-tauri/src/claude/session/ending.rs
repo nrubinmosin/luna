@@ -14,6 +14,11 @@ pub(super) struct ContextRead {
 // carries cumulative input-side token usage. Returns raw tokens; the fraction
 // is derived from it.
 fn context_in(text: &str) -> Option<ContextRead> {
+    usage_in(text).map(|(tokens, model)| ContextRead { tokens, window: crate::claude::models::context_window(&model) })
+}
+
+/// See `context_in`: the tokens, and the model whose window they fill.
+pub(super) fn usage_in(text: &str) -> Option<(f64, String)> {
     for line in text.lines().rev() {
         if !line.contains("\"usage\"") {
             continue;
@@ -34,8 +39,7 @@ fn context_in(text: &str) -> Option<ContextRead> {
                 + u["cache_read_input_tokens"].as_f64().unwrap_or(0.0)
                 + u["cache_creation_input_tokens"].as_f64().unwrap_or(0.0);
             if total > 0.0 {
-                let model = v["message"]["model"].as_str().unwrap_or("");
-                return Some(ContextRead { tokens: total, window: crate::claude::models::context_window(model) });
+                return Some((total, v["message"]["model"].as_str().unwrap_or("").to_string()));
             }
         }
     }
@@ -57,7 +61,7 @@ pub fn last_context(path: &Path) -> Option<(f64, f64)> {
 
 /// See `last_model`: the CLI's own stand-in for a message no model wrote
 /// reads `<synthetic>`.
-fn model_in(text: &str) -> Option<String> {
+pub(super) fn model_in(text: &str) -> Option<String> {
     text.lines().rev().filter(|l| l.contains("\"model\"")).find_map(|line| {
         let v = serde_json::from_str::<serde_json::Value>(line).ok()?;
         if v["isSidechain"].as_bool().unwrap_or(false) {
@@ -134,7 +138,7 @@ pub(super) fn ending(path: &Path) -> Ending {
 
 /// See `Ending`: Some(what was said, if anything) once the text reaches
 /// back to the model's last words or to a prompt, None if it does not.
-fn last_said_in(text: &str) -> Option<Option<(String, Option<String>)>> {
+pub(super) fn last_said_in(text: &str) -> Option<Option<(String, Option<String>)>> {
     for line in text.lines().rev() {
         if !line.contains("\"assistant\"") && !line.contains("\"user\"") {
             continue;
@@ -173,7 +177,7 @@ fn api_error_in(text: &str) -> Option<&'static str> {
 
 /// The last user or assistant line decides: Some(the error line, if it is
 /// one), or None when the text does not reach back to either.
-fn api_error_line(text: &str) -> Option<Option<serde_json::Value>> {
+pub(super) fn api_error_line(text: &str) -> Option<Option<serde_json::Value>> {
     for line in text.lines().rev() {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
         if v["isSidechain"].as_bool() == Some(true) {
@@ -191,12 +195,16 @@ fn api_error_line(text: &str) -> Option<Option<serde_json::Value>> {
 /// What a caller is told of the API error a transcript's last turn ended on,
 /// when it did: the CLI's kind of error and the words it shows for it.
 pub fn api_error_of(path: &Path) -> Option<String> {
-    let v = ending(path).api_error?;
+    Some(api_error_text(&ending(path).api_error?))
+}
+
+/// See `api_error_of`, of the error line.
+pub(super) fn api_error_text(v: &serde_json::Value) -> String {
     let kind = crate::activity::api_error_kind(v["error"].as_str().unwrap_or(""));
-    Some(match content_text(&v["message"]["content"]).filter(|t| !t.trim().is_empty()) {
+    match content_text(&v["message"]["content"]).filter(|t| !t.trim().is_empty()) {
         Some(said) => format!("{kind}: {said}"),
         None => kind.to_string(),
-    })
+    }
 }
 
 /// The tool call the conversation stands on:the last one the model made that
@@ -207,7 +215,7 @@ pub fn pending_tool(path: &Path) -> Option<(String, serde_json::Value)> {
     pending_tool_in(&crate::pty::tail(path, 256 * 1024)?)
 }
 
-fn pending_tool_in(text: &str) -> Option<(String, serde_json::Value)> {
+pub(super) fn pending_tool_in(text: &str) -> Option<(String, serde_json::Value)> {
     let mut open: Vec<(String, String, serde_json::Value)> = Vec::new();
     for line in text.lines() {
         if !line.contains("\"assistant\"") && !line.contains("\"user\"") {
@@ -264,7 +272,7 @@ pub fn due_ms(path: &Path) -> Option<u64> {
 /// start, and cheap, as it is read only once a turn has gone quiet.
 pub(crate) const DUE_TAIL: u64 = 4 * 1024 * 1024;
 
-fn due_in(text: &str) -> Option<u64> {
+pub(super) fn due_in(text: &str) -> Option<u64> {
     struct Call {
         id: String,
         background: bool,
