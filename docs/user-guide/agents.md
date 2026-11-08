@@ -125,7 +125,9 @@ would have asked in its reply, unless it runs with `approval: auto-review`.
   `last`; `luna_wait` names a file with the whole answer.
 - `luna_wait` takes several sessions (`ids`, `mode: "any"` or `"all"`) and says
   which finished. `screen: false` leaves the terminal out; `luna_list` with `ids`
-  gives those rows alone, and `accounts: false` leaves the accounts out.
+  gives those rows alone, and `accounts: false` leaves the accounts out. The
+  accounts' models (Codex's catalog with each model's levels) come only with
+  `models: true`.
 - **Notices.** An agent that asked and ended its turn is not left idle: once the
   answer comes (or the helper asks something, stops on a permission, or exits),
   Luna types a one-line `[Luna notice, not typed by the user]` into the agent's
@@ -182,7 +184,7 @@ would have asked in its reply, unless it runs with `approval: auto-review`.
 its turn began and last did anything, the model it ran on (none until a model has
 answered), and how full its context is after its last turn. It names the accounts
 agents may use (the account alone is enough: it brings its own CLI), each with
-its models, the settings a helper would get there (read from the account's and the
+its models when asked (`models: true`), the settings a helper would get there (read from the account's and the
 project's settings the way the new-chat dialog reads them) and its usage as the
 Accounts window shows it.
 

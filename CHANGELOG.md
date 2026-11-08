@@ -49,6 +49,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   toml_edit moved to versions the rest of the tree already carried, which drops
   dirs 6 and toml_edit 0.22 from the build; vt100 0.18 for the screen a helper's
   output is replayed onto.
+- `luna_list` names each account with its defaults and usage but no longer its
+  models, Codex's catalog with every model's levels being most of what a
+  listing cost an agent that lists often; `models: true` brings them back.
 
 ### Fixed
 
