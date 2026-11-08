@@ -80,7 +80,11 @@ The owner's ten decisions on the deviations (2026-11-08):
    picomatch gives a meaning to (`* ? [ ] { } ( ) |` and `"`) each go in a
    bracket class of its own, and no other, since picomatch also matches the
    path spelled exactly as the pattern (`claude/launch.rs` `memory_excludes`,
-   `glob_literal`).
+   `glob_literal`). Fail-safe: a pattern that, read either way, could match
+   one of the launch's own instruction files (the folder worked in and below,
+   the folders above, added folders read as ever, the library's
+   instructions) is not used, and a Workaround item says which folder could
+   not be excluded (`keep_own_memory`).
 10. Library layout: kept as a UserAction, and shown.
 
 Mechanics:

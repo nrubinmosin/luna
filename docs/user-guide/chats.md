@@ -110,7 +110,9 @@ Each item shows its value and the reason. Tokens and Luna's local addresses are
 never shown, and files appear by their path. The panel also has the chat's own
 **Wait guard for this chat** box (from the CLI's next start). If Luna could not
 note a write into the account, or its note of them will not read, the panel
-says **Accounting incomplete** and why.
+says **Accounting incomplete** and why. A folder whose memory Luna could not
+leave out without risking this project's own instructions is listed under
+**Works around the CLI on this machine**.
 
 Chats from before the guard was a choice, which had it because of Luna tools,
 are named once in a notice across the board until you dismiss it. Below those comes what Luna wrote

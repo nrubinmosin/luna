@@ -137,6 +137,8 @@ items! {
         "The library's instructions for this folder, read as memory from a folder of Luna's.";
     MemoryNarrowed = "library.memory-narrowed", Runtime,
         "Reading the library's instructions as memory would read the other folders added to the session too: their CLAUDE.md files are left out.";
+    MemoryNotNarrowed = "library.memory-not-narrowed", Workaround,
+        "This folder's memory files are read after all: the only pattern that leaves them out would also match this project's own instructions in Claude Code's matcher.";
     TrustWritten = "trust", UserAction,
         "You ticked Trust this folder in the new-chat dialog: Luna wrote the same mark the CLI's own trust prompt writes.";
     LibraryLayout = "library.layout", UserAction,

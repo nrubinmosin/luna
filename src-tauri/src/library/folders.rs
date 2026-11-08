@@ -317,6 +317,10 @@ pub struct SessionSkills {
     /// too (claude/launch.rs `memory_excludes`); set by the session's start,
     /// beside `excluded` in `claudeMdExcludes`.
     pub memory_off: Vec<String>,
+    /// Claude Code: the folders `memory_off` would have left out but could
+    /// not, their patterns colliding with the session's own instruction paths
+    /// (claude/launch.rs `keep_own_memory`), said as what Luna applied.
+    pub memory_kept: Vec<String>,
     /// Claude Code: the library's file of the other instructions, which its
     /// caller gives the session as a `CLAUDE.md` of its own
     /// (pty/start.rs `claude_instructions_dir`).
