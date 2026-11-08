@@ -637,5 +637,6 @@ export const APPLIED = {
       value: 'C:\\src\\luna',
       why: 'You ticked Trust this folder in the new-chat dialog: Luna wrote the same mark the CLI’s own trust prompt writes.'
     }
-  ]
+  ],
+  incomplete: null
 };
