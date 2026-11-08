@@ -1487,8 +1487,8 @@ mod tests {
         // there would match a folder spelled like it as well.
         assert_eq!(glob_literal("E:/w/a!b/@c/d+e,f/!(x)"), "E:/w/a!b/@c/d+e,f/![(]x[)]");
         assert_eq!(
-            glob_literal("/home/u/.notes dir/é 日 😀#$%&'~^`=;:<>"),
-            "/home/u/.notes dir/é 日 😀#$%&'~^`=;:<>",
+            glob_literal("/home/u/.notes dir/é \u{65e5} 😀#$%&'~^`=;:<>"),
+            "/home/u/.notes dir/é \u{65e5} 😀#$%&'~^`=;:<>",
             "nothing else changes"
         );
         let dir = AddedDir { spellings: vec!["E:/work/[ab]".into()], resolved: "E:/work/[ab]".into() };
@@ -1513,7 +1513,7 @@ mod tests {
         use crate::claude::launch::{memory_excludes, AddedDir};
         let Ok(out) = std::env::var("LUNA_GLOB_TABLE") else { return };
         let mut chars: Vec<String> = "!\"#$%&'()*+,-.:;<=>?@[]^_`{|}~ ".chars().map(String::from).collect();
-        chars.extend(["é", "日", "😀"].map(String::from));
+        chars.extend(["é", "\u{65e5}", "😀"].map(String::from));
         let mut rows = Vec::new();
         for c in &chars {
             for name in [
