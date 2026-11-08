@@ -119,7 +119,7 @@ and check the other CLI for the same behavior (AGENTS.md, "Both providers").
 | Thread names in `session_index.jsonl`: the first line is Codex's; a differing one is `/rename` | titles |
 | Model catalog in the account's `models_cache.json`; `codex debug models [--bundled]` | catalog fallbacks |
 | Usage at `chatgpt.com/backend-api/wham/usage` with `auth.json`'s token; `token_count.rate_limits` in rollouts | limits and fallback |
-| Package tarball (seen on rust-v0.167.0): regular files and folders only, no links; 52 entries and 581 MB unpacked for x86_64 Windows, 52 and 541 MB for x86_64 Linux, 50 and 427 MB for arm64 macOS. `codex-package_SHA256SUMS` covers the tarballs; Sigstore bundles (`*.tar.gz.sigstore`) are published for the Linux packages only | unpacked with entry and byte caps, link entries refused (`codex/cli.rs`); checked against `SHA256SUMS` |
+| Package tarball (seen on rust-v0.167.0): regular files and folders only, no links; 52 entries and 581 MB unpacked for x86_64 Windows, 52 and 541 MB for x86_64 Linux, 50 and 427 MB for arm64 macOS. `codex-package_SHA256SUMS` covers the tarballs; Sigstore bundles (`*.tar.gz.sigstore`) are published for the Linux packages only. Written by Python's `tarfile` in PAX format (`scripts/codex_package/archive.py` in openai/codex), which adds a PAX record where a field does not fit a plain header | unpacked with entry, byte, metadata and stream caps; link entries and PAX `size` overrides refused (`codex/cli.rs`); checked against `SHA256SUMS` |
 
 ### Terminal (all)
 

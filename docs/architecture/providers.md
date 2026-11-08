@@ -50,9 +50,16 @@ An install is all or nothing:
    the one exe with the signed manifest's sha256 and size; Codex every regular file of
    the tarball at its tar header's size (the release publishes no hash of the
    files inside, so the tarball's sha256 is what pins them). The Codex unpack
-   takes files and folders only, refusing a link, device, pipe or sparse
-   entry, and stops past `MAX_ENTRIES` entries or `MAX_BYTES` bytes (2,000 and
-   4 GiB; a package holds about 50 and 600 MB). `validate` checks
+   reads the tarball twice through one cap on the decompressed stream
+   (`Capped`: the entries' bytes plus a header, padding and a metadata record
+   each). The first pass reads the headers raw and refuses before anything is
+   written: a PAX record or GNU long name past `MAX_META` (64 KiB; the tar
+   reader would take it into memory whole), a PAX `size` override (Python's
+   `tarfile`, which writes the package, emits one only past 8 GiB), a link,
+   device, pipe or sparse entry, and more than `MAX_ENTRIES` entries or
+   `MAX_BYTES` bytes (2,000 and 4 GiB; a package holds about 50 and 600 MB).
+   The second unpacks with the PAX records applied, budgeting each entry's
+   size as the reader takes it. `validate` checks
    each is a regular file, not a link, at that size and, where given, that
    hash, and that the executable is among them.
 3. **Record.** Every file is flushed to disk (`sync_all`), then
