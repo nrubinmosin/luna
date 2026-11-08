@@ -7,6 +7,11 @@
 //! A core of another build is never worked with. One with no session running
 //! is asked to stop and replaced at once; one with sessions is left alone
 //! until the user says to restart it, which stops them (they resume after).
+//!
+//! Nor is a core run as administrator, whose CLIs would run so too
+//! (elevation.rs): one with no session is replaced, one with sessions waits
+//! for a restart. A window that is itself elevated starts the core with the
+//! desktop shell's ordinary token, and where there is none starts no core.
 
 use crate::ipc::{self, Discovery, Event, Hello, Req, Res, Welcome};
 use serde::Serialize;
@@ -27,7 +32,7 @@ const STOP_WAIT: Duration = Duration::from_secs(30);
 #[derive(Serialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct LinkState {
-    /// starting | up | down | mismatch
+    /// starting | up | down | mismatch | elevated
     pub state: &'static str,
     pub core: Option<Welcome>,
     pub error: Option<String>,
@@ -130,6 +135,10 @@ fn connect() {
             );
             set(LinkState { state: "mismatch", core: Some(core), error: None });
         }
+        Ok(Attached::Elevated { core, why }) => {
+            crate::log::error("core", &why);
+            set(LinkState { state: "elevated", core, error: Some(why) });
+        }
         Err(e) => {
             crate::log::warn("core", &format!("no core: {e}"));
             set(LinkState { state: "down", core: None, error: Some(e) });
@@ -190,34 +199,116 @@ enum Attached {
     Ours(TcpStream, Welcome),
     /// Another build's, with sessions in it.
     Foreign(Welcome),
+    /// No core to work with that is not run as administrator (elevation.rs):
+    /// this window cannot start one, or the one running is elevated. `core`
+    /// is that one when a restart would replace it: it has sessions.
+    Elevated {
+        core: Option<Welcome>,
+        why: String,
+    },
 }
+
+/// What a window does with the core it finds running.
+#[derive(Debug, PartialEq)]
+enum Verdict {
+    Attach,
+    /// Another build's with sessions: left until the person says to restart it.
+    Foreign,
+    /// Stopped and replaced at once: another build's with no session, or an
+    /// elevated one with none.
+    Replace,
+    /// Run as administrator, with sessions: left until the person says to
+    /// restart it, never worked with. Their CLIs run elevated.
+    Elevated,
+}
+
+/// `elevated`: what the core's token says, read by this window; a core older
+/// than the check does not say so itself.
+fn verdict(core: &Welcome, elevated: bool) -> Verdict {
+    if elevated || core.refused.is_some() {
+        return if core.sessions > 0 { Verdict::Elevated } else { Verdict::Replace };
+    }
+    match (core.fingerprint == env!("LUNA_CORE_FP"), core.sessions > 0) {
+        (true, _) => Verdict::Attach,
+        (false, true) => Verdict::Foreign,
+        (false, false) => Verdict::Replace,
+    }
+}
+
+/// An elevated core that this window can neither talk to nor stop: only one
+/// of its own rights can.
+const ELEVATED_STUCK: &str = "A Luna core started as administrator is running, and Luna cannot stop it without \
+    administrator rights. Sign out of Windows and back in, or run `luna --stop-core` as administrator, then start Luna normally.";
 
 /// The running core of this build, started if need be.
 fn attach() -> Result<Attached, String> {
+    // An elevated core that would not answer: if no new core can start beside
+    // it, that one is why. Its pid alone proves nothing: after a reboot it may
+    // be some process of SYSTEM's that this window cannot open either.
+    let mut silent_elevated = None;
     // A core.json whose core is gone — the PC went down under it, and its
     // pid may be another program's by now — is not tried: a connect to its
     // closed port takes Windows seconds to refuse.
     if let Some(found) = discover().filter(Discovery::running) {
+        let elevated = crate::elevation::process_elevated(found.pid) == Some(true);
         match hello(&found, "ui") {
-            Ok((stream, core)) if core.fingerprint == env!("LUNA_CORE_FP") => return Ok(Attached::Ours(stream, core)),
-            Ok((_, core)) if core.sessions > 0 => return Ok(Attached::Foreign(core)),
-            Ok((stream, core)) => {
-                crate::log::warn("core", &format!("the running core is build {} (core {}); replacing it", core.build, core.fingerprint));
-                stop(stream, found.pid);
-            }
+            Ok((stream, core)) => match verdict(&core, elevated) {
+                Verdict::Attach => return Ok(Attached::Ours(stream, core)),
+                Verdict::Foreign => return Ok(Attached::Foreign(core)),
+                Verdict::Elevated => {
+                    let why = format!(
+                        "The sessions are running in a Luna core started as administrator ({} running). Restart it to run them \
+                         normally: they quit and resume in the new one.",
+                        core.sessions
+                    );
+                    return Ok(Attached::Elevated { core: Some(core), why });
+                }
+                Verdict::Replace => {
+                    let how = if elevated || core.refused.is_some() { "run as administrator" } else { "of another build" };
+                    crate::log::warn(
+                        "core",
+                        &format!("the running core is {how} (build {}, core {}); replacing it", core.build, core.fingerprint),
+                    );
+                    stop(stream, found.pid);
+                    if elevated && found.running() {
+                        return Ok(Attached::Elevated { core: None, why: ELEVATED_STUCK.into() });
+                    }
+                }
+            },
+            // An elevated core may refuse a window that is not (a check of the
+            // caller's integrity), and its lock keeps any other from starting.
+            Err(_) if elevated => silent_elevated = Some(found),
             // A core that does not answer; a new one overwrites its core.json.
             Err(_) => {}
         }
     }
+    let how = match crate::elevation::plan(&crate::elevation::System) {
+        crate::elevation::Launch::Refused(r) => return Ok(Attached::Elevated { core: None, why: r.message() }),
+        how => how,
+    };
     let before = discover().map(|d| d.pid);
-    launch()?;
+    match launch(&how) {
+        // Not a core that stopped: a restart would only fail the same way.
+        Err(e) if how != crate::elevation::Launch::Directly => {
+            let why = format!("{} Starting its core with this desktop's ordinary rights failed: {e}", crate::elevation::ADMIN);
+            return Ok(Attached::Elevated { core: None, why });
+        }
+        started => started?,
+    }
     let deadline = std::time::Instant::now() + START_WAIT;
     while std::time::Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(100));
         let Some(found) = discover().filter(|d| Some(d.pid) != before) else { continue };
-        return hello(&found, "ui")
-            .map(|(stream, core)| Attached::Ours(stream, core))
-            .map_err(|e| format!("the new core does not answer: {e}"));
+        let (stream, core) = hello(&found, "ui").map_err(|e| format!("the new core does not answer: {e}"))?;
+        // Started elevated after all: it runs nothing, and is not left to idle.
+        if let Some(why) = core.refused.clone() {
+            stop(stream, found.pid);
+            return Ok(Attached::Elevated { core: None, why });
+        }
+        return Ok(Attached::Ours(stream, core));
+    }
+    if silent_elevated.is_some_and(|d| d.running()) {
+        return Ok(Attached::Elevated { core: None, why: ELEVATED_STUCK.into() });
     }
     Err(format!("no core came up within {}s", START_WAIT.as_secs()))
 }
@@ -304,7 +395,8 @@ fn write(conn: &Conn, frame: &[u8]) -> io::Result<()> {
 }
 
 /// Starts a core of this build, detached: it is meant to outlive the window.
-fn launch() -> Result<(), String> {
+/// `how` is never a refusal: `attach` has stopped at one.
+fn launch(how: &crate::elevation::Launch) -> Result<(), String> {
     let exe = core_exe()?;
     let data = crate::paths::data_dir();
     let log = crate::log::path().clone();
@@ -321,7 +413,16 @@ fn launch() -> Result<(), String> {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    spawn_detached(cmd).map_err(|e| format!("cannot start {}: {e}", exe.display()))
+    let started = match how {
+        // The Secondary Logon service creates it, not this window: it
+        // inherits none of the window's handles, and no console.
+        crate::elevation::Launch::AsShell(shell) => {
+            crate::log::info("core", "this window runs as administrator; starting the core with the desktop shell's token");
+            crate::elevation::spawn_as_shell(*shell, &cmd)
+        }
+        _ => spawn_detached(cmd),
+    };
+    started.map_err(|e| format!("cannot start {}: {e}", exe.display()))
 }
 
 /// Out of any job the window was started in, so closing that job does not
@@ -414,4 +515,41 @@ pub fn core_send(cmd: String, args: Value) -> Result<(), String> {
     let conn = CURRENT.lock().unwrap_or_else(|e| e.into_inner()).clone().ok_or("the core is not running")?;
     let frame = ipc::encode(ipc::SEND, &Req { id: 0, cmd, args }).map_err(|e| e.to_string())?;
     write(&conn, &frame).map_err(|e| format!("the core is not reachable: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn core(fingerprint: &str, sessions: usize, refused: Option<&str>) -> Welcome {
+        Welcome {
+            pid: 1,
+            version: "0".into(),
+            build: "b".into(),
+            fingerprint: fingerprint.into(),
+            started: 0,
+            sessions,
+            refused: refused.map(String::from),
+        }
+    }
+
+    #[test]
+    fn a_core_run_as_administrator_is_never_worked_with() {
+        let ours = env!("LUNA_CORE_FP");
+        // Of this very build, and elevated by its token: an older core says
+        // nothing of it, so the window's own look is what counts.
+        assert_eq!(verdict(&core(ours, 2, None), true), Verdict::Elevated, "sessions in it: the person restarts it");
+        assert_eq!(verdict(&core(ours, 0, None), true), Verdict::Replace, "none: replaced at once");
+        assert_eq!(verdict(&core("0000000000000000", 3, None), true), Verdict::Elevated);
+        // One that says so itself, whatever the window could read of its token.
+        assert_eq!(verdict(&core(ours, 0, Some(crate::elevation::ADMIN)), false), Verdict::Replace);
+    }
+
+    #[test]
+    fn a_core_that_is_not_elevated_is_judged_by_its_build() {
+        let ours = env!("LUNA_CORE_FP");
+        assert_eq!(verdict(&core(ours, 2, None), false), Verdict::Attach);
+        assert_eq!(verdict(&core("0000000000000000", 2, None), false), Verdict::Foreign);
+        assert_eq!(verdict(&core("0000000000000000", 0, None), false), Verdict::Replace);
+    }
 }

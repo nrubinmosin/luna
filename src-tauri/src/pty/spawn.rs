@@ -139,6 +139,8 @@ pub(super) mod capture {
 // running chat ensures it too, and doing all that then left the running
 // process holding a token Luna no longer knew.
 pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, String>) -> Result<String, String> {
+    // Before anything of the launch is built: nothing runs as administrator.
+    crate::elevation::guard()?;
     let state = manager();
     let gate = state.gate(&id);
     let _spawning = gate.lock().unwrap_or_else(|e| e.into_inner());
@@ -533,6 +535,16 @@ fn split_dsr(carry: &mut Vec<u8>, chunk: &[u8]) -> Vec<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_session_is_not_started_as_administrator() {
+        crate::elevation::force(Some(crate::elevation::ADMIN));
+        let got = tauri::async_runtime::block_on(spawn("run-as-admin".into(), || -> Result<Launch, String> {
+            panic!("nothing of the launch is built: it mints a token and writes the CLI's files")
+        }));
+        crate::elevation::force(None);
+        assert_eq!(got, Err(crate::elevation::ADMIN.to_string()));
+    }
 
     #[test]
     fn cursor_queries_are_cut_out_even_across_reads() {

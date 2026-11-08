@@ -145,10 +145,15 @@ fn run() {
         env!("LUNA_BUILD"),
         env!("LUNA_CORE_FP")
     ));
+    // Run as administrator, the core still answers, so that a window hears
+    // why, but starts nothing: every request but `info` and `shutdown` is
+    // refused (`requests`), and nothing below that would start a session or
+    // helper of its own accord runs.
+    let refused = crate::elevation::refusal();
+    if let Some(why) = refused {
+        crate::log::error("core", &format!("{why} The core starts no session or helper."));
+    }
     crate::lifecycle::start_core();
-    // Here and not in the window: session_meta, which turns a Claude
-    // transcript's tokens into a share of the window, runs in this process.
-    crate::claude::models::refresh_soon();
     sweep_old_copies();
     keep_full_speed();
 
@@ -162,20 +167,25 @@ fn run() {
 
     // What the sessions send the page goes to every window there is.
     crate::emit::install(broadcast);
-    // The helpers the last core left and what it kept of the chats, before a
-    // window or an MCP call can ask after them.
-    crate::agents::restore_chats();
-    crate::background::restore();
-    crate::agents::take_up_spawns();
-    // The hook listener before any session can be spawned with hooks
-    // pointing at it; the activity sampler feeds power/ from then on.
-    crate::hub::start();
-    crate::agents::init();
-    crate::agents::register_dev_caller();
-    crate::background::resume_stopped();
-    crate::activity::start();
-    crate::pty::prune_session_files_periodically();
-    crate::media::prune_periodically();
+    if refused.is_none() {
+        // Here and not in the window: session_meta, which turns a Claude
+        // transcript's tokens into a share of the window, runs in this process.
+        crate::claude::models::refresh_soon();
+        // The helpers the last core left and what it kept of the chats, before a
+        // window or an MCP call can ask after them.
+        crate::agents::restore_chats();
+        crate::background::restore();
+        crate::agents::take_up_spawns();
+        // The hook listener before any session can be spawned with hooks
+        // pointing at it; the activity sampler feeds power/ from then on.
+        crate::hub::start();
+        crate::agents::init();
+        crate::agents::register_dev_caller();
+        crate::background::resume_stopped();
+        crate::activity::start();
+        crate::pty::prune_session_files_periodically();
+        crate::media::prune_periodically();
+    }
 
     let token = ipc::mint_token();
     let found = Discovery {
@@ -381,6 +391,13 @@ fn requests(stream: &mut TcpStream, replies: &Replies, started: u64) -> io::Resu
     loop {
         let (kind, payload) = ipc::read_frame(stream)?;
         let req: Req = serde_json::from_slice(&payload).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        // A core run as administrator: who it is and how to stop it, nothing more.
+        if let Some(why) = crate::elevation::refusal().filter(|_| !matches!(req.cmd.as_str(), "info" | "shutdown")) {
+            if kind != ipc::SEND {
+                answer(replies, req.id, Err(why.to_string()));
+            }
+            continue;
+        }
         match req.cmd.as_str() {
             "info" => answer(replies, req.id, serde_json::to_value(Welcome::of_this_process(started)).map_err(|e| e.to_string())),
             "shutdown" => {
@@ -518,6 +535,40 @@ mod tests {
         });
         assert!(got.is_err());
         assert!(took < Duration::from_secs(1), "{took:?}");
+    }
+
+    /// What `requests` answers `cmd` with, in a core whose refusal
+    /// (elevation.rs) is `why`.
+    fn answered(why: Option<&'static str>, cmd: &str) -> Res {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let cmd = cmd.to_string();
+        // The request, then the end of the connection, which ends `requests`.
+        let peer = std::thread::spawn(move || {
+            let mut c = TcpStream::connect(addr).unwrap();
+            ipc::send(&mut c, ipc::REQ, &Req { id: 9, cmd, args: serde_json::Value::Null }).unwrap();
+        });
+        let (mut stream, _) = listener.accept().unwrap();
+        peer.join().unwrap();
+        let (tx, rx) = sync_channel(4);
+        let replies = Replies { tx, stream: Arc::new(stream.try_clone().unwrap()) };
+        crate::elevation::force(why);
+        let _ = requests(&mut stream, &replies, 0);
+        crate::elevation::force(None);
+        let frame = rx.recv_timeout(Duration::from_secs(10)).expect("an answer");
+        let (_, payload) = ipc::read_frame(&mut io::Cursor::new(frame)).unwrap();
+        serde_json::from_slice(&payload).unwrap()
+    }
+
+    #[test]
+    fn a_core_run_as_administrator_says_who_it_is_and_does_nothing_else() {
+        let why = crate::elevation::ADMIN;
+        assert!(answered(None, "power_state").err.is_none(), "answered as ever when not elevated");
+        assert_eq!(answered(Some(why), "power_state").err.as_deref(), Some(why));
+        assert_eq!(answered(Some(why), "ensure_claude_session").err.as_deref(), Some(why));
+        assert_eq!(answered(Some(why), "background_helpers").err.as_deref(), Some(why));
+        let core: Welcome = serde_json::from_value(answered(Some(why), "info").ok.expect("info is answered")).unwrap();
+        assert_eq!(core.refused.as_deref(), Some(why), "and says why");
     }
 
     /// What build.rs leaves beside the exe, read when this build was compiled:

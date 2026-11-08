@@ -10,6 +10,14 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Security
 
+- No CLI runs with administrator rights. Luna started as administrator starts
+  its core, and so every session and helper, with the desktop's ordinary
+  rights; where there are none (no Explorer, another account's credentials,
+  User Account Control off) it starts no session and says to restart it
+  normally. The core refuses sessions and helpers whenever it runs elevated,
+  and a core an older Luna left running elevated is replaced or, with
+  sessions, restarted on the banner's button. Root is refused the same way on
+  Linux and macOS.
 - Dependencies with published vulnerabilities are updated: rustls 0.23.46 and
   rustls-webpki 0.103.16 (TLS handshake fixes), webpki-roots 1.0.11 (distrusted
   emSign roots removed), zip 9 under the updater (tauri-plugin-updater
