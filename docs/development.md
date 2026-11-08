@@ -135,9 +135,10 @@ git push origin v1.2.3              # starts the release workflow
   `tauri.conf.json`, `Cargo.toml`, `Cargo.lock`) disagree, the tree is dirty, HEAD
   is ahead of `origin/master`, or the tag exists.
 - The workflow verifies versions, tag and a green CI run on the commit
-  (`release-verify.ps1`), builds and signs in the `release` environment
-  (`build-windows.ps1`, `release-bundle.ps1`), writes SBOMs (`sbom.ps1`) and
-  attestations, and leaves a **draft** release: setup, `.sig`, `latest.json`,
+  (`release-verify.ps1`), builds without any secret (`build-windows.ps1`,
+  `release-bundle.ps1`), signs in a job of its own in the `release` environment
+  (`release-sign.ps1`), writes SBOMs (`sbom.ps1`) and attestations, and leaves a
+  **draft** release: setup, `.sig`, `latest.json`,
   CycloneDX SBOMs and `SHA256SUMS`. `latest.json`'s `core_fingerprint` comes from
   `core-fingerprint.txt`, which `build.rs` leaves beside the exe, so no runner has
   to run the Windows binary. The logic these scripts share is
@@ -145,11 +146,15 @@ git push origin v1.2.3              # starts the release workflow
 - No bare exe is published: the updater installs into Luna's install folder
   ([ADR-0011](adr/0011-private-data-dir-beside-the-exe.md)).
 - The updater key is a private minisign key kept outside the repo; its public half
-  is in `tauri.conf.json`. `build-windows.ps1 -Installer` takes it from the file
-  `-UpdaterKey` or `LUNA_UPDATER_KEY` names, or from `TAURI_SIGNING_PRIVATE_KEY`
-  (as the workflow has it); `-Unsigned` builds the setup without its `.sig`; a
-  build without `-Installer` needs no key. Authenticode-signing the exe would need
-  a certificate, added under `bundle.windows.signCommand`.
+  is in `tauri.conf.json`. No build takes it: `build-windows.ps1 -Installer` makes
+  the setup unsigned, since `tauri build` runs every dependency's build code.
+  `release-sign.ps1` signs it afterwards with the key from the file `-UpdaterKey`
+  or `LUNA_UPDATER_KEY` names, or from `TAURI_SIGNING_PRIVATE_KEY` (as the
+  workflow has it), running only the Tauri CLI's `signer sign`, held to the
+  integrity `pnpm-lock.yaml` pins, in the pinned Node image without network; it
+  checks the signature against the public key (`updater-signature.mjs`) and puts
+  it into `latest.json`. Authenticode-signing the exe would need a certificate,
+  and the same separation: a `bundle.windows.signCommand` runs inside the build.
 - `./scripts/release.ps1 -Local` still cuts a release on this machine when the
   workflow cannot.
 
