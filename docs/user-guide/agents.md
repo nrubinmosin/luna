@@ -55,8 +55,8 @@ hooks run unasked.
 ## Spawning options
 
 - `readOnly: true` makes a checker: it takes Edit, Write and NotebookEdit from
-  Claude Code (whose Bash can still write) and puts Codex in `read-only`, or
-  `read-only-net` if asked.
+  Claude Code (whose Bash can still write: a tool list, not a sandbox) and puts
+  Codex in `read-only`, or `read-only-net` if asked.
 - `agent: "<name>"` runs Claude Code as an agent the project or account defines
   (`--agent`); Codex has no such thing and refuses it.
 - `account` can be a list of one provider's accounts: the first signed in with
@@ -236,3 +236,8 @@ Accounts window shows it.
   bundled ssh fail under the sandbox; `gh`, Python, plain http and git over https
   work (Luna sets git's `http.sslBackend=openssl` there unless you chose one).
   For git over ssh set `GIT_SSH` to Windows' own `ssh.exe`.
+- Luna's `core` folder (in the data folder) holds the key to the whole app.
+  Off Windows, `read-only` and `read-only-net` sessions cannot read it.
+  `workspace-write` sessions, and every sandbox on Windows, still can: Codex
+  offers no way to deny them a folder that keeps your other settings for those
+  sandboxes. Claude Code's file tools are denied it everywhere; its Bash is not.
