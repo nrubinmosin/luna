@@ -1,0 +1,8 @@
+# What cargo-fuzz leaves here when run outside scripts/fuzz.ps1, which keeps
+# its corpus and findings in test-build/fuzz/ and builds from a copy. The lock
+# is made from the app's own on every build.
+target/
+corpus/
+artifacts/
+coverage/
+Cargo.lock

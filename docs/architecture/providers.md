@@ -81,6 +81,8 @@ transcript `projects/<cwd>/<sid>.jsonl`.
   after a plan is accepted (the plan's handle, repeated by `agent-name`), are not
   titles. Both are rewritten into the tail, so they are read with the context.
   `saved_title` finds a transcript by session id once per launch.
+- `reading.rs`: `read_transcript`, all of the above of a transcript's bytes
+  alone, by the same per-line functions the file-based readers call.
 
 ## Reading a Codex session
 
@@ -121,6 +123,8 @@ live registry.
   of a live chat's thread and its descendants (threads begun since the process
   spawned, two weeks at most): one is at work while its last turn has not
   ended.
+- `reading.rs`: `read_rollout`, all that the running read and the tail read
+  take of a rollout, of its bytes alone, by the same per-line functions.
 
 ## The Codex sandbox on Windows
 
@@ -149,6 +153,11 @@ live registry.
 ## Invariants
 
 - Neither layer imports the other's vocabulary.
+- A transcript is untrusted input (a prompt-injected agent writes much of
+  it): its readers are pure functions of its text, held to golden readings
+  of `src-tauri/fixtures/transcripts/` and fuzzed (`src-tauri/fuzz`,
+  [testing](../testing.md#fuzzing)). A reader of a file does its I/O, then
+  hands the bytes or lines to them.
 - Config writes keep the user's comments and key order (`toml_edit`,
   `preserve_order`), and a file that will not parse is an error, never an empty
   document written back ([accounts](accounts.md#writing-cli-files)).
