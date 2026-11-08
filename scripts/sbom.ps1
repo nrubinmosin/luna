@@ -2,7 +2,9 @@
 # The release's software bills of materials, CycloneDX JSON: the crates the
 # Windows build compiles in (cargo-cyclonedx) and the npm packages its frontend
 # bundles (cyclonedx-npm). Each is made in Docker from the lockfiles alone,
-# with the checkout mounted read-only, so nothing is left behind there.
+# with the checkout mounted read-only, so nothing is left behind there, and
+# each is checked to be a file the release's attestation step takes
+# (Assert-AttestableSbom).
 #
 #   ./scripts/sbom.ps1 -Out <dir>    luna-<version>-cargo.cdx.json and luna-<version>-npm.cdx.json
 #
@@ -54,7 +56,9 @@ cp sbom.json /out/luna-$version-cargo.cdx.json
     # only, the build tools being in the devDependencies. cyclonedx-npm reads
     # the tree through npm, which cannot follow pnpm's own layout, so pnpm lays
     # it out flat (node-linker=hoisted) from the same lockfile. No install
-    # scripts run; nothing here is built.
+    # scripts run; nothing here is built. Not --output-reproducible: that leaves
+    # the serial number and timestamp out, and actions/attest takes a CycloneDX
+    # file only with a serial number, which is how v0.10.0's first run failed.
     Invoke-Checked 'npm SBOM' {
         docker run --rm `
           -e COREPACK_ENABLE_DOWNLOAD_PROMPT=0 `
@@ -70,9 +74,16 @@ mkdir /work
 cp /app/package.json /app/pnpm-lock.yaml /work/
 cd /work
 corepack pnpm install --frozen-lockfile --prod --ignore-scripts --config.node-linker=hoisted --reporter=silent
-npx --yes @cyclonedx/cyclonedx-npm@$CycloneDxNpm --omit dev --spec-version 1.5 --mc-type application --output-reproducible --validate --output-format JSON --output-file /out/luna-$version-npm.cdx.json
+npx --yes @cyclonedx/cyclonedx-npm@$CycloneDxNpm --omit dev --spec-version 1.5 --mc-type application --validate --output-format JSON --output-file /out/luna-$version-npm.cdx.json
 "@)
     }
 }
 
-Get-ChildItem -LiteralPath $Out -Filter "luna-$version-*.cdx.json" | ForEach-Object { Write-Host "SBOM -> $($_.FullName)" }
+# Both files, each as the attestation will see it: one it refuses would
+# otherwise fail the release only once the installer is built and signed.
+foreach ($kind in 'cargo', 'npm') {
+    $file = Join-Path $Out "luna-$version-$kind.cdx.json"
+    if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { throw "the $kind SBOM was not written to $file" }
+    Assert-AttestableSbom $file
+    Write-Host "SBOM -> $file"
+}

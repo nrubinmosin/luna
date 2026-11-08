@@ -35,10 +35,14 @@ jobs:
           persist-credentials: false
           fetch-depth: 0 # the commit-message check walks the pushed range
       - run: ./scripts/gate.ps1 -Group frontend
-      # Only the commits this push or PR brings, so history from before the rule
-      # does not fail it. A new branch (or a force-push whose old tip is gone)
-      # is checked against master.
-      - name: Commit messages carry no AI attribution
+      # Only the commits this push or PR brings, so history from before the rules
+      # does not fail it: a PR from its base, a push from its old tip, a new
+      # branch from master. Off master, what master already holds is left out
+      # too: a branch that merged master in, or was force-pushed over its own
+      # merge, has master's commits in its before..after. An old tip the clone
+      # lacks (a force-push) is fetched; one that is gone fails the run, since
+      # a range from the new tip itself would check nothing and pass.
+      - name: Commit messages follow the rules
         shell: sh
         env:
           BEFORE: ${{ github.event.before }}
@@ -46,12 +50,21 @@ jobs:
           HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           sh scripts/check-commit-msg.test.sh
-          from=${BASE:-$BEFORE}
-          if [ -z "$from" ] || [ "$from" = 0000000000000000000000000000000000000000 ] \
-              || ! git cat-file -e "$from^{commit}" 2>/dev/null; then
+          if [ -n "$BASE" ]; then
+            from=$BASE
+          elif [ "$BEFORE" = 0000000000000000000000000000000000000000 ] && [ "$GITHUB_REF" != refs/heads/master ]; then
             from=origin/master
+          else
+            from=$BEFORE
           fi
-          sh scripts/check-commit-msg.sh --range "$from..$HEAD"
+          git cat-file -e "$from^{commit}" 2>/dev/null || git fetch -q origin "$from" 2>/dev/null || true
+          if ! git cat-file -e "$from^{commit}" 2>/dev/null; then
+            echo "commit-message check: the range's start $from is not in this clone (a force-push?), so the pushed commits cannot be told from history; fix the range by hand (sh scripts/check-commit-msg.sh --range A..B) rather than let this run check nothing" >&2
+            exit 1
+          fi
+          not=
+          [ "$GITHUB_REF" = refs/heads/master ] || not=^origin/master
+          sh scripts/check-commit-msg.sh --range "$from..$HEAD" $not
 
   # The Linux image (docker/linux-check.Dockerfile) rather than a setup action:
   # one definition of the toolchain and the system libraries for the local gate
