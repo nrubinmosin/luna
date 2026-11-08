@@ -28,13 +28,12 @@ fn cached_first_prompt(path: &Path) -> Option<String> {
 }
 
 pub(super) fn read_first_prompt(path: &Path) -> Option<String> {
-    use std::io::{BufRead, BufReader};
+    use std::io::BufReader;
     let f = std::fs::File::open(path).ok()?;
-    first_prompt_in(BufReader::new(f).lines().map_while(Result::ok))
+    first_prompt_in(crate::pty::read_lossy_lines(BufReader::new(f)))
 }
 
-/// `read_first_prompt` of the rollout's lines, up to the first that is no
-/// text.
+/// `read_first_prompt` of the rollout's lines (`read_lossy_lines`).
 pub(super) fn first_prompt_in(lines: impl Iterator<Item = impl AsRef<str>>) -> Option<String> {
     for line in lines.take(200) {
         let line = line.as_ref();
@@ -456,6 +455,23 @@ mod tests {
         )
         .unwrap();
         assert_eq!(last_model(&path).as_deref(), Some("gpt-6.1-sol"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A line that is not UTF-8 (a Latin-1 byte in a prompt) neither ends the
+    /// search for the opening prompt nor is passed over: it reads as the
+    /// conversation reads it.
+    #[test]
+    fn a_line_not_utf8_reads_lossily_in_the_search_for_the_opening_prompt() {
+        let path = std::env::temp_dir().join(format!("luna-codex-latin1-{}.jsonl", std::process::id()));
+        let developer = b"{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"developer\",\"content\":[{\"type\":\"input_text\",\"text\":\"caf\xe9\"}]}}\n";
+        let prompt = b"{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"fix the caf\xe9 page\"}]}}\n";
+        let bytes = [&developer[..], &prompt[..]].concat();
+        std::fs::write(&path, &bytes).unwrap();
+        let want = Some("fix the caf\u{fffd} page".to_string());
+        assert_eq!(read_first_prompt(&path), want);
+        assert_eq!(read_rollout(&bytes, 0).first_prompt, want);
+        assert_eq!(messages_from(&path, 0).0[0].text, "fix the caf\u{fffd} page", "as the conversation has it");
         let _ = std::fs::remove_file(&path);
     }
 

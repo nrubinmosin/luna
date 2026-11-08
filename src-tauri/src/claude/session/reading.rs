@@ -52,7 +52,7 @@ pub fn read_transcript(bytes: &[u8]) -> TranscriptRead {
         consumed,
         messages: said.messages,
         with_tools: with_tools.messages,
-        first_prompt: first_prompt_in(crate::pty::text_lines(bytes)),
+        first_prompt: first_prompt_in(crate::pty::lossy_lines(bytes)),
         custom_title: titles.custom,
         ai_title: titles.ai,
         usage: usage_in(&text),

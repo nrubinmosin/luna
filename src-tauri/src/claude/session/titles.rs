@@ -127,14 +127,13 @@ pub(super) fn cached_first_prompt(account_path: &str, cwd: &str, session_id: &st
 /// The session's opening prompt, trimmed to a title — what the chat is called
 /// for the few seconds before the CLI's own title lands in the transcript.
 fn read_first_prompt(account_path: &str, cwd: &str, session_id: &str) -> Option<String> {
-    use std::io::{BufRead, BufReader};
+    use std::io::BufReader;
     let path = located_transcript(account_path, cwd, session_id);
     let f = std::fs::File::open(&path).ok()?;
-    first_prompt_in(BufReader::new(f).lines().map_while(Result::ok))
+    first_prompt_in(crate::pty::read_lossy_lines(BufReader::new(f)))
 }
 
-/// `read_first_prompt` of the transcript's lines, up to the first that is no
-/// text.
+/// `read_first_prompt` of the transcript's lines (`read_lossy_lines`).
 pub(super) fn first_prompt_in(lines: impl Iterator<Item = impl AsRef<str>>) -> Option<String> {
     // The opening prompt is near the top; no need to walk a 700KB transcript.
     for line in lines.take(80) {
@@ -218,6 +217,25 @@ mod tests {
         assert_eq!(titles_of(&sid, &path, Some("{}")).ai.as_deref(), Some("Chat titles"));
         assert_eq!(titles_of(&sid, &path, Some("{}")).ai.as_deref(), Some("Chat titles"));
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// A line that is not UTF-8 (a Latin-1 byte in a prompt) neither ends the
+    /// search nor is passed over: it reads as the conversation reads it.
+    #[test]
+    fn a_line_not_utf8_reads_lossily_in_the_search_for_the_opening_prompt() {
+        let root = std::env::temp_dir().join(format!("luna-claude-latin1-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let acct = root.to_string_lossy().into_owned();
+        let sid = "5a1e0000-0000-4000-8000-000000000001";
+        let path = transcript_file(&acct, "E:\\p", sid);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let meta = b"{\"type\":\"user\",\"isMeta\":true,\"message\":{\"content\":\"caf\xe9 hook\"}}\n";
+        let prompt = b"{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"fix the caf\xe9 page\"}}\n";
+        std::fs::write(&path, [&meta[..], &prompt[..]].concat()).unwrap();
+        let want = Some("fix the caf\u{fffd} page".to_string());
+        assert_eq!(cached_first_prompt(&acct, "E:\\p", sid), want);
+        assert_eq!(read_transcript(&std::fs::read(&path).unwrap()).first_prompt, want);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

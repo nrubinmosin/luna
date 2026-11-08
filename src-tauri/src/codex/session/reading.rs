@@ -56,7 +56,7 @@ pub fn read_rollout(bytes: &[u8], since_ms: i64) -> RolloutRead {
     RolloutRead {
         consumed,
         messages,
-        first_prompt: first_prompt_in(crate::pty::text_lines(bytes)),
+        first_prompt: first_prompt_in(crate::pty::lossy_lines(bytes)),
         cwd: first.as_ref().and_then(|v| v["payload"]["cwd"].as_str().map(str::to_owned)),
         spawned_by: first.as_ref().and_then(spawned_by),
         tail: tail_in(&text),

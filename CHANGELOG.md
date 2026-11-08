@@ -47,6 +47,10 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   conversation on from a cursor too, not only for one reading from the top,
   so the report it leads with is the newest when that prompt and its answer
   land in different reads.
+- A transcript line that is not UTF-8 no longer ends the search for a chat's
+  opening prompt (the name it goes by until the CLI titles it), in Claude Code
+  and Codex alike: it is read as the conversation reads it, a stray byte as
+  U+FFFD.
 
 ### Security
 
