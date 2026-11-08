@@ -8,6 +8,15 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Changed
+
+- Dependabot opens its grouped update PRs monthly instead of weekly, and leaves a
+  new Node or Rust major to a hand-made migration.
+- Tauri 2.12.5 and its plugins' latest releases; base64, dirs, getrandom and
+  toml_edit moved to versions the rest of the tree already carried, which drops
+  dirs 6 and toml_edit 0.22 from the build; vt100 0.18 for the screen a helper's
+  output is replayed onto.
+
 ### Fixed
 
 - The release workflow failed at attesting the npm SBOM (`Unsupported SBOM
