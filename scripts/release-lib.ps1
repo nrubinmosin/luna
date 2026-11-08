@@ -605,12 +605,43 @@ function Resolve-TrustedPubkey([string]$Value, [switch]$Required) {
 # still trust (docs/releasing.md): the old public key, given by whoever
 # releases, never taken from the build. $Fetch ($url, $path) downloads and
 # $Run ($what, $dockerArgs) runs `docker run`; both are here for the tests.
+# The `docker run` arguments every signer container starts with: removed when
+# done, no network, a read-only root, no capability and no privilege to gain.
+# On a Unix host it runs as the user who runs this: root without capabilities
+# cannot write the .sig into a folder it does not own, and the sign job's
+# assets folder is the runner user's (0755). A mount of a Windows folder keeps
+# no Unix owner, so there the container stays root.
+function Get-SignerIsolation {
+    $user = if ($IsWindows) { @() } else { @('--user', "$(id -u):$(id -g)") }
+    @('--rm', '--network', 'none', '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges') + $user
+}
+
+# A signer container, isolated as Invoke-ReleaseSign runs it, writes a file into
+# a folder of this user's that the host then reads: what the sign job does with
+# the .sig. The unit tests stand in for docker, so only a real run on a Linux
+# host, where Docker holds a container to the folder's owner, shows it.
+function Assert-SignerWritesBundle([string]$Root = $RepoRoot) {
+    $dir = Join-Path $Root "test-build/signer-probe/$([guid]::NewGuid().ToString('n'))"
+    New-Item -ItemType Directory -Force $dir | Out-Null
+    try {
+        docker run @(Get-SignerIsolation) -v "${dir}:/out" (Get-NodeImage) node -e "require('node:fs').writeFileSync('/out/probe.sig', 'signed')"
+        if ($LASTEXITCODE) { throw "the signer's container cannot write into a folder of this user's (exit $LASTEXITCODE)" }
+        if ((Get-Content -LiteralPath (Join-Path $dir 'probe.sig') -Raw) -cne 'signed') { throw 'the file the signer''s container wrote did not come back' }
+    } finally {
+        Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Invoke-ReleaseSign {
     param(
         [Parameter(Mandatory)][string]$Dir,
         [Parameter(Mandatory)][string]$Version,
         [string]$UpdaterKey,
         [string]$TrustedPubkey,
+        # A key made for this run alone, in the signer's container, signs and
+        # is checked against: what a dry run does to go through the signing
+        # without the release's key. Nothing it signs is ever published.
+        [switch]$Throwaway,
         [string]$Root = $RepoRoot,
         [scriptblock]$Fetch = { param($Url, $Path) Invoke-WebRequest -Uri $Url -OutFile $Path -MaximumRetryCount 3 -RetryIntervalSec 5 },
         [scriptblock]$Run = {
@@ -630,7 +661,7 @@ function Invoke-ReleaseSign {
     if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { throw "no latest.json in $Dir" }
     $embedded = Get-UpdaterPubkey $Root
     $pubkey = $embedded
-    if ($TrustedPubkey -and $TrustedPubkey.Trim() -cne $embedded) {
+    if (-not $Throwaway -and $TrustedPubkey -and $TrustedPubkey.Trim() -cne $embedded) {
         $pubkey = $TrustedPubkey.Trim()
         Write-Host 'checking the signature against the trusted public key given for a rotation, not the one this release embeds'
     }
@@ -639,8 +670,10 @@ function Invoke-ReleaseSign {
     # Passed on by name, its value from this process's environment, so it never
     # shows on a command line. Left out, the CLI takes the key to have no password.
     $keyArgs = @()
-    if ($env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD) { $keyArgs += @('-e', 'TAURI_SIGNING_PRIVATE_KEY_PASSWORD') }
-    if ($UpdaterKey) {
+    if (-not $Throwaway -and $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD) { $keyArgs += @('-e', 'TAURI_SIGNING_PRIVATE_KEY_PASSWORD') }
+    if ($Throwaway) {
+        # Made below, once the CLI is in hand.
+    } elseif ($UpdaterKey) {
         if (-not (Test-Path -LiteralPath $UpdaterKey -PathType Leaf)) { throw "no updater key at $UpdaterKey" }
         # Mounted rather than passed as an env value, so it never shows in
         # `docker inspect` or the process list on the host.
@@ -665,11 +698,18 @@ function Invoke-ReleaseSign {
         Export-TarballEntry $tarball 'package/cli.linux-x64-gnu.node' (Join-Path $work 'cli/cli.node')
 
         $image = Get-NodeImage
-        $isolated = @(
-            '--rm', '--network', 'none', '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
+        $isolated = @(Get-SignerIsolation) + @(
             '-v', "$(Join-Path $work 'cli'):/cli:ro",
             '-v', "$(Join-Path $Root 'scripts/updater-signature.mjs'):/sign/updater-signature.mjs:ro"
         )
+        if ($Throwaway) {
+            $keyDir = New-Item -ItemType Directory -Force (Join-Path $work 'key')
+            & $Run 'tauri signer generate' ($isolated + @('-v', "$($keyDir.FullName):/keys", $image,
+                    'node', '/sign/updater-signature.mjs', 'generate', '/cli/cli.node', '/keys/updater.key'))
+            $pubkey = (Get-Content -LiteralPath (Join-Path $keyDir 'updater.key.pub') -Raw).Trim()
+            $keyArgs += @('-v', "$(Join-Path $keyDir 'updater.key'):/keys/updater.key:ro", '-e', 'TAURI_SIGNING_PRIVATE_KEY_PATH=/keys/updater.key')
+            Write-Host 'signing with a throwaway key made for this run; its signature is checked against that key''s public half'
+        }
         $file = "/out/$($setup.Name)"
         & $Run 'tauri signer sign' ($isolated + $keyArgs + @('-v', "${Dir}:/out", $image,
                 'node', '/sign/updater-signature.mjs', 'sign', '/cli/cli.node', $file, $Version))
