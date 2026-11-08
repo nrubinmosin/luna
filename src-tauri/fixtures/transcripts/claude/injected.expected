@@ -1,0 +1,92 @@
+Seen {
+    consumed: 1755,
+    messages: [
+        (
+            "user",
+            false,
+            "build it",
+        ),
+        (
+            "assistant",
+            false,
+            "Started the build in the background.",
+        ),
+        (
+            "assistant",
+            true,
+            "The build passed.",
+        ),
+        (
+            "assistant",
+            true,
+            "The lane is green.",
+        ),
+        (
+            "user",
+            false,
+            "<task-notification> is what I saw, why?",
+        ),
+        (
+            "user",
+            false,
+            "[Request interrupted by user] showed up, is that bad?",
+        ),
+        (
+            "assistant",
+            false,
+            "It is not.",
+        ),
+    ],
+    with_tools: [
+        (
+            "user",
+            false,
+            "build it",
+        ),
+        (
+            "assistant",
+            false,
+            "Started the build in the background.",
+        ),
+        (
+            "assistant",
+            true,
+            "The build passed.",
+        ),
+        (
+            "assistant",
+            true,
+            "The lane is green.",
+        ),
+        (
+            "user",
+            false,
+            "<task-notification> is what I saw, why?",
+        ),
+        (
+            "user",
+            false,
+            "[Request interrupted by user] showed up, is that bad?",
+        ),
+        (
+            "assistant",
+            false,
+            "It is not.",
+        ),
+    ],
+    first_prompt: Some(
+        "build it",
+    ),
+    title: None,
+    context: None,
+    model: Some(
+        "claude-opus-5-5",
+    ),
+    last_said: Some(
+        "It is not.",
+    ),
+    last_said_at: None,
+    api_error: None,
+    pending_tool: None,
+    due_ms: None,
+}

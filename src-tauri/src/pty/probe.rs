@@ -180,6 +180,32 @@ pub fn complete_lines(path: &std::path::Path, from: u64, mut each: impl FnMut(&s
     read
 }
 
+/// `complete_lines` over bytes in memory, from the top: each complete line
+/// handed over as that does, and the offset just past the last of them.
+pub fn complete_lines_in(bytes: &[u8], mut each: impl FnMut(&str)) -> usize {
+    let mut read = 0;
+    while let Some(end) = bytes[read..].iter().position(|b| *b == b'\n') {
+        let line = &bytes[read..=read + end];
+        each(String::from_utf8_lossy(line).trim_end_matches(['\r', '\n']));
+        read += line.len();
+    }
+    read
+}
+
+/// Every line a reader holds, a trailing CR dropped, decoded as the rest of
+/// the transcript readers decode (`tail`, `complete_lines`): a byte that is
+/// not UTF-8 reads as U+FFFD rather than ending the lines or losing one.
+pub fn read_lossy_lines(reader: impl std::io::BufRead) -> impl Iterator<Item = String> {
+    reader.split(b'\n').map_while(Result::ok).map(|line| String::from_utf8_lossy(line.strip_suffix(b"\r").unwrap_or(&line)).into_owned())
+}
+
+/// `read_lossy_lines` of bytes in memory.
+pub fn lossy_lines(bytes: &[u8]) -> impl Iterator<Item = std::borrow::Cow<'_, str>> {
+    // As a reader splits: no line after a last newline, and none in nothing.
+    let body = (!bytes.is_empty()).then(|| bytes.strip_suffix(b"\n").unwrap_or(bytes));
+    body.into_iter().flat_map(|b| b.split(|c| *c == b'\n')).map(|line| String::from_utf8_lossy(line.strip_suffix(b"\r").unwrap_or(line)))
+}
+
 /// What a session-meta read needs, copied out from under the map.
 pub(super) struct Probe {
     pub(super) id: String,

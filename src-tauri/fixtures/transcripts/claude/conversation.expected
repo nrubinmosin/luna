@@ -1,0 +1,70 @@
+Seen {
+    consumed: 2238,
+    messages: [
+        (
+            "user",
+            false,
+            "look into the login bug",
+        ),
+        (
+            "assistant",
+            false,
+            "Looking at the auth module.",
+        ),
+        (
+            "assistant",
+            false,
+            "Found it: the token is never refreshed.\n  Fixing it next.",
+        ),
+        (
+            "user",
+            false,
+            "thanks, go ahead",
+        ),
+    ],
+    with_tools: [
+        (
+            "user",
+            false,
+            "look into the login bug",
+        ),
+        (
+            "assistant",
+            false,
+            "Looking at the auth module.\n[tool: Read]",
+        ),
+        (
+            "assistant",
+            false,
+            "Found it: the token is never refreshed.\n  Fixing it next.",
+        ),
+        (
+            "user",
+            false,
+            "thanks, go ahead",
+        ),
+    ],
+    first_prompt: Some(
+        "look into the login bug",
+    ),
+    title: Some(
+        (
+            "Luna auth",
+            true,
+        ),
+    ),
+    context: Some(
+        (
+            22200.0,
+            1000000.0,
+        ),
+    ),
+    model: Some(
+        "claude-opus-5-5",
+    ),
+    last_said: None,
+    last_said_at: None,
+    api_error: None,
+    pending_tool: None,
+    due_ms: None,
+}

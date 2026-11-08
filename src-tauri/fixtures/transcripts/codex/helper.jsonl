@@ -1,0 +1,10 @@
+{"timestamp":"2026-11-05T09:00:00.000Z","type":"session_meta","payload":{"id":"h1","cwd":"/home/u/p","source":"exec"}}
+{"timestamp":"2026-11-05T09:00:00.100Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}
+{"timestamp":"2026-11-05T09:00:00.200Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Reply with the single word READY.\n\n[A note from Luna, not part of the task: you are a helper of chat c1]"}]}}
+{"timestamp":"2026-11-05T09:00:00.300Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","text":"Reply with the single word READY."}}}
+{"timestamp":"2026-11-05T09:00:01.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"READY"}]}}
+{"timestamp":"2026-11-05T09:00:01.100Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"   "}]}}
+{"timestamp":"2026-11-05T09:00:01.200Z","type":"response_item","payload":{"type":"message","role":"system","content":[{"type":"input_text","text":"not conversation"}]}}
+{"timestamp":"2026-11-05T09:00:01.300Z","type":"response_item","payload":{"type":"message","role":"user","content":"not an array"}}
+{"timestamp":"2026-11-05T09:00:02.000Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"t1","last_agent_message":"READY"}}
+{"timestamp":"2026-11-05T09:00:03.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"still being writ

@@ -29,6 +29,13 @@ param(
 
 if (-not $IsWindows) { throw 'the live tests are built as Windows executables: run this on a Windows host' }
 if (-not ($ClaudeAccount -or $CodexAccount)) { throw 'name a test account: -ClaudeAccount, -CodexAccount or both' }
+# The tests would refuse each start (src-tauri/src/elevation.rs); said here
+# before a build. An admin's ordinary token holds Administrators deny-only,
+# so only an elevated one is in the role.
+$principal = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
+if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    throw 'this terminal runs as administrator, and Luna starts no CLI so: run the live tests from an ordinary one'
+}
 
 $testBuild = Join-Path $RepoRoot 'test-build'
 $dir = Join-Path $testBuild 'live-tests'
