@@ -173,6 +173,17 @@ TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWO
         run  = './scripts/release-sign.ps1 -Dir "$env:RUNNER_TEMP/assets" -Version $env:VERSION -RequireTrustedPubkey'
     }
     [ordered]@{
+        name = 'Sign a copy with a throwaway key'
+        if   = 'needs.verify.outputs.signed != ''true'''
+        env  = 'VERSION: ${{ needs.verify.outputs.version }}'
+        run  = @'
+|
+Copy-Item -Recurse "$env:RUNNER_TEMP/assets" "$env:RUNNER_TEMP/throwaway"
+./scripts/release-sign.ps1 -Dir "$env:RUNNER_TEMP/throwaway" -Version $env:VERSION -Throwaway
+Remove-Item -Recurse -Force "$env:RUNNER_TEMP/throwaway"
+'@
+    }
+    [ordered]@{
         uses = 'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9'
         with = @'
 name: assets
@@ -770,7 +781,11 @@ d8e1  latest.json
             $f.Calls.Add([pscustomobject]@{ What = $What; Args = @($DockerArgs) })
             $cliMount = $DockerArgs[[array]::IndexOf($DockerArgs, '-v') + 1] -replace ':/cli:ro$', ''
             if ((Get-Content -LiteralPath (Join-Path $cliMount 'cli.node') -Raw) -cne 'the native module') { throw 'not the module' }
-            if ($What -eq 'tauri signer sign') { Set-Content (Join-Path $f.Bundle 'Luna_0.9.10_x64-setup.exe.sig') 'U0lHTkFUVVJF' -NoNewline }
+            if ($What -eq 'tauri signer generate') {
+                $keys = ($DockerArgs | Where-Object { $_ -like '*:/keys' }) -replace ':/keys$', ''
+                Set-Content (Join-Path $keys 'updater.key') 'a throwaway key' -NoNewline
+                Set-Content (Join-Path $keys 'updater.key.pub') 'VEhST1dBV0FZ' -NoNewline
+            } elseif ($What -eq 'tauri signer sign') { Set-Content (Join-Path $f.Bundle 'Luna_0.9.10_x64-setup.exe.sig') 'U0lHTkFUVVJF' -NoNewline }
             elseif ($FailCheck) { throw "$What failed (exit 1)" }
         }.GetNewClosure()
     }
@@ -799,6 +814,11 @@ d8e1  latest.json
                 if (-not $text.Contains($flag)) { throw "$($call.What) runs without $flag" }
             }
         }
+        foreach ($call in $f.Calls) {
+            $user = [array]::IndexOf($call.Args, '--user')
+            if ($IsWindows) { Assert-Equal $user -1 }
+            else { Assert-Equal $call.Args[$user + 1] "$(id -u):$(id -g)" }
+        }
         $sign = $f.Calls[0].Args -join ' '
         if (-not $sign.Contains('TAURI_SIGNING_PRIVATE_KEY_PATH=/keys/updater.key') -or -not $sign.Contains(':/keys/updater.key:ro')) { throw 'the key is not mounted for signing' }
         $check = $f.Calls[1].Args
@@ -815,6 +835,26 @@ d8e1  latest.json
             -Fetch { param($url, $to) Copy-Item -LiteralPath $f.Tarball -Destination $to }.GetNewClosure() -Run (& $fakeRun $f)
         $check = $f.Calls[1].Args
         Assert-Equal $check[[array]::IndexOf($check, 'verify') + 3] 'T0xEIEtFWQ=='
+    }
+
+    Check 'a throwaway key is made in the signer''s container, signs, and is what the signature is checked against' {
+        $f = & $signFixture 'sign-throwaway'
+        $env:TAURI_SIGNING_PRIVATE_KEY = 'the real key'
+        try {
+            Invoke-ReleaseSign -Dir $f.Bundle -Version '0.9.10' -Throwaway -Root $f.Root `
+                -Fetch { param($url, $to) Copy-Item -LiteralPath $f.Tarball -Destination $to }.GetNewClosure() -Run (& $fakeRun $f)
+        } finally { Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY }
+        Assert-Equal (@($f.Calls.What) -join ',') 'tauri signer generate,tauri signer sign,the signature check'
+        $generate = $f.Calls[0].Args -join ' '
+        foreach ($flag in '--network none', '--read-only', '--cap-drop ALL') {
+            if (-not $generate.Contains($flag)) { throw "generating the key runs without $flag" }
+        }
+        $sign = $f.Calls[1].Args
+        if (($sign -join ' ') -match 'TAURI_SIGNING_PRIVATE_KEY(?!_PATH)') { throw 'the real key reaches a throwaway signing' }
+        if (-not (($sign -join ' ').Contains('updater.key:/keys/updater.key:ro'))) { throw 'the throwaway key is not mounted for signing' }
+        $check = $f.Calls[2].Args
+        Assert-Equal $check[[array]::IndexOf($check, 'verify') + 3] 'VEhST1dBV0FZ'
+        Assert-Equal (@(Get-ChildItem -LiteralPath (Join-Path $f.Root 'src-tauri/target/release-signer')).Count) 0
     }
 
     Check 'a signature that fails the check is taken away again' {
@@ -858,8 +898,8 @@ d8e1  latest.json
         $edit = { param($from, $to) if (-not $text.Contains($from)) { throw "no '$from' in release.yml" }; $text.Replace($from, $to) }
         $beforeSign = '      # The key goes to this step alone'
         $signRun = '        run: ./scripts/release-sign.ps1 -Dir "$env:RUNNER_TEMP/assets" -Version $env:VERSION -RequireTrustedPubkey'
-        Assert-Throws { Assert-ReleaseWorkflow (& $edit $beforeSign "      - name: Install`n        run: |`n          echo ready`n          pnpm install --frozen-lockfile`n$beforeSign") } 'sign has 6 steps'
-        Assert-Throws { Assert-ReleaseWorkflow (& $edit $beforeSign "      - uses: actions/setup-node@0123456789abcdef0123456789abcdef01234567`n$beforeSign") } 'sign has 6 steps'
+        Assert-Throws { Assert-ReleaseWorkflow (& $edit $beforeSign "      - name: Install`n        run: |`n          echo ready`n          pnpm install --frozen-lockfile`n$beforeSign") } 'sign has 7 steps'
+        Assert-Throws { Assert-ReleaseWorkflow (& $edit $beforeSign "      - uses: actions/setup-node@0123456789abcdef0123456789abcdef01234567`n$beforeSign") } 'sign has 7 steps'
         Assert-Throws { Assert-ReleaseWorkflow (& $edit $signRun "$signRun`n          pnpm install") } 'run is not the one allowed'
         Assert-Throws { Assert-ReleaseWorkflow (& $edit $signRun "        run: `${{ format('{0}{1} install', 'pn', 'pm') }}") } 'run is not the one allowed'
         Assert-Throws { Assert-ReleaseWorkflow (& $edit $signRun ($signRun -replace ' -RequireTrustedPubkey', '')) } 'run is not the one allowed'
