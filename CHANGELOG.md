@@ -19,6 +19,32 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   the history for committed secrets (gitleaks), and the code and workflows with
   CodeQL. `scripts/supply-chain.ps1` runs the same checks locally.
 
+### Changed
+
+- Release notes are made from this file: a release's notes are its version's
+  section, the sections of every version since the last published release, a
+  link to the full changes, and the commands and checksums to verify the
+  download. The tag's message no longer carries them, and the update chip
+  shows the section's opening paragraph.
+- Commit messages follow one written-down form (CONTRIBUTING.md, "Commits"):
+  a sentence of at most 72 characters saying what the change does, no type
+  prefix, a blank line, then why. The commit-msg hook, the gate and CI refuse
+  the rest; past commits stay as they are.
+- Dependabot opens its grouped update PRs monthly instead of weekly, and leaves a
+  new Node or Rust major to a hand-made migration.
+- Tauri 2.12.5 and its plugins' latest releases; base64, dirs, getrandom and
+  toml_edit moved to versions the rest of the tree already carried, which drops
+  dirs 6 and toml_edit 0.22 from the build; vt100 0.18 for the screen a helper's
+  output is replayed onto.
+
+### Fixed
+
+- The release workflow failed at attesting the npm SBOM (`Unsupported SBOM
+  format`): it was written without a serial number, which the attest action
+  requires of a CycloneDX file. Both SBOMs now carry one and are checked for it
+  as soon as they are made, and the attestations use `actions/attest` in place
+  of the deprecated `actions/attest-sbom`.
+
 ## [0.10.0] - 2026-11-08
 
 A security and engineering release. Agent tools now follow least privilege,

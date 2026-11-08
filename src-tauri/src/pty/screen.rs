@@ -7,6 +7,7 @@ use super::start::without_note;
 use super::{manager, now_ms, PtyManager};
 use crate::provider::Provider;
 use serde::Serialize;
+use std::num::NonZeroU16;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
@@ -91,13 +92,21 @@ pub fn title_from_prompt(text: &str) -> Option<String> {
     sane_title(&title)
 }
 
+/// A terminal of this size with `bytes` drawn on it, no scrollback. vt100 wants
+/// a size above zero; a pane not sized yet (0×0) is drawn as 1×1.
+fn replay(bytes: &[u8], rows: u16, cols: u16) -> vt100::Parser {
+    let at_least_one = |n: u16| NonZeroU16::new(n).unwrap_or(NonZeroU16::MIN);
+    let mut parser = vt100::Parser::new(at_least_one(rows), at_least_one(cols), 0);
+    parser.process(bytes);
+    parser
+}
+
 /// Replays raw pty output through a terminal emulator and returns the visible
 /// screen as text, blank trailing lines dropped. The scrollback is capped
 /// (SCROLLBACK_CAP), so a very long session starts mid-stream; a fullscreen
 /// TUI repaints everything on each frame, so that costs nothing visible.
 pub fn render_screen(bytes: &[u8], rows: u16, cols: u16) -> String {
-    let mut parser = vt100::Parser::new(rows.max(1), cols.max(1), 0);
-    parser.process(bytes);
+    let parser = replay(bytes, rows, cols);
     let contents = parser.screen().contents();
     let mut lines: Vec<&str> = contents.lines().map(str::trim_end).collect();
     while lines.last().map(|l| l.is_empty()).unwrap_or(false) {
@@ -212,8 +221,7 @@ pub struct Composer {
 /// None with the cursor hidden or anywhere else: a dialog, a picker, a mode
 /// with a mark of its own (`!`), a screen not drawn yet.
 pub fn read_composer(bytes: &[u8], rows: u16, cols: u16, provider: Provider) -> Option<Composer> {
-    let mut parser = vt100::Parser::new(rows.max(1), cols.max(1), 0);
-    parser.process(bytes);
+    let parser = replay(bytes, rows, cols);
     let screen = parser.screen();
     if screen.hide_cursor() {
         return None;
@@ -279,8 +287,7 @@ pub fn at_empty_prompt(bytes: &[u8], rows: u16, cols: u16, provider: Provider) -
     if provider != Provider::Claude {
         return false;
     }
-    let mut parser = vt100::Parser::new(rows.max(1), cols.max(1), 0);
-    parser.process(bytes);
+    let parser = replay(bytes, rows, cols);
     let screen = parser.screen();
     let first = |r: u16| screen.cell(r, 0).map_or("", |c| c.contents());
     let rule = |r: u16| first(r) == "─";
@@ -332,8 +339,7 @@ pub(super) fn draft_after(state: u64, data: &str) -> u64 {
 /// Where the cursor stands once `bytes` have been drawn at this size, zero-based
 /// (row, col).
 pub(super) fn cursor_at(bytes: &[u8], rows: u16, cols: u16) -> (u16, u16) {
-    let mut parser = vt100::Parser::new(rows.max(1), cols.max(1), 0);
-    parser.process(bytes);
+    let parser = replay(bytes, rows, cols);
     parser.screen().cursor_position()
 }
 

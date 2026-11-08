@@ -51,6 +51,7 @@ jobs:
       tag: ${{ steps.verify.outputs.tag }}
       signed: ${{ steps.verify.outputs.signed }}
       publish: ${{ steps.verify.outputs.publish }}
+      previous: ${{ steps.verify.outputs.previous }} # the latest published release, the notes' baseline
       notes: ${{ steps.verify.outputs.notes }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -127,6 +128,8 @@ jobs:
   # attestation of each and the SBOMs attested against the installer, signed
   # through Sigstore with this run's identity. A job of its own, so the build,
   # which runs every dependency's build code, never holds the OIDC token.
+  # actions/attest with sbom-path is what actions/attest-sbom wrapped before it
+  # was deprecated; sbom.ps1 has already checked each SBOM is one it takes.
   attest:
     needs: [verify, build, sbom]
     runs-on: ubuntu-24.04
@@ -160,12 +163,12 @@ jobs:
         with:
           subject-checksums: assets/SHA256SUMS
       - if: needs.verify.outputs.publish == 'true'
-        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: assets/*-setup.exe
           sbom-path: assets/luna-${{ needs.verify.outputs.version }}-cargo.cdx.json
       - if: needs.verify.outputs.publish == 'true'
-        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: assets/*-setup.exe
           sbom-path: assets/luna-${{ needs.verify.outputs.version }}-npm.cdx.json
@@ -178,7 +181,10 @@ jobs:
 
   # A draft, not a release: installed copies poll the latest published
   # release's latest.json, so nothing reaches them until the maintainer has
-  # looked the draft over and published it.
+  # looked the draft over and published it. Its notes come from CHANGELOG.md
+  # (scripts/release-notes.ps1): the version's section, the sections of every
+  # version newer than the latest published release as verify found it, and
+  # the checksums with the commands to verify the assets.
   publish:
     needs: [verify, attest]
     if: needs.verify.outputs.publish == 'true'
@@ -187,17 +193,21 @@ jobs:
     permissions:
       contents: write
     steps:
+      # For CHANGELOG.md and the scripts the notes are made with.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-${{ needs.verify.outputs.tag }}
-          path: assets
+          path: ${{ runner.temp }}/assets
       - name: Draft the release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ needs.verify.outputs.tag }}
           VERSION: ${{ needs.verify.outputs.version }}
-          NOTES: ${{ needs.verify.outputs.notes }}
+          PREVIOUS: ${{ needs.verify.outputs.previous }}
         run: |
           # Drafts show only to a token that can push, as this one can: a
           # release of the tag, a draft left by an earlier run included, is
@@ -205,6 +215,7 @@ jobs:
           $existing = gh api --paginate "repos/$env:GH_REPO/releases" --jq '.[] | select(.tag_name == $ENV.TAG) | .html_url'
           if ($LASTEXITCODE) { throw "listing the releases failed (exit $LASTEXITCODE)" }
           if ($existing) { throw "$env:TAG already has a release: $existing" }
-          $assets = (Get-ChildItem assets -File).FullName
-          gh release create $env:TAG @assets --draft --verify-tag --title "Luna $env:VERSION" --notes $env:NOTES
+          ./scripts/release-notes.ps1 -Previous $env:PREVIOUS -Checksums "$env:RUNNER_TEMP/assets/SHA256SUMS" -Out "$env:RUNNER_TEMP/notes.md"
+          $assets = (Get-ChildItem "$env:RUNNER_TEMP/assets" -File).FullName
+          gh release create $env:TAG @assets --draft --verify-tag --title "Luna $env:VERSION" --notes-file "$env:RUNNER_TEMP/notes.md"
           if ($LASTEXITCODE) { throw "gh release create failed (exit $LASTEXITCODE)" }
