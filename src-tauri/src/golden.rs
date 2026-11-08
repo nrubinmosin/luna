@@ -231,6 +231,14 @@ pub(crate) fn claude_settings_alone() -> serde_json::Value {
     serde_json::json!({ "permissions": { "deny": ["Read(//<core-dir>/**)"] } })
 }
 
+/// `settings` as a helper's file has them (claude/launch.rs `HelperSettings`):
+/// auto-memory off, and the account's claude.ai connectors.
+pub(crate) fn claude_helper_settings(mut settings: serde_json::Value) -> serde_json::Value {
+    settings["autoMemoryEnabled"] = false.into();
+    settings["disableClaudeAiConnectors"] = true.into();
+    settings
+}
+
 /// The guard's PreToolUse entry in a Claude Code settings file.
 pub(crate) fn claude_guard_entry() -> serde_json::Value {
     let command = format!("{} -s -m 3 -X POST --data-binary @- <guard-url>", claude_curl());

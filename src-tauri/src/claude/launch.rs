@@ -22,6 +22,9 @@ pub(crate) struct ChatStart<'a> {
     pub(crate) agent: Option<&'a str>,
     pub(crate) read_only: bool,
     pub(crate) parent: Option<&'a str>,
+    /// `--strict-mcp-config`: no MCP server but Luna's, a helper's start
+    /// (`HelperSettings`).
+    pub(crate) strict_mcp: bool,
     /// Luna's MCP config file and the token its header takes.
     pub(crate) mcp: Option<(&'a Path, &'a str)>,
     pub(crate) notes_dir: Option<&'a Path>,
@@ -62,6 +65,9 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
     }
     if let Some(parent) = s.parent {
         args.extend(claude_helper_args(parent));
+    }
+    if s.strict_mcp {
+        args.push(STRICT_MCP.into());
     }
     if let Some((mcp, _)) = s.mcp {
         // Luna's tools without a permission prompt in every mode: the
@@ -106,6 +112,28 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
     (args, envs)
 }
 
+/// Claude Code's flag for the MCP servers of `--mcp-config` alone: none of the
+/// account's, the project's, its plugins' or its claude.ai connectors (2.1.319:
+/// "MCP servers are restricted to explicitly passed config here, e.g.
+/// --strict-mcp-config"). With no `--mcp-config` beside it, no server at all.
+pub(crate) const STRICT_MCP: &str = "--strict-mcp-config";
+
+/// What a helper's settings file holds beyond a chat's. A helper is briefed by
+/// an agent, not by the person, so it starts with none of the account's reach
+/// out of Luna but what it was spawned with:
+/// - no auto-memory: what it would save there reaches every later session of
+///   the account, unseen. `autoMemoryEnabled: false`, the key Claude Code's
+///   memory docs give for it (code.claude.com/docs/en/memory; 2.1.319's own
+///   settings schema: "When false, Claude will not read from or write to the
+///   auto-memory directory");
+/// - unless `connectors`, no claude.ai connectors (`disableClaudeAiConnectors`,
+///   settings-reference, honored from any scope), behind `STRICT_MCP`, which
+///   leaves them out already: the setting holds should the flag ever not.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct HelperSettings {
+    pub(crate) connectors: bool,
+}
+
 /// What `claude_instructions_dir` asks of a session's start: the folder and
 /// the variable that has its `CLAUDE.md` read.
 pub(crate) const CLAUDE_ADDED_DIR_MEMORY: &str = "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD";
@@ -129,9 +157,16 @@ pub(crate) fn claude_settings(
     guard_url: Option<&str>,
     library: &crate::library::SessionSkills,
     core: &str,
+    helper: Option<HelperSettings>,
 ) -> serde_json::Map<String, serde_json::Value> {
     let mut settings = serde_json::Map::new();
     settings.insert("permissions".into(), serde_json::json!({ "deny": [claude_read_deny(core, cfg!(windows))] }));
+    if let Some(h) = helper {
+        settings.insert("autoMemoryEnabled".into(), false.into());
+        if !h.connectors {
+            settings.insert("disableClaudeAiConnectors".into(), true.into());
+        }
+    }
     let mut hooks = serde_json::Map::new();
     let mut pre_tool_use = Vec::new();
     if let Some(url) = hook_url {
@@ -224,7 +259,7 @@ mod tests {
         assert_eq!(claude_read_deny(r"/home/u/a\b/core", false), r"Read(//home/u/a\b/core/**)", "a backslash is part of a name there");
         let none = crate::library::SessionSkills::default();
         for (hook, guard) in [(None, None), (Some("http://h/hook/c/s"), None), (None, Some("http://h/guard/c/s"))] {
-            let settings = claude_settings(hook, guard, &none, "/d/core");
+            let settings = claude_settings(hook, guard, &none, "/d/core", None);
             let want = claude_read_deny("/d/core", cfg!(windows));
             assert_eq!(settings["permissions"], serde_json::json!({ "deny": [want] }), "{hook:?} {guard:?}");
         }

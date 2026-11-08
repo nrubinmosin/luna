@@ -62,7 +62,7 @@ pub use registry::{
 pub use resume::agent_resumes;
 pub use spawn::account::account_usage;
 pub use spawn::worktree::{helper_worktree_name, name_to_go_on, report_codex_worktrees, worktree_for_start};
-pub use spawn::{agent_spawned, agent_spawns, chat_starting, spawn, spawn_is, SpawnParams};
+pub use spawn::{agent_spawned, agent_spawns, chat_starting, keeps_connectors, spawn, spawn_is, SpawnParams};
 #[cfg(test)]
 pub use teardown::news_for;
 pub use teardown::{delete, delete_by_user, forget, kill, queued_refused};
