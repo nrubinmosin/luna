@@ -1490,7 +1490,7 @@ mod tests {
         assert!(patterns.iter().all(|p| p.starts_with("E:/work/[[]ab[]]/")), "{patterns:?}");
         // The account's instructions file, a path too, goes in literally.
         let library = crate::library::SessionSkills { excluded: vec!["E:/acc/[x]/CLAUDE.md".into()], ..Default::default() };
-        let settings = crate::claude::launch::claude_settings(None, None, &library, "/d/core");
+        let settings = claude_settings(None, None, &library, "/d/core");
         assert_eq!(settings["claudeMdExcludes"], serde_json::json!(["E:/acc/[[]x[]]/CLAUDE.md"]));
     }
 
