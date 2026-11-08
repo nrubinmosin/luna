@@ -6,6 +6,9 @@
    unreadable part of the dialog before.
    ------------------------------------------------------------------------ */
 [data-app] .settings {
+  /* A failure's red, dark enough on the light card and light enough on the
+     dark one for 4.5:1 (6.3 and 6.2); the app's one red read 3.2 on dark. */
+  --set-error: oklch(0.5 0.19 27);
   display: flex;
   flex-direction: column;
   width: min(920px, calc(100vw - 32px));
@@ -112,6 +115,9 @@
   scrollbar-gutter: stable;
   scroll-padding-block: 16px;
   padding: 2px 12px 22px 22px;
+}
+[data-app][data-theme="dark"] .settings {
+  --set-error: oklch(0.74 0.15 27);
 }
 /* The dark theme's cards are one step off the page, not lost in it. */
 [data-app][data-theme="dark"] .settings-page {
@@ -237,7 +243,7 @@
 [data-app] .set-error {
   margin-top: 4px;
   font-size: var(--fs-4);
-  color: oklch(0.58 0.2 25);
+  color: var(--set-error);
 }
 
 /* ---- the folded explanation ------------------------------------------- */
@@ -272,8 +278,11 @@
 [data-app] .set-about[open] > summary::before {
   transform: rotate(90deg);
 }
+/* Hover underlines rather than shading the line: the accent on --hover fell
+   under 4.5:1 in both themes. */
 [data-app] .set-about > summary:hover {
-  background: var(--hover);
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 [data-app] .set-about > summary:focus-visible {
   outline: 2px solid var(--focus);
