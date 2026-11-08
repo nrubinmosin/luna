@@ -375,6 +375,18 @@ fn serve(mut stream: TcpStream, slot: Slot, token: &str, started: u64) -> io::Re
     result
 }
 
+/// Runs the real `serve` on one accepted connection, for the live integration
+/// test of the peer check (`live.rs`): the test owns the listener and mints
+/// the token, so removing the peer check from `serve` is seen here. A
+/// refused peer returns `Ok(())` before the hello; an accepted one goes on to
+/// the hello against `token`. Windows only: the integration test drives a
+/// sandboxed peer, which is a Windows notion.
+#[cfg(all(test, windows))]
+pub(crate) fn serve_for_test(stream: TcpStream, token: &str) -> io::Result<()> {
+    let slots = Slots::new(STRANGERS);
+    serve(stream, slots.take().expect("a slot"), token, now_ms())
+}
+
 /// Where a connection's answers go: its queue, and its socket, closed when an
 /// answer cannot be queued so the requests waiting on it fail rather than
 /// wait for good.
