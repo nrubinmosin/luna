@@ -84,6 +84,8 @@ fn change_hands(id: &str) -> Option<TakenOver> {
 /// that put text in before this registers its debt after it, or has since the
 /// hold above: the count moves on (`handovers`), which such a send checks its debt
 /// against (owed.rs `owe_from_at`), and what is owed by it goes again, once more.
+/// A notice on its way about it goes nowhere: it is checked against its debts as
+/// it goes in (notifier `deliver_notice`), and they are gone.
 fn drained(id: &str) {
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
     *r.handovers.entry(id.to_string()).or_default() += 1;
@@ -304,6 +306,33 @@ mod tests {
             crate::background::gone_for_test(&id);
             forget(&id);
             forget(&parent);
+        }
+    }
+
+    /// The window's word that the row is made, said again because its answer was
+    /// lost: nothing is handed over twice, and what the person's chat came to be
+    /// owed in between stands. Its former parent hears once.
+    #[test]
+    fn a_handover_said_again_changes_nothing() {
+        for (provider, tag) in [(Provider::Claude, "cl"), (Provider::Codex, "cx")] {
+            let (parent, peer, id) = (format!("ha-{tag}-parent"), format!("ha-{tag}-peer"), format!("ha-{tag}-helper"));
+            let none = serde_json::json!({});
+            register(&parent, Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, none.clone());
+            register(&peer, Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, none);
+            helper(&id, &parent, provider);
+            crate::background::idle_for_test(&id, provider, 1, false);
+            crate::background::background_promote(id.clone()).unwrap();
+            assert_eq!(crate::background::background_promoted(id.clone(), None), Ok(true));
+            // The person's chat goes on: another session asks it something.
+            owe_from(&peer, &id, 2, 0);
+            assert_eq!(crate::background::background_promoted(id.clone(), None), Ok(true), "the retry is answered as the first");
+            assert!(reg().lock().unwrap().owed.contains_key(&(peer.clone(), id.clone())), "what it is owed since stands");
+            assert_eq!(handovers_of(&id), 1);
+            assert_eq!(news_for(&parent).len(), 1, "told once");
+            reg().lock().unwrap().news.retain(|(c, _)| *c != parent);
+            for s in [&id, &peer, &parent] {
+                forget(s);
+            }
         }
     }
 

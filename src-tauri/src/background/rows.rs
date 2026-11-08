@@ -175,7 +175,9 @@ pub fn background_promote(id: String) -> Result<Promoted, String> {
 /// helper, what was sent meanwhile its next turn. Also said by a window settling
 /// what one gone before it was opening, whose row it finds or not. Whether it was
 /// handed over: not for a row made for an opening that is over (PROMOTE_TIMEOUT_MS
-/// gave it back to its parent), which the window lets go of.
+/// gave it back to its parent), which the window lets go of. Said again (a retry
+/// whose first answer was lost), it changes nothing: the handover happens once,
+/// and what the person's chat has come to owe or be owed since stands.
 #[tauri::command]
 pub fn background_promoted(id: String, error: Option<String>) -> Result<bool, String> {
     let Some(why) = error else {
@@ -183,9 +185,15 @@ pub fn background_promoted(id: String, error: Option<String>) -> Result<bool, St
             let mut r = lock();
             match r.entries.get_mut(&id) {
                 Some(e) if !e.promoting => return Ok(false),
+                // Being handed over on an earlier word.
+                Some(e) if e.handing => return Ok(true),
                 // Not to lapse while it is handed over.
-                Some(e) => e.promoting_since = crate::throttle::now_ms(),
-                None => {}
+                Some(e) => {
+                    e.handing = true;
+                    e.promoting_since = crate::throttle::now_ms();
+                }
+                // Handed over already, or deleted meanwhile: nothing more to do.
+                None => return Ok(true),
             }
         }
         let mut count = None;

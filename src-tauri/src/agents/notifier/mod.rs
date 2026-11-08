@@ -608,6 +608,14 @@ fn deliver_notice(
 ) {
     let before = crate::activity::turn_state(caller);
     let baseline = before.map(|t| t.turns_ended).unwrap_or(0);
+    // Again here, where it goes in: the look that put it together was before this
+    // thread, and a debt it tells of may have gone since (a handover clears them,
+    // agents/handover.rs) or become another. Then nothing of it goes in and
+    // nothing is settled; the next look starts over from what stands.
+    if debts_moved(caller, &settled) {
+        crate::log::info("agents", &format!("notice to {} not typed: what it told of changed as it was about to go in", label(caller)));
+        return;
+    }
     // The turn it starts: the next, or for a background caller that has begun
     // one since the look, the one after that.
     let background = crate::background::has(caller);
@@ -1018,6 +1026,46 @@ mod tests {
         assert!(riders_go(false, true, fresh, now, 1), "owed nothing else");
         assert!(riders_go(true, false, fresh, now, 1), "a notice is going in anyway");
         assert!(riders_go(false, false, now - RIDE_MAX_MS, now, 1), "ten minutes at most");
+    }
+
+    /// A notice put together before a handover and going in after it, the gap
+    /// between the notifier's look and its delivery thread: the debt it told of
+    /// went with the handover, so nothing of it goes in. One whose debt stands
+    /// goes in as ever. Both providers' helpers alike.
+    #[test]
+    fn a_notice_on_its_way_through_a_handover_does_not_go_in() {
+        for (provider, tag) in [(Provider::Claude, "cl"), (Provider::Codex, "cx")] {
+            let (a, id, other) = (format!("nh-{tag}-caller"), format!("nh-{tag}-helper"), format!("nh-{tag}-other"));
+            let bg = serde_json::json!({ "background": true });
+            register(&a, Provider::Claude, "C:\\p", "C:\\acc\\one", None, true, serde_json::json!({}));
+            register(&id, provider, "C:\\p", "C:\\acc\\one", Some(&a), false, bg.clone());
+            register(&other, provider, "C:\\p", "C:\\acc\\one", Some(&a), false, bg);
+            // The caller mid-turn: a notice for it queues, to be seen.
+            crate::background::test_helper(&a, "C:\\acc", None, true);
+            crate::background::idle_for_test(&id, provider, 1, false);
+            let looked_up = |helper: &str| {
+                owe_from(&a, helper, 0, 0);
+                reg().lock().unwrap().owed[&(a.clone(), helper.to_string())]
+            };
+            let told = looked_up(&id);
+            assert!(!debts_moved(&a, &[(id.clone(), Settled::Answered, told)]), "as the notifier found it");
+            crate::agents::take_over(&id, || Some(Vec::new()));
+            let pty = crate::pty::manager();
+            let notice = |helper: &str, o: Owed| {
+                let text = format!("{NOTICE_TAG} {helper} answered");
+                deliver_notice(pty, &a, &text, vec![(helper.to_string(), Settled::Answered, o)], vec![], vec![], vec![], vec![]);
+            };
+            notice(&id, told);
+            assert!(crate::background::queued_for_test(&a).is_empty(), "the handover's notice went nowhere");
+            let other_told = looked_up(&other);
+            notice(&other, other_told);
+            assert_eq!(crate::background::queued_for_test(&a), [format!("{NOTICE_TAG} {other} answered")]);
+            reg().lock().unwrap().news.retain(|(c, _)| *c != a);
+            for s in [&id, &other, &a] {
+                crate::background::gone_for_test(s);
+                forget(s);
+            }
+        }
     }
 
     /// A look taken before a retry reads the turn that missed as the answer.

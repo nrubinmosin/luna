@@ -33,6 +33,7 @@ pub fn start(id: &str, spec: Spec, prompt: &str) -> Result<(), String> {
         promoting: false,
         promoting_since: 0,
         deleting: false,
+        handing: false,
         observed: Observed::default(),
     };
     claim(&mut e);

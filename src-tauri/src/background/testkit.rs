@@ -245,6 +245,7 @@ pub fn test_helper(id: &str, account_path: &str, session: Option<&str>, busy: bo
         promoting: false,
         promoting_since: 0,
         deleting: false,
+        handing: false,
         observed: Observed::default(),
     };
     lock().entries.insert(id.to_string(), e);
@@ -305,6 +306,7 @@ pub(super) fn entry(provider: Provider) -> Entry {
         promoting: false,
         promoting_since: 0,
         deleting: false,
+        handing: false,
         observed: Observed::default(),
     }
 }

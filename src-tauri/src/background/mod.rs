@@ -155,6 +155,10 @@ struct Entry {
     /// what the delete went by (whose it is, that it is idle, its worktree) still
     /// holds when it removes it. Text sent queues, and goes with it.
     deleting: bool,
+    /// The window's word that its row is made is being acted on (rows.rs
+    /// `background_promoted`): a second word, a retry whose first answer was
+    /// lost, hands nothing over again.
+    handing: bool,
     observed: Observed,
 }
 

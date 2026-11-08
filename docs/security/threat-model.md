@@ -97,8 +97,10 @@ in section 6.
   ownership, idleness and the worktree removes what it checked, and a removal
   that finds a taken-over chat refuses. A send whose text went in just before a
   handover registers no debt on the person's chat (`owe_from_at`, the handover
-  count), and a notice prepared on a debt gone since is dropped. Waits re-check
-  their `scope` on every look and before handing anything over; history stops at
+  count), and a notice prepared on a debt gone since is dropped, checked again
+  as it goes in. A confirmation said twice hands over once. Waits re-check
+  their `scope` on every look and before handing anything over, a `wait_many`
+  returning a revoked session as `refused` with nothing of it; history stops at
   a link's current owner and at a run the log records as taken over. An opening
   survives a core restart held (`helpers.json`), the window settles it with
   retries, and one never settled goes back to the parent after 15 minutes with
