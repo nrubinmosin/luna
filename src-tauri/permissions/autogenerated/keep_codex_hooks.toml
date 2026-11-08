@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-keep-codex-hooks"
+description = "Enables the keep_codex_hooks command without any pre-configured scope."
+commands.allow = ["keep_codex_hooks"]
+
+[[permission]]
+identifier = "deny-keep-codex-hooks"
+description = "Denies the keep_codex_hooks command without any pre-configured scope."
+commands.deny = ["keep_codex_hooks"]

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-tray-awake"
+description = "Enables the tray_awake command without any pre-configured scope."
+commands.allow = ["tray_awake"]
+
+[[permission]]
+identifier = "deny-tray-awake"
+description = "Denies the tray_awake command without any pre-configured scope."
+commands.deny = ["tray_awake"]

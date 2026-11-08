@@ -1,0 +1,43 @@
+Seen {
+    consumed: 1213,
+    messages: [],
+    first_prompt: None,
+    cwd: None,
+    spawned_by: None,
+    tail_model: Some(
+        "gpt-0-missing",
+    ),
+    context_tokens: Some(
+        7643.0,
+    ),
+    context_window: None,
+    rate_limits: Some(
+        (
+            "{\"primary\":null}",
+            "t",
+        ),
+    ),
+    last_model: Some(
+        "gpt-0-missing",
+    ),
+    answered_model: Some(
+        "gpt-other",
+    ),
+    due_ms: None,
+    scan_from_epoch: Scanned {
+        completed: 0,
+        working: None,
+        ask: None,
+        failed: None,
+        last_said: None,
+        last_said_at: None,
+    },
+    scan_from_now: Scanned {
+        completed: 0,
+        working: None,
+        ask: None,
+        failed: None,
+        last_said: None,
+        last_said_at: None,
+    },
+}

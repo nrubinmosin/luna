@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-library-delete-skill"
+description = "Enables the library_delete_skill command without any pre-configured scope."
+commands.allow = ["library_delete_skill"]
+
+[[permission]]
+identifier = "deny-library-delete-skill"
+description = "Denies the library_delete_skill command without any pre-configured scope."
+commands.deny = ["library_delete_skill"]

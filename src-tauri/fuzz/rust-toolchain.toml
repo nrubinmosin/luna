@@ -1,0 +1,7 @@
+# The fuzz targets' toolchain, and theirs alone: cargo-fuzz instruments with
+# flags only a nightly takes. Pinned by date, as docker/fuzz.Dockerfile installs
+# it; scripts/fuzz.ps1 fails when the two disagree. The app itself is built on
+# src-tauri/rust-toolchain.toml.
+[toolchain]
+channel = "nightly-2026-10-25"
+profile = "minimal"

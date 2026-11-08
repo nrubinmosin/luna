@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-claude-trust-folder"
+description = "Enables the claude_trust_folder command without any pre-configured scope."
+commands.allow = ["claude_trust_folder"]
+
+[[permission]]
+identifier = "deny-claude-trust-folder"
+description = "Denies the claude_trust_folder command without any pre-configured scope."
+commands.deny = ["claude_trust_folder"]

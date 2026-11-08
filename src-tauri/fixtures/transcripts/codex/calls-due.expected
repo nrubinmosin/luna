@@ -1,0 +1,36 @@
+Seen {
+    consumed: 1716,
+    messages: [],
+    first_prompt: None,
+    cwd: None,
+    spawned_by: None,
+    tail_model: None,
+    context_tokens: None,
+    context_window: None,
+    rate_limits: None,
+    last_model: None,
+    answered_model: None,
+    due_ms: Some(
+        1793800819533,
+    ),
+    scan_from_epoch: Scanned {
+        completed: 0,
+        working: Some(
+            true,
+        ),
+        ask: None,
+        failed: None,
+        last_said: None,
+        last_said_at: None,
+    },
+    scan_from_now: Scanned {
+        completed: 0,
+        working: Some(
+            false,
+        ),
+        ask: None,
+        failed: None,
+        last_said: None,
+        last_said_at: None,
+    },
+}

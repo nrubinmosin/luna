@@ -89,9 +89,20 @@ pub fn format_account_config(provider: Provider, text: String) -> Result<String,
     }
 }
 
+/// The page's account path is held to an account folder of Luna's
+/// (boundary.rs) before anything there is read or written.
 #[tauri::command]
-pub fn read_account_config(provider: Provider, account_path: String) -> Result<ConfigFile, String> {
-    let path = config_file(provider, &account_path)?;
+pub fn read_account_config(provider: Provider, account_path: crate::boundary::AccountPath) -> Result<ConfigFile, String> {
+    read_config_file(provider, &String::from(account_path))
+}
+
+#[tauri::command]
+pub fn write_account_config(provider: Provider, account_path: crate::boundary::AccountPath, text: String) -> Result<(), String> {
+    write_config_file(provider, &String::from(account_path), text)
+}
+
+pub(crate) fn read_config_file(provider: Provider, account_path: &str) -> Result<ConfigFile, String> {
+    let path = config_file(provider, account_path)?;
     let (text, exists) = match std::fs::read_to_string(&path) {
         Ok(t) => (t, true),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => (
@@ -112,10 +123,9 @@ pub fn read_account_config(provider: Provider, account_path: String) -> Result<C
 
 /// Writes the text as typed — comments, order and spacing are the user's —
 /// once it parses; a file that would not is never written.
-#[tauri::command]
-pub fn write_account_config(provider: Provider, account_path: String, text: String) -> Result<(), String> {
+pub(crate) fn write_config_file(provider: Provider, account_path: &str, text: String) -> Result<(), String> {
     check_config(provider, &text)?;
-    let path = config_file(provider, &account_path)?;
+    let path = config_file(provider, account_path)?;
     let editing = editing()?;
     write_text(&path, &text)?;
     drop(editing);
@@ -182,20 +192,20 @@ a=\"x\"
     fn the_editor_writes_only_what_parses_and_keeps_it_as_typed() {
         let d = dir("editor");
         let p = d.to_string_lossy().into_owned();
-        assert!(!read_account_config(Provider::Claude, p.clone()).unwrap().exists);
-        assert!(write_account_config(Provider::Claude, p.clone(), "{ \"tui\": ".into()).is_err());
-        assert!(write_account_config(Provider::Claude, p.clone(), "[1]".into()).is_err());
+        assert!(!read_config_file(Provider::Claude, &p).unwrap().exists);
+        assert!(write_config_file(Provider::Claude, &p, "{ \"tui\": ".into()).is_err());
+        assert!(write_config_file(Provider::Claude, &p, "[1]".into()).is_err());
         let typed = "{
   \"tui\":   \"fullscreen\"
 }
 ";
-        write_account_config(Provider::Claude, p.clone(), typed.into()).unwrap();
-        assert_eq!(read_account_config(Provider::Claude, p.clone()).unwrap().text, typed);
-        assert!(write_account_config(Provider::Codex, p.clone(), "model = [unterminated".into()).is_err());
+        write_config_file(Provider::Claude, &p, typed.into()).unwrap();
+        assert_eq!(read_config_file(Provider::Claude, &p).unwrap().text, typed);
+        assert!(write_config_file(Provider::Codex, &p, "model = [unterminated".into()).is_err());
         let toml = "# mine
 model = \"gpt-6\"   # keep
 ";
-        write_account_config(Provider::Codex, p.clone(), toml.into()).unwrap();
+        write_config_file(Provider::Codex, &p, toml.into()).unwrap();
         assert_eq!(std::fs::read_to_string(d.join("config.toml")).unwrap(), toml);
         let _ = std::fs::remove_dir_all(&d);
     }

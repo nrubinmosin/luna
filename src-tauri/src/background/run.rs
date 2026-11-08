@@ -232,6 +232,8 @@ fn take_stderr(id: &str, reader: &OutReader, line: &[u8]) -> bool {
 }
 
 fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
+    // Nothing runs as administrator.
+    crate::elevation::guard()?;
     settle_worktree(id);
     // Before the registry is locked for the command line: a pass reads and
     // writes every account's copies, and every helper's events wait on that
@@ -442,6 +444,17 @@ pub(super) fn stdin_took(e: &mut Entry) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_turn_is_not_started_as_administrator() {
+        // Refused before the helper is even looked up: no such helper is what
+        // a process that may start one says.
+        crate::elevation::refuse_here(Some(crate::elevation::ADMIN));
+        let why = crate::elevation::refusal().map(String::from);
+        let refused = spawn_turn("no-such-helper", "hi");
+        crate::elevation::refuse_here(None);
+        assert_eq!(refused.err(), why);
+    }
 
     #[test]
     fn a_turns_last_events_are_read_with_a_stray_holding_the_pipe() {

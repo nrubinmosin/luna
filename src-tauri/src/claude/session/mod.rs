@@ -15,6 +15,8 @@
 //!   last answer, the last words, an API error, the tool call it stands on and
 //!   when what it waits on is due.
 //! - `titles`: the titles the CLI gives a session, and its opening prompt.
+//! - `reading`: all of the above read of a transcript's bytes alone, by the
+//!   same functions, for the fuzz target and the fixture tests.
 
 use crate::paths::path_key_loose as norm_path;
 use crate::pty::{sane_title, CliTitle, SessionMeta};
@@ -23,6 +25,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 mod ending;
+#[cfg(test)]
+mod fixtures;
+mod reading;
 mod registry;
 mod titles;
 mod transcript;
@@ -30,6 +35,7 @@ mod transcript;
 // Every file of the module reaches the others' items through `use super::*`,
 // and the rest of the crate keeps its `crate::claude::session::X` paths.
 pub use ending::*;
+pub use reading::*;
 pub use registry::*;
 pub use titles::*;
 pub use transcript::*;
