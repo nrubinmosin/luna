@@ -22,6 +22,19 @@ does a background helper spawned without tools.
   action `cancel` disarms it too.
 - A spawn may set `budgetTokens`: once that helper's context passes it, its
   parent hears so, once; nothing is stopped.
+- An agent reads, waits on and sends text to its own helpers. Your own chats,
+  another chat's helpers and its own parent it reaches only by saying so
+  (`scope: "all"`), and what it sends them arrives opened `[From session <id>
+  via Luna]`, so that chat knows the words are not yours. Only its own helpers
+  can it interrupt, stop or delete.
+- A helper starts without its account's MCP servers and connectors (claude.ai's
+  Gmail, Slack and the like; Codex's apps and the servers in its account's
+  `config.toml`), and a Claude Code helper with auto-memory off, so that what
+  an agent briefs it to do stays inside Luna. A spawn with `connectors: true`
+  keeps them. A Codex helper still has servers from the project's `.codex/`
+  folder and from plugins.
+- A tool called with an argument it does not take, or of the wrong type, is
+  refused with what it does take, rather than run on a default.
 
 **The guard.** A chat with tools, and every helper, has its shell commands
 checked before they run: one that follows a file (`tail -f`, `tail -F`,
@@ -97,7 +110,7 @@ hooks run unasked.
   for the next turn.
 - `luna_send` with `interrupt: true` cuts the current turn short (Esc in a
   terminal, the process stopped for a background helper) and the text becomes
-  the next turn.
+  the next turn: in the agent's own helpers only.
 - A prompt or message longer than 8,000 characters reaches a visible session as a
   file it is told to read; a background one takes any length on its stdin.
 - Luna types into a terminal one thing at a time (notices, sends and answers), so
