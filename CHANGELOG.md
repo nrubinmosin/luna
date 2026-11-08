@@ -18,6 +18,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   session, instructions for one kind are laid out with a line saying whose
   they are. What Luna applied lists what the audience kept from a session.
   See docs/user-guide/library.md.
+- Luna's note to every helper also tells it what it still owes: to stop what
+  it started before its turn ends, keep each caveat beside the claim it
+  limits, and send, push or post nothing outward unless its task asks.
 - "What Luna applied" (the ⓘ button on a chat's title bar): everything Luna
   added to the chat's CLI at its latest start, grouped as your choice,
   runtime, boundary or workaround, each with its value and why, and what Luna

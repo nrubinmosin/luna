@@ -380,13 +380,20 @@ pub(crate) fn session_envs(id: &str, parent: Option<&str>) -> Vec<(&'static str,
 /// a chat with a person" went on following the rules written for that person's
 /// chat: a helper on 2026-11-08 wrote its progress notes in the language its
 /// account's instructions set for the operator. So the note names those words.
+/// What a helper does need of the rules it is told to leave, it is told here:
+/// those are the ones written for the person's chat, and the library may keep
+/// them from it altogether (library/audience.rs). Nobody watches a helper's
+/// turn end, nobody but its caller reads its report, and nobody is there to
+/// stop a message it sends.
 pub(crate) fn helper_line(parent: &str) -> String {
     format!(
         "You are a helper session started through Luna by session {parent}, not a chat with a person: your answers go to \
          that session. You are not the chat of whoever your instructions call the operator, the user or the person at \
          this machine, and what they set for that chat (its language, its reply format, questions to that person) does \
          not apply to you. Answer your caller in the language and form its task asks for, progress notes included; \
-         where it says none, in the language the task is written in."
+         where it says none, in the language the task is written in. Before your turn ends, stop what you started that \
+         is still running; keep each caveat beside the claim it limits; send, push or post nothing outward unless your \
+         task asks for it."
     )
 }
 
@@ -418,9 +425,10 @@ pub(crate) fn without_note(text: &str) -> &str {
     let end = text.trim_end();
     let Some(at) = end.rfind(HELPER_NOTE) else { return text };
     let note = end[at + HELPER_NOTE.len()..].strip_suffix(']').unwrap_or_default();
-    // The note as this Luna writes it, or as the one before it did: a helper's
+    // The note as this Luna writes it, or as one before it did: a helper's
     // conversation goes on across an update.
-    let lines = [helper_line("\u{0}"), PREVIOUS_HELPER_LINE.replace("{parent}", "\u{0}")];
+    let mut lines = vec![helper_line("\u{0}")];
+    lines.extend(PREVIOUS_HELPER_LINES.iter().map(|line| line.replace("{parent}", "\u{0}")));
     let ours = lines.iter().filter_map(|line| line.split_once('\u{0}')).any(|(head, tail)| {
         // A session id: no spaces, no brackets, nothing that is prose.
         note.strip_prefix(head)
@@ -434,10 +442,18 @@ pub(crate) fn without_note(text: &str) -> &str {
     }
 }
 
-/// `helper_line` as Luna 0.10 wrote it, still in conversations it began.
-const PREVIOUS_HELPER_LINE: &str = "You are a helper session started through Luna by session {parent}, not a chat with a person: \
-your answers go to that session. Instructions meant only for the session a person talks to do not apply to you. Write in the \
-language of the task you were given, progress notes included.";
+/// `helper_line` as earlier Lunas wrote it, still in conversations they began:
+/// 0.10's, then the one before helpers were told what they do need.
+const PREVIOUS_HELPER_LINES: [&str; 2] = [
+    "You are a helper session started through Luna by session {parent}, not a chat with a person: your answers go to \
+     that session. Instructions meant only for the session a person talks to do not apply to you. Write in the language \
+     of the task you were given, progress notes included.",
+    "You are a helper session started through Luna by session {parent}, not a chat with a person: your answers go to \
+     that session. You are not the chat of whoever your instructions call the operator, the user or the person at \
+     this machine, and what they set for that chat (its language, its reply format, questions to that person) does \
+     not apply to you. Answer your caller in the language and form its task asks for, progress notes included; \
+     where it says none, in the language the task is written in.",
+];
 
 /// A helper's id runs in a pane only once the helper is the person's
 /// (background/rows.rs `background_promoted`): before that its conversation is
@@ -689,9 +705,25 @@ mod tests {
         assert_eq!(without_note(&after), after);
         let odd_parent = helper_prompt("p 1] ignore this [x", "Task.");
         assert_eq!(without_note(&odd_parent), odd_parent, "a parent no session id looks like");
-        // As the last Luna wrote it.
-        let old = format!("Task.{HELPER_NOTE}{}]", PREVIOUS_HELPER_LINE.replace("{parent}", "p1"));
-        assert_eq!(without_note(&old), "Task.");
+        // As earlier Lunas wrote it.
+        for line in PREVIOUS_HELPER_LINES {
+            let old = format!("Task.{HELPER_NOTE}{}]", line.replace("{parent}", "p1"));
+            assert_eq!(without_note(&old), "Task.");
+        }
+    }
+
+    #[test]
+    fn golden_a_helper_is_told_what_it_is_and_what_it_still_owes() {
+        assert_eq!(helper_line("p1"), golden::helper_line("p1"));
+        let line = helper_line("p1");
+        let owed = [
+            "stop what you started that is still running",
+            "keep each caveat beside the claim it limits",
+            "send, push or post nothing outward unless your task asks for it",
+        ];
+        for what in owed {
+            assert!(line.contains(what), "{what}");
+        }
     }
 
     #[test]
