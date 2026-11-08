@@ -47,6 +47,9 @@ pub(super) struct Said {
     pub(super) texts: Vec<String>,
     /// Index in `texts` of the first message of the last turn that wrote any.
     last_turn: usize,
+    /// Index in `texts` of the first message of each turn that wrote any, in
+    /// order: the last of them is `last_turn`.
+    starts: Vec<usize>,
     /// That turn was one its CLI started by itself (a background job's end it
     /// took up), with no prompt of anyone's behind it.
     by_cli: bool,
@@ -55,7 +58,7 @@ pub(super) struct Said {
 impl Said {
     /// Messages of one turn, or of turns that cannot be told apart.
     pub(super) fn one_turn(texts: Vec<String>) -> Said {
-        Said { texts, last_turn: 0, by_cli: false }
+        Said { texts, last_turn: 0, starts: vec![0], by_cli: false }
     }
 }
 
@@ -84,9 +87,12 @@ fn own_words(messages: Vec<Message>, stopped: bool) -> Said {
             prompted = true;
             continue;
         }
-        if prompted || m.after_cli {
-            said.last_turn = said.texts.len();
-            said.by_cli = !prompted;
+        if prompted || m.after_cli || said.texts.is_empty() {
+            if !said.texts.is_empty() {
+                said.last_turn = said.texts.len();
+                said.by_cli = !prompted;
+            }
+            said.starts.push(said.texts.len());
             prompted = false;
         }
         said.texts.push(m.text);
@@ -175,8 +181,10 @@ pub(super) const SHORT_MESSAGE: usize = 400;
 /// text sent mid-turn answers after the first, and the first's long report
 /// would lead with what it has since moved past (a commit it has rebased).
 /// But a short last turn its CLI started by itself (a background job's end)
-/// answers nobody: the report is the longest one before it that is not short,
-/// and the short line goes after it as its last word.
+/// answers nobody: the report is that of the latest turn before it that wrote a
+/// message that is not short, the longest of that turn's — not an older turn's
+/// longer one, which the newer has moved past — and the short line goes after
+/// it as its last word.
 pub(super) fn report_of(replies: &Said) -> usize {
     let from = replies.last_turn.min(replies.len().saturating_sub(1));
     let len = |i: usize| replies[i].chars().count();
@@ -184,8 +192,13 @@ pub(super) fn report_of(replies: &Said) -> usize {
     if replies.get(longest).map_or(0, |r| r.chars().count()) >= SHORT_MESSAGE {
         return longest;
     }
-    let before = replies.by_cli.then(|| (0..from).filter(|&i| len(i) >= SHORT_MESSAGE).max_by_key(|&i| len(i))).flatten();
-    before.unwrap_or(replies.len().saturating_sub(1))
+    let before = replies.by_cli.then(|| {
+        // Each earlier turn as a range of messages, newest first.
+        let mut bounds: Vec<usize> = replies.starts.iter().copied().filter(|&s| s < from).collect();
+        bounds.push(from);
+        bounds.windows(2).rev().find_map(|w| (w[0]..w[1]).filter(|&i| len(i) >= SHORT_MESSAGE).max_by_key(|&i| len(i)))
+    });
+    before.flatten().unwrap_or(replies.len().saturating_sub(1))
 }
 
 /// A report's first line that says anything, on one line and short, without
@@ -365,6 +378,29 @@ mod tests {
         assert!(whole.starts_with("The new tip is 5ce3b92d2."), "{whole}");
         assert!(whole.contains("Its last message:\n\nA leftover wait loop"), "{whole}");
         assert!(begins(&said).starts_with(". It begins: \"The new tip is 5ce3b92d2."));
+        // Two turns with reports before it: the newer's leads, though the
+        // older's is longer — the newer has moved past it.
+        let older = format!("The tip is a1. {}", "Older detail. ".repeat(150));
+        let newer = format!("The tip is b2. {}", "Newer. ".repeat(120));
+        assert!(older.len() > 2000 && (800..1000).contains(&newer.len()));
+        let said = own_words(
+            vec![
+                m("user", "Do A.".into()),
+                m("assistant", older.clone()),
+                m("user", "Now B.".into()),
+                m("assistant", "On B.".into()),
+                m("assistant", newer.clone()),
+                m("assistant", "B pushed.".into()),
+                cli("A leftover job ended."),
+            ],
+            false,
+        );
+        assert_eq!(said.starts, vec![0, 1, 4]);
+        assert_eq!(said[report_of(&said)], newer, "the latest turn with a report, not the longest of all");
+        // A newer turn with nothing long is passed over for the one before it.
+        let said =
+            own_words(vec![m("assistant", older.clone()), m("user", "And?".into()), m("assistant", "Fine.".into()), cli("Ended.")], false);
+        assert_eq!(said[report_of(&said)], older);
         // With nothing long before it, the CLI's short turn still leads.
         let said = own_words(vec![m("assistant", "Done.".into()), cli("A job ended.")], false);
         assert_eq!(said[report_of(&said)], "A job ended.");
