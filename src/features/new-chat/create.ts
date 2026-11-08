@@ -8,7 +8,7 @@ import { pickChatColor } from '../../shared/ui/chatColors';
 import { newId, useChats, wornColors } from '../chats/chats.store';
 import { findAccount, useAccounts } from '../accounts/accounts.store';
 import { currentSlots, usePanes } from '../panes/panes.store';
-import { claude, codex, ui } from '../providers';
+import { claude, codex, ui, ui as providerUi } from '../providers';
 import { startFor, useNewChat } from './newchat.store';
 
 export type ChatSpec = {
@@ -17,6 +17,11 @@ export type ChatSpec = {
   worktree: boolean;
   /** Attach Luna's MCP tools so the session can spawn and drive others. */
   tools?: boolean;
+  /** The guard against endless waits (ticked in the dialog). */
+  guard?: boolean;
+  /** Mark the folder trusted in the account, as the CLI's own trust prompt
+   *  would: ticked in the dialog, never for an agent's chat. */
+  trust?: boolean;
   /** Codex: run the project's hooks without their trust prompt. */
   hooksUnasked?: boolean;
   /** Set when an agent spawns it: the row nests under this chat, and it is
@@ -40,16 +45,17 @@ export type ChatSpec = {
 } & ({ provider: 'claude'; settings: ClaudeSettings } | { provider: 'codex'; settings: CodexSettings });
 
 /**
- * Adds the chat and seats it where it will be seen. Throws if the folder has
- * to be marked trusted and that write fails — neither CLI can show its own
- * trust prompt the way Luna runs it (Claude Code refuses under `--worktree`,
- * Codex would follow it with a sandbox setup question), so the bit has to
- * land before the session spawns.
+ * Adds the chat and seats it where it will be seen. Marks the folder trusted
+ * in the account first when the person ticked that (`trust`) and it is not
+ * yet, and throws if that write fails: the mark has to land before the
+ * session spawns. Unticked, nothing is written and the CLI asks itself. An
+ * agent's chat never writes it: a helper is trusted for its own runs alone
+ * (the core's `codex_trust`).
  */
 export async function createChat(spec: ChatSpec): Promise<string> {
   const p = ui(spec.provider);
   const accountPath = spec.account.path;
-  if (accountPath && !(await p.folderTrusted(accountPath, spec.folder))) {
+  if (spec.trust && !spec.byAgent && accountPath && !(await p.folderTrusted(accountPath, spec.folder))) {
     await p.trustFolder(accountPath, spec.folder);
   }
 
@@ -76,6 +82,7 @@ export async function createChat(spec: ChatSpec): Promise<string> {
     worktreePath,
     color: pickChatColor(wornColors(folders, group)),
     tools: spec.tools ?? false,
+    guard: spec.guard ?? false,
     parentId: spec.parentId ?? null
   };
   const chat: Chat =
@@ -102,8 +109,10 @@ function workingOn() {
 /**
  * The no-dialog path. Everything is already decided: the folder and account of
  * the chat on screen, and the rest from the settings files that would govern
- * it anyway. Falls back to the dialog when there is nothing to go on, or when
- * the trust write fails and the reason wants showing.
+ * it anyway. Falls back to the dialog when there is nothing to go on, when the
+ * folder is not trusted in the account (whether to trust it is the person's to
+ * say, and the dialog is where it is asked), or when creating fails and the
+ * reason wants showing.
  */
 export async function quickChat(): Promise<void> {
   const chats = useChats.getState();
@@ -125,6 +134,13 @@ export async function quickChat(): Promise<void> {
 
   if (!folder || !account) {
     ui.openDialog(folder || undefined);
+    return;
+  }
+  const trusted = await providerUi(account.provider)
+    .folderTrusted(account.path, folder)
+    .catch(() => false);
+  if (!trusted) {
+    ui.openDialog(folder);
     return;
   }
 
@@ -149,8 +165,7 @@ export async function quickChat(): Promise<void> {
       });
     }
   } catch {
-    // The trust write failed; the dialog is where that has a place to be
-    // said.
+    // The dialog is where the reason has a place to be said.
     ui.openDialog(folder);
   }
 }

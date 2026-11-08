@@ -70,15 +70,18 @@ pub fn claude_folder_trusted(account_path: AccountPath, folder: AbsPath) -> Resu
 }
 
 /// Marks the folder trusted for this account — the same bit the CLI's own trust
-/// prompt writes. Leaves every other key in the config untouched.
-#[tauri::command]
+/// prompt writes — when the person ticked that in the new-chat dialog. Leaves
+/// every other key in the config untouched, and notes the write in Luna's
+/// ledger of what it applied (applied.rs). A core command (corecmd.rs), as
+/// Codex's is: the ledger's notes, and what it may have missed, are kept by
+/// the process that answers "What Luna applied".
 pub fn claude_trust_folder(account_path: AccountPath, folder: AbsPath) -> Result<(), String> {
     trust_folder(&String::from(account_path), &String::from(folder))
 }
 
 pub(crate) fn trust_folder(account_path: &str, folder: &str) -> Result<(), String> {
     let path = config_file(account_path)?;
-    let _editing = crate::account_settings::editing()?;
+    let editing = crate::account_settings::editing()?;
     let mut cfg = read_config_for_write(&path)?;
 
     let projects = cfg.as_object_mut().ok_or("Malformed .claude.json")?.entry("projects").or_insert_with(|| Value::Object(Map::new()));
@@ -102,7 +105,9 @@ pub(crate) fn trust_folder(account_path: &str, folder: &str) -> Result<(), Strin
     fs::rename(&tmp, &path).map_err(|e| {
         let _ = fs::remove_file(&tmp);
         e.to_string()
-    })
+    })?;
+    crate::applied::record(&editing, account_path, crate::applied::Item::TrustWritten, folder);
+    Ok(())
 }
 
 #[cfg(test)]

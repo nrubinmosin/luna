@@ -15,7 +15,8 @@ and check the other CLI for the same behavior (AGENTS.md, "Both providers").
 | Observation | What Luna does |
 | --- | --- |
 | On exit, a clean worktree (no changes, no commits) is silently removed; given `--worktree <name>` again it is re-created with the same name and branch | a worktree chat resumes from the project folder as `--worktree <name> --resume <uuid>` |
-| The trust prompt cannot be shown under `--worktree` | writes `hasTrustDialogAccepted` into `.claude.json` before the spawn |
+| The trust prompt cannot be shown under `--worktree` | the new-chat dialog asks to trust the folder and writes `hasTrustDialogAccepted` into `.claude.json` before the spawn only when ticked; it will not create such a worktree chat unticked |
+| `CLAUDE_CODE_SANDBOXED` set makes the process trust any folder, and also lifts other checks of project grants (2.1.318) | not used: no per-run trust for a Claude Code chat |
 | `--mcp-config` takes any number of files and swallows a positional prompt as one more | the prompt goes after `--` |
 | Without `"timeout"` on an HTTP MCP server, a call silent for 5 minutes is dropped | `"timeout": 1900000` |
 | An MCP call longer than 120 s is moved to the background; the result arrives later as a task notification | the notifier waits 10 s for such a `wait` before sending its own notice |
@@ -26,6 +27,7 @@ and check the other CLI for the same behavior (AGENTS.md, "Both providers").
 | `--resume` does not continue a turn a killed process was in, unless an environment variable Luna does not set is present | the window restarts sessions between turns |
 | `--append-system-prompt-file` is not re-read on resume (a resume keeps its system prompt) | folder instructions go as an `--add-dir` `CLAUDE.md` with `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD` |
 | `claudeMdExcludes` takes User memory by absolute path | the account's `CLAUDE.md` path is excluded |
+| `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD` is a switch: set, every additional folder's memory is read (2.1.318); `claudeMdExcludes` patterns are picomatch globs (`{ dot: true }`) on absolute paths with `/`, for User, Project and Local memory; every `\` in a pattern is turned into `/` first, so a backslash escapes nothing; a pattern also matches the path spelled exactly like it (2.1.319's bundled picomatch, `input === glob`); `! @ + ,` are literal unless an unescaped `(` or braces follow, `"` quotes | the variable only with the library's instructions; the other added folders' `CLAUDE.md`, `CLAUDE.local.md`, `.claude/CLAUDE.md` and `.claude/rules/**` excluded, each folder's name literal with `* ? [ ] { } ( ) |` and `"` alone in bracket classes (`[[]`); a pattern whose own spelling or meaning reaches this launch's instruction paths is dropped and shown as a Workaround. On a Claude Code upgrade, run the ignored test `claude_md_exclude_patterns_for_the_matcher_check` (`LUNA_GLOB_TABLE`) and check its table with the new binary's own picomatch |
 | Skills under an `--add-dir` are listed by their own names; one whose name the repository or account already has is listed as `<folder>:<name>`, scoped to that folder | such copies are renamed `luna-<name>` |
 | Before its first draw it syncs organization skills and plugins and makes the worktree, which can take minutes | `starting` state; sends refused until the prompt is taken |
 | It copies `.claude/settings.local.json` into a new worktree; `.worktreeinclude` copies more | `as_made` allows that file only |
@@ -95,11 +97,13 @@ and check the other CLI for the same behavior (AGENTS.md, "Both providers").
 | MCP calls get 60 s by default | `tool_timeout_sec=1900`, `default_tools_approval_mode="approve"` |
 | `-c developer_instructions=` replaces the value from the config stack (ancestors' `.codex` included) | Luna appends a note to helper prompts instead |
 | Trust is matched by the checkout's exact path; a parent folder does not count; `-c projects=…` trusts for one run | trust per path, or a one-run override |
-| The trust screen is followed by a Windows sandbox setup question | trust written before the spawn |
+| The trust screen is followed by a Windows sandbox setup question | trust written before the spawn when the new-chat dialog's box is ticked; unticked, both are Codex's to ask |
 | A `-c` key is split at each dot | plugin slugs are `[a-z0-9-]` |
 | `skills.config` entries from `-c` are added to the account's selector by selector | folder hiding via one `-c skills.config=[…]` |
 | `$CODEX_HOME/AGENTS.override.md` is read instead of `AGENTS.md` | reported in the library window |
-| `check_for_update_on_startup = false` stops update checks | seeded into new accounts |
+| `check_for_update_on_startup = false` stops update checks | passed as `-c` on every start, chat and `exec` alike, never written to `config.toml` |
+| `exec` refuses to run outside a Git repository without `--skip-git-repo-check` | passed to a helper only outside one |
+| `approvals_reviewer` in the account's or project's config sends what Codex asks to a reviewer model | `-c approvals_reviewer="user"` for helpers only; a person's chat keeps its own |
 | A refresh token is single-use; the server rejects a reused one ("refresh token was already used") | Luna never refreshes Codex tokens |
 | Each tool command runs in a session of its own (`setsid`); `shell_environment_policy` may filter the environment, but `CODEX_THREAD_ID` is set after the filter | job membership also by `CODEX_THREAD_ID` |
 | Its own continuation of an interrupted turn lives in the daemon; resumed, it says "Conversation interrupted" and writes no end for that turn | `scan_rollout` ignores a `task_started` older than the process |
@@ -138,7 +142,7 @@ and check the other CLI for the same behavior (AGENTS.md, "Both providers").
 
 | Observation | What Luna does |
 | --- | --- |
-| Without `windows.sandbox`, `read-only` and `workspace-write` reject or ask for every command, even `Get-Content` | `-c windows.sandbox="unelevated"` |
+| Without `windows.sandbox`, `read-only` and `workspace-write` reject or ask for every command, even `Get-Content` | `-c windows.sandbox="unelevated"`, unless the account's `config.toml` names one |
 | Codex takes the first `pwsh.exe` on PATH; the Store app alias fails under the restricted token (`CreateProcessAsUserW failed: 5`) | PATH without `…\Microsoft\WindowsApps` |
 | Under `workspace-write` Codex adds one ACL entry for its sandbox to the folder | documented |
 | "No network" is only proxy variables at `127.0.0.1:9` and `GIT_SSH_COMMAND=cmd /c exit 1`; ssh, raw sockets and `gh` with those cleared still connect | documented: keeps tools off the network by accident, not data in |

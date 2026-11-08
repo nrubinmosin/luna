@@ -184,6 +184,15 @@ impl Dirs {
     }
 }
 
+/// What the library has written into the account folder `account_path`, by
+/// destination, as its ledger says: what the window lists as the library's
+/// layout among what Luna applied to a chat on that account (applied.rs).
+pub fn laid_out_in(account_path: &str) -> Vec<String> {
+    let sep = if cfg!(windows) { '\\' } else { '/' };
+    let under = format!("{}{sep}", crate::paths::path_key(account_path));
+    Ledger::load(&Dirs::current()).written.into_keys().filter(|dest| crate::paths::path_key(dest).starts_with(&under)).collect()
+}
+
 /// What Luna last wrote at each destination, file by file.
 #[derive(Serialize, Deserialize, Default)]
 struct Ledger {

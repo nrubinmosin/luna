@@ -89,6 +89,9 @@ interface ChatBase {
   color?: string | null;
   /** Luna's MCP tools attached: this session can spawn and drive others. */
   tools?: boolean;
+  /** The guard against endless waits, asked for in the new-chat dialog: a
+   *  shell command that would wait forever is refused before it runs. */
+  guard?: boolean;
   /** The chat whose agent spawned this one. A parent that no longer exists
    *  leaves the child an orphan, listed at the top level with a mark. */
   parentId?: string | null;
