@@ -129,6 +129,11 @@ pub fn codex_trusted_roots() -> Vec<String> {
 #[tauri::command]
 pub fn set_codex_trusted_roots(roots: Vec<String>) -> Result<Vec<String>, String> {
     let roots: Vec<String> = roots.into_iter().map(|r| r.trim().to_string()).filter(|r| !r.is_empty()).collect();
+    // Each one trusts everything under it: a plain absolute folder only, as
+    // the folder picker gives (boundary.rs).
+    for r in &roots {
+        crate::boundary::absolute(r).map_err(|e| format!("{r}: {e}"))?;
+    }
     crate::settings::update(|s| s.codex_trusted_roots = roots.clone())?;
     Ok(roots)
 }

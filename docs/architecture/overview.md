@@ -89,7 +89,10 @@ flowchart LR
 - **Commands.** The page calls `call()` in `src/ipc/core.ts`, which invokes a
   Tauri command. Commands that belong to the core are forwarded by the window
   (`core_call`, `core_send` for terminal input) and mapped by name onto the
-  same functions in `corecmd.rs`. The page never talks to the core directly.
+  same functions in `corecmd.rs`, only those in `corecmd::COMMANDS` and each
+  on its lane. The page never talks to the core directly, and reaches only
+  the commands its capability grants
+  ([ADR-0015](../adr/0015-the-page-gets-only-what-it-calls.md)).
 - **Events.** Code that emits does not hold an `AppHandle`: everything goes
   through `emit.rs`. In the core each window has its own queue; a window that
   falls behind is disconnected rather than allowed to stall a pty, and goes

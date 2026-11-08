@@ -1,0 +1,5 @@
+{"type":"user","message":{"role":"user","content":"ping"}}
+not json at all
+{"type":"assistant","message":{"content":"a bare string answer"}}
+{"type":"user","message":{"role":"user","content":[]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"po

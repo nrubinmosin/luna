@@ -8,6 +8,40 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Security
+
+- The window's page reaches only what it calls, so a script injected into it
+  would get no more: each app command is granted to the main window by name
+  and refused to any other window or a remote page, plugins are cut to the
+  calls the page makes (no menus, trays, new webviews or paths), the bridge to
+  the core passes on only the 35 commands the page sends, each on its own lane
+  (never the core's `shutdown`), and account and folder paths are checked
+  where they come in: an account path must be an account folder Luna lists,
+  reached through no link or junction and spelled as on disk, a folder a
+  plain absolute path.
+- Turning on Settings → Helpers → "Let helpers run with more privilege than
+  the chat that spawns them" asks again in a system dialog, which the page's
+  own calls cannot answer, and a yes counts only for the state it was asked
+  about.
+- No CLI runs with administrator rights. Luna started as administrator starts
+  its core, and so every session and helper, with the desktop's ordinary
+  rights and the user's own environment, not the elevated one's; where there
+  are none (no Explorer, another account's credentials, User Account Control
+  off) it starts no session and says to restart it normally. The core refuses
+  sessions and helpers whenever it runs elevated, and a core an older Luna
+  left running elevated is replaced or, with sessions, restarted on the
+  banner's button; one whose rights cannot be read counts as elevated. An
+  elevated core lets an ordinary window in only to stop it, past the check
+  that otherwise turns away a client of lower integrity; a sandboxed one is
+  still refused. Root is refused the same way on Linux and macOS, and the
+  live tests refuse to run from an elevated terminal.
+- The transcript readers, which take what a prompt-injected agent can write,
+  are fuzzed: each provider's are pure functions of a file's bytes, held to
+  golden readings of the fixtures, with a cargo-fuzz target each
+  (`scripts/fuzz.ps1`) that also checks every text read comes out of the
+  input, and that a line's length or depth costs no more than its bytes. A
+  scheduled workflow runs them weekly.
+
 ### Changed
 
 - `luna_list` names each account with its defaults and usage but no longer its
@@ -26,6 +60,22 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Fixed
 
+- A command call whose timeout is past any clock (a Claude Code `Bash`,
+  `PowerShell` or `Monitor` call, a Codex call's bound) made the time it is due
+  wrap round to one long before the call, so a caller waiting on a quiet turn
+  heard of it as hung without the call's own deadline holding the notice back;
+  it is now due never, as an open call with a long timeout is. Codex token
+  counts past 2^64 no longer overflow the total the answering model is found
+  by. Both found by fuzzing.
+- A Claude Code session's answer to a prompt the CLI put in itself (a
+  background task's end) opens a turn of its own for a caller reading the
+  conversation on from a cursor too, not only for one reading from the top,
+  so the report it leads with is the newest when that prompt and its answer
+  land in different reads.
+- A transcript line that is not UTF-8 no longer ends the search for a chat's
+  opening prompt (the name it goes by until the CLI titles it), in Claude Code
+  and Codex alike: it is read as the conversation reads it, a stray byte as
+  U+FFFD.
 - A helper's notice led with the wrong report when its CLI started a short turn
   of its own after the real one (a background job's end it took up): the short
   line came first and the long report sank among the rest. Such a turn now

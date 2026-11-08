@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-write-account-config"
+description = "Enables the write_account_config command without any pre-configured scope."
+commands.allow = ["write_account_config"]
+
+[[permission]]
+identifier = "deny-write-account-config"
+description = "Denies the write_account_config command without any pre-configured scope."
+commands.deny = ["write_account_config"]

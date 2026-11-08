@@ -70,7 +70,8 @@ hooks run unasked.
   slash command comes back at once as not started, with the screen.
 - A helper runs at no more privilege than its caller (permission mode; Codex
   sandbox, approval and network) unless Settings → Helpers allows helpers above
-  their caller, and never in or above Luna's data folder.
+  their caller, and never in or above Luna's data folder. Turning that setting
+  on asks again in a system dialog; turning it off does not.
 
 ## Talking to sessions
 

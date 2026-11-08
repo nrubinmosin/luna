@@ -1,0 +1,55 @@
+Seen {
+    consumed: 1879,
+    messages: [
+        (
+            "user",
+            "Reply with the single word READY.",
+        ),
+        (
+            "assistant",
+            "READY",
+        ),
+    ],
+    first_prompt: Some(
+        "Reply with the single word READY.",
+    ),
+    cwd: Some(
+        "/home/u/p",
+    ),
+    spawned_by: None,
+    tail_model: None,
+    context_tokens: None,
+    context_window: None,
+    rate_limits: None,
+    last_model: None,
+    answered_model: None,
+    due_ms: None,
+    scan_from_epoch: Scanned {
+        completed: 1,
+        working: Some(
+            false,
+        ),
+        ask: None,
+        failed: None,
+        last_said: Some(
+            "READY",
+        ),
+        last_said_at: Some(
+            "2026-11-05T09:00:02.000Z",
+        ),
+    },
+    scan_from_now: Scanned {
+        completed: 0,
+        working: Some(
+            false,
+        ),
+        ask: None,
+        failed: None,
+        last_said: Some(
+            "READY",
+        ),
+        last_said_at: Some(
+            "2026-11-05T09:00:02.000Z",
+        ),
+    },
+}

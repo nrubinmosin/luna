@@ -25,7 +25,10 @@ mod start;
 pub(crate) use control::{
     delete_session, kill_session, kill_tree, orphan_sessions, resize_session, stop_all_sessions, write_session, KeyHold, GRACE,
 };
-pub(crate) use probe::{complete_lines, live_cwds, prune_session_files_periodically, session_meta, tail, ActivityProbe};
+pub(crate) use probe::{
+    complete_lines, complete_lines_in, live_cwds, lossy_lines, prune_session_files_periodically, read_lossy_lines, session_meta, tail,
+    ActivityProbe,
+};
 pub(crate) use screen::{sane_title, session_modes, title_from_prompt, CliTitle, Composer, SessionMeta};
 pub(crate) use spawn::clean_env;
 #[cfg(test)]

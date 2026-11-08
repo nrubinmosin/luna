@@ -1,0 +1,52 @@
+Seen {
+    consumed: 901,
+    messages: [
+        (
+            "user",
+            false,
+            "go on",
+        ),
+        (
+            "assistant",
+            false,
+            "Starting.",
+        ),
+    ],
+    with_tools: [
+        (
+            "user",
+            false,
+            "go on",
+        ),
+        (
+            "assistant",
+            false,
+            "Starting.",
+        ),
+    ],
+    first_prompt: Some(
+        "go on",
+    ),
+    title: Some(
+        (
+            "Keep going",
+            false,
+        ),
+    ),
+    context: Some(
+        (
+            20010.0,
+            1000000.0,
+        ),
+    ),
+    model: Some(
+        "claude-sonnet-5-5",
+    ),
+    last_said: None,
+    last_said_at: None,
+    api_error: Some(
+        "authentication_failed: Invalid API key · Fix external API key",
+    ),
+    pending_tool: None,
+    due_ms: None,
+}

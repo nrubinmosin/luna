@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-accounts-root"
+description = "Enables the set_accounts_root command without any pre-configured scope."
+commands.allow = ["set_accounts_root"]
+
+[[permission]]
+identifier = "deny-set-accounts-root"
+description = "Denies the set_accounts_root command without any pre-configured scope."
+commands.deny = ["set_accounts_root"]
