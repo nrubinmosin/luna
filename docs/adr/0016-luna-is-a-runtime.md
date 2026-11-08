@@ -40,7 +40,9 @@ Every item is in one of four classes (`applied.rs` `Class`):
   account folder, the session's id, resume, activity hooks, Luna's own
   updates, a helper's identity, headless mode and per-run trust).
 - **Boundary**: what keeps a session out of Luna's secrets (the core-folder
-  read deny, ADR-0014).
+  read deny, ADR-0014), and a helper, briefed by an agent rather than the
+  person, within what Luna lets it reach (Luna's MCP server alone, its
+  auto-memory off; threat model F13).
 - **UserAction**: what the person chose: in the new-chat dialog, in Settings,
   in the library, or through an agent they gave tools.
 - **Workaround**: what the CLI cannot do on this machine without it, such as

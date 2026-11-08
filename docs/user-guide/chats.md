@@ -102,7 +102,9 @@ there:
 - **Luna needs it to run the chat**: the account folder, the session's id,
   resume, the activity hooks, the CLI's own updates kept off, a helper's role,
   headless mode and trust for its run.
-- **Protects Luna's own boundary**: the read deny on Luna's core folder.
+- **Protects Luna's own boundary**: the read deny on Luna's core folder; for a
+  helper, Luna's MCP server alone (none of the account's connectors or servers,
+  unless the agent spawned it with them) and its auto-memory off.
 - **Works around the CLI on this machine**: Codex's Windows sandbox when you
   set none, its PATH without the Store's aliases, git's OpenSSL backend.
 

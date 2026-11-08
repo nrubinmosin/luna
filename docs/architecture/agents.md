@@ -35,7 +35,7 @@ decisions in [ADR-0012](../adr/0012-agents-over-mcp-with-notices.md) and
 | `agents/spawn/` | `luna_spawn`: `account.rs` (account lists), `background.rs`, `worktree.rs`, `settle.rs` (spawns that never completed) |
 | `agents/notifier/` | the notifier loop; `lines.rs` what a notice says; `usage.rs` quota and budget news |
 | `agentlog.rs` | `<data>/agents.jsonl`: a line per spawn and per end |
-| `luna_guide.md` | the full manual `luna_guide` returns |
+| `luna_guide.md` | the full manual `luna_guide` returns: whole (`topic: "all"`), by section (`mcp.rs` `guide_text`: any word of a `## ` title), or with no topic its opening and the sections |
 
 ## How a session gets Luna
 
@@ -48,24 +48,52 @@ decisions in [ADR-0012](../adr/0012-agents-over-mcp-with-notices.md) and
 - Tokens are per session and reissued on every spawn. The instruction travels
   in `initialize`; together about 2k tokens once.
 - Every session has `LUNA_SESSION_ID`; a helper also `LUNA_PARENT_ID`. A helper
-  is told what it is and to write in its task's language: Claude Code by
-  `--append-system-prompt`; Codex by a note after each background turn's prompt
-  (a visible one's opening prompt only), because `-c developer_instructions=`
+  is told what it is and to write in its task's language (`pty::helper_line`),
+  naming the words instructions files use for the person (the operator, the
+  user, the person at this machine) so that rules set for that person's chat do
+  not reach it: Claude Code by `--append-system-prompt` and a note after its
+  first prompt (`pty::helper_prompt`), as memory files outweigh an appended
+  system prompt; Codex by the note after each background turn's prompt (a
+  visible one's opening prompt only), because `-c developer_instructions=`
   would replace a value Luna would have to resolve from Codex's config stack.
-  Slash-command prompts go without; a compaction can lose a visible one's.
+  The transcript readers drop the note (`without_note`). Slash-command prompts
+  go without; a compaction can lose a visible one's.
 - The instruction says the CLIs' own subagents cannot use another provider or
   account (without it a Codex orchestrator used its own `spawn_agent`).
+- A helper gets Luna's server and none of its account's, unless spawned with
+  `connectors: true` (`keeps_connectors`: the spawn's record, then
+  `connectors` in its settings, one of `CORE_SETTINGS`). Claude Code:
+  `--strict-mcp-config` (no user, project, plugin or claude.ai server) and a
+  settings file (`HelperSettings`) with `disableClaudeAiConnectors` and
+  `autoMemoryEnabled: false`, the latter even with `connectors`, and
+  `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` in its environment and that file's `env`,
+  as an inherited `0` would turn auto-memory on ahead of the setting. Codex:
+  `-c features.apps=false` and `-c mcp_servers.<name>.enabled=false` for each
+  bare-key server of the account's `config.toml` (`connectors_off`), one it
+  calls `luna` too unless Luna gives the run its own; then Codex merges the
+  two key by key, and an account's `luna` setting more than Luna's replaces
+  stops the start. A config that will not read stops it as well. The
+  project's `.codex/` and plugins' servers stay, as overriding a server no
+  layer defines fails the run. A visible helper is one with a parent at its
+  start.
 
 ## Rights
 
 | Tool | May target |
 | --- | --- |
-| `luna_sessions`, `luna_list` | all sessions of this launch (`list` with `ids` gives any session's rows) |
-| `luna_send` | any session but its own; command text (`/`, `!`) only from full access into its own helper |
-| `luna_read`, `luna_wait` | any session but its own (the transcript is on disk anyway) |
+| `luna_sessions`, `luna_list` | all sessions of this launch (`list` with `ids` gives any session's rows), as metadata: another's `ask` and `task`, and others' spawns in `history`, only with `scope: "all"` |
+| `luna_send` | its descendants; with `scope: "all"` any session but its own, the text opened `[From session <id> via Luna]` (`as_sent`); `interrupt` descendants only; command text (`/`, `!`) only from full access into its own helper |
+| `luna_read`, `luna_wait` | its descendants; with `scope: "all"` any session but its own |
 | `luna_kill`, `luna_delete` | descendants only |
+| `luna_answer` to a model's question | its descendants; with `scope: "all"` any session but its own, an answer typed in as a message opened as `luna_send`'s (`answer_message`) |
 | `luna_answer` with `allow`, `keys`, or on a CLI's own list | descendants only, at the caller's privilege |
 | `luna_spawn` | a helper at no more privilege than the caller, never in or above the data dir |
+
+Every call's arguments are held to its tool's schema first (`arguments_fit`):
+an unknown key is refused naming those the tool takes, a value of the wrong
+type or outside its enum is refused, a required one must be there and not
+empty. `scope` is checked in `mcp.rs` (`agents::in_scope`) before the tool runs;
+an unknown session or the caller itself is left to the tool's own refusal.
 
 Tool depth is 1 (a helper's helpers get no tools); at most 8 descendants per
 chat. The full matrix with code references is in the
@@ -222,10 +250,18 @@ turn, stopped on a prompt (once per stop) or exited.
 
 - The answer is everything said past the debt's offset (`replies_since`),
   written to `<data>/agents/<id>-<sha256, 128 bits>.md` (named by content),
-  report first (`report_of`: the longest message, or with every one under 400
-  characters the last), then the last, then the rest. The notice quotes about
+  report first (`report_of`: the longest message of the last turn, or with every
+  one under 400 characters the last; when that short turn is one the CLI started
+  by itself (`Said::by_cli`, a background job's end), the longest message of the
+  latest turn before it that wrote one of 400 or more (`Said::starts`)), then the last, then the rest. The notice quotes about
   150 characters of the report's first line (`opening_line`), not for a failed
-  turn.
+  turn, and the report's lines in the file (`report_span`: `lines 1-N of M`).
+  `luna_read` with `report: true` (`read::report_read`) gives that report alone,
+  from `since`, else the debt's offset, else the transcript's start, and hands
+  nothing over. It reads as a read does: its cursor stops before a line still
+  being written, the report is cut at 60,000 characters, and a `since` that finds
+  nothing finds nothing (only a read with no cursor falls back to a resumed
+  conversation's last word).
 - A `wait` still out for that answer (`waits`) delivers it instead; if it has
   not within 10 s the notice goes (Claude Code moves an MCP call past 120 s to
   the background and may drop it).
@@ -244,6 +280,13 @@ turn, stopped on a prompt (once per stop) or exited.
   quota news and budget news are no reason to wake a caller: they ride with the
   next notice (`riders_go`), and go alone only once they are all it is owed,
   nothing in Luna is busy, or after `RIDE_MAX_MS`.
+- **Company.** A notice ready for an idle caller that is owed an answer by
+  another session still mid-turn (`Turn::Busy`) waits for it up to
+  `COALESCE_MS` (20 s; `hold_for_company`, counted from the first look it was
+  ready at, on the monotonic clock), so helpers ending seconds apart wake the
+  caller once. Past that, or with nothing else at work, it goes as it would
+  have; one that carries a question or a permission prompt (`Settled::Waiting`,
+  `Settled::Asked`) never waits.
 - A helper with its own helpers out (`waits_on_helpers`) reads `background`; a
   turn on a notice from them counts once it has all their answers. Meanwhile
   its parent hears of turns that wrote a message of 400 characters or more
@@ -278,8 +321,9 @@ turn, stopped on a prompt (once per stop) or exited.
   a send into a chat typed in within 5 s. A draft or text held a minute is
   announced on the desktop once. `session_meta` carries `draft` and `held` for
   the row tag and the pane balloon.
-- `send` with `interrupt: true`: Esc in a terminal (up to 3 s for the turn to
-  read as over), then the text as a prompt of its own.
+- `send` with `interrupt: true`, to the caller's descendants only: Esc in a
+  terminal (up to 3 s for the turn to read as over), then the text as a prompt
+  of its own; a background helper's turn is killed and its held asks cleared.
 - A prompt or message past 8,000 characters reaches a visible session as a file
   under `<data>/agents/` (an `--add-dir` for Claude Code sessions with tools or
   an agent above; Codex sandboxes read anywhere, but `read-only` and

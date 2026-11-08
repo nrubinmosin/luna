@@ -263,8 +263,10 @@ pub(crate) fn codex_curl() -> String {
 pub(crate) fn helper_line(parent: &str) -> String {
     format!(
         "You are a helper session started through Luna by session {parent}, not a chat with a person: your answers go to \
-         that session. Instructions meant only for the session a person talks to do not apply to you. Write in the \
-         language of the task you were given, progress notes included."
+         that session. You are not the chat of whoever your instructions call the operator, the user or the person at \
+         this machine, and what they set for that chat (its language, its reply format, questions to that person) does \
+         not apply to you. Answer your caller in the language and form its task asks for, progress notes included; \
+         where it says none, in the language the task is written in."
     )
 }
 
@@ -292,6 +294,16 @@ pub(crate) fn claude_chat_settings(guard: bool) -> serde_json::Value {
 /// file tools.
 pub(crate) fn claude_settings_alone() -> serde_json::Value {
     serde_json::json!({ "permissions": { "deny": ["Read(//<core-dir>/**)"] } })
+}
+
+/// `settings` as a helper's file has them (claude/launch.rs `HelperSettings`):
+/// auto-memory off, by setting and by variable, and the account's claude.ai
+/// connectors.
+pub(crate) fn claude_helper_settings(mut settings: serde_json::Value) -> serde_json::Value {
+    settings["autoMemoryEnabled"] = false.into();
+    settings["env"] = serde_json::json!({ "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1" });
+    settings["disableClaudeAiConnectors"] = true.into();
+    settings
 }
 
 /// The guard's PreToolUse entry in a Claude Code settings file.
