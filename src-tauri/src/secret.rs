@@ -682,14 +682,26 @@ pub fn claim_private(dir: &Path, uid: u32) -> Result<(), String> {
 /// ACL. Fails if `path` is there already, so a file planted ahead of it is
 /// never written into.
 pub fn create_private(path: &Path) -> io::Result<std::fs::File> {
-    create(path, false)
+    create(path, false, false)
 }
 
-/// `create_private`, open for appending where `append` says so.
-fn create(path: &Path, append: bool) -> io::Result<std::fs::File> {
+/// `create_private`, open for reading as well: for a file read back through
+/// the handle it was made with, so that nothing put at its name meanwhile is
+/// read in its place. Only the Unix shutdown path keeps one (power/machine.rs
+/// `stderr_file`); Windows asks for nothing of the kind.
+#[cfg(not(windows))]
+pub fn create_private_rw(path: &Path) -> io::Result<std::fs::File> {
+    create(path, false, true)
+}
+
+/// `create_private`, open for appending where `append` says so, and for
+/// reading too where `read` does.
+fn create(path: &Path, append: bool, read: bool) -> io::Result<std::fs::File> {
     #[cfg(windows)]
     {
-        acl::create_new(path, acl::write_access(append))
+        use windows::Win32::Storage::FileSystem::FILE_GENERIC_READ;
+        let access = acl::write_access(append) | if read { FILE_GENERIC_READ.0 } else { 0 };
+        acl::create_new(path, access)
     }
     #[cfg(not(windows))]
     {
@@ -699,6 +711,7 @@ fn create(path: &Path, append: bool) -> io::Result<std::fs::File> {
         } else {
             options.write(true);
         }
+        options.read(read);
         options.create_new(true);
         #[cfg(unix)]
         {
@@ -752,7 +765,7 @@ fn open_or_make(path: &Path, append: bool) -> io::Result<std::fs::File> {
                 }
                 Found::Foreign(why) => why,
             },
-            Err(e) if e.kind() == io::ErrorKind::NotFound => match create(path, append) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => match create(path, append, false) {
                 // Made by someone else in between: looked at like any other.
                 Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
                 made => return made,

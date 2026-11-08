@@ -27,12 +27,27 @@ everything has been quiet for the chosen window it counts down a minute with a
 notification, and a click on the chip cancels. Activity during the count cancels
 it and leaves the rule armed.
 
-- **Shutdown** asks each CLI to quit first.
+- **Shutdown** asks Windows first, for a shutdown half a minute away, and closes
+  each CLI inside that time. Windows shows its own notice meanwhile. If Windows
+  refuses (another user is signed in, say), nothing is closed, and a notification
+  and the log say why. The shutdown is a full one whatever Fast Startup is set to,
+  and it is forced: a program that will not close does not hold it up, and
+  **unsaved work in your other programs is lost**, as Windows' notice says. Save
+  what matters before arming the rule. If something cancels the shutdown after
+  the chats were closed (`shutdown /a`), Luna sees the cancellation Windows
+  records and, about a minute and a half after asking, brings the chats back
+  where they were, as after a core restart. If Windows has neither begun the
+  shutdown nor recorded a cancellation by then, Luna undoes nothing: the chats
+  stay closed and a notification says how to bring them back (restart the core
+  from Settings, or quit Luna and start it again), as a slow shutdown may still
+  be on its way.
 - **Sleep / hibernate** leave sessions running; the rule applies again after
   wake.
-- **Restart** (Windows) closes sessions the same way and has Windows start Luna
-  once at the next sign-in, so someone has to sign in; if that cannot be set the
-  log says so and the PC restarts anyway.
+- **Restart** (Windows) goes the same way and has Windows start Luna once at the
+  next sign-in, so someone has to sign in; if that cannot be set the log says so
+  and the PC restarts anyway. A restart Windows refuses, or records as canceled,
+  leaves nothing set to start at the next sign-in; one whose fate is unknown
+  keeps it, as the PC may yet restart.
 - **Start nothing new** drains: until the rule fires or is disarmed, agents'
   `luna_spawn` and `luna_send` are refused and `luna_answer` takes only a
   structured answer to a pending question or permission. What you do yourself is
@@ -40,7 +55,7 @@ it and leaves the rule armed.
 - While the rule is armed and something holds it up, `luna.log` says which
   session and why, so a morning with the PC still on can be read back.
 - An agent asked to turn the PC off when done arms this same rule with
-  `luna_power`.
+  `luna_power`, and cancels it with the action `cancel`.
 
 ## What "busy" and "done" mean
 

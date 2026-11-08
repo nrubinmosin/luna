@@ -142,7 +142,9 @@ in section 6.
 | STRIDE | Threat | Status |
 | --- | --- | --- |
 | T, S | On-path attacker or compromised release host serves a malicious build | mitigated: HTTPS endpoint on GitHub Releases and a minisign public key pinned in the app (`tauri.conf.json:70-76`); Tauri refuses unsigned bundles |
-| T | Signing key theft | reduced: the key is a secret of the `release` environment, handed only to runs of the release workflow on a `v*` tag after a reviewer approves, and kept from the package install ([releasing.md](../releasing.md)); a leak is still accepted (R7) |
+| T | Signing key theft | reduced: the key is a secret of the `release` environment, handed only to the release workflow's sign job on a `v*` tag after a reviewer approves ([releasing.md](../releasing.md)); a leak is still accepted (R7) |
+| T, E | A dependency's build code (build script, proc-macro, frontend tooling) reads the signing key during `tauri build` | mitigated (audit finding, High): the build job holds no secret and signs nothing (`build-windows.ps1`); the sign job, on a fresh runner with only the signing files checked out, checks the build's files against its checksums and signs with the Tauri CLI's `signer sign` held to the integrity `pnpm-lock.yaml` pins, in the pinned Node image with no network (`release-sign.ps1`), and checks the signature against the pinned public key before `latest.json` takes it. `release.ps1 -Local` builds an export of the commit, never the checkout that signs, runs nothing the build made on the host (the core fingerprint is the file build.rs writes; artifacts reached through a link are refused) and mounts the key only into the signer's container. Residual: the same build code can still alter this release's installer, which is then signed and attested (one bad release, not a stolen key); locally, the Docker cache volumes every build shares carry what one build plants into the next build, again into an installer, not to the key |
+| S, T | A key rotation's bridge release is checked against the wrong public key | mitigated: the signature is checked against the public key the release embeds unless the releaser gives the old one (`UPDATER_TRUSTED_PUBKEY` in the `release` environment, `-TrustedPubkey` locally), never one taken from the build. The environment always defines the variable (`embedded` otherwise), so its value outranks a repository variable a collaborator could create; an empty value stops the sign step. Residual: with the environment's variable deleted, a repository one is used; a wrong key fails closed, stopping the release |
 
 ### B7. Core to vendor CLI releases (managed CLI downloads)
 
@@ -223,7 +225,7 @@ caller has at most 8 descendants (`agents/spawn/mod.rs:31`).
 | `luna_answer` with `allow`, `keys`, or on a CLI's own list | own descendants; `allow` only where the caller would run the tool unasked and never from read-only or asking modes; `keys` and CLI lists only from full access (`agents/answer.rs:204`, call sites `agents/answer.rs:306-343`) | `answer_reach` | yes |
 | `luna_read`, `luna_wait` | any session but itself | `authorize_view` (`agents/registry.rs:451`) | yes |
 | `luna_spawn` | a new helper in any account not on the denylist `agent_blocked_accounts` (empty by default, `agents/spawn/account.rs:12`), in any folder except Luna's data dir and what holds it (`agents/privilege.rs:305`, `agents/spawn/mod.rs:385`), at no more privilege than the caller (`agents/privilege.rs:227`, `agents/spawn/mod.rs:447`) | `cap`, `reaches_luna`, spawn cap | yes |
-| `luna_power` | the whole PC (shutdown, restart, sleep; or disarm the user's) | tools only (`power/commands.rs:90`) | no authorization test (R4) |
+| `luna_power` | the whole PC (shutdown, restart, sleep; or cancel the user's) | tools only (`power/commands.rs:90`) | no authorization test (R4) |
 | `luna_sessions`, `luna_list`, `luna_notify`, `luna_guide` | read-only, or notify the user | tools only | yes |
 
 ## 6. Limits of the least-privilege layer
@@ -323,7 +325,13 @@ Residuals:
   confined by its CLI sandbox, reaching `core.json` is F3's residual, not
   accepted.
 - **R4. Agents may arm a PC shutdown** (`luna_power`), bounded by the quiet
-  window and drain logic in `power/`. An orchestration feature.
+  window and drain logic in `power/`. The firing turns on the user's own
+  `SeShutdownPrivilege` in the core's token and asks for a forced shutdown
+  (`SHUTDOWN_FORCE_SELF`, `power/machine.rs`), so a program that will not close
+  cannot hold the PC up overnight: unsaved work in the user's other programs goes
+  with it, which arming the rule accepts. No more authority than `shutdown /f`
+  run by the user, and never another user's session (`SHUTDOWN_FORCE_OTHERS` is
+  not asked for). An orchestration feature.
 - **R5. Agent history keeps prompt prefixes and last answers in plain text**
   (`agentlog.rs:17-19`: 300 and 3,000 characters) in the data dir; the same
   exposure as the CLIs' own transcripts.

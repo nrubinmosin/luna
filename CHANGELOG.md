@@ -10,6 +10,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Changed
 
+- `luna_power` disarms with the action `cancel`; `off`, its old name, still
+  works.
 - Release notes are made from this file: a release's notes are its version's
   section, the sections of every version since the last published release, a
   link to the full changes, and the commands and checksums to verify the
@@ -46,14 +48,45 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   on its entries, its bytes as the tar reader writes them, each metadata record
   and the decompressed stream, and a link entry or PAX size override in it is
   refused.
+- Shut down and restart when done turn the PC off again. Luna asks Windows
+  itself, with the shutdown privilege turned on, instead of running
+  `shutdown.exe`, which had been failing without a word; a refusal is logged
+  with its Windows error.
+- Windows is asked before any session is closed, so a refusal leaves every chat
+  running, and a shutdown Windows records as canceled after the chats were
+  closed brings them back where they were instead of leaving dead panes. One
+  whose fate Windows does not tell leaves the chats closed and says how to bring
+  them back, rather than reopening them under a shutdown still on its way.
+- Windows' notice during the grace says that open programs are closed by force
+  and unsaved work in them is lost, and so does the user guide.
+- Shutdown winds Luna down the way restart does, so a chat parked mid-turn is
+  not saved as finished.
+- A restart that Windows refuses, or that is canceled, no longer leaves Luna set
+  to start at the next sign-in.
 - The release workflow failed at attesting the npm SBOM (`Unsupported SBOM
   format`): it was written without a serial number, which the attest action
   requires of a CycloneDX file. Both SBOMs now carry one and are checked for it
   as soon as they are made, and the attestations use `actions/attest` in place
   of the deprecated `actions/attest-sbom`.
+- The release and test builds failed: `tauri build` refuses a Tauri crate and its
+  npm package on different minor versions, and the notification plugin's crate
+  had moved to 2.8 while `@tauri-apps/plugin-notification` stayed at 2.7. The
+  package is on 2.8 now, and the gate checks every such pair in the lockfiles
+  (`pnpm check:tauri`), so a bump to one side alone fails there.
 
 ### Security
 
+- The updater's signing key no longer reaches the release build. `tauri build`
+  runs every dependency's build scripts, proc-macros and frontend tooling, and
+  any of them could have read the key it was handed; the installer is now
+  built unsigned and signed afterwards in a job of its own, which runs only the
+  Tauri CLI pinned by `pnpm-lock.yaml`, without network, and checks the
+  signature against the updater's public key before publishing it. The release
+  still takes one approval, now given to the signing job. `release.ps1 -Local`
+  signs the same way, builds an export of the commit rather than the checkout
+  it signs from, and no longer runs the built exe to ask its core fingerprint.
+  A key rotation's bridge release is checked against the old public key, given
+  as `UPDATER_TRUSTED_PUBKEY`.
 - Claude Code's release manifest is verified against its detached OpenPGP
   signature and Anthropic's release key, pinned in Luna, before the exe's
   checksum from it is trusted: whoever serves the download bucket can no
