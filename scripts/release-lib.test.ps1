@@ -640,22 +640,29 @@ d8e1  latest.json
         Set-Content (Join-Path $nsis 'Luna_0.9.10_x64-setup.exe') 'x'
         $outside = New-Item -ItemType Directory -Force (Join-Path $work 'outside')
         Set-Content (Join-Path $outside 'secret.txt') '0123456789abcdef' -NoNewline
-        New-Item -ItemType Junction -Path (Join-Path $root 'elsewhere') -Target $outside | Out-Null
+        # A link as each OS makes one without privileges: a junction on
+        # Windows (a symlink there needs Developer Mode or elevation), so a
+        # folder holding the file stands in for a link to the file; a symlink
+        # elsewhere, where pwsh makes no junction and says nothing about it.
+        # Checked to be there, so a link never made cannot pass for refused.
+        $link = {
+            param($path, $folder, $file)
+            if ($IsWindows) { New-Item -ItemType Junction -Path $path -Target $folder | Out-Null }
+            else { New-Item -ItemType SymbolicLink -Path $path -Target $(if ($file) { $file } else { $folder }) | Out-Null }
+            if (-not (Test-Link $path)) { throw "no link made at $path" }
+        }
+        # The link itself goes, never what it points at: a junction or a
+        # folder symlink is removed as a folder on Windows, unlinked elsewhere.
+        $unlink = { param($path) if ($IsWindows) { [IO.Directory]::Delete($path) } else { [IO.File]::Delete($path) } }
+        & $link (Join-Path $root 'elsewhere') $outside
         Set-Content (Join-Path $dir 'core-fingerprint.txt') '0123456789abcdef' -NoNewline
         Find-ReleaseArtifacts '0.9.10' -Dir $dir -Root $root | Out-Null
         Assert-Throws { Find-ReleaseArtifacts '0.9.10' -Dir (Join-Path $root 'elsewhere') -Root $root } 'through a link'
         Remove-Item -LiteralPath (Join-Path $dir 'core-fingerprint.txt')
-        if ($IsWindows) {
-            # A file symlink needs Developer Mode or elevation on Windows; a
-            # junction to a folder holding the file stands in for it.
-            New-Item -ItemType Junction -Path (Join-Path $dir 'core-fingerprint.txt') -Target $outside | Out-Null
-        } else {
-            New-Item -ItemType SymbolicLink -Path (Join-Path $dir 'core-fingerprint.txt') -Target (Join-Path $outside 'secret.txt') | Out-Null
-        }
+        & $link (Join-Path $dir 'core-fingerprint.txt') $outside (Join-Path $outside 'secret.txt')
         Assert-Throws { Find-ReleaseArtifacts '0.9.10' -Dir $dir -Root $root } 'through a link'
-        # The link itself goes, never what it points at.
-        [IO.Directory]::Delete((Join-Path $root 'elsewhere'))
-        if ($IsWindows) { [IO.Directory]::Delete((Join-Path $dir 'core-fingerprint.txt')) } else { [IO.File]::Delete((Join-Path $dir 'core-fingerprint.txt')) }
+        & $unlink (Join-Path $root 'elsewhere')
+        & $unlink (Join-Path $dir 'core-fingerprint.txt')
         Assert-Equal (Test-Path -LiteralPath (Join-Path $outside 'secret.txt')) $true
     }
 
