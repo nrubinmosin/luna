@@ -46,7 +46,7 @@ function VersionRow({
             whiteSpace: 'nowrap',
             overflow: 'hidden',
             textOverflow: 'ellipsis',
-            color: error ? 'oklch(.58 .2 25)' : undefined
+            color: error ? 'var(--set-error)' : undefined
           }}
         >
           {status}
