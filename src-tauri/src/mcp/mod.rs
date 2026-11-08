@@ -760,6 +760,7 @@ mod tests {
                 "params": { "name": "luna_session_send", "arguments": { "id": "rk-kid", "text": text, "requestKey": key } } });
             handle("rk-me", &body.to_string()).unwrap()["result"].clone()
         };
+        assert!(send(&"k".repeat(129), "Fix it.")["content"][0]["text"].as_str().unwrap().contains("at most 128"));
         let first = send("k1", "Fix it.");
         assert!(first.get("isError").is_none(), "{first}");
         assert_eq!(send("k1", "Fix it."), first, "the first call's result, again");
@@ -820,6 +821,8 @@ mod tests {
         assert!(wait(json!({ "ids": [1] })).contains("a list"));
         assert!(wait(json!({ "ids": ["y"], "mode": "some" })).contains("unknown mode"));
         assert!(wait(json!({ "ids": [] })).contains("empty"));
+        let many: Vec<String> = (0..17).map(|i| format!("wm-{i}")).collect();
+        assert!(wait(json!({ "ids": many })).contains("16 at most"), "a thread each: bounded");
         assert!(wait(json!({ "ids": ["nobody"] })).contains("unknown session"));
     }
 

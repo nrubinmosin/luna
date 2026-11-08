@@ -469,6 +469,9 @@ pub struct WaitedMany {
     pub results: Vec<WaitedOne>,
 }
 
+/// The most sessions one wait takes (`wait_many`), each on a thread of its own.
+pub(super) const MAX_TARGETS: usize = 16;
+
 /// `wait` on several sessions at once, each by a `wait` of its own in a thread
 /// of its own, so that what holds a notice back, what a reply covers and what
 /// settles a debt are one wait's for each. `all` has them go on until each has
@@ -503,6 +506,10 @@ pub fn wait_many(
     }
     if unique.is_empty() {
         return Err("ids is empty".into());
+    }
+    // A thread each: a caller waits on a handful, never on everything there is.
+    if unique.len() > MAX_TARGETS {
+        return Err(format!("ids names {} sessions; a wait takes {MAX_TARGETS} at most", unique.len()));
     }
     for id in &unique {
         authorize_view(caller, id)?;
