@@ -33,15 +33,22 @@ git config core.hooksPath .githooks   # pre-commit and commit-msg hooks
   symlink. Skills live in `.agents/skills/<name>/`, with `.claude/skills/<name>`
   a symlink to it; on Windows that needs Developer Mode and
   `git config --global core.symlinks true`.
-- The commit-msg hook refuses AI attribution trailers (`Co-Authored-By:`, the
-  robot emoji, "Generated with ..."). CI checks every pushed commit the same way
-  (`scripts/check-commit-msg.sh`).
+- The commit-msg hook checks the message against the rules in
+  [CONTRIBUTING.md](../CONTRIBUTING.md#commits): a subject of at most 72
+  characters that says what the change does (a capital, a digit or a path first;
+  no type prefix, no trailing period), a blank line, a body wrapped at 72, and no
+  AI attribution (`Co-Authored-By:`, the robot emoji, "Generated with ...").
+  Merges, reverts and the release bump `Luna X.Y.Z` keep git's own form; a
+  `fixup!` passes the hook and fails CI. CI checks every pushed commit the same
+  way, Dependabot's for attribution only. By hand:
+  `sh scripts/check-commit-msg.sh FILE` or `--range A..B`; the check's own tests
+  are `scripts/check-commit-msg.test.sh`, a step of the gate.
 
 ## Scripts
 
 | Command | What it does |
 | --- | --- |
-| `./scripts/gate.ps1` | the gate a change passes before commit: rustfmt, clippy `-D warnings`, the Linux unit tests, and the frontend's install, lint, format check, typecheck, text check, script tests, Vitest suite and build. Stops at the first failure, ends on a summary |
+| `./scripts/gate.ps1` | the gate a change passes before commit: rustfmt, clippy `-D warnings`, the Linux unit tests, the commit-message check's tests, and the frontend's install, lint, format check, typecheck, text check, script tests, Vitest suite and build. Stops at the first failure, ends on a summary |
 | `./scripts/gate.ps1 -Group frontend` | one group only (`frontend`, `rust`, `windows`) |
 | `./scripts/gate.ps1 -Windows` | adds clippy over the Windows build |
 | `./scripts/windows-tests.ps1 -Build -Run` | the unit tests cross-built as Windows executables (files named by cargo's JSON messages), copied to a folder of their own and run on this machine |
@@ -109,7 +116,8 @@ hand, with the same scripts:
 
 `.github/workflows/release.yml` runs only on `v*` tags and by hand
 ([Releases](#releases)). Actions are pinned by commit; Dependabot (`.github/dependabot.yml`) moves them,
-the crates, the npm packages and the images weekly.
+the crates, the npm packages and the images monthly, one grouped PR per ecosystem; a new
+Node or Rust major is left to a hand-made migration (`.github/dependabot.yml` says why).
 
 ## Releases
 
