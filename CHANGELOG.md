@@ -8,6 +8,34 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Security
+
+- The transcript readers, which take what a prompt-injected agent can write,
+  are fuzzed: each provider's are pure functions of a file's bytes, held to
+  golden readings of the fixtures, with a cargo-fuzz target each
+  (`scripts/fuzz.ps1`) that also checks every text read comes out of the
+  input, and that a line's length or depth costs no more than its bytes. A
+  scheduled workflow runs them weekly.
+
+### Fixed
+
+- A command call whose timeout is past any clock (a Claude Code `Bash`,
+  `PowerShell` or `Monitor` call, a Codex call's bound) made the time it is due
+  wrap round to one long before the call, so a caller waiting on a quiet turn
+  heard of it as hung without the call's own deadline holding the notice back;
+  it is now due never, as an open call with a long timeout is. Codex token
+  counts past 2^64 no longer overflow the total the answering model is found
+  by. Both found by fuzzing.
+- A Claude Code session's answer to a prompt the CLI put in itself (a
+  background task's end) opens a turn of its own for a caller reading the
+  conversation on from a cursor too, not only for one reading from the top,
+  so the report it leads with is the newest when that prompt and its answer
+  land in different reads.
+- A transcript line that is not UTF-8 no longer ends the search for a chat's
+  opening prompt (the name it goes by until the CLI titles it), in Claude Code
+  and Codex alike: it is read as the conversation reads it, a stray byte as
+  U+FFFD.
+
 ## [0.10.1] - 2026-11-08
 
 A security and reliability release; it also carries the changes of 0.10.0,

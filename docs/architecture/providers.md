@@ -137,7 +137,17 @@ transcript `projects/<cwd>/<sid>.jsonl`.
 - `registry.rs`: registry and meta. `claude -p` writes a `<pid>.json` too, so
   past the pid and the session it was told to resume, the cwd + start-time
   fallback takes only `entrypoint: cli`.
-- `transcript.rs`: where a transcript is, and the conversation.
+- `transcript.rs`: where a transcript is, and the conversation. A read from a
+  cursor (a plain byte offset its callers hold) starts in the state the lines
+  before it left: a CLI prompt still open makes what answers it open a turn.
+  That state goes with the cursor a read hands back, kept per file and cursor
+  with the file's identity (volume and index, or device and inode), its
+  creation time and the 4 KiB before the cursor; for any other cursor, or a file
+  renamed into place or edited near the cursor since, it is read back from the
+  file in 64 KiB chunks, 8 MiB and lines of 1 MiB at most, a prompt further
+  back counting as answered. An in-place edit that keeps the length and those
+  4 KiB goes unseen: transcripts only grow, and whoever can rewrite one already
+  decides what that session reports, so all it can change is its `after_cli`.
 - `ending.rs`: context, model, last words, API error, pending tool.
 - `titles.rs`: order `custom-title` (a `/rename`) → registry name with
   `nameSource: user` → `ai-title` → first prompt (only while there is no title).
@@ -145,6 +155,8 @@ transcript `projects/<cwd>/<sid>.jsonl`.
   after a plan is accepted (the plan's handle, repeated by `agent-name`), are not
   titles. Both are rewritten into the tail, so they are read with the context.
   `saved_title` finds a transcript by session id once per launch.
+- `reading.rs`: `read_transcript`, all of the above of a transcript's bytes
+  alone, by the same per-line functions the file-based readers call.
 
 ## Reading a Codex session
 
@@ -185,6 +197,8 @@ live registry.
   of a live chat's thread and its descendants (threads begun since the process
   spawned, two weeks at most): one is at work while its last turn has not
   ended.
+- `reading.rs`: `read_rollout`, all that the running read and the tail read
+  take of a rollout, of its bytes alone, by the same per-line functions.
 
 ## The Codex sandbox on Windows
 
@@ -213,6 +227,11 @@ live registry.
 ## Invariants
 
 - Neither layer imports the other's vocabulary.
+- A transcript is untrusted input (a prompt-injected agent writes much of
+  it): its readers are pure functions of its text, held to golden readings
+  of `src-tauri/fixtures/transcripts/` and fuzzed (`src-tauri/fuzz`,
+  [testing](../testing.md#fuzzing)). A reader of a file does its I/O, then
+  hands the bytes or lines to them.
 - Config writes keep the user's comments and key order (`toml_edit`,
   `preserve_order`), and a file that will not parse is an error, never an empty
   document written back ([accounts](accounts.md#writing-cli-files)).

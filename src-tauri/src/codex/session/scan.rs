@@ -28,10 +28,10 @@ pub(super) struct Scan {
     pub(super) working: Option<bool>,
     /// The question the model last put to the user that nothing has answered
     /// yet, with the call id it came in.
-    ask: Option<(String, crate::agents::Ask)>,
+    pub(super) ask: Option<(String, crate::agents::Ask)>,
     /// Why the last turn stopped short, if it did: `task_complete` carries the
     /// error it ended on (Codex 0.166), `turn_aborted` why it was cut off.
-    failed: Option<String>,
+    pub(super) failed: Option<String>,
     /// What the model last said, as the last turn's end has it; None while a
     /// turn is on.
     pub(super) last_said: Option<String>,
@@ -224,7 +224,13 @@ pub fn children_at_work(live: &Live) -> Option<Vec<String>> {
 /// offset just past the last of them. Turn ends count only when written at or
 /// after `since_ms`; a line whose timestamp does not read is taken as new.
 pub(super) fn scan_rollout(path: &Path, from: u64, since_ms: i64, scan: &mut Scan) -> u64 {
-    crate::pty::complete_lines(path, from, |line| {
+    crate::pty::complete_lines(path, from, |line| scan.line(line, since_ms))
+}
+
+impl Scan {
+    /// One complete line of the rollout read into the scan, as `scan_rollout`
+    /// reads each.
+    pub(super) fn line(&mut self, line: &str, since_ms: i64) {
         let event = line.contains("\"event_msg\"");
         if !event && !line.contains("request_user_input") && !line.contains("\"function_call_output\"") {
             return;
@@ -237,33 +243,33 @@ pub(super) fn scan_rollout(path: &Path, from: u64, since_ms: i64, scan: &mut Sca
             (Some("event_msg"), Some("task_started" | "turn_started")) => {
                 // A turn an earlier process was on went with it, and Codex (0.166)
                 // writes no end for it as it resumes: it sits at its composer.
-                scan.working = Some(new);
-                scan.failed = None;
-                scan.last_said = None;
-                scan.last_said_at = None;
+                self.working = Some(new);
+                self.failed = None;
+                self.last_said = None;
+                self.last_said_at = None;
             }
             (Some("event_msg"), Some(end @ ("task_complete" | "turn_complete" | "turn_aborted" | "task_aborted"))) => {
-                scan.working = Some(false);
-                scan.last_said = payload["last_agent_message"].as_str().map(str::to_owned);
-                scan.last_said_at = v["timestamp"].as_str().map(str::to_owned);
-                scan.failed = payload["error"]["message"].as_str().map(str::to_owned).or_else(|| {
+                self.working = Some(false);
+                self.last_said = payload["last_agent_message"].as_str().map(str::to_owned);
+                self.last_said_at = v["timestamp"].as_str().map(str::to_owned);
+                self.failed = payload["error"]["message"].as_str().map(str::to_owned).or_else(|| {
                     end.ends_with("_aborted").then(|| match payload["reason"].as_str() {
                         Some(why) => format!("its turn was aborted ({why})"),
                         None => "its turn was aborted".to_string(),
                     })
                 });
                 // A blocking question goes with the turn that asked it.
-                if scan.ask.as_ref().is_some_and(|(_, a)| a.blocking) {
-                    scan.ask = None;
+                if self.ask.as_ref().is_some_and(|(_, a)| a.blocking) {
+                    self.ask = None;
                 }
                 if new {
-                    scan.completed += 1;
+                    self.completed += 1;
                 }
             }
             // Whatever the user says next is the answer, typed or picked:
             // `user_message` before 0.163, a completed `UserMessage` item since.
-            (Some("event_msg"), Some("user_message")) => scan.ask = None,
-            (Some("event_msg"), Some("item_completed")) if payload["item"]["type"] == "UserMessage" => scan.ask = None,
+            (Some("event_msg"), Some("user_message")) => self.ask = None,
+            (Some("event_msg"), Some("item_completed")) if payload["item"]["type"] == "UserMessage" => self.ask = None,
             (Some("response_item"), Some("function_call")) => {
                 let blocking = match payload["name"].as_str() {
                     Some("request_user_input") => true,
@@ -272,18 +278,18 @@ pub(super) fn scan_rollout(path: &Path, from: u64, since_ms: i64, scan: &mut Sca
                 };
                 let args = payload["arguments"].as_str().and_then(|a| serde_json::from_str::<Value>(a).ok());
                 if let Some(ask) = args.as_ref().and_then(|a| ask_of(a, blocking)) {
-                    scan.ask = Some((payload["call_id"].as_str().unwrap_or("").to_string(), ask));
+                    self.ask = Some((payload["call_id"].as_str().unwrap_or("").to_string(), ask));
                 }
             }
             (Some("response_item"), Some("function_call_output")) => {
-                let answered = scan.ask.as_ref().is_some_and(|(id, a)| a.blocking && payload["call_id"].as_str() == Some(id));
+                let answered = self.ask.as_ref().is_some_and(|(id, a)| a.blocking && payload["call_id"].as_str() == Some(id));
                 if answered {
-                    scan.ask = None;
+                    self.ask = None;
                 }
             }
             _ => {}
         }
-    })
+    }
 }
 
 /// `{"questions":[…]}` as Codex's question tools take it: each with its text

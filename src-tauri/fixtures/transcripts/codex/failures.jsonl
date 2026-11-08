@@ -1,0 +1,9 @@
+{"timestamp":"2026-09-26T15:40:00.000Z","type":"session_meta","payload":{"id":"kid","cwd":"E:\\p","source":{"subagent":{"thread_spawn":{"parent_thread_id":"own","depth":1}}}}}
+{"timestamp":"2026-09-26T15:43:00.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}
+{"timestamp":"2026-09-26T15:44:00.000Z","ordinal":14,"type":"event_msg","payload":{"type":"task_complete","turn_id":"t1","last_agent_message":null,"error":{"message":"unexpected status 401 Unauthorized"}}}
+{"timestamp":"2026-09-26T16:10:00.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t2"}}
+{"timestamp":"2026-09-26T16:10:00.500Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"t2","last_agent_message":"READY"}}
+{"timestamp":"2026-09-26T16:11:00.000Z","type":"event_msg","payload":{"type":"turn_started","turn_id":"t3"}}
+{"timestamp":"2026-09-26T16:11:30.000Z","type":"event_msg","payload":{"type":"turn_aborted","turn_id":"t3","reason":"interrupted"}}
+{"timestamp":"not a time","type":"event_msg","payload":{"type":"turn_started","turn_id":"t4"}}
+{"timestamp":"not a time","type":"event_msg","payload":{"type":"task_aborted","turn_id":"t4"}}

@@ -1,0 +1,15 @@
+{"type":"queue-operation","operation":"enqueue","content":"only queued 11111111","sessionId":"s"}
+{"type":"user","isMeta":true,"message":{"role":"user","content":"A session-scoped Stop hook is now active."},"sessionId":"s"}
+{"type":"user","message":{"role":"user","content":"<command-name>/model</command-name>"},"sessionId":"s"}
+{"type":"user","message":{"role":"user","content":"<local-command-stdout>Set model to opus</local-command-stdout>"},"sessionId":"s"}
+{"type":"user","uuid":"22222222","message":{"role":"user","content":"look into the login bug"},"promptSource":"typed","turnOrigin":"human","sessionId":"s","timestamp":"2026-11-04T15:00:00.000Z"}
+{"type":"ai-title","aiTitle":"Login bug","sessionId":"s"}
+{"type":"assistant","timestamp":"2026-11-04T15:00:05.000Z","message":{"model":"claude-opus-5-5","usage":{"input_tokens":1000,"cache_read_input_tokens":20000,"cache_creation_input_tokens":500,"output_tokens":5},"content":[{"type":"thinking","thinking":"where is it"},{"type":"text","text":"Looking at the auth module."},{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"src/auth.rs"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"fn login() {}"}]},"toolUseResult":{"type":"text"}}
+{"type":"assistant","isSidechain":true,"message":{"model":"claude-haiku-5-5","usage":{"input_tokens":99999},"content":[{"type":"text","text":"a subagent's words"}]}}
+{"type":"user","isSidechain":true,"message":{"role":"user","content":"a subagent's prompt"}}
+{"type":"attachment","attachment":{"type":"queued_command","prompt":"also check logout","source_uuid":"33333333"}}
+{"type":"assistant","timestamp":"2026-11-04T15:00:09.000Z","message":{"model":"claude-opus-5-5","usage":{"input_tokens":1200,"cache_read_input_tokens":21000,"output_tokens":40},"content":[{"type":"text","text":"Found it: the token is never refreshed."},{"type":"text","text":"  Fixing it next.  "}]}}
+{"type":"custom-title","customTitle":"Luna auth","sessionId":"s"}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"thanks, go ahead"},{"type":"image","source":{"type":"base64","data":"AAAA"}}]}}
+{"type":"last-prompt","lastPrompt":"thanks, go ahead","sessionId":"s"}

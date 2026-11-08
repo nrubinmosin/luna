@@ -1,0 +1,68 @@
+Seen {
+    consumed: 2228,
+    messages: [
+        (
+            "user",
+            "fix   the build\nplease",
+        ),
+        (
+            "assistant",
+            "Fixed: the lockfile was stale.\nRun it again.",
+        ),
+    ],
+    first_prompt: Some(
+        "fix the build please",
+    ),
+    cwd: Some(
+        "E:\\p",
+    ),
+    spawned_by: None,
+    tail_model: Some(
+        "gpt-5-codex",
+    ),
+    context_tokens: Some(
+        4100.0,
+    ),
+    context_window: Some(
+        258400.0,
+    ),
+    rate_limits: Some(
+        (
+            "{\"primary\":{\"used_percent\":12.5,\"window_minutes\":300,\"resets_at\":1789000000},\"secondary\":null,\"plan_type\":\"plus\"}",
+            "2026-09-17T10:00:09.000Z",
+        ),
+    ),
+    last_model: Some(
+        "gpt-5-codex",
+    ),
+    answered_model: None,
+    due_ms: None,
+    scan_from_epoch: Scanned {
+        completed: 1,
+        working: Some(
+            false,
+        ),
+        ask: None,
+        failed: None,
+        last_said: Some(
+            "Fixed: the lockfile was stale.\nRun it again.",
+        ),
+        last_said_at: Some(
+            "2026-09-17T10:00:10.000Z",
+        ),
+    },
+    scan_from_now: Scanned {
+        completed: 0,
+        working: Some(
+            false,
+        ),
+        ask: None,
+        failed: None,
+        last_said: Some(
+            "Fixed: the lockfile was stale.\nRun it again.",
+        ),
+        last_said_at: Some(
+            "2026-09-17T10:00:10.000Z",
+        ),
+    },
+}
