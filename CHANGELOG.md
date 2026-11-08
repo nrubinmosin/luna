@@ -35,6 +35,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   still takes one approval, now given to the signing job. `release.ps1 -Local`
   signs the same way, builds an export of the commit rather than the checkout
   it signs from, and no longer runs the built exe to ask its core fingerprint.
+  A key rotation's bridge release is checked against the old public key, given
+  as `UPDATER_TRUSTED_PUBKEY`.
 
 ## [0.10.0] - 2026-11-08
 

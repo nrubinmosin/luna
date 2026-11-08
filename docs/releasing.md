@@ -131,6 +131,8 @@ build made. The workflow, whose runners start empty, has no such carry-over.
        leave the secret out and an empty password is used.
 
    Keep both out of the repository secrets, which reach every job of every workflow.
+   - *Environment variables*: `UPDATER_TRUSTED_PUBKEY`, left unset except for the bridge
+     release of a key rotation (see [the signing key](#the-signing-key-rotation-and-recovery)).
 2. **A tag ruleset** (Settings → Rules → Rulesets → New tag ruleset) for `v*`: restrict
    creations, updates and deletions, with the maintainer as the only bypass. Only they
    can then push a release tag, or move one.
@@ -154,9 +156,14 @@ never shows a secret again.
 
 - **Planned rotation.** Generate a new key (`pnpm tauri signer generate -w <file>`, in
   the Windows build image or anywhere the Tauri CLI runs). Release N with the **new**
-  public key in `tauri.conf.json`, still signed with the **old** key. Once installed
-  copies have taken N, replace the environment secrets with the new key; N+1 onward is
-  signed with it. A copy that skipped N cannot verify N+1: its update fails on the
+  public key in `tauri.conf.json`, still signed with the **old** key. The sign step
+  checks a signature against the public key the release embeds, which for N is the new
+  one, so for N give it the old one installed copies hold: set the `release`
+  environment's variable `UPDATER_TRUSTED_PUBKEY` to the old `plugins.updater.pubkey`
+  (or pass `-TrustedPubkey`, or set `LUNA_UPDATER_TRUSTED_PUBKEY`, for `-Local`), and
+  unset it once N is out. Copy it from the `tauri.conf.json` of the last published
+  release, never from the build. Once installed copies have taken N, replace the
+  environment secrets with the new key; N+1 onward is signed with it. A copy that skipped N cannot verify N+1: its update fails on the
   signature, and its user installs N+1 by hand from the release page, over the existing
   install; Luna keeps its data in the install folder, so nothing is lost.
 - **Lost key.** No installed copy can be updated automatically again. Put a new key's

@@ -552,6 +552,98 @@ d8e1  latest.json
         Assert-Throws { Export-TarballEntry $tarball 'package/missing.node' (Join-Path $dir 'm') } 'has no package/missing.node'
     }
 
+    # A tree as the sign job checks it out, its lockfile pinning a stand-in
+    # for the CLI's tarball, and a bundle as the build leaves it. Docker and
+    # the network are stood in for by $Run and $Fetch (Invoke-ReleaseSign).
+    $signFixture = {
+        param([string]$Name)
+        $root = Join-Path $work $Name
+        New-Item -ItemType Directory -Force (Join-Path $root 'src-tauri') | Out-Null
+        Copy-Item -LiteralPath (Join-Path $RepoRoot 'src-tauri/tauri.conf.json') -Destination (Join-Path $root 'src-tauri')
+        $tarball = Join-Path $root 'good.tgz'
+        $out = [IO.File]::Create($tarball)
+        $writer = [System.Formats.Tar.TarWriter]::new([IO.Compression.GZipStream]::new($out, [IO.Compression.CompressionMode]::Compress))
+        $entry = [System.Formats.Tar.PaxTarEntry]::new([System.Formats.Tar.TarEntryType]::RegularFile, 'package/cli.linux-x64-gnu.node')
+        $entry.DataStream = [IO.MemoryStream]::new([Text.Encoding]::ASCII.GetBytes('the native module'))
+        $writer.WriteEntry($entry)
+        $writer.Dispose()
+        $integrity = 'sha512-' + [Convert]::ToBase64String([Security.Cryptography.SHA512]::HashData([IO.File]::ReadAllBytes($tarball)))
+        Set-Content (Join-Path $root 'pnpm-lock.yaml') "packages:`n`n  '@tauri-apps/cli-linux-x64-gnu@2.12.3':`n    resolution: {integrity: $integrity}`n" -NoNewline
+        $bundle = New-Item -ItemType Directory -Force (Join-Path $root 'bundle')
+        Set-Content (Join-Path $bundle 'Luna_0.9.10_x64-setup.exe') 'setup' -NoNewline
+        New-UpdaterManifest -Version '0.9.10' -CoreFingerprint '0123456789abcdef' -Signature '' -SetupName 'Luna_0.9.10_x64-setup.exe' `
+            -Endpoint (Get-UpdaterEndpoint $root) | Set-Content (Join-Path $bundle 'latest.json') -Encoding utf8
+        $key = Join-Path $root 'updater.key'
+        Set-Content $key 'not a key' -NoNewline
+        [pscustomobject]@{ Root = $root; Tarball = $tarball; Bundle = $bundle.FullName; Key = $key; Calls = [System.Collections.Generic.List[object]]::new() }
+    }
+    # The stand-in for docker: records each run, and for the sign run checks
+    # the native module is the tarball's and writes a .sig.
+    $fakeRun = {
+        param($f, [bool]$FailCheck = $false)
+        {
+            param($What, $DockerArgs)
+            $f.Calls.Add([pscustomobject]@{ What = $What; Args = @($DockerArgs) })
+            $cliMount = $DockerArgs[[array]::IndexOf($DockerArgs, '-v') + 1] -replace ':/cli:ro$', ''
+            if ((Get-Content -LiteralPath (Join-Path $cliMount 'cli.node') -Raw) -cne 'the native module') { throw 'not the module' }
+            if ($What -eq 'tauri signer sign') { Set-Content (Join-Path $f.Bundle 'Luna_0.9.10_x64-setup.exe.sig') 'U0lHTkFUVVJF' -NoNewline }
+            elseif ($FailCheck) { throw "$What failed (exit 1)" }
+        }.GetNewClosure()
+    }
+
+    Check 'a CLI download that does not match the lockfile is never run' {
+        $f = & $signFixture 'sign-mismatch'
+        $before = Get-Content -LiteralPath (Join-Path $f.Bundle 'latest.json') -Raw
+        Assert-Throws {
+            Invoke-ReleaseSign -Dir $f.Bundle -Version '0.9.10' -UpdaterKey $f.Key -Root $f.Root `
+                -Fetch { param($url, $to) Set-Content $to 'a tampered tarball' } -Run (& $fakeRun $f)
+        } 'does not match'
+        Assert-Equal $f.Calls.Count 0
+        Assert-Equal (Test-Path -LiteralPath (Join-Path $f.Bundle 'Luna_0.9.10_x64-setup.exe.sig')) $false
+        Assert-Equal (Get-Content -LiteralPath (Join-Path $f.Bundle 'latest.json') -Raw) $before
+        Assert-Equal (@(Get-ChildItem -LiteralPath (Join-Path $f.Root 'src-tauri/target/release-signer') -ErrorAction SilentlyContinue).Count) 0
+    }
+
+    Check 'signing runs the checked CLI isolated, then checks against the updater''s key' {
+        $f = & $signFixture 'sign-ok'
+        Invoke-ReleaseSign -Dir $f.Bundle -Version '0.9.10' -UpdaterKey $f.Key -Root $f.Root `
+            -Fetch { param($url, $to) Copy-Item -LiteralPath $f.Tarball -Destination $to }.GetNewClosure() -Run (& $fakeRun $f)
+        Assert-Equal (@($f.Calls.What) -join ',') 'tauri signer sign,the signature check'
+        foreach ($call in $f.Calls) {
+            $text = $call.Args -join ' '
+            foreach ($flag in '--rm', '--network none', '--read-only', '--cap-drop ALL', '--security-opt no-new-privileges') {
+                if (-not $text.Contains($flag)) { throw "$($call.What) runs without $flag" }
+            }
+        }
+        $sign = $f.Calls[0].Args -join ' '
+        if (-not $sign.Contains('TAURI_SIGNING_PRIVATE_KEY_PATH=/keys/updater.key') -or -not $sign.Contains(':/keys/updater.key:ro')) { throw 'the key is not mounted for signing' }
+        $check = $f.Calls[1].Args
+        if (($check -join ' ') -match 'keys|TAURI_SIGNING') { throw 'the check is handed the key' }
+        Assert-Equal $check[[array]::IndexOf($check, 'verify') + 3] (Get-UpdaterPubkey $f.Root)
+        $manifest = Get-Content -LiteralPath (Join-Path $f.Bundle 'latest.json') -Raw | ConvertFrom-Json
+        Assert-Equal $manifest.platforms.'windows-x86_64'.signature 'U0lHTkFUVVJF'
+        Assert-Equal (@(Get-ChildItem -LiteralPath (Join-Path $f.Root 'src-tauri/target/release-signer')).Count) 0
+    }
+
+    Check 'a rotation''s bridge release is checked against the trusted key, not the one it carries' {
+        $f = & $signFixture 'sign-bridge'
+        Invoke-ReleaseSign -Dir $f.Bundle -Version '0.9.10' -UpdaterKey $f.Key -Root $f.Root -TrustedPubkey 'T0xEIEtFWQ==' `
+            -Fetch { param($url, $to) Copy-Item -LiteralPath $f.Tarball -Destination $to }.GetNewClosure() -Run (& $fakeRun $f)
+        $check = $f.Calls[1].Args
+        Assert-Equal $check[[array]::IndexOf($check, 'verify') + 3] 'T0xEIEtFWQ=='
+    }
+
+    Check 'a signature that fails the check is taken away again' {
+        $f = & $signFixture 'sign-fail'
+        $fetch = { param($url, $to) Copy-Item -LiteralPath $f.Tarball -Destination $to }.GetNewClosure()
+        $run = & $fakeRun $f $true
+        Assert-Throws {
+            Invoke-ReleaseSign -Dir $f.Bundle -Version '0.9.10' -UpdaterKey $f.Key -Root $f.Root -Fetch $fetch -Run $run
+        } 'the signature check failed'
+        Assert-Equal (Test-Path -LiteralPath (Join-Path $f.Bundle 'Luna_0.9.10_x64-setup.exe.sig')) $false
+        Assert-Equal ((Get-Content -LiteralPath (Join-Path $f.Bundle 'latest.json') -Raw | ConvertFrom-Json).platforms.'windows-x86_64'.signature) ''
+    }
+
     Check 'the bundle is held to the build''s checksums, file for file' {
         $dir = New-Item -ItemType Directory -Force (Join-Path $work 'sums')
         Set-Content (Join-Path $dir 'Luna_0.9.10_x64-setup.exe') 'setup' -NoNewline

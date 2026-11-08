@@ -563,6 +563,107 @@ function Export-TarballEntry([string]$Tarball, [string]$Entry, [string]$Destinat
     }
 }
 
+# Signs the installer for $Version in the bundle $Dir (release-bundle.ps1's)
+# and puts the signature into its latest.json; release-sign.ps1 says why and
+# how. In order: the Tauri CLI's Linux build is fetched into a new folder and
+# held to the integrity $Root's pnpm-lock.yaml pins before anything of it is
+# unpacked, let alone run; `signer sign` runs in the pinned Node image with
+# no network, a read-only root and the key; the signature is checked in a
+# second container, without the key and with the bundle read-only, against
+# $TrustedPubkey, or else the public key $Root's tauri.conf.json embeds; only
+# then does latest.json take it. A .sig that fails the check is removed.
+#
+# $TrustedPubkey is for a key rotation's bridge release, which embeds the new
+# public key but is signed with the old private key, the one installed copies
+# still trust (docs/releasing.md): the old public key, given by whoever
+# releases, never taken from the build. $Fetch ($url, $path) downloads and
+# $Run ($what, $dockerArgs) runs `docker run`; both are here for the tests.
+function Invoke-ReleaseSign {
+    param(
+        [Parameter(Mandatory)][string]$Dir,
+        [Parameter(Mandatory)][string]$Version,
+        [string]$UpdaterKey,
+        [string]$TrustedPubkey,
+        [string]$Root = $RepoRoot,
+        [scriptblock]$Fetch = { param($Url, $Path) Invoke-WebRequest -Uri $Url -OutFile $Path -MaximumRetryCount 3 -RetryIntervalSec 5 },
+        [scriptblock]$Run = {
+            param($What, $DockerArgs)
+            & docker run @DockerArgs
+            if ($LASTEXITCODE) { throw "$What failed (exit $LASTEXITCODE)" }
+        }
+    )
+    Assert-VersionFormat $Version
+    $Dir = [IO.Path]::GetFullPath($Dir, (Get-Location).Path)
+    $setups = @(Get-ChildItem -LiteralPath $Dir -Filter "*_${Version}_*-setup.exe" -File -ErrorAction SilentlyContinue)
+    if ($setups.Count -ne 1) { throw "$Dir should hold one installer for $Version, not $($setups.Count)" }
+    $setup = $setups[0]
+    $sigPath = "$($setup.FullName).sig"
+    if (Test-Path -LiteralPath $sigPath) { throw "$($setup.Name) is signed already" }
+    $manifestPath = Join-Path $Dir 'latest.json'
+    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { throw "no latest.json in $Dir" }
+    $embedded = Get-UpdaterPubkey $Root
+    $pubkey = $embedded
+    if ($TrustedPubkey -and $TrustedPubkey.Trim() -cne $embedded) {
+        $pubkey = $TrustedPubkey.Trim()
+        Write-Host 'checking the signature against the trusted public key given for a rotation, not the one this release embeds'
+    }
+    $endpoint = Get-UpdaterEndpoint $Root
+
+    # Passed on by name, its value from this process's environment, so it never
+    # shows on a command line. Left out, the CLI takes the key to have no password.
+    $keyArgs = @()
+    if ($env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD) { $keyArgs += @('-e', 'TAURI_SIGNING_PRIVATE_KEY_PASSWORD') }
+    if ($UpdaterKey) {
+        if (-not (Test-Path -LiteralPath $UpdaterKey -PathType Leaf)) { throw "no updater key at $UpdaterKey" }
+        # Mounted rather than passed as an env value, so it never shows in
+        # `docker inspect` or the process list on the host.
+        $keyPath = (Resolve-Path -LiteralPath $UpdaterKey).Path
+        $keyArgs += @('-v', "${keyPath}:/keys/updater.key:ro", '-e', 'TAURI_SIGNING_PRIVATE_KEY_PATH=/keys/updater.key')
+    } elseif ($env:TAURI_SIGNING_PRIVATE_KEY) {
+        $keyArgs += @('-e', 'TAURI_SIGNING_PRIVATE_KEY')
+    } else {
+        throw 'signing needs the updater''s private key: pass -UpdaterKey <path>, or set LUNA_UPDATER_KEY or TAURI_SIGNING_PRIVATE_KEY'
+    }
+
+    # The CLI's Linux build, the package @tauri-apps/cli installs on a Linux
+    # host, as the build's own `pnpm install` fetched and checked it.
+    $cli = Get-LockedNpmPackage '@tauri-apps/cli-linux-x64-gnu' $Root
+    $work = Join-Path $Root "src-tauri/target/release-signer/$([guid]::NewGuid().ToString('n'))"
+    New-Item -ItemType Directory -Force (Join-Path $work 'cli') | Out-Null
+    try {
+        $tarball = Join-Path $work 'cli.tgz'
+        Write-Host "Tauri CLI $($cli.Version) from $($cli.Url)"
+        & $Fetch $cli.Url $tarball
+        Assert-Sha512Integrity $tarball $cli.Integrity
+        Export-TarballEntry $tarball 'package/cli.linux-x64-gnu.node' (Join-Path $work 'cli/cli.node')
+
+        $image = Get-NodeImage
+        $isolated = @(
+            '--rm', '--network', 'none', '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
+            '-v', "$(Join-Path $work 'cli'):/cli:ro",
+            '-v', "$(Join-Path $Root 'scripts/updater-signature.mjs'):/sign/updater-signature.mjs:ro"
+        )
+        $file = "/out/$($setup.Name)"
+        & $Run 'tauri signer sign' ($isolated + $keyArgs + @('-v', "${Dir}:/out", $image,
+                'node', '/sign/updater-signature.mjs', 'sign', '/cli/cli.node', $file, $Version))
+        try {
+            & $Run 'the signature check' ($isolated + @('-v', "${Dir}:/out:ro", $image,
+                    'node', '/sign/updater-signature.mjs', 'verify', $file, "$file.sig", $pubkey, $Version))
+        } catch {
+            Remove-Item -LiteralPath $sigPath -ErrorAction SilentlyContinue
+            throw
+        }
+
+        $signature = (Get-Content -LiteralPath $sigPath -Raw).Trim()
+        $manifest = Set-UpdaterManifestSignature -Manifest (Get-Content -LiteralPath $manifestPath -Raw) -Signature $signature `
+            -Version $Version -SetupName $setup.Name -Endpoint $endpoint
+        $manifest | Set-Content -LiteralPath $manifestPath -Encoding utf8
+        Write-Host "signed $($setup.Name) for v$Version; latest.json carries the signature"
+    } finally {
+        Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 # Throws unless the folder $Dir holds exactly the files $Sums lists (sha256sum
 # lines, "<hash>  <name>") and each has its hash: nothing changed, missing or
 # added on the way from one job to the next.

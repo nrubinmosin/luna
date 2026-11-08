@@ -155,11 +155,15 @@ jobs:
           . ./scripts/release-lib.ps1
           Assert-AssetChecksums "$env:RUNNER_TEMP/assets" $env:SUMS
       # The key goes to this step alone, and from it only into the signer's
-      # container.
+      # container. UPDATER_TRUSTED_PUBKEY, a variable of the `release`
+      # environment, is set only for a key rotation's bridge release: the old
+      # public key, which installed copies hold and the signature is checked
+      # against in place of the new one the release embeds.
       - name: Sign the installer
         if: needs.verify.outputs.signed == 'true'
         env:
           VERSION: ${{ needs.verify.outputs.version }}
+          LUNA_UPDATER_TRUSTED_PUBKEY: ${{ vars.UPDATER_TRUSTED_PUBKEY }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: ./scripts/release-sign.ps1 -Dir "$env:RUNNER_TEMP/assets" -Version $env:VERSION
