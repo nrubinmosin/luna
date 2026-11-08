@@ -29,7 +29,7 @@ from the git tags; `git log v<a>..v<b>` has the detail.
     starts never writes trust (a Codex helper is trusted for its own runs).
     Quick chat opens the dialog for a folder the account has not trusted.
   - Codex: `approvals_reviewer="user"` only for helpers; `windows.sandbox` only
-    when neither the account's nor the project's config names one;
+    when the account's `config.toml` names none;
     `check_for_update_on_startup=false` passed on every start and no longer
     written into new accounts (lines already there stay); a helper gets
     `--skip-git-repo-check` only outside a Git repository.

@@ -65,13 +65,12 @@ pub fn write(path: &Path, doc: &DocumentMut) -> Result<(), String> {
     })
 }
 
-/// Whether the account's config.toml or the project's `.codex/config.toml`
-/// in `folder` names a `windows.sandbox`: a choice of the user's, which Luna
-/// does not override with its own (codex/launch.rs `codex_windows_sandbox`).
-pub fn windows_sandbox_set(account_path: &str, folder: &str) -> bool {
-    let project = Path::new(folder).join(".codex").join("config.toml");
-    let files = account_file(account_path).into_iter().chain([project]);
-    files.map(|f| read_or_empty(&f)).any(|doc| doc.get("windows").and_then(|w| w.get("sandbox")).is_some())
+/// Whether the account's config.toml names a `windows.sandbox`: the user's
+/// choice, which Luna does not override with its own (codex/launch.rs
+/// `codex_windows_sandbox`). Not a project's `.codex/config.toml`: that is
+/// the repository's say, and Luna's sandbox stands over it as ever.
+pub fn windows_sandbox_set(account_path: &str) -> bool {
+    account_file(account_path).is_ok_and(|f| read_or_empty(&f).get("windows").and_then(|w| w.get("sandbox")).is_some())
 }
 
 /// A string-valued top-level key, trimmed; None for anything else.
@@ -85,22 +84,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_windows_sandbox_of_the_accounts_or_the_projects_is_the_users_choice() {
+    fn a_windows_sandbox_of_the_accounts_is_the_users_choice_and_a_projects_is_not() {
         let root = std::env::temp_dir().join(format!("luna-codex-winsandbox-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let (account, project) = (root.join("acc"), root.join("proj"));
         std::fs::create_dir_all(&account).unwrap();
         std::fs::create_dir_all(project.join(".codex")).unwrap();
-        let (a, p) = (account.to_string_lossy().into_owned(), project.to_string_lossy().into_owned());
-        assert!(!windows_sandbox_set(&a, &p), "no config at all");
+        let a = account.to_string_lossy().into_owned();
+        assert!(!windows_sandbox_set(&a), "no config at all");
         std::fs::write(account.join("config.toml"), "model = \"x\"\n[windows]\nother = 1\n").unwrap();
-        assert!(!windows_sandbox_set(&a, &p), "a [windows] table without a sandbox");
+        assert!(!windows_sandbox_set(&a), "a [windows] table without a sandbox");
         std::fs::write(account.join("config.toml"), "[windows]\nsandbox = \"elevated\"\n").unwrap();
-        assert!(windows_sandbox_set(&a, &p), "the account's");
+        assert!(windows_sandbox_set(&a), "the account's");
         std::fs::write(account.join("config.toml"), "model = [broken\n").unwrap();
-        assert!(!windows_sandbox_set(&a, &p), "a config that will not parse says nothing");
-        std::fs::write(project.join(".codex").join("config.toml"), "windows.sandbox = \"unelevated\"\n").unwrap();
-        assert!(windows_sandbox_set(&a, &p), "the project's, dotted");
+        assert!(!windows_sandbox_set(&a), "a config that will not parse says nothing");
+        std::fs::write(project.join(".codex").join("config.toml"), "windows.sandbox = \"elevated\"\n").unwrap();
+        assert!(!windows_sandbox_set(&a), "the project's is the repository's say, not the user's");
+        std::fs::write(account.join("config.toml"), "windows.sandbox = \"elevated\"\n").unwrap();
+        assert!(windows_sandbox_set(&a), "the account's, dotted");
         let _ = std::fs::remove_dir_all(&root);
     }
 }

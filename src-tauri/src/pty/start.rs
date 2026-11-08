@@ -550,7 +550,7 @@ pub async fn ensure_codex_session(
             account_path: &account_path,
             resume: resume.as_deref(),
             trust,
-            own_windows_sandbox: crate::codex::config::windows_sandbox_set(&account_path, &folder),
+            own_windows_sandbox: crate::codex::config::windows_sandbox_set(&account_path),
             worktree: worktree.unwrap_or(false),
             model: chosen_model,
             effort: &effort,

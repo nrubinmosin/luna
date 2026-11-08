@@ -140,7 +140,7 @@ and check the other CLI for the same behavior (AGENTS.md, "Both providers").
 
 | Observation | What Luna does |
 | --- | --- |
-| Without `windows.sandbox`, `read-only` and `workspace-write` reject or ask for every command, even `Get-Content` | `-c windows.sandbox="unelevated"`, unless the account's or project's config names one |
+| Without `windows.sandbox`, `read-only` and `workspace-write` reject or ask for every command, even `Get-Content` | `-c windows.sandbox="unelevated"`, unless the account's `config.toml` names one |
 | Codex takes the first `pwsh.exe` on PATH; the Store app alias fails under the restricted token (`CreateProcessAsUserW failed: 5`) | PATH without `…\Microsoft\WindowsApps` |
 | Under `workspace-write` Codex adds one ACL entry for its sandbox to the folder | documented |
 | "No network" is only proxy variables at `127.0.0.1:9` and `GIT_SSH_COMMAND=cmd /c exit 1`; ssh, raw sockets and `gh` with those cleared still connect | documented: keeps tools off the network by accident, not data in |
