@@ -6,7 +6,7 @@ import { onCoreState } from '../../../ipc/events';
 import { useUpdates } from '../../updates/updates.store';
 import { useCli } from '../../updates/cli.store';
 import { PROVIDER_LABEL, type Provider } from '../../../shared/types';
-import { Section } from '../../../shared/ui/Section';
+import { Group, Row } from '../SettingsRows';
 
 const pct = (got: number, total: number | null) => (total ? Math.min(100, Math.round((got / total) * 100)) : null);
 
@@ -33,35 +33,36 @@ function VersionRow({
   disabled?: boolean;
 }) {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0' }}>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 'var(--fs-4)', display: 'flex', alignItems: 'baseline', gap: 6 }}>
-          <span style={{ fontWeight: 700 }}>{name}</span>
-          <span style={{ color: 'var(--dim)', fontVariantNumeric: 'tabular-nums' }}>{version}</span>
-        </div>
+    <Row
+      label={
+        <>
+          <b>{name}</b> <span style={{ color: 'var(--dim)', fontVariantNumeric: 'tabular-nums' }}>{version}</span>
+        </>
+      }
+      desc={
         <div
           title={statusTitle ?? status}
           style={{
-            fontSize: 'var(--fs-2)',
-            marginTop: 1,
             whiteSpace: 'nowrap',
             overflow: 'hidden',
             textOverflow: 'ellipsis',
-            color: error ? 'oklch(.58 .2 25)' : 'var(--faint)'
+            color: error ? 'var(--set-error)' : undefined
           }}
         >
           {status}
         </div>
-      </div>
-      <button
-        onClick={action}
-        disabled={disabled}
-        className={`slim${primary ? ' primary' : ''}`}
-        style={{ flex: 'none', minWidth: 74 }}
-      >
-        {actionLabel}
-      </button>
-    </div>
+      }
+      control={
+        <button
+          onClick={action}
+          disabled={disabled}
+          className={`slim${primary ? ' primary' : ''}`}
+          style={{ minWidth: 76 }}
+        >
+          {actionLabel}
+        </button>
+      }
+    />
   );
 }
 
@@ -182,15 +183,21 @@ function CliRow({ provider }: { provider: Provider }) {
 
 export function VersionsSection() {
   return (
-    <Section label="Versions & updates">
+    <Group
+      about={{
+        summary: 'How updates work',
+        body: (
+          <p>
+            Luna checks for its own updates on launch; each CLI is re-checked every 6 hours. New chats spawn on a fresh
+            CLI — running sessions keep the version they started with.
+          </p>
+        )
+      }}
+    >
       <LunaRow />
       <CoreRow />
       <CliRow provider="claude" />
       <CliRow provider="codex" />
-      <div style={{ fontSize: 'var(--fs-1)', color: 'var(--faint)', marginTop: 4 }}>
-        Luna checks for its own updates on launch; each CLI is re-checked every 6 hours. New chats spawn on a fresh CLI
-        — running sessions keep the version they started with.
-      </div>
-    </Section>
+    </Group>
   );
 }

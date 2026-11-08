@@ -16,6 +16,7 @@
   answers, notices, lifetime
 - [Power and shutdown-when-done](user-guide/power.md)
 - [Updates](user-guide/updates.md): Luna and the CLIs
+- [Settings](user-guide/settings.md): what each page holds and where it went
 
 ## Architecture
 
