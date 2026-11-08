@@ -1,14 +1,38 @@
 #!/bin/sh
-# The one rule for commit messages: authorship is git's author field and
-# nothing else, so a message carries no AI attribution. Refused:
+# The rules for commit messages (CONTRIBUTING.md, "Commits"), checked once here
+# for the commit-msg hook and for CI.
+#
+# Every commit: authorship is git's author field and nothing else, so a
+# message carries no AI attribution. Refused:
 #   - a Co-Authored-By: trailer (any case, blanks before the colon allowed),
 #   - the robot emoji (U+1F916),
 #   - a "Generated with" attribution line: "Generated with " opening a line
 #     (after blanks, #) and followed by a capitalized word, a [bracketed link]
 #     or a URL. Prose like "generated with drizzle-kit" passes.
 #
-#   check-commit-msg.sh FILE            one message file (the commit-msg hook)
-#   check-commit-msg.sh --range A..B    every commit in a range (CI)
+# The form, a sentence saying what the change does:
+#   - the subject is at most 72 characters and does not end in a period,
+#   - it starts with a capital letter, a digit or a path-like name
+#     ("agents/wait.rs:", "check-text", "luna_wait"); lowercase prose is
+#     refused, and so is a Conventional Commits type prefix ("docs:",
+#     "fix(scope)!:"): the type is what the sentence says,
+#   - line 2 is blank, and the body is wrapped at 72, except a line with a
+#     URL, an indented line and a line that is one unbreakable token.
+# Exempt from the form: a merge ("Merge ..."), a revert ('Revert "..."') and
+# the release bump ("Luna X.Y.Z"), and Dependabot's commits by their author.
+# "fixup!", "squash!" and "amend!" commits (git commit --fixup, --squash,
+# --fixup=amend: and --fixup=reword:) pass the hook, to be squashed, and fail
+# the range check, so they never merge.
+#
+#   check-commit-msg.sh FILE              one message file (the commit-msg hook)
+#   check-commit-msg.sh --range REVS...   every commit git rev-list REVS selects
+#                                         (CI: A..B, with ^C for what to leave out)
+#
+# The hook sees the message as git hands it over, before the cleanup: comment
+# lines (core.commentChar) and, after a scissors line, the diff of commit -v are
+# no part of it and are skipped for the form, though an attribution in a comment
+# is refused all the same. What a --cleanup=whitespace or verbatim commit keeps
+# of them is then checked literally, as a stored message, by the range check.
 #
 # Plain sh and git, so it runs the same from Git for Windows' sh and on Linux.
 
@@ -16,49 +40,162 @@ LC_ALL=C
 export LC_ALL
 
 robot=$(printf '\360\237\244\226')
+dependabot='49699333+dependabot[bot]@users.noreply.github.com'
+types='feat|fix|docs|chore|refactor|test|build|ci|perf|style'
 
-# Prints "line N (why): text" for the first offending line of the message on
-# stdin and fails on one. A verbose commit's scissors line ends the message.
-find_offence() {
+# Characters, not bytes: with LC_ALL=C a shell counts bytes, so the UTF-8
+# continuation bytes go first and one byte per character stays.
+length() { printf '%s' "$1" | tr -d '\200-\277' | wc -c | tr -d ' '; }
+
+matches() { printf '%s\n' "$1" | grep -qE "$2"; }
+matches_i() { printf '%s\n' "$1" | grep -qiE "$2"; }
+
+cr=$(printf '\r')
+scissors=' ------------------------ >8 ------------------------'
+
+# What opens a comment line in the hook's message file: core.commentChar and
+# core.commentString are one setting under two names, and as in git the one
+# configured last wins ("#" when neither is). With "auto", git picks per message
+# the first of #;@!$%^&|: that opens no line of the text, and tells nobody; a
+# guess read off the file would let a message choose its own comment character
+# and hide a trailer behind a scissors line of it, so nothing is a comment
+# then, and the author is told why a comment line of theirs is being judged.
+comment_prefix() {
+    c=$(git config --get-regexp '^core\.comment(char|string)$' 2>/dev/null | tail -n 1)
+    case $c in
+        *' '*) c=${c#* } ;;
+        *) c= ;;
+    esac
+    [ -n "$c" ] || c='#'
+    if [ "$c" = auto ]; then
+        echo 'check-commit-msg: core.commentChar is auto, so comment lines and a scissors line are checked as text' >&2
+        return
+    fi
+    printf '%s' "$c"
+}
+
+# Checks the message on stdin, printing "line N (rule): text" per problem, and
+# fails on one. $1 is hook or range: the hook skips comment lines (opened by
+# $comment, when set) and stops at the scissors line, and lets a fixup!,
+# squash! or amend! through; the range check takes the stored message as it
+# is. $2 is whether the form is checked at all, besides the attribution: a
+# merge's or a Dependabot commit's is not.
+check_message() {
+    mode=$1
+    form=$2
     n=0
+    subject=
+    k=0
+    bad=0
     while IFS= read -r line || [ -n "$line" ]; do
         n=$((n + 1))
-        case $line in
-            '# ------------------------ >8 ------------------------') break ;;
-        esac
+        line=${line%"$cr"} # a CRLF file: the CR is no part of the line
+        if [ "$mode" = hook ] && [ -n "$comment" ] && [ "$line" = "$comment$scissors" ]; then
+            break
+        fi
         why=
         case $line in
             *"$robot"*) why='robot emoji' ;;
         esac
         if [ -z "$why" ]; then
-            if printf '%s\n' "$line" | grep -qiE '^[[:space:]]*co-authored-by[[:space:]]*:'; then
+            if matches_i "$line" '^[[:space:]]*co-authored-by[[:space:]]*:'; then
                 why='Co-Authored-By trailer'
-            elif printf '%s\n' "$line" | grep -qE '^[[:space:]#]*Generated with ([A-Z[]|https?://)'; then
+            elif matches "$line" '^[[:space:]#]*Generated with ([A-Z[]|https?://)'; then
                 why='"Generated with" attribution'
             fi
         fi
         if [ -n "$why" ]; then
-            printf '  line %s (%s): %s\n' "$n" "$why" "$line"
-            return 1
+            printf '  line %s (AI attribution, %s): %s\n' "$n" "$why" "$line"
+            bad=1
+        fi
+
+        [ "$form" = yes ] || continue
+        if [ "$mode" = hook ] && [ -n "$comment" ]; then
+            case $line in "$comment"*) continue ;; esac
+        fi
+        case $line in
+            *[![:space:]]*) blank=no ;;
+            *) blank=yes ;;
+        esac
+        if [ -z "$subject" ]; then
+            [ "$blank" = no ] || continue # leading blank lines go with the commit
+            subject=$line
+            case $subject in
+                'Merge '* | 'Revert "'*) form=no ;;
+                'fixup! '* | 'squash! '* | 'amend! '*)
+                    if [ "$mode" = range ]; then
+                        printf '  line %s (fixup!/squash!/amend! commit, squash it before merging): %s\n' "$n" "$line"
+                        bad=1
+                    fi
+                    form=no
+                    ;;
+            esac
+            if matches "$subject" '^Luna [0-9]+\.[0-9]+\.[0-9]+$'; then form=no; fi
+            [ "$form" = yes ] || continue
+            if [ "$(length "$subject")" -gt 72 ]; then
+                printf '  line %s (subject longer than 72 characters, %s): %s\n' "$n" "$(length "$subject")" "$line"
+                bad=1
+            fi
+            case $subject in
+                *.)
+                    printf '  line %s (subject ends in a period): %s\n' "$n" "$line"
+                    bad=1
+                    ;;
+            esac
+            if matches_i "$subject" "^($types)(\([^)]*\))?!?: "; then
+                printf '  line %s (type prefix; say what the change does, the type is in the sentence): %s\n' "$n" "$line"
+                bad=1
+            elif ! matches "$subject" '^([A-Z0-9]|\.?[a-z][a-z0-9]*[-_./][^ ]*)'; then
+                printf '  line %s (subject starts with a lowercase word; start with a capital, a digit or a path-like name): %s\n' "$n" "$line"
+                bad=1
+            fi
+            continue
+        fi
+        k=$((k + 1))
+        if [ "$k" = 1 ] && [ "$blank" = no ]; then
+            printf '  line %s (line 2 is not blank; a blank line separates the subject from the body): %s\n' "$n" "$line"
+            bad=1
+        fi
+        if [ "$(length "$line")" -gt 72 ]; then
+            case $line in
+                *://* | [[:space:]]*) ;; # a URL, an indented line
+                *' '*)
+                    printf '  line %s (body line longer than 72 characters, %s; wrap it): %s\n' "$n" "$(length "$line")" "$line"
+                    bad=1
+                    ;;
+            esac
         fi
     done
+    return $bad
 }
 
-refuse() { # $1 = what was checked, $2 = the offense, $3 = the fix
+refuse() { # $1 = what was checked, $2 = the problems, $3 = the fix
     {
-        echo "commit message refused ($1): no AI attribution in commits."
+        echo "commit message refused ($1):"
         echo "$2"
         echo
-        echo "Authorship is git's author field only: drop the Co-Authored-By trailer, the"
-        echo "robot emoji and any \"Generated with ...\" line. $3"
+        echo 'The rules are in CONTRIBUTING.md, "Commits": a sentence of at most 72'
+        echo 'characters saying what the change does, a blank line, then why, wrapped at'
+        echo '72; no type prefix, no trailing period, no AI attribution.'
+        echo "$3"
     } >&2
 }
 
 case $1 in
     --range)
+        shift
+        # rev-list has said what is wrong with the revisions; a bad range is
+        # not an empty one.
+        revs=$(git rev-list "$@") || exit 2
         bad=0
-        for c in $(git rev-list "$2"); do
-            if ! out=$(git show -s --format=%B "$c" | find_offence); then
+        for c in $revs; do
+            # A merge's message is git's own, and Dependabot's body is
+            # generated: neither is held to the form, both to the attribution.
+            form=yes
+            info=$(git show -s --format='%P|%ae' "$c")
+            case ${info%%|*} in *' '*) form=no ;; esac
+            [ "${info#*|}" = "$dependabot" ] && form=no
+            if ! out=$(git show -s --format=%B "$c" | check_message range $form); then
                 refuse "commit $(git rev-parse --short "$c")" "$out" 'Rewrite the commit message before merging.'
                 bad=1
             fi
@@ -66,12 +203,17 @@ case $1 in
         exit $bad
         ;;
     '')
-        echo 'usage: check-commit-msg.sh FILE | --range A..B' >&2
+        echo 'usage: check-commit-msg.sh FILE | --range REVS...' >&2
         exit 2
         ;;
     *)
-        if ! out=$(find_offence <"$1"); then
-            refuse 'commit-msg hook' "$out" 'Edit it with: git commit --amend'
+        comment=$(comment_prefix)
+        if ! out=$(check_message hook yes <"$1"); then
+            # The refused commit was never made and the change is still staged, so
+            # the way on is a new commit from the message; --amend would fold the
+            # change into the commit before, unless that was what was being done.
+            refuse 'commit-msg hook' "$out" "The commit was not made. Fix the message and commit again: git commit -e -F $1
+(--amend only if the refused commit was an amend)."
             exit 1
         fi
         ;;

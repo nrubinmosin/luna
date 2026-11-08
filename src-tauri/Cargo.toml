@@ -34,6 +34,9 @@ dirs = "7"
 portable-pty = "0.9"
 ureq = { version = "2", features = ["json"] }
 sha2 = "0.10"
+# RSA verification of the Claude Code release manifest's signature
+# (src/claude/manifest_sig.rs). The version rustls already brings in.
+ring = "0.17.14"
 # The secrets Luna mints (src/secret.rs), from the OS's CSPRNG. The version
 # the tree already resolves.
 getrandom = "0.4.3"
@@ -55,10 +58,14 @@ vt100 = "0.18"
 
 # Subclassing the windows — the Alt menu and WM_ENDSESSION (src/sysmenu.rs);
 # Job Objects and process counters for what a session has running under it
-# (src/procs/win.rs); power requests and suspend for keep-awake and
-# shutdown-when-done (src/power/machine.rs); the exit watcher's wait, exit code and
+# (src/procs/win.rs); power requests, suspend, the shutdown call with the
+# privilege it takes and the signs of what became of it (the session metric,
+# the System log), for keep-awake and shutdown-when-done
+# (src/power/machine.rs); the exit watcher's wait, exit code and
 # boot time (src/lifecycle.rs); the DACLs on the folders holding secrets
-# and on the private files made with one (src/secret.rs). Pinned to the version tauri already
+# and on the private files made with one (src/secret.rs); the process at the
+# other end of a loopback connection to the core, and its token (src/peer.rs).
+# Pinned to the version tauri already
 # resolves, so this adds features to a crate in the tree rather than a second
 # copy of it.
 [target.'cfg(windows)'.dependencies]
@@ -70,9 +77,11 @@ windows = { version = "0.62", features = [
     "Win32_Security_Authorization",
     "Win32_Storage_FileSystem",
     "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_EventLog",
     "Win32_System_JobObjects",
     "Win32_System_Power",
     "Win32_System_Registry",
+    "Win32_System_Shutdown",
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
     "Win32_UI_Shell",

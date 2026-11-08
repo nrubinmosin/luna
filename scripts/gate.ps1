@@ -86,6 +86,9 @@ $steps = @(
             Invoke-Frontend 'pnpm check:text' 'xargs -0 -a test-build/tracked-files corepack pnpm run check:text'
         }
     }
+    # tauri build refuses a Tauri crate and its npm package on different
+    # major.minor lines, and nothing here runs tauri build.
+    New-ScriptStep 'check:tauri'
     New-ScriptStep 'test:scripts'
     @{
         # The release scripts' logic (release-lib.ps1) is PowerShell, run on
@@ -97,12 +100,49 @@ $steps = @(
             Invoke-Checked 'release-lib tests' { pwsh -NoProfile -File (Join-Path $RepoRoot 'scripts/release-lib.test.ps1') }
         }
     }
+    @{
+        # What the third-party notices are made of (notices-lib.ps1), on a
+        # made-up tree: the notices script itself needs the registries.
+        Name  = 'notices-lib tests'
+        Group = 'frontend'
+        Run   = {
+            Invoke-Checked 'notices-lib tests' { pwsh -NoProfile -File (Join-Path $RepoRoot 'scripts/notices-lib.test.ps1') }
+        }
+    }
     New-ScriptStep 'test'
     New-ScriptStep 'build'
+    @{
+        # What the notices list beyond the lockfiles' packages, against the tree:
+        # each entry of third-party-licenses/components.json still at the version
+        # it was checked against, and every helper the build tools wrote into
+        # the bundle just built listed, and nothing listed that it lacks.
+        Name  = 'third-party components listed'
+        Group = 'frontend'
+        Run   = {
+            . (Join-Path $RepoRoot 'scripts/notices-lib.ps1')
+            $components = @((Get-Content (Join-Path $RepoRoot 'third-party-licenses/components.json') -Raw | ConvertFrom-Json).components)
+            Assert-ComponentTies $components (Get-Content (Join-Path $RepoRoot 'src-tauri/Cargo.lock') -Raw) (Get-Content (Join-Path $RepoRoot 'pnpm-lock.yaml') -Raw)
+            Assert-BundledHelpers (Join-Path $RepoRoot 'dist') $components
+        }
+    }
     @{
         Name  = 'Linux toolchain image'
         Group = 'rust'
         Run   = { $images.linux = Build-Image luna-linuxcheck linux-check.Dockerfile }
+    }
+    @{
+        # The commit-message check's own tests. Its range mode runs git, which
+        # the slim Node image lacks, so they run in the Linux toolchain image;
+        # they make a throwaway repository in the container's /tmp and touch no
+        # volume, so no cargo lock is needed. CI's frontend job runs them again
+        # on the runner's sh, before checking the pushed range.
+        Name  = 'check-commit-msg tests'
+        Group = 'rust'
+        Run   = {
+            Invoke-Checked 'check-commit-msg tests' {
+                docker run --rm -v "${RepoRoot}:/app:ro" -w /app $images.linux sh scripts/check-commit-msg.test.sh
+            }
+        }
     }
     @{
         Name  = 'cargo fmt --check'

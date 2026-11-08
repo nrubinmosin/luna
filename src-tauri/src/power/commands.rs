@@ -90,16 +90,17 @@ fn armed_as_told(armed: Option<&Armed>) -> serde_json::Value {
 /// An agent's `luna_power`: the rule the power chip arms, so the PC goes down
 /// the way Luna takes it down — once every session is quiet, each CLI asked to
 /// quit first — rather than by a `shutdown` that takes the other chats' work
-/// with it. "off" disarms. Says what still holds the rule up, the caller aside:
-/// its own turn ends once it has answered, and whether this is a dry run (`dry`),
-/// for a test to see before any countdown can end.
+/// with it. "cancel" disarms, as does "off", its name through 0.10. Says what
+/// still holds the rule up, the caller aside: its own turn ends once it has
+/// answered, and whether this is a dry run (`dry`), for a test to see before any
+/// countdown can end.
 pub fn arm_for_agent(caller: &str, action: &str, quiet_s: Option<u64>, drain: Option<bool>) -> Result<serde_json::Value, String> {
-    if action == "off" {
+    if action == "cancel" || action == "off" {
         disarm_power_off();
         return Ok(serde_json::json!({ "armed": null }));
     }
     let Some(a) = Action::parse(action).filter(|a| *a != Action::Log) else {
-        return Err(format!("unknown action {action:?}; use shutdown, restart, hibernate, sleep or off"));
+        return Err(format!("unknown action {action:?}; use shutdown, restart, hibernate, sleep or cancel"));
     };
     let quiet_s = quiet_s.unwrap_or(crate::settings::get().quiet_window_s);
     let state = arm_power_off(a.as_str().to_string(), quiet_s, drain)?;
@@ -141,8 +142,16 @@ mod tests {
     fn an_agent_arms_only_what_the_chip_offers() {
         for bad in ["reboot", "log", ""] {
             let e = arm_for_agent("me", bad, None, None).unwrap_err();
-            assert!(e.contains("use shutdown, restart, hibernate, sleep or off"), "{e}");
+            assert!(e.contains("use shutdown, restart, hibernate, sleep or cancel"), "{e}");
         }
         assert!(state().lock().unwrap().armed.is_none(), "nothing armed on a refusal");
+    }
+
+    #[test]
+    fn an_agent_cancels_with_cancel_and_still_with_off() {
+        for word in ["cancel", "off"] {
+            let disarmed = arm_for_agent("me", word, None, None).unwrap();
+            assert_eq!(disarmed, serde_json::json!({ "armed": null }), "{word}");
+        }
     }
 }

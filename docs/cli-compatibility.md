@@ -54,7 +54,7 @@ and check the other CLI for the same behavior (AGENTS.md, "Both providers").
 | A session resumed elsewhere keeps writing to the folder it started in | transcripts searched in every project folder |
 | `claude -p` with a `run_in_background` task open waits for it and takes its end up in the same run | one notice for the whole job |
 | `Unknown command: /x` is written and no turn starts | spawn answers `started: false` at once |
-
+| Release bucket (seen on 2.1.319): `manifest.json` gives each platform's `checksum` (sha256) and `size`, and says `manifestSignatureEnforcement: flag`; `manifest.json.sig` beside it is an ASCII-armored OpenPGP v4 signature, RSA 4096 with SHA-512, by key `31DD DE24 DDFA B679 F42D 7BD2 BAA9 29FF 1A7E CACE` | the manifest verified against that key, pinned, before its checksum is used (`claude/manifest_sig.rs`) |
 ### Terminal (all)
 
 | Observation | What Luna does |
@@ -74,6 +74,7 @@ and check the other CLI for the same behavior (AGENTS.md, "Both providers").
 | 2.1.318 | an agent's result is taken up in a turn of its own opening with `UserPromptSubmit` (`<task-notification>`) | the registry's busy is judged afresh after `SubagentStop` |
 | 2.1.318+ | permission dialogs and lists drawn as Luna's screen recognition expects | an unrecognized dialog accepts only raw `keys` |
 | 2.1.318 | a `Read(//<path>)` rule is rooted at `/`; on Windows a file's path is matched as `/c/Users/…` and a rule `//c/…` (or `C:/…`) is rooted at `C:\`; rules match without regard to case | the settings file denies `Read(//e/…/core/**)` |
+| 2.1.319 | the version last checked live (MCP token from the environment, the signed manifest) | the oldest a fresh tree installs (`claude/cli.rs` `MIN_VERSION`); raise it with each version checked |
 
 ## Codex
 
@@ -120,6 +121,7 @@ and check the other CLI for the same behavior (AGENTS.md, "Both providers").
 | Thread names in `session_index.jsonl`: the first line is Codex's; a differing one is `/rename` | titles |
 | Model catalog in the account's `models_cache.json`; `codex debug models [--bundled]` | catalog fallbacks |
 | Usage at `chatgpt.com/backend-api/wham/usage` with `auth.json`'s token; `token_count.rate_limits` in rollouts | limits and fallback |
+| Package tarball (seen on rust-v0.167.0): regular files and folders only, no links; 52 entries and 581 MB unpacked for x86_64 Windows, 52 and 541 MB for x86_64 Linux, 50 and 427 MB for arm64 macOS. `codex-package_SHA256SUMS` covers the tarballs; Sigstore bundles (`*.tar.gz.sigstore`) are published for the Linux packages only. Written by Python's `tarfile` in PAX format (`scripts/codex_package/archive.py` in openai/codex), which adds a PAX record where a field does not fit a plain header | unpacked with entry, byte, metadata and stream caps; link entries and PAX `size` overrides refused (`codex/cli.rs`); checked against `SHA256SUMS` |
 
 ### Terminal (all)
 
