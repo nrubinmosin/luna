@@ -324,9 +324,9 @@ fn tools() -> Value {
         },
         {
             "name": "luna_power",
-            "description": "Only when the user asked: shut down, restart, hibernate or sleep the PC once all Luna sessions are quiet for quietS (default: the user's), CLIs closed first; off cancels. drain: till then agents' luna_spawn, luna_send are refused, luna_answer needs a pending ask. Returns busy, waitingForAPerson.",
+            "description": "Only when the user asked: shut down, restart, hibernate or sleep the PC once all Luna sessions are quiet for quietS (default: the user's), CLIs closed first; cancel disarms. drain: till then agents' luna_spawn, luna_send are refused, luna_answer needs a pending ask. Returns busy, waitingForAPerson.",
             "inputSchema": s(json!({
-                "action": { "type": "string", "enum": ["shutdown", "restart", "hibernate", "sleep", "off"] },
+                "action": { "type": "string", "enum": ["shutdown", "restart", "hibernate", "sleep", "cancel", "off"] },
                 "quietS": { "type": "integer" },
                 "drain": { "type": "boolean" }
             }), &["action"]),

@@ -300,9 +300,16 @@ fn settle_lines(s: &mut Saved, reached: &dyn Fn(&str) -> Option<bool>) {
         return;
     }
     let over = turn_known_over(s);
+    settle_stores([&mut s.in_flight, &mut s.fed, &mut s.undelivered], &mut s.budgets_landed, over, reached);
+}
+
+/// `settle_lines` over the stores themselves, for a saved helper and for one of
+/// this core's alike. Codex has no such lines: its stdin taking a batch is all
+/// there is to go by, and what it took is off the books by then.
+fn settle_stores(stores: [&mut Vec<Queued>; 3], budgets_landed: &mut Vec<String>, over: bool, reached: &dyn Fn(&str) -> Option<bool>) {
     let mut known: HashMap<String, Option<bool>> = HashMap::new();
     let mut landed: Vec<String> = Vec::new();
-    for store in [&mut s.in_flight, &mut s.fed, &mut s.undelivered] {
+    for store in stores {
         store.retain_mut(|q| {
             let Some(line) = q.line.take() else { return true };
             match *known.entry(line).or_insert_with_key(|line| reached(line)) {
@@ -318,7 +325,7 @@ fn settle_lines(s: &mut Saved, reached: &dyn Fn(&str) -> Option<bool>) {
             }
         });
     }
-    s.budgets_landed.extend(landed);
+    budgets_landed.extend(landed);
 }
 
 /// What a helper stopped with no conversation yet was started on, as a message,
@@ -340,6 +347,43 @@ fn lone_opening(s: &mut Saved, stopped: bool) -> Option<Queued> {
         q.id = id;
     }
     Some(q)
+}
+
+/// `taken_up` for a helper that stays with this core: it stopped the turn itself
+/// (`stop_all`) and the process is reaped, so the turn is over and the helper may
+/// resume — unless an older core left it in doubt (`unsure`), which only its next
+/// turn settles. First what a Claude Code turn had on stdin is settled against
+/// the conversation, as `restore` does with `settle_lines`: `reached` says of a
+/// line whether the transcript holds it, read off the registry's lock
+/// (`stopped_lines`), and what it holds is not sent again. One with no
+/// conversation yet is owed its opening prompt first, as `lone_opening` gives it
+/// to a new core, unless what was on its way holds it already: in this core every
+/// opening has its id (run.rs `note_opening`), and what was on its way is in
+/// `undelivered` by now (`stop_for_luna`).
+pub(super) fn settle_stopped(e: &mut Entry, reached: &dyn Fn(&str) -> Option<bool>) {
+    if e.run.is_some() || !e.cut_short {
+        return;
+    }
+    e.resumable = !e.unsure;
+    if e.spec.provider == Provider::Claude {
+        settle_stores([&mut e.in_flight, &mut e.fed, &mut e.undelivered], &mut e.budgets_landed, !e.unsure, reached);
+    }
+    if e.session.is_some() {
+        return;
+    }
+    let Some(text) = e.opening.take() else { return };
+    let id = e.opening_id.take();
+    let kept = match &id {
+        Some(id) => e.undelivered.iter().any(|q| q.id == *id),
+        None => e.undelivered.iter().any(|q| q.text == text),
+    };
+    if !kept {
+        let mut q = Queued::new(None, text, Vec::new());
+        if let Some(id) = id {
+            q.id = id;
+        }
+        e.undelivered.insert(0, q);
+    }
 }
 
 /// A saved helper as a registry entry, between turns: a turn that ran went

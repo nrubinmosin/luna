@@ -48,6 +48,183 @@ function Compare-Lines([string]$Before, [string]$After) {
     @(for ($i = 0; $i -lt $a.Count; $i++) { if ($a[$i] -cne $b[$i]) { $b[$i] } })
 }
 
+# A workflow's jobs, read by indentation as YAML nests them (no YAML parser
+# ships with pwsh or the toolchain images): each job, two spaces in under
+# `jobs:`, with Lines, its own lines, comments dropped, and Steps, each item
+# of its `steps:` list with Keys, every key of the step and its whole value:
+# the text after the colon and every line indented deeper than the key, which
+# takes in block scalars (`run: |`, `>-`), quoted and plain multi-line values
+# and nested maps alike. Header holds the lines before `jobs:`.
+function Read-WorkflowJobs([string]$Text) {
+    $lines = @($Text -split '\r?\n' | Where-Object { $_ -notmatch '^\s*#' })
+    $jobsAt = [array]::IndexOf($lines, ($lines | Where-Object { $_ -match '^jobs:\s*$' } | Select-Object -First 1))
+    if ($jobsAt -lt 0) { throw 'no jobs:' }
+    $indent = { param($line) $line.Length - $line.TrimStart(' ').Length }
+    $jobs = [ordered]@{}
+    $job = $null
+    for ($i = $jobsAt + 1; $i -lt $lines.Count; $i++) {
+        $line = $lines[$i]
+        if ($line -match '^  ([A-Za-z0-9_-]+):\s*$') {
+            $job = [pscustomobject]@{ Lines = [System.Collections.Generic.List[string]]::new(); Steps = [System.Collections.Generic.List[object]]::new() }
+            $jobs[$Matches[1]] = $job
+            continue
+        }
+        if ($line.Trim() -and (& $indent $line) -lt 2) { throw "line $($i + 1) is outside any job: $line" }
+        if ($job) { $job.Lines.Add($line) }
+    }
+    foreach ($job in $jobs.Values) {
+        $body = $job.Lines
+        $stepsAt = -1
+        for ($i = 0; $i -lt $body.Count; $i++) { if ($body[$i] -match '^    steps:\s*$') { $stepsAt = $i; break } }
+        if ($stepsAt -lt 0) { continue }
+        # Each item: its lines, its "- " opening taken as two more spaces of
+        # indentation, so its first key sits with the others.
+        $items = [System.Collections.Generic.List[object]]::new()
+        for ($i = $stepsAt + 1; $i -lt $body.Count; $i++) {
+            $line = $body[$i]
+            if ($line.Trim() -and (& $indent $line) -le 4) { break }
+            if ($line -match '^(\s*)- (.*)$' -and $Matches[1].Length -eq 6) {
+                $items.Add([System.Collections.Generic.List[string]]::new())
+                $items[-1].Add((' ' * 8) + $Matches[2])
+            } elseif ($items.Count) {
+                $items[-1].Add($line)
+            } elseif ($line.Trim()) {
+                throw "a step line before any step: $line"
+            }
+        }
+        foreach ($item in $items) {
+            $keys = [ordered]@{}
+            for ($i = 0; $i -lt $item.Count; $i++) {
+                if ($item[$i] -notmatch '^        ([A-Za-z0-9_-]+):(.*)$') {
+                    if ($item[$i].Trim() -and (& $indent $item[$i]) -le 8) { throw "not a step key: $($item[$i])" }
+                    continue
+                }
+                $name = $Matches[1]
+                $value = [System.Collections.Generic.List[string]]::new()
+                $value.Add($Matches[2].Trim())
+                while ($i + 1 -lt $item.Count -and (-not $item[$i + 1].Trim() -or (& $indent $item[$i + 1]) -gt 8)) {
+                    $i++
+                    $value.Add($item[$i].Trim())
+                }
+                $keys[$name] = ($value -join "`n").Trim()
+            }
+            $job.Steps.Add([pscustomobject]@{ Keys = $keys })
+        }
+    }
+    [pscustomobject]@{ Header = @($lines[0..([math]::Max($jobsAt - 1, 0))]); Jobs = $jobs }
+}
+
+# The sign job as release.yml has to have it, step for step: every key of
+# every step and its whole value as Read-WorkflowJobs gives it (a `uses:`
+# without its version comment). An allowlist, not a list of what is barred:
+# a step, a key or a value that is not here is refused, however its command
+# is spelled. A change to the sign job changes this list in the same commit.
+$SignJob = @'
+    needs: [verify, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: ${{ needs.verify.outputs.signed == 'true' && 'release' || '' }}
+    permissions:
+      contents: read
+    steps:
+'@
+$SignSteps = @(
+    [ordered]@{
+        uses = 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
+        with = @'
+persist-credentials: false
+sparse-checkout-cone-mode: false
+sparse-checkout: |
+/scripts/lib.ps1
+/scripts/release-lib.ps1
+/scripts/release-sign.ps1
+/scripts/updater-signature.mjs
+/docker/windows-build.Dockerfile
+/pnpm-lock.yaml
+/src-tauri/tauri.conf.json
+'@
+    }
+    [ordered]@{
+        uses = 'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333'
+        with = @'
+name: unsigned
+path: ${{ runner.temp }}/assets
+'@
+    }
+    [ordered]@{
+        name = 'Check the bundle against the build''s checksums'
+        env  = 'SUMS: ${{ needs.build.outputs.sums }}'
+        run  = @'
+|
+. ./scripts/lib.ps1
+. ./scripts/release-lib.ps1
+Assert-AssetChecksums "$env:RUNNER_TEMP/assets" $env:SUMS
+'@
+    }
+    [ordered]@{
+        name = 'Sign the installer'
+        if   = 'needs.verify.outputs.signed == ''true'''
+        env  = @'
+VERSION: ${{ needs.verify.outputs.version }}
+LUNA_UPDATER_TRUSTED_PUBKEY: ${{ vars.UPDATER_TRUSTED_PUBKEY }}
+TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+'@
+        run  = './scripts/release-sign.ps1 -Dir "$env:RUNNER_TEMP/assets" -Version $env:VERSION -RequireTrustedPubkey'
+    }
+    [ordered]@{
+        uses = 'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9'
+        with = @'
+name: assets
+path: ${{ runner.temp }}/assets/
+if-no-files-found: error
+retention-days: 7
+'@
+    }
+)
+
+# What release.yml has to keep (docs/releasing.md): no YAML anchor, alias or
+# merge key anywhere, so what a step says is what it runs; no job but sign
+# names a secret, a variable or an environment, or mentions the signing key;
+# and sign is exactly $SignJob and $SignSteps, with no `${{ }}` in a `run:`
+# and none in an `env:` but a plain needs, secrets or vars reference. Throws
+# naming the breach.
+function Assert-ReleaseWorkflow([string]$Text) {
+    $plain = @($Text -split "`n" | Where-Object { $_ -notmatch '^\s*#' }) -join "`n"
+    if ($plain -match '(?m)(^\s*-\s+|:\s+)[&*][A-Za-z0-9_-]+|^\s*<<\s*:') { throw 'release.yml uses a YAML anchor, alias or merge key' }
+    $workflow = Read-WorkflowJobs $Text
+    if (($workflow.Header -join "`n") -match 'secrets\.|vars\.|environment:|TAURI_SIGNING') { throw 'the workflow''s header reaches for a secret' }
+    foreach ($name in $workflow.Jobs.Keys) {
+        if ($name -eq 'sign') { continue }
+        if (($workflow.Jobs[$name].Lines -join "`n") -match 'secrets\.|vars\.|environment:|TAURI_SIGNING') {
+            throw "the $name job references a secret, a variable, an environment or the signing key"
+        }
+    }
+    $sign = $workflow.Jobs['sign']
+    if (-not $sign) { throw 'no sign job' }
+    $head = @($sign.Lines) -join "`n"
+    $at = $head.IndexOf("`n    steps:")
+    $head = if ($at -ge 0) { $head.Substring(0, $at + "`n    steps:".Length) } else { $head }
+    if ($head -cne ($SignJob -replace "`r`n", "`n")) { throw "the sign job's settings are not the ones allowed:`n$head" }
+    if ($sign.Steps.Count -ne $SignSteps.Count) { throw "sign has $($sign.Steps.Count) steps, not the $($SignSteps.Count) allowed" }
+    for ($i = 0; $i -lt $SignSteps.Count; $i++) {
+        $step = $sign.Steps[$i].Keys
+        $want = $SignSteps[$i]
+        $got = @($step.Keys) -join ','
+        if ($got -cne (@($want.Keys) -join ',')) { throw "sign step $($i + 1) has the keys $got, not $(@($want.Keys) -join ',')" }
+        foreach ($key in $want.Keys) {
+            $value = if ($key -eq 'uses') { $step[$key] -replace '\s+#.*$', '' } else { $step[$key] }
+            if ($value -cne ($want[$key] -replace "`r`n", "`n")) { throw "sign step $($i + 1)'s $key is not the one allowed: $value" }
+        }
+        if ($step['run'] -match '\$\{\{') { throw "sign step $($i + 1) puts an expression in its run" }
+        foreach ($line in @($step['env'] -split "`n" | Where-Object { $_ })) {
+            if ($line -cnotmatch '^[A-Z_]+: \$\{\{ (needs\.[a-z]+\.outputs\.[a-z]+|secrets\.[A-Z_]+|vars\.[A-Z_]+) \}\}$') {
+                throw "sign step $($i + 1) sets $line"
+            }
+        }
+    }
+}
+
 try {
     $current = (Get-Content (Join-Path $RepoRoot 'package.json') -Raw | ConvertFrom-Json).version
 
@@ -428,16 +605,303 @@ d8e1  latest.json
         foreach ($name in 'Luna_0.9.1_x64-setup.exe', 'Luna_0.9.1_x64-setup.exe.sig', 'Luna_0.9.10_x64-setup.exe') {
             Set-Content (Join-Path $nsis $name) 'x'
         }
-        Set-Content (Join-Path $dir 'luna.exe') 'x'
-        Assert-Throws { Find-ReleaseArtifacts '0.9.10' -Unsigned -Dir $dir } 'core-fingerprint.txt'
+        Assert-Throws { Find-ReleaseArtifacts '0.9.10' -Dir $dir } 'core-fingerprint.txt'
         Set-Content (Join-Path $dir 'core-fingerprint.txt') '0123456789abcdef' -NoNewline
-        Assert-Throws { Find-ReleaseArtifacts '0.9.10' -Dir $dir } 'Luna_0.9.10_x64-setup.exe.sig'
-        $found = Find-ReleaseArtifacts '0.9.10' -Unsigned -Dir $dir
+        # No exe: nothing the build made is run, so nothing asks for one.
+        $found = Find-ReleaseArtifacts '0.9.10' -Dir $dir
         Assert-Equal (Split-Path -Leaf $found.Setup) 'Luna_0.9.10_x64-setup.exe'
-        Assert-Equal $found.Signature $null
         $found = Find-ReleaseArtifacts '0.9.1' -Dir $dir
-        Assert-Equal (Split-Path -Leaf $found.Signature) 'Luna_0.9.1_x64-setup.exe.sig'
+        Assert-Equal (Split-Path -Leaf $found.Setup) 'Luna_0.9.1_x64-setup.exe'
+        Assert-Equal (@($found.PSObject.Properties.Name) -join ',') 'Setup,Fingerprint'
         Assert-Throws { Find-ReleaseArtifacts '0.9.2' -Dir $dir } 'no installer for 0.9.2'
+    }
+
+    Check 'the release source is the commit''s tree, without .git or the skill links' {
+        $to = Join-Path $work 'source'
+        Export-ReleaseSource 'HEAD' $to
+        foreach ($file in 'package.json', 'pnpm-lock.yaml', 'src-tauri/Cargo.lock', 'src-tauri/tauri.conf.json', 'scripts/build-windows.ps1') {
+            if (-not (Test-Path -LiteralPath (Join-Path $to $file) -PathType Leaf)) { throw "no $file in the export" }
+        }
+        foreach ($absent in '.git', '.claude') {
+            if (Test-Path -LiteralPath (Join-Path $to $absent)) { throw "$absent in the export" }
+        }
+        $tracked = git -C $RepoRoot show 'HEAD:package.json'
+        Assert-Equal ((Get-Content -LiteralPath (Join-Path $to 'package.json')) -join "`n") ($tracked -join "`n")
+        Assert-Equal (Test-Path -LiteralPath "$to.tar") $false
+        Assert-Throws { Export-ReleaseSource 'HEAD' $to } 'there already'
+    }
+
+    Check 'a build artifact reached through a link is refused' {
+        # What a build in a container could leave in the tree it wrote: an
+        # artifact, or a folder on the way to it, that is a link elsewhere.
+        $root = Join-Path $work 'linked'
+        $dir = Join-Path $root 'release'
+        $nsis = New-Item -ItemType Directory -Force (Join-Path $dir 'bundle/nsis')
+        Set-Content (Join-Path $nsis 'Luna_0.9.10_x64-setup.exe') 'x'
+        $outside = New-Item -ItemType Directory -Force (Join-Path $work 'outside')
+        Set-Content (Join-Path $outside 'secret.txt') '0123456789abcdef' -NoNewline
+        # A link as each OS makes one without privileges: a junction on
+        # Windows (a symlink there needs Developer Mode or elevation), so a
+        # folder holding the file stands in for a link to the file; a symlink
+        # elsewhere, where pwsh makes no junction and says nothing about it.
+        # Checked to be there, so a link never made cannot pass for refused.
+        $link = {
+            param($path, $folder, $file)
+            if ($IsWindows) { New-Item -ItemType Junction -Path $path -Target $folder | Out-Null }
+            else { New-Item -ItemType SymbolicLink -Path $path -Target $(if ($file) { $file } else { $folder }) | Out-Null }
+            if (-not (Test-Link $path)) { throw "no link made at $path" }
+        }
+        # The link itself goes, never what it points at: a junction or a
+        # folder symlink is removed as a folder on Windows, unlinked elsewhere.
+        $unlink = { param($path) if ($IsWindows) { [IO.Directory]::Delete($path) } else { [IO.File]::Delete($path) } }
+        & $link (Join-Path $root 'elsewhere') $outside
+        Set-Content (Join-Path $dir 'core-fingerprint.txt') '0123456789abcdef' -NoNewline
+        Find-ReleaseArtifacts '0.9.10' -Dir $dir -Root $root | Out-Null
+        Assert-Throws { Find-ReleaseArtifacts '0.9.10' -Dir (Join-Path $root 'elsewhere') -Root $root } 'through a link'
+        Remove-Item -LiteralPath (Join-Path $dir 'core-fingerprint.txt')
+        & $link (Join-Path $dir 'core-fingerprint.txt') $outside (Join-Path $outside 'secret.txt')
+        Assert-Throws { Find-ReleaseArtifacts '0.9.10' -Dir $dir -Root $root } 'through a link'
+        & $unlink (Join-Path $root 'elsewhere')
+        & $unlink (Join-Path $dir 'core-fingerprint.txt')
+        Assert-Equal (Test-Path -LiteralPath (Join-Path $outside 'secret.txt')) $true
+    }
+
+    Check 'the signature goes into latest.json only as the build wrote it for the version' {
+        $endpoint = Get-UpdaterEndpoint
+        $at = [datetime]::new(2026, 11, 7, 12, 30, 5, [DateTimeKind]::Utc)
+        $made = { param($sig, $version = '0.9.10', $setup = 'Luna_0.9.10_x64-setup.exe')
+            New-UpdaterManifest -Version $version -CoreFingerprint '0123456789abcdef' -Signature $sig -SetupName $setup `
+                -Endpoint $endpoint -Notes "Line one`nLine two" -PubDate $at }
+        $sign = { param($manifest, $version = '0.9.10', $setup = 'Luna_0.9.10_x64-setup.exe')
+            Set-UpdaterManifestSignature -Manifest $manifest -Signature "c2lnbmF0dXJl`n" -Version $version -SetupName $setup -Endpoint $endpoint }
+        Assert-Equal (& $sign (& $made '')) (& $made 'c2lnbmF0dXJl')
+        Assert-Throws { & $sign (& $made 'old') } 'carries a signature already'
+        Assert-Throws { & $sign (& $made '') '0.9.11' } "for version '0.9.10', not 0.9.11"
+        Assert-Throws { & $sign (& $made '' '0.9.10' 'Luna_0.9.1_x64-setup.exe') } 'points at'
+        Assert-Throws { Set-UpdaterManifestSignature -Manifest (& $made '') -Signature ' ' -Version '0.9.10' -SetupName 'x' -Endpoint $endpoint } 'no signature'
+        $json = & $made '' | ConvertFrom-Json -AsHashtable
+        $json.platforms['darwin-aarch64'] = $json.platforms['windows-x86_64']
+        Assert-Throws { & $sign ($json | ConvertTo-Json -Depth 5) } 'one platform'
+        $json = & $made '' | ConvertFrom-Json -AsHashtable
+        $json.extra = 1
+        Assert-Throws { & $sign ($json | ConvertTo-Json -Depth 5) } 'has the fields'
+        $json = & $made '' | ConvertFrom-Json -AsHashtable
+        $json.pub_date = 'soon'
+        Assert-Throws { & $sign ($json | ConvertTo-Json -Depth 5) } 'not a date'
+    }
+
+    Check 'the Tauri CLI to sign with is the one pnpm-lock.yaml pins' {
+        $cli = Get-LockedNpmPackage '@tauri-apps/cli-linux-x64-gnu'
+        $wrapper = Get-LockedNpmPackage '@tauri-apps/cli'
+        Assert-Equal $cli.Version $wrapper.Version
+        Assert-Equal $cli.Url "https://registry.npmjs.org/@tauri-apps/cli-linux-x64-gnu/-/cli-linux-x64-gnu-$($cli.Version).tgz"
+        if ($cli.Integrity -notmatch '^sha512-[A-Za-z0-9+/]{86}==$') { throw "integrity $($cli.Integrity)" }
+        $root = New-Item -ItemType Directory -Force (Join-Path $work 'lock')
+        $entry = "  '@x/y@1.0.0':`n    resolution: {integrity: sha512-AAAA}`n"
+        Set-Content (Join-Path $root 'pnpm-lock.yaml') "packages:`n`n$entry`nsnapshots:`n`n  '@x/y@1.0.0': {}`n" -NoNewline
+        Assert-Equal (Get-LockedNpmPackage '@x/y' $root).Version '1.0.0'
+        Set-Content (Join-Path $root 'pnpm-lock.yaml') "packages:`n`n$entry`n$($entry -replace '1\.0\.0', '1.0.1')" -NoNewline
+        Assert-Throws { Get-LockedNpmPackage '@x/y' $root } 'not 2'
+        Set-Content (Join-Path $root 'pnpm-lock.yaml') "packages:`n`n  '@x/y@1.0.0':`n    resolution: {integrity: sha512-AAAA, tarball: https://example.com/y.tgz}`n" -NoNewline
+        Assert-Throws { Get-LockedNpmPackage '@x/y' $root } 'not 0'
+    }
+
+    Check 'a download is held to its sha512 integrity' {
+        $file = Join-Path (New-Item -ItemType Directory -Force (Join-Path $work 'sri')) 'cli.tgz'
+        [IO.File]::WriteAllBytes($file, [Text.Encoding]::ASCII.GetBytes('TAURI'))
+        $good = 'sha512-' + [Convert]::ToBase64String([Security.Cryptography.SHA512]::HashData([Text.Encoding]::ASCII.GetBytes('TAURI')))
+        Assert-Sha512Integrity $file $good
+        $bad = 'sha512-' + [Convert]::ToBase64String([Security.Cryptography.SHA512]::HashData([Text.Encoding]::ASCII.GetBytes('TAURJ')))
+        Assert-Throws { Assert-Sha512Integrity $file $bad } 'does not match'
+        Assert-Throws { Assert-Sha512Integrity $file 'sha256-AAAA' } 'not a sha512 integrity'
+    }
+
+    Check 'only the named file comes out of a tarball' {
+        $dir = New-Item -ItemType Directory -Force (Join-Path $work 'tar')
+        $tarball = Join-Path $dir 'pkg.tgz'
+        $out = [IO.File]::Create($tarball)
+        $writer = [System.Formats.Tar.TarWriter]::new([IO.Compression.GZipStream]::new($out, [IO.Compression.CompressionMode]::Compress))
+        foreach ($name in 'package/package.json', '../escape.node', 'package/cli.node') {
+            $entry = [System.Formats.Tar.PaxTarEntry]::new([System.Formats.Tar.TarEntryType]::RegularFile, $name)
+            $entry.DataStream = [IO.MemoryStream]::new([Text.Encoding]::ASCII.GetBytes("data of $name"))
+            $writer.WriteEntry($entry)
+        }
+        $writer.Dispose()
+        $to = Join-Path $dir 'cli.node'
+        Export-TarballEntry $tarball 'package/cli.node' $to
+        Assert-Equal (Get-Content -LiteralPath $to -Raw) 'data of package/cli.node'
+        Assert-Equal (@(Get-ChildItem -LiteralPath $dir).Name -join ',') 'cli.node,pkg.tgz'
+        Assert-Equal (Test-Path -LiteralPath (Join-Path $work 'escape.node')) $false
+        Assert-Throws { Export-TarballEntry $tarball 'package/cli.node' $to } 'already exists'
+        Assert-Throws { Export-TarballEntry $tarball 'package/missing.node' (Join-Path $dir 'm') } 'has no package/missing.node'
+    }
+
+    # A tree as the sign job checks it out, its lockfile pinning a stand-in
+    # for the CLI's tarball, and a bundle as the build leaves it. Docker and
+    # the network are stood in for by $Run and $Fetch (Invoke-ReleaseSign).
+    $signFixture = {
+        param([string]$Name)
+        $root = Join-Path $work $Name
+        New-Item -ItemType Directory -Force (Join-Path $root 'src-tauri') | Out-Null
+        Copy-Item -LiteralPath (Join-Path $RepoRoot 'src-tauri/tauri.conf.json') -Destination (Join-Path $root 'src-tauri')
+        $tarball = Join-Path $root 'good.tgz'
+        $out = [IO.File]::Create($tarball)
+        $writer = [System.Formats.Tar.TarWriter]::new([IO.Compression.GZipStream]::new($out, [IO.Compression.CompressionMode]::Compress))
+        $entry = [System.Formats.Tar.PaxTarEntry]::new([System.Formats.Tar.TarEntryType]::RegularFile, 'package/cli.linux-x64-gnu.node')
+        $entry.DataStream = [IO.MemoryStream]::new([Text.Encoding]::ASCII.GetBytes('the native module'))
+        $writer.WriteEntry($entry)
+        $writer.Dispose()
+        $integrity = 'sha512-' + [Convert]::ToBase64String([Security.Cryptography.SHA512]::HashData([IO.File]::ReadAllBytes($tarball)))
+        Set-Content (Join-Path $root 'pnpm-lock.yaml') "packages:`n`n  '@tauri-apps/cli-linux-x64-gnu@2.12.3':`n    resolution: {integrity: $integrity}`n" -NoNewline
+        $bundle = New-Item -ItemType Directory -Force (Join-Path $root 'bundle')
+        Set-Content (Join-Path $bundle 'Luna_0.9.10_x64-setup.exe') 'setup' -NoNewline
+        New-UpdaterManifest -Version '0.9.10' -CoreFingerprint '0123456789abcdef' -Signature '' -SetupName 'Luna_0.9.10_x64-setup.exe' `
+            -Endpoint (Get-UpdaterEndpoint $root) | Set-Content (Join-Path $bundle 'latest.json') -Encoding utf8
+        $key = Join-Path $root 'updater.key'
+        Set-Content $key 'not a key' -NoNewline
+        [pscustomobject]@{ Root = $root; Tarball = $tarball; Bundle = $bundle.FullName; Key = $key; Calls = [System.Collections.Generic.List[object]]::new() }
+    }
+    # The stand-in for docker: records each run, and for the sign run checks
+    # the native module is the tarball's and writes a .sig.
+    $fakeRun = {
+        param($f, [bool]$FailCheck = $false)
+        {
+            param($What, $DockerArgs)
+            $f.Calls.Add([pscustomobject]@{ What = $What; Args = @($DockerArgs) })
+            $cliMount = $DockerArgs[[array]::IndexOf($DockerArgs, '-v') + 1] -replace ':/cli:ro$', ''
+            if ((Get-Content -LiteralPath (Join-Path $cliMount 'cli.node') -Raw) -cne 'the native module') { throw 'not the module' }
+            if ($What -eq 'tauri signer sign') { Set-Content (Join-Path $f.Bundle 'Luna_0.9.10_x64-setup.exe.sig') 'U0lHTkFUVVJF' -NoNewline }
+            elseif ($FailCheck) { throw "$What failed (exit 1)" }
+        }.GetNewClosure()
+    }
+
+    Check 'a CLI download that does not match the lockfile is never run' {
+        $f = & $signFixture 'sign-mismatch'
+        $before = Get-Content -LiteralPath (Join-Path $f.Bundle 'latest.json') -Raw
+        Assert-Throws {
+            Invoke-ReleaseSign -Dir $f.Bundle -Version '0.9.10' -UpdaterKey $f.Key -Root $f.Root `
+                -Fetch { param($url, $to) Set-Content $to 'a tampered tarball' } -Run (& $fakeRun $f)
+        } 'does not match'
+        Assert-Equal $f.Calls.Count 0
+        Assert-Equal (Test-Path -LiteralPath (Join-Path $f.Bundle 'Luna_0.9.10_x64-setup.exe.sig')) $false
+        Assert-Equal (Get-Content -LiteralPath (Join-Path $f.Bundle 'latest.json') -Raw) $before
+        Assert-Equal (@(Get-ChildItem -LiteralPath (Join-Path $f.Root 'src-tauri/target/release-signer') -ErrorAction SilentlyContinue).Count) 0
+    }
+
+    Check 'signing runs the checked CLI isolated, then checks against the updater''s key' {
+        $f = & $signFixture 'sign-ok'
+        Invoke-ReleaseSign -Dir $f.Bundle -Version '0.9.10' -UpdaterKey $f.Key -Root $f.Root `
+            -Fetch { param($url, $to) Copy-Item -LiteralPath $f.Tarball -Destination $to }.GetNewClosure() -Run (& $fakeRun $f)
+        Assert-Equal (@($f.Calls.What) -join ',') 'tauri signer sign,the signature check'
+        foreach ($call in $f.Calls) {
+            $text = $call.Args -join ' '
+            foreach ($flag in '--rm', '--network none', '--read-only', '--cap-drop ALL', '--security-opt no-new-privileges') {
+                if (-not $text.Contains($flag)) { throw "$($call.What) runs without $flag" }
+            }
+        }
+        $sign = $f.Calls[0].Args -join ' '
+        if (-not $sign.Contains('TAURI_SIGNING_PRIVATE_KEY_PATH=/keys/updater.key') -or -not $sign.Contains(':/keys/updater.key:ro')) { throw 'the key is not mounted for signing' }
+        $check = $f.Calls[1].Args
+        if (($check -join ' ') -match 'keys|TAURI_SIGNING') { throw 'the check is handed the key' }
+        Assert-Equal $check[[array]::IndexOf($check, 'verify') + 3] (Get-UpdaterPubkey $f.Root)
+        $manifest = Get-Content -LiteralPath (Join-Path $f.Bundle 'latest.json') -Raw | ConvertFrom-Json
+        Assert-Equal $manifest.platforms.'windows-x86_64'.signature 'U0lHTkFUVVJF'
+        Assert-Equal (@(Get-ChildItem -LiteralPath (Join-Path $f.Root 'src-tauri/target/release-signer')).Count) 0
+    }
+
+    Check 'a rotation''s bridge release is checked against the trusted key, not the one it carries' {
+        $f = & $signFixture 'sign-bridge'
+        Invoke-ReleaseSign -Dir $f.Bundle -Version '0.9.10' -UpdaterKey $f.Key -Root $f.Root -TrustedPubkey 'T0xEIEtFWQ==' `
+            -Fetch { param($url, $to) Copy-Item -LiteralPath $f.Tarball -Destination $to }.GetNewClosure() -Run (& $fakeRun $f)
+        $check = $f.Calls[1].Args
+        Assert-Equal $check[[array]::IndexOf($check, 'verify') + 3] 'T0xEIEtFWQ=='
+    }
+
+    Check 'a signature that fails the check is taken away again' {
+        $f = & $signFixture 'sign-fail'
+        $fetch = { param($url, $to) Copy-Item -LiteralPath $f.Tarball -Destination $to }.GetNewClosure()
+        $run = & $fakeRun $f $true
+        Assert-Throws {
+            Invoke-ReleaseSign -Dir $f.Bundle -Version '0.9.10' -UpdaterKey $f.Key -Root $f.Root -Fetch $fetch -Run $run
+        } 'the signature check failed'
+        Assert-Equal (Test-Path -LiteralPath (Join-Path $f.Bundle 'Luna_0.9.10_x64-setup.exe.sig')) $false
+        Assert-Equal ((Get-Content -LiteralPath (Join-Path $f.Bundle 'latest.json') -Raw | ConvertFrom-Json).platforms.'windows-x86_64'.signature) ''
+    }
+
+    Check 'the bundle is held to the build''s checksums, file for file' {
+        $dir = New-Item -ItemType Directory -Force (Join-Path $work 'sums')
+        Set-Content (Join-Path $dir 'Luna_0.9.10_x64-setup.exe') 'setup' -NoNewline
+        Set-Content (Join-Path $dir 'latest.json') '{}' -NoNewline
+        $sha = { param($text) [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($text))).ToLowerInvariant() }
+        $sums = "$(& $sha 'setup')  Luna_0.9.10_x64-setup.exe`n$(& $sha '{}')  latest.json`n"
+        Assert-AssetChecksums $dir $sums
+        Assert-AssetChecksums $dir ($sums -replace '  latest', ' *latest')
+        Set-Content (Join-Path $dir 'latest.json') '{"x":1}' -NoNewline
+        Assert-Throws { Assert-AssetChecksums $dir $sums } 'latest.json has sha256'
+        Set-Content (Join-Path $dir 'latest.json') '{}' -NoNewline
+        Set-Content (Join-Path $dir 'Luna_0.9.10_x64-setup.exe.sig') 'x'
+        Assert-Throws { Assert-AssetChecksums $dir $sums } 'do not list: Luna_0.9.10_x64-setup.exe.sig'
+        Remove-Item -LiteralPath (Join-Path $dir 'Luna_0.9.10_x64-setup.exe.sig')
+        Remove-Item -LiteralPath (Join-Path $dir 'latest.json')
+        Assert-Throws { Assert-AssetChecksums $dir $sums } 'latest.json is missing'
+        Assert-Throws { Assert-AssetChecksums $dir '' } 'no checksums'
+        Assert-Throws { Assert-AssetChecksums $dir "$(& $sha 'setup')  ../setup.exe" } 'not a sha256sum line'
+    }
+
+    Check 'release.yml keeps the key in the sign job, and the sign job as allowed' {
+        $text = [IO.File]::ReadAllText((Join-Path $RepoRoot '.github/workflows/release.yml')) -replace "`r`n", "`n"
+        $workflow = Read-WorkflowJobs $text
+        Assert-Equal ($workflow.Jobs.Keys -join ',') 'verify,build,sign,sbom,attest,publish'
+        Assert-ReleaseWorkflow $text
+
+        # Each breach, as an edit of the real file.
+        $edit = { param($from, $to) if (-not $text.Contains($from)) { throw "no '$from' in release.yml" }; $text.Replace($from, $to) }
+        $beforeSign = '      # The key goes to this step alone'
+        $signRun = '        run: ./scripts/release-sign.ps1 -Dir "$env:RUNNER_TEMP/assets" -Version $env:VERSION -RequireTrustedPubkey'
+        Assert-Throws { Assert-ReleaseWorkflow (& $edit $beforeSign "      - name: Install`n        run: |`n          echo ready`n          pnpm install --frozen-lockfile`n$beforeSign") } 'sign has 6 steps'
+        Assert-Throws { Assert-ReleaseWorkflow (& $edit $beforeSign "      - uses: actions/setup-node@0123456789abcdef0123456789abcdef01234567`n$beforeSign") } 'sign has 6 steps'
+        Assert-Throws { Assert-ReleaseWorkflow (& $edit $signRun "$signRun`n          pnpm install") } 'run is not the one allowed'
+        Assert-Throws { Assert-ReleaseWorkflow (& $edit $signRun "        run: `${{ format('{0}{1} install', 'pn', 'pm') }}") } 'run is not the one allowed'
+        Assert-Throws { Assert-ReleaseWorkflow (& $edit $signRun ($signRun -replace ' -RequireTrustedPubkey', '')) } 'run is not the one allowed'
+        Assert-Throws { Assert-ReleaseWorkflow (& $edit $signRun '        run: *command') } 'anchor, alias'
+        Assert-Throws { Assert-ReleaseWorkflow (& $edit '      - name: Sign the installer' '      - name: &step Sign the installer') } 'anchor, alias'
+        Assert-Throws { Assert-ReleaseWorkflow (& $edit "        if: needs.verify.outputs.signed == 'true'" "        <<: *defaults`n        if: needs.verify.outputs.signed == 'true'") } 'anchor, alias'
+        Assert-Throws {
+            Assert-ReleaseWorkflow (& $edit '          VERSION: ${{ needs.verify.outputs.version }}' "          VERSION: `${{ needs.verify.outputs.version }}`n          BASH_ENV: `${{ format('x') }}")
+        } 'env is not the one allowed'
+        Assert-Throws { Assert-ReleaseWorkflow (& $edit "          sparse-checkout-cone-mode: false`n" '') } 'with is not the one allowed'
+        Assert-Throws { Assert-ReleaseWorkflow (& $edit "    timeout-minutes: 15`n    environment:" "    timeout-minutes: 15`n    container: node:24`n    environment:") } 'settings are not the ones allowed'
+        Assert-Throws { Assert-ReleaseWorkflow (& $edit "    environment: `${{ needs.verify.outputs.signed == 'true' && 'release' || '' }}`n" '') } 'settings are not the ones allowed'
+        Assert-Throws {
+            Assert-ReleaseWorkflow (& $edit '        run: ./scripts/build-windows.ps1 -Installer' "        env:`n          KEY: `${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}`n        run: ./scripts/build-windows.ps1 -Installer")
+        } 'the build job references a secret'
+        Assert-Throws { Assert-ReleaseWorkflow (& $edit "  build:`n    needs: verify`n" "  build:`n    needs: verify`n    environment: release`n") } 'the build job references'
+    }
+
+    Check 'the trusted public key is the embedded one unless a key is given, and required where asked' {
+        $pubkey = Get-UpdaterPubkey
+        Assert-Equal (Resolve-TrustedPubkey '') $null
+        Assert-Equal (Resolve-TrustedPubkey 'embedded') $null
+        Assert-Equal (Resolve-TrustedPubkey 'embedded' -Required) $null
+        Assert-Equal (Resolve-TrustedPubkey " $pubkey`n") $pubkey
+        Assert-Equal (Resolve-TrustedPubkey $pubkey -Required) $pubkey
+        # Empty where it is required: the `release` environment does not
+        # define the variable, so a repository-level one would have stood in.
+        Assert-Throws { Resolve-TrustedPubkey '' -Required } 'UPDATER_TRUSTED_PUBKEY'
+        Assert-Throws { Resolve-TrustedPubkey 'yes' } 'not a minisign public key'
+        Assert-Throws { Resolve-TrustedPubkey 'dW50cnVzdGVkIGNvbW1lbnQ6IHgKUldRCg==' } 'not a minisign public key'
+    }
+
+    Check 'release.ps1 -Local hands -TrustedPubkey on to the signing' {
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $RepoRoot 'scripts/release.ps1'), [ref]$null, [ref]$null)
+        $param = $ast.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'TrustedPubkey' }
+        if (-not $param) { throw 'release.ps1 has no -TrustedPubkey' }
+        Assert-Equal $param.DefaultValue.Extent.Text '$env:LUNA_UPDATER_TRUSTED_PUBKEY'
+        $calls = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.Extent.Text -match 'release-sign\.ps1' }, $true))
+        Assert-Equal $calls.Count 1
+        $elements = @($calls[0].CommandElements | ForEach-Object { $_.Extent.Text })
+        $at = [array]::IndexOf($elements, '-TrustedPubkey')
+        if ($at -lt 0 -or $elements[$at + 1] -cne '$TrustedPubkey') { throw "release-sign.ps1 is called as $($calls[0].Extent.Text)" }
     }
 
     Check 'an SBOM is checked the way actions/attest checks it' {

@@ -649,14 +649,26 @@ mod live {
 
     #[test]
     fn saturation_is_turned_away_and_passes() {
-        let addr = listener(Limits { unknown: 2, head_deadline: Duration::from_millis(300), ..LIMITS });
+        let addr = listener(Limits { unknown: 2, head_deadline: Duration::from_secs(2), ..LIMITS });
         let idle: Vec<TcpStream> = (0..2).map(|_| TcpStream::connect(addr).unwrap()).collect();
-        // The accept loop takes them in order: let it reach both.
-        std::thread::sleep(Duration::from_millis(100));
-        assert!(post_hook(addr, "chat-hub-full", PROMPT).starts_with("HTTP/1.1 503"), "over the cap: turned away at once");
+        // The accept loop takes connections in the order they came, so the
+        // strangers hold both slots when it reaches this one, as long as their
+        // deadline has not passed. It answers without reading, so this one
+        // reads before it sends anything: a request left unread when the 503
+        // is closed has the close reset the connection, and on Windows a reset
+        // drops the answer the client has not read yet.
+        let mut c = TcpStream::connect(addr).unwrap();
+        c.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let mut out = String::new();
+        let _ = c.read_to_string(&mut out);
+        assert!(out.starts_with("HTTP/1.1 503"), "over the cap: turned away at once: {out:?}");
         // The strangers' deadline passes and their slots come back.
-        std::thread::sleep(Duration::from_millis(500));
-        assert!(post_hook(addr, "chat-hub-full", PROMPT).starts_with("HTTP/1.1 204"));
+        let begun = Instant::now();
+        while !post_hook(addr, "chat-hub-full", PROMPT).starts_with("HTTP/1.1 204") {
+            assert!(begun.elapsed() < Duration::from_secs(10), "the slots never came back");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(begun.elapsed() >= Duration::from_secs(1), "the strangers kept their slots: {:?}", begun.elapsed());
         drop(idle);
 
         let addr = listener(Limits { hooks: 0, ..LIMITS });
