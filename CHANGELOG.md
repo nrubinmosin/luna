@@ -10,6 +10,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Changed
 
+- `luna_power` disarms with the action `cancel`; `off`, its old name, still
+  works.
 - Release notes are made from this file: a release's notes are its version's
   section, the sections of every version since the last published release, a
   link to the full changes, and the commands and checksums to verify the
@@ -30,6 +32,21 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Fixed
 
+- Shut down and restart when done turn the PC off again. Luna asks Windows
+  itself, with the shutdown privilege turned on, instead of running
+  `shutdown.exe`, which had been failing without a word; a refusal is logged
+  with its Windows error.
+- Windows is asked before any session is closed, so a refusal leaves every chat
+  running, and a shutdown Windows records as canceled after the chats were
+  closed brings them back where they were instead of leaving dead panes. One
+  whose fate Windows does not tell leaves the chats closed and says how to bring
+  them back, rather than reopening them under a shutdown still on its way.
+- Windows' notice during the grace says that open programs are closed by force
+  and unsaved work in them is lost, and so does the user guide.
+- Shutdown winds Luna down the way restart does, so a chat parked mid-turn is
+  not saved as finished.
+- A restart that Windows refuses, or that is canceled, no longer leaves Luna set
+  to start at the next sign-in.
 - The release workflow failed at attesting the npm SBOM (`Unsupported SBOM
   format`): it was written without a serial number, which the attest action
   requires of a CycloneDX file. Both SBOMs now carry one and are checked for it

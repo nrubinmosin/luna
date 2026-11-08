@@ -223,7 +223,8 @@ fn leave(reason: &str) -> ! {
 }
 
 /// Stops every session so that the next core takes them up where they stood: what
-/// a core leaving does, and a restart of the PC. Returns how many chats were closed.
+/// a core leaving does, and a shutdown or restart of the PC. Returns how many chats
+/// were closed.
 pub fn wind_down() -> usize {
     crate::background::stop_all();
     crate::agents::freeze_chats();

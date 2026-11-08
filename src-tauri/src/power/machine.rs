@@ -1,8 +1,10 @@
 //! What is done to the machine and said of it: the notifications, the firing —
-//! sessions wound down first, the window asked back after a restart — and each
-//! OS's calls, all of it stopped short in the test build and the unit tests.
+//! the OS asked first, the sessions wound down inside the grace it gives, the
+//! window asked back after a restart — and each OS's calls, all of it stopped
+//! short in the test build and the unit tests.
 
 use super::*;
+use std::time::{Duration, Instant};
 
 /// A desktop notification, shown by the window: the app may well be hidden
 /// in the tray when it matters.
@@ -74,6 +76,116 @@ fn relaunch_line(asked: &Result<String, String>) -> String {
     }
 }
 
+/// How long the OS gets before it takes the PC down once it has said yes: the
+/// sessions are closed inside it — every CLI at once, each with `pty::GRACE` —
+/// and the helpers' turns stopped, with room to spare.
+pub(super) const SHUTDOWN_GRACE: Duration = Duration::from_secs(30);
+/// How long past the grace the PC is given to begin going down before what
+/// became of the request is looked into: Windows closes every other program
+/// first, each with up to 20 s to answer.
+pub(super) const SHUTDOWN_OVERRUN: Duration = Duration::from_secs(60);
+
+/// What a shutdown or restart does to the machine and the sessions, in the order
+/// `power_off` does it, so a test can watch that order and script a refusal
+/// without the PC going anywhere: the OS behind `Real`, a recorder in tests.
+pub(super) trait PowerSteps {
+    /// Where the OS's record of shutdown requests stands, taken before the
+    /// request so that only what comes after it is read as its fate: the latest
+    /// record's id, or None where the record cannot be read.
+    fn log_mark(&mut self) -> Option<u64>;
+    /// Asks the OS to turn the PC off, or restart it, `grace` from now, and
+    /// returns the grace it granted. Nothing is closed before it has said yes.
+    fn ask(&mut self, restart: bool, grace: Duration) -> Result<Duration, String>;
+    /// Has the OS start `command` at the user's next sign-in, once.
+    fn set_run_once(&mut self, command: &str) -> Result<(), String>;
+    /// Takes that back: the PC is not restarting after all.
+    fn clear_run_once(&mut self) -> Result<(), String>;
+    /// Winds the core down as a restart of the PC needs: helper turns stopped,
+    /// the chats frozen as they stand, every session asked to quit. How many.
+    fn close_sessions(&mut self) -> usize;
+    /// The run's record says it leaves on purpose: the OS ends this process
+    /// with no word to it. `staying` takes that back.
+    fn leaving(&mut self);
+    fn staying(&mut self);
+    /// Sleeps toward `until`, a second at a time, and says whether it is still
+    /// ahead.
+    fn wait(&mut self, until: Instant) -> bool;
+    /// Whether the session is being shut down.
+    fn shutting_down(&mut self) -> bool;
+    /// What a request of this process's own looks like on the OS's record.
+    fn signature(&mut self) -> Signature;
+    /// The OS's shutdown requests (User32 1074) and cancellations (1075)
+    /// recorded after `mark`, oldest first and read to the record's end; an
+    /// error where it cannot say, or could not read them all.
+    fn shutdown_events_after(&mut self, mark: Option<u64>) -> Result<Vec<ShutdownEvent>, String>;
+    /// Has the window start every chat's session over, and the helpers their
+    /// stopped turns, as after a core restart.
+    fn start_over(&mut self);
+}
+
+/// What Windows' notice says during the grace, and what the record keeps of the
+/// request as its comment.
+pub(super) const MESSAGE_TEXT: &str =
+    "Luna: every session is done, and the PC goes down as you asked. Programs still open are closed by force; unsaved work in them is lost.";
+
+/// A shutdown request or cancellation on the OS's record: which (User32 1074 or
+/// 1075) and, of a request, the process that made it as the record names it (its
+/// exe, then the computer) and the message it gave.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ShutdownEvent {
+    pub id: u32,
+    pub process: String,
+    pub comment: String,
+}
+
+/// What a request of Luna's own looks like on the record: this very exe, and
+/// the message Luna passes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Signature {
+    pub process: String,
+    pub comment: String,
+}
+
+impl ShutdownEvent {
+    /// Whether this is a request of Luna's own and no other program's.
+    fn is_ours(&self, ours: &Signature) -> bool {
+        !ours.process.is_empty()
+            && self.id == 1074
+            && self.process.to_lowercase().starts_with(&ours.process.to_lowercase())
+            && self.comment == ours.comment
+    }
+}
+
+/// What the OS's record says became of a request it said yes to and did not
+/// carry out by the time this process was to have been ended. The OS gives no
+/// word of it directly: `InitiateShutdownW` returns at once and the shutdown
+/// follows on its own, or not at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Fate {
+    /// The OS recorded the request as taken back: `shutdown /a`, or another
+    /// program's `AbortSystemShutdown`.
+    Canceled,
+    /// Nothing says so: the shutdown has not begun, and the record holds no
+    /// cancellation of this request. Nothing is undone on that alone.
+    Unknown,
+}
+
+/// How a shutdown or restart ended, for the log and the tests.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum Outcome {
+    /// The OS said no; nothing was closed.
+    Refused(String),
+    /// The OS said yes and the sessions are closed; it ends this process.
+    GoingDown,
+    /// The OS said yes, the sessions closed, and it recorded the request as
+    /// taken back: the chats start over.
+    TakenBack,
+    /// The OS said yes, the sessions closed, and nothing says what became of
+    /// it: the chats stay closed, the RunOnce value stays, and the person is
+    /// told how to bring them back.
+    Unclear,
+}
+
 /// Times `to_machine` went past `dry` in a test: it never may.
 #[cfg(test)]
 static PAST_DRY: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -123,47 +235,229 @@ pub(super) fn fire(action: Action) {
                 crate::log::error("power", "SetSuspendState refused");
             }
         }
-        Action::Shutdown => {
-            let quit = crate::pty::manager().shut_down_all(crate::pty::GRACE);
-            crate::log::warn("power", &format!("{quit} sessions closed; shutting down"));
-            if to_machine(false, os::shutdown) {
-                crate::lifecycle::exiting("shut-down-when-done turned the PC off");
-                // Windows ends the process from WM_ENDSESSION (sysmenu.rs);
-                // leaving now just makes it tidy.
-                std::thread::sleep(std::time::Duration::from_secs(2));
-                crate::lifecycle::end_process();
-            } else {
-                crate::log::error("power", "shutdown command failed; sessions are closed but the PC is up");
-                notify("Luna could not shut down the PC", "The sessions were closed. See luna.log.");
-            }
+        Action::Shutdown | Action::Restart => {
+            power_off(action, &mut Real);
         }
-        Action::Restart => {
-            let asked = relaunch_command()
-                .and_then(|command| to_machine(Err("a dry run sets nothing".to_string()), || os::run_once(&command)).map(|()| command));
-            crate::log::warn("power", &relaunch_line(&asked));
-            let quit = crate::coreproc::wind_down();
-            crate::log::warn("power", &format!("{quit} sessions closed; restarting"));
-            if to_machine(false, os::restart) {
-                crate::lifecycle::exiting("restart-when-done restarted the PC");
-                // As for a shutdown: Windows ends the process from WM_ENDSESSION.
-                std::thread::sleep(std::time::Duration::from_secs(2));
-                crate::lifecycle::end_process();
-            } else {
-                crate::log::error("power", "restart command failed; sessions are closed but the PC is up");
-                notify("Luna could not restart the PC", "The sessions were closed: quit Luna and start it again. See luna.log.");
-            }
+    }
+}
+
+/// A shutdown or restart, the OS asked first. The other way round — every CLI
+/// closed, then `shutdown /s` — left dead panes and a PC up all night when the
+/// command failed, which it did without a word. A refusal now costs nothing; a
+/// yes is followed by the sessions closing inside the grace; and what became of
+/// the request once it was due decides the rest: a shutdown under way is left to
+/// the OS, one recorded as taken back has the chats start over, and one nothing
+/// speaks for undoes nothing, as a slow shutdown must not find new work started
+/// and its RunOnce gone.
+pub(super) fn power_off(action: Action, steps: &mut dyn PowerSteps) -> Outcome {
+    let restart = action == Action::Restart;
+    let (verb, noun) = (verb(action), action.as_str());
+    // The relaunch first: a RunOnce value is cheap to take back if the OS says
+    // no, and the restart's whole point is Luna coming back.
+    let relaunch = restart.then(|| relaunch_command().and_then(|command| steps.set_run_once(&command).map(|()| command)));
+    if let Some(asked) = &relaunch {
+        crate::log::warn("power", &relaunch_line(asked));
+    }
+    // Before the ask, so that the record's answer is about this request and no
+    // earlier one's cancellation, however recent.
+    let mark = steps.log_mark();
+    let asked_at = Instant::now();
+    let grace = match steps.ask(restart, SHUTDOWN_GRACE) {
+        Ok(grace) => grace,
+        Err(e) => {
+            crate::log::error("power", &refusal_line(action, &e));
+            take_back_relaunch(&relaunch, steps);
+            notify(
+                &format!("Luna could not {verb} the PC"),
+                &format!("The system refused: {e}. The sessions are still running. See luna.log."),
+            );
+            return Outcome::Refused(e);
         }
+    };
+    crate::log::warn("power", &format!("the OS will {verb} the PC in {}s; closing the sessions meanwhile", grace.as_secs()));
+    let quit = steps.close_sessions();
+    crate::log::warn("power", &format!("{quit} sessions closed; the {noun} is the OS's now"));
+    let waited = grace + SHUTDOWN_OVERRUN;
+    steps.leaving();
+    while steps.wait(asked_at + grace) {}
+    // Only once due: whether the session metric is up during the grace is not
+    // documented, and a shutdown taken back inside it must not read as under way.
+    loop {
+        if steps.shutting_down() {
+            crate::log::warn("power", "the session is shutting down; waiting for the OS to end this process");
+            return Outcome::GoingDown;
+        }
+        if !steps.wait(asked_at + waited) {
+            break;
+        }
+    }
+    steps.staying();
+    let fate = match steps.shutdown_events_after(mark) {
+        Ok(events) => fate_of(&events, &steps.signature()),
+        Err(e) => {
+            crate::log::warn("power", &format!("could not read the OS's record of shutdown requests: {e}"));
+            Fate::Unknown
+        }
+    };
+    match fate {
+        Fate::Canceled => {
+            crate::log::error("power", &format!("the {noun} was taken back (shutdown /a, or another program): the chats start over"));
+            take_back_relaunch(&relaunch, steps);
+            steps.start_over();
+            notify(
+                &format!("Luna's {noun} was canceled"),
+                &format!("The system did not {verb} the PC. The chats are starting over where they were. See luna.log."),
+            );
+            Outcome::TakenBack
+        }
+        Fate::Unknown => {
+            crate::log::error("power", &unknown_fate_line(action, waited, matches!(relaunch, Some(Ok(_)))));
+            notify(
+                &format!("Luna's {noun} has not happened"),
+                "The system has neither begun it nor recorded a cancellation, so the chats stay closed. To bring them back, restart Luna's core from Settings, or quit Luna and start it again.",
+            );
+            Outcome::Unclear
+        }
+    }
+}
+
+/// What the OS's record says of the request, from the shutdown events after the
+/// mark taken before it: Luna's own 1074 first — this exe's, with Luna's message,
+/// not any program's — then a 1075 if it was taken back. A 1074 after it is
+/// another program's request, whose cancellation the 1075 may be; a 1075 before
+/// it, a first request that is not Luna's, or no 1074 at all says nothing of
+/// this one.
+fn fate_of(events: &[ShutdownEvent], ours: &Signature) -> Fate {
+    let Some(first) = events.iter().position(|e| e.id == 1074) else { return Fate::Unknown };
+    if !events[first].is_ours(ours) {
+        return Fate::Unknown;
+    }
+    let after = &events[first + 1..];
+    if !after.iter().any(|e| e.id == 1074) && after.iter().any(|e| e.id == 1075) {
+        Fate::Canceled
+    } else {
+        Fate::Unknown
+    }
+}
+
+/// The log's line for an OS that said no, the error as it gave it.
+fn refusal_line(action: Action, e: &str) -> String {
+    format!("the OS refused to {} the PC: {e}; nothing was closed, the sessions run on", verb(action))
+}
+
+/// The log's line for a request nothing speaks for: what was not done, and why.
+fn unknown_fate_line(action: Action, waited: Duration, run_once_set: bool) -> String {
+    let kept = if run_once_set { "; the RunOnce value stays, as the PC may yet restart" } else { "" };
+    format!(
+        "{}s after the {} was asked for the session is not shutting down and the System log has no cancellation (User32 1075): the chats stay closed, nothing is undone on time alone{kept}",
+        waited.as_secs(),
+        action.as_str()
+    )
+}
+
+/// Removes the RunOnce value a restart set, if it did: the PC is not restarting.
+fn take_back_relaunch(relaunch: &Option<Result<String, String>>, steps: &mut dyn PowerSteps) {
+    if matches!(relaunch, Some(Ok(_))) {
+        if let Err(e) = steps.clear_run_once() {
+            crate::log::warn("power", &format!("could not remove the RunOnce value: {e}; Luna starts once more at the next sign-in"));
+        }
+    }
+}
+
+/// The machine itself, every call to it behind `to_machine`.
+struct Real;
+
+impl PowerSteps for Real {
+    fn log_mark(&mut self) -> Option<u64> {
+        to_machine(None, os::log_mark)
+    }
+
+    fn ask(&mut self, restart: bool, grace: Duration) -> Result<Duration, String> {
+        to_machine(Err("a dry run asks nothing".to_string()), || os::shutdown(restart, grace))
+    }
+
+    fn set_run_once(&mut self, command: &str) -> Result<(), String> {
+        to_machine(Err("a dry run sets nothing".to_string()), || os::run_once(command))
+    }
+
+    fn clear_run_once(&mut self) -> Result<(), String> {
+        to_machine(Ok(()), os::clear_run_once)
+    }
+
+    fn close_sessions(&mut self) -> usize {
+        crate::coreproc::wind_down()
+    }
+
+    fn leaving(&mut self) {
+        // For the next start to read: the OS ends this process with no word to it.
+        crate::lifecycle::exiting("shut-down-when-done: the OS is taking the PC down");
+    }
+
+    fn staying(&mut self) {
+        crate::lifecycle::note_exit(None);
+    }
+
+    fn wait(&mut self, until: Instant) -> bool {
+        let left = until.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return false;
+        }
+        std::thread::sleep(left.min(Duration::from_secs(1)));
+        Instant::now() < until
+    }
+
+    fn shutting_down(&mut self) -> bool {
+        os::shutting_down()
+    }
+
+    fn signature(&mut self) -> Signature {
+        // The record names the process by its exe: the core's own copy of it.
+        let process = std::env::current_exe().map(|exe| exe.to_string_lossy().into_owned()).unwrap_or_default();
+        Signature { process, comment: MESSAGE_TEXT.to_string() }
+    }
+
+    fn shutdown_events_after(&mut self, mark: Option<u64>) -> Result<Vec<ShutdownEvent>, String> {
+        os::shutdown_events_after(mark)
+    }
+
+    fn start_over(&mut self) {
+        // The helpers as the next core would take them up: their jobs tied again,
+        // turns may start again, and those stopped mid-turn go on by themselves
+        // where they were spawned to.
+        crate::background::reopen();
+        crate::background::resume_stopped();
+        // The window's panes start every chat's session over from its transcript,
+        // as when a new core replaces one that stopped (core.store.ts).
+        crate::emit::to_ui("pty://start-over", serde_json::json!({ "why": "the shutdown was taken back" }));
     }
 }
 
 #[cfg(windows)]
 pub(super) mod os {
+    use super::ShutdownEvent;
     use std::sync::{Mutex, OnceLock};
-    use windows::Win32::Foundation::HANDLE;
+    use std::time::Duration;
+    use windows::core::{HSTRING, PCWSTR};
+    use windows::Win32::Foundation::{
+        CloseHandle, GetLastError, ERROR_NOT_ALL_ASSIGNED, ERROR_NO_MORE_ITEMS, ERROR_SUCCESS, HANDLE, LUID, WIN32_ERROR,
+    };
+    use windows::Win32::Security::{
+        AdjustTokenPrivileges, LookupPrivilegeValueW, LUID_AND_ATTRIBUTES, SE_PRIVILEGE_ENABLED, SE_SHUTDOWN_NAME, TOKEN_ADJUST_PRIVILEGES,
+        TOKEN_PRIVILEGES, TOKEN_QUERY,
+    };
+    use windows::Win32::System::EventLog::{
+        EvtClose, EvtNext, EvtQuery, EvtQueryChannelPath, EvtQueryForwardDirection, EvtQueryReverseDirection, EvtRender, EvtRenderEventXml,
+        EVT_HANDLE, EVT_QUERY_FLAGS,
+    };
     use windows::Win32::System::Power::{
         PowerClearRequest, PowerCreateRequest, PowerRequestSystemRequired, PowerSetRequest, SetSuspendState,
     };
-    use windows::Win32::System::Threading::{POWER_REQUEST_CONTEXT_SIMPLE_STRING, REASON_CONTEXT};
+    use windows::Win32::System::Shutdown::{
+        InitiateShutdownW, SHTDN_REASON_FLAG_PLANNED, SHTDN_REASON_MAJOR_OTHER, SHTDN_REASON_MINOR_OTHER, SHUTDOWN_FORCE_SELF,
+        SHUTDOWN_POWEROFF, SHUTDOWN_RESTART,
+    };
+    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken, POWER_REQUEST_CONTEXT_SIMPLE_STRING, REASON_CONTEXT};
+    use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_SHUTTINGDOWN};
 
     struct Request(HANDLE);
     unsafe impl Send for Request {}
@@ -219,65 +513,335 @@ pub(super) mod os {
         unsafe { SetSuspendState(hibernate, false, false) }
     }
 
-    fn shutdown_with(flag: &str) -> bool {
-        use std::os::windows::process::CommandExt;
-        std::process::Command::new("shutdown")
-            .args([flag, "/t", "0"])
-            .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
+    /// Runs `f` with SeShutdownPrivilege turned on in this process's token, and
+    /// puts the privilege back as it was after, so the core holds it for the call
+    /// alone. Every user of a workstation has it, disabled until a program that
+    /// means to shut down asks, as `shutdown.exe` does for itself; a token without
+    /// it says so here, and `f` does not run.
+    pub(super) fn with_shutdown_privilege<T>(f: impl FnOnce() -> T) -> Result<T, String> {
+        let mut token = HANDLE::default();
+        // SAFETY: the pseudo-handle of this process; `token` takes a real handle,
+        // closed below.
+        unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &mut token) }
+            .map_err(|e| format!("OpenProcessToken: {e}"))?;
+        let out = enable_shutdown_privilege_on(token).map(|before| {
+            let out = f();
+            // SAFETY: `before` is what AdjustTokenPrivileges wrote: the one
+            // privilege as it was, or none if it was on already.
+            if let Err(e) = unsafe { AdjustTokenPrivileges(token, false, Some(&raw const before), 0, None, None) } {
+                crate::log::warn("power", &format!("could not put SeShutdownPrivilege back as it was: {e}"));
+            }
+            out
+        });
+        // SAFETY: the handle OpenProcessToken gave, closed once.
+        let _ = unsafe { CloseHandle(token) };
+        out
     }
 
-    pub fn shutdown() -> bool {
-        shutdown_with("/s")
+    /// Turns the privilege on and returns its state before, for putting back.
+    fn enable_shutdown_privilege_on(token: HANDLE) -> Result<TOKEN_PRIVILEGES, String> {
+        let mut luid = LUID::default();
+        // SAFETY: a null system name is this machine; `luid` is written.
+        unsafe { LookupPrivilegeValueW(PCWSTR::null(), SE_SHUTDOWN_NAME, &mut luid) }.map_err(|e| format!("LookupPrivilegeValueW: {e}"))?;
+        let state =
+            TOKEN_PRIVILEGES { PrivilegeCount: 1, Privileges: [LUID_AND_ATTRIBUTES { Luid: luid, Attributes: SE_PRIVILEGE_ENABLED }] };
+        let mut before = TOKEN_PRIVILEGES::default();
+        let mut written = 0u32;
+        // SAFETY: `state` outlives the call; `before` has room for the one
+        // privilege it may change, and the call is told so.
+        unsafe {
+            AdjustTokenPrivileges(
+                token,
+                false,
+                Some(&raw const state),
+                size_of::<TOKEN_PRIVILEGES>() as u32,
+                Some(&raw mut before),
+                Some(&raw mut written),
+            )
+        }
+        .map_err(|e| format!("AdjustTokenPrivileges: {e}"))?;
+        // It returns success having enabled nothing, and says so only here.
+        // SAFETY: reads this thread's last error.
+        match unsafe { GetLastError() } {
+            ERROR_SUCCESS => Ok(before),
+            ERROR_NOT_ALL_ASSIGNED => Err("this user does not hold SeShutdownPrivilege (ERROR_NOT_ALL_ASSIGNED)".to_string()),
+            other => Err(format!("AdjustTokenPrivileges: {}", other.to_hresult().message())),
+        }
     }
 
-    pub fn restart() -> bool {
-        shutdown_with("/r")
+    /// `MESSAGE_TEXT` as the call takes it; a test holds the two to one wording.
+    pub(super) const MESSAGE: PCWSTR = windows::core::w!(
+        "Luna: every session is done, and the PC goes down as you asked. Programs still open are closed by force; unsaved work in them is lost."
+    );
+
+    /// Asks Windows for a shutdown or restart `grace` from now — what `shutdown.exe`
+    /// does, minus the process in between, which failed here without a word:
+    /// `InitiateShutdownW` with the privilege on for the call, and its Win32 error
+    /// when it says no. The flags: POWEROFF or RESTART and nothing else of the kind,
+    /// so the PC shuts down fully rather than into Fast Startup's hibernation (no
+    /// HYBRID) and no program is told to reopen (no RESTARTAPPS); FORCE_SELF, so a
+    /// program of the user's that will not close cannot hold the PC up all night
+    /// with nobody there to answer Windows' "this app is preventing shutdown" — the
+    /// user asked for the PC to go down, and the notice says what that costs; not
+    /// FORCE_OTHERS: another user signed in is not this one's to sign out, so
+    /// Windows refuses (ERROR_SHUTDOWN_USERS_LOGGED_ON) and nothing is closed. A
+    /// planned reason, as Event Viewer records it.
+    pub fn shutdown(restart: bool, grace: Duration) -> Result<Duration, String> {
+        let what = (if restart { SHUTDOWN_RESTART } else { SHUTDOWN_POWEROFF }) | SHUTDOWN_FORCE_SELF;
+        let reason = SHTDN_REASON_FLAG_PLANNED | SHTDN_REASON_MAJOR_OTHER | SHTDN_REASON_MINOR_OTHER;
+        // SAFETY: a null machine name is this machine; the message is a literal.
+        let code = with_shutdown_privilege(|| unsafe { InitiateShutdownW(PCWSTR::null(), MESSAGE, grace.as_secs() as u32, what, reason) })?;
+        WIN32_ERROR(code).ok().map_err(|e| format!("InitiateShutdownW: {e}"))?;
+        Ok(grace)
     }
+
+    /// Whether the session is being shut down: the one sign Windows gives a
+    /// process with no window, set once the grace is over and winlogon takes the
+    /// session down (GetSystemMetrics, SM_SHUTTINGDOWN).
+    pub fn shutting_down() -> bool {
+        // SAFETY: no pointers; a failure reads as 0, which is "no".
+        unsafe { GetSystemMetrics(SM_SHUTTINGDOWN) != 0 }
+    }
+
+    /// Where the System log stands: its latest record's EventRecordID, which only
+    /// grows, so that what a request leaves there is told from what was there
+    /// before it, whatever the clocks do. None where the log cannot be read.
+    pub fn log_mark() -> Option<u64> {
+        let (latest, _) = query(windows::core::w!("*"), EvtQueryReverseDirection, 1).ok()?;
+        let xml = latest.first()?;
+        element(xml, "EventRecordID")
+    }
+
+    /// The User32 shutdown requests (1074) and cancellations (1075) the System log
+    /// holds after `mark`, oldest first and read to the record's end: winlogon
+    /// writes the one as a request comes in, naming the process and its message,
+    /// and the other on an `AbortSystemShutdown` (`shutdown /a`), the one trace of
+    /// a request taken back.
+    pub fn shutdown_events_after(mark: Option<u64>) -> Result<Vec<ShutdownEvent>, String> {
+        let mark = mark.ok_or("the System log could not be read before the request")?;
+        let xpath =
+            HSTRING::from(format!("*[System[Provider[@Name='User32'] and (EventID=1074 or EventID=1075) and EventRecordID > {mark}]]"));
+        let (events, end) = query(&xpath, EvtQueryForwardDirection, 64)?;
+        let events = events
+            .iter()
+            .filter_map(|xml| {
+                let id = element(xml, "EventID")? as u32;
+                let process = data(xml, "param1").unwrap_or_default();
+                let comment = data(xml, "param6").unwrap_or_default();
+                Some(ShutdownEvent { id, process, comment })
+            })
+            .collect();
+        complete(events, end)
+    }
+
+    /// How a reading of the record ended: at the record's end, at the cap given,
+    /// or on an error.
+    #[derive(Debug, PartialEq, Eq)]
+    pub(super) enum End {
+        Exhausted,
+        Capped,
+        Failed(String),
+    }
+
+    /// The events only if the record was read to its end: a prefix of it could
+    /// show a request and its cancellation with another request yet unread.
+    pub(super) fn complete(events: Vec<ShutdownEvent>, end: End) -> Result<Vec<ShutdownEvent>, String> {
+        match end {
+            End::Exhausted => Ok(events),
+            End::Capped => Err("more shutdown events on record than were read".into()),
+            End::Failed(e) => Err(e),
+        }
+    }
+
+    /// Up to `cap` events of the System log matching `xpath`, as XML, in the
+    /// `direction` given, and how the reading ended: only ERROR_NO_MORE_ITEMS is
+    /// the record's end.
+    fn query(xpath: impl windows::core::Param<PCWSTR>, direction: EVT_QUERY_FLAGS, cap: usize) -> Result<(Vec<String>, End), String> {
+        let flags = EvtQueryChannelPath.0 | direction.0;
+        // SAFETY: a null session is the local log; the query outlives the call, and
+        // every handle it gives is closed here.
+        unsafe {
+            let results = EvtQuery(None, windows::core::w!("System"), xpath, flags).map_err(|e| format!("EvtQuery: {e}"))?;
+            let mut out = Vec::new();
+            let mut handles = vec![0isize; cap.clamp(1, 64)];
+            let mut returned = 0u32;
+            let end = loop {
+                if out.len() >= cap {
+                    break End::Capped;
+                }
+                match EvtNext(results, &mut handles, 0, 0, &mut returned) {
+                    Ok(()) if returned == 0 => break End::Failed("EvtNext gave no event and no end".into()),
+                    Ok(()) => {
+                        // Every handle closed, whatever a rendering says.
+                        let batch: Vec<Result<String, String>> = handles[..returned as usize]
+                            .iter()
+                            .map(|&event| {
+                                let event = EVT_HANDLE(event);
+                                let rendered = render(event);
+                                let _ = EvtClose(event);
+                                rendered
+                            })
+                            .collect();
+                        match batch.into_iter().collect::<Result<Vec<String>, String>>() {
+                            Ok(xmls) => out.extend(xmls),
+                            Err(e) => break End::Failed(e),
+                        }
+                    }
+                    Err(e) if e.code() == ERROR_NO_MORE_ITEMS.to_hresult() => break End::Exhausted,
+                    Err(e) => break End::Failed(format!("EvtNext: {e}")),
+                }
+            };
+            let _ = EvtClose(results);
+            Ok((out, end))
+        }
+    }
+
+    /// An event as the XML the log renders it to.
+    fn render(event: EVT_HANDLE) -> Result<String, String> {
+        let mut used = 0u32;
+        let mut props = 0u32;
+        // SAFETY: asked for the size first, with no buffer; then given one that size.
+        unsafe {
+            let _ = EvtRender(None, event, EvtRenderEventXml.0, 0, None, &mut used, &mut props);
+            let mut buf = vec![0u16; (used as usize).div_ceil(2)];
+            EvtRender(None, event, EvtRenderEventXml.0, used, Some(buf.as_mut_ptr().cast()), &mut used, &mut props)
+                .map_err(|e| format!("EvtRender: {e}"))?;
+            Ok(String::from_utf16_lossy(&buf).trim_end_matches('\0').to_string())
+        }
+    }
+
+    /// The number in `<tag ...>N</tag>` of an event's XML, if there is one.
+    pub(super) fn element(xml: &str, tag: &str) -> Option<u64> {
+        text_after(xml, &format!("<{tag}"))?.trim().parse().ok()
+    }
+
+    /// The text of `<Data Name='name'>…</Data>` in an event's XML, its XML escapes
+    /// undone, if there is one.
+    pub(super) fn data(xml: &str, name: &str) -> Option<String> {
+        let text = text_after(xml, &format!("<Data Name='{name}'")).or_else(|| text_after(xml, &format!("<Data Name=\"{name}\"")))?;
+        Some(text.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&apos;", "'").replace("&amp;", "&"))
+    }
+
+    /// What stands between the end of the tag opening with `open` and the next tag.
+    fn text_after<'a>(xml: &'a str, open: &str) -> Option<&'a str> {
+        let rest = &xml[xml.find(open)?..];
+        let body = &rest[rest.find('>')? + 1..];
+        Some(&body[..body.find('<')?])
+    }
+
+    /// Takes a shutdown asked for back while its grace runs: the live check's
+    /// way of not turning the PC off (`windows_takes_the_shutdown_request_and_its_abort`).
+    #[cfg(test)]
+    pub fn abort_shutdown() -> Result<(), String> {
+        // SAFETY: a null machine name is this machine.
+        with_shutdown_privilege(|| unsafe { windows::Win32::System::Shutdown::AbortSystemShutdownW(PCWSTR::null()) })?
+            .map_err(|e| format!("AbortSystemShutdownW: {e}"))
+    }
+
+    const RUN_ONCE_KEY: PCWSTR = windows::core::w!("Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce");
+    const RUN_ONCE_VALUE: PCWSTR = windows::core::w!("Luna");
 
     /// Has Windows run `command` at the user's next sign-in, once. Outside Luna's
     /// data folder because only the OS can do this: a value under RunOnce is the
     /// one-shot it offers, and it removes the value itself.
     pub fn run_once(command: &str) -> Result<(), String> {
-        use windows::core::{w, HSTRING};
         use windows::Win32::System::Registry::{RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ};
         let value = HSTRING::from(command);
         // The terminating zero counts, as REG_SZ wants it.
         let bytes = ((value.len() + 1) * 2) as u32;
+        let data = Some(value.as_ptr() as *const core::ffi::c_void);
         // SAFETY: both names are literals, and `value` outlives the call, which copies.
-        unsafe {
-            RegSetKeyValueW(
-                HKEY_CURRENT_USER,
-                w!("Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce"),
-                w!("Luna"),
-                REG_SZ.0,
-                Some(value.as_ptr() as *const core::ffi::c_void),
-                bytes,
-            )
-        }
-        .ok()
-        .map_err(|e| e.to_string())
+        unsafe { RegSetKeyValueW(HKEY_CURRENT_USER, RUN_ONCE_KEY, RUN_ONCE_VALUE, REG_SZ.0, data, bytes) }.ok().map_err(|e| e.to_string())
+    }
+
+    /// Removes the value `run_once` set: the PC is not restarting after all.
+    pub fn clear_run_once() -> Result<(), String> {
+        use windows::Win32::System::Registry::{RegDeleteKeyValueW, HKEY_CURRENT_USER};
+        // SAFETY: both names are literals.
+        unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, RUN_ONCE_KEY, RUN_ONCE_VALUE) }.ok().map_err(|e| e.to_string())
     }
 }
 
 #[cfg(not(windows))]
 pub(super) mod os {
+    use std::time::Duration;
+
     pub fn hold(_on: bool) -> bool {
         false
     }
     pub fn suspend(_hibernate: bool) -> bool {
         false
     }
-    pub fn shutdown() -> bool {
+
+    /// `shutdown(8)` as Linux and macOS both have it: `-h` halts, which powers
+    /// the machine off on either, `-r` restarts, and the delay is in whole
+    /// minutes, so the grace rounds up to one. Root's to run as a rule; a refusal
+    /// comes back with what it printed.
+    pub fn shutdown(restart: bool, grace: Duration) -> Result<Duration, String> {
+        let minutes = grace.as_secs().div_ceil(60).max(1);
+        run("shutdown", &[if restart { "-r" } else { "-h" }, &format!("+{minutes}")])?;
+        Ok(Duration::from_secs(minutes * 60))
+    }
+
+    /// Runs a command to its end, its stderr into a private file of a fresh name
+    /// in the data folder, read back through the handle it was made with, and
+    /// says how it failed: the spawn error, or its exit status with what it said.
+    /// Not `.output()`: macOS's `shutdown` forks a child that keeps stderr for as
+    /// long as the delay runs, and a pipe to it would be read to its end only as
+    /// the PC went down.
+    fn run(program: &str, args: &[&str]) -> Result<(), String> {
+        use std::io::{Read, Seek};
+        let path = crate::paths::data_dir().join(format!("shutdown.{}.stderr", crate::secret::random_hex(8)));
+        let mut said_file = stderr_file(&path)?;
+        let status = said_file.try_clone().map_err(|e| format!("could not share {}: {e}", path.display())).and_then(|childs| {
+            std::process::Command::new(program)
+                .args(args)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(childs)
+                .status()
+                .map_err(|e| format!("could not run {program}: {e}"))
+        });
+        let _ = std::fs::remove_file(&path);
+        let status = status?;
+        let mut said = String::new();
+        let _ = said_file.rewind().and_then(|()| said_file.read_to_string(&mut said));
+        if status.success() {
+            return Ok(());
+        }
+        let said = said.trim();
+        let said = if said.is_empty() { String::new() } else { format!(": {said}") };
+        Err(format!("{program} {} ended with {status}{said}", args.join(" ")))
+    }
+
+    /// The file a command's stderr goes to: new, private and by a name nothing
+    /// had, a link planted there refused rather than followed
+    /// (`secret::create_private_rw`), and read back through this very handle, so
+    /// a file put at the name is neither written into nor read.
+    pub(super) fn stderr_file(path: &std::path::Path) -> Result<std::fs::File, String> {
+        crate::secret::create_private_rw(path).map_err(|e| format!("could not make {}: {e}", path.display()))
+    }
+
+    /// Nothing here tells a session going down from one that is not.
+    pub fn shutting_down() -> bool {
         false
     }
-    pub fn restart() -> bool {
-        false
+
+    /// Nothing here keeps a record of shutdown requests to stand in.
+    pub fn log_mark() -> Option<u64> {
+        None
     }
+
+    /// Nor one of a `shutdown -c`.
+    pub fn shutdown_events_after(_mark: Option<u64>) -> Result<Vec<super::ShutdownEvent>, String> {
+        Err("nothing here records shutdown requests".into())
+    }
+
     pub fn run_once(_command: &str) -> Result<(), String> {
         Err("only Windows has RunOnce".into())
+    }
+    pub fn clear_run_once() -> Result<(), String> {
+        Ok(())
     }
 }
 
@@ -295,9 +859,9 @@ mod tests {
         assert_eq!(past(), 0, "fire stops short of the machine");
         // Every way out, should `fire` ever not stop first.
         assert!(!to_machine(false, || panic!("suspend")));
-        assert!(!to_machine(false, || panic!("shutdown")));
-        assert!(!to_machine(false, || panic!("restart")));
+        assert_eq!(to_machine(Err::<Duration, &str>("dry"), || panic!("shutdown")), Err("dry"));
         assert_eq!(to_machine(Err::<(), &str>("dry"), || panic!("RunOnce")), Err("dry"));
+        assert_eq!(to_machine(Ok::<(), &str>(()), || panic!("RunOnce removal")), Ok(()));
         assert_eq!(past(), 0);
     }
 
@@ -309,5 +873,371 @@ mod tests {
         assert!(run_once_command(Path::new("C:\\a\"b.exe")).is_err());
         assert!(run_once_command(Path::new(&"x".repeat(RUN_ONCE_MAX))).is_err());
         assert!(relaunch_line(&Err("no".into())).contains("restarting all the same"));
+    }
+
+    /// What Luna's requests look like on the recorder's record.
+    fn ours() -> Signature {
+        Signature { process: "C:\\Luna\\core\\luna.exe".into(), comment: MESSAGE_TEXT.into() }
+    }
+
+    /// A request of Luna's own, as the record names it: the exe, then the computer.
+    fn asked() -> ShutdownEvent {
+        ShutdownEvent { id: 1074, process: "c:\\luna\\core\\luna.exe (PC)".into(), comment: MESSAGE_TEXT.into() }
+    }
+
+    /// Another program's request.
+    fn theirs() -> ShutdownEvent {
+        ShutdownEvent { id: 1074, process: "C:\\Windows\\system32\\shutdown.exe (PC)".into(), comment: "".into() }
+    }
+
+    fn taken_back() -> ShutdownEvent {
+        ShutdownEvent { id: 1075, process: String::new(), comment: String::new() }
+    }
+
+    /// Writes down each step a firing takes and plays the OS: one that says no,
+    /// one that takes the session down, and a record of shutdown requests as
+    /// (record id, event) pairs, with where it stood as the request went in, and
+    /// a reading of it that may break off (`cut`) before the record's end.
+    struct Recorder {
+        steps: Vec<String>,
+        refuse: Option<&'static str>,
+        down: bool,
+        mark: Option<u64>,
+        log: Vec<(u64, ShutdownEvent)>,
+        cut: Option<&'static str>,
+    }
+
+    impl Default for Recorder {
+        fn default() -> Self {
+            Recorder { steps: Vec::new(), refuse: None, down: false, mark: Some(10), log: Vec::new(), cut: None }
+        }
+    }
+
+    impl PowerSteps for Recorder {
+        fn log_mark(&mut self) -> Option<u64> {
+            self.steps.push("mark".into());
+            self.mark
+        }
+        fn ask(&mut self, restart: bool, grace: Duration) -> Result<Duration, String> {
+            self.steps.push(format!("ask {} in {}s", if restart { "restart" } else { "poweroff" }, grace.as_secs()));
+            match self.refuse {
+                Some(e) => Err(e.to_string()),
+                None => Ok(grace),
+            }
+        }
+        fn set_run_once(&mut self, command: &str) -> Result<(), String> {
+            self.steps.push(format!("set_run_once {command}"));
+            Ok(())
+        }
+        fn clear_run_once(&mut self) -> Result<(), String> {
+            self.steps.push("clear_run_once".into());
+            Ok(())
+        }
+        fn close_sessions(&mut self) -> usize {
+            self.steps.push("close_sessions".into());
+            2
+        }
+        fn leaving(&mut self) {
+            self.steps.push("leaving".into());
+        }
+        fn staying(&mut self) {
+            self.steps.push("staying".into());
+        }
+        fn wait(&mut self, _until: Instant) -> bool {
+            false
+        }
+        fn shutting_down(&mut self) -> bool {
+            self.down
+        }
+        fn signature(&mut self) -> Signature {
+            ours()
+        }
+        fn shutdown_events_after(&mut self, mark: Option<u64>) -> Result<Vec<ShutdownEvent>, String> {
+            let mark = mark.ok_or("no mark")?;
+            self.steps.push(format!("events after {mark}"));
+            if let Some(cut) = self.cut {
+                return Err(cut.to_string());
+            }
+            Ok(self.log.iter().filter(|(record, _)| *record > mark).map(|(_, event)| event.clone()).collect())
+        }
+        fn start_over(&mut self) {
+            self.steps.push("start_over".into());
+        }
+    }
+
+    /// A restart has a window exe to relaunch: this test binary stands in.
+    fn with_window_exe() -> String {
+        let exe = std::env::current_exe().unwrap();
+        set_window_exe(exe.clone());
+        format!("set_run_once {}", run_once_command(&exe).unwrap())
+    }
+
+    fn run(action: Action, recorder: &mut Recorder) -> Outcome {
+        power_off(action, recorder)
+    }
+
+    /// The record of a request taken back: Luna's own 1074, then the 1075.
+    fn canceled() -> Vec<(u64, ShutdownEvent)> {
+        vec![(11, asked()), (12, taken_back())]
+    }
+
+    #[test]
+    fn the_os_is_asked_before_any_session_is_closed_and_the_record_marked_before_that() {
+        let mut rec = Recorder { down: true, ..Default::default() };
+        assert_eq!(run(Action::Shutdown, &mut rec), Outcome::GoingDown);
+        assert_eq!(rec.steps, ["mark", "ask poweroff in 30s", "close_sessions", "leaving"], "the session going down is left to the OS");
+
+        let run_once = with_window_exe();
+        let mut rec = Recorder { down: true, ..Default::default() };
+        assert_eq!(run(Action::Restart, &mut rec), Outcome::GoingDown);
+        assert_eq!(rec.steps, [run_once.as_str(), "mark", "ask restart in 30s", "close_sessions", "leaving"]);
+    }
+
+    #[test]
+    fn a_refusal_closes_nothing_and_says_what_the_os_said() {
+        let mut rec = Recorder { refuse: Some("InitiateShutdownW: ERROR_SHUTDOWN_USERS_LOGGED_ON (1191)"), ..Default::default() };
+        let outcome = run(Action::Shutdown, &mut rec);
+        assert_eq!(outcome, Outcome::Refused("InitiateShutdownW: ERROR_SHUTDOWN_USERS_LOGGED_ON (1191)".into()));
+        assert_eq!(rec.steps, ["mark", "ask poweroff in 30s"], "no session closed, nothing started over");
+        let Outcome::Refused(e) = outcome else { unreachable!() };
+        let line = refusal_line(Action::Shutdown, &e);
+        assert!(line.contains("ERROR_SHUTDOWN_USERS_LOGGED_ON (1191)") && line.contains("nothing was closed"), "{line}");
+    }
+
+    #[test]
+    fn a_restart_the_os_refuses_takes_its_run_once_back() {
+        let run_once = with_window_exe();
+        let mut rec = Recorder { refuse: Some("no"), ..Default::default() };
+        assert_eq!(run(Action::Restart, &mut rec), Outcome::Refused("no".into()));
+        assert_eq!(rec.steps, [run_once.as_str(), "mark", "ask restart in 30s", "clear_run_once"]);
+    }
+
+    #[test]
+    fn a_shutdown_recorded_as_taken_back_starts_the_chats_over() {
+        let mut rec = Recorder { log: canceled(), ..Default::default() };
+        assert_eq!(run(Action::Shutdown, &mut rec), Outcome::TakenBack);
+        assert_eq!(rec.steps, ["mark", "ask poweroff in 30s", "close_sessions", "leaving", "staying", "events after 10", "start_over"]);
+
+        let run_once = with_window_exe();
+        let mut rec = Recorder { log: canceled(), ..Default::default() };
+        assert_eq!(run(Action::Restart, &mut rec), Outcome::TakenBack);
+        assert_eq!(
+            rec.steps.join(" > "),
+            format!("{run_once} > mark > ask restart in 30s > close_sessions > leaving > staying > events after 10 > clear_run_once > start_over")
+        );
+    }
+
+    /// Time alone is no cancellation: a slow shutdown must not find new work
+    /// started and its RunOnce value gone.
+    #[test]
+    fn a_shutdown_nothing_speaks_for_undoes_nothing_and_keeps_the_run_once() {
+        let mut rec = Recorder::default();
+        assert_eq!(run(Action::Shutdown, &mut rec), Outcome::Unclear);
+        assert_eq!(rec.steps, ["mark", "ask poweroff in 30s", "close_sessions", "leaving", "staying", "events after 10"]);
+
+        let run_once = with_window_exe();
+        let mut rec = Recorder::default();
+        assert_eq!(run(Action::Restart, &mut rec), Outcome::Unclear);
+        assert_eq!(rec.steps, [run_once.as_str(), "mark", "ask restart in 30s", "close_sessions", "leaving", "staying", "events after 10"]);
+        let line = unknown_fate_line(Action::Restart, Duration::from_secs(90), true);
+        assert!(line.contains("90s") && line.contains("RunOnce value stays") && line.contains("1075"), "{line}");
+        assert!(!unknown_fate_line(Action::Shutdown, Duration::from_secs(90), false).contains("RunOnce"));
+    }
+
+    /// Only a cancellation recorded after this request, and after no other, is
+    /// this request's: one from before the mark is stale, another program's
+    /// request in between may be what the cancellation took back, and a record
+    /// that could not be marked says nothing.
+    #[test]
+    fn only_a_cancellation_after_this_request_and_no_other_counts() {
+        let stale = vec![(9, taken_back()), (11, asked())];
+        let mut rec = Recorder { log: stale, ..Default::default() };
+        assert_eq!(run(Action::Shutdown, &mut rec), Outcome::Unclear, "a cancellation from before the mark");
+        assert!(!rec.steps.contains(&"start_over".to_string()));
+
+        let anothers = vec![(11, asked()), (12, theirs()), (13, taken_back())];
+        let mut rec = Recorder { log: anothers, ..Default::default() };
+        assert_eq!(run(Action::Shutdown, &mut rec), Outcome::Unclear, "another request in between");
+
+        let mut rec = Recorder { log: canceled(), mark: None, ..Default::default() };
+        assert_eq!(run(Action::Shutdown, &mut rec), Outcome::Unclear, "no mark, no reading");
+        assert!(!rec.steps.iter().any(|s| s.starts_with("events after")));
+
+        assert_eq!(fate_of(&[asked(), taken_back()], &ours()), Fate::Canceled);
+        assert_eq!(fate_of(&[taken_back(), asked()], &ours()), Fate::Unknown, "a cancellation before the request");
+        assert_eq!(fate_of(&[taken_back()], &ours()), Fate::Unknown, "no request of ours on record");
+        assert_eq!(fate_of(&[asked(), taken_back(), theirs()], &ours()), Fate::Unknown);
+        assert_eq!(fate_of(&[asked()], &ours()), Fate::Unknown);
+    }
+
+    /// A record read short of its end says nothing: a request and its cancellation
+    /// at the front could have another request behind them, still unread.
+    #[test]
+    fn a_record_read_short_of_its_end_undoes_nothing() {
+        let mut rec = Recorder { log: canceled(), cut: Some("EvtNext: The wait operation timed out."), ..Default::default() };
+        assert_eq!(run(Action::Shutdown, &mut rec), Outcome::Unclear);
+        assert!(rec.steps.contains(&"events after 10".to_string()) && !rec.steps.contains(&"start_over".to_string()));
+
+        let run_once = with_window_exe();
+        let mut rec = Recorder { log: canceled(), cut: Some("more shutdown events on record than were read"), ..Default::default() };
+        assert_eq!(run(Action::Restart, &mut rec), Outcome::Unclear);
+        assert!(rec.steps.contains(&run_once) && !rec.steps.contains(&"clear_run_once".to_string()), "the RunOnce value stays");
+    }
+
+    /// The first request after the mark is Luna's own only if this exe made it
+    /// with Luna's message: another program's, however timed, says nothing of ours.
+    #[test]
+    fn a_request_that_is_not_lunas_own_is_not_taken_for_it() {
+        let mut rec = Recorder { log: vec![(11, theirs()), (12, taken_back())], ..Default::default() };
+        assert_eq!(run(Action::Shutdown, &mut rec), Outcome::Unclear, "another exe");
+        assert!(!rec.steps.contains(&"start_over".to_string()));
+
+        let other_message = ShutdownEvent { comment: "shutdown /s by hand".into(), ..asked() };
+        let mut rec = Recorder { log: vec![(11, other_message), (12, taken_back())], ..Default::default() };
+        assert_eq!(run(Action::Shutdown, &mut rec), Outcome::Unclear, "this exe, another message");
+
+        let mut rec = Recorder { log: vec![(11, theirs()), (12, asked()), (13, taken_back())], ..Default::default() };
+        assert_eq!(run(Action::Shutdown, &mut rec), Outcome::Unclear, "another program's request came first");
+
+        let unknown_exe = Signature { process: String::new(), ..ours() };
+        assert_eq!(fate_of(&[asked(), taken_back()], &unknown_exe), Fate::Unknown, "no exe to go by matches nothing");
+        let elsewhere = Signature { process: "D:\\other\\luna.exe".into(), ..ours() };
+        assert_eq!(fate_of(&[asked(), taken_back()], &elsewhere), Fate::Unknown);
+        let in_another_case = Signature { process: "c:\\LUNA\\Core\\Luna.exe".into(), ..ours() };
+        assert_eq!(fate_of(&[asked(), taken_back()], &in_another_case), Fate::Canceled, "paths compare as Windows does");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn an_events_fields_are_read_off_its_xml() {
+        let xml = "<Event><System><EventID Qualifiers=\"32768\">1074</EventID><EventRecordID>12345</EventRecordID></System>\
+                   <EventData><Data Name='param1'>C:\\a &amp; b\\luna.exe (PC)</Data><Data Name='param5'>power off</Data>\
+                   <Data Name='param6'>Luna: &lt;done&gt;</Data></EventData></Event>";
+        assert_eq!(os::element(xml, "EventID"), Some(1074));
+        assert_eq!(os::element(xml, "EventRecordID"), Some(12345));
+        assert_eq!(os::element(xml, "Level"), None);
+        assert_eq!(os::element("<EventID>x</EventID>", "EventID"), None);
+        assert_eq!(os::data(xml, "param1").as_deref(), Some("C:\\a & b\\luna.exe (PC)"));
+        assert_eq!(os::data(xml, "param6").as_deref(), Some("Luna: <done>"));
+        assert_eq!(os::data(xml, "param7"), None);
+        // The notice and the record's comment are one wording.
+        // SAFETY: a literal with its terminating zero.
+        assert_eq!(unsafe { os::MESSAGE.to_string() }.unwrap(), MESSAGE_TEXT);
+    }
+
+    /// Only a record read to its end is evidence.
+    #[cfg(windows)]
+    #[test]
+    fn a_reading_that_broke_off_or_hit_its_cap_is_no_record() {
+        let whole = vec![asked(), taken_back()];
+        assert_eq!(os::complete(whole.clone(), os::End::Exhausted), Ok(whole.clone()));
+        assert!(os::complete(whole.clone(), os::End::Capped).is_err());
+        assert_eq!(os::complete(whole, os::End::Failed("EvtNext: timed out".into())), Err("EvtNext: timed out".to_string()));
+    }
+
+    /// A link planted where a command's stderr file would go is not followed:
+    /// nothing is written into, or read from, what it points at. A name nothing
+    /// had gets a private file, read back through the handle it was made with.
+    #[cfg(unix)]
+    #[test]
+    fn a_planted_link_at_the_stderr_files_name_is_refused() {
+        use std::io::{Read, Seek, Write};
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("luna-power-stderr-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let theirs = dir.join("theirs");
+        std::fs::write(&theirs, "kept").unwrap();
+        let planted = dir.join("shutdown.deadbeef.stderr");
+        std::os::unix::fs::symlink(&theirs, &planted).unwrap();
+        assert!(os::stderr_file(&planted).is_err());
+        assert_eq!(std::fs::read_to_string(&theirs).unwrap(), "kept", "neither followed nor truncated");
+
+        let fresh = dir.join("shutdown.cafe.stderr");
+        let mut file = os::stderr_file(&fresh).unwrap();
+        assert_eq!(std::fs::metadata(&fresh).unwrap().permissions().mode() & 0o777, 0o600);
+        file.try_clone().unwrap().write_all(b"said").unwrap();
+        let mut back = String::new();
+        file.rewind().unwrap();
+        file.read_to_string(&mut back).unwrap();
+        assert_eq!(back, "said");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Whether SeShutdownPrivilege is on in this process's token, read back from
+    /// the token itself.
+    #[cfg(windows)]
+    fn shutdown_privilege_on() -> bool {
+        use windows::core::PCWSTR;
+        use windows::Win32::Foundation::{CloseHandle, HANDLE, LUID};
+        use windows::Win32::Security::{
+            GetTokenInformation, LookupPrivilegeValueW, TokenPrivileges, LUID_AND_ATTRIBUTES, SE_PRIVILEGE_ENABLED, SE_SHUTDOWN_NAME,
+            TOKEN_PRIVILEGES, TOKEN_QUERY,
+        };
+        use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+        let mut token = HANDLE::default();
+        let mut luid = LUID::default();
+        let mut len = 0u32;
+        // SAFETY: this process's own token, read and closed here; the buffer is
+        // sized by the first call and aligned for the entries the second fills.
+        unsafe {
+            OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).unwrap();
+            LookupPrivilegeValueW(PCWSTR::null(), SE_SHUTDOWN_NAME, &mut luid).unwrap();
+            let _ = GetTokenInformation(token, TokenPrivileges, None, 0, &mut len);
+            let mut buf = vec![0u32; (len as usize).div_ceil(4)];
+            GetTokenInformation(token, TokenPrivileges, Some(buf.as_mut_ptr().cast()), len, &mut len).unwrap();
+            CloseHandle(token).unwrap();
+            let count = buf[0] as usize;
+            let first = buf.as_ptr().cast::<u8>().add(std::mem::offset_of!(TOKEN_PRIVILEGES, Privileges)).cast::<LUID_AND_ATTRIBUTES>();
+            std::slice::from_raw_parts(first, count).iter().any(|p| p.Luid == luid && (p.Attributes.0 & SE_PRIVILEGE_ENABLED.0) != 0)
+        }
+    }
+
+    /// The privilege is the call's alone: on inside, as it was after, a refusal
+    /// of the call included.
+    #[cfg(windows)]
+    #[test]
+    fn the_shutdown_privilege_is_on_for_the_call_alone() {
+        let before = shutdown_privilege_on();
+        let inside = os::with_shutdown_privilege(shutdown_privilege_on).unwrap();
+        assert!(inside, "on for the call");
+        assert_eq!(shutdown_privilege_on(), before, "as it was after");
+        assert!(!before, "a process starts with it off, so the restore is seen to do something");
+    }
+
+    /// The real call, by hand and once: asks Windows for a shutdown a minute away
+    /// and takes it back at once, Windows' notice showing in between; then that
+    /// the signs `power_off` goes by read as they should: the session metric, and
+    /// the request and its cancellation in the System log after the mark taken
+    /// before it. The one test here that reaches the OS, on purpose.
+    #[test]
+    #[cfg(windows)]
+    #[ignore = "live: asks Windows for a shutdown and aborts it; run by hand, alone"]
+    fn windows_takes_the_shutdown_request_and_its_abort() {
+        let mark = os::log_mark();
+        eprintln!("System log mark before the request: {mark:?}");
+        let asked = os::shutdown(false, Duration::from_secs(60));
+        eprintln!("InitiateShutdownW(poweroff, 60 s): {asked:?}");
+        eprintln!("SM_SHUTTINGDOWN during the grace: {}", os::shutting_down());
+        let aborted = os::abort_shutdown();
+        eprintln!("AbortSystemShutdownW: {aborted:?}");
+        eprintln!("SM_SHUTTINGDOWN after the abort: {}", os::shutting_down());
+        eprintln!("SeShutdownPrivilege on after the calls: {}", shutdown_privilege_on());
+        // The log takes a moment to have it.
+        let mut events = Ok(Vec::new());
+        for _ in 0..50 {
+            events = os::shutdown_events_after(mark);
+            if events.as_ref().is_ok_and(|e| e.iter().any(|event| event.id == 1075)) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        eprintln!("User32 shutdown events after the mark: {events:?}");
+        asked.expect("InitiateShutdownW");
+        aborted.expect("AbortSystemShutdownW");
+        let events = events.expect("the System log reads to its end");
+        let signature = Real.signature();
+        eprintln!("this process as the record should name it: {signature:?}");
+        assert_eq!(fate_of(&events, &signature), Fate::Canceled, "this exe's request with Luna's message, then its abort");
     }
 }
