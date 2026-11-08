@@ -136,17 +136,27 @@ function Compare-ReleaseVersion([string]$Left, [string]$Right) {
 # A version heading of CHANGELOG.md, Keep a Changelog style: "## [1.2.3] - 2026-11-08".
 $ChangelogHeading = '^## \[(?<version>[^\]]+)\](?: - (?<date>\S+))?\s*$'
 
+# A line opening a code fence (CommonMark 4.5): three or more backticks, with
+# an info string that holds no backtick (so ```code``` is an inline code span,
+# not a fence), or three or more tildes with anything after. The fence closes
+# on the same character, at least as many, alone on its line.
+$MarkdownFenceOpen = '^ {0,3}(?:(?<fence>`{3,})[^`]*|(?<fence>~{3,}).*)$'
+function Get-MarkdownFenceClose([string]$Fence) { "^ {0,3}[$($Fence[0])]{$($Fence.Length),}\s*$" }
+
+# A reference-link definition (CommonMark 4.7): the label, a colon, the
+# destination (bare or in <>), an optional title in quotes or parentheses.
+$MarkdownLinkDefinition = '^ {0,3}\[(?<name>[^\]]+)\]:\s*(?:<[^>]*>|\S+)(?:\s+(?:"[^"]*"|''[^'']*''|\([^)]*\)))?\s*$'
+
 # CHANGELOG.md read once: Sections, in the file's order, each with Version,
 # Date, Heading (the line's text after "## "), Lines (its body as written, up
 # to the next ## heading; the reference-link definitions taken out) and
 # IntroEnd (how many of those lines come before its first ### subsection); and
-# Links, every "[name]: url" definition from anywhere in the file, by name
-# lowercased, as CommonMark matches them. A heading, a definition or a ###
-# inside a code fence is text, not structure: a fence of three or more
-# backticks or tildes closes only on the same character, at least as many
-# (CommonMark 4.5), so a `## heading` shown in a code block neither ends a
-# section nor opens one. The release notes come from this file, so a tree
-# without one cannot be released.
+# Links, every "[name]: url" definition from anywhere in the file, the line
+# as written, by label lowercased, the first of a label kept, as CommonMark
+# matches them. A heading, a definition or a ### inside a code fence is text,
+# not structure ($MarkdownFenceOpen), so a `## heading` shown in a code block
+# neither ends a section nor opens one. The release notes come from this
+# file, so a tree without one cannot be released.
 function Read-Changelog([string]$Root) {
     $path = Join-Path $Root 'CHANGELOG.md'
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "no CHANGELOG.md in $Root; the release notes are made from it" }
@@ -156,11 +166,11 @@ function Read-Changelog([string]$Root) {
     $fence = $null
     foreach ($line in [IO.File]::ReadAllText($path) -split "\r?\n") {
         if ($fence) {
-            if ($line -match "^ {0,3}[$($fence[0])]{$($fence.Length),}\s*$") { $fence = $null }
+            if ($line -match (Get-MarkdownFenceClose $fence)) { $fence = $null }
             if ($current) { $current.Lines.Add($line) }
             continue
         }
-        if ($line -match '^ {0,3}(?<fence>`{3,}|~{3,})') {
+        if ($line -match $MarkdownFenceOpen) {
             $fence = $Matches.fence
             if ($current) { $current.Lines.Add($line) }
             continue
@@ -177,8 +187,9 @@ function Read-Changelog([string]$Root) {
             continue
         }
         if ($line -match '^## ') { $current = $null; continue }
-        if ($line -match '^\[(?<name>[^\]]+)\]:\s*(?<url>\S+)\s*$') {
-            $links[$Matches.name.ToLowerInvariant()] = [pscustomobject]@{ Name = $Matches.name; Url = $Matches.url }
+        if ($line -match $MarkdownLinkDefinition) {
+            $label = $Matches.name.ToLowerInvariant()
+            if (-not $links.ContainsKey($label)) { $links[$label] = $line.Trim() }
             continue
         }
         if ($current) {
@@ -218,26 +229,25 @@ function Get-ChangelogSection([string]$Version, [string]$Root = $RepoRoot) {
     }
 }
 
-# The reference-link definitions ("[name]: url") the Markdown $Text uses, in
-# the order first used, from $Links as Read-Changelog collected them: a
-# "[name]" not followed by "(" refers to one, outside code fences. A
-# section's "[details]" would otherwise lose its target once lifted out of
-# the file.
+# The reference-link definitions the Markdown $Text uses, as written, in the
+# order first used, from $Links as Read-Changelog collected them: a "[name]"
+# not followed by "(" refers to one, outside code fences. A section's
+# "[details]" would otherwise lose its target once lifted out of the file.
 function Get-UsedLinkDefinitions([string]$Text, [hashtable]$Links) {
     $used = [ordered]@{}
     $fence = $null
     foreach ($line in $Text -split "`n") {
         if ($fence) {
-            if ($line -match "^ {0,3}[$($fence[0])]{$($fence.Length),}\s*$") { $fence = $null }
+            if ($line -match (Get-MarkdownFenceClose $fence)) { $fence = $null }
             continue
         }
-        if ($line -match '^ {0,3}(?<fence>`{3,}|~{3,})') { $fence = $Matches.fence; continue }
+        if ($line -match $MarkdownFenceOpen) { $fence = $Matches.fence; continue }
         foreach ($match in [regex]::Matches($line, '\[([^\]]+)\](?!\()')) {
             $name = $match.Groups[1].Value.ToLowerInvariant()
             if ($Links.ContainsKey($name) -and -not $used.Contains($name)) { $used[$name] = $Links[$name] }
         }
     }
-    @($used.Values | ForEach-Object { "[$($_.Name)]: $($_.Url)" })
+    @($used.Values)
 }
 
 # The release notes of $Version, from CHANGELOG.md: its section as written;

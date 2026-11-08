@@ -169,7 +169,9 @@ Tooling notes, with a code block.
   [0.9.10]: nope
   ```
 
-- The [details] are elsewhere; see [the docs][details] and [details][].
+- Run ```pnpm gate``` first: an inline code span, not a fence.
+- The [details] are elsewhere; see [the docs][details] and [details][], the
+  [spec] and the [notes].
 
 ~~~
 ## another heading, in tildes
@@ -206,7 +208,10 @@ A security and engineering release. Agent tools now follow least privilege.
 [Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.10.2...HEAD
 [0.10.2]: https://github.com/nrubinmosin/luna/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/nrubinmosin/luna/compare/v0.10.0...v0.10.1
-[details]: https://example.com/details
+[details]: https://example.com/details "More details"
+[Details]: https://example.com/second-definition-is-ignored
+[spec]: <https://example.com/spec> 'The spec'
+[notes]: https://example.com/notes (Notes)
 [unused]: https://example.com/unused
 '@ -replace "`r`n", "`n"
     $tree = New-Tree notes
@@ -254,7 +259,9 @@ Tooling notes, with a code block.
   [0.9.10]: nope
   ```
 
-- The [details] are elsewhere; see [the docs][details] and [details][].
+- Run ```pnpm gate``` first: an inline code span, not a fence.
+- The [details] are elsewhere; see [the docs][details] and [details][], the
+  [spec] and the [notes].
 
 ~~~
 ## another heading, in tildes
@@ -263,21 +270,25 @@ still inside the tilde fence
 ~~~
 '@ -replace "`r`n", "`n"
         Assert-Equal $section.Body $expected.Trim()
-        # The section after the fences is still found whole.
+        # The section after the fences and the inline code span is still found whole.
         Assert-Equal (Get-ChangelogSection '0.10.1' $tree).Intro 'A small release.'
         # The definition shown in the fence is not one: 0.9.10 keeps its real body.
         Assert-Equal (Get-ChangelogSection '0.9.10' $tree).Body '- Fixes and refinements.'
     }
 
-    Check 'the link definitions a lifted section uses come with it, once' {
+    Check 'the link definitions a lifted section uses come with it, once, as written' {
+        # Titles in quotes or parentheses and a <destination> are kept as
+        # written; of two definitions of a label (case-insensitive) the first
+        # counts; the one shown inside the fence is none.
+        $definitions = "[details]: https://example.com/details `"More details`"`n[spec]: <https://example.com/spec> 'The spec'`n[notes]: https://example.com/notes (Notes)`n"
         $notes = New-ReleaseNotes -Version '0.10.2' -Previous 'v0.10.1' -Root $tree
-        $tail = "CHANGELOG.md#0102---2026-11-10).`n`n[details]: https://example.com/details`n"
-        if (-not $notes.EndsWith($tail)) { throw "the details definition is not appended once at the end:`n$notes" }
-        if ($notes -match '\[unused\]|\[0\.10\.[12]\]: |\[0\.9\.10\]: https') { throw "a definition nothing refers to was appended:`n$notes" }
+        $tail = "CHANGELOG.md#0102---2026-11-10).`n`n$definitions"
+        if (-not $notes.EndsWith($tail)) { throw "the definitions are not appended once at the end, as written:`n$notes" }
+        if ($notes -match '\[unused\]|second-definition|\[0\.10\.[12]\]: |\[0\.9\.10\]: https') { throw "a definition nothing refers to was appended:`n$notes" }
         Assert-Equal ([regex]::Matches($notes, '\[details\]: ').Count) 1
         # Definitions go after the verify block too, and still once across several sections.
         $notes = New-ReleaseNotes -Version '0.10.2' -Previous 'v0.9.11' -Checksums "ff84  Luna_0.10.2_x64-setup.exe`n" -Root $tree
-        if (-not $notes.EndsWith("``````" + "`n`n[details]: https://example.com/details`n")) { throw "no definition after the verify block:`n$notes" }
+        if (-not $notes.EndsWith("``````" + "`n`n$definitions")) { throw "no definitions after the verify block:`n$notes" }
         Assert-Equal ([regex]::Matches($notes, '\[details\]: ').Count) 1
         # Notes without references get none.
         if ((New-ReleaseNotes -Version '0.10.1' -Previous 'v0.10.0' -Root $tree) -match '\]: https') { throw 'a definition appended to notes without references' }
