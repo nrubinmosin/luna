@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-codex-trusted-roots"
+description = "Enables the set_codex_trusted_roots command without any pre-configured scope."
+commands.allow = ["set_codex_trusted_roots"]
+
+[[permission]]
+identifier = "deny-set-codex-trusted-roots"
+description = "Denies the set_codex_trusted_roots command without any pre-configured scope."
+commands.deny = ["set_codex_trusted_roots"]

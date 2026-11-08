@@ -35,7 +35,7 @@ decisions in [ADR-0012](../adr/0012-agents-over-mcp-with-notices.md) and
 | `agents/spawn/` | `luna_spawn`: `account.rs` (account lists), `background.rs`, `worktree.rs`, `settle.rs` (spawns that never completed) |
 | `agents/notifier/` | the notifier loop; `lines.rs` what a notice says; `usage.rs` quota and budget news |
 | `agentlog.rs` | `<data>/agents.jsonl`: a line per spawn and per end |
-| `luna_guide.md` | the full manual `luna_guide` returns |
+| `luna_guide.md` | the full manual `luna_guide` returns: whole (`topic: "all"`), by section (`mcp.rs` `guide_text`: any word of a `## ` title), or with no topic its opening and the sections |
 
 ## How a session gets Luna
 
@@ -48,11 +48,16 @@ decisions in [ADR-0012](../adr/0012-agents-over-mcp-with-notices.md) and
 - Tokens are per session and reissued on every spawn. The instruction travels
   in `initialize`; together about 2k tokens once.
 - Every session has `LUNA_SESSION_ID`; a helper also `LUNA_PARENT_ID`. A helper
-  is told what it is and to write in its task's language: Claude Code by
-  `--append-system-prompt`; Codex by a note after each background turn's prompt
-  (a visible one's opening prompt only), because `-c developer_instructions=`
+  is told what it is and to write in its task's language (`pty::helper_line`),
+  naming the words instructions files use for the person (the operator, the
+  user, the person at this machine) so that rules set for that person's chat do
+  not reach it: Claude Code by `--append-system-prompt` and a note after its
+  first prompt (`pty::helper_prompt`), as memory files outweigh an appended
+  system prompt; Codex by the note after each background turn's prompt (a
+  visible one's opening prompt only), because `-c developer_instructions=`
   would replace a value Luna would have to resolve from Codex's config stack.
-  Slash-command prompts go without; a compaction can lose a visible one's.
+  The transcript readers drop the note (`without_note`). Slash-command prompts
+  go without; a compaction can lose a visible one's.
 - The instruction says the CLIs' own subagents cannot use another provider or
   account (without it a Codex orchestrator used its own `spawn_agent`).
 
@@ -222,10 +227,18 @@ turn, stopped on a prompt (once per stop) or exited.
 
 - The answer is everything said past the debt's offset (`replies_since`),
   written to `<data>/agents/<id>-<sha256, 128 bits>.md` (named by content),
-  report first (`report_of`: the longest message, or with every one under 400
-  characters the last), then the last, then the rest. The notice quotes about
+  report first (`report_of`: the longest message of the last turn, or with every
+  one under 400 characters the last; when that short turn is one the CLI started
+  by itself (`Said::by_cli`, a background job's end), the longest message of the
+  latest turn before it that wrote one of 400 or more (`Said::starts`)), then the last, then the rest. The notice quotes about
   150 characters of the report's first line (`opening_line`), not for a failed
-  turn.
+  turn, and the report's lines in the file (`report_span`: `lines 1-N of M`).
+  `luna_read` with `report: true` (`read::report_read`) gives that report alone,
+  from `since`, else the debt's offset, else the transcript's start, and hands
+  nothing over. It reads as a read does: its cursor stops before a line still
+  being written, the report is cut at 60,000 characters, and a `since` that finds
+  nothing finds nothing (only a read with no cursor falls back to a resumed
+  conversation's last word).
 - A `wait` still out for that answer (`waits`) delivers it instead; if it has
   not within 10 s the notice goes (Claude Code moves an MCP call past 120 s to
   the background and may drop it).
@@ -244,6 +257,13 @@ turn, stopped on a prompt (once per stop) or exited.
   quota news and budget news are no reason to wake a caller: they ride with the
   next notice (`riders_go`), and go alone only once they are all it is owed,
   nothing in Luna is busy, or after `RIDE_MAX_MS`.
+- **Company.** A notice ready for an idle caller that is owed an answer by
+  another session still mid-turn (`Turn::Busy`) waits for it up to
+  `COALESCE_MS` (20 s; `hold_for_company`, counted from the first look it was
+  ready at, on the monotonic clock), so helpers ending seconds apart wake the
+  caller once. Past that, or with nothing else at work, it goes as it would
+  have; one that carries a question or a permission prompt (`Settled::Waiting`,
+  `Settled::Asked`) never waits.
 - A helper with its own helpers out (`waits_on_helpers`) reads `background`; a
   turn on a notice from them counts once it has all their answers. Meanwhile
   its parent hears of turns that wrote a message of 400 characters or more

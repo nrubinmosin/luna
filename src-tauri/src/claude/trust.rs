@@ -1,3 +1,4 @@
+use crate::boundary::{AbsPath, AccountPath};
 use serde_json::{Map, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -59,8 +60,11 @@ fn read_config_for_write(path: &Path) -> Result<Value, String> {
     Err(last)
 }
 
+/// The page's paths are held to an account folder of Luna's and a plain
+/// absolute folder (boundary.rs) before the account's config is touched.
 #[tauri::command]
-pub fn claude_folder_trusted(account_path: String, folder: String) -> Result<bool, String> {
+pub fn claude_folder_trusted(account_path: AccountPath, folder: AbsPath) -> Result<bool, String> {
+    let (account_path, folder) = (String::from(account_path), String::from(folder));
     let cfg = read_config(&config_file(&account_path)?);
     Ok(cfg["projects"][project_key(&folder)]["hasTrustDialogAccepted"].as_bool().unwrap_or(false))
 }
@@ -68,8 +72,12 @@ pub fn claude_folder_trusted(account_path: String, folder: String) -> Result<boo
 /// Marks the folder trusted for this account — the same bit the CLI's own trust
 /// prompt writes. Leaves every other key in the config untouched.
 #[tauri::command]
-pub fn claude_trust_folder(account_path: String, folder: String) -> Result<(), String> {
-    let path = config_file(&account_path)?;
+pub fn claude_trust_folder(account_path: AccountPath, folder: AbsPath) -> Result<(), String> {
+    trust_folder(&String::from(account_path), &String::from(folder))
+}
+
+pub(crate) fn trust_folder(account_path: &str, folder: &str) -> Result<(), String> {
+    let path = config_file(account_path)?;
     let _editing = crate::account_settings::editing()?;
     let mut cfg = read_config_for_write(&path)?;
 
@@ -77,7 +85,7 @@ pub fn claude_trust_folder(account_path: String, folder: String) -> Result<(), S
     if !projects.is_object() {
         *projects = Value::Object(Map::new());
     }
-    let entry = projects.as_object_mut().unwrap().entry(project_key(&folder)).or_insert_with(|| Value::Object(Map::new()));
+    let entry = projects.as_object_mut().unwrap().entry(project_key(folder)).or_insert_with(|| Value::Object(Map::new()));
     if !entry.is_object() {
         *entry = Value::Object(Map::new());
     }

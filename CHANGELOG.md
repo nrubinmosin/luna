@@ -10,6 +10,18 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Security
 
+- The window's page reaches only what it calls, so a script injected into it
+  would get no more: each app command is granted to the main window by name
+  and refused to any other window or a remote page, plugins are cut to the
+  calls the page makes (no menus, trays, new webviews or paths), the bridge to
+  the core passes on only the 35 commands the page sends, each on its own lane
+  (never the core's `shutdown`), and account and folder paths are checked
+  where they come in: an account path must be an account folder Luna lists,
+  reached through no link or junction and spelled as on disk, a folder a
+  plain absolute path.
+- Turning on Settings → Agents & trust → "Allow helpers more permissions than
+  their parent chat" asks again in a system dialog, which the page's own calls
+  cannot answer, and a yes counts only for the state it was asked about.
 - No CLI runs with administrator rights. Luna started as administrator starts
   its core, and so every session and helper, with the desktop's ordinary
   rights and the user's own environment, not the elevated one's; where there
@@ -41,6 +53,19 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   Lists say when they are empty, link exceptions are added from a menu, and a
   browser's long command line can be shown in full or copied. The page list
   works from the keyboard. See docs/user-guide/settings.md.
+- `luna_list` names each account with its defaults and usage but no longer its
+  models, Codex's catalog with every model's levels being most of what a
+  listing cost an agent that lists often; `models: true` brings them back.
+- A notice says which lines of its answer file are the report (`lines 1-N of
+  M`), and `luna_read` with `report: true` gives the report alone, so an agent
+  that wants only the report need not read everything else the helper said.
+- `luna_guide` takes a `topic`: a word of a section's title gives that section,
+  `all` the whole guide, and no topic its opening with the sections to ask
+  for. The instruction sessions get says to read it whole before the first
+  spawn; a lookup after that costs a section, not the whole manual.
+- A notice ready for an agent that another of its helpers is still working for
+  waits up to 20 seconds for that one's answer, so helpers finishing within
+  seconds of each other wake the agent once, not once each.
 
 ### Fixed
 
@@ -60,6 +85,17 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   opening prompt (the name it goes by until the CLI titles it), in Claude Code
   and Codex alike: it is read as the conversation reads it, a stray byte as
   U+FFFD.
+- A helper's notice led with the wrong report when its CLI started a short turn
+  of its own after the real one (a background job's end it took up): the short
+  line came first and the long report sank among the rest. Such a turn now
+  leaves the report to the long message before it, and comes next as the last
+  word.
+- Helpers followed rules their account's instructions set for the person's own
+  chat — one wrote its progress notes in the language set for "the operator".
+  The note a helper gets now names the words such instructions use (the
+  operator, the user, the person at this machine) and tells it to answer its
+  caller in its task's language and form; a Claude Code helper gets the note
+  after its first prompt too, not only in its system prompt.
 
 ## [0.10.1] - 2026-11-08
 

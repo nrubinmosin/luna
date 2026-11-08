@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-waiting-marker"
+description = "Enables the set_waiting_marker command without any pre-configured scope."
+commands.allow = ["set_waiting_marker"]
+
+[[permission]]
+identifier = "deny-set-waiting-marker"
+description = "Denies the set_waiting_marker command without any pre-configured scope."
+commands.deny = ["set_waiting_marker"]

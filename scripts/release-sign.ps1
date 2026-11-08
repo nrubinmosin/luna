@@ -13,6 +13,7 @@
 #   ./scripts/release-sign.ps1 -Dir <bundle> -Version 1.2.3 -UpdaterKey <path>   the key file
 #   ./scripts/release-sign.ps1 -Dir <bundle> -Version 1.2.3                      the key in TAURI_SIGNING_PRIVATE_KEY
 #   ... -TrustedPubkey <base64>                       a key rotation's bridge release (docs/releasing.md)
+#   ./scripts/release-sign.ps1 -Dir <copy> -Version 1.2.3 -Throwaway             a dry run's: a key made for the run
 #
 # <bundle> is what release-bundle.ps1 made: the installer for -Version and a
 # latest.json without a signature. -UpdaterKey defaults to LUNA_UPDATER_KEY;
@@ -31,10 +32,15 @@ param(
     [Parameter(Mandatory)][string]$Version,
     [string]$UpdaterKey = $env:LUNA_UPDATER_KEY,
     [string]$TrustedPubkey = $env:LUNA_UPDATER_TRUSTED_PUBKEY,
-    [switch]$RequireTrustedPubkey
+    [switch]$RequireTrustedPubkey,
+    [switch]$Throwaway
 )
 . "$PSScriptRoot/lib.ps1"
 . "$PSScriptRoot/release-lib.ps1"
 
-$trusted = Resolve-TrustedPubkey $TrustedPubkey -Required:$RequireTrustedPubkey
-Invoke-ReleaseSign -Dir $Dir -Version $Version -UpdaterKey $UpdaterKey -TrustedPubkey $trusted
+if ($Throwaway) {
+    Invoke-ReleaseSign -Dir $Dir -Version $Version -Throwaway
+} else {
+    $trusted = Resolve-TrustedPubkey $TrustedPubkey -Required:$RequireTrustedPubkey
+    Invoke-ReleaseSign -Dir $Dir -Version $Version -UpdaterKey $UpdaterKey -TrustedPubkey $trusted
+}

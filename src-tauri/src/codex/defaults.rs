@@ -20,6 +20,8 @@ use super::models::CodexModel;
 use serde::Serialize;
 use std::path::Path;
 
+use crate::boundary::{AbsPath, AccountPath, OrEmpty};
+
 /// One resolved value and the file it came from, so the dialog can say why it
 /// is showing what it is showing.
 #[derive(Serialize, Clone)]
@@ -98,8 +100,15 @@ fn apply(out: &mut Said, source: &str, doc: &toml_edit::DocumentMut) {
 
 /// Async and off to a blocking thread: with no catalog on disk the model
 /// list comes from the CLI, which takes seconds.
+///
+/// That CLI runs with `CODEX_HOME` set to the account (`codex_models`), and
+/// a trusted folder's `.codex/config.toml` is read: both paths are checked
+/// (boundary.rs). Either may be empty: no account gives Luna's own defaults
+/// without reading or running anything, and no folder leaves the project's
+/// file out.
 #[tauri::command]
-pub async fn codex_defaults(account_path: String, folder: String) -> CodexDefaults {
+pub async fn codex_defaults(account_path: OrEmpty<AccountPath>, folder: OrEmpty<AbsPath>) -> CodexDefaults {
+    let (account_path, folder) = (account_path.into_string(), folder.into_string());
     tauri::async_runtime::spawn_blocking(move || {
         let models = if account_path.is_empty() { vec![] } else { super::models::models_for(&account_path) };
         resolve(&account_path, &folder, &models)

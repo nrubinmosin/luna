@@ -47,12 +47,18 @@ pub(super) struct Said {
     pub(super) texts: Vec<String>,
     /// Index in `texts` of the first message of the last turn that wrote any.
     last_turn: usize,
+    /// Index in `texts` of the first message of each turn that wrote any, in
+    /// order: the last of them is `last_turn`.
+    starts: Vec<usize>,
+    /// That turn was one its CLI started by itself (a background job's end it
+    /// took up), with no prompt of anyone's behind it.
+    by_cli: bool,
 }
 
 impl Said {
     /// Messages of one turn, or of turns that cannot be told apart.
     pub(super) fn one_turn(texts: Vec<String>) -> Said {
-        Said { texts, last_turn: 0 }
+        Said { texts, last_turn: 0, starts: vec![0], by_cli: false }
     }
 }
 
@@ -81,8 +87,12 @@ fn own_words(messages: Vec<Message>, stopped: bool) -> Said {
             prompted = true;
             continue;
         }
-        if prompted || m.after_cli {
-            said.last_turn = said.texts.len();
+        if prompted || m.after_cli || said.texts.is_empty() {
+            if !said.texts.is_empty() {
+                said.last_turn = said.texts.len();
+                said.by_cli = !prompted;
+            }
+            said.starts.push(said.texts.len());
             prompted = false;
         }
         said.texts.push(m.text);
@@ -90,19 +100,43 @@ fn own_words(messages: Vec<Message>, stopped: bool) -> Said {
     said
 }
 
+/// `own_words` of messages a reader read itself, its cursor its own.
+pub(super) fn said_of(messages: Vec<Message>) -> Said {
+    own_words(messages, false)
+}
+
 /// Where a notice says the answer is: a file holding it, report first
 /// (`answer_text`). The notice itself quotes no more than the report's first
 /// line (`begins`) — a caller that had a long answer cut read the whole of it
 /// back anyway, and a long notice reaches the CLI as a paste.
 pub(super) fn answer_file(id: &str, replies: &Said) -> String {
-    answer_where(note_file(id, &answer_text(replies)).as_deref())
+    let text = answer_text(replies);
+    answer_where(note_file(id, &text).as_deref(), report_span(replies, &text))
 }
 
-pub(super) fn answer_where(file: Option<&std::path::Path>) -> String {
-    match file {
-        Some(path) => format!("the answer is in {}, its report first", path.display()),
-        None => "luna_read gives the answer".into(),
+/// Where the answer is, and with `span` (`report_span`) which lines of the file
+/// are the report: a caller that wants only the report reads those.
+pub(super) fn answer_where(file: Option<&std::path::Path>, span: Option<(usize, usize)>) -> String {
+    match (file, span) {
+        (Some(path), Some((report, all))) if report < all => {
+            format!("the answer is in {}, its report first (lines 1-{report} of {all})", path.display())
+        }
+        (Some(path), _) => format!("the answer is in {}, its report first", path.display()),
+        (None, _) => "luna_read gives the answer".into(),
     }
+}
+
+/// How many lines of `text`, an answer file that opens with `replies`'s report
+/// (`answer_text`), are the report, and how many it has in all. None with
+/// nothing said.
+pub(super) fn report_span(replies: &Said, text: &str) -> Option<(usize, usize)> {
+    let report = replies.get(report_of(replies))?;
+    Some((report.lines().count().max(1), text.lines().count().max(1)))
+}
+
+/// The report alone (`report_of`), what `luna_read` with `report: true` gives.
+pub(super) fn report_text(replies: &Said) -> Option<String> {
+    replies.get(report_of(replies)).cloned()
 }
 
 /// `text` in a file for a notice to name, under `notes_dir`. Named by what it
@@ -151,14 +185,25 @@ pub(super) const SHORT_MESSAGE: usize = 400;
 /// — when it is the last, where it ended up. Not the longest of all: a turn on
 /// text sent mid-turn answers after the first, and the first's long report
 /// would lead with what it has since moved past (a commit it has rebased).
-fn report_of(replies: &Said) -> usize {
+/// But a short last turn its CLI started by itself (a background job's end)
+/// answers nobody: the report is that of the latest turn before it that wrote a
+/// message that is not short, the longest of that turn's — not an older turn's
+/// longer one, which the newer has moved past — and the short line goes after
+/// it as its last word.
+pub(super) fn report_of(replies: &Said) -> usize {
     let from = replies.last_turn.min(replies.len().saturating_sub(1));
-    let longest = (from..replies.len()).max_by_key(|&i| replies[i].chars().count()).unwrap_or(from);
-    if replies.get(longest).map_or(0, |r| r.chars().count()) < SHORT_MESSAGE {
-        replies.len().saturating_sub(1)
-    } else {
-        longest
+    let len = |i: usize| replies[i].chars().count();
+    let longest = (from..replies.len()).max_by_key(|&i| len(i)).unwrap_or(from);
+    if replies.get(longest).map_or(0, |r| r.chars().count()) >= SHORT_MESSAGE {
+        return longest;
     }
+    let before = replies.by_cli.then(|| {
+        // Each earlier turn as a range of messages, newest first.
+        let mut bounds: Vec<usize> = replies.starts.iter().copied().filter(|&s| s < from).collect();
+        bounds.push(from);
+        bounds.windows(2).rev().find_map(|w| (w[0]..w[1]).filter(|&i| len(i) >= SHORT_MESSAGE).max_by_key(|&i| len(i)))
+    });
+    before.flatten().unwrap_or(replies.len().saturating_sub(1))
 }
 
 /// A report's first line that says anything, on one line and short, without
@@ -217,9 +262,33 @@ mod tests {
     use crate::agents::read::Message;
 
     #[test]
+    fn a_notice_says_which_lines_are_the_report() {
+        let replies = Said::one_turn(vec![
+            "Let me look.".to_string(),
+            format!("REPORT: line one\nline two\nline three {}", "x".repeat(400)),
+            "Nothing else changed.".to_string(),
+        ]);
+        let line = answer_file("span", &replies);
+        assert!(line.ends_with(", its report first (lines 1-3 of 15)"), "{line}");
+        let file = line.trim_start_matches("the answer is in ").split(", its report first").next().unwrap().to_string();
+        let whole = std::fs::read_to_string(&file).unwrap();
+        let _ = std::fs::remove_file(&file);
+        let head: Vec<&str> = whole.lines().take(3).collect();
+        assert_eq!(head[0], "REPORT: line one");
+        assert!(head[2].starts_with("line three"));
+        assert_eq!(whole.lines().count(), 15);
+        assert_eq!(report_text(&replies).unwrap().lines().count(), 3);
+        // A file that is the report alone says nothing of lines.
+        let one = answer_file("span", &Said::one_turn(vec!["Done.".into()]));
+        assert!(one.ends_with(", its report first"), "{one}");
+        let _ = std::fs::remove_file(one.trim_start_matches("the answer is in ").trim_end_matches(", its report first"));
+        assert_eq!(report_text(&Said::default()), None);
+    }
+
+    #[test]
     fn an_answer_file_puts_the_report_first_and_the_last_word_next() {
         let read = |line: String| {
-            let file = line.trim_start_matches("the answer is in ").trim_end_matches(", its report first").to_string();
+            let file = line.trim_start_matches("the answer is in ").split(", its report first").next().unwrap().to_string();
             let whole = std::fs::read_to_string(&file).unwrap();
             let _ = std::fs::remove_file(&file);
             whole
@@ -295,15 +364,62 @@ mod tests {
             false,
         );
         assert_eq!(said[report_of(&said)], "Still green at 5ce3b92d2.");
+        // As power-fix put it on 2026-11-08: a long report, then a turn its CLI
+        // started by itself on a background job's end, short. The report
+        // stands; the short line comes next as its last word.
+        let cli = |text: &str| Message { role: "assistant".into(), text: text.into(), after_cli: true };
+        let said = own_words(
+            vec![
+                m("user", "Fix the shutdown.".into()),
+                m("assistant", "Reading the crate.".into()),
+                m("assistant", first.clone()),
+                cli("A leftover wait loop I started has stopped; nothing else changed."),
+            ],
+            false,
+        );
+        assert_eq!(said.last_turn, 2, "the CLI's own turn is a turn");
+        assert_eq!(said[report_of(&said)], first, "the turn before reports");
+        let whole = answer_text(&said);
+        assert!(whole.starts_with("The new tip is 5ce3b92d2."), "{whole}");
+        assert!(whole.contains("Its last message:\n\nA leftover wait loop"), "{whole}");
+        assert!(begins(&said).starts_with(". It begins: \"The new tip is 5ce3b92d2."));
+        // Two turns with reports before it: the newer's leads, though the
+        // older's is longer — the newer has moved past it.
+        let older = format!("The tip is a1. {}", "Older detail. ".repeat(150));
+        let newer = format!("The tip is b2. {}", "Newer. ".repeat(120));
+        assert!(older.len() > 2000 && (800..1000).contains(&newer.len()));
+        let said = own_words(
+            vec![
+                m("user", "Do A.".into()),
+                m("assistant", older.clone()),
+                m("user", "Now B.".into()),
+                m("assistant", "On B.".into()),
+                m("assistant", newer.clone()),
+                m("assistant", "B pushed.".into()),
+                cli("A leftover job ended."),
+            ],
+            false,
+        );
+        assert_eq!(said.starts, vec![0, 1, 4]);
+        assert_eq!(said[report_of(&said)], newer, "the latest turn with a report, not the longest of all");
+        // A newer turn with nothing long is passed over for the one before it.
+        let said =
+            own_words(vec![m("assistant", older.clone()), m("user", "And?".into()), m("assistant", "Fine.".into()), cli("Ended.")], false);
+        assert_eq!(said[report_of(&said)], older);
+        // With nothing long before it, the CLI's short turn still leads.
+        let said = own_words(vec![m("assistant", "Done.".into()), cli("A job ended.")], false);
+        assert_eq!(said[report_of(&said)], "A job ended.");
         // Stopped on its prompt, with nothing said to it: the turn before stands.
         let said = own_words(vec![m("assistant", first.clone()), m("user", "And now?".into())], true);
         assert_eq!((said.last_turn, said[report_of(&said)].clone()), (0, first.clone()));
         // A turn the CLI started itself, on a background job's end, is one
-        // too, though its prompt is not among the messages.
+        // too, though its prompt is not among the messages; short, it leaves
+        // the report to the turn before.
         let mut taken_up = m("assistant", "The lane finished green at 9f3e2a1; nothing else changed.".into());
         taken_up.after_cli = true;
-        let said = own_words(vec![m("user", "Verify it.".into()), m("assistant", first), taken_up], false);
-        assert_eq!(said[report_of(&said)], "The lane finished green at 9f3e2a1; nothing else changed.");
+        let said = own_words(vec![m("user", "Verify it.".into()), m("assistant", first.clone()), taken_up], false);
+        assert_eq!(said.last_turn, 1);
+        assert_eq!(said[report_of(&said)], first);
     }
 
     #[test]

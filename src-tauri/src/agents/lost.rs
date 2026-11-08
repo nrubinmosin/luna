@@ -323,7 +323,7 @@ mod tests {
         // Both CLIs alike. One from a file an older core wrote has the note on it.
         for (id, provider, kept) in [
             ("fs-claude", Provider::Claude, "the whole job\nword for word".to_string()),
-            ("fs-codex", Provider::Codex, crate::pty::codex_helper_prompt("fs-parent", "the whole job\nword for word")),
+            ("fs-codex", Provider::Codex, crate::pty::helper_prompt("fs-parent", "the whole job\nword for word")),
         ] {
             first_turn_cut(id, "fs-parent", provider, &kept, &["and a follow-up"]);
             back(id, "fs-parent", provider);
@@ -507,7 +507,7 @@ mod tests {
         rollout("cli", &root.join("elsewhere").to_string_lossy(), "the whole job", "aaaa0000-away");
         rollout("cli", &folder, "another job", "aaaa0000-else");
         assert_eq!(conversation_of("rc-codex", Provider::Codex, &folder, &account), None, "a helper's, another folder's, another's job");
-        rollout("cli", &folder, &crate::pty::codex_helper_prompt("rc-parent", "the whole job"), "aaaa0000-mine");
+        rollout("cli", &folder, &crate::pty::helper_prompt("rc-parent", "the whole job"), "aaaa0000-mine");
         assert_eq!(
             conversation_of("rc-codex", Provider::Codex, &folder, &account).as_deref(),
             Some("aaaa0000-mine"),

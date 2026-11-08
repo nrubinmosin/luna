@@ -171,6 +171,17 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: ./scripts/release-sign.ps1 -Dir "$env:RUNNER_TEMP/assets" -Version $env:VERSION -RequireTrustedPubkey
+      # A run without the key goes through the same signing on a copy of the
+      # bundle, with a key made for it and thrown away, so a dry run fails
+      # where the release's signing would; the bundle itself goes on unsigned.
+      - name: Sign a copy with a throwaway key
+        if: needs.verify.outputs.signed != 'true'
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          Copy-Item -Recurse "$env:RUNNER_TEMP/assets" "$env:RUNNER_TEMP/throwaway"
+          ./scripts/release-sign.ps1 -Dir "$env:RUNNER_TEMP/throwaway" -Version $env:VERSION -Throwaway
+          Remove-Item -Recurse -Force "$env:RUNNER_TEMP/throwaway"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: assets
