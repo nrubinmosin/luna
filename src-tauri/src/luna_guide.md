@@ -98,7 +98,8 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
 - `requestKey` (spawn, send, delete): a retry with the same key and arguments within an hour gets
   the first call's result, not a second helper or message; one that failed is made anew. A key
   stands for one call: other arguments under it are refused. Keys are kept in the core's memory:
-  a core restart forgets them.
+  a core restart forgets them. A key is at most 128 characters; Luna keeps 64 of yours, the
+  oldest finished making way.
 - `budgetTokens`: past that many `context` tokens (its own, not its subagents' or helpers') its
   parent hears, once; nothing stops. `settings` shows `budgetBreach`, `budgetTold`.
 
@@ -127,7 +128,7 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   none. `failed` names the error a turn stopped on (API error, usage limit, crash, stop);
   `transcriptMissing`: no transcript, so no reply says nothing. `screen: true` adds the
   terminal. A helper does not exit between turns: `until: "exit"` returns once it is deleted.
-- With `ids` it returns `outcome` (`finished` or `timeout`), `finished` and `results`, one per id
+- With `ids` (16 at most) it returns `outcome` (`finished` or `timeout`), `finished` and `results`, one per id
   as a single wait gives it, with `id`. Under `mode: "any"` the others come back `pending` or
   `timeout`, still owed. A wait running when the answer comes hands it over instead of the
   notice; one canceled hands nothing over, and the notice comes.

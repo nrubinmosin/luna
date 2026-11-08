@@ -19,6 +19,14 @@ const KEYED: [&str; 3] = ["luna_session_spawn", "luna_session_send", "luna_sessi
 /// How long a keyed call's result is kept for a retry.
 const KEY_KEEP: Duration = Duration::from_secs(60 * 60);
 
+/// What a `requestKey` and what is kept for it may come to: a key's length,
+/// how many one caller and all callers hold, and a result's size. Past a count,
+/// the oldest finished call goes; one too large to keep is made, not kept.
+const KEY_CHARS: usize = 128;
+const KEYS_PER_CALLER: usize = 64;
+const KEYS_IN_ALL: usize = 1024;
+const KEPT_RESULT_BYTES: usize = 16 * 1024;
+
 /// The most of a past run's prompt and last reply `luna_run_list` passes on: a
 /// row is a pointer to the run, whose transcript has it whole.
 const RUN_PROMPT: usize = 160;
@@ -151,10 +159,14 @@ fn run(caller: &str, params: &Value, this: &Call) -> Value {
     }
     let key = a["requestKey"].as_str().filter(|k| !k.is_empty() && KEYED.contains(&name));
     let Some(key) = key else { return act(caller, name, a, this) };
+    if key.chars().count() > KEY_CHARS {
+        return failure(format!("a requestKey is at most {KEY_CHARS} characters"));
+    }
     let slot = (caller.to_string(), name.to_string(), key.to_string());
     match keyed(&slot, fingerprint(a)) {
         Keyed::Done(v) => v,
         Keyed::Running => failure(format!("a {name} with requestKey {key:?} is still under way; its result comes to that call")),
+        Keyed::Full => failure(format!("{KEYS_PER_CALLER} keyed calls of yours are under way; retry once one has its result")),
         Keyed::Other => failure(format!(
             "requestKey {key:?} was given to a {name} with other arguments; a key stands for one call, so a new call takes a new key"
         )),
@@ -176,6 +188,8 @@ enum Keyed {
     /// The key stands for a call with other arguments: refused, not that
     /// call's result passed off as this one's.
     Other,
+    /// No room: every kept call that could make way is still under way.
+    Full,
 }
 
 /// A keyed call: since when, the arguments it was made with (`fingerprint`),
@@ -219,6 +233,22 @@ fn keyed(slot: &(String, String, String), print: String) -> Keyed {
         Some(Slot { result: Some(v), .. }) => Keyed::Done(v.clone()),
         Some(_) => Keyed::Running,
         None => {
+            // Room for it: the caller's oldest finished call goes past its own
+            // count, anyone's past the whole count.
+            let mine = slots.keys().filter(|(c, _, _)| *c == slot.0).count();
+            if mine >= KEYS_PER_CALLER || slots.len() >= KEYS_IN_ALL {
+                let oldest = slots
+                    .iter()
+                    .filter(|(k, s)| s.result.is_some() && (mine < KEYS_PER_CALLER || k.0 == slot.0))
+                    .min_by_key(|(_, s)| s.at)
+                    .map(|(k, _)| k.clone());
+                match oldest {
+                    Some(k) => {
+                        slots.remove(&k);
+                    }
+                    None => return Keyed::Full,
+                }
+            }
             slots.insert(slot.clone(), Slot { at: Instant::now(), print, result: None });
             Keyed::New
         }
@@ -229,7 +259,8 @@ fn keyed(slot: &(String, String, String), print: String) -> Keyed {
 /// and a retry makes it anew.
 fn settle_key(slot: (String, String, String), out: &Value) {
     let mut slots = key_slots().lock().unwrap_or_else(|e| e.into_inner());
-    if out["isError"] == true {
+    // Too large to keep: made, and a retry would make it again.
+    if out["isError"] == true || out.to_string().len() > KEPT_RESULT_BYTES {
         slots.remove(&slot);
     } else if let Some(s) = slots.get_mut(&slot) {
         s.at = Instant::now();
@@ -554,4 +585,35 @@ pub(super) fn lineage_of(runs: &[crate::agentlog::Run]) -> HashMap<String, Strin
         .filter(|run| run.how.as_deref() != Some(crate::agentlog::TAKEN_OVER))
         .map(|run| (run.id.clone(), run.parent.clone()))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn slot(caller: &str, key: &str) -> (String, String, String) {
+        (caller.to_string(), "luna_session_send".to_string(), key.to_string())
+    }
+
+    #[test]
+    fn kept_calls_are_bounded_per_caller_and_in_size() {
+        // A caller's own count: its oldest finished call makes way.
+        for i in 0..=KEYS_PER_CALLER {
+            assert!(matches!(keyed(&slot("kb-one", &format!("k{i}")), "p".into()), Keyed::New));
+            settle_key(slot("kb-one", &format!("k{i}")), &json!({ "ok": true }));
+        }
+        let held = |caller: &str| key_slots().lock().unwrap().keys().filter(|(c, _, _)| c == caller).count();
+        assert_eq!(held("kb-one"), KEYS_PER_CALLER);
+        assert!(matches!(keyed(&slot("kb-one", "k0"), "p".into()), Keyed::New), "the oldest went");
+        // All still under way: no room, and nothing of another's is touched.
+        for i in 0..KEYS_PER_CALLER {
+            assert!(matches!(keyed(&slot("kb-busy", &format!("k{i}")), "p".into()), Keyed::New));
+        }
+        assert!(matches!(keyed(&slot("kb-busy", "one-more"), "p".into()), Keyed::Full));
+        // A result too large to keep is not kept.
+        assert!(matches!(keyed(&slot("kb-big", "k"), "p".into()), Keyed::New));
+        settle_key(slot("kb-big", "k"), &json!({ "text": "x".repeat(KEPT_RESULT_BYTES) }));
+        assert_eq!(held("kb-big"), 0);
+        key_slots().lock().unwrap().retain(|(c, _, _), _| !c.starts_with("kb-"));
+    }
 }
