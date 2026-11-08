@@ -108,6 +108,11 @@ pub(super) mod capture {
         TAKEN.lock().unwrap_or_else(|e| e.into_inner()).insert(id.to_string(), None);
     }
 
+    /// Whether a test captures `id`'s launch, which then never runs.
+    pub(super) fn expected(id: &str) -> bool {
+        TAKEN.lock().unwrap_or_else(|e| e.into_inner()).contains_key(id)
+    }
+
     /// The launch back if nobody expects it, else None: kept for `take`.
     pub(super) fn keep(id: &str, launch: Launch) -> Option<Launch> {
         let mut taken = TAKEN.lock().unwrap_or_else(|e| e.into_inner());
@@ -139,6 +144,16 @@ pub(super) mod capture {
 // running chat ensures it too, and doing all that then left the running
 // process holding a token Luna no longer knew.
 pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, String>) -> Result<String, String> {
+    // Before anything of the launch is built: nothing runs as administrator.
+    // A test's captured launch is never run (`capture`), and only so may a
+    // test, elevated on CI's runners, get past.
+    #[cfg(test)]
+    let captured = capture::expected(&id);
+    #[cfg(not(test))]
+    let captured = false;
+    if !captured {
+        crate::elevation::guard()?;
+    }
     let state = manager();
     let gate = state.gate(&id);
     let _spawning = gate.lock().unwrap_or_else(|e| e.into_inner());
@@ -533,6 +548,32 @@ fn split_dsr(carry: &mut Vec<u8>, chunk: &[u8]) -> Vec<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_session_is_not_started_as_administrator() {
+        crate::elevation::refuse_here(Some(crate::elevation::ADMIN));
+        let why = crate::elevation::refusal().map(String::from);
+        let got = tauri::async_runtime::block_on(spawn("run-as-admin".into(), || -> Result<Launch, String> {
+            panic!("nothing of the launch is built: it mints a token and writes the CLI's files")
+        }));
+        crate::elevation::refuse_here(None);
+        assert_eq!(got.err(), why);
+    }
+
+    #[test]
+    fn only_a_captured_launch_goes_past_the_check_in_a_test() {
+        // A test that captures its launch runs nothing, so it gets past even
+        // a refusal; one that does not is refused, as a live test would be.
+        capture::expect("captured-as-admin");
+        crate::elevation::refuse_here(Some(crate::elevation::ADMIN));
+        let ok = || -> Result<Launch, String> { Err("built".into()) };
+        let captured = tauri::async_runtime::block_on(spawn("captured-as-admin".into(), ok));
+        let live = tauri::async_runtime::block_on(spawn("live-as-admin".into(), ok));
+        crate::elevation::refuse_here(None);
+        let _ = capture::take("captured-as-admin");
+        assert_eq!(captured, Err("built".into()), "the launch was built, to be captured");
+        assert!(live.is_err_and(|e| e != "built"), "refused before it was built");
+    }
 
     #[test]
     fn cursor_queries_are_cut_out_even_across_reads() {

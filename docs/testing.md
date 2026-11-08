@@ -184,7 +184,9 @@ in; builds the Windows test executables (`windows-tests.ps1 -Build`) into
 CLI is the test build's managed copy when it has one, else the one on PATH.
 Run from `test-build/live-tests`, the executable keeps its own data folder, so
 its hub, settings and log (`test-build/live-tests/luna.log`) never mix with a
-test build running beside it.
+test build running beside it. From a terminal run as administrator the script
+stops at once, and the tests would refuse each start anyway: they check the
+token as Luna does (`elevation.rs`), and no test can lift that.
 
 The tests are `#[ignore]`d, so `cargo test` and the gate list them as ignored
 and never run them. Even with `--ignored` they do nothing unless `LUNA_LIVE=1`;

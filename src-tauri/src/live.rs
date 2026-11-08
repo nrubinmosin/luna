@@ -52,6 +52,11 @@ fn live(provider: Provider) -> Option<Live> {
         Provider::Claude => "LUNA_LIVE_CLAUDE_ACCOUNT",
         Provider::Codex => "LUNA_LIVE_CODEX_ACCOUNT",
     };
+    // Said before any CLI is reached, though every start would refuse anyway
+    // (elevation.rs): a terminal run as administrator runs the suite so too.
+    if let Some(why) = crate::elevation::refusal() {
+        panic!("the live suite runs no CLI from here: {why}");
+    }
     let path = std::env::var(var)
         .unwrap_or_else(|_| panic!("LUNA_LIVE=1 needs {var}: an account folder in test-build/accounts/{}", provider.accounts_dir()));
     Some(test_account(provider, Path::new(&path)).unwrap_or_else(|e| panic!("{var}: {e}")))

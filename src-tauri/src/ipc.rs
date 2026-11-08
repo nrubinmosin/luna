@@ -77,6 +77,11 @@ pub struct Welcome {
     /// sessions in the core, which has none.
     #[serde(default)]
     pub sessions: usize,
+    /// Why this core starts no session or helper: it runs as administrator
+    /// (elevation.rs). Absent from a core that does, and from one older than
+    /// the check, whose elevation the window reads from its token instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refused: Option<String>,
 }
 
 impl Welcome {
@@ -88,6 +93,7 @@ impl Welcome {
             fingerprint: env!("LUNA_CORE_FP").into(),
             started,
             sessions: crate::pty::manager().live_count() + crate::background::running(),
+            refused: crate::elevation::refusal().map(String::from),
         }
     }
 }

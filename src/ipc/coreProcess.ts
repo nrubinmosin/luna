@@ -7,10 +7,13 @@ export interface CoreDto {
   fingerprint: string;
   started: number;
   sessions: number;
+  /** Why it starts no session: it runs as administrator. */
+  refused?: string | null;
 }
 
 export interface CoreStateDto {
-  state: 'starting' | 'up' | 'down' | 'mismatch';
+  /** `elevated`: no core that is not run as administrator; `error` says why. */
+  state: 'starting' | 'up' | 'down' | 'mismatch' | 'elevated';
   core: CoreDto | null;
   error: string | null;
 }
