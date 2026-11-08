@@ -54,6 +54,7 @@
 | [0011](adr/0011-private-data-dir-beside-the-exe.md) | Luna's data lives in one private folder beside the exe | Accepted |
 | [0012](adr/0012-agents-over-mcp-with-notices.md) | Agents drive sessions over MCP; answers come back as notices | Accepted |
 | [0013](adr/0013-own-cli-binaries.md) | Luna ships and updates its own copies of the CLIs | Accepted |
+| [0014](adr/0014-the-page-gets-only-what-it-calls.md) | The page gets only the commands it calls | Accepted |
 
 New decisions start from the [template](adr/0000-template.md).
 

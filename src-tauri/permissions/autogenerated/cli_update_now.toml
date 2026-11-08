@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-cli-update-now"
+description = "Enables the cli_update_now command without any pre-configured scope."
+commands.allow = ["cli_update_now"]
+
+[[permission]]
+identifier = "deny-cli-update-now"
+description = "Denies the cli_update_now command without any pre-configured scope."
+commands.deny = ["cli_update_now"]

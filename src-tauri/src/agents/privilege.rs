@@ -321,8 +321,61 @@ pub fn helpers_above_caller() -> bool {
     crate::settings::get().helpers_above_caller
 }
 
+/// Turning it on lifts the privilege cap for every tooled session (the trust
+/// contract, threat model §3), so it takes a person: a native dialog, asked by
+/// the window process, that a script in the page can open by calling this but
+/// cannot answer. Turning it off takes nothing. The answer is the setting as
+/// it stands after, so the switch shows a refusal as off.
 #[tauri::command]
-pub fn set_helpers_above_caller(on: bool) -> Result<bool, String> {
+pub async fn set_helpers_above_caller<R: tauri::Runtime>(window: tauri::WebviewWindow<R>, on: bool) -> Result<bool, String> {
+    // Off the main thread: the dialog blocks until it is answered.
+    tauri::async_runtime::spawn_blocking(move || set_above(on, || confirm_above(&window))).await.map_err(|e| e.to_string())?
+}
+
+const ABOVE_TITLE: &str = "Let helpers run above their caller?";
+const ABOVE_TEXT: &str = "Helpers will be able to run with more privilege than the session that spawns them: \
+                          a session in a read-only or asking mode could start one with full access, and answer \
+                          or type commands into its helpers.\n\nTurn this on only if you mean to.";
+
+/// A message box owned by the window. On Windows `MessageBoxW` itself, which
+/// can make Cancel the default, so a stray Enter leaves the cap on; the
+/// dialog plugin's task dialog has no such option.
+#[cfg(windows)]
+fn confirm_above<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) -> bool {
+    use windows::core::HSTRING;
+    use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, IDOK, MB_DEFBUTTON2, MB_ICONWARNING, MB_OKCANCEL};
+    // SAFETY: the owner is this window's own handle, or none; the strings
+    // live across the call.
+    unsafe {
+        MessageBoxW(
+            window.hwnd().ok(),
+            &HSTRING::from(ABOVE_TEXT),
+            &HSTRING::from(ABOVE_TITLE),
+            MB_OKCANCEL | MB_ICONWARNING | MB_DEFBUTTON2,
+        ) == IDOK
+    }
+}
+
+#[cfg(not(windows))]
+fn confirm_above<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) -> bool {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+    window
+        .dialog()
+        .message(ABOVE_TEXT)
+        .title(ABOVE_TITLE)
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom("Turn on".into(), "Cancel".into()))
+        .parent(window)
+        .blocking_show()
+}
+
+/// The setting, changed to `on`, where `confirm` (the person, in the window)
+/// agrees to a change that lifts the cap; unchanged otherwise.
+fn set_above(on: bool, confirm: impl FnOnce() -> bool) -> Result<bool, String> {
+    if on && !helpers_above_caller() && !confirm() {
+        crate::log::info("agents", "helpers above their caller: not confirmed, left off");
+        return Ok(false);
+    }
     crate::settings::update(|s| s.helpers_above_caller = on)?;
     Ok(on)
 }
@@ -405,6 +458,20 @@ mod tests {
         let mut p = SpawnParams { read_only: Some(read_only), ..Default::default() };
         f(&mut p);
         p
+    }
+
+    #[test]
+    fn lifting_the_cap_takes_a_persons_yes() {
+        // The page asks to turn it on and nobody agrees in the dialog: the
+        // setting stays off and nothing is written.
+        let mut asked = false;
+        let answer = set_above(true, || {
+            asked = true;
+            false
+        });
+        assert_eq!(answer, Ok(false));
+        assert!(asked, "turning it on must ask");
+        assert!(!helpers_above_caller());
     }
 
     #[test]

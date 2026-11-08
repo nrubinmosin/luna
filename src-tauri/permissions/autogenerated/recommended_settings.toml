@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-recommended-settings"
+description = "Enables the recommended_settings command without any pre-configured scope."
+commands.allow = ["recommended_settings"]
+
+[[permission]]
+identifier = "deny-recommended-settings"
+description = "Denies the recommended_settings command without any pre-configured scope."
+commands.deny = ["recommended_settings"]

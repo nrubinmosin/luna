@@ -232,8 +232,8 @@ pub(super) fn apply(provider: Provider, account_path: &str, add: &[String], remo
 }
 
 #[tauri::command]
-pub fn recommended_settings(provider: Provider, account_path: String) -> Result<Vec<Rec>, String> {
-    recommend(provider, &account_path)
+pub fn recommended_settings(provider: Provider, account_path: crate::boundary::AccountPath) -> Result<Vec<Rec>, String> {
+    recommend(provider, &String::from(account_path))
 }
 
 #[tauri::command]
