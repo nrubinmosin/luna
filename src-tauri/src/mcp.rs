@@ -211,8 +211,8 @@ fn tools() -> Value {
     json!([
         {
             "name": "luna_list",
-            "description": "Your id (me), sessions you spawned (state, ask, turnsEnded, worktree, branch, sha, task, deletesInMin, turnStartedAt, lastActivityAt, resolvedModel, context, leftRunning) and accounts you may use: models, a helper's defaults in your folder, usage (% per window, resets). ids: only these, any session; accounts then only if true.",
-            "inputSchema": s(json!({ "ids": { "type": "array", "items": { "type": "string" } }, "accounts": { "type": "boolean" } }), &[]),
+            "description": "Your id (me), sessions you spawned (state, ask, turnsEnded, worktree, branch, sha, task, deletesInMin, turnStartedAt, lastActivityAt, resolvedModel, context, leftRunning) and accounts you may use: a helper's defaults in your folder, usage (% per window, resets), models if models: true. ids: only these, any session; accounts then only if true.",
+            "inputSchema": s(json!({ "ids": { "type": "array", "items": { "type": "string" } }, "accounts": { "type": "boolean" }, "models": { "type": "boolean" } }), &[]),
             "annotations": reads
         },
         {
@@ -409,6 +409,7 @@ fn call(caller: &str, params: &Value, this: &Call) -> Value {
         "quietS",
         "drain",
         "accounts",
+        "models",
     ];
     let set: Vec<String> = STEERING.iter().filter_map(|k| a.get(*k).filter(|v| !v.is_null()).map(|v| format!("{k}={v}"))).collect();
     if !set.is_empty() {
@@ -545,8 +546,9 @@ fn run(caller: &str, params: &Value, this: &Call) -> Value {
 /// a caller naming sessions wants those, and has not asked for accounts.
 fn listing(caller: &str, a: &Value) -> Result<Value, String> {
     let ids = if a["ids"].is_null() { None } else { Some(id_list(&a["ids"])?) };
-    let accounts = a["accounts"].as_bool().unwrap_or(ids.is_none());
-    Ok(json!(agents::list(caller, ids.as_deref(), accounts)))
+    let models = a["models"].as_bool().unwrap_or(false);
+    let accounts = a["accounts"].as_bool().unwrap_or(ids.is_none() || models);
+    Ok(json!(agents::list(caller, ids.as_deref(), accounts, models)))
 }
 
 /// A tool's `ids`, whose each must be a session id.
@@ -741,7 +743,7 @@ mod tests {
             t.as_object_mut().unwrap().remove("annotations");
         }
         let text = list.to_string();
-        assert!(text.len() < 7400, "tools/list is {} chars", text.len());
+        assert!(text.len() < 7500, "tools/list is {} chars", text.len());
         assert!(INSTRUCTIONS.len() < 1000, "instructions are {} bytes", INSTRUCTIONS.len());
         // Read only on request, but whole: keep it to a few thousand tokens.
         assert!(GUIDE.len() < 15_500, "the guide is {} bytes", GUIDE.len());
@@ -863,6 +865,13 @@ mod tests {
         assert!(rows(&alone).is_empty() && body(&alone)["accounts"].is_array());
         assert!(body(&alone).get("unknown").is_none());
         assert_eq!(list(json!({ "ids": "ls-kid" }))["isError"], true);
+        // An account's models only when asked: Codex's catalog, efforts and all,
+        // is most of what a listing costs a caller that lists often.
+        let rows_of = |v: &Value| body(v)["accounts"].as_array().cloned().unwrap_or_default();
+        assert!(rows_of(&all).iter().all(|a| a.get("models").is_none()), "{all}");
+        let with = list(json!({ "models": true }));
+        assert!(body(&with)["accounts"].is_array());
+        assert!(rows_of(&with).iter().all(|a| a["models"].is_array()), "{with}");
     }
 
     #[test]
