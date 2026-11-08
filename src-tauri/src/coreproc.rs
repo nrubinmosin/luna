@@ -552,9 +552,9 @@ mod tests {
         peer.join().unwrap();
         let (tx, rx) = sync_channel(4);
         let replies = Replies { tx, stream: Arc::new(stream.try_clone().unwrap()) };
-        crate::elevation::force(why);
+        crate::elevation::refuse_here(why);
         let _ = requests(&mut stream, &replies, 0);
-        crate::elevation::force(None);
+        crate::elevation::refuse_here(None);
         let frame = rx.recv_timeout(Duration::from_secs(10)).expect("an answer");
         let (_, payload) = ipc::read_frame(&mut io::Cursor::new(frame)).unwrap();
         serde_json::from_slice(&payload).unwrap()
@@ -562,8 +562,12 @@ mod tests {
 
     #[test]
     fn a_core_run_as_administrator_says_who_it_is_and_does_nothing_else() {
-        let why = crate::elevation::ADMIN;
-        assert!(answered(None, "power_state").err.is_none(), "answered as ever when not elevated");
+        // Elevated itself (CI's runners and containers), the test process is
+        // refused for its own reason before any it adds.
+        let why = crate::elevation::refusal().unwrap_or(crate::elevation::ADMIN);
+        if crate::elevation::refusal().is_none() {
+            assert!(answered(None, "power_state").err.is_none(), "answered as ever when not elevated");
+        }
         assert_eq!(answered(Some(why), "power_state").err.as_deref(), Some(why));
         assert_eq!(answered(Some(why), "ensure_claude_session").err.as_deref(), Some(why));
         assert_eq!(answered(Some(why), "background_helpers").err.as_deref(), Some(why));

@@ -143,30 +143,39 @@ pub fn refusal_of(os: &impl Os) -> Option<String> {
     }
 }
 
-/// Why this process starts no CLI: it runs with administrator rights. Read
-/// once; a token's elevation does not change under a running process.
-#[cfg(not(test))]
-pub fn refusal() -> Option<&'static str> {
+/// The OS's own answer for this process. Read once; a token's elevation does
+/// not change under a running process.
+fn os_refusal() -> Option<&'static str> {
     static R: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
     R.get_or_init(|| refusal_of(&System)).as_deref()
 }
 
-/// The tests' own: they run elevated on CI's Windows runners and as root in
-/// its containers, and a test that wants a refusal says so (`force`).
+/// Why this process starts no CLI: it runs with administrator rights.
+#[cfg(not(test))]
+pub fn refusal() -> Option<&'static str> {
+    os_refusal()
+}
+
+/// In the tests too the OS's own answer comes first: the live suite
+/// (live.rs) starts real CLIs from a test executable, and one run from an
+/// elevated terminal must be refused like Luna. A test may add a refusal
+/// (`refuse_here`), never lift one; a test that only builds a launch without
+/// running it is let past by its own capture (pty/spawn.rs).
 #[cfg(test)]
 pub fn refusal() -> Option<&'static str> {
-    FORCED.with(std::cell::Cell::get)
+    os_refusal().or_else(|| REFUSED_HERE.with(std::cell::Cell::get))
 }
 
 #[cfg(test)]
 thread_local! {
-    static FORCED: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
+    static REFUSED_HERE: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
 }
 
-/// For this test thread: `refusal` says `why`.
+/// For this test thread: `refusal` says `why` as well as whatever the OS
+/// says; None takes it back.
 #[cfg(test)]
-pub fn force(why: Option<&'static str>) {
-    FORCED.with(|f| f.set(why));
+pub fn refuse_here(why: Option<&'static str>) {
+    REFUSED_HERE.with(|f| f.set(why));
 }
 
 /// Where a CLI is about to be started: refused in a process that runs as
@@ -213,17 +222,34 @@ pub fn process_elevated(pid: u32) -> Option<bool> {
     win::process_elevated(pid)
 }
 
-/// Root's: `/proc/<pid>` belongs to the process's effective uid.
-#[cfg(target_os = "linux")]
+/// Root's: its effective uid is 0. Linux says so in `/proc/<pid>/status`;
+/// macOS has no /proc, and `ps` reads it from the kernel there.
+#[cfg(unix)]
 pub fn process_elevated(pid: u32) -> Option<bool> {
-    use std::os::unix::fs::MetadataExt;
-    std::fs::metadata(format!("/proc/{pid}")).ok().map(|m| m.uid() == 0)
+    let from_proc = || std::fs::read_to_string(format!("/proc/{pid}/status")).ok().and_then(|s| euid_in_status(&s));
+    let from_ps = || {
+        let out = std::process::Command::new("/bin/ps")
+            .args(["-o", "uid=", "-p", &pid.to_string()])
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()?;
+        euid_from_ps(&String::from_utf8_lossy(&out.stdout))
+    };
+    from_proc().or_else(from_ps).map(|uid| uid == 0)
 }
 
-/// Not told on macOS; a core there checks its own uid (`refusal`) and says so.
-#[cfg(all(not(windows), not(target_os = "linux")))]
-pub fn process_elevated(_pid: u32) -> Option<bool> {
-    None
+/// The effective uid in a `/proc/<pid>/status`: its `Uid:` line holds the
+/// real, effective, saved and filesystem uids, in that order.
+#[cfg_attr(not(unix), allow(dead_code))]
+fn euid_in_status(status: &str) -> Option<u32> {
+    status.lines().find_map(|l| l.strip_prefix("Uid:"))?.split_whitespace().nth(1)?.parse().ok()
+}
+
+/// `ps -o uid=`: the effective uid alone, padded; nothing for a pid gone.
+#[cfg_attr(not(unix), allow(dead_code))]
+fn euid_from_ps(out: &str) -> Option<u32> {
+    out.trim().parse().ok()
 }
 
 /// Starts `cmd` with the token of the desktop shell `pid`, which is checked
@@ -241,10 +267,10 @@ pub fn spawn_as_shell(_pid: u32, _cmd: &std::process::Command) -> std::io::Resul
 #[cfg(windows)]
 mod win {
     use super::Token;
-    use std::ffi::OsStr;
+    use std::ffi::{OsStr, OsString};
     use std::io;
-    use std::os::windows::ffi::OsStrExt;
-    use windows::core::{PCWSTR, PWSTR};
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    use windows::core::{BOOL, PCWSTR, PWSTR};
     use windows::Win32::Foundation::{CloseHandle, LocalFree, ERROR_ACCESS_DENIED, HANDLE, HLOCAL};
     use windows::Win32::Security::Authorization::ConvertSidToStringSidW;
     use windows::Win32::Security::{
@@ -253,10 +279,15 @@ mod win {
         TOKEN_ADJUST_DEFAULT, TOKEN_ADJUST_SESSIONID, TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE, TOKEN_ELEVATION, TOKEN_ELEVATION_TYPE,
         TOKEN_INFORMATION_CLASS, TOKEN_MANDATORY_LABEL, TOKEN_QUERY, TOKEN_USER,
     };
+    use windows::Win32::System::Environment::{CreateEnvironmentBlock, DestroyEnvironmentBlock};
+    use windows::Win32::System::JobObjects::{
+        IsProcessInJob, JobObjectBasicProcessIdList, QueryInformationJobObject, JOBOBJECT_BASIC_PROCESS_ID_LIST,
+    };
     use windows::Win32::System::Threading::{
         CreateProcessWithTokenW, GetCurrentProcess, OpenProcess, OpenProcessToken, ResumeThread, TerminateProcess,
-        CREATE_NEW_PROCESS_GROUP, CREATE_PROCESS_LOGON_FLAGS, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, PROCESS_ACCESS_RIGHTS,
-        PROCESS_INFORMATION, PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, STARTUPINFOW,
+        CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, CREATE_PROCESS_LOGON_FLAGS, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT,
+        PROCESS_ACCESS_RIGHTS, PROCESS_CREATION_FLAGS, PROCESS_INFORMATION, PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION,
+        STARTUPINFOW,
     };
     use windows::Win32::UI::WindowsAndMessaging::{GetShellWindow, GetWindowThreadProcessId};
 
@@ -402,29 +433,45 @@ mod win {
         let program = wide(cmd.get_program());
         let mut line = command_line(std::iter::once(cmd.get_program()).chain(cmd.get_args()));
         let cwd = cmd.get_current_dir().map(|d| wide(d.as_os_str()));
-        // Given, not left to Windows: it would build one from the user's
-        // profile, without what the window was started with.
-        let env = environment();
+        let env = core_environment(profile_environment(primary.0)?, std::env::vars_os());
         let startup = STARTUPINFOW { cb: size_of::<STARTUPINFOW>() as u32, ..Default::default() };
-        let mut info = PROCESS_INFORMATION::default();
         // Suspended, so nothing of it runs before its token is seen to be what
         // was asked for. No handle is inherited: this function has no way to.
-        // SAFETY: every buffer is NUL-terminated and outlives the call; the
-        // command line is a mutable copy, as the call requires.
-        unsafe {
-            CreateProcessWithTokenW(
-                primary.0,
-                CREATE_PROCESS_LOGON_FLAGS(0),
-                PCWSTR(program.as_ptr()),
-                Some(PWSTR(line.as_mut_ptr())),
-                CREATE_NEW_PROCESS_GROUP | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED,
-                Some(env.as_ptr().cast()),
-                cwd.as_ref().map_or(PCWSTR::null(), |d| PCWSTR(d.as_ptr())),
-                &startup,
-                &mut info,
-            )
-        }?;
+        // Out of any job the window was started in, as `spawn_detached` asks;
+        // a job that forbids breaking away refuses the first try.
+        let flags = CREATE_NEW_PROCESS_GROUP | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED;
+        let create = |flags: PROCESS_CREATION_FLAGS, line: &mut Vec<u16>| {
+            let mut info = PROCESS_INFORMATION::default();
+            // SAFETY: every buffer is NUL-terminated and outlives the call; the
+            // command line is a mutable copy, as the call requires.
+            unsafe {
+                CreateProcessWithTokenW(
+                    primary.0,
+                    CREATE_PROCESS_LOGON_FLAGS(0),
+                    PCWSTR(program.as_ptr()),
+                    Some(PWSTR(line.as_mut_ptr())),
+                    flags,
+                    Some(env.as_ptr().cast()),
+                    cwd.as_ref().map_or(PCWSTR::null(), |d| PCWSTR(d.as_ptr())),
+                    &startup,
+                    &mut info,
+                )
+            }
+            .map(|()| info)
+        };
+        let info = create(flags | CREATE_BREAKAWAY_FROM_JOB, &mut line).or_else(|_| create(flags, &mut line))?;
         let (child, thread) = (Owned(info.hProcess), Owned(info.hThread));
+        // What became of the job is not taken on trust: Secondary Logon, not
+        // this window, creates the process. Said in the log, the one place a
+        // run as administrator leaves a trace of it.
+        match in_my_job(info.dwProcessId) {
+            Some(true) => crate::log::warn(
+                "core",
+                "the core started with the shell's token is in this window's job: it ends if that job is closed with it",
+            ),
+            Some(false) => crate::log::info("core", "the core started with the shell's token is outside this window's job"),
+            None => crate::log::warn("core", "could not tell whether the core started with the shell's token is in this window's job"),
+        }
         let started = open_token(child.0, TOKEN_QUERY).map_err(io::Error::from).and_then(|t| read(t.0));
         if !matches!(&started, Ok(t) if !t.elevated && t.user == me.user) {
             // SAFETY: the handle CreateProcessWithTokenW returned, full access.
@@ -445,13 +492,79 @@ mod win {
         s.encode_wide().chain(Some(0)).collect()
     }
 
-    /// This process's environment as a block, sorted by name as Windows
-    /// expects one.
-    fn environment() -> Vec<u16> {
-        let mut vars: Vec<_> = std::env::vars_os().collect();
-        vars.sort_by_cached_key(|(k, _)| k.to_string_lossy().to_uppercase());
+    /// Whether `pid` is in the job this process runs in: false when this one
+    /// is in none; None when the job cannot be read.
+    pub(super) fn in_my_job(pid: u32) -> Option<bool> {
+        let mut mine = BOOL(0);
+        // SAFETY: the current process's pseudo-handle; `mine` is written once.
+        unsafe { IsProcessInJob(GetCurrentProcess(), None, &mut mine) }.ok()?;
+        if !mine.as_bool() {
+            return Some(false);
+        }
+        let mut cap: usize = 256;
+        loop {
+            // Two u32 counts, then the pids as usize: the struct's own layout.
+            let mut buf = vec![0usize; 1 + cap];
+            let bytes = (buf.len() * size_of::<usize>()) as u32;
+            // SAFETY: no job handle names this process's own job; the buffer
+            // is `bytes` long and read only after the call filled it.
+            let got = unsafe { QueryInformationJobObject(None, JobObjectBasicProcessIdList, buf.as_mut_ptr().cast(), bytes, None) };
+            // SAFETY: the buffer starts with the JOBOBJECT_BASIC_PROCESS_ID_LIST header.
+            let head = unsafe { &*buf.as_ptr().cast::<JOBOBJECT_BASIC_PROCESS_ID_LIST>() };
+            let (assigned, listed) = (head.NumberOfAssignedProcesses as usize, head.NumberOfProcessIdsInList as usize);
+            if got.is_ok() {
+                return Some(buf[1..=listed.min(cap)].contains(&(pid as usize)));
+            }
+            if assigned > cap && cap < 1 << 16 {
+                cap = assigned + 64;
+                continue;
+            }
+            return None;
+        }
+    }
+
+    /// The environment Windows makes for `token`'s user from their profile,
+    /// as Explorer's own programs get it: not the window's, whose PATH, TEMP
+    /// and the rest an elevated start may have pointed at an administrator's
+    /// places.
+    fn profile_environment(token: HANDLE) -> io::Result<Vec<(OsString, OsString)>> {
+        let mut block: *mut std::ffi::c_void = std::ptr::null_mut();
+        // SAFETY: a primary token with the TOKEN_QUERY and TOKEN_DUPLICATE
+        // the call needs; not inheriting this process's own variables.
+        unsafe { CreateEnvironmentBlock(&mut block, Some(token), false) }?;
+        let mut vars = Vec::new();
+        // SAFETY: the block is `NAME=value` strings, each NUL-terminated, the
+        // last followed by another NUL; read up to that and freed once.
+        unsafe {
+            let mut at = block.cast::<u16>().cast_const();
+            loop {
+                let len = (0..).take_while(|&i| *at.add(i) != 0).count();
+                if len == 0 {
+                    break;
+                }
+                let entry = std::slice::from_raw_parts(at, len);
+                // From the second character: `=C:=C:\dir` names a drive's
+                // current folder, its name starting with `=`.
+                if let Some(eq) = entry.iter().skip(1).position(|&c| c == u16::from(b'=')) {
+                    vars.push((OsString::from_wide(&entry[..eq + 1]), OsString::from_wide(&entry[eq + 2..])));
+                }
+                at = at.add(len + 1);
+            }
+            let _ = DestroyEnvironmentBlock(block);
+        }
+        Ok(vars)
+    }
+
+    /// The core's environment: the user's own from their profile, and on top
+    /// of it only Luna's own variables (`LUNA_*`) from the window's, which a
+    /// test build is started with (the dev caller's token, folder and
+    /// account). As a block, sorted by name as Windows expects one.
+    pub(super) fn core_environment(profile: Vec<(OsString, OsString)>, window: impl Iterator<Item = (OsString, OsString)>) -> Vec<u16> {
+        let key = |k: &OsString| k.to_string_lossy().to_uppercase();
+        let mut vars: std::collections::BTreeMap<String, (OsString, OsString)> = profile.into_iter().map(|kv| (key(&kv.0), kv)).collect();
+        vars.extend(window.filter(|(k, _)| key(k).starts_with("LUNA_")).map(|kv| (key(&kv.0), kv)));
         let mut block = Vec::new();
-        for (k, v) in vars {
+        for (k, v) in vars.into_values() {
             block.extend(k.encode_wide());
             block.push(u16::from(b'='));
             block.extend(v.encode_wide());
@@ -462,6 +575,15 @@ mod win {
         }
         block.push(0);
         block
+    }
+
+    /// For a test: this process's own profile environment, as the core would
+    /// get it with this process's token.
+    #[cfg(test)]
+    pub(super) fn own_profile_environment() -> io::Result<Vec<(OsString, OsString)>> {
+        // SAFETY: the current process's pseudo-handle.
+        let token = open_token(unsafe { GetCurrentProcess() }, TOKEN_QUERY | TOKEN_DUPLICATE)?;
+        profile_environment(token.0)
     }
 
     /// `args` as one command line that CommandLineToArgvW and the C runtime
@@ -596,10 +718,27 @@ mod tests {
 
     #[test]
     fn the_guard_says_why() {
-        assert_eq!(guard(), Ok(()));
-        force(Some(ADMIN));
-        assert_eq!(guard(), Err(ADMIN.to_string()));
-        force(None);
+        refuse_here(Some(ADMIN));
+        let refused = guard();
+        refuse_here(None);
+        assert_eq!(refused, Err(os_refusal().unwrap_or(ADMIN).to_string()));
+    }
+
+    /// The live suite's executable runs elevated when its terminal does: the
+    /// tests answer as Luna does then, and no test can say otherwise. Here
+    /// that is the OS's answer itself, whatever this machine's token is; CI's
+    /// Windows runners (elevated) and its Linux containers (root) see the
+    /// refusal, a desktop's ordinary terminal does not.
+    #[test]
+    fn a_test_run_as_administrator_is_refused_like_luna() {
+        let os = refusal_of(&System);
+        assert_eq!(refusal().map(String::from), os);
+        assert_eq!(guard().is_err(), os.is_some());
+        assert_eq!(os.is_some(), System.me().is_none_or(|t| t.elevated));
+        // Taking a test's own refusal back leaves the OS's in place.
+        refuse_here(Some("a test's"));
+        refuse_here(None);
+        assert_eq!(refusal().map(String::from), os);
     }
 
     /// What this machine's own token reads as: the tests run elevated on CI's
@@ -618,6 +757,62 @@ mod tests {
         if let Some((pid, shell)) = System.shell() {
             assert!(pid != 0 && shell.user.starts_with("S-1-5-"), "{shell:?}");
         }
+    }
+
+    #[test]
+    fn a_processs_effective_uid_is_read_as_its_kernel_gives_it() {
+        let status = "Name:\tluna-core\nUid:\t1000\t0\t0\t0\nGid:\t1000\t1000\t1000\t1000\n";
+        assert_eq!(euid_in_status(status), Some(0), "the second field, not the real uid");
+        assert_eq!(euid_in_status("Name:\tx\n"), None);
+        assert_eq!(euid_from_ps("  501\n"), Some(501));
+        assert_eq!(euid_from_ps(""), None, "a pid that is gone");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn this_processs_uid_reads() {
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        let root = unsafe { libc::geteuid() } == 0;
+        assert_eq!(process_elevated(std::process::id()), Some(root));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_core_gets_the_users_own_environment_and_lunas_variables_alone() {
+        use std::ffi::OsString;
+        let os = |s: &str| OsString::from(s);
+        let profile = vec![(os("Path"), os(r"C:\Windows")), (os("TEMP"), os(r"C:\Users\me\Temp")), (os("LUNA_DEV_FOLDER"), os("old"))];
+        let window = vec![
+            (os("PATH"), os(r"C:\admin-only")),
+            (os("TEMP"), os(r"C:\Windows\Temp")),
+            (os("LUNA_DEV_TOKEN"), os("t0k3n")),
+            (os("LUNA_DEV_FOLDER"), os("new")),
+        ];
+        let block = win::core_environment(profile, window.into_iter());
+        assert_eq!(block[block.len() - 2..], [0, 0], "double-NUL terminated");
+        let text = String::from_utf16(&block[..block.len() - 2]).unwrap();
+        let vars: Vec<&str> = text.split('\0').collect();
+        assert_eq!(vars, [r"LUNA_DEV_FOLDER=new", "LUNA_DEV_TOKEN=t0k3n", r"Path=C:\Windows", r"TEMP=C:\Users\me\Temp"]);
+    }
+
+    /// The profile's environment as Windows makes it for this token, and the
+    /// job check, on this machine.
+    #[cfg(windows)]
+    #[test]
+    fn the_profile_environment_and_the_job_read() {
+        let vars = win::own_profile_environment().expect("CreateEnvironmentBlock");
+        let has = |name: &str| vars.iter().any(|(k, v)| k.eq_ignore_ascii_case(name) && !v.is_empty());
+        assert!(has("USERPROFILE") && has("SystemRoot") && has("Path"), "{vars:?}");
+        // This test process is in a job or not; either way it is in its own,
+        // and SYSTEM's process is never in it.
+        let mut mine = windows::core::BOOL(0);
+        // SAFETY: the current process's pseudo-handle; `mine` written once.
+        unsafe {
+            windows::Win32::System::JobObjects::IsProcessInJob(windows::Win32::System::Threading::GetCurrentProcess(), None, &mut mine)
+        }
+        .unwrap();
+        assert_eq!(win::in_my_job(std::process::id()), Some(mine.as_bool()));
+        assert_ne!(win::in_my_job(4), Some(true));
     }
 
     #[cfg(windows)]

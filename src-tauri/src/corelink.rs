@@ -222,8 +222,14 @@ enum Verdict {
     Elevated,
 }
 
-/// `elevated`: what the core's token says, read by this window; a core older
-/// than the check does not say so itself.
+/// What this window read of the core's token, fail closed: only a token read
+/// as ordinary is one. One that could not be read at all is not worked with.
+fn counts_as_elevated(read: Option<bool>) -> bool {
+    read != Some(false)
+}
+
+/// `elevated`: what the core's token says, read by this window
+/// (`counts_as_elevated`); a core older than the check does not say so itself.
 fn verdict(core: &Welcome, elevated: bool) -> Verdict {
     if elevated || core.refused.is_some() {
         return if core.sessions > 0 { Verdict::Elevated } else { Verdict::Replace };
@@ -236,9 +242,12 @@ fn verdict(core: &Welcome, elevated: bool) -> Verdict {
 }
 
 /// An elevated core that this window can neither talk to nor stop: only one
-/// of its own rights can.
+/// of its own rights can, or time. A core that refuses to run sessions (this
+/// build's and later) has none, and leaves ten minutes after its last window
+/// went (coreproc.rs `leave_when_alone`).
 const ELEVATED_STUCK: &str = "A Luna core started as administrator is running, and Luna cannot stop it without \
-    administrator rights. Sign out of Windows and back in, or run `luna --stop-core` as administrator, then start Luna normally.";
+    administrator rights. With no session in it, it leaves by itself ten minutes after its last window closed: start Luna \
+    again then. Or sign out of Windows, or run `luna --stop-core` as administrator.";
 
 /// The running core of this build, started if need be.
 fn attach() -> Result<Attached, String> {
@@ -250,7 +259,7 @@ fn attach() -> Result<Attached, String> {
     // pid may be another program's by now — is not tried: a connect to its
     // closed port takes Windows seconds to refuse.
     if let Some(found) = discover().filter(Discovery::running) {
-        let elevated = crate::elevation::process_elevated(found.pid) == Some(true);
+        let elevated = counts_as_elevated(crate::elevation::process_elevated(found.pid));
         match hello(&found, "ui") {
             Ok((stream, core)) => match verdict(&core, elevated) {
                 Verdict::Attach => return Ok(Attached::Ours(stream, core)),
@@ -543,6 +552,17 @@ mod tests {
         assert_eq!(verdict(&core("0000000000000000", 3, None), true), Verdict::Elevated);
         // One that says so itself, whatever the window could read of its token.
         assert_eq!(verdict(&core(ours, 0, Some(crate::elevation::ADMIN)), false), Verdict::Replace);
+    }
+
+    #[test]
+    fn a_core_whose_token_cannot_be_read_is_not_attached() {
+        let ours = env!("LUNA_CORE_FP");
+        assert!(counts_as_elevated(None), "unread is not ordinary");
+        assert!(counts_as_elevated(Some(true)));
+        assert!(!counts_as_elevated(Some(false)));
+        // Of this very build and answering: still not worked with.
+        assert_eq!(verdict(&core(ours, 2, None), counts_as_elevated(None)), Verdict::Elevated);
+        assert_eq!(verdict(&core(ours, 0, None), counts_as_elevated(None)), Verdict::Replace);
     }
 
     #[test]

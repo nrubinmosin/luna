@@ -48,8 +48,10 @@ says *Luna is running as administrator; restart it normally*, with why:
 Close Luna and start it the usual way. A core an older Luna left running as
 administrator is not used: with no session in it, it is replaced at once; with
 sessions, the banner asks you to restart it, and they resume in the new one.
-If Luna cannot stop it without administrator rights, the banner says to sign
-out of Windows or run `luna --stop-core` as administrator. On Linux and macOS,
+If Luna cannot stop it without administrator rights, the banner says so: a
+core with no session in it leaves by itself ten minutes after its last window
+closed, and then Luna starts normally; otherwise sign out of Windows, or run
+`luna --stop-core` as administrator. On Linux and macOS,
 Luna run as root (with `sudo`, `sudo -E` among it) starts no session either.
 
 ## Helpers across a core restart
