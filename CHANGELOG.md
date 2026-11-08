@@ -93,6 +93,11 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   had moved to 2.8 while `@tauri-apps/plugin-notification` stayed at 2.7. The
   package is on 2.8 now, and the gate checks every such pair in the lockfiles
   (`pnpm check:tauri`), so a bump to one side alone fails there.
+- A helper's notice led with the wrong report when its CLI started a short turn
+  of its own after the real one (a background job's end it took up): the short
+  line came first and the long report sank among the rest. Such a turn now
+  leaves the report to the long message before it, and comes next as the last
+  word.
 
 ### Security
 
