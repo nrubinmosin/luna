@@ -1,0 +1,48 @@
+Seen {
+    consumed: 760,
+    messages: [
+        (
+            "user",
+            false,
+            "plan   the fix\nfor issue 5244, which has been open for a long while now",
+        ),
+        (
+            "user",
+            false,
+            "mention \"type\":\"ai-title\" in passing",
+        ),
+    ],
+    with_tools: [
+        (
+            "user",
+            false,
+            "plan   the fix\nfor issue 5244, which has been open for a long while now",
+        ),
+        (
+            "user",
+            false,
+            "mention \"type\":\"ai-title\" in passing",
+        ),
+        (
+            "assistant",
+            false,
+            "[tool: ExitPlanMode]",
+        ),
+    ],
+    first_prompt: Some(
+        "plan the fix for issue 5244, which has been open…",
+    ),
+    title: Some(
+        (
+            "Issue #5244",
+            false,
+        ),
+    ),
+    context: None,
+    model: None,
+    last_said: None,
+    last_said_at: None,
+    api_error: None,
+    pending_tool: None,
+    due_ms: None,
+}
