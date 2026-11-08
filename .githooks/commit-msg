@@ -1,6 +1,8 @@
 #!/bin/sh
-# Refuses a commit message that carries AI attribution (a Co-Authored-By
-# trailer, the robot emoji, a "Generated with ..." line). The rule lives once in
+# Refuses a commit message that breaks the rules in CONTRIBUTING.md ("Commits"):
+# a subject over 72 characters, a trailing period, lowercase prose, a type prefix,
+# an unwrapped body, or AI attribution (a Co-Authored-By trailer, the robot
+# emoji, a "Generated with ..." line). The rules live once in
 # scripts/check-commit-msg.sh, which CI runs over every pushed commit too.
 #
 # Enable once per clone:  git config core.hooksPath .githooks

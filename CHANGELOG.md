@@ -8,6 +8,13 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Changed
+
+- Commit messages follow one written-down form (CONTRIBUTING.md, "Commits"):
+  a sentence of at most 72 characters saying what the change does, no type
+  prefix, a blank line, then why. The commit-msg hook, the gate and CI refuse
+  the rest; past commits stay as they are.
+
 ## [0.10.0] - 2026-11-08
 
 A security and engineering release. Agent tools now follow least privilege,
