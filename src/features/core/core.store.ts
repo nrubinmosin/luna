@@ -1,19 +1,23 @@
 import { create } from 'zustand';
 import { coreRestart, coreState, type CoreStateDto } from '../../ipc/coreProcess';
-import { onCoreState } from '../../ipc/events';
+import { onCoreState, onStartOver } from '../../ipc/events';
 import { forgetAll } from '../panes/terminals';
 
 /**
  * The window's line to the core, where the sessions run (corelink.rs). When a
  * core that stopped is replaced by a new one, every terminal starts over —
- * its session went with the old core — and resumes from its transcript.
+ * its session went with the old core — and resumes from its transcript. The
+ * same when the core itself says so: it closed every session for a shutdown of
+ * the PC that was then taken back (power/machine.rs).
  */
 interface CoreState {
   link: CoreStateDto;
-  /** Counts the cores the panes have had to start over for. */
+  /** Counts the times the panes have had to start their sessions over. */
   epoch: number;
   init: () => Promise<void>;
   restart: () => void;
+  /** Every terminal is made afresh and its session resumed from its transcript. */
+  startOver: () => void;
 }
 
 /** The one subscription to the link, shared by every `init`: two calls
@@ -41,19 +45,22 @@ export const useCore = create<CoreState>((set, get) => ({
       const pid = link.state === 'up' ? (link.core?.pid ?? null) : null;
       const replaced = pid != null && (troubled || (lastPid != null && lastPid !== pid));
       if (pid != null) lastPid = pid;
+      set({ link });
       if (replaced) {
         troubled = false;
-        forgetAll();
-        set({ link, epoch: get().epoch + 1 });
-      } else {
-        set({ link });
+        get().startOver();
       }
     };
-    listening ??= onCoreState(take);
+    listening ??= Promise.all([onCoreState(take), onStartOver(() => get().startOver())]);
     await listening;
     take(await coreState());
   },
 
   // The ipc layer has logged a failure; the banner stays up to say the rest.
-  restart: () => void coreRestart().catch(() => {})
+  restart: () => void coreRestart().catch(() => {}),
+
+  startOver: () => {
+    forgetAll();
+    set({ epoch: get().epoch + 1 });
+  }
 }));

@@ -35,6 +35,11 @@ export const onAgentSpawn = (cb: (r: AgentSpawnRequest) => void): Promise<Unlist
 export const onCoreState = (cb: (s: CoreStateDto) => void): Promise<UnlistenFn> =>
   tauriAvailable ? listen<CoreStateDto>('core://state', e => cb(e.payload)) : Promise.resolve(() => {});
 
+/** Every session was closed for a shutdown of the PC that was then taken back
+ *  (power/machine.rs): the panes start theirs over, as after a core restart. */
+export const onStartOver = (cb: (p: { why: string }) => void): Promise<UnlistenFn> =>
+  tauriAvailable ? listen<{ why: string }>('pty://start-over', e => cb(e.payload)) : Promise.resolve(() => {});
+
 export interface Notice {
   title: string;
   body: string;

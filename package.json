@@ -15,6 +15,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "check:text": "node scripts/check-text.mjs",
+    "check:tauri": "node scripts/check-tauri-versions.mjs",
     "test:scripts": "node --test scripts/*.test.mjs",
     "preview": "vite preview",
     "tauri": "tauri"
@@ -30,7 +31,7 @@
     "@lezer/highlight": "^1.2.5",
     "@tauri-apps/api": "^2.12.0",
     "@tauri-apps/plugin-dialog": "^2.8.0",
-    "@tauri-apps/plugin-notification": "^2.7.0",
+    "@tauri-apps/plugin-notification": "^2.8.0",
     "@tauri-apps/plugin-updater": "^2.14.0",
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/addon-webgl": "^0.19.0",
