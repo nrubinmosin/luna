@@ -9,16 +9,18 @@ on one of the user's accounts.
   project folder and a state: `working`, `waiting` (a permission prompt), `question`,
   `idle`, `starting` (its CLI has not drawn yet), `background` (a job, a subagent its CLI
   runs in the background, or a helper of its still runs), `exited`.
-- A helper is **background** by default: no row, no terminal; each turn is one run of the
+- Every helper runs in the **background**: no row, no terminal; each turn is one run of the
   CLI's headless mode (`claude -p`, `codex exec`) on the helper's account, and the next turn
-  resumes its conversation. The user sees it as a count on your chat's row and can open it as
-  a chat between its turns. `visible: true` makes it a normal chat row instead, nested under
-  yours, that the user can type into.
+  resumes its conversation. The user sees it as a count on your chat's row, can watch its
+  conversation read-only, and can open it as a chat between its turns. Opening hands it to the
+  user for good: it is their chat, no longer yours to send to, wait on, read, stop or delete,
+  nothing more is owed by it, text still queued for it is not delivered, and one notice tells
+  you so (and where that text is).
 - Each `luna_list` row also says:
   - `branch`, `sha` (short; no branch: detached, as a Codex worktree is): what its folder or
     worktree has checked out. `task`: the first line of its spawn's prompt.
   - `turnStartedAt`: when the turn on now began; null between turns. `lastActivityAt`: its
-    last event (a visible session's last transcript write); a long command or think shows
+    last event (a user's chat's last transcript write); a long command or think shows
     nothing until it ends, so quiet is not stuck. Times are UTC ISO.
   - `resolvedModel`: the full model id a model answered on; null until one has.
   - `context`: how full its context window is after its last turn: `tokens` in the window
@@ -38,7 +40,7 @@ on one of the user's accounts.
   chats, other chats' helpers, your parent) you can read, wait on, send text to and answer with
   `scope: "all"`, without which those tools refuse it; your text reaches it opened `[From session
   <your id> via Luna]`. A deleted parent's helper passes to its parent; with none, only
-  the user can stop or delete it, and a background one goes once idle for 30 min.
+  the user can stop or delete it, and it goes once idle for 30 min.
 - At most eight helpers under one chat. A helper given `tools: true` gets these tools too,
   but its own helpers get none.
 - `LUNA_SESSION_ID` holds a session's id, `LUNA_PARENT_ID` a helper's parent's. A helper is told it
@@ -57,20 +59,19 @@ on one of the user's accounts.
   limit. When an account your live helpers run on reaches 90%, then 95%, of a window, a
   notice says so, once each until it resets (by the figures Luna's window keeps: none open,
   no notice).
-- A model the organization does not allow, swapped by the CLI, is in `warnings`.
+- A model the organization does not allow is swapped by the CLI: `resolvedModel` says what ran.
 
 ## Spawning
 - A helper's mode (exact spelling; else the account's default) may not exceed yours: plan /
   read-only < default, dontAsk / read-only asking < acceptEdits < workspace-write < auto-review <
   bypassPermissions / danger-full-access; network apart. Allow rules, config unweighed. Higher:
   refused unless the user allows. No helper works in or above Luna's own folder.
-- Codex's `approval`: auto-review has a reviewer model answer what Codex would ask
-  (workspace-write only); on-request is for visible ones: a background Codex has nobody to
-  ask, and runs with never unless told auto-review, the sandbox being what holds it. Running
-  the project's hooks past Codex's trust prompt is the user's setting per folder: without it
-  a background Codex skips untrusted hooks, a visible one stops on it. A background Codex trusts the
-  folder it is sent to for its run, so the project's own `.codex/` config loads; a visible
-  one in a folder Codex does not trust yet has Luna trust it for that account.
+- Codex's `approval`: `never` (the default), or `auto-review`, a reviewer model answering what
+  Codex would ask (workspace-write only). A helper has nobody to ask, so policies that ask a
+  person (on-request and the like) are refused; the sandbox is what holds it. Running the
+  project's hooks past Codex's trust prompt is the user's setting per folder: without it a Codex
+  helper skips untrusted hooks. It trusts the folder it is sent to for its run, so the project's
+  own `.codex/` config loads.
 - Codex's network: none in `read-only` or, unless its config says so, `workspace-write`, but
   on Windows only by dead proxy variables: ssh and raw sockets still connect.
   `danger-full-access`: the machine's. `read-only-net` reads only, with network; on Windows
@@ -85,7 +86,7 @@ on one of the user's accounts.
 - `worktree: true` shares no files or git with the sessions in that folder; the result
   names the worktree and branch, or `worktreePending` until the CLI has made it. `sameFolder`
   lists live sessions working in the same directory.
-- A prompt over 8,000 characters reaches a visible session as a file it is told to read.
+- Text over 8,000 characters reaches a user's chat as a file it is told to read.
 - A helper has Luna's MCP server alone: none of its account's servers or connectors (claude.ai's
   Gmail, Slack and the like; Codex's apps and `config.toml` servers), and a Claude Code one no
   auto-memory. `connectors: true` keeps them, for a task that needs them. A Codex helper still has
@@ -106,7 +107,7 @@ on one of the user's accounts.
   It comes when your chat is between turns and nobody types in it; a subagent of yours in the
   background does not hold it back, another helper of yours mid-turn may, up to 20 s, so that
   near-simultaneous ends come as one notice (never a question or a prompt).
-- "NOT done yet": a job it started still runs (named), a subagent of a visible one's CLI
+- "NOT done yet": a job it started still runs (named), a subagent of a user's chat's CLI
   works on in the background, or its own helpers have yet to answer it. Said once; the next
   notice comes when that is over or a turn of its own ends (all of it
   idle 30 min: one more says so; it may be stuck or waiting), not one it only ran
@@ -149,45 +150,41 @@ on one of the user's accounts.
   only if it died). You stay owed: once your chat is back (given up after 10 minutes) a notice
   says it did NOT finish; `luna_send` has it carry on. What you queued never reached it: the
   notice counts it and its file ends on it (`undelivered` in `luna_read`,
-  `luna_wait`). A helper stopped with no conversation yet, visible too, "never got started": the
-  file holds its prompt, then that text; `luna_send` starts it afresh, or with its CLI not back
-  spawn it again. A worktree it began is reused only if Luna named it and untouched; else `worktreeLeft`.
+  `luna_wait`). A helper stopped with no conversation yet "never got started": the file holds
+  its prompt, then that text; `luna_send` starts it afresh. A worktree it began is reused only
+  if Luna named it and untouched; else `worktreeLeft`.
 - `resumeOnRestart` goes on by itself with that text (afresh on its prompt if it never got started);
-  one notice says so, the usual one follows. Else the plain notice: a background helper where Luna
-  cannot tell the old turn ended, a visible one whose CLI Luna could not bring back, or that the
-  user or you wrote to first.
-- Visible sessions and chats you wrote to come back when the window starts them, with text held for
-  them; the notice comes then, or after a minute saying they have not.
+  one notice says so, the usual one follows. Else the plain notice: where Luna cannot tell the
+  old turn ended, or that you wrote to first.
+- The user's chats you wrote to come back when the window starts them, with text held for them;
+  the notice comes then, or after a minute saying they have not.
 - A `luna_spawn` a restart cut off errors. Wait for the notice before spawning again: no helper came
   of it (a file has its prompt; any `worktreeLeft`), or with `resumeOnRestart` it started afresh.
 
 ## Answering and steering
 - A session in state `question` or `waiting` has an `ask`: the questions with their
   options, or the tool up for permission. In `luna_answer` an option's number counts from 1.
-  It returns `state`, `ask` and the `screen` after it. A background helper's `ask` has an
-  `id`: pass it as `askId`, so your answer cannot land on the next one; a stale or unknown id
+  It returns `state`, `ask` and, for a user's chat, the `screen` after it. A helper's `ask` has
+  an `id`: pass it as `askId`, so your answer cannot land on the next one; a stale or unknown id
   is refused, and so is no id with several held.
-- `allow`, `keys`, a CLI's own list: your helpers only; allow true only for what you run unasked
-  (never plan/default), keys and lists at full access; others' (`scope: "all"`): model questions only.
-  No control chars.
+- `allow`: your helpers only, true only for what you run unasked (never plan/default). Others'
+  (`scope: "all"`): a question its model asked, nothing else. No control chars.
   Text or a prompt starting with `/` or `!` (CLI command, shell as you): only at
   full access, into your own helpers.
-- A visible Codex stopped on a list of its own ("Hooks need review" at startup) has it as a
-  question too, its options the only answers it takes; a spawn it kept back returns it as `ask`.
-- A background Claude Code helper's questions and permission prompts come to you this way, one
-  at a time. A background Codex helper's are in its reply.
-- `luna_send` to a working session is `queued`: a visible CLI takes it into the running turn
-  or the next; a background Claude helper at its next tool boundary (`joined`; a long tool
-  or subagent delays it); background Codex the next turn. `luna_wait` with the
-  `turnsEnded` returned waits for whichever answers it. `interrupt: true` (your own helpers and
-  theirs only) makes the text the next turn, behind any queued (`queued` if that turn would not stop). Where the user is
-  typing, or left a draft Luna cannot put aside (Codex's), the result says `held: true`: Luna
-  types it in once they are done, and a `luna_wait` waits for that first. Do not send again.
-- `autoDelete`: Luna deletes the helper 30 minutes after its answer reached you, not while a
-  job or helper of its runs (processes idle 2 h on end do not count: they go with it, and you
-  hear so); a read or a send starts that over (`deletesInMin` counts down). The worktree stays. Off
-  for visible ones unless `true`. One the user typed into, or whose turn you killed, is never
-  deleted; ending only what it left running between turns keeps it as it was.
+- A Claude Code helper's questions and permission prompts come to you this way, one at a time.
+  A Codex helper's are in its reply.
+- `luna_send` to a working session is `queued`: a Claude Code helper takes it at its next tool
+  boundary (`joined`; a long tool or subagent delays it); a Codex helper the next turn; a user's
+  chat into the running turn or the next. `luna_wait` with the `turnsEnded` returned waits for
+  whichever answers it. `interrupt: true` (your own helpers and theirs only) makes the text the
+  next turn, behind any queued (`queued` if that turn would not stop). Where the user is typing
+  in their chat, or left a draft Luna cannot put aside (Codex's), the result says `held: true`:
+  Luna types it in once they are done, and a `luna_wait` waits for that first. Do not send again.
+- `autoDelete` (on by default): Luna deletes the helper 30 minutes after its answer reached you,
+  not while a job or helper of its runs (processes idle 2 h on end do not count: they go with it,
+  and you hear so); a read or a send starts that over (`deletesInMin` counts down). The worktree
+  stays. One whose turn you killed is never deleted; ending only what it left running between
+  turns keeps it as it was.
 - A deleted session's transcript stays in its account's folder (`luna_sessions` history names
   it). If a helper printed what it should not have, tell the user that path.
 

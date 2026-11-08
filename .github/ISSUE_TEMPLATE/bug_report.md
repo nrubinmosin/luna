@@ -24,7 +24,7 @@ labels: bug
 **Session details**
 
 - Provider and mode (permission mode, or Codex approval + sandbox):
-- Worktree, Luna tools, background or visible helper:
+- Worktree, Luna tools, a helper (or one opened as a chat):
 
 **Log**
 

@@ -3,12 +3,14 @@ import { createPortal } from 'react-dom';
 import { useShallow } from 'zustand/react/shallow';
 import { backgroundDelete, backgroundKill, type BackgroundHelperDto } from '../../ipc/agents';
 import { Icon } from '../../shared/ui/icons';
+import { ConfirmDialog } from '../../shared/ui/ConfirmDialog';
 import { useDialogHost } from '../../shared/ui/dialogHost';
 import { sinceLabel } from '../../shared/lib/format';
 import { logWarn } from '../../shared/lib/log';
 import { allChats, useChats } from '../chats/chats.store';
 import { rootOf, useBackground } from './background.store';
 import { openAsChat } from './bridge';
+import { HelperView } from './HelperView';
 
 /** A state as a person reads it. */
 const STATE_LABEL: Record<string, string> = {
@@ -56,8 +58,9 @@ function askLine(h: BackgroundHelperDto): string | null {
 /**
  * The background helpers of one chat (background/), its helpers' helpers
  * with them: a count on its row, and on a click a list of them with what each
- * is doing, to open one as a chat of its own, stop it or delete it. Its agent
- * is the one told what they say; this is for a person who wants to look.
+ * is doing, to watch one read-only as it works, open one as a chat of the
+ * person's own (which takes it from its agent for good), stop it or delete it.
+ * Its agent is the one told what they say; this is for a person who wants to look.
  */
 export function BackgroundChip({ parentId }: { parentId: string }) {
   const helpers = useBackground(useShallow(s => s.helpers.filter(h => rootOf(h, s.helpers) === parentId)));
@@ -99,6 +102,12 @@ export function LooseHelpers() {
 
 function HelperChip({ helpers, what }: { helpers: BackgroundHelperDto[]; what: string }) {
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
+  // Kept here, not in the list: a click anywhere closes the list, and the
+  // view or the question it opened goes on.
+  const [watching, setWatching] = useState<string | null>(null);
+  const [handing, setHanding] = useState<BackgroundHelperDto | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const watched = helpers.find(h => h.id === watching);
   const newest = Math.max(0, ...helpers.map(h => h.startedMs));
   const [fresh, setFresh] = useState(false);
   // A spawn is the one moment nothing else on screen marks: glow for a while.
@@ -137,7 +146,47 @@ function HelperChip({ helpers, what }: { helpers: BackgroundHelperDto[]; what: s
     >
       <Icon name="agents" size={12} />
       {helpers.length}
-      {anchor && <HelperList helpers={helpers} anchor={anchor} onClose={() => setAnchor(null)} />}
+      {anchor && (
+        <HelperList
+          helpers={helpers}
+          anchor={anchor}
+          onClose={() => setAnchor(null)}
+          onWatch={id => {
+            setWatching(id);
+            setAnchor(null);
+          }}
+          onOpen={h => {
+            setHanding(h);
+            setAnchor(null);
+          }}
+          error={error}
+          setError={setError}
+        />
+      )}
+      {watched && <HelperView helper={watched} onClose={() => setWatching(null)} />}
+      {handing && (
+        <ConfirmDialog
+          title={`Open "${handing.name || handing.id}" as your chat?`}
+          body={
+            <>
+              It becomes a chat of your own, for good: its agent can no longer send to it, wait on it, stop or delete
+              it, and is told so once. Anything still queued for it is not delivered; whoever sent it hears where it is.
+            </>
+          }
+          confirmLabel="Open as chat"
+          danger={false}
+          onCancel={() => setHanding(null)}
+          onConfirm={() => {
+            const h = handing;
+            setHanding(null);
+            setError(null);
+            openAsChat(h.id).catch(e => {
+              logWarn('agents', `opening a helper failed: ${String(e)}`);
+              setError(String(e));
+            });
+          }}
+        />
+      )}
     </span>
   );
 }
@@ -145,16 +194,23 @@ function HelperChip({ helpers, what }: { helpers: BackgroundHelperDto[]; what: s
 function HelperList({
   helpers,
   anchor,
-  onClose
+  onClose,
+  onWatch,
+  onOpen,
+  error,
+  setError
 }: {
   helpers: BackgroundHelperDto[];
   anchor: HTMLElement;
   onClose: () => void;
+  onWatch: (id: string) => void;
+  onOpen: (h: BackgroundHelperDto) => void;
+  error: string | null;
+  setError: (e: string | null) => void;
 }) {
   const host = useDialogHost();
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const now = useNow(15_000);
 
   useLayoutEffect(() => {
@@ -244,6 +300,9 @@ function HelperList({
               </div>
             )}
             <div style={{ display: 'flex', gap: 6 }}>
+              <button title="Its conversation as it goes, read-only" onClick={() => onWatch(h.id)}>
+                Watch
+              </button>
               <button
                 disabled={busy || left.length > 0}
                 title={
@@ -251,12 +310,9 @@ function HelperList({
                     ? 'Open it once its turn is over'
                     : left.length > 0
                       ? 'Stop what its turn left running first'
-                      : 'Make it a chat you can see and type in'
+                      : 'Make it a chat of your own; its agent loses it for good'
                 }
-                onClick={act('opening a helper', async () => {
-                  await openAsChat(h.id);
-                  onClose();
-                })}
+                onClick={() => onOpen(h)}
               >
                 Open as chat
               </button>
@@ -267,7 +323,18 @@ function HelperList({
               >
                 Stop
               </button>
-              <button onClick={act('deleting a helper', () => backgroundDelete(h.id))}>Delete</button>
+              <button
+                disabled={busy || left.length > 0}
+                title={busy || left.length > 0 ? 'Stop it first: it is at work' : 'Delete it, and the worktree it made'}
+                onClick={act('deleting a helper', async () => {
+                  const r = await backgroundDelete(h.id);
+                  // Its worktree held work saved nowhere else: kept, and said.
+                  if (r.worktreeKept)
+                    setError(`Deleted; its worktree was kept for its uncommitted work: ${r.worktreeKept}`);
+                })}
+              >
+                Delete
+              </button>
             </div>
           </div>
         );

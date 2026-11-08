@@ -1,9 +1,8 @@
 //! Spawns that never completed: what their caller is told, and those started
 //! afresh under a later core.
 
-use crate::agents::lost::{left_words, sentence};
+use crate::agents::lost::left_words;
 use crate::agents::notifier::CALLER_RETURN_MS;
-use crate::agents::persist::SESSION_RETURN_MS;
 use crate::agents::registry::{label, reg, Registry, DEV_CALLER};
 use crate::agents::said::note_file;
 use crate::agents::spawn::{spawn_with, SpawnTaken};
@@ -51,7 +50,6 @@ fn never_completed(s: &SpawnTaken, why: Option<&str>, left: &str) -> String {
 /// as a spawn does.
 fn spawn_afresh(s: SpawnTaken) {
     let mut params = s.params.clone();
-    params.visible = Some(s.visible);
     params.auto_delete = s.auto_delete;
     params.resume_on_restart = Some(true);
     params.budget_tokens = s.budget_tokens;
@@ -61,8 +59,7 @@ fn spawn_afresh(s: SpawnTaken) {
     }
     // Before this one can make a worktree of its own, which is no leftover.
     let left = worktrees_left(&s);
-    let mut still_coming = false;
-    let made = spawn_with(&s.caller, params, Some(s.request), &mut still_coming);
+    let made = spawn_with(&s.caller, params, Some(s.request));
     let told = match &made {
         Ok(made) => {
             crate::log::warn(
@@ -75,15 +72,6 @@ fn spawn_afresh(s: SpawnTaken) {
                 made.id,
             )
         }
-        // The later request stands and the window may yet answer it, so this is no
-        // failure: told to spawn again, the caller would have two.
-        Err(why) if still_coming => {
-            crate::log::warn("agents", &format!("{}'s spawn {} asked for afresh is not answered yet: {why}", label(&s.caller), s.request));
-            format!(
-                "Your luna_spawn {} was cut off when Luna's core restarted, which is also why that call ended in an error or with no answer. As it asked with resumeOnRestart, Luna asked for it afresh, and the window has not started it yet. It may still come up: luna_list will show it and its answer comes as a notice, or a notice says it failed. Do not spawn it again.{left}",
-                spawn_called(&s),
-            )
-        }
         Err(why) => {
             crate::log::warn(
                 "agents",
@@ -94,53 +82,25 @@ fn spawn_afresh(s: SpawnTaken) {
     };
     let helper = made.ok().map(|made| made.id);
     let owed_placed = helper.is_some();
-    let told = SpawnTaken { news: Some(told), helper, owed_placed, settled: true, retried: still_coming, ..s };
+    let told = SpawnTaken { news: Some(told), helper, owed_placed, settled: true, ..s };
     reg().lock().unwrap_or_else(|e| e.into_inner()).spawns.insert(told.request, told);
     crate::background::save();
 }
 
-/// A spawn that had timed out, its caller told it may yet come up, and the window
-/// says it did not.
-pub(in crate::agents) fn spawn_failed_late(s: SpawnTaken, why: &str) {
-    crate::log::warn("agents", &format!("{}'s spawn {} failed after it timed out: {why}", label(&s.caller), s.request));
-    let prompt = match note_file(&format!("spawn-{}", s.request), &s.params.prompt) {
-        Some(path) => format!("Its prompt is in {}", path.display()),
-        None => "Its prompt was not kept".to_string(),
-    };
-    let news = format!(
-        "Your luna_spawn {}, which had not started in time, did not come up after all: {} No helper came of it. {prompt}; spawn it again if it still matters.{}",
-        spawn_called(&s),
-        sentence(why),
-        worktrees_left(&s)
-    );
-    if let Some(left) = reg().lock().unwrap_or_else(|e| e.into_inner()).spawns.get_mut(&s.request) {
-        left.news = Some(news);
-    }
-    crate::background::save();
-}
-
-/// What the spawns the last core left have come to, once a window has had the time
-/// to finish any it was part way through (`SESSION_RETURN_MS`, as for a chat coming
-/// back): a session known by then is one that came of it, and answers as any other
-/// (`take_up_spawns`, and a row since deleted is no longer known); for the rest the
-/// caller is told, or with `resumeOnRestart` it is started afresh and then told.
-/// What it came to is decided under the lock that gives it up (`SpawnTaken::settled`):
-/// past that a session the window is still starting for it is refused (`spawn_is`),
-/// and before it that session is the one that came of it.
-pub(in crate::agents) fn settle_spawns(up_ms: u64) {
-    if up_ms < SESSION_RETURN_MS {
-        return;
-    }
+/// What the spawns the last core left have come to. Its helpers are known by now
+/// (`background::restore` comes first): a helper known is one that came of it, and
+/// answers as any other (`take_up_spawns`); for the rest the caller is told, or with
+/// `resumeOnRestart` it is started afresh and then told. What it came to is decided
+/// under the lock that gives it up (`SpawnTaken::settled`): past that a helper still
+/// being made for it is refused (`spawn_is`).
+pub(in crate::agents) fn settle_spawns() {
     let due: Vec<(SpawnTaken, bool)> = {
         let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-        let Registry { spawns, known, abandoned, .. } = &mut *r;
+        let Registry { spawns, known, .. } = &mut *r;
         let mut due = Vec::new();
         for s in spawns.values_mut().filter(|s| s.left_by_core && !s.settled) {
             let made = s.helper.as_ref().is_some_and(|h| known.contains_key(h));
             s.settled = true;
-            if !made && s.resume_on_restart {
-                abandoned.remove(&s.request);
-            }
             due.push((s.clone(), made));
         }
         for (s, made) in &due {
@@ -199,39 +159,33 @@ pub(in crate::agents) fn spawn_news(up_ms: u64) -> HashMap<String, Vec<(u64, Str
 mod tests {
     use super::*;
     use crate::agents::notifier::CALLER_RETURN_MS;
-    use crate::agents::persist::{take_up_spawns, SESSION_RETURN_MS};
+    use crate::agents::persist::take_up_spawns;
     use crate::agents::registry::{reg, register};
     use crate::agents::spawn::SpawnTaken;
     use crate::agents::teardown::forget;
-    use crate::agents::test_support::{cut_short_chat, spawn_taken, spawns_to_myself, take_up};
+    use crate::agents::test_support::{spawn_taken, spawns_to_myself, take_up};
     use crate::provider::Provider;
 
     #[test]
     fn what_a_spawn_came_to_decides_what_its_caller_is_told() {
         let _one = spawns_to_myself();
-        // One that had come to a session the last core saved: nothing to say of the
-        // spawn, and that session owes its caller as if the call had got there.
+        // One that had come to a helper the last core saved: nothing to say of the
+        // spawn, and that helper owes its caller as if the call had got there.
         register("ws-caller", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, serde_json::json!({}));
-        let mut made = cut_short_chat("ws-made", "ws-caller", true, false, false);
-        made.turns_ended = 0;
-        made.ties.owed.clear();
-        made.ties.opening = Some("the opening".into());
+        let background = serde_json::json!({ "background": true });
+        register("ws-made", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", Some("ws-caller"), false, background);
+        crate::background::take_up_for_test("ws-made", "C:\\p", 1, &[], None);
         // Asked for again by a request above any the file holds.
         let lost = spawn_taken(9_000_001, "ws-caller", None, false);
-        take_up(vec![made], Vec::new(), vec![spawn_taken(9_000_000, "ws-caller", Some("ws-made"), true), lost]);
+        take_up(Vec::new(), Vec::new(), vec![spawn_taken(9_000_000, "ws-caller", Some("ws-made"), true), lost]);
         assert!(reg().lock().unwrap().next_request > 9_000_001);
         take_up_spawns();
         {
             let r = reg().lock().unwrap();
             let o = r.owed[&("ws-caller".to_string(), "ws-made".to_string())];
-            assert!(o.cut_short && o.baseline == 0 && o.cursor == 0);
-            assert_eq!(r.resumes["ws-made"].opening.as_deref(), Some("the opening"));
+            assert!(!o.cut_short && o.baseline == 0 && o.cursor == 0, "its turn ended: that is the answer");
         }
-        assert_eq!(crate::activity::turns_counted("ws-made"), Some(1), "its turn went with the core");
-        // Nothing before the window has had its chance.
-        settle_spawns(SESSION_RETURN_MS - 1);
-        assert!(reg().lock().unwrap().spawns[&9_000_001].news.is_none());
-        settle_spawns(SESSION_RETURN_MS);
+        settle_spawns();
         {
             let r = reg().lock().unwrap();
             assert!(!r.spawns.contains_key(&9_000_000), "a helper came of it");
@@ -251,26 +205,9 @@ mod tests {
         assert!(reg().lock().unwrap().spawns.contains_key(&9_000_001));
         assert!(!spawn_news(CALLER_RETURN_MS).contains_key("ws-caller"));
         assert!(!reg().lock().unwrap().spawns.contains_key(&9_000_001), "not back in time: to the log");
+        crate::background::remove("ws-made");
         forget("ws-made");
         forget("ws-caller");
-    }
-
-    #[test]
-    fn a_row_the_window_dropped_makes_it_a_spawn_nothing_came_of() {
-        let _one = spawns_to_myself();
-        register("wd-caller", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, serde_json::json!({}));
-        let mut made = cut_short_chat("wd-gone", "wd-caller", false, false, false);
-        made.ties.owed.clear();
-        take_up(vec![made], Vec::new(), vec![spawn_taken(9_000_100, "wd-caller", Some("wd-gone"), false)]);
-        take_up_spawns();
-        // `chat_names` finds no row for it: the caller's debt goes with it.
-        forget("wd-gone");
-        assert!(!reg().lock().unwrap().owed.contains_key(&("wd-caller".to_string(), "wd-gone".to_string())));
-        settle_spawns(SESSION_RETURN_MS);
-        let news = reg().lock().unwrap().spawns[&9_000_100].news.clone().unwrap();
-        assert!(news.contains("never completed"), "{news}");
-        forget("wd-caller");
-        assert!(!reg().lock().unwrap().spawns.contains_key(&9_000_100));
     }
 
     #[test]

@@ -234,8 +234,8 @@
 [data-app] .chat-row[data-active="yes"] .row-tag {
   color: #ffc27a;
 }
-/* The helpers a chat spawned: a count to unfold, shaped like the folders'
-   own fold button. */
+/* The helpers a chat's agent runs: a count that opens their list, shaped
+   like the folders' own fold button. */
 [data-app] .chat-row .kids {
   flex: none;
   display: inline-flex;
@@ -257,12 +257,6 @@
 [data-app] .chat-row .kids:hover {
   background: var(--hover);
   border-color: var(--faint);
-}
-[data-app] .chat-row .kids svg {
-  transition: transform 0.12s ease-out;
-}
-[data-app] .chat-row .kids[data-open="yes"] svg {
-  transform: rotate(90deg);
 }
 [data-app] .chat-row[data-active="yes"] .kids {
   background: rgba(255, 255, 255, 0.2);

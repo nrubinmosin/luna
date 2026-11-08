@@ -95,7 +95,13 @@ pub(super) struct Privilege {
 /// What Luna starts helpers in, spelled exactly as the CLIs take them.
 const CODEX_SANDBOXES: [&str; 4] = ["read-only", crate::codex::launch::READ_ONLY_NET, "workspace-write", "danger-full-access"];
 
-const CODEX_APPROVALS: [&str; 3] = ["never", "on-request", crate::codex::launch::AUTO_REVIEW];
+/// A helper runs in the background, where nobody is there to ask: it never
+/// asks, or a reviewer model answers for it.
+const CODEX_APPROVALS: [&str; 2] = ["never", crate::codex::launch::AUTO_REVIEW];
+
+/// Codex's policies that ask a person, which a chat of the person's may run in
+/// and a helper may not.
+const CODEX_ASKING: [&str; 3] = ["on-request", "untrusted", "on-failure"];
 
 impl Privilege {
     const LEAST: Privilege = Privilege { reach: Reach::ReadOnly, net: false };
@@ -118,7 +124,7 @@ impl Privilege {
                     AUTO_REVIEW => return at(Reach::Reviewed, true),
                     "never" => false,
                     // Codex's own policies a user's chat may run in.
-                    "on-request" | "untrusted" | "on-failure" => true,
+                    a if CODEX_ASKING.contains(&a) => true,
                     _ => return None,
                 };
                 match mode {
@@ -162,10 +168,9 @@ fn mode_label(provider: Provider, mode: &str, approval: Option<&str>) -> String 
 }
 
 /// The mode a helper starts in when the spawn leaves it out: what the request
-/// asks for over the account's defaults, as `background_spec` and the window
-/// (agents/bridge.ts) work it out. Claude: (permissionMode, None); Codex:
-/// (sandbox, Some(approval)). A background Codex never asks, unless it has a
-/// reviewer.
+/// asks for over the account's defaults, as `background_spec` works it out.
+/// Claude: (permissionMode, None); Codex: (sandbox, Some(approval)). A Codex
+/// helper never asks, unless it has a reviewer: nobody is there to ask.
 fn effective_mode(params: &SpawnParams, provider: Provider, account_path: &str, folder: &str) -> (String, Option<String>) {
     use crate::codex::launch::{AUTO_REVIEW, AUTO_REVIEW_SANDBOX};
     match provider {
@@ -179,7 +184,6 @@ fn effective_mode(params: &SpawnParams, provider: Provider, account_path: &str, 
             let d = crate::codex::defaults::flags(account_path, folder);
             let approval = match asked(&params.approval) {
                 Some(a) => a.to_string(),
-                None if params.visible.unwrap_or(false) => d["approval"].as_str().unwrap_or("on-request").to_string(),
                 None => "never".to_string(),
             };
             let sandbox = match asked(&params.sandbox) {
@@ -207,6 +211,13 @@ fn canonical_mode(provider: Provider, mode: &str, approval: Option<&str>, defaul
             let approval = approval.unwrap_or("never");
             if !CODEX_SANDBOXES.contains(&mode) {
                 return Err(format!("unknown sandbox \"{mode}\"{whence}; use {}, spelled so", CODEX_SANDBOXES.join(", ")));
+            }
+            if CODEX_ASKING.contains(&approval) {
+                return Err(format!(
+                    "approval {approval} asks a person, and a helper runs in the background with nobody there to ask; \
+                     use {}",
+                    CODEX_APPROVALS.join(" or ")
+                ));
             }
             if !CODEX_APPROVALS.contains(&approval) {
                 return Err(format!("unknown approval \"{approval}\"{whence}; use {}, spelled so", CODEX_APPROVALS.join(", ")));
@@ -453,14 +464,15 @@ pub(crate) fn command_prefix(text: &str) -> Option<char> {
     text.trim_start().chars().next().filter(|c| matches!(c, '/' | '!'))
 }
 
-/// Text typed into a visible session is a prompt for its model. One the CLI
-/// would take as a command goes only from a caller at full access into its
-/// own helper (`approver` None: the user's setting), or from the dev caller;
-/// it is refused, not escaped, as no escape is known to hold in both CLIs.
-/// A background helper is held to it too: `claude -p` runs a project's custom
-/// commands and skills, which can pre-approve tools (`allowed-tools`). Codex's
-/// `exec` is not known to read a leading `/` as a command; one rule for both
-/// costs it nothing a full-access caller cannot still send.
+/// Text sent to a session is a prompt for its model. One the CLI would take as
+/// a command goes only from a caller at full access into its own helper
+/// (`approver` None: the user's setting), or from the dev caller; it is
+/// refused, not escaped, as no escape is known to hold in both CLIs. Into a
+/// chat's terminal it never goes: the chats there are the person's. A helper is
+/// held to it too: `claude -p` runs a project's custom commands and skills,
+/// which can pre-approve tools (`allowed-tools`). Codex's `exec` is not known to
+/// read a leading `/` as a command; one rule for both costs it nothing a
+/// full-access caller cannot still send.
 pub(super) fn command_reach(text: &str, dev: bool, own: bool, approver: Option<Privilege>) -> Result<(), String> {
     let Some(c) = command_prefix(text) else { return Ok(()) };
     let full = Privilege { reach: Reach::Full, net: true };
@@ -489,11 +501,7 @@ pub(crate) fn command_reach_now(caller: &str, id: &str, text: &str) -> Result<()
 /// other C0 and C1 controls, DEL. Line breaks and tabs are text.
 pub(super) fn plain_text(text: &str) -> Result<(), String> {
     match text.chars().find(|&c| c.is_control() && !matches!(c, '\n' | '\r' | '\t')) {
-        Some(c) => Err(format!(
-            "the text holds control character U+{:04X}, which a terminal takes as a key; send plain text (luna_answer's keys \
-             press keys in your own helpers)",
-            c as u32
-        )),
+        Some(c) => Err(format!("the text holds control character U+{:04X}, which a terminal takes as a key; send plain text", c as u32)),
         None => Ok(()),
     }
 }
@@ -677,30 +685,30 @@ mod tests {
         use serde_json::json;
         let ro = json!({ "sandbox": "read-only", "approval": "never" });
         let full = json!({ "sandbox": "danger-full-access", "approval": "never" });
-        let visible = |f: fn(&mut SpawnParams)| {
-            let mut p = SpawnParams { visible: Some(true), ..Default::default() };
+        let asked = |f: fn(&mut SpawnParams)| {
+            let mut p = SpawnParams::default();
             f(&mut p);
             p
         };
-        // What the window would read in any case is refused here, before any
+        // What a looser reading would take is refused here, before any
         // comparison, the setting on or not.
         for above in [false, true] {
-            let mut p = visible(|p| (p.sandbox, p.approval) = (Some("DANGER-FULL-ACCESS".into()), Some("never".into())));
+            let mut p = asked(|p| (p.sandbox, p.approval) = (Some("DANGER-FULL-ACCESS".into()), Some("never".into())));
             let e = settle_mode(&mut p, Provider::Codex, (Provider::Codex, &ro), "", "", above).unwrap_err();
             assert!(e.contains("unknown sandbox \"DANGER-FULL-ACCESS\""), "{e}");
-            let mut p = visible(|p| p.permission_mode = Some("BypassPermissions".into()));
+            let mut p = asked(|p| p.permission_mode = Some("BypassPermissions".into()));
             assert!(settle_mode(&mut p, Provider::Claude, (Provider::Codex, &full), "", "", above)
                 .unwrap_err()
                 .contains("unknown permission mode"));
-            let mut p = visible(|p| (p.sandbox, p.approval) = (Some("read-only".into()), Some("Never".into())));
+            let mut p = asked(|p| (p.sandbox, p.approval) = (Some("read-only".into()), Some("Never".into())));
             assert!(settle_mode(&mut p, Provider::Codex, (Provider::Codex, &full), "", "", above)
                 .unwrap_err()
                 .contains("unknown approval"));
         }
         // Spelled right, it is held to the caller's and pinned as checked.
-        let mut p = visible(|p| (p.sandbox, p.approval) = (Some("danger-full-access".into()), Some("never".into())));
+        let mut p = asked(|p| (p.sandbox, p.approval) = (Some("danger-full-access".into()), Some("never".into())));
         assert!(settle_mode(&mut p, Provider::Codex, (Provider::Codex, &ro), "", "", false).unwrap_err().contains("more privilege"));
-        let mut p = visible(|p| (p.sandbox, p.approval) = (Some(" read-only ".into()), Some("never".into())));
+        let mut p = asked(|p| (p.sandbox, p.approval) = (Some(" read-only ".into()), Some("never".into())));
         settle_mode(&mut p, Provider::Codex, (Provider::Codex, &ro), "", "", false).unwrap();
         assert_eq!((p.sandbox.as_deref(), p.approval.as_deref()), (Some("read-only"), Some("never")));
         // A background Codex never asks unless a reviewer answers; its sandbox is then fixed.
@@ -712,6 +720,25 @@ mod tests {
         assert_eq!(p.approval.as_deref(), Some("never"));
     }
 
+    /// Helpers run in the background, so a Codex policy that asks a person has
+    /// nobody to ask: refused by name, whatever the caller may run and the
+    /// user's setting; a chat of the person's still runs in it and counts as
+    /// asking when it spawns.
+    #[test]
+    fn a_codex_helper_never_asks_a_person() {
+        use serde_json::json;
+        let full = json!({ "sandbox": "danger-full-access", "approval": "never" });
+        for approval in ["on-request", "untrusted", "on-failure"] {
+            for above in [false, true] {
+                let mut p = SpawnParams { approval: Some(approval.into()), sandbox: Some("read-only".into()), ..Default::default() };
+                let e = settle_mode(&mut p, Provider::Codex, (Provider::Codex, &full), "", "", above).unwrap_err();
+                assert!(e.contains("nobody there to ask") && e.contains("never or auto-review"), "{approval}: {e}");
+            }
+            let chat = json!({ "sandbox": "read-only", "approval": approval });
+            assert_eq!(Privilege::of_caller(Provider::Codex, &chat), Privilege { reach: Reach::Asks, net: false });
+        }
+    }
+
     #[test]
     fn a_caller_approves_its_helpers_permission_only_where_it_would_run_it_unasked() {
         let permission = |tool: &str| Ask::permission(Some(tool.into()), None);
@@ -720,26 +747,25 @@ mod tests {
         // Read-only and asking callers never say yes: it goes to a person.
         for has in [at(Reach::ReadOnly, false), at(Reach::Asks, false), at(Reach::ReadOnly, true)] {
             for p in [&bash, &edit, &fetch] {
-                assert!(answer_reach(true, has, Provider::Claude, Some(p), Some(true), None).unwrap_err().contains("goes to the user"));
-                assert!(answer_reach(true, has, Provider::Claude, Some(p), None, Some("{enter}")).is_err(), "keys are a yes too");
-                assert_eq!(answer_reach(true, has, Provider::Claude, Some(p), Some(false), None), Ok(()), "a no is always theirs");
+                assert!(answer_reach(true, has, Provider::Claude, Some(p), Some(true)).unwrap_err().contains("goes to the user"));
+                assert_eq!(answer_reach(true, has, Provider::Claude, Some(p), Some(false)), Ok(()), "a no is always theirs");
             }
         }
         // acceptEdits may pass an edit, not a command or a fetch.
         let edits = at(Reach::Edits, false);
-        assert_eq!(answer_reach(true, edits, Provider::Claude, Some(&edit), Some(true), None), Ok(()));
-        assert!(answer_reach(true, edits, Provider::Claude, Some(&bash), Some(true), None).is_err());
-        assert!(answer_reach(true, edits, Provider::Claude, Some(&fetch), Some(true), None).is_err());
+        assert_eq!(answer_reach(true, edits, Provider::Claude, Some(&edit), Some(true)), Ok(()));
+        assert!(answer_reach(true, edits, Provider::Claude, Some(&bash), Some(true)).is_err());
+        assert!(answer_reach(true, edits, Provider::Claude, Some(&fetch), Some(true)).is_err());
         // A Codex approval lets a command out of its sandbox: full only.
         let codex = Ask::permission(None, Some("rm -rf build".into()));
-        assert!(answer_reach(true, at(Reach::Commands, false), Provider::Codex, Some(&codex), Some(true), None).is_err());
-        assert!(answer_reach(true, at(Reach::Reviewed, true), Provider::Codex, Some(&codex), Some(true), None).is_err());
+        assert!(answer_reach(true, at(Reach::Commands, false), Provider::Codex, Some(&codex), Some(true)).is_err());
+        assert!(answer_reach(true, at(Reach::Reviewed, true), Provider::Codex, Some(&codex), Some(true)).is_err());
         let full = at(Reach::Full, true);
         for (provider, p) in [(Provider::Codex, &codex), (Provider::Claude, &bash), (Provider::Claude, &fetch)] {
-            assert_eq!(answer_reach(true, full, provider, Some(p), Some(true), None), Ok(()));
+            assert_eq!(answer_reach(true, full, provider, Some(p), Some(true)), Ok(()));
         }
         // The user's setting lifts it (no approver to hold to).
-        assert_eq!(answer_reach(true, None, Provider::Claude, Some(&bash), Some(true), None), Ok(()));
+        assert_eq!(answer_reach(true, None, Provider::Claude, Some(&bash), Some(true)), Ok(()));
     }
 
     #[test]
@@ -766,7 +792,7 @@ mod tests {
     }
 
     #[test]
-    fn raw_keys_and_a_clis_own_lists_take_full_access_even_on_ones_own_helper() {
+    fn a_clis_own_lists_take_full_access_even_on_ones_own_helper() {
         let at = |reach, net| Some(Privilege { reach, net });
         let q = |text: &str, list_at| AskQuestion {
             text: text.into(),
@@ -783,19 +809,13 @@ mod tests {
             at(Reach::Commands, false),
             at(Reach::Reviewed, true),
         ] {
-            // Shift+Tab switches Claude Code's mode: no dialog is detected for it.
-            for held in [None, Some(&question)] {
-                let e = answer_reach(true, has, Provider::Claude, held, None, Some("{shift+tab}")).unwrap_err();
-                assert!(e.contains("full access"), "{e}");
-            }
-            assert!(answer_reach(true, has, Provider::Codex, Some(&hooks), None, None).unwrap_err().contains("Hooks need review"));
-            assert!(answer_reach(true, has, Provider::Codex, Some(&hooks), Some(true), None).is_err(), "as luna_send's interrupt asks");
-            assert_eq!(answer_reach(true, has, Provider::Claude, Some(&question), None, None), Ok(()), "a model's question stays open");
+            assert!(answer_reach(true, has, Provider::Codex, Some(&hooks), None).unwrap_err().contains("Hooks need review"));
+            assert!(answer_reach(true, has, Provider::Codex, Some(&hooks), Some(true)).is_err());
+            assert_eq!(answer_reach(true, has, Provider::Claude, Some(&question), None), Ok(()), "a model's question stays open");
         }
         let full = at(Reach::Full, true);
-        assert_eq!(answer_reach(true, full, Provider::Claude, None, None, Some("{shift+tab}")), Ok(()));
-        assert_eq!(answer_reach(true, full, Provider::Codex, Some(&hooks), None, None), Ok(()));
-        assert_eq!(answer_reach(true, None, Provider::Claude, None, None, Some("{shift+tab}")), Ok(()), "the user's setting");
+        assert_eq!(answer_reach(true, full, Provider::Codex, Some(&hooks), None), Ok(()));
+        assert_eq!(answer_reach(true, None, Provider::Codex, Some(&hooks), None), Ok(()), "the user's setting");
     }
 
     #[test]

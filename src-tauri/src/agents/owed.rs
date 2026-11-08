@@ -7,7 +7,7 @@ use crate::agents::read::transcript_end;
 use crate::agents::registry::{parent_of, reg, waits_on_helpers_in, Registry, DEV_CALLER};
 use crate::throttle::now_ms;
 
-/// Text typed into a visible session mid-turn is the CLI's to place: into
+/// Text typed into a chat's terminal mid-turn is the CLI's to place: into
 /// the turn that runs, or a turn of its own right after it. A turn end
 /// counts as the answer to it once no turn has started this long after —
 /// more than one activity sample.
@@ -33,7 +33,7 @@ pub(super) struct Owed {
     /// of its questions still unanswered): what it said from there on is the
     /// answer, however many turns it took.
     pub(super) cursor: u64,
-    /// Asked by text typed into a visible session mid-turn (see
+    /// Asked by text typed into a chat's terminal mid-turn (see
     /// QUEUED_GRACE_MS).
     pub(super) queued: bool,
     /// Asked by text Luna held (`Held`) and typed in later: the `turnsEnded`

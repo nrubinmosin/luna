@@ -89,11 +89,6 @@ interface ChatBase {
   color?: string | null;
   /** Luna's MCP tools attached: this session can spawn and drive others. */
   tools?: boolean;
-  /** The chat whose agent spawned this one. A parent that no longer exists
-   *  leaves the child an orphan, listed at the top level with a mark. */
-  parentId?: string | null;
-  /** Whether the children under this row are unfolded; folded by default. */
-  childrenOpen?: boolean;
   /** The browser this chat's links open in, remembered from a Shift+click;
    *  unset means its account's, its folder's or the default. */
   browser?: string | null;

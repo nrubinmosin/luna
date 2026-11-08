@@ -1,5 +1,6 @@
 //! Helpers as the window and the power rules see them: rows, signs, turn states,
-//! and turning one into a visible chat.
+//! the read-only view of one's conversation, and handing one over to the person
+//! as a chat of their own.
 
 use super::*;
 
@@ -101,7 +102,8 @@ pub fn turn_quiet_ms(id: &str, now: u64) -> Option<u64> {
     Some(now.saturating_sub(e.observed.event_ms.max(run.started_ms)))
 }
 
-/// What the window needs to make a helper a chat of its own.
+/// What the window needs to make a helper a chat of the person's own. No parent:
+/// the chat is nobody's helper.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Promoted {
@@ -111,18 +113,18 @@ pub struct Promoted {
     pub folder: String,
     pub worktree_path: Option<String>,
     pub session_id: Option<String>,
-    pub parent: Option<String>,
     pub name: Option<String>,
     pub settings: Value,
     pub tools: bool,
 }
 
-/// Starts handing a helper over to a chat row, from which on the window runs
-/// it by resuming its conversation in a terminal like any chat's: what the row
-/// needs. Not while a turn runs — the conversation would be in two processes at
-/// once. The helper stays, with no turn starting, until the window says how the
-/// row came out (`background_promoted`): a row it could not make leaves the
-/// helper as it was, rather than neither.
+/// Starts handing a helper over to the person as a chat row of their own, from
+/// which on the window runs it by resuming its conversation in a terminal like
+/// any chat's: what the row needs. Not while a turn runs — the conversation would
+/// be in two processes at once. The helper stays, with no turn starting and out of
+/// its parent's reach to stop or delete, until the window says how the row came out
+/// (`background_promoted`): a row it could not make leaves the helper as it was,
+/// its parent's, rather than neither.
 #[tauri::command]
 pub fn background_promote(id: String) -> Result<Promoted, String> {
     let (spec, cwd, session) = {
@@ -151,7 +153,6 @@ pub fn background_promote(id: String) -> Result<Promoted, String> {
         folder: crate::worktree::project_of(&spec.folder).unwrap_or_else(|| spec.folder.clone()),
         worktree_path: worktree_path.or_else(|| crate::worktree::project_of(&spec.folder).map(|_| spec.folder.clone())),
         session_id: session,
-        parent: crate::agents::parent_of(&id),
         name: crate::agents::chat_name(&id),
         settings: crate::agents::settings_of(&id),
         tools: spec.tools,
@@ -160,22 +161,28 @@ pub fn background_promote(id: String) -> Result<Promoted, String> {
 }
 
 /// The window's word on a helper `background_promote` began handing over: its
-/// row made (`error` None), the helper goes, what was sent to it meanwhile with
-/// what never reached it; or the row could not be made, and it goes on as a
+/// row made (`error` None), it is the person's for good (agents/handover.rs) and
+/// its record goes, what was sent to it meanwhile and what never reached it told of
+/// to whoever sent it; or the row could not be made, and it goes on as its parent's
 /// helper, what was sent meanwhile its next turn. Also said by a window settling
 /// what one gone before it was opening, whose row it finds or not.
 #[tauri::command]
 pub fn background_promoted(id: String, error: Option<String>) -> Result<(), String> {
     let Some(why) = error else {
-        // Gone already (deleted meanwhile): the row has its conversation.
-        let Some(mut e) = lock().entries.remove(&id) else { return Ok(()) };
-        let queued = std::mem::take(&mut e.queue);
-        e.undelivered.extend(queued);
-        crate::agents::undelivered_left(&id, &e.undelivered);
-        // Its count goes on in the chat's track: what its callers are owed, and
-        // what they were told to wait past, go by it.
-        crate::activity::count_at_least(&id, e.turns_ended);
-        crate::agents::promoted(&id);
+        let mut count = None;
+        crate::agents::take_over(&id, || {
+            // Gone already (deleted meanwhile): the row has its conversation.
+            let mut e = lock().entries.remove(&id)?;
+            count = Some(e.turns_ended);
+            let mut unsent = std::mem::take(&mut e.undelivered);
+            unsent.extend(std::mem::take(&mut e.queue));
+            Some(unsent)
+        });
+        // Its count goes on in the chat's track, so a count anyone was shown of it
+        // stays one it has passed.
+        if let Some(n) = count {
+            crate::activity::count_at_least(&id, n);
+        }
         changed();
         // Or a core killed now would take it up beside the chat it has become.
         save();
@@ -215,9 +222,89 @@ pub fn background_kill(id: String) {
     kill(&id);
 }
 
+/// The person's Delete. A helper at work goes only with `stop_working`, and a
+/// worktree holding unsaved work only with `drop_unsaved`: each is a yes of its
+/// own, which a box ticked for the chat above it is not (agents/teardown.rs).
 #[tauri::command]
-pub fn background_delete(id: String, drop_worktree: Option<bool>) -> Result<(), String> {
-    crate::agents::delete_by_user(&id, drop_worktree.unwrap_or(true))
+pub fn background_delete(
+    id: String,
+    drop_worktree: Option<bool>,
+    stop_working: Option<bool>,
+    drop_unsaved: Option<bool>,
+) -> Result<crate::agents::UserDeleted, String> {
+    crate::agents::delete_by_user(&id, drop_worktree.unwrap_or(true), stop_working.unwrap_or(false), drop_unsaved.unwrap_or(false))
+}
+
+/// What each helper named has at stake in a delete (agents/teardown.rs `AtStake`),
+/// for the Delete dialog to list before anything goes.
+#[tauri::command]
+pub fn background_at_stake(ids: Vec<String>) -> Vec<crate::agents::AtStake> {
+    // A dialog lists a chat's helpers, a handful: more is no call of the window's.
+    crate::agents::at_stake(&ids[..ids.len().min(MAX_AT_STAKE)])
+}
+
+/// The most helpers one `background_at_stake` looks at: each takes a git status.
+const MAX_AT_STAKE: usize = 32;
+
+/// The most messages a look at a helper's conversation gives, the newest; and
+/// the most characters of each. A first look at a long conversation would
+/// otherwise carry all of it to the window at once.
+const VIEW_MESSAGES: usize = 200;
+const VIEW_TEXT: usize = 20_000;
+
+/// What the window's read-only view of a helper shows (`background_transcript`).
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Transcript {
+    pub messages: Vec<crate::agents::Message>,
+    /// Pass back as `since` for what comes after.
+    pub cursor: u64,
+    /// The file it was read from: another one (a new conversation) starts the
+    /// view over from the top.
+    pub file: Option<String>,
+    /// A turn is running: the view looks again soon.
+    pub running: bool,
+    /// Older messages a first look left out (VIEW_MESSAGES).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub left_out: usize,
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
+}
+
+/// A helper's conversation from `since` on, for the window's read-only view of it:
+/// read off its transcript by the same readers `luna_read` uses, tool calls marked.
+/// The file comes from the helper's own record, never from the window; `file` is
+/// the one `since` was a cursor into, and a cursor into another reads from the top.
+#[tauri::command]
+pub fn background_transcript(id: String, since: Option<u64>, file: Option<String>) -> Result<Transcript, String> {
+    let (provider, running) = {
+        let r = lock();
+        let e = r.entries.get(&id).ok_or("no such helper")?;
+        (e.spec.provider, e.run.is_some())
+    };
+    let Some(path) = transcript(&id) else {
+        return Ok(Transcript { messages: Vec::new(), cursor: 0, file: None, running, left_out: 0 });
+    };
+    let same = file.is_some_and(|f| std::path::Path::new(&f) == path);
+    Ok(view_of(&path, provider, if same { since.unwrap_or(0) } else { 0 }, running))
+}
+
+/// `background_transcript` of a file.
+fn view_of(path: &std::path::Path, provider: Provider, since: u64, running: bool) -> Transcript {
+    let (mut messages, cursor) = match provider {
+        Provider::Claude => crate::claude::session::messages_from(path, since, true),
+        Provider::Codex => crate::codex::session::messages_from(path, since),
+    };
+    let left_out = messages.len().saturating_sub(VIEW_MESSAGES);
+    messages.drain(..left_out);
+    for m in &mut messages {
+        if m.text.chars().count() > VIEW_TEXT {
+            m.text = format!("{}…", m.text.chars().take(VIEW_TEXT).collect::<String>());
+        }
+    }
+    Transcript { messages, cursor, file: Some(path.to_string_lossy().into_owned()), running, left_out }
 }
 
 /// The helper's turn as the agent layer counts it: busy while a turn's
@@ -344,6 +431,71 @@ mod tests {
         assert_eq!(s.last_activity_at.as_deref(), iso(1_793_000_060_000).as_deref());
         assert!(s.turn_started_at.unwrap().ends_with('Z'));
         lock().entries.remove("signs-1");
+    }
+
+    /// The window's view of a helper tails its conversation: a first look has
+    /// what there is (the newest, if long), each next one what came since, both
+    /// providers by the readers `luna_read` uses; another file starts over.
+    #[test]
+    fn the_view_of_a_helper_tails_its_conversation_read_only() {
+        let dir = std::env::temp_dir().join(format!("luna-view-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let append = |path: &std::path::Path, line: String| {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new().create(true).append(true).open(path).unwrap();
+            writeln!(f, "{line}").unwrap();
+        };
+        let claude_user = |t: &str| json!({ "type": "user", "message": { "role": "user", "content": t } }).to_string();
+        let claude_said = |t: &str| json!({ "type": "assistant", "message": { "content": [{ "type": "text", "text": t }] } }).to_string();
+        let codex_user = |t: &str| {
+            json!({ "type": "response_item", "payload": { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": t }] } }).to_string()
+        };
+        let codex_said = |t: &str| {
+            json!({ "type": "response_item", "payload": { "type": "message", "role": "assistant", "content": [{ "type": "output_text", "text": t }] } }).to_string()
+        };
+        for (provider, user, said) in [
+            (Provider::Claude, &claude_user as &dyn Fn(&str) -> String, &claude_said as &dyn Fn(&str) -> String),
+            (Provider::Codex, &codex_user, &codex_said),
+        ] {
+            let path = dir.join(format!("{}.jsonl", provider.as_str()));
+            append(&path, user("do the job"));
+            append(&path, said("starting on it"));
+            let first = view_of(&path, provider, 0, true);
+            let texts: Vec<&str> = first.messages.iter().map(|m| m.text.as_str()).collect();
+            assert_eq!(texts, ["do the job", "starting on it"], "{provider:?}");
+            assert!(first.running && first.left_out == 0);
+            // Nothing new: nothing.
+            assert!(view_of(&path, provider, first.cursor, true).messages.is_empty());
+            // A line still being written is not read until it is whole.
+            {
+                use std::io::Write;
+                let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+                write!(f, "{}", &said("half")[..10]).unwrap();
+            }
+            let half = view_of(&path, provider, first.cursor, true);
+            assert!(half.messages.is_empty() && half.cursor == first.cursor, "{provider:?}");
+            let _ = std::fs::write(&path, format!("{}\n{}\n{}\n", user("do the job"), said("starting on it"), said("done: all green")));
+            let next = view_of(&path, provider, first.cursor, false);
+            assert_eq!(next.messages.iter().map(|m| m.text.as_str()).collect::<Vec<_>>(), ["done: all green"], "{provider:?}");
+            assert!(!next.running);
+            let _ = std::fs::remove_file(&path);
+        }
+        // A long conversation: the newest, each cut to its length.
+        let long = dir.join("long.jsonl");
+        for i in 0..(VIEW_MESSAGES + 5) {
+            append(&long, claude_said(&format!("message {i}")));
+        }
+        append(&long, claude_said(&"x".repeat(VIEW_TEXT + 10)));
+        let v = view_of(&long, Provider::Claude, 0, false);
+        assert_eq!((v.messages.len(), v.left_out), (VIEW_MESSAGES, 6));
+        assert!(v.messages.last().unwrap().text.ends_with('…') && v.messages.last().unwrap().text.chars().count() == VIEW_TEXT + 1);
+        let _ = std::fs::remove_dir_all(&dir);
+        // Only a helper there is, and by its own record.
+        assert!(background_transcript("view-nobody".into(), None, None).unwrap_err().contains("no such helper"));
+        test_helper("view-0", "C:\\acc", None, false);
+        let none = background_transcript("view-0".into(), Some(99), Some("C:\\elsewhere.jsonl".into())).unwrap();
+        assert!(none.messages.is_empty() && none.file.is_none(), "no conversation yet");
+        lock().entries.remove("view-0");
     }
 
     #[test]

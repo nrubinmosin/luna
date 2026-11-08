@@ -77,10 +77,20 @@ titles, context and drafts come from the core (`session_meta`), polled by
   order with level descriptions as tooltips; approval and sandbox as two radio
   columns, `auto-review` holding the sandbox at `workspace-write`. The title bar
   shows `bypass` for never + danger-full-access and `auto-review` for that.
-- **Agent bridge** (`features/agents/bridge.ts`): `agent://spawn` →
-  `createChat` with `parentId` and `ensure_*` with the prompt → `agent_spawned`;
-  `agent://deleted` → `deleteChat`; `agent_resumes` → `startSession`; a model
-  asked for without an effort gets its default effort.
+- **Agent bridge** (`features/agents/bridge.ts`): `agent://background` → the
+  helpers' list (`background.store`), shown as a chip on their parent's row;
+  `openAsChat` → `background_promote`, a top-level `createChat` of the person's
+  own (`fromHelper`), then `background_promoted`; a page coming up settles what a
+  gone one was opening. Chat names, groups and accounts' usage go to the core on
+  every change. Chat rows are flat: none has a parent (a stored `parentId` is
+  let go as the store is read).
+- **Helper view** (`features/agents/HelperView.tsx`, `helperTranscript.ts`): a
+  helper's conversation read-only, from `background_transcript` by a cursor,
+  every second while a turn runs.
+- **Delete dialog** (`features/chats/DeleteChatDialog.tsx`, `helperDeletes.ts`):
+  the chat's helpers with what each has at stake (`background_at_stake`), and a
+  box of its own for stopping working ones and for dropping worktrees with
+  unsaved work.
 
 ## Terminals
 

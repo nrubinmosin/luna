@@ -15,8 +15,8 @@ interface ChatsState {
    */
   folders: Folder[];
   active: string | null;
-  /** `byPerson`: launched by the user rather than by an agent, which makes
-   *  the folder one the new-chat dialog offers. */
+  /** `byPerson`: launched by the user from the new-chat dialog, which makes
+   *  the folder one the dialog offers; a helper opened as a chat is not. */
   addChat: (folderPath: string, chat: Chat, byPerson: boolean) => void;
   deleteChat: (chatId: string) => void;
   /** Forgets a launch folder. Only offered while nothing is left in it. */
@@ -29,9 +29,6 @@ interface ChatsState {
   toggleFolder: (folderId: string) => void;
   setActive: (chatId: string | null) => void;
   setStatus: (chatId: string, status: Chat['status']) => void;
-  /** Unfold or fold the children an agent spawned under this chat. */
-  setChildrenOpen: (chatId: string, open: boolean) => void;
-  setParent: (chatId: string, parentId: string) => void;
   /** Names a chat from somewhere other than the user — a no-op where the
    *  name it has may not be replaced from there (see `mayRename`). */
   setName: (chatId: string, name: string, source: NameSource) => void;
@@ -114,6 +111,13 @@ const named = (c: Chat & { nameCustom?: boolean }): Chat => {
   return { ...rest, nameSource: nameCustom ? 'user' : rest.sessionId ? 'prompt' : undefined };
 };
 
+/** What a chat row an earlier Luna stored may still carry of the agent that
+ *  spawned it as a visible helper; let go as it is read (`merge`). */
+interface Spawned {
+  parentId?: string | null;
+  childrenOpen?: boolean;
+}
+
 let seq = 0;
 export const newId = (prefix: string) => `${prefix}${Date.now().toString(36)}${(seq++).toString(36)}`;
 
@@ -133,26 +137,8 @@ export const useChats = create<ChatsState>()(
                   : f
               )
             : [...s.folders, { id: newId('f'), path: folderPath, open: true, chats: [chat], picked: byPerson }];
-          // A child an agent spawned does not take the selection: the parent
-          // is what the user is looking at.
-          return { folders, active: chat.parentId ? s.active : chat.id };
+          return { folders, active: chat.id };
         }),
-
-      setChildrenOpen: (chatId, open) =>
-        set(s => ({
-          folders: s.folders.map(f => ({
-            ...f,
-            chats: f.chats.map(c => (c.id === chatId ? { ...c, childrenOpen: open } : c))
-          }))
-        })),
-
-      setParent: (chatId, parentId) =>
-        set(s => ({
-          folders: s.folders.map(f => ({
-            ...f,
-            chats: f.chats.map(c => (c.id === chatId ? { ...c, parentId } : c))
-          }))
-        })),
 
       deleteChat: chatId => {
         // Panes are cleared here rather than by the caller: a chat can be
@@ -320,17 +306,21 @@ export const useChats = create<ChatsState>()(
           // chat without one would be invisible in every group.
           // `last` was what the folder's newest chat started with, learned
           // rather than chosen; a folder now keeps only a start it was given.
-          folders: (p.folders ?? []).map(({ last: _learned, ...f }: Folder & { last?: unknown }) => ({
-            ...f,
-            chats: (f.chats ?? []).map(c => named({ ...c, group: c.group ?? 0 })),
-            // Stored before folders said who launched there. A top-level chat,
-            // a start kept from the dialog or the dialog's last folder is a
-            // person's doing; an empty folder cannot say, and is let go as an
-            // agent's — Browse brings it back.
-            picked:
-              f.picked ??
-              ((f.chats ?? []).some(c => !c.parentId) || !!f.start || f.path === useNewChat.getState().lastFolder)
-          }))
+          folders: (p.folders ?? []).map(({ last: _learned, ...f }: Folder & { last?: unknown }) => {
+            const stored = (f.chats ?? []) as Array<Chat & Spawned>;
+            return {
+              ...f,
+              // A chat an earlier Luna nested under the chat whose agent spawned
+              // it is the person's own now (agents/handover.rs): a top-level row.
+              chats: stored.map(({ parentId: _p, childrenOpen: _o, ...c }) => named({ ...c, group: c.group ?? 0 })),
+              // Stored before folders said who launched there. A top-level chat,
+              // a start kept from the dialog or the dialog's last folder is a
+              // person's doing; an empty folder cannot say, and is let go as an
+              // agent's — Browse brings it back.
+              picked:
+                f.picked ?? (stored.some(c => !c.parentId) || !!f.start || f.path === useNewChat.getState().lastFolder)
+            };
+          })
         };
       }
     }

@@ -2,18 +2,18 @@
 //! (`reg`), and what it says of a session — who it is (`Known`), what the window
 //! calls it, which token is its, whose it is and whom it may reach.
 
-use crate::agents::delivery::Held;
+use crate::agents::handover::taken_over_error;
+use crate::agents::held::Held;
 use crate::agents::notifier::lines::NoticeTurn;
 use crate::agents::notifier::usage::QuotaTold;
 use crate::agents::owed::{Owed, Receipt};
-use crate::agents::persist::{Opening, CHATS_FROZEN};
-use crate::agents::resume::ChatResume;
-use crate::agents::spawn::{Pending, SpawnTaken};
-use crate::agents::teardown::{forget, Auto, Reparented};
+use crate::agents::persist::CHATS_FROZEN;
+use crate::agents::spawn::SpawnTaken;
+use crate::agents::teardown::{forget, Auto};
 use crate::provider::Provider;
 use crate::throttle::now_ms;
 use std::collections::HashMap;
-use std::sync::{Condvar, Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock};
 
 /// A session the agent layer knows: every one started with tools, and every
 /// one an agent spawned.
@@ -54,25 +54,15 @@ pub(super) struct Registry {
     /// Sessions by the SHA-256 of their bearer token (`token_key`).
     pub(super) tokens: HashMap<[u8; 32], String>,
     pub(super) known: HashMap<String, Known>,
-    pub(super) pending: HashMap<u64, std::sync::Arc<(Mutex<Pending>, Condvar)>>,
-    /// Spawns whose caller stopped waiting (SPAWN_TIMEOUT), or which the last
-    /// core left, by request id: the caller to hand the chat to should the
-    /// frontend still make it.
-    pub(super) abandoned: HashMap<u64, (String, bool)>,
     pub(super) next_request: u64,
     /// Spawns taken on and not yet seen through, by request id.
     pub(super) spawns: HashMap<u64, SpawnTaken>,
-    /// Visible helpers that are to go on by themselves, by id.
-    pub(super) resumes: HashMap<String, ChatResume>,
-    /// What each visible helper was first asked, by id.
-    pub(super) openings: HashMap<String, Opening>,
     /// What each helper was spawned to do, one line of it (`first_words`), by id.
     /// Kept in its ties: `agents.jsonl` is cut, and a helper can outlive its line.
     pub(super) tasks: HashMap<String, String>,
-    /// What Luna named the worktree of a visible Claude Code helper, by id: the one
-    /// it knows to be that helper's, what a fresh start goes back into if it is still
-    /// as made (`worktree_for_start`). A background helper's is in its `Spec`.
-    pub(super) worktree_names: HashMap<String, String>,
+    /// Helpers the person took over as their own chats, by id, with the parent
+    /// each was taken from (handover.rs): what that parent's calls are refused with.
+    pub(super) taken_over: HashMap<String, String>,
     /// A Codex helper to make a worktree of its own, by id, until its CLI has said
     /// where: the worktrees there were as it was spawned. Codex takes no name, so one
     /// new since is all that tells what a core may have cut it off making.
@@ -128,9 +118,9 @@ pub(super) struct Registry {
     /// with its input and the subagent that asks, if one does: subagents at
     /// work side by side may each hold one.
     pub(super) hook_asks: HashMap<String, Vec<(String, serde_json::Value, Option<String>)>>,
-    /// Text sent to visible sessions where a person was typing or had a
-    /// draft Luna could not put aside, in the order it came: the notifier
-    /// types each in once the way is clear (see `deliver_held`).
+    /// Text sent to the person's chats where they were typing or had a draft
+    /// Luna could not put aside, in the order it came: typed in once the way is
+    /// clear (see `deliver_held`).
     pub(super) held: Vec<Held>,
     /// Notices a caller's draft holds back, by caller, for the chat row.
     pub(super) notices_held: HashMap<String, usize>,
@@ -156,17 +146,12 @@ pub(super) fn reg() -> &'static Mutex<Registry> {
         Mutex::new(Registry {
             tokens: HashMap::new(),
             known: HashMap::new(),
-            pending: HashMap::new(),
-            abandoned: HashMap::new(),
             borrowed: Default::default(),
-            // A page can still answer a request of a core gone since, which is
-            // not to land on one of this core's.
+            // Above any request a core gone since may have left on disk.
             next_request: now_ms(),
             spawns: HashMap::new(),
-            resumes: HashMap::new(),
-            openings: HashMap::new(),
             tasks: HashMap::new(),
-            worktree_names: HashMap::new(),
+            taken_over: HashMap::new(),
             worktrees_before: HashMap::new(),
             worktrees_left: HashMap::new(),
             delivery_floors: HashMap::new(),
@@ -204,20 +189,17 @@ pub(super) fn account_name(account_path: &str) -> String {
 }
 
 /// Whose a session is: the core's record (`pass_up`, kept across cores), and only
-/// with none the window's word, never for an orphan.
-fn parent_by_record(record: Option<&Known>, window_says: Option<&str>) -> Option<String> {
+/// with none the one given (a helper being made), never for an orphan.
+fn parent_by_record(record: Option<&Known>, given: Option<&str>) -> Option<String> {
     let orphan = record.is_some_and(|k| k.orphan);
-    record.and_then(|k| k.parent.clone()).or_else(|| window_says.filter(|_| !orphan).map(str::to_owned))
-}
-
-/// Whom a session the window is starting is to be told it answers to.
-pub fn parent_on_start(id: &str, window_says: Option<String>) -> Option<String> {
-    parent_by_record(reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(id), window_says.as_deref())
+    record.and_then(|k| k.parent.clone()).or_else(|| given.filter(|_| !orphan).map(str::to_owned))
 }
 
 /// A session is starting. Returns the bearer token for its MCP config when it
-/// gets tools. Called at every spawn, so a resumed session is re-registered
-/// with the same lineage and a fresh token.
+/// gets tools. Called at every start of its CLI, so a session going on is
+/// registered again with the same lineage and a fresh token. `parent` is the
+/// spawning session's for a helper being made; a chat the window starts is the
+/// person's own and has none.
 pub fn register(
     id: &str,
     provider: Provider,
@@ -231,10 +213,8 @@ pub fn register(
     let account = account_name(account_path);
     let previous = r.known.get(id).cloned();
     r.exits.remove(id);
-    // Whose it is since it last ran, if anything has changed that (`forget`):
-    // the window still names the parent it was spawned by.
+    // Whose it is since it last ran, if anything has changed that (`forget`).
     let orphan = previous.as_ref().is_some_and(|k| k.orphan);
-    let window_says = parent;
     let parent = parent_by_record(previous.as_ref(), parent);
     // The window's settings are the flags it starts a CLI with: this one is the
     // core's, kept across every start.
@@ -248,13 +228,6 @@ pub fn register(
     }
     // A session running again: what the chats' ties say is news once more.
     CHATS_FROZEN.store(false, std::sync::atomic::Ordering::SeqCst);
-    // Kept across cores too (`restore_chats`), so a new parent the window never
-    // heard of before its core went is said again, and this stays the one record.
-    if let (Some(says), Some(is)) = (window_says, &parent) {
-        if says != is {
-            crate::emit::to_ui("agent://reparent", Reparented { id: id.to_string(), parent: is.clone() });
-        }
-    }
     r.known.insert(
         id.to_string(),
         Known {
@@ -372,22 +345,9 @@ pub fn settings_of(id: &str) -> serde_json::Value {
     reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(id).map(|k| k.settings.clone()).unwrap_or_default()
 }
 
-/// A background helper has become a chat the window runs: no longer one
-/// Luna deletes on its own, and the window registers it again when its
-/// session starts.
-pub fn promoted(id: &str) {
-    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-    r.auto.remove(id);
-    if let Some(k) = r.known.get_mut(id) {
-        if let Some(o) = k.settings.as_object_mut() {
-            o.remove("background");
-        }
-    }
-}
-
-/// What a session's settings hold that no window sets: `register` keeps them across
-/// every start of its CLI, and ties across cores. `resumeOnRestart`, a budget
-/// with where it stands (`budget_news`), and `connectors` (`keeps_connectors`).
+/// What a helper's settings hold that its CLI is not started with: `register` keeps
+/// them across every start, and ties across cores. `resumeOnRestart`, a budget with
+/// where it stands (`budget_news`), and `connectors` (`Spec::connectors`).
 const CORE_SETTINGS: [&str; 5] = ["resumeOnRestart", "budgetTokens", "budgetBreach", "budgetTold", "connectors"];
 
 /// Whether a helper was spawned with `resumeOnRestart`.
@@ -437,7 +397,13 @@ pub(super) fn descendants(r: &Registry, of: &str) -> Vec<String> {
 /// The target must be something the caller spawned, directly or through a
 /// child. Anything else — the user's own chats, a sibling — is out of reach.
 pub(super) fn authorize(caller: &str, target: &str) -> Result<Known, String> {
+    if crate::background::promoting(target) {
+        return Err(format!("the person is opening {target} as a chat of their own; it is theirs once it opens"));
+    }
     let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    if r.taken_over.get(target).is_some_and(|from| from == caller) {
+        return Err(taken_over_error(target));
+    }
     if !is_descendant(&r, caller, target) {
         return Err(format!("session {target} is not one you spawned"));
     }
@@ -484,6 +450,9 @@ pub fn in_scope(caller: &str, id: &str, scope: Option<&str>, verb: &str) -> Resu
     let r = reg().lock().unwrap_or_else(|e| e.into_inner());
     if all || caller == id || !r.known.contains_key(id) || is_descendant(&r, caller, id) {
         return Ok(());
+    }
+    if r.taken_over.get(id).is_some_and(|from| from == caller) {
+        return Err(taken_over_error(id));
     }
     Err(format!(
         "session {id} is not one you spawned; to {verb} a session that is not yours (the user's own chats, another's \
@@ -609,29 +578,27 @@ mod tests {
     }
 
     #[test]
-    fn a_helper_is_told_of_the_parent_it_passes_to_and_a_chat_as_it_starts() {
+    fn a_helper_is_told_of_the_parent_it_passes_to() {
         let (account, none) = ("C:\\acc\\anthropic\\one", serde_json::json!({}));
         let background = serde_json::json!({ "background": true });
         register("tp-grand", Provider::Claude, "C:\\p", account, None, true, none.clone());
-        register("tp-parent", Provider::Claude, "C:\\p", account, Some("tp-grand"), true, none.clone());
+        register("tp-parent", Provider::Claude, "C:\\p", account, Some("tp-grand"), true, background.clone());
         register("tp-kid", Provider::Claude, "C:\\p", account, Some("tp-parent"), false, background);
         crate::background::take_up_for_test("tp-kid", "C:\\p", 1, &[], None);
         crate::background::set_parent("tp-kid", Some("tp-parent".into()));
-        register("tp-chat", Provider::Claude, "C:\\p", account, Some("tp-parent"), false, none);
 
         forget("tp-parent");
         assert_eq!(crate::background::told_parent_for_test("tp-kid").as_deref(), Some("tp-grand"), "a background helper's next turn");
-        // A running chat keeps what it started with; its next start goes by the
-        // record, whatever parent the window last heard of.
-        assert_eq!(parent_on_start("tp-chat", Some("tp-parent".into())).as_deref(), Some("tp-grand"));
-        assert_eq!(parent_on_start("tp-unknown", Some("tp-parent".into())).as_deref(), Some("tp-parent"), "no record: the window's word");
+        // Registered again, as a core taking it up does, it keeps the record's.
+        register("tp-kid", Provider::Claude, "C:\\p", account, Some("tp-parent"), false, serde_json::json!({ "background": true }));
+        assert_eq!(parent_of("tp-kid").as_deref(), Some("tp-grand"));
 
         forget("tp-grand");
         assert_eq!(crate::background::told_parent_for_test("tp-kid"), None, "nobody left to answer to");
-        assert_eq!(parent_on_start("tp-chat", Some("tp-parent".into())), None, "an orphan, whatever its row still names");
+        register("tp-kid", Provider::Claude, "C:\\p", account, Some("tp-parent"), false, serde_json::json!({ "background": true }));
+        assert_eq!(parent_of("tp-kid"), None, "an orphan stays one");
         crate::background::remove("tp-kid");
         forget("tp-kid");
-        forget("tp-chat");
     }
 
     #[test]

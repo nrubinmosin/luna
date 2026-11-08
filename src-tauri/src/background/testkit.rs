@@ -23,6 +23,12 @@ pub fn queued_for_test(id: &str) -> Vec<String> {
     lock().entries.get(id).map(|e| e.queue.iter().map(|q| q.text.clone()).collect()).unwrap_or_default()
 }
 
+/// Being opened as a chat by the person, or not.
+#[cfg(test)]
+pub fn promoting_for_test(id: &str, on: bool) {
+    lock().entries.get_mut(id).unwrap().promoting = on;
+}
+
 /// A turn of its runs.
 #[cfg(test)]
 pub fn set_running_for_test(id: &str) {

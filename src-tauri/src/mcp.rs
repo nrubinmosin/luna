@@ -282,7 +282,7 @@ fn tools() -> Value {
         },
         {
             "name": "luna_spawn",
-            "description": "Start a helper, in the background unless visible: true. Omitted settings: the account's defaults. Returns id, resolved settings, started (false: see screen; a visible Codex may still start, luna_wait first), starting (prompt held, do not resend), warnings, sameFolder, worktree, accountChoice.",
+            "description": "Start a helper; it runs in the background, and the user can watch it read-only or open it as a chat, which takes it from you for good. Omitted settings: the account's defaults. Returns id, resolved settings, turnsEnded, sameFolder, worktree, accountChoice.",
             "inputSchema": s(json!({
                 "prompt": { "type": "string" },
                 "provider": { "type": "string", "enum": ["claude", "codex"], "description": "default: yours" },
@@ -293,7 +293,7 @@ fn tools() -> Value {
                 "model": { "type": "string", "description": "from luna_list; claude also a full id" },
                 "effort": { "type": "string", "description": "low|medium|high|xhigh|max; claude also ultracode; codex per model" },
                 "permissionMode": { "type": "string", "description": "claude: default|acceptEdits|plan|bypassPermissions" },
-                "approval": { "type": "string", "description": "codex: never|auto-review|on-request (visible only)" },
+                "approval": { "type": "string", "description": "codex: never|auto-review" },
                 "sandbox": { "type": "string", "description": "codex: read-only|read-only-net|workspace-write|danger-full-access" },
                 "readOnly": { "type": "boolean", "description": "claude: no edit tools, Bash still writes; codex: read-only sandbox" },
                 "agent": { "type": "string", "description": "claude: its --agent" },
@@ -301,8 +301,7 @@ fn tools() -> Value {
                 "worktree": { "type": "boolean", "description": "its own git worktree" },
                 "name": { "type": "string" },
                 "tools": { "type": "boolean", "description": "these tools too (one level)" },
-                "visible": { "type": "boolean", "description": "a chat the user sees" },
-                "autoDelete": { "type": "boolean", "description": "deleted 30 min after its answer reached you; default: background true" },
+                "autoDelete": { "type": "boolean", "description": "deleted 30 min after its answer reached you; default: true" },
                 "resumeOnRestart": { "type": "boolean", "description": "goes on by itself after a core restart" },
                 "budgetTokens": { "type": "integer", "description": "context tokens; past them you hear, once" },
                 "connectors": { "type": "boolean", "description": "its account's MCP servers and connectors too" }
@@ -322,14 +321,13 @@ fn tools() -> Value {
         },
         {
             "name": "luna_answer",
-            "description": "Answer what a session waits on (yours; scope all: any), its state question or waiting (ask says what, askId: its id if any): answers, one per question: an option's number or label, or your own words; allow: true/false for a permission, note: why not. keys: raw keystrokes for any other dialog, e.g. \"{down}{enter}\" (also {esc} {tab} {shift+tab} {up} {left} {right} {space} {backspace}).",
+            "description": "Answer what a session waits on (yours; scope all: a question a user's chat's model asked), its state question or waiting (ask says what, askId: its id if any): answers, one per question: an option's number or label, or your own words; allow: true/false for your helper's permission, note: why not.",
             "inputSchema": s(json!({
                 "id": { "type": "string" },
                 "askId": { "type": "string" },
                 "answers": { "type": "array", "items": { "type": "string" } },
                 "allow": { "type": "boolean" },
                 "note": { "type": "string" },
-                "keys": { "type": "string" },
                 "scope": scope.clone()
             }), &["id"]),
             "annotations": acts
@@ -365,7 +363,7 @@ fn tools() -> Value {
         },
         {
             "name": "luna_kill",
-            "description": "Stop a session's process: a background helper's turn (no autoDelete after; luna_send goes on), between turns its leftRunning (ended); a visible one's, till resumed.",
+            "description": "Stop your helper's turn (no autoDelete after; luna_send goes on); between turns, its leftRunning (ended).",
             "inputSchema": s(json!({ "id": { "type": "string" } }), &["id"]),
             "annotations": ends
         },
@@ -450,7 +448,6 @@ fn call(caller: &str, params: &Value, this: &Call) -> Value {
         "approval",
         "folder",
         "worktree",
-        "visible",
         "tools",
         "autoDelete",
         "budgetTokens",
@@ -554,7 +551,6 @@ fn run(caller: &str, params: &Value, this: &Call) -> Value {
                 &strings(&a["answers"]),
                 a["allow"].as_bool(),
                 a["note"].as_str(),
-                a["keys"].as_str().filter(|k| !k.is_empty()),
                 entered.draining(),
             )
             .map(|r| json!(r))
@@ -1117,6 +1113,17 @@ mod tests {
         // The cases that cost something when passed over.
         let (failed, e) = call("luna_spawn", json!({ "prompt": "review it", "read_only": true }));
         assert!(failed && e.contains("did you mean `readOnly`?"), "{e}");
+        // Helpers run in the background only: what asked for a visible one, or
+        // pressed keys on one's screen, is refused as any key the tool lacks.
+        for (tool, args) in [
+            ("luna_spawn", json!({ "prompt": "go", "visible": true })),
+            ("luna_spawn", json!({ "prompt": "go", "visible": false })),
+            ("luna_answer", json!({ "id": "x", "keys": "{enter}" })),
+        ] {
+            let key = args.as_object().unwrap().keys().find(|k| *k != "prompt" && *k != "id").unwrap().clone();
+            let (failed, e) = call(tool, args);
+            assert!(failed && e.contains(&format!("`{key}`")) && e.contains("takes"), "{tool}.{key}: {e}");
+        }
         assert!(call("luna_send", json!({ "id": "x", "text": "stop", "interrupt": "true" })).1.contains("`interrupt` takes true or false"));
         assert!(call("luna_read", json!({ "id": "x", "last": -1 })).1.contains("`last` takes a whole number"));
         assert!(call("luna_wait", json!({})).1.contains("id or ids is required"));

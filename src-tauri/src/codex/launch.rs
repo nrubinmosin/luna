@@ -38,14 +38,10 @@ pub(crate) struct ChatStart<'a> {
     /// The guard against endless waits (guard.rs) as its `-c` override, if
     /// the session has it (pty/start.rs `codex_guard_args`).
     pub(crate) guard: &'a [String],
-    /// A helper's account's MCP servers and apps turned off (`connectors_off`).
-    pub(crate) connectors_off: &'a [String],
-    pub(crate) parent: Option<&'a str>,
     /// Luna's MCP server's URL and the session's token, while the server is
     /// up to take it.
     pub(crate) mcp: Option<(&'a str, &'a str)>,
     pub(crate) skill_args: &'a [String],
-    pub(crate) prompt: Option<&'a str>,
 }
 
 /// The arguments and environment of a Codex chat's start; `codex login`
@@ -113,20 +109,14 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
         args.push(HOOKS_UNASKED.into());
     }
     args.extend(s.guard.iter().cloned());
-    args.extend(s.connectors_off.iter().cloned());
     args.push("-c".into());
     args.push(CODEX_TITLE.into());
-    envs.extend(crate::pty::session_envs(s.id, s.parent));
+    envs.extend(crate::pty::session_envs(s.id, None));
     if let Some((url, token)) = s.mcp {
         args.extend(mcp_args(url));
         envs.push(("LUNA_MCP_TOKEN", token.to_string()));
     }
     args.extend(s.skill_args.iter().cloned());
-    if let Some(p) = s.prompt.map(str::trim).filter(|p| !p.is_empty()) {
-        // A prompt that starts with a dash is still a prompt.
-        args.push("--".into());
-        args.push(p.to_string());
-    }
     (args, envs)
 }
 

@@ -35,7 +35,7 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   would get no more: each app command is granted to the main window by name
   and refused to any other window or a remote page, plugins are cut to the
   calls the page makes (no menus, trays, new webviews or paths), the bridge to
-  the core passes on only the 35 commands the page sends, each on its own lane
+  the core passes on only the 34 commands the page sends, each on its own lane
   (never the core's `shutdown`), and account and folder paths are checked
   where they come in: an account path must be an account folder Luna lists,
   reached through no link or junction and spelled as on disk, a folder a
@@ -63,6 +63,12 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   input, and that a line's length or depth costs no more than its bytes. A
   scheduled workflow runs them weekly.
 
+### Added
+
+- **Watch** in a chat's helper list shows that helper's conversation,
+  read-only and live: what its agent asked and what it said, tool calls marked,
+  updating every second while it works.
+
 ### Changed
 
 - `luna_list` names each account with its defaults and usage but no longer its
@@ -78,6 +84,37 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - A notice ready for an agent that another of its helpers is still working for
   waits up to 20 seconds for that one's answer, so helpers finishing within
   seconds of each other wake the agent once, not once each.
+- **Breaking for agents:** every helper runs in the background. A Codex
+  helper's `approval` is `never` (the default) or `auto-review`; one that asks
+  a person (`on-request` and the like) is refused, as nobody is there to ask.
+  `luna_spawn` answers with `id`, `settings`, `turnsEnded`, `sameFolder`, the
+  worktree and `accountChoice`; `started`, `screen`, `ask`, `starting` and
+  `warnings` are gone with the visible start that filled them.
+- **Breaking for agents:** "Open as chat" hands a helper over to you for good.
+  It becomes a chat of your own, a top-level row seated in a pane: its agent
+  can no longer send to it, wait on it, read it as its own, stop or delete it,
+  and is owed nothing more by it. The agent hears so once, in a notice that
+  outlives a restart. Text still queued for the helper is not delivered, and
+  whoever sent it is told where it is. Luna asks before it does this, and while
+  it opens the agent can neither stop nor delete it.
+- Deleting a chat lists the helpers its agent runs with what each is doing and
+  what its worktree holds. Ticking the box to take them along never stops one
+  still at work, or drops a worktree with uncommitted work, by itself: each
+  takes a box of its own, and Luna checks both again as it deletes. A helper's
+  own Delete waits while it works and keeps such a worktree.
+- Chats an earlier Luna ran as visible helpers are your own chats: their rows
+  are no longer nested under the chat that spawned them, and no agent can stop,
+  delete or answer for them.
+
+### Removed
+
+- **Breaking for agents:** `luna_spawn`'s `visible`; a call passing it is
+  refused as any unknown argument is. With it go visible helpers, the chats an
+  agent started in the window, and what kept them: the window's part in a
+  spawn, carrying them on after a core restart, their nesting and reparenting,
+  and the rule that one you typed into was never auto-deleted.
+- **Breaking for agents:** `luna_answer`'s `keys` (raw keystrokes for a
+  helper's screen); a helper has none, and a dialog in your own chat is yours.
 
 ### Fixed
 
