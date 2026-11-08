@@ -134,10 +134,16 @@ test('license texts kept for other packages are skipped, the folder they are in 
   // A skipped path is never read, so one that does not exist passes; a checked
   // one is read, and the read fails.
   assert.deepEqual(
-    checkFiles(['third-party-licenses/crates/none/LICENSE', 'third-party-licenses/npm/@x/y/LICENSE']),
+    checkFiles([
+      'third-party-licenses/crates/none/LICENSE',
+      'third-party-licenses/npm/@x/y/LICENSE',
+      'third-party-licenses/tools/none/LICENSE',
+      'third-party-licenses/installer/none/COPYING'
+    ]),
     []
   );
   assert.throws(() => checkFiles(['third-party-licenses/NONE.md']), /ENOENT/);
+  assert.throws(() => checkFiles(['third-party-licenses/none.json']), /ENOENT/);
 });
 
 test('a symbolic link to a directory, and a directory, are passed over', () => {

@@ -8,10 +8,15 @@
 #   ./scripts/third-party-notices.ps1 -Out <file>
 #   ... -Source <tree>      of another tree than this checkout (build-windows.ps1 -Source)
 #
-#   - the Rust standard library, whose license texts come with the toolchain;
+#   - the Rust standard library, with the inventory of its own sources and the
+#     crates it is built from that the pinned toolchain carries
+#     (share/doc/rust/COPYRIGHT-library.html) and the license texts it names;
 #   - the crates the Windows build links (cargo metadata for its target, normal
 #     dependencies only: no build script, proc macro or test dependency);
-#   - the npm packages the frontend is built from (production dependencies).
+#   - the npm packages the frontend is built from (production dependencies);
+#   - what the build tools write into the interface bundle, and what the
+#     installer carries outside both graphs (third-party-licenses/components.json:
+#     NSIS, its Tauri plug-in, the WebView2 loader, the VC runtime).
 #
 # A component without a license text of its own takes the one kept for it in
 # third-party-licenses/; one with neither fails the script (notices-lib.ps1).
@@ -39,7 +44,7 @@ try {
         # The registry's sources of every package in the target's tree, and of
         # each the files that hold its license, under <name>-<version>/ by their
         # path in the package. RUSTUP_TOOLCHAIN keeps rustup to the image's own
-        # toolchain, whose doc folder holds the standard library's licenses.
+        # toolchain, whose doc folder holds the standard library's inventory.
         Invoke-Checked 'crate licenses' {
             docker run --rm `
               -e RUSTUP_TOOLCHAIN=$toolchain `
@@ -59,8 +64,8 @@ grep -o '"manifest_path":"[^"]*"' /out/metadata.json | cut -d'"' -f4 | while rea
     cp "$dir/$file" "/out/crates/$(basename "$dir")/$file"
   done
 done
-mkdir -p /out/rust-std
-cp "$(rustc --print sysroot)/share/doc/rust/licenses/MIT.txt" "$(rustc --print sysroot)/share/doc/rust/licenses/Apache-2.0.txt" /out/rust-std/
+mkdir -p /out/rust-doc
+cp -r "$(rustc --print sysroot)/share/doc/rust/COPYRIGHT-library.html" "$(rustc --print sysroot)/share/doc/rust/licenses" /out/rust-doc/
 '@)
         }
 
@@ -111,10 +116,22 @@ for (const packages of Object.values(listed))
             Supplied = Join-Path $supplied "crates/$($package.name)"
         }
     }
+    # The standard library: its inventory as text, then the license texts its
+    # in-tree files are under, which the inventory only names.
+    $html = Get-Content -LiteralPath (Join-Path $stage 'rust-doc/COPYRIGHT-library.html') -Raw
+    $stdDir = Join-Path $stage 'rust-std'
+    New-Item -ItemType Directory -Force (Join-Path $stdDir 'licenses') | Out-Null
+    [IO.File]::WriteAllText((Join-Path $stdDir 'COPYRIGHT-library.txt'), (ConvertFrom-RustCopyright $html))
+    foreach ($id in Get-RustInTreeLicenses $html) {
+        $text = Join-Path $stage "rust-doc/licenses/$id.txt"
+        if (-not (Test-Path -LiteralPath $text)) { throw "the toolchain's COPYRIGHT-library names $id, and its licenses folder has no $id.txt" }
+        Copy-Item -LiteralPath $text -Destination (Join-Path $stdDir 'licenses')
+    }
     $std = [pscustomobject]@{
-        Name = 'Rust standard library'; Version = $toolchain; License = 'MIT OR Apache-2.0'
-        Source = "https://github.com/rust-lang/rust/tree/$toolchain/library"; Note = $null
-        Staged = Join-Path $stage 'rust-std'; Supplied = $null
+        Name = 'Rust standard library'; Version = $toolchain; License = 'MIT OR Apache-2.0, with the exceptions its inventory lists'
+        Source = "https://github.com/rust-lang/rust/tree/$toolchain/library (COPYRIGHT: https://github.com/rust-lang/rust/blob/$toolchain/COPYRIGHT)"
+        Note = 'Copyright The Rust Project Developers (see https://thanks.rust-lang.org) and the holders the inventory below names. The inventory is the toolchain''s own (share/doc/rust/COPYRIGHT-library.html, as text): the standard library''s release as a whole, the crates it is built from included.'
+        Staged = $stdDir; Supplied = $null
     }
 
     $listed = Get-Content (Join-Path $stage 'npm.json') -Raw | ConvertFrom-Json
@@ -135,10 +152,18 @@ for (const packages of Object.values(listed))
     }
     $npm = @($npm | Sort-Object Name, Version -Culture ([cultureinfo]::InvariantCulture))
 
+    # What the installer carries outside the two graphs, each held to the
+    # version it was checked against.
+    $components = @((Get-Content (Join-Path $supplied 'components.json') -Raw | ConvertFrom-Json).components)
+    Assert-ComponentTies $components (Get-Content (Join-Path $Source 'src-tauri/Cargo.lock') -Raw) (Get-Content (Join-Path $Source 'pnpm-lock.yaml') -Raw)
+    $extra = { param($section) @($components | Where-Object section -eq $section | ForEach-Object { ConvertTo-ComponentItem $_ $supplied }) }
+
     $sections = @(
         [pscustomobject]@{ Title = 'Rust standard library, compiled into luna.exe'; Items = @(Add-LicenseTexts @($std)) }
         [pscustomobject]@{ Title = 'Rust crates compiled into luna.exe'; Items = @(Add-LicenseTexts @($crates)) }
         [pscustomobject]@{ Title = 'npm packages bundled into the interface'; Items = @(Add-LicenseTexts $npm) }
+        [pscustomobject]@{ Title = 'Code the build tools write into the interface'; Items = @(Add-LicenseTexts (& $extra 'interface')) }
+        [pscustomobject]@{ Title = 'Carried by the installer outside the crates and packages'; Items = @(Add-LicenseTexts (& $extra 'installer')) }
     )
 
     # A folder kept for a package that no longer ships is noise at best.

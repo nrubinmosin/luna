@@ -1,0 +1,76 @@
+{
+  "$comment": "What the installer carries outside the crate and npm package graphs, for scripts/third-party-notices.ps1. Each entry was checked against the version in `tiedTo`; once the tree resolves another, the gate fails until the entry is checked again (see README.md). `markers` name the helper signatures (notices-lib.ps1) the built interface must show for the entry, and `texts` the folder here holding its license texts.",
+  "components": [
+    {
+      "section": "interface",
+      "name": "Vite runtime helpers (preload helper, __vite__mapDeps)",
+      "version": "7.3.7",
+      "license": "MIT",
+      "source": "https://github.com/vitejs/vite/tree/v7.3.7/packages/vite/src/client",
+      "note": "Emitted by Vite into the built interface: code for loading its chunks, not the build tool itself.",
+      "texts": "tools/vite",
+      "markers": ["vite-preload-helper", "vite-map-deps"],
+      "tiedTo": { "npm": "vite", "version": "7.3.7" }
+    },
+    {
+      "section": "interface",
+      "name": "Vite module preload polyfill (adapted from es-module-shims)",
+      "version": "7.3.7",
+      "license": "MIT",
+      "source": "https://github.com/vitejs/vite/blob/v7.3.7/packages/vite/src/node/plugins/modulePreloadPolyfill.ts",
+      "note": "Emitted by Vite into the built interface; its notice is Guy Bedford's, as the source carries it.",
+      "texts": "tools/vite-modulepreload-polyfill",
+      "markers": ["vite-modulepreload-polyfill"],
+      "tiedTo": { "npm": "vite", "version": "7.3.7" }
+    },
+    {
+      "section": "interface",
+      "name": "CommonJS interop helper (@rollup/plugin-commonjs, bundled in Vite)",
+      "version": "29 (in Vite 7.3.7)",
+      "license": "MIT",
+      "source": "https://github.com/rollup/plugins/tree/master/packages/commonjs",
+      "note": "Emitted into the built interface for the CommonJS packages it bundles (React among them).",
+      "texts": "tools/rollup-plugin-commonjs",
+      "markers": ["rollup-commonjs-default-export"],
+      "tiedTo": { "npm": "vite", "version": "7.3.7" }
+    },
+    {
+      "section": "installer",
+      "name": "NSIS (the installer's stub, its LZMA decompressor and the NSISdl plug-in)",
+      "version": "3.11",
+      "license": "Zlib AND bzip2-1.0.6 AND CPL-1.0",
+      "source": "https://github.com/kichik/nsis/tree/v311 (Debian trixie's nsis package, in docker/windows-build.Dockerfile)",
+      "note": "setup.exe is built with NSIS and carries its runtime code; the zlib/libpng license covers NSIS itself and the Common Public License its LZMA module, as COPYING says.",
+      "texts": "installer/nsis"
+    },
+    {
+      "section": "installer",
+      "name": "nsis_tauri_utils.dll",
+      "version": "0.5.3",
+      "license": "MIT OR Apache-2.0",
+      "source": "https://github.com/tauri-apps/nsis-tauri-utils/tree/nsis_tauri_utils-v0.5.3",
+      "note": "An NSIS plug-in that Tauri's bundler embeds in setup.exe. It is built with windows-sys, whose license texts are among the crates above.",
+      "texts": "installer/nsis-tauri-utils",
+      "tiedTo": { "npm": "@tauri-apps/cli", "version": "2.12.3" }
+    },
+    {
+      "section": "installer",
+      "name": "WebView2 loader (WebView2LoaderStatic.lib, Microsoft.Web.WebView2 SDK)",
+      "version": "1.0.3800.47",
+      "license": "LicenseRef-Microsoft-WebView2-SDK (BSD-3-Clause-style, LICENSE.txt below)",
+      "source": "https://www.nuget.org/packages/Microsoft.Web.WebView2/1.0.3800.47",
+      "note": "Linked statically into luna.exe through webview2-com-sys, which ships the SDK's library byte for byte. The WebView2 runtime itself is not shipped: the installer downloads Microsoft's Evergreen bootstrapper when the runtime is missing, under Microsoft's own terms.",
+      "texts": "installer/webview2-loader",
+      "tiedTo": { "crate": "webview2-com-sys", "version": "0.39.1" }
+    },
+    {
+      "section": "installer",
+      "name": "Microsoft Visual C++ runtime (vcruntime, static library)",
+      "version": "14.44 (Visual Studio 2022 17.14, as cargo-xwin fetches it)",
+      "license": "Microsoft Visual Studio license terms, Distributable Code",
+      "source": "not published; https://learn.microsoft.com/cpp/windows/redistributing-visual-cpp-files",
+      "note": "Linked statically into luna.exe (static_vcruntime, through tauri-build); the Universal CRT it links dynamically is part of Windows. The runtime libraries are Distributable Code under the Visual Studio license terms (https://visualstudio.microsoft.com/license-terms/; the list at https://learn.microsoft.com/visualstudio/releases/2022/redistribution), distributed here on the conditions those terms set.",
+      "noText": "Microsoft publishes the terms, not a license text to reproduce; they are linked above."
+    }
+  ]
+}

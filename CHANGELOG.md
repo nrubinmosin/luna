@@ -24,7 +24,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 - The installer puts `THIRD-PARTY-NOTICES.txt` beside Luna, and each release
   publishes it too: the license texts of every crate and npm package Luna is
-  built from, and where their source is.
+  built from, and where their source is; the Rust standard library's own
+  inventory; and what the build tools and the installer add: Vite's helpers,
+  NSIS and its Tauri plug-in, the WebView2 loader and the Visual C++ runtime.
 
 ### Changed
 
@@ -135,7 +137,9 @@ fixes below.
 
 - The installer puts `THIRD-PARTY-NOTICES.txt` beside Luna, and each release
   publishes it too: the license texts of every crate and npm package Luna is
-  built from, and where their source is.
+  built from, and where their source is; the Rust standard library's own
+  inventory; and what the build tools and the installer add: Vite's helpers,
+  NSIS and its Tauri plug-in, the WebView2 loader and the Visual C++ runtime.
 
 ### Changed
 
