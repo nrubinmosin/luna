@@ -37,6 +37,16 @@ $toolchain = $rust.Tag -replace '-.*$', ''
 $supplied = Join-Path $Source 'third-party-licenses'
 
 Initialize-HostDirs 'test-build'
+# The containers run as root, and cp and cpSync keep a file's mode, so a crate
+# published with 0640 files (fnv 1.0.7) came back root's own and unreadable on
+# a Linux host such as the Actions runner, its folders undeletable. Each
+# container hands /out back on its way out, a failure included: readable to
+# all, and on a Unix host owned by whoever runs this. Not `docker run --user`:
+# the cache volumes they share with the builds, and the images' own folders,
+# are root's. A mount of a Windows folder keeps no Unix mode or owner, so on a
+# Windows host this changes nothing.
+$owner = if ($IsWindows) { @() } else { @('-e', "OUT_OWNER=$(id -u):$(id -g)") }
+$handBack = 'trap ''chmod -R a+rX /out; if [ -n "${OUT_OWNER:-}" ]; then chown -R "$OUT_OWNER" /out; fi'' EXIT' + "`n"
 $stage = Join-Path $RepoRoot "test-build/notices/$([guid]::NewGuid().ToString('n'))"
 New-Item -ItemType Directory -Force $stage | Out-Null
 try {
@@ -48,12 +58,13 @@ try {
         Invoke-Checked 'crate licenses' {
             docker run --rm `
               -e RUSTUP_TOOLCHAIN=$toolchain `
+              @owner `
               -v "${Source}:/app:ro" `
               -v "${stage}:/out" `
               -v luna-cargo-registry:/usr/local/cargo/registry `
               -w /app/src-tauri `
               $rust.Ref `
-              bash -c (ConvertTo-BashScript @'
+              bash -c (ConvertTo-BashScript ($handBack + @'
 set -e
 cargo metadata --locked --format-version 1 --filter-platform x86_64-pc-windows-msvc > /out/metadata.json
 grep -o '"manifest_path":"[^"]*"' /out/metadata.json | cut -d'"' -f4 | while read -r manifest; do
@@ -66,7 +77,7 @@ grep -o '"manifest_path":"[^"]*"' /out/metadata.json | cut -d'"' -f4 | while rea
 done
 mkdir -p /out/rust-doc
 cp -r "$(rustc --print sysroot)/share/doc/rust/COPYRIGHT-library.html" "$(rustc --print sysroot)/share/doc/rust/licenses" /out/rust-doc/
-'@)
+'@))
         }
 
         # The production packages as pnpm installs them from the lockfile, no
@@ -76,11 +87,12 @@ cp -r "$(rustc --print sysroot)/share/doc/rust/COPYRIGHT-library.html" "$(rustc 
             docker run --rm `
               -e COREPACK_ENABLE_DOWNLOAD_PROMPT=0 `
               -e COREPACK_HOME=/corepack `
+              @owner `
               -v "${Source}:/app:ro" `
               -v "${stage}:/out" `
               -v luna-corepack:/corepack `
               (Get-NodeImage) `
-              bash -c (ConvertTo-BashScript @'
+              bash -c (ConvertTo-BashScript ($handBack + @'
 set -e
 mkdir /work
 cp /app/package.json /app/pnpm-lock.yaml /work/
@@ -97,7 +109,7 @@ for (const packages of Object.values(listed))
         cpSync(`${path}/${f}`, `/out/npm/${p.name}@${p.versions[i]}/${f}`, { recursive: true });
     });
 '
-'@)
+'@))
         }
     }
 
