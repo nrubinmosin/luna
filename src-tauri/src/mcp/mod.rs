@@ -698,7 +698,8 @@ mod tests {
     #[test]
     fn a_wait_gives_its_report_unless_told_and_its_screen_only_when_told() {
         let report = || Some(agents::ReportPart { text: "The report.".into(), rest: 2, guessed: true, file: Some("C:/notes/a.md".into()) });
-        let waited = || json!({ "outcome": "turn_done", "state": "idle", "reply": "The report.\n\n---\n\nall else", "screen": "A\nB" });
+        // As the agent layer leaves it for `report`: its reply the report already.
+        let waited = || json!({ "outcome": "turn_done", "state": "idle", "reply": "The report.", "screen": "A\nB" });
         let shaped = |a: Value| {
             let mut v = waited();
             as_asked(&mut v, report(), &a);
@@ -710,7 +711,7 @@ mod tests {
         assert_eq!((v["rest"].as_u64(), v["file"].as_str(), v["reportGuessed"].as_bool()), (Some(2), Some("C:/notes/a.md"), Some(true)));
         assert!(v.get("screen").is_none(), "{v}");
         // All of it, as asked; none at all; the screen when told.
-        assert_eq!(shaped(json!({ "reply": "all" }))["reply"], "The report.\n\n---\n\nall else");
+        assert!(shaped(json!({ "reply": "all" })).get("rest").is_none(), "all of it: nothing more to point at");
         assert!(shaped(json!({ "reply": "none" })).get("reply").is_none());
         assert_eq!(shaped(json!({ "screen": true }))["screen"], "A\nB");
         // No reply to begin with: nothing is made up.

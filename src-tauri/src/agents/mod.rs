@@ -67,7 +67,7 @@ pub use spawn::{spawn, SpawnParams};
 #[cfg(test)]
 pub use teardown::news_for;
 pub use teardown::{at_stake, delete, delete_by_user, forget, kill, queued_refused, AtStake, UserDeleted};
-pub use wait::{wait, wait_many, ReportPart};
+pub use wait::{report_replies, report_reply, wait, wait_many, ReportPart};
 
 use held::held_sender;
 use notifier::notifier;
