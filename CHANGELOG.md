@@ -55,6 +55,10 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - A notice says which lines of its answer file are the report (`lines 1-N of
   M`), and `luna_read` with `report: true` gives the report alone, so an agent
   that wants only the report need not read everything else the helper said.
+- `luna_guide` takes a `topic`: a word of a section's title gives that section,
+  `all` the whole guide, and no topic its opening with the sections to ask
+  for. The instruction sessions get says to read it whole before the first
+  spawn; a lookup after that costs a section, not the whole manual.
 
 ### Fixed
 
