@@ -84,6 +84,10 @@ on one of the user's accounts.
   names the worktree and branch, or `worktreePending` until the CLI has made it. `sameFolder`
   lists live sessions working in the same directory.
 - A prompt over 8,000 characters reaches a visible session as a file it is told to read.
+- A helper has Luna's MCP server alone: none of its account's servers or connectors (claude.ai's
+  Gmail, Slack and the like; Codex's apps and `config.toml` servers), and a Claude Code one no
+  auto-memory. `connectors: true` keeps them, for a task that needs them. A Codex helper still has
+  servers from the project's `.codex/` and from plugins.
 - `budgetTokens`: past that many `context` tokens (its own, not its subagents' or helpers') its
   parent hears, once; nothing stops. The line rides like an idle one. `settings`
   shows `budgetBreach`, `budgetTold`.

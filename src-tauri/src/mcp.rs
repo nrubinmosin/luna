@@ -294,7 +294,8 @@ fn tools() -> Value {
                 "visible": { "type": "boolean", "description": "a chat the user sees" },
                 "autoDelete": { "type": "boolean", "description": "deleted 30 min after its answer reached you; default: background true" },
                 "resumeOnRestart": { "type": "boolean", "description": "goes on by itself after a core restart" },
-                "budgetTokens": { "type": "integer", "description": "context tokens; past them you hear, once" }
+                "budgetTokens": { "type": "integer", "description": "context tokens; past them you hear, once" },
+                "connectors": { "type": "boolean", "description": "its account's MCP servers and connectors too" }
             }), &["prompt"]),
             "annotations": acts
         },
@@ -442,6 +443,7 @@ fn call(caller: &str, params: &Value, this: &Call) -> Value {
         "tools",
         "autoDelete",
         "budgetTokens",
+        "connectors",
         "name",
         "until",
         "timeoutS",

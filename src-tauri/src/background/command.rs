@@ -46,6 +46,11 @@ pub(super) fn command_for(e: &Entry, id: &str) -> Result<(Vec<String>, String, V
                 args.extend(["--agent".into(), agent.clone()]);
             }
             let mut denied: Vec<&str> = if s.read_only { crate::claude::launch::CLAUDE_EDIT_TOOLS.to_vec() } else { Vec::new() };
+            // Luna's server alone, unless spawned with the account's own.
+            let helper = crate::claude::launch::HelperSettings { connectors: s.connectors };
+            if !s.connectors {
+                args.push(crate::claude::launch::STRICT_MCP.into());
+            }
             if let Some((mcp, token)) = s.token.clone().and_then(|t| Some((crate::pty::claude_mcp_file(id)?, t))) {
                 args.extend(["--mcp-config".into(), mcp.to_string_lossy().into_owned()]);
                 envs.push((crate::claude::launch::CLAUDE_MCP_TOKEN_ENV, token));
@@ -76,7 +81,7 @@ pub(super) fn command_for(e: &Entry, id: &str) -> Result<(Vec<String>, String, V
             // (library/folders.rs `session_args`). No hooks: its stream says it all; but
             // the guard against endless waits, a helper's as any (guard.rs).
             let skills = crate::library::session_args(Provider::Claude, &s.account_path, &dir);
-            let settings = crate::pty::claude_settings_file(id, false, s.tools || s.parent.is_some(), &skills)?;
+            let settings = crate::pty::claude_settings_file(id, false, s.tools || s.parent.is_some(), &skills, Some(helper))?;
             args.extend(["--settings".into(), settings.to_string_lossy().into_owned()]);
             if let Some(dir) = crate::pty::claude_instructions_dir(id, skills.instructions.as_deref()) {
                 args.extend(["--add-dir".into(), dir.to_string_lossy().into_owned()]);
@@ -128,6 +133,9 @@ pub(super) fn command_for(e: &Entry, id: &str) -> Result<(Vec<String>, String, V
             }
             if let Some(path) = crate::pty::codex_sandbox_path(&s.mode) {
                 envs.push(("PATH", path));
+            }
+            if !s.connectors {
+                args.extend(crate::codex::launch::connectors_off(&crate::codex::config::mcp_servers(&s.account_path)));
             }
             if let Some(token) = s.token.clone().filter(|_| s.tools) {
                 args.extend(crate::pty::codex_mcp_args());
@@ -206,7 +214,7 @@ mod tests {
         assert!(command_for(&entry(Provider::Claude), bad).is_err(), "no deny written, no Claude turn");
         // The helper itself refuses the same way.
         let none = crate::library::SessionSkills::default();
-        assert!(crate::pty::claude_settings_file(bad, true, false, &none).is_err(), "and a pane start would too");
+        assert!(crate::pty::claude_settings_file(bad, true, false, &none, None).is_err(), "and a pane start would too");
         // Codex carries the deny in its sandbox profile, not a settings file,
         // so the same id does not stop it.
         assert!(command_for(&entry(Provider::Codex), bad).is_ok(), "Codex writes no settings file");
@@ -542,10 +550,17 @@ mod tests {
         let mut e = entry(Provider::Claude);
         e.spec.mode = "acceptEdits".into();
         let t = turn(&e, ID, &r);
-        assert_eq!(t.args, with_settings(claude_turn("acceptEdits")));
+        assert_eq!(t.args, with_settings(strict(claude_turn("acceptEdits"))));
         assert_eq!(t.dir, "C:\\p");
         assert_eq!(t.envs, claude_turn_envs(ID));
-        assert_eq!((t.settings, t.mcp), (Some(golden::claude_settings_alone()), None), "no hooks: its stream says it all");
+        let settings = golden::claude_helper_settings(golden::claude_settings_alone());
+        assert_eq!((t.settings, t.mcp), (Some(settings), None), "no hooks: its stream says it all");
+    }
+
+    /// `args`, then no MCP server but those it is given: none of its account's.
+    fn strict(mut args: Vec<String>) -> Vec<String> {
+        args.push("--strict-mcp-config".into());
+        args
     }
 
     /// `args`, then the settings file every Claude Code turn is given.
@@ -565,13 +580,13 @@ mod tests {
         e.spec.worktree_name = Some("luna-x".into());
         let mut want = claude_turn("default");
         want.push("--worktree=luna-x".into());
-        assert_eq!(turn(&e, ID, &r).args, with_settings(want));
+        assert_eq!(turn(&e, ID, &r).args, with_settings(strict(want)));
 
         // A conversation, in the folder it was sent to.
         e.session = Some("s-1".into());
         let mut want = claude_turn("default");
         want.extend(strings(&["--resume", "s-1"]));
-        let want = with_settings(want);
+        let want = with_settings(strict(want));
         let t = turn(&e, ID, &r);
         assert_eq!((t.args, t.dir.as_str()), (want.clone(), "C:\\p"));
 
@@ -587,7 +602,7 @@ mod tests {
         let t = turn(&e, ID, &r);
         let mut want = claude_turn("default");
         want.extend(strings(&["--worktree=luna-x", "--resume", "s-1"]));
-        assert_eq!((t.args, t.dir.as_str()), (with_settings(want), "C:\\p"));
+        assert_eq!((t.args, t.dir.as_str()), (with_settings(strict(want)), "C:\\p"));
     }
 
     #[test]
@@ -606,6 +621,7 @@ mod tests {
         want.extend(strings(&[
             "--agent",
             "reviewer",
+            "--strict-mcp-config",
             "--mcp-config",
             "<mcp-file>",
             "--permission-prompt-tool",
@@ -626,7 +642,7 @@ mod tests {
         envs.extend(claude_turn_envs(ID));
         envs.extend(pairs(&[("LUNA_PARENT_ID", "golden-parent")]));
         assert_eq!(t.envs, envs);
-        let mut guard = golden::claude_settings_alone();
+        let mut guard = golden::claude_helper_settings(golden::claude_settings_alone());
         guard["hooks"] = json!({ "PreToolUse": [golden::claude_guard_entry()] });
         assert_eq!(t.settings, Some(guard), "the guard alone");
         assert_eq!(t.mcp, Some(golden::claude_mcp_config()));
@@ -637,7 +653,7 @@ mod tests {
         e.spec.read_only = false;
         e.spec.agent = None;
         let t = turn(&e, ID, &r);
-        let mut want = claude_turn("default");
+        let mut want = strict(claude_turn("default"));
         want.extend(strings(&[
             "--mcp-config",
             "<mcp-file>",
@@ -647,7 +663,17 @@ mod tests {
             "mcp__luna__luna_permission",
         ]));
         assert_eq!(t.args, with_settings(want));
-        assert_eq!(t.settings, Some(golden::claude_settings_alone()), "neither tools nor a parent: no guard");
+        let alone = golden::claude_helper_settings(golden::claude_settings_alone());
+        assert_eq!(t.settings, Some(alone), "neither tools nor a parent: no guard");
+
+        // Spawned with `connectors`: the account's servers and connectors too, its
+        // auto-memory still off.
+        e.spec.connectors = true;
+        let t = turn(&e, ID, &r);
+        assert!(!t.args.iter().any(|a| a == "--strict-mcp-config"), "{:?}", t.args);
+        let mut kept = golden::claude_settings_alone();
+        kept["autoMemoryEnabled"] = json!(false);
+        assert_eq!(t.settings, Some(kept));
         crate::agents::forget(ID);
     }
 
@@ -672,6 +698,12 @@ mod tests {
         args
     }
 
+    /// The account's apps off for the run, and each server its `config.toml`
+    /// names: the golden account has none.
+    fn apps_off() -> Vec<String> {
+        strings(&["-c", "features.apps=false"])
+    }
+
     fn codex_turn_envs(id: &str, sandboxed: bool) -> Vec<(String, String)> {
         let mut envs = if sandboxed { golden::codex_sandbox_path() } else { Vec::new() };
         envs.extend(pairs(&[("CODEX_HOME", "C:\\acc"), ("LUNA_SESSION_ID", id)]));
@@ -687,6 +719,7 @@ mod tests {
         let mut want = strings(&["exec", "-C", "C:\\p"]);
         want.extend(codex_turn(true));
         want.extend(codex_held(golden::codex_read_only(&["-c", "sandbox_mode=\"read-only\""]), true));
+        want.extend(apps_off());
         want.push("-".into());
         assert_eq!(t.args, want);
         assert_eq!(t.dir, "C:\\p");
@@ -703,6 +736,7 @@ mod tests {
         let tail = |mut a: Vec<String>| {
             a.extend(codex_turn(false));
             a.extend(codex_held(golden::codex_read_only(&["-c", "sandbox_mode=\"read-only\""]), true));
+            a.extend(apps_off());
             a.push("-".into());
             a
         };
@@ -739,6 +773,7 @@ mod tests {
             let mut want = strings(&["exec", "-C", "C:\\p"]);
             want.extend(codex_turn(true));
             want.extend(held);
+            want.extend(apps_off());
             want.push("-".into());
             assert_eq!(t.args, want, "{mode} {auto_review}");
             let mut envs = codex_turn_envs(&id, sandboxed);
@@ -766,6 +801,7 @@ mod tests {
         want.extend(codex_turn(true));
         want.extend(strings(&["--dangerously-bypass-hook-trust", "-c", &golden::codex_guard()]));
         want.extend(codex_held(strings(&["-c", "sandbox_mode=\"workspace-write\""]), true));
+        want.extend(apps_off());
         want.extend(golden::codex_mcp());
         want.push("-".into());
         assert_eq!(t.args, want);
@@ -783,7 +819,35 @@ mod tests {
         let t = turn(&e, ID, &r);
         assert!(!t.args.iter().any(|a| a.starts_with("mcp_servers.")), "{:?}", t.args);
         assert!(!t.envs.iter().any(|(k, _)| k == "LUNA_MCP_TOKEN"));
+        // Spawned with `connectors`: its account's apps and servers stay on.
+        e.spec.connectors = true;
+        let t = turn(&e, ID, &r);
+        assert!(!t.args.iter().any(|a| a == "features.apps=false"), "{:?}", t.args);
         crate::agents::forget(ID);
+    }
+
+    #[test]
+    fn golden_headless_codex_helper_turns_off_the_servers_its_account_names() {
+        const ID: &str = "golden-bg-codex-servers";
+        let account = std::env::temp_dir().join(format!("luna-golden-codex-servers-{}", std::process::id()));
+        std::fs::create_dir_all(&account).unwrap();
+        let config = "[mcp_servers.gmail]\ncommand = \"node\"\n\n[mcp_servers.\"team.slack\"]\nurl = \"https://x\"\n\n\
+                      [mcp_servers.luna]\nurl = \"https://y\"\n\n[mcp_servers.Zoho_CRM-2]\nurl = \"https://z\"\n";
+        std::fs::write(account.join("config.toml"), config).unwrap();
+        let account = account.to_string_lossy().into_owned();
+        let r = Redact::for_chat(ID).with(account.clone(), "<acc>");
+        let mut e = entry(Provider::Codex);
+        e.spec.account_path = account.clone();
+        let t = turn(&e, ID, &r);
+        let mut want = strings(&["exec", "-C", "C:\\p"]);
+        want.extend(codex_turn(true));
+        want.extend(codex_held(golden::codex_read_only(&["-c", "sandbox_mode=\"read-only\""]), true));
+        // A name a `-c` key cannot spell is left on: overriding it would fail the
+        // run; `luna` is Luna's own.
+        want.extend(apps_off());
+        want.extend(strings(&["-c", "mcp_servers.gmail.enabled=false", "-c", "mcp_servers.Zoho_CRM-2.enabled=false", "-"]));
+        assert_eq!(t.args, want);
+        let _ = std::fs::remove_dir_all(&account);
     }
 
     #[test]
@@ -793,7 +857,7 @@ mod tests {
         let (mut e, r) = library_entry(ID, &lib, Provider::Claude);
         e.spec.mode = "default".into();
         let t = turn(&e, ID, &r);
-        let mut want = claude_turn("default");
+        let mut want = strict(claude_turn("default"));
         want.extend(strings(&["--settings", "<settings-file>", "--add-dir", "<instructions-dir>", "--add-dir", "<library-dir>"]));
         assert_eq!(t.args, want);
         assert_eq!(t.dir, "<project>");
@@ -806,7 +870,7 @@ mod tests {
                 ("LUNA_SESSION_ID", ID),
             ])
         );
-        let mut settings = golden::claude_settings_alone();
+        let mut settings = golden::claude_helper_settings(golden::claude_settings_alone());
         settings["skillOverrides"] = json!({ "review": "off" });
         settings["claudeMdExcludes"] = json!(["<acc>/CLAUDE.md"]);
         assert_eq!(t.settings, Some(settings), "no hooks, no guard: what the folder keeps from it alone");
@@ -823,6 +887,7 @@ mod tests {
         want.extend(crate::codex::trust::trust_override(&lib.folder).iter().map(|a| r.text(a)));
         want.extend(strings(&["--model", "haiku", "-c", "model_reasoning_effort=\"low\""]));
         want.extend(codex_held(golden::codex_read_only(&["-c", "sandbox_mode=\"read-only\""]), true));
+        want.extend(apps_off());
         want.extend(strings(&[
             "-c",
             &format!("plugins.{}@luna.enabled=true", crate::library::GoldenLibrary::SLUG),

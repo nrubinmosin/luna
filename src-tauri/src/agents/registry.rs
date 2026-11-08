@@ -386,9 +386,9 @@ pub fn promoted(id: &str) {
 }
 
 /// What a session's settings hold that no window sets: `register` keeps them across
-/// every start of its CLI, and ties across cores. `resumeOnRestart`, and a budget
-/// with where it stands (`budget_news`).
-const CORE_SETTINGS: [&str; 4] = ["resumeOnRestart", "budgetTokens", "budgetBreach", "budgetTold"];
+/// every start of its CLI, and ties across cores. `resumeOnRestart`, a budget
+/// with where it stands (`budget_news`), and `connectors` (`keeps_connectors`).
+const CORE_SETTINGS: [&str; 5] = ["resumeOnRestart", "budgetTokens", "budgetBreach", "budgetTold", "connectors"];
 
 /// Whether a helper was spawned with `resumeOnRestart`.
 pub fn resumes_on_restart(id: &str) -> bool {

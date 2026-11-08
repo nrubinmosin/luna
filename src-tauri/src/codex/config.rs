@@ -38,6 +38,14 @@ pub fn read(path: &Path) -> Result<DocumentMut, String> {
     }
 }
 
+/// The names of the MCP servers an account's `config.toml` defines, as
+/// written; none if it will not read.
+pub fn mcp_servers(account_path: &str) -> Vec<String> {
+    let Ok(path) = account_file(account_path) else { return Vec::new() };
+    let doc = read_or_empty(&path);
+    doc.get("mcp_servers").and_then(|t| t.as_table_like()).map(|t| t.iter().map(|(name, _)| name.to_string()).collect()).unwrap_or_default()
+}
+
 /// For lookups only: a config that will not parse simply has nothing to say.
 /// One look, as nothing is written back.
 pub fn read_or_empty(path: &Path) -> DocumentMut {
