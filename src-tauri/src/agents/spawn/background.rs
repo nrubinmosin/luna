@@ -25,9 +25,8 @@ pub(in crate::agents) fn asked(v: &Option<String>) -> Option<&str> {
     v.as_deref().map(str::trim).filter(|v| !v.is_empty())
 }
 
-/// The settings a background helper runs with: what the request asks for
-/// over the account's defaults, refused in the same words the window uses
-/// for a visible one (agents/bridge.ts).
+/// The settings a helper runs with: what the request asks for over the
+/// account's defaults, refused in the words the new-chat dialog would use.
 fn background_spec(params: &SpawnParams, provider: Provider, account_path: &str, folder: &str) -> Result<crate::background::Spec, String> {
     let worktree = params.worktree.unwrap_or(false);
     let tools = params.tools.unwrap_or(false);
@@ -87,8 +86,8 @@ fn background_spec(params: &SpawnParams, provider: Provider, account_path: &str,
                 Some(AUTO_REVIEW) => true,
                 Some(_) => {
                     return Err(format!(
-                        "a background Codex helper has nobody to ask for approval; leave approval out, \
-                         use {AUTO_REVIEW}, or spawn it with visible: true"
+                        "a Codex helper runs in the background with nobody to ask for approval; leave approval out, \
+                         or use {AUTO_REVIEW}"
                     ))
                 }
             };
@@ -255,20 +254,7 @@ pub(in crate::agents) fn spawn_background(
         }
     }
     let worktree_pending = own_worktree && worktree.path.is_none();
-    Ok(Spawned {
-        id,
-        turns_ended: 0,
-        settings,
-        started: true,
-        screen: None,
-        ask: None,
-        starting: false,
-        warnings: Vec::new(),
-        same_folder,
-        worktree,
-        worktree_pending,
-        account_choice: None,
-    })
+    Ok(Spawned { id, turns_ended: 0, settings, same_folder, worktree, worktree_pending, account_choice: None })
 }
 
 #[cfg(test)]

@@ -89,7 +89,7 @@ and check the other CLI for the same behavior (AGENTS.md, "Both providers").
 | `--worktree` is refused on resume | resume as `resume <uuid> -C <worktree>` |
 | `--approve-for-me` refuses `-a` / `-s` beside it | `auto-review` replaces both, in `workspace-write` |
 | `never` + `danger-full-access` is spelled `--dangerously-bypass-approvals-and-sandbox` | passed as such |
-| Project hooks need review ("Hooks need review") for every new worktree, account or edited hook; `--dangerously-bypass-hook-trust` skips it; `exec` drops untrusted hooks silently | "Hooks unasked" per folder; a visible list is an `ask` |
+| Project hooks need review ("Hooks need review") for every new worktree, account or edited hook; `--dangerously-bypass-hook-trust` skips it; `exec` drops untrusted hooks silently | "Hooks unasked" per folder; in a chat's terminal the list is an `ask`, the person's to answer |
 | Hooks run through the user's shell (PowerShell on Windows, where a bare `@-` does not parse); a failing hook lets the call go ahead | the guard's command quotes `"@-"` and calls curl by full path |
 | Hooks call its shell tool `Bash` | the guard matches `Bash` |
 | MCP calls get 60 s by default | `tool_timeout_sec=1900`, `default_tools_approval_mode="approve"` |
@@ -115,7 +115,7 @@ and check the other CLI for the same behavior (AGENTS.md, "Both providers").
 | `request_user_input` holds the turn; `request_user_input_async` stays open until the next `UserMessage` | both read as questions |
 | Approval requests are not written to the rollout; the spinner redraws continuously | waiting = a turn in flight with a screen unchanged for 3 s, or a recognized approval dialog |
 | Context: `last_token_usage.total_tokens − reasoning_output_tokens` against `model_context_window` | same formula |
-| A token count is written again unchanged when rate limits renew | a visible Codex's model is the last `turn_context` after which the total grew |
+| A token count is written again unchanged when rate limits renew | a Codex chat's model is the last `turn_context` after which the total grew |
 | The rollout names a turn's model before asking it; a reroute leaves a `model rerouted` item | model taken only from a turn its model answered |
 | `task_complete.last_agent_message`, `task_complete.error`, `turn_aborted` | last words and failures |
 | `exec --json` reports retries as `error` events ("Reconnecting... 2/5") | not failures |

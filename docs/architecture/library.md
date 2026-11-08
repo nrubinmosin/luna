@@ -109,12 +109,11 @@ Passes run when the window starts, before every session start, after every
 change in the window and on Sync now, one at a time under a lock file beside the
 ledger shared by window and core. Where `lay_out` runs in a start:
 
-- **A chat or visible helper** (`pty/start.rs`): inside the launch closure, so
-  under that chat's own spawn gate (one chat's starts wait on its pass; other
-  chats and their input do not). Claude Code: after the worktree fetch, then
-  `session_args`, then the settings file, `register` and `spawn_is`. Codex:
-  after `register` and `spawn_is`, then `session_args`. A login session gets no
-  pass.
+- **A chat** (`pty/start.rs`): inside the launch closure, so under that chat's
+  own spawn gate (one chat's starts wait on its pass; other chats and their
+  input do not). Claude Code: after the worktree fetch, then `session_args`,
+  then the settings file and `register`. Codex: after `register`, then
+  `session_args`. A login session gets no pass.
 - **A background helper's turn** (`background/run.rs`): before the background
   registry is locked for the command line, since every helper's events wait on
   that lock and a pass reads and writes every account's copies. Window commands run off its main thread (`command(async)`).

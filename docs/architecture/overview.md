@@ -98,16 +98,17 @@ flowchart LR
   falls behind is disconnected rather than allowed to stall a pty, and goes
   straight back (`corelink.rs` `rejoin`), its panes redrawn from the scrollback.
   Main event families: `pty://output`, `pty://exit`, `power://state`,
-  `agent://spawn`, `agent://deleted`, `agent://reparent`, `agent://background`.
+  `agent://background`.
 - **Status.** Every 5 s `activity/` combines the CLI's turn state (hooks,
   registry, rollout), the processes under the CLI, and recent output into
   busy / waiting / idle per session; `power/` follows that summary
   ([power and lifecycle](power-and-lifecycle.md)).
 - **Agents.** A session with Luna's tools calls `POST /mcp` on the hub with its
-  bearer token. The core does not know chats, so a visible spawn is a round
-  trip to the page, which owns the chat list ([agents](agents.md)).
+  bearer token. Every helper it spawns runs in the core, in the background, with
+  no part for the window, which only lists them, shows one read-only, and opens
+  one as the person's own chat when asked ([agents](agents.md)).
 
-### An agent spawns a visible helper
+### An agent spawns a helper
 
 ```mermaid
 sequenceDiagram
@@ -115,48 +116,52 @@ sequenceDiagram
   participant A as Agent CLI (caller)
   participant H as hub.rs + mcp.rs
   participant R as agents/ (registry)
-  participant Wn as Window + page (bridge.ts)
-  participant PT as pty/ (core)
-  participant S as Helper CLI
+  participant B as background/ (core)
+  participant S as Helper CLI (headless)
 
   A->>H: POST /mcp tools/call luna_spawn (Bearer token)
-  H->>R: authorize caller, settle privilege, account, folder
+  H->>R: arguments_fit, authorize caller, settle privilege, account, folder
   R->>R: record SpawnTaken in chat-ties.json
-  R-->>Wn: agent://spawn (request id, settings, prompt)
-  Wn->>Wn: createChat(parentId), row not seated in a pane
-  Wn->>PT: ensure_claude_session / ensure_codex_session (spawnRequest)
-  Note over PT,R: schematic: under the chat's spawn gate, before any process exists (exact order per CLI below)
-  PT->>R: register (token, lineage) + spawn_is (bind to the request, save the ties)
-  PT->>PT: library pass, settings / MCP files, args (launch.rs)
-  PT->>S: create the CLI process in a pty, prompt after --
-  Wn->>R: agent_spawned (request id, chat id)
-  R->>PT: await_start: prompt taken up, or screen
+  R->>R: register (lineage, token) + spawn_is (task, save the ties)
+  R->>B: start: spec, first turn's prompt
+  B->>S: one headless run (claude -p / codex exec), prompt on stdin
   R->>R: owe_from: record the caller's debt for the answer
-  R-->>H: result: id, settings, warnings, sameFolder, worktree
+  R-->>H: result: id, settings, sameFolder, worktree
   H-->>A: tool result
   Note over A: caller may end its turn
-  S-->>R: turn ends (hooks / transcript)
+  S-->>B: turn ends (its event stream)
   R->>A: notifier types "[Luna notice, not typed by the user] ..."
 ```
 
-The preparation boxes are schematic; `pty/start.rs` does them in this order:
+Registration and `spawn_is` happen before the process is created, so a helper
+can never run unknown to the registry, and a core that dies mid-start leaves a
+record to settle ([background helpers](background-helpers.md#a-spawn-under-way)).
 
-- **Claude Code:** worktree fetch (if any) → library pass and `session_args` →
-  settings file (`claude_settings_file`) → `register` → `spawn_is` → MCP file
-  (`claude_mcp_file`) → instructions folder → `claude::launch::chat_args`.
-- **Codex:** guard arguments → `register` → `spawn_is` → library pass and
-  `session_args` → `codex::launch::chat_args` (Luna's MCP server goes by `-c`
-  arguments, no file).
+### The person opens a helper as a chat
 
-Registration and `spawn_is` happen inside the start, before the process is
-created, so a session can never run unknown to the registry and a core that dies
-mid-start leaves a record to settle. The caller's debt is a separate step,
-recorded once the spawn call has its answer (or, for a session that came up
-after the call timed out, when `agent_spawned` arrives).
+```mermaid
+sequenceDiagram
+  autonumber
+  participant P as Page (BackgroundChip, bridge.ts)
+  participant B as background/rows.rs
+  participant R as agents/ (handover.rs)
+  participant A as Its former parent
 
-A background helper (the default) skips the window entirely: `agents/spawn`
-hands the request to `background/`, which runs each turn as one headless CLI
-process ([background helpers](background-helpers.md)).
+  P->>B: background_promote (between turns)
+  B->>B: promoting: no turn starts, sends queue, parent's kill/delete refused
+  B-->>P: the row's data (same id, session id, no parent)
+  P->>P: createChat (top level), setSessionId, seat in a pane
+  P->>B: background_promoted (ok)
+  B->>R: take_over
+  R->>R: one hold: parent gone, debts gone, taken_over recorded
+  R->>B: take the record and what was queued for it
+  R->>R: one line per session affected, saved in chat-ties.json
+  R->>A: notice once A is idle: "The person took over your helper ..."
+```
+
+A row the window could not make answers `background_promoted` with the error,
+and the helper goes on as its parent's.
+
 
 ## Where state lives
 
@@ -166,7 +171,7 @@ process ([background helpers](background-helpers.md)).
 | Chat list, board, folders, UI prefs | page | localStorage (`persist`) |
 | Luna settings (accounts root, defaults, library reaches) | core and window | `<data>/settings.json`, written under `settings.json.lock` |
 | Helpers, their queues and ties | core | `<data>/helpers.json` |
-| Visible sessions' agent ties, held sends, spawns under way | core | `<data>/chat-ties.json` |
+| What agents are owed by the person's chats, held sends, spawns under way, untold lines | core | `<data>/chat-ties.json` |
 | Spawn history | core | `<data>/agents.jsonl` |
 | Library ledger | core and window | `<data>/library-state.json`, `library-blobs/` |
 | Log | both | `<data>/luna.log` |

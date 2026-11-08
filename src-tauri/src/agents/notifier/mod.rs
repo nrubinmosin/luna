@@ -6,7 +6,8 @@ pub(super) mod lines;
 pub(super) mod usage;
 
 use crate::agents::ask::live;
-use crate::agents::delivery::{still_starting, type_text, TypingInto, DRAFT_ALERT_MS};
+use crate::agents::delivery::{still_starting, type_text, TypingInto};
+use crate::agents::held::DRAFT_ALERT_MS;
 use crate::agents::lost::{take_undelivered, worktrees_left_line};
 use crate::agents::notifier::lines::{
     count_notice, last_notice, notice_line, notice_turn, pair_stopped, standing_line, BACKGROUND_GRACE_MS, BREAKER_NOTICES,
@@ -17,7 +18,7 @@ use crate::agents::notifier::usage::{
 };
 use crate::agents::owed::Owed;
 use crate::agents::persist::{core_up_ms, SESSION_RETURN_MS};
-use crate::agents::registry::{chat_name, label, parent_of, reg, waits_on_helpers, Known, Registry};
+use crate::agents::registry::{chat_name, label, parent_of, reg, waits_on_helpers, Known, Registry, DEV_CALLER};
 use crate::agents::spawn::settle::{settle_spawns, spawn_news};
 use crate::agents::teardown::reap;
 use crate::provider::Provider;
@@ -52,7 +53,7 @@ pub(super) const CALLER_RETURN_MS: u64 = 10 * 60 * 1000;
 pub const NOTICE_TAG: &str = "[Luna notice, not typed by the user]";
 
 /// How many of the notifier's looks go by between reads of the transcripts of
-/// helpers with a budget: finding a visible one's goes to the disk.
+/// helpers with a budget: each read goes to the disk.
 const BUDGET_EVERY_LOOKS: u32 = 5;
 
 /// The shortest gap between two notifications from one session: a model in
@@ -413,13 +414,24 @@ pub(super) fn notifier() {
         for caller in budget.keys() {
             by_caller.entry(caller.clone()).or_default();
         }
-        settle_spawns(core_up_ms());
+        settle_spawns();
         let mut news: HashMap<String, Vec<String>> = HashMap::new();
         {
             let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
             let Registry { news: queued, known, .. } = &mut *r;
-            queued.retain(|(caller, _)| known.contains_key(caller));
-            for (caller, line) in queued.iter() {
+            // A caller a core restart has yet to bring back gets the time any
+            // caller gets (CALLER_RETURN_MS): these lines are said once, and kept
+            // across a core for that (`SavedChats::news`).
+            let up_ms = core_up_ms();
+            // The dev caller has no terminal to be told in: the log has its lines,
+            // as it has its spawns' (`spawn_news`).
+            queued.retain(|(caller, line)| {
+                if caller == DEV_CALLER {
+                    crate::log::warn("agents", &format!("{caller} is not there to be told: {line}"));
+                }
+                caller != DEV_CALLER && (known.contains_key(caller) || up_ms < CALLER_RETURN_MS)
+            });
+            for (caller, line) in queued.iter().filter(|(caller, _)| known.get(caller).is_some_and(|k| !k.waiting)) {
                 news.entry(caller.clone()).or_default().push(line.clone());
             }
         }
@@ -467,7 +479,7 @@ pub(super) fn notifier() {
                     continue;
                 }
                 let said = if pair_stopped(pty, &caller, id) {
-                    standing_line(pty, &caller, who, id, k, *o)
+                    standing_line(pty, who, id, k, *o)
                 } else {
                     notice_line(pty, &caller, who, id, k, *o)
                 };
@@ -630,7 +642,7 @@ fn deliver_notice(
         .map(|(id, _, _)| label(id))
         .chain(quota_lines.iter().map(|n| format!("{} at {}%", n.key.1, n.told.level)))
         .chain(spawn_lines.iter().map(|(request, _)| format!("spawn {request}")))
-        .chain(news_lines.iter().map(|_| "an auto-delete".to_string()))
+        .chain(news_lines.iter().map(|_| "a helper's going".to_string()))
         .chain(budget_lines.iter().map(|n| format!("the budget of {}", label(&n.id))))
         .collect::<Vec<_>>()
         .join(", ");
@@ -683,6 +695,8 @@ fn deliver_notice(
                 r.quota_told.insert(n.key, n.told);
             }
             r.news.retain(|(c, line)| !(c == caller && news_lines.contains(line)));
+            // Told: not to be told again by a core after this one.
+            let told_news = !news_lines.is_empty();
             let told_spawns = !spawn_lines.is_empty();
             for (request, _) in spawn_lines {
                 r.spawns.remove(&request);
@@ -700,7 +714,7 @@ fn deliver_notice(
             for id in &told_lost {
                 take_undelivered(id, caller, parent_of(id).as_deref() == Some(caller));
             }
-            if !told_lost.is_empty() || !told_left.is_empty() || told_spawns || told_budgets {
+            if !told_lost.is_empty() || !told_left.is_empty() || told_news || told_spawns || told_budgets {
                 crate::background::save();
             }
             for id in stopped {

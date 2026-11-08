@@ -29,7 +29,8 @@ import { demoState } from './ipc';
 /** `?demo`, `?demo=dark`, `?demo=peek`, `?demo=newchat`, `?demo=codex` (the same on a Codex
  *  account), `?demo=settings`, `?demo=accounts`, `?demo=recommended`, `?demo=editor`, `?demo=worktrees`,
  *  `?demo=checks` / `checks-dark` (the Recommendations window), `checks-bar` / `checks-bar-dark` (their chip),
- *  `?demo=library`, `?demo=power`. */
+ *  `?demo=library`, `?demo=power`, `?demo=helper` / `helper-dark` (a helper watched read-only),
+ *  `?demo=delete-helpers` (deleting a chat whose helpers are at work). */
 export type Scene =
   | 'main'
   | 'dark'
@@ -46,7 +47,10 @@ export type Scene =
   | 'checks'
   | 'checks-dark'
   | 'checks-bar'
-  | 'checks-bar-dark';
+  | 'checks-bar-dark'
+  | 'helper'
+  | 'helper-dark'
+  | 'delete-helpers';
 const SCENES: Scene[] = [
   'dark',
   'peek',
@@ -62,7 +66,10 @@ const SCENES: Scene[] = [
   'checks',
   'checks-dark',
   'checks-bar',
-  'checks-bar-dark'
+  'checks-bar-dark',
+  'helper',
+  'helper-dark',
+  'delete-helpers'
 ];
 
 export function seedDemo(scene: Scene) {
@@ -126,6 +133,26 @@ export function seedDemo(scene: Scene) {
         [...document.querySelectorAll<HTMLButtonElement>('button')].find(b => b.textContent === 'Differences')?.click(),
       600
     );
+  }
+  // A helper of the first chat, watched: its chip, then Watch, as clicks would.
+  if (scene === 'helper' || scene === 'helper-dark') {
+    setTimeout(() => {
+      document.querySelector<HTMLElement>('.chat-row[data-active="yes"] .kids')?.click();
+      setTimeout(
+        () =>
+          [...document.querySelectorAll<HTMLButtonElement>('.popover button')]
+            .find(b => b.textContent === 'Watch')
+            ?.click(),
+        300
+      );
+    }, 300);
+  }
+  // The first chat's Delete, with its helpers listed and their boxes ticked.
+  if (scene === 'delete-helpers') {
+    setTimeout(() => {
+      document.querySelector<HTMLElement>('.chat-row[data-active="yes"] [title^="Delete chat"]')?.click();
+      setTimeout(() => document.querySelector<HTMLElement>('label[for^="drop-helpers-"]')?.click(), 400);
+    }, 300);
   }
   // The two dialogs belong to an account row; open them the way a click would.
   const button = scene === 'recommended' ? 'Recommended settings' : scene === 'editor' ? 'Edit settings.json' : null;

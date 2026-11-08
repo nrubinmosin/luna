@@ -1,5 +1,5 @@
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import type { AgentSpawnRequest, BackgroundHelperDto } from './agents';
+import type { BackgroundHelperDto } from './agents';
 import type { CliStatusDto } from './cli';
 import type { CoreStateDto } from './coreProcess';
 import type { PowerStateDto } from './power';
@@ -28,9 +28,6 @@ export const onPtyExit = (cb: (p: PtyExit) => void): Promise<UnlistenFn> =>
 export const onPowerState = (cb: (s: PowerStateDto) => void): Promise<UnlistenFn> =>
   tauriAvailable ? listen<PowerStateDto>('power://state', e => cb(e.payload)) : Promise.resolve(() => {});
 
-export const onAgentSpawn = (cb: (r: AgentSpawnRequest) => void): Promise<UnlistenFn> =>
-  tauriAvailable ? listen<AgentSpawnRequest>('agent://spawn', e => cb(e.payload)) : Promise.resolve(() => {});
-
 /** The window's line to the core changed (corelink.rs). */
 export const onCoreState = (cb: (s: CoreStateDto) => void): Promise<UnlistenFn> =>
   tauriAvailable ? listen<CoreStateDto>('core://state', e => cb(e.payload)) : Promise.resolve(() => {});
@@ -58,12 +55,3 @@ export const onOpenChat = (cb: (p: { chatId: string }) => void): Promise<Unliste
 /** The background helpers, whenever one starts, moves on or goes (background/). */
 export const onBackgroundHelpers = (cb: (rows: BackgroundHelperDto[]) => void): Promise<UnlistenFn> =>
   tauriAvailable ? listen<BackgroundHelperDto[]>('agent://background', e => cb(e.payload)) : Promise.resolve(() => {});
-
-export const onAgentDeleted = (cb: (p: { id: string }) => void): Promise<UnlistenFn> =>
-  tauriAvailable ? listen<{ id: string }>('agent://deleted', e => cb(e.payload)) : Promise.resolve(() => {});
-
-/** A chat's parent was deleted, and it passed to that one's parent (agents/teardown.rs `forget`). */
-export const onAgentReparent = (cb: (p: { id: string; parent: string }) => void): Promise<UnlistenFn> =>
-  tauriAvailable
-    ? listen<{ id: string; parent: string }>('agent://reparent', e => cb(e.payload))
-    : Promise.resolve(() => {});

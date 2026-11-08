@@ -138,23 +138,6 @@ fn in_folder(cwd: &str, folder: &str) -> bool {
     norm_path(cwd) == norm_path(folder) || (codex_shaped(cwd) && project_of(cwd).is_some_and(|p| same_place(&p, folder)))
 }
 
-/// The rollouts a terminal session started at or after `since_ms` in this folder, or
-/// in a worktree of it, whichever chat's they are.
-pub fn rollouts_since(account_path: &str, folder: &str, since_ms: u64) -> Vec<PathBuf> {
-    let Some(since) = Local.timestamp_millis_opt(since_ms as i64).single().map(|t| t.naive_local()) else { return Vec::new() };
-    let ours = |cwd: &str| in_folder(cwd, folder);
-    // Its name has it to the second, and the clocks may differ by a few.
-    let not_before = since - chrono::Duration::seconds(5);
-    rollouts_on(account_path, days_back(Local::now().date_naive(), 2))
-        .into_iter()
-        .filter(|(ts, _, _)| *ts >= not_before)
-        .filter(|(_, _, p)| {
-            first_line(p).is_some_and(|v| v["payload"]["source"] == "cli" && v["payload"]["cwd"].as_str().is_some_and(ours))
-        })
-        .map(|(_, _, p)| p)
-        .collect()
-}
-
 /// The rollout of a thread a live session's TUI says it is on, by the start of
 /// its id that the title holds (pty/screen.rs `thread_in_title`): looked for where a
 /// thread of now is written, the last two days, and once in all the rest, for a

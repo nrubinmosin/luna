@@ -322,7 +322,7 @@ mod tests {
             r.entries.get_mut("ba-kid").unwrap().held.push_back(Held { serial, ask, input: Value::Null, answer: None });
         };
         let answered = |serial: u64| lock().entries["ba-kid"].held.iter().find(|h| h.serial == serial).is_some_and(|h| h.answer.is_some());
-        let yes = |ask_id: Option<&str>| answer("ba-edits", "ba-kid", ask_id, &[], Some(true), None, None, false).map(|_| ());
+        let yes = |ask_id: Option<&str>| answer("ba-edits", "ba-kid", ask_id, &[], Some(true), None, false).map(|_| ());
 
         // An edit held first, a command behind it: the first passes for an
         // acceptEdits caller, the command does not, named by its id.
@@ -339,7 +339,7 @@ mod tests {
         assert!(yes(None).unwrap_err().contains("approving Bash"));
         assert!(!answered(902));
         // Refusing it stays the caller's.
-        answer("ba-edits", "ba-kid", Some("a902"), &[], Some(false), Some("not that"), None, false).unwrap();
+        answer("ba-edits", "ba-kid", Some("a902"), &[], Some(false), Some("not that"), false).unwrap();
         assert!(answered(902));
 
         // A model's question held first: answering it takes no privilege, and
@@ -352,7 +352,7 @@ mod tests {
         hold(904, Ask::permission(Some("Bash".into()), None));
         assert!(yes(Some("a904")).unwrap_err().contains("approving Bash"));
         assert!(!answered(904));
-        answer("ba-edits", "ba-kid", Some("a903"), &["A".to_string()], None, None, None, false).unwrap();
+        answer("ba-edits", "ba-kid", Some("a903"), &["A".to_string()], None, None, false).unwrap();
         assert!(answered(903));
 
         lock().entries.remove("ba-kid");

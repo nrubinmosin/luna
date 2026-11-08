@@ -22,16 +22,18 @@ decisions in [ADR-0012](../adr/0012-agents-over-mcp-with-notices.md) and
 | --- | --- |
 | `hub.rs` | loopback HTTP: `/hook/<chat>/<secret>`, `/guard/<chat>/<secret>`, `/mcp` (bearer); a thread per request in bounded lanes (`admit.rs`) |
 | `mcp.rs` | JSON-RPC: `initialize` (with `instructions`), `tools/list`, `tools/call`; twelve `luna_*` tools; `luna_permission` only for a background Claude Code helper's CLI; `mcp::Call` per call in flight; `HISTORY_LAST` |
-| `agents/registry.rs` | the `Registry` behind one lock (`reg()`): tokens (by SHA-256), `Known` sessions, lineage, pending spawns, debts, waits, receipts, names, groups |
+| `agents/registry.rs` | the `Registry` behind one lock (`reg()`): tokens (by SHA-256), `Known` sessions, lineage, spawns under way, debts, waits, receipts, names, groups, helpers taken over |
 | `agents/owed.rs` | answers owed (`Owed`), `hand_over` and its undo |
 | `agents/ask.rs` | what a session waits on (`ask_of`), screen recognition of dialogs |
 | `agents/read.rs`, `agents/said.rs` | transcripts and rollouts read with a byte cursor; what a session said and how a result puts it (`reply_of`, `report_of`) |
-| `agents/lost.rs` | what never reached a session |
+| `agents/lost.rs` | what never reached a helper |
 | `agents/privilege.rs` | the least-privilege layer (`settle_mode`, `reaches_luna`, `command_reach`) |
-| `agents/delivery.rs` | typing into terminals, `luna_send`, `await_start` |
+| `agents/delivery.rs` | `luna_send`, typing into a chat's terminal (`TypingInto`, `type_text`, the draft put aside) |
+| `agents/held.rs` | text held for a person's draft (`hold`, `deliver_held`) and text a core went in the middle of typing (`reconcile_held`) |
+| `agents/handover.rs` | a helper the person opens as a chat, handed over for good (`take_over`) |
 | `agents/answer.rs`, `wait.rs`, `list.rs` | `luna_answer`, `luna_wait`, `luna_list` / `luna_sessions` |
-| `agents/teardown.rs` | kill, delete, `reap` (autoDelete), `forget` |
-| `agents/persist.rs`, `agents/resume.rs` | ties across cores; chats carried on after a core |
+| `agents/teardown.rs` | kill, delete, the person's guarded delete (`delete_by_user`, `at_stake`), `reap` (autoDelete), `forget` |
+| `agents/persist.rs` | ties across cores: a helper's in `helpers.json`, the person's chats' debts, held sends, spawns under way and untold lines in `chat-ties.json` |
 | `agents/spawn/` | `luna_spawn`: `account.rs` (account lists), `background.rs`, `worktree.rs`, `settle.rs` (spawns that never completed) |
 | `agents/notifier/` | the notifier loop; `lines.rs` what a notice says; `usage.rs` quota and budget news |
 | `agentlog.rs` | `<data>/agents.jsonl`: a line per spawn and per end |
@@ -53,16 +55,15 @@ decisions in [ADR-0012](../adr/0012-agents-over-mcp-with-notices.md) and
   user, the person at this machine) so that rules set for that person's chat do
   not reach it: Claude Code by `--append-system-prompt` and a note after its
   first prompt (`pty::helper_prompt`), as memory files outweigh an appended
-  system prompt; Codex by the note after each background turn's prompt (a
-  visible one's opening prompt only), because `-c developer_instructions=`
-  would replace a value Luna would have to resolve from Codex's config stack.
-  The transcript readers drop the note (`without_note`). Slash-command prompts
-  go without; a compaction can lose a visible one's.
+  system prompt; Codex by the note after each turn's prompt, because
+  `-c developer_instructions=` would replace a value Luna would have to resolve
+  from Codex's config stack. The transcript readers drop the note
+  (`without_note`). Slash-command prompts go without.
 - The instruction says the CLIs' own subagents cannot use another provider or
   account (without it a Codex orchestrator used its own `spawn_agent`).
 - A helper gets Luna's server and none of its account's, unless spawned with
-  `connectors: true` (`keeps_connectors`: the spawn's record, then
-  `connectors` in its settings, one of `CORE_SETTINGS`). Claude Code:
+  `connectors: true` (`Spec::connectors`, kept as `connectors` in its settings,
+  one of `CORE_SETTINGS`). Claude Code:
   `--strict-mcp-config` (no user, project, plugin or claude.ai server) and a
   settings file (`HelperSettings`) with `disableClaudeAiConnectors` and
   `autoMemoryEnabled: false`, the latter even with `connectors`, and
@@ -74,8 +75,9 @@ decisions in [ADR-0012](../adr/0012-agents-over-mcp-with-notices.md) and
   two key by key, and an account's `luna` setting more than Luna's replaces
   stops the start. A config that will not read stops it as well. The
   project's `.codex/` and plugins' servers stay, as overriding a server no
-  layer defines fails the run. A visible helper is one with a parent at its
-  start.
+  layer defines fails the run. A chat the window starts is never a helper
+  (`ensure_*_session` registers it with no parent), so it keeps its account's
+  servers, as one started by hand would.
 
 ## Rights
 
@@ -84,10 +86,13 @@ decisions in [ADR-0012](../adr/0012-agents-over-mcp-with-notices.md) and
 | `luna_sessions`, `luna_list` | all sessions of this launch (`list` with `ids` gives any session's rows), as metadata: another's `ask` and `task`, and others' spawns in `history`, only with `scope: "all"` |
 | `luna_send` | its descendants; with `scope: "all"` any session but its own, the text opened `[From session <id> via Luna]` (`as_sent`); `interrupt` descendants only; command text (`/`, `!`) only from full access into its own helper |
 | `luna_read`, `luna_wait` | its descendants; with `scope: "all"` any session but its own |
-| `luna_kill`, `luna_delete` | descendants only |
+| `luna_kill`, `luna_delete` | descendants only, never one the person is opening as a chat (`promoting`) |
 | `luna_answer` to a model's question | its descendants; with `scope: "all"` any session but its own, an answer typed in as a message opened as `luna_send`'s (`answer_message`) |
-| `luna_answer` with `allow`, `keys`, or on a CLI's own list | descendants only, at the caller's privilege |
-| `luna_spawn` | a helper at no more privilege than the caller, never in or above the data dir |
+| `luna_answer` with `allow`, or on a CLI's own list | descendants only, at the caller's privilege |
+| `luna_spawn` | a background helper at no more privilege than the caller, never in or above the data dir; a Codex one never with an approval that asks a person |
+
+Every descendant is a background helper: a chat the window runs has no parent,
+so no agent interrupts, stops, deletes or approves for it.
 
 Every call's arguments are held to its tool's schema first (`arguments_fit`):
 an unknown key is refused naming those the tool takes, a value of the wrong
@@ -100,35 +105,47 @@ chat. The full matrix with code references is in the
 [threat model](../security/threat-model.md#5-mcp-authorization-matrix).
 
 **Lineage.** Children outlive their parent (`forget`): each passes to the
-parent's own parent (a visible one's row hears `agent://reparent`); with none it
-is an orphan (`Known::orphan`, saved in `Ties`): a visible one stays a row
-marked ↳, a background one is listed under "Helpers with no chat"
-(`LooseHelpers`) and joins `auto`. A helper started without a folder works
-where its caller does, worktree included (`agents::caller_worktree`). A helper
-that passes to another parent (`pass_up`) is told as it next starts.
+parent's own parent; with none it is an orphan (`Known::orphan`, saved in
+`Ties`), listed under "Helpers with no chat" (`LooseHelpers`), and joins
+`auto`. A helper started without a folder works where its caller does,
+worktree included (`agents::caller_worktree`). A helper that passes to another
+parent (`pass_up`) is told as it next starts.
+
+**Handed over.** A helper the person opens as a chat (`background_promote`,
+then the window's `background_promoted`) becomes theirs for good
+(`handover::take_over`), in this order:
+
+1. While its record still stands with `promoting` set (no turn starts, sends
+   queue, and `authorize` refuses its parent's kill and delete), one hold of
+   the registry takes its parent away, every debt anyone was owed by it, its
+   seen counts, receipts, delivery floors and breaker counts, its `auto` and
+   `borrowed` marks and a helper's settings (`HELPER_SETTINGS`), and records
+   `taken_over` (helper → former parent). From then on its former parent's
+   send, read and wait are refused as its own (`in_scope`), its kill and delete
+   by `authorize`, both with the takeover's words, and a `wait` in flight ends
+   on it (`wait.rs`). With `scope: "all"` it reaches the chat as any of the
+   person's.
+2. Then the helper's record is taken (`background_promoted`), with what was
+   queued for it and what never reached it.
+3. Each session owed by it, and each sender of that text, gets one line in
+   `Registry::news`: its parent that the person took it over and nothing more
+   is owed, the others that nothing more is owed by it; each with the file its
+   undelivered text is in (`note_file`). `news` is saved in `chat-ties.json`,
+   so the line outlives a core; the dev caller's goes to the log.
+
+The helper's own helpers stay its; the chat the person now has owes them
+nothing new. A row the window could not make leaves everything as it was.
 
 ## Spawning
 
-The core does not know chats, so a visible spawn is a round trip (sequence in
-the [overview](overview.md#an-agent-spawns-a-visible-helper)):
-
-1. `agent://spawn` to the page, which makes the chat (`parentId`, not seated in
-   a pane) and calls `ensure_*` with the prompt as the CLI's positional argument
-   after `--`.
-2. The page answers `agent_spawned`; the core waits on a Condvar up to 90 s,
-   then up to 30 s more for the session to take up the prompt (`started`).
-   Otherwise the answer carries `screen`, and with the screen still empty
-   `starting`: before its first draw Claude Code syncs organization skills and
-   makes the worktree, which can take minutes.
-3. An event reaches only a listening page, so the request stays on its record
-   until a session comes of it (`SpawnTaken::asked`), and the page asks for
-   what is waiting once it listens and at every core (`agent_spawns`). The row
-   is named by the request, so a reloaded page finds the same row.
-
-While a session is `starting`, its prompt sits in the CLI's arguments and
-`send` refuses. `spawn` also reports: an unknown slash command (`started: false`
-at once), `warnings` (screen lines with ⚠, e.g. a model the organization does
-not allow), and `sameFolder` (other live sessions in the helper's folder).
+Every helper runs in the core (`spawn/background.rs`, [background
+helpers](background-helpers.md)); the window takes no part. `spawn` settles the
+account, folder and privilege (`settle_mode`, `command_reach`), records the
+spawn on disk (`SpawnUnderWay`), registers the helper with its parent
+(`spawn_is` notes its task and, for a Codex one in a worktree of its own, the
+worktrees there were), starts its first turn and answers with `id`,
+`settings`, `turnsEnded`, `sameFolder` (other live sessions in its folder) and
+the worktree once the CLI has made it (`worktreePending` until then).
 
 `account` may be a list of one provider's accounts: the first signed in with
 every window under 95%, else the one with most room; `accountChoice` says why.
@@ -164,12 +181,13 @@ background helper's held call; for Claude Code the tool its hooks name
 in the transcript; for Codex the rollout's open question or an approval its
 screen shows.
 
-`luna_answer` in a terminal is keys: an option is arrows down and Enter, free
-text in the row after the options, several Claude Code questions end on a
-review Enter submits; a permission is Enter (Codex `y`) or Esc; an async Codex
-question is answered by a message. `keys` takes `{enter}`, `{down}`… for any
-other dialog. `send` into a session on a blocking dialog refuses. Background
-asks carry an opaque `id`; `luna_answer` takes it as `askId`.
+A helper's ask is answered on its record (`background::answer`), checked against
+the very ask it lands on; asks carry an opaque `id`, which `luna_answer` takes
+as `askId`. In a chat's terminal (`scope: "all"`) only a question its model
+asked is answered, as keys: an option is arrows down and Enter, free text in the
+row after the options, several Claude Code questions end on a review Enter
+submits; an async question is answered by a message. A permission there is the
+person's. `send` into a session on a blocking dialog refuses.
 
 ## Reading and waiting
 
@@ -223,7 +241,7 @@ Invariants:
   offset, returned everything uncut, ends on an assistant message, and found
   the session idle with nothing of its own running. A timeout only restarts the
   autoDelete clock (`looked`).
-- Text typed into a visible session mid-turn may join that turn or start the
+- Text typed into a chat's terminal mid-turn may join that turn or start the
   next, so a `queued` debt counts a turn end only once no turn has begun 8 s
   later (`QUEUED_GRACE_MS`, `queue_settled`).
 - Every debt has a revision (`Owed::rev`); `take_debt` looks and takes in one
@@ -274,8 +292,13 @@ turn, stopped on a prompt (once per stop) or exited.
   itself (`Owed::held`): the notifier and a `wait` go by the same 20 s
   (`held_for_wait`, `job_end_stood`), so the end reaches the caller once.
 - A notice is an ordinary turn of the caller; a dev caller with no terminal gets
-  none. Typing one takes seconds and the turn it starts may ask again meanwhile,
-  so the notifier changes the debt only if it is still the one it announced.
+  none, its lines going to the log. Typing one takes seconds and the turn it
+  starts may ask again meanwhile, so the notifier changes the debt only if it is
+  still the one it announced.
+- Lines no debt brings (`Registry::news`: a helper taken over, an auto-delete, a
+  queued text refused) wait for a caller a restart has yet to bring back for as
+  long as any caller is waited for (`CALLER_RETURN_MS`), and are saved with
+  `chat-ties.json` until told.
 - **Riders.** A job's end with nothing said (`Settled::NoNews`), the idle line,
   quota news and budget news are no reason to wake a caller: they ride with the
   next notice (`riders_go`), and go alone only once they are all it is owed,
@@ -321,10 +344,13 @@ turn, stopped on a prompt (once per stop) or exited.
   a send into a chat typed in within 5 s. A draft or text held a minute is
   announced on the desktop once. `session_meta` carries `draft` and `held` for
   the row tag and the pane balloon.
-- `send` with `interrupt: true`, to the caller's descendants only: Esc in a
-  terminal (up to 3 s for the turn to read as over), then the text as a prompt
-  of its own; a background helper's turn is killed and its held asks cleared.
-- A prompt or message past 8,000 characters reaches a visible session as a file
+- Terminals are the person's chats only: what types into one is a notice to a
+  chat with tools, a `luna_send` with `scope: "all"`, or an answer to a question
+  its model asked. Nothing presses a key for an agent there.
+- `send` with `interrupt: true`, to the caller's descendants only (every one a
+  helper): its turn is killed and its held asks cleared, and the text is the
+  next turn.
+- A message past 8,000 characters reaches a chat as a file
   under `<data>/agents/` (an `--add-dir` for Claude Code sessions with tools or
   an agent above; Codex sandboxes read anywhere, but `read-only` and
   `read-only-net` off Windows are denied `core/` (F3) — `workspace-write` and
@@ -350,8 +376,14 @@ none is `transcriptMissing`, not "no reply".
 `wait` on it, no helper of its own, nothing left running that still holds the
 machine (`left_holds`), and no turn for 30 minutes, as `delete` would, without
 its worktree. Any `read` / `wait` / `send` restarts the clock (`deletesInMin`).
-A helper a person typed into (`typed_ago_ms`) or an agent killed is left alone.
-On by default for background helpers, off for visible ones.
+A helper an agent killed mid-turn is left alone. On by default.
+
+The person's Delete on a helper, or on a chat with its helpers ticked
+(`delete_by_user`), refuses one at work (a turn, an ask held, what its turns
+left running) unless told to stop it, and keeps a worktree with unsaved work
+(`worktree::unsaved_work`) unless told to drop it, saying so
+(`UserDeleted::worktree_kept`). The dialog asks the core what each has at stake
+first (`at_stake`) and offers each as a box of its own.
 
 Before any delete `remove` writes a `left` line to `agents.jsonl` (transcript
 path, worktree, last message, cut to 400 characters by `history`).
@@ -361,14 +393,15 @@ path, worktree, last message, cut to 400 characters by `history`).
 | Failure | Behavior |
 | --- | --- |
 | Hub down | hooks and guard fail open; MCP calls fail |
-| Window not listening for `agent://spawn` | request kept until a page asks (`agent_spawns`) |
 | Caller's CLI cancels a `wait` | nothing handed over; the notice brings it |
 | Two models answering each other | breaker after 12 notices in 15 min |
 | Core dies mid-turn | debts, ties and queues restored from disk; callers told "cut short" ([background helpers](background-helpers.md#outliving-the-core)) |
-| A CLI version draws a dialog differently | not recognized: `allow` refused, only raw `keys` reach it |
+| Window gone while opening a helper as a chat | the next window settles it by whether its row exists (`settleOpenings`) |
+| A chat's CLI draws a dialog differently | not recognized: it waits for the person |
 
 ## Testing without a second Luna
 
 `LUNA_DEV_TOKEN` (+ `LUNA_DEV_FOLDER`, `LUNA_DEV_ACCOUNT`) registers a caller
-`dev` with that bearer token; its spawns are top-level chats.
+`dev` with that bearer token; its helpers are listed under "Helpers with no
+chat", and its notices go to the log.
 `scripts/test-build.ps1 -Run -DevCaller` sets them ([development](../development.md)).

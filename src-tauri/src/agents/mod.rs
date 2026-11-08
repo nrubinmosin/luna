@@ -1,20 +1,19 @@
 //! Sessions run by sessions. A chat started with Luna's MCP server attached
-//! can spawn other chats — another model, another account — send them text,
-//! read what they answered, wait for them, and kill or delete them, worktree
+//! can spawn helpers — another model, another account — send them text, read
+//! what they answered, wait for them, and stop or delete them, worktree
 //! included. This module is the registry behind those tools: who is who,
-//! who may touch whom, and the round trips to the UI that owns the chat list.
+//! who may touch whom.
 //!
-//! The core does not know chats, only pty sessions
-//! (docs/adr/0001-session-state-lives-in-the-cli.md), so a spawn is a request to the frontend — `agent://spawn` out, `agent_spawned`
-//! back — and a delete tells the frontend to drop the row after the session
-//! and its worktree are gone. Lineage lives here: every session registered
-//! with a parent is that parent's, and a caller may only reach its own
-//! descendants — except to list every session, and, told `scope: "all"`, to
-//! type a message into one and read or wait on its answer, which is how
-//! sessions talk to each other (the message says whose it is); interrupting,
-//! killing and deleting stay with the lineage. Children outlive their parent:
-//! they pass to its parent, or with none stand alone, the window's to manage
-//! (see `forget`).
+//! Every helper runs in the background, in the core (background/); the window
+//! runs only the person's own chats (docs/adr/0001-session-state-lives-in-the-cli.md),
+//! and a helper the person opens as a chat is handed over to them for good
+//! (handover.rs). Lineage lives here: every session registered with a parent is
+//! that parent's, and a caller may only reach its own descendants — except to
+//! list every session, and, told `scope: "all"`, to type a message into one and
+//! read or wait on its answer, which is how sessions talk to each other (the
+//! message says whose it is); interrupting, stopping and deleting stay with the
+//! lineage. Helpers outlive their parent: they pass to its parent, or with none
+//! stand alone, the window's to manage (see `forget`).
 //!
 //! A helper does not report back on its own the way a subagent does: its
 //! answer sits in its own transcript until someone waits for it or reads it.
@@ -26,6 +25,8 @@
 mod answer;
 mod ask;
 mod delivery;
+mod handover;
+mod held;
 mod list;
 mod lost;
 mod notifier;
@@ -34,7 +35,6 @@ mod persist;
 pub(crate) mod privilege;
 mod read;
 mod registry;
-mod resume;
 mod said;
 pub(crate) mod spawn;
 mod teardown;
@@ -44,31 +44,32 @@ mod wait;
 
 pub use answer::answer;
 pub use ask::{on_hook, resolve_option, state_of, Ask, AskQuestion};
-pub use delivery::{held_count, notes_dir, send};
+pub use delivery::{notes_dir, send};
+pub use handover::take_over;
+pub use held::held_count;
 pub use list::{list, sessions, SessionFilter};
 pub use lost::undelivered_left;
 #[cfg(test)]
 pub(crate) use notifier::riders_go;
 pub use notifier::{notify, NOTICE_TAG};
 pub use owed::{resumed, retried};
-pub use persist::{conversation_of, freeze_chats, restore_chats, save_chats, take_up_spawns, tie_back, ties_of, Ties};
+pub use persist::{freeze_chats, restore_chats, save_chats, take_up_spawns, tie_back, ties_of, Ties};
 pub(crate) use privilege::{command_prefix, command_reach_now};
 pub use read::{read, Message};
 pub(crate) use registry::mint;
 pub use registry::{
-    caller_of, chat_name, chat_names, has_tools, in_scope, label, own_or_self, parent_of, parent_on_start, promoted, register,
-    register_dev_caller, resumes_on_restart, scope_all, session_exited, settings_of, DEV_CALLER,
+    caller_of, chat_name, chat_names, has_tools, in_scope, label, own_or_self, parent_of, register, register_dev_caller,
+    resumes_on_restart, scope_all, session_exited, settings_of, DEV_CALLER,
 };
-pub use resume::agent_resumes;
 pub use spawn::account::account_usage;
-pub use spawn::worktree::{helper_worktree_name, name_to_go_on, report_codex_worktrees, worktree_for_start};
-pub use spawn::{agent_spawned, agent_spawns, chat_starting, keeps_connectors, spawn, spawn_is, SpawnParams};
+pub use spawn::worktree::{name_to_go_on, report_codex_worktrees};
+pub use spawn::{spawn, SpawnParams};
 #[cfg(test)]
 pub use teardown::news_for;
-pub use teardown::{delete, delete_by_user, forget, kill, queued_refused};
+pub use teardown::{at_stake, delete, delete_by_user, forget, kill, queued_refused, AtStake, UserDeleted};
 pub use wait::{wait, wait_many};
 
-use delivery::held_sender;
+use held::held_sender;
 use notifier::notifier;
 
 /// Starts the notifier and what types in the sends held for people, once.

@@ -13,7 +13,9 @@ import {
   LIBRARY,
   LIBRARY_DIFF,
   CORE,
-  BACKGROUND
+  BACKGROUND,
+  HELPER_TRANSCRIPT,
+  AT_STAKE
 } from './fixtures';
 
 /** What the stand-in answers with, set when a scene is seeded: until then it
@@ -45,6 +47,14 @@ export function answer<T>(cmd: string, args: Record<string, unknown>, fallback: 
   if (cmd === 'codex_models') return CODEX_MODELS as unknown as T;
   if (cmd === 'power_state') return demoState.power as unknown as T;
   if (cmd === 'background_helpers') return BACKGROUND as unknown as T;
+  // A helper's conversation once, with nothing new after it.
+  if (cmd === 'background_transcript') {
+    const first = args.since == null;
+    return { ...HELPER_TRANSCRIPT, messages: first ? HELPER_TRANSCRIPT.messages : [] } as unknown as T;
+  }
+  if (cmd === 'background_at_stake') {
+    return (args.ids as string[]).map(id => AT_STAKE[id] ?? { id }) as unknown as T;
+  }
   // The Accounts window's own dialogs, so they can be looked at too.
   if (cmd === 'read_account_config') {
     const claudeSide = args.provider === 'claude';

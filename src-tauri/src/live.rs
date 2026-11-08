@@ -249,7 +249,7 @@ fn spawn(live: &Live, extra: Value, prompt: &str) -> Spawned {
         extra[k] = v.clone();
     }
     let spawned = crate::agents::spawn(&caller, live.params(&folder, prompt, extra)).expect("luna_spawn");
-    assert!(spawned.started, "a background helper starts at once");
+    assert!(crate::background::has(&spawned.id), "a helper runs in the background");
     Spawned { caller, id: spawned.id, folder }
 }
 

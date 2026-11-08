@@ -43,18 +43,6 @@ pub(super) fn content_text(content: &serde_json::Value) -> Option<String> {
     None
 }
 
-/// The transcripts begun at or after `since_ms` by sessions that started in one of
-/// these folders, each of which has a folder of its own under the account.
-pub fn transcripts_since(account_path: &str, cwds: &[String], since_ms: u64) -> Vec<PathBuf> {
-    let since = std::time::UNIX_EPOCH + std::time::Duration::from_millis(since_ms);
-    let began = |p: &Path| std::fs::metadata(p).ok().and_then(|m| m.created().or_else(|_| m.modified()).ok()).is_some_and(|t| t >= since);
-    cwds.iter()
-        .filter_map(|cwd| std::fs::read_dir(Path::new(account_path).join("projects").join(encode_project_dir(cwd))).ok())
-        .flat_map(|dir| dir.flatten().map(|e| e.path()).collect::<Vec<_>>())
-        .filter(|p| p.extension().is_some_and(|e| e == "jsonl") && began(p))
-        .collect()
-}
-
 /// The transcript of a session Luna knows by its id and cwd rather than
 /// through the registry — a background helper's, which `claude -p` names in
 /// its first event.

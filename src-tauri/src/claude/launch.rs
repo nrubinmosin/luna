@@ -21,16 +21,11 @@ pub(crate) struct ChatStart<'a> {
     pub(crate) settings_file: Option<&'a Path>,
     pub(crate) agent: Option<&'a str>,
     pub(crate) read_only: bool,
-    pub(crate) parent: Option<&'a str>,
-    /// `--strict-mcp-config`: no MCP server but Luna's, a helper's start
-    /// (`HelperSettings`).
-    pub(crate) strict_mcp: bool,
     /// Luna's MCP config file and the token its header takes.
     pub(crate) mcp: Option<(&'a Path, &'a str)>,
     pub(crate) notes_dir: Option<&'a Path>,
     pub(crate) instructions_dir: Option<&'a Path>,
     pub(crate) skill_args: &'a [String],
-    pub(crate) prompt: Option<&'a str>,
 }
 
 /// The arguments and environment of a Claude Code chat's start.
@@ -63,12 +58,6 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
         args.push("--disallowedTools".into());
         args.push(CLAUDE_EDIT_TOOLS.join(","));
     }
-    if let Some(parent) = s.parent {
-        args.extend(claude_helper_args(parent));
-    }
-    if s.strict_mcp {
-        args.push(STRICT_MCP.into());
-    }
     if let Some((mcp, _)) = s.mcp {
         // Luna's tools without a permission prompt in every mode: the
         // user ticked the box that gives them. Variadic like
@@ -78,7 +67,7 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
         args.push("--mcp-config".into());
         args.push(path(mcp));
     }
-    // A long prompt or message from its agent comes as a file there
+    // A long message from another session comes as a file there
     // (agents/delivery.rs `spill`), and so does a helper's answer named in a
     // notice, to read without asking.
     if let Some(notes) = s.notes_dir {
@@ -90,29 +79,19 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
         args.push(path(dir));
     }
     args.extend(s.skill_args.iter().cloned());
-    if let Some(p) = s.prompt.map(str::trim).filter(|p| !p.is_empty()) {
-        // `--mcp-config` takes any number of files, and took the prompt
-        // after it for one more: "MCP config file not found: <prompt>".
-        args.push("--".into());
-        args.push(p.to_string());
-    }
     let mut envs = vec![
         ("CLAUDE_CONFIG_DIR", s.account_path.to_string()),
         // Luna updates the CLI itself; the CLI's own updater would install a
         // second copy under the user profile that nothing here ever runs.
         ("DISABLE_AUTOUPDATER", "1".to_string()),
     ];
-    // A helper's, whatever it would inherit (`HelperSettings`).
-    if s.parent.is_some() {
-        envs.push((NO_AUTO_MEMORY_ENV, "1".to_string()));
-    }
     if s.instructions_dir.is_some() {
         envs.push((CLAUDE_ADDED_DIR_MEMORY, "1".to_string()));
     }
     if let Some((_, token)) = s.mcp {
         envs.push((CLAUDE_MCP_TOKEN_ENV, token.to_string()));
     }
-    envs.extend(crate::pty::session_envs(s.id, s.parent));
+    envs.extend(crate::pty::session_envs(s.id, None));
     (args, envs)
 }
 

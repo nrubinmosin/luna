@@ -2,14 +2,15 @@
 //! it exits or the time is up, with the answer handed over on the way out.
 
 use crate::agents::ask::{ask_of, live, state_of, Ask};
-use crate::agents::delivery::{is_held, screen_of, POLL};
-use crate::agents::lost::{lost_answer, still_all_lost, undelivered_note};
+use crate::agents::delivery::{screen_of, POLL};
+use crate::agents::handover::{taken_from, taken_over_error};
+use crate::agents::held::is_held;
+use crate::agents::lost::undelivered_note;
 use crate::agents::notifier::job_end_stood;
 use crate::agents::notifier::lines::{news_for_parent, real_turn_past, verdict, Verdict};
 use crate::agents::owed::{hand_over, last_shown, looked, Owed, QUEUED_GRACE_MS};
 use crate::agents::read::{failure_of, transcript_found, transcript_path, MAX_TEXT};
 use crate::agents::registry::{authorize_view, reg, waits_on_helpers, DEV_CALLER};
-use crate::agents::resume::resume_pending;
 use crate::agents::said::{answer_file, answer_text, replies_since, said_since, Said};
 use crate::provider::Provider;
 use crate::throttle::now_ms;
@@ -178,19 +179,16 @@ fn wait_for(
     let gone_err = || -> Result<(Waited, bool), String> { Err(LET_GO.into()) };
     let pty = crate::pty::manager();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_s.clamp(1, 1800));
-    // A first turn lost is all there is to wait for, and what Luna holds of the
-    // caller's stays for it (`deliver_held`), so nothing below would ever see it through.
-    // An `exit` waits for the session itself.
-    let lost = || (until == "turn_done" || !live(pty, id)) && still_all_lost(pty, caller, id) && holding() != Holding::Unsure;
+    // Its helper the person took over while this waited: nothing more is to come.
+    let taken = || taken_from(id).is_some_and(|from| from == caller);
     // Text Luna holds for a person's draft goes in first; the turn to wait
-    // for is the one it starts, past whatever the person sent meanwhile. So does
-    // what carries it on after a core stopped its turn.
-    while is_held(caller, id) || resume_pending(id) {
+    // for is the one it starts, past whatever the person sent meanwhile.
+    while is_held(caller, id) {
         if gone() {
             return gone_err();
         }
-        if lost() {
-            return lost_answer(caller, id, call, alone);
+        if taken() {
+            return Err(taken_over_error(id));
         }
         if std::time::Instant::now() >= deadline {
             let (state, ask) = state_of(id);
@@ -248,8 +246,8 @@ fn wait_for(
         if gone() {
             return gone_err();
         }
-        if lost() {
-            return lost_answer(caller, id, call, alone);
+        if taken() {
+            return Err(taken_over_error(id));
         }
         let alive = live(pty, id);
         let (ts, floor) = state_then_floor(&key, || crate::activity::turn_state(id));

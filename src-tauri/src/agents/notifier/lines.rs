@@ -2,17 +2,15 @@
 //! settled or standing, and the turns notices start.
 
 use crate::agents::ask::{ask_of, live};
-use crate::agents::lost::{first_turn_lost, never_started_what, sentence, undelivered_for, undelivered_line, undelivered_text};
+use crate::agents::lost::{never_started_what, sentence, undelivered_for, undelivered_line, undelivered_text};
 use crate::agents::notifier::{left_quiet, Settled, IDLE_JOB_MS};
 use crate::agents::owed::{Owed, QUEUED_GRACE_MS};
 use crate::agents::persist::{core_up_ms, returning};
 use crate::agents::read::{failure_of, transcript_end, transcript_found, transcript_path};
 use crate::agents::registry::{is_descendant, label, reg, waits_on_helpers, Known, Registry};
-use crate::agents::resume::resume_pending;
 use crate::agents::said::{
     answer_file, answer_text, answer_where, begins, note_file, replies_since, report_span, said_since, SHORT_MESSAGE,
 };
-use crate::agents::spawn::worktree::leave_half_made;
 use crate::agents::wait::REPLY_GRACE_MS;
 use crate::provider::Provider;
 use crate::throttle::now_ms;
@@ -259,8 +257,7 @@ pub(in crate::agents) fn notice_line(
             _ => Some((None, Settled::Hold(ended))),
         };
     }
-    // Going on by itself any moment: what it said so far is no end of anything.
-    if now == Verdict::TurnOver && !resume_pending(id) {
+    if now == Verdict::TurnOver {
         let cut = crate::background::cut_short(id) || o.cut_short;
         let failed = if cut { None } else { failure_of(pty, id, k.provider) };
         let replies = replies_since(pty, id, k.provider, o.cursor, cut || failed.is_some());
@@ -302,7 +299,7 @@ pub(in crate::agents) fn notice_line(
             1 => format!(" with 1 message since you asked; {}", answer_where(file.as_deref(), span)),
             n => format!(" with {n} messages since you asked; {}", answer_where(file.as_deref(), span)),
         };
-        if parent && (crate::background::never_started(id) || (o.cut_short && first_turn_lost(pty, id))) {
+        if parent && crate::background::never_started(id) {
             // Before it is told: what its next turn will not go on in is told with this.
             crate::background::settle_worktree(id);
             let what = never_started_what(&lost, file.as_deref());
@@ -366,7 +363,7 @@ pub(in crate::agents) fn notice_line(
             }
         }
     }
-    standing_line(pty, caller, who, id, k, o)
+    standing_line(pty, who, id, k, o)
 }
 
 /// A turn that has said nothing for this long, its caller hears of once: a
@@ -444,7 +441,6 @@ fn turn_quiet_ms(pty: &crate::pty::PtyManager, id: &str) -> Option<u64> {
 /// prompt until it times out for the breaker's sake.
 pub(in crate::agents) fn standing_line(
     pty: &crate::pty::PtyManager,
-    caller: &str,
     who: &str,
     id: &str,
     k: &Known,
@@ -455,18 +451,6 @@ pub(in crate::agents) fn standing_line(
         // The window has yet to start it, as it does a chat in a pane.
         if returning(k, core_up_ms()) {
             return None;
-        }
-        if o.cut_short && k.parent.as_deref() == Some(caller) && first_turn_lost(pty, id) {
-            leave_half_made(id, k);
-            let lost = undelivered_for(id, caller, true);
-            let file = note_file(id, &undelivered_text(&lost));
-            let what = never_started_what(&lost, file.as_deref());
-            // No `luna_send` for one that is not running. Opened by a person, it
-            // would start with nothing to go on.
-            return Some((
-                Some(format!("{who} never got started: Luna's core restarted before its first turn got anywhere, and its CLI has not started again, so there is nothing to carry on from; {what}. Spawn it again if it still matters, and luna_delete this one.")),
-                Settled::Exited,
-            ));
         }
         if o.cut_short {
             return Some((
@@ -488,7 +472,7 @@ pub(in crate::agents) fn standing_line(
             Settled::Exited,
         ));
     }
-    if o.resumed && !resume_pending(id) {
+    if o.resumed {
         return Some((
             Some(format!("{who} was cut short when Luna's core restarted and has resumed automatically, with anything queued for it. It works on; another notice comes when its turn ends.")),
             Settled::Resumed,
@@ -503,7 +487,7 @@ pub(in crate::agents) fn standing_line(
                 None => format!("{who} {}. Answer with luna_answer.", a.line()),
             },
             None => format!(
-                "{who} is stopped on a prompt in its terminal; luna_read with screen: true shows it, luna_answer with keys answers it."
+                "{who} is stopped on a prompt in its terminal that Luna cannot read; luna_read with screen: true shows it, and the person answers it."
             ),
         };
         return Some((Some(line), Settled::Waiting));
@@ -980,7 +964,7 @@ mod tests {
         assert!(pair_stopped(pty, "bp-c", "bp-s"));
         // A job's end or a turn's, which is all the notifier would have for a
         // stopped pair: nothing.
-        assert!(standing_line(pty, "bp-c", "Your helper", "bp-s", &known, o).is_none());
+        assert!(standing_line(pty, "Your helper", "bp-s", &known, o).is_none());
         // Held on a prompt, it is told, or the helper sits there until it times out.
         crate::background::in_turn_for_test("bp-s");
         let asks = std::thread::spawn(|| {
@@ -992,7 +976,7 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        let Some((Some(line), Settled::Waiting)) = standing_line(pty, "bp-c", "Your helper", "bp-s", &known, o) else {
+        let Some((Some(line), Settled::Waiting)) = standing_line(pty, "Your helper", "bp-s", &known, o) else {
             panic!("a prompt goes through")
         };
         assert!(line.contains("asks for permission to run Bash: ls") && line.contains("askId"), "{line}");
@@ -1000,7 +984,7 @@ mod tests {
         let _ = asks.join();
         // And gone is gone.
         crate::background::gone_for_test("bp-s");
-        assert!(matches!(standing_line(pty, "bp-c", "Your helper", "bp-s", &known, o), Some((Some(_), Settled::Exited))));
+        assert!(matches!(standing_line(pty, "Your helper", "bp-s", &known, o), Some((Some(_), Settled::Exited))));
         forget("bp-s");
         let _ = std::fs::remove_file(&path);
     }
