@@ -4,6 +4,21 @@
 use super::*;
 use crate::settings::FIRST_INSTRUCTIONS;
 
+/// The temp folder as the disk spells it. A runner's TEMP can be an 8.3 short
+/// name (`C:\Users\RUNNER~1\…`), and a session given a folder under it is told
+/// of both its spellings (pty/start.rs `added_dir`): a golden written for one
+/// would meet the other unredacted. Without Windows' `\\?\` prefix, which
+/// canonicalizing adds and no path a CLI reports carries.
+fn temp_as_on_disk() -> PathBuf {
+    let temp = std::env::temp_dir();
+    let Ok(full) = std::fs::canonicalize(&temp) else { return temp };
+    let text = full.to_string_lossy().into_owned();
+    match text.strip_prefix(r"\\?\") {
+        Some(rest) if !rest.starts_with(r"UNC\") => PathBuf::from(rest),
+        _ => full,
+    }
+}
+
 pub(super) struct Fixture {
     pub(super) base: PathBuf,
     pub(super) dirs: Dirs,
@@ -12,7 +27,7 @@ pub(super) struct Fixture {
 
 impl Fixture {
     pub(super) fn new(tag: &str) -> Fixture {
-        let base = std::env::temp_dir().join(format!("luna-library-{tag}-{}", std::process::id()));
+        let base = temp_as_on_disk().join(format!("luna-library-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let dirs = Dirs { root: base.join("library"), data: base.join("data") };
         let accounts =
