@@ -40,9 +40,10 @@ doubt, prepare and ask.
 ./scripts/release.ps1 -Bump 1.2.3
 ```
 
-Writes the four version files and nothing else. If `CHANGELOG.md` exists, add
-the version's heading and entry (the tag check looks for the heading); without
-one the check only warns. Commit as `Luna 1.2.3` (the repo's convention) and
+Writes the four version files and nothing else. Write the version's section in
+`CHANGELOG.md`: it is the release notes (`release.ps1` refuses a missing or
+empty one), and its opening paragraph is what the update chip shows. Write it
+from the commits, user-facing, short. Commit as `Luna 1.2.3` (the repo's convention) and
 get it onto `master` the way `master` takes changes: a pull request when it is
 protected (`docs/releasing.md`, "One-time setup"), else a push. Wait for CI on
 that commit before tagging.
@@ -51,13 +52,12 @@ that commit before tagging.
 
 ```powershell
 ./scripts/release.ps1 -DryRun                   # all checks, no tag
-./scripts/release.ps1 -Notes "<release notes>"  # annotated tag v1.2.3
+./scripts/release.ps1                           # annotated tag v1.2.3
 git push origin v1.2.3                          # starts release.yml
 ```
 
-The tag's message becomes the release notes: write them from the commits,
-user-facing, short. Fix whatever `-DryRun` refuses rather than working around
-it.
+The notes come from the CHANGELOG section, not the tag. Fix whatever
+`-DryRun` refuses rather than working around it.
 
 ## 4. Watch the workflow
 
@@ -96,8 +96,11 @@ gh release download v1.2.3 -D test-build/release-v1.2.3
 - **latest.json**: `version` is 1.2.3; `platforms.windows-x86_64.url` is
   `https://github.com/nrubinmosin/luna/releases/download/v1.2.3/<installer
   name>`; its `signature` equals the `.sig` file's contents, compared as
-  strings by a command, not by eye; `core_fingerprint` is present; `notes` are
-  the ones meant.
+  strings by a command, not by eye; `core_fingerprint` is present; `notes` is
+  the CHANGELOG section's opening paragraph.
+- **Notes**: the draft's body is the CHANGELOG section, the sections of any
+  version since the last published release, the compare link and the Verify
+  block whose `SHA256SUMS` match the asset.
 - **Plausibility**: the installer is megabytes, not kilobytes; each SBOM lists
   the project's real dependencies. A file that hashes right can still be the
   wrong file.

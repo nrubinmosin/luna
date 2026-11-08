@@ -9,17 +9,20 @@ signing step and publishes the draft the workflow leaves.
 
 1. **Bump.** `./scripts/release.ps1 -Bump 1.2.3` writes the version into the four
    files that carry it: `package.json`, `src-tauri/tauri.conf.json`,
-   `src-tauri/Cargo.toml` and `src-tauri/Cargo.lock`. Add the `CHANGELOG.md` entry if
-   there is one, and commit (`Luna 1.2.3`) on a branch of its own. `master` is
+   `src-tauri/Cargo.toml` and `src-tauri/Cargo.lock`. Write the version's section in
+   `CHANGELOG.md` (`## [1.2.3] - <date>`): it is the release notes, and its opening
+   paragraph, before the first `###` subsection, is what the update chip shows in
+   installed copies. Commit (`Luna 1.2.3`) on a branch of its own. `master` is
    protected (see [One-time setup](#one-time-setup)), so the bump goes in through a
    pull request like any other change: push the branch, open the PR, and merge it once
    CI has passed.
 2. **Tag.** On `master` as merged (`git switch master; git pull --ff-only`),
-   `./scripts/release.ps1` (or `-Notes "..."`) checks that the tree is clean,
-   HEAD is on `origin/master`, the four versions agree, `CHANGELOG.md` has a heading for
-   the version (a warning when there is no CHANGELOG), and the tag is free here and on
-   `origin`. It then makes the annotated tag `v1.2.3`, whose message becomes the release
-   notes, and prints `git push origin v1.2.3`. `-DryRun` checks without tagging.
+   `./scripts/release.ps1` checks that the tree is clean, HEAD is on `origin/master`,
+   the four versions agree, the release notes render from `CHANGELOG.md` (the version's
+   section is there, and neither it nor the section of any version since the last
+   published release is empty), and the tag is free here and on `origin`. It then makes the annotated tag
+   `v1.2.3` (message `Luna 1.2.3`) and prints `git push origin v1.2.3`. `-DryRun`
+   checks without tagging.
 3. **The workflow** runs on the tag push:
 
    ```
@@ -28,8 +31,9 @@ signing step and publishes the draft the workflow leaves.
    ```
 
    - **verify**: the versions agree with the tag; the tag is annotated and points at a
-     commit on `master`; CI (`ci.yml`) has passed on that very commit as a push. A CI run
-     still going is waited for (up to 45 minutes), so the tag can go out with its commit.
+     commit on `master`; the release notes render from `CHANGELOG.md`; CI (`ci.yml`) has
+     passed on that very commit as a push. A CI run still going is waited for (up to 45
+     minutes), so the tag can go out with its commit.
    - **build** waits for a reviewer's approval of the `release` environment, then builds
      the NSIS installer and its updater signature with `scripts/build-windows.ps1` in the
      same Docker image as a local build, and writes `latest.json`
@@ -41,7 +45,12 @@ signing step and publishes the draft the workflow leaves.
    - **attest**: `SHA256SUMS` over every asset, a build provenance attestation of each,
      and the two SBOMs attested against the installer.
    - **publish** creates a **draft** release with the installer, `.sig`, `latest.json`,
-     the SBOMs and `SHA256SUMS`.
+     the SBOMs and `SHA256SUMS`. Its notes are made from `CHANGELOG.md`
+     (`scripts/release-notes.ps1`): the version's section as written; under a heading
+     each, the sections of every version newer than the latest *published* release, so a
+     version that was tagged but never published ships its changes here; a link to the
+     compare view from that release and to the CHANGELOG; and a Verify section with the
+     commands under [Verifying a release](#verifying-a-release) and the `SHA256SUMS`.
 4. **Publish.** Look the draft over and publish it. Installed copies read `latest.json`
    from the latest *published* release (`plugins.updater.endpoints` in
    `tauri.conf.json`), so nothing reaches them before this.
@@ -64,8 +73,9 @@ on the fixed commit, which the tag ruleset lets only the maintainer do).
 **Without the workflow.** `./scripts/release.ps1 -Local` cuts the release the way it
 was done before the workflow: it builds and signs on this machine with the key that
 `-UpdaterKey` or `LUNA_UPDATER_KEY` names, and uploads a published release with `gh`
-(no SBOMs or attestations). `-Local -DryRun` builds and composes without uploading;
-`-Local -SkipBuild` uploads what the last build left.
+(no SBOMs or attestations; the notes from `CHANGELOG.md` as above, without the Verify
+section). `-Local -DryRun` builds and composes without uploading; `-Local -SkipBuild`
+uploads what the last build left.
 
 ## One-time setup
 
