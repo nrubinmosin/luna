@@ -55,6 +55,10 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   and the exception menu work from the keyboard, Tab stays inside the dialog
   and the focus returns to what opened it, and a draft on one page survives a
   look at another. See docs/user-guide/settings.md.
+- Confirmation dialogs (deleting a chat, an update, a library change) take
+  the focus when they open, keep Tab inside them, leave the window or dialog
+  behind them unreachable until they close, and then give the focus back to
+  the button that opened them. Enter on a focused Cancel now only cancels.
 - `luna_list` names each account with its defaults and usage but no longer its
   models, Codex's catalog with every model's levels being most of what a
   listing cost an agent that lists often; `models: true` brings them back.

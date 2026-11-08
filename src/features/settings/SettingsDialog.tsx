@@ -5,7 +5,7 @@ import { useDialogHost } from '../../shared/ui/dialogHost';
 import { Icon, type IconName } from '../../shared/ui/icons';
 import { BrowsersSection, OpenLinksSection } from '../browsers/BrowserSection';
 import { SETTINGS_PAGES, useSettings, type SettingsPage } from './settings.store';
-import { focusables } from './SettingsRows';
+import { useModal } from '../../shared/ui/modal';
 import { AccountsFolderSection } from './sections/AccountsFolderSection';
 import { NewChatsSection } from './sections/NewChatsSection';
 import { WorktreesSection } from './sections/WorktreesSection';
@@ -84,22 +84,12 @@ function SettingsWindow({ onClose }: { onClose: () => void }) {
   // Out of any draggable subtree, inside the [data-app] theme scope.
   const host = useDialogHost();
 
-  // Modal: the rest of the app is inert while Settings is up, so neither
-  // Tab nor a screen reader wanders behind it, and the focus goes back to
-  // what opened it on close. Popups opened later (the exception menu, the
-  // update confirm) land beside it in the host and stay live. Ahead of the
-  // effect below, which moves the focus.
-  useEffect(() => {
-    const scrim = dialog.current?.parentElement;
-    if (!host || !scrim) return;
-    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const others = [...host.children].filter(c => c !== scrim && !c.hasAttribute('inert'));
-    others.forEach(c => c.setAttribute('inert', ''));
-    return () => {
-      others.forEach(c => c.removeAttribute('inert'));
-      if (opener?.isConnected) opener.focus();
-    };
-  }, [host]);
+  // Modal: the rest of the app is inert while Settings is up, Tab goes round
+  // inside it, and the focus goes back to what opened it on close. Keyboard
+  // users land on the page list, ready for the arrows. Popups opened later
+  // (the exception menu) land beside it in the host and stay live; the update
+  // confirm is a modal of its own and suspends Settings while it is up.
+  const trap = useModal(dialog, host, '[role="tab"][aria-selected="true"]');
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -110,12 +100,6 @@ function SettingsWindow({ onClose }: { onClose: () => void }) {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
-
-  // Keyboard users land on the page list, ready for the arrows. Once the
-  // host is there: on the first render it may not be yet.
-  useEffect(() => {
-    nav.current?.querySelector<HTMLElement>('[aria-selected="true"]')?.focus();
-  }, [host]);
 
   // The page list is a vertical tab list: the arrows, Home and End move
   // between pages and show each one; Tab goes on into the page.
@@ -136,21 +120,6 @@ function SettingsWindow({ onClose }: { onClose: () => void }) {
     e.preventDefault();
     useSettings.getState().setPage(next);
     nav.current?.querySelectorAll<HTMLElement>('[role="tab"]')[to]?.focus();
-  };
-
-  // Tab and Shift+Tab go round the dialog rather than out of it. A key from
-  // a popup the dialog owns (portaled outside it) is that popup's to handle.
-  const trap = (e: ReactKeyboardEvent) => {
-    const box = dialog.current;
-    if (e.key !== 'Tab' || !box?.contains(e.target as Node)) return;
-    const all = focusables(box);
-    const first = all[0];
-    const last = all[all.length - 1];
-    if (!first || !last) return;
-    if (e.shiftKey ? document.activeElement === first : document.activeElement === last) {
-      e.preventDefault();
-      (e.shiftKey ? last : first).focus();
-    }
   };
 
   if (!host) return null;

@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
@@ -73,6 +74,50 @@ describe('ConfirmDialog', () => {
       )
     });
     expect(screen.getByRole('checkbox', { name: /delete the worktree too/i })).toBeInTheDocument();
+  });
+
+  it('is modal: focus moves in, Tab goes round, and closing gives the focus back', async () => {
+    const user = userEvent.setup();
+    function Host() {
+      const [open, setOpen] = useState(false);
+      return (
+        <div data-app>
+          <div data-testid="app">
+            <button onClick={() => setOpen(true)}>Delete…</button>
+          </div>
+          {open && <ConfirmDialog title="Delete chat?" body="b" onConfirm={() => {}} onCancel={() => setOpen(false)} />}
+        </div>
+      );
+    }
+    render(<Host />);
+    const opener = screen.getByRole('button', { name: 'Delete…' });
+    await user.click(opener);
+
+    const dialog = screen.getByRole('dialog', { name: 'Delete chat?' });
+    expect(dialog).toHaveFocus();
+    expect(screen.getByTestId('app')).toHaveAttribute('inert');
+    await user.tab();
+    expect(screen.getByRole('button', { name: 'Close' })).toHaveFocus();
+    await user.tab();
+    await user.tab();
+    expect(screen.getByRole('button', { name: 'Delete' })).toHaveFocus();
+    await user.tab();
+    expect(screen.getByRole('button', { name: 'Close' })).toHaveFocus();
+    await user.tab({ shift: true });
+    expect(screen.getByRole('button', { name: 'Delete' })).toHaveFocus();
+
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.getByTestId('app')).not.toHaveAttribute('inert');
+    expect(opener).toHaveFocus();
+  });
+
+  it('takes Enter on a focused Cancel as Cancel alone', async () => {
+    const { onConfirm, onCancel, user } = open();
+    screen.getByRole('button', { name: 'Cancel' }).focus();
+    await user.keyboard('{Enter}');
+    expect(onCancel).toHaveBeenCalledOnce();
+    expect(onConfirm).not.toHaveBeenCalled();
   });
 
   it('stops listening for keys once closed', async () => {
