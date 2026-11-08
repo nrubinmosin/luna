@@ -1078,7 +1078,7 @@ mod tests {
         // A's, by the owners now, and once both are gone by the log's word on
         // the takeover, which cuts B's lineage.
         agents::register("hs-tb", crate::provider::Provider::Claude, "C:/p", "C:/acc/anthropic/one", Some("hs-me"), true, json!({}));
-        agents::take_over("hs-tb", || Some(Vec::new()));
+        agents::take_over("hs-tb", || Some(Vec::new())).unwrap();
         agents::register("hs-tc", crate::provider::Provider::Claude, "C:/p", "C:/acc/anthropic/one", Some("hs-tb"), false, json!({}));
         let took = |id: &str, parent: &str| crate::agentlog::Run { how: Some(crate::agentlog::TAKEN_OVER.into()), ..run(id, parent) };
         let taken = || vec![took("hs-tb", "hs-me"), run("hs-tc", "hs-tb")];
