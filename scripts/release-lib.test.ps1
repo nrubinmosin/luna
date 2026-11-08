@@ -48,6 +48,105 @@ function Compare-Lines([string]$Before, [string]$After) {
     @(for ($i = 0; $i -lt $a.Count; $i++) { if ($a[$i] -cne $b[$i]) { $b[$i] } })
 }
 
+# A workflow's jobs, read by indentation as YAML nests them (no YAML parser
+# ships with pwsh or the toolchain images): each job, two spaces in under
+# `jobs:`, with Lines, its own lines, comments dropped, and Steps, each item
+# of its `steps:` list with Keys, every key of the step and its whole value:
+# the text after the colon and every line indented deeper than the key, which
+# takes in block scalars (`run: |`, `>-`), quoted and plain multi-line values
+# and nested maps alike. Header holds the lines before `jobs:`.
+function Read-WorkflowJobs([string]$Text) {
+    $lines = @($Text -split '\r?\n' | Where-Object { $_ -notmatch '^\s*#' })
+    $jobsAt = [array]::IndexOf($lines, ($lines | Where-Object { $_ -match '^jobs:\s*$' } | Select-Object -First 1))
+    if ($jobsAt -lt 0) { throw 'no jobs:' }
+    $indent = { param($line) $line.Length - $line.TrimStart(' ').Length }
+    $jobs = [ordered]@{}
+    $job = $null
+    for ($i = $jobsAt + 1; $i -lt $lines.Count; $i++) {
+        $line = $lines[$i]
+        if ($line -match '^  ([A-Za-z0-9_-]+):\s*$') {
+            $job = [pscustomobject]@{ Lines = [System.Collections.Generic.List[string]]::new(); Steps = [System.Collections.Generic.List[object]]::new() }
+            $jobs[$Matches[1]] = $job
+            continue
+        }
+        if ($line.Trim() -and (& $indent $line) -lt 2) { throw "line $($i + 1) is outside any job: $line" }
+        if ($job) { $job.Lines.Add($line) }
+    }
+    foreach ($job in $jobs.Values) {
+        $body = $job.Lines
+        $stepsAt = -1
+        for ($i = 0; $i -lt $body.Count; $i++) { if ($body[$i] -match '^    steps:\s*$') { $stepsAt = $i; break } }
+        if ($stepsAt -lt 0) { continue }
+        # Each item: its lines, its "- " opening taken as two more spaces of
+        # indentation, so its first key sits with the others.
+        $items = [System.Collections.Generic.List[object]]::new()
+        for ($i = $stepsAt + 1; $i -lt $body.Count; $i++) {
+            $line = $body[$i]
+            if ($line.Trim() -and (& $indent $line) -le 4) { break }
+            if ($line -match '^(\s*)- (.*)$' -and $Matches[1].Length -eq 6) {
+                $items.Add([System.Collections.Generic.List[string]]::new())
+                $items[-1].Add((' ' * 8) + $Matches[2])
+            } elseif ($items.Count) {
+                $items[-1].Add($line)
+            } elseif ($line.Trim()) {
+                throw "a step line before any step: $line"
+            }
+        }
+        foreach ($item in $items) {
+            $keys = [ordered]@{}
+            for ($i = 0; $i -lt $item.Count; $i++) {
+                if ($item[$i] -notmatch '^        ([A-Za-z0-9_-]+):(.*)$') {
+                    if ($item[$i].Trim() -and (& $indent $item[$i]) -le 8) { throw "not a step key: $($item[$i])" }
+                    continue
+                }
+                $name = $Matches[1]
+                $value = [System.Collections.Generic.List[string]]::new()
+                $value.Add($Matches[2].Trim())
+                while ($i + 1 -lt $item.Count -and (-not $item[$i + 1].Trim() -or (& $indent $item[$i + 1]) -gt 8)) {
+                    $i++
+                    $value.Add($item[$i].Trim())
+                }
+                $keys[$name] = ($value -join "`n").Trim()
+            }
+            $job.Steps.Add([pscustomobject]@{ Keys = $keys })
+        }
+    }
+    [pscustomobject]@{ Header = @($lines[0..([math]::Max($jobsAt - 1, 0))]); Jobs = $jobs }
+}
+
+# What release.yml has to keep (docs/releasing.md): no job but sign names a
+# secret, a variable or an environment, or mentions the signing key; sign
+# names the `release` environment for signed runs, checks out sparsely, uses
+# no action but checkout and the artifact ones, and runs no package manager,
+# build tool or build script in any of its steps. Throws naming the breach.
+function Assert-ReleaseWorkflow([string]$Text) {
+    $workflow = Read-WorkflowJobs $Text
+    if (($workflow.Header -join "`n") -match 'secrets\.|vars\.|environment:|TAURI_SIGNING') { throw 'the workflow''s header reaches for a secret' }
+    foreach ($name in $workflow.Jobs.Keys) {
+        if ($name -eq 'sign') { continue }
+        if (($workflow.Jobs[$name].Lines -join "`n") -match 'secrets\.|vars\.|environment:|TAURI_SIGNING') {
+            throw "the $name job references a secret, a variable, an environment or the signing key"
+        }
+    }
+    $sign = $workflow.Jobs['sign']
+    if (-not $sign) { throw 'no sign job' }
+    if (($sign.Lines -join "`n") -notmatch "(?m)^    environment: \$\{\{ needs\.verify\.outputs\.signed == 'true' && 'release' \|\| '' \}\}$") {
+        throw 'sign does not name the release environment'
+    }
+    $allowed = '^actions/(checkout|download-artifact|upload-artifact)@[0-9a-f]{40}$'
+    $tools = '(?<![\w.-])(pnpm|npm|npx|yarn|corepack|bun|deno|node|cargo|rustc|rustup|make|cmake|pip|python3?|go|tauri|docker build)(?![\w-])|build-windows|release-bundle|sbom\.ps1|gate\.ps1'
+    foreach ($step in $sign.Steps) {
+        $uses = $step.Keys['uses']
+        if ($uses) {
+            if (($uses -replace '\s+#.*$', '') -notmatch $allowed) { throw "sign uses $uses" }
+            if ($uses -match '^actions/checkout@' -and $step.Keys['with'] -notmatch '(?m)^sparse-checkout:') { throw 'sign checks out the whole tree' }
+        }
+        if ($step.Keys['run'] -match $tools) { throw "a sign step runs build tooling: $($step.Keys['run'])" }
+        if ($step.Keys['shell'] -and $step.Keys['shell'] -notmatch '^(pwsh|bash)$') { throw "a sign step runs in $($step.Keys['shell'])" }
+    }
+    if (-not ($sign.Steps | Where-Object { $_.Keys['env'] -match 'secrets\.TAURI_SIGNING_PRIVATE_KEY\b' })) { throw 'sign gets no key' }
+}
+
 try {
     $current = (Get-Content (Join-Path $RepoRoot 'package.json') -Raw | ConvertFrom-Json).version
 
@@ -664,32 +763,29 @@ d8e1  latest.json
         Assert-Throws { Assert-AssetChecksums $dir "$(& $sha 'setup')  ../setup.exe" } 'not a sha256sum line'
     }
 
-    Check 'in release.yml only the sign job holds a secret or the release environment' {
-        # Jobs by their two-space-indented key under jobs:, each with its lines.
-        $jobs = [ordered]@{}
-        $current = $null
-        $inJobs = $false
-        foreach ($line in (Get-Content (Join-Path $RepoRoot '.github/workflows/release.yml'))) {
-            if ($line -match '^jobs:\s*$') { $inJobs = $true; continue }
-            if (-not $inJobs) {
-                if ($line -match 'secrets\.|environment:') { throw "outside the jobs: $line" }
-                continue
-            }
-            if ($line -match '^  ([A-Za-z0-9_-]+):\s*$') { $current = $Matches[1]; $jobs[$current] = @(); continue }
-            if ($current) { $jobs[$current] += $line }
-        }
-        Assert-Equal (($jobs.Keys) -join ',') 'verify,build,sign,sbom,attest,publish'
-        foreach ($job in $jobs.Keys) {
-            $text = ($jobs[$job] | Where-Object { $_ -notmatch '^\s*#' }) -join "`n"
-            $touches = $text -match 'secrets\.|TAURI_SIGNING|environment:'
-            if ($job -eq 'sign') {
-                if ($text -notmatch "environment: \$\{\{ needs\.verify\.outputs\.signed == 'true' && 'release' \|\| '' \}\}") { throw 'sign names no release environment' }
-                if ($text -notmatch 'secrets\.TAURI_SIGNING_PRIVATE_KEY\b') { throw 'sign gets no key' }
-                if ($text -match '(?m)^\s*-?\s*run: .*(pnpm|cargo|tauri build|build-windows)') { throw 'sign runs build tooling' }
-            } elseif ($touches) {
-                throw "the $job job references a secret, the signing key or an environment"
-            }
-        }
+    Check 'release.yml keeps the key in the sign job, and build tooling out of it' {
+        $text = [IO.File]::ReadAllText((Join-Path $RepoRoot '.github/workflows/release.yml')) -replace "`r`n", "`n"
+        $workflow = Read-WorkflowJobs $text
+        Assert-Equal ($workflow.Jobs.Keys -join ',') 'verify,build,sign,sbom,attest,publish'
+        $sign = $workflow.Jobs['sign']
+        Assert-Equal (@($sign.Steps | ForEach-Object { if ($_.Keys['name']) { $_.Keys['name'] } else { $_.Keys['uses'] -replace '@.*$', '' } }) -join ',') `
+            'actions/checkout,actions/download-artifact,Check the bundle against the build''s checksums,Sign the installer,actions/upload-artifact'
+        Assert-Equal ($sign.Steps[2].Keys['run'] -split "`n")[0] '|'
+        Assert-ReleaseWorkflow $text
+
+        # Each breach, as an edit of the real file.
+        $edit = { param($from, $to) if (-not $text.Contains($from)) { throw "no '$from' in release.yml" }; $text.Replace($from, $to) }
+        $beforeSign = '      # The key goes to this step alone'
+        Assert-Throws { Assert-ReleaseWorkflow (& $edit $beforeSign "      - name: Install`n        run: |`n          echo ready`n          pnpm install --frozen-lockfile`n$beforeSign") } 'runs build tooling'
+        Assert-Throws { Assert-ReleaseWorkflow (& $edit $beforeSign "      - run: >-`n          corepack enable &&`n          pnpm i`n$beforeSign") } 'runs build tooling'
+        Assert-Throws { Assert-ReleaseWorkflow (& $edit $beforeSign "      - shell: bash`n        run: `"cargo`n          build`"`n$beforeSign") } 'runs build tooling'
+        Assert-Throws { Assert-ReleaseWorkflow (& $edit $beforeSign "      - uses: actions/setup-node@0123456789abcdef0123456789abcdef01234567`n$beforeSign") } 'sign uses actions/setup-node'
+        Assert-Throws { Assert-ReleaseWorkflow (& $edit "          sparse-checkout-cone-mode: false`n" '' | ForEach-Object { $_ -replace '(?s)          sparse-checkout: \|\n(            \S+\n)+', '' }) } 'whole tree'
+        Assert-Throws {
+            Assert-ReleaseWorkflow (& $edit "        run: ./scripts/build-windows.ps1 -Installer" "        env:`n          KEY: `${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}`n        run: ./scripts/build-windows.ps1 -Installer")
+        } 'the build job references a secret'
+        Assert-Throws { Assert-ReleaseWorkflow (& $edit "  build:`n    needs: verify`n" "  build:`n    needs: verify`n    environment: release`n") } 'the build job references'
+        Assert-Throws { Assert-ReleaseWorkflow (& $edit "    environment: `${{ needs.verify.outputs.signed == 'true' && 'release' || '' }}`n" '') } 'release environment'
     }
 
     Check 'an SBOM is checked the way actions/attest checks it' {
