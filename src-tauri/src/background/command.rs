@@ -287,7 +287,7 @@ fn profile_deny(args: &[String]) -> Option<(String, String)> {
 /// Codex has nowhere but the conversation, where one note at its start goes
 /// with a compaction, and a long helper would go on as the chat of a person.
 /// Not in `Entry::opening`, which goes back to the caller as what it asked, nor
-/// in what `luna_read` gives back (`message_of` in codex/session/read.rs and
+/// in what `luna_message_list` gives back (`message_of` in codex/session/read.rs and
 /// claude/session/transcript.rs).
 pub(super) fn stdin_text(e: &Entry, prompt: &str) -> String {
     match (&e.spec.parent, e.spec.provider) {

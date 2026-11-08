@@ -10,11 +10,11 @@ use serde::Serialize;
 
 /// What a session waits on a person for: a question its model put (Claude
 /// Code's `AskUserQuestion`, Codex's `request_user_input`), or leave to run a
-/// tool. `luna_answer` answers either.
+/// tool. `luna_session_answer` answers either.
 #[derive(Clone, Serialize, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Ask {
-    /// A background helper's: which of its held asks this is, for `luna_answer`
+    /// A background helper's: which of its held asks this is, for `luna_session_answer`
     /// to name, so that an answer written on one cannot land on the next. A
     /// terminal shows one dialog at a time and has none.
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -14,7 +14,7 @@ quiet.
   has done nothing (under 1% of a core and 1 KiB/s of I/O) for 2 hours on end: a
   client waiting on work elsewhere is quiet too, but a forgotten `tail -F` or an
   unused server is let go then, and stops holding up the rule below. The log says
-  so, and it still shows in `luna_list`.
+  so, and it still shows in `luna_session_list`.
 - Windows does not restart its sleep timer for the request: if nobody has touched
   the PC for longer than that timer, it sleeps the moment the hold goes.
 - `luna.log` records when the hold was set and let go, which session held it
@@ -49,13 +49,13 @@ it and leaves the rule armed.
   leaves nothing set to start at the next sign-in; one whose fate is unknown
   keeps it, as the PC may yet restart.
 - **Start nothing new** drains: until the rule fires or is disarmed, agents'
-  `luna_spawn` and `luna_send` are refused and `luna_answer` takes only a
+  `luna_session_spawn` and `luna_session_send` are refused and `luna_session_answer` takes only a
   structured answer to a pending question or permission. What you do yourself is
   never refused.
 - While the rule is armed and something holds it up, `luna.log` says which
   session and why, so a morning with the PC still on can be read back.
 - An agent asked to turn the PC off when done arms this same rule with
-  `luna_power`, and cancels it with the action `cancel`.
+  `luna_power_set`, and cancels it with the action `cancel`.
 
 ## What "busy" and "done" mean
 

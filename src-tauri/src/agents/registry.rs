@@ -442,14 +442,14 @@ pub(super) fn authorize(caller: &str, target: &str) -> Result<Known, String> {
 }
 
 /// Reading a session and waiting on it reach any session but the caller's
-/// own: the transcript is on disk for anyone `luna_sessions` names it to, and
+/// own: the transcript is on disk for anyone `luna_session_list` names it to, and
 /// a caller that typed into a session has to be able to collect the answer.
 pub(super) fn authorize_view(caller: &str, target: &str) -> Result<Known, String> {
     if caller == target {
         return Err("that is your own session".into());
     }
     let r = reg().lock().unwrap_or_else(|e| e.into_inner());
-    r.known.get(target).cloned().ok_or_else(|| format!("unknown session {target}; luna_sessions lists them"))
+    r.known.get(target).cloned().ok_or_else(|| format!("unknown session {target}; luna_session_list lists them"))
 }
 
 /// Whether `id` is the caller's: spawned by it, directly or through a helper.
@@ -509,7 +509,7 @@ pub(super) fn authorize_send(caller: &str, target: &str) -> Result<Known, String
     if r.auto.get(target).is_some_and(|a| a.deleting) {
         return Err(format!("{target} is being deleted (autoDelete, idle since its answer); spawn a helper again for more"));
     }
-    let known = r.known.get(target).cloned().ok_or_else(|| format!("unknown session {target}; luna_sessions lists them"))?;
+    let known = r.known.get(target).cloned().ok_or_else(|| format!("unknown session {target}; luna_session_list lists them"))?;
     // Text on its way starts the idle count over now, under the lock `reap`
     // decides under: it cannot be taken for deletion while this is delivered.
     if let Some(a) = r.auto.get_mut(target) {
@@ -519,7 +519,7 @@ pub(super) fn authorize_send(caller: &str, target: &str) -> Result<Known, String
 }
 
 /// Every chat's name and window group, sent whenever one changes: what
-/// `luna_sessions` calls the user's own chats and where it puts them, which
+/// `luna_session_list` calls the user's own chats and where it puts them, which
 /// the core otherwise knows only by id.
 #[tauri::command]
 pub fn chat_names(mut names: HashMap<String, String>, groups: Option<HashMap<String, u32>>) {

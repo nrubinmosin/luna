@@ -1,10 +1,10 @@
 //! A session's transcript: where it is, what it holds as messages, and
-//! `luna_read`, which hands them over from a cursor on.
+//! `luna_message_list`, which hands them over from a cursor on.
 
 use crate::agents::ask::{state_of, Ask};
 use crate::agents::delivery::screen_of;
 use crate::agents::lost::{lost_count, lost_whole, undelivered_note};
-use crate::agents::owed::{hand_over, queue_settled, seen};
+use crate::agents::owed::{hand_over, looked, queue_settled, seen};
 use crate::agents::registry::{authorize_view, label, reg};
 use crate::provider::Provider;
 use serde::{Deserialize, Serialize};
@@ -44,7 +44,7 @@ pub struct Reading {
     /// Messages MAX_TEXT left out of this result: read from `since` on,
     /// the ones after `cursor`, still to read; with `last`, older ones.
     #[serde(skip_serializing_if = "is_zero")]
-    pub left_out: usize,
+    pub rest: usize,
     /// See `state_of`.
     pub state: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -63,6 +63,12 @@ pub struct Reading {
     /// final answer (`said::report_guessed`).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub report_guessed: bool,
+    /// Of a report read with `rest`: a file holding all it said, report first.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+    /// The answer owed for this report was collected (`ack`): no notice follows.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub acked: bool,
 }
 
 /// The last transcript found for each session: Claude Code drops the
@@ -190,14 +196,10 @@ pub fn read(
     last: Option<usize>,
     with_tools: bool,
     with_screen: bool,
-    report: bool,
     call: &crate::mcp::Call,
 ) -> Result<Reading, String> {
     let known = authorize_view(caller, id)?;
     let pty = crate::pty::manager();
-    if report {
-        return Ok(report_read(caller, id, known.provider, since, with_screen));
-    }
     let path = transcript_path(pty, id);
     // Taken before the transcript is read: a turn over by now has its words
     // in what is read.
@@ -229,7 +231,7 @@ pub fn read(
         }
     }
     let size = |m: &Message| m.text.chars().count();
-    let mut left_out = 0;
+    let mut rest = 0;
     let mut text_cut = false;
     if messages.iter().map(size).sum::<usize>() > MAX_TEXT {
         // As many as fit, and the first one taken whatever its size.
@@ -246,14 +248,14 @@ pub fn read(
         };
         if last.is_some() {
             let keep = fit(&mut messages.iter().rev().map(size));
-            left_out = messages.len() - keep;
-            front += left_out;
-            messages.drain(..left_out);
+            rest = messages.len() - keep;
+            front += rest;
+            messages.drain(..rest);
         } else {
             let keep = fit(&mut messages.iter().map(size));
-            left_out = messages.len() - keep;
-            back = left_out;
-            if left_out > 0 {
+            rest = messages.len() - keep;
+            back = rest;
+            if rest > 0 {
                 messages.truncate(keep);
                 if let Some(p) = &path {
                     cursor = cursor_after(p, from, cursor, found, keep, &messages_at);
@@ -303,20 +305,22 @@ pub fn read(
         transcript_missing: messages.is_empty() && !transcript_found(pty, id),
         messages,
         cursor,
-        left_out,
+        rest,
         state,
         ask,
         turns_ended,
         screen: with_screen.then(|| screen_of(pty, id)).flatten(),
         undelivered,
         report_guessed: false,
+        file: None,
+        acked: false,
     })
 }
 
 /// The report of what the session said since `since`, else since the caller
 /// last asked it something, else of its last turn that said anything: the one
 /// message a notice's answer file opens with (`said::report_of`), for a caller
-/// that wants no more of it. The rest it said is counted in `left_out`. Not the
+/// that wants no more of it. The rest it said is counted in `rest`. Not the
 /// answer collected: a notice owed still comes, its file holding the whole.
 ///
 /// Read as any read is: the cursor handed back is where the reader stopped,
@@ -325,7 +329,7 @@ pub fn read(
 /// the top. An explicit `since` that finds nothing is nothing: only a read
 /// with no cursor of its own takes, as a notice does (`said::replies_since`),
 /// the last word of a conversation that went on in a transcript of its own.
-fn report_read(caller: &str, id: &str, provider: Provider, since: Option<u64>, with_screen: bool) -> Reading {
+fn report_read(caller: &str, id: &str, provider: Provider, since: Option<u64>) -> Reading {
     let pty = crate::pty::manager();
     let owed = reg().lock().unwrap_or_else(|e| e.into_inner()).owed.get(&(caller.to_string(), id.to_string())).map(|o| o.cursor);
     let (path, moved) = transcript_seen(pty, id);
@@ -350,6 +354,11 @@ fn report_read(caller: &str, id: &str, provider: Provider, since: Option<u64>, w
     }
     let replies = crate::agents::said::said_of(found);
     let report_guessed = crate::agents::said::report_guessed(&replies);
+    // The rest it said is a file away, report first, for a caller that wants it.
+    let file = (replies.len() > 1)
+        .then(|| crate::agents::said::note_file(id, &crate::agents::said::answer_text(&replies)))
+        .flatten()
+        .map(|p| p.to_string_lossy().into_owned());
     let messages: Vec<Message> = crate::agents::said::report_text(&replies)
         .map(|text| Message { role: "assistant".into(), text: cut_to_max(&text).unwrap_or(text), after_cli: false, final_answer: false })
         .into_iter()
@@ -357,16 +366,49 @@ fn report_read(caller: &str, id: &str, provider: Provider, since: Option<u64>, w
     let (state, ask) = state_of(id);
     Reading {
         transcript_missing: messages.is_empty() && !transcript_found(pty, id),
-        left_out: replies.len().saturating_sub(messages.len()),
+        rest: replies.len().saturating_sub(messages.len()),
         messages,
         cursor,
         state,
         ask,
         turns_ended: crate::activity::turn_state(id).map(|t| t.turns_ended).unwrap_or(0),
-        screen: with_screen.then(|| screen_of(pty, id)).flatten(),
+        screen: None,
         undelivered: None,
         report_guessed,
+        file,
+        acked: false,
     }
+}
+
+/// `luna_report_get`: the report of what the session said (`report_read`), as a
+/// look at it that starts its autoDelete count over (`looked`). With `ack`, a
+/// report of all of an owed answer, its turn over, collects that answer as a
+/// whole read would, so no notice follows; whatever else, it stays owed, and
+/// `acked` says which. A cancel after the response puts the debt back.
+pub fn report_get(caller: &str, id: &str, since: Option<u64>, ack: bool, call: &crate::mcp::Call) -> Result<Reading, String> {
+    let known = authorize_view(caller, id)?;
+    let ts = crate::activity::turn_state(id);
+    let mut reading = report_read(caller, id, known.provider, since);
+    looked(id);
+    if !ack {
+        return Ok(reading);
+    }
+    let key = (caller.to_string(), id.to_string());
+    let owed = reg().lock().unwrap_or_else(|e| e.into_inner()).owed.get(&key).copied();
+    let turns_ended = ts.map(|t| t.turns_ended).unwrap_or(0);
+    let done = ts.is_none_or(|t| t.turn == crate::activity::Turn::Idle && !t.children_busy);
+    // All of it: read from where the question found the transcript, its turn
+    // over, the session's own word last.
+    let whole = owed.is_some_and(|o| {
+        since.is_none_or(|at| at <= o.cursor)
+            && turns_ended > o.baseline
+            && (!o.queued || queue_settled(&key, o, turns_ended))
+            && !reading.messages.is_empty()
+    });
+    if whole && done && call.commit(hand_over(caller, id, turns_ended, None)) {
+        reading.acked = true;
+    }
+    Ok(reading)
 }
 
 /// A message's text cut to MAX_TEXT characters, saying how much more there is
@@ -376,7 +418,7 @@ fn cut_to_max(text: &str) -> Option<String> {
     (n > MAX_TEXT).then(|| {
         let more = n - MAX_TEXT;
         format!(
-            "{}\n\n[cut: {more} more characters; the transcript luna_sessions names has it whole]",
+            "{}\n\n[cut: {more} more characters; the transcript luna_session_get names has it whole]",
             text.chars().take(MAX_TEXT).collect::<String>()
         )
     })
@@ -417,7 +459,7 @@ mod tests {
     use crate::agents::registry::{reg, register, session_exited};
     use crate::agents::teardown::forget;
 
-    /// `report: true` reads as a read does: the reader's cursor, never past a
+    /// `luna_report_get` reads as a read does: the reader's cursor, never past a
     /// line still being written; a long report cut at MAX_TEXT; an explicit
     /// cursor that finds nothing finds nothing.
     #[test]
@@ -434,21 +476,21 @@ mod tests {
         std::fs::write(&path, format!("{whole}{half}")).unwrap();
         transcripts().lock().unwrap().insert(id.to_string(), path.clone());
 
-        let r = report_read("rr-caller", id, Provider::Claude, None, false);
+        let r = report_read("rr-caller", id, Provider::Claude, None);
         assert_eq!(r.messages.len(), 1);
         assert!(r.messages[0].text.starts_with("REPORT "), "the report");
         assert!(r.messages[0].text.contains("[cut: 507 more characters;"), "cut at MAX_TEXT like any read");
-        assert_eq!(r.left_out, 1, "the other message it said");
+        assert_eq!(r.rest, 1, "the other message it said");
         assert_eq!(r.cursor, whole.len() as u64, "before the line still being written, not the file's end");
 
         // From that cursor nothing is there yet: nothing, not an older message.
-        let r = report_read("rr-caller", id, Provider::Claude, Some(whole.len() as u64), false);
+        let r = report_read("rr-caller", id, Provider::Claude, Some(whole.len() as u64));
         assert!(r.messages.is_empty(), "{:?}", r.messages);
         assert_eq!(r.cursor, whole.len() as u64);
 
         // The line finished: it is the next read's.
         std::fs::write(&path, format!("{whole}{}", line("assistant", "Pushed."))).unwrap();
-        let r = report_read("rr-caller", id, Provider::Claude, Some(whole.len() as u64), false);
+        let r = report_read("rr-caller", id, Provider::Claude, Some(whole.len() as u64));
         assert_eq!(r.messages.iter().map(|m| m.text.as_str()).collect::<Vec<_>>(), ["Pushed."]);
 
         transcripts().lock().unwrap().remove(id);
@@ -498,10 +540,10 @@ mod tests {
         owe_from("lr-parent", "lb-child", 0, 0);
         let key = ("lr-parent".to_string(), "lb-child".to_string());
         let call = crate::mcp::Call::new();
-        let note = read("lr-parent", "lb-child", None, None, false, false, false, &call).unwrap().undelivered.unwrap();
+        let note = read("lr-parent", "lb-child", None, None, false, false, &call).unwrap().undelivered.unwrap();
         assert!(note.contains("never got started"), "{note}");
         assert!(!reg().lock().unwrap().owed.contains_key(&key), "all there was: no notice is to say it again");
-        assert_eq!(read("lr-parent", "lb-child", None, None, false, false, false, &crate::mcp::Call::new()).unwrap().undelivered, None);
+        assert_eq!(read("lr-parent", "lb-child", None, None, false, false, &crate::mcp::Call::new()).unwrap().undelivered, None);
         call.cancel();
         assert!(reg().lock().unwrap().owed.contains_key(&key), "payload and debt together");
         crate::background::remove("lb-child");

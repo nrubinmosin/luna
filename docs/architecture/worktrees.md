@@ -44,7 +44,7 @@ lose, and to sweep the ones no chat claims.
   `git worktree remove -f -f`, since Claude Code locks its worktree and a killed
   one does not release the lock. Only `worktree-*` branches are ever deleted.
   A Codex bucket dir goes once empty.
-- **`luna_delete` with `dropWorktree`** (`worktree_to_drop`: not one handed to
+- **`luna_session_delete` with `dropWorktree`** (`worktree_to_drop`: not one handed to
   the session or shared) runs `git status --porcelain` (submodules not hidden)
   and counts commits that would be lost (`commits_lost`): those HEAD or a going
   `worktree-*` branch reach and no staying branch or remote does. A branch the

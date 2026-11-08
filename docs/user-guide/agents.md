@@ -1,23 +1,28 @@
 # Agents: sessions that run sessions
 
 A chat created with **Luna tools** ticked (off by default) gets Luna as an MCP
-server, and with it twelve tools: `luna_list`, `luna_sessions`, `luna_spawn`,
-`luna_send`, `luna_answer`, `luna_read`, `luna_wait`, `luna_kill`,
-`luna_delete`, `luna_guide`, `luna_notify`, `luna_power`.
+server, and with it sixteen tools, each named for the thing it acts on and what it does
+(`luna_<resource>_<verb>`; a `list` gives compact rows, a `get` one item whole):
+`luna_session_list`, `luna_session_get`, `luna_session_spawn`, `luna_session_send`,
+`luna_session_answer`, `luna_session_wait`, `luna_session_stop`, `luna_session_delete`,
+`luna_message_list`, `luna_report_get`, `luna_account_list`, `luna_account_get`,
+`luna_run_list`, `luna_guide_get`, `luna_notification_send`, `luna_power_set`. The names
+before Luna 0.11 (`luna_list`, `luna_spawn` and the rest) are gone: called, one answers with
+the tools there are now.
 
 The model can start a helper session (another model, another account, Codex
 instead of Claude) with an opening prompt, wait for its reply, send follow-ups,
 answer what it asks, and delete it when done, worktree and its `worktree-*`
 branch included if it asked for one. The tools and a short instruction cost
-about 2k tokens once per session; the full manual is `luna_guide`'s, read only
+about 2k tokens once per session; the full manual is `luna_guide_get`'s, read only
 when the model asks: whole with `topic: "all"` (the instruction says to, before
 the first spawn), one section by a word of its title (`topic: "spawning"`), or,
 with no topic, its opening and the sections to ask for. A chat without the box knows nothing of Luna, and neither
 does a background helper spawned without tools.
 
-- `luna_notify` raises a desktop notification mid-turn, titled with the chat's
+- `luna_notification_send` raises a desktop notification mid-turn, titled with the chat's
   name and opening it when clicked, at most one every 10 seconds.
-- `luna_power`, for when you ask for it, arms the same "when done" shutdown,
+- `luna_power_set`, for when you ask for it, arms the same "when done" shutdown,
   restart, hibernate or sleep as the power chip, which shows and cancels it; the
   action `cancel` disarms it too.
 - A spawn may set `budgetTokens`: once that helper's context passes it, its
@@ -88,9 +93,9 @@ hooks run unasked.
   every usage window under 95%, else the one with most room. `accountChoice`
   says which and why.
 - `worktree: true` keeps the helper apart; the spawn names the worktree the CLI
-  made and its branch (`luna_list` shows them for every helper).
+  made and its branch (`luna_session_list` shows them for every helper).
 - The spawn reports what settings cannot: other live sessions in the same
-  directory (`sameFolder`), whose files and git it shares. `luna_list` names the
+  directory (`sameFolder`), whose files and git it shares. `luna_session_list` names the
   model a turn ran on, where the organization swapped the one asked for.
 - A helper runs at no more privilege than its caller (permission mode; Codex
   sandbox, approval and network) unless Settings → Agents & trust allows helpers
@@ -102,26 +107,26 @@ hooks run unasked.
 ## Talking to sessions
 
 - **Rights:** an agent kills and deletes only sessions it spawned (and theirs).
-  It can see every other one, yours included, with `luna_sessions` (name, window
+  It can see every other one, yours included, with `luna_session_list` (name, window
   group, account and folder, project folder, cwd, the CLI's session id and
-  transcript path), type into any of them with `luna_send`, and read or wait on
-  the answer, so you can tell one chat to pass word to another. `luna_sessions`
+  transcript path), type into any of them with `luna_session_send`, and read or wait on
+  the answer, so you can tell one chat to pass word to another. `luna_session_list`
   narrows to one group (`group: "mine"`) and to rows with some text (`q`), so
   chats in one group can settle something between themselves.
-- **Your draft is safe.** Into a chat you are typing in, `luna_send` does not
+- **Your draft is safe.** Into a chat you are typing in, `luna_session_send` does not
   type: Luna holds the text and types it once you stop. Over an unsent draft in
   Claude Code it stashes the draft (Ctrl+S), sends, and the CLI puts the draft
   back, pastes and images included, unless a draft is stashed already. Codex has
   no stash, so the text waits for the draft to be sent or cleared. A chat with a
   draft wears a **draft** tag with the count of messages held, and a balloon says
   how many wait; a minute's hold is announced on the desktop.
-- `luna_send` to a background Claude Code helper mid-turn joins that turn at its
+- `luna_session_send` to a background Claude Code helper mid-turn joins that turn at its
   next tool boundary (a long tool or subagent delays it); if the CLI finishes
   first, the text starts the next turn; if that fails, it returns to the sender.
   After a core crash Luna looks for it in the transcript rather than send twice.
   Codex's `exec` reads its input once, so text to a background Codex helper waits
   for the next turn.
-- `luna_send` with `interrupt: true` stops the helper's turn and the text
+- `luna_session_send` with `interrupt: true` stops the helper's turn and the text
   becomes the next turn: in the agent's own helpers only.
 - A message longer than 8,000 characters reaches one of your chats as a file it
   is told to read; a helper takes any length on its stdin.
@@ -134,12 +139,12 @@ hooks run unasked.
 `state` says `working`, `waiting` (a permission), `question`, `idle` and so on,
 and `ask` carries the question with its options or the command up for
 permission: Claude Code's `AskUserQuestion` and permission prompts, Codex's
-questions and approvals. `luna_answer` answers: an option's number or label, own
+questions and approvals. `luna_session_answer` answers: an option's number or label, own
 words, or `allow` true or false.
 
 A Claude Code helper puts its questions and permission prompts to Luna instead
 of a screen, so its agent answers them. Each has an `id` in `ask`, which
-`luna_answer` takes as `askId`, so an answer cannot land on the next prompt; an
+`luna_session_answer` takes as `askId`, so an answer cannot land on the next prompt; an
 id it never had is refused as unknown, and without one an answer is taken only
 when a single prompt is held. A Codex helper has nobody to ask and says what it
 would have asked in its reply, unless it runs with `approval: auto-review`. In
@@ -148,19 +153,17 @@ one of your own chats an agent may answer only a question its model asked
 
 ## Getting the answer
 
-- `luna_read` reads the transcript, not the screen; `luna_wait` returns the reply
-  itself, everything the helper said since it was asked, report first. Past
-  60,000 characters either is cut: `luna_read` says how many messages it left
-  out (`leftOut`), goes on from its cursor with `since`, keeps the newest with
-  `last`; `luna_wait` names a file with the whole answer. `luna_read` with
-  `report: true` gives the report alone (of what was said since `since`, else
-  since the agent asked), and does not count as collecting the answer. A notice
-  says which lines of its file are the report (`lines 1-N of M`).
-- `luna_wait` takes several sessions (`ids`, `mode: "any"` or `"all"`) and says
-  which finished. `screen: false` leaves the terminal out; `luna_list` with `ids`
-  gives those rows alone, and `accounts: false` leaves the accounts out. The
-  accounts' models (Codex's catalog with each model's levels) come only with
-  `models: true`.
+- `luna_message_list` reads the transcript, not the screen. `luna_session_wait` returns the
+  report by default, with how many other messages there are (`rest`) and a file holding them
+  all; `reply: "all"` returns everything, `"none"` nothing. `luna_report_get` gives the report
+  alone and, with `ack: true`, collects the answer so no notice follows. The report is the
+  message the CLI marked as its turn's final answer, or, without that mark, the longest of the
+  turn, which Luna then says it picked by length. Past 60,000 characters a read is cut:
+  `rest` says how many messages it left out, and its cursor goes on from there.
+- `luna_session_wait` takes several sessions (`ids`, `mode: "any"` or `"all"`) and says
+  which finished; the terminal comes only with `screen: true`. `luna_session_list` gives
+  compact rows a page at a time with filters; `luna_session_get` one session whole; accounts
+  are `luna_account_list` and `luna_account_get` (defaults, usage, models).
 - **Notices.** An agent that asked and ended its turn is not left idle: once the
   answer comes (or the helper asks something, stops on a permission, or exits),
   Luna types a one-line `[Luna notice, not typed by the user]` into the agent's
@@ -169,7 +172,7 @@ one of your own chats an agent may answer only a question its model asked
   to 20 seconds more for that one's, so helpers finishing together make one
   notice and one turn of the agent; a question or a permission prompt never
   waits. A draft you left there is stashed the same way (Claude Code) or holds
-  the notice (Codex). A `luna_wait` still out for that answer hands it over
+  the notice (Codex). A `luna_session_wait` still out for that answer hands it over
   instead, and the notice follows only if the wait has not within 10 seconds
   (Claude Code moves a call past two minutes to the background). A wait the
   agent's CLI cancels or interrupts hands nothing over, and the notice comes as
@@ -180,13 +183,13 @@ one of your own chats an agent may answer only a question its model asked
   message, or the last when all are short — but a short turn the CLI started by
   itself, on a background job's end, leaves the report to the long message
   before it) first, then the last, then the rest.
-  A `luna_read` collects the answer only when it returns all of it, uncut, from a
+  A `luna_message_list` collects the answer only when it returns all of it, uncut, from a
   finished helper.
 - Text sent to one of your chats mid-turn may join that turn or start the next,
   so Luna gives the CLI 8 seconds after a turn ends before taking it as the
   answer.
 - A turn that stopped on an error (a usage limit, an API error, a crash, a kill)
-  is reported as that, with the reason; `luna_wait` has it as `failed`. What the
+  is reported as that, with the reason; `luna_session_wait` has it as `failed`. What the
   helper said before it stopped comes with it. A helper whose CLI quit before its
   model did anything (an unknown `agent`, a model that is not there) is idle, not
   busy, and goes like any other.
@@ -202,8 +205,8 @@ one of your own chats an agent may answer only a question its model asked
   next notice, alone only once nothing else is owed, nothing is at work, or after
   10 minutes.
 - What turns left running (a server, a watcher, a forgotten `tail -F`) is named in
-  the notice and in `luna_list` as `leftRunning` (pid, start, recent CPU or I/O).
-  For a background helper `luna_kill`, or Stop in the helper list, ends it once
+  the notice and in `luna_session_list` as `leftRunning` (pid, start, recent CPU or I/O).
+  For a background helper `luna_session_stop`, or Stop in the helper list, ends it once
   the turn is over. All idle for 30 minutes: the owed agent gets one notice that
   it may be stuck or waiting, and how to end it; the notice of its end still
   comes. A turn silent for 30
@@ -216,23 +219,23 @@ one of your own chats an agent may answer only a question its model asked
 - An agent also gets a notice when an account its helpers run on reaches 90%
   and then 95% of a usage window, once each per window.
 
-`luna_list` shows per helper: the first line of its task, branch and commit, when
-its turn began and last did anything, the model it ran on (none until a model has
-answered), and how full its context is after its last turn. It names the accounts
-agents may use (the account alone is enough: it brings its own CLI), each with
-its models when asked (`models: true`), the settings a helper would get there (read from the account's and the
-project's settings the way the new-chat dialog reads them) and its usage as the
-Accounts window shows it.
+`luna_session_list` shows per helper its state, the first line of its task and when it last
+did anything; `luna_session_get` adds its branch and commit, when its turn began, the model it
+ran on (none until a model has answered) and how full its context is after its last turn.
+`luna_account_list` names the accounts agents may use (the account alone is enough: it brings
+its own CLI) with their usage as the Accounts window shows it; `luna_account_get` adds the
+settings a helper would get there (read from the account's and the project's settings the way
+the new-chat dialog reads them) and its models.
 
 ## Lifetime
 
 - A helper goes by itself (`autoDelete`, on by default) once its answer reached
   the agent and it has sat idle 30 minutes with nobody reading or writing to it;
-  `luna_list` shows `deletesInMin`. It waits for jobs it left and helpers of its
+  `luna_session_list` shows `deletesInMin`. It waits for jobs it left and helpers of its
   own; processes idle 2 hours on end do not count and go with it.
-- A helper stopped with `luna_kill` is never auto-deleted; one you opened as a
+- A helper stopped with `luna_session_stop` is never auto-deleted; one you opened as a
   chat is yours and stays, as does a worktree it made.
-- `luna_delete` with `dropWorktree` takes the worktree the CLI made and its
+- `luna_session_delete` with `dropWorktree` takes the worktree the CLI made and its
   `worktree-*` branch (a branch the helper named itself stays). It refuses when
   that would lose uncommitted changes, untracked files or unique commits, and
   says which, unless `force: true`. A worktree that cannot be removed comes back
@@ -246,8 +249,8 @@ Accounts window shows it.
   spawned passes to that agent. A helper with no parent is listed under
   "Helpers with no chat" and goes half an hour after it is done.
 - Every spawn is recorded in `agents.jsonl` (when, by whom, where, account,
-  settings, the start of the prompt, how it ended), so `luna_sessions` with
-  `history: true` shows what ran before, and a run can be repeated. A deleted
+  settings, the start of the prompt, how it ended), so `luna_run_list` shows what ran
+  before, and a run can be repeated. A deleted
   helper leaves its transcript path, worktree and the first 400 characters of its
   last message.
 

@@ -1,4 +1,4 @@
-//! Helpers with no terminal and no row: every one `luna_spawn` starts. The
+//! Helpers with no terminal and no row: every one `luna_session_spawn` starts. The
 //! person watches one read-only, or opens it as a chat, which hands it over to
 //! them for good (agents/handover.rs). Each turn is one run of the CLI in its headless
 //! mode — `claude -p --output-format stream-json`, `codex exec --json` — with
@@ -15,11 +15,11 @@
 //! A Claude Code helper is never left to ask the air: its permission prompts
 //! and `AskUserQuestion` come to Luna through `--permission-prompt-tool`
 //! (`luna_permission`), which holds the CLI's call until the agent that
-//! spawned it answers with `luna_answer`. Codex's headless mode has no one to
+//! spawned it answers with `luna_session_answer`. Codex's headless mode has no one to
 //! ask: a question it has comes in its reply, and the answer is the next turn.
 //!
 //! The conversation itself lands on disk as with any session — Claude Code's
-//! transcript, Codex's rollout — so `luna_read` reads it there.
+//! transcript, Codex's rollout — so `luna_message_list` reads it there.
 
 use crate::agents::Ask;
 use crate::procs::{left_names, leftovers, Leftover};
@@ -56,12 +56,12 @@ pub(crate) use run::*;
 pub(crate) use testkit::*;
 pub(crate) use types::*;
 
-/// Lines of what a helper did kept for `luna_read(screen)`: its messages,
+/// Lines of what a helper did kept for `luna_message_list(screen)`: its messages,
 /// commands and errors, one line each.
 const LOG_LINES: usize = 200;
 /// How much of a message one log line keeps.
 const LOG_CHARS: usize = 300;
-/// How long a held permission or question waits for `luna_answer` before the
+/// How long a held permission or question waits for `luna_session_answer` before the
 /// CLI is told nobody answered. Under the MCP call timeout the CLIs are given
 /// (pty/start.rs `MCP_TOOL_TIMEOUT_MS`).
 const ASK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
@@ -135,7 +135,7 @@ struct Entry {
     /// registry lock.
     left_running: bool,
     /// What that is, process by process, as last sampled between turns: what
-    /// `luna_list` names, and whether it does anything (`leftovers`).
+    /// `luna_session_get` names, and whether it does anything (`leftovers`).
     left: Vec<Leftover>,
     /// A stop between turns is ending what its turns left (`kill`): no turn
     /// starts meanwhile, as its CLI would land in the job being emptied; text

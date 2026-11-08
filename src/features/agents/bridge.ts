@@ -227,7 +227,7 @@ export function useAgentBridge() {
     };
   }, []);
 
-  // The core knows sessions by id only; `luna_sessions` names them with the
+  // The core knows sessions by id only; `luna_session_list` names them with the
   // rows' names and places them in their window groups, sent now and again
   // whenever one changes.
   useEffect(() => {
@@ -257,7 +257,7 @@ export function useAgentBridge() {
     };
   }, []);
 
-  // `luna_list` gives agents each account's usage as the Accounts window
+  // `luna_account_list` gives agents each account's usage as the Accounts window
   // shows it, so a helper goes where there is room; sent whenever it moves.
   useEffect(() => {
     let last = '';

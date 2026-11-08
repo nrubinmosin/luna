@@ -1,7 +1,7 @@
 //! The live suite: helpers run on the real CLIs, signed in to real accounts,
-//! through the path `luna_spawn` takes — `agents::spawn` and its privilege
+//! through the path `luna_session_spawn` takes — `agents::spawn` and its privilege
 //! cap, `background::start` and `command_for`, the CLI's headless mode, Luna's
-//! MCP server on the hub — and read back as `luna_wait` reads them. What the
+//! MCP server on the hub — and read back as `luna_session_wait` reads them. What the
 //! deterministic tests stand in for with fixtures (a CLI's stream, the flags
 //! it accepts, its MCP client) is the CLI's own here, so a CLI release that
 //! changes any of it shows.
@@ -147,7 +147,7 @@ impl Live {
         id
     }
 
-    /// A spawn as `luna_spawn` would take it, on this account, at low effort,
+    /// A spawn as `luna_session_spawn` would take it, on this account, at low effort,
     /// kept until the test deletes it. The model is the account's default
     /// unless LUNA_LIVE_CLAUDE_MODEL / LUNA_LIVE_CODEX_MODEL names one.
     fn params(&self, folder: &str, prompt: &str, extra: Value) -> crate::agents::SpawnParams {
@@ -207,7 +207,7 @@ impl Drop for Spawned {
 }
 
 /// What the turn showed while it ran, sampled as the power rules and
-/// `luna_list` sample it, and what `luna_wait` then gave back.
+/// `luna_session_list` sample it, and what `luna_session_wait` then gave back.
 struct Turn {
     states: Vec<crate::activity::Turn>,
     outcome: &'static str,
@@ -234,7 +234,7 @@ fn first_turn(s: &Spawned) -> Turn {
         std::thread::sleep(Duration::from_millis(100));
     }
     let call = crate::mcp::Call::new();
-    let w = crate::agents::wait(&s.caller, &s.id, "turn_done", 30, Some(0), None, &call).expect("luna_wait on the helper");
+    let w = crate::agents::wait(&s.caller, &s.id, "turn_done", 30, Some(0), None, &call).expect("luna_session_wait on the helper");
     Turn { states, outcome: w.outcome, turns_ended: w.turns_ended, reply: w.reply, failed: w.failed, screen: w.screen }
 }
 
@@ -248,7 +248,7 @@ fn spawn(live: &Live, extra: Value, prompt: &str) -> Spawned {
     for (k, v) in helper_mode.as_object().into_iter().flatten() {
         extra[k] = v.clone();
     }
-    let spawned = crate::agents::spawn(&caller, live.params(&folder, prompt, extra)).expect("luna_spawn");
+    let spawned = crate::agents::spawn(&caller, live.params(&folder, prompt, extra)).expect("luna_session_spawn");
     assert!(crate::background::has(&spawned.id), "a helper runs in the background");
     Spawned { caller, id: spawned.id, folder }
 }
@@ -286,7 +286,7 @@ fn an_mcp_call_authenticates(provider: Provider) {
         &live,
         json!({ "tools": true }),
         &format!(
-            "Call the luna_list tool from the luna MCP server once, with no arguments. Then reply with exactly this word \
+            "Call the luna_session_list tool from the luna MCP server once, with no arguments. Then reply with exactly this word \
              and nothing else: {word}"
         ),
     );
@@ -296,8 +296,8 @@ fn an_mcp_call_authenticates(provider: Provider) {
     // mcp.rs logs every call under the session its token named, after the
     // hub has taken the token: a call refused at the door logs nothing.
     let log = std::fs::read_to_string(crate::log::path()).unwrap_or_default();
-    let call = log.lines().find(|l| l.contains("[mcp]") && l.contains(&s.id) && l.contains(" luna_list "));
-    let call = call.unwrap_or_else(|| panic!("no luna_list call from {} in {}", s.id, crate::log::path().display()));
+    let call = log.lines().find(|l| l.contains("[mcp]") && l.contains(&s.id) && l.contains(" luna_session_list "));
+    let call = call.unwrap_or_else(|| panic!("no luna_session_list call from {} in {}", s.id, crate::log::path().display()));
     assert!(!call.contains(" failed in "), "{call}");
 }
 

@@ -1,4 +1,4 @@
-//! `luna_wait`: one session or several, until a turn ends, a prompt holds it,
+//! `luna_session_wait`: one session or several, until a turn ends, a prompt holds it,
 //! it exits or the time is up, with the answer handed over on the way out.
 
 use crate::agents::ask::{ask_of, live, state_of, Ask};
@@ -99,6 +99,10 @@ pub struct Waited {
     pub reply: Option<String>,
     /// The turn did not end by itself: it stopped on this error (`failure_of`),
     /// and `reply` is what it said before that, if anything.
+    /// `reply`'s report alone, for a caller that wants no more (`luna_session_wait`
+    /// `reply: "report"`, the default there).
+    #[serde(skip)]
+    pub report: Option<ReportPart>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failed: Option<String>,
     /// Luna found no transcript, so a null `reply` says nothing about whether
@@ -135,6 +139,7 @@ impl Waited {
             ask: None,
             turns_ended: 0,
             reply: None,
+            report: None,
             failed: Some(why),
             transcript_missing: false,
             screen: None,
@@ -231,6 +236,7 @@ fn wait_for(
                     ask,
                     turns_ended,
                     reply: None,
+                    report: None,
                     failed: None,
                     transcript_missing: false,
                     screen,
@@ -368,7 +374,7 @@ fn wait_for(
             // A turn that stopped on an error has said all it will.
             let reply_now = |stopped: bool| reply_of(pty, id, known.provider, asked_at, alone, stopped);
             let mut reply = if outcome == "job_done" {
-                asked_at.and_then(|at| reply_text(id, &said_since(pty, id, known.provider, at), alone))
+                asked_at.and_then(|at| reply_with_report(id, &said_since(pty, id, known.provider, at), alone))
             } else if says {
                 reply_now(failed.is_some())
             } else {
@@ -402,7 +408,19 @@ fn wait_for(
             }
             let (state, ask) = state_of(id);
             return Ok((
-                Waited { outcome, state, ask, turns_ended, reply, failed, transcript_missing, screen, undelivered, job_debt },
+                Waited {
+                    outcome,
+                    state,
+                    ask,
+                    turns_ended,
+                    report: reply.as_ref().map(|r| r.1.clone()),
+                    reply: reply.map(|r| r.0),
+                    failed,
+                    transcript_missing,
+                    screen,
+                    undelivered,
+                    job_debt,
+                },
                 answers,
             ));
         }
@@ -419,6 +437,7 @@ fn wait_for(
                     ask,
                     turns_ended,
                     reply: None,
+                    report: None,
                     failed: None,
                     transcript_missing: false,
                     screen,
@@ -574,6 +593,7 @@ pub fn wait_many(
                         ask,
                         turns_ended,
                         reply: None,
+                        report: None,
                         failed: why,
                         transcript_missing: false,
                         screen: None,
@@ -683,12 +703,40 @@ enum Holding {
 /// with no question out, its last message. None when it said nothing, or the
 /// prompt is the last word of a turn that has not `stopped` short
 /// (`own_words`). `cut` as in `reply_text`.
-fn reply_of(pty: &crate::pty::PtyManager, id: &str, provider: Provider, asked_at: Option<u64>, cut: bool, stopped: bool) -> Option<String> {
+fn reply_of(
+    pty: &crate::pty::PtyManager,
+    id: &str,
+    provider: Provider,
+    asked_at: Option<u64>,
+    cut: bool,
+    stopped: bool,
+) -> Option<(String, ReportPart)> {
     let replies = match asked_at {
         Some(at) => replies_since(pty, id, provider, at, stopped),
         None => Said::one_turn(replies_since(pty, id, provider, 0, false).texts.pop().into_iter().collect()),
     };
-    reply_text(id, &replies, cut)
+    reply_with_report(id, &replies, cut)
+}
+
+/// The report alone of a wait's reply: its text (`report_text`), how many
+/// messages it leaves out, whether it was picked by length, and with any left
+/// out a file of the whole, report first.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ReportPart {
+    pub text: String,
+    pub rest: usize,
+    pub guessed: bool,
+    pub file: Option<String>,
+}
+
+/// `reply_text` and its `ReportPart`; None for no messages.
+fn reply_with_report(id: &str, replies: &Said, cut: bool) -> Option<(String, ReportPart)> {
+    let text = reply_text(id, replies, cut)?;
+    let report = crate::agents::said::report_text(replies)?;
+    let rest = replies.len().saturating_sub(1);
+    let file = (rest > 0).then(|| crate::agents::said::note_file(id, &answer_text(replies))).flatten();
+    let guessed = rest > 0 && crate::agents::said::report_guessed(replies);
+    Some((text, ReportPart { text: report, rest, guessed, file: file.map(|p| p.to_string_lossy().into_owned()) }))
 }
 
 /// Messages as one reply in a tool result; None for no messages. `cut` keeps it
@@ -926,6 +974,7 @@ mod tests {
                 ask: None,
                 turns_ended: 1,
                 reply,
+                report: None,
                 failed: None,
                 transcript_missing: false,
                 screen: None,

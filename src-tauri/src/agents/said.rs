@@ -128,7 +128,7 @@ pub(super) fn answer_where(file: Option<&std::path::Path>, span: Option<(usize, 
         // The report is all there is: nothing to put first.
         (Some(path), Some(_)) => format!("the answer is in {}", path.display()),
         (Some(path), None) => format!("the answer is in {}, its report first", path.display()),
-        (None, _) => "luna_read gives the answer".into(),
+        (None, _) => "luna_message_list gives the answer".into(),
     }
 }
 
@@ -140,7 +140,7 @@ pub(super) fn report_span(replies: &Said, text: &str) -> Option<(usize, usize)> 
     Some((report.lines().count().max(1), text.lines().count().max(1)))
 }
 
-/// The report alone (`report_of`), what `luna_read` with `report: true` gives.
+/// The report alone (`report_of`), what `luna_report_get` gives.
 pub(super) fn report_text(replies: &Said) -> Option<String> {
     replies.get(report_of(replies)).cloned()
 }
@@ -257,7 +257,7 @@ pub(super) fn inline_answer(replies: &Said) -> Option<String> {
     (!line.is_empty() && line.chars().count() <= INLINE_ANSWER).then_some(line)
 }
 
-/// The most of a helper's task `luna_list` gives: it comes with every row.
+/// The most of a helper's task `luna_session_list` gives: it comes with every row.
 pub(super) const TASK_CHARS: usize = 100;
 
 /// The first line of `text` that says anything, as `opening_line` puts it, cut to

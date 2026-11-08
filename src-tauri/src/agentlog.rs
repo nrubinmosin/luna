@@ -1,8 +1,8 @@
 //! What agents have spawned, kept past the rows: a helper deleted when its
-//! work was done leaves nothing in `luna_sessions`, and the next run that
+//! work was done leaves nothing in `luna_session_list`, and the next run that
 //! means to repeat it — same model, account, prompt — has nothing to go by.
 //! One JSON line per spawn and one per end in `<data>/agents.jsonl`, read
-//! back by `luna_sessions` with `history: true`.
+//! back by `luna_run_list`.
 
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -88,7 +88,7 @@ pub fn ended(id: &str, how: &str) {
     append(&file(), json!({ "at": now(), "event": "end", "id": id, "how": how }));
 }
 
-/// UTC, as `luna_list` gives its times (background/types.rs `iso`).
+/// UTC, as `luna_session_list` gives its times (background/types.rs `iso`).
 fn now() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }

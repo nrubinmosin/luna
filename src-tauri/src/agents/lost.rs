@@ -95,7 +95,7 @@ pub(super) fn undelivered_line(lost: &[String], after_answer: bool, file: Option
     match file {
         Some(_) if after_answer => format!(" Not delivered: {what} queued for it, at the end of that file; send again what still matters."),
         Some(path) => format!(" Not delivered: {what} queued for it, in {}; send again what still matters.", path.display()),
-        None => format!(" Not delivered: {what} queued for it; luna_read gives them, send again what still matters."),
+        None => format!(" Not delivered: {what} queued for it; luna_message_list gives them, send again what still matters."),
     }
 }
 
