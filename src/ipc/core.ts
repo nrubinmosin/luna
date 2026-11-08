@@ -63,6 +63,7 @@ const CORE_CALL: ReadonlySet<string> = new Set([
   'apply_recommended',
   'codex_folder_trusted',
   'codex_trust_folder',
+  'claude_trust_folder',
   'applied_by_luna'
 ]);
 const CORE_SEND: ReadonlySet<string> = new Set(['write_session', 'resize_session']);
