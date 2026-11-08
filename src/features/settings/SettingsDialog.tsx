@@ -5,6 +5,7 @@ import { useDialogHost } from '../../shared/ui/dialogHost';
 import { Icon, type IconName } from '../../shared/ui/icons';
 import { BrowsersSection, OpenLinksSection } from '../browsers/BrowserSection';
 import { SETTINGS_PAGES, useSettings, type SettingsPage } from './settings.store';
+import { focusables } from './SettingsRows';
 import { AccountsFolderSection } from './sections/AccountsFolderSection';
 import { NewChatsSection } from './sections/NewChatsSection';
 import { WorktreesSection } from './sections/WorktreesSection';
@@ -79,8 +80,26 @@ function SettingsWindow({ onClose }: { onClose: () => void }) {
   const page = useSettings(s => s.page);
   const current = useUpdates(s => s.current);
   const nav = useRef<HTMLDivElement>(null);
+  const dialog = useRef<HTMLDivElement>(null);
   // Out of any draggable subtree, inside the [data-app] theme scope.
   const host = useDialogHost();
+
+  // Modal: the rest of the app is inert while Settings is up, so neither
+  // Tab nor a screen reader wanders behind it, and the focus goes back to
+  // what opened it on close. Popups opened later (the exception menu, the
+  // update confirm) land beside it in the host and stay live. Ahead of the
+  // effect below, which moves the focus.
+  useEffect(() => {
+    const scrim = dialog.current?.parentElement;
+    if (!host || !scrim) return;
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const others = [...host.children].filter(c => c !== scrim && !c.hasAttribute('inert'));
+    others.forEach(c => c.setAttribute('inert', ''));
+    return () => {
+      others.forEach(c => c.removeAttribute('inert'));
+      if (opener?.isConnected) opener.focus();
+    };
+  }, [host]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -119,9 +138,23 @@ function SettingsWindow({ onClose }: { onClose: () => void }) {
     nav.current?.querySelectorAll<HTMLElement>('[role="tab"]')[to]?.focus();
   };
 
+  // Tab and Shift+Tab go round the dialog rather than out of it. A key from
+  // a popup the dialog owns (portaled outside it) is that popup's to handle.
+  const trap = (e: ReactKeyboardEvent) => {
+    const box = dialog.current;
+    if (e.key !== 'Tab' || !box?.contains(e.target as Node)) return;
+    const all = focusables(box);
+    const first = all[0];
+    const last = all[all.length - 1];
+    if (!first || !last) return;
+    if (e.shiftKey ? document.activeElement === first : document.activeElement === last) {
+      e.preventDefault();
+      (e.shiftKey ? last : first).focus();
+    }
+  };
+
   if (!host) return null;
 
-  const p = PAGES[page];
   return createPortal(
     <div
       onClick={e => {
@@ -144,7 +177,9 @@ function SettingsWindow({ onClose }: { onClose: () => void }) {
       }}
     >
       <div
+        ref={dialog}
         onClick={e => e.stopPropagation()}
+        onKeyDown={trap}
         className="window settings"
         role="dialog"
         aria-modal="true"
@@ -174,7 +209,7 @@ function SettingsWindow({ onClose }: { onClose: () => void }) {
                   role="tab"
                   id={`settings-tab-${id}`}
                   aria-selected={id === page}
-                  aria-controls="settings-panel"
+                  aria-controls={`settings-panel-${id}`}
                   tabIndex={id === page ? 0 : -1}
                   onClick={() => useSettings.getState().setPage(id)}
                 >
@@ -185,13 +220,22 @@ function SettingsWindow({ onClose }: { onClose: () => void }) {
             </div>
             <div className="settings-nav-foot">Luna {current || '—'}</div>
           </div>
-          <div className="settings-page" id="settings-panel" role="tabpanel" aria-labelledby={`settings-tab-${page}`}>
-            <h2 className="settings-page-title">{p.title}</h2>
-            {/* Keyed by page, so each page opens at its top. */}
-            <div className="settings-scroll" key={page}>
-              {p.body()}
+          {/* Every page stays mounted, the others hidden: a draft typed on one
+              (the waiting marker, a browser of your own) is still there after
+              a look at another. */}
+          {SETTINGS_PAGES.map(id => (
+            <div
+              key={id}
+              className="settings-page"
+              id={`settings-panel-${id}`}
+              role="tabpanel"
+              aria-labelledby={`settings-tab-${id}`}
+              hidden={id !== page}
+            >
+              <h2 className="settings-page-title">{PAGES[id].title}</h2>
+              <div className="settings-scroll">{PAGES[id].body()}</div>
             </div>
-          </div>
+          ))}
         </div>
       </div>
     </div>,

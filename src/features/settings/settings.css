@@ -82,6 +82,10 @@
   display: flex;
   flex-direction: column;
 }
+/* The pages not shown stay mounted (their drafts with them), out of the layout. */
+[data-app] .settings-page[hidden] {
+  display: none;
+}
 /* xp.css frames every [role="tabpanel"] as XP's tab control: a white sheet
    with a border and a margin. The page is the dialog's own ground. */
 [data-app] .settings-page[role="tabpanel"] {
