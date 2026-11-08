@@ -174,10 +174,12 @@ impl SpawnUnderWay {
     }
 }
 
-/// How many sessions count against the cap of `caller`'s top chat: all under it,
-/// every generation, and the spawns of any of them under way with no session yet,
+/// The sessions that count against the cap of `caller`'s top chat, by id: all
+/// under it, every generation, but an `autoDelete` helper whose answer has
+/// reached its caller and that only waits out its time to go (`Auto::idle_since`);
+/// and how many spawns of any of them are under way with no session yet,
 /// `except` aside (the one asked for again).
-fn under_cap(r: &Registry, caller: &str, except: Option<u64>) -> usize {
+fn under_cap(r: &Registry, caller: &str, except: Option<u64>) -> (Vec<String>, usize) {
     let top = top_of(r, caller);
     let coming = r
         .spawns
@@ -185,22 +187,28 @@ fn under_cap(r: &Registry, caller: &str, except: Option<u64>) -> usize {
         .filter(|s| s.helper.is_none() && !s.settled && Some(s.request) != except)
         .filter(|s| s.caller == top || is_descendant(r, &top, &s.caller))
         .count();
-    descendants(r, &top).len() + coming
+    let done = |id: &String| r.auto.get(id).is_some_and(|a| a.idle_since.is_some() && !a.deleting);
+    let mut counted: Vec<String> = descendants(r, &top).into_iter().filter(|id| !done(id)).collect();
+    counted.sort();
+    (counted, coming)
 }
 
-/// Whether `caller` may spawn one more (MAX_DESCENDANTS).
+/// Whether `caller` may spawn one more (MAX_DESCENDANTS); refused, it hears which
+/// sessions take the places, to delete what it is done with.
 fn cap_room(r: &Registry, caller: &str, except: Option<u64>) -> Result<(), String> {
-    if under_cap(r, caller, except) < MAX_DESCENDANTS {
+    let (counted, coming) = under_cap(r, caller, except);
+    if counted.len() + coming < MAX_DESCENDANTS {
         return Ok(());
     }
-    Err(if top_of(r, caller) == caller {
-        format!("you already have {MAX_DESCENDANTS} sessions under you, spawns under way counted; delete some first")
-    } else {
-        format!(
-            "the chat at the top of your line already has {MAX_DESCENDANTS} sessions under it, yours and the other helpers' \
-             counted; delete some first"
-        )
-    })
+    let coming = if coming > 0 { format!(", and {coming} spawn(s) under way") } else { String::new() };
+    let whose = if top_of(r, caller) == caller { "you" } else { "the chat at the top of your line" };
+    Err(format!(
+        "{whose} already {} {MAX_DESCENDANTS} sessions under {}: {}{coming}. Helpers whose answer reached you and that wait \
+         out autoDelete do not count; delete those you are done with",
+        if whose == "you" { "have" } else { "has" },
+        if whose == "you" { "you" } else { "it" },
+        counted.join(", ")
+    ))
 }
 
 impl Drop for SpawnUnderWay {
@@ -462,6 +470,18 @@ mod tests {
         assert!(room("cap-top", Some(taken.0)), "asked for again, it stands in for itself");
         drop(taken);
         assert!(room("cap-top", None), "gone with its call");
+        // Full again: the refusal names who holds the places.
+        one("cap-grandkid", Some("cap-tools"));
+        let e = cap_room(&reg().lock().unwrap(), "cap-top", None).unwrap_err();
+        assert!(e.contains("cap-grandkid") && e.contains("cap-kid-0") && e.contains("delete those"), "{e}");
+        // One whose answer reached its caller and that waits out autoDelete holds none.
+        reg().lock().unwrap().auto.insert("cap-kid-0".into(), crate::agents::teardown::Auto { idle_since: Some(1), deleting: false });
+        assert!(room("cap-top", None), "a finished helper is no place taken");
+        // At work again, or not autoDelete, it counts.
+        reg().lock().unwrap().auto.insert("cap-kid-0".into(), crate::agents::teardown::Auto { idle_since: None, deleting: false });
+        assert!(!room("cap-top", None));
+        reg().lock().unwrap().auto.remove("cap-kid-0");
+        forget("cap-grandkid");
         for id in ids.iter().map(String::as_str).chain(["cap-top"]) {
             forget(id);
         }
