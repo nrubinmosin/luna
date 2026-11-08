@@ -136,22 +136,28 @@ another program's and is left alone.
   end the core polls `GetSystemMetrics(SM_SHUTTINGDOWN)` ("nonzero if the
   current session is shutting down") and, seeing it, leaves the rest to Windows
   however long it takes; still zero `SHUTDOWN_OVERRUN` (60 s) past the grace, it
-  asks the System log (`EvtQuery`, XPath with `timediff`) for a User32 event 1075
-  since the request, which winlogon writes when an `AbortSystemShutdown`
-  (`shutdown /a`) takes a pending shutdown back. Found, the request was canceled:
-  the RunOnce value goes, the helpers' jobs are tied to the core again and the
-  stopped ones settled and resumed (`background::reopen`, `settle_stopped`,
+  reads the System log (`EvtQuery`) for the User32 shutdown events after the mark
+  it took before asking (the latest `EventRecordID`, so no earlier cancellation
+  and no clock change can pass for this request's): its own 1074, then a 1075,
+  which winlogon writes when an `AbortSystemShutdown` (`shutdown /a`) takes a
+  pending shutdown back (`fate_of`). That order alone means canceled: the RunOnce
+  value goes, the helpers' jobs are tied to the core again and the stopped ones
+  settled — their stdin lines reconciled with the transcript off the lock, as
+  `restore` does — and resumed (`background::reopen`, `settle_stopped`,
   `resume_stopped`), and the window starts every chat over (`pty://start-over`,
-  `core.store.ts`), as a new core would. Not found, nothing is undone: the RunOnce
-  value stays, the chats stay closed, and a notification says how to bring them
-  back by hand. Restart (Windows only, refused elsewhere at arming) sets the
-  RunOnce value with the window's exe (`--window-exe`) before asking. Off Windows
-  the ask is `shutdown -h|-r +1` run to its end with stderr in a file in the data
-  dir (not `.output()`: macOS's `shutdown` forks a child that keeps the pipe
-  open for the whole delay), its exit status and what it said logged; nothing
-  there tells a canceled shutdown from a slow one, so recovery is by hand. Sleep /
-  hibernate is `SetSuspendState`; sessions live on, and the clock jump on wake
-  resets the window and countdown.
+  `core.store.ts`), as a new core would. Another 1074 in between (another
+  program's request, whose cancellation the 1075 may be), a 1075 only before the
+  mark, or no reading at all undoes nothing: the RunOnce value stays, the chats
+  stay closed, and a notification says how to bring them back by hand. Restart
+  (Windows only, refused elsewhere at arming) sets the RunOnce value with the
+  window's exe (`--window-exe`) before asking. Off Windows the ask is
+  `shutdown -h|-r +1` run to its end with stderr in a private file of a fresh name
+  in the data dir (`secret::create_private_rw`, never a planted link followed;
+  not `.output()`: macOS's `shutdown` forks a child that keeps the pipe open for
+  the whole delay), read back through its own handle, its exit status and what it
+  said logged; nothing there tells a canceled shutdown from a slow one, so
+  recovery is by hand. Sleep / hibernate is `SetSuspendState`; sessions live on,
+  and the clock jump on wake resets the window and countdown.
 - **Drain** (`Armed::drain`, "start nothing new") refuses agents' `luna_spawn`
   and `luna_send` in `mcp::run` and narrows `luna_answer` to structured answers;
   a person is never refused. Calls are counted under the lock that arms
@@ -214,7 +220,7 @@ text), notices, the awake hold. Sessions are named by id and chat name
 | Keeper gone with its core | the next core ends tied jobs from `tied-jobs/` (`end_last_ties`) |
 | WebView2 dies | `watchdog.rs` rebuilds the window; sessions untouched |
 | The OS refuses the shutdown or restart | nothing closed; the Win32 error logged and shown; a restart's RunOnce value removed |
-| The shutdown is taken back after the sessions closed | the System log's User32 1075, read 60 s past the grace; RunOnce value removed, helpers' jobs tied again and the stopped ones resumed, every chat started over from its transcript |
+| The shutdown is taken back after the sessions closed | the System log's User32 1074 then 1075 after the mark, read 60 s past the grace; RunOnce value removed, helpers' jobs tied again and the stopped ones resumed, every chat started over from its transcript |
 | The shutdown has neither begun nor been recorded as canceled 60 s past the grace | nothing undone: RunOnce kept, chats closed; a notification says how to bring them back (restart the core, or Luna) |
 | A shutdown taken back, then the core dies | its helpers' jobs were tied again on reopening, so their processes die with it; the next core's `tied` is true to the state |
 | Restart's RunOnce cannot be set | logged; the PC restarts anyway |
