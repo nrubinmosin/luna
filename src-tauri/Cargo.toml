@@ -51,7 +51,7 @@ flate2 = "1"
 tar = "0.4"
 # A terminal emulator in memory, for showing an agent what its helper's
 # screen says (src/pty/screen.rs `screen`): the scrollback replayed into a grid.
-vt100 = "0.16"
+vt100 = "0.18"
 
 # Subclassing the windows — the Alt menu and WM_ENDSESSION (src/sysmenu.rs);
 # Job Objects and process counters for what a session has running under it

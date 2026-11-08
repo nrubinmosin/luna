@@ -14,7 +14,7 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   new Node or Rust major to a hand-made migration.
 - Tauri 2.12.5 and its plugins' latest patches; base64, dirs, getrandom and
   toml_edit on the versions the rest of the tree already carried, so each is in
-  the build once.
+  the build once; vt100 0.18 for the screen a helper's output is replayed onto.
 
 ## [0.10.0] - 2026-11-08
 
