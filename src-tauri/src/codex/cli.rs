@@ -100,9 +100,26 @@ fn fetch(agent: &ureq::Agent, version: &str, dir: &Path, progress: &mut dyn FnMu
     Ok(Package { files: unpacked?, verified: format!("{asset} sha256 from codex-package_SHA256SUMS; files at their tar header sizes") })
 }
 
+/// What one package may unpack to: a tarball that matches its checksum is
+/// still not let fill the disk or the folder without end. rust-v0.167.0's
+/// largest, x86_64-pc-windows-msvc, holds 52 entries and 581 MB (Linux x64
+/// 52 and 541 MB, macOS arm64 50 and 427 MB), none of them links; these
+/// leave it room to grow several times over.
+const MAX_BYTES: u64 = 4 << 30;
+const MAX_ENTRIES: usize = 2_000;
+
+struct Caps {
+    bytes: u64,
+    entries: usize,
+}
+
 /// Unpacks the package tarball into `dir` and lists the regular files it put
 /// there, each at the size its tar header gives.
-pub(crate) fn unpack(reader: impl std::io::Read, dir: &Path) -> Result<Vec<PackageFile>, String> {
+fn unpack(reader: impl std::io::Read, dir: &Path) -> Result<Vec<PackageFile>, String> {
+    unpack_capped(reader, dir, Caps { bytes: MAX_BYTES, entries: MAX_ENTRIES })
+}
+
+fn unpack_capped(reader: impl std::io::Read, dir: &Path, caps: Caps) -> Result<Vec<PackageFile>, String> {
     let gz = flate2::read::GzDecoder::new(reader);
     let mut archive = tar::Archive::new(gz);
     // Entries are relative (`bin/codex.exe`); anything that tries to climb
@@ -110,13 +127,33 @@ pub(crate) fn unpack(reader: impl std::io::Read, dir: &Path) -> Result<Vec<Packa
     archive.set_preserve_permissions(true);
     // By path: a later entry for the same path is what stays on disk.
     let mut files = std::collections::BTreeMap::new();
+    let (mut bytes, mut entries) = (0u64, 0usize);
     for entry in archive.entries().map_err(|e| format!("tar: {e}"))? {
         let mut entry = entry.map_err(|e| format!("tar: {e}"))?;
-        let regular = entry.header().entry_type().is_file();
+        let kind = entry.header().entry_type();
         let size = entry.header().size().map_err(|e| format!("tar: {e}"))?;
-        let rel = rel_of(&entry.path().map_err(|e| format!("tar: {e}"))?);
+        let path = entry.path().map_err(|e| format!("tar: {e}"))?.into_owned();
+        // Files and folders only. A link, hard or symbolic, could point a
+        // later entry, or the record's own check, outside the folder; the
+        // packages have none. Devices, pipes and sparse files have no place
+        // in one either.
+        if kind.is_symlink() || kind.is_hard_link() {
+            return Err(format!("tar: refused: a link entry, {}", path.display()));
+        }
+        let metadata =
+            kind.is_pax_global_extensions() || kind.is_pax_local_extensions() || kind.is_gnu_longname() || kind.is_gnu_longlink();
+        if !(kind.is_file() || kind.is_dir() || metadata) {
+            return Err(format!("tar: refused: an entry of type {:?}, {}", kind.as_byte() as char, path.display()));
+        }
+        entries += 1;
+        if kind.is_file() {
+            bytes = bytes.saturating_add(size);
+        }
+        if entries > caps.entries || bytes > caps.bytes {
+            return Err(format!("tar: refused: more than {} entries or {} bytes", caps.entries, caps.bytes));
+        }
         let unpacked = entry.unpack_in(dir).map_err(|e| format!("unpack: {e}"))?;
-        if let (true, true, Some(rel)) = (unpacked, regular, rel) {
+        if let (true, true, Some(rel)) = (unpacked, kind.is_file(), rel_of(&path)) {
             files.insert(rel, size);
         }
     }
@@ -139,8 +176,9 @@ fn rel_of(path: &Path) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{checksum_from_sums, unpack, BIN_REL};
+    use super::{checksum_from_sums, unpack, unpack_capped, Caps, BIN_REL, MAX_BYTES, MAX_ENTRIES};
     use std::io::Write;
+    use std::path::PathBuf;
 
     #[test]
     fn picks_the_matching_line() {
@@ -155,42 +193,85 @@ mod tests {
         assert_eq!(checksum_from_sums(sums, "other"), None);
     }
 
-    /// A tarball of `entries`, its tar cut to `keep` bytes first.
-    fn tar_gz(entries: &[(&str, &[u8])], keep: Option<usize>) -> Vec<u8> {
+    const HELPER: &str = "codex-resources/codex-command-runner.exe";
+
+    enum Entry<'a> {
+        File(&'a str, &'a [u8]),
+        Symlink(&'a str, &'a str),
+        HardLink(&'a str, &'a str),
+    }
+
+    fn tar_gz(entries: &[Entry]) -> Vec<u8> {
         let mut builder = tar::Builder::new(Vec::new());
-        for (path, bytes) in entries {
+        for entry in entries {
             let mut header = tar::Header::new_gnu();
-            header.set_size(bytes.len() as u64);
             header.set_mode(0o755);
+            let (path, data, link) = match entry {
+                Entry::File(path, bytes) => (path, *bytes, None),
+                Entry::Symlink(path, target) => (path, &[][..], Some((tar::EntryType::Symlink, target))),
+                Entry::HardLink(path, target) => (path, &[][..], Some((tar::EntryType::Link, target))),
+            };
+            header.set_size(data.len() as u64);
+            if let Some((kind, target)) = link {
+                header.set_entry_type(kind);
+                header.set_link_name(target).unwrap();
+            }
             header.set_cksum();
-            builder.append_data(&mut header, path, *bytes).unwrap();
+            builder.append_data(&mut header, path, data).unwrap();
         }
-        let mut tar = builder.into_inner().unwrap();
-        if let Some(keep) = keep {
-            tar.truncate(keep);
-        }
+        let tar = builder.into_inner().unwrap();
         let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
         gz.write_all(&tar).unwrap();
         gz.finish().unwrap()
     }
 
-    /// The real unpacker on a package whose exe entry stops halfway: the
-    /// unpack fails or the directory does not validate. Whole, it does.
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("luna-codex-unpack-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// What `cli::validate` holds the folder to: every file, at its header's
+    /// size.
     #[test]
-    fn a_package_with_its_exe_cut_short_does_not_validate() {
-        let dir = std::env::temp_dir().join(format!("luna-codex-unpack-{}", std::process::id()));
-        let exe = vec![7u8; 4000];
-        let helper = vec![9u8; 3000];
-        let entries: [(&str, &[u8]); 2] = [(BIN_REL, &exe), ("codex-resources/codex-command-runner.exe", &helper)];
-        let attempt = |keep: Option<usize>| {
+    fn a_whole_package_unpacks_listing_each_file_at_its_size() {
+        let dir = scratch("whole");
+        let (exe, helper) = (vec![7u8; 4000], vec![9u8; 3000]);
+        let files = unpack(&tar_gz(&[Entry::File(BIN_REL, &exe), Entry::File(HELPER, &helper)])[..], &dir).unwrap();
+        let listed: Vec<_> = files.iter().map(|f| (f.rel.as_str(), f.size)).collect();
+        assert_eq!(listed, [(BIN_REL, 4000), (HELPER, 3000)]);
+        crate::cli::validate(&dir, "0.1.0", BIN_REL, crate::cli::Package { files, verified: "test".into() }).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn link_entries_are_refused() {
+        let exe = vec![7u8; 100];
+        for link in [Entry::Symlink("codex-path/rg.exe", "../../../outside"), Entry::HardLink("codex-path/rg.exe", "bin/codex.exe")] {
+            let dir = scratch("link");
+            let refused = unpack(&tar_gz(&[Entry::File(BIN_REL, &exe), link])[..], &dir).err().expect("refused");
+            assert!(refused.contains("a link entry"), "{refused}");
+            assert!(std::fs::symlink_metadata(dir.join("codex-path").join("rg.exe")).is_err(), "nothing was made for it");
             let _ = std::fs::remove_dir_all(&dir);
-            std::fs::create_dir_all(&dir).unwrap();
-            let files = unpack(&tar_gz(&entries, keep)[..], &dir)?;
-            crate::cli::validate(&dir, "0.1.0", BIN_REL, crate::cli::Package { files, verified: "test".into() }).map(|_| ())
-        };
-        // One header block, then half the exe.
-        assert!(attempt(Some(512 + 2000)).is_err());
-        attempt(None).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_package_past_its_caps_is_refused_before_the_entry_is_written() {
+        let (exe, helper) = (vec![7u8; 4000], vec![9u8; 3000]);
+        let tarball = tar_gz(&[Entry::File(BIN_REL, &exe), Entry::File(HELPER, &helper)]);
+
+        let dir = scratch("caps-bytes");
+        let refused = unpack_capped(&tarball[..], &dir, Caps { bytes: 5000, entries: MAX_ENTRIES }).err().expect("refused");
+        assert!(refused.contains("refused: more than"), "{refused}");
+        assert!(dir.join(BIN_REL).is_file() && !dir.join(HELPER).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let dir = scratch("caps-entries");
+        let refused = unpack_capped(&tarball[..], &dir, Caps { bytes: MAX_BYTES, entries: 1 }).err().expect("refused");
+        assert!(refused.contains("refused: more than"), "{refused}");
+        assert!(!dir.join(HELPER).exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

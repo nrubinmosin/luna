@@ -46,7 +46,10 @@ An install is all or nothing:
 2. **Validation.** The source says what it put there (`Package`): Claude Code
    the one exe with the manifest's sha256 and size; Codex every regular file of
    the tarball at its tar header's size (the release publishes no hash of the
-   files inside, so the tarball's sha256 is what pins them). `validate` checks
+   files inside, so the tarball's sha256 is what pins them). The Codex unpack
+   takes files and folders only, refusing a link, device, pipe or sparse
+   entry, and stops past `MAX_ENTRIES` entries or `MAX_BYTES` bytes (2,000 and
+   4 GiB; a package holds about 50 and 600 MB). `validate` checks
    each is a regular file, not a link, at that size and, where given, that
    hash, and that the executable is among them.
 3. **Record.** Every file is flushed to disk (`sync_all`), then
