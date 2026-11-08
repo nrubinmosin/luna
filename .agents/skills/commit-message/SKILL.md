@@ -72,11 +72,11 @@ token's default owner (TokenOwner, acl::maker_sid).
 
 ## When the hook refuses
 
-The commit was not made. Your changes are still staged and the refused
-message is in `.git/COMMIT_EDITMSG`. So fix the message and run the same
-`git commit -F` again; `git commit --amend` here would fold the staged changes
-into the commit before, which is a different commit (amend only when the
-refused command was itself an amend).
+The commit was not made, as the refusal says: your changes are still staged.
+Fix the message in the file the refusal names and commit again from it
+(`git commit -e -F <file>`, or `-F` your own draft). `git commit --amend`
+here would fold the staged changes into the commit before; amend only when the
+refused command was itself an amend.
 
 Fix every line the refusal names, then check again, because a fix can uncover
 the next rule: drop `fix: ` and what is left starts lowercase, which the
@@ -90,31 +90,25 @@ list shows which account each helper runs on`.
 CI runs `--range` over every commit of the pull request, so each one must pass
 on its own, not just the last.
 
-- **Review follow-ups**: `git commit --fixup <sha>` makes a `fixup!` commit the
-  hook lets through and CI refuses. Fold them in before the merge, without an
-  editor:
-
-  ```sh
-  git rebase --autosquash "$(git merge-base HEAD origin/master)"
-  ```
-
-  (git 2.44 or later; older git needs `-i` with `GIT_SEQUENCE_EDITOR=true`.)
-  Then `sh scripts/check-commit-msg.sh --range origin/master..HEAD`. A branch
-  that merged master in needs `--rebase-merges`, or the merge is flattened.
-- **Rewording an older commit**: not `git commit --fixup=reword:<sha>` or
-  `--fixup=amend:`, since the `amend!` commit they write is refused by the
-  hook. Fold the fixups first (autosquash finds a `fixup!` by its target's
-  subject, which the reword changes), then amend the commit on a detached
-  HEAD and replay the rest of the branch onto it. Plain commands, no editor,
-  so they run the same from PowerShell, sh or a sandboxed agent:
-
-  ```sh
-  git switch --detach <sha>
-  git commit --amend -F test-build/msg.txt
-  git rebase --onto HEAD <sha> <branch>
-  ```
-
+- **Review follow-ups**: `git commit --fixup <sha>` makes a `fixup!` commit.
+- **Rewording an older commit**: an `amend!` commit. With an editor,
+  `git commit --fixup=reword:<sha>` writes one. Without one (`--fixup` refuses
+  `-F`), write it yourself: the first line `amend! <the commit's subject as it
+  is now>`, a blank line, then the whole new message; a reword changes no
+  file, so commit it empty: `git commit --allow-empty -F test-build/msg.txt`.
   The last commit is simpler: `git commit --amend -F test-build/msg.txt`.
+
+The hook lets `fixup!`, `squash!` and `amend!` through and CI refuses them, so
+fold them all in before the merge, in one rebase that needs no editor (git
+2.44 or later; older git needs `-i` with `GIT_SEQUENCE_EDITOR=true`):
+
+```sh
+git rebase --autosquash "$(git merge-base HEAD origin/master)"
+sh scripts/check-commit-msg.sh --range origin/master..HEAD
+```
+
+A branch that merged master in needs `--rebase-merges`, or the merge is
+flattened.
 
 Rewritten commits need a force push (`--force-with-lease`) of a branch others
 may have fetched: that is a push, so it waits for a yes.
