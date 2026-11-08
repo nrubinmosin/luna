@@ -133,34 +133,39 @@ export function NewChatDialog() {
 
   // A folder the account has not trusted: whether Luna marks it trusted, as
   // the CLI's own prompt would, is asked here, unticked; left so, the CLI
-  // asks in the chat itself.
-  const [trusted, setTrusted] = useState(true);
-  const [trustIt, setTrustIt] = useState(false);
+  // asks in the chat itself. The answer and the tick both belong to one
+  // provider, account and folder: picking another makes the answer pending
+  // (no Create until it comes) and the tick void, so no trust is ever written
+  // for a folder nobody ticked it for.
+  const trustKey = `${provider}\u0000${accountPath}\u0000${folder}`;
+  const [trustAnswer, setTrustAnswer] = useState<{ key: string; trusted: boolean } | null>(null);
+  const [trustTicked, setTrustTicked] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   useEffect(() => {
     let stale = false;
+    const key = `${provider}\u0000${accountPath}\u0000${folder}`;
     if (!folder || !accountPath) {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- with nothing to ask about the answer is known at once
-      setTrusted(true);
+      setTrustAnswer({ key, trusted: true });
       return;
     }
     void ui(provider)
       .folderTrusted(accountPath, folder)
-      .then(ok => {
-        if (stale) return;
-        setTrusted(ok);
-        setTrustIt(false);
-      })
-      .catch(() => !stale && setTrusted(true));
+      .then(trusted => !stale && setTrustAnswer({ key, trusted }))
+      .catch(() => !stale && setTrustAnswer({ key, trusted: true }));
     return () => {
       stale = true;
     };
   }, [folder, accountPath, provider]);
+  const answer = trustAnswer?.key === trustKey ? trustAnswer : null;
+  const trustPending = answer === null;
+  const trusted = answer?.trusted ?? true;
+  const trustIt = !trusted && trustTicked === trustKey;
   // Claude Code cannot show its trust prompt in a worktree it makes: such a
   // chat needs the folder trusted first, or no worktree.
   const trustNeeded = provider === 'claude' && worktree && !trusted && !trustIt;
-  const canCreate = !!folder && !!account && !trustNeeded;
+  const canCreate = !!folder && !!account && !trustPending && !trustNeeded;
 
   const browse = async () => {
     const picked = await pickFolder();
@@ -367,7 +372,12 @@ export function NewChatDialog() {
                 }}
               >
                 <div className="field-row" style={{ marginBottom: 3 }}>
-                  <input type="checkbox" id="trust-toggle" checked={trustIt} onChange={() => setTrustIt(t => !t)} />
+                  <input
+                    type="checkbox"
+                    id="trust-toggle"
+                    checked={trustIt}
+                    onChange={() => setTrustTicked(trustIt ? null : trustKey)}
+                  />
                   <label htmlFor="trust-toggle" style={{ fontWeight: 600, color: 'var(--fg)', cursor: 'default' }}>
                     Trust this folder in “{account.name}”
                   </label>
