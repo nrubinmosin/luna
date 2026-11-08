@@ -1,13 +1,15 @@
 //! The window's line to the core (coreproc.rs): find the one running for this
 //! data dir or start it, say hello, and hold the connection for as long as
 //! the window lives. Everything the page asks of the sessions goes down it
-//! (`core_call`, `core_send`), and everything the sessions send the page
-//! comes up it and on to the webview.
+//! (`core_call`, `core_send`), only the commands `corecmd::COMMANDS` lists for
+//! the page, and everything the sessions send the page comes up it and on to
+//! the webview.
 //!
 //! A core of another build is never worked with. One with no session running
 //! is asked to stop and replaced at once; one with sessions is left alone
 //! until the user says to restart it, which stops them (they resume after).
 
+use crate::corecmd;
 use crate::ipc::{self, Discovery, Event, Hello, Req, Res, Welcome};
 use serde::Serialize;
 use serde_json::Value;
@@ -401,9 +403,20 @@ pub fn core_restart() {
     });
 }
 
+/// The page may have the window pass on only the commands the core lists for
+/// it, each on its own lane (`corecmd::COMMANDS`): the protocol's `shutdown`
+/// and `info`, and a command sent on the wrong lane, stop here.
+fn passes(cmd: &str, on: corecmd::Lane) -> Result<(), String> {
+    match corecmd::lane(cmd) {
+        Some(lane) if lane == on => Ok(()),
+        _ => Err(format!("the window does not pass {cmd:?} on to the core")),
+    }
+}
+
 /// A command for the sessions, answered by the core (corecmd.rs).
 #[tauri::command]
 pub async fn core_call(cmd: String, args: Value) -> Result<Value, String> {
+    passes(&cmd, corecmd::Lane::Call)?;
     tauri::async_runtime::spawn_blocking(move || request(cmd, args)).await.map_err(|e| e.to_string())?
 }
 
@@ -411,7 +424,30 @@ pub async fn core_call(cmd: String, args: Value) -> Result<Value, String> {
 /// not waited on. Sync, so the page's calls keep their order.
 #[tauri::command]
 pub fn core_send(cmd: String, args: Value) -> Result<(), String> {
+    passes(&cmd, corecmd::Lane::Send)?;
     let conn = CURRENT.lock().unwrap_or_else(|e| e.into_inner()).clone().ok_or("the core is not running")?;
     let frame = ipc::encode(ipc::SEND, &Req { id: 0, cmd, args }).map_err(|e| e.to_string())?;
     write(&conn, &frame).map_err(|e| format!("the core is not reachable: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_page_cannot_have_the_window_pass_on_what_the_core_does_not_list() {
+        // Refused before any core is looked for. Passed on, the protocol's own
+        // commands would stop the core or answer for it, and a command on the
+        // wrong lane would run unanswered or be waited on.
+        let refused = |r: Result<(), String>| r.is_err_and(|e| e.contains("does not pass"));
+        for cmd in ["shutdown", "info", "hello", "", "ensure_claude_session", "kill_session"] {
+            assert!(refused(core_send(cmd.into(), Value::Null)), "core_send {cmd}");
+        }
+        for cmd in ["shutdown", "info", "hello", "", "write_session", "resize_session", "nope"] {
+            let r = tauri::async_runtime::block_on(core_call(cmd.into(), Value::Null)).map(drop);
+            assert!(refused(r), "core_call {cmd}");
+        }
+        assert!(passes("write_session", corecmd::Lane::Send).is_ok());
+        assert!(passes("ensure_codex_session", corecmd::Lane::Call).is_ok());
+    }
 }

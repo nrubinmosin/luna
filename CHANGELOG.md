@@ -19,6 +19,17 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   dependencies for advisories, licenses and sources (cargo-deny, `pnpm audit`),
   the history for committed secrets (gitleaks), and the code and workflows with
   CodeQL. `scripts/supply-chain.ps1` runs the same checks locally.
+- The window's page reaches only what it calls, so a script injected into it
+  would get no more: each app command is granted to the main window by name
+  and refused to any other window or a remote page, plugins are cut to the
+  calls the page makes (no menus, trays, new webviews or paths), the bridge to
+  the core passes on only the 35 commands the page sends, each on its own lane
+  (never the core's `shutdown`), and account and folder paths are checked
+  where they come in: an account path must be an account folder Luna lists,
+  a folder a plain absolute path.
+- Turning on Settings → Helpers → "Let helpers run with more privilege than
+  the chat that spawns them" asks again in a system dialog, which a script in
+  the page cannot answer.
 
 ### Added
 

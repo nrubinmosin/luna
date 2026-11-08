@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-library-resolve"
+description = "Enables the library_resolve command without any pre-configured scope."
+commands.allow = ["library_resolve"]
+
+[[permission]]
+identifier = "deny-library-resolve"
+description = "Denies the library_resolve command without any pre-configured scope."
+commands.deny = ["library_resolve"]

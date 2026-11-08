@@ -89,6 +89,12 @@ windows = { version = "0.62", features = [
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# Tauri's mock runtime, for the tests that hold the window's commands to its
+# capability (lib.rs `acl`, not built on Windows). A feature of the tauri
+# already in the tree.
+[target.'cfg(not(windows))'.dev-dependencies]
+tauri = { version = "2", features = ["test"] }
+
 # Checked by `cargo clippy --all-targets -- -D warnings` on both Linux and
 # Windows, the latter for the code only Windows compiles.
 [lints.rust]

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-fetch-before-worktree"
+description = "Enables the set_fetch_before_worktree command without any pre-configured scope."
+commands.allow = ["set_fetch_before_worktree"]
+
+[[permission]]
+identifier = "deny-set-fetch-before-worktree"
+description = "Denies the set_fetch_before_worktree command without any pre-configured scope."
+commands.deny = ["set_fetch_before_worktree"]

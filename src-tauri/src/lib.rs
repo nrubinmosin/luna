@@ -7,6 +7,7 @@ mod agentlog;
 mod agents;
 mod asking;
 mod background;
+mod boundary;
 mod browsers;
 mod checks;
 mod claude;
@@ -138,7 +139,7 @@ fn open_link(url: String, ctx: Option<browsers::Context>) -> Result<(), String> 
 /// in the tooltip, so a hidden window still says why the PC will not sleep.
 /// `None` puts the plain icon back.
 #[tauri::command]
-fn tray_awake(app: tauri::AppHandle, holders: Option<String>) -> Result<(), String> {
+fn tray_awake<R: tauri::Runtime>(app: tauri::AppHandle<R>, holders: Option<String>) -> Result<(), String> {
     let Some(tray) = app.tray_by_id("main") else { return Ok(()) };
     let Some(base) = app.default_window_icon() else { return Ok(()) };
     let (icon, tip) = match holders {
@@ -169,6 +170,85 @@ fn with_dot(base: &tauri::image::Image<'_>) -> tauri::image::Image<'static> {
         }
     }
     tauri::image::Image::new_owned(rgba, w as u32, h as u32)
+}
+
+/// Every app command the window registers. build.rs reads this list for the
+/// application manifest (capabilities/ grants each one by name), and the ACL
+/// tests below build a mock app with it.
+macro_rules! app_handler {
+    () => {
+        tauri::generate_handler![
+            account_settings::recommended_settings,
+            account_settings::settings_sync_state,
+            account_settings::set_settings_parent,
+            account_settings::set_settings_sync_on_start,
+            account_settings::read_account_config,
+            account_settings::check_account_config,
+            account_settings::format_account_config,
+            account_settings::write_account_config,
+            accounts::list_accounts,
+            accounts::create_account,
+            accounts::delete_account,
+            agents::spawn::account::agent_blocked_accounts,
+            agents::spawn::account::set_agent_account,
+            agents::privilege::helpers_above_caller,
+            agents::privilege::set_helpers_above_caller,
+            cli::cli_status,
+            cli::cli_update_now,
+            claude::defaults::claude_defaults,
+            claude::limits::account_limits,
+            claude::trust::claude_folder_trusted,
+            claude::trust::claude_trust_folder,
+            codex::defaults::codex_defaults,
+            codex::hooks::codex_hooks_start,
+            codex::hooks::set_codex_hooks_default,
+            codex::hooks::keep_codex_hooks,
+            codex::limits::codex_limits,
+            codex::models::codex_models,
+            codex::trust::codex_trusted_roots,
+            codex::trust::set_codex_trusted_roots,
+            library::library_overview,
+            library::library_sync,
+            library::library_set_source,
+            library::library_set_instructions,
+            library::library_set_accounts,
+            library::library_set_folder,
+            library::library_set_folder_skill,
+            library::library_set_folder_instructions,
+            library::library_skip,
+            library::library_resolve,
+            library::library_diff,
+            library::library_read,
+            library::library_write,
+            library::library_check_skill,
+            library::library_new_skill,
+            library::library_delete_skill,
+            library::library_new_instructions,
+            library::library_rename_instructions,
+            library::library_delete_instructions,
+            library::library_open,
+            log::append_log,
+            media::save_media,
+            open_link,
+            browsers::browsers,
+            browsers::set_browsers,
+            tray_awake,
+            corelink::core_call,
+            corelink::core_send,
+            corelink::core_state,
+            corelink::core_restart,
+            lifecycle::note_exit,
+            pty::probe::saved_title,
+            settings::get_accounts_root,
+            settings::set_accounts_root,
+            watchdog::ui_heartbeat,
+            worktree::fetch_before_worktree,
+            worktree::set_fetch_before_worktree,
+            asking::waiting_marker,
+            asking::set_waiting_marker,
+            worktree::inspect_worktrees,
+        ]
+    };
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -296,77 +376,7 @@ pub fn run() {
                 api.prevent_close();
             }
         })
-        .invoke_handler(tauri::generate_handler![
-            account_settings::recommended_settings,
-            account_settings::settings_sync_state,
-            account_settings::set_settings_parent,
-            account_settings::set_settings_sync_on_start,
-            account_settings::read_account_config,
-            account_settings::check_account_config,
-            account_settings::format_account_config,
-            account_settings::write_account_config,
-            accounts::list_accounts,
-            accounts::create_account,
-            accounts::delete_account,
-            agents::spawn::account::agent_blocked_accounts,
-            agents::spawn::account::set_agent_account,
-            agents::privilege::helpers_above_caller,
-            agents::privilege::set_helpers_above_caller,
-            cli::cli_status,
-            cli::cli_update_now,
-            claude::defaults::claude_defaults,
-            claude::limits::account_limits,
-            claude::trust::claude_folder_trusted,
-            claude::trust::claude_trust_folder,
-            codex::defaults::codex_defaults,
-            codex::hooks::codex_hooks_start,
-            codex::hooks::set_codex_hooks_default,
-            codex::hooks::keep_codex_hooks,
-            codex::limits::codex_limits,
-            codex::models::codex_models,
-            codex::trust::codex_trusted_roots,
-            codex::trust::set_codex_trusted_roots,
-            library::library_overview,
-            library::library_sync,
-            library::library_set_source,
-            library::library_set_instructions,
-            library::library_set_accounts,
-            library::library_set_folder,
-            library::library_set_folder_skill,
-            library::library_set_folder_instructions,
-            library::library_skip,
-            library::library_resolve,
-            library::library_diff,
-            library::library_read,
-            library::library_write,
-            library::library_check_skill,
-            library::library_new_skill,
-            library::library_delete_skill,
-            library::library_new_instructions,
-            library::library_rename_instructions,
-            library::library_delete_instructions,
-            library::library_open,
-            log::append_log,
-            media::save_media,
-            open_link,
-            browsers::browsers,
-            browsers::set_browsers,
-            tray_awake,
-            corelink::core_call,
-            corelink::core_send,
-            corelink::core_state,
-            corelink::core_restart,
-            lifecycle::note_exit,
-            pty::probe::saved_title,
-            settings::get_accounts_root,
-            settings::set_accounts_root,
-            watchdog::ui_heartbeat,
-            worktree::fetch_before_worktree,
-            worktree::set_fetch_before_worktree,
-            asking::waiting_marker,
-            asking::set_waiting_marker,
-            worktree::inspect_worktrees,
-        ])
+        .invoke_handler(app_handler!())
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
         // Quit comes from the tray while pty sessions are still streaming;
@@ -391,4 +401,107 @@ pub fn run() {
                 power::clear();
             }
         });
+}
+
+/// The window's commands held to its capability (capabilities/default.json),
+/// on a mock app built from the same handler and context as the real one.
+/// Not on Windows: a built app links tauri's menu and tray code, whose
+/// comctl32 imports load only with the manifest the app's own exe carries,
+/// and a test exe without it does not start. The capability is the same on
+/// every platform, and the Linux check runs these.
+#[cfg(all(test, not(windows)))]
+mod acl {
+    // The handler's paths are the crate root's, and so is `Manager`.
+    use super::*;
+    use serde_json::{json, Value};
+    use tauri::ipc::{CallbackFn, InvokeBody};
+    use tauri::test::{get_ipc_response, mock_builder, MockRuntime, INVOKE_KEY};
+    use tauri::webview::InvokeRequest;
+
+    // The app's own origin off Windows (Windows serves it as http://tauri.localhost).
+    const LOCAL: &str = "tauri://localhost";
+
+    fn app() -> tauri::App<MockRuntime> {
+        mock_builder().invoke_handler(app_handler!()).build(tauri::generate_context!()).expect("mock app")
+    }
+
+    fn ask(app: &tauri::App<MockRuntime>, window: &str, url: &str, cmd: &str, body: Value) -> Result<Value, String> {
+        let w = match app.get_webview_window(window) {
+            Some(w) => w,
+            None => tauri::WebviewWindowBuilder::new(app, window, Default::default()).build().expect("mock window"),
+        };
+        let request = InvokeRequest {
+            cmd: cmd.into(),
+            callback: CallbackFn(0),
+            error: CallbackFn(1),
+            url: url.parse().expect("url"),
+            body: InvokeBody::Json(body),
+            headers: Default::default(),
+            invoke_key: INVOKE_KEY.to_string(),
+        };
+        get_ipc_response(&w, request).map(|b| b.deserialize::<Value>().expect("json")).map_err(|e| e.to_string())
+    }
+
+    fn refused(r: Result<Value, String>) -> bool {
+        r.is_err_and(|e| e.contains("not allowed"))
+    }
+
+    #[test]
+    fn the_main_window_reaches_its_commands_and_no_other_window_does() {
+        let app = app();
+        let own = ask(&app, "main", LOCAL, "core_state", json!({}));
+        assert!(own.is_ok(), "{own:?}");
+        // Any other window, and the main one showing a remote page.
+        assert!(refused(ask(&app, "other", LOCAL, "core_state", json!({}))));
+        assert!(refused(ask(&app, "other", LOCAL, "core_call", json!({ "cmd": "power_state", "args": {} }))));
+        assert!(refused(ask(&app, "main", "https://example.com", "core_state", json!({}))));
+    }
+
+    #[test]
+    fn plugin_calls_the_page_does_not_make_are_refused() {
+        let app = app();
+        for cmd in [
+            "plugin:tray|new",
+            "plugin:menu|new",
+            "plugin:webview|create_webview_window",
+            "plugin:window|create",
+            "plugin:window|set_position",
+            "plugin:window|show",
+            "plugin:path|resolve_directory",
+            "plugin:event|emit",
+            "plugin:app|app_hide",
+            "plugin:updater|download_and_install",
+            "plugin:notification|cancel",
+        ] {
+            assert!(refused(ask(&app, "main", LOCAL, cmd, json!({}))), "{cmd} was let through");
+        }
+        let granted = ask(&app, "main", LOCAL, "plugin:app|version", json!({}));
+        assert!(granted.is_ok(), "{granted:?}");
+    }
+
+    #[test]
+    fn the_capability_grants_every_command_the_window_registers() {
+        // One left out would be refused in the app; one granted and not
+        // registered is a stale grant.
+        let lib = include_str!("lib.rs");
+        let start = lib.find("generate_handler![").unwrap() + "generate_handler![".len();
+        let mut registered: Vec<String> = lib[start..start + lib[start..].find(']').unwrap()]
+            .split(',')
+            .map(str::trim)
+            .filter(|e| !e.is_empty())
+            .map(|e| format!("allow-{}", e.rsplit("::").next().unwrap().replace('_', "-")))
+            .collect();
+        let cap: Value = serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
+        let mut granted: Vec<String> = cap["permissions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .filter(|p| !p.contains(':'))
+            .map(String::from)
+            .collect();
+        registered.sort();
+        granted.sort();
+        assert_eq!(registered, granted);
+    }
 }
