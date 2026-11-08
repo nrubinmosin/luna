@@ -135,7 +135,7 @@ pub(super) fn command_for(e: &Entry, id: &str) -> Result<(Vec<String>, String, V
                 envs.push(("PATH", path));
             }
             if !s.connectors {
-                args.extend(crate::codex::launch::connectors_off(&crate::codex::config::mcp_servers(&s.account_path)));
+                args.extend(crate::codex::launch::connectors_off(&crate::codex::config::helper_mcp_servers(&s.account_path)?));
             }
             if let Some(token) = s.token.clone().filter(|_| s.tools) {
                 args.extend(crate::pty::codex_mcp_args());
@@ -847,6 +847,15 @@ mod tests {
         want.extend(apps_off());
         want.extend(strings(&["-c", "mcp_servers.gmail.enabled=false", "-c", "mcp_servers.Zoho_CRM-2.enabled=false", "-"]));
         assert_eq!(t.args, want);
+        // A config that will not parse: no turn, rather than one with its servers on.
+        std::fs::write(std::path::Path::new(&account).join("config.toml"), "[mcp_servers.gmail\n").unwrap();
+        let e = command_for(&e, ID).err().unwrap();
+        assert!(e.contains("not started"), "{e}");
+        // Spawned with them, it never needed the list.
+        let mut kept = entry(Provider::Codex);
+        kept.spec.account_path = account.clone();
+        kept.spec.connectors = true;
+        assert!(command_for(&kept, ID).is_ok());
         let _ = std::fs::remove_dir_all(&account);
     }
 
