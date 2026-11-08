@@ -134,6 +134,14 @@ through a link, fails the test instead of being used. Each test is time-boxed
 ends, passed or not. `LUNA_LIVE_CLAUDE_MODEL` / `LUNA_LIVE_CODEX_MODEL` pick a
 model; the account's default is used otherwise, at low effort.
 
+The Windows peer-check tests (`the_windows_peer_check_refuses_a_sandboxed_codex`,
+`serve_welcomes_a_plain_client_and_refuses_a_sandboxed_one`) need only the
+Codex CLI, no account, and are run on their own with `--exact`. Several Codex
+sandbox runs in one process can leave its sandbox unable to reach loopback, so
+a routine run skips a sandboxed connection that never comes; with
+`LUNA_LIVE_STRICT=1` that connection is required and its absence fails the
+test, which is how to prove the refusal was exercised.
+
 One more ignored test reaches the machine rather than a CLI:
 `power::machine::tests::windows_takes_the_shutdown_request_and_its_abort` asks
 Windows for a real shutdown a minute away, through the call shut-down-when-done
