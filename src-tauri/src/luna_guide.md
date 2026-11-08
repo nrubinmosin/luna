@@ -32,6 +32,8 @@ on one of the user's accounts.
 - `luna_list` `ids: [..]`: those rows alone, of any session (unknown ids in `unknown`), no
   accounts unless `accounts: true`; `accounts: false` drops them;
   `ids: []` with `accounts: true`: accounts alone. Their models only with `models: true`.
+  Another's `ask` and `task` there, its `ask` in `luna_sessions`, and others' spawns in its
+  `history`, only with `scope: "all"`.
 - You interrupt, kill and delete only sessions you spawned and theirs. Any other (the user's own
   chats, other chats' helpers, your parent) you can read, wait on, send text to and answer with
   `scope: "all"`, without which those tools refuse it; your text reaches it opened `[From session

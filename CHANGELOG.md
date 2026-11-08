@@ -18,6 +18,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   the agent's own takes `scope: "all"` in the call, and text so sent, an
   answer typed in as a message too, arrives opened `[From session <id> via
   Luna]` rather than as the user's own words.
+- `luna_list` and `luna_sessions` list any session's state but give another
+  session's question, permission request or task, and others' past spawns
+  with their prompts and replies, only with `scope: "all"`.
 - Helpers start with Luna's MCP server alone: no MCP servers or connectors of
   their account (claude.ai's Gmail, Slack and other tools that send and write
   in the person's name; Codex's apps and its account's `config.toml`
