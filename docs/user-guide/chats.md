@@ -126,11 +126,11 @@ the library's copies. See [ADR-0016](../adr/0016-luna-is-a-runtime.md).
 - **Working / waiting for you / resting**, read from the CLI's own session
   registry, so it is right whether or not the chat has a pane.
 - A chat turning to waiting raises a desktop notification (the window may be in
-  the tray), with the system's sound unless Settings → Notifications says not
+  the tray), with the system’s sound unless Settings → General → Notifications says not
   to. A click brings the window up with that chat on the peek sheet.
 - **Waiting by marker:** a turn that ends asking you something in plain words is
   waiting too, when its last message ends on a line holding the text set in
-  Settings → Waiting for you (`AWAITING OPERATOR` to begin with). It stays
+  Settings → General → Waiting for you (`AWAITING OPERATOR` to begin with). It stays
   waiting until you write to it or clear it with the check on its title bar or
   row; a power-off armed for "when done" does not wait for it.
 - Context use is read from the session transcript against the model's real

@@ -19,6 +19,22 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Changed
 
+- Settings is a wide dialog with its pages listed on the left (General, Chats,
+  Agents & trust, Links, Updates) and only the page scrolling, in place of one
+  narrow column of ten sections. Every setting is a row with its control on
+  the right and one line on what it does; what a change costs (helpers above
+  their chat, a deleted worktree's uncommitted work, accounts moved by hand)
+  stays in view, and the rest of each explanation folds into a "How … works"
+  line. Help text is 12 px at the least and passes WCAG AA in both themes.
+  Lists say when they are empty, link exceptions are added from a menu, and a
+  browser's long command line can be shown in full or copied. The page list
+  and the exception menu work from the keyboard, Tab stays inside the dialog
+  and the focus returns to what opened it, and a draft on one page survives a
+  look at another. See docs/user-guide/settings.md.
+- Confirmation dialogs (deleting a chat, an update, a library change) take
+  the focus when they open, keep Tab inside them, leave the window or dialog
+  behind them unreachable until they close, and then give the focus back to
+  the button that opened them. Enter on a focused Cancel now only cancels.
 - Luna is a runtime, not a provider configurator (ADR-0016): it adds to a CLI
   what running it needs and what protects its own boundary, changes nothing
   else without the person's say, and shows what it applied.
