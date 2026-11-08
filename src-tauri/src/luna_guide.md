@@ -97,7 +97,7 @@ on one of the user's accounts.
   not of a turn that stopped on an error, which it says.
   It comes when your chat is between turns and nobody types in it; a subagent of yours in the
   background does not hold it back, another helper of yours mid-turn may, up to 20 s, so that
-  near-simultaneous ends come as one notice.
+  near-simultaneous ends come as one notice (never a question or a prompt).
 - "NOT done yet": a job it started still runs (named), a subagent of a visible one's CLI
   works on in the background, or its own helpers have yet to answer it. Said once; the next
   notice comes when that is over or a turn of its own ends (all of it

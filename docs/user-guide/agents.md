@@ -139,7 +139,8 @@ would have asked in its reply, unless it runs with `approval: auto-review`.
   chat, as soon as it is between turns and you have not typed into it for 20
   seconds. When another helper it is waiting on is mid-turn, the notice waits up
   to 20 seconds more for that one's, so helpers finishing together make one
-  notice and one turn of the agent. A draft you left there is stashed the same way (Claude Code) or holds
+  notice and one turn of the agent; a question or a permission prompt never
+  waits. A draft you left there is stashed the same way (Claude Code) or holds
   the notice (Codex). A `luna_wait` still out for that answer hands it over
   instead, and the notice follows only if the wait has not within 10 seconds
   (Claude Code moves a call past two minutes to the background). A wait the

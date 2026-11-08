@@ -23,9 +23,10 @@ use crate::agents::teardown::reap;
 use crate::provider::Provider;
 use crate::throttle::now_ms;
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 /// How often the notifier looks for answers nobody collected.
-pub(super) const NOTIFY_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
+pub(super) const NOTIFY_EVERY: Duration = Duration::from_secs(2);
 
 /// Looks in a row the caller has to be found idle before a notice goes in:
 /// a turn that has just ended may still be followed by the one it queued.
@@ -89,6 +90,7 @@ pub fn notify(caller: &str, text: &str) -> Result<(), String> {
 }
 
 /// What became of a session the caller is owed an answer by.
+#[derive(Clone)]
 pub(super) enum Settled {
     /// A turn past the one asked about ended.
     Answered,
@@ -308,16 +310,29 @@ const _: () = assert!(COALESCE_MS < RIDE_MAX_MS);
 
 /// Whether a notice first ready at `first_ready` waits on at `now`: only while
 /// something else the caller is owed is at work (`others_working`), and never
-/// past COALESCE_MS.
-pub(super) fn coalesce_holds(first_ready: u64, now: u64, others_working: bool) -> bool {
-    others_working && now.saturating_sub(first_ready) < COALESCE_MS
+/// past COALESCE_MS. On the monotonic clock: a wall clock set back would hold
+/// it longer.
+pub(super) fn coalesce_holds(first_ready: Instant, now: Instant, others_working: bool) -> bool {
+    others_working && now.saturating_duration_since(first_ready) < Duration::from_millis(COALESCE_MS)
 }
 
-/// `coalesce_holds` for `caller` at `now`, keeping when its notice was first
-/// ready in `since`; a notice that goes out takes its entry with it.
-fn hold_for_company(since: &mut HashMap<String, u64>, caller: &str, now: u64, others_working: bool) -> bool {
+/// Whether the notice put together for `caller` (its lines settling `settled`,
+/// of the debts to `owed_by`) waits for company at `now`, keeping when it was
+/// first ready in `since`; one that goes out takes its entry with it. Never one
+/// that carries a question or a permission prompt: a helper stopped on it waits
+/// on the caller, and so may the person behind a question.
+fn hold_for_company(
+    since: &mut HashMap<String, Instant>,
+    caller: &str,
+    now: Instant,
+    settled: &[(String, Settled, Owed)],
+    owed_by: &[&str],
+    working: impl Fn(&str) -> bool,
+) -> bool {
+    let asks = settled.iter().any(|(_, how, _)| matches!(how, Settled::Waiting | Settled::Asked(_)));
+    let others_working = owed_by.iter().any(|id| !settled.iter().any(|(s, ..)| s == id) && working(id));
     let first = *since.entry(caller.to_string()).or_insert(now);
-    let holds = coalesce_holds(first, now, others_working);
+    let holds = !asks && coalesce_holds(first, now, others_working);
     if !holds {
         since.remove(caller);
     }
@@ -337,7 +352,7 @@ pub(super) fn notifier() {
     let mut drafts: HashMap<String, (u64, bool)> = HashMap::new();
     // When each caller's notice was first ready while another of its helpers
     // worked on (`hold_for_company`).
-    let mut company_since: HashMap<String, u64> = HashMap::new();
+    let mut company_since: HashMap<String, Instant> = HashMap::new();
     let mut looks_at_budgets = 0;
     loop {
         std::thread::sleep(NOTIFY_EVERY);
@@ -526,12 +541,10 @@ pub(super) fn notifier() {
             }
             // Another session it is owed an answer by still at work: this notice
             // waits a few seconds for that one's (COALESCE_MS), so near-simultaneous
-            // ends wake the caller once.
-            let others_working = items.iter().any(|(id, ..)| {
-                !settled.iter().any(|(s, ..)| s == id)
-                    && crate::activity::turn_state(id).is_some_and(|t| t.turn == crate::activity::Turn::Busy)
-            });
-            if hold_for_company(&mut company_since, &caller, now_ms(), others_working) {
+            // ends wake the caller once. Not a question or a prompt.
+            let owed_by: Vec<&str> = items.iter().map(|(id, ..)| id.as_str()).collect();
+            let busy = |id: &str| crate::activity::turn_state(id).is_some_and(|t| t.turn == crate::activity::Turn::Busy);
+            if hold_for_company(&mut company_since, &caller, Instant::now(), &settled, &owed_by, busy) {
                 continue;
             }
             // Typing it waits up to SEND_TIMEOUT for the turn to start, off this
@@ -843,24 +856,38 @@ mod tests {
     /// else of the caller's is at work.
     #[test]
     fn a_notice_waits_a_little_for_a_helper_about_to_finish() {
-        let ready = 1_000_000;
-        let at = |s: u64| ready + s * 1000;
+        let ready = Instant::now();
+        let at = |s: u64| ready + Duration::from_secs(s);
         assert!(coalesce_holds(ready, at(0), true), "another helper of its mid-turn: it waits");
         assert!(coalesce_holds(ready, at(19), true));
         assert!(!coalesce_holds(ready, at(20), true), "never past COALESCE_MS");
         assert!(!coalesce_holds(ready, at(0), false), "nothing else at work: it goes at once");
-        // A clock that went back holds no longer than it would have.
-        assert!(coalesce_holds(ready, ready - 5_000, true));
-        // The look loop's own bookkeeping: the first look a line is ready starts
-        // the wait, a later one keeps it, delivery or nothing ready clears it.
-        let mut since: HashMap<String, u64> = HashMap::new();
-        assert!(hold_for_company(&mut since, "c", at(0), true));
-        assert!(hold_for_company(&mut since, "c", at(10), true), "{since:?}");
+
+        // What the look loop holds, as it puts a notice together: "a" answered,
+        // "b" still at work.
+        let owed = Owed::from(0, 0);
+        let answered = vec![("a".to_string(), Settled::Answered, owed)];
+        let owed_by = ["a", "b"];
+        let b_works = |id: &str| id == "b";
+        let mut since: HashMap<String, Instant> = HashMap::new();
+        assert!(hold_for_company(&mut since, "c", at(0), &answered, &owed_by, b_works));
+        assert!(hold_for_company(&mut since, "c", at(10), &answered, &owed_by, b_works), "{since:?}");
         assert_eq!(since.get("c"), Some(&at(0)), "the wait counts from the first look");
-        assert!(!hold_for_company(&mut since, "c", at(21), true));
+        assert!(!hold_for_company(&mut since, "c", at(21), &answered, &owed_by, b_works), "20 s at most");
         assert!(!since.contains_key("c"), "going out clears it");
-        assert!(!hold_for_company(&mut since, "d", at(0), false));
+        // "b" answered too meanwhile: both go now, in one notice.
+        let both = vec![answered[0].clone(), ("b".to_string(), Settled::Answered, owed)];
+        assert!(!hold_for_company(&mut since, "c", at(30), &both, &owed_by, b_works));
+        // Nothing else at work: no wait.
+        assert!(!hold_for_company(&mut since, "d", at(0), &answered, &owed_by, |_| false));
         assert!(!since.contains_key("d"));
+        // A question or a permission prompt never waits, with company at work or not.
+        for how in [Settled::Waiting, Settled::Asked(7)] {
+            let asking = vec![("a".to_string(), how, owed)];
+            assert!(!hold_for_company(&mut since, "e", at(0), &asking, &owed_by, b_works));
+            let with_answer = vec![asking[0].clone(), ("x".to_string(), Settled::Answered, owed)];
+            assert!(!hold_for_company(&mut since, "e", at(0), &with_answer, &["a", "x", "b"], b_works), "nor what goes with it");
+        }
     }
 
     /// A job's end with no word from it, or an idle job, is told of with the
