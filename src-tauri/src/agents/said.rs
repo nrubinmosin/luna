@@ -100,6 +100,11 @@ fn own_words(messages: Vec<Message>, stopped: bool) -> Said {
     said
 }
 
+/// `own_words` of messages a reader read itself, its cursor its own.
+pub(super) fn said_of(messages: Vec<Message>) -> Said {
+    own_words(messages, false)
+}
+
 /// Where a notice says the answer is: a file holding it, report first
 /// (`answer_text`). The notice itself quotes no more than the report's first
 /// line (`begins`) — a caller that had a long answer cut read the whole of it
