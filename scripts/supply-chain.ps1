@@ -2,13 +2,15 @@
 # The supply-chain checks, each in Docker on pinned tools, the same ones
 # .github/workflows/security.yml runs:
 #
+#   tests    the tests of these checks themselves (scripts/supply-chain-lib.test.ps1)
 #   deny     cargo-deny over the crate's tree (src-tauri/deny.toml): RustSec
 #            advisories, licenses, bans and sources
 #   audit    pnpm audit over the npm tree, production and dev: a high or
 #            critical advisory fails it unless pnpm-audit-ignores.json names it
-#   secrets  gitleaks over the git history, secrets redacted in its output
+#   secrets  gitleaks over the git history; a finding names its rule, file,
+#            line and commit, never the text it matched
 #
-#   ./scripts/supply-chain.ps1                         all three
+#   ./scripts/supply-chain.ps1                         all four
 #   ./scripts/supply-chain.ps1 -Check deny,audit       some of them
 #   ./scripts/supply-chain.ps1 -Check secrets -Range <base>..<head>
 #                                                      only the commits of a range
@@ -18,36 +20,19 @@
 # passed yesterday. So the gate stays hermetic and this runs beside it.
 #
 # Every check runs, and the script ends on a summary of all of them: exit 1 when
-# any failed. An ignore, of an advisory in either tree, ends on an expiry date,
-# and a check fails once that date has passed.
+# any failed. An ignore, of an advisory in either tree, carries a reason and an
+# expiry date (supply-chain-lib.ps1), and a check fails once that date has passed.
 param(
-    [ValidateSet('deny', 'audit', 'secrets')]
-    [string[]]$Check = @('deny', 'audit', 'secrets'),
+    [ValidateSet('tests', 'deny', 'audit', 'secrets')]
+    [string[]]$Check = @('tests', 'deny', 'audit', 'secrets'),
     # What gitleaks scans, as git log takes it: a range, or a commit for the
     # whole history reachable from it.
     [string]$Range = 'HEAD'
 )
 . "$PSScriptRoot/lib.ps1"
-
-# cargo-deny's release binary, checked against the SHA-256 pinned here before
-# it runs: built from its own lockfile by its maintainers, where a `cargo
-# install` here would compile it and its whole tree on every CI run.
-$CargoDeny = '0.20.2'
-$CargoDenySha256 = '9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f'
-# gitleaks' official image, by tag for people and digest for the image itself.
-$Gitleaks = 'ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f'
+. "$PSScriptRoot/supply-chain-lib.ps1"
 
 $today = [datetime]::UtcNow.Date
-
-# Whether an ignore's expiry has passed; throws on a date that does not parse,
-# so a typo cannot keep an ignore forever.
-function Test-Expired([string]$What, [string]$Date) {
-    $parsed = [datetime]::MinValue
-    if (-not [datetime]::TryParseExact($Date, 'yyyy-MM-dd', [cultureinfo]::InvariantCulture, 'None', [ref]$parsed)) {
-        throw "$What has no expiry date (yyyy-MM-dd), or one that does not parse: '$Date'"
-    }
-    $parsed -lt $today
-}
 
 # The release archive, downloaded once into test-build/ and checked against the
 # pin every time it is used. Returns the folder holding it.
@@ -67,30 +52,11 @@ function Get-CargoDeny {
     $dir
 }
 
-# deny.toml's ignores carry their expiry in the reason, which is all cargo-deny
-# lets an ignore say: '... Expires YYYY-MM-DD'.
-function Assert-DenyIgnores {
-    $toml = Get-Content (Join-Path $RepoRoot 'src-tauri/deny.toml') -Raw
-    $entries = [regex]::Matches($toml, '(?m)^\s*\{\s*id\s*=\s*"([^"]+)"\s*,\s*reason\s*=\s*"([^"]*)"\s*\}')
-    if ($entries.Count -ne [regex]::Matches($toml, '(?m)^\s*\{\s*id\s*=').Count) {
-        throw 'src-tauri/deny.toml has an ignore not written as { id = "...", reason = "... Expires YYYY-MM-DD" } on one line'
-    }
-    $expired = foreach ($entry in $entries) {
-        $id = $entry.Groups[1].Value
-        $date = if ($entry.Groups[2].Value -match 'Expires (\S+)$') { $Matches[1] } else { '' }
-        if (Test-Expired "deny.toml's ignore of $id" $date) { "$id (expired $date)" }
-    }
-    if ($expired) { throw "src-tauri/deny.toml ignores past their expiry: $($expired -join ', '); review each and renew or drop it" }
-}
-
-# In the Rust image the Windows toolchain image builds on, as scripts/sbom.ps1
-# does: cargo-deny runs cargo metadata, and fetches the advisory database with
-# the git CLI, which the slim image lacks. RUSTUP_TOOLCHAIN names the image's
-# own toolchain, so rustup does not fetch what rust-toolchain.toml lists on top.
+# RUSTUP_TOOLCHAIN names the image's own toolchain, so rustup does not fetch
+# what rust-toolchain.toml lists on top.
 function Invoke-Deny {
-    Assert-DenyIgnores
-    $rust = Get-BaseImages | Where-Object { $_.File -eq 'docker/windows-build.Dockerfile' -and $_.Repo -eq 'rust' }
-    if (@($rust).Count -ne 1) { throw 'docker/windows-build.Dockerfile should have one FROM rust: line' }
+    Assert-DenyIgnores (Get-DenyIgnores (Join-Path $RepoRoot 'src-tauri/deny.toml')) $today
+    $rust = Get-RustImage
     $tool = Get-CargoDeny
     $archive = "cargo-deny-$CargoDeny-x86_64-unknown-linux-musl"
     Invoke-Checked 'cargo deny' {
@@ -114,15 +80,8 @@ tar -xzf /tool/$archive.tar.gz -C /tmp
 # this decides on its JSON, so that an ignore can carry a reason and an expiry
 # (pnpm's own auditConfig.ignoreGhsas takes neither).
 function Invoke-Audit {
-    $ignoreFile = Join-Path $RepoRoot 'pnpm-audit-ignores.json'
-    $ignores = @((Get-Content $ignoreFile -Raw | ConvertFrom-Json).ignores)
-    $expired = foreach ($ignore in $ignores) {
-        foreach ($field in 'id', 'package', 'reason', 'expires') {
-            if (-not $ignore.$field) { throw "pnpm-audit-ignores.json has an ignore without '$field'" }
-        }
-        if (Test-Expired "the ignore of $($ignore.id)" $ignore.expires) { "$($ignore.id) (expired $($ignore.expires))" }
-    }
-    if ($expired) { throw "pnpm-audit-ignores.json ignores past their expiry: $($expired -join ', '); review each and renew or drop it" }
+    $ignores = @((Get-Content (Join-Path $RepoRoot 'pnpm-audit-ignores.json') -Raw | ConvertFrom-Json).ignores | Where-Object { $_ })
+    Assert-NpmIgnores $ignores $today
 
     # pnpm audit exits non-zero whenever it finds anything, so its exit code
     # says nothing; output that is not its report is a failure of its own.
@@ -163,10 +122,9 @@ function Invoke-Audit {
     if ($failing) { throw "high or critical advisories: $($failing -join ', ')" }
 }
 
-# gitleaks reads the repository's object store, mounted read-only: in a
-# worktree .git is a pointer to a host path, so the store is git's common dir,
-# and the range's ends are resolved to commits here, where the worktree's HEAD
-# is known. The default rules; --redact keeps every secret out of the output.
+# gitleaks reads the repository's object store: in a worktree .git is a pointer
+# to a host path, so the store is git's common dir, and the range's ends are
+# resolved to commits here, where the worktree's HEAD is known.
 function Invoke-Secrets {
     $store = (git -C $RepoRoot rev-parse --path-format=absolute --git-common-dir)
     if ($LASTEXITCODE) { throw "git rev-parse failed (exit $LASTEXITCODE)" }
@@ -175,13 +133,7 @@ function Invoke-Secrets {
         if ($LASTEXITCODE -or -not $sha) { throw "-Range: '$end' is not a commit here" }
         $sha.Trim()
     }
-    $logOpts = $ends -join '..'
-    Invoke-Checked 'gitleaks' {
-        docker run --rm `
-          -v "$($store.Trim()):/repo.git:ro" `
-          $Gitleaks `
-          git /repo.git --log-opts=$logOpts --redact --verbose --no-banner | Out-Host
-    }
+    Invoke-Gitleaks $store.Trim() ($ends -join '..')
 }
 
 $results = @()
@@ -192,6 +144,7 @@ Use-BuildLock {
         $result = 'ok'
         try {
             switch ($name) {
+                'tests' { Invoke-Checked 'supply-chain-lib tests' { pwsh -NoProfile -File (Join-Path $PSScriptRoot 'supply-chain-lib.test.ps1') | Out-Host } }
                 'deny' { Invoke-Deny }
                 'audit' { Invoke-Audit }
                 'secrets' { Invoke-Secrets }
