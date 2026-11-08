@@ -162,7 +162,7 @@ fn reading_on_from_a_cursor_reads_as_from_the_top() {
 fn the_lines_in_memory_are_the_lines_on_disk() {
     let path = std::env::temp_dir().join(format!("luna-claude-lines-{}.jsonl", std::process::id()));
     let mut samples: Vec<Vec<u8>> = FIXTURES.iter().map(|(_, bytes, _)| bytes.to_vec()).collect();
-    samples.push(b"a\r\r\n\nb\n\r\nc".to_vec());
+    samples.extend([b"a\r\r\n\nb\n\r\nc".to_vec(), b"\n".to_vec(), b"x\xe9\r".to_vec(), Vec::new()]);
     for bytes in samples {
         std::fs::write(&path, &bytes).unwrap();
         let (mut on_disk, mut in_memory) = (Vec::new(), Vec::new());
@@ -175,9 +175,8 @@ fn the_lines_in_memory_are_the_lines_on_disk() {
             crate::pty::complete_lines_in(&bytes[first..], |l| lines.push(l.to_string()));
             assert_eq!(lines, on_disk, "cut at {cut}");
         }
-        use std::io::BufRead;
-        let buffered: Vec<String> = std::io::BufReader::new(&bytes[..]).lines().map_while(Result::ok).collect();
-        assert_eq!(crate::pty::text_lines(&bytes).collect::<Vec<_>>(), buffered);
+        let buffered: Vec<String> = crate::pty::read_lossy_lines(std::io::BufReader::new(&bytes[..])).collect();
+        assert_eq!(crate::pty::lossy_lines(&bytes).collect::<Vec<_>>(), buffered);
     }
     let _ = std::fs::remove_file(&path);
 }

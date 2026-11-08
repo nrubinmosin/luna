@@ -192,21 +192,18 @@ pub fn complete_lines_in(bytes: &[u8], mut each: impl FnMut(&str)) -> usize {
     read
 }
 
-/// The lines of bytes in memory as a buffered reader's `lines()` gives them,
-/// up to the first that is not UTF-8, where `map_while(Result::ok)` stops it.
-pub fn text_lines(bytes: &[u8]) -> impl Iterator<Item = &str> {
-    let mut rest = bytes;
-    std::iter::from_fn(move || {
-        if rest.is_empty() {
-            return None;
-        }
-        let end = rest.iter().position(|b| *b == b'\n').map_or(rest.len(), |i| i + 1);
-        let line = &rest[..end];
-        rest = &rest[end..];
-        let line = line.strip_suffix(b"\n").unwrap_or(line);
-        Some(line.strip_suffix(b"\r").unwrap_or(line))
-    })
-    .map_while(|line| std::str::from_utf8(line).ok())
+/// Every line a reader holds, a trailing CR dropped, decoded as the rest of
+/// the transcript readers decode (`tail`, `complete_lines`): a byte that is
+/// not UTF-8 reads as U+FFFD rather than ending the lines or losing one.
+pub fn read_lossy_lines(reader: impl std::io::BufRead) -> impl Iterator<Item = String> {
+    reader.split(b'\n').map_while(Result::ok).map(|line| String::from_utf8_lossy(line.strip_suffix(b"\r").unwrap_or(&line)).into_owned())
+}
+
+/// `read_lossy_lines` of bytes in memory.
+pub fn lossy_lines(bytes: &[u8]) -> impl Iterator<Item = std::borrow::Cow<'_, str>> {
+    // As a reader splits: no line after a last newline, and none in nothing.
+    let body = (!bytes.is_empty()).then(|| bytes.strip_suffix(b"\n").unwrap_or(bytes));
+    body.into_iter().flat_map(|b| b.split(|c| *c == b'\n')).map(|line| String::from_utf8_lossy(line.strip_suffix(b"\r").unwrap_or(line)))
 }
 
 /// What a session-meta read needs, copied out from under the map.

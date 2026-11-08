@@ -34,7 +34,9 @@ Seen {
             "CRLF endings",
         ),
     ],
-    first_prompt: None,
+    first_prompt: Some(
+        "caf� in Latin-1",
+    ),
     title: Some(
         (
             "Line endings",
