@@ -59,6 +59,7 @@
 | [0015](adr/0015-the-page-gets-only-what-it-calls.md) | The page gets only the commands it calls | Accepted |
 | [0016](adr/0016-luna-is-a-runtime.md) | Luna is a runtime, not a provider configurator | Accepted |
 | [0017](adr/0017-helpers-run-in-the-background-only.md) | Helpers run in the background only; opening one hands it to the person | Accepted |
+| [0018](adr/0018-mcp-tools-by-resource-and-verb.md) | Name the MCP tools by resource and verb, and break the old names | Accepted |
 
 New decisions start from the [template](adr/0000-template.md).
 
