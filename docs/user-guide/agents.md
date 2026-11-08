@@ -42,8 +42,10 @@ hooks run unasked.
   you open it.
 - At most eight helpers under one chat, and a helper's helpers get no tools.
 - Every session gets its id as `LUNA_SESSION_ID`, a helper its parent's as
-  `LUNA_PARENT_ID`. A helper is told what it is and to write in the language of
-  its task: Claude Code through its system prompt; Codex, which can only replace
+  `LUNA_PARENT_ID`. A helper is told what it is — not the chat of whoever its
+  instructions call the operator, the user or the person at this machine — and
+  to write in the language of its task: Claude Code through its system prompt
+  and a note after its first prompt; Codex, which can only replace
   `developer_instructions`, through a note Luna appends to each background
   prompt (a visible helper's first). A prompt opening with a slash command goes
   without it, and a compaction can lose a visible one's.

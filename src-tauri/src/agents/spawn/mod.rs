@@ -470,11 +470,7 @@ pub(super) fn spawn_with(caller: &str, mut params: SpawnParams, replaces: Option
     let (provider, account, prompt) =
         (params.provider.clone().unwrap_or_default(), params.account_name().unwrap_or_default().to_string(), params.prompt.clone());
     // A command line holds some 32 thousand characters on Windows.
-    params.prompt = if provider == Provider::Codex.as_str() {
-        spill(&crate::pty::codex_helper_prompt(caller, &params.prompt))
-    } else {
-        spill(&params.prompt)
-    };
+    params.prompt = spill(&crate::pty::helper_prompt(caller, &params.prompt));
     let hooks_unasked = provider == Provider::Codex.as_str() && crate::codex::hooks::unasked_in(&folder);
     let asking = SpawnRequest { request_id, parent_id: caller.to_string(), in_worktree, hooks_unasked, params };
     if let Some(s) = reg().lock().unwrap_or_else(|e| e.into_inner()).spawns.get_mut(&request_id) {

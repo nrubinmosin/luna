@@ -144,15 +144,18 @@ pub(super) fn command_for(e: &Entry, id: &str) -> (Vec<String>, String, Vec<(&'s
 }
 
 /// What a turn's CLI is given: `prompt`, which on every turn of a Codex helper
-/// carries Luna's note (`pty::codex_helper_prompt`), naming its parent as it is
-/// now. Claude Code's system prompt says it every turn; Codex has nowhere but
-/// the conversation, where one note at its start goes with a compaction, and a
-/// long helper would go on as the chat of a person. Not in `Entry::opening`,
-/// which goes back to the caller as what it asked, nor in what `luna_read`
-/// gives back (codex/session/read.rs `message_of`).
+/// carries Luna's note (`pty::helper_prompt`), naming its parent as it is
+/// now. Claude Code's system prompt says it every turn, and its first prompt
+/// too, beside the task its account's instructions would otherwise outweigh;
+/// Codex has nowhere but the conversation, where one note at its start goes
+/// with a compaction, and a long helper would go on as the chat of a person.
+/// Not in `Entry::opening`, which goes back to the caller as what it asked, nor
+/// in what `luna_read` gives back (`message_of` in codex/session/read.rs and
+/// claude/session/transcript.rs).
 pub(super) fn stdin_text(e: &Entry, prompt: &str) -> String {
     match (&e.spec.parent, e.spec.provider) {
-        (Some(parent), Provider::Codex) => crate::pty::codex_helper_prompt(parent, prompt),
+        (Some(parent), Provider::Codex) => crate::pty::helper_prompt(parent, prompt),
+        (Some(parent), Provider::Claude) if e.session.is_none() => crate::pty::helper_prompt(parent, prompt),
         _ => prompt.to_string(),
     }
 }
@@ -273,9 +276,20 @@ mod tests {
         assert_eq!(stdin_text(&e, "/review"), "/review", "not into a command's arguments");
         e.session = Some("t-1".into());
         assert_eq!(notes(stdin_text(&e, "Carry on where you left off.")), 1, "and each one after: a compaction loses the first");
+        // Claude Code's first prompt has it too, beside the task its account's
+        // instructions would otherwise outweigh; after that its system prompt
+        // says it on every turn.
         let mut e = entry(Provider::Claude);
         e.spec.parent = Some("p-1".into());
-        assert_eq!(stdin_text(&e, "the prompt"), "the prompt", "its system prompt says it there");
+        let first = stdin_text(&e, "the prompt");
+        assert!(first.starts_with("the prompt\n\n") && notes(first.clone()) == 1, "{first}");
+        assert!(first.contains("the operator, the user or the person at this machine"), "{first}");
+        assert_eq!(stdin_text(&e, "/review"), "/review");
+        e.session = Some("s-1".into());
+        assert_eq!(stdin_text(&e, "the next"), "the next", "its system prompt says it there");
+        e.session = None;
+        e.spec.parent = None;
+        assert_eq!(stdin_text(&e, "the prompt"), "the prompt", "a helper of nobody's is told nothing");
     }
 
     #[test]

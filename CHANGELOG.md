@@ -98,6 +98,12 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   line came first and the long report sank among the rest. Such a turn now
   leaves the report to the long message before it, and comes next as the last
   word.
+- Helpers followed rules their account's instructions set for the person's own
+  chat — one wrote its progress notes in the language set for "the operator".
+  The note a helper gets now names the words such instructions use (the
+  operator, the user, the person at this machine) and tells it to answer its
+  caller in its task's language and form; a Claude Code helper gets the note
+  after its first prompt too, not only in its system prompt.
 
 ### Security
 
