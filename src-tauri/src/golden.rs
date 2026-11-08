@@ -28,10 +28,13 @@ impl Redact {
         {
             r = r.with(url.expect("the hub is listening"), to);
         }
+        let core = path(crate::ipc::core_dir());
         r.with(path(data.join("hooks").join(format!("{id}.json"))), "<settings-file>")
             .with(path(data.join("mcp").join(format!("{id}.json"))), "<mcp-file>")
             .with(path(data.join("hooks").join(id)), "<instructions-dir>")
             .with(path(crate::agents::notes_dir()), "<notes-dir>")
+            .with(crate::claude::launch::claude_read_deny(&core, cfg!(windows)), "Read(//<core-dir>/**)")
+            .with(core, "<core-dir>")
     }
 
     pub(crate) fn with(mut self, from: impl Into<String>, to: &str) -> Self {
@@ -212,14 +215,20 @@ pub(crate) fn claude_chat_settings(guard: bool) -> serde_json::Value {
     if guard {
         pre.push(claude_guard_entry());
     }
-    serde_json::json!({
-        "hooks": {
-            "UserPromptSubmit": hook, "PostToolUse": hook, "Stop": hook, "StopFailure": hook,
-            "Notification": hook, "SessionEnd": hook, "PermissionRequest": hook,
-            "SubagentStart": hook, "SubagentStop": hook,
-            "PreToolUse": pre,
-        }
-    })
+    let mut settings = claude_settings_alone();
+    settings["hooks"] = serde_json::json!({
+        "UserPromptSubmit": hook, "PostToolUse": hook, "Stop": hook, "StopFailure": hook,
+        "Notification": hook, "SessionEnd": hook, "PermissionRequest": hook,
+        "SubagentStart": hook, "SubagentStop": hook,
+        "PreToolUse": pre,
+    });
+    settings
+}
+
+/// What every Claude Code settings file holds: Luna's `core/` denied to the
+/// file tools.
+pub(crate) fn claude_settings_alone() -> serde_json::Value {
+    serde_json::json!({ "permissions": { "deny": ["Read(//<core-dir>/**)"] } })
 }
 
 /// The guard's PreToolUse entry in a Claude Code settings file.
@@ -278,14 +287,37 @@ pub(crate) fn codex_sandbox_path() -> Vec<(String, String)> {
     }
 }
 
-/// `read-only-net` as Codex's `-c` overrides, the profile as `<profile>`.
+/// `read-only-net` as Codex's `-c` overrides, the profile as `<profile>`, and
+/// off Windows Luna's `core/` denied.
 pub(crate) fn codex_read_only_net() -> Vec<String> {
-    strings(&[
+    let mut args = strings(&[
         "-c",
         "default_permissions=\"<profile>\"",
         "-c",
         "permissions.<profile>.extends=\":read-only\"",
         "-c",
         "permissions.<profile>.network.enabled=true",
-    ])
+    ]);
+    args.extend(codex_core_deny());
+    args
+}
+
+/// `read-only` as Codex takes it: off Windows a profile, `<profile>`, that
+/// denies Luna's `core/`; on Windows `mode`, Codex's own flag or override.
+pub(crate) fn codex_read_only(mode: &[&str]) -> Vec<String> {
+    if cfg!(windows) {
+        return strings(mode);
+    }
+    let mut args = strings(&["-c", "default_permissions=\"<profile>\"", "-c", "permissions.<profile>.extends=\":read-only\""]);
+    args.extend(codex_core_deny());
+    args
+}
+
+/// The profile's deny of Luna's `core/`, off Windows.
+fn codex_core_deny() -> Vec<String> {
+    if cfg!(windows) {
+        Vec::new()
+    } else {
+        strings(&["-c", "permissions.<profile>.filesystem={\"<core-dir>\"=\"deny\"}"])
+    }
 }

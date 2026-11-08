@@ -110,7 +110,26 @@ not allow), and `sameFolder` (other live sessions in the helper's folder).
 `account` may be a list of one provider's accounts: the first signed in with
 every window under 95%, else the one with most room; `accountChoice` says why.
 `readOnly: true` takes Edit, Write and NotebookEdit from Claude Code (whose Bash
-can still write) and puts Codex in `read-only` (or `read-only-net`).
+can still write) and puts Codex in `read-only` (or `read-only-net`). Claude's
+"read-only" is a list of tools, not an OS sandbox: Luna never confines Claude
+Code, and a session is held only by its permission mode and its rules, unless
+its user turns on Claude's own sandbox (none on native Windows).
+
+The core's token in `<data>/core/core.json` is the key to every command
+(threat model F3), so no session is to read it:
+- Claude Code: every settings file Luna writes (`claude_settings`) denies
+  `Read(//<core>/**)` to its file tools (`claude_read_deny`; a Windows drive
+  as `//e/…`). A rule, not a sandbox: Bash, where it runs unasked, reads
+  anything.
+- Codex off Windows: `read-only` and `read-only-net` run under a profile of
+  Luna's, named afresh at every start, that extends `:read-only` and denies
+  `core/` (`codex/launch.rs` `denies_core`, `profile_args`), the path in the
+  TOML value so its dots survive Codex's `-c` key split. `workspace-write`
+  (and `auto-review`) stays Codex's own mode, as `:workspace` drops an
+  account's `[sandbox_workspace_write]` roots and network.
+- Codex on Windows: no deny. The unelevated sandbox refuses every command
+  under a profile with one, and its write-restricted token reads `core/`
+  through the folder's private DACL.
 `agent: "<name>"` is Claude Code's `--agent`; Codex refuses it.
 
 ## State and asks
@@ -278,7 +297,10 @@ turn, stopped on a prompt (once per stop) or exited.
   read as over), then the text as a prompt of its own.
 - A prompt or message past 8,000 characters reaches a visible session as a file
   under `<data>/agents/` (an `--add-dir` for Claude Code sessions with tools or
-  an agent above; Codex sandboxes read anywhere), swept after a week.
+  an agent above; Codex sandboxes read anywhere, but `read-only` and
+  `read-only-net` off Windows are denied `core/` (F3) — `workspace-write` and
+  every Windows sandbox still read it, the latter through the data folder's
+  private DACL), swept after a week.
 
 ## Failed turns
 
