@@ -342,6 +342,36 @@ fn lone_opening(s: &mut Saved, stopped: bool) -> Option<Queued> {
     Some(q)
 }
 
+/// `taken_up` for a helper that stays with this core: it stopped the turn itself
+/// (`stop_all`) and the process is reaped, so the turn is over and the helper may
+/// resume — unless an older core left it in doubt (`unsure`), which only its next
+/// turn settles. One with no conversation yet is owed its opening prompt first,
+/// as `lone_opening` gives it to a new core, unless what was on its way holds it
+/// already: in this core every opening has its id (run.rs `note_opening`), and
+/// what was on its way is in `undelivered` by now (`stop_for_luna`).
+pub(super) fn settle_stopped(e: &mut Entry) {
+    if e.run.is_some() || !e.cut_short {
+        return;
+    }
+    e.resumable = !e.unsure;
+    if e.session.is_some() {
+        return;
+    }
+    let Some(text) = e.opening.take() else { return };
+    let id = e.opening_id.take();
+    let kept = match &id {
+        Some(id) => e.undelivered.iter().any(|q| q.id == *id),
+        None => e.undelivered.iter().any(|q| q.text == text),
+    };
+    if !kept {
+        let mut q = Queued::new(None, text, Vec::new());
+        if let Some(id) = id {
+            q.id = id;
+        }
+        e.undelivered.insert(0, q);
+    }
+}
+
 /// A saved helper as a registry entry, between turns: a turn that ran went
 /// with the old core and counts as ended, and so does the text queued
 /// behind it, which never reached the CLI (as `stop` counts them) and is kept
