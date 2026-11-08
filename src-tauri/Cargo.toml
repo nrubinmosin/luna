@@ -25,18 +25,18 @@ tauri-plugin-opener = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-window-state = "2"
-base64 = "0.22"
+base64 = "0.23"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 serde = { version = "1", features = ["derive"] }
 # preserve_order: a settings file Luna edits keeps its keys where the user put them.
 serde_json = { version = "1", features = ["preserve_order"] }
-dirs = "6"
+dirs = "7"
 portable-pty = "0.9"
 ureq = { version = "2", features = ["json"] }
 sha2 = "0.10"
 # The secrets Luna mints (src/secret.rs), from the OS's CSPRNG. The version
 # the tree already resolves.
-getrandom = "0.3.4"
+getrandom = "0.4.3"
 # Compares a presented secret with Luna's in constant time (src/secret.rs).
 subtle = "2.6.1"
 # Each chat's hook secret, HMAC-SHA256 of its id (src/secret.rs, hub.rs).
@@ -44,7 +44,7 @@ subtle = "2.6.1"
 hmac = "=0.12.1"
 # The hub's request heads (src/hub.rs), parsed strictly.
 httparse = "1.10.1"
-toml_edit = "0.22"
+toml_edit = "0.25"
 # Lays out a config.toml edited by hand, comments kept (account_settings/editor.rs).
 taplo = { version = "0.14", default-features = false }
 flate2 = "1"
