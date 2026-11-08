@@ -1,0 +1,69 @@
+# cargo-deny's policy for the crate's dependency tree, checked by
+# scripts/supply-chain.ps1 (and so by .github/workflows/security.yml): known
+# advisories, licenses, banned or duplicated crates, and where crates come from.
+# The tree is every platform's: a crate only Linux or macOS builds still counts.
+
+[advisories]
+# The RustSec advisory database, fetched fresh on every run. A vulnerability, an
+# unmaintained or unsound crate fails the check; a yanked one is a warning, as a
+# yank is often a packaging mistake rather than a flaw.
+yanked = "warn"
+# Each ignore names who still pulls the crate in and why it cannot go yet, and
+# ends on "Expires YYYY-MM-DD": scripts/supply-chain.ps1 fails once that date
+# has passed, so an ignore is looked at again rather than kept for good.
+ignore = [
+    # zbus 5 split its name and value types into crates that zbus 6 folds back
+    # in. zbus is the D-Bus client of notify-rust and tauri-plugin-opener and
+    # -single-instance on Linux only, absent from the Windows build, and none of
+    # them moves to zbus 6 yet. Unmaintained, with no vulnerability reported.
+    { id = "RUSTSEC-2026-0370", reason = "zvariant: Linux-only, through zbus 5; no upstream on zbus 6 yet. Expires 2027-02-08" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names: Linux-only, through zbus 5; no upstream on zbus 6 yet. Expires 2027-02-08" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive: Linux-only, through zbus 5; no upstream on zbus 6 yet. Expires 2027-02-08" },
+    # A proc macro of gtk-rs 0.18 (glib-macros, gtk3-macros), the GTK stack wry
+    # and tao build on Linux: it runs at compile time only, and only for Linux.
+    { id = "RUSTSEC-2024-0370", reason = "proc-macro-error: Linux-only, compile-time, through gtk-rs 0.18 under tao and wry. Expires 2027-02-08" },
+]
+
+[licenses]
+# What the tree needs to be distributed under the crate's MIT OR Apache-2.0,
+# from `cargo deny list`; a crate under anything else fails the check. A license
+# expression passes when one of its alternatives is here, so crates dual-licensed
+# MIT or Apache-2.0 alongside something else need nothing more.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    # Permissive, attribution only: subtle and others (BSD-3-Clause); ring,
+    # rustls-webpki, untrusted, libloading (ISC); foldhash (Zlib).
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    # The Unicode data license, permissive: the ICU crates under url and idna,
+    # and unicode-ident's tables.
+    "Unicode-3.0",
+    # Apache-2.0 with an exception that only loosens it: target-lexicon, a
+    # build-time dependency of the Linux GTK crates' build scripts.
+    "Apache-2.0 WITH LLVM-exception",
+    # The Mozilla CA bundle as data, a permissive data license: webpki-roots and
+    # webpki-root-certs, ureq's trust roots.
+    "CDLA-Permissive-2.0",
+    # Weak copyleft per file: cssparser, cssparser-macros, selectors, dtoa-short
+    # (tauri-utils' HTML handling at build time) and option-ext (under dirs).
+    # It binds only those crates' own files, used unmodified and published on
+    # crates.io, and allows distribution in a larger work under other terms.
+    "MPL-2.0",
+]
+confidence-threshold = 0.93
+
+[bans]
+# The Tauri stack pulls several majors of windows-sys, syn, toml_edit and the
+# like, none of which the crate can unify itself: duplicates are reported, not
+# refused. A wildcard version requirement is refused.
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+# crates.io only: no other registry and no git dependency.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

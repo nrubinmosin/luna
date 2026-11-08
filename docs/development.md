@@ -52,6 +52,7 @@ git config core.hooksPath .githooks   # pre-commit and commit-msg hooks
 | `./scripts/screenshots.ps1 -Out test-build/shots` | headless shots of the UI on the demo data |
 | `./scripts/live-tests.ps1` | the live suite on real CLIs and throwaway accounts (`scripts/test-accounts.ps1`); never run by CI, see [testing.md](testing.md) |
 | `./scripts/release.ps1` | bump the version, or tag a release for the workflow (see [releasing.md](releasing.md)) |
+| `./scripts/supply-chain.ps1` | the supply-chain checks: cargo-deny, `pnpm audit` and gitleaks ([below](#supply-chain)) |
 
 With Node installed locally, `pnpm install` and `pnpm dev` serve the frontend
 alone in a browser (Tauri commands are no-ops; `?demo` loads the fixture).
@@ -107,9 +108,54 @@ hand, with the same scripts:
 | `windows-build` | `gate.ps1 -Group windows` and `windows-tests.ps1 -Build`, uploading the test executables |
 | `windows-tests` | runs those executables on a `windows-2025` runner |
 
+`.github/workflows/security.yml` runs the supply-chain checks and CodeQL on
+every pull request, every push to master, weekly and by hand
+([Supply chain](#supply-chain)).
+
 `.github/workflows/release.yml` runs only on `v*` tags and by hand
 ([Releases](#releases)). Actions are pinned by commit; Dependabot (`.github/dependabot.yml`) moves them,
 the crates, the npm packages and the images weekly.
+
+## Supply chain
+
+`./scripts/supply-chain.ps1` runs, each in Docker on a pinned tool:
+
+| Check | What fails it |
+| --- | --- |
+| `deny` | cargo-deny 0.20.2 (release binary, SHA-256 pinned in the script) with `src-tauri/deny.toml`: a RustSec advisory (vulnerable, unmaintained, unsound), a license outside the allowlist, a wildcard requirement, a crate from anywhere but crates.io. Duplicate versions and yanked crates are warnings |
+| `audit` | `pnpm audit`, production and dev packages: a high or critical advisory. Moderate and low ones are listed |
+| `secrets` | gitleaks 8.30.1 (image by digest) over the history reachable from `HEAD`, or `-Range <base>..<head>`; secrets are redacted in its output |
+
+```powershell
+./scripts/supply-chain.ps1                     # all three; exit 1 if any fails
+./scripts/supply-chain.ps1 -Check deny,audit   # some of them
+```
+
+They need the network (the advisory databases, the registries), and their answer
+changes with no change to the repo, so the gate does not run them and stays
+hermetic. In CI, `security.yml` runs each check as a job of its own (`gitleaks`
+over a pull request's commits, or master's whole history on schedule and by
+hand) and CodeQL over the workflows, the TypeScript and the Rust, build-mode
+none. CodeQL's analysis jobs hold no write permission, since Rust's extraction
+loads the tree through cargo, which can run its build scripts and proc macros; a
+separate `codeql-upload` job, which runs no project code, uploads the results to
+the Security tab. The runner is Linux, so the Windows-only modules are parsed
+without macro expansion or the semantic analysis the rest gets.
+
+An advisory with no fix to take yet is ignored only with a reason and an
+expiry, which the script enforces; it fails once the date has passed:
+
+- a crate: an entry in `deny.toml`'s `[advisories] ignore`, on one line, whose
+  reason names who pulls the crate in and why it cannot go, ending on
+  `Expires YYYY-MM-DD`;
+- an npm package: an entry in `pnpm-audit-ignores.json`'s `ignores`:
+  `{ "id": "GHSA-...", "package": "...", "reason": "...", "expires": "YYYY-MM-DD" }`.
+
+An ignore goes in through a pull request like any change, with the advisory and
+why it does not reach Luna in its description; three months is the usual
+expiry. The licenses `deny.toml` allows are the ones the tree needs, each
+unusual one justified there; a new license in the tree is decided there, not
+allowed in bulk.
 
 ## Releases
 

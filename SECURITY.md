@@ -72,4 +72,5 @@ Out of scope:
 
 The assets, trust boundaries, the status of every finding and the accepted
 risks are documented in
-[docs/security/threat-model.md](docs/security/threat-model.md).
+[docs/security/threat-model.md](docs/security/threat-model.md); its section 9
+lists the supply-chain checks CI runs and what they leave open.
