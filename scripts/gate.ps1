@@ -105,6 +105,20 @@ $steps = @(
         Run   = { $images.linux = Build-Image luna-linuxcheck linux-check.Dockerfile }
     }
     @{
+        # The commit-message check's own tests. Its range mode runs git, which
+        # the slim Node image lacks, so they run in the Linux toolchain image;
+        # they make a throwaway repository in the container's /tmp and touch no
+        # volume, so no cargo lock is needed. CI's frontend job runs them again
+        # on the runner's sh, before checking the pushed range.
+        Name  = 'check-commit-msg tests'
+        Group = 'rust'
+        Run   = {
+            Invoke-Checked 'check-commit-msg tests' {
+                docker run --rm -v "${RepoRoot}:/app:ro" -w /app $images.linux sh scripts/check-commit-msg.test.sh
+            }
+        }
+    }
+    @{
         Name  = 'cargo fmt --check'
         Group = 'rust'
         Run   = { Invoke-LinuxCargo 'cargo fmt' $build $images.linux 'cargo fmt --check' }
