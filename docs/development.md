@@ -39,8 +39,8 @@ git config core.hooksPath .githooks   # pre-commit and commit-msg hooks
   no type prefix, no trailing period), a blank line, a body wrapped at 72, and no
   AI attribution (`Co-Authored-By:`, the robot emoji, "Generated with ...").
   Merges, reverts and the release bump `Luna X.Y.Z` keep git's own form; a
-  `fixup!` passes the hook and fails CI. CI checks every pushed commit the same
-  way, Dependabot's for attribution only. By hand:
+  `fixup!`, `squash!` or `amend!` passes the hook and fails CI. CI checks every
+  pushed commit the same way, Dependabot's for attribution only. By hand:
   `sh scripts/check-commit-msg.sh FILE` or `--range A..B`; the check's own tests
   are `scripts/check-commit-msg.test.sh`, a step of the gate.
 

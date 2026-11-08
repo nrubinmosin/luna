@@ -20,8 +20,9 @@
 #     URL, an indented line and a line that is one unbreakable token.
 # Exempt from the form: a merge ("Merge ..."), a revert ('Revert "..."') and
 # the release bump ("Luna X.Y.Z"), and Dependabot's commits by their author.
-# "fixup!" and "squash!" commits pass the hook, to be squashed, and fail the
-# range check, so they never merge.
+# "fixup!", "squash!" and "amend!" commits (git commit --fixup, --squash,
+# --fixup=amend: and --fixup=reword:) pass the hook, to be squashed, and fail
+# the range check, so they never merge.
 #
 #   check-commit-msg.sh FILE              one message file (the commit-msg hook)
 #   check-commit-msg.sh --range REVS...   every commit git rev-list REVS selects
@@ -75,10 +76,10 @@ comment_prefix() {
 
 # Checks the message on stdin, printing "line N (rule): text" per problem, and
 # fails on one. $1 is hook or range: the hook skips comment lines (opened by
-# $comment, when set) and stops at the scissors line, and lets a fixup! through;
-# the range check takes the stored message as it is. $2 is whether the form is
-# checked at all, besides the attribution: a merge's or a Dependabot commit's
-# is not.
+# $comment, when set) and stops at the scissors line, and lets a fixup!,
+# squash! or amend! through; the range check takes the stored message as it
+# is. $2 is whether the form is checked at all, besides the attribution: a
+# merge's or a Dependabot commit's is not.
 check_message() {
     mode=$1
     form=$2
@@ -121,9 +122,9 @@ check_message() {
             subject=$line
             case $subject in
                 'Merge '* | 'Revert "'*) form=no ;;
-                'fixup! '* | 'squash! '*)
+                'fixup! '* | 'squash! '* | 'amend! '*)
                     if [ "$mode" = range ]; then
-                        printf '  line %s (fixup!/squash! commit, squash it before merging): %s\n' "$n" "$line"
+                        printf '  line %s (fixup!/squash!/amend! commit, squash it before merging): %s\n' "$n" "$line"
                         bad=1
                     fi
                     form=no
@@ -175,7 +176,8 @@ refuse() { # $1 = what was checked, $2 = the problems, $3 = the fix
         echo
         echo 'The rules are in CONTRIBUTING.md, "Commits": a sentence of at most 72'
         echo 'characters saying what the change does, a blank line, then why, wrapped at'
-        echo "72; no type prefix, no trailing period, no AI attribution. $3"
+        echo '72; no type prefix, no trailing period, no AI attribution.'
+        echo "$3"
     } >&2
 }
 
@@ -207,7 +209,11 @@ case $1 in
     *)
         comment=$(comment_prefix)
         if ! out=$(check_message hook yes <"$1"); then
-            refuse 'commit-msg hook' "$out" 'Edit it with: git commit --amend'
+            # The refused commit was never made and the change is still staged, so
+            # the way on is a new commit from the message; --amend would fold the
+            # change into the commit before, unless that was what was being done.
+            refuse 'commit-msg hook' "$out" "The commit was not made. Fix the message and commit again: git commit -e -F $1
+(--amend only if the refused commit was an amend)."
             exit 1
         fi
         ;;
