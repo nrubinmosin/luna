@@ -52,8 +52,9 @@ The owner's ten decisions on the deviations (2026-11-08):
    new-chat dialog (off by default). Helpers keep it.
 2. Codex `approvals_reviewer="user"`: helpers only. A chat keeps whatever
    reviewer its account or project names.
-3. `windows.sandbox="unelevated"`: only when neither the account's nor the
-   project's config names a `windows.sandbox`.
+3. `windows.sandbox="unelevated"`: only when the account's `config.toml`
+   names no `windows.sandbox`. A project's `.codex/config.toml` is the
+   repository's say, not the user's, and does not count.
 4. Windows PATH without the Store's aliases, and git's OpenSSL backend: kept
    as Workarounds, and shown.
 5. `check_for_update_on_startup=false`: passed as `-c` on every Codex start,

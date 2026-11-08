@@ -202,7 +202,7 @@ pub(super) fn command_for(e: &Entry, id: &str) -> Result<Command, String> {
                 }
                 args.extend(sandbox);
             }
-            let own = crate::codex::config::windows_sandbox_set(&s.account_path, &dir);
+            let own = crate::codex::config::windows_sandbox_set(&s.account_path);
             if let Some(sb) = crate::codex::launch::codex_windows_sandbox(&s.mode).filter(|_| !own) {
                 applied.push(Item::WindowsSandbox.with(format!("-c {sb}")));
                 args.extend(["-c".into(), sb]);

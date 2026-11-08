@@ -39,7 +39,7 @@ and a why. Per provider:
 | Self-update off (Runtime) | `DISABLE_AUTOUPDATER=1` | `-c check_for_update_on_startup=false` per start, never written |
 | Guard (UserAction in a chat, Runtime in a helper) | `PreToolUse` in the `--settings` file | `-c hooks.PreToolUse`, only with hooks unasked |
 | Reviewer | n/a | `approvals_reviewer="user"` for helpers only |
-| Windows sandbox (Workaround) | n/a | `unelevated` unless the account's or project's config names one |
+| Windows sandbox (Workaround) | n/a | `unelevated` unless the account's `config.toml` names one |
 | Trust | the CLI's prompt, or the dialog's write | the CLI's screen, the dialog's write, or a helper's `-c` for its run |
 | `--skip-git-repo-check` (Runtime) | n/a | a helper outside a Git repository only |
 | Core read deny (Boundary) | `permissions.deny` in `--settings` | a profile deny, off Windows (ADR-0014) |
@@ -224,9 +224,9 @@ live registry.
 
 - Without `windows.sandbox` Codex rejects or sends for approval every command
   under `read-only`, `read-only-net` and `workspace-write`. Those modes get
-  `-c windows.sandbox="unelevated"` unless the account's `config.toml` or the
-  project's `.codex/config.toml` names a `windows.sandbox` of its own
-  (`config.rs` `windows_sandbox_set`), which then stands (a restricted token per command: no
+  `-c windows.sandbox="unelevated"` unless the account's `config.toml` names
+  a `windows.sandbox` of its own (`config.rs` `windows_sandbox_set`), which
+  then stands; a project's does not count (a restricted token per command: no
   administrator, no sandbox accounts; under `workspace-write` Codex adds one ACL
   entry for its sandbox to the folder) and a `PATH` without
   `…\Microsoft\WindowsApps`: the Store PowerShell's app alias fails under the
