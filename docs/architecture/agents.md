@@ -67,7 +67,10 @@ decisions in [ADR-0012](../adr/0012-agents-over-mcp-with-notices.md) and
   settings file (`HelperSettings`) with `disableClaudeAiConnectors` and
   `autoMemoryEnabled: false`, the latter even with `connectors`. Codex:
   `-c features.apps=false` and `-c mcp_servers.<name>.enabled=false` for each
-  bare-key server of the account's `config.toml` (`connectors_off`); the
+  bare-key server of the account's `config.toml` (`connectors_off`), one it
+  calls `luna` too unless Luna gives the run its own; then Codex merges the
+  two key by key, and an account's `luna` setting more than Luna's replaces
+  stops the start. A config that will not read stops it as well. The
   project's `.codex/` and plugins' servers stay, as overriding a server no
   layer defines fails the run. A visible helper is one with a parent at its
   start.

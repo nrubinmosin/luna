@@ -132,22 +132,50 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
 
 /// What keeps a Codex helper to Luna's MCP server, as a Claude Code one is kept
 /// by `--strict-mcp-config`: its account's apps (ChatGPT's connectors, the
-/// stable `features.apps`) and each server its account's `config.toml` names,
-/// turned off for the run (`mcp_servers.<name>.enabled`; 0.167.0). Codex has no
-/// switch for all servers at once, and an override naming a server no layer
-/// defines fails the run's config ("invalid transport"), as does one for a
-/// name a `-c` key cannot spell, split as it is at every dot: only the
-/// account's own, bare-key names, are named here. A project's `.codex/` and a
-/// plugin's servers stay on (docs/security/threat-model.md); `luna` is Luna's.
-pub(crate) fn connectors_off(servers: &[String]) -> Vec<String> {
+/// stable `features.apps`) and each server its account's `config.toml` defines
+/// (`servers`: name and keys, codex/config.rs `mcp_servers`), turned off for the
+/// run (`mcp_servers.<name>.enabled`; 0.167.0). Codex has no switch for all
+/// servers at once, and an override naming a server no layer defines fails the
+/// run's config ("invalid transport"), as does one for a name a `-c` key cannot
+/// spell, split as it is at every dot: only the account's own, bare-key names,
+/// are named here. A project's `.codex/` and a plugin's servers stay on
+/// (docs/security/threat-model.md).
+///
+/// A server the account calls `luna` is no exception: off, unless Luna gives the
+/// run its own (`luna_supplied`, `mcp_args`). Then Codex merges the two key by
+/// key, so the account's must set nothing Luna's does not replace
+/// (`LUNA_SERVER_KEYS`), or the helper is not started: what runs as `luna` is
+/// Luna's server, exactly.
+pub(crate) fn connectors_off(servers: &[(String, Vec<String>)], luna_supplied: bool) -> Result<Vec<String>, String> {
     let mut args = vec!["-c".to_string(), "features.apps=false".to_string()];
     let bare = |n: &str| !n.is_empty() && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
-    for name in servers.iter().filter(|n| bare(n) && *n != "luna") {
+    for (name, keys) in servers.iter().filter(|(n, _)| bare(n)) {
         args.push("-c".into());
-        args.push(format!("mcp_servers.{name}.enabled=false"));
+        if name != LUNA_SERVER || !luna_supplied {
+            args.push(format!("mcp_servers.{name}.enabled=false"));
+            continue;
+        }
+        let other: Vec<&str> = keys.iter().map(String::as_str).filter(|k| !LUNA_SERVER_KEYS.contains(k)).collect();
+        if !other.is_empty() {
+            return Err(format!(
+                "the helper is not started: its account's config.toml defines an MCP server named {LUNA_SERVER} whose {} \
+                 would be merged into Luna's own; rename that server, or spawn with connectors: true",
+                other.join(", ")
+            ));
+        }
+        // What it sets Luna's overrides replace, but for one that turns it off.
+        args.push(format!("mcp_servers.{LUNA_SERVER}.enabled=true"));
     }
-    args
+    Ok(args)
 }
+
+/// The name Luna's own MCP server goes by in a Codex session (`mcp_args`).
+const LUNA_SERVER: &str = "luna";
+
+/// The keys of `[mcp_servers.luna]` that `mcp_args` sets, and `enabled`, which
+/// `connectors_off` does: an account's server of that name setting only these
+/// is replaced by Luna's whole.
+const LUNA_SERVER_KEYS: [&str; 5] = ["url", "bearer_token_env_var", "tool_timeout_sec", "default_tools_approval_mode", "enabled"];
 
 /// `hooks.PreToolUse` for Codex, posting each shell call to `url` through
 /// `curl` (pty/start.rs `codex_guard_args`). A TOML literal string: the
@@ -313,13 +341,30 @@ mod tests {
 
     #[test]
     fn a_helper_has_its_accounts_apps_and_named_servers_off() {
-        let names = |n: &[&str]| n.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        assert_eq!(connectors_off(&[]), ["-c", "features.apps=false"]);
+        let servers = |n: &[(&str, &[&str])]| {
+            n.iter().map(|(name, keys)| (name.to_string(), keys.iter().map(|k| k.to_string()).collect())).collect::<Vec<_>>()
+        };
+        assert_eq!(connectors_off(&[], false).unwrap(), ["-c", "features.apps=false"]);
+        let account =
+            servers(&[("gmail", &["command"]), ("team.slack", &["url"]), ("", &[]), ("Zoho_CRM-2", &["url"]), ("café", &["url"])]);
         assert_eq!(
-            connectors_off(&names(&["gmail", "luna", "team.slack", "", "Zoho_CRM-2", "café"])),
+            connectors_off(&account, false).unwrap(),
             ["-c", "features.apps=false", "-c", "mcp_servers.gmail.enabled=false", "-c", "mcp_servers.Zoho_CRM-2.enabled=false"],
-            "Luna's own stays, and a name a -c key cannot spell is not tried"
+            "a name a -c key cannot spell is not tried"
         );
+        // An account's own `luna`: off when Luna gives the run no server of its own.
+        let theirs = servers(&[("luna", &["command", "args"])]);
+        assert_eq!(connectors_off(&theirs, false).unwrap(), ["-c", "features.apps=false", "-c", "mcp_servers.luna.enabled=false"]);
+        // With Luna's own, only one Luna's would replace whole goes, turned on.
+        let e = connectors_off(&theirs, true).unwrap_err();
+        assert!(e.contains("not started") && e.contains("command, args"), "{e}");
+        let like_lunas = servers(&[("luna", &["url", "enabled"])]);
+        assert_eq!(connectors_off(&like_lunas, true).unwrap(), ["-c", "features.apps=false", "-c", "mcp_servers.luna.enabled=true"]);
+        // What `mcp_args` sets is what the account's may set.
+        for arg in mcp_args("http://h/mcp").iter().filter(|a| *a != "-c") {
+            let key = arg.trim_start_matches("mcp_servers.luna.").split('=').next().unwrap();
+            assert!(LUNA_SERVER_KEYS.contains(&key), "{key}");
+        }
     }
 
     /// A chat's settings carry its hooks and, with the guard, a second

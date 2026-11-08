@@ -503,7 +503,7 @@ pub async fn ensure_codex_session(
         // A helper starts without its account's MCP servers and apps, as a
         // Claude Code one does, unless spawned with them (`connectors_off`).
         let connectors_off = if parent.is_some() && !crate::agents::keeps_connectors(&id, spawn_request) {
-            codex_launch::connectors_off(&crate::codex::config::helper_mcp_servers(&account_path)?)
+            codex_launch::connectors_off(&crate::codex::config::helper_mcp_servers(&account_path)?, mcp.is_some())?
         } else {
             Vec::new()
         };

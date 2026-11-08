@@ -38,18 +38,19 @@ pub fn read(path: &Path) -> Result<DocumentMut, String> {
     }
 }
 
-/// The names of the MCP servers an account's `config.toml` defines, as
-/// written; none without the file. One that will not read or parse, after
+/// The MCP servers an account's `config.toml` defines, each by its name as
+/// written with the keys its table sets; none without the file. One that will not read or parse, after
 /// `read`'s looks again, is an error and not an empty list: a helper's start
 /// turns those servers off by name, and a list read short would leave them on.
-pub fn mcp_servers(account_path: &str) -> Result<Vec<String>, String> {
+pub fn mcp_servers(account_path: &str) -> Result<Vec<(String, Vec<String>)>, String> {
     let doc = read(&account_file(account_path)?)?;
     let servers = doc.get("mcp_servers").and_then(|t| t.as_table_like());
-    Ok(servers.map(|t| t.iter().map(|(name, _)| name.to_string()).collect()).unwrap_or_default())
+    let keys = |v: &toml_edit::Item| v.as_table_like().map(|t| t.iter().map(|(k, _)| k.to_string()).collect()).unwrap_or_default();
+    Ok(servers.map(|t| t.iter().map(|(name, v)| (name.to_string(), keys(v))).collect()).unwrap_or_default())
 }
 
 /// `mcp_servers` for a helper's start, which goes no further without it.
-pub fn helper_mcp_servers(account_path: &str) -> Result<Vec<String>, String> {
+pub fn helper_mcp_servers(account_path: &str) -> Result<Vec<(String, Vec<String>)>, String> {
     mcp_servers(account_path).map_err(|e| {
         format!(
             "the helper is not started: Luna could not read which MCP servers its account's config.toml defines, to turn them off ({e})"
@@ -113,7 +114,7 @@ mod tests {
         let account = root.to_string_lossy().into_owned();
         assert_eq!(mcp_servers(&account), Ok(Vec::new()), "no file: no servers");
         std::fs::write(root.join("config.toml"), "model = \"m\"\n[mcp_servers.gmail]\ncommand = \"node\"\n").unwrap();
-        assert_eq!(mcp_servers(&account), Ok(vec!["gmail".to_string()]));
+        assert_eq!(mcp_servers(&account), Ok(vec![("gmail".to_string(), vec!["command".to_string()])]));
         // Caught mid-write, or broken: an error, never a short list.
         std::fs::write(root.join("config.toml"), "[mcp_servers.gmail\ncommand = ").unwrap();
         assert!(mcp_servers(&account).is_err());
