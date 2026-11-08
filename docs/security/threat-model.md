@@ -23,7 +23,7 @@ flowchart LR
     C["Core process<br/>coreproc.rs, corecmd.rs, agents/"]
     H["Hub: loopback HTTP<br/>hub.rs (hooks, /guard, /mcp)"]
     S["CLI child processes<br/>claude / codex<br/>pty/, background/"]
-    D[("Luna data dir<br/>core/core.json, hooks/, mcp/,<br/>settings, logs, agents.jsonl,<br/>managed CLI binaries")]
+    D[("Luna data dir<br/>core/core.json, hooks/, mcp/,<br/>settings, logs, agents.jsonl,<br/>applied-ledger.json,<br/>managed CLI binaries")]
     A[("Account folders<br/>CLI credentials, settings,<br/>skills")]
     P[("Project folders<br/>and worktrees")]
   end
@@ -131,7 +131,8 @@ in section 6.
 | --- | --- | --- |
 | T, E | Shell or argument injection through spawn parameters | mitigated: children start from an argv vector, never a shell (`pty/spawn.rs:196`); modes, efforts, models and sandboxes are checked against fixed lists, spelled exactly (`agents/privilege.rs:264`); text Luna types is refused if it holds control characters (`agents/privilege.rs:493`) |
 | E | A tooled session spawns a helper with more privilege than itself | fixed (F1) |
-| E | A config's `auto_review` answers for a person | mitigated: Codex sessions Luna starts without auto-review pin `approvals_reviewer="user"` (`codex/launch.rs:155`, `codex/launch.rs:90`, `background/command.rs:123`) |
+| E | A config's `auto_review` answers for a person | mitigated for helpers: a helper's Codex pins `approvals_reviewer="user"`, so what it would ask goes to its parent (`codex/launch.rs` `CODEX_PERSON_REVIEWS`, `background/command.rs` `command_for`). A person's own chat follows its account's and project's `approvals_reviewer` since 0.11.0 ([ADR-0016](../adr/0016-luna-is-a-runtime.md), decision 2): Codex reads a project's `.codex/config.toml` only in a trusted folder, and the reviewer it names is shown in the chat's settings as Codex's own. Accepted as the person's configuration |
+| I | "What Luna applied" (`applied_by_luna`, a core command) shows a session's token or the hub's secret | mitigated: an item's value names a token by its variable and a hub URL by its purpose, never the value (`applied.rs`, `codex/launch.rs` `LUNA_TOOLS_VALUE`, `claude/launch.rs` `luna_tools_value`); every launch golden checks that no item holds the session's token or a hub URL (`golden.rs` `Redact::applied`). The ledger of account writes (`<data>/applied-ledger.json`) holds paths only, written private (`secret::write_private`) under the account settings' lock |
 | I | A session inherits Luna's or a parent session's identity variables | mitigated: inherited CLI session variables are removed (`pty/spawn.rs:206`, `pty/spawn.rs:506`) |
 | E | Luna started as administrator (or root) hands its elevated token to the core and so to every CLI | fixed (F11): see below |
 

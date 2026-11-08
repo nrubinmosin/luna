@@ -14,6 +14,13 @@ How a session is started, what it is started with, and how its terminal is run.
   a pty (`pty/spawn.rs`).
 - Keep the scrollback, answer terminal queries, read the screen, and write
   input the way each CLI needs it.
+- Say what each start applied: the builders return `applied::Applied` items
+  beside the arguments ([ADR-0016](../adr/0016-luna-is-a-runtime.md)), `Launch`
+  carries them, and `pty::spawn` hands them to the registry
+  (`agents::set_applied`) once the process runs; a helper's turn does the same
+  in `background/run.rs`. The core answers `applied_by_luna(chat_id)` with the
+  latest, and the trust writes of the chat's folder from
+  `<data>/applied-ledger.json` and the library's layout in its account.
 
 ## Key modules
 
@@ -28,6 +35,7 @@ How a session is started, what it is started with, and how its terminal is run.
 | `claude/launch.rs` | Claude Code's arguments and environment (`chat_args`), the settings file's hooks and guard, the helper's system prompt line |
 | `codex/launch.rs` | Codex's arguments and environment, approval and sandbox overrides, `read-only-net`, the guard, Luna's MCP server |
 | `guard.rs` | the PreToolUse guard against waits that never end |
+| `applied.rs` | the items Luna may apply, each with its class and why; the ledger of account writes; `applied_by_luna` |
 | `golden.rs` | placeholders that make launch golden tests stable |
 
 ## Command lines
@@ -56,9 +64,13 @@ passed only when the transcript exists; otherwise the chat starts afresh.
 ```
 codex [resume <uuid>] -C <cwd> --no-daemon [--worktree] --model <m>
       -c model_reasoning_effort="<e>" -a <on-request|never> -s <sandbox> [-c …]
+      -c check_for_update_on_startup=false -c tui.terminal_title=["thread-id"]
 ```
 
-`CODEX_HOME` is the account folder. `never` + `danger-full-access` becomes
+`CODEX_HOME` is the account folder. A helper adds `-c approvals_reviewer="user"`
+and its folder's trust for the run; a person's chat gets neither, so its
+account's or project's reviewer stands and an untrusted folder shows Codex's
+own trust screen. `never` + `danger-full-access` becomes
 `--dangerously-bypass-approvals-and-sandbox`; `auto-review` is
 `--approve-for-me` in place of `-a`/`-s`, in `workspace-write`.
 `--no-daemon` keeps the session in this process and pty rather than in Codex's
@@ -80,13 +92,16 @@ The goldens run the real start, not the builders alone.
   `Launch` in place of creating the process. Each test compares the whole
   argument list, the environment, the cwd, the resume decision and the session's
   description, and reads back the settings, MCP and instructions files written
-  for it. Cases: chats, permission modes, resume only with a transcript,
-  worktrees by name, login, helpers with tools (guard, Luna's MCP, role), Codex
+  for it, and what it applied (`Started::applied`, placeholders in). Cases:
+  chats, permission modes, resume only with a transcript, worktrees by name,
+  login, the guard only when asked for, helpers with tools (guard, Luna's MCP,
+  role, reviewer, per-run trust), a `windows.sandbox` of the user's kept, Codex
   approval / sandbox pairs, library folders (skills, instructions, plugins,
-  hidden skills).
+  hidden skills, the other added folders' memory left out).
 - **Headless** (`background/command.rs`, `golden_headless_*`): a helper turn's
   argv, folder and environment, and the settings and MCP files where the CLI takes them, for both CLIs: first turn,
-  resume and worktree, sandboxes and the reviewer, tools, library folders. What
+  resume and worktree, sandboxes and the reviewer, tools, library folders,
+  `--skip-git-repo-check` only outside a repository. What
   goes on stdin (the prompt, Luna's note, slash commands kept out of a
   command's arguments) has tests of its own there.
 - **Redaction is strict** (`golden.rs` `Redact`): only what changes per run is
@@ -98,7 +113,9 @@ The goldens run the real start, not the builders alone.
   becomes `<sandbox-path>` only if it is this process's minus the Store's app
   aliases; the `GIT_CONFIG_*` TLS entries (Windows) become one
   `<git-ssl-backend>` only if they are exactly this process's plus the backend;
-  a `read-only-net` profile's random name becomes `<profile>`.
+  a `read-only-net` profile's random name becomes `<profile>`. What was applied
+  is checked to hold neither the session's token nor a hub URL
+  (`Redact::applied`).
 
 Any change to a launch path shows up as a reviewed diff of the expected values.
 
@@ -108,10 +125,17 @@ Every Claude Code session starts with a `--settings` file adding hooks that post
 to the hub with `curl.exe` (elsewhere `curl`). Hooks print nothing: Claude Code
 adds the stdout of a hook exiting 0 to the context. The one settings file also
 carries the library's `skillOverrides` and `claudeMdExcludes`
-(`claude_settings_file`), since only one `--settings` flag is taken.
+(`claude_settings_file`), since only one `--settings` flag is taken. With the
+library's instructions, `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1` would
+have Claude Code read the memory of every added folder, so `claudeMdExcludes`
+also names the memory files of the others: the notes folder, the library's
+skills folders, the user's `permissions.additionalDirectories`
+(`claude/launch.rs` `memory_excludes`), each unless it lies above or below the
+folder worked in.
 
 The **guard** (`guard.rs`) is a PreToolUse hook on `Bash|PowerShell|Monitor` for
-a chat with tools and every helper; for Codex `-c hooks.PreToolUse=[…]` on its
+a chat whose person ticked "Wait guard" in the new-chat dialog (`Chat.guard`,
+passed as `guard` to `ensure_*`) and for every helper; for Codex `-c hooks.PreToolUse=[…]` on its
 shell (Codex calls it `Bash`), only where hooks run unasked. It posts to
 `/guard/<id>/<secret>`, which denies a command that follows a file
 (`tail -f/-F/--follow`, `Get-Content -Wait`; quotes, comments, heredocs and

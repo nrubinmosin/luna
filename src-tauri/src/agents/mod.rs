@@ -55,8 +55,8 @@ pub(crate) use privilege::{command_prefix, command_reach_now};
 pub use read::{read, Message};
 pub(crate) use registry::mint;
 pub use registry::{
-    caller_of, chat_name, chat_names, has_tools, label, parent_of, parent_on_start, promoted, register, register_dev_caller,
-    resumes_on_restart, session_exited, settings_of, DEV_CALLER,
+    applied_of, caller_of, chat_name, chat_names, has_tools, label, parent_of, parent_on_start, promoted, register, register_dev_caller,
+    resumes_on_restart, session_exited, set_applied, settings_of, DEV_CALLER,
 };
 pub use resume::agent_resumes;
 pub use spawn::account::account_usage;

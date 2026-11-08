@@ -65,16 +65,13 @@ pub fn write(path: &Path, doc: &DocumentMut) -> Result<(), String> {
     })
 }
 
-/// What a fresh account starts with. Luna updates the CLI itself, so the CLI's
-/// own startup check would only nag about a version Luna is about to install.
-pub fn seed(account_path: &str) -> Result<(), String> {
-    let path = account_file(account_path)?;
-    let _editing = crate::account_settings::editing()?;
-    let mut doc = read(&path)?;
-    if doc.get("check_for_update_on_startup").is_none() {
-        doc["check_for_update_on_startup"] = toml_edit::value(false);
-    }
-    write(&path, &doc)
+/// Whether the account's config.toml or the project's `.codex/config.toml`
+/// in `folder` names a `windows.sandbox`: a choice of the user's, which Luna
+/// does not override with its own (codex/launch.rs `codex_windows_sandbox`).
+pub fn windows_sandbox_set(account_path: &str, folder: &str) -> bool {
+    let project = Path::new(folder).join(".codex").join("config.toml");
+    let files = account_file(account_path).into_iter().chain([project]);
+    files.map(|f| read_or_empty(&f)).any(|doc| doc.get("windows").and_then(|w| w.get("sandbox")).is_some())
 }
 
 /// A string-valued top-level key, trimmed; None for anything else.
@@ -88,31 +85,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn seed_keeps_what_is_there() {
-        let root = std::env::temp_dir().join(format!("luna-codex-config-{}", std::process::id()));
+    fn a_windows_sandbox_of_the_accounts_or_the_projects_is_the_users_choice() {
+        let root = std::env::temp_dir().join(format!("luna-codex-winsandbox-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
-        let path = root.join("config.toml");
-        std::fs::write(&path, "# mine\nmodel = \"gpt-5-codex\" # keep\n").unwrap();
-
-        seed(&root.to_string_lossy()).unwrap();
-        let text = std::fs::read_to_string(&path).unwrap();
-        assert!(text.contains("# mine"));
-        assert!(text.contains("model = \"gpt-5-codex\" # keep"));
-        assert!(text.contains("check_for_update_on_startup = false"));
-
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn a_broken_file_is_not_overwritten() {
-        let root = std::env::temp_dir().join(format!("luna-codex-broken-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
-        let path = root.join("config.toml");
-        std::fs::write(&path, "model = [unterminated\n").unwrap();
-        assert!(seed(&root.to_string_lossy()).is_err());
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "model = [unterminated\n");
+        let (account, project) = (root.join("acc"), root.join("proj"));
+        std::fs::create_dir_all(&account).unwrap();
+        std::fs::create_dir_all(project.join(".codex")).unwrap();
+        let (a, p) = (account.to_string_lossy().into_owned(), project.to_string_lossy().into_owned());
+        assert!(!windows_sandbox_set(&a, &p), "no config at all");
+        std::fs::write(account.join("config.toml"), "model = \"x\"\n[windows]\nother = 1\n").unwrap();
+        assert!(!windows_sandbox_set(&a, &p), "a [windows] table without a sandbox");
+        std::fs::write(account.join("config.toml"), "[windows]\nsandbox = \"elevated\"\n").unwrap();
+        assert!(windows_sandbox_set(&a, &p), "the account's");
+        std::fs::write(account.join("config.toml"), "model = [broken\n").unwrap();
+        assert!(!windows_sandbox_set(&a, &p), "a config that will not parse says nothing");
+        std::fs::write(project.join(".codex").join("config.toml"), "windows.sandbox = \"unelevated\"\n").unwrap();
+        assert!(windows_sandbox_set(&a, &p), "the project's, dotted");
         let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -15,7 +15,7 @@ Version-specific observations are in [cli-compatibility.md](../cli-compatibility
 | Models | `models.rs`: context windows from the Models API | `models.rs`: catalog with per-level descriptions |
 | Limits | `limits.rs`: OAuth usage + CLI cache | `limits.rs`: `wham/usage` + rollout fallback |
 | Auth | `oauth.rs`: refresh like the CLI | none: Codex refreshes itself |
-| Trust | `trust.rs`: `hasTrustDialogAccepted` in `.claude.json` | `trust.rs`: `[projects.'<path>'] trust_level` or a one-run `-c` |
+| Trust | `trust.rs`: `hasTrustDialogAccepted` in `.claude.json`, written only when the new-chat dialog's box is ticked | `trust.rs`: `[projects.'<path>'] trust_level` when ticked, or a one-run `-c` (a helper, a trusted root) |
 | Config writing | JSON (`account_settings/`) | `config.rs`: `toml_edit`, comments kept |
 | Hooks unasked | n/a | `hooks.rs`: `--dangerously-bypass-hook-trust` |
 | Session on disk | `session/`: registry + transcript | `session/`: rollouts + `session_index.jsonl` |
@@ -23,7 +23,27 @@ Version-specific observations are in [cli-compatibility.md](../cli-compatibility
 
 Shared mechanics only: the pty (`pty/`), worktrees (`worktree/`), the accounts
 folder (`accounts.rs`), CLI downloads (`cli.rs`), the 429 cool-off
-(`throttle.rs`).
+(`throttle.rs`), and what Luna applies to a start (`applied.rs`).
+
+## What Luna applies
+
+Luna is a runtime ([ADR-0016](../adr/0016-luna-is-a-runtime.md)): it adds to a
+CLI what running it as a session needs, what protects its own boundary, and
+what the person chose, and shows each in the chat's "What Luna applied". Each
+builder returns the `applied::Item`s it applied beside the arguments. An item
+cannot be declared without a class (Runtime, Boundary, UserAction, Workaround)
+and a why. Per provider:
+
+| Item | Claude Code | Codex |
+| --- | --- | --- |
+| Self-update off (Runtime) | `DISABLE_AUTOUPDATER=1` | `-c check_for_update_on_startup=false` per start, never written |
+| Guard (UserAction in a chat, Runtime in a helper) | `PreToolUse` in the `--settings` file | `-c hooks.PreToolUse`, only with hooks unasked |
+| Reviewer | n/a | `approvals_reviewer="user"` for helpers only |
+| Windows sandbox (Workaround) | n/a | `unelevated` unless the account's or project's config names one |
+| Trust | the CLI's prompt, or the dialog's write | the CLI's screen, the dialog's write, or a helper's `-c` for its run |
+| `--skip-git-repo-check` (Runtime) | n/a | a helper outside a Git repository only |
+| Core read deny (Boundary) | `permissions.deny` in `--settings` | a profile deny, off Windows (ADR-0014) |
+| Library memory | `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD`, narrowed by `claudeMdExcludes` (`memory_excludes`) | n/a: Codex takes no other instructions |
 
 ## CLI binaries
 
@@ -204,7 +224,9 @@ live registry.
 
 - Without `windows.sandbox` Codex rejects or sends for approval every command
   under `read-only`, `read-only-net` and `workspace-write`. Those modes get
-  `-c windows.sandbox="unelevated"` (a restricted token per command: no
+  `-c windows.sandbox="unelevated"` unless the account's `config.toml` or the
+  project's `.codex/config.toml` names a `windows.sandbox` of its own
+  (`config.rs` `windows_sandbox_set`), which then stands (a restricted token per command: no
   administrator, no sandbox accounts; under `workspace-write` Codex adds one ACL
   entry for its sandbox to the folder) and a `PATH` without
   `…\Microsoft\WindowsApps`: the Store PowerShell's app alias fails under the

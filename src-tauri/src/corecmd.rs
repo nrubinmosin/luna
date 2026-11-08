@@ -64,6 +64,7 @@ pub const COMMANDS: &[(&str, Lane)] = &[
     ("recommendations", Lane::Call),
     ("apply_recommendation", Lane::Call),
     ("dismiss_recommendation", Lane::Call),
+    ("applied_by_luna", Lane::Call),
 ];
 
 /// The lane `cmd` comes on, or None for a command the page may not send.
@@ -152,11 +153,12 @@ pub fn dispatch(cmd: &str, args: Value) -> Result<Value, String> {
             id: String, folder: AbsPath, account_path: AccountPath, model: String, effort: String,
             permission_mode: String, worktree: bool, worktree_name: Option<String>, resume: Option<String>,
             tools: Option<bool>, parent: Option<String>, prompt: Option<String>,
-            read_only: Option<bool>, agent: Option<String>, spawn_request: Option<u64>),
+            read_only: Option<bool>, agent: Option<String>, spawn_request: Option<u64>, guard: Option<bool>),
         "ensure_codex_session" => call!(wait res args, pty::ensure_codex_session,
             id: String, folder: AbsPath, account_path: AccountPath, model: Option<String>, effort: String,
             approval: String, sandbox: String, worktree: Option<bool>, resume: Option<String>, login: bool,
-            tools: Option<bool>, hooks_unasked: Option<bool>, parent: Option<String>, prompt: Option<String>, spawn_request: Option<u64>),
+            tools: Option<bool>, hooks_unasked: Option<bool>, parent: Option<String>, prompt: Option<String>, spawn_request: Option<u64>,
+            guard: Option<bool>),
         "write_session" => call!(res args, pty::write_session, id: String, data: String),
         "resize_session" => call!(res args, pty::resize_session, id: String, cols: u16, rows: u16),
         "kill_session" => call!(wait res args, pty::kill_session, id: String),
@@ -193,6 +195,7 @@ pub fn dispatch(cmd: &str, args: Value) -> Result<Value, String> {
             provider: Provider, account_path: AccountPath, add: Vec<String>, remove: Vec<String>),
         "codex_folder_trusted" => call!(res args, crate::codex::trust::codex_folder_trusted, account_path: AccountPath, folder: AbsPath),
         "codex_trust_folder" => call!(res args, crate::codex::trust::codex_trust_folder, account_path: AccountPath, folder: AbsPath),
+        "applied_by_luna" => call!(ok args, crate::applied::applied_by_luna, chat_id: String),
         "recommendations" => call!(res args, checks::recommendations),
         "apply_recommendation" => call!(res args, checks::apply_recommendation, id: String, account: Option<String>, confirmed: bool),
         "dismiss_recommendation" => call!(res args, checks::dismiss_recommendation, id: String, account: Option<String>, dismissed: bool),

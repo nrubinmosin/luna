@@ -21,8 +21,8 @@ does a background helper spawned without tools.
 - A spawn may set `budgetTokens`: once that helper's context passes it, its
   parent hears so, once; nothing is stopped.
 
-**The guard.** A chat with tools, and every helper, has its shell commands
-checked before they run: one that follows a file (`tail -f`, `tail -F`,
+**The guard.** Every helper, and a chat whose **Wait guard** box was ticked in
+the new-chat dialog, has its shell commands checked before they run: one that follows a file (`tail -f`, `tail -F`,
 `Get-Content -Wait`, in Bash, PowerShell or a Monitor) with no `timeout N` in
 front is refused, with what to do instead. Such a wait outlives the tool that ran
 it and holds the PC awake all night. Codex sessions get this only where Codex

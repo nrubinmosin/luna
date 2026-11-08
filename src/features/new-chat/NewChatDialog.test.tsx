@@ -2,6 +2,7 @@ import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import * as defaults from '../../ipc/defaults';
+import * as trust from '../../ipc/trust';
 import type { ClaudeDefaultsDto, CodexDefaultsDto } from '../../ipc/defaults';
 import type { Account } from '../../shared/types';
 import { useAccounts } from '../accounts/accounts.store';
@@ -20,6 +21,7 @@ vi.mock('../../ipc/defaults', async importOriginal => ({
 vi.mock('../../ipc/trust', async importOriginal => ({
   ...(await importOriginal<typeof import('../../ipc/trust')>()),
   claudeFolderTrusted: vi.fn(() => Promise.resolve(true)),
+  claudeTrustFolder: vi.fn(() => Promise.resolve()),
   codexFolderTrusted: vi.fn(() => Promise.resolve(true)),
   codexHooksStart: vi.fn(() => Promise.resolve({ default: false, kept: null }))
 }));
@@ -60,6 +62,8 @@ const fromAccount = (value: string) => ({ value, source: 'account' as const });
 
 beforeEach(() => {
   // What a test told the settings to say goes back to nothing said.
+  vi.mocked(trust.claudeFolderTrusted).mockResolvedValue(true);
+  vi.mocked(trust.claudeTrustFolder).mockClear();
   mocked.claudeDefaults.mockImplementation(() => Promise.resolve(STOCK_CLAUDE));
   mocked.codexDefaults.mockImplementation(() => Promise.resolve(STOCK_CODEX));
   useAccounts.setState({ accounts: [account('claude', 'work'), account('codex', 'gpt')], loaded: true });
@@ -169,5 +173,62 @@ describe('NewChatDialog: creating', () => {
     useAccounts.setState({ accounts: [] });
     render(<NewChatDialog />);
     expect(screen.getByRole('button', { name: 'Create' })).toBeDisabled();
+  });
+});
+
+describe('NewChatDialog: what Luna adds only when asked', () => {
+  it('writes no trust unless the box is ticked, and then the CLI’s own mark', async () => {
+    vi.mocked(trust.claudeFolderTrusted).mockResolvedValue(false);
+    const write = vi.mocked(trust.claudeTrustFolder).mockResolvedValue();
+    const user = userEvent.setup();
+    const first = render(<NewChatDialog />);
+    await settle();
+    expect(screen.getByRole('checkbox', { name: 'Trust this folder in “work”' })).not.toBeChecked();
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    expect(write).not.toHaveBeenCalled();
+    first.unmount();
+
+    useNewChat.getState().openDialog('/repo');
+    render(<NewChatDialog />);
+    await settle();
+    await user.click(screen.getByRole('checkbox', { name: 'Trust this folder in “work”' }));
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    expect(write).toHaveBeenCalledWith('/accounts/claude/work', '/repo');
+  });
+
+  it('will not make a Claude Code worktree in a folder it cannot be asked about', async () => {
+    vi.mocked(trust.claudeFolderTrusted).mockResolvedValue(false);
+    const user = userEvent.setup();
+    render(<NewChatDialog />);
+    await settle();
+    const worktree = screen.getByRole('checkbox', { name: 'Git worktree' });
+    if (!(worktree as HTMLInputElement).checked) await user.click(worktree);
+    expect(screen.getByRole('button', { name: 'Create' })).toBeDisabled();
+    await user.click(worktree);
+    expect(screen.getByRole('button', { name: 'Create' })).toBeEnabled();
+    await user.click(worktree);
+    await user.click(screen.getByRole('checkbox', { name: 'Trust this folder in “work”' }));
+    expect(screen.getByRole('button', { name: 'Create' })).toBeEnabled();
+  });
+
+  it('starts a chat without the wait guard unless it is ticked', async () => {
+    const user = userEvent.setup();
+    render(<NewChatDialog />);
+    const box = screen.getByRole('checkbox', { name: 'Wait guard' });
+    expect(box).not.toBeChecked();
+    await user.click(box);
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+    const [chat] = allChats(useChats.getState().folders);
+    expect(chat).toMatchObject({ guard: true });
+  });
+
+  it('offers Codex the wait guard only with its hooks unasked', async () => {
+    useNewChat.getState().remember('/repo', { provider: 'codex', name: 'gpt' });
+    const user = userEvent.setup();
+    render(<NewChatDialog />);
+    await settle();
+    expect(screen.getByRole('checkbox', { name: 'Wait guard' })).toBeDisabled();
+    await user.click(screen.getByRole('checkbox', { name: 'Hooks unasked' }));
+    expect(screen.getByRole('checkbox', { name: 'Wait guard' })).toBeEnabled();
   });
 });

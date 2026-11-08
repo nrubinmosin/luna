@@ -8,6 +8,35 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Added
+
+- "What Luna applied" (the ⓘ button on a chat's title bar): everything Luna
+  added to the chat's CLI at its latest start, grouped as your choice,
+  runtime, boundary or workaround, each with its value and why, and what Luna
+  wrote into the account (the folder's trust, the library's copies). Tokens
+  and Luna's local addresses are never shown.
+
+### Changed
+
+- Luna is a runtime, not a provider configurator (ADR-0016): it adds to a CLI
+  what running it needs and what protects its own boundary, changes nothing
+  else without the person's say, and shows what it applied.
+  - The guard against endless waits is off in chats unless "Wait guard" is
+    ticked in the new-chat dialog; helpers keep it. Chats with Luna's tools no
+    longer get it by default.
+  - The new-chat dialog asks "Trust this folder in <account>", unticked;
+    unticked, nothing is written and the CLI asks itself. A chat an agent
+    starts never writes trust (a Codex helper is trusted for its own runs).
+    Quick chat opens the dialog for a folder the account has not trusted.
+  - Codex: `approvals_reviewer="user"` only for helpers; `windows.sandbox` only
+    when neither the account's nor the project's config names one;
+    `check_for_update_on_startup=false` passed on every start and no longer
+    written into new accounts (lines already there stay); a helper gets
+    `--skip-git-repo-check` only outside a Git repository.
+  - Claude Code: with the library's instructions, the other folders added to a
+    session (Luna's notes folder, the library's skills folders, the user's own
+    `additionalDirectories`) are no longer read as memory.
+
 ### Security
 
 - The window's page reaches only what it calls, so a script injected into it

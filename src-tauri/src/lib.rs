@@ -5,6 +5,7 @@ mod activity;
 mod admit;
 mod agentlog;
 mod agents;
+mod applied;
 mod asking;
 mod background;
 mod boundary;

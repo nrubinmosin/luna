@@ -96,6 +96,33 @@ impl Redact {
         out
     }
 
+    /// What a start applied, as (key, class, value) with placeholders in, once
+    /// checked to carry no secret: neither the session's token, which `envs`
+    /// hold, nor a hub URL with the hub's secret in it.
+    pub(crate) fn applied(
+        &self,
+        applied: &[crate::applied::Applied],
+        envs: &[(&'static str, String)],
+    ) -> Vec<(String, crate::applied::Class, String)> {
+        let token = envs.iter().find(|(k, _)| *k == "LUNA_MCP_TOKEN").map(|(_, v)| v.clone());
+        let urls: Vec<&String> = self
+            .texts
+            .iter()
+            .filter(|(_, to)| matches!(to.as_str(), "<hook-url>" | "<guard-url>" | "<mcp-url>"))
+            .map(|(from, _)| from)
+            .collect();
+        applied
+            .iter()
+            .map(|a| {
+                assert!(token.as_ref().is_none_or(|t| !a.value.contains(t.as_str())), "{}: the token is not shown", a.key);
+                for url in &urls {
+                    assert!(!a.value.contains(url.as_str()), "{}: no hub URL is shown: {}", a.key, a.value);
+                }
+                (a.key.to_string(), a.class, self.text(&a.value))
+            })
+            .collect()
+    }
+
     /// A JSON file a start wrote, placeholders in.
     pub(crate) fn file(&self, path: &str) -> serde_json::Value {
         let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{path}: {e}"));

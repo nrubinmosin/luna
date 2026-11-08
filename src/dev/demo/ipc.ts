@@ -13,7 +13,8 @@ import {
   LIBRARY,
   LIBRARY_DIFF,
   CORE,
-  BACKGROUND
+  BACKGROUND,
+  APPLIED
 } from './fixtures';
 
 /** What the stand-in answers with, set when a scene is seeded: until then it
@@ -45,6 +46,7 @@ export function answer<T>(cmd: string, args: Record<string, unknown>, fallback: 
   if (cmd === 'codex_models') return CODEX_MODELS as unknown as T;
   if (cmd === 'power_state') return demoState.power as unknown as T;
   if (cmd === 'background_helpers') return BACKGROUND as unknown as T;
+  if (cmd === 'applied_by_luna') return APPLIED as unknown as T;
   // The Accounts window's own dialogs, so they can be looked at too.
   if (cmd === 'read_account_config') {
     const claudeSide = args.provider === 'claude';
