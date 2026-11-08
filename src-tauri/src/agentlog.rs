@@ -77,8 +77,13 @@ pub fn left(id: &str, transcript: Option<&str>, worktree: Option<&str>, last: Op
     append(&file(), json!({ "at": now(), "event": "left", "id": id, "transcript": transcript, "worktree": worktree, "last": last }));
 }
 
-/// A spawned session's row is gone: `deleted` (by its agent or by hand) or
-/// `auto-deleted`.
+/// How a run the person took over as their own chat ended (agents/handover.rs):
+/// the line a history's lineage stops at, as its spawner's claim on it did, for
+/// as long as the log keeps it.
+pub const TAKEN_OVER: &str = "taken over by the person";
+
+/// A spawned session's row is gone: `deleted` (by its agent or by hand),
+/// `auto-deleted`, or `TAKEN_OVER`.
 pub fn ended(id: &str, how: &str) {
     append(&file(), json!({ "at": now(), "event": "end", "id": id, "how": how }));
 }

@@ -18,7 +18,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   server and with its auto-memory off shows both as boundary items.
 - **Watch** in a chat's helper list shows that helper's conversation,
   read-only and live: what its agent asked and what it said, tool calls marked,
-  updating every second while it works.
+  updating every second while it works. A long conversation shows its latest
+  part, without very long entries such as a tool's whole output, and says so.
 
 ### Changed
 
@@ -71,7 +72,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   by it. The agent hears so once, in a notice that outlives a restart. Text
   still queued for the helper is not delivered, and whoever sent it is told
   where it is. Luna asks before it does this, and while it opens the agent can
-  neither stop nor delete it.
+  neither stop nor delete it. An opening Luna cannot finish (the window closed
+  midway and stays closed) gives the helper back to its agent after 15
+  minutes, and the agent is told.
 - Deleting a chat lists the helpers its agent runs with what each is doing and
   what its worktree holds. Ticking the box to take them along never stops one
   still at work, or drops a worktree with uncommitted work, by itself: each

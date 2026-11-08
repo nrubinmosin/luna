@@ -60,7 +60,8 @@ const opening = new Set<string>();
  * the agent that spawned it has no claim on it from then on, and hears so once
  * (agents/handover.rs). The core holds the helper, with no turn starting, until
  * the row is made, and lets it go only then: a row that could not be made leaves
- * the helper as it was, its agent's, never neither.
+ * the helper as it was, its agent's, never neither. The row is seated in a pane,
+ * which resumes the conversation, only once the core has let go of it.
  */
 export async function openAsChat(id: string): Promise<void> {
   // A second click while the first is on its way: one row, made once.
@@ -75,25 +76,70 @@ export async function openAsChat(id: string): Promise<void> {
       await backgroundPromoted(id, why).catch(() => {});
       throw e;
     }
-    await backgroundPromoted(id, null);
+    if (await settleMade(id)) usePanes.getState().autoPlace(id);
   } finally {
     opening.delete(id);
   }
 }
 
+/** How long to wait before each try again to tell the core a row is made, in
+ *  ms: a core restarting, or taken over by another, has it on a later try. Past
+ *  the last, the next core to come up is told (`settleOpenings`), and one that
+ *  never is gives the helper back to its agent (background/rows.rs
+ *  `PROMOTE_TIMEOUT_MS`). */
+export const SETTLE_RETRY_MS = [500, 1000, 2000, 4000, 8000, 15_000, 30_000, 60_000];
+
+/**
+ * Tells the core the row for helper `id` is made, trying again as long as
+ * `SETTLE_RETRY_MS` says. True once the helper is the person's. A row made for
+ * an opening the core has since given up is let go of here: the helper is its
+ * agent's again, and the row would only run its conversation beside it.
+ */
+async function settleMade(id: string): Promise<boolean> {
+  for (let i = 0; ; i++) {
+    try {
+      const handed = await backgroundPromoted(id, null);
+      if (handed === false) {
+        logWarn('agents', `helper ${id} went back to its agent before its opening was settled; its row is let go`);
+        useChats.getState().deleteChat(id);
+      }
+      return handed !== false;
+    } catch (e) {
+      if (i >= SETTLE_RETRY_MS.length) {
+        logWarn(
+          'agents',
+          `telling the core helper ${id} is opened failed: ${String(e)}; the next core to come up is told`
+        );
+        return false;
+      }
+      await new Promise(resolve => setTimeout(resolve, SETTLE_RETRY_MS[i]));
+    }
+  }
+}
+
 /**
  * Helpers a window that went away was opening as chats, settled by what this
- * one has: its row made, the core hands the helper over; none, it goes on as a
- * helper. A row with a helper's id is made by nothing but an opening.
+ * one has: its row made, the core hands the helper over and the row is seated;
+ * none, it goes on as a helper. A row with a helper's id is made by nothing but
+ * an opening, so one whose opening the core gave up is let go of.
  */
 function settleOpenings(rows: BackgroundHelperDto[]): void {
   for (const h of rows) {
     if (opening.has(h.id)) continue;
     const made = !!useChats.getState().findChat(h.id);
     if (!made && !h.promoting) continue;
-    backgroundPromoted(h.id, made ? null : 'the window that was opening it as a chat went away').catch(e =>
-      logWarn('agents', `settling the opening of helper ${h.id} failed: ${String(e)}`)
-    );
+    if (!made) {
+      backgroundPromoted(h.id, 'the window that was opening it as a chat went away').catch(e =>
+        logWarn('agents', `settling the opening of helper ${h.id} failed: ${String(e)}`)
+      );
+      continue;
+    }
+    opening.add(h.id);
+    void settleMade(h.id)
+      .then(handed => {
+        if (handed) usePanes.getState().autoPlace(h.id);
+      })
+      .finally(() => opening.delete(h.id));
   }
 }
 
@@ -148,7 +194,6 @@ async function promote(p: PromotedDto): Promise<void> {
     agent: word('agent') || null
   });
   if (p.sessionId) useChats.getState().setSessionId(id, p.sessionId);
-  usePanes.getState().autoPlace(id);
 }
 
 /** Mounted once in App: keeps the helpers' list and the core's view of the chats. */

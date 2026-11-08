@@ -147,7 +147,22 @@ struct Entry {
     /// delete it; text sent queues, and is told of as never delivered once the
     /// person has it (agents/handover.rs).
     promoting: bool,
+    /// When `promoting` began, for PROMOTE_TIMEOUT_MS: kept across a core, as
+    /// `promoting` is.
+    promoting_since: u64,
+    /// A delete is under way (`claim_delete`), until it has removed the helper or
+    /// been refused: no turn starts, and it is not opened as a chat, meanwhile, so
+    /// what the delete went by (whose it is, that it is idle, its worktree) still
+    /// holds when it removes it. Text sent queues, and goes with it.
+    deleting: bool,
     observed: Observed,
+}
+
+impl Entry {
+    /// Something has it held between turns: no turn starts until it lets go.
+    fn held_back(&self) -> bool {
+        self.promoting || self.deleting
+    }
 }
 
 struct Registry {

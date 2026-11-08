@@ -142,9 +142,17 @@ pub fn background_promote(id: String) -> Result<Promoted, String> {
         if e.promoting {
             return Err("it is being opened as a chat already".into());
         }
+        // A delete has it (agents/teardown.rs): it goes, not to the person.
+        if e.deleting {
+            return Err("it is being deleted".into());
+        }
         e.promoting = true;
+        e.promoting_since = crate::throttle::now_ms();
         (e.spec.clone(), e.cwd.clone(), e.session.clone())
     };
+    // A core killed now holds it the same way in the next (persist.rs), until the
+    // window settles the row it may have made.
+    save();
     changed();
     let worktree_path = cwd.filter(|c| !crate::pty::same_dir(c, &spec.folder));
     Ok(Promoted {
@@ -165,10 +173,21 @@ pub fn background_promote(id: String) -> Result<Promoted, String> {
 /// its record goes, what was sent to it meanwhile and what never reached it told of
 /// to whoever sent it; or the row could not be made, and it goes on as its parent's
 /// helper, what was sent meanwhile its next turn. Also said by a window settling
-/// what one gone before it was opening, whose row it finds or not.
+/// what one gone before it was opening, whose row it finds or not. Whether it was
+/// handed over: not for a row made for an opening that is over (PROMOTE_TIMEOUT_MS
+/// gave it back to its parent), which the window lets go of.
 #[tauri::command]
-pub fn background_promoted(id: String, error: Option<String>) -> Result<(), String> {
+pub fn background_promoted(id: String, error: Option<String>) -> Result<bool, String> {
     let Some(why) = error else {
+        {
+            let mut r = lock();
+            match r.entries.get_mut(&id) {
+                Some(e) if !e.promoting => return Ok(false),
+                // Not to lapse while it is handed over.
+                Some(e) => e.promoting_since = crate::throttle::now_ms(),
+                None => {}
+            }
+        }
         let mut count = None;
         crate::agents::take_over(&id, || {
             // Gone already (deleted meanwhile): the row has its conversation.
@@ -186,35 +205,47 @@ pub fn background_promoted(id: String, error: Option<String>) -> Result<(), Stri
         changed();
         // Or a core killed now would take it up beside the chat it has become.
         save();
-        return Ok(());
+        return Ok(true);
     };
     crate::log::warn("background", &format!("{} was not opened as a chat: {why}", crate::agents::label(&id)));
-    let next = {
-        let mut r = lock();
-        let Some(e) = r.entries.get_mut(&id) else { return Ok(()) };
-        e.promoting = false;
-        (e.run.is_none() && !e.ending_left && !e.queue.is_empty()).then(|| {
-            claim(e);
-            reserve(e)
-        })
-    };
-    let next = next.and_then(|res| settle_batch(&id, res)).map(|b| b.text);
-    match next {
-        Some(text) => {
-            save();
-            if run_turn(&id, &text).is_err() {
-                if let Some(e) = lock().entries.get_mut(&id) {
-                    e.in_flight.clear();
-                }
-            }
-        }
-        // A `resumeOnRestart` helper a restart left to go on, which the opening
-        // held back: it goes on now, if nothing else has taken it up.
-        None if crate::agents::resumes_on_restart(&id) => resume(&id),
-        None => {}
+    match lock().entries.get_mut(&id) {
+        Some(e) => e.promoting = false,
+        None => return Ok(false),
     }
-    changed();
-    Ok(())
+    save();
+    go_on(&id);
+    Ok(false)
+}
+
+/// How long an opening as a chat may go unsettled before the helper goes back to
+/// its parent: the window confirms in seconds and tries again for minutes, and one
+/// that went away settles it when it comes back (agents/bridge.ts). Past this the
+/// parent, which can neither stop nor delete it meanwhile, has waited enough.
+pub(super) const PROMOTE_TIMEOUT_MS: u64 = 15 * 60 * 1000;
+
+/// Openings unsettled past PROMOTE_TIMEOUT_MS at `now` go back to their parents,
+/// which hear so (agents/handover.rs `opening_lapsed`). From the activity sampler.
+pub(super) fn lapse_openings(now: u64) {
+    let overdue = |e: &Entry| e.promoting && now.saturating_sub(e.promoting_since) >= PROMOTE_TIMEOUT_MS;
+    let ids: Vec<String> = lock().entries.iter().filter(|(_, e)| overdue(e)).map(|(id, _)| id.clone()).collect();
+    for id in ids {
+        // Again under the lock: a window settling it meanwhile has it.
+        let lapsed = lock().entries.get_mut(&id).filter(|e| overdue(e)).map(|e| e.promoting = false).is_some();
+        if !lapsed {
+            continue;
+        }
+        crate::log::warn(
+            "background",
+            &format!(
+                "{} was not opened as a chat: the window did not settle the opening within {} minutes",
+                crate::agents::label(&id),
+                PROMOTE_TIMEOUT_MS / 60_000
+            ),
+        );
+        save();
+        crate::agents::opening_lapsed(&id);
+        go_on(&id);
+    }
 }
 
 #[tauri::command]
@@ -251,6 +282,14 @@ const MAX_AT_STAKE: usize = 32;
 /// otherwise carry all of it to the window at once.
 const VIEW_MESSAGES: usize = 200;
 const VIEW_TEXT: usize = 20_000;
+/// The most of a conversation's file one look reads, back from its end: a first
+/// look at a long one, or one grown by more since the last, starts that far back,
+/// at a line's start, and says it passed over what came before. With tool results
+/// in it a transcript runs to hundreds of MB, and a look comes every second.
+const VIEW_SCAN: u64 = 2 * 1024 * 1024;
+/// A line longer than this (a tool's whole output, a file read in) is passed over
+/// unread rather than parsed.
+const VIEW_LINE: usize = 256 * 1024;
 
 /// What the window's read-only view of a helper shows (`background_transcript`).
 #[derive(Serialize, Debug)]
@@ -267,6 +306,10 @@ pub struct Transcript {
     /// Older messages a first look left out (VIEW_MESSAGES).
     #[serde(skip_serializing_if = "is_zero")]
     pub left_out: usize,
+    /// Part of the conversation was passed over unread: too far back (VIEW_SCAN),
+    /// or a line too long (VIEW_LINE).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub passed_over: bool,
 }
 
 fn is_zero(n: &usize) -> bool {
@@ -285,17 +328,41 @@ pub fn background_transcript(id: String, since: Option<u64>, file: Option<String
         (e.spec.provider, e.run.is_some())
     };
     let Some(path) = transcript(&id) else {
-        return Ok(Transcript { messages: Vec::new(), cursor: 0, file: None, running, left_out: 0 });
+        return Ok(Transcript { messages: Vec::new(), cursor: 0, file: None, running, left_out: 0, passed_over: false });
     };
     let same = file.is_some_and(|f| std::path::Path::new(&f) == path);
     Ok(view_of(&path, provider, if same { since.unwrap_or(0) } else { 0 }, running))
 }
 
-/// `background_transcript` of a file.
+/// `background_transcript` of a file: at most VIEW_SCAN of it read into memory,
+/// its complete lines no longer than VIEW_LINE given to the transcript readers
+/// that work on bytes (`luna_lib::transcripts`), the newest VIEW_MESSAGES kept.
 fn view_of(path: &std::path::Path, provider: Provider, since: u64, running: bool) -> Transcript {
-    let (mut messages, cursor) = match provider {
-        Provider::Claude => crate::claude::session::messages_from(path, since, true),
-        Provider::Codex => crate::codex::session::messages_from(path, since),
+    let len = std::fs::metadata(path).map_or(0, |m| m.len());
+    // A cursor past the end is one into a file since cut short or written anew.
+    let since = if since > len { 0 } else { since };
+    let start = since.max(len.saturating_sub(VIEW_SCAN));
+    let bytes = read_span(path, start, len);
+    // Started past the cursor, most likely mid-line: from the next line on. With
+    // none yet, from here, the fragment read as no message.
+    let skip = if start > since { bytes.iter().position(|b| *b == b'\n').map_or(0, |i| i + 1) } else { 0 };
+    let span = &bytes[skip..];
+    // A last line without its newline is still being written: the next look's.
+    let whole = span.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
+    let mut lines = Vec::with_capacity(whole);
+    let mut too_long = false;
+    for line in span[..whole].split_inclusive(|b| *b == b'\n') {
+        if line.len() > VIEW_LINE {
+            too_long = true;
+            lines.push(b'\n');
+        } else {
+            lines.extend_from_slice(line);
+        }
+    }
+    drop(bytes);
+    let mut messages = match provider {
+        Provider::Claude => crate::claude::session::messages_in(&lines, 0, true).0,
+        Provider::Codex => crate::codex::session::messages_in(&lines).0,
     };
     let left_out = messages.len().saturating_sub(VIEW_MESSAGES);
     messages.drain(..left_out);
@@ -304,7 +371,21 @@ fn view_of(path: &std::path::Path, provider: Provider, since: u64, running: bool
             m.text = format!("{}…", m.text.chars().take(VIEW_TEXT).collect::<String>());
         }
     }
-    Transcript { messages, cursor, file: Some(path.to_string_lossy().into_owned()), running, left_out }
+    let cursor = start + (skip + whole) as u64;
+    let passed_over = start > since || too_long;
+    Transcript { messages, cursor, file: Some(path.to_string_lossy().into_owned()), running, left_out, passed_over }
+}
+
+/// Bytes `from..to` of a file, fewer if it is shorter by now; none if it will not read.
+fn read_span(path: &std::path::Path, from: u64, to: u64) -> Vec<u8> {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut f) = std::fs::File::open(path) else { return Vec::new() };
+    if f.seek(SeekFrom::Start(from)).is_err() {
+        return Vec::new();
+    }
+    let mut bytes = Vec::with_capacity(to.saturating_sub(from) as usize);
+    let _ = f.take(to.saturating_sub(from)).read_to_end(&mut bytes);
+    bytes
 }
 
 /// The helper's turn as the agent layer counts it: busy while a turn's
@@ -338,6 +419,7 @@ pub(super) fn turn_holds(t: &crate::activity::TurnState) -> bool {
 /// for LEFTOVER_HOLD_MS on end (`Leftover::holds`). Noted for `turn_state`,
 /// which is what tells its caller and `reap` that a job still runs, however idle.
 pub fn activity() -> Vec<crate::activity::SessionActivity> {
+    lapse_openings(crate::throttle::now_ms());
     let ids: Vec<(String, Option<std::sync::Arc<crate::procs::Job>>)> =
         lock().entries.iter().map(|(id, e)| (id.clone(), e.job.clone().filter(|_| e.run.is_none()))).collect();
     let mut moved = false;
@@ -496,6 +578,71 @@ mod tests {
         let none = background_transcript("view-0".into(), Some(99), Some("C:\\elsewhere.jsonl".into())).unwrap();
         assert!(none.messages.is_empty() && none.file.is_none(), "no conversation yet");
         lock().entries.remove("view-0");
+    }
+
+    /// A look reads no more than VIEW_SCAN back from the end, whatever the file or
+    /// the cursor, from a line's start, and passes over a line past VIEW_LINE
+    /// unread; it says when it did either.
+    #[test]
+    fn the_view_of_a_helper_reads_a_bounded_tail() {
+        let dir = std::env::temp_dir().join(format!("luna-view-bounded-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let said = |t: &str| json!({ "type": "assistant", "message": { "content": [{ "type": "text", "text": t }] } }).to_string();
+        let codex_said = |t: &str| {
+            json!({ "type": "response_item", "payload": { "type": "message", "role": "assistant", "content": [{ "type": "output_text", "text": t }] } }).to_string()
+        };
+        for (provider, line) in [(Provider::Claude, &said as &dyn Fn(&str) -> String), (Provider::Codex, &codex_said)] {
+            let path = dir.join(format!("{}.jsonl", provider.as_str()));
+            // Old lines worth more than a look reads, then the newest.
+            let filler = line(&"o".repeat(1000));
+            let mut text = String::new();
+            while (text.len() as u64) < VIEW_SCAN + 4096 {
+                text.push_str(&filler);
+                text.push('\n');
+            }
+            text.push_str(&format!("{}\n", line(&"x".repeat(VIEW_LINE + 1))));
+            text.push_str(&format!("{}\n", line("the newest")));
+            std::fs::write(&path, &text).unwrap();
+            let v = view_of(&path, provider, 0, false);
+            assert!(v.passed_over, "{provider:?}");
+            assert_eq!(v.cursor, text.len() as u64);
+            assert_eq!(v.messages.last().map(|m| m.text.as_str()), Some("the newest"), "{provider:?}");
+            assert!(v.messages.iter().all(|m| !m.text.starts_with('x')), "the long line was not read");
+            assert!(v.messages.len() <= VIEW_MESSAGES);
+            // Grown by more than a look reads since the last: the same.
+            let later = view_of(&path, provider, 10, false);
+            assert!(later.passed_over && later.cursor == text.len() as u64);
+            // Nothing new: nothing, and nothing passed over.
+            let again = view_of(&path, provider, v.cursor, false);
+            assert!(again.messages.is_empty() && !again.passed_over);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An opening the window never settles goes back to the helper's parent past
+    /// PROMOTE_TIMEOUT_MS, which hears so; the row a window makes for it after
+    /// that is refused, the helper its parent's still. Both providers alike.
+    #[test]
+    fn an_opening_left_unsettled_goes_back_to_its_parent() {
+        for (provider, tag) in [(Provider::Claude, "cl"), (Provider::Codex, "cx")] {
+            let (parent, id) = (format!("lo-{tag}-parent"), format!("lo-{tag}-helper"));
+            crate::agents::register(&parent, Provider::Claude, "C:\\p", "C:\\acc\\one", None, true, json!({}));
+            crate::agents::register(&id, provider, "C:\\p", "C:\\acc\\one", Some(&parent), false, json!({ "background": true }));
+            idle_for_test(&id, provider, 1, false);
+            background_promote(id.clone()).unwrap();
+            let since = lock().entries[&id].promoting_since;
+            lapse_openings(since + PROMOTE_TIMEOUT_MS - 1);
+            assert!(promoting(&id), "not yet");
+            lapse_openings(since + PROMOTE_TIMEOUT_MS);
+            assert!(!promoting(&id), "its parent's again");
+            let told = crate::agents::news_for(&parent);
+            assert!(told.iter().any(|l| l.contains(&format!("your helper {id}")) && l.contains("did not open")), "{told:?}");
+            assert_eq!(background_promoted(id.clone(), None), Ok(false), "a row made now is refused");
+            assert!(has(&id) && crate::agents::parent_of(&id).as_deref() == Some(parent.as_str()));
+            gone_for_test(&id);
+            crate::agents::forget(&id);
+            crate::agents::forget(&parent);
+        }
     }
 
     #[test]

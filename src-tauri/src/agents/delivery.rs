@@ -4,8 +4,9 @@
 //! is held (held.rs).
 
 use crate::agents::ask::{live, state_of};
+use crate::agents::handover::handovers_of;
 use crate::agents::held::{hold, words};
-use crate::agents::owed::{owe_from, seen};
+use crate::agents::owed::{owe_from, owe_from_at, seen};
 use crate::agents::privilege::{command_reach_now, plain_text};
 use crate::agents::read::transcript_end;
 use crate::agents::registry::{authorize_send, is_mine, label, reg};
@@ -330,6 +331,9 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool) -> Result<Sent,
         // Taken before the text goes in: a turn it starts may be over, and
         // written, by the time the call returns.
         let cursor = transcript_end(id);
+        // And this, for the debt below: the person may take the helper over
+        // once the text is in, which takes it back out (handover.rs).
+        let handovers = handovers_of(id);
         use crate::background::Placed;
         let (placed, interrupted) = if interrupt {
             let i = crate::background::interrupt(id, text, Some(caller))?;
@@ -344,8 +348,13 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool) -> Result<Sent,
         if placed == Placed::Queued || interrupted {
             baseline += 1;
         }
+        if !owe_from_at(caller, id, baseline, cursor, handovers) {
+            return Err(format!(
+                "the person took {id} over as their own chat as this was sent: the text did not go in, and your next notice \
+                 says where it is"
+            ));
+        }
         seen(caller, id, baseline);
-        owe_from(caller, id, baseline, cursor);
         return Ok(Sent {
             ok: true,
             state_before,

@@ -63,6 +63,11 @@ pub(super) struct Registry {
     /// Helpers the person took over as their own chats, by id, with the parent
     /// each was taken from (handover.rs): what that parent's calls are refused with.
     pub(super) taken_over: HashMap<String, String>,
+    /// How many times each session's ownership has changed hands, counted once
+    /// what was queued for it has been taken back out (handover.rs): a send that
+    /// put text in before that owes nothing of the person's chat after it
+    /// (owed.rs `owe_from_at`).
+    pub(super) handovers: HashMap<String, u64>,
     /// A Codex helper to make a worktree of its own, by id, until its CLI has said
     /// where: the worktrees there were as it was spawned. Codex takes no name, so one
     /// new since is all that tells what a core may have cut it off making.
@@ -163,6 +168,7 @@ pub(super) fn reg() -> &'static Mutex<Registry> {
             spawns: HashMap::new(),
             tasks: HashMap::new(),
             taken_over: HashMap::new(),
+            handovers: HashMap::new(),
             worktrees_before: HashMap::new(),
             worktrees_left: HashMap::new(),
             delivery_floors: HashMap::new(),
@@ -463,6 +469,11 @@ pub fn scope_all(scope: Option<&str>) -> Result<bool, String> {
 /// Whether `id` is the caller or one of its own: what `scope` `mine` reaches.
 pub fn own_or_self(caller: &str, id: &str) -> bool {
     caller == id || is_mine(caller, id)
+}
+
+/// Whether this core knows session `id`: whose it is then goes by its owner now.
+pub fn is_known(id: &str) -> bool {
+    reg().lock().unwrap_or_else(|e| e.into_inner()).known.contains_key(id)
 }
 
 /// What a read, a wait or a send may reach, by its `scope`: the caller's own

@@ -122,11 +122,16 @@ then the window's `background_promoted`) becomes theirs for good
    `borrowed` marks and a helper's settings (`HELPER_SETTINGS`), and records
    `taken_over` (helper → former parent). From then on its former parent's
    send, read and wait are refused as its own (`in_scope`), its kill and delete
-   by `authorize`, both with the takeover's words, and a `wait` in flight ends
-   on it (`wait.rs`). With `scope: "all"` it reaches the chat as any of the
-   person's.
+   by `authorize`, both with the takeover's words. A `wait` in flight holds to
+   its `scope` on every look and before it hands anything over (`wait.rs`), so
+   every ancestor's wait without `scope: "all"` ends with nothing of it; with
+   `scope: "all"` it reaches the chat as any of the person's.
 2. Then the helper's record is taken (`background_promoted`), with what was
-   queued for it and what never reached it.
+   queued for it and what never reached it, and `drained` moves its count on
+   (`handovers`) and clears its debts again: a send whose text went in before
+   that checks its debt against the count it took first (`owe_from_at`) and
+   registers none, and the notifier drops a notice prepared on a debt gone
+   since (`debts_moved`).
 3. Each session owed by it, and each sender of that text, gets one line in
    `Registry::news`: its parent that the person took it over and nothing more
    is owed, the others that nothing more is owed by it; each with the file its
@@ -135,6 +140,17 @@ then the window's `background_promoted`) becomes theirs for good
 
 The helper's own helpers stay its; the chat the person now has owes them
 nothing new. A row the window could not make leaves everything as it was.
+`agents.jsonl` records the run as ended `taken over by the person`
+(`agentlog::TAKEN_OVER`): a history's lineage goes by each link's owner now
+while the core knows it, and past a gone link by the spawner its run records,
+never past such a run (`mcp.rs` `runs_in_scope`).
+
+**Deleted.** Every delete of a helper, an agent's, the person's or `reap`'s,
+first holds it (`background::claim_delete`): no turn starts and it cannot be
+opened as a chat until the delete has removed it or let it be, and an opening
+under way refuses the delete. An agent's delete asks `authorize` again under
+that hold, so ownership, idleness and the worktree it went by are what it
+removes; `remove` refuses a chat the person took over.
 
 ## Spawning
 

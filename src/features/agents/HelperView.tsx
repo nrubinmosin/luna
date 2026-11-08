@@ -84,6 +84,7 @@ export function HelperView({ helper, onClose }: { helper: BackgroundHelperDto; o
           <div style={{ fontSize: 'var(--fs-1)', color: 'var(--dim)' }} data-testid="helper-view-status">
             {status}
             {t.leftOut > 0 && ` · ${t.leftOut} older message${t.leftOut > 1 ? 's' : ''} not shown`}
+            {t.passedOver && ' · earlier parts and very long entries not read'}
           </div>
           <div
             ref={list}

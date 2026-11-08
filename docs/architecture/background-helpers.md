@@ -97,8 +97,12 @@ its row's chip.
   (`background_transcript`, by the same readers `luna_read` uses, tool calls
   marked) from a cursor, and again every second while a turn runs, every five
   between turns (`useHelperTranscript`). The file is the helper's own, from its
-  record, never one the window names; a first look keeps the newest 200
-  messages, each cut at 20,000 characters. Read-only: nothing it shows takes
+  record, never one the window names. A look reads at most 2 MB back from the
+  file's end into memory (`VIEW_SCAN`), from a line's start, passes over a line
+  longer than 256 KB (`VIEW_LINE`), and parses the rest with the readers that
+  work on bytes (`claude::session::messages_in`, `codex::session::messages_in`);
+  it keeps the newest 200 messages, each cut at 20,000 characters, and says
+  when it passed anything over (`passedOver`). Read-only: nothing it shows takes
   input.
 - **Delete** (`background_delete`) refuses a helper at work unless
   `stopWorking`, and keeps a worktree with unsaved work unless `dropUnsaved`
@@ -116,7 +120,15 @@ session id to resume, no parent); the window answers `background_promoted`. On
 success `agents::take_over` changes its hands under one registry hold, then
 takes its record with what was queued for it, and tells its parent and every
 other sender once ([agents](agents.md#rights)); on an error it is unmarked and
-goes on. A window coming up settles what a gone one was opening.
+goes on. The window seats the row in a pane only once the core has let go, and
+`ensure_*_session` refuses a helper's id until then. It tells the core again on a
+failure (`SETTLE_RETRY_MS`, up to about two minutes), and a window coming up
+settles what a gone one was opening. `promoting` and since when are saved in
+`helpers.json`, so a core restarted meanwhile holds the helper the same way. An
+opening unsettled for 15 minutes (`PROMOTE_TIMEOUT_MS`, checked by the activity
+sampler) goes back to the parent, which hears so (`handover::opening_lapsed`);
+a row made for it after that is refused (`background_promoted` answers false)
+and the window lets go of it.
 
 ## Worktrees
 

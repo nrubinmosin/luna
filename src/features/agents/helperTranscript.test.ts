@@ -62,7 +62,7 @@ describe('the read-only view of a helper', () => {
   it('starts over on a new transcript file, and keeps only the newest of a long one', async () => {
     const many = Array.from({ length: VIEW_KEEP + 3 }, (_, i) => said(`m${i}`));
     mocked.backgroundTranscript
-      .mockResolvedValueOnce(look({ messages: many, cursor: 10, leftOut: 7 }))
+      .mockResolvedValueOnce(look({ messages: many, cursor: 10, leftOut: 7, passedOver: true }))
       .mockResolvedValueOnce(look({ messages: [said('fresh start')], cursor: 5, file: '/t/b.jsonl' }))
       .mockResolvedValue(look({ cursor: 5, file: '/t/b.jsonl' }));
     const { result } = renderHook(() => useHelperTranscript('bg1'));
@@ -70,9 +70,11 @@ describe('the read-only view of a helper', () => {
     expect(result.current.messages).toHaveLength(VIEW_KEEP);
     expect(result.current.messages[0]?.text).toBe('m3');
     expect(result.current.leftOut).toBe(10);
+    expect(result.current.passedOver).toBe(true);
     await after(TAIL_RUNNING_MS);
     expect(result.current.messages.map(m => m.text)).toEqual(['fresh start']);
     expect(result.current.leftOut).toBe(0);
+    expect(result.current.passedOver).toBe(false);
   });
 
   it('stops looking once closed, and once the helper is gone', async () => {

@@ -34,8 +34,9 @@ pub fn take_over(id: &str, take_record: impl FnOnce() -> Option<Vec<crate::backg
         return;
     };
     let unsent = take_record().unwrap_or_default();
+    drained(id);
     tell(id, &taken, unsent);
-    crate::agentlog::ended(id, "taken over by the person");
+    crate::agentlog::ended(id, crate::agentlog::TAKEN_OVER);
     crate::log::warn(
         "agents",
         &format!(
@@ -77,6 +78,24 @@ fn change_hands(id: &str) -> Option<TakenOver> {
         r.taken_over.insert(id.to_string(), p.clone());
     }
     Some(TakenOver { parent, owed })
+}
+
+/// Its queue taken back out: no text can go in for it as a helper any more. A send
+/// that put text in before this registers its debt after it, or has since the
+/// hold above: the count moves on (`handovers`), which such a send checks its debt
+/// against (owed.rs `owe_from_at`), and what is owed by it goes again, once more.
+fn drained(id: &str) {
+    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    *r.handovers.entry(id.to_string()).or_default() += 1;
+    r.owed.retain(|(_, s), _| s != id);
+    r.seen.retain(|(_, s), _| s != id);
+    r.delivery_floors.retain(|(_, s), _| s != id);
+}
+
+/// The count `drained` keeps for `id`, as a send that puts text in for it takes
+/// it before it does.
+pub(super) fn handovers_of(id: &str) -> u64 {
+    reg().lock().unwrap_or_else(|e| e.into_inner()).handovers.get(id).copied().unwrap_or(0)
 }
 
 /// The line each one hears: its parent that the helper is the person's now, the
@@ -155,10 +174,22 @@ fn dropped_line(id: &str, dropped: &[crate::background::Queued]) -> String {
     }
 }
 
-/// Whose helper `id` was before the person took it over, while this core knows:
-/// what a call of that parent's is refused with.
-pub(super) fn taken_from(id: &str) -> Option<String> {
-    reg().lock().unwrap_or_else(|e| e.into_inner()).taken_over.get(id).cloned()
+/// An opening of helper `id` as a chat that the window never settled has gone back
+/// to its parent (background/rows.rs `lapse_openings`), which could neither stop nor
+/// delete it meanwhile: the parent hears that it is its helper again, as it was.
+pub fn opening_lapsed(id: &str) {
+    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    let Some(parent) = r.known.get(id).and_then(|k| k.parent.clone()) else { return };
+    let name = r.names.get(id).map_or(String::new(), |n| format!(" \"{n}\""));
+    r.news.push((
+        parent,
+        format!(
+            "The person began opening your helper {id}{name} as a chat of their own, and it did not open: it is yours as \
+             before, to send to, wait on, stop or delete."
+        ),
+    ));
+    drop(r);
+    crate::background::save();
 }
 
 /// The refusal a former parent gets.
@@ -237,12 +268,42 @@ mod tests {
             assert!(std::fs::read_to_string(file).unwrap().contains("the peer's words"));
             let _ = std::fs::remove_file(file);
             // What a call of its parent's is refused with.
-            assert_eq!(taken_from(&id).as_deref(), Some(parent.as_str()));
+            assert_eq!(reg().lock().unwrap().taken_over.get(&id), Some(&parent));
 
             reg().lock().unwrap().news.retain(|(c, _)| *c != parent && *c != peer);
             for s in [&id, &parent, &peer] {
                 forget(s);
             }
+        }
+    }
+
+    /// A send whose text went into the queue just before the person took the
+    /// helper over, and gets to its debt only after: the handover took the text
+    /// back out and told its sender, and the person's chat owes it nothing. Its
+    /// debt from before, if any, is gone with the others.
+    #[test]
+    fn a_send_caught_by_a_takeover_owes_nothing_of_the_persons_chat() {
+        use crate::agents::owed::owe_from_at;
+        for (provider, tag) in [(Provider::Claude, "cl"), (Provider::Codex, "cx")] {
+            let (parent, id) = (format!("sc-{tag}-parent"), format!("sc-{tag}-helper"));
+            register(&parent, Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, serde_json::json!({}));
+            helper(&id, &parent, provider);
+            crate::background::idle_for_test(&id, provider, 1, false);
+            let before = handovers_of(&id);
+            crate::background::promoting_for_test(&id, true);
+            let placed = crate::background::send(&id, "one more thing", Some(&parent)).unwrap();
+            assert_eq!(placed, crate::background::Placed::Queued, "held while it opens");
+            // A debt it had registered by then, which the handover clears.
+            owe_from_at(&parent, &id, 1, 0, before);
+            take_over(&id, || Some(Vec::new()));
+            assert!(!owe_from_at(&parent, &id, 2, 0, before), "the send learns it was taken over");
+            assert!(!reg().lock().unwrap().owed.contains_key(&(parent.clone(), id.clone())), "and nothing is owed");
+            // Text sent to the person's chat from now on is owed as any chat's.
+            assert!(owe_from_at(&parent, &id, 2, 0, handovers_of(&id)));
+            reg().lock().unwrap().news.retain(|(c, _)| *c != parent);
+            crate::background::gone_for_test(&id);
+            forget(&id);
+            forget(&parent);
         }
     }
 

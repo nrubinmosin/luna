@@ -92,6 +92,17 @@ in section 6.
   longer send to, read or wait on it as its own, stop or delete it, and is owed
   nothing by it; while it is being opened its parent can neither stop nor
   delete it. With `scope: "all"` it reaches it as any of the person's chats.
+  A delete and an opening exclude each other per helper (`background::claim_delete`,
+  `promoting`), and no turn starts under either, so a delete that checked
+  ownership, idleness and the worktree removes what it checked, and a removal
+  that finds a taken-over chat refuses. A send whose text went in just before a
+  handover registers no debt on the person's chat (`owe_from_at`, the handover
+  count), and a notice prepared on a debt gone since is dropped. Waits re-check
+  their `scope` on every look and before handing anything over; history stops at
+  a link's current owner and at a run the log records as taken over. An opening
+  survives a core restart held (`helpers.json`), the window settles it with
+  retries, and one never settled goes back to the parent after 15 minutes with
+  a notice; until then a pane cannot start a helper's id.
 - `luna_answer` with `allow`, or an answer to a list the CLI holds its own
   screen on, works only on the caller's own helpers, and only at the privilege
   it would itself need to run the tool unasked.
@@ -253,14 +264,14 @@ caller has at most 8 descendants (`agents/spawn/mod.rs:31`).
 
 | Tool | May target | Check | Tested |
 | --- | --- | --- | --- |
-| `luna_kill`, `luna_delete` | own descendants, every one a background helper; never one the person is opening as a chat (`promoting`); a helper the person took over refuses its former parent (`taken_over`) | `authorize` (`agents/registry.rs:399`) | yes |
+| `luna_kill`, `luna_delete` | own descendants, every one a background helper; never one the person is opening as a chat (`promoting`); a helper the person took over refuses its former parent (`taken_over`); a delete holds the helper from its first check to its removal and asks whose it is again under that hold (`background::claim_delete`) | `authorize` (`agents/registry.rs:399`) | yes |
 | `luna_send` | own descendants; with `scope: "all"` any session but itself, the user's chats included, the text opened `[From session <id> via Luna]` (`agents/delivery.rs:286`); `interrupt` only own descendants, both providers, and never a chat's terminal (`agents/delivery.rs:300`); `/`- or `!`-led text only from full access into its own helper, checked again where queued or kept text is typed (`agents/privilege.rs:476`, `agents/privilege.rs:491`, `background/queue.rs:84`) | `in_scope` (`agents/registry.rs:448`), `authorize_send` (`agents/registry.rs:466`), `is_mine`, `command_reach` | yes |
 | `luna_answer` to a question a model asked | own descendants; with `scope: "all"` any session but itself, the user's chats included; an answer typed in as a message (a question with no dialog) opened `[From session <id> via Luna]` (`agents/answer.rs`, `answer_message`) | `in_scope` (`agents/registry.rs:448`), `authorize_send` | yes |
 | `luna_answer` with `allow`, or on a CLI's own list | own descendants; `allow` only where the caller would run the tool unasked and never from read-only or asking modes; CLI lists only from full access (`agents/answer.rs:138`, call sites in `answer`, `agents/answer.rs:221`). A permission in a chat's terminal is never pressed for (`presses_for`) | `answer_reach` | yes |
-| `luna_read`, `luna_wait` | own descendants; with `scope: "all"` any session but itself; a `wait` its former parent has out on a helper the person takes over ends (`wait.rs`, `taken_from`) | `in_scope` (`agents/registry.rs:448`), `authorize_view` (`agents/registry.rs:416`) | yes |
+| `luna_read`, `luna_wait` | own descendants; with `scope: "all"` any session but itself; a `wait` holds to its `scope` on every look and before it hands anything over, so one any ancestor has out on a helper the person takes over ends with nothing of it (`wait.rs`, `in_scope`) | `in_scope` (`agents/registry.rs:448`), `authorize_view` (`agents/registry.rs:416`) | yes |
 | `luna_spawn` | a new background helper in any account not on the denylist `agent_blocked_accounts` (empty by default, `agents/spawn/account.rs:12`), in any folder except Luna's data dir and what holds it (`agents/privilege.rs:316`, `agents/spawn/mod.rs:284`), at no more privilege than the caller (`agents/privilege.rs:238`, `agents/spawn/mod.rs:348`); a Codex one never with an approval that asks a person (`agents/privilege.rs:215`) | `cap`, `reaches_luna`, `canonical_mode`, spawn cap | yes |
 | `luna_power` | the whole PC (shutdown, restart, sleep; or cancel the user's) | tools only (`power/commands.rs:90`) | no authorization test (R4) |
-| `luna_sessions`, `luna_list` | every session's metadata (state, folders, settings, transcript path); another's `ask` and `task`, and others' past spawns with their prompts and last replies (`history`), only with `scope: "all"` (`agents/list.rs`, `mcp.rs` `runs_in_scope`) | `scope_all`, `own_or_self` | yes |
+| `luna_sessions`, `luna_list` | every session's metadata (state, folders, settings, transcript path); another's `ask` and `task`, and others' past spawns with their prompts and last replies (`history`), only with `scope: "all"` (`agents/list.rs`, `mcp.rs` `runs_in_scope`: a run's lineage goes by each link's owner now while it is known, and stops at a run the log records as taken over by the person) | `scope_all`, `own_or_self` | yes |
 | `luna_notify`, `luna_guide` | notify the user, or read the guide | tools only | yes |
 
 ## 6. Limits of the least-privilege layer

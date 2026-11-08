@@ -19,6 +19,9 @@ export interface HelperTranscript {
   running: boolean;
   /** Older messages left out, by the core's first look or by VIEW_KEEP. */
   leftOut: number;
+  /** Some of the conversation was never read: the core reads only so far
+   *  back, and passes over a line too long to show. */
+  passedOver: boolean;
   /** Nothing has come in yet. */
   loading: boolean;
   error: string | null;
@@ -34,6 +37,7 @@ export function useHelperTranscript(id: string, open = true): HelperTranscript {
     messages: [],
     running: false,
     leftOut: 0,
+    passedOver: false,
     loading: true,
     error: null
   });
@@ -54,7 +58,15 @@ export function useHelperTranscript(id: string, open = true): HelperTranscript {
           const all = fresh ? t.messages : [...s.messages, ...t.messages];
           const cut = Math.max(0, all.length - VIEW_KEEP);
           const leftOut = (fresh ? 0 : s.leftOut) + (t.leftOut ?? 0) + cut;
-          return { messages: cut ? all.slice(cut) : all, running: t.running, leftOut, loading: false, error: null };
+          const passedOver = (fresh ? false : s.passedOver) || !!t.passedOver;
+          return {
+            messages: cut ? all.slice(cut) : all,
+            running: t.running,
+            leftOut,
+            passedOver,
+            loading: false,
+            error: null
+          };
         });
         timer = window.setTimeout(() => void look(), t.running ? TAIL_RUNNING_MS : TAIL_IDLE_MS);
       } catch (e) {

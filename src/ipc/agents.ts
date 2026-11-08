@@ -83,6 +83,8 @@ export interface HelperTranscriptDto {
   running: boolean;
   /** Older messages a first look left out. */
   leftOut?: number;
+  /** Part of the conversation was passed over unread: too far back, or a line too long. */
+  passedOver?: boolean;
 }
 
 export const backgroundHelpers = () => call<BackgroundHelperDto[]>('background_helpers', {}, []);
@@ -91,9 +93,10 @@ export const backgroundHelpers = () => call<BackgroundHelperDto[]>('background_h
  *  `backgroundPromoted` says how the row came out. */
 export const backgroundPromote = (id: string) => call<PromotedDto>('background_promote', { id });
 /** The row for a helper being opened is made (`error` null), and it is the person's for good; or it
- *  could not be, and the helper goes on as its parent's. */
+ *  could not be, and the helper goes on as its parent's. Whether it was handed over: false for a row
+ *  made for an opening the core has since given up, the helper its parent's again. */
 export const backgroundPromoted = (id: string, error: string | null) =>
-  call<void>('background_promoted', { id, error });
+  call<boolean>('background_promoted', { id, error });
 /** Stops the turn it is on, or between turns what its turns left running; the conversation stays. */
 export const backgroundKill = (id: string) => call<void>('background_kill', { id });
 /** Deletes it, the worktree it made too unless `dropWorktree` is false. A helper at work is refused

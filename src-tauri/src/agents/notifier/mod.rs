@@ -575,12 +575,13 @@ pub(super) fn notifier() {
     }
 }
 
-/// A debt a notice was put together on has become another since (`Owed::rev`), and
-/// what it says may no longer hold: nothing of it is typed, nothing is settled, and
-/// the next look starts over. A debt taken since is left to `settle_told`.
+/// A debt a notice was put together on has become another since (`Owed::rev`), or
+/// is gone (a wait took the answer, the person took the session over), and what it
+/// says may no longer hold: nothing of it is typed, nothing is settled, and the next
+/// look starts over. A debt taken since is left to `settle_told`.
 fn debts_moved(caller: &str, told: &[(String, Settled, Owed)]) -> bool {
     let r = reg().lock().unwrap_or_else(|e| e.into_inner());
-    told.iter().any(|(id, _, o)| r.owed.get(&(caller.to_string(), id.clone())).is_some_and(|now| now.rev != o.rev))
+    told.iter().any(|(id, _, o)| r.owed.get(&(caller.to_string(), id.clone())).is_none_or(|now| now.rev != o.rev))
 }
 
 /// What the breaker counts, and all it silences: notices a turn's or a job's
