@@ -2271,6 +2271,7 @@ dependencies = [
  "httparse",
  "libc",
  "portable-pty",
+ "ring",
  "serde",
  "serde_json",
  "sha2",

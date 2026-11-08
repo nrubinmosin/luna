@@ -6,6 +6,7 @@ pub mod cli;
 pub mod defaults;
 pub mod launch;
 pub mod limits;
+mod manifest_sig;
 pub mod models;
 pub mod oauth;
 pub mod session;
