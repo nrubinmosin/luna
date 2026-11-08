@@ -618,7 +618,8 @@ mod tests {
     #[test]
     fn a_final_answer_is_marked_as_codex_marks_it() {
         let said = |phase: Option<&str>| {
-            let mut payload = serde_json::json!({ "type": "message", "role": "assistant", "content": [{ "type": "output_text", "text": "Done." }] });
+            let mut payload =
+                serde_json::json!({ "type": "message", "role": "assistant", "content": [{ "type": "output_text", "text": "Done." }] });
             if let Some(p) = phase {
                 payload["phase"] = p.into();
             }

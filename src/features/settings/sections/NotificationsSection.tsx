@@ -12,8 +12,8 @@ export function NotificationsSection() {
         body: (
           <p>
             The system’s own notification sound, at its volume and muted by Do Not Disturb like any other. A click on a
-            notification about a chat — waiting for you, or one its agent raised with <code>luna_notification_send</code> — brings
-            that chat up on the peek sheet.
+            notification about a chat — waiting for you, or one its agent raised with{' '}
+            <code>luna_notification_send</code> — brings that chat up on the peek sheet.
           </p>
         )
       }}

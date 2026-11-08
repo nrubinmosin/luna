@@ -266,7 +266,8 @@ mod tests {
         assert_eq!(handle("plain", r#"{"jsonrpc":"2.0","id":9,"method":"tools/list"}"#).unwrap()["result"]["tools"], json!([]));
         let init = handle("plain", r#"{"jsonrpc":"2.0","id":11,"method":"initialize","params":{}}"#).unwrap();
         assert!(init["result"].get("instructions").is_none(), "no word of tools it does not have");
-        let r = handle("plain", r#"{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"luna_session_list","arguments":{}}}"#).unwrap();
+        let r = handle("plain", r#"{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"luna_session_list","arguments":{}}}"#)
+            .unwrap();
         assert_eq!(r["result"]["isError"], true);
         assert_eq!(handle("me", r#"{"jsonrpc":"2.0","id":3,"method":"ping"}"#).unwrap()["result"], json!({}));
         assert_eq!(handle("me", r#"{"jsonrpc":"2.0","id":4,"method":"nope"}"#).unwrap()["error"]["code"], -32601);
@@ -325,9 +326,11 @@ mod tests {
     #[test]
     fn a_tool_on_a_foreign_session_is_an_error_result() {
         tooled("me");
-        let r =
-            handle("me", r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"luna_session_stop","arguments":{"id":"someone"}}}"#)
-                .unwrap();
+        let r = handle(
+            "me",
+            r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"luna_session_stop","arguments":{"id":"someone"}}}"#,
+        )
+        .unwrap();
         assert_eq!(r["result"]["isError"], true);
         assert!(r["result"]["content"][0]["text"].as_str().unwrap().contains("not one you spawned"));
         // Text may go to any session, but only one Luna runs.
@@ -523,12 +526,16 @@ mod tests {
             let (failed, e) = call(tool, args);
             assert!(failed && e.contains(&format!("`{key}`")) && e.contains("takes"), "{tool}.{key}: {e}");
         }
-        assert!(call("luna_session_send", json!({ "id": "x", "text": "stop", "interrupt": "true" })).1.contains("`interrupt` takes true or false"));
+        assert!(call("luna_session_send", json!({ "id": "x", "text": "stop", "interrupt": "true" }))
+            .1
+            .contains("`interrupt` takes true or false"));
         assert!(call("luna_message_list", json!({ "id": "x", "last": -1 })).1.contains("`last` takes a whole number"));
         assert!(call("luna_session_wait", json!({})).1.contains("id or ids is required"));
         assert!(call("luna_session_wait", json!({ "id": "" })).1.contains("id or ids is required"));
         assert!(call("luna_session_send", json!({ "id": "x" })).1.contains("text is required"));
-        assert!(call("luna_session_spawn", json!({ "prompt": "go", "account": 3 })).1.contains("`account` takes a string or a list of strings"));
+        assert!(call("luna_session_spawn", json!({ "prompt": "go", "account": 3 }))
+            .1
+            .contains("`account` takes a string or a list of strings"));
         assert!(call("luna_power_set", json!({ "action": "explode" })).1.contains("unknown action"));
         // What the schema allows still goes through to the tool.
         let (failed, e) = call("luna_guide_get", json!({ "topic": null }));
@@ -604,7 +611,8 @@ mod tests {
     fn the_guide_is_a_tool_result() {
         tooled("guide-test");
         let call = |args: &str| {
-            let body = format!(r#"{{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{{"name":"luna_guide_get","arguments":{args}}}}}"#);
+            let body =
+                format!(r#"{{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{{"name":"luna_guide_get","arguments":{args}}}}}"#);
             handle("guide-test", &body).unwrap()["result"].clone()
         };
         let r = call(r#"{"topic":"luna_session_spawn"}"#);
@@ -620,7 +628,17 @@ mod tests {
         let list = tools();
         let hint =
             |name: &str, key: &str| list.as_array().unwrap().iter().find(|t| t["name"] == name).unwrap()["annotations"][key].as_bool();
-        for name in ["luna_session_list", "luna_session_get", "luna_message_list", "luna_report_get", "luna_session_wait", "luna_account_list", "luna_account_get", "luna_run_list", "luna_guide_get"] {
+        for name in [
+            "luna_session_list",
+            "luna_session_get",
+            "luna_message_list",
+            "luna_report_get",
+            "luna_session_wait",
+            "luna_account_list",
+            "luna_account_get",
+            "luna_run_list",
+            "luna_guide_get",
+        ] {
             assert_eq!(hint(name, "readOnlyHint"), Some(true), "{name}");
         }
         for name in ["luna_session_stop", "luna_session_delete", "luna_power_set"] {
@@ -679,9 +697,7 @@ mod tests {
 
     #[test]
     fn a_wait_gives_its_report_unless_told_and_its_screen_only_when_told() {
-        let report = || {
-            Some(agents::ReportPart { text: "The report.".into(), rest: 2, guessed: true, file: Some("C:/notes/a.md".into()) })
-        };
+        let report = || Some(agents::ReportPart { text: "The report.".into(), rest: 2, guessed: true, file: Some("C:/notes/a.md".into()) });
         let waited = || json!({ "outcome": "turn_done", "state": "idle", "reply": "The report.\n\n---\n\nall else", "screen": "A\nB" });
         let shaped = |a: Value| {
             let mut v = waited();
@@ -710,10 +726,14 @@ mod tests {
             let body = json!({ "jsonrpc": "2.0", "id": 20, "method": "tools/call", "params": { "name": old, "arguments": {} } });
             let r = handle("rm-me", &body.to_string()).unwrap()["result"].clone();
             let text = r["content"][0]["text"].as_str().unwrap();
-            assert!(r["isError"] == true && text.contains("is gone") && text.contains("luna_session_list, luna_session_get"), "{old}: {text}");
+            assert!(
+                r["isError"] == true && text.contains("is gone") && text.contains("luna_session_list, luna_session_get"),
+                "{old}: {text}"
+            );
         }
         // Accounts are a resource of their own now.
-        let body = json!({ "jsonrpc": "2.0", "id": 21, "method": "tools/call", "params": { "name": "luna_account_list", "arguments": {} } });
+        let body =
+            json!({ "jsonrpc": "2.0", "id": 21, "method": "tools/call", "params": { "name": "luna_account_list", "arguments": {} } });
         let r = handle("rm-me", &body.to_string()).unwrap()["result"].clone();
         assert!(r.get("isError").is_none(), "{r}");
         let body = json!({ "jsonrpc": "2.0", "id": 22, "method": "tools/call",
@@ -724,7 +744,15 @@ mod tests {
     #[test]
     fn a_change_retried_with_its_request_key_is_made_once() {
         tooled("rk-me");
-        agents::register("rk-kid", crate::provider::Provider::Claude, "C:/p", "C:/acc/anthropic/one", Some("rk-me"), false, json!({ "background": true }));
+        agents::register(
+            "rk-kid",
+            crate::provider::Provider::Claude,
+            "C:/p",
+            "C:/acc/anthropic/one",
+            Some("rk-me"),
+            false,
+            json!({ "background": true }),
+        );
         crate::background::take_up_for_test("rk-kid", "C:/p", 1, &[], None);
         crate::background::set_running_for_test("rk-kid");
         let send = |key: &str, text: &str| {
@@ -750,7 +778,7 @@ mod tests {
 
     /// Whether a keyed call of `caller` with `key` is kept.
     fn key_slots_hold(caller: &str, key: &str) -> bool {
-        super::dispatch::key_held(caller, key)
+        dispatch::key_held(caller, key)
     }
 
     #[test]
@@ -773,7 +801,8 @@ mod tests {
     fn a_wait_on_several_takes_its_arguments_apart_from_one() {
         tooled("several-test");
         let wait = |args: Value| {
-            let body = json!({ "jsonrpc": "2.0", "id": 13, "method": "tools/call", "params": { "name": "luna_session_wait", "arguments": args } });
+            let body =
+                json!({ "jsonrpc": "2.0", "id": 13, "method": "tools/call", "params": { "name": "luna_session_wait", "arguments": args } });
             let r = handle("several-test", &body.to_string()).unwrap();
             assert_eq!(r["result"]["isError"], true, "{r}");
             r["result"]["content"][0]["text"].as_str().unwrap().to_string()

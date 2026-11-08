@@ -1162,7 +1162,9 @@ mod tests {
         let line = line.unwrap();
         assert!(matches!(how, Settled::Answered));
         assert!(
-            line.contains("never got started") && line.contains("its prompt was lost") && line.contains("luna_session_send starts it afresh"),
+            line.contains("never got started")
+                && line.contains("its prompt was lost")
+                && line.contains("luna_session_send starts it afresh"),
             "{line}"
         );
         assert!(line.contains("its prompt and 1 queued message are in "), "{line}");

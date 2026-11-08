@@ -291,7 +291,11 @@ pub fn answer(
                 type_in(pty, id, &text, before.map(|t| t.turn), baseline, hold)?;
             }
             Some(a) => press(pty, id, &presses_for(known.provider, a, answers)?)?,
-            None => return Err(format!("session {id} is not on a question Luna can read; luna_message_list with screen: true shows its terminal")),
+            None => {
+                return Err(format!(
+                    "session {id} is not on a question Luna can read; luna_message_list with screen: true shows its terminal"
+                ))
+            }
         }
         reg().lock().unwrap_or_else(|e| e.into_inner()).answered.insert((caller.to_string(), id.to_string()), now_ms());
     }
