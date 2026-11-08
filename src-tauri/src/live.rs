@@ -368,17 +368,32 @@ fn codex_sandboxes_reach_the_core_folder_as_the_threat_model_says() {
         eprintln!("skipped: LUNA_LIVE is not 1");
         return;
     }
+    /// The probe and the Codex home go when the test does, passed or not.
+    struct Gone(PathBuf, PathBuf);
+    impl Drop for Gone {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+            let _ = std::fs::remove_dir_all(&self.1);
+        }
+    }
     let core = crate::ipc::core_dir();
     crate::secret::private_dir(&core).expect("core/");
     let probe = core.join(format!("probe-{}.json", crate::agents::mint()[..8].to_lowercase()));
-    crate::secret::write_private(&probe, b"{\"probe\":\"not a token\"}").expect("the probe file");
     // A Codex home of its own: only Luna's overrides decide the sandbox.
     let home = crate::paths::data_dir().join("live-codex-home");
+    let _gone = Gone(probe.clone(), home.clone());
+    crate::secret::write_private(&probe, b"{\"probe\":\"not a token\"}").expect("the probe file");
     std::fs::create_dir_all(&home).expect("the Codex home");
     let path = probe.to_string_lossy().into_owned();
     let reader: Vec<String> = if cfg!(windows) {
+        // A cmdlet, and "refused" for a denied access only: in the sandbox
+        // Windows PowerShell runs in ConstrainedLanguage, which refuses .NET
+        // method calls whatever the file's access.
         let quoted = path.replace('\'', "''");
-        let script = format!("try {{ 'read ok ' + [IO.File]::ReadAllBytes('{quoted}').Length }} catch {{ 'refused' }}");
+        let script = format!(
+            "try {{ 'read ok ' + (Get-Content -LiteralPath '{quoted}' -Encoding Byte -ReadCount 0 -ErrorAction Stop).Length }} \
+             catch [System.UnauthorizedAccessException] {{ 'refused' }} catch {{ 'failed ' + $_.FullyQualifiedErrorId }}"
+        );
         ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", &script].map(String::from).to_vec()
     } else {
         let script = r#"if n=$(wc -c < "$1" 2>/dev/null); then echo "read ok $n"; else echo refused; fi"#;
@@ -418,8 +433,6 @@ fn codex_sandboxes_reach_the_core_folder_as_the_threat_model_says() {
         let said = run(crate::codex::launch::profile_args("luna-live-probe", false, Some(&dir)), "read-only");
         assert!(!read(&said) && said.contains("elevated"), "Codex runs a deny on Windows now; Luna can give it there: {said}");
     }
-    let _ = std::fs::remove_file(&probe);
-    let _ = std::fs::remove_dir_all(&home);
 }
 
 /// What the suite takes for a test account, checked without one: the guard
