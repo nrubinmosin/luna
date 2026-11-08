@@ -8,8 +8,56 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Changed
+
+- Settings is a wide dialog with its pages listed on the left (General, Chats,
+  Agents & trust, Links, Updates) and only the page scrolling, in place of one
+  narrow column of ten sections. Every setting is a row with its control on
+  the right and one line on what it does; what a change costs (helpers above
+  their chat, a deleted worktree's uncommitted work, accounts moved by hand)
+  stays in view, and the rest of each explanation folds into a "How … works"
+  line. Help text is 12 px at the least and passes WCAG AA in both themes.
+  Lists say when they are empty, link exceptions are added from a menu, and a
+  browser's long command line can be shown in full or copied. The page list
+  and the exception menu work from the keyboard, Tab stays inside the dialog
+  and the focus returns to what opened it, and a draft on one page survives a
+  look at another. See docs/user-guide/settings.md.
+- Confirmation dialogs (deleting a chat, an update, a library change) take
+  the focus when they open, keep Tab inside them, leave the window or dialog
+  behind them unreachable until they close, and then give the focus back to
+  the button that opened them. Enter on a focused Cancel now only cancels.
+
+## [0.10.2] - 2026-11-08
+
+A security release for the agent tools and the app window: an agent reaches
+only its own helpers unless it asks for every session, helpers start without
+their account's connectors, the window's page can call only what it uses, and
+no CLI runs with administrator rights. It also makes Luna's tools cheaper for
+agents to use and fixes several ways a helper's report or a transcript was
+misread.
+
 ### Security
 
+- An agent can interrupt only its own helpers and theirs: `luna_send` with
+  `interrupt: true` reached any session, so one agent could stop another
+  chat's helper mid-turn, or a person's chat, and dismiss the question it was
+  waiting on.
+- Reading, waiting on, sending text to and answering a session that is not
+  the agent's own takes `scope: "all"` in the call, and text so sent, an
+  answer typed in as a message too, arrives opened `[From session <id> via
+  Luna]` rather than as the user's own words.
+- `luna_list` and `luna_sessions` list any session's state but give another
+  session's question, permission request or task, and others' past spawns
+  with their prompts and replies, only with `scope: "all"`.
+- Helpers start with Luna's MCP server alone: no MCP servers or connectors of
+  their account (claude.ai's Gmail, Slack and other tools that send and write
+  in the person's name; Codex's apps and its account's `config.toml`
+  servers), unless spawned with `connectors: true`, and Claude Code helpers
+  with auto-memory off. A Codex helper keeps the servers of the project's
+  `.codex/` and of plugins, which Codex gives no way to turn off for a run.
+- Every `luna_*` tool refuses an argument it does not take, or of the wrong
+  type, naming those it takes, instead of running on a default: `read_only`
+  for `readOnly` spawned a helper that could write.
 - The window's page reaches only what it calls, so a script injected into it
   would get no more: each app command is granted to the main window by name
   and refused to any other window or a remote page, plugins are cut to the
@@ -19,9 +67,10 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   where they come in: an account path must be an account folder Luna lists,
   reached through no link or junction and spelled as on disk, a folder a
   plain absolute path.
-- Turning on Settings → Agents & trust → "Allow helpers more permissions than
-  their parent chat" asks again in a system dialog, which the page's own calls
-  cannot answer, and a yes counts only for the state it was asked about.
+- Turning on Settings → Helpers → "Let helpers run with more privilege than
+  the chat that spawns them" asks again in a system dialog, which the page's
+  own calls cannot answer, and a yes counts only for the state it was asked
+  about.
 - No CLI runs with administrator rights. Luna started as administrator starts
   its core, and so every session and helper, with the desktop's ordinary
   rights and the user's own environment, not the elevated one's; where there
@@ -43,22 +92,6 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Changed
 
-- Settings is a wide dialog with its pages listed on the left (General, Chats,
-  Agents & trust, Links, Updates) and only the page scrolling, in place of one
-  narrow column of ten sections. Every setting is a row with its control on
-  the right and one line on what it does; what a change costs (helpers above
-  their chat, a deleted worktree's uncommitted work, accounts moved by hand)
-  stays in view, and the rest of each explanation folds into a "How … works"
-  line. Help text is 12 px at the least and passes WCAG AA in both themes.
-  Lists say when they are empty, link exceptions are added from a menu, and a
-  browser's long command line can be shown in full or copied. The page list
-  and the exception menu work from the keyboard, Tab stays inside the dialog
-  and the focus returns to what opened it, and a draft on one page survives a
-  look at another. See docs/user-guide/settings.md.
-- Confirmation dialogs (deleting a chat, an update, a library change) take
-  the focus when they open, keep Tab inside them, leave the window or dialog
-  behind them unreachable until they close, and then give the focus back to
-  the button that opened them. Enter on a focused Cancel now only cancels.
 - `luna_list` names each account with its defaults and usage but no longer its
   models, Codex's catalog with every model's levels being most of what a
   listing cost an agent that lists often; `models: true` brings them back.
@@ -75,6 +108,13 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Fixed
 
+- A Codex prompt that opens with a tag of its own, such as `<task>…</task>`,
+  is a prompt again: `luna_read` and answers left out every user message
+  starting with `<`, and with it the start of the turn that answered it. Only
+  the blocks Codex itself puts there (its environment, skills, shell commands,
+  interruptions and the like) are left out.
+- `luna_answer` refuses answers to a question with no dialog that are one too
+  few or too many, rather than send them as if they answered it.
 - A command call whose timeout is past any clock (a Claude Code `Bash`,
   `PowerShell` or `Monitor` call, a Codex call's bound) made the time it is due
   wrap round to one long before the call, so a caller waiting on a quiet turn
@@ -361,7 +401,8 @@ fixes below.
 - First release: Claude Code sessions in panes, accounts with isolated configs,
   usage limits, worktrees, the updater.
 
-[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.10.1...HEAD
+[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.10.2...HEAD
+[0.10.2]: https://github.com/nrubinmosin/luna/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/nrubinmosin/luna/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/nrubinmosin/luna/compare/v0.9.10...v0.10.0
 [0.9.0]: https://github.com/nrubinmosin/luna/compare/v0.8.0...v0.9.0

@@ -10,7 +10,7 @@ use crate::agents::owed::{owe_from, seen, Owed};
 use crate::agents::persist::{core_up_ms, returning};
 use crate::agents::privilege::{answerer, command_reach_now, plain_text};
 use crate::agents::read::transcript_end;
-use crate::agents::registry::{authorize_send, chat_name, label, reg, Registry, DEV_CALLER};
+use crate::agents::registry::{authorize_send, chat_name, is_mine, label, reg, Registry, DEV_CALLER};
 use crate::agents::resume::{call_off_resume, mark_going_in, reconcile_held, resume_chats, resume_pending, unmark_going_in};
 use crate::provider::Provider;
 use crate::throttle::now_ms;
@@ -238,6 +238,17 @@ pub(super) fn spill(text: &str) -> String {
     )
 }
 
+/// `spill` of text the caller sends `id`, already `as_sent`: past LONG_TEXT the
+/// line pointing at the file is what the session reads first, and it says
+/// whose the message is as the text would have (`as_sent`).
+pub(super) fn spill_sent(caller: &str, id: &str, sent: &str) -> String {
+    let typed = spill(sent);
+    if typed == sent {
+        return typed;
+    }
+    as_sent(caller, id, &typed)
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Sent {
@@ -310,12 +321,38 @@ pub(super) fn type_in(
     Ok(await_start(pty, id, text, baseline, SEND_TIMEOUT.saturating_sub(ENTER_RETRY)))
 }
 
+/// What text sent to a session that is not the caller's opens with: whose words
+/// they are, which that session would otherwise take for its user's.
+pub(super) fn from_line(caller: &str) -> String {
+    format!("[From session {caller} via Luna]")
+}
+
+/// Text as it goes into `id`: as written, into the caller's own helper, which
+/// knows its parent's voice; into any other session after `from_line`, on the
+/// same line, so the transcript keeps whose it was too.
+pub(super) fn as_sent(caller: &str, id: &str, text: &str) -> String {
+    if is_mine(caller, id) {
+        text.to_string()
+    } else {
+        format!("{} {text}", from_line(caller))
+    }
+}
+
 /// Types text into the session, presses Enter after it, and reports whether
 /// a turn began. With `interrupt` the turn in flight, and any prompt it is
 /// stopped on, is cut short first (Esc; a background helper's process
-/// stopped), and the text is the next turn rather than one queued after it.
+/// stopped), and the text is the next turn rather than one queued after it:
+/// only in the caller's own helpers, as stopping a turn ends work and dismisses
+/// a question that is someone else's to answer.
 pub fn send(caller: &str, id: &str, text: &str, interrupt: bool) -> Result<Sent, String> {
     let known = authorize_send(caller, id)?;
+    let mine = is_mine(caller, id);
+    if interrupt && !mine {
+        return Err(format!(
+            "interrupt only stops sessions you spawned, directly or through a helper; {id} is not one. Send without \
+             interrupt: the text is queued after its turn"
+        ));
+    }
     let pty = crate::pty::manager();
     if !live(pty, id) {
         return Err(format!("session {id} is not running"));
@@ -326,13 +363,13 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool) -> Result<Sent,
     // A background helper has no terminal: its queue takes turns by itself.
     plain_text(text)?;
     command_reach_now(caller, id, text)?;
+    // Checked as written: a `/` or `!` the line would hide is refused all the same.
+    let text = &as_sent(caller, id, text);
     let terminal = if crate::background::has(id) { None } else { TypingInto::wait_for(id, TYPING_WAIT) };
     let (state_before, ask) = state_of(id);
     if let Some(a) = ask.as_ref().filter(|a| a.blocking && !interrupt) {
-        return Err(format!(
-            "session {id} is on a {}: typed text would land in its dialog. Answer it with luna_answer, or send with interrupt: true to dismiss it",
-            a.kind
-        ));
+        let way_out = if mine { ", or send with interrupt: true to dismiss it" } else { "; its own chat or the user may" };
+        return Err(format!("session {id} is on a {}: typed text would land in its dialog. Answer it with luna_answer{way_out}", a.kind));
     }
     // Esc is to dismiss a dialog before the text goes in, but text that comes
     // while it is still up lands in it: past a permission or a CLI's own list,
@@ -404,7 +441,8 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool) -> Result<Sent,
     // go out with a draft they left: it waits for them (`deliver_held`),
     // unless the draft can be put aside (`type_text`).
     let typing = pty.typed_ago_ms(id).is_some_and(|ms| ms < SEND_TYPING_MS);
-    let typed = if typing || terminal.is_none() { None } else { put_in(caller, id, &spill(text), before, baseline, interrupted)? };
+    let typed =
+        if typing || terminal.is_none() { None } else { put_in(caller, id, &spill_sent(caller, id, text), before, baseline, interrupted)? };
     let Some(sent) = typed else {
         hold(caller, id, text);
         return Ok(Sent {
@@ -666,7 +704,7 @@ pub(super) fn deliver_held(pty: &crate::pty::PtyManager) {
         let baseline = before.map(|t| t.turns_ended).unwrap_or(0);
         let typing = if blocked { None } else { TypingInto::claim(&id) };
         let typed = if typing.is_some() {
-            let going = spill(&text);
+            let going = spill_sent(&caller, &id, &text);
             mark_going_in(&id, &going, transcript_end(&id), Some((caller.as_str(), since)));
             put_in(&caller, &id, &going, before, baseline, false)
         } else {
@@ -762,6 +800,93 @@ mod tests {
         assert!(TypingInto::wait_for("tw-other", Duration::from_millis(1)).is_some(), "another terminal is another matter");
         drop(got);
         assert!(!TypingInto::under_way("tw-chat"));
+    }
+
+    #[test]
+    fn an_interrupt_stops_only_the_callers_own() {
+        let (claude, codex, none) = ("C:\\acc\\anthropic\\one", "C:\\acc\\openai\\two", serde_json::json!({}));
+        let background = serde_json::json!({ "background": true });
+        register("ir-me", Provider::Claude, "C:\\p", claude, None, true, none.clone());
+        // A person's chats, one of each provider, and their helpers: one
+        // working in the background and stopped on a question of its own.
+        register("ir-chat", Provider::Claude, "C:\\p", claude, None, true, none.clone());
+        register("ir-codex-chat", Provider::Codex, "C:\\p", codex, None, false, none.clone());
+        register("ir-theirs", Provider::Claude, "C:\\p", claude, Some("ir-chat"), false, background.clone());
+        crate::background::take_up_for_test("ir-theirs", "C:\\p", 1, &[], None);
+        crate::background::set_running_for_test("ir-theirs");
+        crate::background::hold_for_test("ir-theirs");
+        register("ir-codex-theirs", Provider::Codex, "C:\\p", codex, Some("ir-codex-chat"), false, background);
+        for id in ["ir-chat", "ir-codex-chat", "ir-theirs", "ir-codex-theirs"] {
+            let e = send("ir-me", id, "drop that and do this", true).err().unwrap_or_else(|| panic!("{id} was interrupted"));
+            assert!(e.contains("interrupt only stops sessions you spawned"), "{id}: {e}");
+        }
+        // Its turn goes on, and its question still waits for whoever owns it.
+        assert!(crate::background::ask("ir-theirs").is_some(), "its question was dismissed");
+        // Its own helper, either provider, is not refused for being someone else's
+        // (here they are simply not running).
+        register("ir-mine", Provider::Claude, "C:\\p", claude, Some("ir-me"), false, none.clone());
+        register("ir-mine-codex", Provider::Codex, "C:\\p", codex, Some("ir-mine"), false, none);
+        for id in ["ir-mine", "ir-mine-codex"] {
+            let e = send("ir-me", id, "drop that and do this", true).err().unwrap();
+            assert!(e.contains("is not running"), "{id}: {e}");
+        }
+        crate::background::remove("ir-theirs");
+        for id in ["ir-mine-codex", "ir-mine", "ir-theirs", "ir-codex-theirs", "ir-chat", "ir-codex-chat", "ir-me"] {
+            forget(id);
+        }
+    }
+
+    #[test]
+    fn text_to_a_session_not_the_callers_says_whose_it_is() {
+        let (claude, none) = ("C:\\acc\\anthropic\\one", serde_json::json!({}));
+        let background = serde_json::json!({ "background": true });
+        register("ff-me", Provider::Claude, "C:\\p", claude, None, true, none.clone());
+        register("ff-chat", Provider::Claude, "C:\\p", claude, None, true, none);
+        register("ff-theirs", Provider::Claude, "C:\\p", claude, Some("ff-chat"), false, background.clone());
+        register("ff-mine", Provider::Claude, "C:\\p", claude, Some("ff-me"), false, background);
+        for id in ["ff-theirs", "ff-mine"] {
+            crate::background::take_up_for_test(id, "C:\\p", 1, &[], None);
+            crate::background::set_running_for_test(id);
+        }
+        assert!(send("ff-me", "ff-theirs", "the build is green", false).unwrap().queued);
+        assert!(send("ff-me", "ff-mine", "the build is green", false).unwrap().queued);
+        assert_eq!(crate::background::queued_for_test("ff-theirs"), ["[From session ff-me via Luna] the build is green"]);
+        assert_eq!(crate::background::queued_for_test("ff-mine"), ["the build is green"], "its own helper knows its parent");
+        // A command the line would hide is refused as written.
+        assert!(send("ff-me", "ff-theirs", "/permissions", false).is_err());
+        for id in ["ff-theirs", "ff-mine"] {
+            crate::background::remove(id);
+        }
+        for id in ["ff-theirs", "ff-mine", "ff-chat", "ff-me"] {
+            forget(id);
+        }
+    }
+
+    #[test]
+    fn a_long_message_points_at_its_file_in_the_senders_name() {
+        let (account, none) = ("C:\\acc\\anthropic\\one", serde_json::json!({}));
+        register("sp-me", Provider::Claude, "C:\\p", account, None, true, none.clone());
+        register("sp-kid", Provider::Claude, "C:\\p", account, Some("sp-me"), false, none.clone());
+        register("sp-chat", Provider::Claude, "C:\\p", account, None, false, none);
+        let long = "word ".repeat(LONG_TEXT / 4);
+        let file_of = |line: &str| {
+            let after = line.split("put it in a file: ").nth(1).unwrap();
+            after.split(". Read the whole file").next().unwrap().to_string()
+        };
+        // To a session not the caller's: the pointer opens as the message would.
+        let theirs = spill_sent("sp-me", "sp-chat", &as_sent("sp-me", "sp-chat", &long));
+        assert!(theirs.starts_with("[From session sp-me via Luna] This message is"), "{theirs}");
+        let file = file_of(&theirs);
+        assert!(std::fs::read_to_string(&file).unwrap().starts_with("[From session sp-me via Luna] word"));
+        let _ = std::fs::remove_file(&file);
+        // To its own helper, as before; a short one as it is.
+        let mine = spill_sent("sp-me", "sp-kid", &as_sent("sp-me", "sp-kid", &long));
+        assert!(mine.starts_with("This message is"), "{mine}");
+        let _ = std::fs::remove_file(file_of(&mine));
+        assert_eq!(spill_sent("sp-me", "sp-chat", "[From session sp-me via Luna] hi"), "[From session sp-me via Luna] hi");
+        for id in ["sp-kid", "sp-chat", "sp-me"] {
+            forget(id);
+        }
     }
 
     #[test]
