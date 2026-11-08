@@ -36,12 +36,29 @@ const TAG_SIGNATURE: u8 = 2;
 const SIG_BINARY_DOCUMENT: u8 = 0x00;
 const PUBKEY_RSA: u8 = 1;
 const HASH_SHA512: u8 = 10;
-/// Subpackets a signature may mark critical and still be understood here:
-/// creation time, issuer key ID, issuer fingerprint.
-const KNOWN_CRITICAL: [u8; 3] = [2, 16, 33];
+/// When the pinned key was made (its key packet's creation time): no
+/// signature of it is older.
+const KEY_CREATED: u32 = 1_774_907_248;
 
-/// Whether `sig` is the pinned key's signature over exactly `manifest`.
+const SUB_CREATED: u8 = 2;
+const SUB_SIG_EXPIRES: u8 = 3;
+const SUB_KEY_EXPIRES: u8 = 9;
+const SUB_ISSUER: u8 = 16;
+const SUB_ISSUER_FPR: u8 = 33;
+/// Subpackets a signature may mark critical and still be understood here.
+const KNOWN_CRITICAL: [u8; 5] = [SUB_CREATED, SUB_SIG_EXPIRES, SUB_KEY_EXPIRES, SUB_ISSUER, SUB_ISSUER_FPR];
+/// How far ahead of this machine's clock a signature may say it was made.
+const CLOCK_SKEW: u64 = 24 * 3600;
+
+/// Whether `sig` is the pinned key's signature over exactly `manifest`, and
+/// in force now.
 pub fn verify(manifest: &[u8], sig: &[u8]) -> Result<(), String> {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    verify_at(manifest, sig, now)
+}
+
+/// `verify` with the clock given, in seconds since the epoch.
+fn verify_at(manifest: &[u8], sig: &[u8], now: u64) -> Result<(), String> {
     let packet = dearmor(sig)?;
     let body = packet_body(&packet, TAG_SIGNATURE)?;
     let bad = |what: &str| format!("manifest signature: {what}");
@@ -50,9 +67,14 @@ pub fn verify(manifest: &[u8], sig: &[u8]) -> Result<(), String> {
         return Err(bad(&format!("not a v4 RSA/SHA-512 document signature ({version}, {kind}, {key_algo}, {hash_algo})")));
     }
     let hashed_end = 6 + u16_at(body, 4).ok_or_else(|| bad("too short"))? as usize;
-    check_subpackets(body.get(6..hashed_end).ok_or_else(|| bad("hashed subpackets cut short"))?).map_err(|e| bad(&e))?;
+    let hashed = body.get(6..hashed_end).ok_or_else(|| bad("hashed subpackets cut short"))?;
+    in_force(hashed, now).map_err(|e| bad(&e))?;
+    // The unhashed subpackets are outside what the key signs, so anyone may
+    // write them: skipped whole, nothing in them read.
     let unhashed_end = hashed_end + 2 + u16_at(body, hashed_end).ok_or_else(|| bad("too short"))? as usize;
-    // Two bytes of the digest, for a quick reject; the RSA check covers them.
+    // Then the digest's first two bytes: also unsigned, a hint for a quick
+    // reject that anyone may set. Skipped too; the RSA check below is the
+    // verdict.
     let mpi_at = unhashed_end + 2;
     let bits = u16_at(body, mpi_at).ok_or_else(|| bad("no signature value"))? as usize;
     let value = body.get(mpi_at + 2..).filter(|v| v.len() == bits.div_ceil(8)).ok_or_else(|| bad("signature value cut short"))?;
@@ -152,9 +174,14 @@ fn packet_body(data: &[u8], tag: u8) -> Result<&[u8], String> {
     }
 }
 
-/// Refuses a critical subpacket this check does not understand: a signature
-/// that says "do not accept me unless you know this" is not accepted blind.
-fn check_subpackets(mut area: &[u8]) -> Result<(), String> {
+/// Whether the signature's hashed subpackets let it stand at `now`: it says
+/// when it was made (as RFC 9580 requires), not before the key and not ahead
+/// of this clock past `CLOCK_SKEW`; neither it nor the key has expired by
+/// its own say; and no critical subpacket is one this check does not
+/// understand (a signature that says "do not accept me unless you know this"
+/// is not accepted blind).
+fn in_force(mut area: &[u8], now: u64) -> Result<(), String> {
+    let (mut created, mut sig_expires, mut key_expires) = (None, None, None);
     while !area.is_empty() {
         let (len, header) = match area[0] {
             o if o < 192 => (o as usize, 1),
@@ -163,11 +190,34 @@ fn check_subpackets(mut area: &[u8]) -> Result<(), String> {
             _ => return Err("subpacket length cut short".into()),
         };
         let packet = area.get(header..header + len).filter(|p| !p.is_empty()).ok_or("subpacket cut short")?;
-        let (critical, kind) = (packet[0] & 0x80 != 0, packet[0] & 0x7f);
-        if critical && !KNOWN_CRITICAL.contains(&kind) {
-            return Err(format!("critical subpacket {kind} not understood"));
+        let (critical, kind, data) = (packet[0] & 0x80 != 0, packet[0] & 0x7f, &packet[1..]);
+        let time = || <[u8; 4]>::try_from(data).map(u32::from_be_bytes).map_err(|_| format!("subpacket {kind} is not a time"));
+        match kind {
+            SUB_CREATED => created = Some(time()?),
+            SUB_SIG_EXPIRES => sig_expires = Some(time()?),
+            SUB_KEY_EXPIRES => key_expires = Some(time()?),
+            _ if critical && !KNOWN_CRITICAL.contains(&kind) => return Err(format!("critical subpacket {kind} not understood")),
+            _ => {}
         }
         area = &area[header + len..];
+    }
+    let created = created.ok_or("no creation time in the signed part")?;
+    if created < KEY_CREATED {
+        return Err("made before the release key was".into());
+    }
+    if u64::from(created) > now + CLOCK_SKEW {
+        return Err("made in the future by this machine's clock".into());
+    }
+    // An expiration of 0 means none, both for the signature and for the key.
+    if let Some(after) = sig_expires.filter(|&s| s != 0) {
+        if u64::from(created) + u64::from(after) <= now {
+            return Err("expired".into());
+        }
+    }
+    if let Some(after) = key_expires.filter(|&s| s != 0) {
+        if u64::from(KEY_CREATED) + u64::from(after) <= now {
+            return Err("the release key has expired by the signature's own say".into());
+        }
     }
     Ok(())
 }
@@ -178,12 +228,43 @@ fn unhex(s: &str) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::{dearmor, unhex, verify, KEY_E, KEY_N};
+    use super::*;
 
     // A real release's pair, as downloads.claude.ai served it, the signature
-    // armored (.gitattributes keeps their bytes).
+    // armored (.gitattributes keeps their bytes), made at SIGNED_AT.
     const MANIFEST: &[u8] = include_bytes!("testdata/manifest-2.1.319.json");
     const SIG: &[u8] = include_bytes!("testdata/manifest-2.1.319.json.sig");
+    const SIGNED_AT: u64 = 1_793_908_560;
+
+    fn sub(kind: u8, data: &[u8]) -> Vec<u8> {
+        let mut out = vec![(data.len() + 1) as u8, kind];
+        out.extend_from_slice(data);
+        out
+    }
+
+    #[test]
+    fn a_released_signature_stands_from_when_it_was_made() {
+        verify_at(MANIFEST, SIG, SIGNED_AT + 1).unwrap();
+        assert!(verify_at(MANIFEST, SIG, SIGNED_AT - 2 * CLOCK_SKEW).unwrap_err().contains("future"));
+    }
+
+    #[test]
+    fn hashed_times_and_critical_subpackets_are_held_to() {
+        let now = u64::from(KEY_CREATED) + 1000;
+        let made = sub(SUB_CREATED, &(KEY_CREATED + 10).to_be_bytes());
+        let with = |extra: Vec<u8>| [made.clone(), extra].concat();
+        in_force(&made, now).unwrap();
+        assert!(in_force(&[], now).unwrap_err().contains("no creation time"));
+        assert!(in_force(&sub(SUB_CREATED, &(KEY_CREATED - 1).to_be_bytes()), now).unwrap_err().contains("before the release key"));
+        assert!(in_force(&sub(SUB_CREATED, &[1, 2]), now).unwrap_err().contains("not a time"));
+        assert_eq!(in_force(&with(sub(SUB_SIG_EXPIRES, &5u32.to_be_bytes())), now).unwrap_err(), "expired");
+        in_force(&with(sub(SUB_SIG_EXPIRES, &0u32.to_be_bytes())), now).unwrap();
+        in_force(&with(sub(SUB_SIG_EXPIRES, &5000u32.to_be_bytes())), now).unwrap();
+        assert!(in_force(&with(sub(SUB_KEY_EXPIRES, &100u32.to_be_bytes())), now).unwrap_err().contains("key has expired"));
+        in_force(&with(sub(0x80 | SUB_KEY_EXPIRES, &100_000u32.to_be_bytes())), now).unwrap();
+        assert!(in_force(&with(sub(0x80 | 50, b"x")), now).unwrap_err().contains("critical subpacket 50"));
+        in_force(&with(sub(50, b"x")), now).unwrap();
+    }
 
     #[test]
     fn a_released_manifest_verifies_armored_or_not() {
@@ -226,7 +307,7 @@ mod tests {
             out
         }
         let mut body = vec![4u8];
-        body.extend_from_slice(&1_774_907_248u32.to_be_bytes());
+        body.extend_from_slice(&KEY_CREATED.to_be_bytes());
         body.push(1);
         body.extend(mpi(&unhex(KEY_N)));
         body.extend(mpi(&KEY_E));
