@@ -89,6 +89,10 @@ fn from_other_accounts(account_path: &str) -> Vec<CodexModel> {
 
 /// `codex debug models`, bounded: a hung network must not hold the dialog.
 fn from_cli(account_path: &str, bundled: bool) -> Vec<CodexModel> {
+    // The window runs this too, and a window run as administrator runs no CLI.
+    if crate::elevation::guard().is_err() {
+        return Vec::new();
+    }
     let mut cmd = Command::new(crate::cli::binary(Provider::Codex));
     cmd.args(["debug", "models"]);
     if bundled {

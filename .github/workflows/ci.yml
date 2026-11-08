@@ -80,6 +80,9 @@ jobs:
 
   # Clippy over the Windows-only code, and the unit tests built as Windows
   # executables; cargo's JSON names the exact files (scripts/windows-tests.ps1).
+  # Then the third-party notices the installer and the release carry, made as
+  # the release makes them: on a Linux host, as a user that is not root, which
+  # reads what root's containers hand back, as Docker on Windows never shows.
   windows-build:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -89,6 +92,7 @@ jobs:
           persist-credentials: false
       - run: ./scripts/gate.ps1 -Group windows
       - run: ./scripts/windows-tests.ps1 -Build
+      - run: ./scripts/third-party-notices.ps1 -Out "$env:RUNNER_TEMP/THIRD-PARTY-NOTICES.txt"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-tests

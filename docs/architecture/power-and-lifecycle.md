@@ -25,6 +25,7 @@ everything is done, and how its own processes start, update and end.
 | `asking.rs` | a turn that ended on the waiting marker |
 | `power/` | `mod.rs` state; `rule.rs` each tick; `machine.rs` firing and OS calls; `admission.rs` what a draining rule lets in; `commands.rs` incl. `luna_power` |
 | `coreproc.rs`, `corelink.rs`, `ipc.rs` | the core's life, the window's link, the frame protocol |
+| `elevation.rs` | no CLI as administrator: the window's de-elevated core start, the refusal everywhere a CLI starts |
 | `lifecycle.rs` | exit reasons, the `--watch-exit` watcher, `luna.run`, Restart window |
 | `log.rs` | `luna.log` |
 | `watchdog.rs` | rebuilds a window whose WebView died |
@@ -182,6 +183,42 @@ another program's and is left alone.
   holds the connection (losing it means the core died: banner, Restart), skips a
   `core.json` whose pid is dead, runs restarts one at a time. A core of another
   build with no sessions is replaced at once; with sessions only on a button.
+- **Never elevated** (`elevation.rs`). No CLI runs with administrator rights.
+  A window that finds its own token elevated (or above medium integrity) starts
+  the core with the desktop shell's token: `GetShellWindow`, its process's
+  token checked to be this user's and not elevated, duplicated as a primary
+  token and used with `CreateProcessWithTokenW` (the SeImpersonatePrivilege an
+  elevated admin holds, and the Secondary Logon service), suspended until the
+  new process's own token is seen to be ordinary. Its environment is the
+  user's own from their profile (`CreateEnvironmentBlock` with that token, not
+  the window's, whose PATH or TEMP an elevated start may point at an
+  administrator's places), with the window's `LUNA_*` variables alone on top
+  (a test build's dev caller); the working folder is the data dir. It is
+  asked out of the window's job (`CREATE_BREAKAWAY_FROM_JOB`, retried
+  without where a job forbids it); whether it landed in the window's job is
+  checked while it is suspended and logged, not assumed: Secondary Logon
+  creates it, and that path has not been run elevated here. No shell, a shell of another
+  user (over-the-shoulder credentials) or an elevated one (UAC off, the
+  built-in Administrator) and no core is started: link state `elevated`, the
+  banner without a restart button. The core reads its own token too: elevated,
+  it starts nothing of its own (no hub, no restored helpers), answers `info`
+  and `shutdown` only, and says why in `Welcome.refused`; `pty::spawn`, a
+  helper's turn and `codex debug models` (which the window runs too) refuse
+  in an elevated process whatever asked; so do the unit and live tests, which
+  read the OS's answer too (a test may add a refusal, never lift one; only a
+  launch a test captures, never run, goes past). A running core whose token
+  reads elevated or cannot be read at all (`ERROR_ACCESS_DENIED`: above this
+  window's integrity; off Windows its effective uid, from `/proc/<pid>/status`
+  or `ps`) is never attached (`verdict`): replaced with no session, else the
+  banner asks for a restart. The peer check (`peer.rs`) turns a client of
+  lower integrity away, which would leave an ordinary window no way to stop
+  an elevated core; so a core that refuses work lets a plain one (not
+  restricted, not an AppContainer) in to stop it and nothing else
+  (`Verdict::StopOnly`): only `shutdown` is answered on that connection, and
+  it is sent no events. One that can still be neither reached nor stopped (an
+  older build's, another user's) leaves, with no session, ten minutes after
+  its last window; the banner says so. Off Windows, euid 0 is refused the
+  same way, with no de-elevation.
 - **Restart window** (tray) starts a new window as `--after <pid>`, the core left
   running. `watchdog.rs` rebuilds a window whose WebView died.
 - **Quit** asks every session to quit as a delete would, stops helper turns, then
@@ -222,6 +259,8 @@ text), notices, the awake hold. Sessions are named by id and chat name
 | Core dies | chats' CLIs end with their terminals; helpers' jobs end with the core (Job Object or keeper) |
 | Keeper gone with its core | the next core ends tied jobs from `tied-jobs/` (`end_last_ties`) |
 | WebView2 dies | `watchdog.rs` rebuilds the window; sessions untouched |
+| Luna started as administrator, and the shell's token cannot be had (no shell, another user's, elevated) or `CreateProcessWithTokenW` fails (Secondary Logon disabled) | no core started; the banner says why; nothing runs elevated |
+| An elevated core runs that this window can neither reach nor stop | the banner says so; it has no session and leaves ten minutes after its last window, or an elevated `luna --stop-core` or a sign-out ends it |
 | The OS refuses the shutdown or restart | nothing closed; the Win32 error logged and shown; a restart's RunOnce value removed |
 | The shutdown is taken back after the sessions closed | the System log's User32 1074 then 1075 after the mark, read 60 s past the grace; RunOnce value removed, helpers' jobs tied again and the stopped ones resumed, every chat started over from its transcript |
 | The shutdown has neither begun nor been recorded as canceled 60 s past the grace | nothing undone: RunOnce kept, chats closed; a notification says how to bring them back (restart the core, or Luna) |

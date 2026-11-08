@@ -16,7 +16,6 @@
 //! feeds it the facts a connection would carry; the facts themselves
 //! (`peer_facts`) are Windows' to read.
 
-#[cfg(windows)]
 use std::net::TcpStream;
 
 /// What the peer check reads of the process at the client end of a loopback
@@ -38,6 +37,11 @@ pub struct PeerFacts {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Verdict {
     Allow,
+    /// Let in to stop the core and nothing else: a plain process below the
+    /// integrity of a core run as administrator, which runs no session and
+    /// so has nothing else to give (elevation.rs). The window it started
+    /// from, not elevated, has no other way to stop it.
+    StopOnly,
     /// Refused, with a reason safe to log (no token, no secret).
     Refuse(&'static str),
 }
@@ -46,33 +50,44 @@ pub enum Verdict {
 /// token is restricted or an AppContainer, or whose integrity is below the
 /// core's, is refused; anyone else at the core's integrity or above is let in
 /// to try the hello. `core_integrity` is the core's own mandatory-label RID.
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn verdict(peer: Option<&PeerFacts>, core_integrity: u32) -> Verdict {
+    verdict_for(peer, core_integrity, false)
+}
+
+/// `verdict`, for a core that refuses all work when `core_refuses_work`: then
+/// a plain peer of lower integrity may stop it (`StopOnly`). A sandboxed,
+/// contained or unknown peer is refused all the same.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn verdict_for(peer: Option<&PeerFacts>, core_integrity: u32, core_refuses_work: bool) -> Verdict {
     match peer {
         None => Verdict::Refuse("the owning process could not be found"),
         Some(p) if p.restricted => Verdict::Refuse("a restricted token (a CLI sandbox)"),
         Some(p) if p.app_container => Verdict::Refuse("an app container"),
+        Some(p) if p.integrity < core_integrity && core_refuses_work => Verdict::StopOnly,
         Some(p) if p.integrity < core_integrity => Verdict::Refuse("a lower integrity level"),
         Some(_) => Verdict::Allow,
     }
 }
 
-/// The reason to refuse `stream`'s client, or None to let it through. On
-/// Windows it reads the owning process and decides; elsewhere, where Luna
-/// never confines a CLI in an OS sandbox, every loopback peer is let in to the
-/// token check that follows. The returned string names the process, never the
-/// token, for the log.
+/// How far `stream`'s client is let in: `Ok(false)` all the way to the token
+/// check, `Ok(true)` to stop the core only, or why it is refused. On Windows
+/// it reads the owning process and decides; elsewhere, where Luna never
+/// confines a CLI in an OS sandbox, every loopback peer is let in to the
+/// token check that follows. The reason names the process, never the token,
+/// for the log.
 #[cfg(windows)]
-pub fn refuse_reason(stream: &TcpStream) -> Option<String> {
+pub fn admission(stream: &TcpStream, core_refuses_work: bool) -> Result<bool, String> {
     // Without the core's own integrity there is no threshold to judge a peer
     // against, so no connection is let in until it can be read (fail closed).
     let Some(core) = win::core_integrity() else {
-        return Some("the core's own integrity could not be read".to_string());
+        return Err("the core's own integrity could not be read".to_string());
     };
     let facts = win::peer_facts(stream);
-    match verdict(facts.as_ref(), core) {
-        Verdict::Allow => None,
-        Verdict::Refuse(why) => Some(match &facts {
+    match verdict_for(facts.as_ref(), core, core_refuses_work) {
+        Verdict::Allow => Ok(false),
+        Verdict::StopOnly => Ok(true),
+        Verdict::Refuse(why) => Err(match &facts {
             Some(f) => format!("pid {} ({}): {why}", f.pid, f.image),
             None => why.to_string(),
         }),
@@ -82,8 +97,15 @@ pub fn refuse_reason(stream: &TcpStream) -> Option<String> {
 /// Off Windows there is no OS sandbox under Luna to escape: the token check is
 /// the gate.
 #[cfg(not(windows))]
-pub fn refuse_reason(_stream: &std::net::TcpStream) -> Option<String> {
-    None
+pub fn admission(_stream: &TcpStream, _core_refuses_work: bool) -> Result<bool, String> {
+    Ok(false)
+}
+
+/// The reason to refuse `stream`'s client from a core that works, or None to
+/// let it through (`admission`).
+#[cfg_attr(not(all(test, windows)), allow(dead_code))]
+pub fn refuse_reason(stream: &TcpStream) -> Option<String> {
+    admission(stream, false).err()
 }
 
 #[cfg(windows)]
@@ -334,5 +356,25 @@ mod tests {
         // A restricted token of the core's integrity is still refused: the
         // sandbox keeps the integrity but restricts the token.
         assert!(matches!(verdict(Some(&restricted), MEDIUM), Verdict::Refuse(_)));
+    }
+
+    #[test]
+    fn a_core_run_as_administrator_may_be_stopped_by_an_ordinary_window_and_no_sandbox() {
+        const HIGH: u32 = 0x3000;
+        // The ordinary window below an elevated core that refuses all work:
+        // let in to stop it, nothing more.
+        assert_eq!(verdict_for(Some(&plain()), HIGH, true), Verdict::StopOnly);
+        // Not by a core that works: there it is refused as ever.
+        assert!(matches!(verdict_for(Some(&plain()), HIGH, false), Verdict::Refuse(_)));
+        // A sandboxed, contained or unknown peer is refused even by a core that
+        // refuses work, at any integrity.
+        for p in [PeerFacts { restricted: true, ..plain() }, PeerFacts { app_container: true, ..plain() }] {
+            assert!(matches!(verdict_for(Some(&p), HIGH, true), Verdict::Refuse(_)), "{p:?}");
+            let low = PeerFacts { integrity: LOW, ..p };
+            assert!(matches!(verdict_for(Some(&low), HIGH, true), Verdict::Refuse(_)), "{low:?}");
+        }
+        assert!(matches!(verdict_for(None, HIGH, true), Verdict::Refuse(_)));
+        // One of the core's own integrity has the full way in.
+        assert_eq!(verdict_for(Some(&PeerFacts { integrity: HIGH, ..plain() }), HIGH, true), Verdict::Allow);
     }
 }
