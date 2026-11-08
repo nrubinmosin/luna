@@ -6,6 +6,7 @@
 # the checkout mounted read-only, so the same tree gives the same file:
 #
 #   ./scripts/third-party-notices.ps1 -Out <file>
+#   ... -Source <tree>      of another tree than this checkout (build-windows.ps1 -Source)
 #
 #   - the Rust standard library, whose license texts come with the toolchain;
 #   - the crates the Windows build links (cargo metadata for its target, normal
@@ -14,17 +15,21 @@
 #
 # A component without a license text of its own takes the one kept for it in
 # third-party-licenses/; one with neither fails the script (notices-lib.ps1).
-param([Parameter(Mandatory)][string]$Out)
+param(
+    [Parameter(Mandatory)][string]$Out,
+    [string]$Source
+)
 . "$PSScriptRoot/lib.ps1"
 . "$PSScriptRoot/release-lib.ps1"
 . "$PSScriptRoot/notices-lib.ps1"
 
 $version = Get-ReleaseVersion
 $Out = [IO.Path]::GetFullPath($Out, (Get-Location).Path)
+$Source = if ($Source) { [IO.Path]::GetFullPath($Source, (Get-Location).Path) } else { $RepoRoot }
 $rust = Get-BaseImages | Where-Object { $_.File -eq 'docker/windows-build.Dockerfile' -and $_.Repo -eq 'rust' }
 if (@($rust).Count -ne 1) { throw 'docker/windows-build.Dockerfile should have one FROM rust: line' }
 $toolchain = $rust.Tag -replace '-.*$', ''
-$supplied = Join-Path $RepoRoot 'third-party-licenses'
+$supplied = Join-Path $Source 'third-party-licenses'
 
 Initialize-HostDirs 'test-build'
 $stage = Join-Path $RepoRoot "test-build/notices/$([guid]::NewGuid().ToString('n'))"
@@ -38,7 +43,7 @@ try {
         Invoke-Checked 'crate licenses' {
             docker run --rm `
               -e RUSTUP_TOOLCHAIN=$toolchain `
-              -v "${RepoRoot}:/app:ro" `
+              -v "${Source}:/app:ro" `
               -v "${stage}:/out" `
               -v luna-cargo-registry:/usr/local/cargo/registry `
               -w /app/src-tauri `
@@ -66,7 +71,7 @@ cp "$(rustc --print sysroot)/share/doc/rust/licenses/MIT.txt" "$(rustc --print s
             docker run --rm `
               -e COREPACK_ENABLE_DOWNLOAD_PROMPT=0 `
               -e COREPACK_HOME=/corepack `
-              -v "${RepoRoot}:/app:ro" `
+              -v "${Source}:/app:ro" `
               -v "${stage}:/out" `
               -v luna-corepack:/corepack `
               (Get-NodeImage) `
@@ -94,13 +99,13 @@ for (const packages of Object.values(listed))
     # Every crate the exe links, and the standard library under them.
     $metadata = Get-Content (Join-Path $stage 'metadata.json') -Raw | ConvertFrom-Json -Depth 64
     $crates = foreach ($package in Get-ShippedCrates $metadata) {
-        $source = "https://crates.io/crates/$($package.name)/$($package.version)"
-        if ($package.repository) { $source += " (repository: $($package.repository))" }
+        $origin = "https://crates.io/crates/$($package.name)/$($package.version)"
+        if ($package.repository) { $origin += " (repository: $($package.repository))" }
         [pscustomobject]@{
             Name     = $package.name
             Version  = $package.version
             License  = $package.license
-            Source   = $source
+            Source   = $origin
             Note     = Get-LicenseNote $package.license
             Staged   = Join-Path $stage "crates/$($package.name)-$($package.version)"
             Supplied = Join-Path $supplied "crates/$($package.name)"

@@ -45,6 +45,9 @@ pub(crate) mod testkit;
 
 pub use leftovers::*;
 
+/// A core's death, for a test of what a tie does to a job across the crate.
+#[cfg(all(test, windows))]
+pub use imp::close_as_in_a_death;
 #[cfg(windows)]
 pub use imp::resume;
 pub use imp::{adopt, alive, also_marked, await_environment, end_last_ties, join, keeper_from_args, let_go, pin, tie, Job, Pin};
@@ -262,7 +265,7 @@ mod tests {
         let mut c = start();
         let job = adopt(c.id()).unwrap();
         tie(&job, "t");
-        imp::close_as_in_a_death(job);
+        close_as_in_a_death(job);
         assert!(ended_within(&mut c, 3000), "the OS ends what is in it");
 
         // A helper deleted or opened as a chat: the job is dropped.
@@ -279,14 +282,14 @@ mod tests {
         let job = adopt(c.id()).unwrap();
         tie(&job, "t");
         let_go(&job);
-        imp::close_as_in_a_death(job);
+        close_as_in_a_death(job);
         assert!(!ended_within(&mut c, 500), "let go of, its handle closing ends nothing");
         let _ = c.kill();
         let _ = c.wait();
 
         // A chat's job is never tied.
         let mut c = start();
-        imp::close_as_in_a_death(adopt(c.id()).unwrap());
+        close_as_in_a_death(adopt(c.id()).unwrap());
         assert!(!ended_within(&mut c, 500));
         let _ = c.kill();
         let _ = c.wait();
