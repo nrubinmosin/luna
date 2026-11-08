@@ -106,6 +106,35 @@ describe('SettingsDialog', () => {
     expect(useSettings.getState().open).toBe(false);
   });
 
+  it('walks the exception menu with the arrows; Tab and Shift+Tab close it and go on from its button', async () => {
+    act(() => {
+      useAccounts.setState({ accounts: ACCOUNTS });
+      useChats.setState({ folders: FOLDERS });
+    });
+    const user = open('links');
+    const button = await screen.findByRole('button', { name: 'Add an exception…' });
+    await user.click(button);
+    const items = within(screen.getByRole('menu')).getAllByRole('menuitem');
+    items.forEach(item => expect(item).toHaveAttribute('tabindex', '-1'));
+    expect(items[0]).toHaveFocus();
+    await user.keyboard('{ArrowDown}');
+    expect(items[1]).toHaveFocus();
+    await user.keyboard('{End}');
+    expect(items[items.length - 1]).toHaveFocus();
+    await user.keyboard('{ArrowDown}');
+    expect(items[0]).toHaveFocus();
+
+    await user.tab();
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+    expect(screen.getByText('How a chat’s browser is chosen')).toHaveFocus();
+
+    await user.click(button);
+    await user.tab({ shift: true });
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+    expect(button).toHaveFocus();
+    expect(useSettings.getState().open).toBe(true);
+  });
+
   it('is modal: the app behind is inert, Tab goes round, and the focus goes back to the opener', async () => {
     render(
       <div data-app>

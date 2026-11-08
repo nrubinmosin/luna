@@ -5,7 +5,7 @@ import { useAccounts } from '../accounts/accounts.store';
 import { useChats } from '../chats/chats.store';
 import { PROVIDER_LABEL } from '../../shared/types';
 import { useDialogHost } from '../../shared/ui/dialogHost';
-import { CommandLine, Group, List, ListItem, Row } from '../settings/SettingsRows';
+import { CommandLine, focusables, Group, List, ListItem, Row } from '../settings/SettingsRows';
 import { choices, useBrowsers } from './browsers.store';
 
 /**
@@ -221,14 +221,38 @@ function AddException({
     };
   }, [open]);
 
-  // Up and Down walk the items, as in any menu.
+  // A menu as the ARIA pattern has it: its items are out of the tab order
+  // and the arrows, Home and End move between them. Tab and Shift+Tab close
+  // it and go on from its button, the way they would had it never opened
+  // (the menu itself is portaled to the end of the page, where Tab would
+  // otherwise leave the dialog).
   const walk = (e: ReactKeyboardEvent) => {
-    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
-    e.preventDefault();
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      e.stopPropagation();
+      setOpen(false);
+      const button = face.current;
+      const box = button?.closest('[role="dialog"]');
+      const all = box ? focusables(box) : [];
+      const at = button ? all.indexOf(button) : -1;
+      (e.shiftKey || at < 0 ? button : (all[at + 1] ?? all[0]))?.focus();
+      return;
+    }
     const items = [...(menu.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? [])];
     const at = items.indexOf(document.activeElement as HTMLElement);
-    const next = (at + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
-    items[next]?.focus();
+    const to =
+      e.key === 'ArrowDown'
+        ? (at + 1) % items.length
+        : e.key === 'ArrowUp'
+          ? (at - 1 + items.length) % items.length
+          : e.key === 'Home'
+            ? 0
+            : e.key === 'End'
+              ? items.length - 1
+              : null;
+    if (to === null) return;
+    e.preventDefault();
+    items[to]?.focus();
   };
 
   const pick = (kind: Kind, key: string) => {
@@ -267,7 +291,7 @@ function AddException({
                   <div key={kind} role="group" aria-label={kind === 'accounts' ? 'Accounts' : 'Project folders'}>
                     <div className="set-menu-head">{kind === 'accounts' ? 'Accounts' : 'Project folders'}</div>
                     {free[kind].map(k => (
-                      <button key={k.key} role="menuitem" title={k.key} onClick={() => pick(kind, k.key)}>
+                      <button key={k.key} role="menuitem" tabIndex={-1} title={k.key} onClick={() => pick(kind, k.key)}>
                         {k.label}
                       </button>
                     ))}
