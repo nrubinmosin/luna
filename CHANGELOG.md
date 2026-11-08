@@ -29,6 +29,19 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   input, and that a line's length or depth costs no more than its bytes. A
   scheduled workflow runs them weekly.
 
+### Changed
+
+- Settings is a wide dialog with its pages listed on the left (General, Chats,
+  Agents & trust, Links, Updates) and only the page scrolling, in place of one
+  narrow column of ten sections. Every setting is a row with its control on
+  the right and one line on what it does; what a change costs (helpers above
+  their chat, a deleted worktree's uncommitted work, accounts moved by hand)
+  stays in view, and the rest of each explanation folds into a "How … works"
+  line. Help text is 12 px at the least and passes WCAG AA in both themes.
+  Lists say when they are empty, link exceptions are added from a menu, and a
+  browser's long command line can be shown in full or copied. The page list
+  works from the keyboard. See docs/user-guide/settings.md.
+
 ### Fixed
 
 - A command call whose timeout is past any clock (a Claude Code `Bash`,
