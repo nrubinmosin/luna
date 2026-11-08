@@ -24,6 +24,10 @@ pub struct Message {
     /// all the same, for which report leads (`own_words`).
     #[serde(skip)]
     pub after_cli: bool,
+    /// Its CLI marked it the turn's final answer (Claude Code's `end_turn`, Codex's
+    /// `final_answer` phase): the report, said so rather than guessed (`report_of`).
+    #[serde(skip)]
+    pub final_answer: bool,
 }
 
 /// How far the session's transcript goes now, 0 before it has one.
@@ -55,6 +59,10 @@ pub struct Reading {
     /// See `Waited::transcript_missing`.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub transcript_missing: bool,
+    /// A report read's report was picked by length, its CLI having marked no
+    /// final answer (`said::report_guessed`).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub report_guessed: bool,
 }
 
 /// The last transcript found for each session: Claude Code drops the
@@ -301,6 +309,7 @@ pub fn read(
         turns_ended,
         screen: with_screen.then(|| screen_of(pty, id)).flatten(),
         undelivered,
+        report_guessed: false,
     })
 }
 
@@ -340,8 +349,9 @@ fn report_read(caller: &str, id: &str, provider: Provider, since: Option<u64>, w
         found = read_at(0).0.into_iter().last().into_iter().collect();
     }
     let replies = crate::agents::said::said_of(found);
+    let report_guessed = crate::agents::said::report_guessed(&replies);
     let messages: Vec<Message> = crate::agents::said::report_text(&replies)
-        .map(|text| Message { role: "assistant".into(), text: cut_to_max(&text).unwrap_or(text), after_cli: false })
+        .map(|text| Message { role: "assistant".into(), text: cut_to_max(&text).unwrap_or(text), after_cli: false, final_answer: false })
         .into_iter()
         .collect();
     let (state, ask) = state_of(id);
@@ -355,6 +365,7 @@ fn report_read(caller: &str, id: &str, provider: Provider, since: Option<u64>, w
         turns_ended: crate::activity::turn_state(id).map(|t| t.turns_ended).unwrap_or(0),
         screen: with_screen.then(|| screen_of(pty, id)).flatten(),
         undelivered: None,
+        report_guessed,
     }
 }
 
@@ -452,7 +463,7 @@ mod tests {
         let messages_at = |at: u64| -> Messages {
             let text = std::fs::read_to_string(&path).unwrap();
             let rest = &text[(at as usize).min(text.len())..];
-            (rest.lines().map(|l| Message { role: "assistant".into(), text: l.into(), after_cli: false }).collect(), text.len() as u64)
+            (rest.lines().map(|l| Message { role: "assistant".into(), text: l.into(), after_cli: false, final_answer: false }).collect(), text.len() as u64)
         };
         assert_eq!(cursor_after(&path, 0, 6, 3, 1, &messages_at), 2);
         assert_eq!(cursor_after(&path, 2, 6, 2, 1, &messages_at), 4);
