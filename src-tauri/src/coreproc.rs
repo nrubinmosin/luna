@@ -145,10 +145,15 @@ fn run() {
         env!("LUNA_BUILD"),
         env!("LUNA_CORE_FP")
     ));
+    // Run as administrator, the core still answers, so that a window hears
+    // why, but starts nothing: every request but `info` and `shutdown` is
+    // refused (`requests`), and nothing below that would start a session or
+    // helper of its own accord runs.
+    let refused = crate::elevation::refusal();
+    if let Some(why) = refused {
+        crate::log::error("core", &format!("{why} The core starts no session or helper."));
+    }
     crate::lifecycle::start_core();
-    // Here and not in the window: session_meta, which turns a Claude
-    // transcript's tokens into a share of the window, runs in this process.
-    crate::claude::models::refresh_soon();
     sweep_old_copies();
     keep_full_speed();
 
@@ -162,20 +167,25 @@ fn run() {
 
     // What the sessions send the page goes to every window there is.
     crate::emit::install(broadcast);
-    // The helpers the last core left and what it kept of the chats, before a
-    // window or an MCP call can ask after them.
-    crate::agents::restore_chats();
-    crate::background::restore();
-    crate::agents::take_up_spawns();
-    // The hook listener before any session can be spawned with hooks
-    // pointing at it; the activity sampler feeds power/ from then on.
-    crate::hub::start();
-    crate::agents::init();
-    crate::agents::register_dev_caller();
-    crate::background::resume_stopped();
-    crate::activity::start();
-    crate::pty::prune_session_files_periodically();
-    crate::media::prune_periodically();
+    if refused.is_none() {
+        // Here and not in the window: session_meta, which turns a Claude
+        // transcript's tokens into a share of the window, runs in this process.
+        crate::claude::models::refresh_soon();
+        // The helpers the last core left and what it kept of the chats, before a
+        // window or an MCP call can ask after them.
+        crate::agents::restore_chats();
+        crate::background::restore();
+        crate::agents::take_up_spawns();
+        // The hook listener before any session can be spawned with hooks
+        // pointing at it; the activity sampler feeds power/ from then on.
+        crate::hub::start();
+        crate::agents::init();
+        crate::agents::register_dev_caller();
+        crate::background::resume_stopped();
+        crate::activity::start();
+        crate::pty::prune_session_files_periodically();
+        crate::media::prune_periodically();
+    }
 
     let token = ipc::mint_token();
     let found = Discovery {
@@ -333,11 +343,17 @@ fn serve(mut stream: TcpStream, slot: Slot, token: &str, started: u64) -> io::Re
     // On Windows, who owns the client end decides before the hello: a CLI in
     // its sandbox reads the token and connects, so the core turns a restricted,
     // contained or lower-integrity peer away (peer.rs, threat model F3). Fail
-    // closed, and say nothing back, as a bad hello gets nothing.
-    if let Some(why) = crate::peer::refuse_reason(&stream) {
-        crate::log::warn("core", &format!("refused a loopback connection: {why}"));
-        return Ok(());
-    }
+    // closed, and say nothing back, as a bad hello gets nothing. A core run as
+    // administrator, which does no work, lets an ordinary window in below its
+    // integrity to stop it and nothing else (`stop_only`): that window has
+    // no other way to.
+    let stop_only = match crate::peer::admission(&stream, crate::elevation::refusal().is_some()) {
+        Ok(stop_only) => stop_only,
+        Err(why) => {
+            crate::log::warn("core", &format!("refused a loopback connection: {why}"));
+            return Ok(());
+        }
+    };
     let (first_id, hello) = hello(&stream, slot, token, HELLO_DEADLINE)?;
     if hello.proto != ipc::PROTO {
         let err = format!("protocol {} spoken here, {} asked for", ipc::PROTO, hello.proto);
@@ -362,7 +378,8 @@ fn serve(mut stream: TcpStream, slot: Slot, token: &str, started: u64) -> io::Re
 
     static NEXT: AtomicU64 = AtomicU64::new(1);
     let id = NEXT.fetch_add(1, Ordering::Relaxed);
-    if hello.role == "ui" {
+    // One let in only to stop the core hears none of its events either.
+    if hello.role == "ui" && !stop_only {
         let mut windows = WINDOWS.lock().unwrap_or_else(|e| e.into_inner());
         // Under the windows' lock, so nothing held can slip past in between.
         for frame in HELD.lock().unwrap_or_else(|e| e.into_inner()).drain(..) {
@@ -371,7 +388,7 @@ fn serve(mut stream: TcpStream, slot: Slot, token: &str, started: u64) -> io::Re
         windows.push(Window { id, tx: tx.clone(), stream: stream.try_clone()? });
     }
     let replies = Replies { tx, stream: Arc::new(stream.try_clone()?) };
-    let result = requests(&mut stream, &replies, started);
+    let result = requests(&mut stream, &replies, started, stop_only);
     WINDOWS.lock().unwrap_or_else(|e| e.into_inner()).retain(|w| w.id != id);
     result
 }
@@ -397,10 +414,29 @@ struct Replies {
     stream: Arc<TcpStream>,
 }
 
-fn requests(stream: &mut TcpStream, replies: &Replies, started: u64) -> io::Result<()> {
+/// Said to a connection let in only to stop the core (`serve`).
+const STOP_ONLY: &str = "this connection may only stop the core: it runs as administrator, above the caller";
+
+/// Why `cmd` is not answered on this connection, if it is not. A core run as
+/// administrator says who it is and stops, nothing more; to a connection let
+/// in below its integrity (`stop_only`) it only stops.
+fn turned_away(cmd: &str, stop_only: bool) -> Option<String> {
+    if stop_only {
+        return (cmd != "shutdown").then(|| STOP_ONLY.to_string());
+    }
+    crate::elevation::refusal().filter(|_| !matches!(cmd, "info" | "shutdown")).map(String::from)
+}
+
+fn requests(stream: &mut TcpStream, replies: &Replies, started: u64, stop_only: bool) -> io::Result<()> {
     loop {
         let (kind, payload) = ipc::read_frame(stream)?;
         let req: Req = serde_json::from_slice(&payload).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        if let Some(why) = turned_away(&req.cmd, stop_only) {
+            if kind != ipc::SEND {
+                answer(replies, req.id, Err(why));
+            }
+            continue;
+        }
         match req.cmd.as_str() {
             "info" => answer(replies, req.id, serde_json::to_value(Welcome::of_this_process(started)).map_err(|e| e.to_string())),
             "shutdown" => {
@@ -538,6 +574,73 @@ mod tests {
         });
         assert!(got.is_err());
         assert!(took < Duration::from_secs(1), "{took:?}");
+    }
+
+    /// What `requests` answers `cmd` with, in a core whose refusal
+    /// (elevation.rs) is `why`.
+    fn answered(why: Option<&'static str>, cmd: &str) -> Res {
+        answered_on(why, cmd, false)
+    }
+
+    /// The same on a connection let in only to stop the core when `stop_only`.
+    fn answered_on(why: Option<&'static str>, cmd: &str, stop_only: bool) -> Res {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let cmd = cmd.to_string();
+        // The request, then the end of the connection, which ends `requests`.
+        let peer = std::thread::spawn(move || {
+            let mut c = TcpStream::connect(addr).unwrap();
+            ipc::send(&mut c, ipc::REQ, &Req { id: 9, cmd, args: serde_json::Value::Null }).unwrap();
+        });
+        let (mut stream, _) = listener.accept().unwrap();
+        peer.join().unwrap();
+        let (tx, rx) = sync_channel(4);
+        let replies = Replies { tx, stream: Arc::new(stream.try_clone().unwrap()) };
+        crate::elevation::refuse_here(why);
+        let _ = requests(&mut stream, &replies, 0, stop_only);
+        crate::elevation::refuse_here(None);
+        let frame = rx.recv_timeout(Duration::from_secs(10)).expect("an answer");
+        let (_, payload) = ipc::read_frame(&mut io::Cursor::new(frame)).unwrap();
+        serde_json::from_slice(&payload).unwrap()
+    }
+
+    #[test]
+    fn a_core_run_as_administrator_says_who_it_is_and_does_nothing_else() {
+        // Elevated itself (CI's runners and containers), the test process is
+        // refused for its own reason before any it adds.
+        let why = crate::elevation::refusal().unwrap_or(crate::elevation::ADMIN);
+        if crate::elevation::refusal().is_none() {
+            assert!(answered(None, "power_state").err.is_none(), "answered as ever when not elevated");
+        }
+        assert_eq!(answered(Some(why), "power_state").err.as_deref(), Some(why));
+        assert_eq!(answered(Some(why), "ensure_claude_session").err.as_deref(), Some(why));
+        assert_eq!(answered(Some(why), "background_helpers").err.as_deref(), Some(why));
+        let core: Welcome = serde_json::from_value(answered(Some(why), "info").ok.expect("info is answered")).unwrap();
+        assert_eq!(core.refused.as_deref(), Some(why), "and says why");
+    }
+
+    #[test]
+    fn a_window_let_in_below_an_elevated_core_may_stop_it_and_nothing_else() {
+        let why = crate::elevation::refusal().unwrap_or(crate::elevation::ADMIN);
+        // Not even who it is: only the stop goes through. (Its answer ends this
+        // process, so the stop itself is checked before `requests` acts on it.)
+        for cmd in ["info", "power_state", "ensure_claude_session", "background_helpers", "write_session"] {
+            assert_eq!(answered_on(Some(why), cmd, true).err.as_deref(), Some(STOP_ONLY), "{cmd}");
+            assert_eq!(turned_away(cmd, true).as_deref(), Some(STOP_ONLY), "{cmd}");
+        }
+        assert_eq!(turned_away("shutdown", true), None, "the stop is answered");
+        // On a connection with the full way in, a refusing core's own rule.
+        refuse_here_for(why, || {
+            assert_eq!(turned_away("shutdown", false), None);
+            assert_eq!(turned_away("info", false), None);
+            assert_eq!(turned_away("power_state", false).as_deref(), Some(why));
+        });
+    }
+
+    fn refuse_here_for(why: &'static str, f: impl FnOnce()) {
+        crate::elevation::refuse_here(Some(why));
+        f();
+        crate::elevation::refuse_here(None);
     }
 
     /// What build.rs leaves beside the exe, read when this build was compiled:

@@ -10,6 +10,18 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Security
 
+- No CLI runs with administrator rights. Luna started as administrator starts
+  its core, and so every session and helper, with the desktop's ordinary
+  rights and the user's own environment, not the elevated one's; where there
+  are none (no Explorer, another account's credentials, User Account Control
+  off) it starts no session and says to restart it normally. The core refuses
+  sessions and helpers whenever it runs elevated, and a core an older Luna
+  left running elevated is replaced or, with sessions, restarted on the
+  banner's button; one whose rights cannot be read counts as elevated. An
+  elevated core lets an ordinary window in only to stop it, past the check
+  that otherwise turns away a client of lower integrity; a sandboxed one is
+  still refused. Root is refused the same way on Linux and macOS, and the
+  live tests refuse to run from an elevated terminal.
 - The transcript readers, which take what a prompt-injected agent can write,
   are fuzzed: each provider's are pure functions of a file's bytes, held to
   golden readings of the fixtures, with a cargo-fuzz target each

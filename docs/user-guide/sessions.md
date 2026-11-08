@@ -30,6 +30,30 @@ update can replace the exe), not in the window.
   core** brings the chats back from their transcripts. It is never restarted
   behind your back.
 
+### Started as administrator
+
+No CLI Luna starts ever runs with administrator rights. Started as
+administrator ("Run as administrator", or from an elevated terminal), the
+window starts the core with the ordinary rights of the person signed in to
+the desktop, the same the desktop's own programs have, and the sessions run
+with those. Where there are none to take, Luna starts no session and a banner
+says *Luna is running as administrator; restart it normally*, with why:
+
+- the desktop shell (Explorer) is not running;
+- Luna was started with another account's credentials than the one signed in
+  (it starts no session as either);
+- the account has no standard-user rights at all: User Account Control is
+  off, or it is the built-in Administrator.
+
+Close Luna and start it the usual way. A core an older Luna left running as
+administrator is not used: with no session in it, it is replaced at once; with
+sessions, the banner asks you to restart it, and they resume in the new one.
+If Luna cannot stop it without administrator rights, the banner says so: a
+core with no session in it leaves by itself ten minutes after its last window
+closed, and then Luna starts normally; otherwise sign out of Windows, or run
+`luna --stop-core` as administrator. On Linux and macOS,
+Luna run as root (with `sudo`, `sudo -E` among it) starts no session either.
+
 ## Helpers across a core restart
 
 Background helpers outlive the core: each is kept in `helpers.json` in the data

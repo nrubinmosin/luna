@@ -40,7 +40,12 @@ export const useCore = create<CoreState>((set, get) => ({
       // Starting again after a core was up: one that let this window go and
       // is gone back to (corelink.rs `rejoin`) has the same pid, and the
       // output it sent meanwhile never came, so the panes start over too.
-      if (link.state === 'down' || link.state === 'mismatch' || (link.state === 'starting' && lastPid != null))
+      if (
+        link.state === 'down' ||
+        link.state === 'mismatch' ||
+        link.state === 'elevated' ||
+        (link.state === 'starting' && lastPid != null)
+      )
         troubled = true;
       const pid = link.state === 'up' ? (link.core?.pid ?? null) : null;
       const replaced = pid != null && (troubled || (lastPid != null && lastPid !== pid));
