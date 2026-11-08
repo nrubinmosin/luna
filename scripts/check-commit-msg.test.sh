@@ -61,6 +61,13 @@ names() { # $1 = message, $2 = text the refusal must carry
     fi
 }
 
+lacks() { # $1 = message, $2 = text the refusal must not carry
+    if explain "$1" | grep -qF -- "$2"; then
+        echo "FAIL (hook): the refusal of '$1' says: $2" >&2
+        fail=1
+    fi
+}
+
 # --- attribution (every commit, whatever its form) ---
 
 check refuse 'Fix it
@@ -99,6 +106,10 @@ check accept 'Fix the gate: step 2.0'
 check refuse 'generated with drizzle-kit'
 check refuse 'fix the gate'
 names 'fix the gate' 'lowercase'
+# A refused commit was never made: the way on is a new commit from the
+# message, not an amend, which would fold the staged change into the one before.
+names 'fix the gate' "git commit -e -F $tmp"
+lacks 'fix the gate' 'Edit it with: git commit --amend'
 check accept '2026 releases are attested'
 check accept 'agents/wait.rs: luna_wait on one session or several'
 check accept 'check-text passes over symbolic links'
@@ -160,7 +171,14 @@ check accept 'Luna 0.10.0'
 check refuse 'Luna 0.10.0.'
 check accept 'fixup! fix the gate'
 check accept 'squash! fix the gate.'
+# What git commit --fixup=amend: and --fixup=reword: write.
+check accept 'amend! fix the gate
+
+Fix the gate'
 check refuse 'fixup! fix the gate
+
+Co-Authored-By: Someone <a@b.c>'
+check refuse 'amend! Fix the gate
 
 Co-Authored-By: Someone <a@b.c>'
 
@@ -176,6 +194,9 @@ check_range refuse 'Fix the gate
 Co-Authored-By: Someone <a@b.c>'
 check_range refuse 'fixup! Fix the gate'
 check_range refuse 'squash! Fix the gate'
+check_range refuse 'amend! Fix the gate
+
+Fix the gate'
 check_range accept 'Luna 0.10.0'
 check_range accept 'build(deps): bump the npm group across 1 directory with 3 updates
 

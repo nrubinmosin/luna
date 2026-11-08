@@ -47,8 +47,10 @@ not what kind of change it was. The commit-msg hook and CI refuse what strays;
 - **No attribution trailers**: no `Co-Authored-By:`, no robot emoji, no
   "Generated with ...". Authorship is git's author field only.
 - **The forms git writes itself stay as they are**: `Merge ...`,
-  `Revert "..."` and the release bump `Luna X.Y.Z`. A `fixup!` or `squash!`
-  commit passes the hook and fails CI: squash it before the merge.
+  `Revert "..."` and the release bump `Luna X.Y.Z`. A `fixup!`, `squash!` or
+  `amend!` commit passes the hook and fails CI: squash it before the merge.
+  A message the hook refused was never committed: fix it and commit again
+  (`git commit -e -F <file>`), not `--amend`.
 - Everything in US English (`pnpm check:text`).
 - Match the surrounding code: naming, idioms, comment density; comments say why.
 - Delete what a change makes obsolete in the same change; commit no scratch
