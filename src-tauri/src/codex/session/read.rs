@@ -461,6 +461,14 @@ pub fn messages_from(path: &Path, from: u64) -> (Vec<crate::agents::Message>, u6
     (out, read)
 }
 
+/// `messages_from` of a rollout's bytes in memory, from the top: the messages of
+/// its complete lines, and the offset just past the last of them.
+pub fn messages_in(bytes: &[u8]) -> (Vec<crate::agents::Message>, usize) {
+    let mut out = Vec::new();
+    let read = crate::pty::complete_lines_in(bytes, |line| out.extend(message_in(line)));
+    (out, read)
+}
+
 /// One complete line of a rollout as `messages_from` reads it.
 pub(super) fn message_in(line: &str) -> Option<crate::agents::Message> {
     if !line.contains("\"response_item\"") {

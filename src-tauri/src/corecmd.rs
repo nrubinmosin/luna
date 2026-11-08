@@ -45,9 +45,8 @@ pub const COMMANDS: &[(&str, Lane)] = &[
     ("background_promoted", Lane::Call),
     ("background_kill", Lane::Call),
     ("background_delete", Lane::Call),
-    ("agent_spawned", Lane::Call),
-    ("agent_resumes", Lane::Call),
-    ("agent_spawns", Lane::Call),
+    ("background_at_stake", Lane::Call),
+    ("background_transcript", Lane::Call),
     ("chat_names", Lane::Call),
     ("account_usage", Lane::Call),
     ("power_state", Lane::Call),
@@ -153,13 +152,11 @@ pub fn dispatch(cmd: &str, args: Value) -> Result<Value, String> {
         "ensure_claude_session" => call!(wait res args, pty::ensure_claude_session,
             id: String, folder: AbsPath, account_path: AccountPath, model: String, effort: String,
             permission_mode: String, worktree: bool, worktree_name: Option<String>, resume: Option<String>,
-            tools: Option<bool>, parent: Option<String>, prompt: Option<String>,
-            read_only: Option<bool>, agent: Option<String>, spawn_request: Option<u64>, guard: Option<bool>),
+            tools: Option<bool>, read_only: Option<bool>, agent: Option<String>, guard: Option<bool>),
         "ensure_codex_session" => call!(wait res args, pty::ensure_codex_session,
             id: String, folder: AbsPath, account_path: AccountPath, model: Option<String>, effort: String,
             approval: String, sandbox: String, worktree: Option<bool>, resume: Option<String>, login: bool,
-            tools: Option<bool>, hooks_unasked: Option<bool>, parent: Option<String>, prompt: Option<String>, spawn_request: Option<u64>,
-            guard: Option<bool>),
+            tools: Option<bool>, hooks_unasked: Option<bool>, guard: Option<bool>),
         "write_session" => call!(res args, pty::write_session, id: String, data: String),
         "resize_session" => call!(res args, pty::resize_session, id: String, cols: u16, rows: u16),
         "kill_session" => call!(wait res args, pty::kill_session, id: String),
@@ -174,11 +171,11 @@ pub fn dispatch(cmd: &str, args: Value) -> Result<Value, String> {
         "background_promote" => call!(res args, crate::background::background_promote, id: String),
         "background_promoted" => call!(res args, crate::background::background_promoted, id: String, error: Option<String>),
         "background_kill" => call!(ok args, crate::background::background_kill, id: String),
-        "background_delete" => call!(res args, crate::background::background_delete, id: String, drop_worktree: Option<bool>),
-        "agent_spawned" => call!(ok args, agents::agent_spawned,
-            request_id: u64, chat_id: Option<String>, name: Option<String>, error: Option<String>),
-        "agent_resumes" => call!(ok args, agents::agent_resumes),
-        "agent_spawns" => call!(ok args, agents::agent_spawns),
+        "background_delete" => call!(res args, crate::background::background_delete,
+            id: String, drop_worktree: Option<bool>, stop_working: Option<bool>, drop_unsaved: Option<bool>),
+        "background_at_stake" => call!(ok args, crate::background::background_at_stake, ids: Vec<String>),
+        "background_transcript" => call!(res args, crate::background::background_transcript,
+            id: String, since: Option<u64>, file: Option<String>),
         "chat_names" => call!(ok args, agents::chat_names,
             names: HashMap<String, String>, groups: Option<HashMap<String, u32>>),
         "account_usage" => call!(ok args, agents::account_usage, usage: HashMap<String, Value>),
@@ -210,7 +207,7 @@ pub fn dispatch(cmd: &str, args: Value) -> Result<Value, String> {
 /// (a reattach reads the modes after the session it ensured), and each takes
 /// no time.
 pub fn in_order(cmd: &str) -> bool {
-    matches!(cmd, "write_session" | "resize_session" | "session_modes" | "chat_names" | "account_usage" | "agent_spawned" | "power_state")
+    matches!(cmd, "write_session" | "resize_session" | "session_modes" | "chat_names" | "account_usage" | "power_state")
 }
 
 #[cfg(test)]

@@ -1,20 +1,18 @@
-//! Typing into a terminal: `luna_send`, one writer per terminal at a time
-//! (`TypingInto`), a person's draft put aside and back, and text held while
-//! someone types (`hold`, `deliver_held`).
+//! `luna_send`, and typing into a terminal: one writer per terminal at a time
+//! (`TypingInto`), a person's draft put aside and back. Every terminal is a chat
+//! of the person's (helpers run in the background); text that cannot go in yet
+//! is held (held.rs).
 
-use crate::agents::answer::{answer_reach, press, Key, INTERRUPT_SETTLE};
-use crate::agents::ask::{ask_of, live, state_of};
-use crate::agents::lost::still_all_lost;
-use crate::agents::notifier::NOTIFY_EVERY;
-use crate::agents::owed::{owe_from, seen, Owed};
-use crate::agents::persist::{core_up_ms, returning};
-use crate::agents::privilege::{answerer, command_reach_now, plain_text};
+use crate::agents::ask::{live, state_of};
+use crate::agents::handover::handovers_of;
+use crate::agents::held::{hold, words};
+use crate::agents::owed::{owe_from, owe_from_at, seen};
+use crate::agents::privilege::{command_reach_now, plain_text};
 use crate::agents::read::transcript_end;
-use crate::agents::registry::{authorize_send, chat_name, is_mine, label, reg, Registry, DEV_CALLER};
-use crate::agents::resume::{call_off_resume, mark_going_in, reconcile_held, resume_chats, resume_pending, unmark_going_in};
+use crate::agents::registry::{authorize_send, is_mine, label, reg};
 use crate::provider::Provider;
 use crate::throttle::now_ms;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::sync::{Condvar, Mutex, OnceLock};
 
 /// Enter, sent after the text so the TUI sees a paste and then a keypress.
@@ -49,51 +47,9 @@ pub(super) const SEND_TYPING_MS: u64 = 5_000;
 /// included, and its turn to start (SEND_TIMEOUT).
 pub(super) const TYPING_WAIT: std::time::Duration = std::time::Duration::from_secs(25);
 
-/// A notice or a send held this long by an unsent draft is announced on the
-/// desktop, once: the draft may be forgotten, the text is not.
-pub(super) const DRAFT_ALERT_MS: u64 = 60_000;
-
 /// How long Claude Code gets to show a draft put aside, or back, after the
 /// key that does it.
 const STASH_WAIT: std::time::Duration = std::time::Duration::from_millis(1500);
-
-/// A `send` waiting for a person to send or clear what they typed.
-pub(super) struct Held {
-    pub(super) caller: String,
-    pub(super) id: String,
-    pub(super) text: String,
-    pub(super) since: u64,
-    /// The desktop has been told (DRAFT_ALERT_MS).
-    pub(super) told: bool,
-    /// On its way in: found so by the next core, a core went during that.
-    pub(super) going_in: Option<GoingIn>,
-}
-
-/// How a core after this one tells whether text being typed arrived: the CLI went
-/// with the core, so what is in its conversation is what it took.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct GoingIn {
-    /// The start of it, words only, to look for in what the session was told.
-    pub(super) needle: String,
-    /// Where the transcript ended before it went in.
-    pub(super) cursor: u64,
-}
-
-/// How much of a text is looked for: enough to tell it, in case its tail changed.
-pub(super) const NEEDLE: usize = 200;
-
-/// Text with its white space as one space each.
-pub(super) fn words(s: &str) -> String {
-    s.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-/// What to look for of `text` when `typed` is what goes in: itself, or if it went
-/// in with more or went to a file (`spill`), what was typed.
-pub(super) fn needle_of(typed: &str, text: &str) -> String {
-    let (typed, text) = (words(typed), words(text));
-    (if typed.contains(&text) { text } else { typed }).chars().take(NEEDLE).collect()
-}
 
 /// A terminal Luna is typing into, for as long as this is held, whatever it is
 /// typing: a notice, a send, a held send, an answer. Text goes in as a paste and
@@ -154,7 +110,7 @@ pub(super) fn unknown_command(pty: &crate::pty::PtyManager, id: &str, text: &str
 }
 
 /// The last lines of a session's terminal, for a caller that has to see
-/// what a helper is stuck on.
+/// what a session is stuck on.
 pub(super) fn screen_of(pty: &crate::pty::PtyManager, id: &str) -> Option<String> {
     // A helper with no terminal has what it did instead.
     if crate::background::has(id) {
@@ -178,10 +134,9 @@ fn has_started(id: &str, after_turn: u32) -> bool {
 /// True while the CLI has not drawn anything yet: alive, no turn begun or
 /// over, and a blank terminal. Claude Code syncs the org's skills and plugins
 /// and makes its worktree before it draws a thing — minutes on a bad day,
-/// with the session looking dead all along. The opening prompt is a CLI
-/// argument and waits for it intact; text typed now would be lost. Of this
-/// process's turns only: the count goes on across respawns, and one started again
-/// after a core's restart is as blank as a new one.
+/// with the session looking dead all along. Text typed now would be lost. Of
+/// this process's turns only: the count goes on across respawns, and one started
+/// again after a core's restart is as blank as a new one.
 pub(super) fn still_starting(pty: &crate::pty::PtyManager, id: &str) -> bool {
     use crate::activity::Turn;
     if crate::background::has(id) {
@@ -209,13 +164,12 @@ pub(super) fn await_start(pty: &crate::pty::PtyManager, id: &str, text: &str, af
     }
 }
 
-/// Past this many characters a prompt or message goes to a visible session
-/// as a file it is told to read: a command line holds some 32 thousand on
-/// Windows, and a Codex composer takes typed text one key event at a time.
+/// Past this many characters a message goes to a terminal as a file it is told
+/// to read: a Codex composer takes typed text one key event at a time.
 const LONG_TEXT: usize = 8000;
 
-/// Where long prompts and messages are put for the sessions they are for.
-/// A Claude Code session an agent spawned gets it as an `--add-dir`.
+/// Where long messages are put for the sessions they are for, and the answers
+/// and notes Luna writes for its callers.
 pub fn notes_dir() -> std::path::PathBuf {
     crate::paths::data_dir().join("agents")
 }
@@ -338,14 +292,14 @@ pub(super) fn as_sent(caller: &str, id: &str, text: &str) -> String {
     }
 }
 
-/// Types text into the session, presses Enter after it, and reports whether
-/// a turn began. With `interrupt` the turn in flight, and any prompt it is
-/// stopped on, is cut short first (Esc; a background helper's process
-/// stopped), and the text is the next turn rather than one queued after it:
-/// only in the caller's own helpers, as stopping a turn ends work and dismisses
-/// a question that is someone else's to answer.
+/// Puts text into the session and reports whether a turn began: a helper's
+/// queue takes it as a message, a chat's terminal as typed text. With
+/// `interrupt` the turn in flight, and any prompt it is stopped on, is cut short
+/// first (its process stopped), and the text is the next turn rather than one
+/// queued after it: only in the caller's own helpers, as stopping a turn ends
+/// work and dismisses a question that is someone else's to answer.
 pub fn send(caller: &str, id: &str, text: &str, interrupt: bool) -> Result<Sent, String> {
-    let known = authorize_send(caller, id)?;
+    authorize_send(caller, id)?;
     let mine = is_mine(caller, id);
     if interrupt && !mine {
         return Err(format!(
@@ -357,37 +311,29 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool) -> Result<Sent,
     if !live(pty, id) {
         return Err(format!("session {id} is not running"));
     }
-    // Before anything is read of it: what is going in now may be a notice, and
-    // the session busy on it by the time this text's turn comes. Not there in
-    // time, the text is held like any other (`hold`), and goes in when it can.
-    // A background helper has no terminal: its queue takes turns by itself.
     plain_text(text)?;
     command_reach_now(caller, id, text)?;
     // Checked as written: a `/` or `!` the line would hide is refused all the same.
     let text = &as_sent(caller, id, text);
-    let terminal = if crate::background::has(id) { None } else { TypingInto::wait_for(id, TYPING_WAIT) };
+    let background = crate::background::has(id);
+    // Before anything is read of a chat: what is going in now may be a notice,
+    // and the chat busy on it by the time this text's turn comes. Not there in
+    // time, the text is held like any other (`hold`), and goes in when it can.
+    let terminal = if background { None } else { TypingInto::wait_for(id, TYPING_WAIT) };
     let (state_before, ask) = state_of(id);
     if let Some(a) = ask.as_ref().filter(|a| a.blocking && !interrupt) {
         let way_out = if mine { ", or send with interrupt: true to dismiss it" } else { "; its own chat or the user may" };
         return Err(format!("session {id} is on a {}: typed text would land in its dialog. Answer it with luna_answer{way_out}", a.kind));
     }
-    // Esc is to dismiss a dialog before the text goes in, but text that comes
-    // while it is still up lands in it: past a permission or a CLI's own list,
-    // only a caller whose yes it could be (`answer_reach`). A background helper
-    // takes text as a message, never as keys.
-    if let Some(a) = ask.as_ref().filter(|a| a.blocking && terminal.is_some()) {
-        if a.kind == "permission" || a.questions.iter().any(|q| q.list_at.is_some()) {
-            let (own, approver) = answerer(caller, id);
-            answer_reach(own, approver, known.provider, Some(a), Some(true), None)
-                .map_err(|e| format!("session {id} is on a {}, which text sent with interrupt could land in. {e}", a.kind))?;
-        }
-    }
-    let mut before = crate::activity::turn_state(id);
+    let before = crate::activity::turn_state(id);
     let mut baseline = before.map(|t| t.turns_ended).unwrap_or(0);
-    if crate::background::has(id) {
+    if background {
         // Taken before the text goes in: a turn it starts may be over, and
         // written, by the time the call returns.
         let cursor = transcript_end(id);
+        // And this, for the debt below: the person may take the helper over
+        // once the text is in, which takes it back out (handover.rs).
+        let handovers = handovers_of(id);
         use crate::background::Placed;
         let (placed, interrupted) = if interrupt {
             let i = crate::background::interrupt(id, text, Some(caller))?;
@@ -402,8 +348,13 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool) -> Result<Sent,
         if placed == Placed::Queued || interrupted {
             baseline += 1;
         }
+        if !owe_from_at(caller, id, baseline, cursor, handovers) {
+            return Err(format!(
+                "the person took {id} over as their own chat as this was sent: the text did not go in, and your next notice \
+                 says where it is"
+            ));
+        }
         seen(caller, id, baseline);
-        owe_from(caller, id, baseline, cursor);
         return Ok(Sent {
             ok: true,
             state_before,
@@ -416,33 +367,20 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool) -> Result<Sent,
             screen: None,
         });
     }
-    let busy = |t: Option<crate::activity::TurnState>| {
-        t.is_some_and(|t| matches!(t.turn, crate::activity::Turn::Busy | crate::activity::Turn::Waiting))
-    };
-    let interrupted = interrupt && busy(before) && terminal.is_some();
-    if interrupted {
-        press(pty, id, &[Key::Seq("\x1b")])?;
-        let deadline = std::time::Instant::now() + INTERRUPT_SETTLE;
-        while busy(crate::activity::turn_state(id)) && std::time::Instant::now() < deadline {
-            std::thread::sleep(POLL);
-        }
-        before = crate::activity::turn_state(id);
-        baseline = before.map(|t| t.turns_ended).unwrap_or(0);
+    // Only a helper is ever the caller's own, and helpers have no terminal.
+    if interrupt {
+        return Err(format!("{id} is a chat of the person's: interrupt stops only a helper's turn"));
     }
     if still_starting(pty, id) {
         return Err(format!(
-            "session {id} has not come up yet (its terminal is still blank), so typed text would be lost; \
-             an opening prompt from luna_spawn is held and runs once it is up — luna_wait(turn_done) for the reply"
+            "session {id} has not come up yet (its terminal is still blank), so typed text would be lost; send it again shortly"
         ));
     }
-    // What a caller sends now is what it goes on with.
-    call_off_resume(id, "a session sent it text first");
     // Text typed now would land in the middle of what a person is typing, or
     // go out with a draft they left: it waits for them (`deliver_held`),
     // unless the draft can be put aside (`type_text`).
     let typing = pty.typed_ago_ms(id).is_some_and(|ms| ms < SEND_TYPING_MS);
-    let typed =
-        if typing || terminal.is_none() { None } else { put_in(caller, id, &spill_sent(caller, id, text), before, baseline, interrupted)? };
+    let typed = if typing || terminal.is_none() { None } else { put_in(caller, id, &spill_sent(caller, id, text), before, baseline)? };
     let Some(sent) = typed else {
         hold(caller, id, text);
         return Ok(Sent {
@@ -450,32 +388,29 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool) -> Result<Sent,
             state_before,
             queued: false,
             joined: false,
-            interrupted,
+            interrupted: false,
             held: true,
             started: false,
             turns_ended: baseline,
             screen: None,
         });
     };
-    Ok(Sent { state_before, interrupted, ..sent })
+    Ok(Sent { state_before, ..sent })
 }
 
-/// Types a caller's text into a visible session and owes the caller the
-/// answer; None when a person's draft is in the way and stays there.
-fn put_in(
+/// Types a caller's text into a chat and owes the caller the answer; None when
+/// a person's draft is in the way and stays there.
+pub(super) fn put_in(
     caller: &str,
     id: &str,
     text: &str,
     before: Option<crate::activity::TurnState>,
     baseline: u32,
-    interrupted: bool,
 ) -> Result<Option<Sent>, String> {
     // Held text too comes through here, typed long after it was taken.
     command_reach_now(caller, id, text)?;
     let pty = crate::pty::manager();
-    // After an Esc the TUI is between turns whatever the sampler has caught
-    // up with: the text is a prompt of its own, not one queued.
-    let turn_before = if interrupted { None } else { before.map(|t| t.turn) };
+    let turn_before = before.map(|t| t.turn);
     let queued = turn_before == Some(crate::activity::Turn::Busy);
     // Before the text goes in: `type_in` waits for the turn to start, and a
     // short one is over, and written, by then.
@@ -497,7 +432,17 @@ fn put_in(
             o.queued = true;
         }
     }
-    Ok(Some(Sent { ok: true, state_before: "", queued, joined: false, interrupted, held: false, started, turns_ended: baseline, screen }))
+    Ok(Some(Sent {
+        ok: true,
+        state_before: "",
+        queued,
+        joined: false,
+        interrupted: false,
+        held: false,
+        started,
+        turns_ended: baseline,
+        screen,
+    }))
 }
 
 /// Types text in as a prompt (`type_in`) — around a person's draft where
@@ -511,19 +456,6 @@ pub(super) fn type_text(
     baseline: u32,
 ) -> Result<Option<bool>, String> {
     let hold = pty.hold_keys(id).ok_or("no such session")?;
-    type_held(pty, id, text, turn_before, baseline, hold)
-}
-
-/// `type_text` with a person's keys held back already: what is to look at the
-/// session once more first takes them before it looks.
-pub(super) fn type_held(
-    pty: &crate::pty::PtyManager,
-    id: &str,
-    text: &str,
-    turn_before: Option<crate::activity::Turn>,
-    baseline: u32,
-    hold: crate::pty::KeyHold,
-) -> Result<Option<bool>, String> {
     if !pty.has_draft(id) {
         return type_in(pty, id, text, turn_before, baseline, hold).map(Some);
     }
@@ -606,161 +538,6 @@ fn stash_and_type(
     Ok(Some(started))
 }
 
-/// Puts a caller's text by for the notifier to type in (`deliver_held`).
-fn hold(caller: &str, id: &str, text: &str) {
-    crate::log::info(
-        "agents",
-        &format!("send from {} to {} held: the user is typing or has a draft, or other text is going in", label(caller), label(id)),
-    );
-    reg().lock().unwrap_or_else(|e| e.into_inner()).held.push(Held {
-        caller: caller.to_string(),
-        id: id.to_string(),
-        text: text.to_string(),
-        since: now_ms(),
-        told: false,
-        going_in: None,
-    });
-    // "Do not send it again" goes back with the result: it must hold.
-    crate::background::save();
-}
-
-/// What Luna holds for a chat: sends waiting to go into it, and notices a
-/// draft in it keeps back. For the chat row.
-pub fn held_count(id: &str) -> usize {
-    let r = reg().lock().unwrap_or_else(|e| e.into_inner());
-    r.held.iter().filter(|h| h.id == id).count() + r.notices_held.get(id).copied().unwrap_or(0)
-}
-
-/// Looks for held sends to type in, on a thread of its own: typing one waits
-/// for its turn to start, which is not to keep the notices back.
-pub(super) fn held_sender() {
-    loop {
-        std::thread::sleep(NOTIFY_EVERY);
-        let pty = crate::pty::manager();
-        resume_chats(pty);
-        deliver_held(pty);
-    }
-}
-
-/// Types in the sends held for people at their keys (`hold`), each once its
-/// session is clear, in the order they came; tells the caller of a session
-/// that went before its text could, and the desktop of text a draft has held
-/// for long.
-pub(super) fn deliver_held(pty: &crate::pty::PtyManager) {
-    // What a core went in the middle of typing, its session back; one carrying on
-    // sees to it itself (`resume_chat`).
-    let marked: std::collections::HashSet<String> =
-        reg().lock().unwrap_or_else(|e| e.into_inner()).held.iter().filter(|h| h.going_in.is_some()).map(|h| h.id.clone()).collect();
-    for id in marked {
-        if pty.alive(&id) && !resume_pending(&id) {
-            reconcile_held(pty, &id);
-        }
-    }
-    let held: Vec<(String, String, String, u64, bool)> = {
-        let r = reg().lock().unwrap_or_else(|e| e.into_inner());
-        r.held.iter().map(|h| (h.caller.clone(), h.id.clone(), h.text.clone(), h.since, h.told)).collect()
-    };
-    let mut stuck: std::collections::HashSet<String> = Default::default();
-    for (caller, id, text, since, told) in held {
-        let drop_it = |r: &mut Registry| {
-            if let Some(i) = r.held.iter().position(|h| h.caller == caller && h.id == id && h.since == since) {
-                r.held.remove(i);
-            }
-        };
-        // Its parent gets it back with what it first asked (`undelivered_for`), the
-        // two being no use apart: typed in, this would start it on the wrong foot. Not
-        // once that parent has sent it something that went in: it has started on that.
-        if still_all_lost(pty, &caller, &id)
-            && reg().lock().unwrap_or_else(|e| e.into_inner()).owed.contains_key(&(caller.clone(), id.clone()))
-        {
-            continue;
-        }
-        if !live(pty, &id) {
-            // Kept across a core: it goes in once the window has started it.
-            if reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(&id).is_some_and(|k| returning(k, core_up_ms())) {
-                continue;
-            }
-            drop_it(&mut reg().lock().unwrap_or_else(|e| e.into_inner()));
-            if caller != DEV_CALLER {
-                let ended = crate::activity::turn_state(&id).map_or(0, |t| t.turns_ended);
-                let mut o = Owed::from(ended, transcript_end(&id));
-                o.lost = true;
-                reg().lock().unwrap_or_else(|e| e.into_inner()).owed.insert((caller.clone(), id.clone()), o);
-            }
-            continue;
-        }
-        // It goes in with what carries the chat on (`resume_chat`).
-        if resume_pending(&id) {
-            continue;
-        }
-        // One at a time per session, so they go in the order they came.
-        if stuck.contains(&id) {
-            continue;
-        }
-        let blocked = ask_of(&id).is_some_and(|a| a.blocking)
-            || still_starting(pty, &id)
-            || pty.typed_ago_ms(&id).is_some_and(|ms| ms < SEND_TYPING_MS);
-        let before = crate::activity::turn_state(&id);
-        let baseline = before.map(|t| t.turns_ended).unwrap_or(0);
-        let typing = if blocked { None } else { TypingInto::claim(&id) };
-        let typed = if typing.is_some() {
-            let going = spill_sent(&caller, &id, &text);
-            mark_going_in(&id, &going, transcript_end(&id), Some((caller.as_str(), since)));
-            put_in(&caller, &id, &going, before, baseline, false)
-        } else {
-            Ok(None)
-        };
-        if !matches!(typed, Ok(Some(_))) {
-            unmark_going_in(&id);
-        }
-        drop(typing);
-        match typed {
-            Ok(Some(sent)) => {
-                let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-                drop_it(&mut r);
-                if let Some(o) = r.owed.get_mut(&(caller.clone(), id.clone())) {
-                    o.late = true;
-                }
-                drop(r);
-                // Or a core killed now would type it in again.
-                crate::background::save();
-                crate::log::info(
-                    "agents",
-                    &format!("held send from {} typed into {} (started {})", label(&caller), label(&id), sent.started),
-                );
-            }
-            Ok(None) => {
-                stuck.insert(id.clone());
-                if !told && pty.has_draft(&id) && now_ms().saturating_sub(since) >= DRAFT_ALERT_MS {
-                    if let Some(h) =
-                        reg().lock().unwrap_or_else(|e| e.into_inner()).held.iter_mut().find(|h| h.id == id && h.since == since)
-                    {
-                        h.told = true;
-                    }
-                    let chat = chat_name(&id).unwrap_or_else(|| id.clone());
-                    let from = chat_name(&caller).unwrap_or_else(|| caller.clone());
-                    crate::power::notify_chat(
-                        &id,
-                        "A message is waiting",
-                        &format!(
-                            "\"{chat}\" has an unsent draft, so Luna is holding a message from \"{from}\" until you send or clear it."
-                        ),
-                    );
-                }
-            }
-            Err(e) => {
-                stuck.insert(id.clone());
-                crate::log::warn("agents", &format!("held send from {} to {} failed: {e}", label(&caller), label(&id)));
-            }
-        }
-    }
-}
-
-/// Whether text `caller` sent to `id` is still held.
-pub(super) fn is_held(caller: &str, id: &str) -> bool {
-    reg().lock().unwrap_or_else(|e| e.into_inner()).held.iter().any(|h| h.caller == caller && h.id == id)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -815,7 +592,7 @@ mod tests {
         crate::background::take_up_for_test("ir-theirs", "C:\\p", 1, &[], None);
         crate::background::set_running_for_test("ir-theirs");
         crate::background::hold_for_test("ir-theirs");
-        register("ir-codex-theirs", Provider::Codex, "C:\\p", codex, Some("ir-codex-chat"), false, background);
+        register("ir-codex-theirs", Provider::Codex, "C:\\p", codex, Some("ir-codex-chat"), false, background.clone());
         for id in ["ir-chat", "ir-codex-chat", "ir-theirs", "ir-codex-theirs"] {
             let e = send("ir-me", id, "drop that and do this", true).err().unwrap_or_else(|| panic!("{id} was interrupted"));
             assert!(e.contains("interrupt only stops sessions you spawned"), "{id}: {e}");
@@ -824,8 +601,8 @@ mod tests {
         assert!(crate::background::ask("ir-theirs").is_some(), "its question was dismissed");
         // Its own helper, either provider, is not refused for being someone else's
         // (here they are simply not running).
-        register("ir-mine", Provider::Claude, "C:\\p", claude, Some("ir-me"), false, none.clone());
-        register("ir-mine-codex", Provider::Codex, "C:\\p", codex, Some("ir-mine"), false, none);
+        register("ir-mine", Provider::Claude, "C:\\p", claude, Some("ir-me"), false, background.clone());
+        register("ir-mine-codex", Provider::Codex, "C:\\p", codex, Some("ir-mine"), false, background);
         for id in ["ir-mine", "ir-mine-codex"] {
             let e = send("ir-me", id, "drop that and do this", true).err().unwrap();
             assert!(e.contains("is not running"), "{id}: {e}");
@@ -895,16 +672,16 @@ mod tests {
         let bypass = serde_json::json!({ "permissionMode": "bypassPermissions" });
         register("cr-asks", Provider::Claude, "C:\\p", "C:\\acc\\one", None, true, none.clone());
         register("cr-full", Provider::Claude, "C:\\p", "C:\\acc\\one", None, true, bypass);
-        register("cr-kid", Provider::Codex, "C:\\p", "C:\\acc\\one", Some("cr-asks"), false, none.clone());
-        register("cr-kid2", Provider::Codex, "C:\\p", "C:\\acc\\one", Some("cr-full"), false, none);
+        register("cr-chat", Provider::Codex, "C:\\p", "C:\\acc\\one", None, false, none.clone());
+        register("cr-kid", Provider::Codex, "C:\\p", "C:\\acc\\one", Some("cr-full"), false, none);
         // `put_in` types what `send` took and what was held: refused there
         // before anything reaches the terminal.
-        let e = put_in("cr-asks", "cr-kid", "/permissions :workspace", None, 0, false).err().unwrap();
+        let e = put_in("cr-asks", "cr-chat", "/permissions :workspace", None, 0).err().unwrap();
         assert!(e.contains("not a prompt"), "{e}");
-        assert!(put_in("cr-full", "cr-kid", " !whoami", None, 0, false).err().unwrap().contains("not a prompt"), "not its helper");
-        assert_eq!(command_reach_now("cr-full", "cr-kid2", "/permissions :workspace"), Ok(()));
-        assert_eq!(command_reach_now("cr-asks", "cr-kid", "permissions, please"), Ok(()));
-        for id in ["cr-kid", "cr-kid2", "cr-asks", "cr-full"] {
+        assert!(put_in("cr-full", "cr-chat", " !whoami", None, 0).err().unwrap().contains("not a prompt"), "not its helper");
+        assert_eq!(command_reach_now("cr-full", "cr-kid", "/permissions :workspace"), Ok(()));
+        assert_eq!(command_reach_now("cr-asks", "cr-chat", "permissions, please"), Ok(()));
+        for id in ["cr-kid", "cr-chat", "cr-asks", "cr-full"] {
             forget(id);
         }
     }

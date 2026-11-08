@@ -31,6 +31,9 @@ pub fn start(id: &str, spec: Spec, prompt: &str) -> Result<(), String> {
         left: Vec::new(),
         ending_left: false,
         promoting: false,
+        promoting_since: 0,
+        deleting: false,
+        handing: false,
         observed: Observed::default(),
     };
     claim(&mut e);

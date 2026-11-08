@@ -3,7 +3,7 @@ import type { Chat } from '../../shared/types';
 import { StatusDot } from '../../shared/ui/StatusDot';
 import { chatColorTheme } from '../../shared/ui/chatColors';
 import { ACCENT, shortSessionId } from '../../shared/lib/format';
-import { Icon, ToolButton } from '../../shared/ui/icons';
+import { ToolButton } from '../../shared/ui/icons';
 import { numberedChats, useChats } from './chats.store';
 import { currentLayout, currentSlots, usePanes } from '../panes/panes.store';
 import { DeleteChatDialog } from './DeleteChatDialog';
@@ -11,27 +11,10 @@ import { draftTag, useDrafts } from './drafts.store';
 import { CLEAR_WAITING_TITLE, clearWaiting, useMarked } from './marked.store';
 import { BackgroundChip } from '../agents/BackgroundChip';
 
-export function ChatRow({
-  chat,
-  depth = 0,
-  childCount = 0,
-  orphan = false
-}: {
-  chat: Chat;
-  /** Nesting under the chat whose agent spawned it (FolderSection.tree). */
-  depth?: number;
-  /** Chats this one's agent spawned, shown when unfolded. */
-  childCount?: number;
-  /** Spawned, yet listed on its own: the parent is gone, or sits in
-   *  another folder. */
-  orphan?: boolean;
-}) {
+export function ChatRow({ chat }: { chat: Chat }) {
   const active = useChats(s => s.active === chat.id);
   const tag = draftTag(useDrafts(s => s.by[chat.id]));
   const marked = useMarked(s => !!s.by[chat.id]);
-  // An agent may spawn into any folder, so a parent missing from this one
-  // is not necessarily gone.
-  const parentName = useChats(s => (orphan ? (s.findChat(chat.parentId ?? null)?.name ?? null) : null));
   const setActive = useChats(s => s.setActive);
   const dragging = usePanes(s => s.drag === chat.id);
   const layout = usePanes(currentLayout);
@@ -92,7 +75,7 @@ export function ChatRow({
       className="chat-row"
       data-active={active ? 'yes' : 'no'}
       data-waiting={chat.status === 'waiting' ? 'yes' : 'no'}
-      style={{ paddingLeft: 5 + depth * 14, opacity: dragging ? 0.45 : 1 }}
+      style={{ paddingLeft: 5, opacity: dragging ? 0.45 : 1 }}
     >
       {/* The chat's color, so a row and the pane wearing the same tint link up
           by eye. In flow whether set or not. */}
@@ -106,47 +89,8 @@ export function ChatRow({
           background: chatColorTheme(chat.color)?.swatch ?? 'transparent'
         }}
       />
-      {/* Sessions this chat's agent spawned, folded by default. The count
-          stays visible folded, so a parent at work is never a mystery. */}
-      {childCount > 0 && (
-        <span
-          onClick={e => {
-            e.stopPropagation();
-            useChats.getState().setChildrenOpen(chat.id, !chat.childrenOpen);
-          }}
-          title={`${childCount} session${childCount > 1 ? 's' : ''} spawned by this chat — click to ${chat.childrenOpen ? 'fold' : 'unfold'}`}
-          className="kids"
-          data-open={chat.childrenOpen ? 'yes' : 'no'}
-        >
-          <svg width="9" height="9" viewBox="0 0 9 9" aria-hidden>
-            <path
-              d="M3 1.5 6 4.5 3 7.5"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.7"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          </svg>
-          {childCount}
-        </span>
-      )}
       {/* Helpers its agent runs in the background: no rows, a count here. */}
       <BackgroundChip parentId={chat.id} />
-      {(depth > 0 || orphan) && (
-        <span
-          title={
-            !orphan
-              ? 'Spawned by the chat above'
-              : parentName
-                ? `Spawned by "${parentName}" in another folder`
-                : 'Spawned by a chat that no longer exists'
-          }
-          style={{ flex: 'none', color: 'var(--faint)', display: 'flex' }}
-        >
-          <Icon name="child" size={13} />
-        </span>
-      )}
       <StatusDot status={chat.status} />
       {editing ? (
         <input

@@ -6,7 +6,7 @@ use crate::agents::owed::Owed;
 use crate::agents::persist::{take_up_chats, SavedChat, SavedChats, SavedSend, Ties};
 use crate::agents::read::transcripts;
 use crate::agents::registry::{reg, register, Known};
-use crate::agents::spawn::{chat_starting, SpawnTaken};
+use crate::agents::spawn::SpawnTaken;
 use crate::agents::wait::REPLY_GRACE_MS;
 use crate::provider::Provider;
 use crate::throttle::now_ms;
@@ -38,31 +38,25 @@ pub(super) fn notice_for(caller: &str, id: &str, turns_ended: u32) -> (Option<St
     notice_line(crate::pty::manager(), caller, "Your helper", id, &k, o).unwrap()
 }
 
-/// A chat as the last core left it: spawned by `parent`, its turn cut short
-/// with `flag` or not, and owed to `parent` from count 3 on.
-pub(super) fn cut_short_chat(id: &str, parent: &str, flag: bool, mid_turn: bool, already: bool) -> SavedChat {
-    let settings = if flag { serde_json::json!({ "resumeOnRestart": true }) } else { serde_json::json!({}) };
+/// A chat of the person's as the last core left it: `caller` wrote to it and is
+/// owed its answer from count `baseline` on, its transcript read from `cursor`,
+/// and it had ended `baseline` turns.
+pub(super) fn owed_chat(id: &str, caller: &str, baseline: u32, cursor: u64) -> SavedChat {
     SavedChat {
         id: id.into(),
         provider: Provider::Claude,
         folder: "C:\\p".into(),
         account_path: "C:\\acc\\anthropic\\one".into(),
-        turns_ended: 3,
+        turns_ended: baseline,
         transcript: None,
-        mid_turn,
-        ties: Ties {
-            parent: Some(parent.into()),
-            settings,
-            owed: vec![(parent.into(), 3, 40)],
-            seen: vec![(parent.into(), 3)],
-            cut_short: if already { vec![parent.into()] } else { Vec::new() },
-            ..Default::default()
-        },
+        mid_turn: false,
+        ties: Ties { owed: vec![(caller.into(), baseline, cursor)], seen: vec![(caller.into(), baseline)], ..Default::default() },
     }
 }
 
 pub(super) fn take_up(chats: Vec<SavedChat>, sends: Vec<SavedSend>, spawns: Vec<SpawnTaken>) {
-    take_up_chats(serde_json::from_slice(&serde_json::to_vec(&SavedChats { chats, sends, spawns }).unwrap()).unwrap());
+    let saved = SavedChats { chats, sends, spawns, news: Vec::new() };
+    take_up_chats(serde_json::from_slice(&serde_json::to_vec(&saved).unwrap()).unwrap());
 }
 
 /// `settle_spawns` and its like go over every spawn there is, a test's or
@@ -81,46 +75,15 @@ pub(super) fn spawn_taken(request: u64, caller: &str, helper: Option<&str>, resu
         resume_on_restart: resume,
         budget_tokens: None,
         connectors: false,
-        visible: true,
         in_worktree: None,
         account_path: "C:\\acc\\anthropic\\one".into(),
         worktrees_before: Vec::new(),
-        asked: None,
         helper: helper.map(str::to_owned),
         owed_placed: false,
         left_by_core: false,
         settled: false,
         news: None,
-        retried: false,
     }
-}
-
-/// A visible helper as the last core left it, its first turn having gone with
-/// it: asked `opening`, owed to `parent`, with `held` from that parent waiting.
-pub(super) fn first_turn_cut(id: &str, parent: &str, provider: Provider, opening: &str, held: &[&str]) {
-    let mut chat = cut_short_chat(id, parent, false, true, false);
-    chat.provider = provider;
-    chat.turns_ended = 0;
-    chat.ties.owed = vec![(parent.into(), 0, 0)];
-    chat.ties.seen = Vec::new();
-    chat.ties.opening = Some(opening.into());
-    let sends = held.iter().map(|text| SavedSend { caller: parent.into(), id: id.into(), text: (*text).into(), going_in: None }).collect();
-    take_up(vec![chat], sends, Vec::new());
-}
-
-/// The window starts it: no longer waiting for that.
-pub(super) fn back(id: &str, parent: &str, provider: Provider) {
-    register(id, provider, "C:\\p", "C:\\acc\\anthropic\\one", Some(parent), false, serde_json::json!({}));
-}
-
-/// A caller a wait is not let go by, and a helper that lost its first turn, back
-/// afresh with `held` from it waiting.
-pub(super) fn lost_helper(caller: &str, id: &str, dir: &str, held: &[&str]) {
-    register(caller, Provider::Claude, dir, dir, None, true, serde_json::json!({}));
-    crate::background::test_helper(caller, dir, None, false);
-    first_turn_cut(id, caller, Provider::Claude, "the whole job", held);
-    back(id, caller, Provider::Claude);
-    chat_starting(id, false);
 }
 
 pub(super) fn tooled(id: &str) {

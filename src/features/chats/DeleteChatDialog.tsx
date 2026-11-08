@@ -1,34 +1,21 @@
-import { useState } from 'react';
+import { type ReactNode, useEffect, useMemo, useState } from 'react';
 import type { Chat } from '../../shared/types';
-import { allChats, useChats } from './chats.store';
+import { useChats } from './chats.store';
 import { ui } from '../providers';
-import { backgroundDelete } from '../../ipc/agents';
+import { backgroundAtStake, backgroundDelete, type AtStakeDto } from '../../ipc/agents';
 import { deleteSession } from '../../ipc/worktrees';
 import { ConfirmDialog } from '../../shared/ui/ConfirmDialog';
 import { rootOf, useBackground } from '../agents/background.store';
 import { useDeletePrefs } from './deletePrefs.store';
+import { helperDeletes, helperLines } from './helperDeletes';
+import { logWarn } from '../../shared/lib/log';
 
 /**
  * The one gate every "delete chat" click goes through, wherever the click
  * came from — the sidebar row or a pane's title bar. Owns the worktree
- * checkbox and the deletion itself, so the two entry points cannot drift.
+ * checkbox, the helpers its agent runs, and the deletion itself, so the two
+ * entry points cannot drift.
  */
-/** Every chat spawned under this one, any depth, deepest last. */
-function descendantsOf(chat: Chat): Chat[] {
-  const all = allChats(useChats.getState().folders);
-  const out: Chat[] = [];
-  const walk = (id: string) => {
-    for (const c of all) {
-      if (c.parentId === id) {
-        out.push(c);
-        walk(c.id);
-      }
-    }
-  };
-  walk(chat.id);
-  return out;
-}
-
 function deleteOne(chat: Chat, dropWorktree: boolean) {
   const folder = useChats.getState().folderOf(chat.id);
   if (folder) {
@@ -44,26 +31,77 @@ function deleteOne(chat: Chat, dropWorktree: boolean) {
   useChats.getState().deleteChat(chat.id);
 }
 
+/** A box with its label, drawn by xp.css on the label: the input needs an id
+ *  and the label a matching `for`, or the box renders as nothing at all. */
+function Box({
+  id,
+  checked,
+  onChange,
+  children
+}: {
+  id: string;
+  checked: boolean;
+  onChange: (on: boolean) => void;
+  children: ReactNode;
+}) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 7, fontSize: 'var(--fs-4)', color: 'var(--dim)' }}>
+      <input type="checkbox" id={id} checked={checked} onChange={e => onChange(e.target.checked)} />
+      {/* xp.css makes every label inline-flex, which chops a wrapping label
+          into unwrappable flex columns around a <code> child; block restores
+          normal text flow. */}
+      <label htmlFor={id} style={{ display: 'block', cursor: 'default', lineHeight: 1.5 }}>
+        {children}
+      </label>
+    </div>
+  );
+}
+
+const list = (names: string[]) => names.join(', ');
+
 export function DeleteChatDialog({ chat, onClose }: { chat: Chat; onClose: () => void }) {
   // Starts where Settings says; flipping it here is for this delete only.
   const [dropWorktree, setDropWorktree] = useState(() => useDeletePrefs.getState().dropWorktree);
-  // The helpers this chat's agent spawned. Kept by default — they may hold
-  // an answer nothing else has — and listed as orphans once the parent goes.
-  const [withChildren, setWithChildren] = useState(false);
-  const children = descendantsOf(chat);
-  // The ones with no row, under it or under a helper of its that has one.
+  // The helpers this chat's agent runs. Kept by default — they may hold an
+  // answer nothing else has — and each goes by itself once idle.
+  const [withHelpers, setWithHelpers] = useState(false);
+  // A yes of its own each: what the chat's boxes never stretch to.
+  const [stopWorking, setStopWorking] = useState(false);
+  const [dropUnsaved, setDropUnsaved] = useState(false);
   const allBackground = useBackground(s => s.helpers);
-  const lines = new Set([chat.id, ...children.map(c => c.id)]);
-  const background = allBackground.filter(h => lines.has(rootOf(h, allBackground) ?? ''));
-  const spawned = [...children.map(c => c.name), ...background.map(h => h.name || h.id)];
+  const helpers = useMemo(
+    () => allBackground.filter(h => rootOf(h, allBackground) === chat.id),
+    [allBackground, chat.id]
+  );
+  const ids = helpers.map(h => h.id).join('\n');
+  // What each has at stake, as the core sees it now: its turn, its worktree's
+  // unsaved work. Asked once the list is known; the rows alone until it answers.
+  const [stake, setStake] = useState<Record<string, AtStakeDto> | null>(null);
+  useEffect(() => {
+    if (!ids) return;
+    let live = true;
+    backgroundAtStake(ids.split('\n'))
+      .then(rows => {
+        if (live) setStake(Object.fromEntries(rows.map(r => [r.id, r])));
+      })
+      .catch(e => logWarn('agents', `asking what the helpers have at stake failed: ${String(e)}`));
+    return () => {
+      live = false;
+    };
+  }, [ids]);
+  const lines = helperLines(helpers, stake);
+  const working = lines.filter(l => l.working);
+  const unsaved = lines.filter(l => l.unsaved);
 
   const doDelete = () => {
     onClose();
-    if (withChildren) {
-      for (const h of background) {
-        void backgroundDelete(h.id, dropWorktree).catch(err => console.warn('[luna] delete failed', err));
-      }
-      for (const c of [...children].reverse()) deleteOne(c, dropWorktree);
+    for (const d of helperDeletes(lines, { withHelpers, dropWorktree, stopWorking, dropUnsaved })) {
+      void backgroundDelete(d.id, d)
+        .then(r => {
+          if (r.worktreeKept)
+            logWarn('agents', `helper ${d.id} deleted, its worktree kept for its unsaved work: ${r.worktreeKept}`);
+        })
+        .catch(err => console.warn('[luna] delete failed', err));
     }
     deleteOne(chat, dropWorktree);
   };
@@ -104,74 +142,52 @@ export function DeleteChatDialog({ chat, onClose }: { chat: Chat; onClose: () =>
               {chat.worktreePath}
             </div>
           )}
+          {lines.length > 0 && (
+            <ul className="helper-stakes" style={{ margin: '8px 0 0', paddingLeft: 18, fontSize: 'var(--fs-3)' }}>
+              {lines.map(l => (
+                <li key={l.id}>
+                  <b>{l.name}</b>: {l.working ?? 'done'}
+                  {l.unsaved && <> · its worktree holds {l.unsaved}</>}
+                </li>
+              ))}
+            </ul>
+          )}
         </>
       }
       extra={
-        (chat.worktree || spawned.length > 0) && (
+        (chat.worktree || lines.length > 0) && (
           <div onClick={e => e.stopPropagation()} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {(chat.worktree ||
-              (withChildren && (children.some(c => c.worktree) || background.some(h => h.worktree)))) && (
-              // The box itself is drawn by xp.css on the label, which is why
-              // the input needs an id and the label a matching `for`: nested
-              // inside one, the checkbox renders as nothing at all.
-              <div
-                style={{
-                  display: 'flex',
-                  alignItems: 'flex-start',
-                  gap: 7,
-                  fontSize: 'var(--fs-4)',
-                  color: 'var(--dim)'
-                }}
-              >
-                <input
-                  type="checkbox"
-                  id={`drop-worktree-${chat.id}`}
-                  checked={dropWorktree}
-                  onChange={e => setDropWorktree(e.target.checked)}
-                />
-                {/* xp.css makes every label inline-flex, which chops a wrapping
-                    label into unwrappable flex columns around the <code> child;
-                    block restores normal text flow. */}
-                <label
-                  htmlFor={`drop-worktree-${chat.id}`}
-                  style={{ display: 'block', cursor: 'default', lineHeight: 1.5 }}
-                >
-                  {ui(chat.provider).branchPrefix ? (
-                    <>
-                      Delete the worktree and its throwaway <code>{ui(chat.provider).branchPrefix}…</code> branch too,
-                    </>
-                  ) : (
-                    <>Delete the worktree too,</>
-                  )}{' '}
-                  including any uncommitted work.
-                </label>
-              </div>
+            {(chat.worktree || (withHelpers && helpers.some(h => h.worktree))) && (
+              <Box id={`drop-worktree-${chat.id}`} checked={dropWorktree} onChange={setDropWorktree}>
+                {ui(chat.provider).branchPrefix ? (
+                  <>
+                    Delete the worktree and its throwaway <code>{ui(chat.provider).branchPrefix}…</code> branch too,
+                  </>
+                ) : (
+                  <>Delete the worktree too,</>
+                )}{' '}
+                including any uncommitted work.
+              </Box>
             )}
-            {spawned.length > 0 && (
-              <div
-                style={{
-                  display: 'flex',
-                  alignItems: 'flex-start',
-                  gap: 7,
-                  fontSize: 'var(--fs-4)',
-                  color: 'var(--dim)'
-                }}
-              >
-                <input
-                  type="checkbox"
-                  id={`drop-children-${chat.id}`}
-                  checked={withChildren}
-                  onChange={e => setWithChildren(e.target.checked)}
-                />
-                <label
-                  htmlFor={`drop-children-${chat.id}`}
-                  style={{ display: 'block', cursor: 'default', lineHeight: 1.5 }}
-                >
-                  Also delete the {spawned.length} session{spawned.length > 1 ? 's' : ''} its agent spawned (
-                  {spawned.join(', ')}). Left alone, they stay listed as orphans
-                  {background.length > 0 && ', and a background one goes by itself half an hour after it is done'}.
-                </label>
-              </div>
+            {lines.length > 0 && (
+              <Box id={`drop-helpers-${chat.id}`} checked={withHelpers} onChange={setWithHelpers}>
+                Also delete the {lines.length} helper{lines.length > 1 ? 's' : ''} its agent runs. Left alone, each goes
+                by itself half an hour after it is done.
+              </Box>
+            )}
+            {withHelpers && working.length > 0 && (
+              <Box id={`stop-working-${chat.id}`} checked={stopWorking} onChange={setStopWorking}>
+                Also stop and delete the {working.length === 1 ? 'one' : working.length} still working (
+                {list(working.map(l => l.name))}). Left unticked, {working.length === 1 ? 'it finishes' : 'they finish'}{' '}
+                first.
+              </Box>
+            )}
+            {withHelpers && dropWorktree && unsaved.length > 0 && (
+              <Box id={`drop-unsaved-${chat.id}`} checked={dropUnsaved} onChange={setDropUnsaved}>
+                Also delete the worktree{unsaved.length > 1 ? 's' : ''} of {list(unsaved.map(l => l.name))}, with the
+                uncommitted work in {unsaved.length > 1 ? 'them' : 'it'}. Left unticked,{' '}
+                {unsaved.length > 1 ? 'they stay' : 'it stays'} on disk.
+              </Box>
             )}
           </div>
         )

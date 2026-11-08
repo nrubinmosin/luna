@@ -79,9 +79,9 @@ trust by the exact path, never a parent's. With a Codex running on the account,
 trust goes as this override instead of into `config.toml`.
 
 Codex's "hooks unasked" (`codex/hooks.rs`): the default and per-folder choices
-live in Luna's settings, where the core reads them for helpers too. A visible
-Codex stopped on "Hooks need review" is an `ask` (`agents/ask.rs`
-`codex_list_on`).
+live in Luna's settings, where the core reads them for helpers too. A Codex
+chat stopped on "Hooks need review" is an `ask` (`agents/ask.rs`
+`codex_list_on`), the person's to answer.
 
 ## Recommendations (`checks.rs`)
 

@@ -282,7 +282,7 @@ fn tools() -> Value {
         },
         {
             "name": "luna_spawn",
-            "description": "Start a helper, in the background unless visible: true. Omitted settings: the account's defaults. Returns id, resolved settings, started (false: see screen; a visible Codex may still start, luna_wait first), starting (prompt held, do not resend), warnings, sameFolder, worktree, accountChoice.",
+            "description": "Start a helper; it runs in the background, and the user can watch it read-only or open it as a chat, which takes it from you for good. Omitted settings: the account's defaults. Returns id, resolved settings, turnsEnded, sameFolder, worktree, accountChoice.",
             "inputSchema": s(json!({
                 "prompt": { "type": "string" },
                 "provider": { "type": "string", "enum": ["claude", "codex"], "description": "default: yours" },
@@ -293,7 +293,7 @@ fn tools() -> Value {
                 "model": { "type": "string", "description": "from luna_list; claude also a full id" },
                 "effort": { "type": "string", "description": "low|medium|high|xhigh|max; claude also ultracode; codex per model" },
                 "permissionMode": { "type": "string", "description": "claude: default|acceptEdits|plan|bypassPermissions" },
-                "approval": { "type": "string", "description": "codex: never|auto-review|on-request (visible only)" },
+                "approval": { "type": "string", "description": "codex: never|auto-review" },
                 "sandbox": { "type": "string", "description": "codex: read-only|read-only-net|workspace-write|danger-full-access" },
                 "readOnly": { "type": "boolean", "description": "claude: no edit tools, Bash still writes; codex: read-only sandbox" },
                 "agent": { "type": "string", "description": "claude: its --agent" },
@@ -301,8 +301,7 @@ fn tools() -> Value {
                 "worktree": { "type": "boolean", "description": "its own git worktree" },
                 "name": { "type": "string" },
                 "tools": { "type": "boolean", "description": "these tools too (one level)" },
-                "visible": { "type": "boolean", "description": "a chat the user sees" },
-                "autoDelete": { "type": "boolean", "description": "deleted 30 min after its answer reached you; default: background true" },
+                "autoDelete": { "type": "boolean", "description": "deleted 30 min after its answer reached you; default: true" },
                 "resumeOnRestart": { "type": "boolean", "description": "goes on by itself after a core restart" },
                 "budgetTokens": { "type": "integer", "description": "context tokens; past them you hear, once" },
                 "connectors": { "type": "boolean", "description": "its account's MCP servers and connectors too" }
@@ -322,14 +321,13 @@ fn tools() -> Value {
         },
         {
             "name": "luna_answer",
-            "description": "Answer what a session waits on (yours; scope all: any), its state question or waiting (ask says what, askId: its id if any): answers, one per question: an option's number or label, or your own words; allow: true/false for a permission, note: why not. keys: raw keystrokes for any other dialog, e.g. \"{down}{enter}\" (also {esc} {tab} {shift+tab} {up} {left} {right} {space} {backspace}).",
+            "description": "Answer what a session waits on (yours; scope all: a question a user's chat's model asked), its state question or waiting (ask says what, askId: its id if any): answers, one per question: an option's number or label, or your own words; allow: true/false for your helper's permission, note: why not.",
             "inputSchema": s(json!({
                 "id": { "type": "string" },
                 "askId": { "type": "string" },
                 "answers": { "type": "array", "items": { "type": "string" } },
                 "allow": { "type": "boolean" },
                 "note": { "type": "string" },
-                "keys": { "type": "string" },
                 "scope": scope.clone()
             }), &["id"]),
             "annotations": acts
@@ -365,7 +363,7 @@ fn tools() -> Value {
         },
         {
             "name": "luna_kill",
-            "description": "Stop a session's process: a background helper's turn (no autoDelete after; luna_send goes on), between turns its leftRunning (ended); a visible one's, till resumed.",
+            "description": "Stop your helper's turn (no autoDelete after; luna_send goes on); between turns, its leftRunning (ended).",
             "inputSchema": s(json!({ "id": { "type": "string" } }), &["id"]),
             "annotations": ends
         },
@@ -450,7 +448,6 @@ fn call(caller: &str, params: &Value, this: &Call) -> Value {
         "approval",
         "folder",
         "worktree",
-        "visible",
         "tools",
         "autoDelete",
         "budgetTokens",
@@ -554,7 +551,6 @@ fn run(caller: &str, params: &Value, this: &Call) -> Value {
                 &strings(&a["answers"]),
                 a["allow"].as_bool(),
                 a["note"].as_str(),
-                a["keys"].as_str().filter(|k| !k.is_empty()),
                 entered.draining(),
             )
             .map(|r| json!(r))
@@ -615,6 +611,7 @@ fn run(caller: &str, params: &Value, this: &Call) -> Value {
                     a["until"].as_str().unwrap_or("turn_done"),
                     a["timeoutS"].as_u64().unwrap_or(600),
                     a["afterTurn"].as_u64().map(|n| n as u32),
+                    scope,
                     this,
                 )
             })
@@ -719,16 +716,15 @@ fn kind_of(spec: &Value) -> String {
 
 /// Past spawns as a caller may have them: its own and its helpers' and theirs,
 /// or with `all` everyone's. A run holds its whole prompt and its last reply.
-/// Whose a run is goes by the helper's owner now, where it is still known (one
-/// whose parent was deleted has passed up, `forget`), else by the spawner each
-/// run records (`lineage`, helper to spawner), up the chain: any link of it the
+/// Whose a run is goes up its chain, from the run's own session: a link this
+/// core still knows goes by its owner now, and that is the whole answer (one
+/// whose parent was deleted has passed up, `forget`; one the person took over
+/// is theirs, whatever spawned it); a link gone goes by the spawner its run
+/// records (`lineage`, helper to spawner), which a takeover cut. Any link the
 /// caller or one of its own makes the run the caller's.
 fn runs_in_scope(caller: &str, runs: Vec<crate::agentlog::Run>, all: bool, lineage: &HashMap<String, String>) -> Vec<crate::agentlog::Run> {
     let owned = |run: &crate::agentlog::Run| {
-        if agents::own_or_self(caller, &run.id) {
-            return true;
-        }
-        let mut link = run.parent.as_str();
+        let mut link = run.id.as_str();
         // As deep as a lineage goes (`registry::depth_of`), and a loop no further.
         for _ in 0..16 {
             if link.is_empty() {
@@ -736,6 +732,9 @@ fn runs_in_scope(caller: &str, runs: Vec<crate::agentlog::Run>, all: bool, linea
             }
             if agents::own_or_self(caller, link) {
                 return true;
+            }
+            if agents::is_known(link) {
+                return false;
             }
             match lineage.get(link) {
                 Some(spawner) => link = spawner,
@@ -747,9 +746,13 @@ fn runs_in_scope(caller: &str, runs: Vec<crate::agentlog::Run>, all: bool, linea
     runs.into_iter().filter(|run| all || owned(run)).collect()
 }
 
-/// Each spawned session's spawner, as the runs record them.
+/// Each spawned session's spawner, as the runs record them: none for a run the
+/// person took over, which was its spawner's no more from then on.
 fn lineage_of(runs: &[crate::agentlog::Run]) -> HashMap<String, String> {
-    runs.iter().map(|run| (run.id.clone(), run.parent.clone())).collect()
+    runs.iter()
+        .filter(|run| run.how.as_deref() != Some(crate::agentlog::TAKEN_OVER))
+        .map(|run| (run.id.clone(), run.parent.clone()))
+        .collect()
 }
 
 /// `luna_list`: every row and the accounts, the costly part of it, unless told;
@@ -808,8 +811,8 @@ fn wait_several(caller: &str, a: &Value, this: &Call) -> Result<Value, String> {
         "all" => true,
         other => return Err(format!("unknown mode {other:?}; use any or all")),
     };
-    agents::wait_many(caller, &ids, all, a["until"].as_str().unwrap_or("turn_done"), a["timeoutS"].as_u64().unwrap_or(600), this)
-        .map(|w| json!(w))
+    let (until, timeout_s) = (a["until"].as_str().unwrap_or("turn_done"), a["timeoutS"].as_u64().unwrap_or(600));
+    agents::wait_many(caller, &ids, all, until, timeout_s, a["scope"].as_str(), this).map(|w| json!(w))
 }
 
 /// A result as text blocks: the JSON, then the terminal if it has one, for
@@ -1071,6 +1074,20 @@ mod tests {
         agents::forget("hs-c");
         assert_eq!(ids(runs_in_scope("hs-me", chain(), false, &lineage)), ["hs-b", "hs-c"], "by B's run");
         assert!(runs_in_scope("someone-else", vec![run("hs-c", "hs-b")], false, &lineage).is_empty(), "not another's");
+        // A -> B, the person took B over, and B spawned C since: neither run is
+        // A's, by the owners now, and once both are gone by the log's word on
+        // the takeover, which cuts B's lineage.
+        agents::register("hs-tb", crate::provider::Provider::Claude, "C:/p", "C:/acc/anthropic/one", Some("hs-me"), true, json!({}));
+        agents::take_over("hs-tb", || Some(Vec::new())).unwrap();
+        agents::register("hs-tc", crate::provider::Provider::Claude, "C:/p", "C:/acc/anthropic/one", Some("hs-tb"), false, json!({}));
+        let took = |id: &str, parent: &str| crate::agentlog::Run { how: Some(crate::agentlog::TAKEN_OVER.into()), ..run(id, parent) };
+        let taken = || vec![took("hs-tb", "hs-me"), run("hs-tc", "hs-tb")];
+        let lineage = lineage_of(&taken());
+        assert!(runs_in_scope("hs-me", taken(), false, &lineage).is_empty(), "the person's chat and its helper are not A's");
+        agents::forget("hs-tc");
+        agents::forget("hs-tb");
+        assert!(runs_in_scope("hs-me", taken(), false, &lineage).is_empty(), "nor once both are gone");
+        assert_eq!(ids(runs_in_scope("hs-me", taken(), true, &lineage)), ["hs-tb", "hs-tc"], "with scope all, as anyone's");
         // Through the tool: a scope it does not know is refused, not taken for mine.
         let body = json!({ "jsonrpc": "2.0", "id": 19, "method": "tools/call",
             "params": { "name": "luna_sessions", "arguments": { "history": true, "scope": "everyone" } } });
@@ -1117,6 +1134,17 @@ mod tests {
         // The cases that cost something when passed over.
         let (failed, e) = call("luna_spawn", json!({ "prompt": "review it", "read_only": true }));
         assert!(failed && e.contains("did you mean `readOnly`?"), "{e}");
+        // Helpers run in the background only: what asked for a visible one, or
+        // pressed keys on one's screen, is refused as any key the tool lacks.
+        for (tool, args) in [
+            ("luna_spawn", json!({ "prompt": "go", "visible": true })),
+            ("luna_spawn", json!({ "prompt": "go", "visible": false })),
+            ("luna_answer", json!({ "id": "x", "keys": "{enter}" })),
+        ] {
+            let key = args.as_object().unwrap().keys().find(|k| *k != "prompt" && *k != "id").unwrap().clone();
+            let (failed, e) = call(tool, args);
+            assert!(failed && e.contains(&format!("`{key}`")) && e.contains("takes"), "{tool}.{key}: {e}");
+        }
         assert!(call("luna_send", json!({ "id": "x", "text": "stop", "interrupt": "true" })).1.contains("`interrupt` takes true or false"));
         assert!(call("luna_read", json!({ "id": "x", "last": -1 })).1.contains("`last` takes a whole number"));
         assert!(call("luna_wait", json!({})).1.contains("id or ids is required"));

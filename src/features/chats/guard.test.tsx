@@ -37,11 +37,13 @@ describe('the wait guard of chats made before it was a choice', () => {
       folder([
         chat('tooled', { tools: true }),
         chat('plain', {}),
-        chat('helper', { tools: true, parentId: 'tooled' }),
+        // A helper an earlier Luna nested under its parent had the guard as
+        // a helper; it is the person's chat now and starts without it.
+        chat('helper', { tools: true, parentId: 'tooled' } as Partial<Chat>),
         chat('chosen', { tools: true, guard: true })
       ])
     ]);
-    expect(unguarded).toEqual(['tooled']);
+    expect(unguarded).toEqual(['tooled', 'helper']);
     const by = Object.fromEntries(allChats(folders).map(c => [c.id, c.guard]));
     expect(by).toEqual({ tooled: false, plain: false, helper: false, chosen: true });
     // Decided once: a second look finds nothing left to say.
@@ -70,11 +72,7 @@ describe('the wait guard of chats made before it was a choice', () => {
     expect(useChats.getState().findChat('c1')?.guard).toBe(true);
   });
 
-  it('has no box on a helper, which has the guard anyway, and none usable on Codex without its hooks unasked', () => {
-    const helper = chat('h1', { parentId: 'c1' });
-    const { unmount } = render(<AppliedPanel chat={helper} onClose={() => {}} />);
-    expect(screen.queryByRole('checkbox', { name: 'Wait guard for this chat' })).toBeNull();
-    unmount();
+  it('has no usable box on Codex without its hooks unasked', () => {
     const codex = chat('x1', { provider: 'codex', hooksUnasked: false });
     render(<AppliedPanel chat={codex} onClose={() => {}} />);
     expect(screen.getByRole('checkbox', { name: 'Wait guard for this chat' })).toBeDisabled();

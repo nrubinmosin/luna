@@ -18,7 +18,7 @@ pub(crate) struct ChatStart<'a> {
     pub(crate) account_path: &'a str,
     pub(crate) resume: Option<&'a str>,
     /// A `-c` trusting the folder for this run, and what it comes of: a
-    /// trusted root, a trust asked for while the account was in use, a helper.
+    /// trusted root, or a trust asked for while the account was in use.
     pub(crate) trust: Option<([String; 2], Item)>,
     /// The account's config names a `windows.sandbox` of its own
     /// (codex/config.rs `windows_sandbox_set`): Luna gives it none.
@@ -44,14 +44,10 @@ pub(crate) struct ChatStart<'a> {
     /// The guard against endless waits (guard.rs) as its `-c` override, if
     /// the session has it (pty/start.rs `codex_guard_args`).
     pub(crate) guard: &'a [String],
-    /// A helper's account's MCP servers and apps turned off (`connectors_off`).
-    pub(crate) connectors_off: &'a [String],
-    pub(crate) parent: Option<&'a str>,
     /// Luna's MCP server's URL and the session's token, while the server is
     /// up to take it.
     pub(crate) mcp: Option<(&'a str, &'a str)>,
     pub(crate) skill_args: &'a [String],
-    pub(crate) prompt: Option<&'a str>,
 }
 
 /// The arguments and environment of a Codex chat's start, and what Luna
@@ -61,7 +57,7 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
     let mut envs = vec![("CODEX_HOME", s.account_path.to_string())];
     let mut applied = vec![
         Item::Account.with(format!("CODEX_HOME={}", s.account_path)),
-        crate::claude::launch::session_applied(s.id, s.parent),
+        crate::claude::launch::session_applied(s.id, None),
         Item::Folder.with(format!("-C {}", s.folder)),
     ];
     if let Some(session_id) = s.resume {
@@ -110,14 +106,8 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
             args.push("--ask-for-approval".into());
             args.push(approval.to_string());
             applied.push(Item::Approval.with(format!("--ask-for-approval {approval}")));
-            // What a helper would ask goes to the chat that started it; a
-            // person's chat keeps whatever reviewer its account or project
-            // names.
-            if s.parent.is_some() {
-                args.push("-c".into());
-                args.push(CODEX_PERSON_REVIEWS.into());
-                applied.push(Item::HelperReviewer.with(format!("-c {CODEX_PERSON_REVIEWS}")));
-            }
+            // A person's chat keeps whatever reviewer its account or project
+            // names (a helper's turn is kept to a person's: background/command.rs).
             // Without its profile, `--sandbox read-only-net`, which Codex
             // refuses: never a sandbox looser than the one asked for.
             match s.profile.filter(|_| takes_profile(sandbox, cfg!(windows))) {
@@ -156,21 +146,14 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
     }
     args.extend(s.guard.iter().cloned());
     if !s.guard.is_empty() {
-        applied.push(guard_applied(s.parent.is_some()));
-    }
-    args.extend(s.connectors_off.iter().cloned());
-    if !s.connectors_off.is_empty() {
-        applied.push(connectors_off_applied(s.connectors_off));
+        applied.push(guard_applied(false));
     }
     args.extend(no_update_check());
     applied.push(Item::NoAutoUpdate.with(format!("-c {NO_UPDATE_CHECK}")));
     args.push("-c".into());
     args.push(CODEX_TITLE.into());
     applied.push(Item::ThreadTitle.with(format!("-c {CODEX_TITLE}")));
-    envs.extend(crate::pty::session_envs(s.id, s.parent));
-    if let Some(parent) = s.parent {
-        applied.push(Item::HelperIdentity.with(format!("a note after its opening prompt: {}", crate::pty::helper_line(parent))));
-    }
+    envs.extend(crate::pty::session_envs(s.id, None));
     if let Some((url, token)) = s.mcp {
         args.extend(mcp_args(url));
         envs.push(("LUNA_MCP_TOKEN", token.to_string()));
@@ -178,11 +161,6 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
     }
     args.extend(s.skill_args.iter().cloned());
     applied.extend(library_applied(s.skill_args));
-    if let Some(p) = s.prompt.map(str::trim).filter(|p| !p.is_empty()) {
-        // A prompt that starts with a dash is still a prompt.
-        args.push("--".into());
-        args.push(p.to_string());
-    }
     (args, envs, applied)
 }
 

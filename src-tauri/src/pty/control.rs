@@ -364,11 +364,6 @@ impl PtyManager {
         }
     }
 
-    /// Asks the session to quit and kills it if it does not.
-    pub async fn kill(&self, id: &str) {
-        take_and_shut_down(self, id).await;
-    }
-
     /// Whether a session other than `id` is in this worktree: a running one
     /// started in it or moved into it itself, or a background helper sent to
     /// it or working in it, between its turns too.

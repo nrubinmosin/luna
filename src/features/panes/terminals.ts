@@ -64,7 +64,6 @@ export function startSession(chat: Chat, folderPath: string, accountPath: string
         resume: chat.sessionId ?? null,
         tools: chat.tools ?? false,
         hooksUnasked: chat.hooksUnasked ?? false,
-        parent: chat.parentId ?? null,
         guard: chat.guard ?? false
       })
     : ensureClaudeSession({
@@ -78,7 +77,6 @@ export function startSession(chat: Chat, folderPath: string, accountPath: string
         worktreeName: claudeWorktree,
         resume: chat.sessionId ?? null,
         tools: chat.tools ?? false,
-        parent: chat.parentId ?? null,
         readOnly: chat.readOnly ?? false,
         agent: chat.agent ?? null,
         guard: chat.guard ?? false

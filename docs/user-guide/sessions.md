@@ -68,21 +68,20 @@ next core takes them up after an update, a restart or a reboot.
   included, where Luna knows the old turn ended (a normal stop, or any death of
   the core). One stopped before its first turn got anywhere is reported as never
   started, with its prompt, and with `resumeOnRestart` starts afresh on it.
-- A visible helper with `resumeOnRestart` goes on too: Luna starts its CLI, in a
-  pane or not, and types the same word in once it is back at its prompt, unless
-  you typed into it or an agent wrote to it first. A visible helper without it
-  that has no conversation to come back to is reported as never started, its
-  prompt and the agent's held messages in a file.
 - Luna names a Claude Code helper's worktree itself, so a fresh start goes back
   into that one only, and only if nothing has touched it since Claude Code made
   it. Anything else, and whatever a Codex helper began (Codex takes no name),
   stays where it is and the agent hears of it as `worktreeLeft`.
-- What agents hold of your visible chats (who spawned them, a worktree they were
-  handed, answers owed, messages held for your draft) is kept in
-  `chat-ties.json` and picked up when each chat starts again. So is a
-  `luna_spawn` the core went in the middle of: the agent is told no helper came
-  of it, with its prompt in a file and any worktree it had begun named and left,
-  or with `resumeOnRestart` Luna starts it afresh and says so.
+- What agents hold of your chats (answers owed by a chat an agent wrote to,
+  messages held for your draft) is kept in `chat-ties.json` and picked up when
+  each chat starts again, and so is a notice not yet given (such as the one
+  telling an agent you took its helper over). So is a `luna_spawn` the core went
+  in the middle of: the agent is told no helper came of it, with its prompt in a
+  file and any worktree it had begun named and left, or with `resumeOnRestart`
+  Luna starts it afresh and says so.
+- A chat an earlier Luna ran as a visible helper comes back as a chat of your
+  own: no agent can stop, delete or answer for it, and its row is no longer
+  nested under the chat that spawned it.
 
 ## Orphans and leftover worktrees
 

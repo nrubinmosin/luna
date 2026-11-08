@@ -3,7 +3,6 @@
 
 use crate::agents::list::disk_meta;
 use crate::agents::registry::{chat_name, label, reg, Known};
-use crate::provider::Provider;
 use serde::Serialize;
 
 /// Where a session in a worktree works: the path, and the branch and commit
@@ -105,23 +104,6 @@ pub fn helper_worktree_name(id: &str) -> String {
     format!("luna-{id}")
 }
 
-/// The name a visible helper's CLI is to ask for, starting on no prompt of its own:
-/// in a conversation the one it has, afresh the one it is still to go by. None for a
-/// session Luna named none for: its CLI names its own, as a chat of a person's does.
-pub fn worktree_for_start(id: &str, folder: &str, account_path: &str, conversation: bool) -> Option<String> {
-    let name = reg().lock().unwrap_or_else(|e| e.into_inner()).worktree_names.get(id).cloned()?;
-    if conversation {
-        return Some(name);
-    }
-    let name = name_to_go_on(id, &name, folder, account_path);
-    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-    match &name {
-        Some(name) => r.worktree_names.insert(id.to_string(), name.clone()),
-        None => r.worktree_names.remove(id),
-    };
-    name
-}
-
 /// What a helper that has no conversation asks for, its worktree named `name`: that
 /// name if nothing is there, as the CLI then makes it, or if what is there is still as
 /// the CLI made it with nobody in it (`worktree::as_made`), as going back in is then the
@@ -160,20 +142,6 @@ pub fn report_codex_worktrees(id: &str, folder: &str, account_path: &str) {
     leave_worktrees(id, crate::worktree::codex_new_since(folder, account_path, &before, &crate::pty::live_cwds()));
 }
 
-/// `id`'s CLI is not back to go on in any of it: its parent hears of what it began, and
-/// opened after that it makes its own.
-pub(in crate::agents) fn leave_half_made(id: &str, k: &Known) {
-    if k.provider == Provider::Codex {
-        return report_codex_worktrees(id, &k.folder, &k.account_path);
-    }
-    let Some(name) = reg().lock().unwrap_or_else(|e| e.into_inner()).worktree_names.get(id).cloned() else { return };
-    let path = crate::worktree::named_path(&k.folder, &name);
-    if std::path::Path::new(&path).exists() {
-        reg().lock().unwrap_or_else(|e| e.into_inner()).worktree_names.insert(id.to_string(), format!("{name}-2"));
-        leave_worktrees(id, vec![path]);
-    }
-}
-
 fn leave_worktrees(id: &str, left: Vec<String>) {
     if left.is_empty() {
         return;
@@ -196,11 +164,11 @@ mod tests {
     use super::*;
     use crate::agents::lost::{undelivered_note, worktrees_left_line};
     use crate::agents::owed::hand_over;
-    use crate::agents::persist::ties_in;
+    use crate::agents::persist::{tie_back, ties_in};
     use crate::agents::registry::{reg, register};
     use crate::agents::spawn::Spawned;
     use crate::agents::teardown::forget;
-    use crate::agents::test_support::{cut_short_chat, take_up};
+    use crate::provider::Provider;
 
     #[test]
     fn a_worktree_still_being_made_says_so() {
@@ -210,11 +178,6 @@ mod tests {
                 id: "w".into(),
                 turns_ended: 0,
                 settings: serde_json::Value::Null,
-                started: true,
-                screen: None,
-                ask: None,
-                starting: false,
-                warnings: Vec::new(),
                 same_folder: Vec::new(),
                 worktree,
                 worktree_pending,
@@ -256,47 +219,40 @@ mod tests {
         Some((root, repo, made))
     }
 
-    /// A visible helper its name was given, as `spawn_is` gives it.
-    fn named_helper(id: &str, repo: &str, name: &str) {
-        register(id, Provider::Claude, repo, "C:\\no\\such\\account", Some("rw-parent"), false, serde_json::json!({}));
-        reg().lock().unwrap().worktree_names.insert(id.to_string(), name.to_string());
-    }
-
+    /// A Claude Code helper a core cut off in its first turn starts afresh in the
+    /// worktree Luna named for it only while that is as the CLI made it.
     #[test]
     fn a_fresh_start_goes_back_only_into_the_worktree_luna_named_and_only_as_made() {
         let Some((root, repo, made)) = repo_with("reuse", &["luna-a", "luna-b", "someone-elses"]) else { return };
         let (a, b, elses) = (&made[0], &made[1], &made[2]);
-        let start = |id: &str| worktree_for_start(id, &repo, "C:\\no\\such\\account", false);
+        let background = serde_json::json!({ "background": true });
+        let helper = |id: &str| {
+            register(id, Provider::Claude, &repo, "C:\\no\\such\\account", Some("rw-parent"), false, background.clone());
+        };
+        let start = |id: &str, name: &str| name_to_go_on(id, name, &repo, "C:\\no\\such\\account");
 
         // Its own, as made. The clean one beside it, new as it is, is nobody's to take.
-        named_helper("rw-a", &repo, "luna-a");
-        assert_eq!(start("rw-a").as_deref(), Some("luna-a"));
+        helper("rw-a");
+        assert_eq!(start("rw-a", "luna-a").as_deref(), Some("luna-a"));
         assert_eq!(worktrees_left_line("rw-a"), "");
         // Not there: Claude Code makes it by that name.
-        named_helper("rw-new", &repo, "luna-new");
-        assert_eq!(start("rw-new").as_deref(), Some("luna-new"));
-        // Named none, a person's chat: its CLI names its own, and nothing is taken.
-        register("rw-none", Provider::Claude, &repo, "C:\\no\\such\\account", None, false, serde_json::json!({}));
-        assert_eq!(start("rw-none"), None);
+        helper("rw-new");
+        assert_eq!(start("rw-new", "luna-new").as_deref(), Some("luna-new"));
 
         // Something in it: left alone, told of, and the next name from here on.
         std::fs::write(std::path::Path::new(b).join("half-done.txt"), "work").unwrap();
-        named_helper("rw-b", &repo, "luna-b");
-        assert_eq!(start("rw-b").as_deref(), Some("luna-b-2"));
+        helper("rw-b");
+        assert_eq!(start("rw-b", "luna-b").as_deref(), Some("luna-b-2"));
         let said = worktrees_left_line("rw-b");
         assert!(
             said.contains("worktreeLeft") && said.contains(b.as_str()) && !said.contains(elses.as_str()) && !said.contains(a.as_str()),
             "{said}"
         );
-        assert_eq!(reg().lock().unwrap().worktree_names["rw-b"], "luna-b-2");
-        assert_eq!(start("rw-b").as_deref(), Some("luna-b-2"));
+        assert_eq!(start("rw-b", "luna-b").as_deref(), Some("luna-b-2"));
         assert_eq!(worktrees_left_line("rw-b"), said, "the one it left is not told of twice");
-        // In a conversation it is its own, whatever is in it.
-        named_helper("rw-talk", &repo, "luna-b");
-        assert_eq!(worktree_for_start("rw-talk", &repo, "C:\\no\\such\\account", true).as_deref(), Some("luna-b"));
         // A name that would be a flag never goes out as one.
-        named_helper("rw-flag", &repo, "--dangerously-skip-permissions");
-        assert_eq!(start("rw-flag"), None);
+        helper("rw-flag");
+        assert_eq!(start("rw-flag", "--dangerously-skip-permissions"), None);
 
         // Told once: with what is told first, or with a read; a cancel brings it back.
         let note = undelivered_note("rw-parent", "rw-b").unwrap();
@@ -313,31 +269,12 @@ mod tests {
             ties_in(&r, "rw-b").unwrap()
         };
         assert_eq!(ties.worktrees_left, std::slice::from_ref(b));
-        assert_eq!(ties.worktree_name.as_deref(), Some("luna-b-2"));
-        let mut chat = cut_short_chat("rw-back", "rw-parent", false, true, false);
-        chat.ties.worktree_name = Some("luna-back".into());
-        chat.ties.worktrees_left = vec!["b".into()];
-        take_up(vec![chat], Vec::new(), Vec::new());
-        {
-            let r = reg().lock().unwrap();
-            assert_eq!(r.worktree_names["rw-back"], "luna-back");
-            assert_eq!(r.worktrees_left["rw-back"], ["b"]);
-        }
-        for id in ["rw-a", "rw-new", "rw-none", "rw-b", "rw-talk", "rw-flag", "rw-back"] {
+        forget("rw-b");
+        tie_back("rw-b", Provider::Claude, &repo, "C:\\no\\such\\account", ties);
+        assert_eq!(reg().lock().unwrap().worktrees_left["rw-b"], std::slice::from_ref(b));
+        for id in ["rw-a", "rw-new", "rw-b", "rw-flag"] {
             forget(id);
         }
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn a_helper_not_back_has_what_luna_named_told_of_and_then_makes_another() {
-        let Some((root, repo, made)) = repo_with("notback", &["luna-gone"]) else { return };
-        named_helper("nb-chat", &repo, "luna-gone");
-        let k = reg().lock().unwrap().known["nb-chat"].clone();
-        leave_half_made("nb-chat", &k);
-        assert!(worktrees_left_line("nb-chat").contains(made[0].as_str()));
-        assert_eq!(reg().lock().unwrap().worktree_names["nb-chat"], "luna-gone-2");
-        forget("nb-chat");
         let _ = std::fs::remove_dir_all(&root);
     }
 }
