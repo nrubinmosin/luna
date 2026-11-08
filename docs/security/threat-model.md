@@ -339,3 +339,26 @@ Residuals:
   same-user process racing the check could redirect a write. Covered by R3.
 - **R7. Single signing key** for updates, no rollback index beyond Tauri's
   version comparison. Accepted for a single-maintainer project.
+
+## 9. Supply chain
+
+What Luna is built from: the crates in `src-tauri/Cargo.lock`, the npm
+packages in `pnpm-lock.yaml`, the toolchain images in `docker/`, the GitHub
+Actions in `.github/workflows/`, and the commits themselves. A malicious or
+vulnerable one reaches users through the release (B6). The checks below run in
+`.github/workflows/security.yml` on every pull request, every push to master and
+weekly, and locally through `scripts/supply-chain.ps1`; they need the network,
+so the gate (`scripts/gate.ps1`) does not run them.
+
+| Threat | Control | Residual |
+| --- | --- | --- |
+| A dependency with a published vulnerability | cargo-deny's advisories check against the RustSec database (`src-tauri/deny.toml`); `pnpm audit`, production and dev packages, failing on high and critical; Dependabot alerts and security updates. An ignore names its reason and an expiry date, past which the check fails | moderate and low npm advisories are reported, not refused; a vulnerability not yet in a database is not seen; between weekly runs, a new advisory surfaces on the next PR or Dependabot alert |
+| An abandoned or unsound crate | cargo-deny fails on RustSec's unmaintained and unsound advisories anywhere in the tree, not only in direct dependencies | the ones ignored in `deny.toml` (Linux-only, through zbus 5 and gtk-rs 0.18, glib's unsound iterator among them) until their upstreams move; each ignore's reason and expiry are checked |
+| A license the project cannot distribute under, or whose terms a release breaks | cargo-deny's license allowlist, derived from the tree, each unusual entry justified in `deny.toml`; the installer and the release carry `THIRD-PARTY-NOTICES.txt` (`scripts/third-party-notices.ps1`) with every shipped crate's and npm package's license texts and source, the standard library's inventory, and what the build tools and the installer add (`third-party-licenses/components.json`); the script fails on a shipped package without its text, the gate on a listed component the tree has moved past | npm licenses are listed, not checked against an allowlist; the shipped set is cargo metadata's and pnpm's view of the tree, which may include a little that the linker or bundler drops |
+| A crate from an unexpected registry or a git repository | cargo-deny's sources check: crates.io only; wildcard requirements refused | the npm registry is trusted as configured; lockfile integrity hashes (both trees, `--locked`, `--frozen-lockfile`) hold each version to the bytes first resolved |
+| A malicious version of a known package (account takeover, typosquat) | lockfiles pinned, Dependabot moves them weekly through the whole gate; versions a few months old preferred for tools; the release's SBOMs record what shipped | not detected by any check here until an advisory names it; build scripts, proc macros and npm install scripts run in the build containers, where the release build also holds the updater key (B6) |
+| A credential committed to the repository | gitleaks over each pull request's commits and weekly over master's whole history, a finding printed as its rule, file, line and commit only, never the text around it; GitHub secret scanning with push protection | gitleaks' default rules only; a secret already pushed must be rotated, not just removed |
+| A flaw in Luna's own code or workflows of a kind CodeQL knows | CodeQL code scanning of the TypeScript, the Rust and the workflows (default query suites), results in the repository's Security tab | build-mode none on a Linux runner: what macros and build scripts generate is seen only as far as extraction resolves it, and the Windows-only modules get no semantic analysis; queries cover known patterns, not Luna's own authorization logic (sections 4-6) |
+| A compromised Action or tool | every Action pinned by commit SHA, images by digest, cargo-deny's binary by SHA-256, gitleaks' image by digest; Dependabot moves the Actions and images | the tools themselves are trusted at the pinned version; `apt-get` in the Dockerfiles installs moving distro packages |
+| Dependency code reaching a CI credential | the supply-chain jobs hold only `contents: read`, checkouts keep no credentials; CodeQL's analysis, whose Rust extraction can run the tree's build scripts, holds no write permission, and its results are uploaded by a separate job that runs no project code | the release build still runs dependency code with the updater key present (B6) |
+

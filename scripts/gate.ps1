@@ -100,8 +100,31 @@ $steps = @(
             Invoke-Checked 'release-lib tests' { pwsh -NoProfile -File (Join-Path $RepoRoot 'scripts/release-lib.test.ps1') }
         }
     }
+    @{
+        # What the third-party notices are made of (notices-lib.ps1), on a
+        # made-up tree: the notices script itself needs the registries.
+        Name  = 'notices-lib tests'
+        Group = 'frontend'
+        Run   = {
+            Invoke-Checked 'notices-lib tests' { pwsh -NoProfile -File (Join-Path $RepoRoot 'scripts/notices-lib.test.ps1') }
+        }
+    }
     New-ScriptStep 'test'
     New-ScriptStep 'build'
+    @{
+        # What the notices list beyond the lockfiles' packages, against the tree:
+        # each entry of third-party-licenses/components.json still at the version
+        # it was checked against, and every helper the build tools wrote into
+        # the bundle just built listed, and nothing listed that it lacks.
+        Name  = 'third-party components listed'
+        Group = 'frontend'
+        Run   = {
+            . (Join-Path $RepoRoot 'scripts/notices-lib.ps1')
+            $components = @((Get-Content (Join-Path $RepoRoot 'third-party-licenses/components.json') -Raw | ConvertFrom-Json).components)
+            Assert-ComponentTies $components (Get-Content (Join-Path $RepoRoot 'src-tauri/Cargo.lock') -Raw) (Get-Content (Join-Path $RepoRoot 'pnpm-lock.yaml') -Raw)
+            Assert-BundledHelpers (Join-Path $RepoRoot 'dist') $components
+        }
+    }
     @{
         Name  = 'Linux toolchain image'
         Group = 'rust'

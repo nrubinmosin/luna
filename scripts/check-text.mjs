@@ -37,9 +37,15 @@ const MARKER_LINE = new RegExp(String.raw`^\s*(?:\/\/+|#|<!--|\/\*+|\*|--)` + MA
 /** The repository's root: every path is taken relative to it. */
 export const ROOT = fileURLToPath(new URL('..', import.meta.url));
 
-// Not text anyone writes (lockfiles, generated schemas), and this checker and
-// its tests, which spell out the very words they look for.
-const SKIP_PATHS = [/(^|\/)pnpm-lock\.yaml$/, /(^|\/)Cargo\.lock$/, /^src-tauri\/gen\//];
+// Not text anyone here writes (lockfiles, generated schemas, other projects'
+// license texts kept verbatim), and this checker and its tests, which spell out
+// the very words they look for.
+const SKIP_PATHS = [
+  /(^|\/)pnpm-lock\.yaml$/,
+  /(^|\/)Cargo\.lock$/,
+  /^src-tauri\/gen\//,
+  /^third-party-licenses\/(crates|npm|tools|installer)\//
+];
 const SKIP_FILES = new Set(['scripts/check-text.mjs', 'scripts/check-text.test.mjs']);
 
 // A file's type is its extension, or its name when it has none (`.gitignore`).
