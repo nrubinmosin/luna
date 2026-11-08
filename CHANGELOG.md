@@ -52,6 +52,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - `luna_list` names each account with its defaults and usage but no longer its
   models, Codex's catalog with every model's levels being most of what a
   listing cost an agent that lists often; `models: true` brings them back.
+- A notice says which lines of its answer file are the report (`lines 1-N of
+  M`), and `luna_read` with `report: true` gives the report alone, so an agent
+  that wants only the report need not read everything else the helper said.
 
 ### Fixed
 

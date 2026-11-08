@@ -99,14 +99,33 @@ fn own_words(messages: Vec<Message>, stopped: bool) -> Said {
 /// line (`begins`) — a caller that had a long answer cut read the whole of it
 /// back anyway, and a long notice reaches the CLI as a paste.
 pub(super) fn answer_file(id: &str, replies: &Said) -> String {
-    answer_where(note_file(id, &answer_text(replies)).as_deref())
+    let text = answer_text(replies);
+    answer_where(note_file(id, &text).as_deref(), report_span(replies, &text))
 }
 
-pub(super) fn answer_where(file: Option<&std::path::Path>) -> String {
-    match file {
-        Some(path) => format!("the answer is in {}, its report first", path.display()),
-        None => "luna_read gives the answer".into(),
+/// Where the answer is, and with `span` (`report_span`) which lines of the file
+/// are the report: a caller that wants only the report reads those.
+pub(super) fn answer_where(file: Option<&std::path::Path>, span: Option<(usize, usize)>) -> String {
+    match (file, span) {
+        (Some(path), Some((report, all))) if report < all => {
+            format!("the answer is in {}, its report first (lines 1-{report} of {all})", path.display())
+        }
+        (Some(path), _) => format!("the answer is in {}, its report first", path.display()),
+        (None, _) => "luna_read gives the answer".into(),
     }
+}
+
+/// How many lines of `text`, an answer file that opens with `replies`'s report
+/// (`answer_text`), are the report, and how many it has in all. None with
+/// nothing said.
+pub(super) fn report_span(replies: &Said, text: &str) -> Option<(usize, usize)> {
+    let report = replies.get(report_of(replies))?;
+    Some((report.lines().count().max(1), text.lines().count().max(1)))
+}
+
+/// The report alone (`report_of`), what `luna_read` with `report: true` gives.
+pub(super) fn report_text(replies: &Said) -> Option<String> {
+    replies.get(report_of(replies)).cloned()
 }
 
 /// `text` in a file for a notice to name, under `notes_dir`. Named by what it
@@ -225,9 +244,33 @@ mod tests {
     use crate::agents::read::Message;
 
     #[test]
+    fn a_notice_says_which_lines_are_the_report() {
+        let replies = Said::one_turn(vec![
+            "Let me look.".to_string(),
+            format!("REPORT: line one\nline two\nline three {}", "x".repeat(400)),
+            "Nothing else changed.".to_string(),
+        ]);
+        let line = answer_file("span", &replies);
+        assert!(line.ends_with(", its report first (lines 1-3 of 15)"), "{line}");
+        let file = line.trim_start_matches("the answer is in ").split(", its report first").next().unwrap().to_string();
+        let whole = std::fs::read_to_string(&file).unwrap();
+        let _ = std::fs::remove_file(&file);
+        let head: Vec<&str> = whole.lines().take(3).collect();
+        assert_eq!(head[0], "REPORT: line one");
+        assert!(head[2].starts_with("line three"));
+        assert_eq!(whole.lines().count(), 15);
+        assert_eq!(report_text(&replies).unwrap().lines().count(), 3);
+        // A file that is the report alone says nothing of lines.
+        let one = answer_file("span", &Said::one_turn(vec!["Done.".into()]));
+        assert!(one.ends_with(", its report first"), "{one}");
+        let _ = std::fs::remove_file(one.trim_start_matches("the answer is in ").trim_end_matches(", its report first"));
+        assert_eq!(report_text(&Said::default()), None);
+    }
+
+    #[test]
     fn an_answer_file_puts_the_report_first_and_the_last_word_next() {
         let read = |line: String| {
-            let file = line.trim_start_matches("the answer is in ").trim_end_matches(", its report first").to_string();
+            let file = line.trim_start_matches("the answer is in ").split(", its report first").next().unwrap().to_string();
             let whole = std::fs::read_to_string(&file).unwrap();
             let _ = std::fs::remove_file(&file);
             whole

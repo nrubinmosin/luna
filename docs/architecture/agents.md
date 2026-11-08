@@ -213,7 +213,10 @@ turn, stopped on a prompt (once per stop) or exited.
   by itself (`Said::by_cli`, a background job's end), the longest message of 400
   or more before it), then the last, then the rest. The notice quotes about
   150 characters of the report's first line (`opening_line`), not for a failed
-  turn.
+  turn, and the report's lines in the file (`report_span`: `lines 1-N of M`).
+  `luna_read` with `report: true` (`read::report_read`) gives that report alone,
+  from `since`, else the debt's offset, else the transcript's start, and hands
+  nothing over.
 - A `wait` still out for that answer (`waits`) delivers it instead; if it has
   not within 10 s the notice goes (Claude Code moves an MCP call past 120 s to
   the background and may drop it).
