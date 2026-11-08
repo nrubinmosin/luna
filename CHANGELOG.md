@@ -35,6 +35,11 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   requires of a CycloneDX file. Both SBOMs now carry one and are checked for it
   as soon as they are made, and the attestations use `actions/attest` in place
   of the deprecated `actions/attest-sbom`.
+- The release and test builds failed: `tauri build` refuses a Tauri crate and its
+  npm package on different minor versions, and the notification plugin's crate
+  had moved to 2.8 while `@tauri-apps/plugin-notification` stayed at 2.7. The
+  package is on 2.8 now, and the gate checks every such pair in the lockfiles
+  (`pnpm check:tauri`), so a bump to one side alone fails there.
 
 ## [0.10.0] - 2026-11-08
 
