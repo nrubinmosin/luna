@@ -302,7 +302,7 @@ fn tools() -> Value {
             "inputSchema": s(json!({
                 "id": { "type": "string" },
                 "text": { "type": "string" },
-                "interrupt": { "type": "boolean", "description": "stop its current turn first" }
+                "interrupt": { "type": "boolean", "description": "stop its current turn first (yours only)" }
             }), &["id", "text"]),
             "annotations": acts
         },

@@ -32,7 +32,7 @@ on one of the user's accounts.
 - `luna_list` `ids: [..]`: those rows alone, of any session (unknown ids in `unknown`), no
   accounts unless `accounts: true`; `accounts: false` drops them;
   `ids: []` with `accounts: true`: accounts alone. Their models only with `models: true`.
-- You kill and delete only sessions you spawned and theirs. Any other session you can read,
+- You interrupt, kill and delete only sessions you spawned and theirs. Any other session you can read,
   wait on and send text to. A deleted parent's helper passes to its parent; with none, only
   the user can stop or delete it, and a background one goes once idle for 30 min.
 - At most eight helpers under one chat. A helper given `tools: true` gets these tools too,
@@ -170,8 +170,8 @@ on one of the user's accounts.
 - `luna_send` to a working session is `queued`: a visible CLI takes it into the running turn
   or the next; a background Claude helper at its next tool boundary (`joined`; a long tool
   or subagent delays it); background Codex the next turn. `luna_wait` with the
-  `turnsEnded` returned waits for whichever answers it. `interrupt: true` makes the text the
-  next turn, behind any queued (`queued` if that turn would not stop). Where the user is
+  `turnsEnded` returned waits for whichever answers it. `interrupt: true` (your own helpers and
+  theirs only) makes the text the next turn, behind any queued (`queued` if that turn would not stop). Where the user is
   typing, or left a draft Luna cannot put aside (Codex's), the result says `held: true`: Luna
   types it in once they are done, and a `luna_wait` waits for that first. Do not send again.
 - `autoDelete`: Luna deletes the helper 30 minutes after its answer reached you, not while a
