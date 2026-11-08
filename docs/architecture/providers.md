@@ -137,7 +137,12 @@ transcript `projects/<cwd>/<sid>.jsonl`.
 - `registry.rs`: registry and meta. `claude -p` writes a `<pid>.json` too, so
   past the pid and the session it was told to resume, the cwd + start-time
   fallback takes only `entrypoint: cli`.
-- `transcript.rs`: where a transcript is, and the conversation.
+- `transcript.rs`: where a transcript is, and the conversation. A read from a
+  cursor (a plain byte offset its callers hold) starts in the state the lines
+  before it left: a CLI prompt still open makes what answers it open a turn.
+  That state goes with the cursor a read hands back, kept per file and cursor;
+  for any other cursor it is read back from the file in 64 KiB chunks, 8 MiB
+  and lines of 1 MiB at most, a prompt further back counting as answered.
 - `ending.rs`: context, model, last words, API error, pending tool.
 - `titles.rs`: order `custom-title` (a `/rename`) → registry name with
   `nameSource: user` → `ai-title` → first prompt (only while there is no title).

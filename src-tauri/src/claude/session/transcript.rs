@@ -100,50 +100,117 @@ pub(super) fn located_transcript(account_path: &str, cwd: &str, session_id: &str
 /// since cut short or written anew, where it would land mid-line: the file is
 /// read from the top. A read from a cursor gives what one from the top gives
 /// from there: a CLI prompt the lines before it end on still makes what answers
-/// it open a turn (`after_cli`), so the cursor stays a byte offset its callers
-/// can hold.
+/// it open a turn (`after_cli`). The cursor stays a byte offset its callers can
+/// hold; the state at it comes from the read that handed it back, or failing
+/// that is read back from the file within REBUILD_SCAN.
 pub fn messages_from(path: &Path, from: u64, with_tools: bool) -> (Vec<crate::agents::Message>, u64) {
     let from = if std::fs::metadata(path).is_ok_and(|m| from > m.len()) { 0 } else { from };
-    let mut said = Conversation::resumed(with_tools, from > 0 && cli_prompt_before(path, from, with_tools));
+    let pending = from > 0 && carried(path, from, with_tools).unwrap_or_else(|| cli_prompt_before(path, from, with_tools));
+    let mut said = Conversation::resumed(with_tools, pending);
     let read = crate::pty::complete_lines(path, from, |line| said.line(line));
+    carry(path, read, with_tools, said.cli_prompt);
     (said.messages, read)
 }
 
 /// `messages_from` of a file's bytes, `from` an offset into them.
 pub fn messages_in(bytes: &[u8], from: usize, with_tools: bool) -> (Vec<crate::agents::Message>, usize) {
     let from = if from > bytes.len() { 0 } else { from };
-    let pending = cli_prompt_at_end(&String::from_utf8_lossy(&bytes[..from]), with_tools).unwrap_or(false);
+    let pending = cli_prompt_back(from as u64, with_tools, |start, buf| {
+        buf.copy_from_slice(&bytes[start as usize..start as usize + buf.len()]);
+        true
+    });
     let mut said = Conversation::resumed(with_tools, pending);
     let read = crate::pty::complete_lines_in(&bytes[from..], |line| said.line(line));
     (said.messages, from + read)
 }
 
+/// How much of a file the state at a cursor is read back from, in chunks of
+/// REBUILD_CHUNK: at most REBUILD_SCAN bytes, and through no line longer than
+/// REBUILD_LINE. A CLI prompt further back, or behind such a line, counts as
+/// answered, and what answers it opens no turn of its own. So a read from a
+/// cursor no read handed back costs this much I/O and memory at most, however
+/// much the tool results since have grown the file.
+const REBUILD_CHUNK: usize = 64 * 1024;
+const REBUILD_SCAN: usize = 8 * 1024 * 1024;
+const REBUILD_LINE: usize = 1024 * 1024;
+
+/// What a read ended on, by file, cursor handed back and `with_tools`: whether
+/// a CLI prompt was left open there, and the bytes just before the cursor, so a
+/// file written anew under it is not taken for the one read. The read that goes
+/// on from that cursor carries the state instead of reading it back, which a
+/// caller polling a session does every few seconds.
+type Carried = HashMap<(PathBuf, u64, bool), (Vec<u8>, bool)>;
+
+fn carried_states() -> &'static Mutex<Carried> {
+    static STATES: std::sync::OnceLock<Mutex<Carried>> = std::sync::OnceLock::new();
+    STATES.get_or_init(Default::default)
+}
+
+/// The last bytes before `at`, which a cursor's state goes with.
+fn before_cursor(path: &Path, at: u64) -> Option<Vec<u8>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let start = at.saturating_sub(32);
+    let mut bytes = vec![0; (at - start) as usize];
+    let mut f = std::fs::File::open(path).ok()?;
+    f.seek(SeekFrom::Start(start)).ok()?;
+    f.read_exact(&mut bytes).ok()?;
+    Some(bytes)
+}
+
+fn carried(path: &Path, from: u64, with_tools: bool) -> Option<bool> {
+    let states = carried_states().lock().unwrap_or_else(|e| e.into_inner());
+    let (before, pending) = states.get(&(path.to_path_buf(), from, with_tools))?;
+    (before_cursor(path, from).as_ref() == Some(before)).then_some(*pending)
+}
+
+fn carry(path: &Path, at: u64, with_tools: bool, pending: bool) {
+    let Some(before) = before_cursor(path, at) else { return };
+    let mut states = carried_states().lock().unwrap_or_else(|e| e.into_inner());
+    if states.len() >= CACHE_CAP {
+        states.clear();
+    }
+    states.insert((path.to_path_buf(), at, with_tools), (before, pending));
+}
+
 /// Whether the file up to `from` ends on a prompt the CLI put in itself with
-/// nothing said since. Looked for backwards in windows that grow, as the line
-/// that decides is nearly always the last one or close to it; a window that
-/// does not reach the top starts at its first whole line.
+/// nothing said since (`cli_prompt_back`).
 fn cli_prompt_before(path: &Path, from: u64, with_tools: bool) -> bool {
     use std::io::{Read, Seek, SeekFrom};
     let Ok(mut f) = std::fs::File::open(path) else { return false };
-    let mut size: u64 = 64 * 1024;
+    cli_prompt_back(from, with_tools, |start, buf| f.seek(SeekFrom::Start(start)).is_ok() && f.read_exact(buf).is_ok())
+}
+
+/// Whether the bytes before `from` end on a prompt the CLI put in itself with
+/// nothing said since, read backwards a chunk at a time by `read_at(start,
+/// buf)`, which fills `buf` from `start` or says it cannot. The line that
+/// decides is nearly always the last one or close to it; the bounds are
+/// REBUILD_SCAN and REBUILD_LINE.
+fn cli_prompt_back(from: u64, with_tools: bool, mut read_at: impl FnMut(u64, &mut [u8]) -> bool) -> bool {
+    // The front of what has been read: a line whose start is further back.
+    let mut carried: Vec<u8> = Vec::new();
+    let mut at = from;
     loop {
-        let start = from.saturating_sub(size);
-        let mut bytes = vec![0; (from - start) as usize];
-        if f.seek(SeekFrom::Start(start)).is_err() || f.read_exact(&mut bytes).is_err() {
+        let start = at.saturating_sub(REBUILD_CHUNK as u64);
+        let mut bytes = vec![0; (at - start) as usize];
+        if !read_at(start, &mut bytes) {
             return false;
         }
-        let whole = match (start, bytes.iter().position(|b| *b == b'\n')) {
-            (0, _) => &bytes[..],
-            (_, Some(i)) => &bytes[i + 1..],
-            (_, None) => &[],
+        bytes.extend_from_slice(&carried);
+        // The lines this chunk completes: from its first newline on, or all
+        // of it at the top of the file.
+        let (front, whole) = match (start, bytes.iter().position(|b| *b == b'\n')) {
+            (0, _) => (&[][..], &bytes[..]),
+            (_, Some(i)) => (&bytes[..i], &bytes[i + 1..]),
+            (_, None) => (&bytes[..], &[][..]),
         };
         if let Some(pending) = cli_prompt_at_end(&String::from_utf8_lossy(whole), with_tools) {
             return pending;
         }
-        if start == 0 {
+        if start == 0 || front.len() > REBUILD_LINE || from - start >= REBUILD_SCAN as u64 {
             return false;
         }
-        size = size.saturating_mul(4);
+        carried = front.to_vec();
+        at = start;
     }
 }
 
@@ -407,6 +474,89 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let seen: Vec<(&str, &str, bool)> = msgs.iter().map(|m| (m.role.as_str(), m.text.as_str(), m.after_cli)).collect();
         assert_eq!(seen, [("user", "verify it", false), ("assistant", "The lane runs.", false), ("assistant", "Green.", true)]);
+    }
+
+    /// A file of `size` bytes of tool results after a CLI prompt, as a long
+    /// tool run leaves one: lines of `line` bytes, no turn line among them.
+    fn prompt_then_tool_results(path: &Path, size: usize, line: usize) -> u64 {
+        use std::io::Write;
+        let notice = r#"{"type":"user","origin":{"kind":"task-notification"},"message":{"role":"user","content":"<task-notification>\n<status>completed</status>\n</task-notification>"}}"#;
+        let result = format!(
+            r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"t1","content":"{}"}}]}}}}"#,
+            "x".repeat(line.saturating_sub(100))
+        );
+        let mut out = std::io::BufWriter::new(std::fs::File::create(path).unwrap());
+        writeln!(out, "{notice}").unwrap();
+        for _ in 0..size / (result.len() + 1) {
+            writeln!(out, "{result}").unwrap();
+        }
+        out.flush().unwrap();
+        std::fs::metadata(path).unwrap().len()
+    }
+
+    /// The state at a cursor is read back from the file in fixed chunks, at
+    /// most REBUILD_SCAN bytes and no line longer than REBUILD_LINE, however
+    /// large the file: a CLI prompt further back counts as answered.
+    #[test]
+    fn rebuilding_a_cursors_state_reads_a_bounded_tail_of_a_large_file() {
+        use std::io::{Read, Seek, SeekFrom};
+        let path = std::env::temp_dir().join(format!("luna-claude-rebuild-{}.jsonl", std::process::id()));
+        let read_back = |from: u64| {
+            let mut f = std::fs::File::open(&path).unwrap();
+            let (mut bytes, mut peak) = (0, 0);
+            let started = std::time::Instant::now();
+            let pending = cli_prompt_back(from, false, |start, buf| {
+                bytes += buf.len();
+                peak = peak.max(buf.len());
+                f.seek(SeekFrom::Start(start)).is_ok() && f.read_exact(buf).is_ok()
+            });
+            (pending, bytes, peak, started.elapsed())
+        };
+        // 200 MB of 64 KiB tool results behind the cursor.
+        let end = prompt_then_tool_results(&path, 200 << 20, 64 << 10);
+        let (pending, bytes, peak, took) = read_back(end);
+        eprintln!("200 MB file: read {bytes} bytes, {peak} at most at once, in {took:?}");
+        assert!(!pending, "too far back: answered");
+        assert!(bytes <= REBUILD_SCAN + REBUILD_CHUNK && peak <= REBUILD_CHUNK, "{bytes} bytes read, {peak} at once");
+        // One line of 4 MiB behind the cursor: given up on at REBUILD_LINE.
+        let end = prompt_then_tool_results(&path, 8 << 20, 4 << 20);
+        let (pending, bytes, _, _) = read_back(end);
+        assert!(!pending && bytes <= REBUILD_LINE + 2 * REBUILD_CHUNK, "{bytes} bytes read");
+        // Within the bounds the prompt is found, across chunks and lines.
+        let end = prompt_then_tool_results(&path, 2 << 20, 300 << 10);
+        assert!(read_back(end).0);
+        let started = std::time::Instant::now();
+        let answer = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Green."}]}}"#;
+        std::io::Write::write_all(&mut std::fs::OpenOptions::new().append(true).open(&path).unwrap(), format!("{answer}\n").as_bytes())
+            .unwrap();
+        let (said, _) = messages_from(&path, end, false);
+        assert!(said[0].after_cli && started.elapsed() < std::time::Duration::from_secs(10));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Where a read stopped, the state it ended on goes on with the read from
+    /// its cursor, however far back the prompt is: only a cursor no read
+    /// handed back, or one into a file since written anew, is read back.
+    #[test]
+    fn a_read_carries_its_state_to_the_next_read_from_its_cursor() {
+        let path = std::env::temp_dir().join(format!("luna-claude-carry-{}.jsonl", std::process::id()));
+        let elsewhere = path.with_extension("copy.jsonl");
+        prompt_then_tool_results(&path, REBUILD_SCAN * 2, 64 << 10);
+        let (said, cursor) = messages_from(&path, 0, false);
+        assert!(said.is_empty());
+        let answer = br#"{"type":"assistant","message":{"content":[{"type":"text","text":"Green."}]}}"#;
+        let grown = [std::fs::read(&path).unwrap(), answer.to_vec(), b"\n".to_vec()].concat();
+        std::fs::write(&path, &grown).unwrap();
+        std::fs::write(&elsewhere, &grown).unwrap();
+        assert!(messages_from(&path, cursor, false).0[0].after_cli, "carried from the read that handed the cursor back");
+        assert!(!messages_from(&elsewhere, cursor, false).0[0].after_cli, "read back: further than REBUILD_SCAN");
+        // Written anew under the same cursor: not the file that read ended on.
+        let mut anew = grown.clone();
+        anew[cursor as usize - 2] = b' ';
+        std::fs::write(&path, &anew).unwrap();
+        assert!(!messages_from(&path, cursor, false).0[0].after_cli);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&elsewhere);
     }
 
     /// As a caller waiting on a session sees it: the CLI's own prompt lands in
