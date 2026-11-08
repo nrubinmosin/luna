@@ -127,10 +127,21 @@ try {
         Assert-Equal (Compare-ReleaseVersion '1.2.3' '1.2.3') 0
         Assert-Equal (Compare-ReleaseVersion '1.2.3' '1.2.3-rc.1') 1
         Assert-Equal (Compare-ReleaseVersion '1.2.3-rc.1' '1.2.3-rc.2') -1
+        # SemVer 2.0.0 section 11: identifiers one by one, numbers as numbers
+        # and below words, the shorter set lower.
+        Assert-Equal (Compare-ReleaseVersion '1.2.3-rc.2' '1.2.3-rc.10') -1
+        Assert-Equal (Compare-ReleaseVersion '1.2.3-rc.10' '1.2.3-rc.10') 0
+        $chain = '1.0.0-alpha', '1.0.0-alpha.1', '1.0.0-alpha.beta', '1.0.0-beta', '1.0.0-beta.2', '1.0.0-beta.11', '1.0.0-rc.1', '1.0.0'
+        for ($i = 1; $i -lt $chain.Count; $i++) {
+            if ((Compare-ReleaseVersion $chain[$i - 1] $chain[$i]) -ne -1) { throw "$($chain[$i - 1]) should come before $($chain[$i])" }
+            if ((Compare-ReleaseVersion $chain[$i] $chain[$i - 1]) -ne 1) { throw "$($chain[$i]) should come after $($chain[$i - 1])" }
+        }
     }
 
-    # A CHANGELOG as the repo writes it: the Unreleased section, three versions
-    # with subsections, a bare one, an empty one, and the link definitions.
+    # A CHANGELOG as the repo writes it: the Unreleased section, a version with
+    # code fences (headings and a definition shown as text), a nested list and
+    # reference links, three versions with subsections, a bare one, an empty
+    # one, and the link definitions.
     $changelog = @'
 # Changelog
 
@@ -141,6 +152,30 @@ All notable changes are recorded here.
 ### Fixed
 
 - Not out yet.
+
+## [0.10.2] - 2026-11-10
+
+Tooling notes, with a code block.
+
+### Changed
+
+- A nested list:
+  - with a child item
+  - and another
+
+  ```sh
+  ## example heading
+  ### not a heading
+  [0.9.10]: nope
+  ```
+
+- The [details] are elsewhere; see [the docs][details] and [details][].
+
+~~~
+## another heading, in tildes
+```
+still inside the tilde fence
+~~~
 
 ## [0.10.1] - 2026-11-09
 
@@ -168,8 +203,11 @@ A security and engineering release. Agent tools now follow least privilege.
 
 - Fixes and refinements.
 
-[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.10.1...HEAD
+[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.10.2...HEAD
+[0.10.2]: https://github.com/nrubinmosin/luna/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/nrubinmosin/luna/compare/v0.10.0...v0.10.1
+[details]: https://example.com/details
+[unused]: https://example.com/unused
 '@ -replace "`r`n", "`n"
     $tree = New-Tree notes
     Set-Content (Join-Path $tree 'CHANGELOG.md') $changelog -NoNewline
@@ -195,7 +233,61 @@ A security and engineering release. Agent tools now follow least privilege.
         $last = Get-ChangelogSection '0.9.10' $tree
         Assert-Equal $last.Body '- Fixes and refinements.'
         Assert-Equal $last.Intro '- Fixes and refinements.'
-        Assert-Equal ((Get-ChangelogVersions $tree) -join ' ') '0.10.1 0.10.0 0.9.11 0.9.10'
+        Assert-Equal ((Get-ChangelogVersions $tree) -join ' ') '0.10.2 0.10.1 0.10.0 0.9.11 0.9.10'
+    }
+
+    Check 'a heading or a definition inside a code fence is text, not structure' {
+        $section = Get-ChangelogSection '0.10.2' $tree
+        Assert-Equal $section.Intro 'Tooling notes, with a code block.'
+        $expected = @'
+Tooling notes, with a code block.
+
+### Changed
+
+- A nested list:
+  - with a child item
+  - and another
+
+  ```sh
+  ## example heading
+  ### not a heading
+  [0.9.10]: nope
+  ```
+
+- The [details] are elsewhere; see [the docs][details] and [details][].
+
+~~~
+## another heading, in tildes
+```
+still inside the tilde fence
+~~~
+'@ -replace "`r`n", "`n"
+        Assert-Equal $section.Body $expected.Trim()
+        # The section after the fences is still found whole.
+        Assert-Equal (Get-ChangelogSection '0.10.1' $tree).Intro 'A small release.'
+        # The definition shown in the fence is not one: 0.9.10 keeps its real body.
+        Assert-Equal (Get-ChangelogSection '0.9.10' $tree).Body '- Fixes and refinements.'
+    }
+
+    Check 'the link definitions a lifted section uses come with it, once' {
+        $notes = New-ReleaseNotes -Version '0.10.2' -Previous 'v0.10.1' -Root $tree
+        $tail = "CHANGELOG.md#0102---2026-11-10).`n`n[details]: https://example.com/details`n"
+        if (-not $notes.EndsWith($tail)) { throw "the details definition is not appended once at the end:`n$notes" }
+        if ($notes -match '\[unused\]|\[0\.10\.[12]\]: |\[0\.9\.10\]: https') { throw "a definition nothing refers to was appended:`n$notes" }
+        Assert-Equal ([regex]::Matches($notes, '\[details\]: ').Count) 1
+        # Definitions go after the verify block too, and still once across several sections.
+        $notes = New-ReleaseNotes -Version '0.10.2' -Previous 'v0.9.11' -Checksums "ff84  Luna_0.10.2_x64-setup.exe`n" -Root $tree
+        if (-not $notes.EndsWith("``````" + "`n`n[details]: https://example.com/details`n")) { throw "no definition after the verify block:`n$notes" }
+        Assert-Equal ([regex]::Matches($notes, '\[details\]: ').Count) 1
+        # Notes without references get none.
+        if ((New-ReleaseNotes -Version '0.10.1' -Previous 'v0.10.0' -Root $tree) -match '\]: https') { throw 'a definition appended to notes without references' }
+    }
+
+    Check 'a release behind the latest published one is refused' {
+        Assert-Throws { New-ReleaseNotes -Version '0.10.0' -Previous 'v0.10.1' -Root $tree } 'v0.10.1, the latest published release, is not older than 0.10.0'
+        Assert-Throws { New-ReleaseNotes -Version '0.10.1' -Previous 'v0.10.1' -Root $tree } 'not older than 0.10.1'
+        # An older baseline named on purpose renders.
+        if ((New-ReleaseNotes -Version '0.10.1' -Previous 'v0.9.11' -Root $tree) -notmatch 'Also from 0\.10\.0') { throw 'an explicit older baseline did not render' }
     }
 
     Check 'a missing or empty CHANGELOG section is refused, and Unreleased never taken' {

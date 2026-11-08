@@ -111,66 +111,133 @@ function Get-CiVerdict([object[]]$Runs) {
     'red'
 }
 
-# Two versions in the order the updater and semver put them: negative when
-# $A is the older, zero, positive. A release outranks its own pre-releases.
+# Two versions in the order semver (2.0.0, section 11) and the updater put
+# them: -1 when $Left is the older, 0, 1. A release outranks its own
+# pre-releases; pre-release identifiers compare one by one, numeric ones as
+# numbers and below alphanumeric ones, and the shorter set is the lower when
+# equal so far: rc.2 < rc.10, alpha < alpha.1 < beta.
 function Compare-ReleaseVersion([string]$Left, [string]$Right) {
     $l = @($Left -split '-', 2); $r = @($Right -split '-', 2)
     $order = ([version]$l[0]).CompareTo([version]$r[0])
-    if ($order -ne 0) { return $order }
+    if ($order -ne 0) { return [math]::Sign($order) }
     if ($l.Count -ne $r.Count) { return $(if ($l.Count -eq 1) { 1 } else { -1 }) }
     if ($l.Count -eq 1) { return 0 }
-    [string]::CompareOrdinal($l[1], $r[1])
+    $li = @($l[1] -split '\.'); $ri = @($r[1] -split '\.')
+    for ($i = 0; $i -lt [math]::Min($li.Count, $ri.Count); $i++) {
+        $ln = $li[$i] -match '^\d+$'; $rn = $ri[$i] -match '^\d+$'
+        $order = if ($ln -and $rn) { ([bigint]$li[$i]).CompareTo([bigint]$ri[$i]) }
+        elseif ($ln) { -1 } elseif ($rn) { 1 }
+        else { [string]::CompareOrdinal($li[$i], $ri[$i]) }
+        if ($order -ne 0) { return [math]::Sign($order) }
+    }
+    [math]::Sign($li.Count - $ri.Count)
 }
 
 # A version heading of CHANGELOG.md, Keep a Changelog style: "## [1.2.3] - 2026-11-08".
 $ChangelogHeading = '^## \[(?<version>[^\]]+)\](?: - (?<date>\S+))?\s*$'
 
-# CHANGELOG.md's lines; the release notes come from it, so a tree without one
-# cannot be released.
+# CHANGELOG.md read once: Sections, in the file's order, each with Version,
+# Date, Heading (the line's text after "## "), Lines (its body as written, up
+# to the next ## heading; the reference-link definitions taken out) and
+# IntroEnd (how many of those lines come before its first ### subsection); and
+# Links, every "[name]: url" definition from anywhere in the file, by name
+# lowercased, as CommonMark matches them. A heading, a definition or a ###
+# inside a code fence is text, not structure: a fence of three or more
+# backticks or tildes closes only on the same character, at least as many
+# (CommonMark 4.5), so a `## heading` shown in a code block neither ends a
+# section nor opens one. The release notes come from this file, so a tree
+# without one cannot be released.
 function Read-Changelog([string]$Root) {
     $path = Join-Path $Root 'CHANGELOG.md'
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "no CHANGELOG.md in $Root; the release notes are made from it" }
-    [IO.File]::ReadAllText($path) -split "\r?\n"
+    $sections = [System.Collections.Generic.List[object]]::new()
+    $links = @{}
+    $current = $null
+    $fence = $null
+    foreach ($line in [IO.File]::ReadAllText($path) -split "\r?\n") {
+        if ($fence) {
+            if ($line -match "^ {0,3}[$($fence[0])]{$($fence.Length),}\s*$") { $fence = $null }
+            if ($current) { $current.Lines.Add($line) }
+            continue
+        }
+        if ($line -match '^ {0,3}(?<fence>`{3,}|~{3,})') {
+            $fence = $Matches.fence
+            if ($current) { $current.Lines.Add($line) }
+            continue
+        }
+        if ($line -match $ChangelogHeading) {
+            $current = [pscustomobject]@{
+                Version  = $Matches.version
+                Date     = $Matches.date
+                Heading  = $line.Substring(3).Trim()
+                Lines    = [System.Collections.Generic.List[string]]::new()
+                IntroEnd = -1
+            }
+            $sections.Add($current)
+            continue
+        }
+        if ($line -match '^## ') { $current = $null; continue }
+        if ($line -match '^\[(?<name>[^\]]+)\]:\s*(?<url>\S+)\s*$') {
+            $links[$Matches.name.ToLowerInvariant()] = [pscustomobject]@{ Name = $Matches.name; Url = $Matches.url }
+            continue
+        }
+        if ($current) {
+            if ($current.IntroEnd -lt 0 -and $line -match '^### ') { $current.IntroEnd = $current.Lines.Count }
+            $current.Lines.Add($line)
+        }
+    }
+    [pscustomobject]@{ Sections = $sections; Links = $links }
 }
 
 # The versions CHANGELOG.md has sections for, in the file's order (newest
 # first); [Unreleased] is not one.
 function Get-ChangelogVersions([string]$Root = $RepoRoot) {
-    @(Read-Changelog $Root | ForEach-Object {
-        if ($_ -match $ChangelogHeading -and $Matches.version -ne 'Unreleased') { $Matches.version }
-    })
+    @((Read-Changelog $Root).Sections | Where-Object { $_.Version -ne 'Unreleased' } | ForEach-Object { $_.Version })
 }
 
-# One version's section of CHANGELOG.md: Version, Date, Heading (the line's
-# text after "## "), Intro (the text before its first ### subsection, which
-# latest.json carries for the update chip) and Body (intro and subsections as
-# written; the link definitions at the end of the file left out). Throws when
-# the heading is missing or the section holds no text or bullets, and for
+# One version's section of CHANGELOG.md: Version, Date, Heading, Intro (the
+# text before its first ### subsection, which latest.json carries for the
+# update chip) and Body (intro and subsections as written). Throws when the
+# heading is missing or the section holds no text or bullets, and for
 # [Unreleased], whose content is not released as it is.
 function Get-ChangelogSection([string]$Version, [string]$Root = $RepoRoot) {
     Assert-VersionFormat $Version
-    $lines = Read-Changelog $Root
-    $start = -1
-    for ($i = 0; $i -lt $lines.Count; $i++) {
-        if ($lines[$i] -match $ChangelogHeading -and $Matches.version -ceq $Version) { $start = $i; $date = $Matches.date; break }
-    }
-    if ($start -lt 0) { throw "CHANGELOG.md has no section for $Version (## [$Version] - <date>); write its entry first" }
-    $body = foreach ($line in $lines[($start + 1)..($lines.Count - 1)]) {
-        if ($line -match '^## ') { break }
-        if ($line -match '^\[[^\]]+\]:\s*\S+\s*$') { continue }
-        $line
-    }
-    $text = (@($body) -join "`n").Trim()
+    $section = (Read-Changelog $Root).Sections | Where-Object { $_.Version -ceq $Version } | Select-Object -First 1
+    if (-not $section) { throw "CHANGELOG.md has no section for $Version (## [$Version] - <date>); write its entry first" }
+    $text = ($section.Lines -join "`n").Trim()
     if (-not @($text -split "`n" | Where-Object { $_.Trim() -and $_ -notmatch '^###' })) {
         throw "the $Version section of CHANGELOG.md is empty; write what changed before releasing it"
     }
+    $introLines = if ($section.IntroEnd -lt 0) { $section.Lines } elseif ($section.IntroEnd -eq 0) { @() } else { $section.Lines.GetRange(0, $section.IntroEnd) }
     [pscustomobject]@{
         Version = $Version
-        Date    = $date
-        Heading = $lines[$start].Substring(3).Trim()
-        Intro   = (($text -split '(?m)^###', 2)[0]).Trim()
+        Date    = $section.Date
+        Heading = $section.Heading
+        Intro   = (@($introLines) -join "`n").Trim()
         Body    = $text
     }
+}
+
+# The reference-link definitions ("[name]: url") the Markdown $Text uses, in
+# the order first used, from $Links as Read-Changelog collected them: a
+# "[name]" not followed by "(" refers to one, outside code fences. A
+# section's "[details]" would otherwise lose its target once lifted out of
+# the file.
+function Get-UsedLinkDefinitions([string]$Text, [hashtable]$Links) {
+    $used = [ordered]@{}
+    $fence = $null
+    foreach ($line in $Text -split "`n") {
+        if ($fence) {
+            if ($line -match "^ {0,3}[$($fence[0])]{$($fence.Length),}\s*$") { $fence = $null }
+            continue
+        }
+        if ($line -match '^ {0,3}(?<fence>`{3,}|~{3,})') { $fence = $Matches.fence; continue }
+        foreach ($match in [regex]::Matches($line, '\[([^\]]+)\](?!\()')) {
+            $name = $match.Groups[1].Value.ToLowerInvariant()
+            if ($Links.ContainsKey($name) -and -not $used.Contains($name)) { $used[$name] = $Links[$name] }
+        }
+    }
+    @($used.Values | ForEach-Object { "[$($_.Name)]: $($_.Url)" })
 }
 
 # The release notes of $Version, from CHANGELOG.md: its section as written;
@@ -178,10 +245,13 @@ function Get-ChangelogSection([string]$Version, [string]$Root = $RepoRoot) {
 # the tag of the latest published release (v0.10.0 was tagged and never
 # published, so 0.10.1's notes carry its changes too; '' when nothing has
 # been published yet, and then $Version's section alone); the compare view
-# and the CHANGELOG, linked; and with -Checksums (the SHA256SUMS text) a
-# Verify section with the commands docs/releasing.md documents and the
-# checksums themselves. Reads nothing but the tree at $Root. Returns the
-# Markdown text.
+# and the CHANGELOG, linked; with -Checksums (the SHA256SUMS text) a Verify
+# section with the commands docs/releasing.md documents and the checksums
+# themselves; and the link definitions the sections use. Refuses a $Previous
+# that is not older than $Version: releases go forward of the latest
+# published one, which installed copies take, so a backport is not a release
+# this pipeline makes, and the notes would span backwards. Reads nothing but
+# the tree at $Root. Returns the Markdown text.
 function New-ReleaseNotes {
     param(
         [Parameter(Mandatory)][string]$Version,
@@ -193,8 +263,11 @@ function New-ReleaseNotes {
     $section = Get-ChangelogSection $Version $Root
     $parts = @($section.Body)
     if ($Previous) {
-        $versions = Get-ChangelogVersions $Root
         $previousVersion = $Previous -replace '^v', ''
+        if ((Compare-ReleaseVersion $previousVersion $Version) -ge 0) {
+            throw "$Previous, the latest published release, is not older than ${Version}: a release goes forward of the one installed copies take (releases/latest). To render the notes against an older baseline anyway, name it with -Previous."
+        }
+        $versions = Get-ChangelogVersions $Root
         for ($i = [array]::IndexOf($versions, $Version) + 1; $i -lt $versions.Count; $i++) {
             if ((Compare-ReleaseVersion $versions[$i] $previousVersion) -le 0) { break }
             $older = Get-ChangelogSection $versions[$i] $Root
@@ -241,6 +314,10 @@ $($Checksums.Trim())
 $fence
 "@
     }
+    # The definitions the lifted sections refer to, once, where Markdown
+    # keeps them: at the end.
+    $definitions = Get-UsedLinkDefinitions ($parts -join "`n`n") (Read-Changelog $Root).Links
+    if ($definitions) { $parts += ($definitions -join "`n") }
     (($parts -join "`n`n") -replace "`r`n", "`n") + "`n"
 }
 
