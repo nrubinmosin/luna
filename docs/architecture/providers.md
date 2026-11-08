@@ -28,14 +28,78 @@ folder (`accounts.rs`), CLI downloads (`cli.rs`), the 429 cool-off
 ## CLI binaries
 
 `cli.rs` keeps Luna's own copies in `<data>/claude-cli/versions/<ver>/claude.exe`
-and `<data>/codex-cli/versions/<ver>/bin/codex.exe`, with `current` pointing at
-the active one ([ADR-0013](../adr/0013-own-cli-binaries.md)). Versions are never
-overwritten; old ones are swept once nobody holds them; `PATH` is the fallback
-until a copy exists. Each channel is checked every six hours. Claude Code is
-verified against its manifest's sha256. Codex comes as the package tarball, the
-only asset with a line in `codex-package_SHA256SUMS`, which also carries
-`codex-command-runner.exe` and the other Windows sandbox helpers; it is unpacked
-whole into the version folder.
+and `<data>/codex-cli/versions/<ver>/bin/codex.exe`, with `current` naming the
+active version folder ([ADR-0013](../adr/0013-own-cli-binaries.md)). Versions are
+never overwritten; old ones are swept once nobody holds them; `PATH` is the
+fallback until a copy exists. Each channel is checked every six hours. Claude
+Code's `manifest.json` is verified against its detached signature
+(`manifest.json.sig`) and Anthropic's release key, pinned in
+`claude/manifest_sig.rs`; the exe then against that manifest's sha256 and
+size. A new key reaches Luna only with a Luna release. The manifest must name
+the version it was fetched for (a signed older manifest served under a newer
+version's URLs is a relabel), and no version below the floor is taken: the
+highest one whose signed manifest Luna has accepted (`<root>/signed-floor`), or
+`MIN_VERSION` (2.1.319, the one last checked live) on a fresh tree. The
+`latest` pointer is not signed, so this is what keeps an old signed release
+from being replayed; a release Anthropic itself pulls back is refused as well,
+logged, until a newer one comes. Codex comes as the
+package tarball, the only asset with a line in `codex-package_SHA256SUMS`, which
+also carries `codex-command-runner.exe` and the other Windows sandbox helpers; it
+is unpacked whole into the version folder.
+
+An install is all or nothing:
+
+1. **Staging.** The fetch writes into `<root>/staging/<ver>-<random>/`, on the
+   same volume as `versions/`. Whatever an earlier pass left in `staging/` (a
+   crash mid-download or mid-unpack) is removed first; a link or junction there,
+   or `staging` itself as one, is removed as itself and never gone into.
+2. **Validation.** The source says what it put there (`Package`): Claude Code
+   the one exe with the signed manifest's sha256 and size; Codex every regular file of
+   the tarball at its tar header's size (the release publishes no hash of the
+   files inside, so the tarball's sha256 is what pins them). The Codex unpack
+   reads the tarball twice through one cap on the decompressed stream
+   (`Capped`: the entries' bytes plus a header, padding and a metadata record
+   each). The first pass reads the headers raw and refuses before anything is
+   written: a PAX record or GNU long name past `MAX_META` (64 KiB; the tar
+   reader would take it into memory whole), a PAX `size` override (Python's
+   `tarfile`, which writes the package, emits one only past 8 GiB), a link,
+   device, pipe or sparse entry, and more than `MAX_ENTRIES` entries or
+   `MAX_BYTES` bytes (2,000 and 4 GiB; a package holds about 50 and 600 MB).
+   The second unpacks with the PAX records applied, budgeting each entry's
+   size as the reader takes it. `validate` checks
+   each is a regular file, not a link, at that size and, where given, that
+   hash, and that the executable is among them.
+3. **Record.** Every file is flushed to disk (`sync_all`), then
+   `luna-install.json` (version, how it was verified, every file with its size
+   and hash where known) is written into the staged folder and flushed, then on
+   Unix every folder below is fsynced: a rename that survives a power cut finds
+   whole files, not names and sizes over contents still in the cache.
+4. **Promotion.** One rename of the staged folder into `versions/` under a name
+   nothing has: `<ver>`, or `<ver>~<n>` while an older `<ver>` folder is still
+   there. An existing folder, which a running session may hold, is never
+   replaced, moved or added to. On Unix `versions/` and `staging/` are fsynced
+   after it. Windows cannot flush a folder without flushing the whole volume
+   (administrator only): NTFS journals the rename, so after a crash it is whole
+   or absent, but a recent one may be undone; then the staged copy is still in
+   `staging/` and the next pass sweeps it and fetches again.
+5. **Flip.** The first time, `<root>/recorded` is written. Then `current` is
+   rewritten through a temp name, flushed before its rename (and its folder
+   fsynced on Unix, `secret::write_private_synced`), to the new folder's name,
+   and the sweep runs.
+
+A folder counts as installed only by its record, with every file it lists
+present at its size; that is checked for each spawn, the hashes only at
+install. Without a record a folder is spawned only in a tree with no
+`recorded` file, which can only be from before records (whose `current` was
+moved only to finished installs); the update pass still fetches its version
+again beside it, and the sweep removes the old one once nothing holds it. In a
+tree with `recorded`, a folder without its record is refused, whatever is in
+it.
+
+The sweep and the cleanup delete nothing through a link or junction: each
+entry is checked with `symlink_metadata` on every component from the CLI root
+down to the path (`link_free_below`), and a folder with one on the way goes by
+`remove_tree`, which removes a link as itself.
 
 ## Defaults
 

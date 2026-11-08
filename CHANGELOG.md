@@ -10,6 +10,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Changed
 
+- `luna_power` disarms with the action `cancel`; `off`, its old name, still
+  works.
 - Release notes are made from this file: a release's notes are its version's
   section, the sections of every version since the last published release, a
   link to the full changes, and the commands and checksums to verify the
@@ -30,6 +32,37 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Fixed
 
+- A CLI install cut short (Luna killed or the PC off while Codex's package was
+  unpacked) could be taken for a finished one on the next check: the executable
+  being there was enough, so Codex ran without its sandbox helpers or from a
+  truncated file. Both CLIs are now fetched into a staging folder, checked file
+  by file against what their release publishes (Claude Code: sha256 and size;
+  Codex: the package's sha256, then each file's size), given a completion
+  record, and moved into place with one rename under a name no folder has, so a
+  version a session is running is never touched. Only a version with its record
+  counts as installed; ones installed before this are fetched again once. The
+  files, the record and (on Unix) the folders are flushed to disk before the
+  version is named current, and once Luna has installed this way a version
+  without its record is never run. Sweeping old versions deletes nothing
+  through a link or junction below them. Codex's package is unpacked with caps
+  on its entries, its bytes as the tar reader writes them, each metadata record
+  and the decompressed stream, and a link entry or PAX size override in it is
+  refused.
+- Shut down and restart when done turn the PC off again. Luna asks Windows
+  itself, with the shutdown privilege turned on, instead of running
+  `shutdown.exe`, which had been failing without a word; a refusal is logged
+  with its Windows error.
+- Windows is asked before any session is closed, so a refusal leaves every chat
+  running, and a shutdown Windows records as canceled after the chats were
+  closed brings them back where they were instead of leaving dead panes. One
+  whose fate Windows does not tell leaves the chats closed and says how to bring
+  them back, rather than reopening them under a shutdown still on its way.
+- Windows' notice during the grace says that open programs are closed by force
+  and unsaved work in them is lost, and so does the user guide.
+- Shutdown winds Luna down the way restart does, so a chat parked mid-turn is
+  not saved as finished.
+- A restart that Windows refuses, or that is canceled, no longer leaves Luna set
+  to start at the next sign-in.
 - The release workflow failed at attesting the npm SBOM (`Unsupported SBOM
   format`): it was written without a serial number, which the attest action
   requires of a CycloneDX file. Both SBOMs now carry one and are checked for it
@@ -51,6 +84,11 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   opening prompt (the name it goes by until the CLI titles it), in Claude Code
   and Codex alike: it is read as the conversation reads it, a stray byte as
   U+FFFD.
+- The release and test builds failed: `tauri build` refuses a Tauri crate and its
+  npm package on different minor versions, and the notification plugin's crate
+  had moved to 2.8 while `@tauri-apps/plugin-notification` stayed at 2.7. The
+  package is on 2.8 now, and the gate checks every such pair in the lockfiles
+  (`pnpm check:tauri`), so a bump to one side alone fails there.
 
 ### Security
 
@@ -71,6 +109,17 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   (`scripts/fuzz.ps1`) that also checks every text read comes out of the
   input, and that a line's length or depth costs no more than its bytes. A
   scheduled workflow runs them weekly.
+- Claude Code's release manifest is verified against its detached OpenPGP
+  signature and Anthropic's release key, pinned in Luna, before the exe's
+  checksum from it is trusted: whoever serves the download bucket can no
+  longer hand Luna an exe of their own with a matching manifest. Codex is
+  still checked only against the checksums of its own release.
+- The signed manifest must name the version it was fetched for, and no Claude
+  Code version below the highest signed one Luna has accepted (or below
+  2.1.319 on a fresh install) is installed, so an old signed release cannot be
+  replayed under the unsigned `latest` pointer. A signature is held to its
+  signed creation and expiration times, and the release key to its expiry
+  where the signature gives one.
 
 ## [0.10.0] - 2026-11-08
 

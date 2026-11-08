@@ -194,6 +194,14 @@ through a link, fails the test instead of being used. Each test is time-boxed
 ends, passed or not. `LUNA_LIVE_CLAUDE_MODEL` / `LUNA_LIVE_CODEX_MODEL` pick a
 model; the account's default is used otherwise, at low effort.
 
+One more ignored test reaches the machine rather than a CLI:
+`power::machine::tests::windows_takes_the_shutdown_request_and_its_abort` asks
+Windows for a real shutdown a minute away, through the call shut-down-when-done
+makes, and aborts it at once; Windows' own notice shows in between. Run it
+alone, by name, from the Windows test executable
+(`luna_lib-*.exe windows_takes_the_shutdown --ignored`), and should the abort
+fail, `shutdown /a` takes the request back.
+
 ### Cost, and why not in CI
 
 Every run spends real quota: a few short turns per provider, on the accounts

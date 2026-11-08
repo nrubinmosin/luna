@@ -14,9 +14,11 @@
 //! arming with someone waiting says so in a notification — then counts down a minute with a notification, and
 //! any activity in that minute cancels the count and leaves the arm in place.
 //! Sleep and hibernate leave the sessions running and stay armed, so after a
-//! wake the same rule applies again; shutdown first asks each CLI to quit, and
-//! restart winds Luna down as a core leaving does and asks Windows to start the
-//! window at the next sign-in, once.
+//! wake the same rule applies again; shutdown and restart ask the OS first, with
+//! a grace, and only on its yes wind Luna down as a core leaving does, each CLI
+//! asked to quit; restart also asks Windows to start the window at the next
+//! sign-in, once. A refusal closes nothing, and a shutdown taken back after the
+//! sessions closed has the window start the chats over.
 //!
 //! A rule may drain: until it fires, agents start nothing new, so it converges
 //! rather than wait on work that keeps making work. Only the tools are refused
