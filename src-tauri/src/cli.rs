@@ -84,6 +84,12 @@ pub struct PackageFile {
 /// everything else, before the rename that makes it a version.
 const RECORD: &str = "luna-install.json";
 
+/// At a provider's root once this code has installed there, before it first
+/// points `current` at anything: from then on a version without its record
+/// is never run (`current_in`). A tree without it is from before records,
+/// whose `current` was only ever moved to a finished install.
+const RECORDED: &str = "recorded";
+
 #[derive(Serialize, Deserialize)]
 pub(crate) struct Record {
     version: String,
@@ -204,7 +210,11 @@ fn current_in(root: &Path, bin_rel: &str) -> Option<Current> {
     let dir = root.join("versions").join(name);
     match read_record(&dir) {
         Ok(record) => intact(&dir, &record, bin_rel).then(|| Current { dir: name.into(), version: record.version, recorded: true }),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+        // Without its record, a directory is run only in a tree this code has
+        // never installed into: there it can only be from before records. In
+        // one it has, it is an install whose record is gone, which proves
+        // nothing about the files beside it.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound && fs::symlink_metadata(root.join(RECORDED)).is_err() => {
             dir.join(bin_rel).is_file().then(|| Current { dir: name.into(), version: name.into(), recorded: false })
         }
         Err(_) => None,
@@ -410,21 +420,27 @@ fn update_in(
         Some(dir) => dir,
         None => install_in(root, bin_rel, latest, fetch)?,
     };
+    if fs::symlink_metadata(root.join(RECORDED)).is_err() {
+        crate::secret::write_private_synced(&root.join(RECORDED), b"versions here are installed with completion records\n")
+            .map_err(|e| format!("write {RECORDED}: {e}"))?;
+    }
     // The flip is the last step, so a crash anywhere above leaves `current`
     // pointing at a directory that is known to be complete.
     // Through a temp file: the core reads `current` for every spawn, and a
     // read between a plain write's truncate and its bytes would find no
     // version and spawn whatever is on PATH. Private as it is made, under a
-    // random name (`secret::write_private`): in a data dir open to others a
-    // `current` of theirs would pick the binary every session runs.
-    crate::secret::write_private(&root.join("current"), dir.as_bytes()).map_err(|e| format!("write current: {e}"))?;
+    // random name: in a data dir open to others a `current` of theirs would
+    // pick the binary every session runs. Synced, so a power cut leaves the
+    // old name or the new one.
+    crate::secret::write_private_synced(&root.join("current"), dir.as_bytes()).map_err(|e| format!("write current: {e}"))?;
     prune_in(root, bin_rel);
     Ok((dir, true))
 }
 
 /// Fetches `version` into a fresh staging directory, holds it to what the
-/// fetch vouched for, records it, and renames it into `versions/`. Returns
-/// the name it got there. Whatever fails, the staged directory goes.
+/// fetch vouched for, puts it and its record on disk, and renames it into
+/// `versions/`. Returns the name it got there. Whatever fails, the staged
+/// directory goes.
 fn install_in(
     root: &Path,
     bin_rel: &str,
@@ -433,20 +449,74 @@ fn install_in(
 ) -> Result<String, String> {
     let staging = clean_staging(root)?;
     let staged = staging.join(format!("{version}-{}", crate::secret::random_hex(4)));
+    let versions = root.join("versions");
     fs::create_dir(&staged).map_err(|e| format!("mkdir {}: {e}", staged.display()))?;
     let done = fetch(&staged)
         .and_then(|package| validate(&staged, version, bin_rel, package))
-        .and_then(|record| {
-            let json = serde_json::to_vec_pretty(&record).map_err(|e| e.to_string())?;
-            crate::secret::write_private(&staged.join(RECORD), &json).map_err(|e| format!("write {RECORD}: {e}"))
-        })
-        .and_then(|()| promote(&staged, &root.join("versions"), version));
-    if done.is_err() {
+        .and_then(|record| persist(&staged, &record))
+        .and_then(|()| promote(&staged, &versions, version));
+    let done = done.and_then(|name| {
+        // The rename made durable before `current` names its result. Where
+        // the platform cannot (Windows, `secret::sync_dir`), a rename a power
+        // cut undoes leaves the staged copy, which the next pass sweeps and
+        // fetches again; one that stays finds its files already on disk.
+        crate::secret::sync_dir(&versions)
+            .and_then(|()| crate::secret::sync_dir(&staging))
+            .map_err(|e| format!("sync {}: {e}", versions.display()))?;
+        Ok(name)
+    });
+    if done.is_err() && fs::symlink_metadata(&staged).is_ok() {
         if let Err(e) = remove_tree(&staged) {
             crate::log::info("cli", &format!("leaving {} for the next pass: {e}", staged.display()));
         }
     }
     done
+}
+
+/// Puts the validated package on disk before anything can name it: every
+/// file flushed, then the record written and flushed, then (on Unix) every
+/// directory below, so a rename that survives a power cut finds whole
+/// files, never names and sizes over contents still in the cache.
+fn persist(staged: &Path, record: &Record) -> Result<(), String> {
+    for f in &record.files {
+        let path = staged.join(&f.path);
+        sync_file(&path).map_err(|e| format!("sync {}: {e}", path.display()))?;
+    }
+    let json = serde_json::to_vec_pretty(record).map_err(|e| e.to_string())?;
+    // A plain new file in a directory made for this install: nothing reads it
+    // before the rename, so no temp name is needed to keep it whole.
+    let path = staged.join(RECORD);
+    let mut file = crate::secret::create_private(&path).map_err(|e| format!("write {RECORD}: {e}"))?;
+    file.write_all(&json).and_then(|()| file.sync_all()).map_err(|e| format!("write {RECORD}: {e}"))?;
+    drop(file);
+    sync_dirs(staged).map_err(|e| format!("sync {}: {e}", staged.display()))
+}
+
+/// Flushes a file's data to disk. Windows flushes only through a handle open
+/// for writing (`FlushFileBuffers`), Unix through any; a file unpacked
+/// read-only cannot be opened for writing there.
+fn sync_file(path: &Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    let file = fs::OpenOptions::new().write(true).open(path)?;
+    #[cfg(not(windows))]
+    let file = fs::File::open(path)?;
+    file.sync_all()
+}
+
+/// `secret::sync_dir` on `dir` and every directory below it, links not
+/// followed; nothing to do where a directory cannot be flushed.
+fn sync_dirs(dir: &Path) -> std::io::Result<()> {
+    if !cfg!(unix) {
+        return Ok(());
+    }
+    for entry in fs::read_dir(dir)? {
+        let path = entry?.path();
+        let meta = fs::symlink_metadata(&path)?;
+        if meta.is_dir() && !is_link(&meta) {
+            sync_dirs(&path)?;
+        }
+    }
+    crate::secret::sync_dir(dir)
 }
 
 /// Holds the staged directory to the package: every file it names is there,
@@ -547,8 +617,28 @@ fn is_link(meta: &fs::Metadata) -> bool {
     meta.file_type().is_symlink()
 }
 
+/// No link or junction on the way from `root` down to `path`, `path`
+/// included, so a delete there stays in Luna's tree. `root` is the boundary:
+/// the data dir's own ancestry is paths.rs's to check. A component that is
+/// not there ends the walk: nothing below it can be reached.
+fn link_free_below(root: &Path, path: &Path) -> bool {
+    let Ok(rel) = path.strip_prefix(root) else { return false };
+    let mut at = root.to_path_buf();
+    for part in rel.components() {
+        at.push(part);
+        match fs::symlink_metadata(&at) {
+            Ok(meta) if is_link(&meta) => return false,
+            Ok(_) => {}
+            Err(e) => return e.kind() == std::io::ErrorKind::NotFound,
+        }
+    }
+    true
+}
+
 /// Removes `path` and what is below it without following a link or junction
-/// anywhere: one is removed as itself.
+/// anywhere: one is removed as itself. That `path`'s own ancestors are no
+/// links is the caller's to know (`link_free_below`, or a directory it has
+/// just checked or made).
 fn remove_tree(path: &Path) -> std::io::Result<()> {
     let meta = fs::symlink_metadata(path)?;
     if is_link(&meta) {
@@ -570,17 +660,26 @@ fn remove_tree(path: &Path) -> std::io::Result<()> {
 /// on the next pass after the session ends.
 fn prune_in(root: &Path, bin_rel: &str) {
     let keep = current_in(root, bin_rel).map(|c| c.dir);
-    let Ok(entries) = fs::read_dir(root.join("versions")) else { return };
+    let versions = root.join("versions");
+    if !link_free_below(root, &versions) {
+        crate::log::warn("cli", &format!("{} is a link or junction; not sweeping through it", versions.display()));
+        return;
+    }
+    let Ok(entries) = fs::read_dir(&versions) else { return };
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
         if Some(name.as_str()) == keep.as_deref() {
             continue;
         }
         let path = entry.path();
-        // A link here is none of Luna's making: it goes as itself, and the
-        // exe below is not reached through it.
-        if fs::symlink_metadata(&path).is_ok_and(|m| is_link(&m)) {
-            let _ = remove_tree(&path);
+        // A link anywhere on the way to the exe (the version directory, its
+        // `bin/`) is none of Luna's making: the directory goes by
+        // `remove_tree`, which takes a link as itself, and nothing is
+        // deleted through one.
+        if !link_free_below(root, &path.join(bin_rel)) {
+            if let Err(e) = remove_tree(&path) {
+                crate::log::info("cli", &format!("keeping {}: {e}", path.display()));
+            }
             continue;
         }
         // The exe first: Windows refuses it while a session runs it, and the
@@ -771,6 +870,48 @@ mod tests {
         assert!(!staged.exists());
         assert_eq!(fs::read(root.join("versions").join(&name).join(BIN)).unwrap(), FILES[0].1);
         let _ = remove_tree(&root);
+    }
+
+    /// A record lost after install (a power cut before it reached the disk,
+    /// on an older layout) must not let the bare exe pass: only a tree this
+    /// code never installed into runs a directory without one.
+    #[test]
+    fn a_version_installed_here_is_not_run_without_its_record() {
+        let root = scratch("unrecorded");
+        update_in(&root, BIN, "1.2.0", &mut whole).unwrap();
+        assert!(root.join(RECORDED).is_file(), "the tree is marked before `current` names anything");
+        fs::remove_file(root.join("versions").join("1.2.0").join(RECORD)).unwrap();
+        assert!(current_in(&root, BIN).is_none());
+        let _ = remove_tree(&root);
+
+        // From before records: no marker, and `current` names a directory
+        // with its exe. Still run, but not taken for installed.
+        let legacy = scratch("legacy");
+        write_files(&legacy.join("versions").join("0.9.0"), &FILES[..1]);
+        fs::write(legacy.join("current"), "0.9.0").unwrap();
+        assert!(current_in(&legacy, BIN).is_some_and(|c| !c.recorded && c.version == "0.9.0"));
+        assert!(installed_in(&legacy, BIN, "0.9.0").is_none());
+        let _ = remove_tree(&legacy);
+    }
+
+    /// prune removes an old version's exe first; with `bin/` a junction out,
+    /// that remove would have gone through it.
+    #[test]
+    fn prune_deletes_nothing_through_a_junction_below_a_version() {
+        let root = scratch("prune-link");
+        let outside = scratch("prune-link-outside");
+        write_files(&outside, &[("codex.exe", b"not Luna's")]);
+        update_in(&root, BIN, "2.0.0", &mut whole).unwrap();
+        let old = root.join("versions").join("1.0.0");
+        fs::create_dir_all(&old).unwrap();
+        link_dir(&old.join("bin"), &outside);
+
+        prune_in(&root, BIN);
+        assert!(outside.join("codex.exe").is_file(), "the exe outside the tree survived");
+        assert!(!old.exists(), "the old version went, its junction as itself");
+        assert!(current_in(&root, BIN).is_some_and(|c| c.version == "2.0.0"));
+        let _ = remove_tree(&root);
+        let _ = remove_tree(&outside);
     }
 
     #[test]

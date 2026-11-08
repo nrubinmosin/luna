@@ -38,7 +38,11 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   Codex: the package's sha256, then each file's size), given a completion
   record, and moved into place with one rename under a name no folder has, so a
   version a session is running is never touched. Only a version with its record
-  counts as installed; ones installed before this are fetched again once.
+  counts as installed; ones installed before this are fetched again once. The
+  files, the record and (on Unix) the folders are flushed to disk before the
+  version is named current, and once Luna has installed this way a version
+  without its record is never run. Sweeping old versions deletes nothing
+  through a link or junction below them.
 - The release workflow failed at attesting the npm SBOM (`Unsupported SBOM
   format`): it was written without a serial number, which the attest action
   requires of a CycloneDX file. Both SBOMs now carry one and are checked for it

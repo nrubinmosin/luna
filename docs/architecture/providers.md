@@ -49,19 +49,37 @@ An install is all or nothing:
    files inside, so the tarball's sha256 is what pins them). `validate` checks
    each is a regular file, not a link, at that size and, where given, that
    hash, and that the executable is among them.
-3. **Record.** `luna-install.json` (version, how it was verified, every file
-   with its size and hash where known) is written into the staged folder last.
+3. **Record.** Every file is flushed to disk (`sync_all`), then
+   `luna-install.json` (version, how it was verified, every file with its size
+   and hash where known) is written into the staged folder and flushed, then on
+   Unix every folder below is fsynced: a rename that survives a power cut finds
+   whole files, not names and sizes over contents still in the cache.
 4. **Promotion.** One rename of the staged folder into `versions/` under a name
    nothing has: `<ver>`, or `<ver>~<n>` while an older `<ver>` folder is still
    there. An existing folder, which a running session may hold, is never
-   replaced, moved or added to. Then `current` is rewritten (temp file and
-   rename) to the new folder's name, and the sweep runs.
+   replaced, moved or added to. On Unix `versions/` and `staging/` are fsynced
+   after it. Windows cannot flush a folder without flushing the whole volume
+   (administrator only): NTFS journals the rename, so after a crash it is whole
+   or absent, but a recent one may be undone; then the staged copy is still in
+   `staging/` and the next pass sweeps it and fetches again.
+5. **Flip.** The first time, `<root>/recorded` is written. Then `current` is
+   rewritten through a temp name, flushed before its rename (and its folder
+   fsynced on Unix, `secret::write_private_synced`), to the new folder's name,
+   and the sweep runs.
 
 A folder counts as installed only by its record, with every file it lists
 present at its size; that is checked for each spawn, the hashes only at
-install. A folder from before records that `current` names is still spawned,
-but the update pass fetches its version again beside it, and the sweep removes
-the old one once nothing holds it.
+install. Without a record a folder is spawned only in a tree with no
+`recorded` file, which can only be from before records (whose `current` was
+moved only to finished installs); the update pass still fetches its version
+again beside it, and the sweep removes the old one once nothing holds it. In a
+tree with `recorded`, a folder without its record is refused, whatever is in
+it.
+
+The sweep and the cleanup delete nothing through a link or junction: each
+entry is checked with `symlink_metadata` on every component from the CLI root
+down to the path (`link_free_below`), and a folder with one on the way goes by
+`remove_tree`, which removes a link as itself.
 
 ## Defaults
 
