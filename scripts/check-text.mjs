@@ -44,7 +44,7 @@ const SKIP_PATHS = [
   /(^|\/)pnpm-lock\.yaml$/,
   /(^|\/)Cargo\.lock$/,
   /^src-tauri\/gen\//,
-  /^third-party-licenses\/(crates|npm)\//
+  /^third-party-licenses\/(crates|npm|tools|installer)\//
 ];
 const SKIP_FILES = new Set(['scripts/check-text.mjs', 'scripts/check-text.test.mjs']);
 

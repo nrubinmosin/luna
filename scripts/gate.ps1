@@ -112,6 +112,20 @@ $steps = @(
     New-ScriptStep 'test'
     New-ScriptStep 'build'
     @{
+        # What the notices list beyond the lockfiles' packages, against the tree:
+        # each entry of third-party-licenses/components.json still at the version
+        # it was checked against, and every helper the build tools wrote into
+        # the bundle just built listed, and nothing listed that it lacks.
+        Name  = 'third-party components listed'
+        Group = 'frontend'
+        Run   = {
+            . (Join-Path $RepoRoot 'scripts/notices-lib.ps1')
+            $components = @((Get-Content (Join-Path $RepoRoot 'third-party-licenses/components.json') -Raw | ConvertFrom-Json).components)
+            Assert-ComponentTies $components (Get-Content (Join-Path $RepoRoot 'src-tauri/Cargo.lock') -Raw) (Get-Content (Join-Path $RepoRoot 'pnpm-lock.yaml') -Raw)
+            Assert-BundledHelpers (Join-Path $RepoRoot 'dist') $components
+        }
+    }
+    @{
         Name  = 'Linux toolchain image'
         Group = 'rust'
         Run   = { $images.linux = Build-Image luna-linuxcheck linux-check.Dockerfile }

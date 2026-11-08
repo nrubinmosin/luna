@@ -126,6 +126,88 @@ try {
         Assert-Equal (New-NoticesText '1.2.3' $sections) $text
     }
 
+    Check 'the standard library''s inventory reads as text, license texts keeping their lines' {
+        $html = @"
+<html><head><title>Copyright notices</title><style>p { x }</style></head><body>
+<h1>Copyright notices for The Rust Standard Library</h1>
+<p><b>License:</b> Apache-2.0 OR MIT</p>
+<p><b>Copyright:</b> The Rust Project Developers</p>
+<h2 id="out-of-tree-dependencies">Out-of-tree dependencies</h2>
+<h3>&#128230; aho-corasick-1.1.4</h3>
+<p><b>Authors:</b> Andrew Gallant &#60;jamslam@gmail.com&#62;</p>
+<details><summary><code>LICENSE-MIT</code></summary><pre>
+The MIT License (MIT)
+
+    Copyright (c) 2015 Andrew Gallant &amp; &#34;others&#34;
+</pre></details>
+</body></html>
+"@
+        $text = ConvertFrom-RustCopyright $html
+        if ($text -match '</?(b|p|h\d|pre|code|summary|details|html|head|body|style|title)\b|&#|&amp;|\{ x \}|Copyright notices</') { throw "tags, entities or head left: $text" }
+        if ($text -match '(?m)^Copyright notices$') { throw "the head's title is left: $text" }
+        if ($text -notmatch "(?m)^License: Apache-2\.0 OR MIT$") { throw "no license line: $text" }
+        if ($text -notmatch "Authors: Andrew Gallant <jamslam@gmail\.com>") { throw "entities not decoded: $text" }
+        if (-not $text.Contains("--- LICENSE-MIT`nThe MIT License (MIT)`n`n    Copyright (c) 2015 Andrew Gallant & `"others`"")) { throw "the license text lost its lines: $text" }
+        Assert-Equal ($text -match "`n`n`n") $false
+    }
+
+    Check 'the in-tree license ids are read from before the out-of-tree crates only' {
+        $html = '<p><b>License:</b> Apache-2.0 OR MIT</p><p><b>License:</b> BSD-2-Clause AND (Apache-2.0 OR MIT)</p><p><b>License:</b> Unicode-3.0</p>' +
+            '<h2 id="out-of-tree-dependencies">x</h2><p><b>License:</b> MPL-2.0</p>'
+        Assert-Equal ((Get-RustInTreeLicenses $html) -join ' ') 'Apache-2.0 BSD-2-Clause MIT Unicode-3.0'
+    }
+
+    # A built interface of the given text, as dist/ would hold it.
+    $newDist = {
+        param($name, $js)
+        $dir = Join-Path $work "dist-$name"
+        New-Item -ItemType Directory -Force (Join-Path $dir 'assets') | Out-Null
+        Set-Content -LiteralPath (Join-Path $dir 'assets/index.js') $js -NoNewline
+        Set-Content -LiteralPath (Join-Path $dir 'index.html') '<script type="module" src="/assets/index.js"></script>' -NoNewline
+        $dir
+    }
+    $vite = [pscustomobject]@{ name = 'Vite helpers'; markers = @('vite-preload-helper', 'vite-map-deps') }
+    $bundle = 'const __vite__mapDeps=(i,m=__vite__mapDeps)=>i;window.dispatchEvent(new Event("vite:preloadError"));'
+
+    Check 'every helper the bundle holds is listed, and every listed one is in it' {
+        Assert-BundledHelpers (& $newDist ok $bundle) @($vite)
+        $cjs = 'function Mk(i){return i&&i.__esModule&&Object.prototype.hasOwnProperty.call(i,"default")?i.default:i}'
+        Assert-Throws { Assert-BundledHelpers (& $newDist unlisted "$bundle$cjs") @($vite) } 'rollup-commonjs-default-export is in the bundle'
+        $polyfill = [pscustomobject]@{ name = 'polyfill'; markers = @('vite-modulepreload-polyfill') }
+        Assert-Throws { Assert-BundledHelpers (& $newDist stale $bundle) @($vite, $polyfill) } 'vite-modulepreload-polyfill is listed'
+        Assert-Throws { Assert-BundledHelpers (& $newDist ok2 $bundle) @([pscustomobject]@{ name = 'x'; markers = @('nonsense') }) } 'does not know: nonsense'
+        Assert-Throws { Assert-BundledHelpers (Join-Path $work 'no-dist') @($vite) } 'no built interface'
+    }
+
+    Check 'a component checked against another version than the lockfile''s fails' {
+        $cargo = "[[package]]`nname = `"webview2-com-sys`"`nversion = `"0.39.1`"`n"
+        $pnpm = "packages:`n`n  vite@7.3.7:`n    resolution: {}`n`n  '@tauri-apps/cli@2.12.3':`n    resolution: {}`n"
+        $tied = { param($kind, $name, $version) [pscustomobject]@{ name = "c $name"; tiedTo = [pscustomobject]@{ $kind = $name; version = $version } } }
+        Assert-ComponentTies @((& $tied crate webview2-com-sys 0.39.1), (& $tied npm vite 7.3.7), (& $tied npm '@tauri-apps/cli' 2.12.3), [pscustomobject]@{ name = 'untied' }) $cargo $pnpm
+        Assert-Throws { Assert-ComponentTies @(& $tied crate webview2-com-sys 0.39.0) $cargo $pnpm } 'checked against crate webview2-com-sys 0.39.0, and the lockfile has 0.39.1'
+        Assert-Throws { Assert-ComponentTies @(& $tied npm '@tauri-apps/cli' 2.13.0) $cargo $pnpm } 'the lockfile has 2.12.3'
+        Assert-Throws { Assert-ComponentTies @(& $tied npm left-pad 1.0.0) $cargo $pnpm } 'the lockfile has none'
+    }
+
+    Check 'a component without texts needs its reason, and then passes without them' {
+        $base = @{ section = 'installer'; name = 'runtime'; version = '1'; license = 'terms'; source = 'https://example.invalid'; note = 'linked statically.' }
+        Assert-Throws { ConvertTo-ComponentItem ([pscustomobject]$base) $work } 'neither its texts nor why'
+        $item = ConvertTo-ComponentItem ([pscustomobject]($base + @{ noText = 'terms, not a text.' })) $work
+        $done = Add-LicenseTexts @($item)
+        Assert-Equal @($done[0].Texts).Count 0
+        Assert-Equal $done[0].Note 'linked statically. terms, not a text.'
+        $blank = $base.Clone(); $blank.note = ' '; $blank.texts = 'x'
+        Assert-Throws { ConvertTo-ComponentItem ([pscustomobject]$blank) $work } "without 'note'"
+    }
+
+    Check 'every entry of the repo''s components.json has its texts here' {
+        $supplied = Join-Path $RepoRoot 'third-party-licenses'
+        $components = @((Get-Content (Join-Path $supplied 'components.json') -Raw | ConvertFrom-Json).components)
+        $done = Add-LicenseTexts @($components | ForEach-Object { ConvertTo-ComponentItem $_ $supplied })
+        Assert-Equal $done.Count $components.Count
+        foreach ($name in $components.markers | Where-Object { $_ }) { if (-not $HelperSignatures.Contains($name)) { throw "unknown marker $name" } }
+    }
+
     Check 'only MPL-2.0 code gets the source statement' {
         Assert-Equal (Get-LicenseNote 'MIT OR Apache-2.0') $null
         if (-not (Get-LicenseNote 'MIT OR MPL-2.0')) { throw 'no statement for MPL-2.0 as an alternative' }
