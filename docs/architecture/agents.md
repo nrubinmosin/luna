@@ -235,7 +235,10 @@ turn, stopped on a prompt (once per stop) or exited.
   turn, and the report's lines in the file (`report_span`: `lines 1-N of M`).
   `luna_read` with `report: true` (`read::report_read`) gives that report alone,
   from `since`, else the debt's offset, else the transcript's start, and hands
-  nothing over.
+  nothing over. It reads as a read does: its cursor stops before a line still
+  being written, the report is cut at 60,000 characters, and a `since` that finds
+  nothing finds nothing (only a read with no cursor falls back to a resumed
+  conversation's last word).
 - A `wait` still out for that answer (`waits`) delivers it instead; if it has
   not within 10 s the notice goes (Claude Code moves an MCP call past 120 s to
   the background and may drop it).
