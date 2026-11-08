@@ -185,6 +185,7 @@ pub(crate) fn settings_applied(
     if !library.memory_off.is_empty() {
         applied.push(Item::MemoryNarrowed.with(format!("claudeMdExcludes {}", library.memory_off.join(", "))));
     }
+    applied.extend(library.memory_kept.iter().map(|note| Item::MemoryNotNarrowed.with(note)));
     applied
 }
 
@@ -227,6 +228,76 @@ pub(crate) fn memory_excludes(added: &[AddedDir], folder: &str) -> Vec<String> {
                     out.push(pattern);
                 }
             }
+        }
+    }
+    out
+}
+
+/// A folder whose instruction files this launch's Claude Code reads as its
+/// own project's: the folder it works in and those below it (`nested`), the
+/// folders above it, an added folder left unexcluded, the library's
+/// instructions folder.
+pub(crate) struct OwnMemory {
+    pub(crate) root: String,
+    pub(crate) nested: bool,
+}
+
+/// `patterns` (from `memory_excludes`) less any that Claude Code's picomatch
+/// would also match against one of the launch's `own` instruction files, and
+/// a note for each dropped. A pattern of ours matches two things there: the
+/// path it names with its escapes read as the characters they stand for, and
+/// — picomatch's shortcut for an input spelled exactly like the pattern — the
+/// path its own text spells (`E:/w/[[]ab[]]/CLAUDE.md` is also a file in a
+/// folder named `[[]ab[]]`). Both readings are judged here, as folders, so a
+/// pattern that could take this project's own instructions is not used and
+/// the folder it was for is read as the CLI would read it.
+pub(crate) fn keep_own_memory(patterns: Vec<String>, own: &[OwnMemory]) -> (Vec<String>, Vec<String>) {
+    let norm = |p: &str| p.replace('\\', "/").trim_end_matches('/').to_string();
+    let same = |a: &str, b: &str| if cfg!(windows) { a.eq_ignore_ascii_case(b) } else { a == b };
+    let within = |inner: &str, outer: &str| {
+        same(inner, outer) || (inner.get(..outer.len()).is_some_and(|head| same(head, outer)) && inner[outer.len()..].starts_with('/'))
+    };
+    let mut kept = Vec::new();
+    let mut notes = Vec::new();
+    for pattern in patterns {
+        // Longest first: a .claude/CLAUDE.md also ends in /CLAUDE.md.
+        let folder = ["/.claude/rules/**", "/.claude/CLAUDE.md", "/CLAUDE.local.md", "/CLAUDE.md"]
+            .iter()
+            .find_map(|file| pattern.strip_suffix(file))
+            .unwrap_or(&pattern)
+            .to_string();
+        let readings = [folder.clone(), glob_unescape(&folder)];
+        let hit = own.iter().find_map(|o| {
+            let root = norm(&o.root);
+            readings.iter().any(|r| if o.nested { within(r, &root) } else { same(r, &root) }).then_some(root)
+        });
+        match hit {
+            Some(root) => {
+                let note =
+                    format!("could not exclude {}: its name collides with this project's instruction path {root}", glob_unescape(&folder));
+                if !notes.contains(&note) {
+                    notes.push(note);
+                }
+            }
+            None => kept.push(pattern),
+        }
+    }
+    (kept, notes)
+}
+
+/// `glob_literal` undone: each one-character bracket class it made, as the
+/// character.
+fn glob_unescape(pattern: &str) -> String {
+    let chars: Vec<char> = pattern.chars().collect();
+    let mut out = String::with_capacity(pattern.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '[' && chars.get(i + 2) == Some(&']') {
+            out.push(chars[i + 1]);
+            i += 3;
+        } else {
+            out.push(chars[i]);
+            i += 1;
         }
     }
     out

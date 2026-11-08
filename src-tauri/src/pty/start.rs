@@ -79,13 +79,44 @@ pub(crate) fn claude_settings_dirs(account_path: &str, folder: &str) -> Vec<Stri
 }
 
 /// What `memory_excludes` leaves out of a Claude Code session in `folder`
-/// given the library's instructions: every other folder it is added, by
-/// Luna (`luna_dirs`) or by the user's settings.
-pub(crate) fn claude_memory_off(luna_dirs: &[String], account_path: &str, folder: &str) -> Vec<String> {
+/// given the library's instructions (in `instructions`): every other folder
+/// it is added, by Luna (`luna_dirs`) or by the user's settings. Fail-safe:
+/// a pattern that could also match one of this session's own instruction
+/// files (`keep_own_memory`) is dropped, and said in the second list.
+pub(crate) fn claude_memory_off(
+    luna_dirs: &[String],
+    account_path: &str,
+    folder: &str,
+    instructions: Option<&str>,
+) -> (Vec<String>, Vec<String>) {
+    use claude_launch::OwnMemory;
     let mut added = luna_dirs.to_vec();
     added.extend(claude_settings_dirs(account_path, folder));
     let added: Vec<_> = added.iter().map(|d| added_dir(d)).collect();
-    claude_launch::memory_excludes(&added, &resolved_path(folder))
+    let resolved = resolved_path(folder);
+    let patterns = claude_launch::memory_excludes(&added, &resolved);
+    // The session's own: where it works and below, every folder above, the
+    // added folders it reads as ever, the library's instructions; each by
+    // every spelling it may be met by.
+    let mut own = Vec::new();
+    for spelled in [lexical_path(folder), resolved] {
+        let mut dir = Some(std::path::Path::new(&spelled));
+        let mut nested = true;
+        while let Some(d) = dir {
+            own.push(OwnMemory { root: d.to_string_lossy().replace('\\', "/"), nested });
+            nested = false;
+            dir = d.parent();
+        }
+    }
+    for dir in &added {
+        let left_alone =
+            dir.spellings.iter().all(|s| !patterns.iter().any(|p| p.contains(&claude_launch::glob_literal(&s.replace('\\', "/")))));
+        if left_alone {
+            own.extend(dir.spellings.iter().map(|s| OwnMemory { root: s.replace('\\', "/"), nested: true }));
+        }
+    }
+    own.extend(instructions.map(|i| OwnMemory { root: i.replace('\\', "/"), nested: false }));
+    claude_launch::keep_own_memory(patterns, &own)
 }
 
 /// `dir` as `memory_excludes` takes it: as given with `.` and `..` worked out,
@@ -449,7 +480,8 @@ pub async fn ensure_claude_session(
         if instructions.is_some() {
             let mut luna_dirs = added_dirs(&skills.args);
             luna_dirs.extend(notes.as_ref().map(|n| n.to_string_lossy().into_owned()));
-            skills.memory_off = claude_memory_off(&luna_dirs, &account_path, &folder);
+            let dir = instructions.as_ref().map(|d| d.to_string_lossy().into_owned());
+            (skills.memory_off, skills.memory_kept) = claude_memory_off(&luna_dirs, &account_path, &folder, dir.as_deref());
         }
         // Rewritten at every spawn: the listener's port is new with every Luna run.
         // The guard against endless waits (guard.rs): a helper's, or a chat's
@@ -1540,6 +1572,59 @@ mod tests {
     }
 
     #[test]
+    fn an_exclude_that_could_match_the_projects_own_instructions_is_not_used() {
+        use crate::claude::launch::{keep_own_memory, memory_excludes, AddedDir, OwnMemory};
+        let at = |d: &str| AddedDir { spellings: vec![d.to_string()], resolved: d.to_string() };
+        let own = |roots: &[(&str, bool)]| roots.iter().map(|(r, n)| OwnMemory { root: r.to_string(), nested: *n }).collect::<Vec<_>>();
+        // An added folder [ab]: its pattern E:/w/[[]ab[]]/CLAUDE.md is also,
+        // in picomatch's shortcut, the CLAUDE.md of a folder named [[]ab[]].
+        let patterns = memory_excludes(&[at("E:/w/[ab]")], "E:/w/[[]ab[]]");
+        assert_eq!(patterns.len(), 4);
+        let (kept, notes) = keep_own_memory(patterns.clone(), &own(&[("E:/w/[[]ab[]]", true), ("E:/w", false), ("E:", false)]));
+        assert!(kept.is_empty(), "{kept:?}");
+        assert_eq!(notes, ["could not exclude E:/w/[ab]: its name collides with this project's instruction path E:/w/[[]ab[]]"]);
+        // Nor below the project, where Claude Code loads memory on demand.
+        let (kept, _) = keep_own_memory(patterns.clone(), &own(&[("E:/w", true)]));
+        assert!(kept.is_empty(), "a folder [[]ab[]] under E:/w is the project's");
+        // A normal case: nothing of the project's is touched, all are used.
+        let normal = memory_excludes(&[at("/data/notes"), at("E:/w/[ab]")], "/work/app");
+        let (kept, notes) = keep_own_memory(normal.clone(), &own(&[("/work/app", true), ("/work", false), ("/", false)]));
+        assert_eq!((kept, notes.len()), (normal, 0));
+        // Through the start: the Workaround is what Luna applied.
+        let library = crate::library::SessionSkills {
+            memory_kept: vec!["could not exclude E:/w/[ab]: its name collides with this project's instruction path E:/w/[[]ab[]]".into()],
+            ..Default::default()
+        };
+        let applied = crate::claude::launch::settings_applied("/s.json", false, None, &library, "/d/core");
+        let item = applied.iter().find(|a| a.key == "library.memory-not-narrowed").expect("said");
+        assert_eq!(item.class, crate::applied::Class::Workaround);
+        assert!(item.value.starts_with("could not exclude E:/w/[ab]"), "{}", item.value);
+    }
+
+    #[test]
+    fn a_real_project_named_like_an_escape_keeps_its_instructions() {
+        let root = std::env::temp_dir().join(format!("luna-collide-{}", std::process::id()));
+        let (project, added) = (root.join("[[]ab[]]"), root.join("[ab]"));
+        std::fs::create_dir_all(project.join(".claude")).unwrap();
+        std::fs::create_dir_all(&added).unwrap();
+        let account = root.join("acc");
+        std::fs::create_dir_all(&account).unwrap();
+        let settings = serde_json::json!({ "permissions": { "additionalDirectories": [added.to_string_lossy()] } });
+        std::fs::write(project.join(".claude").join("settings.json"), settings.to_string()).unwrap();
+        let (off, kept) = claude_memory_off(&[], &account.to_string_lossy(), &project.to_string_lossy(), None);
+        assert!(off.is_empty(), "no pattern that is also this project's CLAUDE.md: {off:?}");
+        assert!(!kept.is_empty() && kept.iter().all(|k| k.contains("collides with this project's instruction path")), "{kept:?}");
+        // Another project beside them: [ab] is left out as usual.
+        let other = root.join("plain");
+        std::fs::create_dir_all(other.join(".claude")).unwrap();
+        std::fs::write(other.join(".claude").join("settings.json"), settings.to_string()).unwrap();
+        let (off, kept) = claude_memory_off(&[], &account.to_string_lossy(), &other.to_string_lossy(), None);
+        // Four memory files for each spelling of [ab].
+        assert!(!off.is_empty() && off.len() % 4 == 0 && kept.is_empty(), "{off:?} {kept:?}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn a_folder_above_the_project_by_dot_dot_is_beside_it_and_left_out() {
         let root = std::env::temp_dir().join(format!("luna-dotdot-{}", std::process::id()));
         let (project, shared) = (root.join("proj"), root.join("shared"));
@@ -1549,14 +1634,14 @@ mod tests {
         std::fs::create_dir_all(&account).unwrap();
         std::fs::write(project.join(".claude").join("settings.json"), r#"{"permissions":{"additionalDirectories":["../shared"]}}"#)
             .unwrap();
-        let off = claude_memory_off(&[], &account.to_string_lossy(), &project.to_string_lossy());
+        let (off, _) = claude_memory_off(&[], &account.to_string_lossy(), &project.to_string_lossy(), None);
         let shared = resolved_path(&shared.to_string_lossy()).replace('\\', "/");
         assert!(off.contains(&format!("{}/CLAUDE.md", crate::claude::launch::glob_literal(&shared))), "{off:?}");
         assert!(off.iter().all(|p| !p.contains("..")), "resolved, not `<project>/../shared`: {off:?}");
         // Nested in the project instead: read as ever.
         std::fs::write(project.join(".claude").join("settings.json"), r#"{"permissions":{"additionalDirectories":["./docs/../sub"]}}"#)
             .unwrap();
-        assert!(claude_memory_off(&[], &account.to_string_lossy(), &project.to_string_lossy()).is_empty());
+        assert!(claude_memory_off(&[], &account.to_string_lossy(), &project.to_string_lossy(), None).0.is_empty());
         let _ = std::fs::remove_dir_all(&root);
     }
 
