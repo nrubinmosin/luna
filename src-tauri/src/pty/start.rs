@@ -24,16 +24,19 @@ use std::sync::Mutex;
 /// session (library/folders.rs `SessionSkills`) — skills off in `skillOverrides`,
 /// which settings of this source beat whatever the account's or the
 /// project's say, and the account's instructions in `claudeMdExcludes`.
-/// Always: Luna's `core/` denied to its file tools (`claude_read_deny`).
-/// Written to a file under the data dir (`hooks/`, named for what it first
-/// held) rather than passed inline, so the command line stays readable and
-/// quoting is not a concern. None if it cannot be written.
+/// Always: Luna's `core/` denied to its file tools (`claude_read_deny`), so
+/// there is always a file to write. Written to a file under the data dir
+/// (`hooks/`, named for what it first held) rather than passed inline, so the
+/// command line stays readable and quoting is not a concern. Err if it cannot
+/// be written: a session carries the core-folder deny or does not start
+/// (threat model F3), so the caller refuses the launch rather than run without
+/// it.
 pub(crate) fn claude_settings_file(
     chat_id: &str,
     hooks: bool,
     guard: bool,
     library: &crate::library::SessionSkills,
-) -> Option<std::path::PathBuf> {
+) -> Result<std::path::PathBuf, String> {
     let settings = claude_settings(
         crate::hub::hook_url(chat_id).filter(|_| hooks).as_deref(),
         crate::hub::guard_url(chat_id).filter(|_| guard).as_deref(),
@@ -42,10 +45,11 @@ pub(crate) fn claude_settings_file(
     );
     // Owner-only: the hook URLs in it carry the hub's secret.
     let dir = crate::paths::data_dir().join("hooks");
-    crate::secret::private_dir(&dir).ok()?;
+    crate::secret::private_dir(&dir).map_err(|e| format!("cannot make {}: {e}", dir.display()))?;
     let path = dir.join(format!("{chat_id}.json"));
-    crate::secret::write_private(&path, serde_json::to_string_pretty(&settings).ok()?.as_bytes()).ok()?;
-    Some(path)
+    let json = serde_json::to_string_pretty(&settings).map_err(|e| format!("the settings do not serialize: {e}"))?;
+    crate::secret::write_private(&path, json.as_bytes()).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+    Ok(path)
 }
 
 /// The instructions a folder of the library gives a Claude Code session in
@@ -321,7 +325,10 @@ pub async fn ensure_claude_session(
         // The guard against endless waits (guard.rs): a chat with Luna's tools
         // and a helper, which only such a chat starts.
         let guard = tools.unwrap_or(false) || parent.is_some();
-        let settings_file = claude_settings_file(&id, true, guard, &skills);
+        // Mandatory: it carries the core-folder deny (threat model F3). If it
+        // cannot be written, the session does not start rather than run
+        // without it.
+        let settings_file = claude_settings_file(&id, true, guard, &skills)?;
         let tools = tools.unwrap_or(false);
         let read_only = read_only.unwrap_or(false);
         let agent = agent.filter(|a| !a.is_empty());
@@ -355,7 +362,7 @@ pub async fn ensure_claude_session(
             permission_mode: &permission_mode,
             resume: resume.as_deref(),
             worktree: worktree.then_some(worktree_name.as_deref()),
-            settings_file: settings_file.as_deref(),
+            settings_file: Some(&settings_file),
             agent: agent.as_deref(),
             read_only,
             parent: parent.as_deref(),

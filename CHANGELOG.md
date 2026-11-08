@@ -21,7 +21,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 - Sessions are denied the folder that holds the key to Luna's core, wherever
   their CLI can enforce it: Claude Code's file tools everywhere, and Codex's
-  `read-only` and `read-only-net` sandboxes on Linux and macOS.
+  `read-only` and `read-only-net` sandboxes on Linux and macOS. A Claude Code
+  session whose deny cannot be written does not start, rather than run without
+  it.
 - On Windows, where a Codex sandbox can still read that file, the core instead
   refuses the connection: it checks which process is at the other end of each
   loopback connection and turns away one running in a CLI sandbox (a restricted
