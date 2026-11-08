@@ -410,7 +410,11 @@ pub fn account_list(provider: Option<&str>) -> Vec<AccountSummary> {
     allowed_account_dirs()
         .into_iter()
         .filter(|a| provider.is_none_or(|p| a.provider.as_str() == p))
-        .map(|a| AccountSummary { usage: usage.get(&format!("{}/{}", a.provider.as_str(), a.name)).cloned(), provider: a.provider, name: a.name })
+        .map(|a| AccountSummary {
+            usage: usage.get(&format!("{}/{}", a.provider.as_str(), a.name)).cloned(),
+            provider: a.provider,
+            name: a.name,
+        })
         .collect()
 }
 
@@ -474,7 +478,15 @@ mod tests {
         register("grp-far", Provider::Claude, "C:\\work\\luna", "C:\\acc\\anthropic\\one", None, false, none.clone());
         register("grp-loose", Provider::Claude, "C:\\work\\luna", "C:\\acc\\anthropic\\one", None, false, none.clone());
         for i in 0..3 {
-            register(&format!("grp-kid-{i}"), Provider::Claude, "C:\\work\\luna", "C:\\acc\\anthropic\\one", Some("grp-me"), false, none.clone());
+            register(
+                &format!("grp-kid-{i}"),
+                Provider::Claude,
+                "C:\\work\\luna",
+                "C:\\acc\\anthropic\\one",
+                Some("grp-me"),
+                false,
+                none.clone(),
+            );
         }
         // Added to what is there and not said as `chat_names` says it: the window's
         // whole list, which would let go of every other test's waiting chat.
@@ -517,7 +529,8 @@ mod tests {
         let row = serde_json::to_string(&first.sessions[0]).unwrap();
         assert!(row.len() < 320, "{} chars: {row}", row.len());
         // Named, any session, and unknown ones said.
-        let named = session_list("grp-me", &SessionQuery { ids: Some(vec!["grp-far".into(), "grp-gone".into()]), ..Default::default() }).unwrap();
+        let named =
+            session_list("grp-me", &SessionQuery { ids: Some(vec!["grp-far".into(), "grp-gone".into()]), ..Default::default() }).unwrap();
         assert_eq!(named.sessions.len(), 1);
         assert_eq!(named.unknown, ["grp-gone"]);
         for i in 0..3 {
@@ -529,7 +542,15 @@ mod tests {
     fn session_get_is_one_session_whole() {
         let none = serde_json::json!({});
         register("sg-me", Provider::Claude, "C:\\work\\luna", "C:\\acc\\anthropic\\one", None, true, none.clone());
-        register("sg-kid", Provider::Claude, "C:\\work\\luna", "C:\\acc\\anthropic\\one", Some("sg-me"), false, serde_json::json!({ "model": "m" }));
+        register(
+            "sg-kid",
+            Provider::Claude,
+            "C:\\work\\luna",
+            "C:\\acc\\anthropic\\one",
+            Some("sg-me"),
+            false,
+            serde_json::json!({ "model": "m" }),
+        );
         let got = serde_json::to_value(session_get("sg-me", "sg-kid", false).unwrap()).unwrap();
         assert_eq!((got["id"].as_str(), got["folder"].as_str()), (Some("sg-kid"), Some("C:\\work\\luna")));
         assert_eq!(got["settings"]["model"], "m");

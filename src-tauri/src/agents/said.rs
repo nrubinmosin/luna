@@ -385,18 +385,30 @@ mod tests {
         let m = |role: &str, text: String, final_answer: bool| Message { role: role.into(), text, after_cli: false, final_answer };
         let progress = format!("Working through the files. {}", "Notes. ".repeat(150));
         let said = own_words(
-            vec![m("user", "Fix it.".into(), false), m("assistant", progress.clone(), false), m("assistant", "Fixed: 3 files.".into(), true)],
+            vec![
+                m("user", "Fix it.".into(), false),
+                m("assistant", progress.clone(), false),
+                m("assistant", "Fixed: 3 files.".into(), true),
+            ],
             false,
         );
         assert_eq!(said[report_of(&said)], "Fixed: 3 files.", "the CLI's final answer, not the longest message");
         assert!(!report_guessed(&said));
         // No mark: the longest, and the caller is told it was picked so.
-        let said = own_words(vec![m("user", "Fix it.".into(), false), m("assistant", progress.clone(), false), m("assistant", "ok".into(), false)], false);
+        let said = own_words(
+            vec![m("user", "Fix it.".into(), false), m("assistant", progress.clone(), false), m("assistant", "ok".into(), false)],
+            false,
+        );
         assert_eq!(said[report_of(&said)], progress);
         assert!(report_guessed(&said));
         // A mark in an earlier turn says nothing of the last one.
         let said = own_words(
-            vec![m("user", "A?".into(), false), m("assistant", "A.".into(), true), m("user", "B?".into(), false), m("assistant", progress.clone(), false)],
+            vec![
+                m("user", "A?".into(), false),
+                m("assistant", "A.".into(), true),
+                m("user", "B?".into(), false),
+                m("assistant", progress.clone(), false),
+            ],
             false,
         );
         assert_eq!(said[report_of(&said)], progress);

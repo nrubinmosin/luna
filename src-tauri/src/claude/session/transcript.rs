@@ -495,7 +495,10 @@ mod tests {
         let line = serde_json::json!({ "type": "user", "message": { "role": "user", "content": prompt } });
         std::fs::write(&path, format!("{line}\n")).unwrap();
         let (msgs, _) = messages_from(&path, 0, false);
-        assert_eq!(msgs, vec![crate::agents::Message { role: "user".into(), text: "Fix the build.".into(), after_cli: false, final_answer: false }]);
+        assert_eq!(
+            msgs,
+            vec![crate::agents::Message { role: "user".into(), text: "Fix the build.".into(), after_cli: false, final_answer: false }]
+        );
         let _ = std::fs::remove_file(&path);
     }
 
@@ -511,7 +514,10 @@ mod tests {
         // Finished: the next read from the cursor has it whole.
         std::fs::write(&path, format!("{first}\n{half}ng\"}}]}}}}\n")).unwrap();
         let (msgs, next) = messages_from(&path, cursor, false);
-        assert_eq!(msgs, vec![crate::agents::Message { role: "assistant".into(), text: "pong".into(), after_cli: false, final_answer: false }]);
+        assert_eq!(
+            msgs,
+            vec![crate::agents::Message { role: "assistant".into(), text: "pong".into(), after_cli: false, final_answer: false }]
+        );
         assert_eq!(next, std::fs::metadata(&path).unwrap().len());
         // Written anew, shorter: a cursor past its end reads it from the top.
         std::fs::write(&path, format!("{first}\n")).unwrap();
@@ -691,7 +697,10 @@ mod tests {
         std::fs::write(&path, format!("{notice}\n{snapshot}\n{answer}\n")).unwrap();
         let (later, _) = messages_from(&path, cursor, false);
         let _ = std::fs::remove_file(&path);
-        assert_eq!(later, vec![crate::agents::Message { role: "assistant".into(), text: "Green.".into(), after_cli: true, final_answer: false }]);
+        assert_eq!(
+            later,
+            vec![crate::agents::Message { role: "assistant".into(), text: "Green.".into(), after_cli: true, final_answer: false }]
+        );
         // Said since: the prompt is answered, and a read after that starts afresh.
         let bytes = format!("{notice}\n{answer}\n{answer}\n");
         let after_first = notice.len() + answer.len() + 2;

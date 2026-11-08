@@ -505,7 +505,10 @@ mod tests {
         let messages_at = |at: u64| -> Messages {
             let text = std::fs::read_to_string(&path).unwrap();
             let rest = &text[(at as usize).min(text.len())..];
-            (rest.lines().map(|l| Message { role: "assistant".into(), text: l.into(), after_cli: false, final_answer: false }).collect(), text.len() as u64)
+            (
+                rest.lines().map(|l| Message { role: "assistant".into(), text: l.into(), after_cli: false, final_answer: false }).collect(),
+                text.len() as u64,
+            )
         };
         assert_eq!(cursor_after(&path, 0, 6, 3, 1, &messages_at), 2);
         assert_eq!(cursor_after(&path, 2, 6, 2, 1, &messages_at), 4);

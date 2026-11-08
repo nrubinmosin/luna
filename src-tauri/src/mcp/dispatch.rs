@@ -32,7 +32,7 @@ const RUNS_MAX: usize = 50;
 /// how long it took. The arguments that steer a call are named; what is said
 /// through it (prompts, sent text, answers, notifications) is not.
 pub(super) fn call(caller: &str, params: &Value, this: &Call) -> Value {
-    let started = std::time::Instant::now();
+    let started = Instant::now();
     let out = run(caller, params, this);
     let name = params["name"].as_str().unwrap_or("?");
     let a = &params["arguments"];
@@ -141,7 +141,10 @@ fn run(caller: &str, params: &Value, this: &Call) -> Value {
         return failure(format!("{name} is not one of this session's tools"));
     }
     if REMOVED.contains(&name) {
-        return failure(format!("{name} is gone since Luna 0.11; the tools now: {}. luna_guide_get says which does what.", names().join(", ")));
+        return failure(format!(
+            "{name} is gone since Luna 0.11; the tools now: {}. luna_guide_get says which does what.",
+            names().join(", ")
+        ));
     }
     if let Err(e) = arguments_fit(name, a) {
         return failure(e);

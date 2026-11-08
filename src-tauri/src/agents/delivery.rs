@@ -323,7 +323,10 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool) -> Result<Sent,
     let (state_before, ask) = state_of(id);
     if let Some(a) = ask.as_ref().filter(|a| a.blocking && !interrupt) {
         let way_out = if mine { ", or send with interrupt: true to dismiss it" } else { "; its own chat or the user may" };
-        return Err(format!("session {id} is on a {}: typed text would land in its dialog. Answer it with luna_session_answer{way_out}", a.kind));
+        return Err(format!(
+            "session {id} is on a {}: typed text would land in its dialog. Answer it with luna_session_answer{way_out}",
+            a.kind
+        ));
     }
     let before = crate::activity::turn_state(id);
     let mut baseline = before.map(|t| t.turns_ended).unwrap_or(0);
