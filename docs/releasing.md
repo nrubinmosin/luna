@@ -31,7 +31,9 @@ signing step and publishes the draft the workflow leaves.
    ```
 
    - **verify**: the versions agree with the tag; the tag is annotated and points at a
-     commit on `master`; the release notes render from `CHANGELOG.md`; CI (`ci.yml`) has
+     commit on `master`; the release notes render from `CHANGELOG.md` against the latest
+     published release, looked up once here for the whole run (a version behind it is
+     refused: releases go forward only); CI (`ci.yml`) has
      passed on that very commit as a push. A CI run still going is waited for (up to 45
      minutes), so the tag can go out with its commit.
    - **build** waits for a reviewer's approval of the `release` environment, then builds

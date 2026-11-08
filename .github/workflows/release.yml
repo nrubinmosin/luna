@@ -51,6 +51,7 @@ jobs:
       tag: ${{ steps.verify.outputs.tag }}
       signed: ${{ steps.verify.outputs.signed }}
       publish: ${{ steps.verify.outputs.publish }}
+      previous: ${{ steps.verify.outputs.previous }} # the latest published release, the notes' baseline
       notes: ${{ steps.verify.outputs.notes }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -182,8 +183,8 @@ jobs:
   # release's latest.json, so nothing reaches them until the maintainer has
   # looked the draft over and published it. Its notes come from CHANGELOG.md
   # (scripts/release-notes.ps1): the version's section, the sections of every
-  # version newer than the latest published release, and the checksums with
-  # the commands to verify the assets.
+  # version newer than the latest published release as verify found it, and
+  # the checksums with the commands to verify the assets.
   publish:
     needs: [verify, attest]
     if: needs.verify.outputs.publish == 'true'
@@ -206,6 +207,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
           TAG: ${{ needs.verify.outputs.tag }}
           VERSION: ${{ needs.verify.outputs.version }}
+          PREVIOUS: ${{ needs.verify.outputs.previous }}
         run: |
           # Drafts show only to a token that can push, as this one can: a
           # release of the tag, a draft left by an earlier run included, is
@@ -213,7 +215,7 @@ jobs:
           $existing = gh api --paginate "repos/$env:GH_REPO/releases" --jq '.[] | select(.tag_name == $ENV.TAG) | .html_url'
           if ($LASTEXITCODE) { throw "listing the releases failed (exit $LASTEXITCODE)" }
           if ($existing) { throw "$env:TAG already has a release: $existing" }
-          ./scripts/release-notes.ps1 -Repo $env:GH_REPO -Checksums "$env:RUNNER_TEMP/assets/SHA256SUMS" -Out "$env:RUNNER_TEMP/notes.md"
+          ./scripts/release-notes.ps1 -Previous $env:PREVIOUS -Checksums "$env:RUNNER_TEMP/assets/SHA256SUMS" -Out "$env:RUNNER_TEMP/notes.md"
           $assets = (Get-ChildItem "$env:RUNNER_TEMP/assets" -File).FullName
           gh release create $env:TAG @assets --draft --verify-tag --title "Luna $env:VERSION" --notes-file "$env:RUNNER_TEMP/notes.md"
           if ($LASTEXITCODE) { throw "gh release create failed (exit $LASTEXITCODE)" }

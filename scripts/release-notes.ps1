@@ -7,11 +7,13 @@
 # link; and, with -Checksums, a Verify section with the commands
 # docs/releasing.md documents and the SHA256SUMS themselves.
 #
-#   ./scripts/release-notes.ps1 -Repo owner/name -Checksums <SHA256SUMS> -Out <file>
-#       as the release workflow runs it: the latest published release is asked of
-#       GitHub through gh (GH_TOKEN)
-#   ./scripts/release-notes.ps1 -Previous v1.2.2 -Out <file>
-#       with the previous release named ('' for none), nothing asked of anyone
+#   ./scripts/release-notes.ps1 -Previous v1.2.2 -Checksums <SHA256SUMS> -Out <file>
+#       as the release workflow runs it, with the latest published release its
+#       verify job found ('' for none); also how to render against an older
+#       baseline on purpose, which New-ReleaseNotes otherwise refuses
+#   ./scripts/release-notes.ps1 -Repo owner/name -Out <file>
+#       the latest published release asked of GitHub through gh (GH_TOKEN, or
+#       gh's own login)
 param(
     [Parameter(Mandatory)][string]$Out,
     [string]$Repo,

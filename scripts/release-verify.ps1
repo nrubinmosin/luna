@@ -15,7 +15,8 @@
 #
 # Reads only, through gh (GH_TOKEN; the job's token needs contents: read and
 # actions: read). Under Actions the answers go to $GITHUB_OUTPUT: version, tag,
-# signed, publish, notes.
+# signed, publish, previous (the latest published release's tag, or empty),
+# notes.
 param(
     [Parameter(Mandatory)][string]$Ref,
     [Parameter(Mandatory)][string]$Sha,
@@ -38,16 +39,22 @@ $version = Get-ReleaseVersion
 $plan = Get-ReleasePlan $Ref $version $DryRun.IsPresent
 Write-Host "v$version from $Ref at $Sha`: $(if ($plan.Signed) { 'signed' } else { 'unsigned' }), $(if ($plan.Publish) { 'drafted on GitHub' } else { 'dry run' })"
 
+# The latest published release, the baseline the notes span from: looked up
+# once here and handed to the publish job, so the two render against the
+# same release even if one is published while the run is going.
+$previous = Get-LatestReleaseTag $Repo
+
 # The notes latest.json carries, which the update chip shows: the CHANGELOG
 # section's intro. The release's own notes are made by the publish job
 # (release-notes.ps1) from the same sections, and are rendered here first so
-# an empty one fails the run before anything is built. A dry run may run on
-# a commit that has no section yet; a release may not.
+# an empty section, or a version behind the latest published release, fails
+# the run before anything is built. A dry run may run on a commit that has
+# no section yet; a release may not.
 $notes = "Luna $version"
 try {
     $section = Get-ChangelogSection $version
     if ($section.Intro) { $notes = $section.Intro }
-    New-ReleaseNotes -Version $version -Previous (Get-LatestReleaseTag $Repo) | Out-Null
+    New-ReleaseNotes -Version $version -Previous $previous | Out-Null
 } catch {
     if ($plan.Signed) { throw }
     Write-Warning "$_; fine for a dry run"
@@ -104,8 +111,9 @@ while ($true) {
 $outputs = [ordered]@{
     version = $version
     tag     = $plan.Tag
-    signed  = "$($plan.Signed)".ToLowerInvariant()
-    publish = "$($plan.Publish)".ToLowerInvariant()
+    signed   = "$($plan.Signed)".ToLowerInvariant()
+    publish  = "$($plan.Publish)".ToLowerInvariant()
+    previous = $previous
 }
 if ($env:GITHUB_OUTPUT) {
     $lines = foreach ($key in $outputs.Keys) { "$key=$($outputs[$key])" }
