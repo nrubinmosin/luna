@@ -1482,8 +1482,15 @@ mod tests {
     fn a_folder_name_goes_into_claude_md_excludes_literally() {
         use crate::claude::launch::{glob_literal, memory_excludes, AddedDir};
         assert_eq!(glob_literal("E:/work/[ab]"), "E:/work/[[]ab[]]");
-        assert_eq!(glob_literal("C:/Program Files (x86)/a*b?{c,d}!+@"), "C:/Program Files [(]x86[)]/a[*]b[?][{]c[,]d[}][!][+][@]");
-        assert_eq!(glob_literal("/home/u/.notes dir/x"), "/home/u/.notes dir/x", "nothing else changes");
+        assert_eq!(glob_literal("C:/Program Files (x86)/a*b?{c,d}|\"q\""), "C:/Program Files [(]x86[)]/a[*]b[?][{]c,d[}][|][\"]q[\"]");
+        // Literal where nothing next to them makes them more: an escape
+        // there would match a folder spelled like it as well.
+        assert_eq!(glob_literal("E:/w/a!b/@c/d+e,f/!(x)"), "E:/w/a!b/@c/d+e,f/![(]x[)]");
+        assert_eq!(
+            glob_literal("/home/u/.notes dir/é 日 😀#$%&'~^`=;:<>"),
+            "/home/u/.notes dir/é 日 😀#$%&'~^`=;:<>",
+            "nothing else changes"
+        );
         let dir = AddedDir { spellings: vec!["E:/work/[ab]".into()], resolved: "E:/work/[ab]".into() };
         let patterns = memory_excludes(&[dir], "E:/work/a");
         assert_eq!(patterns[0], "E:/work/[[]ab[]]/CLAUDE.md", "not a class that matches E:/work/a/CLAUDE.md");
@@ -1492,6 +1499,44 @@ mod tests {
         let library = crate::library::SessionSkills { excluded: vec!["E:/acc/[x]/CLAUDE.md".into()], ..Default::default() };
         let settings = claude_settings(None, None, &library, "/d/core");
         assert_eq!(settings["claudeMdExcludes"], serde_json::json!(["E:/acc/[[]x[]]/CLAUDE.md"]));
+    }
+
+    /// The patterns `memory_excludes` makes for folders named with every
+    /// printable ASCII character, a space and non-ASCII ones, in the places
+    /// picomatch reads differently, written as JSON to `LUNA_GLOB_TABLE`: for
+    /// checking them with Claude Code's own matcher, which only its binary
+    /// has (docs/cli-compatibility.md, `claudeMdExcludes`). Run by hand on a
+    /// Claude Code upgrade.
+    #[test]
+    #[ignore = "writes a table for an outside check; run with LUNA_GLOB_TABLE set"]
+    fn claude_md_exclude_patterns_for_the_matcher_check() {
+        use crate::claude::launch::{memory_excludes, AddedDir};
+        let Ok(out) = std::env::var("LUNA_GLOB_TABLE") else { return };
+        let mut chars: Vec<String> = "!\"#$%&'()*+,-.:;<=>?@[]^_`{|}~ ".chars().map(String::from).collect();
+        chars.extend(["é", "日", "😀"].map(String::from));
+        let mut rows = Vec::new();
+        for c in &chars {
+            for name in [
+                format!("x{c}y"),
+                format!("{c}y"),
+                format!("x{c}"),
+                c.clone(),
+                format!("x{c}(y)"),
+                format!("x{c}(y|z)"),
+                format!("{c}{c}y"),
+                format!("x{c}{{a,b}}"),
+                format!("x{c}[ab]"),
+                format!("x{c}*"),
+            ] {
+                for base in ["E:/w", "/home/u"] {
+                    let dir = format!("{base}/{name}");
+                    let added = AddedDir { spellings: vec![dir.clone()], resolved: dir.clone() };
+                    let patterns = memory_excludes(&[added], "/elsewhere");
+                    rows.push(serde_json::json!({ "dir": dir, "char": c, "name": name, "base": base, "patterns": patterns }));
+                }
+            }
+        }
+        std::fs::write(out, serde_json::to_string_pretty(&rows).unwrap()).unwrap();
     }
 
     #[test]

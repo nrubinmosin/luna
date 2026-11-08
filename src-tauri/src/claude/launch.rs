@@ -238,15 +238,24 @@ pub(crate) fn memory_excludes(added: &[AddedDir], folder: &str) -> Vec<String> {
 /// matched against absolute file paths using picomatch", its settings schema;
 /// https://code.claude.com/docs/en/memory#exclude-specific-claudemd-files),
 /// after turning every `\` in a pattern into `/`, so a backslash cannot escape
-/// anything there. Each character glob syntax gives a meaning to goes in a
-/// bracket class of its own (`[[]` is a literal `[`), which picomatch 4
-/// matches literally: a folder `E:/work/[ab]` would otherwise match
-/// `E:/work/a`.
+/// anything there: a character that means something goes in a bracket class
+/// of its own instead (`[[]` is a literal `[`), and only such a character.
+/// picomatch also takes a pattern as matching the input spelled exactly like
+/// it, so every needless escape would match one more folder (`a[!]b` matches
+/// a folder named `a[!]b` as well as `a!b`). Which characters, found with
+/// Claude Code 2.1.319's own bundled picomatch, `{ dot: true }`, POSIX and
+/// Windows, on every printable ASCII character, a space and non-ASCII ones,
+/// alone and before `(`, `(…|…)`, `{a,b}`, `[ab]` and `*`, each name having to
+/// match itself and none of its neighbors: `* ? [ ] { } ( ) |` and `"`, which
+/// picomatch reads as quoting. `! @ + ,` are literal there once the `(` an
+/// extglob would need, or the braces a list would, are escaped. A folder that
+/// does need an escape is still matched by a folder spelled as the escaped
+/// pattern (`[[]ab[]]`), picomatch's own shortcut.
 pub(crate) fn glob_literal(path: &str) -> String {
     let mut out = String::with_capacity(path.len());
     for c in path.chars() {
         match c {
-            '*' | '?' | '[' | ']' | '{' | '}' | '(' | ')' | '!' | '+' | '@' | ',' => {
+            '*' | '?' | '[' | ']' | '{' | '}' | '(' | ')' | '|' | '"' => {
                 out.push('[');
                 out.push(c);
                 out.push(']');

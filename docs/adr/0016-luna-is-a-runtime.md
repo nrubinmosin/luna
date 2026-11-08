@@ -76,8 +76,10 @@ The owner's ten decisions on the deviations (2026-11-08):
    session works in is left alone, since Claude Code reads those anyway,
    judged on resolved paths (`..`, links and short names worked out). Each
    folder's name goes into the pattern literally: Claude Code turns `\` into
-   `/` in these patterns before picomatch, so every glob character is put in
-   a bracket class of its own (`claude/launch.rs` `memory_excludes`,
+   `/` in these patterns before picomatch, so the characters its bundled
+   picomatch gives a meaning to (`* ? [ ] { } ( ) |` and `"`) each go in a
+   bracket class of its own, and no other, since picomatch also matches the
+   path spelled exactly as the pattern (`claude/launch.rs` `memory_excludes`,
    `glob_literal`).
 10. Library layout: kept as a UserAction, and shown.
 
@@ -99,9 +101,11 @@ Mechanics:
   every turn. The core answers `applied_by_luna(chat_id)`.
 - Writes into an account outside a launch go in a small ledger,
   `<data>/applied-ledger.json` (`applied::record`, under the account
-  settings' lock). For now that is folder trust. A ledger that will not read
-  is not written over, and a write it missed is said in
-  `applied-ledger.incomplete`; either way the panel says "Accounting
+  settings' lock). For now that is folder trust, whose writes for both CLIs
+  are core commands, so the core keeps every note. A ledger that will not
+  read is not written over. A write it missed is kept in the core's memory
+  until a later ledger write takes it in, and said in
+  `applied-ledger.incomplete` as well; either way the panel says "Accounting
   incomplete" rather than show the account's part as whole. The library's layout is read
   from the library's own ledger.
 - The window shows them in each chat's "What Luna applied" (the ⓘ button on
