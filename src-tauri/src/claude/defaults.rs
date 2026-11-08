@@ -11,7 +11,7 @@
 //! The values come out in the CLI's own spelling and already settled: one
 //! Luna has no equivalent for reads as nothing said, and nothing said is
 //! Luna's stock choice (`source: stock`). The dialog, a spawn and
-//! `luna_list` all take them from here, so what an agent is told it would
+//! `luna_account_get` all take them from here, so what an agent is told it would
 //! get is what it gets.
 
 use serde::Serialize;
@@ -136,7 +136,7 @@ pub fn claude_defaults(account_path: String, folder: String) -> Defaults {
     }
 }
 
-/// The same as the flags a helper would be spawned with, for `luna_list`.
+/// The same as the flags a helper would be spawned with, for `luna_account_get`.
 pub fn flags(account_path: &str, folder: &str) -> Value {
     let d = claude_defaults(account_path.to_owned(), folder.to_owned());
     serde_json::json!({ "model": d.model.value, "effort": d.effort.value, "permissionMode": d.permission_mode.value })

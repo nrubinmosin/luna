@@ -1,4 +1,4 @@
-//! `luna_spawn`: a helper run in the background here, in the core, its account,
+//! `luna_session_spawn`: a helper run in the background here, in the core, its account,
 //! folder and privilege settled first. A spawn under way is on disk until a
 //! helper comes of it (`SpawnUnderWay`).
 
@@ -83,7 +83,7 @@ impl SpawnParams {
     }
 }
 
-/// A `luna_spawn` taken on, in `chat-ties.json` until a helper has come of it and
+/// A `luna_session_spawn` taken on, in `chat-ties.json` until a helper has come of it and
 /// its caller is owed by that: a core going before then leaves the caller an error
 /// from the call, or nothing at all, and this is what the next core tells it from.
 #[derive(Clone, Serialize, Deserialize)]
@@ -235,7 +235,7 @@ pub struct Spawned {
     #[serde(flatten)]
     pub worktree: Worktree,
     /// Asked for a worktree of its own and the CLI has not said where yet:
-    /// `luna_list` names it once it has.
+    /// `luna_session_list` names it once it has.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub worktree_pending: bool,
     /// With `account` as a list: the one taken, and why not the ones before.
@@ -344,7 +344,7 @@ pub(super) fn spawn_with(caller: &str, mut params: SpawnParams, replaces: Option
     let Some(account) = pick.cloned() else {
         return Err(match one.as_deref() {
             Some(name) => {
-                format!("no {} account named {name:?} is available to agents; luna_list shows the ones that are", provider.as_str())
+                format!("no {} account named {name:?} is available to agents; luna_account_list shows the ones that are", provider.as_str())
             }
             None => format!("no {} account is available to agents", provider.as_str()),
         });

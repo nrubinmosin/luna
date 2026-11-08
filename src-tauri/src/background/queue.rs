@@ -235,7 +235,7 @@ fn send_as(id: &str, q: Queued, may_join: bool) -> Result<Placed, String> {
         let mut r = lock();
         let e = r.entries.get_mut(id).ok_or("no such helper")?;
         if !e.held.is_empty() {
-            return Err(format!("helper {id} is waiting on a question or permission: answer it with luna_answer"));
+            return Err(format!("helper {id} is waiting on a question or permission: answer it with luna_session_answer"));
         }
         place(e, q, may_join)
     };

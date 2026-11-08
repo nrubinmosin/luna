@@ -96,14 +96,14 @@ struct Track {
     /// When the first turn began (0 = never): children born after it are the
     /// model's own, whichever turn started them.
     first_turn_ms: u64,
-    /// When the turn on now began, for `luna_list`: a hook's moment, or the
+    /// When the turn on now began, for `luna_session_get`: a hook's moment, or the
     /// sample that first saw it where no hook speaks.
     turn_started_ms: Option<u64>,
     prev: Vec<ProcRead>,
     procs: Option<procs::Busy>,
     /// What its turns started that is still there (`procs::Busy::young`), each
     /// with when it was last at work: what holds the machine of it, what
-    /// `luna_list` names between turns, and what its caller hears has sat idle.
+    /// `luna_session_get` names between turns, and what its caller hears has sat idle.
     left: Vec<procs::Leftover>,
     /// The last sample its turn was on (busy, or holding on a prompt): what a
     /// child born since is as quiet as, to begin with (`procs::leftovers`).
@@ -154,7 +154,7 @@ pub struct TurnState {
 }
 
 /// Between turns, what a session's turns left running (`Track::left`): for
-/// `luna_list`, and for its caller to hear when all of it has sat idle long.
+/// `luna_session_get`, and for its caller to hear when all of it has sat idle long.
 pub fn left_running(chat_id: &str) -> Vec<procs::Leftover> {
     let st = state().lock().unwrap_or_else(|e| e.into_inner());
     st.tracks.get(chat_id).filter(|t| t.turn == Turn::Idle).map(|t| t.left.clone()).unwrap_or_default()

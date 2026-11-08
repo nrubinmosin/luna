@@ -47,7 +47,7 @@ pub use ask::{on_hook, resolve_option, state_of, Ask, AskQuestion};
 pub use delivery::{notes_dir, send};
 pub use handover::{opening_lapsed, take_over};
 pub use held::held_count;
-pub use list::{list, sessions, SessionFilter};
+pub use list::{account_get, account_list, session_get, session_list, SessionQuery};
 pub use lost::undelivered_left;
 #[cfg(test)]
 pub(crate) use notifier::riders_go;
@@ -55,7 +55,7 @@ pub use notifier::{notify, NOTICE_TAG};
 pub use owed::{resumed, retried};
 pub use persist::{freeze_chats, restore_chats, save_chats, take_up_spawns, tie_back, ties_of, Ties};
 pub(crate) use privilege::{command_prefix, command_reach_now};
-pub use read::{read, Message};
+pub use read::{read, report_get, Message};
 pub(crate) use registry::mint;
 pub use registry::{
     applied_of, caller_of, chat_name, chat_names, has_tools, in_scope, is_known, label, own_or_self, parent_of, register,
@@ -67,7 +67,7 @@ pub use spawn::{spawn, SpawnParams};
 #[cfg(test)]
 pub use teardown::news_for;
 pub use teardown::{at_stake, delete, delete_by_user, forget, kill, queued_refused, AtStake, UserDeleted};
-pub use wait::{wait, wait_many};
+pub use wait::{wait, wait_many, ReportPart};
 
 use held::held_sender;
 use notifier::notifier;

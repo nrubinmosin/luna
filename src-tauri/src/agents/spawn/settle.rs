@@ -40,7 +40,7 @@ fn never_completed(s: &SpawnTaken, why: Option<&str>, left: &str) -> String {
     };
     let why = why.map_or(String::new(), |w| format!(" (started afresh, it failed too: {w})"));
     format!(
-        "Your luna_spawn {} never completed: Luna's core restarted while it was being made, which is also why that call ended in an error or with no answer. No helper came of it{why}. {prompt}; spawn it again if it still matters.{left}",
+        "Your luna_session_spawn {} never completed: Luna's core restarted while it was being made, which is also why that call ended in an error or with no answer. No helper came of it{why}. {prompt}; spawn it again if it still matters.{left}",
         spawn_called(s),
     )
 }
@@ -67,7 +67,7 @@ fn spawn_afresh(s: SpawnTaken) {
                 &format!("{}'s spawn {} started afresh as {} after a core cut it off", label(&s.caller), s.request, label(&made.id)),
             );
             format!(
-                "Your luna_spawn {} was cut off when Luna's core restarted, which is also why that call ended in an error or with no answer. As it asked with resumeOnRestart, Luna started it afresh as {}: do not spawn it again, and its answer comes as a notice.{left}",
+                "Your luna_session_spawn {} was cut off when Luna's core restarted, which is also why that call ended in an error or with no answer. As it asked with resumeOnRestart, Luna started it afresh as {}: do not spawn it again, and its answer comes as a notice.{left}",
                 spawn_called(&s),
                 made.id,
             )

@@ -116,7 +116,7 @@ pub(super) fn injected(block: &str) -> bool {
 /// `response_item` of type `message` with a user or assistant role. Developer
 /// messages (skills, agent-mode preambles) and what Codex injects as a user
 /// message (`injected`: `AGENTS.md`, `<environment_context>` and the like)
-/// are not conversation and are left out, the way `luna_read` leaves out
+/// are not conversation and are left out, the way `luna_message_list` leaves out
 /// Claude Code's meta turns.
 fn message_of(v: &Value) -> Option<crate::agents::Message> {
     if v["type"] != "response_item" || v["payload"]["type"] != "message" {

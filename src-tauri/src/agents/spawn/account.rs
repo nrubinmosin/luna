@@ -149,11 +149,11 @@ pub(in crate::agents) fn pick_from_list(
         return Err("the account list is empty".into());
     }
     let why: Vec<String> = skipped.iter().map(|s| format!("{}: {}", s.account, s.why)).collect();
-    Err(format!("no account in the list can take a helper ({}); luna_list shows the ones that can", why.join("; ")))
+    Err(format!("no account in the list can take a helper ({}); luna_account_list shows the ones that can", why.join("; ")))
 }
 
 /// Each account's usage as the window shows it, by `provider/name`, sent
-/// whenever it changes: `luna_list` passes it on, so an agent picks an
+/// whenever it changes: `luna_account_list` passes it on, so an agent picks an
 /// account by the numbers the user sees — and the core asks no usage
 /// endpoint of its own, which would only draw their 429s sooner.
 #[tauri::command]

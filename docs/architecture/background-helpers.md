@@ -1,6 +1,6 @@
 # Background helpers
 
-What `luna_spawn` makes, every time: no chat row, no pty, all in the core, so no
+What `luna_session_spawn` makes, every time: no chat row, no pty, all in the core, so no
 window is needed. The person watches one read-only or opens it as a chat of
 their own, which hands it over for good. Also: how helpers, and what agents are
 owed by the person's chats, outlive a core restart.
@@ -9,7 +9,7 @@ owed by the person's chats, outlive a core restart.
 
 - Run each turn as one headless CLI process and parse its event stream.
 - Queue, join and reserve text sent to a helper; hold its permission prompts
-  and questions for `luna_answer`.
+  and questions for `luna_session_answer`.
 - Track what its turns leave running, and end it with the helper.
 - Persist helpers and agent ties so the next core can take them up.
 
@@ -64,7 +64,7 @@ owed by the person's chats, outlive a core restart.
 A Claude Code helper always gets Luna's MCP server, if only for
 `--permission-prompt-tool mcp__luna__luna_permission` (hidden from its model by
 `--disallowedTools`). Permission prompts and `AskUserQuestion` arrive as that
-call, held on a Condvar until `luna_answer` (allow / deny, or `answers` by
+call, held on a Condvar until `luna_session_answer` (allow / deny, or `answers` by
 question text) or the turn's end. Several at once queue; the oldest is shown.
 Each has an opaque `askId`: one no longer open is refused, one never had
 (`Registry::asked`) is unknown, and without an id an answer goes through only
@@ -78,7 +78,7 @@ reviewer model answers.
 
 Each helper has one job for its life; every turn's process joins it. Between
 turns `children_busy` is what the turn left (`procs::left_in`), each process kept
-with when it last worked (`Leftover`); `luna_list` shows them as `leftRunning`.
+with when it last worked (`Leftover`); `luna_session_list` shows them as `leftRunning`.
 A stop between turns ends only them and holds the helper (`Entry::ending_left`),
 so a send queues rather than start a CLI in a job being emptied. A turn whose
 CLI went before its model did anything (`Observed::acted` false: an unknown
@@ -94,7 +94,7 @@ The window gets the list as `agent://background` and lists a chat's helpers on
 its row's chip.
 
 - **Watch** reads the helper's conversation off its transcript
-  (`background_transcript`, by the same readers `luna_read` uses, tool calls
+  (`background_transcript`, by the same readers `luna_message_list` uses, tool calls
   marked) from a cursor, and again every second while a turn runs, every five
   between turns (`useHelperTranscript`). The file is the helper's own, from its
   record, never one the window names. A look reads at most 2 MB back from the
@@ -164,7 +164,7 @@ has read the file, so an empty registry never overwrites it.
   (`owed_stands`).
 - Text queued behind a stopped turn stays, never run; only its sender hears of
   it (`Entry::undelivered`, `undelivered_text`), and `read` / `wait` name it as
-  `undelivered`. `luna_kill` drops the queue.
+  `undelivered`. `luna_session_stop` drops the queue.
 - A helper stopped before any turn named its conversation keeps its opening
   (`Entry::opening`); the notice says it never started (`never_started`).
 - **`resumeOnRestart`** (in `settings`, so in the ties): `resume_stopped`, once

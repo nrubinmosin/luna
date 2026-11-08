@@ -1,4 +1,4 @@
-//! Text held for a chat of the person's: a `luna_send` that found someone typing
+//! Text held for a chat of the person's: a `luna_session_send` that found someone typing
 //! there, or a draft Luna could not put aside, typed in once the way is clear
 //! (`deliver_held`), and text a core went in the middle of typing, found or not
 //! in what the chat was told (`reconcile_held`).
