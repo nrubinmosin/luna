@@ -74,7 +74,7 @@ bit is written before the spawn: `hasTrustDialogAccepted` in `.claude.json`, or
 Codex can also be trusted for one run, `-c projects={"<checkout>"={trust_level=
 "trusted"}}` (`trust_override`), which writes nothing: every background
 helper's turn, and any session in a project under a folder of
-`codexTrustedRoots` (Settings → "Codex trusts on this computer"). Codex matches
+`codexTrustedRoots` (Settings → Agents & trust → Trusted folders). Codex matches
 trust by the exact path, never a parent's. With a Codex running on the account,
 trust goes as this override instead of into `config.toml`.
 

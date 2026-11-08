@@ -239,7 +239,7 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
     // writes every account's copies, and every helper's events wait on that
     // lock (library/folders.rs `session_args`).
     crate::library::lay_out("before a helper's turn");
-    let (args, dir, envs, provider, on_stdin, line, account) = {
+    let (args, dir, envs, applied, provider, on_stdin, line, account) = {
         let r = lock();
         if r.closed {
             return Err("Luna is stopping".into());
@@ -248,10 +248,10 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
         if e.run.as_ref().is_some_and(|run| run.stopped) {
             return Err(STOPPED.into());
         }
-        let (args, dir, envs) = command_for(e, id)?;
+        let (args, dir, envs, applied) = command_for(e, id)?;
         // A batch's own, on disk by now; what no batch carries needs only to be a uuid.
         let line = e.in_flight.first().map_or_else(new_id, |q| q.id.clone());
-        (args, dir, envs, e.spec.provider, stdin_text(e, prompt), line, e.spec.account_path.clone())
+        (args, dir, envs, applied, e.spec.provider, stdin_text(e, prompt), line, e.spec.account_path.clone())
     };
     if !std::path::Path::new(&dir).is_dir() {
         return Err(format!("{dir} does not exist"));
@@ -338,6 +338,9 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
         crate::log::error("background", &format!("could not start {}: {e}", crate::agents::label(id)));
         format!("could not start {}: {e}", provider.as_str())
     })?;
+    // This turn's, for the window's "What Luna applied"; not under this
+    // module's lock, which nothing may hold while it takes the registry's.
+    crate::agents::set_applied(id, applied, &account, &dir);
     let pid = Some(child.id());
     // Into the helper's job before it has had time to start anything. What is
     // waited for here is not waited for with every helper's lock held.

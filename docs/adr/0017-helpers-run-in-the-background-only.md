@@ -1,4 +1,4 @@
-# ADR-0016: Helpers run in the background only; opening one hands it to the person
+# ADR-0017: Helpers run in the background only; opening one hands it to the person
 
 - **Status:** Accepted
 - **Date:** 2026-11-09

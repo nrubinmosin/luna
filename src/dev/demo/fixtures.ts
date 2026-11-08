@@ -7,6 +7,7 @@ import type { CoreStateDto } from '../../ipc/coreProcess';
 import type { ClaudeDefaultsDto, CodexDefaultsDto, CodexModelDto } from '../../ipc/defaults';
 import type { FileDiffDto, LibraryOverviewDto, PlaceDto } from '../../ipc/library';
 import type { PowerStateDto } from '../../ipc/power';
+import type { BrowsersDto } from '../../ipc/browsers';
 import type { WorktreeInfoDto } from '../../ipc/worktrees';
 import type { Group, Layout, Slots } from '../../features/panes/panes.store';
 
@@ -601,4 +602,99 @@ export const AT_STAKE: Record<string, AtStakeDto> = {
     unsaved: '2 uncommitted files'
   },
   'demo-bg-2': { id: 'demo-bg-2', working: 'waits on a question or permission' }
+};
+
+/** What the first chat's panel says Luna applied (applied.rs), as a Claude
+ *  Code chat with Luna's tools started on a work account. */
+export const APPLIED = {
+  launch: [
+    {
+      key: 'account',
+      class: 'runtime',
+      value: 'CLAUDE_CONFIG_DIR=C:\\Users\\dev\\Luna\\accounts\\anthropic\\work',
+      why: 'The account this chat belongs to: the CLI reads its settings and sign-in from there.'
+    },
+    {
+      key: 'no-self-update',
+      class: 'runtime',
+      value: 'DISABLE_AUTOUPDATER=1',
+      why: 'Luna installs and updates the CLI itself; the CLI’s own updater would install or announce a copy nothing here runs.'
+    },
+    {
+      key: 'session-id',
+      class: 'runtime',
+      value: 'LUNA_SESSION_ID=demo-1',
+      why: 'Tells the session, and what it runs, which Luna chat it is (and a helper which chat started it).'
+    },
+    {
+      key: 'model',
+      class: 'userAction',
+      value: 'opus',
+      why: 'As chosen for this chat: in the new-chat dialog, or from the account’s settings.'
+    },
+    {
+      key: 'effort',
+      class: 'userAction',
+      value: 'max',
+      why: 'As chosen for this chat: in the new-chat dialog, or from the account’s settings.'
+    },
+    {
+      key: 'activity-hooks',
+      class: 'runtime',
+      value: 'hooks in C:\\Users\\dev\\Luna\\hooks\\demo-1.json',
+      why: 'How Luna learns that the chat works, waits or asks: each event is posted to Luna’s local listener, and they print nothing.'
+    },
+    {
+      key: 'core-read-deny',
+      class: 'boundary',
+      value: 'permissions.deny Read(//c/Users/dev/Luna/core/**) in C:\\Users\\dev\\Luna\\hooks\\demo-1.json',
+      why: 'Keeps the session’s file tools out of Luna’s core folder, whose token reaches every session (threat model F3).'
+    },
+    {
+      key: 'luna-tools',
+      class: 'userAction',
+      value:
+        '--mcp-config C:\\Users\\dev\\Luna\\mcp\\demo-1.json, --allowedTools mcp__luna; its token in LUNA_MCP_TOKEN, not shown',
+      why: 'The Luna tools box (or the agent that spawned it): Luna’s MCP server, its tools allowed without a prompt.'
+    },
+    {
+      key: 'notes-dir',
+      class: 'runtime',
+      value: '--add-dir C:\\Users\\dev\\Luna\\agents',
+      why: 'Long prompts, messages and helpers’ answers from Luna arrive as files there, readable without asking.'
+    }
+  ],
+  account: [
+    {
+      key: 'trust',
+      class: 'userAction',
+      value: 'C:\\src\\luna',
+      why: 'You ticked Trust this folder in the new-chat dialog: Luna wrote the same mark the CLI’s own trust prompt writes.'
+    }
+  ],
+  incomplete: null
+};
+
+// Settings → Links: the browsers a Windows machine might have, two Chrome
+// profiles among them, and one account sent to the second.
+export const BROWSERS: BrowsersDto = {
+  system: String.raw`"C:\Program Files\Mozilla Firefox\firefox.exe" -osint -url "%1"`,
+  found: [
+    {
+      id: 'edge',
+      name: 'Microsoft Edge',
+      command: String.raw`"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" %1`
+    },
+    {
+      id: 'chrome:Default',
+      name: 'Google Chrome — Work',
+      command: String.raw`"C:\Program Files\Google\Chrome\Application\chrome.exe" --profile-directory="Default" %1`
+    },
+    {
+      id: 'chrome:Profile 1',
+      name: 'Google Chrome — Personal',
+      command: String.raw`"C:\Program Files\Google\Chrome\Application\chrome.exe" --profile-directory="Profile 1" %1`
+    }
+  ],
+  settings: { custom: [], default: 'chrome:Default', accounts: { 'claude/personal': 'chrome:Profile 1' }, folders: {} }
 };

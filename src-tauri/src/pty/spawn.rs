@@ -92,6 +92,17 @@ pub(super) struct Launch {
     pub(super) envs: Vec<(&'static str, String)>,
     pub(super) resume: Option<String>,
     pub(super) describe: String,
+    /// What Luna applied in it (applied.rs), kept for the chat once it runs.
+    pub(super) applied: Vec<crate::applied::Applied>,
+}
+
+impl Launch {
+    /// The launch as its process will run (`finish_spec`): the terminal it
+    /// draws into, the folder it starts in, what its environment loses.
+    pub(super) fn finished(mut self) -> Launch {
+        finish_spec(&mut self.envs, &mut self.applied, &self.cwd, true);
+        self
+    }
 }
 
 /// The starts a test has asked to see (`expect`): `spawn` builds their
@@ -174,13 +185,14 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
     if let Some(old) = exited {
         end_leftovers(&old);
     }
-    let launch = launch()?;
+    // Finished here, so a test's capture holds the process as it will run.
+    let launch = launch()?.finished();
     // A test reads what a start would run, and nothing runs (`capture`).
     #[cfg(test)]
     let Some(launch) = capture::keep(&id, launch) else {
         return Ok(String::new());
     };
-    let Launch { provider, cwd, account_path, args, envs, resume, describe } = launch;
+    let Launch { provider, cwd, account_path, args, envs, resume, describe, applied } = launch;
 
     // portable-pty starts a process whose cwd is not there in the user
     // profile instead, without a word: a chat whose worktree had been removed
@@ -218,22 +230,20 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
     // from), and the NO_COLOR an agent's shell sets turned every terminal here
     // black and white. The sessions here are nobody's children. NO_COLOR is
     // only dropped when it came with such a session: set by hand, it stays.
-    for k in INHERITED_SESSION_VARS {
+    for k in removed_env() {
         cmd.env_remove(k);
     }
-    if INHERITED_SESSION_VARS.iter().any(|k| std::env::var_os(k).is_some()) {
-        cmd.env_remove("NO_COLOR");
-    }
+    // TERM among them (`Launch::finished`).
     for (k, v) in &envs {
         cmd.env(k, v);
     }
-    cmd.env("TERM", "xterm-256color");
 
     let child = pair.slave.spawn_command(cmd).map_err(|e| {
         crate::log::error("pty", &format!("spawn failed for {id} in {cwd}: {e}"));
         e.to_string()
     })?;
     drop(pair.slave);
+    crate::agents::set_applied(&id, applied, &account_path, &cwd);
 
     let pid = child.process_id();
     let spawned_at_ms = now_ms() as u128;
@@ -518,12 +528,36 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
 
 /// The same clean-up for a process started without a pty (background/).
 pub(crate) fn clean_env(cmd: &mut Command) {
-    for k in INHERITED_SESSION_VARS {
+    for k in removed_env() {
         cmd.env_remove(k);
     }
+}
+
+/// The variables a CLI process starts without, though this one has them: the
+/// inherited session's (`INHERITED_SESSION_VARS`), and NO_COLOR only when it
+/// came with such a session — set by hand, it stays.
+pub(crate) fn removed_env() -> Vec<&'static str> {
+    let mut out = INHERITED_SESSION_VARS.to_vec();
     if INHERITED_SESSION_VARS.iter().any(|k| std::env::var_os(k).is_some()) {
-        cmd.env_remove("NO_COLOR");
+        out.push("NO_COLOR");
     }
+    out
+}
+
+/// The last of a CLI process's spec, in the one place both kinds of start
+/// finish it: what its environment loses (`removed_env`), the terminal a
+/// pane's CLI draws into (`terminal`), and the folder it starts in, each as
+/// what Luna applied. A pane's start (`Launch::finished`) and a helper's turn
+/// (background/command.rs `command_for`) end here, so what runs is what the
+/// window shows.
+pub(crate) fn finish_spec(envs: &mut Vec<(&'static str, String)>, applied: &mut Vec<crate::applied::Applied>, cwd: &str, terminal: bool) {
+    use crate::applied::Item;
+    if terminal {
+        envs.push(("TERM", "xterm-256color".to_string()));
+        applied.push(Item::Terminal.with("TERM=xterm-256color"));
+    }
+    applied.push(Item::Cwd.with(format!("cwd {cwd}")));
+    applied.push(Item::InheritedCleared.with(format!("unset {}", removed_env().join(", "))));
 }
 
 /// Cuts the cursor queries (DSR) out of a read. Returns the output between

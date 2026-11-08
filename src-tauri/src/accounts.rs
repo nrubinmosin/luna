@@ -84,11 +84,11 @@ pub fn create_account(provider: Provider, name: String) -> Result<AccountInfo, S
     if dir.exists() {
         return Err(format!("Account \"{name}\" already exists"));
     }
+    // Nothing written into it: what Luna needs of a CLI on it (its own
+    // updates kept off, say) goes with each start (codex/launch.rs
+    // `NO_UPDATE_CHECK`).
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let path = dir.to_string_lossy().into_owned();
-    if provider == Provider::Codex {
-        crate::codex::config::seed(&path)?;
-    }
     Ok(AccountInfo { provider, name, path })
 }
 

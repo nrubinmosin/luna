@@ -107,7 +107,6 @@ mod tests {
         assert!(apply(Provider::Claude, &p, &["tui".into()], &[]).is_err());
         assert!(write_config_file(Provider::Claude, &p, "{}".into()).is_err());
         assert!(sync_one(Provider::Claude, &parent.to_string_lossy(), &p).is_err());
-        assert!(crate::codex::config::seed(&p).is_err());
         assert!(crate::codex::trust::codex_trust_folder(p.clone(), "/somewhere".into()).is_err());
         assert!(crate::claude::trust::trust_folder(&p, "/somewhere").is_err());
         LOCK_AT.with(|l| *l.borrow_mut() = None);

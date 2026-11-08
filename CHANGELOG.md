@@ -8,6 +8,99 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Added
+
+- "What Luna applied" (the ⓘ button on a chat's title bar): everything Luna
+  added to the chat's CLI at its latest start, grouped as your choice,
+  runtime, boundary or workaround, each with its value and why, and what Luna
+  wrote into the account (the folder's trust, the library's copies). Tokens
+  and Luna's local addresses are never shown. A helper kept to Luna's MCP
+  server and with its auto-memory off shows both as boundary items.
+- **Watch** in a chat's helper list shows that helper's conversation,
+  read-only and live: what its agent asked and what it said, tool calls marked,
+  updating every second while it works.
+
+### Changed
+
+- Settings is a wide dialog with its pages listed on the left (General, Chats,
+  Agents & trust, Links, Updates) and only the page scrolling, in place of one
+  narrow column of ten sections. Every setting is a row with its control on
+  the right and one line on what it does; what a change costs (helpers above
+  their chat, a deleted worktree's uncommitted work, accounts moved by hand)
+  stays in view, and the rest of each explanation folds into a "How … works"
+  line. Help text is 12 px at the least and passes WCAG AA in both themes.
+  Lists say when they are empty, link exceptions are added from a menu, and a
+  browser's long command line can be shown in full or copied. The page list
+  and the exception menu work from the keyboard, Tab stays inside the dialog
+  and the focus returns to what opened it, and a draft on one page survives a
+  look at another. See docs/user-guide/settings.md.
+- Confirmation dialogs (deleting a chat, an update, a library change) take
+  the focus when they open, keep Tab inside them, leave the window or dialog
+  behind them unreachable until they close, and then give the focus back to
+  the button that opened them. Enter on a focused Cancel now only cancels.
+- Luna is a runtime, not a provider configurator (ADR-0016): it adds to a CLI
+  what running it needs and what protects its own boundary, changes nothing
+  else without the person's say, and shows what it applied.
+  - The guard against endless waits is off in chats unless "Wait guard" is
+    ticked in the new-chat dialog; helpers keep it. Chats with Luna's tools no
+    longer get it by default.
+  - The new-chat dialog asks "Trust this folder in <account>", unticked;
+    unticked, nothing is written and the CLI asks itself. A chat an agent
+    starts never writes trust (a Codex helper is trusted for its own runs).
+    Quick chat opens the dialog for a folder the account has not trusted.
+  - Codex: `approvals_reviewer="user"` only for helpers; `windows.sandbox` only
+    when the account's `config.toml` names none;
+    `check_for_update_on_startup=false` passed on every start and no longer
+    written into new accounts (lines already there stay); a helper gets
+    `--skip-git-repo-check` only outside a Git repository.
+  - Claude Code: with the library's instructions, the other folders added to a
+    session (Luna's notes folder, the library's skills folders, the user's own
+    `additionalDirectories`) are no longer read as memory.
+  - Chats that had the guard because of Luna tools are named in a notice
+    once; a chat's ⓘ panel turns the guard on for it.
+- **Breaking for agents:** every helper runs in the background. A Codex
+  helper's `approval` is `never` (the default) or `auto-review`; one that asks
+  a person (`on-request` and the like) is refused, as nobody is there to ask.
+  `luna_spawn` answers with `id`, `settings`, `turnsEnded`, `sameFolder`, the
+  worktree and `accountChoice`; `started`, `screen`, `ask`, `starting` and
+  `warnings` are gone with the visible start that filled them.
+- **Breaking for agents:** "Open as chat" hands a helper over to you for good.
+  It becomes a chat of your own, a top-level row seated in a pane that keeps
+  the wait guard until you turn it off: its agent can no longer send to it,
+  wait on it, read it as its own, stop or delete it, and is owed nothing more
+  by it. The agent hears so once, in a notice that outlives a restart. Text
+  still queued for the helper is not delivered, and whoever sent it is told
+  where it is. Luna asks before it does this, and while it opens the agent can
+  neither stop nor delete it.
+- Deleting a chat lists the helpers its agent runs with what each is doing and
+  what its worktree holds. Ticking the box to take them along never stops one
+  still at work, or drops a worktree with uncommitted work, by itself: each
+  takes a box of its own, and Luna checks both again as it deletes. A helper's
+  own Delete waits while it works and keeps such a worktree.
+- Chats an earlier Luna ran as visible helpers are your own chats: their rows
+  are no longer nested under the chat that spawned them, no agent can stop,
+  delete or answer for them, and the guard notice names them too, as they now
+  start without it.
+
+### Removed
+
+- **Breaking for agents:** `luna_spawn`'s `visible`; a call passing it is
+  refused as any unknown argument is. With it go visible helpers, the chats an
+  agent started in the window, and what kept them: the window's part in a
+  spawn, carrying them on after a core restart, their nesting and reparenting,
+  and the rule that one you typed into was never auto-deleted.
+- **Breaking for agents:** `luna_answer`'s `keys` (raw keystrokes for a
+  helper's screen); a helper has none, and a dialog in your own chat is yours.
+
+## [0.10.2] - 2026-11-08
+
+A security release for the agent tools and the app window: an agent reaches
+only its own helpers unless it asks for every session, helpers start without
+their account's connectors, the window's page can call only what it uses, and
+no CLI runs with administrator rights. It also makes Luna's tools cheaper for
+agents to use and fixes several ways a helper's report or a transcript was
+misread.
+
 ### Security
 
 - An agent can interrupt only its own helpers and theirs: `luna_send` with
@@ -30,12 +123,11 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - Every `luna_*` tool refuses an argument it does not take, or of the wrong
   type, naming those it takes, instead of running on a default: `read_only`
   for `readOnly` spawned a helper that could write.
-
 - The window's page reaches only what it calls, so a script injected into it
   would get no more: each app command is granted to the main window by name
   and refused to any other window or a remote page, plugins are cut to the
   calls the page makes (no menus, trays, new webviews or paths), the bridge to
-  the core passes on only the 34 commands the page sends, each on its own lane
+  the core passes on only the 35 commands the page sends, each on its own lane
   (never the core's `shutdown`), and account and folder paths are checked
   where they come in: an account path must be an account folder Luna lists,
   reached through no link or junction and spelled as on disk, a folder a
@@ -63,12 +155,6 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   input, and that a line's length or depth costs no more than its bytes. A
   scheduled workflow runs them weekly.
 
-### Added
-
-- **Watch** in a chat's helper list shows that helper's conversation,
-  read-only and live: what its agent asked and what it said, tool calls marked,
-  updating every second while it works.
-
 ### Changed
 
 - `luna_list` names each account with its defaults and usage but no longer its
@@ -84,37 +170,6 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - A notice ready for an agent that another of its helpers is still working for
   waits up to 20 seconds for that one's answer, so helpers finishing within
   seconds of each other wake the agent once, not once each.
-- **Breaking for agents:** every helper runs in the background. A Codex
-  helper's `approval` is `never` (the default) or `auto-review`; one that asks
-  a person (`on-request` and the like) is refused, as nobody is there to ask.
-  `luna_spawn` answers with `id`, `settings`, `turnsEnded`, `sameFolder`, the
-  worktree and `accountChoice`; `started`, `screen`, `ask`, `starting` and
-  `warnings` are gone with the visible start that filled them.
-- **Breaking for agents:** "Open as chat" hands a helper over to you for good.
-  It becomes a chat of your own, a top-level row seated in a pane: its agent
-  can no longer send to it, wait on it, read it as its own, stop or delete it,
-  and is owed nothing more by it. The agent hears so once, in a notice that
-  outlives a restart. Text still queued for the helper is not delivered, and
-  whoever sent it is told where it is. Luna asks before it does this, and while
-  it opens the agent can neither stop nor delete it.
-- Deleting a chat lists the helpers its agent runs with what each is doing and
-  what its worktree holds. Ticking the box to take them along never stops one
-  still at work, or drops a worktree with uncommitted work, by itself: each
-  takes a box of its own, and Luna checks both again as it deletes. A helper's
-  own Delete waits while it works and keeps such a worktree.
-- Chats an earlier Luna ran as visible helpers are your own chats: their rows
-  are no longer nested under the chat that spawned them, and no agent can stop,
-  delete or answer for them.
-
-### Removed
-
-- **Breaking for agents:** `luna_spawn`'s `visible`; a call passing it is
-  refused as any unknown argument is. With it go visible helpers, the chats an
-  agent started in the window, and what kept them: the window's part in a
-  spawn, carrying them on after a core restart, their nesting and reparenting,
-  and the rule that one you typed into was never auto-deleted.
-- **Breaking for agents:** `luna_answer`'s `keys` (raw keystrokes for a
-  helper's screen); a helper has none, and a dialog in your own chat is yours.
 
 ### Fixed
 
@@ -411,7 +466,8 @@ fixes below.
 - First release: Claude Code sessions in panes, accounts with isolated configs,
   usage limits, worktrees, the updater.
 
-[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.10.1...HEAD
+[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.10.2...HEAD
+[0.10.2]: https://github.com/nrubinmosin/luna/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/nrubinmosin/luna/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/nrubinmosin/luna/compare/v0.9.10...v0.10.0
 [0.9.0]: https://github.com/nrubinmosin/luna/compare/v0.8.0...v0.9.0

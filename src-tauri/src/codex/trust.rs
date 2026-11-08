@@ -139,8 +139,10 @@ pub fn set_codex_trusted_roots(roots: Vec<String>) -> Result<Vec<String>, String
 }
 
 /// Marks the folder trusted for this account — the same entry Codex's own
-/// trust screen writes. Leaves every other key in the config untouched. With a
-/// Codex running on the account, for its sessions instead (see the top).
+/// trust screen writes — when the person ticked that in the new-chat dialog.
+/// Leaves every other key in the config untouched, and notes the write in
+/// Luna's ledger of what it applied (applied.rs). With a Codex running on the
+/// account, for its sessions instead (see the top), which their starts show.
 #[tauri::command]
 pub fn codex_trust_folder(account_path: String, folder: String) -> Result<(), String> {
     let path = config::account_file(&account_path)?;
@@ -150,7 +152,7 @@ pub fn codex_trust_folder(account_path: String, folder: String) -> Result<(), St
         }
         return Ok(());
     };
-    let _editing = crate::account_settings::editing()?;
+    let editing = crate::account_settings::editing()?;
     let mut doc = config::read(&path)?;
     if trusted_in(&doc, &folder) {
         return Ok(());
@@ -177,7 +179,9 @@ pub fn codex_trust_folder(account_path: String, folder: String) -> Result<(), St
     }
     entry.as_table_like_mut().ok_or("project entry is not a table")?.insert("trust_level", toml_edit::value("trusted"));
 
-    config::write(&path, &doc)
+    config::write(&path, &doc)?;
+    crate::applied::record(&editing, &account_path, crate::applied::Item::TrustWritten, &folder);
+    Ok(())
 }
 
 #[cfg(test)]

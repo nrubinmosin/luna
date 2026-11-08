@@ -89,6 +89,9 @@ interface ChatBase {
   color?: string | null;
   /** Luna's MCP tools attached: this session can spawn and drive others. */
   tools?: boolean;
+  /** The guard against endless waits, asked for in the new-chat dialog: a
+   *  shell command that would wait forever is refused before it runs. */
+  guard?: boolean;
   /** The browser this chat's links open in, remembered from a Shift+click;
    *  unset means its account's, its folder's or the default. */
   browser?: string | null;

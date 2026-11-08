@@ -138,6 +138,17 @@ pub(super) struct Registry {
     pub(super) quota_told: HashMap<(String, String, String), QuotaTold>,
     /// Lines for a caller's next notice that no debt brings: by caller.
     pub(super) news: Vec<(String, String)>,
+    /// What Luna applied to each session's latest start, a helper's latest
+    /// turn (applied.rs), with the account and folder it ran on: what the
+    /// window's "What Luna applied" shows.
+    pub(super) applied: HashMap<String, Launched>,
+}
+
+/// A session's latest start, as `applied` keeps it.
+pub(super) struct Launched {
+    applied: Vec<crate::applied::Applied>,
+    account_path: String,
+    folder: String,
 }
 
 pub(super) fn reg() -> &'static Mutex<Registry> {
@@ -175,6 +186,7 @@ pub(super) fn reg() -> &'static Mutex<Registry> {
             exits: HashMap::new(),
             quota_told: HashMap::new(),
             news: Vec::new(),
+            applied: HashMap::new(),
         })
     });
     // Tests assert with this held and all of them share it: one that fails is
@@ -272,6 +284,19 @@ pub fn register_dev_caller() {
     r.tokens.insert(token_key(token.trim()), DEV_CALLER.to_string());
     let url = crate::hub::mcp_url().unwrap_or_default();
     crate::log::warn("agents", &format!("dev caller registered for {folder} ({account_path}); MCP at {url}"));
+}
+
+/// What Luna applied to `id`'s start, on `account_path` in `folder`: kept
+/// until its next start, or its turn's for a helper, replaces it.
+pub fn set_applied(id: &str, applied: Vec<crate::applied::Applied>, account_path: &str, folder: &str) {
+    let launched = Launched { applied, account_path: account_path.to_string(), folder: folder.to_string() };
+    reg().lock().unwrap_or_else(|e| e.into_inner()).applied.insert(id.to_string(), launched);
+}
+
+/// What `set_applied` keeps of `id`: what was applied, the account, the folder.
+pub fn applied_of(id: &str) -> Option<(Vec<crate::applied::Applied>, String, String)> {
+    let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    r.applied.get(id).map(|l| (l.applied.clone(), l.account_path.clone(), l.folder.clone()))
 }
 
 /// A pty session's process has gone, with this exit code if it left one.

@@ -2,28 +2,48 @@
 //! lines its stdin is given.
 
 use super::*;
+use crate::applied::{Applied, Item};
+
+/// What `command_for` gives a turn: its CLI's arguments, the folder it runs
+/// in, its environment, and what Luna applied in them (applied.rs).
+pub(super) type Command = (Vec<String>, String, Vec<(&'static str, String)>, Vec<Applied>);
 
 /// The arguments and working directory of the next turn. Err when a Claude
 /// Code turn's mandatory settings — its core-folder deny (threat model F3) —
 /// cannot be written: the turn refuses rather than run without the deny.
-pub(super) fn command_for(e: &Entry, id: &str) -> Result<(Vec<String>, String, Vec<(&'static str, String)>), String> {
+pub(super) fn command_for(e: &Entry, id: &str) -> Result<Command, String> {
     let s = &e.spec;
     let mut args: Vec<String> = Vec::new();
     let mut envs: Vec<(&'static str, String)> = Vec::new();
+    let mut applied = vec![
+        Item::Account.with(match s.provider {
+            Provider::Claude => format!("CLAUDE_CONFIG_DIR={}", s.account_path),
+            Provider::Codex => format!("CODEX_HOME={}", s.account_path),
+        }),
+        crate::claude::launch::session_applied(id, s.parent.as_deref()),
+    ];
     // A worktree the first turn made, while it is there; Claude Code may
     // drop a clean one on exit, and is then asked for it again by name.
     let made = e.cwd.clone().filter(|c| !crate::pty::same_dir(c, &s.folder));
     let mut dir = s.folder.clone();
+    // The guard against endless waits (guard.rs), a helper's as any.
+    let guard = s.tools || s.parent.is_some();
     match s.provider {
         Provider::Claude => {
             args.extend(
                 ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--replay-user-messages"]
                     .map(String::from),
             );
+            applied.push(
+                Item::HelperHeadless.with("-p, --input-format stream-json, --output-format stream-json, --verbose, --replay-user-messages"),
+            );
             if let Some(m) = &s.model {
                 args.extend(["--model".into(), m.clone()]);
+                applied.push(Item::Model.with(format!("--model {m}")));
             }
             args.extend(["--effort".into(), s.effort.clone(), "--permission-mode".into(), s.mode.clone()]);
+            applied.push(Item::Effort.with(format!("--effort {}", s.effort)));
+            applied.push(Item::PermissionMode.with(format!("--permission-mode {}", s.mode)));
             match (&e.session, &made) {
                 (Some(sid), Some(wt)) if std::path::Path::new(wt).is_dir() => {
                     dir = wt.clone();
@@ -42,120 +62,222 @@ pub(super) fn command_for(e: &Entry, id: &str) -> Result<(Vec<String>, String, V
                 (None, _) if s.worktree => args.push(crate::worktree::worktree_arg(s.worktree_name.as_deref())),
                 (None, _) => {}
             }
+            if let Some(sid) = &e.session {
+                applied.push(Item::Resume.with(format!("--resume {sid}")));
+            }
+            if let Some(wt) = args.iter().find(|a| a.starts_with("--worktree")) {
+                applied.push(Item::Worktree.with(wt));
+            }
             if let Some(agent) = &s.agent {
                 args.extend(["--agent".into(), agent.clone()]);
+                applied.push(Item::Agent.with(format!("--agent {agent}")));
             }
             let mut denied: Vec<&str> = if s.read_only { crate::claude::launch::CLAUDE_EDIT_TOOLS.to_vec() } else { Vec::new() };
-            // Luna's server alone, unless spawned with the account's own.
+            if s.read_only {
+                applied.push(Item::ReadOnly.with(format!("--disallowedTools {}", denied.join(","))));
+            }
+            // Luna's server alone, unless spawned with the account's own; what
+            // that keeps it to is applied with the settings file that holds it.
             let helper = crate::claude::launch::HelperSettings { connectors: s.connectors };
             if !s.connectors {
                 args.push(crate::claude::launch::STRICT_MCP.into());
             }
             if let Some((mcp, token)) = s.token.clone().and_then(|t| Some((crate::pty::claude_mcp_file(id)?, t))) {
-                args.extend(["--mcp-config".into(), mcp.to_string_lossy().into_owned()]);
+                let mcp = mcp.to_string_lossy().into_owned();
+                args.extend(["--mcp-config".into(), mcp.clone()]);
                 envs.push((crate::claude::launch::CLAUDE_MCP_TOKEN_ENV, token));
                 args.extend(["--permission-prompt-tool".into(), "mcp__luna__luna_permission".into()]);
+                applied.push(
+                    Item::HelperPermissionPrompt.with(format!("--mcp-config {mcp}, --permission-prompt-tool mcp__luna__luna_permission")),
+                );
                 // The CLI's to call, not the model's: hidden from its tools,
                 // and the prompts still come through.
                 denied.push("mcp__luna__luna_permission");
                 if s.tools {
                     args.extend(["--allowedTools".into(), "mcp__luna".into()]);
+                    applied.push(Item::LunaTools.with(crate::claude::launch::luna_tools_value(&mcp)));
                 }
             }
             if !denied.is_empty() {
                 args.extend(["--disallowedTools".into(), denied.join(",")]);
+                if s.token.is_some() {
+                    applied
+                        .push(Item::HelperPermissionPrompt.with(format!("Luna's own tool hidden: --disallowedTools {}", denied.join(","))));
+                }
             }
             if let Some(parent) = &s.parent {
                 args.extend(crate::claude::launch::claude_helper_args(parent));
+                applied.push(Item::HelperIdentity.with(format!("--append-system-prompt: {}", crate::pty::helper_line(parent))));
             }
             // A helper with tools has helpers of its own to hear from: what a
             // notice names is a file there, to read without asking.
+            let mut notes = None;
             if s.tools {
-                let notes = crate::agents::notes_dir();
-                if std::fs::create_dir_all(&notes).is_ok() {
-                    args.extend(["--add-dir".into(), notes.to_string_lossy().into_owned()]);
+                let dir = crate::agents::notes_dir();
+                if std::fs::create_dir_all(&dir).is_ok() {
+                    let dir = dir.to_string_lossy().into_owned();
+                    args.extend(["--add-dir".into(), dir.clone()]);
+                    applied.push(Item::NotesDir.with(format!("--add-dir {dir}")));
+                    notes = Some(dir);
                 }
             }
             // The skills the library gives sessions where it works and keeps
             // from them, on every turn: each is a process of its own
             // (library/folders.rs `session_args`). No hooks: its stream says it all; but
             // the guard against endless waits, a helper's as any (guard.rs).
-            let skills = crate::library::session_args(Provider::Claude, &s.account_path, &dir);
-            let settings = crate::pty::claude_settings_file(id, false, s.tools || s.parent.is_some(), &skills, Some(helper))?;
-            args.extend(["--settings".into(), settings.to_string_lossy().into_owned()]);
-            if let Some(dir) = crate::pty::claude_instructions_dir(id, skills.instructions.as_deref()) {
-                args.extend(["--add-dir".into(), dir.to_string_lossy().into_owned()]);
-                envs.push((crate::claude::launch::CLAUDE_ADDED_DIR_MEMORY, "1".into()));
+            let mut skills = crate::library::session_args(Provider::Claude, &s.account_path, &dir);
+            let instructions = crate::pty::claude_instructions_dir(id, skills.instructions.as_deref());
+            if instructions.is_some() {
+                let mut luna_dirs: Vec<String> = skills.args.windows(2).filter(|w| w[0] == "--add-dir").map(|w| w[1].clone()).collect();
+                luna_dirs.extend(notes);
+                let own = instructions.as_ref().map(|d| d.to_string_lossy().into_owned());
+                (skills.memory_off, skills.memory_kept) = crate::pty::claude_memory_off(&luna_dirs, &s.account_path, &dir, own.as_deref());
             }
+            let (settings, holds) = crate::pty::claude_settings_file(id, false, guard.then_some(Item::HelperGuard), &skills, Some(helper))?;
+            args.extend(["--settings".into(), settings.to_string_lossy().into_owned()]);
+            applied.extend(holds);
+            if let Some(dir) = instructions {
+                let dir = dir.to_string_lossy().into_owned();
+                args.extend(["--add-dir".into(), dir.clone()]);
+                envs.push((crate::claude::launch::CLAUDE_ADDED_DIR_MEMORY, "1".into()));
+                applied.push(crate::claude::launch::instructions_applied(&dir));
+            }
+            applied.extend(crate::claude::launch::skills_applied(&skills.args));
             args.extend(skills.args);
             envs.push(("CLAUDE_CONFIG_DIR", s.account_path.clone()));
             envs.push(("DISABLE_AUTOUPDATER", "1".into()));
+            applied.push(Item::NoAutoUpdate.with("DISABLE_AUTOUPDATER=1"));
             // Never inherited: a `0` there turns auto-memory on (`HelperSettings`).
             envs.push((crate::claude::launch::NO_AUTO_MEMORY_ENV, "1".into()));
         }
         Provider::Codex => {
             args.push("exec".into());
+            applied.push(Item::HelperHeadless.with("exec --json, the prompt on stdin (-)"));
             match &e.session {
                 Some(thread) => {
                     args.extend(["resume".into(), thread.clone()]);
+                    applied.push(Item::Resume.with(format!("resume {thread}")));
                     if let Some(wt) = made.filter(|w| std::path::Path::new(w).is_dir()) {
                         dir = wt;
                     }
                 }
                 None => {
                     args.extend(["-C".into(), s.folder.clone()]);
+                    applied.push(Item::Folder.with(format!("-C {}", s.folder)));
                     if s.worktree {
                         args.push("--worktree".into());
+                        applied.push(Item::Worktree.with("--worktree"));
                     }
                 }
             }
-            args.extend(["--json".into(), "--skip-git-repo-check".into()]);
+            args.push("--json".into());
+            // `exec` refuses a folder outside git without it; in a repository
+            // it is not needed, and the check is Codex's to make.
+            if !in_git(&dir) {
+                args.push("--skip-git-repo-check".into());
+                applied.push(Item::SkipGitRepoCheck.with("--skip-git-repo-check"));
+            }
             // `exec` cannot ask for the folder's trust and goes without the
             // project's config and hooks if it lacks it; a helper is where it
             // was sent, trusted for the run (codex/trust.rs).
-            args.extend(crate::codex::trust::trust_override(&s.folder));
+            if let Some((trust, item)) = crate::pty::codex_trust(&s.account_path, &s.folder, true) {
+                applied.push(item.with(format!("-c {}", trust[1])));
+                args.extend(trust);
+            }
             if let Some(m) = &s.model {
                 args.extend(["--model".into(), m.clone()]);
+                applied.push(Item::Model.with(format!("--model {m}")));
             }
             args.extend(["-c".into(), format!("model_reasoning_effort=\"{}\"", s.effort)]);
+            applied.push(Item::Effort.with(format!("-c model_reasoning_effort=\"{}\"", s.effort)));
             if s.hooks_unasked {
                 args.push(crate::codex::launch::HOOKS_UNASKED.into());
+                applied.push(Item::HooksUnasked.with(crate::codex::launch::HOOKS_UNASKED));
             }
-            args.extend(crate::pty::codex_guard_args(id, s.tools || s.parent.is_some(), s.hooks_unasked));
+            let guard_args = crate::pty::codex_guard_args(id, guard, s.hooks_unasked);
+            if !guard_args.is_empty() {
+                applied.push(crate::codex::launch::guard_applied(true));
+            }
+            args.extend(guard_args);
             if s.auto_review {
                 args.push("--approve-for-me".into());
+                applied.push(Item::Approval.with("--approve-for-me"));
+                let sandbox = crate::codex::launch::AUTO_REVIEW_SANDBOX;
+                applied.push(Item::Sandbox.with(format!("{sandbox}, Codex's own under --approve-for-me")));
             } else {
                 // `exec` asks nobody: the sandbox is what holds it.
                 args.extend(["-c".into(), "approval_policy=\"never\"".into()]);
+                applied.push(Item::HelperApprovalNever.with("-c approval_policy=\"never\""));
                 args.extend(["-c".into(), crate::codex::launch::CODEX_PERSON_REVIEWS.into()]);
-                args.extend(crate::pty::codex_sandbox_args(&s.mode));
+                applied.push(Item::HelperReviewer.with(format!("-c {}", crate::codex::launch::CODEX_PERSON_REVIEWS)));
+                let sandbox = crate::pty::codex_sandbox_args(&s.mode);
+                applied.push(crate::codex::launch::sandbox_applied(&s.mode, &sandbox));
+                if let Some((profile, dir)) = profile_deny(&sandbox) {
+                    applied.push(crate::codex::launch::core_deny_applied(&profile, &dir));
+                }
+                args.extend(sandbox);
             }
-            if let Some(sb) = crate::codex::launch::codex_windows_sandbox(&s.mode) {
+            let own = crate::codex::config::windows_sandbox_set(&s.account_path);
+            if let Some(sb) = crate::codex::launch::codex_windows_sandbox(&s.mode).filter(|_| !own) {
+                applied.push(Item::WindowsSandbox.with(format!("-c {sb}")));
                 args.extend(["-c".into(), sb]);
             }
             if let Some(path) = crate::pty::codex_sandbox_path(&s.mode) {
                 envs.push(("PATH", path));
+                applied.push(Item::SandboxPath.with("PATH without …\\Microsoft\\WindowsApps"));
             }
+            args.extend(crate::codex::launch::no_update_check());
+            applied.push(Item::NoAutoUpdate.with(format!("-c {}", crate::codex::launch::NO_UPDATE_CHECK)));
             // Luna's own server, with its tools: none while the hub is not up.
             let luna = s.token.clone().filter(|_| s.tools).map(|token| (crate::pty::codex_mcp_args(), token));
             if !s.connectors {
                 let supplied = luna.as_ref().is_some_and(|(mcp, _)| !mcp.is_empty());
                 let servers = crate::codex::config::helper_mcp_servers(&s.account_path)?;
-                args.extend(crate::codex::launch::connectors_off(&servers, supplied)?);
+                let off = crate::codex::launch::connectors_off(&servers, supplied)?;
+                applied.push(crate::codex::launch::connectors_off_applied(&off));
+                args.extend(off);
             }
             if let Some((mcp, token)) = luna {
                 args.extend(mcp);
                 envs.push(("LUNA_MCP_TOKEN", token));
+                applied.push(Item::LunaTools.with(crate::codex::launch::LUNA_TOOLS_VALUE));
             }
-            envs.extend(crate::pty::codex_git_envs(&s.mode));
+            let git = crate::pty::codex_git_envs(&s.mode);
+            if !git.is_empty() {
+                applied.push(crate::codex::launch::git_ssl_applied(&git));
+            }
+            envs.extend(git);
             envs.push(("CODEX_HOME", s.account_path.clone()));
-            args.extend(crate::library::session_args(Provider::Codex, &s.account_path, &dir).args);
+            let library = crate::library::session_args(Provider::Codex, &s.account_path, &dir).args;
+            applied.extend(crate::codex::launch::library_applied(&library));
+            args.extend(library);
+            if let Some(parent) = &s.parent {
+                applied.push(Item::HelperIdentity.with(format!("a note after every prompt: {}", crate::pty::helper_line(parent))));
+            }
             // The prompt comes on stdin; Claude Code reads it there unasked.
             args.push("-".into());
         }
     }
     envs.extend(crate::pty::session_envs(id, s.parent.as_deref()));
-    Ok((args, dir, envs))
+    // No terminal: a helper's CLI writes to pipes (`run.rs`, `clean_env`).
+    crate::pty::finish_spec(&mut envs, &mut applied, &dir, false);
+    Ok((args, dir, envs, applied))
+}
+
+/// Whether `dir` lies in a Git checkout, as `codex exec` looks for one: a
+/// `.git` (a folder, or a worktree's file) there or above.
+fn in_git(dir: &str) -> bool {
+    std::path::Path::new(dir).ancestors().any(|d| d.join(".git").exists())
+}
+
+/// The profile and the folder Luna's sandbox `-c`s deny (codex/launch.rs
+/// `profile_args`), if they deny one.
+fn profile_deny(args: &[String]) -> Option<(String, String)> {
+    let value = args.iter().find_map(|a| a.strip_prefix("permissions.").and_then(|r| r.split_once(".filesystem=")))?;
+    let (profile, table) = value;
+    let doc: toml_edit::DocumentMut = format!("f = {table}").parse().ok()?;
+    let (dir, _) = doc["f"].as_inline_table()?.iter().next()?;
+    Some((profile.to_string(), dir.to_string()))
 }
 
 /// What a turn's CLI is given: `prompt`, which on every turn of a Codex helper
@@ -199,7 +321,7 @@ mod tests {
         assert!(!has_dir(&e), "one with no tools gets no notices");
         e.spec.tools = true;
         assert!(has_dir(&e));
-        let (args, _, _) = command_for(&e, "x").unwrap();
+        let (args, _, _, _) = command_for(&e, "x").unwrap();
         let at = args.iter().position(|a| a == "--add-dir").unwrap();
         assert_eq!(args[at + 1], crate::agents::notes_dir().to_string_lossy());
         let mut codex = entry(Provider::Codex);
@@ -220,7 +342,7 @@ mod tests {
         assert!(command_for(&entry(Provider::Claude), bad).is_err(), "no deny written, no Claude turn");
         // The helper itself refuses the same way.
         let none = crate::library::SessionSkills::default();
-        assert!(crate::pty::claude_settings_file(bad, true, false, &none, None).is_err(), "and a pane start would too");
+        assert!(crate::pty::claude_settings_file(bad, true, None, &none, None).is_err(), "and a pane start would too");
         // Codex carries the deny in its sandbox profile, not a settings file,
         // so the same id does not stop it.
         assert!(command_for(&entry(Provider::Codex), bad).is_ok(), "Codex writes no settings file");
@@ -229,7 +351,7 @@ mod tests {
     #[test]
     fn a_turn_resumes_the_conversation_the_first_one_named() {
         let mut e = entry(Provider::Codex);
-        let (args, dir, _) = command_for(&e, "x").unwrap();
+        let (args, dir, _, _) = command_for(&e, "x").unwrap();
         assert_eq!(args[..3], ["exec", "-C", "C:\\p"]);
         assert_eq!(args.last().map(String::as_str), Some("-"), "the prompt comes on stdin");
         assert!(
@@ -238,12 +360,12 @@ mod tests {
         );
         assert_eq!(dir, "C:\\p");
         on_codex_event(&mut e, &json!({ "type": "thread.started", "thread_id": "t-1" }));
-        let (args, _, _) = command_for(&e, "x").unwrap();
+        let (args, _, _, _) = command_for(&e, "x").unwrap();
         assert_eq!(args[..3], ["exec", "resume", "t-1"]);
 
         let mut e = entry(Provider::Claude);
         on_claude_event(&mut e, &json!({ "type": "system", "subtype": "init", "session_id": "s-1", "cwd": "C:\\p" }));
-        let (args, _, envs) = command_for(&e, "x").unwrap();
+        let (args, _, envs, _) = command_for(&e, "x").unwrap();
         assert_eq!(args[..3], ["-p", "--input-format", "stream-json"]);
         let at = args.iter().position(|a| a == "--resume").unwrap();
         assert_eq!(args[at + 1], "s-1");
@@ -255,7 +377,7 @@ mod tests {
         crate::hub::start();
         let mut e = entry(Provider::Claude);
         e.spec.token = Some("the-helpers-token".into());
-        let (args, _, envs) = command_for(&e, "bg-mcp-token").unwrap();
+        let (args, _, envs, _) = command_for(&e, "bg-mcp-token").unwrap();
         let at = args.iter().position(|a| a == "--mcp-config").expect("Luna's server");
         let config = std::fs::read_to_string(&args[at + 1]).unwrap();
         assert!(!config.contains("the-helpers-token"), "{config}");
@@ -271,7 +393,7 @@ mod tests {
         let mut e = entry(Provider::Claude);
         e.spec.worktree = true;
         e.spec.worktree_name = Some("luna-x".into());
-        let (args, dir, _) = command_for(&e, "x").unwrap();
+        let (args, dir, _, _) = command_for(&e, "x").unwrap();
         assert!(args.contains(&"--worktree=luna-x".to_string()) && !args.contains(&"--worktree".to_string()));
         assert_eq!(dir, "C:\\p");
         assert!(!args.iter().any(|a| a == "--resume"), "there is no conversation to resume");
@@ -279,11 +401,11 @@ mod tests {
         // A name that is a flag turns permissions off, as Claude Code reads it, if it
         // ever gets to be an argument: not from the spec, and not from where it worked.
         e.spec.worktree_name = Some(FLAG.into());
-        let (args, _, _) = command_for(&e, "x").unwrap();
+        let (args, _, _, _) = command_for(&e, "x").unwrap();
         assert!(args.contains(&"--worktree".to_string()) && !args.iter().any(|a| a.contains(FLAG)), "{args:?}");
         e.session = Some("s-1".into());
         e.cwd = Some(std::path::Path::new("C:\\no\\such").join(FLAG).to_string_lossy().into_owned());
-        let (args, _, _) = command_for(&e, "x").unwrap();
+        let (args, _, _, _) = command_for(&e, "x").unwrap();
         assert!(args.contains(&"--resume".to_string()) && !args.iter().any(|a| a.contains(FLAG)), "{args:?}");
         e.cwd = Some(std::path::Path::new("C:\\no\\such").join("luna-x").to_string_lossy().into_owned());
         assert!(
@@ -294,7 +416,7 @@ mod tests {
         // Codex names none, and always makes its own.
         let mut e = entry(Provider::Codex);
         e.spec.worktree = true;
-        let (args, _, _) = command_for(&e, "x").unwrap();
+        let (args, _, _, _) = command_for(&e, "x").unwrap();
         assert_eq!(args[..3], ["exec", "-C", "C:\\p"]);
         assert!(args.contains(&"--worktree".to_string()));
 
@@ -342,7 +464,7 @@ mod tests {
             set_parent("moved", Some("new".into()));
             let r = lock();
             let e = &r.entries["moved"];
-            let (args, _, envs) = command_for(e, "moved").unwrap();
+            let (args, _, envs, _) = command_for(e, "moved").unwrap();
             assert!(envs.iter().any(|(k, v)| *k == "LUNA_PARENT_ID" && v == "new"), "{provider:?}");
             let line = stdin_text(e, "go on");
             match provider {
@@ -359,7 +481,7 @@ mod tests {
             // With nobody to answer to, it is told of nobody.
             set_parent("moved", None);
             let e = lock().entries.remove("moved").unwrap();
-            let (args, _, envs) = command_for(&e, "moved").unwrap();
+            let (args, _, envs, _) = command_for(&e, "moved").unwrap();
             assert!(!envs.iter().any(|(k, _)| *k == "LUNA_PARENT_ID"));
             assert!(!args.iter().any(|a| a == "--append-system-prompt"));
             assert_eq!(stdin_text(&e, "go on"), "go on");
@@ -372,7 +494,7 @@ mod tests {
         e.spec.mode = crate::codex::launch::READ_ONLY_NET.into();
         for session in [None, Some("t-1".to_string())] {
             e.session = session;
-            let (args, _, envs) = command_for(&e, "x").unwrap();
+            let (args, _, envs, _) = command_for(&e, "x").unwrap();
             assert!(args.iter().any(|a| a.starts_with("default_permissions=\"luna-")));
             assert!(args.iter().any(|a| a.ends_with(".network.enabled=true")));
             assert!(!args.iter().any(|a| a.starts_with("sandbox_mode=")), "Codex's docs say not to set both");
@@ -385,10 +507,10 @@ mod tests {
     #[test]
     fn read_only_takes_the_edit_tools_away_from_claude() {
         let mut e = entry(Provider::Claude);
-        let (args, _, _) = command_for(&e, "x").unwrap();
+        let (args, _, _, _) = command_for(&e, "x").unwrap();
         assert_eq!(value_of(&args, "--disallowedTools"), None);
         e.spec.read_only = true;
-        let (args, _, _) = command_for(&e, "x").unwrap();
+        let (args, _, _, _) = command_for(&e, "x").unwrap();
         assert_eq!(value_of(&args, "--disallowedTools"), Some("Edit,Write,NotebookEdit"));
         assert_eq!(args.iter().filter(|a| *a == "--disallowedTools").count(), 1);
     }
@@ -397,10 +519,10 @@ mod tests {
     fn an_agent_is_claude_codes_flag_on_every_turn() {
         let mut e = entry(Provider::Claude);
         e.spec.agent = Some("checker".into());
-        let (args, _, _) = command_for(&e, "x").unwrap();
+        let (args, _, _, _) = command_for(&e, "x").unwrap();
         assert_eq!(value_of(&args, "--agent"), Some("checker"));
         e.session = Some("s-1".into());
-        let (args, _, _) = command_for(&e, "x").unwrap();
+        let (args, _, _, _) = command_for(&e, "x").unwrap();
         assert_eq!(value_of(&args, "--agent"), Some("checker"));
         assert_eq!(value_of(&args, "--resume"), Some("s-1"));
     }
@@ -410,7 +532,7 @@ mod tests {
         for provider in [Provider::Claude, Provider::Codex] {
             let mut e = entry(provider);
             e.spec.parent = Some("p-1".into());
-            let (args, _, envs) = command_for(&e, "x").unwrap();
+            let (args, _, envs, _) = command_for(&e, "x").unwrap();
             assert!(envs.iter().any(|(k, v)| *k == "LUNA_SESSION_ID" && v == "x"));
             assert!(envs.iter().any(|(k, v)| *k == "LUNA_PARENT_ID" && v == "p-1"));
             assert!(!args.iter().any(|a| a.contains("developer_instructions")), "that would replace what its config says");
@@ -419,7 +541,7 @@ mod tests {
             }
         }
         for provider in [Provider::Claude, Provider::Codex] {
-            let (args, _, envs) = command_for(&entry(provider), "x").unwrap();
+            let (args, _, envs, _) = command_for(&entry(provider), "x").unwrap();
             assert!(envs.iter().any(|(k, v)| *k == "LUNA_SESSION_ID" && v == "x"), "whoever started it");
             assert!(!envs.iter().any(|(k, _)| *k == "LUNA_PARENT_ID"));
             assert!(!args.iter().any(|a| a == "--append-system-prompt"));
@@ -431,7 +553,7 @@ mod tests {
         let mut e = entry(Provider::Codex);
         e.spec.mode = "workspace-write".into();
         e.spec.auto_review = true;
-        let (args, _, _) = command_for(&e, "x").unwrap();
+        let (args, _, _, _) = command_for(&e, "x").unwrap();
         assert!(args.contains(&"--approve-for-me".to_string()));
         assert!(!args.iter().any(|a| a.starts_with("approvals_reviewer=")), "its own flag says who reviews");
         assert!(!args.iter().any(|a| a.starts_with("approval_policy=") || a.starts_with("sandbox_mode=")), "Codex refuses them beside it");
@@ -440,11 +562,11 @@ mod tests {
     #[test]
     fn hooks_run_unasked_only_when_the_folder_says_so() {
         let mut e = entry(Provider::Codex);
-        let (args, _, _) = command_for(&e, "x").unwrap();
+        let (args, _, _, _) = command_for(&e, "x").unwrap();
         assert!(!args.contains(&crate::codex::launch::HOOKS_UNASKED.to_string()));
         e.spec.hooks_unasked = true;
         on_codex_event(&mut e, &json!({ "type": "thread.started", "thread_id": "t-1" }));
-        let (args, _, _) = command_for(&e, "x").unwrap();
+        let (args, _, _, _) = command_for(&e, "x").unwrap();
         assert_eq!(args[..3], ["exec", "resume", "t-1"]);
         assert!(args.contains(&crate::codex::launch::HOOKS_UNASKED.to_string()), "every turn, resumes too");
         assert!(args.iter().any(|a| a.starts_with("projects={") && a.contains("trust_level")), "trusted for the run");
@@ -453,10 +575,10 @@ mod tests {
     #[test]
     fn claude_helpers_keep_stdin_for_stream_json_and_codex_ones_do_not() {
         let has = |args: &[String], flag: &str| args.iter().any(|a| a == flag);
-        let (args, _, _) = command_for(&entry(Provider::Claude), "x").unwrap();
+        let (args, _, _, _) = command_for(&entry(Provider::Claude), "x").unwrap();
         assert!(args.windows(2).any(|w| w == ["--input-format", "stream-json"]), "{args:?}");
         assert!(has(&args, "--replay-user-messages"), "its word that a line was taken in");
-        let (args, _, _) = command_for(&entry(Provider::Codex), "x").unwrap();
+        let (args, _, _, _) = command_for(&entry(Provider::Codex), "x").unwrap();
         assert!(!has(&args, "--input-format") && !has(&args, "--replay-user-messages"));
     }
 
@@ -486,10 +608,23 @@ mod tests {
         settings: Option<Value>,
         mcp: Option<Value>,
         instructions: Option<String>,
+        /// What Luna applied, as (key, class, value), placeholders in.
+        applied: Vec<(String, crate::applied::Class, String)>,
+    }
+
+    impl Turn {
+        fn keys(&self) -> Vec<&str> {
+            self.applied.iter().map(|(k, _, _)| k.as_str()).collect()
+        }
+        fn value(&self, key: &str) -> Option<&str> {
+            self.applied.iter().find(|(k, _, _)| k == key).map(|(_, _, v)| v.as_str())
+        }
     }
 
     fn turn(e: &Entry, id: &str, r: &Redact) -> Turn {
-        let (args, dir, envs) = command_for(e, id).unwrap();
+        let (args, dir, envs, applied) = command_for(e, id).unwrap();
+        Redact::assert_shown(&args, &envs, &dir, &applied);
+        let applied = r.applied(&applied, &envs);
         let args = r.args(&args);
         let data = crate::paths::data_dir();
         let read = |sub: &str, placeholder: &str| {
@@ -500,7 +635,7 @@ mod tests {
         };
         let (settings, mcp) = (read("hooks", "<settings-file>"), read("mcp", "<mcp-file>"));
         let instructions = golden::instructions(id, &args);
-        Turn { dir: r.text(&dir), envs: r.envs(&envs), settings, mcp, instructions, args }
+        Turn { dir: r.text(&dir), envs: r.envs(&envs), settings, mcp, instructions, args, applied }
     }
 
     /// A Claude Code turn's arguments up to where a conversation is named.
@@ -547,6 +682,8 @@ mod tests {
         e.spec.folder = lib.folder.clone();
         let r = Redact::for_chat(id)
             .with(lib.claude_skills(), "<library-dir>")
+            // As `claudeMdExcludes` names it, on every OS.
+            .with(lib.claude_skills().replace('\\', "/"), "<library-dir>")
             .with(lib.folder.clone(), "<project>")
             .with(account.clone(), "<acc>")
             // As `claudeMdExcludes` names a file, on every OS.
@@ -701,13 +838,15 @@ mod tests {
         args
     }
 
-    /// `exec` asking nobody, held by the sandbox `mode`.
+    /// `exec` asking nobody, held by the sandbox `mode`; then Codex's own
+    /// update check kept off.
     fn codex_held(sandbox: Vec<String>, windows: bool) -> Vec<String> {
         let mut args = strings(&["-c", "approval_policy=\"never\"", "-c", "approvals_reviewer=\"user\""]);
         args.extend(sandbox);
         if windows {
             args.extend(golden::codex_windows_sandbox());
         }
+        args.extend(strings(&["-c", "check_for_update_on_startup=false"]));
         args
     }
 
@@ -767,6 +906,42 @@ mod tests {
     }
 
     #[test]
+    fn a_codex_turn_is_told_to_skip_the_git_check_only_outside_a_repository() {
+        const ID: &str = "golden-bg-codex-git";
+        let r = Redact::for_chat(ID);
+        let mut e = entry(Provider::Codex);
+        let t = turn(&e, ID, &r);
+        assert!(t.args.contains(&"--skip-git-repo-check".to_string()), "C:\\p is no repository");
+        assert!(t.keys().contains(&"helper.skip-git-repo-check"));
+        let repo = std::env::temp_dir().join(format!("luna-bg-git-{}", std::process::id()));
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::create_dir_all(repo.join("sub")).unwrap();
+        e.spec.folder = repo.join("sub").to_string_lossy().into_owned();
+        let r = r.with(e.spec.folder.clone(), "<sub>");
+        let t = turn(&e, ID, &r);
+        assert!(!t.args.contains(&"--skip-git-repo-check".to_string()), "in a repository Codex needs no word: {:?}", t.args);
+        assert!(!t.keys().contains(&"helper.skip-git-repo-check"));
+        assert_eq!(t.value("helper.trust").map(|v| v.starts_with("-c projects=")), Some(true), "trusted for the run, nothing written");
+        assert_eq!(t.value("helper.reviewer"), Some("-c approvals_reviewer=\"user\""));
+        assert_eq!(t.value("no-self-update"), Some("-c check_for_update_on_startup=false"));
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn a_codex_turn_keeps_a_windows_sandbox_its_user_chose() {
+        const ID: &str = "golden-bg-codex-own-sandbox";
+        let account = std::env::temp_dir().join(format!("luna-bg-winsandbox-{}", std::process::id()));
+        std::fs::create_dir_all(&account).unwrap();
+        std::fs::write(account.join("config.toml"), "[windows]\nsandbox = \"elevated\"\n").unwrap();
+        let mut e = entry(Provider::Codex);
+        e.spec.account_path = account.to_string_lossy().into_owned();
+        let r = Redact::for_chat(ID).with(e.spec.account_path.clone(), "<acc>");
+        let t = turn(&e, ID, &r);
+        assert!(!t.args.iter().any(|a| a.starts_with("windows.sandbox")), "{:?}", t.args);
+        let _ = std::fs::remove_dir_all(&account);
+    }
+
+    #[test]
     fn golden_headless_codex_sandboxes_and_the_reviewer() {
         // (sandbox, auto review, what holds it, whether Windows sandboxes it)
         let read_only_net = codex_held(golden::codex_read_only_net(), true);
@@ -774,7 +949,13 @@ mod tests {
             ("workspace-write", false, codex_held(strings(&["-c", "sandbox_mode=\"workspace-write\""]), true), true),
             ("danger-full-access", false, codex_held(strings(&["-c", "sandbox_mode=\"danger-full-access\""]), false), false),
             ("read-only-net", false, read_only_net, true),
-            ("workspace-write", true, [strings(&["--approve-for-me"]), golden::codex_windows_sandbox()].concat(), true),
+            (
+                "workspace-write",
+                true,
+                [strings(&["--approve-for-me"]), golden::codex_windows_sandbox(), strings(&["-c", "check_for_update_on_startup=false"])]
+                    .concat(),
+                true,
+            ),
         ];
         for (mode, auto_review, held, sandboxed) in cases {
             let id = format!("golden-bg-codex-{mode}-{auto_review}");
@@ -917,7 +1098,13 @@ mod tests {
         );
         let mut settings = golden::claude_helper_settings(golden::claude_settings_alone());
         settings["skillOverrides"] = json!({ "review": "off" });
-        settings["claudeMdExcludes"] = json!(["<acc>/CLAUDE.md"]);
+        settings["claudeMdExcludes"] = json!([
+            "<acc>/CLAUDE.md",
+            "<library-dir>/CLAUDE.md",
+            "<library-dir>/CLAUDE.local.md",
+            "<library-dir>/.claude/CLAUDE.md",
+            "<library-dir>/.claude/rules/**"
+        ]);
         assert_eq!(t.settings, Some(settings), "no hooks, no guard: what the folder keeps from it alone");
         assert_eq!(t.instructions.as_deref(), Some(crate::library::GoldenLibrary::INSTRUCTIONS), "the library's, word for word");
     }
@@ -928,7 +1115,8 @@ mod tests {
         let lib = crate::library::GoldenLibrary::new("bg-codex");
         let (e, r) = library_entry(ID, &lib, Provider::Codex);
         let t = turn(&e, ID, &r);
-        let mut want = strings(&["exec", "-C", "<project>", "--json", "--skip-git-repo-check"]);
+        // A repository: Codex finds it, and needs no word to run there.
+        let mut want = strings(&["exec", "-C", "<project>", "--json"]);
         want.extend(crate::codex::trust::trust_override(&lib.folder).iter().map(|a| r.text(a)));
         want.extend(strings(&["--model", "haiku", "-c", "model_reasoning_effort=\"low\""]));
         want.extend(codex_held(golden::codex_read_only(&["-c", "sandbox_mode=\"read-only\""]), true));

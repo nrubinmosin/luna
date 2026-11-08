@@ -2,8 +2,9 @@
 //! — `tail -f`, `Get-Content -Wait` — with no deadline of its own outlives the
 //! tool that ran it: on Windows a Monitor that expires or a shell that is
 //! killed leaves its pipeline behind, and it holds the PC awake all night (as
-//! in a campaign on 2026-11-04). Sessions with Luna's tools and every helper
-//! get a PreToolUse hook that posts the call here (hub.rs `/guard`,
+//! in a campaign on 2026-11-04). Every helper, and a chat whose person ticked
+//! "Wait guard" in the new-chat dialog, get a PreToolUse hook that posts the
+//! call here (hub.rs `/guard`,
 //! pty/start.rs `claude_settings_file` and `codex_guard_args`);
 //! such a command is refused with what to do instead, everything else goes
 //! ahead. A deadline is a `timeout N`

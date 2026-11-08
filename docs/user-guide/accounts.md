@@ -44,8 +44,8 @@ Luna writes the CLI's own trust bit for a folder before a session starts:
 `--worktree`, and Codex follows its trust screen with a Windows sandbox
 question. Codex can also be trusted for one run (`-c projects=…`), which writes
 nothing: background Codex helpers are trusted that way wherever they are sent,
-and so is any Codex session under a folder in Settings → "Codex trusts on this
-computer". Codex matches trust by the exact path, so a parent folder in its
+and so is any Codex session under a folder in Settings → Agents & trust →
+Trusted folders. Codex matches trust by the exact path, so a parent folder in its
 config would not do.
 
 ## Recommendations

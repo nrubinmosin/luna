@@ -410,6 +410,7 @@ pub fn forget(id: &str) {
     r.notice_times.retain(|(who, chat), _| who != id && chat != id);
     r.stopped.retain(|(who, chat), _| who != id && chat != id);
     r.exits.remove(id);
+    r.applied.remove(id);
     let told = r.quota_told.len();
     r.quota_told.retain(|(caller, _, _), _| caller != id);
     let quota_now = r.quota_told.len() != told;

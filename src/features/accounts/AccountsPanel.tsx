@@ -159,7 +159,7 @@ function AccountsPanel() {
           icon="gear"
           label="Settings"
           title="Settings — accounts folder, new chats, versions and updates"
-          onClick={() => useSettings.getState().setOpen(true)}
+          onClick={() => useSettings.getState().setOpen(true, 'general')}
         />
       </div>
 

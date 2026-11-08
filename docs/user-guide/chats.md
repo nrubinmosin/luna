@@ -12,6 +12,25 @@ folders you launched chats in, adopted orphans into or browsed to.
 
 The account decides which CLI runs, and the rest of the dialog follows.
 
+Two boxes add something to the CLI only when you tick them:
+
+- **Trust this folder in "<account>"** shows when the account has not trusted
+  the folder yet, unticked. Ticked, Luna writes the same mark the CLI's own
+  trust prompt writes (`hasTrustDialogAccepted` in `.claude.json`, or
+  `trust_level = "trusted"` in `config.toml`), and the chat opens on its prompt.
+  Unticked, nothing is written and the CLI asks in the chat itself (Codex then
+  asks about its Windows sandbox too). Claude Code cannot ask when it makes a
+  worktree, so such a chat needs the box ticked or the worktree off. A chat an
+  agent starts never writes trust: a Codex helper is trusted for its own runs
+  only.
+- **Wait guard**, off: a shell command that would wait forever (`tail -f`,
+  `Get-Content -Wait` without a timeout) is refused before it runs, with the
+  reason for the model. Helpers always have it. Codex runs it only with
+  **Hooks unasked** on.
+
+**Ctrl+Shift+N** opens the dialog instead when the folder is not trusted in the
+account, since whether to trust it is yours to say.
+
 **Claude Code:** model (a drop-down), effort
 (`low/medium/high/xhigh/max/ultracode`) and permission mode. Isolation runs
 `claude --worktree` in `<folder>/.claude/worktrees/<name>`, on a
@@ -59,7 +78,8 @@ can see: a free one, or the pane you last worked in when the board is full.
 
 ## The pane title bar
 
-Buttons first (recolor, rename, delete, peek, take off the board), then the
+Buttons first (recolor, rename, what Luna applied, delete, peek, take off the
+board), then the
 name and chips: folder, account, model and effort, permission mode (Claude
 Code) or approval and sandbox (Codex; `bypass` and `auto-review` get chips of
 their own), the worktree flag, and context used as a meter and a number. A
@@ -70,16 +90,47 @@ the row's tooltip.
 Every new chat is dealt one of ten colors, worn by its title bar and as a stripe
 on its sidebar row.
 
+## What Luna applied
+
+The ⓘ button on a chat's title bar lists everything Luna added to its CLI at
+its latest start (a helper's latest turn), read-only, grouped by why it is
+there:
+
+- **You chose**: the model, effort and modes, the worktree, Luna tools, the wait
+  guard, hooks unasked, the library's skills and instructions, an agent's
+  request.
+- **Luna needs it to run the chat**: the account folder, the session's id,
+  resume, the activity hooks, the CLI's own updates kept off, a helper's role,
+  headless mode and trust for its run.
+- **Protects Luna's own boundary**: the read deny on Luna's core folder; for a
+  helper, Luna's MCP server alone (none of the account's connectors or servers,
+  unless the agent spawned it with them) and its auto-memory off.
+- **Works around the CLI on this machine**: Codex's Windows sandbox when you
+  set none, its PATH without the Store's aliases, git's OpenSSL backend.
+
+Each item shows its value and the reason. Tokens and Luna's local addresses are
+never shown, and files appear by their path. The panel also has the chat's own
+**Wait guard for this chat** box (from the CLI's next start). If Luna could not
+note a write into the account, or its note of them will not read, the panel
+says **Accounting incomplete** and why. A folder whose memory Luna could not
+leave out without risking this project's own instructions is listed under
+**Works around the CLI on this machine**.
+
+Chats from before the guard was a choice, which had it because of Luna tools,
+are named once in a notice across the board until you dismiss it. Below those comes what Luna wrote
+into the account outside a start: the folder's trust when you ticked it, and
+the library's copies. See [ADR-0016](../adr/0016-luna-is-a-runtime.md).
+
 ## Status
 
 - **Working / waiting for you / resting**, read from the CLI's own session
   registry, so it is right whether or not the chat has a pane.
 - A chat turning to waiting raises a desktop notification (the window may be in
-  the tray), with the system's sound unless Settings → Notifications says not
+  the tray), with the system’s sound unless Settings → General → Notifications says not
   to. A click brings the window up with that chat on the peek sheet.
 - **Waiting by marker:** a turn that ends asking you something in plain words is
   waiting too, when its last message ends on a line holding the text set in
-  Settings → Waiting for you (`AWAITING OPERATOR` to begin with). It stays
+  Settings → General → Waiting for you (`AWAITING OPERATOR` to begin with). It stays
   waiting until you write to it or clear it with the check on its title bar or
   row; a power-off armed for "when done" does not wait for it.
 - Context use is read from the session transcript against the model's real

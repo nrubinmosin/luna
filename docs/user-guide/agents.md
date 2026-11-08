@@ -37,8 +37,8 @@ does a background helper spawned without tools.
 - A tool called with an argument it does not take, or of the wrong type, is
   refused with what it does take, rather than run on a default.
 
-**The guard.** A chat with tools, and every helper, has its shell commands
-checked before they run: one that follows a file (`tail -f`, `tail -F`,
+**The guard.** Every helper, and a chat whose **Wait guard** box was ticked in
+the new-chat dialog, has its shell commands checked before they run: one that follows a file (`tail -f`, `tail -F`,
 `Get-Content -Wait`, in Bash, PowerShell or a Monitor) with no `timeout N` in
 front is refused, with what to do instead. Such a wait outlives the tool that ran
 it and holds the PC awake all night. Codex sessions get this only where Codex
@@ -89,9 +89,9 @@ hooks run unasked.
   directory (`sameFolder`), whose files and git it shares. `luna_list` names the
   model a turn ran on, where the organization swapped the one asked for.
 - A helper runs at no more privilege than its caller (permission mode; Codex
-  sandbox, approval and network) unless Settings → Helpers allows helpers above
-  their caller, and never in or above Luna's data folder. Turning that setting
-  on asks again in a system dialog; turning it off does not.
+  sandbox, approval and network) unless Settings → Agents & trust allows helpers
+  above their caller, and never in or above Luna's data folder. Turning that
+  setting on asks again in a system dialog; turning it off does not.
 - A Codex helper never asks a person: its approval is `never` or `auto-review`,
   and one that asks (`on-request` and the like) is refused, as nobody is there.
 

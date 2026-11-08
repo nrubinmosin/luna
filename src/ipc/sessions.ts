@@ -19,6 +19,8 @@ export interface ClaudeSessionSpec {
   readOnly?: boolean;
   /** The agent it runs as (`--agent`). */
   agent?: string | null;
+  /** The guard against endless waits, as the chat's person asked. */
+  guard?: boolean;
 }
 
 export const ensureClaudeSession = (spec: ClaudeSessionSpec) =>
@@ -37,7 +39,8 @@ export const ensureClaudeSession = (spec: ClaudeSessionSpec) =>
       resume: spec.resume ?? null,
       tools: spec.tools ?? false,
       readOnly: spec.readOnly ?? false,
-      agent: spec.agent ?? null
+      agent: spec.agent ?? null,
+      guard: spec.guard ?? false
     },
     ''
   );
@@ -59,6 +62,8 @@ export interface CodexSessionSpec {
   tools?: boolean;
   /** Run the project's hooks without their trust prompt (codex/hooks.rs). */
   hooksUnasked?: boolean;
+  /** The guard against endless waits, as the chat's person asked. */
+  guard?: boolean;
 }
 
 export const ensureCodexSession = (spec: CodexSessionSpec) =>
@@ -76,7 +81,8 @@ export const ensureCodexSession = (spec: CodexSessionSpec) =>
       resume: spec.resume ?? null,
       login: spec.login ?? false,
       tools: spec.tools ?? false,
-      hooksUnasked: spec.hooksUnasked ?? false
+      hooksUnasked: spec.hooksUnasked ?? false,
+      guard: spec.guard ?? false
     },
     ''
   );

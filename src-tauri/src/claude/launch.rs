@@ -4,6 +4,7 @@
 //! writes, registers or mints. The start does that under the chat's spawn
 //! gate (pty/start.rs) and hands the results in.
 
+use crate::applied::{Applied, Item};
 use std::path::Path;
 
 /// A Claude Code chat's start as `chat_args` lays it out: what the window
@@ -18,7 +19,8 @@ pub(crate) struct ChatStart<'a> {
     pub(crate) resume: Option<&'a str>,
     /// `--worktree`, by this name if it has one.
     pub(crate) worktree: Option<Option<&'a str>>,
-    pub(crate) settings_file: Option<&'a Path>,
+    /// The `--settings` file, and what it holds (`settings_applied`).
+    pub(crate) settings_file: Option<(&'a Path, &'a [Applied])>,
     pub(crate) agent: Option<&'a str>,
     pub(crate) read_only: bool,
     /// Luna's MCP config file and the token its header takes.
@@ -28,9 +30,18 @@ pub(crate) struct ChatStart<'a> {
     pub(crate) skill_args: &'a [String],
 }
 
-/// The arguments and environment of a Claude Code chat's start.
-pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, String)>) {
+/// The arguments and environment of a Claude Code chat's start, and what
+/// Luna applied in them (applied.rs).
+pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, String)>, Vec<Applied>) {
     let path = |p: &Path| p.to_string_lossy().into_owned();
+    let mut applied = vec![
+        Item::Account.with(format!("CLAUDE_CONFIG_DIR={}", s.account_path)),
+        Item::NoAutoUpdate.with("DISABLE_AUTOUPDATER=1"),
+        session_applied(s.id, None),
+        Item::Model.with(format!("--model {}", s.model)),
+        Item::Effort.with(format!("--effort {}", s.effort)),
+        Item::PermissionMode.with(format!("--permission-mode {}", s.permission_mode)),
+    ];
     let mut args = vec![
         "--model".to_string(),
         s.model.to_string(),
@@ -42,21 +53,27 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
     if let Some(session_id) = s.resume {
         args.push("--resume".into());
         args.push(session_id.to_string());
+        applied.push(Item::Resume.with(format!("--resume {session_id}")));
     }
     if let Some(name) = s.worktree {
-        args.push(crate::worktree::worktree_arg(name));
+        let arg = crate::worktree::worktree_arg(name);
+        applied.push(Item::Worktree.with(&arg));
+        args.push(arg);
     }
-    if let Some(settings) = s.settings_file {
+    if let Some((settings, holds)) = s.settings_file {
         args.push("--settings".into());
         args.push(path(settings));
+        applied.extend(holds.iter().cloned());
     }
     if let Some(agent) = s.agent {
         args.push("--agent".into());
         args.push(agent.to_string());
+        applied.push(Item::Agent.with(format!("--agent {agent}")));
     }
     if s.read_only {
         args.push("--disallowedTools".into());
         args.push(CLAUDE_EDIT_TOOLS.join(","));
+        applied.push(Item::ReadOnly.with(format!("--disallowedTools {}", CLAUDE_EDIT_TOOLS.join(","))));
     }
     if let Some((mcp, _)) = s.mcp {
         // Luna's tools without a permission prompt in every mode: the
@@ -66,6 +83,7 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
         args.push("mcp__luna".into());
         args.push("--mcp-config".into());
         args.push(path(mcp));
+        applied.push(Item::LunaTools.with(luna_tools_value(&path(mcp))));
     }
     // A long message from another session comes as a file there
     // (agents/delivery.rs `spill`), and so does a helper's answer named in a
@@ -73,12 +91,15 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
     if let Some(notes) = s.notes_dir {
         args.push("--add-dir".into());
         args.push(path(notes));
+        applied.push(Item::NotesDir.with(format!("--add-dir {}", path(notes))));
     }
     if let Some(dir) = s.instructions_dir {
         args.push("--add-dir".into());
         args.push(path(dir));
+        applied.push(instructions_applied(&path(dir)));
     }
     args.extend(s.skill_args.iter().cloned());
+    applied.extend(skills_applied(s.skill_args));
     let mut envs = vec![
         ("CLAUDE_CONFIG_DIR", s.account_path.to_string()),
         // Luna updates the CLI itself; the CLI's own updater would install a
@@ -92,7 +113,216 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
         envs.push((CLAUDE_MCP_TOKEN_ENV, token.to_string()));
     }
     envs.extend(crate::pty::session_envs(s.id, None));
-    (args, envs)
+    (args, envs, applied)
+}
+
+/// `session_envs` as applied: the session's id, and its parent's.
+pub(crate) fn session_applied(id: &str, parent: Option<&str>) -> Applied {
+    Item::SessionId.with(match parent {
+        Some(parent) => format!("LUNA_SESSION_ID={id}, LUNA_PARENT_ID={parent}"),
+        None => format!("LUNA_SESSION_ID={id}"),
+    })
+}
+
+/// Luna's MCP server as applied: the config file by its path, the token by
+/// the variable it travels in.
+pub(crate) fn luna_tools_value(config: &str) -> String {
+    format!("--mcp-config {config}, --allowedTools mcp__luna; its token in {CLAUDE_MCP_TOKEN_ENV}, not shown")
+}
+
+/// The library's instructions folder as applied, with the variable that has
+/// it read as memory.
+pub(crate) fn instructions_applied(dir: &str) -> Applied {
+    Item::LibraryInstructions.with(format!("--add-dir {dir}, {CLAUDE_ADDED_DIR_MEMORY}=1"))
+}
+
+/// The library's `--add-dir`s of skills (library/folders.rs `session_args`)
+/// as applied; nothing without any.
+pub(crate) fn skills_applied(skill_args: &[String]) -> Option<Applied> {
+    let dirs: Vec<&str> = skill_args.iter().filter(|a| *a != "--add-dir").map(String::as_str).collect();
+    (!dirs.is_empty()).then(|| Item::LibrarySkills.with(format!("--add-dir {}", dirs.join(", --add-dir "))))
+}
+
+/// What a `--settings` file of `claude_settings`, at `path`, holds, as
+/// applied: its hooks, the guard as `guard` says it is there (a chat's
+/// choice or a helper's), the core's deny, and the library's.
+pub(crate) fn settings_applied(
+    path: &str,
+    hooks: bool,
+    guard: Option<Item>,
+    library: &crate::library::SessionSkills,
+    core: &str,
+) -> Vec<Applied> {
+    let mut applied = Vec::new();
+    if hooks {
+        applied.push(Item::ActivityHooks.with(format!("hooks in --settings {path}")));
+    }
+    if let Some(guard) = guard {
+        applied.push(guard.with(format!("a PreToolUse hook on {} in --settings {path}", crate::guard::TOOLS.replace('|', ", "))));
+    }
+    applied.push(Item::CoreReadDeny.with(format!("permissions.deny {} in --settings {path}", claude_read_deny(core, cfg!(windows)))));
+    if !library.hidden.is_empty() {
+        applied.push(Item::LibraryHidden.with(format!("skillOverrides off: {}", library.hidden.join(", "))));
+    }
+    if !library.excluded.is_empty() {
+        applied.push(
+            Item::LibraryAccountInstructions
+                .with(format!("claudeMdExcludes {}", library.excluded.iter().map(|p| glob_literal(p)).collect::<Vec<_>>().join(", "))),
+        );
+    }
+    if !library.memory_off.is_empty() {
+        applied.push(Item::MemoryNarrowed.with(format!("claudeMdExcludes {}", library.memory_off.join(", "))));
+    }
+    applied.extend(library.memory_kept.iter().map(|note| Item::MemoryNotNarrowed.with(note)));
+    applied
+}
+
+/// A folder added to a session, as `memory_excludes` takes it: each spelling
+/// Claude Code may meet it by (as given, and as the disk resolves it), and
+/// the resolved one, which the containment checks go by.
+pub(crate) struct AddedDir {
+    pub(crate) spellings: Vec<String>,
+    pub(crate) resolved: String,
+}
+
+/// What `CLAUDE_ADDED_DIR_MEMORY` would have a session read as memory beyond
+/// the library's instructions, as `claudeMdExcludes` patterns: the memory
+/// files of each folder in `added` — every `--add-dir` but the instructions'
+/// own, and those the user's settings add — where the session working in
+/// `folder` (resolved) would not read them anyway. Claude Code reads the
+/// memory of the folders above the one it works in and loads that of the
+/// folders below on demand, so a folder on either side of it is left alone,
+/// judged on resolved paths: `<folder>/../shared` is beside it, not in it. The
+/// variable is a switch (2.1.318: every additional folder's or none), and
+/// these patterns are what narrows it; each folder's own name goes in
+/// literally (`glob_literal`).
+pub(crate) fn memory_excludes(added: &[AddedDir], folder: &str) -> Vec<String> {
+    let norm = |p: &str| p.replace('\\', "/").trim_end_matches('/').to_string();
+    let same = |a: &str, b: &str| if cfg!(windows) { a.eq_ignore_ascii_case(b) } else { a == b };
+    let within = |inner: &str, outer: &str| {
+        same(inner, outer) || (inner.get(..outer.len()).is_some_and(|head| same(head, outer)) && inner[outer.len()..].starts_with('/'))
+    };
+    let folder = norm(folder);
+    let mut out = Vec::new();
+    for dir in added {
+        let resolved = norm(&dir.resolved);
+        if resolved.is_empty() || within(&folder, &resolved) || within(&resolved, &folder) {
+            continue;
+        }
+        for spelled in dir.spellings.iter().map(|s| norm(s)).filter(|s| !s.is_empty()) {
+            for file in ["CLAUDE.md", "CLAUDE.local.md", ".claude/CLAUDE.md", ".claude/rules/**"] {
+                let pattern = format!("{}/{file}", glob_literal(&spelled));
+                if !out.contains(&pattern) {
+                    out.push(pattern);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// A folder whose instruction files this launch's Claude Code reads as its
+/// own project's: the folder it works in and those below it (`nested`), the
+/// folders above it, an added folder left unexcluded, the library's
+/// instructions folder.
+pub(crate) struct OwnMemory {
+    pub(crate) root: String,
+    pub(crate) nested: bool,
+}
+
+/// `patterns` (from `memory_excludes`) less any that Claude Code's picomatch
+/// would also match against one of the launch's `own` instruction files, and
+/// a note for each dropped. A pattern of ours matches two things there: the
+/// path it names with its escapes read as the characters they stand for, and
+/// — picomatch's shortcut for an input spelled exactly like the pattern — the
+/// path its own text spells (`E:/w/[[]ab[]]/CLAUDE.md` is also a file in a
+/// folder named `[[]ab[]]`). Both readings are judged here, as folders, so a
+/// pattern that could take this project's own instructions is not used and
+/// the folder it was for is read as the CLI would read it.
+pub(crate) fn keep_own_memory(patterns: Vec<String>, own: &[OwnMemory]) -> (Vec<String>, Vec<String>) {
+    let norm = |p: &str| p.replace('\\', "/").trim_end_matches('/').to_string();
+    let same = |a: &str, b: &str| if cfg!(windows) { a.eq_ignore_ascii_case(b) } else { a == b };
+    let within = |inner: &str, outer: &str| {
+        same(inner, outer) || (inner.get(..outer.len()).is_some_and(|head| same(head, outer)) && inner[outer.len()..].starts_with('/'))
+    };
+    let mut kept = Vec::new();
+    let mut notes = Vec::new();
+    for pattern in patterns {
+        // Longest first: a .claude/CLAUDE.md also ends in /CLAUDE.md.
+        let folder = ["/.claude/rules/**", "/.claude/CLAUDE.md", "/CLAUDE.local.md", "/CLAUDE.md"]
+            .iter()
+            .find_map(|file| pattern.strip_suffix(file))
+            .unwrap_or(&pattern)
+            .to_string();
+        let readings = [folder.clone(), glob_unescape(&folder)];
+        let hit = own.iter().find_map(|o| {
+            let root = norm(&o.root);
+            readings.iter().any(|r| if o.nested { within(r, &root) } else { same(r, &root) }).then_some(root)
+        });
+        match hit {
+            Some(root) => {
+                let note =
+                    format!("could not exclude {}: its name collides with this project's instruction path {root}", glob_unescape(&folder));
+                if !notes.contains(&note) {
+                    notes.push(note);
+                }
+            }
+            None => kept.push(pattern),
+        }
+    }
+    (kept, notes)
+}
+
+/// `glob_literal` undone: each one-character bracket class it made, as the
+/// character.
+fn glob_unescape(pattern: &str) -> String {
+    let chars: Vec<char> = pattern.chars().collect();
+    let mut out = String::with_capacity(pattern.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '[' && chars.get(i + 2) == Some(&']') {
+            out.push(chars[i + 1]);
+            i += 3;
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// `path` (with `/`) as a `claudeMdExcludes` pattern matching that path alone.
+/// Claude Code matches those patterns with picomatch (2.1.318: "Glob patterns
+/// or absolute paths of CLAUDE.md files to exclude from loading. Patterns are
+/// matched against absolute file paths using picomatch", its settings schema;
+/// https://code.claude.com/docs/en/memory#exclude-specific-claudemd-files),
+/// after turning every `\` in a pattern into `/`, so a backslash cannot escape
+/// anything there: a character that means something goes in a bracket class
+/// of its own instead (`[[]` is a literal `[`), and only such a character.
+/// picomatch also takes a pattern as matching the input spelled exactly like
+/// it, so every needless escape would match one more folder (`a[!]b` matches
+/// a folder named `a[!]b` as well as `a!b`). Which characters, found with
+/// Claude Code 2.1.319's own bundled picomatch, `{ dot: true }`, POSIX and
+/// Windows, on every printable ASCII character, a space and non-ASCII ones,
+/// alone and before `(`, `(…|…)`, `{a,b}`, `[ab]` and `*`, each name having to
+/// match itself and none of its neighbors: `* ? [ ] { } ( ) |` and `"`, which
+/// picomatch reads as quoting. `! @ + ,` are literal there once the `(` an
+/// extglob would need, or the braces a list would, are escaped. A folder that
+/// does need an escape is still matched by a folder spelled as the escaped
+/// pattern (`[[]ab[]]`), picomatch's own shortcut.
+pub(crate) fn glob_literal(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    for c in path.chars() {
+        match c {
+            '*' | '?' | '[' | ']' | '{' | '}' | '(' | ')' | '|' | '"' => {
+                out.push('[');
+                out.push(c);
+                out.push(']');
+            }
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// Claude Code's flag for the MCP servers of `--mcp-config` alone: none of the
@@ -122,6 +352,16 @@ pub(crate) struct HelperSettings {
     pub(crate) connectors: bool,
 }
 
+/// What a helper's settings file and start hold beyond a chat's, as applied:
+/// auto-memory off, and unless `connectors` Luna's MCP server alone.
+pub(crate) fn helper_settings_applied(h: HelperSettings, path: &str) -> Vec<Applied> {
+    let mut applied = vec![Item::HelperNoMemory.with(format!("autoMemoryEnabled: false in {path}, {NO_AUTO_MEMORY_ENV}=1"))];
+    if !h.connectors {
+        applied.push(Item::HelperMcpAlone.with(format!("{STRICT_MCP}, disableClaudeAiConnectors: true in {path}")));
+    }
+    applied
+}
+
 /// Claude Code's variable that turns auto-memory off (`1`) or on (`0`) above
 /// the settings (code.claude.com/docs/en/memory).
 pub(crate) const NO_AUTO_MEMORY_ENV: &str = "CLAUDE_CODE_DISABLE_AUTO_MEMORY";
@@ -140,7 +380,8 @@ fn hook_command(url: &str) -> String {
 }
 
 /// `claude_settings_file`'s settings: the session's hooks to `hook_url`, the
-/// guard's to `guard_url`, the skills and instructions it does not get, and
+/// guard's to `guard_url`, the skills and instructions it does not get (the
+/// account's, and the other memory `memory_excludes` names), and
 /// `core`, Luna's `core/`, denied to its file tools: its `core.json` holds the
 /// token to the whole core. A rule, not a sandbox: Bash, where it runs
 /// unasked, still reads anything (threat model F3).
@@ -192,8 +433,10 @@ pub(crate) fn claude_settings(
     if !library.hidden.is_empty() {
         settings.insert("skillOverrides".into(), library.hidden.iter().map(|n| (n.clone(), serde_json::json!("off"))).collect());
     }
-    if !library.excluded.is_empty() {
-        settings.insert("claudeMdExcludes".into(), library.excluded.clone().into());
+    // The account's instructions file is a path, not a pattern: taken literally.
+    let excluded: Vec<String> = library.excluded.iter().map(|p| glob_literal(p)).chain(library.memory_off.iter().cloned()).collect();
+    if !excluded.is_empty() {
+        settings.insert("claudeMdExcludes".into(), excluded.into());
     }
     settings
 }
