@@ -249,15 +249,45 @@ check_in_repo refuse 'Fix the gate
 The body.
 # ------------------------ >8 ------------------------
 Co-Authored-By: x'
-g config core.commentChar auto
-# git chose ";" here, "#" opening a line of the text: a commit -v tells by its
-# scissors line, a plain one by its last comment line.
+# commentString and commentChar are one setting: the last configured wins. (A
+# fresh key each time: git replaces a set one in place, keeping its position.)
+g config --unset core.commentChar
+g config core.commentString '::'
+g config core.commentChar ';'
 check_in_repo accept 'Fix the gate
+; a comment
 
-# A heading
-;
-; Please enter the commit message for your changes. Lines starting
+The body.'
+check_in_repo refuse 'Fix the gate
+:: text, not a comment
+
+The body.'
+g config --unset core.commentString
+g config --unset core.commentChar
+g config core.commentChar ';'
+g config core.commentString '::'
+check_in_repo accept 'Fix the gate
+:: a comment
+
+The body.'
+check_in_repo refuse 'Fix the gate
+; text, not a comment
+
+The body.'
+g config --unset core.commentString
+g config --unset core.commentChar
+# With "auto", git's pick is unknown, so nothing is a comment and no scissors
+# line cuts: a message cannot choose a character and hide a trailer behind it.
+g config core.commentChar auto
+check_in_repo refuse 'Fix the gate
+
+The body.
 ; ------------------------ >8 ------------------------
+Co-Authored-By: x'
+check_in_repo refuse 'Fix the gate
+
+The body.
+# ------------------------ >8 ------------------------
 Co-Authored-By: x'
 check_in_repo accept 'Fix the gate
 
@@ -266,11 +296,14 @@ check_in_repo accept 'Fix the gate
 ; Please enter the commit message for your changes. Lines starting
 ; with ";" will be ignored, and an empty message aborts the commit.'
 check_in_repo refuse 'Fix the gate
+# a comment elsewhere, text here
 
-# A heading
-;
-; Please enter the commit message for your changes. Lines starting
-Co-Authored-By: x'
+The body.'
+printf 'Fix the gate\n' >"$tmp"
+if ! (cd "$repo" && sh "$here/check-commit-msg.sh" "$tmp") 2>&1 | grep -q 'core.commentChar is auto'; then
+    echo 'FAIL (hook, commentChar=auto): no warning that comment lines are checked as text' >&2
+    fail=1
+fi
 g config --unset core.commentChar
 
 # --- merges and what a range leaves out ---

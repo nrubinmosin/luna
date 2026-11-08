@@ -52,23 +52,25 @@ matches_i() { printf '%s\n' "$1" | grep -qiE "$2"; }
 cr=$(printf '\r')
 scissors=' ------------------------ >8 ------------------------'
 
-# What opens a comment line in the message file $1, from the repository's
-# core.commentChar (or commentString; "#" when unset), or nothing when git
-# added no comments. With "auto", git picks per message the first of #;@!$%^&|:
-# that opens no line of the text, and tells nobody: the pick is read off the
-# file, from the scissors line of a commit -v when there is one, else from the
-# last non-blank line, which is git's last comment line when there are any.
-# A text line there opening with one of those characters is taken for a
-# comment: a rare miss, and one the range check catches once committed.
+# What opens a comment line in the hook's message file: core.commentChar and
+# core.commentString are one setting under two names, and as in git the one
+# configured last wins ("#" when neither is). With "auto", git picks per message
+# the first of #;@!$%^&|: that opens no line of the text, and tells nobody; a
+# guess read off the file would let a message choose its own comment character
+# and hide a trailer behind a scissors line of it, so nothing is a comment
+# then, and the author is told why a comment line of theirs is being judged.
 comment_prefix() {
-    c=$(git config --get core.commentString 2>/dev/null || git config --get core.commentChar 2>/dev/null) || c='#'
-    [ -n "$c" ] || c='#'
-    [ "$c" = auto ] || { printf '%s' "$c"; return; }
-    last=$(tr -d "$cr" <"$1" | grep -E "^[^ ]+$scissors\$" | head -n 1)
-    [ -n "$last" ] || last=$(tr -d "$cr" <"$1" | grep -v '^[[:space:]]*$' | tail -n 1)
-    case $last in
-        [\#\;@!\$%^\&\|:]*) printf '%s' "$last" | cut -c1 ;;
+    c=$(git config --get-regexp '^core\.comment(char|string)$' 2>/dev/null | tail -n 1)
+    case $c in
+        *' '*) c=${c#* } ;;
+        *) c= ;;
     esac
+    [ -n "$c" ] || c='#'
+    if [ "$c" = auto ]; then
+        echo 'check-commit-msg: core.commentChar is auto, so comment lines and a scissors line are checked as text' >&2
+        return
+    fi
+    printf '%s' "$c"
 }
 
 # Checks the message on stdin, printing "line N (rule): text" per problem, and
@@ -203,7 +205,7 @@ case $1 in
         exit 2
         ;;
     *)
-        comment=$(comment_prefix "$1")
+        comment=$(comment_prefix)
         if ! out=$(check_message hook yes <"$1"); then
             refuse 'commit-msg hook' "$out" 'Edit it with: git commit --amend'
             exit 1
