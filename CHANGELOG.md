@@ -10,15 +10,6 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Security
 
-- Dependencies with published vulnerabilities are updated: rustls 0.23.46 and
-  rustls-webpki 0.103.16 (TLS handshake fixes), webpki-roots 1.0.11 (distrusted
-  emSign roots removed), zip 9 under the updater (tauri-plugin-updater
-  2.14.1) and tokio 1.53.3 (an unsound `AsyncFd` constructor); among the build
-  tools, Vite 7.3.7 and source-map-js 1.2.2.
-- Every pull request, every change to master and a weekly run check the
-  dependencies for advisories, licenses and sources (cargo-deny, `pnpm audit`),
-  the history for committed secrets (gitleaks), and the code and workflows with
-  CodeQL. `scripts/supply-chain.ps1` runs the same checks locally.
 - The window's page reaches only what it calls, so a script injected into it
   would get no more: each app command is granted to the main window by name
   and refused to any other window or a remote page, plugins are cut to the
@@ -32,6 +23,60 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   the chat that spawns them" asks again in a system dialog, which the page's
   own calls cannot answer, and a yes counts only for the state it was asked
   about.
+
+## [0.10.1] - 2026-11-08
+
+A security and reliability release; it also carries the changes of 0.10.0,
+which was never published. Claude Code downloads are checked against
+Anthropic's signed release, sessions are kept away from the key to Luna's
+core, an interrupted CLI install is no longer mistaken for a finished one,
+shutting the PC down or restarting it when done works again, and the
+updater's signing key is kept out of the release build.
+
+### Security
+
+- Dependencies with published vulnerabilities are updated: rustls 0.23.46 and
+  rustls-webpki 0.103.16 (TLS handshake fixes), webpki-roots 1.0.11 (distrusted
+  emSign roots removed), zip 9 under the updater (tauri-plugin-updater
+  2.14.1) and tokio 1.53.3 (an unsound `AsyncFd` constructor); among the build
+  tools, Vite 7.3.7 and source-map-js 1.2.2.
+- Every pull request, every change to master and a weekly run check the
+  dependencies for advisories, licenses and sources (cargo-deny, `pnpm audit`),
+  the history for committed secrets (gitleaks), and the code and workflows with
+  CodeQL. `scripts/supply-chain.ps1` runs the same checks locally.
+- The updater's signing key no longer reaches the release build. `tauri build`
+  runs every dependency's build scripts, proc-macros and frontend tooling, and
+  any of them could have read the key it was handed; the installer is now
+  built unsigned and signed afterwards in a job of its own, which runs only the
+  Tauri CLI pinned by `pnpm-lock.yaml`, without network, and checks the
+  signature against the updater's public key before publishing it. The release
+  still takes one approval, now given to the signing job. `release.ps1 -Local`
+  signs the same way, builds an export of the commit rather than the checkout
+  it signs from, and no longer runs the built exe to ask its core fingerprint.
+  A key rotation's bridge release is checked against the old public key, given
+  as `UPDATER_TRUSTED_PUBKEY`.
+- Claude Code's release manifest is verified against its detached OpenPGP
+  signature and Anthropic's release key, pinned in Luna, before the exe's
+  checksum from it is trusted: whoever serves the download bucket can no
+  longer hand Luna an exe of their own with a matching manifest. Codex is
+  still checked only against the checksums of its own release.
+- The signed manifest must name the version it was fetched for, and no Claude
+  Code version below the highest signed one Luna has accepted (or below
+  2.1.319 on a fresh install) is installed, so an old signed release cannot be
+  replayed under the unsigned `latest` pointer. A signature is held to its
+  signed creation and expiration times, and the release key to its expiry
+  where the signature gives one.
+- Sessions are denied the folder that holds the key to Luna's core, wherever
+  their CLI can enforce it: Claude Code's file tools everywhere, and Codex's
+  `read-only` and `read-only-net` sandboxes on Linux and macOS. A Claude Code
+  session whose deny cannot be written does not start, rather than run without
+  it.
+- On Windows, where a Codex sandbox can still read that file, the core instead
+  refuses the connection: it checks which process is at the other end of each
+  loopback connection and turns away one running in a CLI sandbox (a restricted
+  or contained token, or a lower integrity level) before it can present the
+  key. A normal window is unaffected. Codex's `workspace-write` on Linux and
+  macOS remains able to read the file; the threat model (F3) says why.
 
 ### Added
 
@@ -107,31 +152,6 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   package is on 2.8 now, and the gate checks every such pair in the lockfiles
   (`pnpm check:tauri`), so a bump to one side alone fails there.
 
-### Security
-
-- The updater's signing key no longer reaches the release build. `tauri build`
-  runs every dependency's build scripts, proc-macros and frontend tooling, and
-  any of them could have read the key it was handed; the installer is now
-  built unsigned and signed afterwards in a job of its own, which runs only the
-  Tauri CLI pinned by `pnpm-lock.yaml`, without network, and checks the
-  signature against the updater's public key before publishing it. The release
-  still takes one approval, now given to the signing job. `release.ps1 -Local`
-  signs the same way, builds an export of the commit rather than the checkout
-  it signs from, and no longer runs the built exe to ask its core fingerprint.
-  A key rotation's bridge release is checked against the old public key, given
-  as `UPDATER_TRUSTED_PUBKEY`.
-- Claude Code's release manifest is verified against its detached OpenPGP
-  signature and Anthropic's release key, pinned in Luna, before the exe's
-  checksum from it is trusted: whoever serves the download bucket can no
-  longer hand Luna an exe of their own with a matching manifest. Codex is
-  still checked only against the checksums of its own release.
-- The signed manifest must name the version it was fetched for, and no Claude
-  Code version below the highest signed one Luna has accepted (or below
-  2.1.319 on a fresh install) is installed, so an old signed release cannot be
-  replayed under the unsigned `latest` pointer. A signature is held to its
-  signed creation and expiration times, and the release key to its expiry
-  where the signature gives one.
-
 ## [0.10.0] - 2026-11-08
 
 A security and engineering release. Agent tools now follow least privilege,
@@ -172,14 +192,6 @@ fixes below.
 - Documentation in `docs/`: a user guide by topic, architecture pages, decision
   records, notes on how each CLI behaves, and a development guide.
 - A contributing guide, issue and pull request templates, and this changelog.
-
-### Added
-
-- The installer puts `THIRD-PARTY-NOTICES.txt` beside Luna, and each release
-  publishes it too: the license texts of every crate and npm package Luna is
-  built from, and where their source is; the Rust standard library's own
-  inventory; and what the build tools and the installer add: Vite's helpers,
-  NSIS and its Tauri plug-in, the WebView2 loader and the Visual C++ runtime.
 
 ### Changed
 
@@ -270,7 +282,8 @@ fixes below.
 - First release: Claude Code sessions in panes, accounts with isolated configs,
   usage limits, worktrees, the updater.
 
-[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.10.1...HEAD
+[0.10.1]: https://github.com/nrubinmosin/luna/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/nrubinmosin/luna/compare/v0.9.10...v0.10.0
 [0.9.0]: https://github.com/nrubinmosin/luna/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/nrubinmosin/luna/compare/v0.7.0...v0.8.0

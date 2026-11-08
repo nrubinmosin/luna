@@ -1,4 +1,4 @@
-# ADR-0014: The page gets only the commands it calls
+# ADR-0015: The page gets only the commands it calls
 
 - **Status:** Accepted
 - **Date:** 2026-11-08

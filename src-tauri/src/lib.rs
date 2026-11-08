@@ -32,6 +32,7 @@ mod log;
 mod mcp;
 mod media;
 mod paths;
+mod peer;
 mod power;
 mod procs;
 mod provider;
