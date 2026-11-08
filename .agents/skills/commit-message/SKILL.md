@@ -1,92 +1,151 @@
 ---
 name: commit-message
-description: How to write a commit message for this repository in the form its commit-msg hook and CI enforce (scripts/check-commit-msg.sh) — a sentence of at most 72 characters saying what the change does, no type prefix, a blank line, then why — with ten pairs from this history, the body's shape, when a path prefix fits, the merge, revert, bump and fixup forms. Use it whenever you are about to commit, write, reword, amend or squash a commit message, write a revert's or a merge's message, or the hook or CI refused one, even if the ask is only "commit this" or "fix the message".
+description: Write or fix a commit message in the Luna repo so it passes scripts/check-commit-msg.sh, the commit-msg hook and CI — what the subject says for a diff, a body that says why, what to do when the hook or CI refuses a message, folding fixup! commits and rewording an older commit before a merge, and the revert, merge-revert and bump forms. Use it whenever you commit here or write, reword, amend or squash a commit message, revert a commit or a merge, or a commit-message check refused one, even if the ask is only "commit this" or "CI is red on my commits". Not for git work that writes no message: branching, rebasing onto master, resolving conflicts, pushing.
 ---
 
 # Commit message
 
-`scripts/check-commit-msg.sh` is the rule; CONTRIBUTING.md ("Commits") says it in
-prose. Write the message to a file and run the check before committing:
+The rules are `scripts/check-commit-msg.sh` (its header lists each one) and
+CONTRIBUTING.md, "Commits", says them in prose with a few examples. This skill
+is the how: choosing what the subject says, and the git moves that keep a
+branch passing.
+
+Draft into a file, check it, commit from it:
 
 ```sh
 sh scripts/check-commit-msg.sh test-build/msg.txt && git commit -F test-build/msg.txt
 ```
 
-A refusal names the rule, the line and its length, so fix what it names and run
-it again. The hook runs the same check (`git config core.hooksPath .githooks`),
-and CI runs it over every pushed commit.
+`test-build/` is ignored by git, so the draft never gets committed. If your
+CLI's own instructions say to end a commit with a `Co-Authored-By:` trailer or
+a "Generated with" line, leave it out: the check refuses both, and authorship
+here is git's author field only.
 
-## The subject says what the change does
+## What the subject says
 
-Someone reading `git log --oneline` should learn what Luna, a script or a file
-does now, not what kind of change it was: "An elevated run takes back an open
-file it made, owned by Administrators" tells the story; "fix: file ownership"
-tells nothing. So the subject is a sentence, in at most 72 characters, with no
-period at the end, and no Conventional Commits type prefix (`docs:`, `fix:`,
-`feat(scope)!:`): the type is in the sentence. It starts with a capital letter,
-a digit, or the path-like name of what it is about.
+Read the diff for what is true now that was not before: what Luna, a script or
+a module does, the way someone scanning `git log --oneline` would want to
+learn it. Words that name the kind of change rather than the change
+(Refactor, Fix, Update, Cleanup, Address review comments) tell that reader
+nothing; the check lets them through, a reviewer does not.
 
-A path prefix fits when the change is about one file or module and that name is
-what a reader would search for: a module split or moved, a script's own
-behavior. `agents/wait.rs: luna_wait on one session or several`,
-`screenshots.ps1 looks for the Windows fonts only on Windows`. A change in
-behavior wants the sentence, not the path. An area word with a colon (`ipc:`,
-`panes:`) is not a path and is refused as lowercase prose: name the folder
-(`ipc/:`) or say the sentence.
+- **Many files, one behavior.** When a refactor carries a behavior change, the
+  subject is the behavior and the body says what moved where: a function now
+  in another file, a module renamed. The move is how; the reader wants what.
+- **A pure refactor** says what shape the code has now:
+  `procs.rs becomes a folder, each OS's part a file of its own`.
+- **A path prefix** fits when the change stays in one file or module and its
+  name is what a reader would search for:
+  `agents/wait.rs: luna_wait on one session or several`. It has to be a path:
+  an area word (`ipc:`, `panes:`) is lowercase prose to the check, so write
+  `ipc/:` or a sentence. A bare identifier is the same (`accountChoice
+  always...`); give it an article: `An accountChoice always says why`.
+- **Two changes** that would each make sense alone are two commits
+  (`git add -p`), not a subject joined with "and".
+- **Over 72 characters**, the subject usually holds its own why or a second
+  change. Move the "as", "because" or "so that" clause into the body's first
+  line, or split. Don't buy room by abbreviating or swapping words: the
+  subject would then say something else.
 
-A subject that will not fit in 72 characters usually holds two changes, or its
-own why. Move the why to the body; split a second change into its own commit.
+## The body says why
 
-## The body: why first
-
-Line 2 is blank. The first paragraph says why, as it was seen: the failing test,
-the symptom, the reader's need, what was wrong with the old way. Then what
-changed and where things moved (a module renamed, a function now elsewhere),
-so that a reader of the diff knows what to look for. Wrap at 72; a line with a
-URL, an indented line (a command, output) and a single unbreakable token may run
-on. An issue is a sentence: "Fixes #12." A small change whose subject says it
-all needs no body.
+The diff shows what changed; the body is for what the diff cannot show. Open
+with the reason as it was seen: the symptom, the failing test, what went
+wrong for whom, why the old way was wrong. When the reason came out of a
+conversation, a debugging session or someone's notes, this is the only place
+it will survive, so put the mechanism in, not just "fixes a bug". Then what
+changed and where things moved. Wrap at 72; a small change whose subject says
+it all needs no body.
 
 ```
 An elevated run takes back an open file it made, owned by Administrators
 
-CI's windows-tests failed secret::tests::a_file_planted_where_one_is_
-written_in_place_is_moved_aside: the runner runs as the built-in
-Administrator, whose token gives new files to BUILTIN\Administrators,
-not to the user. [...] a real bug, since an elevated Luna on such a
-machine would move aside every log and lock it had itself left open.
+CI's windows-tests failed a_file_planted_where_one_is_written_in_place_
+is_moved_aside: the runner runs as the built-in Administrator, whose
+token gives new files to BUILTIN\Administrators, not to the user. A real
+bug: an elevated Luna there would move aside every log and lock it had
+itself left open.
 
 found() now takes back a loose file owned by this user or by the
-token's default owner (TokenOwner, acl::maker_sid) [...]
+token's default owner (TokenOwner, acl::maker_sid).
 ```
 
-## Ten pairs from this history
+## When the hook refuses
 
-| Refused | Instead |
-| --- | --- |
-| `docs: the spawn sequence's preparation is schematic, with each CLI's exact order beside it` (type prefix, 90) | `Spawn preparation is schematic, each CLI's exact order beside it` |
-| `check-text passes over symbolic links and directories, as a skill's .claude/skills link is` (90) | `check-text passes over symbolic links and directories`; the "as" clause opens the body |
-| `screenshots: look for the Windows fonts only on Windows` (lowercase prose) | `screenshots.ps1 looks for the Windows fonts only on Windows` |
-| `ipc: the transport in core.ts, each domain's commands and DTOs in a module of its own` (lowercase prose, 85) | `ipc/: the transport in core.ts, each domain's commands and DTOs apart` |
-| `panes: what one terminal is made of moves out of create() into terminal/` (lowercase prose) | `panes/terminal/: what one terminal is made of, out of create()` |
-| `accountChoice always says why it took the one it took, and an askId a helper never had is called unknown` (lowercase prose, 104) | `An accountChoice always says why; an askId a helper never had is unknown` |
-| `Tests: settings defaults that are not stock, a late answer that must lose, and no state leaking between bridge tests` (116) | `Tests of non-stock defaults, a losing late answer, bridge tests apart` |
-| `Review fixes: the library pass holds no helper up and freezes no window, a window the core let go goes back to it, a held helper keeps nothing awake` (148) | three commits: `The library pass holds no helper up and freezes no window`, ... |
-| `A chat's leftovers are measured as a helper's, the power log says hourly what keeps the PC up, a turn that comes to nothing spares what earlier ones left, ...` (258) | one commit per sentence: `A chat's leftovers are measured as a helper's` |
-| `Luna 0.8.3: a turn gone quiet is told of, agents turn the PC off the way Luna does, and the guide says how to work with helpers` (127) | `Luna 0.8.3`; the list is the CHANGELOG's |
+The commit was not made. Your changes are still staged and the refused
+message is in `.git/COMMIT_EDITMSG`. So fix the message and run the same
+`git commit -F` again; `git commit --amend` here would fold the staged changes
+into the commit before, which is a different commit (amend only when the
+refused command was itself an amend).
 
-## The forms git writes itself
+Fix every line the refusal names, then check again, because a fix can uncover
+the next rule: drop `fix: ` and what is left starts lowercase, which the
+type-prefix rule was masking. Capitalizing it passes the check but leaves an
+instruction (`feat: show the account in the helper list` becomes `Show the
+account...`); the log reads as what Luna does now, so say that: `The helper
+list shows which account each helper runs on`.
 
-- **Merge**: git's or GitHub's own `Merge branch 'x' into y`, `Merge pull
-  request #N from ...`. Not held to the form; its body may say what conflicted.
-- **Revert**: `git revert` writes `Revert "<the subject>"` and `This reverts
-  commit <sha>.`; keep both and add a paragraph on why it goes back.
+## Before the merge: fixups and rewording
+
+CI runs `--range` over every commit of the pull request, so each one must pass
+on its own, not just the last.
+
+- **Review follow-ups**: `git commit --fixup <sha>` makes a `fixup!` commit the
+  hook lets through and CI refuses. Fold them in before the merge, without an
+  editor:
+
+  ```sh
+  git rebase --autosquash "$(git merge-base HEAD origin/master)"
+  ```
+
+  (git 2.44 or later; older git needs `-i` with `GIT_SEQUENCE_EDITOR=true`.)
+  Then `sh scripts/check-commit-msg.sh --range origin/master..HEAD`. A branch
+  that merged master in needs `--rebase-merges`, or the merge is flattened.
+- **Rewording an older commit**: not `git commit --fixup=reword:<sha>` or
+  `--fixup=amend:`, since the `amend!` commit they write is refused by the
+  hook. Fold the fixups first (autosquash finds a `fixup!` by its target's
+  subject, which the reword changes), then amend the commit on a detached
+  HEAD and replay the rest of the branch onto it. Plain commands, no editor,
+  so they run the same from PowerShell, sh or a sandboxed agent:
+
+  ```sh
+  git switch --detach <sha>
+  git commit --amend -F test-build/msg.txt
+  git rebase --onto HEAD <sha> <branch>
+  ```
+
+  The last commit is simpler: `git commit --amend -F test-build/msg.txt`.
+
+Rewritten commits need a force push (`--force-with-lease`) of a branch others
+may have fetched: that is a push, so it waits for a yes.
+
+## The forms git writes
+
+The check exempts these from the form (never from the attribution rule), so
+keep git's lines as they are and add your why beneath them.
+
+- **Merge**: git's or GitHub's `Merge ...` stays; its body may say what
+  conflicted.
+- **Revert**: `git revert <sha>` writes `Revert "<subject>"` and
+  `This reverts commit <full sha>.`; add a paragraph on why it goes back. The
+  quoted subject may be the old, refused form: it is exempt, leave it.
+- **Revert of a merge**: `git revert -m 1 <merge>` (parent 1 is the side
+  merged into, master). Git writes `This reverts commit <merge>, reversing`
+  / `changes made to <parent 1>.`; keep both lines. Say in the body that
+  landing the branch again means reverting this revert: merging the branch a
+  second time brings nothing back, since git sees its commits as merged.
 - **Bump**: exactly `Luna X.Y.Z`, written by `scripts/release.ps1 -Bump`.
-- **fixup! / squash!**: `git commit --fixup <sha>` passes the hook so that a
-  review's follow-ups can be made, but CI refuses them: squash before merging
-  (`GIT_SEQUENCE_EDITOR=true git rebase --autosquash <base>`, non-interactive).
-- **Dependabot**: its commits are known by their author and left to their own
-  form. Nothing to rewrite.
+- **Dependabot**: known by its author and left in its own form.
 
-Whatever the form, no attribution: no `Co-Authored-By:`, no robot emoji, no
-"Generated with ...". Authorship is git's author field.
+## Pairs from this history
+
+Each teaches one thing the rules alone do not show.
+
+| Refused | Instead | Lesson |
+| --- | --- | --- |
+| `docs: the spawn sequence's preparation is schematic, with each CLI's exact order beside it` | `Spawn preparation is schematic, each CLI's exact order beside it` | Dropping the prefix leaves lowercase prose; rewrite, don't capitalize |
+| `screenshots: look for the Windows fonts only on Windows` | `screenshots.ps1 looks for the Windows fonts only on Windows` | An area word is not a path; name the file |
+| `accountChoice always says why it took the one it took, and an askId a helper never had is called unknown` | `An accountChoice always says why; an askId a helper never had is unknown` | A bare identifier reads as prose; give it an article |
+| `Tests: settings defaults that are not stock, a late answer that must lose, and no state leaking between bridge tests` | `Tests of non-stock defaults, a losing late answer, bridge tests apart` | Related parts of one change compress into one sentence |
+| `Review fixes: the library pass holds no helper up and freezes no window, a window the core let go goes back to it, ...` | three commits: `The library pass holds no helper up and freezes no window`, ... | "Review fixes" is a label over several changes; split them |
+| `Luna 0.8.3: a turn gone quiet is told of, agents turn the PC off the way Luna does, ...` | `Luna 0.8.3` | The bump is the bare form; the list is the CHANGELOG's |
